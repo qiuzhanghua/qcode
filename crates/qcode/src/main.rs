@@ -6,6 +6,9 @@ use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
@@ -71,6 +74,10 @@ struct RunArgs {
     /// [pricing."<model>"] entry in the config file.
     #[arg(long, value_name = "USD")]
     max_cost: Option<f64>,
+    /// Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled
+    /// (same path as Ctrl-C, including process-group cleanup) and qc exits 124.
+    #[arg(long, value_name = "SECS")]
+    timeout: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -128,6 +135,7 @@ async fn cmd_run(
         yes,
         cwd,
         max_cost,
+        timeout,
     } = args;
 
     let prompt = match prompt {
@@ -228,8 +236,20 @@ async fn cmd_run(
         Box::new(AutoDeny)
     };
 
+    if timeout == Some(0) {
+        return Err("--timeout must be at least 1 second".into());
+    }
+
     let cancel = CancellationToken::new();
     install_ctrl_c(cancel.clone());
+    let timed_out = Arc::new(AtomicBool::new(false));
+    if let Some(seconds) = timeout {
+        install_timeout(
+            cancel.clone(),
+            Duration::from_secs(seconds),
+            timed_out.clone(),
+        );
+    }
 
     let outcome = run_turn(
         TurnContext {
@@ -266,6 +286,13 @@ async fn cmd_run(
     if outcome.cancelled {
         if !json && !outcome.text.is_empty() {
             println!("{}", outcome.text);
+        }
+        if timed_out.load(Ordering::SeqCst) {
+            eprintln!(
+                "[timeout] turn exceeded {}s; cancelled",
+                timeout.unwrap_or_default()
+            );
+            return Ok(ExitCode::from(124));
         }
         eprintln!("[cancelled] turn interrupted; the event log is intact");
         return Ok(ExitCode::from(130));
@@ -380,6 +407,20 @@ fn install_ctrl_c(cancel: CancellationToken) {
                 std::process::exit(130);
             }
         }
+    });
+}
+
+/// Whole-turn deadline. It cancels through the same token as Ctrl-C, so a
+/// running shell still gets its process group killed before the turn ends.
+fn install_timeout(cancel: CancellationToken, timeout: Duration, fired: Arc<AtomicBool>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(timeout).await;
+        fired.store(true, Ordering::SeqCst);
+        eprintln!(
+            "\n[timeout] turn exceeded {}s; stopping…",
+            timeout.as_secs()
+        );
+        cancel.cancel();
     });
 }
 

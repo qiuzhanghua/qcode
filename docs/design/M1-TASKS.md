@@ -95,8 +95,11 @@
 - 审批等待可取消：`Approver` 收到取消令牌；交互式实现把阻塞的 stdin 读取移到 blocking 线程，
   Ctrl-C 立即以 `cancelled` 收尾（读取线程随进程退出）。
 - CLI：Ctrl-C 取消当前 turn（再按一次立即退出），取消的 turn 以退出码 130 结束。
+- `--timeout <secs>`：整个 turn 的墙钟上限，超时复用同一取消路径（abort 流 + 杀进程组），
+  `turn_ended(cancelled)`，退出码 124；0 或负数在启动时被拒。
 - 验收：引擎取消 2 条 + 进程组清理 2 条（取消与超时后后台 `sleep` 均消失）
-  + CLI 端到端 1 条（真实 `qc` 进程对不响应的服务按 Ctrl-C，退出码 130 且 `turn_ended(cancelled)`）。
+  + CLI 端到端 2 条（真实 `qc` 进程对不响应的服务按 Ctrl-C 退出 130；`--timeout 1`
+  到点退出 124，两者都写 `turn_ended(cancelled)`）。
 
 ### M1-12 事件 schema 黄金测试 ✅
 

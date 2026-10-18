@@ -47,6 +47,8 @@ export DEEPSEEK_API_KEY=...
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
   `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
+- **超时**：`--timeout <秒>` 给整个 turn 设墙钟上限，超时走同一条取消路径
+  （含进程组清理），退出码 124 以便与手工取消区分。
 - **事件日志**：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃；
   `sessions show` 可完整 replay。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
@@ -94,7 +96,7 @@ action = "deny"
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--data-dir`、`--config`。
+常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--data-dir`、`--config`。
 `--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档
