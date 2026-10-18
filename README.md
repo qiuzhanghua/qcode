@@ -29,7 +29,9 @@ cargo test --workspace
 
 - 事件日志：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃。
 - 状态机：`Idle / Streaming / AwaitingApproval / RunningTool / Compacting / Cancelling`。
-- Provider port：能力声明 + 流式 delta；M0 只有脚本化 mock。
+- Provider port：能力声明 + 流式 delta；已实现脚本化 mock 与
+  OpenAI-compatible（SSE，覆盖 OpenAI / DeepSeek / Ollama / vLLM）。
+  CLI 目前只接 mock，真实 provider 的接线在 M0-9。
 - CLI：`run` / `sessions list` / `sessions show`。
 
 尚未实现：真实 provider、工具循环、审批、TUI、MCP、压缩。

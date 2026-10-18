@@ -1,8 +1,11 @@
 //! Concrete provider implementations.
 //!
-//! M0 ships only a scripted mock used by tests and by `coder run --provider mock`.
-//! The OpenAI-compatible streaming client lands in M0-8.
+//! M0 ships a scripted mock plus an OpenAI-compatible streaming client that
+//! covers OpenAI, DeepSeek, Ollama and vLLM.
 
 pub mod mock;
+pub mod openai_compat;
+pub mod sse;
 
 pub use mock::MockProvider;
+pub use openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};

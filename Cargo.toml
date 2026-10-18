@@ -21,10 +21,11 @@ serde_json = "1"
 thiserror = "2"
 ulid = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 tempfile = "3"

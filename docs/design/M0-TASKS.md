@@ -73,15 +73,26 @@
 - 工具调用暂不支持：写入 error 事件 + `turn_ended(failed)`，显式失败而不是静默丢弃。
 - 验收：同 M0-6。
 
-## 待完成
+### M0-8 OpenAI-compatible provider ✅
 
-### M0-8 OpenAI-compatible provider
+`crates/coder-providers/src/openai_compat.rs`、`src/sse.rs`。
 
-- 目标：真实 HTTP 流式，覆盖 OpenAI / DeepSeek / Ollama / vLLM。
-- 范围：`reqwest` + SSE 解析；文本与工具参数增量；usage 映射；错误映射到
-  `ProviderError`；取消时 drop 连接。
-- 验收：对本地 mock SSE server 跑通；4xx/429/5xx/断流各有单测；不联网也能测。
-- 依赖：无。估时：2–3 天。
+- `reqwest 0.13` + 手写 SSE 解码（按字节缓冲，UTF-8 跨 chunk 安全）。
+- 文本、`reasoning_content`、工具参数增量、usage、finish_reason 全部映射到 `StreamEvent`。
+- 状态码映射：401/403 → Auth，429 → RateLimit（带 Retry-After），
+  400 上下文超限 → ContextOverflow。
+- 取消用 `select!` + drop 响应，错误以流内 `Err` 返回。
+- 验收：`tests/http_smoke.rs` 用本地 TCP 服务回放真实 HTTP 响应，覆盖 200 流式与 401。
+
+### M0-12 录制 SSE 回放测试 ✅
+
+- `tests/fixtures/openai_text.sse`、`openai_tool_call.sse`，纯文本 fixture，无网络。
+- `SseDecoder` 单测覆盖：跨 chunk、多事件同 chunk、CRLF、注释、多行 data、
+  UTF-8 被切开、未完成尾事件丢弃。
+- 工具 fixture 验证参数分片拼接后是合法 JSON，并在 `[DONE]` 时产出 `ToolCallDone`。
+- 验收：`cargo test -p coder-providers` 14 个测试全绿（10 单元 + 4 集成）。
+
+## 待完成（M0-9 起）
 
 ### M0-9 配置与凭据
 
@@ -102,14 +113,6 @@
 - 目标：macOS + Linux 矩阵，fmt / clippy / test / cargo-deny。
 - 验收：PR 上全绿；缓存 `~/.cargo` 与 `target`。
 - 依赖：无。估时：0.5 天。
-
-### M0-12 录制 SSE 回放测试
-
-- 目标：把一次真实响应的 SSE 分片存成 fixture，离线回放。
-- 范围：`tests/fixtures/*.sse`；解析器单测覆盖：跨 chunk 的事件、注释行、
-  多字节 UTF-8 被切开、`[DONE]`。
-- 验收：确定性、无网络。
-- 依赖：M0-8。估时：1 天。
 
 ### M0-13 `coder doctor`
 
