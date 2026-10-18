@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{Answer, ApprovalRequest, Approver};
 use crate::event::{
     ApprovalDecided, ApprovalRequested, AssistantMessage, ContentBlock, Decision, ErrorEvent,
-    Event, EventKind, Scope, ToolCall, ToolResult, TurnEnded, TurnStarted, TurnStatus, Usage,
-    UserMessage,
+    Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus,
+    Usage, UserMessage,
 };
 use crate::history;
 use crate::policy::{Action, Policy};
@@ -55,6 +55,9 @@ pub struct RunOptions<'a> {
     pub input: &'a str,
     pub workspace: PathBuf,
     pub max_turns: u32,
+    /// Cooperative cancellation. The CLI cancels it on Ctrl-C, a future TUI on
+    /// Esc. Cancellation is not an error: the turn ends with `cancelled`.
+    pub cancel: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +66,7 @@ pub struct RunOutcome {
     pub turns: u32,
     pub text: String,
     pub stop_reason: StopReason,
+    pub cancelled: bool,
 }
 
 /// Appends events for one session while keeping `seq` and `turn` consistent.
@@ -139,13 +143,25 @@ where
 
     let events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events(&events);
-    let tool_context = ToolContext {
-        workspace: options.workspace.clone(),
-    };
+    let tool_context =
+        ToolContext::new(options.workspace.clone()).with_cancel(options.cancel.clone());
 
     let mut turns = 0;
     let mut total_usage = Usage::default();
     loop {
+        if options.cancel.is_cancelled() {
+            return finish(
+                &mut writer,
+                TurnStatus::Cancelled,
+                total_usage,
+                String::new(),
+                StopReason::EndTurn,
+                options.session_id,
+                turns,
+                &mut on_event,
+            );
+        }
+
         turns += 1;
         if turns > options.max_turns {
             writer.append(
@@ -175,24 +191,42 @@ where
             max_output_tokens: None,
         };
 
-        let (blocks, usage, stop_reason) = collect_stream(ctx.provider, request).await?;
-        total_usage.merge(&usage);
+        let collected = collect_stream(ctx.provider, request, &options.cancel).await?;
+        total_usage.merge(&collected.usage);
 
-        writer.append(
-            EventKind::AssistantMessage(AssistantMessage {
-                blocks: blocks.clone(),
-                provider_raw: json!({ "provider": ctx.provider.name() }),
-                usage: usage.clone(),
-            }),
-            &mut on_event,
-        )?;
-        messages.push(Message {
-            role: Role::Assistant,
-            blocks: blocks.clone(),
-            tool_call_id: None,
-        });
+        // Partial output survives cancellation: the model may already have
+        // said something useful before Ctrl-C.
+        if !collected.blocks.is_empty() {
+            writer.append(
+                EventKind::AssistantMessage(AssistantMessage {
+                    blocks: collected.blocks.clone(),
+                    provider_raw: json!({ "provider": ctx.provider.name() }),
+                    usage: collected.usage.clone(),
+                }),
+                &mut on_event,
+            )?;
+            messages.push(Message {
+                role: Role::Assistant,
+                blocks: collected.blocks.clone(),
+                tool_call_id: None,
+            });
+        }
 
-        let calls: Vec<ToolCallBlock> = blocks
+        if collected.cancelled {
+            return finish(
+                &mut writer,
+                TurnStatus::Cancelled,
+                total_usage,
+                blocks_text(&collected.blocks),
+                StopReason::EndTurn,
+                options.session_id,
+                turns,
+                &mut on_event,
+            );
+        }
+
+        let calls: Vec<ToolCallBlock> = collected
+            .blocks
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::ToolCall {
@@ -209,32 +243,40 @@ where
             .collect();
 
         if calls.is_empty() {
-            let text: String = blocks
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect();
-            writer.append(
-                EventKind::TurnEnded(TurnEnded {
-                    status: TurnStatus::Completed,
-                    usage: total_usage,
-                    cost_usd: 0.0,
-                }),
-                &mut on_event,
-            )?;
-            return Ok(RunOutcome {
-                session_id: options.session_id.to_string(),
-                turns,
+            let text = blocks_text(&collected.blocks);
+            return finish(
+                &mut writer,
+                TurnStatus::Completed,
+                total_usage,
                 text,
-                stop_reason,
-            });
+                collected.stop_reason,
+                options.session_id,
+                turns,
+                &mut on_event,
+            );
         }
 
+        let mut halted = false;
         for call in calls {
+            if halted || tool_context.cancel.is_cancelled() {
+                // Keep the one-call-one-result invariant even when the run is
+                // going away; replay and resume depend on it.
+                halted = true;
+                append_result(
+                    &mut writer,
+                    &call.call_id,
+                    &ToolOutput::cancelled("cancelled by user"),
+                    &mut on_event,
+                )?;
+                continue;
+            }
+
             let output =
                 execute_call(&ctx, &tool_context, &mut writer, &call, &mut on_event).await?;
+            if output.status == ToolStatus::Cancelled {
+                halted = true;
+                continue;
+            }
             messages.push(Message {
                 role: Role::Tool,
                 blocks: vec![ContentBlock::Text {
@@ -243,7 +285,61 @@ where
                 tool_call_id: Some(call.call_id),
             });
         }
+
+        if halted {
+            return finish(
+                &mut writer,
+                TurnStatus::Cancelled,
+                total_usage,
+                String::new(),
+                StopReason::EndTurn,
+                options.session_id,
+                turns,
+                &mut on_event,
+            );
+        }
     }
+}
+
+fn blocks_text(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish<F>(
+    writer: &mut SessionWriter<'_>,
+    status: TurnStatus,
+    usage: Usage,
+    text: String,
+    stop_reason: StopReason,
+    session_id: &str,
+    turns: u32,
+    on_event: &mut F,
+) -> Result<RunOutcome, EngineError>
+where
+    F: FnMut(&Event),
+{
+    writer.append(
+        EventKind::TurnEnded(TurnEnded {
+            status,
+            usage,
+            cost_usd: 0.0,
+        }),
+        on_event,
+    )?;
+    Ok(RunOutcome {
+        session_id: session_id.to_string(),
+        turns,
+        text,
+        stop_reason,
+        cancelled: status == TurnStatus::Cancelled,
+    })
 }
 
 struct ToolCallBlock {
@@ -252,12 +348,33 @@ struct ToolCallBlock {
     arguments: Value,
 }
 
+struct Collected {
+    blocks: Vec<ContentBlock>,
+    usage: Usage,
+    stop_reason: StopReason,
+    cancelled: bool,
+}
+
 async fn collect_stream(
     provider: &dyn Provider,
     request: CompletionRequest,
-) -> Result<(Vec<ContentBlock>, Usage, StopReason), EngineError> {
-    let cancel = CancellationToken::new();
-    let mut stream = provider.stream(request, cancel).await?;
+    cancel: &CancellationToken,
+) -> Result<Collected, EngineError> {
+    let mut stream = match provider.stream(request, cancel.clone()).await {
+        Ok(stream) => stream,
+        // Providers check the token while opening the connection (DNS, TLS,
+        // waiting for response headers), so cancellation can surface here
+        // before a stream ever exists.
+        Err(ProviderError::Cancelled) if cancel.is_cancelled() => {
+            return Ok(Collected {
+                blocks: Vec::new(),
+                usage: Usage::default(),
+                stop_reason: StopReason::EndTurn,
+                cancelled: true,
+            });
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     let mut text = String::new();
     let mut reasoning = String::new();
@@ -265,34 +382,53 @@ async fn collect_stream(
     let mut usage = Usage::default();
     let mut stop_reason = StopReason::EndTurn;
     let mut ended = false;
+    let mut cancelled = false;
 
-    while let Some(item) = stream.next().await {
-        match item? {
-            StreamEvent::TextDelta(delta) => text.push_str(&delta),
-            StreamEvent::ReasoningDelta(delta) => reasoning.push_str(&delta),
-            StreamEvent::ToolCallDone {
+    loop {
+        // `biased` makes cancellation win over a stream item that is ready in
+        // the same poll, so Ctrl-C is never swallowed by a busy stream.
+        let item = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                cancelled = true;
+                break;
+            }
+            item = stream.next() => item,
+        };
+
+        let Some(item) = item else {
+            break;
+        };
+
+        match item {
+            Ok(StreamEvent::TextDelta(delta)) => text.push_str(&delta),
+            Ok(StreamEvent::ReasoningDelta(delta)) => reasoning.push_str(&delta),
+            Ok(StreamEvent::ToolCallDone {
                 call_id,
                 name,
                 arguments,
-            } => tool_blocks.push(ContentBlock::ToolCall {
+            }) => tool_blocks.push(ContentBlock::ToolCall {
                 call_id,
                 name,
                 arguments,
             }),
-            StreamEvent::Usage(reported) => usage = reported,
-            StreamEvent::Ended {
+            Ok(StreamEvent::Usage(reported)) => usage = reported,
+            Ok(StreamEvent::Ended {
                 stop_reason: reason,
-            } => {
+            }) => {
                 stop_reason = reason;
                 ended = true;
                 break;
             }
-            StreamEvent::Started | StreamEvent::ToolCallDelta { .. } => {}
+            Ok(StreamEvent::Started | StreamEvent::ToolCallDelta { .. }) => {}
+            // A provider that notices the token before we do reports Cancelled
+            // instead of ending the stream; that is a cancellation, not a bug.
+            Err(ProviderError::Cancelled) => {
+                cancelled = true;
+                break;
+            }
+            Err(err) => return Err(err.into()),
         }
-    }
-
-    if !ended {
-        return Err(EngineError::IncompleteStream);
     }
 
     let mut blocks = Vec::new();
@@ -305,9 +441,29 @@ async fn collect_stream(
     if !text.is_empty() {
         blocks.push(ContentBlock::Text { text });
     }
-    blocks.extend(tool_blocks);
 
-    Ok((blocks, usage, stop_reason))
+    if cancelled {
+        // Never surface half-streamed tool calls: their arguments may be
+        // truncated, and executing them after a cancel is exactly wrong.
+        return Ok(Collected {
+            blocks,
+            usage,
+            stop_reason: StopReason::EndTurn,
+            cancelled: true,
+        });
+    }
+
+    if !ended {
+        return Err(EngineError::IncompleteStream);
+    }
+
+    blocks.extend(tool_blocks);
+    Ok(Collected {
+        blocks,
+        usage,
+        stop_reason,
+        cancelled: false,
+    })
 }
 
 async fn execute_call<F>(
@@ -329,6 +485,12 @@ where
         on_event,
     )?;
 
+    if tool_context.cancel.is_cancelled() {
+        let output = ToolOutput::cancelled("cancelled by user");
+        append_result(writer, &call.call_id, &output, on_event)?;
+        return Ok(output);
+    }
+
     let Some(tool) = ctx.tools.get(&call.name) else {
         let output = ToolOutput::error(format!("unknown tool: {}", call.name));
         append_result(writer, &call.call_id, &output, on_event)?;
@@ -341,6 +503,7 @@ where
     let rule_id = decision.rule_id.clone();
 
     let mut allowed = decision.action == Action::Allow;
+    let mut aborted = false;
 
     if decision.action == Action::Ask {
         let request = ApprovalRequest {
@@ -358,7 +521,15 @@ where
             }),
             on_event,
         )?;
-        allowed = ctx.approver.approve(&request).await == Answer::Allow;
+        let answer = tokio::select! {
+            biased;
+            _ = tool_context.cancel.cancelled() => {
+                aborted = true;
+                Answer::Deny
+            }
+            answer = ctx.approver.approve(&request) => answer,
+        };
+        allowed = answer == Answer::Allow;
     }
 
     let scope = if rule_id.is_some() {
@@ -380,6 +551,14 @@ where
         }),
         on_event,
     )?;
+
+    if aborted {
+        // The approver was still waiting when the run was cancelled. Log the
+        // tool result so the call/result invariant holds, then unwind.
+        let output = ToolOutput::cancelled("cancelled by user");
+        append_result(writer, &call.call_id, &output, on_event)?;
+        return Ok(output);
+    }
 
     let output = if allowed {
         match tool.execute(tool_context, call.arguments.clone()).await {

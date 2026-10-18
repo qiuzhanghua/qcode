@@ -1,14 +1,15 @@
 use std::path::Path;
+use std::time::Duration;
 
+use qcode_core::event::ToolStatus;
 use qcode_core::tool::{Tool, ToolContext};
 use qcode_tools::fs::{EditFile, ListDir, ReadFile, WriteFile};
 use qcode_tools::shell::RunShell;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 fn context(dir: &Path) -> ToolContext {
-    ToolContext {
-        workspace: dir.to_path_buf(),
-    }
+    ToolContext::new(dir.to_path_buf())
 }
 
 #[tokio::test]
@@ -148,4 +149,96 @@ async fn shell_reports_exit_code_and_scrubs_env() {
         .await
         .unwrap();
     assert_eq!(failed.metadata.exit_code, Some(3));
+}
+
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only performs the permission/existence check.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Wait for the background child's pid to appear, then cancel the run. Returns
+/// the pid so the test can assert that it is gone.
+#[cfg(unix)]
+async fn cancel_once_child_is_running(pid_file: &Path, cancel: &CancellationToken) -> Option<i32> {
+    for _ in 0..200 {
+        if let Ok(text) = std::fs::read_to_string(pid_file)
+            && let Ok(pid) = text.trim().parse::<i32>()
+        {
+            cancel.cancel();
+            return Some(pid);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    None
+}
+
+#[cfg(unix)]
+async fn wait_until_gone(pid: i32) -> bool {
+    for _ in 0..150 {
+        if !process_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_kills_the_whole_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let cancel = CancellationToken::new();
+    let ctx = context(dir.path()).with_cancel(cancel.clone());
+    let pid_file = dir.path().join("child.pid");
+
+    let run = RunShell.execute(
+        &ctx,
+        json!({"command": "sleep 30 & echo $! > child.pid; wait"}),
+    );
+    let (output, pid) = tokio::join!(run, cancel_once_child_is_running(&pid_file, &cancel));
+
+    let output = output.unwrap();
+    assert_eq!(output.status, ToolStatus::Cancelled);
+    assert!(output.output.contains("cancelled by user"));
+
+    let pid = pid.expect("background child never wrote its pid");
+    assert!(
+        wait_until_gone(pid).await,
+        "grandchild {pid} survived cancellation"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_kills_the_whole_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+    let pid_file = dir.path().join("child.pid");
+
+    // The pid file is written before the timeout fires; the tool call itself
+    // is what has to wait one second.
+    let output = RunShell
+        .execute(
+            &ctx,
+            json!({
+                "command": "sleep 30 & echo $! > child.pid; wait",
+                "timeout_secs": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(output.status, ToolStatus::Error);
+    assert!(output.output.contains("timed out after 1s"));
+
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        wait_until_gone(pid).await,
+        "grandchild {pid} survived the timeout"
+    );
 }

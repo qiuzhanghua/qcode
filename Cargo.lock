@@ -949,8 +949,10 @@ dependencies = [
  "qcode-tools",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -1002,6 +1004,7 @@ dependencies = [
  "async-trait",
  "globset",
  "ignore",
+ "libc",
  "qcode-core",
  "regex",
  "serde",
@@ -1009,6 +1012,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

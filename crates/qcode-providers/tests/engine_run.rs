@@ -8,6 +8,7 @@ use qcode_core::policy::Policy;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_providers::MockProvider;
+use tokio_util::sync::CancellationToken;
 
 fn meta() -> SessionStarted {
     SessionStarted {
@@ -25,6 +26,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         input: "hi",
         workspace: workspace.to_path_buf(),
         max_turns: 4,
+        cancel: CancellationToken::new(),
     }
 }
 

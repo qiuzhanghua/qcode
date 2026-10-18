@@ -83,12 +83,22 @@
 - shell 环境放行 `CARGO_HOME` / `RUSTUP_HOME` / `CARGO_TARGET_DIR`，
   避免 agent 里的 cargo 用错缓存或撞沙箱。
 
-## 待完成（M1-9 起）
+### M1-9 取消与进程清理 ✅
 
-### M1-9 取消与进程清理
+- `RunOptions.cancel`（`CancellationToken`）贯穿引擎：流式响应与工具执行都可中断。
+  取消不是错误：turn 以 `turn_ended(cancelled)` 结束，已产生的文本保留。
+- `ToolContext.cancel` 让工具感知取消；引擎不 drop `execute` future，清理逻辑由工具自己跑完。
+- `run_shell` 以 `process_group(0)` 启动，取消/超时时对整组先 SIGTERM、2s 后 SIGKILL，
+  孙进程（`cargo` / `make` / `node` worker）不会成为孤儿；输出保留并标 `cancelled`。
+- 审批中取消会写 deny 决策 + `cancelled` 结果；同一批里未执行的调用补 `cancelled` 结果，
+  保持 `tool_call` → `tool_result` 一一对应。
+- 已知限制：交互式审批用同步 stdin 读取，等待输入时第一次 Ctrl-C 要等该行返回；
+  再按一次 Ctrl-C 立即退出（M1-10 一并处理）。
+- CLI：Ctrl-C 取消当前 turn（再按一次立即退出），取消的 turn 以退出码 130 结束。
+- 验收：引擎取消 2 条 + 进程组清理 2 条（取消与超时后后台 `sleep` 均消失）
+  + CLI 端到端 1 条（真实 `qc` 进程对不响应的服务按 Ctrl-C，退出码 130 且 `turn_ended(cancelled)`）。
 
-- 引擎层接 `CancellationToken`，Esc/超时统一走 kill 进程组。
-- 验收：长命令取消后没有遗留子进程。
+## 待完成（M1-10 起）
 
 ### M1-10 交互式审批回归
 
@@ -99,10 +109,6 @@
 
 - `--max-cost` 累计 usage 估价，超限终止。
 - 依赖 provider 价格表；先做 OpenAI-compatible 的估算。
-
-### M1-12 事件 schema 黄金测试
-
-- 给每类事件加 JSON 快照，防止持久化格式悄悄变形。
 
 ## 已知限制
 

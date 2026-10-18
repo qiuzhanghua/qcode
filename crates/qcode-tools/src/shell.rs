@@ -2,6 +2,10 @@
 //!
 //! The environment is scrubbed down to a small allow-list so API keys in the
 //! parent process cannot be read by `env`. Approval is `Execute` by default.
+//!
+//! The child is spawned as the leader of a new process group, so cancellation
+//! and timeout can take down the whole tree (`sh`, `cargo`, `make`, workers)
+//! with one signal instead of orphaning grandchildren.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -12,10 +16,19 @@ use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 
 use crate::path;
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
+/// How long a cancelled or timed-out group gets to exit on SIGTERM before the
+/// whole group is SIGKILLed. Matches the design note in docs/design/SPEC.md.
+const TERM_GRACE: Duration = Duration::from_secs(2);
+/// How long we wait for the group leader after SIGKILL.
+const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How long we keep draining pipes after the process is gone.
+const DRAIN_GRACE: Duration = Duration::from_secs(5);
+
 const ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
@@ -84,6 +97,10 @@ impl Tool for RunShell {
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
 
+        if ctx.cancel.is_cancelled() {
+            return Ok(ToolOutput::cancelled("cancelled by user\n"));
+        }
+
         let mut command = tokio::process::Command::new("sh");
         command
             .arg("-c")
@@ -94,6 +111,13 @@ impl Tool for RunShell {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
+        #[cfg(unix)]
+        {
+            // New process group led by this child. Negative pids in
+            // `signal_group` then address the shell and everything it started.
+            command.process_group(0);
+        }
+
         command.env_clear();
         for key in ENV_ALLOWLIST {
             if let Ok(value) = std::env::var(key) {
@@ -101,23 +125,67 @@ impl Tool for RunShell {
             }
         }
 
-        let child = command.spawn()?;
-        let output =
-            match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
-                .await
-            {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Ok(ToolOutput {
-                        status: ToolStatus::Error,
-                        output: format!("command timed out after {timeout_secs}s"),
-                        metadata: ToolMetadata::default(),
-                    });
-                }
-            };
+        let mut child = command.spawn()?;
+        let pid = child.id().unwrap_or(0);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = child
+            .stdout
+            .take()
+            .expect("stdout is piped, so the handle exists");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("stderr is piped, so the handle exists");
+        let stdout_task = tokio::spawn(read_all(stdout));
+        let stderr_task = tokio::spawn(read_all(stderr));
+
+        // Reap on a task of our own so the select below never has to hold
+        // `child`; the pid (captured above) is all the kill path needs.
+        let (status_tx, mut status_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = status_tx.send(child.wait().await);
+        });
+
+        let mut exit_status = None;
+        let mut cancelled_by_user = false;
+        let mut timed_out = false;
+
+        tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => cancelled_by_user = true,
+            result = tokio::time::timeout(Duration::from_secs(timeout_secs), &mut status_rx) => {
+                match result {
+                    Ok(Ok(Ok(status))) => exit_status = Some(status),
+                    Ok(Ok(Err(err))) => return Err(err.into()),
+                    // The wait task went away without a status; nothing to reap.
+                    Ok(Err(_recv)) => {}
+                    Err(_elapsed) => timed_out = true,
+                }
+            }
+        }
+
+        if cancelled_by_user || timed_out {
+            signal_group(pid, SIGTERM);
+            match tokio::time::timeout(TERM_GRACE, &mut status_rx).await {
+                Ok(Ok(Ok(status))) => exit_status = Some(status),
+                _ => {
+                    // Something in the group ignored SIGTERM (or the shell is
+                    // gone but a worker is not); SIGKILL takes the whole group.
+                    signal_group(pid, SIGKILL);
+                    if let Ok(Ok(Ok(status))) =
+                        tokio::time::timeout(KILL_GRACE, &mut status_rx).await
+                    {
+                        exit_status = Some(status);
+                    }
+                }
+            }
+        }
+
+        let stdout_bytes = drain(stdout_task).await;
+        let stderr_bytes = drain(stderr_task).await;
+
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         let mut combined = String::new();
         combined.push_str(&stdout);
         if !stderr.is_empty() {
@@ -127,18 +195,33 @@ impl Tool for RunShell {
             combined.push_str(&stderr);
         }
 
-        let exit_code = output.status.code();
-        let mut text = format!(
-            "exit code: {}\n",
-            exit_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".to_string())
-        );
+        let exit_code = exit_status.and_then(|status| status.code());
+        let mut text = String::new();
+        if cancelled_by_user {
+            text.push_str("cancelled by user\n");
+        } else if timed_out {
+            text.push_str(&format!("command timed out after {timeout_secs}s\n"));
+        } else {
+            text.push_str(&format!(
+                "exit code: {}\n",
+                exit_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ));
+        }
         text.push_str(&combined);
 
         let (text, truncated) = crate::truncate(&text, OUTPUT_LIMIT);
+        let status = if cancelled_by_user {
+            ToolStatus::Cancelled
+        } else if timed_out {
+            ToolStatus::Error
+        } else {
+            ToolStatus::Ok
+        };
+
         Ok(ToolOutput {
-            status: ToolStatus::Ok,
+            status,
             output: text,
             metadata: ToolMetadata {
                 truncated,
@@ -148,4 +231,62 @@ impl Tool for RunShell {
             },
         })
     }
+}
+
+async fn read_all(mut reader: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let _ = reader.read_to_end(&mut buffer).await;
+    buffer
+}
+
+/// Collect a pipe reader, but never let a leaked grandchild holding the pipe
+/// open keep the tool call alive forever.
+async fn drain(mut task: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    match tokio::time::timeout(DRAIN_GRACE, &mut task).await {
+        Ok(Ok(buffer)) => buffer,
+        _ => {
+            task.abort();
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(unix)]
+const SIGTERM: i32 = libc::SIGTERM;
+#[cfg(unix)]
+const SIGKILL: i32 = libc::SIGKILL;
+#[cfg(not(unix))]
+const SIGTERM: i32 = 15;
+#[cfg(not(unix))]
+const SIGKILL: i32 = 9;
+
+/// Signal the process group led by `pid`.
+///
+/// Negative pids address the group; the child became its leader because it was
+/// spawned with `process_group(0)`. A bare pid would only reach `sh`, leaving
+/// `cargo`/`make`/`node` grandchildren running after the turn was cancelled.
+#[cfg(unix)]
+fn signal_group(pid: u32, signal: i32) {
+    if pid == 0 {
+        return;
+    }
+    // SAFETY: `kill` is async-signal-safe and only touches the given group.
+    // ESRCH is expected when the group has already exited.
+    unsafe {
+        libc::kill(-(pid as i32), signal);
+    }
+}
+
+/// Windows has no process groups; `taskkill /T` walks the child tree instead.
+/// This is a stopgap until the OS sandbox layer owns process containment.
+#[cfg(not(unix))]
+fn signal_group(pid: u32, _signal: i32) {
+    if pid == 0 {
+        return;
+    }
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }

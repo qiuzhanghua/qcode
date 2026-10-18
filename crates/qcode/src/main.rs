@@ -16,6 +16,7 @@ use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
 #[command(name = "qc", version, about = "qcode — terminal coding agent")]
@@ -220,6 +221,9 @@ async fn cmd_run(
         Box::new(AutoDeny)
     };
 
+    let cancel = CancellationToken::new();
+    install_ctrl_c(cancel.clone());
+
     let outcome = run_turn(
         TurnContext {
             store: &store,
@@ -234,6 +238,7 @@ async fn cmd_run(
             input: &prompt,
             workspace: workspace.clone(),
             max_turns,
+            cancel: cancel.clone(),
         },
         |event| {
             if json {
@@ -248,6 +253,14 @@ async fn cmd_run(
     )
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
+
+    if outcome.cancelled {
+        if !json && !outcome.text.is_empty() {
+            println!("{}", outcome.text);
+        }
+        eprintln!("[cancelled] turn interrupted; the event log is intact");
+        return Ok(ExitCode::from(130));
+    }
 
     if !json {
         println!("session: {}", outcome.session_id);
@@ -333,6 +346,28 @@ fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
         .join(".local")
         .join("share")
         .join("qcode")
+}
+
+/// Ctrl-C asks the engine to stop; a second Ctrl-C wins immediately.
+///
+/// The first press cancels the token, which makes the engine abort the stream
+/// and lets `run_shell` kill its process group before the tool result is
+/// written. Pressing again is the escape hatch for a wedged process.
+fn install_ctrl_c(cancel: CancellationToken) {
+    tokio::spawn(async move {
+        let mut presses = 0u32;
+        while tokio::signal::ctrl_c().await.is_ok() {
+            presses += 1;
+            if presses == 1 {
+                eprintln!(
+                    "\n[cancel] stopping the current turn… (Ctrl-C again to quit immediately)"
+                );
+                cancel.cancel();
+            } else {
+                std::process::exit(130);
+            }
+        }
+    });
 }
 
 /// Human-mode progress on stderr. Without this a 10-minute test run looks like

@@ -33,6 +33,7 @@ export DEEPSEEK_API_KEY=...
 ```
 
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
+取消：Ctrl-C 一次取消当前 turn，再按一次立即退出。
 
 ## 当前能力
 
@@ -43,6 +44,9 @@ export DEEPSEEK_API_KEY=...
   每次决策写事件，含命中的 rule id。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
+- **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
+  `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
+  `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
 - **事件日志**：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃；
   `sessions show` 可完整 replay。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），

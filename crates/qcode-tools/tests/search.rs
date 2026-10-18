@@ -21,9 +21,7 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn context(dir: &tempfile::TempDir) -> ToolContext {
-    ToolContext {
-        workspace: dir.path().to_path_buf(),
-    }
+    ToolContext::new(dir.path())
 }
 
 #[tokio::test]

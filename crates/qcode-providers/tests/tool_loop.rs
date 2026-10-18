@@ -1,15 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::approval::{AutoApprove, AutoDeny};
 use qcode_core::engine::{EngineError, RunOptions, TurnContext, run_turn};
 use qcode_core::event::{EventKind, SessionStarted, ToolStatus, TurnStatus};
 use qcode_core::policy::{Action, Policy, Rule};
-use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
+use qcode_core::provider::{
+    Capabilities, CompletionRequest, EventStream, Provider, ProviderError, StopReason, StreamEvent,
+    ToolSpec,
+};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_providers::MockProvider;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 struct FakeTool;
 
@@ -118,6 +123,7 @@ async fn executes_tool_and_continues() {
             input: "go",
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
+            cancel: CancellationToken::new(),
         },
         |_| {},
     )
@@ -171,6 +177,7 @@ async fn denial_is_reported_to_the_model() {
             input: "go",
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
+            cancel: CancellationToken::new(),
         },
         |_| {},
     )
@@ -215,6 +222,7 @@ async fn asking_without_a_tty_denies() {
             input: "go",
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
+            cancel: CancellationToken::new(),
         },
         |_| {},
     )
@@ -262,6 +270,7 @@ async fn max_turns_stops_the_loop() {
             input: "go",
             workspace: dir.path().to_path_buf(),
             max_turns: 2,
+            cancel: CancellationToken::new(),
         },
         |_| {},
     )
@@ -269,4 +278,157 @@ async fn max_turns_stops_the_loop() {
     .unwrap_err();
 
     assert!(matches!(error, EngineError::MaxTurns(2)));
+}
+
+/// Blocks until the run is cancelled, the way `run_shell` blocks on a child.
+struct BlockingTool;
+
+#[async_trait]
+impl Tool for BlockingTool {
+    fn name(&self) -> &str {
+        "block"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "block".to_string(),
+            description: "waits for cancellation".to_string(),
+            parameters: json!({"type": "object"}),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &Value) -> ApprovalClass {
+        ApprovalClass::Read
+    }
+
+    async fn execute(&self, ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        ctx.cancel.cancelled().await;
+        Ok(ToolOutput::cancelled("cancelled by user"))
+    }
+}
+
+struct HangingProvider;
+
+#[async_trait]
+impl Provider for HangingProvider {
+    fn name(&self) -> &str {
+        "hanging"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _cancel: CancellationToken,
+    ) -> Result<EventStream, ProviderError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        // Keep the sender alive so the stream never ends on its own: only the
+        // engine's cancellation path can stop this call.
+        std::mem::forget(tx);
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+}
+
+async fn cancel_after(cancel: CancellationToken, millis: u64) {
+    tokio::time::sleep(Duration::from_millis(millis)).await;
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn cancellation_stops_a_running_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+
+    let provider =
+        MockProvider::scripted(vec![tool_response("block"), text_response("unreachable")]);
+    let tools = ToolRegistry::new(vec![Arc::new(BlockingTool)]);
+    let policy = Policy::default();
+    let cancel = CancellationToken::new();
+
+    let run = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+        },
+        RunOptions {
+            session_id: &id,
+            model: "mock-1",
+            input: "go",
+            workspace: dir.path().to_path_buf(),
+            max_turns: 4,
+            cancel: cancel.clone(),
+        },
+        |_| {},
+    );
+
+    let (outcome, ()) = tokio::join!(run, cancel_after(cancel, 50));
+    let outcome = outcome.unwrap();
+
+    assert!(outcome.cancelled);
+    let events = store.load(&id).unwrap();
+    assert!(matches!(
+        events.last().map(|event| &event.kind),
+        Some(EventKind::TurnEnded(ended)) if ended.status == TurnStatus::Cancelled
+    ));
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::ToolResult(result) if result.status == ToolStatus::Cancelled
+    )));
+    // Cancellation ends the turn; the model must not be asked again.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::AssistantMessage(_)))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn cancellation_stops_a_hanging_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+
+    let provider = HangingProvider;
+    let tools = ToolRegistry::new(Vec::new());
+    let policy = Policy::default();
+    let cancel = CancellationToken::new();
+
+    let run = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+        },
+        RunOptions {
+            session_id: &id,
+            model: "hanging-1",
+            input: "go",
+            workspace: dir.path().to_path_buf(),
+            max_turns: 4,
+            cancel: cancel.clone(),
+        },
+        |_| {},
+    );
+
+    let (outcome, ()) = tokio::join!(run, cancel_after(cancel, 50));
+    let outcome = outcome.unwrap();
+
+    assert!(outcome.cancelled);
+    assert!(outcome.text.is_empty());
+    let events = store.load(&id).unwrap();
+    assert!(matches!(
+        events.last().map(|event| &event.kind),
+        Some(EventKind::TurnEnded(ended)) if ended.status == TurnStatus::Cancelled
+    ));
 }

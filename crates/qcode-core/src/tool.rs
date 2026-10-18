@@ -9,13 +9,35 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::event::{ToolMetadata, ToolStatus};
 use crate::provider::ToolSpec;
 
+/// Everything a tool is allowed to know about its surroundings.
+///
+/// `cancel` is the run-wide cancellation token. Tools that can block for a long
+/// time (notably `run_shell`) must observe it and stop what they are doing;
+/// the engine deliberately does not drop the `execute` future, because dropping
+/// it would leave the cleanup path half-run.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace: PathBuf,
+    pub cancel: CancellationToken,
+}
+
+impl ToolContext {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
 }
 
 /// How dangerous a call is, derived from the tool and its arguments.
@@ -62,6 +84,20 @@ impl ToolOutput {
     pub fn with_metadata(mut self, metadata: ToolMetadata) -> Self {
         self.metadata = metadata;
         self
+    }
+
+    /// A call that was stopped because the run was cancelled. Partial output is
+    /// kept: a cancelled `cargo test` still tells the model what it had done.
+    pub fn cancelled(output: impl Into<String>) -> Self {
+        let output = output.into();
+        Self {
+            metadata: ToolMetadata {
+                bytes: output.len() as u64,
+                ..ToolMetadata::default()
+            },
+            status: ToolStatus::Cancelled,
+            output,
+        }
     }
 }
 

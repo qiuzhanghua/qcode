@@ -22,7 +22,7 @@ toml = "1"
 thiserror = "2"
 ulid = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
@@ -30,6 +30,7 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 globset = "0.4"
+libc = "0.2"
 ignore = "0.4"
 regex = "1"
 tracing = "0.1"
