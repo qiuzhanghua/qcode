@@ -50,6 +50,7 @@ fn provider(base_url: String) -> OpenAiCompatProvider {
         name: "test".to_string(),
         base_url,
         api_key: Some("test-key".to_string()),
+        stream_usage: true,
     })
     .expect("provider")
 }

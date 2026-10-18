@@ -1,7 +1,7 @@
 # coder（工作代号）
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M0 垂直切片已跑通**
-（headless 单轮 + 事件落盘 + replay，provider 为 mock）。
+终端 coding agent，Rust 实现，clean-room。**当前状态：M0 垂直切片**
+（headless 单轮 + 事件落盘 + replay + OpenAI-compatible 流式 provider）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名在发布前会更换，`coder` 只是代号。
 
@@ -29,12 +29,36 @@ cargo test --workspace
 
 - 事件日志：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃。
 - 状态机：`Idle / Streaming / AwaitingApproval / RunningTool / Compacting / Cancelling`。
-- Provider port：能力声明 + 流式 delta；已实现脚本化 mock 与
-  OpenAI-compatible（SSE，覆盖 OpenAI / DeepSeek / Ollama / vLLM）。
-  CLI 目前只接 mock，真实 provider 的接线在 M0-9。
-- CLI：`run` / `sessions list` / `sessions show`。
+- Provider：脚本化 mock + OpenAI-compatible（SSE，覆盖 OpenAI / DeepSeek / Ollama / vLLM），
+  支持文本、reasoning、工具参数增量、usage、取消与错误映射。
+- CLI：`run` / `sessions list` / `sessions show`；`--provider` 选择 mock 或真实 provider。
 
-尚未实现：真实 provider、工具循环、审批、TUI、MCP、压缩。
+尚未实现：工具循环、审批、TUI、MCP、压缩。
+
+## 配置
+
+```toml
+# ~/.config/coder/config.toml
+default_provider = "deepseek"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"   # 只存变量名，不存 key
+default_model = "deepseek-chat"
+stream_usage = true
+```
+
+```bash
+export DEEPSEEK_API_KEY=...
+./target/debug/coder run "explain this repo" --json
+
+# 覆盖配置
+./target/debug/coder run "hi" --provider ollama --model qwen2.5-coder \
+  --base-url http://localhost:11434/v1
+```
+
+优先级：CLI flags > 环境变量（`CODER_PROVIDER` / `CODER_MODEL` / `CODER_BASE_URL`）>
+配置文件 > 内置默认。keyless 服务把 `api_key_env` 设为 `""`。
 
 ## 文档
 
@@ -48,10 +72,10 @@ cargo test --workspace
 
 ```
 crates/coder-core        domain、event、store、state、provider port、engine
-crates/coder-providers   provider 实现（M0：mock）
+crates/coder-providers   provider 实现（mock + OpenAI-compatible）
 crates/coder-tools       内置工具（M1）
 crates/coder-mcp         MCP client（M2）
-crates/coder-cli         coder 二进制
+crates/coder-cli         coder 二进制、配置解析
 crates/coder-tui         ratatui 前端（M2）
 ```
 

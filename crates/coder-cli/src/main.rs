@@ -1,3 +1,5 @@
+mod config;
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -5,8 +7,9 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use coder_core::engine::{RunOptions, run_turn};
 use coder_core::event::SessionStarted;
+use coder_core::provider::Provider;
 use coder_core::store::SessionStore;
-use coder_providers::MockProvider;
+use coder_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,6 +21,9 @@ struct Cli {
     /// Data directory. Defaults to the XDG data home.
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
+    /// Config file. Defaults to ~/.config/coder/config.toml.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -37,11 +43,17 @@ struct RunArgs {
     /// Emit the event stream as JSONL on stdout.
     #[arg(long)]
     json: bool,
-    /// Provider to use (only `mock` in M0).
-    #[arg(long, default_value = "mock")]
-    provider: String,
+    /// Provider name: mock, openai, deepseek, ollama, or a custom entry.
+    #[arg(long)]
+    provider: Option<String>,
     #[arg(long)]
     model: Option<String>,
+    /// Override the provider base URL.
+    #[arg(long)]
+    base_url: Option<String>,
+    /// Do not ask the server for a usage chunk.
+    #[arg(long)]
+    no_stream_usage: bool,
     #[arg(long, default_value_t = 8)]
     max_turns: u32,
 }
@@ -62,9 +74,14 @@ enum SessionsCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let Cli { data_dir, command } = Cli::parse();
+    let Cli {
+        data_dir,
+        config,
+        command,
+    } = Cli::parse();
+
     let result = match command {
-        Command::Run(args) => cmd_run(args, data_dir).await,
+        Command::Run(args) => cmd_run(args, data_dir, config).await,
         Command::Sessions(args) => cmd_sessions(args, data_dir),
     };
 
@@ -80,8 +97,19 @@ async fn main() -> ExitCode {
 async fn cmd_run(
     args: RunArgs,
     data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prompt = match args.prompt {
+    let RunArgs {
+        prompt,
+        json,
+        provider,
+        model,
+        base_url,
+        no_stream_usage,
+        max_turns,
+    } = args;
+
+    let prompt = match prompt {
         Some(prompt) => prompt,
         None => {
             let mut buffer = String::new();
@@ -93,14 +121,24 @@ async fn cmd_run(
         return Err("prompt is empty".into());
     }
 
+    let loaded = load_config(config_path)?;
+    let resolved = config::resolve(
+        &loaded,
+        &config::Overrides {
+            provider,
+            model,
+            base_url,
+            stream_usage: no_stream_usage.then_some(false),
+        },
+        &|key| std::env::var(key).ok(),
+    )?;
+
     let store = SessionStore::new(resolve_data_dir(data_dir));
     let cwd = std::env::current_dir()?.display().to_string();
-    let model = args.model.unwrap_or_else(|| "mock-1".to_string());
-    let json = args.json;
 
     let (session_id, first_event) = store.create(&SessionStarted {
-        model: model.clone(),
-        provider: args.provider.clone(),
+        model: resolved.model.clone(),
+        provider: resolved.name.clone(),
         cwd,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })?;
@@ -108,21 +146,30 @@ async fn cmd_run(
         println!("{}", serde_json::to_string(&first_event)?);
     }
 
-    let provider = match args.provider.as_str() {
-        "mock" => MockProvider::text(
+    let provider: Box<dyn Provider> = if resolved.is_mock {
+        Box::new(MockProvider::text(
             "Hello from the mock provider. The event log and replay path are working.",
-        ),
-        other => return Err(format!("unknown provider: {other}").into()),
+        ))
+    } else {
+        Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
+            name: resolved.name.clone(),
+            base_url: resolved
+                .base_url
+                .clone()
+                .expect("non-mock provider always has a base URL"),
+            api_key: resolved.api_key.clone(),
+            stream_usage: resolved.stream_usage,
+        })?)
     };
 
     let outcome = run_turn(
         &store,
-        &provider,
+        provider.as_ref(),
         RunOptions {
             session_id: &session_id,
-            model: &model,
+            model: &resolved.model,
             input: &prompt,
-            max_turns: args.max_turns,
+            max_turns,
         },
         |event| {
             if json {
@@ -172,6 +219,24 @@ fn cmd_sessions(
     }
 
     Ok(())
+}
+
+fn load_config(explicit: Option<PathBuf>) -> Result<config::Config, Box<dyn std::error::Error>> {
+    let explicit = explicit.or_else(|| std::env::var("CODER_CONFIG").ok().map(PathBuf::from));
+
+    if let Some(path) = explicit {
+        if !path.exists() {
+            return Err(format!("config file not found: {}", path.display()).into());
+        }
+        return Ok(config::load(&path)?);
+    }
+
+    let path = config::default_path()?;
+    if path.exists() {
+        Ok(config::load(&path)?)
+    } else {
+        Ok(config::Config::default())
+    }
 }
 
 fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {

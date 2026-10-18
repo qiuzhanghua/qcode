@@ -20,13 +20,26 @@ use tokio_util::sync::CancellationToken;
 
 use crate::sse::{SseDecoder, SseEvent};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatConfig {
     /// Display name, e.g. `openai` / `deepseek` / `ollama`.
     pub name: String,
     /// Base URL including the version segment, e.g. `https://api.openai.com/v1`.
     pub base_url: String,
     pub api_key: Option<String>,
+    /// Ask for a final usage chunk via `stream_options.include_usage`.
+    pub stream_usage: bool,
+}
+
+impl std::fmt::Debug for OpenAiCompatConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiCompatConfig")
+            .field("name", &self.name)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("stream_usage", &self.stream_usage)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -80,28 +93,43 @@ impl Provider for OpenAiCompatProvider {
         request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
-        let body = build_body(&request)?;
-        let mut builder = self.client.post(self.endpoint()).json(&body);
-        if let Some(key) = &self.config.api_key {
-            builder = builder.bearer_auth(key);
-        }
-        builder = builder.header("accept", "text/event-stream");
+        let mut include_usage = self.config.stream_usage;
+        let response = loop {
+            let body = build_body(&request, include_usage)?;
+            let mut builder = self.client.post(self.endpoint()).json(&body);
+            if let Some(key) = &self.config.api_key {
+                builder = builder.bearer_auth(key);
+            }
+            builder = builder.header("accept", "text/event-stream");
 
-        let response = tokio::select! {
-            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-            result = builder.send() => result.map_err(|err| ProviderError::Network(err.to_string()))?,
-        };
+            let response = tokio::select! {
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                result = builder.send() => {
+                    result.map_err(|err| ProviderError::Network(err.to_string()))?
+                }
+            };
 
-        let status = response.status();
-        if !status.is_success() {
+            let status = response.status();
+            if status.is_success() {
+                break response;
+            }
+
             let retry_after = response
                 .headers()
                 .get("retry-after")
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<u64>().ok());
-            let body = response.text().await.unwrap_or_default();
-            return Err(map_status(status.as_u16(), &body, retry_after));
-        }
+            let text = response.text().await.unwrap_or_default();
+
+            // Some OpenAI-compatible servers reject `stream_options`; retry
+            // once without it instead of failing the whole turn.
+            if status.as_u16() == 400 && include_usage && text.contains("stream_options") {
+                include_usage = false;
+                continue;
+            }
+
+            return Err(map_status(status.as_u16(), &text, retry_after));
+        };
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
@@ -188,7 +216,7 @@ struct ToolCallAccum {
     arguments: String,
 }
 
-fn build_body(request: &CompletionRequest) -> Result<Value, ProviderError> {
+fn build_body(request: &CompletionRequest, include_usage: bool) -> Result<Value, ProviderError> {
     let mut messages = vec![json!({
         "role": "system",
         "content": request.system,
@@ -202,8 +230,11 @@ fn build_body(request: &CompletionRequest) -> Result<Value, ProviderError> {
         "model": request.model,
         "messages": messages,
         "stream": true,
-        "stream_options": { "include_usage": true },
     });
+
+    if include_usage {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
 
     if !request.tools.is_empty() {
         body["tools"] = Value::Array(request.tools.iter().map(convert_tool).collect());
@@ -511,5 +542,18 @@ mod tests {
             map_status(503, "", None),
             ProviderError::Server(_)
         ));
+    }
+
+    #[test]
+    fn debug_redacts_api_key() {
+        let config = OpenAiCompatConfig {
+            name: "test".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            api_key: Some("sk-secret-value".to_string()),
+            stream_usage: true,
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("sk-secret-value"));
+        assert!(debug.contains("<redacted>"));
     }
 }

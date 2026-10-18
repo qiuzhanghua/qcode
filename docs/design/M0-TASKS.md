@@ -84,6 +84,19 @@
 - 取消用 `select!` + drop 响应，错误以流内 `Err` 返回。
 - 验收：`tests/http_smoke.rs` 用本地 TCP 服务回放真实 HTTP 响应，覆盖 200 流式与 401。
 
+### M0-9 配置与凭据 ✅
+
+`crates/coder-cli/src/config.rs`。
+
+- 三层优先级：CLI flags > 环境变量 > `~/.config/coder/config.toml` > 内置默认。
+- 凭据只存环境变量名（`api_key_env`），key 永不写入配置或事件；
+  `OpenAiCompatConfig` 的 `Debug` 输出 `<redacted>`。
+- 内置 `openai` / `deepseek` / `ollama` 的 base URL 与 key 变量名；
+  自定义 provider 通过 config 或 `--base-url --model` 提供。
+- `--config`、`--provider`、`--model`、`--base-url`、`--no-stream-usage` 全部接通。
+- `stream_options` 被服务端拒绝时自动去掉并重试一次。
+- 验收：7 个配置优先级/错误提示测试；冒烟验证 mock 路径与缺 key 提示。
+
 ### M0-12 录制 SSE 回放测试 ✅
 
 - `tests/fixtures/openai_text.sse`、`openai_tool_call.sse`，纯文本 fixture，无网络。
@@ -92,14 +105,14 @@
 - 工具 fixture 验证参数分片拼接后是合法 JSON，并在 `[DONE]` 时产出 `ToolCallDone`。
 - 验收：`cargo test -p coder-providers` 14 个测试全绿（10 单元 + 4 集成）。
 
-## 待完成（M0-9 起）
+### M0-11 CI ✅（cargo-deny 待补）
 
-### M0-9 配置与凭据
+- `.github/workflows/ci.yml`：macOS + Linux 矩阵，fmt / clippy `-D warnings` / test，
+  外加 MSRV 1.95 的 `cargo check`。
+- `cargo-deny` 暂未加入：需要先确认全部传递依赖的许可证清单，避免提交一个必红的 job。
+  作为 M1 的独立任务。
 
-- 目标：user config + env + CLI 三层优先级；API key 只从 env/keychain 读。
-- 范围：`config.toml` 解析、`--config`、`--model` 默认值、数据目录解析。
-- 验收：优先级测试；key 不出现在任何日志/JSONL 中。
-- 依赖：M0-8。估时：1 天。
+## 待完成（M0-10 起）
 
 ### M0-10 日志与脱敏
 
@@ -107,12 +120,6 @@
 - 范围：stderr 日志、事件日志不含密钥、shell 环境清洗的前置工具函数。
 - 验收：注入假 key，断言日志中不出现。
 - 依赖：M0-9。估时：0.5 天。
-
-### M0-11 CI
-
-- 目标：macOS + Linux 矩阵，fmt / clippy / test / cargo-deny。
-- 验收：PR 上全绿；缓存 `~/.cargo` 与 `target`。
-- 依赖：无。估时：0.5 天。
 
 ### M0-13 `coder doctor`
 
