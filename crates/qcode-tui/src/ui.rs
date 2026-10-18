@@ -12,6 +12,11 @@ use ratatui::{
 };
 
 use crate::app::{App, ApprovalPrompt, Block, ToolEntry};
+
+/// Expanded tool output is capped so one huge result cannot dominate a frame.
+const TOOL_OUTPUT_LINES: usize = 400;
+/// Hard bound on the block window even when every block is a single line.
+const MAX_WINDOW_BLOCKS: usize = 2_000;
 use qcode_core::event::{ToolStatus, TurnStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -51,7 +56,7 @@ fn status_label(app: &App) -> (&'static str, Color) {
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let (label, color) = status_label(app);
     let muted = Style::default().fg(Color::Gray);
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " qcode",
             Style::default()
@@ -72,20 +77,70 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             label,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    if app.scroll > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("↑{}", app.scroll),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(transcript_lines(app)).wrap(Wrap { trim: false }),
-        area,
-    );
+    let height = area.height as usize;
+    // Only blocks near the visible window are turned into `Line`s. The budget
+    // grows with the scroll offset, so paging up walks backwards through the
+    // transcript without ever laying out all of it.
+    let budget = height.saturating_add(app.scroll).saturating_add(8);
+    let lines = transcript_lines(app, budget);
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total = paragraph.line_count(area.width);
+    // Bottom-anchored: `scroll` counts rows up from the newest line.
+    let offset = total
+        .saturating_sub(height)
+        .saturating_sub(app.scroll)
+        .min(u16::MAX as usize);
+    frame.render_widget(paragraph.scroll((offset as u16, 0)), area);
 }
 
-fn transcript_lines(app: &App) -> Vec<Line<'static>> {
+fn block_rows(block: &Block) -> usize {
+    match block {
+        Block::User(text) | Block::Assistant(text) | Block::Notice(text) => {
+            text.split('\n').count().max(1)
+        }
+        Block::Tool(tool) => {
+            1 + if tool.expanded {
+                tool.output
+                    .split('\n')
+                    .take(TOOL_OUTPUT_LINES)
+                    .count()
+                    .max(1)
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
+    // Walk backwards from the newest block until the budget is met, then
+    // restore reading order.
+    let mut selected = Vec::new();
+    let mut rows = 0;
+    for block in app.blocks.iter().rev() {
+        selected.push(block);
+        rows += block_rows(block);
+        if rows >= budget || selected.len() >= MAX_WINDOW_BLOCKS {
+            break;
+        }
+    }
+    selected.reverse();
+
     let mut lines = Vec::new();
-    for block in &app.blocks {
+    for block in selected {
         match block {
             Block::User(text) => {
                 push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan))
@@ -98,6 +153,14 @@ fn transcript_lines(app: &App) -> Vec<Line<'static>> {
             }
             Block::Tool(tool) => push_tool(&mut lines, tool),
         }
+    }
+
+    if !app.streaming.is_empty() {
+        push_text(&mut lines, "  ", &app.streaming, Style::default());
+        lines.push(Line::from(Span::styled(
+            "▍",
+            Style::default().fg(Color::Cyan),
+        )));
     }
     lines
 }
@@ -124,6 +187,10 @@ fn status_glyph(status: Option<ToolStatus>) -> (&'static str, &'static str, Colo
 
 fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
     let (glyph, status, color) = status_glyph(tool.status);
+    let elapsed = tool
+        .elapsed
+        .map(|duration| format!(" · {}", format_duration(duration)))
+        .unwrap_or_default();
     lines.push(Line::from(vec![
         Span::styled(format!(" {glyph} "), Style::default().fg(color)),
         Span::styled(
@@ -133,7 +200,7 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
         Span::raw(" "),
         Span::styled(tool.summary.clone(), Style::default().fg(Color::Gray)),
         Span::raw(" "),
-        Span::styled(format!("[{status}]"), Style::default().fg(color)),
+        Span::styled(format!("[{status}{elapsed}]"), Style::default().fg(color)),
     ]));
 
     if !tool.expanded {
@@ -146,11 +213,31 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
         )));
         return;
     }
-    for chunk in tool.output.split('\n') {
+    for (rendered, chunk) in tool.output.split('\n').enumerate() {
+        if rendered == TOOL_OUTPUT_LINES {
+            let total = tool.output.split('\n').count();
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "    │ … {} more lines (Ctrl-O to collapse)",
+                    total - rendered
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+            break;
+        }
         lines.push(Line::from(Span::styled(
             format!("    │ {chunk}"),
             Style::default().fg(Color::DarkGray),
         )));
+    }
+}
+
+fn format_duration(duration: time::Duration) -> String {
+    let millis = duration.whole_milliseconds().max(0);
+    if millis < 1_000 {
+        format!("{millis}ms")
+    } else {
+        format!("{:.1}s", duration.as_seconds_f64())
     }
 }
 

@@ -75,6 +75,7 @@ fn options<'a>(
         cancel: CancellationToken::new(),
         pricing: Some(pricing()),
         max_cost_usd,
+        on_delta: None,
     }
 }
 

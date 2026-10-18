@@ -105,7 +105,10 @@ fn renders_status_transcript_and_composer() {
         screen.contains("cargo test"),
         "tool summary missing:\n{screen}"
     );
-    assert!(screen.contains("[ok]"), "tool status missing:\n{screen}");
+    assert!(
+        screen.contains("[ok · ") && screen.contains("ms]"),
+        "tool status or duration missing:\n{screen}"
+    );
     assert!(screen.contains("message"), "composer missing:\n{screen}");
 }
 
@@ -199,4 +202,94 @@ fn first_ctrl_c_shows_the_quit_hint() {
         screen.contains("ctrl-c again to quit"),
         "quit hint missing:\n{screen}"
     );
+}
+
+#[test]
+fn streaming_preview_is_rendered_with_a_cursor() {
+    use qcode_core::engine::Delta;
+
+    let mut app = App::new("mock", "mock-1");
+    apply(
+        &mut app,
+        1,
+        EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        }),
+    );
+    app.apply_delta(&Delta::Text("partial text".to_string()));
+
+    let screen = draw(&app, 80, 24);
+    assert!(
+        screen.contains("partial text"),
+        "streaming preview missing:\n{screen}"
+    );
+    assert!(screen.contains("▍"), "cursor missing:\n{screen}");
+}
+
+#[test]
+fn page_keys_scroll_the_transcript_window() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = App::new("mock", "mock-1");
+    for index in 0..60u64 {
+        apply(
+            &mut app,
+            index + 1,
+            EventKind::UserMessage(UserMessage {
+                text: format!("line-{index:03}"),
+                attachments: Vec::new(),
+            }),
+        );
+    }
+
+    let bottom = draw(&app, 40, 10);
+    assert!(
+        bottom.contains("line-059"),
+        "newest line missing at the bottom:\n{bottom}"
+    );
+    assert!(
+        !bottom.contains("line-000"),
+        "window should start near the tail:\n{bottom}"
+    );
+
+    // The transcript area is six rows tall here; six pages cover all 60 lines.
+    for _ in 0..6 {
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    }
+    let top = draw(&app, 40, 10);
+    assert!(
+        top.contains("line-000"),
+        "PageUp did not reach the top:\n{top}"
+    );
+    assert!(
+        !top.contains("line-059"),
+        "old content should no longer be visible:\n{top}"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    let back = draw(&app, 40, 10);
+    assert!(
+        back.contains("line-059"),
+        "End did not return to the tail:\n{back}"
+    );
+}
+
+#[test]
+fn scrolled_view_shows_the_offset_in_the_status_bar() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = App::new("mock", "mock-1");
+    for index in 0..40u64 {
+        apply(
+            &mut app,
+            index + 1,
+            EventKind::UserMessage(UserMessage {
+                text: format!("line-{index:03}"),
+                attachments: Vec::new(),
+            }),
+        );
+    }
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    let screen = draw(&app, 80, 10);
+    assert!(screen.contains("↑10"), "scroll offset missing:\n{screen}");
 }

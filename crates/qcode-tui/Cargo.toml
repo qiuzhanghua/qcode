@@ -8,5 +8,6 @@ rust-version.workspace = true
 [dependencies]
 qcode-core = { version = "0.1.0", path = "../qcode-core" }
 # Pinned: tui-textarea 0.7 depends on ratatui ^0.29, so both must move together.
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
+time.workspace = true

@@ -18,7 +18,8 @@ pub mod tool;
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
 pub use cost::Pricing;
 pub use engine::{
-    EngineError, RunOptions, RunOutcome, SYSTEM_PROMPT, SessionWriter, TurnContext, run_turn,
+    Delta, DeltaSink, EngineError, RunOptions, RunOutcome, SYSTEM_PROMPT, SessionWriter,
+    TurnContext, run_turn,
 };
 pub use event::*;
 pub use policy::{Action, Decision, Policy, Rule};

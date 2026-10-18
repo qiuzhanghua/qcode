@@ -4,8 +4,13 @@
 //! `UiAction` for the caller to execute, which keeps the key map unit-testable
 //! and lets the renderer be exercised with `TestBackend`.
 
+use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use time::{Duration, OffsetDateTime};
+
+/// Rows moved by PageUp / PageDown. The UI clamps this to the transcript.
+const SCROLL_STEP: usize = 10;
 
 /// One visible item in the transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +30,9 @@ pub struct ToolEntry {
     pub status: Option<ToolStatus>,
     pub output: String,
     pub expanded: bool,
+    /// When the call started, kept to show a duration once it finishes.
+    pub started: OffsetDateTime,
+    pub elapsed: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,7 +65,12 @@ pub enum UiAction {
 #[derive(Debug, Clone)]
 pub struct App {
     pub blocks: Vec<Block>,
+    /// Text streamed for the message currently being generated. Cleared when
+    /// the authoritative `assistant_message` event arrives.
+    pub streaming: String,
     pub input: String,
+    /// Rows scrolled up from the bottom of the transcript (0 = follow tail).
+    pub scroll: usize,
     pub status: Status,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
@@ -68,7 +81,9 @@ impl App {
     pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             blocks: Vec::new(),
+            streaming: String::new(),
             input: String::new(),
+            scroll: 0,
             status: Status {
                 provider: provider.into(),
                 model: model.into(),
@@ -93,11 +108,15 @@ impl App {
                 self.status.turn = event.turn;
                 self.status.running = true;
                 self.status.last = None;
+                self.streaming.clear();
             }
             EventKind::UserMessage(message) => {
                 self.blocks.push(Block::User(message.text.clone()));
             }
             EventKind::AssistantMessage(message) => {
+                // The completed message supersedes the streamed preview, which
+                // may have been cut short by cancellation.
+                self.streaming.clear();
                 for block in &message.blocks {
                     if let ContentBlock::Text { text } = block {
                         self.blocks.push(Block::Assistant(text.clone()));
@@ -112,12 +131,15 @@ impl App {
                     status: None,
                     output: String::new(),
                     expanded: false,
+                    started: event.ts,
+                    elapsed: None,
                 }));
             }
             EventKind::ToolResult(result) => {
                 if let Some(tool) = self.tool_mut(&result.call_id) {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
+                    tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
                 }
             }
             EventKind::ApprovalRequested(request) => {
@@ -136,6 +158,7 @@ impl App {
                 self.approval = None;
             }
             EventKind::TurnEnded(ended) => {
+                self.streaming.clear();
                 self.status.running = false;
                 self.status.last = Some(ended.status);
                 self.status.cost_usd = ended.cost_usd;
@@ -202,12 +225,26 @@ impl App {
                 // transcript is projected from events, so do not add a second
                 // copy here.
                 let text = std::mem::take(&mut self.input);
+                self.scroll = 0;
                 self.status.running = true;
                 Some(UiAction::Submit(text))
             }
             KeyCode::Esc => self.status.running.then_some(UiAction::Cancel),
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
+                None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
+                None
+            }
+            KeyCode::End => {
+                self.scroll = 0;
+                None
+            }
             KeyCode::Backspace => {
                 self.input.pop();
+                self.scroll = 0;
                 None
             }
             KeyCode::Char('o') if ctrl => {
@@ -216,9 +253,18 @@ impl App {
             }
             KeyCode::Char(character) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 self.input.push(character);
+                self.scroll = 0;
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Append a transient stream delta. Reasoning is acknowledged but not
+    /// rendered yet (M2 keeps the transcript focused on visible output).
+    pub fn apply_delta(&mut self, delta: &Delta) {
+        if let Delta::Text(text) = delta {
+            self.streaming.push_str(text);
         }
     }
 
@@ -351,6 +397,21 @@ mod tests {
     }
 
     #[test]
+    fn page_keys_move_the_scroll_offset() {
+        let mut app = App::new("mock", "mock-1");
+        app.handle_key(key(KeyCode::PageUp));
+        app.handle_key(key(KeyCode::PageUp));
+        assert_eq!(app.scroll, 20);
+
+        app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 10);
+
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.input, "x");
+    }
+
+    #[test]
     fn tool_result_updates_the_matching_row() {
         let mut app = App::new("mock", "mock-1");
         app.apply(&event(EventKind::ToolCall(ToolCall {
@@ -395,6 +456,27 @@ mod tests {
             usage: Usage::default(),
         })));
         assert_eq!(app.blocks, vec![Block::Assistant("done".to_string())]);
+    }
+
+    #[test]
+    fn streamed_text_is_replaced_by_the_final_message() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        })));
+        app.apply_delta(&Delta::Text("hel".to_string()));
+        app.apply_delta(&Delta::Text("lo".to_string()));
+        assert_eq!(app.streaming, "hello");
+
+        app.apply(&event(EventKind::AssistantMessage(AssistantMessage {
+            blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            provider_raw: json!({}),
+            usage: Usage::default(),
+        })));
+        assert!(app.streaming.is_empty());
+        assert_eq!(app.blocks, vec![Block::Assistant("hello".to_string())]);
     }
 
     #[test]

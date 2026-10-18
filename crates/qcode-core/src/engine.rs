@@ -4,6 +4,7 @@
 //! Providers only stream; tools only execute; approvers only answer.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -23,6 +24,36 @@ use crate::provider::{
 };
 use crate::store::{SessionStore, StoreError};
 use crate::tool::{ToolContext, ToolOutput, ToolRegistry};
+
+/// A streamed delta. Deltas are transient: they drive the UI while the model
+/// is talking and are never written to the event log. The completed blocks are
+/// persisted later as one `assistant_message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delta {
+    Text(String),
+    Reasoning(String),
+}
+
+/// `Fn` wrapper so `RunOptions` can stay `Clone + Debug` while holding a
+/// callback into the frontend.
+#[derive(Clone)]
+pub struct DeltaSink(Arc<dyn Fn(Delta) + Send + Sync>);
+
+impl DeltaSink {
+    pub fn new(sink: impl Fn(Delta) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(sink))
+    }
+
+    pub fn emit(&self, delta: Delta) {
+        (self.0)(delta);
+    }
+}
+
+impl std::fmt::Debug for DeltaSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeltaSink")
+    }
+}
 
 /// Placeholder system prompt, written for this project. Replace it once the
 /// prompt layer exists; do not copy wording from any other agent.
@@ -68,6 +99,8 @@ pub struct RunOptions<'a> {
     /// Stop before the next provider call once the estimate passes this USD
     /// limit. Requires `pricing`; the CLI validates the pair before running.
     pub max_cost_usd: Option<f64>,
+    /// Optional live stream for the frontend. Deltas are not persisted.
+    pub on_delta: Option<DeltaSink>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +242,13 @@ where
             max_output_tokens: None,
         };
 
-        let collected = collect_stream(ctx.provider, request, &options.cancel).await?;
+        let collected = collect_stream(
+            ctx.provider,
+            request,
+            &options.cancel,
+            options.on_delta.as_ref(),
+        )
+        .await?;
         total_usage.merge(&collected.usage);
         if let Some(pricing) = &options.pricing {
             total_cost += pricing.cost_usd(&collected.usage);
@@ -412,6 +451,7 @@ async fn collect_stream(
     provider: &dyn Provider,
     request: CompletionRequest,
     cancel: &CancellationToken,
+    on_delta: Option<&DeltaSink>,
 ) -> Result<Collected, EngineError> {
     let mut stream = match provider.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
@@ -454,8 +494,18 @@ async fn collect_stream(
         };
 
         match item {
-            Ok(StreamEvent::TextDelta(delta)) => text.push_str(&delta),
-            Ok(StreamEvent::ReasoningDelta(delta)) => reasoning.push_str(&delta),
+            Ok(StreamEvent::TextDelta(delta)) => {
+                if let Some(sink) = on_delta {
+                    sink.emit(Delta::Text(delta.clone()));
+                }
+                text.push_str(&delta);
+            }
+            Ok(StreamEvent::ReasoningDelta(delta)) => {
+                if let Some(sink) = on_delta {
+                    sink.emit(Delta::Reasoning(delta.clone()));
+                }
+                reasoning.push_str(&delta);
+            }
             Ok(StreamEvent::ToolCallDone {
                 call_id,
                 name,

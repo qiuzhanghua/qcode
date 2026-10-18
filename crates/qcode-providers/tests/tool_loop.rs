@@ -126,6 +126,7 @@ async fn executes_tool_and_continues() {
             cancel: CancellationToken::new(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     )
@@ -182,6 +183,7 @@ async fn denial_is_reported_to_the_model() {
             cancel: CancellationToken::new(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     )
@@ -229,6 +231,7 @@ async fn asking_without_a_tty_denies() {
             cancel: CancellationToken::new(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     )
@@ -279,6 +282,7 @@ async fn max_turns_stops_the_loop() {
             cancel: CancellationToken::new(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     )
@@ -374,6 +378,7 @@ async fn cancellation_stops_a_running_tool() {
             cancel: cancel.clone(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     );
@@ -429,6 +434,7 @@ async fn cancellation_stops_a_hanging_stream() {
             cancel: cancel.clone(),
             pricing: None,
             max_cost_usd: None,
+            on_delta: None,
         },
         |_| {},
     );

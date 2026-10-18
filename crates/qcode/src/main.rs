@@ -238,6 +238,7 @@ async fn cmd_run(
             cancel: cancel.clone(),
             pricing,
             max_cost_usd: max_cost,
+            on_delta: None,
         },
         |event| {
             if json {

@@ -1,8 +1,9 @@
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use qcode_core::approval::AutoApprove;
-use qcode_core::engine::{RunOptions, TurnContext, run_turn};
+use qcode_core::engine::{Delta, DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::{EventKind, SessionStarted, TurnStatus};
 use qcode_core::policy::Policy;
 use qcode_core::store::SessionStore;
@@ -29,6 +30,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         cancel: CancellationToken::new(),
         pricing: None,
         max_cost_usd: None,
+        on_delta: None,
     }
 }
 
@@ -120,4 +122,44 @@ async fn torn_final_line_is_dropped_on_load() {
 
     let after = store.load(&id).expect("load after torn write");
     assert_eq!(after.len(), before);
+}
+
+#[tokio::test]
+async fn stream_deltas_reach_the_frontend() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::new(dir.path());
+    let (id, _) = store.create(&meta()).expect("create session");
+
+    let provider = MockProvider::text("hello world");
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
+    let seen = Arc::new(Mutex::new(String::new()));
+    let sink = {
+        let seen = seen.clone();
+        DeltaSink::new(move |delta: Delta| {
+            if let Delta::Text(text) = delta {
+                seen.lock().expect("buffer lock").push_str(&text);
+            }
+        })
+    };
+
+    let mut options = options(&id, dir.path());
+    options.on_delta = Some(sink);
+
+    let outcome = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+        },
+        options,
+        |_| {},
+    )
+    .await
+    .expect("run turn");
+
+    assert_eq!(outcome.text, "hello world");
+    assert_eq!(&*seen.lock().expect("buffer lock"), "hello world");
 }

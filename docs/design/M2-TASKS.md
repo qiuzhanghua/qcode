@@ -24,19 +24,26 @@
 - 验收：事件投影/键位单测 8 条 + `TestBackend` 渲染 4 条（状态栏、transcript、
   工具折叠、审批浮层）。
 
-### M2-2 引擎接线（实现完成，待真终端验收）
+### M2-2 引擎接线 ✅
 
 - `qc`（无子命令）启动 TUI；非 TTY 直接报错并提示 `qc run`。
 - `run_turn` 作为 future 与键盘输入同一个 `select!` 轮询：事件经 unbounded channel 进 UI，
   审批经 oneshot 反向应答，Esc 取消当前 turn，Ctrl-C 两次退出（退出前最多等 3s 让进程组清理）。
 - 每个 turn 使用新的 `CancellationToken`；多轮共享同一 session 与事件日志。
-- 流式 delta 合并顺延到 M2-5（当前粒度为完整消息事件）。
-- 验收：TuiApprover 单测 3 条 + 非 TTY 拒绝集成测试 1 条；真终端手工会话待验收。
+- 流式 delta 合并见 M2-9。
+- 验收：TuiApprover 单测 3 条 + 非 TTY 拒绝集成测试 1 条；真终端手工会话确认；
+  退出延迟（空闲仍等 3s）已在 87354c0 修复。
 
-### M2-3 transcript 虚拟化与工具折叠
+### M2-3 transcript 虚拟化与工具折叠 ✅
 
-- 只布局可见行；工具调用一行摘要（名称 + 参数 + 状态 + 耗时），Ctrl-O 展开完整输出。
-- 验收：1 万行 transcript 下的滚动性能测试（无全量布局）。
+- 只构建靠近可见窗口的块：行数预算 = 区域高度 + 滚动偏移 + 8，硬上限 2000 块；
+  展开的工具输出最多渲染 400 行，多出时提示剩余行数。transcript 再长，
+  每帧工作量也只与窗口相关。
+- `Paragraph::line_count`（ratatui `unstable-rendered-line-info`）得到换行后的总行数，
+  底部锚定；`PageUp` / `PageDown`（每次 10 行）、`End` 回到底部，状态栏显示 `↑N`。
+- 工具行显示名称、参数摘要、状态与耗时（ms / s）。
+- 验收：60 行窗口滚动测试（PageUp 到顶、End 回底）、滚动偏移状态栏测试、
+  滚动键单测；构建量受预算约束，不随 transcript 总量线性增长。
 
 ### M2-4 多行输入
 
@@ -65,3 +72,13 @@
 
 - `ratatui = "=0.29.0"`：与 `tui-textarea 0.7`（依赖 `ratatui ^0.29`）配套，避免同一进程里
   出现两个 ratatui 版本。升级 ratatui 当独立任务，连同 `tui-textarea` 一起评估。
+- 启用 `unstable-rendered-line-info` feature：仅用 `Paragraph::line_count` 做滚动锚定；
+  升级时确认该 API 是否已稳定。
+
+### M2-9 流式输出与 60Hz 合并重绘 ✅
+
+- 引擎新增 `Delta` / `DeltaSink` 瞬时回调：文本与推理 delta 只送前端，不进事件日志；
+  完成后的 `assistant_message` 仍是唯一持久化来源。
+- TUI 把 delta 追加到流式缓冲，按 16ms ticker 合并重绘（≤60Hz）；`assistant_message`
+  与 `turn_ended` 到达时清空缓冲，取消时保留引擎给出的部分文本。
+- 验收：引擎 delta 转发测试、App 缓冲替换测试、流式预览渲染测试。

@@ -18,7 +18,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use qcode_core::approval::{Answer, ApprovalRequest, Approver};
 use qcode_core::cost::Pricing;
-use qcode_core::engine::{EngineError, RunOptions, RunOutcome, TurnContext, run_turn};
+use qcode_core::engine::{
+    Delta, DeltaSink, EngineError, RunOptions, RunOutcome, TurnContext, run_turn,
+};
 use qcode_core::event::{Event, SessionStarted, TurnStatus};
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
@@ -50,6 +52,7 @@ pub struct TuiOptions<'a> {
 
 enum TuiMsg {
     Event(Event),
+    Delta(Delta),
     Key(KeyEvent),
     Approval {
         call_id: String,
@@ -110,14 +113,24 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let mut engine: Pin<Box<dyn Future<Output = Result<RunOutcome, EngineError>> + '_>> =
         Box::pin(std::future::pending());
 
-    let loop_result: Result<(), Box<dyn std::error::Error>> = loop {
-        if let Err(err) = terminal.terminal.draw(|frame| render(frame, &app)) {
-            break Err(err.into());
-        }
+    // Coalesce stream deltas into at most one draw per frame (60Hz).
+    let mut ticker = tokio::time::interval(Duration::from_millis(16));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dirty = true;
 
+    let loop_result: Result<(), Box<dyn std::error::Error>> = loop {
         tokio::select! {
             biased;
+            _ = ticker.tick() => {
+                if dirty {
+                    if let Err(err) = terminal.terminal.draw(|frame| render(frame, &app)) {
+                        break Err(err.into());
+                    }
+                    dirty = false;
+                }
+            }
             message = rx.recv() => {
+                dirty = true;
                 let Some(message) = message else { break Ok(()) };
                 match message {
                     TuiMsg::Event(event) => app.apply(&event),
@@ -132,6 +145,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 engine_running = true;
                                 let turn_cancel = cancel.clone();
                                 let sender = tx.clone();
+                                let delta_sender = tx.clone();
                                 engine = Box::pin(run_turn(
                                     TurnContext {
                                         store: options.store,
@@ -149,6 +163,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         cancel: turn_cancel,
                                         pricing: options.pricing,
                                         max_cost_usd: options.max_cost_usd,
+                                        on_delta: Some(DeltaSink::new(move |delta| {
+                                            let _ = delta_sender.send(TuiMsg::Delta(delta));
+                                        })),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));
@@ -182,15 +199,18 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             }
                         }
                     }
+                    TuiMsg::Delta(delta) => app.apply_delta(&delta),
                     TuiMsg::Approval { call_id, reply } => {
                         pending_approval = Some((call_id, reply));
                     }
                 }
             }
             result = &mut engine => {
+                dirty = true;
                 engine = Box::pin(std::future::pending());
                 engine_running = false;
                 if let Err(err) = result {
+                    app.streaming.clear();
                     app.status.running = false;
                     app.status.last = Some(TurnStatus::Failed);
                     app.push_notice(format!("engine error: {err}"));

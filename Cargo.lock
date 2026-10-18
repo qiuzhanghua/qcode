@@ -1233,6 +1233,7 @@ dependencies = [
  "qcode-core",
  "ratatui",
  "serde_json",
+ "time",
 ]
 
 [[package]]
