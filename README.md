@@ -36,8 +36,9 @@ export DEEPSEEK_API_KEY=...
 
 ## 当前能力
 
-- **工具循环**：`read_file` / `write_file` / `edit_file` / `list_dir` / `run_shell`，
-  多轮调用直到任务完成。
+- **工具循环**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` /
+  `grep` / `run_shell`，多轮调用直到任务完成。`glob` 与 `grep` 遵守 `.gitignore`，
+  跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
   每次决策写事件，含命中的 rule id。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；

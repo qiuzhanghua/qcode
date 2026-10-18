@@ -66,6 +66,16 @@
 
 - 48 个测试：core 策略/状态/历史，providers 工具循环 4 条（执行、拒绝、非 TTY 拒绝、max turns），tools 6 条（含 symlink 逃逸与环境清洗）。
 
+### M1-8 glob / grep ✅
+
+`crates/coder-tools/src/search.rs`。
+
+- `glob`：`ignore` 遍历 + `globset`；遵守 `.gitignore`，跳过隐藏与构建目录；
+  无斜杠的模式同时匹配 basename；结果排序，上限 1000。
+- `grep`：`regex` + `ignore`；跳过二进制与 >4MB 文件；输出 `path:line:text`，
+  支持 `glob` 过滤与 `context`（0–5）；上限 200 条匹配。
+- 验收：6 个测试覆盖 gitignore、basename、行号、context、glob 过滤、无匹配。
+
 ### M1-13 人类模式进度与构建环境 ✅
 
 - 非 `--json` 时把 `tool_call` / `tool_result` / `approval` / `turn` 状态打到 stderr，
@@ -73,12 +83,7 @@
 - shell 环境放行 `CARGO_HOME` / `RUSTUP_HOME` / `CARGO_TARGET_DIR`，
   避免 agent 里的 cargo 用错缓存或撞沙箱。
 
-## 待完成
-
-### M1-8 glob / grep
-
-- 用 `ignore` + `globset` 实现，遵守 `.gitignore`；输出上限与排序。
-- 验收：大仓库里 `glob`/`grep` 不失控，结果可复现。
+## 待完成（M1-9 起）
 
 ### M1-9 取消与进程清理
 

@@ -3,6 +3,7 @@
 
 pub mod fs;
 pub mod path;
+pub mod search;
 pub mod shell;
 
 use std::sync::Arc;
@@ -15,6 +16,8 @@ pub fn builtin_registry() -> ToolRegistry {
         Arc::new(fs::WriteFile),
         Arc::new(fs::EditFile),
         Arc::new(fs::ListDir),
+        Arc::new(search::GlobTool),
+        Arc::new(search::GrepTool),
         Arc::new(shell::RunShell),
     ])
 }

@@ -29,6 +29,9 @@ futures-util = "0.3"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+globset = "0.4"
+ignore = "0.4"
+regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
