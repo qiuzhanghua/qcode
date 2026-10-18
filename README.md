@@ -23,6 +23,9 @@ cargo test --workspace
 # 离线冒烟（mock provider，不调用工具）
 ./target/debug/coder run "say hi" --json --data-dir .tmp/data
 
+# 离线演示工具循环：list_dir，不联网
+./target/debug/coder run "demo" --provider mock-tools --yes
+
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
 # 不写 --model 时，DeepSeek 默认使用 deepseek-flash

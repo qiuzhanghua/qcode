@@ -10,9 +10,9 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use coder_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
 use coder_core::engine::{RunOptions, TurnContext, run_turn};
-use coder_core::event::SessionStarted;
+use coder_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
 use coder_core::policy::Policy;
-use coder_core::provider::Provider;
+use coder_core::provider::{Provider, StopReason, StreamEvent};
 use coder_core::store::SessionStore;
 use coder_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use coder_tools::builtin_registry;
@@ -179,12 +179,31 @@ async fn cmd_run(
         println!("{}", serde_json::to_string(&first_event)?);
     }
 
-    let provider: Box<dyn Provider> = if resolved.is_mock {
-        Box::new(MockProvider::text(
+    let provider: Box<dyn Provider> = match resolved.name.as_str() {
+        "mock" => Box::new(MockProvider::text(
             "Hello from the mock provider. The event log and replay path are working.",
-        ))
-    } else {
-        Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
+        )),
+        "mock-tools" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "demo-1".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"path": "."}),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("工具循环跑通了。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        _ => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
             name: resolved.name.clone(),
             base_url: resolved
                 .base_url
@@ -192,7 +211,7 @@ async fn cmd_run(
                 .expect("non-mock provider always has a base URL"),
             api_key: resolved.api_key.clone(),
             stream_usage: resolved.stream_usage,
-        })?)
+        })?),
     };
 
     let tools = builtin_registry();
@@ -226,6 +245,8 @@ async fn cmd_run(
                     "{}",
                     serde_json::to_string(event).expect("event should serialize")
                 );
+            } else {
+                progress(event);
             }
         },
     )
@@ -316,4 +337,48 @@ fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
         .join(".local")
         .join("share")
         .join("coder")
+}
+
+/// Human-mode progress on stderr. Without this a 10-minute test run looks like
+/// a hang, because the engine only reports the final text on stdout.
+fn progress(event: &Event) {
+    match &event.kind {
+        EventKind::ToolCall(call) => {
+            let summary = call
+                .arguments
+                .get("command")
+                .and_then(|value| value.as_str())
+                .or_else(|| call.arguments.get("path").and_then(|value| value.as_str()))
+                .unwrap_or_default();
+            eprintln!("\n[tool] {} {}", call.name, truncate_chars(summary, 120));
+        }
+        EventKind::ToolResult(result) => {
+            let status = match result.status {
+                ToolStatus::Ok => "ok",
+                ToolStatus::Error => "error",
+                ToolStatus::Cancelled => "cancelled",
+                ToolStatus::Interrupted => "interrupted",
+            };
+            eprintln!("[tool] {status} ({} bytes)", result.metadata.bytes);
+        }
+        EventKind::ApprovalDecided(decided) => {
+            let decision = if decided.decision == Decision::Allow {
+                "allowed"
+            } else {
+                "denied"
+            };
+            eprintln!("[approval] {decision}");
+        }
+        EventKind::TurnEnded(ended) => {
+            eprintln!("[turn] {:?}", ended.status);
+        }
+        _ => {}
+    }
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(limit).collect::<String>())
 }

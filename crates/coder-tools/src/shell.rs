@@ -17,7 +17,19 @@ use crate::path;
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 const ENV_ALLOWLIST: &[&str] = &[
-    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR",
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "TMPDIR",
+    // Build configuration, not secrets. Without these the agent's cargo uses
+    // the wrong registry cache (and may fight the sandbox).
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "CARGO_TARGET_DIR",
 ];
 
 pub struct RunShell;

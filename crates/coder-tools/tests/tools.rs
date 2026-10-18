@@ -132,6 +132,17 @@ async fn shell_reports_exit_code_and_scrubs_env() {
     assert!(!output.output.contains("sk-should-not-leak"));
     assert_eq!(output.metadata.exit_code, Some(0));
 
+    if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+        let output = RunShell
+            .execute(
+                &ctx,
+                json!({"command": "printf '%s' \"${CARGO_HOME:-missing}\""}),
+            )
+            .await
+            .unwrap();
+        assert!(output.output.contains(&cargo_home));
+    }
+
     let failed = RunShell
         .execute(&ctx, json!({"command": "exit 3"}))
         .await

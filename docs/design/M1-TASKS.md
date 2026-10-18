@@ -66,6 +66,13 @@
 
 - 48 个测试：core 策略/状态/历史，providers 工具循环 4 条（执行、拒绝、非 TTY 拒绝、max turns），tools 6 条（含 symlink 逃逸与环境清洗）。
 
+### M1-13 人类模式进度与构建环境 ✅
+
+- 非 `--json` 时把 `tool_call` / `tool_result` / `approval` / `turn` 状态打到 stderr，
+  长命令不再看起来像卡死。
+- shell 环境放行 `CARGO_HOME` / `RUSTUP_HOME` / `CARGO_TARGET_DIR`，
+  避免 agent 里的 cargo 用错缓存或撞沙箱。
+
 ## 待完成
 
 ### M1-8 glob / grep
