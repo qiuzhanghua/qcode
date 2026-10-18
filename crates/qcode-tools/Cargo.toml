@@ -1,0 +1,20 @@
+[package]
+name = "qcode-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+qcode-core = { path = "../qcode-core" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+globset.workspace = true
+ignore.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,4 +1,4 @@
-# coder — 设计决策
+# qcode — 设计决策
 
 > 状态：定稿（v1 范围）。L0–L6 已定。日期：2026-10-18。
 > 本文件是实现时的唯一决策依据；改动需追加决策记录。
@@ -25,14 +25,14 @@ engine-first，TUI 只订阅事件流。
 
 | crate | 职责 |
 |---|---|
-| `coder-core` | domain、turn/loop、policy、事件、存储抽象 |
-| `coder-providers` | provider 适配与流式解析 |
-| `coder-tools` | 内置工具、进程执行、sandbox runner |
-| `coder-mcp` | rmcp client 封装 |
-| `coder-cli` | 参数、配置加载、headless 输出 |
-| `coder-tui` | ratatui 前端 |
+| `qcode-core` | domain、turn/loop、policy、事件、存储抽象 |
+| `qcode-providers` | provider 适配与流式解析 |
+| `qcode-tools` | 内置工具、进程执行、sandbox runner |
+| `qcode-mcp` | rmcp client 封装 |
+| `qcode` | 参数、配置加载、headless 输出 |
+| `qcode-tui` | ratatui 前端 |
 
-命名：`coder` 仅为内部代号（与 Coder Technologies 有撞名风险），发布前定名。
+命名：`qcode` 仅为内部代号（与 Coder Technologies 有撞名风险），发布前定名。
 spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体替换；配置目录预留迁移读取。
 
 ## 3. 平台、沙箱与进程模型
@@ -42,7 +42,7 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 事实约束：macOS `sandbox-exec` 已标 deprecated，且嵌套调用返回 EPERM(71)
   → **sandbox 只在一个进程边界上套一次**。
 - 进程模型：只读工具与 `write_file` 在引擎进程内执行；只有 `run_shell` 走
-  `coder sandbox exec --policy … -- argv` 独立进程组。
+  `qc sandbox exec --policy … -- argv` 独立进程组。
 - `write_file` 的路径校验（canonicalize、workspace 前缀、symlink、`..`）
   是安全关键代码，必须有单测。
 - 主机名级出网控制在三平台都做不到 → 网络策略的边界是本地代理，v2 再引入。
@@ -107,7 +107,7 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 合成 fixture：`eval/fixtures/workspace`，纯 std、三 crate（core / store / cli）、
   离线、`cargo test` < 5s；每个任务在固定 commit 的快照上跑。
 - 5 条任务：修 bug / 加功能 / 重构 / 跨文件 API 改动 / 修 CI，判据均为命令退出码。
-- 二阶段用真实仓库（`qrlib` 或自有中等仓库），三阶段 self-hosting（coder 改 coder）。
+- 二阶段用真实仓库（`qrlib` 或自有中等仓库），三阶段 self-hosting（qcode 改 qcode）。
 - 与 MVP 判据共用。详见 [EVAL.md](./EVAL.md)。
 
 ### 4.9 Provider 能力与降级
@@ -146,7 +146,7 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 ### 4.13 headless
 
-- `coder run "prompt" --json` 输出 JSONL，与 TUI 同源。
+- `qc run "prompt" --json` 输出 JSONL，与 TUI 同源。
 - 退出码：`0` 成功 / `1` 任务失败 / `2` 用法错误 / `3` 审批拒绝 / `4` provider 错误。
 - 审批：`--approval-policy`（allow / deny / 规则文件）或 stdin 的 JSONL 协议。
 - 必须支持 `--max-turns`、`--max-cost`、`--timeout`、`--cwd`。
@@ -221,13 +221,13 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 **约束**
 
-1. ratatui 只做渲染；事件循环、焦点、键位映射由 `coder-tui` 自己实现。
+1. ratatui 只做渲染；事件循环、焦点、键位映射由 `qcode-tui` 自己实现。
 2. 长 transcript 必须虚拟化，只渲染可见行。
 3. 默认不捕获鼠标，保留终端原生的选择/复制。
 4. 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标必须有测试。
-5. ratatui 的用法限制在 `coder-tui` 内，版本 pin 死；升级当独立任务。
+5. ratatui 的用法限制在 `qcode-tui` 内，版本 pin 死；升级当独立任务。
 
 **后果**
 
 - M2 增加“transcript 虚拟化”和“CJK / IME 测试”两项任务。
-- M2 开始前不引入 ratatui 依赖，`coder-tui` 保持空壳。
+- M2 开始前不引入 ratatui 依赖，`qcode-tui` 保持空壳。

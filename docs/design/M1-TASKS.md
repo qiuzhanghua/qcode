@@ -14,7 +14,7 @@
 
 ### M1-1 Tool 契约与注册表 ✅
 
-`crates/coder-core/src/tool.rs`。
+`crates/qcode-core/src/tool.rs`。
 
 - `Tool` trait：`spec()`、`approval()`、`execute()`；`approval()` 不产生副作用。
 - `ApprovalClass`：Read / WriteInside / WriteOutside / Execute，由工具根据参数计算。
@@ -22,7 +22,7 @@
 
 ### M1-2 内置工具 ✅
 
-`crates/coder-tools`。
+`crates/qcode-tools`。
 
 - `read_file`：行号、二进制检测、2000 行 / 32KB 上限。
 - `write_file`：临时文件 + rename 原子写，自动建父目录。
@@ -33,7 +33,7 @@
 
 ### M1-3 策略引擎 ✅
 
-`crates/coder-core/src/policy.rs`。
+`crates/qcode-core/src/policy.rs`。
 
 - 三值 allow / ask / deny；deny 永远最高；同值下最具体的规则胜出。
 - 默认：读与 workspace 内写 allow；workspace 外写与 shell ask。
@@ -41,14 +41,14 @@
 
 ### M1-4 审批接口 ✅
 
-`crates/coder-core/src/approval.rs`。
+`crates/qcode-core/src/approval.rs`。
 
 - `AutoApprove`（`--yes`）、`AutoDeny`（非 TTY 默认）、`InteractiveApprover`（stdin 确认）。
 - 请求包含 call_id、工具名、摘要、原因、命中的 rule id。
 
 ### M1-5 Turn loop ✅
 
-`crates/coder-core/src/engine.rs`、`history.rs`。
+`crates/qcode-core/src/engine.rs`、`history.rs`。
 
 - 模型 → 工具 → 审批 → 工具结果 → 再问模型，直到没有工具调用。
 - 历史从事件日志重建（`tool_call_id` 正确回传），为 resume 打底。
@@ -68,7 +68,7 @@
 
 ### M1-8 glob / grep ✅
 
-`crates/coder-tools/src/search.rs`。
+`crates/qcode-tools/src/search.rs`。
 
 - `glob`：`ignore` 遍历 + `globset`；遵守 `.gitignore`，跳过隐藏与构建目录；
   无斜杠的模式同时匹配 basename；结果排序，上限 1000。

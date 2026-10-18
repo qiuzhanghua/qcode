@@ -1,9 +1,0 @@
-[package]
-name = "coder-tui"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
-
-[dependencies]
-coder-core = { path = "../coder-core" }

@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/coder-core",
-  "crates/coder-providers",
-  "crates/coder-tools",
-  "crates/coder-mcp",
-  "crates/coder-cli",
-  "crates/coder-tui",
+  "crates/qcode-core",
+  "crates/qcode-providers",
+  "crates/qcode-tools",
+  "crates/qcode-mcp",
+  "crates/qcode",
+  "crates/qcode-tui",
 ]
 
 [workspace.package]

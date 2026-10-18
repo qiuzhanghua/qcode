@@ -1,4 +1,4 @@
-# coder — 评测方案（EVAL）
+# qcode — 评测方案（EVAL）
 
 > 决策背景见 [DECISIONS.md](./DECISIONS.md) §4.8。目标是让“改 prompt / 换模型 / 改工具”
 > 都有可比较的数字，而不是凭感觉。
@@ -65,7 +65,7 @@ expect_exit = 0
 2. 复制 snapshot 到临时目录；在副本里初始化 git。
 3. 清洗环境变量（同 SPEC §12 的 shell 清洗规则）。
 4. 记录起始指标；以 headless 模式运行 agent：
-   `coder run "<prompt>" --json --approval-policy eval/policy.toml --max-turns N --timeout N`。
+   `qc run "<prompt>" --json --approval-policy eval/policy.toml --max-turns N --timeout N`。
 5. agent 结束后：恢复 `tests/`、`scripts/`、`AGENTS.md` 到快照状态；
    注入隐藏测试；执行 checks。
 6. 记录指标与事件日志路径；删除临时目录（失败时保留并打印路径）。
@@ -91,7 +91,7 @@ workspace 外 deny——保证评测可无人值守运行。
 
 - **P1**：本方案，M2 起并行准备，M4 必须可用。
 - **P2**：真实仓库——`qrlib`（1k LOC、有测试）或自有中等仓库；任务改为真实 issue。
-- **P3**：self-hosting——用 coder 修 coder 的 bug、加小功能；这是最终验收。
+- **P3**：self-hosting——用 qcode 修 qcode 的 bug、加小功能；这是最终验收。
 
 ## 8. 不做什么
 

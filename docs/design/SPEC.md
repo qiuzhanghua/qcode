@@ -1,4 +1,4 @@
-# coder v1 — 实现规格
+# qcode v1 — 实现规格
 
 > 依赖决策见 [DECISIONS.md](./DECISIONS.md)。本文件描述“怎么做”，不包含代码。
 > 所有路径/前缀/命令名以常量封装，改名时只改一处。
@@ -32,12 +32,12 @@
 
 ```
 ┌─────────────┐   events    ┌──────────────┐
-│ coder-tui   │◀────────────│              │
-└─────────────┘             │  coder-core  │──▶ coder-providers ──▶ LLM API
+│ qcode-tui   │◀────────────│              │
+└─────────────┘             │  qcode-core  │──▶ qcode-providers ──▶ LLM API
 ┌─────────────┐   events    │  (turn loop, │
-│ coder-cli   │◀────────────│   policy,    │──▶ coder-tools ──▶ shell / fs
+│ qcode   │◀────────────│   policy,    │──▶ qcode-tools ──▶ shell / fs
 │  --json     │             │   store)     │
-└─────────────┘             │              │──▶ coder-mcp ──▶ MCP servers
+└─────────────┘             │              │──▶ qcode-mcp ──▶ MCP servers
                             └──────────────┘
 ```
 
@@ -215,10 +215,10 @@ enabled = true
 
 | 用途 | 路径 |
 |---|---|
-| 用户配置 | `~/.config/coder/config.toml` |
-| 项目配置 | `<workspace>/.coder/config.toml` |
-| 数据 | `~/.local/share/coder/` |
-| 缓存 | `~/.cache/coder/` |
+| 用户配置 | `~/.config/qcode/config.toml` |
+| 项目配置 | `<workspace>/.qcode/config.toml` |
+| 数据 | `~/.local/share/qcode/` |
+| 缓存 | `~/.cache/qcode/` |
 
 优先级：CLI flags > 环境变量 > 项目配置 > 用户配置。
 凭据：环境变量（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）优先，
@@ -230,14 +230,14 @@ shell 环境清洗：只传 `PATH HOME USER SHELL LANG LC_* TERM TMPDIR` 与用�
 
 | 命令 | 说明 |
 |---|---|
-| `coder` | 启动 TUI（新会话） |
-| `coder run "prompt"` | headless；prompt 也可从 stdin 读 |
-| `coder resume <id>` | 恢复会话（TUI） |
-| `coder sessions list/show` | 会话管理 |
-| `coder config edit/show` | 配置 |
-| `coder mcp list/add/remove` | MCP 管理 |
-| `coder doctor` | 自检（toolchain、路径、provider 连通性） |
-| `coder sandbox exec` | 内部使用，不对外承诺 |
+| `qcode` | 启动 TUI（新会话） |
+| `qc run "prompt"` | headless；prompt 也可从 stdin 读 |
+| `qcode resume <id>` | 恢复会话（TUI） |
+| `qc sessions list/show` | 会话管理 |
+| `qc config edit/show` | 配置 |
+| `qc mcp list/add/remove` | MCP 管理 |
+| `qc doctor` | 自检（toolchain、路径、provider 连通性） |
+| `qc sandbox exec` | 内部使用，不对外承诺 |
 
 `run` 的关键 flag：`--json`、`--model`、`--provider`、`--approval-policy`、`--yes`、
 `--max-turns`、`--max-cost`、`--timeout`、`--cwd`、`--config`。
@@ -260,7 +260,7 @@ stdout 只输出 JSONL 事件；日志与进度走 stderr。
 ## 15. 存储
 
 ```text
-~/.local/share/coder/
+~/.local/share/qcode/
   sessions/<ulid>.jsonl
   sessions/<ulid>/outputs/<call_id>.txt
   index.sqlite
@@ -270,7 +270,7 @@ stdout 只输出 JSONL 事件；日志与进度走 stderr。
 - 单写者：会话文件加 flock，第二个进程只能只读或拒绝。
 - 写入：append + 在 turn 边界 fsync；末尾半行在加载时丢弃。
 - 索引：session id、起止时间、模型、cwd、turn 数、成本；可全量重建。
-- 清理：`outputs/` 随会话删除；提供 `coder sessions gc`。
+- 清理：`outputs/` 随会话删除；提供 `qc sessions gc`。
 
 ## 16. 测试与评测
 
