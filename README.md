@@ -26,6 +26,9 @@ cargo test --workspace
 # 离线演示工具循环：list_dir，不联网
 ./target/debug/qc run "demo" --provider mock-tools --yes
 
+# 交互式审批演练：run_shell 默认 ask（在真实终端里跑；y 执行，n 拒绝）
+./target/debug/qc run "demo" --provider mock-approval
+
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
 # 不写 --model 时，DeepSeek 默认使用 deepseek-flash

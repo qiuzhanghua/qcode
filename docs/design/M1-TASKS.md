@@ -139,6 +139,8 @@
 - 验收：审批文案能看懂、拒绝后模型能继续。
 - 代码侧的取消支持已完成（见 M1-9）；自动化仍阻塞：本机沙箱禁止 `openpty`
   （`script: openpty: Operation not permitted`），pty 模拟真终端跑不了，需在普通终端验收。
+- 离线演练入口：`qc run demo --provider mock-approval`（脚本化 `run_shell`，
+  默认为 ask）；非 TTY 自动 deny + 模型继续的路径已有自动化回归。
 
 
 ## 已知限制

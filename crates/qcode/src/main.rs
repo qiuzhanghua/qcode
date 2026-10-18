@@ -195,6 +195,29 @@ async fn cmd_run(
         "mock" => Box::new(MockProvider::text(
             "Hello from the mock provider. The event log and replay path are working.",
         )),
+        // Offline rehearsal of the approval UI: one run_shell call (ask by
+        // default) followed by a closing message. Deliberately tiny so the
+        // manual M1-10 walkthrough stays readable.
+        "mock-approval" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "approval-1".to_string(),
+                    name: "run_shell".to_string(),
+                    arguments: serde_json::json!({"command": "echo qcode-approval-demo"}),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("审批流程演示结束。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
         "mock-tools" => Box::new(MockProvider::scripted(vec![
             vec![
                 StreamEvent::Started,
