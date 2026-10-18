@@ -1,4 +1,6 @@
 mod config;
+mod doctor;
+mod logging;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -34,6 +36,8 @@ enum Command {
     Run(RunArgs),
     /// Inspect persisted sessions.
     Sessions(SessionsArgs),
+    /// Diagnose configuration, credentials and data directory.
+    Doctor,
 }
 
 #[derive(Debug, Args)]
@@ -74,6 +78,8 @@ enum SessionsCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    logging::init();
+
     let Cli {
         data_dir,
         config,
@@ -83,10 +89,11 @@ async fn main() -> ExitCode {
     let result = match command {
         Command::Run(args) => cmd_run(args, data_dir, config).await,
         Command::Sessions(args) => cmd_sessions(args, data_dir),
+        Command::Doctor => cmd_doctor(data_dir, config).await,
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
             ExitCode::FAILURE
@@ -98,7 +105,7 @@ async fn cmd_run(
     args: RunArgs,
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let RunArgs {
         prompt,
         json,
@@ -133,6 +140,14 @@ async fn cmd_run(
         &|key| std::env::var(key).ok(),
     )?;
 
+    let redactor = logging::Redactor::new(resolved.api_key.clone());
+    tracing::info!(
+        provider = %resolved.name,
+        model = %resolved.model,
+        base_url = ?resolved.base_url,
+        "provider resolved"
+    );
+
     let store = SessionStore::new(resolve_data_dir(data_dir));
     let cwd = std::env::current_dir()?.display().to_string();
 
@@ -142,6 +157,7 @@ async fn cmd_run(
         cwd,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })?;
+    tracing::info!(session = %session_id, "session created");
     if json {
         println!("{}", serde_json::to_string(&first_event)?);
     }
@@ -180,7 +196,8 @@ async fn cmd_run(
             }
         },
     )
-    .await?;
+    .await
+    .map_err(|err| redactor.redact(&err.to_string()))?;
 
     if !json {
         println!("session: {}", outcome.session_id);
@@ -188,13 +205,13 @@ async fn cmd_run(
         println!("{}", outcome.text);
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_sessions(
     args: SessionsArgs,
     data_dir: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let store = SessionStore::new(resolve_data_dir(data_dir));
 
     match args.command {
@@ -202,7 +219,7 @@ fn cmd_sessions(
             let sessions = store.list()?;
             if sessions.is_empty() {
                 println!("no sessions");
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
             for session in sessions {
                 println!(
@@ -218,7 +235,19 @@ fn cmd_sessions(
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_doctor(
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let healthy = doctor::run(data_dir, config_path)?;
+    Ok(if healthy {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn load_config(explicit: Option<PathBuf>) -> Result<config::Config, Box<dyn std::error::Error>> {

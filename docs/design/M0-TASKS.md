@@ -112,28 +112,48 @@
 - `cargo-deny` 暂未加入：需要先确认全部传递依赖的许可证清单，避免提交一个必红的 job。
   作为 M1 的独立任务。
 
-## 待完成（M0-10 起）
+### M0-10 日志与脱敏 ✅
 
-### M0-10 日志与脱敏
+`crates/coder-cli/src/logging.rs`。
 
-- 目标：`tracing` + `RUST_LOG`；统一的 redaction 函数。
-- 范围：stderr 日志、事件日志不含密钥、shell 环境清洗的前置工具函数。
-- 验收：注入假 key，断言日志中不出现。
-- 依赖：M0-9。估时：0.5 天。
+- `tracing` + `tracing-subscriber`：默认 `warn`，`RUST_LOG=info` 打开细节，全部写 stderr。
+- stdout 只保留 JSONL；冒烟验证日志与事件流分离。
+- `Redactor` 掩码已知密钥（长串优先），用于错误输出。
+- 验收：3 个 redaction 测试；`RUST_LOG=info` 下 JSONL 仍是 5 行。
 
-### M0-13 `coder doctor`
+### M0-13 `coder doctor` ✅
 
-- 目标：一条命令回答“为什么跑不起来”。
-- 范围：数据目录可写、配置可解析、provider 凭据存在、rustc/cargo 版本、
-  当前 sandbox 模式。
-- 验收：缺 key / 目录只读时给出可操作提示。
-- 依赖：M0-9。估时：0.5 天。
+`crates/coder-cli/src/doctor.rs`。
 
-### M0-14 文档与 LICENSE
+- 检查数据目录可写、配置可解析、provider / model / base URL、凭据是否存在、
+  rustc 版本、sandbox 状态。
+- 缺 key、目录只读、配置解析失败都会给出可操作提示并以非零退出。
+- 验收：本地冒烟输出 `all checks passed`。
 
-- 目标：README 快速开始、架构图、Apache-2.0 LICENSE 文件。
-- 验收：新人按 README 能在 5 分钟内跑通 mock 路径。
-- 依赖：无。估时：0.5 天。
+### M0-14 文档与 LICENSE ✅
+
+- `LICENSE`（Apache-2.0 全文）与 `NOTICE`。
+- README 增加配置示例、优先级说明与 doctor 用法。
+- 验收：按 README 的快速开始可直接跑通 mock 路径。
+
+## M0 验收（人工）
+
+计划内任务全部完成。真实 provider 这一段需要你的 key：
+
+```bash
+export DEEPSEEK_API_KEY=...
+./target/debug/coder doctor
+./target/debug/coder run "say hi" --provider deepseek --model deepseek-chat --json
+```
+
+检查四件事：
+
+1. `doctor` 报告 `all checks passed`，且 key 显示为 present 而不是内容。
+2. `run` 输出 5 条事件，`seq` 从 1 连续到 5。
+3. `coder sessions show <id>` 能完整 replay。
+4. 报错信息里不出现 key 明文。
+
+注意：工具调用尚未实现（M1），真实模型只适合纯文本问题；要求调用工具时会显式失败。
 
 ## 环境约定
 
