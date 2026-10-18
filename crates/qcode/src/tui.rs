@@ -29,7 +29,10 @@ use qcode_core::tool::ToolRegistry;
 use qcode_tui::{App, UiAction, render};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyEvent};
+use ratatui::crossterm::event::{
+    self, Event as TermEvent, KeyEvent, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -104,7 +107,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     let mut app = App::new(options.provider_name, options.model);
     app.push_notice(format!(
-        "session {session_id} · Enter 发送 · Esc 取消 · Ctrl-O 展开工具 · Ctrl-C 两次退出"
+        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-C 两次退出"
     ));
 
     let mut cancel = CancellationToken::new();
@@ -233,7 +236,14 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(err) = execute!(stdout, EnterAlternateScreen) {
+        // Ask terminals that understand the Kitty protocol to report
+        // modifiers (Shift+Enter / Esc) distinctly. Others ignore the sequence
+        // and keep using Ctrl-N for newlines.
+        if let Err(err) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        ) {
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -257,7 +267,11 @@ impl TerminalGuard {
             return;
         }
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            PopKeyboardEnhancementFlags,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
         self.restored = true;
     }

@@ -72,7 +72,8 @@ pub struct App {
     /// the authoritative `assistant_message` event arrives.
     pub streaming: String,
     /// Multi-line composer. tui-textarea owns editing keys, CJK width and
-    /// cursor movement; the app only decides when Enter submits.
+    /// cursor movement; the app only decides when Enter submits (Ctrl-N and
+    /// Shift/Alt+Enter insert a newline).
     pub textarea: TextArea<'static>,
     /// Rows scrolled up from the bottom of the transcript (0 = follow tail).
     pub scroll: usize,
@@ -220,9 +221,20 @@ impl App {
         }
 
         match key.code {
-            // Enter submits; Shift+Enter (and Ctrl+Enter) fall through to the
-            // textarea, which inserts a newline.
-            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+            // Terminals without the Kitty keyboard protocol cannot tell
+            // Shift+Enter from Enter, so Ctrl-N is the reliable newline key.
+            KeyCode::Char('n') if ctrl => {
+                self.textarea.insert_newline();
+                return None;
+            }
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.textarea.insert_newline();
+                return None;
+            }
+            KeyCode::Enter => {
                 if self.status.running {
                     return None;
                 }
@@ -430,6 +442,22 @@ mod tests {
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Some(UiAction::Submit("中文\n!".to_string())));
         assert_eq!(app.textarea.lines(), [""]);
+    }
+
+    #[test]
+    fn ctrl_n_and_modified_enter_insert_newlines() {
+        let mut app = App::new("mock", "mock-1");
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.handle_key(key(KeyCode::Char('b')));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(app.textarea.lines(), ["a", "b", "c", "d"]);
+
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, Some(UiAction::Submit("a\nb\nc\nd".to_string())));
     }
 
     #[test]

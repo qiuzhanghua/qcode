@@ -49,9 +49,11 @@
 
 - 引入 `tui-textarea = "=0.7.0"`（`default-features = false`, `features = ["crossterm"]`），
   与 ratatui 0.29 配套；编辑器自己处理光标移动、Home/End、粘贴与 CJK 宽度。
-- Enter 提交，Shift+Enter 换行；输入框随行数增高（最多占屏幕 1/3）；
-  普通 End 留给编辑器，`Ctrl+End` 把 transcript 拉回底部。
-- 验收：CJK + Shift+Enter 的多行提交单测、输入框增高渲染测试。
+- Enter 提交；**Ctrl-N 换行**（终端普遍无法区分 Shift+Enter 与 Enter，所以给一个可靠键位），
+  Shift/Alt+Enter 在支持 Kitty 键盘协议的终端里同样换行；启动时 push
+  `DISAMBIGUATE_ESCAPE_CODES`，退出时 pop。
+- 输入框随行数增高（最多占屏幕 1/3）；普通 End 留给编辑器，`Ctrl+End` 把 transcript 拉回底部。
+- 验收：CJK 多行提交、Ctrl-N / Shift+Enter / Alt+Enter 换行单测、输入框增高渲染测试。
 - 已知限制：IME 组合与系统粘贴仍需要真终端手工确认（本机沙箱无法分配 tty）。
 
 ### M2-5 上下文压缩
