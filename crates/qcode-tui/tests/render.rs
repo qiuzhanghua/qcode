@@ -293,3 +293,31 @@ fn scrolled_view_shows_the_offset_in_the_status_bar() {
     let screen = draw(&app, 80, 10);
     assert!(screen.contains("↑10"), "scroll offset missing:\n{screen}");
 }
+
+#[test]
+fn composer_grows_with_multiline_input() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let single = App::new("mock", "mock-1");
+
+    let mut multi = App::new("mock", "mock-1");
+    for character in ['a', 'b', 'c'] {
+        multi.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        multi.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    }
+    multi.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+
+    let top_row = |screen: &str| {
+        screen
+            .lines()
+            .position(|line| line.contains("message "))
+            .expect("composer border")
+    };
+
+    let single_screen = draw(&single, 40, 12);
+    let multi_screen = draw(&multi, 40, 12);
+    assert!(
+        top_row(&multi_screen) < top_row(&single_screen),
+        "composer did not grow:\n{single_screen}\n---\n{multi_screen}"
+    );
+}

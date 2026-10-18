@@ -10,4 +10,5 @@ qcode-core = { version = "0.1.0", path = "../qcode-core" }
 # Pinned: tui-textarea 0.7 depends on ratatui ^0.29, so both must move together.
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
+tui-textarea = { version = "=0.7.0", default-features = false, features = ["crossterm"] }
 time.workspace = true

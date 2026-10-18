@@ -20,10 +20,16 @@ const MAX_WINDOW_BLOCKS: usize = 2_000;
 use qcode_core::event::{ToolStatus, TurnStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // The composer grows with the number of lines, up to a third of the
+    // screen, so multi-line prompts stay readable.
+    let lines = app.textarea.lines().len() as u16;
+    let max_composer = (frame.area().height / 3).max(3);
+    let composer_height = (lines + 2).clamp(3, max_composer);
+
     let areas = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(composer_height),
     ])
     .split(frame.area());
 
@@ -242,26 +248,8 @@ fn format_duration(duration: time::Duration) -> String {
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
-    let border = if app.status.running {
-        Color::DarkGray
-    } else {
-        Color::Cyan
-    };
-    let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Cyan)),
-        Span::raw(app.input.clone()),
-    ]))
-    .block(
-        UiBlock::bordered()
-            .title(" message ")
-            .border_style(Style::default().fg(border)),
-    );
-    frame.render_widget(paragraph, area);
-
-    let max_x = area.x + area.width.saturating_sub(2);
-    let max_y = area.y + area.height.saturating_sub(2);
-    let cursor_x = area.x + 3 + app.input.chars().count() as u16;
-    frame.set_cursor_position((cursor_x.min(max_x), max_y.min(area.y + 1)));
+    // tui-textarea draws its own block and cursor.
+    frame.render_widget(&app.textarea, area);
 }
 
 fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt) {

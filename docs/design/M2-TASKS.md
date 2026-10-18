@@ -45,10 +45,14 @@
 - 验收：60 行窗口滚动测试（PageUp 到顶、End 回底）、滚动偏移状态栏测试、
   滚动键单测；构建量受预算约束，不随 transcript 总量线性增长。
 
-### M2-4 多行输入
+### M2-4 多行输入 ✅
 
-- 用 `tui-textarea`（与 ratatui 版本配套）；Shift+Enter 换行、粘贴、光标移动。
-- CJK 宽度、IME、粘贴必须有测试；默认不捕获鼠标。
+- 引入 `tui-textarea = "=0.7.0"`（`default-features = false`, `features = ["crossterm"]`），
+  与 ratatui 0.29 配套；编辑器自己处理光标移动、Home/End、粘贴与 CJK 宽度。
+- Enter 提交，Shift+Enter 换行；输入框随行数增高（最多占屏幕 1/3）；
+  普通 End 留给编辑器，`Ctrl+End` 把 transcript 拉回底部。
+- 验收：CJK + Shift+Enter 的多行提交单测、输入框增高渲染测试。
+- 已知限制：IME 组合与系统粘贴仍需要真终端手工确认（本机沙箱无法分配 tty）。
 
 ### M2-5 上下文压缩
 

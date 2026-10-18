@@ -44,8 +44,8 @@ export DEEPSEEK_API_KEY=...
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
 取消：Ctrl-C 一次取消当前 turn，再按一次立即退出。
 
-TUI 键位：Enter 发送、Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
-PageUp / PageDown 滚动 transcript、End 回到底部；
+TUI 键位：Enter 发送、Shift+Enter 换行、Esc 取消当前 turn、Ctrl-C 两次退出、
+Ctrl-O 展开/折叠最近一次工具输出、PageUp / PageDown 滚动 transcript、Ctrl+End 回到底部；
 审批浮层里 `y` 允许、`n` 拒绝。助手文本按 ≤60Hz 合并流式显示，完成后落盘为一条
 `assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
 

@@ -7,7 +7,10 @@
 use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::Block as UiBlock;
 use time::{Duration, OffsetDateTime};
+use tui_textarea::TextArea;
 
 /// Rows moved by PageUp / PageDown. The UI clamps this to the transcript.
 const SCROLL_STEP: usize = 10;
@@ -68,7 +71,9 @@ pub struct App {
     /// Text streamed for the message currently being generated. Cleared when
     /// the authoritative `assistant_message` event arrives.
     pub streaming: String,
-    pub input: String,
+    /// Multi-line composer. tui-textarea owns editing keys, CJK width and
+    /// cursor movement; the app only decides when Enter submits.
+    pub textarea: TextArea<'static>,
     /// Rows scrolled up from the bottom of the transcript (0 = follow tail).
     pub scroll: usize,
     pub status: Status,
@@ -82,7 +87,7 @@ impl App {
         Self {
             blocks: Vec::new(),
             streaming: String::new(),
-            input: String::new(),
+            textarea: composer(),
             scroll: 0,
             status: Status {
                 provider: provider.into(),
@@ -215,49 +220,53 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Enter => {
-                // One turn at a time: submitting while the engine is busy
-                // would drop the running future and skip its cleanup.
-                if self.status.running || self.input.trim().is_empty() {
+            // Enter submits; Shift+Enter (and Ctrl+Enter) fall through to the
+            // textarea, which inserts a newline.
+            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if self.status.running {
                     return None;
                 }
-                // The engine echoes a `user_message` event right away; the
-                // transcript is projected from events, so do not add a second
-                // copy here.
-                let text = std::mem::take(&mut self.input);
+                let text = self.textarea.lines().join("\n");
+                if text.trim().is_empty() {
+                    return None;
+                }
+                self.clear_composer();
                 self.scroll = 0;
                 self.status.running = true;
-                Some(UiAction::Submit(text))
+                return Some(UiAction::Submit(text));
             }
-            KeyCode::Esc => self.status.running.then_some(UiAction::Cancel),
+            KeyCode::Esc => return self.status.running.then_some(UiAction::Cancel),
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_add(SCROLL_STEP);
-                None
+                return None;
             }
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
-                None
+                return None;
             }
-            KeyCode::End => {
+            // Plain End belongs to the textarea (end of line); Ctrl+End jumps
+            // the transcript back to the tail.
+            KeyCode::End if ctrl => {
                 self.scroll = 0;
-                None
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-                self.scroll = 0;
-                None
+                return None;
             }
             KeyCode::Char('o') if ctrl => {
                 self.toggle_last_tool();
-                None
+                return None;
             }
-            KeyCode::Char(character) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
-                self.input.push(character);
-                self.scroll = 0;
-                None
-            }
-            _ => None,
+            _ => {}
         }
+
+        // Any other key edits the composer; typing while scrolled up returns
+        // to the live tail.
+        self.scroll = 0;
+        self.textarea.input(key);
+        None
+    }
+
+    fn clear_composer(&mut self) {
+        self.textarea.select_all();
+        self.textarea.cut();
     }
 
     /// Append a transient stream delta. Reasoning is acknowledged but not
@@ -311,6 +320,18 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
     }
 }
 
+/// Composer styling lives here so the renderer only has to draw `&TextArea`.
+fn composer() -> TextArea<'static> {
+    let mut textarea = TextArea::default();
+    textarea.set_block(
+        UiBlock::bordered()
+            .title(" message ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    textarea.set_cursor_line_style(Style::default());
+    textarea
+}
+
 #[cfg(test)]
 mod tests {
     use qcode_core::event::{
@@ -337,7 +358,7 @@ mod tests {
         }
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Some(UiAction::Submit("fix tests".to_string())));
-        assert!(app.input.is_empty());
+        assert_eq!(app.textarea.lines(), [""]);
         assert!(app.blocks.is_empty());
         assert!(app.status.running);
     }
@@ -397,6 +418,21 @@ mod tests {
     }
 
     #[test]
+    fn composer_supports_cjk_and_shift_enter_newlines() {
+        let mut app = App::new("mock", "mock-1");
+        for character in "中文".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        app.handle_key(key(KeyCode::Char('!')));
+        assert_eq!(app.textarea.lines(), ["中文", "!"]);
+
+        let action = app.handle_key(key(KeyCode::Enter));
+        assert_eq!(action, Some(UiAction::Submit("中文\n!".to_string())));
+        assert_eq!(app.textarea.lines(), [""]);
+    }
+
+    #[test]
     fn page_keys_move_the_scroll_offset() {
         let mut app = App::new("mock", "mock-1");
         app.handle_key(key(KeyCode::PageUp));
@@ -408,7 +444,7 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(app.scroll, 0);
-        assert_eq!(app.input, "x");
+        assert_eq!(app.textarea.lines()[0], "x");
     }
 
     #[test]
@@ -498,7 +534,7 @@ mod tests {
     #[test]
     fn submitted_text_is_rendered_once_the_event_arrives() {
         let mut app = App::new("mock", "mock-1");
-        app.input = "hi".to_string();
+        app.textarea.insert_str("hi");
         app.handle_key(key(KeyCode::Enter));
         app.apply(&event(EventKind::UserMessage(UserMessage {
             text: "hi".to_string(),
