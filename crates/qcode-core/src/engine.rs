@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::approval::{Answer, ApprovalRequest, Approver};
+use crate::cost::Pricing;
 use crate::event::{
     ApprovalDecided, ApprovalRequested, AssistantMessage, ContentBlock, Decision, ErrorEvent,
     Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus,
@@ -38,6 +39,10 @@ pub enum EngineError {
     IncompleteStream,
     #[error("exceeded max turns ({0})")]
     MaxTurns(u32),
+    #[error("estimated cost ${spent:.6} exceeded --max-cost ${limit:.6}")]
+    MaxCost { spent: f64, limit: f64 },
+    #[error("--max-cost requires pricing for the model")]
+    MissingPricing,
 }
 
 pub struct TurnContext<'a> {
@@ -58,6 +63,11 @@ pub struct RunOptions<'a> {
     /// Cooperative cancellation. The CLI cancels it on Ctrl-C, a future TUI on
     /// Esc. Cancellation is not an error: the turn ends with `cancelled`.
     pub cancel: CancellationToken,
+    /// Per-model token rates. `None` means cost is unknown and stays at zero.
+    pub pricing: Option<Pricing>,
+    /// Stop before the next provider call once the estimate passes this USD
+    /// limit. Requires `pricing`; the CLI validates the pair before running.
+    pub max_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +77,8 @@ pub struct RunOutcome {
     pub text: String,
     pub stop_reason: StopReason,
     pub cancelled: bool,
+    /// Estimated USD for the whole turn, zero when no pricing is configured.
+    pub cost_usd: f64,
 }
 
 /// Appends events for one session while keeping `seq` and `turn` consistent.
@@ -138,6 +150,10 @@ pub async fn run_turn<F>(
 where
     F: FnMut(&Event),
 {
+    if options.max_cost_usd.is_some() && options.pricing.is_none() {
+        return Err(EngineError::MissingPricing);
+    }
+
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
     writer.begin_turn(options.input, &mut on_event)?;
 
@@ -148,12 +164,14 @@ where
 
     let mut turns = 0;
     let mut total_usage = Usage::default();
+    let mut total_cost = 0.0;
     loop {
         if options.cancel.is_cancelled() {
             return finish(
                 &mut writer,
                 TurnStatus::Cancelled,
                 total_usage,
+                total_cost,
                 String::new(),
                 StopReason::EndTurn,
                 options.session_id,
@@ -176,7 +194,7 @@ where
                 EventKind::TurnEnded(TurnEnded {
                     status: TurnStatus::Failed,
                     usage: total_usage.clone(),
-                    cost_usd: 0.0,
+                    cost_usd: total_cost,
                 }),
                 &mut on_event,
             )?;
@@ -193,6 +211,9 @@ where
 
         let collected = collect_stream(ctx.provider, request, &options.cancel).await?;
         total_usage.merge(&collected.usage);
+        if let Some(pricing) = &options.pricing {
+            total_cost += pricing.cost_usd(&collected.usage);
+        }
 
         // Partial output survives cancellation: the model may already have
         // said something useful before Ctrl-C.
@@ -217,12 +238,40 @@ where
                 &mut writer,
                 TurnStatus::Cancelled,
                 total_usage,
+                total_cost,
                 blocks_text(&collected.blocks),
                 StopReason::EndTurn,
                 options.session_id,
                 turns,
                 &mut on_event,
             );
+        }
+
+        if let Some(limit) = options.max_cost_usd
+            && total_cost > limit
+        {
+            writer.append(
+                EventKind::Error(ErrorEvent {
+                    kind: "max_cost".to_string(),
+                    message: format!(
+                        "estimated cost ${total_cost:.6} exceeded --max-cost ${limit:.6}"
+                    ),
+                    retryable: false,
+                }),
+                &mut on_event,
+            )?;
+            writer.append(
+                EventKind::TurnEnded(TurnEnded {
+                    status: TurnStatus::Failed,
+                    usage: total_usage.clone(),
+                    cost_usd: total_cost,
+                }),
+                &mut on_event,
+            )?;
+            return Err(EngineError::MaxCost {
+                spent: total_cost,
+                limit,
+            });
         }
 
         let calls: Vec<ToolCallBlock> = collected
@@ -248,6 +297,7 @@ where
                 &mut writer,
                 TurnStatus::Completed,
                 total_usage,
+                total_cost,
                 text,
                 collected.stop_reason,
                 options.session_id,
@@ -291,6 +341,7 @@ where
                 &mut writer,
                 TurnStatus::Cancelled,
                 total_usage,
+                total_cost,
                 String::new(),
                 StopReason::EndTurn,
                 options.session_id,
@@ -316,6 +367,7 @@ fn finish<F>(
     writer: &mut SessionWriter<'_>,
     status: TurnStatus,
     usage: Usage,
+    cost_usd: f64,
     text: String,
     stop_reason: StopReason,
     session_id: &str,
@@ -329,7 +381,7 @@ where
         EventKind::TurnEnded(TurnEnded {
             status,
             usage,
-            cost_usd: 0.0,
+            cost_usd,
         }),
         on_event,
     )?;
@@ -339,6 +391,7 @@ where
         text,
         stop_reason,
         cancelled: status == TurnStatus::Cancelled,
+        cost_usd,
     })
 }
 

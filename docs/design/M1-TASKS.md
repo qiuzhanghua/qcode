@@ -107,6 +107,18 @@
 - 覆盖 assistant 的三种 content block、usage、tool metadata 默认值、turn 三种状态。
 - 字段改名或丢弃会同时打破快照与往返，迫使改动显式升级 `EVENT_SCHEMA_VERSION`。
 
+### M1-11 成本上限 ✅
+
+- 价目表是配置数据：`[pricing."<model>"]` 的 input / output / cache_read / cache_write
+  （USD / 百万 token），未配置的计数器按 0 计。
+- 引擎按每次 provider 调用的 usage 累加估算，写入 `turn_ended.cost_usd`
+  （无价目表时为 0）；人类模式结尾打印 `cost: $… (estimated)`。
+- `--max-cost`：每次模型响应后、工具执行前检查；超限写 `error(max_cost)` +
+  `turn_ended(failed)` 并返回 `MaxCost`，退出码 1，工具不再执行。
+- 启动期校验：`--max-cost` 缺价目表、负数/NaN 预算或税率都报错，不会静默按 0 处理。
+- 验收：`Pricing` 单测 3 条 + 引擎预算 5 条（低于预算、超限、跨调用累加、缺价目表、
+  无价目表按 0）+ 配置解析/校验 4 条。
+
 ## 待完成（M1-10 起）
 
 ### M1-10 交互式审批回归
@@ -114,10 +126,6 @@
 - 在真实终端里手工跑一次 `run_shell` 的 ask → allow / deny。
 - 验收：审批文案能看懂、拒绝后模型能继续。
 
-### M1-11 成本上限
-
-- `--max-cost` 累计 usage 估价，超限终止。
-- 依赖 provider 价格表；先做 OpenAI-compatible 的估算。
 
 ## 已知限制
 

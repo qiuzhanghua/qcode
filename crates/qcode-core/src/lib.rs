@@ -5,6 +5,7 @@
 //! crates and are injected through the traits defined here.
 
 pub mod approval;
+pub mod cost;
 pub mod engine;
 pub mod event;
 pub mod history;
@@ -15,6 +16,7 @@ pub mod store;
 pub mod tool;
 
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
+pub use cost::Pricing;
 pub use engine::{
     EngineError, RunOptions, RunOutcome, SYSTEM_PROMPT, SessionWriter, TurnContext, run_turn,
 };

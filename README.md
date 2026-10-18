@@ -51,6 +51,8 @@ export DEEPSEEK_API_KEY=...
   `sessions show` 可完整 replay。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
+- **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
+  `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
 尚未实现：TUI、MCP、上下文压缩、子 agent、OS 沙箱。
@@ -65,6 +67,14 @@ default_provider = "deepseek"
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"   # 只存变量名，不存 key
 default_model = "deepseek-flash"
+
+# 成本估算与 --max-cost 的价目表（USD / 百万 token）。
+# 数值为示例，按服务商当前价目表填写；未配置的模型成本按 0 计。
+[pricing."deepseek-flash"]
+input_usd_per_mtok = 0.28
+output_usd_per_mtok = 0.42
+cache_read_usd_per_mtok = 0.014   # 可选，默认 0
+cache_write_usd_per_mtok = 0.28   # 可选，默认 0
 
 [[approval.rules]]
 id = "allow-cargo-test"
@@ -84,7 +94,8 @@ action = "deny"
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--max-turns`、`--data-dir`、`--config`。
+常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--data-dir`、`--config`。
+`--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档
 

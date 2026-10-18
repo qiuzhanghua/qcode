@@ -67,6 +67,10 @@ struct RunArgs {
     /// Workspace root for tools. Defaults to the current directory.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Stop once the estimated cost exceeds this many USD. Requires a
+    /// [pricing."<model>"] entry in the config file.
+    #[arg(long, value_name = "USD")]
+    max_cost: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -123,6 +127,7 @@ async fn cmd_run(
         max_turns,
         yes,
         cwd,
+        max_cost,
     } = args;
 
     let prompt = match prompt {
@@ -148,6 +153,8 @@ async fn cmd_run(
         },
         &|key| std::env::var(key).ok(),
     )?;
+
+    let pricing = config::pricing_for(&loaded, &resolved.model, max_cost)?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -239,6 +246,8 @@ async fn cmd_run(
             workspace: workspace.clone(),
             max_turns,
             cancel: cancel.clone(),
+            pricing,
+            max_cost_usd: max_cost,
         },
         |event| {
             if json {
@@ -266,6 +275,10 @@ async fn cmd_run(
         println!("session: {}", outcome.session_id);
         println!();
         println!("{}", outcome.text);
+        if outcome.cost_usd > 0.0 {
+            println!();
+            println!("cost: ${:.6} (estimated)", outcome.cost_usd);
+        }
     }
 
     Ok(ExitCode::SUCCESS)

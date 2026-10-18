@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use qcode_core::cost::Pricing;
 use qcode_core::policy::Rule;
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
@@ -22,6 +23,10 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub approval: ApprovalConfig,
+    /// Token prices keyed by model name. Optional: without an entry, cost is
+    /// unknown (reported as zero) and `--max-cost` refuses to run.
+    #[serde(default)]
+    pub pricing: BTreeMap<String, Pricing>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -86,6 +91,15 @@ pub enum ConfigError {
     InvalidBaseUrl { provider: String, url: String },
     #[error("cannot determine home directory; pass --config explicitly")]
     NoHome,
+    #[error(
+        "--max-cost requires pricing for model '{model}'; add a [pricing.\"{model}\"] \
+         section with input_usd_per_mtok and output_usd_per_mtok"
+    )]
+    PricingRequired { model: String },
+    #[error("pricing for model '{model}' must be finite and non-negative")]
+    InvalidPricing { model: String },
+    #[error("--max-cost must be a finite, non-negative USD amount")]
+    InvalidMaxCost,
 }
 
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
@@ -146,6 +160,37 @@ fn builtin(name: &str) -> Option<Builtin> {
             default_model: None,
         }),
         _ => None,
+    }
+}
+
+/// Resolve the price table for a model and validate the budget pair.
+///
+/// `--max-cost` without a price entry is a hard error: silently treating the
+/// cost as zero would make the flag a no-op.
+pub fn pricing_for(
+    config: &Config,
+    model: &str,
+    max_cost: Option<f64>,
+) -> Result<Option<Pricing>, ConfigError> {
+    if let Some(limit) = max_cost
+        && !(limit.is_finite() && limit >= 0.0)
+    {
+        return Err(ConfigError::InvalidMaxCost);
+    }
+
+    match config.pricing.get(model) {
+        Some(pricing) => {
+            if !pricing.validate() {
+                return Err(ConfigError::InvalidPricing {
+                    model: model.to_string(),
+                });
+            }
+            Ok(Some(*pricing))
+        }
+        None if max_cost.is_some() => Err(ConfigError::PricingRequired {
+            model: model.to_string(),
+        }),
+        None => Ok(None),
     }
 }
 
@@ -378,6 +423,67 @@ mod tests {
         let config: Config = toml::from_str(r#"default_provider = "mystery""#).unwrap();
         let error = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap_err();
         assert!(matches!(error, ConfigError::UnknownProvider(_)));
+    }
+
+    #[test]
+    fn pricing_table_parses_and_resolves() {
+        let config: Config = toml::from_str(
+            r#"
+            [pricing."deepseek-flash"]
+            input_usd_per_mtok = 0.28
+            output_usd_per_mtok = 0.42
+            cache_read_usd_per_mtok = 0.028
+            "#,
+        )
+        .unwrap();
+        let pricing = pricing_for(&config, "deepseek-flash", Some(1.0))
+            .unwrap()
+            .expect("pricing entry");
+        assert_eq!(pricing.input_usd_per_mtok, 0.28);
+        assert_eq!(pricing.output_usd_per_mtok, 0.42);
+        assert_eq!(pricing.cache_read_usd_per_mtok, 0.028);
+        assert_eq!(pricing.cache_write_usd_per_mtok, 0.0);
+    }
+
+    #[test]
+    fn max_cost_without_pricing_is_an_error() {
+        let error = pricing_for(&Config::default(), "mystery", Some(0.5)).unwrap_err();
+        assert!(matches!(error, ConfigError::PricingRequired { .. }));
+        assert!(error.to_string().contains("[pricing.\"mystery\"]"));
+    }
+
+    #[test]
+    fn no_budget_needs_no_pricing() {
+        assert!(
+            pricing_for(&Config::default(), "mystery", None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_budget_or_rates_are_rejected() {
+        assert!(matches!(
+            pricing_for(&Config::default(), "m", Some(-1.0)),
+            Err(ConfigError::InvalidMaxCost)
+        ));
+        assert!(matches!(
+            pricing_for(&Config::default(), "m", Some(f64::NAN)),
+            Err(ConfigError::InvalidMaxCost)
+        ));
+
+        let config: Config = toml::from_str(
+            r#"
+            [pricing.m]
+            input_usd_per_mtok = -0.1
+            output_usd_per_mtok = 1.0
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            pricing_for(&config, "m", Some(1.0)),
+            Err(ConfigError::InvalidPricing { .. })
+        ));
     }
 
     #[test]

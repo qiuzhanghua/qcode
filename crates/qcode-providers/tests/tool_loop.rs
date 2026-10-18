@@ -124,6 +124,8 @@ async fn executes_tool_and_continues() {
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     )
@@ -178,6 +180,8 @@ async fn denial_is_reported_to_the_model() {
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     )
@@ -223,6 +227,8 @@ async fn asking_without_a_tty_denies() {
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     )
@@ -271,6 +277,8 @@ async fn max_turns_stops_the_loop() {
             workspace: dir.path().to_path_buf(),
             max_turns: 2,
             cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     )
@@ -364,6 +372,8 @@ async fn cancellation_stops_a_running_tool() {
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: cancel.clone(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     );
@@ -417,6 +427,8 @@ async fn cancellation_stops_a_hanging_stream() {
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: cancel.clone(),
+            pricing: None,
+            max_cost_usd: None,
         },
         |_| {},
     );

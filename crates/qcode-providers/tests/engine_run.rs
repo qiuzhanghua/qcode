@@ -27,6 +27,8 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         workspace: workspace.to_path_buf(),
         max_turns: 4,
         cancel: CancellationToken::new(),
+        pricing: None,
+        max_cost_usd: None,
     }
 }
 
