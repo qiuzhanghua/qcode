@@ -330,6 +330,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_model_overrides_deepseek_default() {
+        let config = Config::default();
+        let overrides = Overrides {
+            provider: Some("deepseek".to_string()),
+            model: Some("custom-model".to_string()),
+            ..Overrides::default()
+        };
+        let resolved = resolve(
+            &config,
+            &overrides,
+            &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
+        )
+        .unwrap();
+        assert_eq!(resolved.model, "custom-model");
+    }
+
+    #[test]
     fn missing_key_is_actionable() {
         let config: Config = toml::from_str(r#"default_provider = "deepseek""#).unwrap();
         let error = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap_err();

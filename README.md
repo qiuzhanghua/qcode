@@ -25,8 +25,8 @@ cargo test --workspace
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
-./target/debug/coder run "看一下 src/lib.rs 并总结" \
-  --provider deepseek --model deepseek-flash --yes
+# 不写 --model 时，DeepSeek 默认使用 deepseek-flash
+./target/debug/coder run "看一下 src/lib.rs 并总结" --provider deepseek --yes
 ```
 
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
@@ -73,6 +73,7 @@ action = "deny"
 
 优先级：CLI flags > 环境变量（`CODER_PROVIDER` / `CODER_MODEL` / `CODER_BASE_URL`）>
 配置文件 > 内置默认。keyless 服务把 `api_key_env` 设为 `""`。
+`default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
 常用 flag：`--yes`、`--cwd`、`--max-turns`、`--data-dir`、`--config`。
