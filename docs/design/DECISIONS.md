@@ -177,6 +177,7 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - rmcp 3.x：stdio + streamable HTTP；v1 不支持 2024-11-05 legacy SSE；
   `call_tool` 外层自包 timeout（库没有 per-request deadline）。
 - provider v1：OpenAI-compatible（DeepSeek / Ollama / vLLM）+ Anthropic 原生。
+- DeepSeek 默认模型：`deepseek-flash`（2026-10-18 用户选择；可用 `--model` 覆盖）。
 - 已知成本：rig 强制 `serde_json` 的 `preserve_order` + `float_roundtrip`。
 - 回退条件：自写 loop 超过 2 周未跑通“多轮工具 + 审批 + 取消”，改用 `AgentRun`。
 

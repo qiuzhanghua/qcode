@@ -125,6 +125,7 @@ pub struct Resolved {
 struct Builtin {
     base_url: &'static str,
     api_key_env: &'static str,
+    default_model: Option<&'static str>,
 }
 
 fn builtin(name: &str) -> Option<Builtin> {
@@ -132,14 +133,17 @@ fn builtin(name: &str) -> Option<Builtin> {
         "openai" => Some(Builtin {
             base_url: "https://api.openai.com/v1",
             api_key_env: "OPENAI_API_KEY",
+            default_model: None,
         }),
         "deepseek" => Some(Builtin {
             base_url: "https://api.deepseek.com/v1",
             api_key_env: "DEEPSEEK_API_KEY",
+            default_model: Some("deepseek-flash"),
         }),
         "ollama" => Some(Builtin {
             base_url: "http://localhost:11434/v1",
             api_key_env: "",
+            default_model: None,
         }),
         _ => None,
     }
@@ -220,6 +224,11 @@ pub fn resolve(
         .clone()
         .or_else(|| env("CODER_MODEL"))
         .or_else(|| entry.default_model.clone())
+        .or_else(|| {
+            builtin
+                .as_ref()
+                .and_then(|builtin| builtin.default_model.map(str::to_string))
+        })
         .ok_or_else(|| ConfigError::MissingModel {
             provider: name.clone(),
         })?;
@@ -306,6 +315,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.model, "env-model");
+    }
+
+    #[test]
+    fn deepseek_defaults_to_flash() {
+        let config: Config = toml::from_str(r#"default_provider = "deepseek""#).unwrap();
+        let resolved = resolve(
+            &config,
+            &Overrides::default(),
+            &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
+        )
+        .unwrap();
+        assert_eq!(resolved.model, "deepseek-flash");
     }
 
     #[test]

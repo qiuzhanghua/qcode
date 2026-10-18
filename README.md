@@ -26,7 +26,7 @@ cargo test --workspace
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
 ./target/debug/coder run "看一下 src/lib.rs 并总结" \
-  --provider deepseek --model deepseek-chat --yes
+  --provider deepseek --model deepseek-flash --yes
 ```
 
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
@@ -56,7 +56,7 @@ default_provider = "deepseek"
 [providers.deepseek]
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"   # 只存变量名，不存 key
-default_model = "deepseek-chat"
+default_model = "deepseek-flash"
 
 [[approval.rules]]
 id = "allow-cargo-test"
