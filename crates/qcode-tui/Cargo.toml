@@ -6,4 +6,4 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { path = "../qcode-core" }
+qcode-core = { version = "0.1.0", path = "../qcode-core" }

@@ -122,6 +122,15 @@
 - 验收：`Pricing` 单测 3 条 + 引擎预算 5 条（低于预算、超限、跨调用累加、缺价目表、
   无价目表按 0）+ 配置解析/校验 4 条。
 
+### M1-14 依赖审计 ✅
+
+- `deny.toml`：只允许宽松许可证（MIT / Apache-2.0 / BSD / ISC / Unicode / Zlib /
+  CDLA-Permissive），拒绝 yanked、通配符依赖、未知 registry 与 git 源。
+- advisory 用 RustSec 数据库；CI 增加 `cargo-deny-action` job。
+- 本地命令：`cargo deny check`（首次会 clone advisory 数据库，需要 github.com 可访问）；
+  受限网络下可只跑 `cargo deny check licenses bans sources`。
+- 同时给 workspace 内部 path 依赖补上 `version`，避免 `wildcards` 把本地依赖误判为 `*`。
+
 ## 待完成（M1-10 起）
 
 ### M1-10 交互式审批回归

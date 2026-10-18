@@ -121,4 +121,5 @@ crates/qcode-tui         ratatui 前端（M2）
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。版权归 qiuzhanghua。第三方依赖许可证用 cargo-deny 审计（M1 待办）。
+MIT，见 [LICENSE](LICENSE)。版权归 qiuzhanghua。第三方依赖的许可证与已知漏洞用
+`cargo deny check` 审计（配置见 [deny.toml](deny.toml)，CI 同步运行）。

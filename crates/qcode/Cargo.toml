@@ -10,9 +10,9 @@ name = "qc"
 path = "src/main.rs"
 
 [dependencies]
-qcode-core = { path = "../qcode-core" }
-qcode-providers = { path = "../qcode-providers" }
-qcode-tools = { path = "../qcode-tools" }
+qcode-core = { version = "0.1.0", path = "../qcode-core" }
+qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
+qcode-tools = { version = "0.1.0", path = "../qcode-tools" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
