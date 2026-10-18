@@ -72,9 +72,15 @@
 - 验收：阈值/估算/切分单测 5 条 + 历史投影单测 1 条 + 引擎端到端 2 条
   （触发压缩并验证 replay、宽窗口不压缩）。
 
-### M2-6 AGENTS.md
+### M2-6 AGENTS.md ✅
 
-- workspace 根 `AGENTS.md` 注入 system prompt；加大小上限与路径校验；记录命中来源。
+- 启动时从 workspace 根加载 `AGENTS.md`：缺失或空白不注入；超过 32KiB、不是普通文件、
+  或是 symlink 都直接报错（避免把 workspace 外的内容喂给模型）。
+- 内容追加到 system prompt 末尾（`# AGENTS.md` 段），用户的项目规则优先于通用提示。
+- `qc run` 与 TUI 共用同一加载器，headless 模式同样生效。
+- 已知范围：只做 workspace 根一层；user-level / 多级目录继承留待后续（当前工具 workspace
+  就是 cwd，根即最近一层）。
+- 验收：加载器 5 条（缺失、裁剪、空白、超限、symlink）+ system prompt 组合单测。
 
 ### M2-7 MCP client（tools only）
 

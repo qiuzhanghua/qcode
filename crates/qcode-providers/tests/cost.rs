@@ -77,6 +77,7 @@ fn options<'a>(
         max_cost_usd,
         on_delta: None,
         context_window: None,
+        agents_md: None,
     }
 }
 

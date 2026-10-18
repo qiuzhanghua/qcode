@@ -129,6 +129,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             max_cost_usd: None,
             on_delta: None,
             context_window: Some(1_000),
+            agents_md: None,
         },
         |_| {},
     )
@@ -202,6 +203,7 @@ async fn a_roomy_window_skips_compaction() {
             max_cost_usd: None,
             on_delta: None,
             context_window: Some(10_000_000),
+            agents_md: None,
         },
         |_| {},
     )

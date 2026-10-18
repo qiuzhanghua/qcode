@@ -68,6 +68,8 @@ Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底
   `sessions show` 可完整 replay。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
+- **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
+  symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
 - **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；

@@ -52,6 +52,7 @@ pub struct TuiOptions<'a> {
     pub max_cost_usd: Option<f64>,
     pub max_turns: u32,
     pub context_window: Option<u64>,
+    pub agents_md: Option<String>,
 }
 
 enum TuiMsg {
@@ -171,6 +172,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                             let _ = delta_sender.send(TuiMsg::Delta(delta));
                                         })),
                                         context_window: options.context_window,
+                                        agents_md: options.agents_md.clone(),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));

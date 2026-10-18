@@ -128,6 +128,7 @@ async fn executes_tool_and_continues() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     )
@@ -186,6 +187,7 @@ async fn denial_is_reported_to_the_model() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     )
@@ -235,6 +237,7 @@ async fn asking_without_a_tty_denies() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     )
@@ -287,6 +290,7 @@ async fn max_turns_stops_the_loop() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     )
@@ -384,6 +388,7 @@ async fn cancellation_stops_a_running_tool() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     );
@@ -441,6 +446,7 @@ async fn cancellation_stops_a_hanging_stream() {
             max_cost_usd: None,
             on_delta: None,
             context_window: None,
+            agents_md: None,
         },
         |_| {},
     );

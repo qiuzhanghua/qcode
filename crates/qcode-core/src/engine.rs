@@ -61,6 +61,17 @@ impl std::fmt::Debug for DeltaSink {
 pub const SYSTEM_PROMPT: &str = "You are qcode, a terminal coding agent. Be concise. Use the available tools when they are \
      needed, and verify your work before finishing.";
 
+/// Compose the static prompt with workspace instructions. AGENTS.md goes last
+/// so the user's project rules win over the generic text.
+pub fn system_prompt(agents_md: Option<&str>) -> String {
+    match agents_md {
+        Some(text) if !text.trim().is_empty() => {
+            format!("{SYSTEM_PROMPT}\n\n# AGENTS.md\n\n{}", text.trim())
+        }
+        _ => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error(transparent)]
@@ -106,6 +117,8 @@ pub struct RunOptions<'a> {
     /// context reaches 78% of it, older turns are summarized into a
     /// `compaction` event.
     pub context_window: Option<u64>,
+    /// Contents of the workspace `AGENTS.md`, injected into the system prompt.
+    pub agents_md: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -341,7 +354,7 @@ where
 
         let request = CompletionRequest {
             model: options.model.to_string(),
-            system: SYSTEM_PROMPT.to_string(),
+            system: system_prompt(options.agents_md.as_deref()),
             messages: messages.clone(),
             tools: ctx.tools.specs(),
             max_output_tokens: None,
@@ -819,5 +832,21 @@ fn summarize_call(name: &str, args: &Value) -> String {
         format!("{}…", raw.chars().take(160).collect::<String>())
     } else {
         raw
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_md_is_appended_to_the_system_prompt() {
+        assert_eq!(system_prompt(None), SYSTEM_PROMPT);
+        assert_eq!(system_prompt(Some("   ")), SYSTEM_PROMPT);
+
+        let with_rules = system_prompt(Some("  use tabs  "));
+        assert!(with_rules.starts_with(SYSTEM_PROMPT));
+        assert!(with_rules.contains("# AGENTS.md"));
+        assert!(with_rules.ends_with("use tabs"));
     }
 }

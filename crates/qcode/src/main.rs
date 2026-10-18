@@ -1,3 +1,4 @@
+mod agents;
 mod config;
 mod doctor;
 mod logging;
@@ -181,6 +182,10 @@ async fn cmd_run(
         None => std::env::current_dir()?,
     };
     let workspace = workspace.canonicalize()?;
+    let agents_md = agents::load(&workspace)?;
+    if agents_md.is_some() {
+        tracing::info!("loaded AGENTS.md from the workspace root");
+    }
     let cwd = workspace.display().to_string();
 
     let (session_id, first_event) = store.create(&SessionStarted {
@@ -240,6 +245,7 @@ async fn cmd_run(
             max_cost_usd: max_cost,
             on_delta: None,
             context_window: Some(loaded.context.window_tokens),
+            agents_md,
         },
         |event| {
             if json {
@@ -306,6 +312,7 @@ async fn cmd_tui(
 
     let store = SessionStore::new(resolve_data_dir(data_dir));
     let workspace = std::env::current_dir()?.canonicalize()?;
+    let agents_md = agents::load(&workspace)?;
     let provider = build_provider(&resolved)?;
     let tools = builtin_registry();
     let policy = Policy::new(loaded.approval.rules.clone());
@@ -322,6 +329,7 @@ async fn cmd_tui(
         max_cost_usd: None,
         max_turns: 8,
         context_window: Some(loaded.context.window_tokens),
+        agents_md,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
