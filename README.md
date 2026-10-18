@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI 基础）**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI 已接线）**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -10,6 +10,12 @@
 ```bash
 # 工具链入口（cot）
 c
+
+# TUI（无子命令；真实 provider 由 config/env 选择）
+./target/debug/qc
+
+# TUI 上的工具循环演练
+QCODE_PROVIDER=mock-tools ./target/debug/qc
 
 # 依赖缓存放 workspace 内（文件沙箱限制，非全局安装）
 export CARGO_HOME="$PWD/.cargo-home"
@@ -38,6 +44,9 @@ export DEEPSEEK_API_KEY=...
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
 取消：Ctrl-C 一次取消当前 turn，再按一次立即退出。
 
+TUI 键位：Enter 发送、Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出；
+审批浮层里 `y` 允许、`n` 拒绝。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
+
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` /
@@ -60,7 +69,7 @@ export DEEPSEEK_API_KEY=...
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：TUI、MCP、上下文压缩、子 agent、OS 沙箱。
+尚未实现：MCP、上下文压缩、AGENTS.md、子 agent、OS 沙箱；TUI 处于 M2 接线阶段。
 
 ## 配置
 
@@ -120,7 +129,7 @@ crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
 crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell
 crates/qcode-mcp         MCP client（M2）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
-crates/qcode-tui         ratatui 前端（M2：状态投影与渲染）
+crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
 ```
 
 ## License

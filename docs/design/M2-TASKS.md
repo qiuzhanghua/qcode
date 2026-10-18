@@ -24,11 +24,14 @@
 - 验收：事件投影/键位单测 8 条 + `TestBackend` 渲染 4 条（状态栏、transcript、
   工具折叠、审批浮层）。
 
-### M2-2 引擎接线
+### M2-2 引擎接线（实现完成，待真终端验收）
 
-- 后台 `run_turn` + 事件通道；审批走正向请求/反向应答 channel；Esc 取消 token。
-- `qc` 无子命令时启动 TUI；`qc run` 保持 headless；非 TTY 仍走 `AutoDeny`。
-- 流式 delta 由引擎新增的「瞬时回调」送入 UI（不入事件日志），60Hz 合并重绘。
+- `qc`（无子命令）启动 TUI；非 TTY 直接报错并提示 `qc run`。
+- `run_turn` 作为 future 与键盘输入同一个 `select!` 轮询：事件经 unbounded channel 进 UI，
+  审批经 oneshot 反向应答，Esc 取消当前 turn，Ctrl-C 两次退出（退出前最多等 3s 让进程组清理）。
+- 每个 turn 使用新的 `CancellationToken`；多轮共享同一 session 与事件日志。
+- 流式 delta 合并顺延到 M2-5（当前粒度为完整消息事件）。
+- 验收：TuiApprover 单测 3 条 + 非 TTY 拒绝集成测试 1 条；真终端手工会话待验收。
 
 ### M2-3 transcript 虚拟化与工具折叠
 

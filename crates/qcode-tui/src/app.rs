@@ -193,7 +193,9 @@ impl App {
 
         match key.code {
             KeyCode::Enter => {
-                if self.input.trim().is_empty() {
+                // One turn at a time: submitting while the engine is busy
+                // would drop the running future and skip its cleanup.
+                if self.status.running || self.input.trim().is_empty() {
                     return None;
                 }
                 // The engine echoes a `user_message` event right away; the

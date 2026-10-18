@@ -1,6 +1,7 @@
 mod config;
 mod doctor;
 mod logging;
+mod tui;
 
 use std::io::IsTerminal;
 use std::io::Read;
@@ -30,8 +31,9 @@ struct Cli {
     /// Config file. Defaults to ~/.config/qcode/config.toml.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Without a subcommand, qc starts the TUI.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,9 +107,10 @@ async fn main() -> ExitCode {
     } = Cli::parse();
 
     let result = match command {
-        Command::Run(args) => cmd_run(args, data_dir, config).await,
-        Command::Sessions(args) => cmd_sessions(args, data_dir),
-        Command::Doctor => cmd_doctor(data_dir, config).await,
+        Some(Command::Run(args)) => cmd_run(args, data_dir, config).await,
+        Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
+        Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
+        None => cmd_tui(data_dir, config).await,
     };
 
     match result {
@@ -191,7 +194,184 @@ async fn cmd_run(
         println!("{}", serde_json::to_string(&first_event)?);
     }
 
-    let provider: Box<dyn Provider> = match resolved.name.as_str() {
+    let provider = build_provider(&resolved)?;
+
+    let tools = builtin_registry();
+    let policy = Policy::new(loaded.approval.rules.clone());
+    let approver: Box<dyn Approver> = if yes {
+        Box::new(AutoApprove)
+    } else if std::io::stdin().is_terminal() {
+        Box::new(InteractiveApprover)
+    } else {
+        Box::new(AutoDeny)
+    };
+
+    if timeout == Some(0) {
+        return Err("--timeout must be at least 1 second".into());
+    }
+
+    let cancel = CancellationToken::new();
+    install_ctrl_c(cancel.clone());
+    let timed_out = Arc::new(AtomicBool::new(false));
+    if let Some(seconds) = timeout {
+        install_timeout(
+            cancel.clone(),
+            Duration::from_secs(seconds),
+            timed_out.clone(),
+        );
+    }
+
+    let outcome = run_turn(
+        TurnContext {
+            store: &store,
+            provider: provider.as_ref(),
+            tools: &tools,
+            policy: &policy,
+            approver: approver.as_ref(),
+        },
+        RunOptions {
+            session_id: &session_id,
+            model: &resolved.model,
+            input: prompt,
+            workspace: workspace.clone(),
+            max_turns,
+            cancel: cancel.clone(),
+            pricing,
+            max_cost_usd: max_cost,
+        },
+        |event| {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(event).expect("event should serialize")
+                );
+            } else {
+                progress(event);
+            }
+        },
+    )
+    .await
+    .map_err(|err| redactor.redact(&err.to_string()))?;
+
+    if outcome.cancelled {
+        if !json && !outcome.text.is_empty() {
+            println!("{}", outcome.text);
+        }
+        if timed_out.load(Ordering::SeqCst) {
+            eprintln!(
+                "[timeout] turn exceeded {}s; cancelled",
+                timeout.unwrap_or_default()
+            );
+            return Ok(ExitCode::from(124));
+        }
+        eprintln!("[cancelled] turn interrupted; the event log is intact");
+        return Ok(ExitCode::from(130));
+    }
+
+    if !json {
+        println!("session: {}", outcome.session_id);
+        println!();
+        println!("{}", outcome.text);
+        if outcome.cost_usd > 0.0 {
+            println!();
+            println!("cost: ${:.6} (estimated)", outcome.cost_usd);
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_tui(
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err("TUI needs a terminal; use `qc run \"...\"` for headless mode".into());
+    }
+
+    let loaded = load_config(config_path)?;
+    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
+        std::env::var(key).ok()
+    })?;
+    let pricing = config::pricing_for(&loaded, &resolved.model, None)?;
+
+    let redactor = logging::Redactor::new(resolved.api_key.clone());
+    tracing::info!(
+        provider = %resolved.name,
+        model = %resolved.model,
+        "starting TUI"
+    );
+
+    let store = SessionStore::new(resolve_data_dir(data_dir));
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let provider = build_provider(&resolved)?;
+    let tools = builtin_registry();
+    let policy = Policy::new(loaded.approval.rules.clone());
+
+    tui::run(tui::TuiOptions {
+        store: &store,
+        provider: provider.as_ref(),
+        tools: &tools,
+        policy: &policy,
+        workspace,
+        provider_name: &resolved.name,
+        model: &resolved.model,
+        pricing,
+        max_cost_usd: None,
+        max_turns: 8,
+    })
+    .await
+    .map_err(|err| redactor.redact(&err.to_string()))?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_sessions(
+    args: SessionsArgs,
+    data_dir: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let store = SessionStore::new(resolve_data_dir(data_dir));
+
+    match args.command {
+        SessionsCommand::List => {
+            let sessions = store.list()?;
+            if sessions.is_empty() {
+                println!("no sessions");
+                return Ok(ExitCode::SUCCESS);
+            }
+            for session in sessions {
+                println!(
+                    "{}  turns={}  model={}  cwd={}",
+                    session.id, session.turns, session.started.model, session.started.cwd
+                );
+            }
+        }
+        SessionsCommand::Show { id } => {
+            for event in store.load(&id)? {
+                println!("{}", serde_json::to_string_pretty(&event)?);
+            }
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_doctor(
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let healthy = doctor::run(data_dir, config_path)?;
+    Ok(if healthy {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn build_provider(
+    resolved: &config::Resolved,
+) -> Result<Box<dyn Provider>, Box<dyn std::error::Error>> {
+    Ok(match resolved.name.as_str() {
         "mock" => Box::new(MockProvider::text(
             "Hello from the mock provider. The event log and replay path are working.",
         )),
@@ -247,132 +427,6 @@ async fn cmd_run(
             api_key: resolved.api_key.clone(),
             stream_usage: resolved.stream_usage,
         })?),
-    };
-
-    let tools = builtin_registry();
-    let policy = Policy::new(loaded.approval.rules.clone());
-    let approver: Box<dyn Approver> = if yes {
-        Box::new(AutoApprove)
-    } else if std::io::stdin().is_terminal() {
-        Box::new(InteractiveApprover)
-    } else {
-        Box::new(AutoDeny)
-    };
-
-    if timeout == Some(0) {
-        return Err("--timeout must be at least 1 second".into());
-    }
-
-    let cancel = CancellationToken::new();
-    install_ctrl_c(cancel.clone());
-    let timed_out = Arc::new(AtomicBool::new(false));
-    if let Some(seconds) = timeout {
-        install_timeout(
-            cancel.clone(),
-            Duration::from_secs(seconds),
-            timed_out.clone(),
-        );
-    }
-
-    let outcome = run_turn(
-        TurnContext {
-            store: &store,
-            provider: provider.as_ref(),
-            tools: &tools,
-            policy: &policy,
-            approver: approver.as_ref(),
-        },
-        RunOptions {
-            session_id: &session_id,
-            model: &resolved.model,
-            input: &prompt,
-            workspace: workspace.clone(),
-            max_turns,
-            cancel: cancel.clone(),
-            pricing,
-            max_cost_usd: max_cost,
-        },
-        |event| {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(event).expect("event should serialize")
-                );
-            } else {
-                progress(event);
-            }
-        },
-    )
-    .await
-    .map_err(|err| redactor.redact(&err.to_string()))?;
-
-    if outcome.cancelled {
-        if !json && !outcome.text.is_empty() {
-            println!("{}", outcome.text);
-        }
-        if timed_out.load(Ordering::SeqCst) {
-            eprintln!(
-                "[timeout] turn exceeded {}s; cancelled",
-                timeout.unwrap_or_default()
-            );
-            return Ok(ExitCode::from(124));
-        }
-        eprintln!("[cancelled] turn interrupted; the event log is intact");
-        return Ok(ExitCode::from(130));
-    }
-
-    if !json {
-        println!("session: {}", outcome.session_id);
-        println!();
-        println!("{}", outcome.text);
-        if outcome.cost_usd > 0.0 {
-            println!();
-            println!("cost: ${:.6} (estimated)", outcome.cost_usd);
-        }
-    }
-
-    Ok(ExitCode::SUCCESS)
-}
-
-fn cmd_sessions(
-    args: SessionsArgs,
-    data_dir: Option<PathBuf>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let store = SessionStore::new(resolve_data_dir(data_dir));
-
-    match args.command {
-        SessionsCommand::List => {
-            let sessions = store.list()?;
-            if sessions.is_empty() {
-                println!("no sessions");
-                return Ok(ExitCode::SUCCESS);
-            }
-            for session in sessions {
-                println!(
-                    "{}  turns={}  model={}  cwd={}",
-                    session.id, session.turns, session.started.model, session.started.cwd
-                );
-            }
-        }
-        SessionsCommand::Show { id } => {
-            for event in store.load(&id)? {
-                println!("{}", serde_json::to_string_pretty(&event)?);
-            }
-        }
-    }
-
-    Ok(ExitCode::SUCCESS)
-}
-
-async fn cmd_doctor(
-    data_dir: Option<PathBuf>,
-    config_path: Option<PathBuf>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let healthy = doctor::run(data_dir, config_path)?;
-    Ok(if healthy {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
     })
 }
 

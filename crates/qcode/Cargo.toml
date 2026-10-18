@@ -13,6 +13,9 @@ path = "src/main.rs"
 qcode-core = { version = "0.1.0", path = "../qcode-core" }
 qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 qcode-tools = { version = "0.1.0", path = "../qcode-tools" }
+qcode-tui = { version = "0.1.0", path = "../qcode-tui" }
+async-trait.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

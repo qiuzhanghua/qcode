@@ -1151,10 +1151,13 @@ dependencies = [
 name = "qcode"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "qcode-core",
  "qcode-providers",
  "qcode-tools",
+ "qcode-tui",
+ "ratatui",
  "serde",
  "serde_json",
  "tempfile",

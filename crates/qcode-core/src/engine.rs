@@ -57,7 +57,7 @@ pub struct TurnContext<'a> {
 pub struct RunOptions<'a> {
     pub session_id: &'a str,
     pub model: &'a str,
-    pub input: &'a str,
+    pub input: String,
     pub workspace: PathBuf,
     pub max_turns: u32,
     /// Cooperative cancellation. The CLI cancels it on Ctrl-C, a future TUI on
@@ -155,7 +155,7 @@ where
     }
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
-    writer.begin_turn(options.input, &mut on_event)?;
+    writer.begin_turn(&options.input, &mut on_event)?;
 
     let events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events(&events);

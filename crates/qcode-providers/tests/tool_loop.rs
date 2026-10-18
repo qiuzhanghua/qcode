@@ -120,7 +120,7 @@ async fn executes_tool_and_continues() {
         RunOptions {
             session_id: &id,
             model: "mock-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
@@ -176,7 +176,7 @@ async fn denial_is_reported_to_the_model() {
         RunOptions {
             session_id: &id,
             model: "mock-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
@@ -223,7 +223,7 @@ async fn asking_without_a_tty_denies() {
         RunOptions {
             session_id: &id,
             model: "mock-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
@@ -273,7 +273,7 @@ async fn max_turns_stops_the_loop() {
         RunOptions {
             session_id: &id,
             model: "mock-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 2,
             cancel: CancellationToken::new(),
@@ -368,7 +368,7 @@ async fn cancellation_stops_a_running_tool() {
         RunOptions {
             session_id: &id,
             model: "mock-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: cancel.clone(),
@@ -423,7 +423,7 @@ async fn cancellation_stops_a_hanging_stream() {
         RunOptions {
             session_id: &id,
             model: "hanging-1",
-            input: "go",
+            input: "go".to_string(),
             workspace: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: cancel.clone(),

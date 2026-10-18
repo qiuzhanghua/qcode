@@ -69,7 +69,7 @@ fn options<'a>(
     RunOptions {
         session_id,
         model: "cost-model",
-        input: "hi",
+        input: "hi".to_string(),
         workspace: workspace.to_path_buf(),
         max_turns: 4,
         cancel: CancellationToken::new(),

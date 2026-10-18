@@ -23,7 +23,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
     RunOptions {
         session_id,
         model: "mock-1",
-        input: "hi",
+        input: "hi".to_string(),
         workspace: workspace.to_path_buf(),
         max_turns: 4,
         cancel: CancellationToken::new(),

@@ -1,0 +1,345 @@
+//! Terminal frontend: crossterm setup, the event loop, and the channel-based
+//! approver that bridges `run_turn` and the UI.
+//!
+//! The state machine and renderer live in `qcode-tui`; this module owns the
+//! parts that need a real terminal. The engine runs as a future polled by the
+//! same select as keyboard input, so no `'static` task or shared ownership is
+//! needed: events reach the UI through an unbounded channel, approvals travel
+//! back through a one-shot.
+
+use std::future::Future;
+use std::io::{self, Stdout};
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use qcode_core::approval::{Answer, ApprovalRequest, Approver};
+use qcode_core::cost::Pricing;
+use qcode_core::engine::{EngineError, RunOptions, RunOutcome, TurnContext, run_turn};
+use qcode_core::event::{Event, SessionStarted, TurnStatus};
+use qcode_core::policy::Policy;
+use qcode_core::provider::Provider;
+use qcode_core::store::SessionStore;
+use qcode_core::tool::ToolRegistry;
+use qcode_tui::{App, UiAction, render};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{self, Event as TermEvent, KeyEvent};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+pub struct TuiOptions<'a> {
+    pub store: &'a SessionStore,
+    pub provider: &'a dyn Provider,
+    pub tools: &'a ToolRegistry,
+    pub policy: &'a Policy,
+    pub workspace: PathBuf,
+    pub provider_name: &'a str,
+    pub model: &'a str,
+    pub pricing: Option<Pricing>,
+    pub max_cost_usd: Option<f64>,
+    pub max_turns: u32,
+}
+
+enum TuiMsg {
+    Event(Event),
+    Key(KeyEvent),
+    Approval {
+        call_id: String,
+        reply: oneshot::Sender<Answer>,
+    },
+}
+
+/// Bridges the engine's `Approver` port to the UI loop. The engine awaits a
+/// one-shot; the UI answers it when the user presses y or n.
+pub struct TuiApprover {
+    tx: mpsc::UnboundedSender<TuiMsg>,
+}
+
+#[async_trait]
+impl Approver for TuiApprover {
+    async fn approve(&self, request: &ApprovalRequest, cancel: CancellationToken) -> Answer {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .tx
+            .send(TuiMsg::Approval {
+                call_id: request.call_id.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return Answer::Deny;
+        }
+
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Answer::Deny,
+            answer = answer => answer.unwrap_or(Answer::Deny),
+        }
+    }
+}
+
+pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let (session_id, _) = options.store.create(&SessionStarted {
+        model: options.model.to_string(),
+        provider: options.provider_name.to_string(),
+        cwd: options.workspace.display().to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })?;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let approver = TuiApprover { tx: tx.clone() };
+    let input = InputThread::spawn(tx.clone());
+    let mut terminal = TerminalGuard::enter()?;
+
+    let mut app = App::new(options.provider_name, options.model);
+    app.push_notice(format!(
+        "session {session_id} · Enter 发送 · Esc 取消 · Ctrl-O 展开工具 · Ctrl-C 两次退出"
+    ));
+
+    let mut cancel = CancellationToken::new();
+    let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
+    let mut engine: Pin<Box<dyn Future<Output = Result<RunOutcome, EngineError>> + '_>> =
+        Box::pin(std::future::pending());
+
+    let loop_result: Result<(), Box<dyn std::error::Error>> = loop {
+        if let Err(err) = terminal.terminal.draw(|frame| render(frame, &app)) {
+            break Err(err.into());
+        }
+
+        tokio::select! {
+            biased;
+            message = rx.recv() => {
+                let Some(message) = message else { break Ok(()) };
+                match message {
+                    TuiMsg::Event(event) => app.apply(&event),
+                    TuiMsg::Key(key) => {
+                        let Some(action) = app.handle_key(key) else { continue };
+                        match action {
+                            UiAction::Submit(text) => {
+                                // A fresh token per turn: cancelling one turn
+                                // must not poison the next one.
+                                cancel = CancellationToken::new();
+                                pending_approval = None;
+                                let turn_cancel = cancel.clone();
+                                let sender = tx.clone();
+                                engine = Box::pin(run_turn(
+                                    TurnContext {
+                                        store: options.store,
+                                        provider: options.provider,
+                                        tools: options.tools,
+                                        policy: options.policy,
+                                        approver: &approver,
+                                    },
+                                    RunOptions {
+                                        session_id: &session_id,
+                                        model: options.model,
+                                        input: text,
+                                        workspace: options.workspace.clone(),
+                                        max_turns: options.max_turns,
+                                        cancel: turn_cancel,
+                                        pricing: options.pricing,
+                                        max_cost_usd: options.max_cost_usd,
+                                    },
+                                    move |event| {
+                                        let _ = sender.send(TuiMsg::Event(event.clone()));
+                                    },
+                                ));
+                            }
+                            UiAction::Approve { call_id, allow } => {
+                                if let Some((pending_call, reply)) = pending_approval.take()
+                                    && pending_call == call_id
+                                {
+                                    let _ = reply.send(if allow {
+                                        Answer::Allow
+                                    } else {
+                                        Answer::Deny
+                                    });
+                                }
+                            }
+                            UiAction::Cancel => cancel.cancel(),
+                            UiAction::Quit => {
+                                // Give run_shell a moment to kill its process
+                                // group before we drop the engine future.
+                                cancel.cancel();
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(3),
+                                    &mut engine,
+                                )
+                                .await;
+                                break Ok(());
+                            }
+                        }
+                    }
+                    TuiMsg::Approval { call_id, reply } => {
+                        pending_approval = Some((call_id, reply));
+                    }
+                }
+            }
+            result = &mut engine => {
+                engine = Box::pin(std::future::pending());
+                if let Err(err) = result {
+                    app.status.running = false;
+                    app.status.last = Some(TurnStatus::Failed);
+                    app.push_notice(format!("engine error: {err}"));
+                }
+            }
+        }
+    };
+
+    drop(input);
+    terminal.restore();
+    loop_result
+}
+
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    restored: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(err) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(err);
+        }
+
+        match Terminal::new(CrosstermBackend::new(stdout)) {
+            Ok(terminal) => Ok(Self {
+                terminal,
+                restored: false,
+            }),
+            Err(err) => {
+                let mut stdout = io::stdout();
+                let _ = execute!(stdout, LeaveAlternateScreen);
+                let _ = disable_raw_mode();
+                Err(err)
+            }
+        }
+    }
+
+    fn restore(&mut self) {
+        if self.restored {
+            return;
+        }
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = self.terminal.show_cursor();
+        self.restored = true;
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+/// Blocking crossterm reads on their own thread keep the async loop responsive
+/// without depending on crossterm's optional event-stream feature.
+struct InputThread {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InputThread {
+    fn spawn(tx: mpsc::UnboundedSender<TuiMsg>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::SeqCst) {
+                match event::poll(Duration::from_millis(50)) {
+                    Ok(true) => match event::read() {
+                        Ok(TermEvent::Key(key)) => {
+                            if tx.send(TuiMsg::Key(key)).is_err() {
+                                break;
+                            }
+                        }
+                        // Resize and mouse events are handled by the next draw.
+                        Ok(_) => {}
+                        Err(_) => break,
+                    },
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for InputThread {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> ApprovalRequest {
+        ApprovalRequest {
+            call_id: "call-1".to_string(),
+            tool: "run_shell".to_string(),
+            summary: "echo hi".to_string(),
+            reason: "process execution".to_string(),
+            rule_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_round_trips_through_the_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let approver = TuiApprover { tx };
+        let handle =
+            tokio::spawn(
+                async move { approver.approve(&request(), CancellationToken::new()).await },
+            );
+
+        let TuiMsg::Approval { call_id, reply } = rx.recv().await.expect("approval message") else {
+            panic!("unexpected message");
+        };
+        assert_eq!(call_id, "call-1");
+        reply.send(Answer::Allow).expect("send answer");
+        assert_eq!(handle.await.expect("join"), Answer::Allow);
+    }
+
+    #[tokio::test]
+    async fn cancellation_denies_without_an_answer() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let approver = TuiApprover { tx };
+        let cancel = CancellationToken::new();
+        let turn_cancel = cancel.clone();
+        let handle = tokio::spawn(async move { approver.approve(&request(), turn_cancel).await });
+
+        let message = rx.recv().await.expect("approval message");
+        cancel.cancel();
+        assert_eq!(handle.await.expect("join"), Answer::Deny);
+        drop(message);
+    }
+
+    #[tokio::test]
+    async fn a_closed_ui_channel_denies() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        let approver = TuiApprover { tx };
+        let answer = approver.approve(&request(), CancellationToken::new()).await;
+        assert_eq!(answer, Answer::Deny);
+    }
+}
