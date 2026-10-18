@@ -46,7 +46,7 @@ export DEEPSEEK_API_KEY=...
 
 TUI 键位：Enter 发送、**Ctrl-N 换行**（支持 Kitty 键盘协议的终端里 Shift+Enter 也可）、
 Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
-PageUp / PageDown 滚动 transcript、Ctrl+End 回到底部；
+Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底部；
 审批浮层里 `y` 允许、`n` 拒绝。助手文本按 ≤60Hz 合并流式显示，完成后落盘为一条
 `assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
 

@@ -40,10 +40,11 @@
   展开的工具输出最多渲染 400 行，多出时提示剩余行数。transcript 再长，
   每帧工作量也只与窗口相关。
 - `Paragraph::line_count`（ratatui `unstable-rendered-line-info`）得到换行后的总行数，
-  底部锚定；`PageUp` / `PageDown`（每次 10 行）、`End` 回到底部，状态栏显示 `↑N`。
+  底部锚定；`PageUp`/`PageDown` 或 `Ctrl-U`/`Ctrl-D`（每次 10 行）、`Ctrl+End` 回到底部，
+  状态栏显示 `↑N`。
 - 工具行显示名称、参数摘要、状态与耗时（ms / s）。
-- 验收：60 行窗口滚动测试（PageUp 到顶、End 回底）、滚动偏移状态栏测试、
-  滚动键单测；构建量受预算约束，不随 transcript 总量线性增长。
+- 验收：60 行窗口滚动测试（PageUp 到顶、Ctrl+End 回底）、滚动偏移状态栏测试、
+  滚动键单测（含 Ctrl-U/Ctrl-D）；构建量受预算约束，不随 transcript 总量线性增长。
 
 ### M2-4 多行输入 ✅
 

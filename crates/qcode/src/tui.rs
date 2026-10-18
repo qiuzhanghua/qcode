@@ -107,7 +107,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     let mut app = App::new(options.provider_name, options.model);
     app.push_notice(format!(
-        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-C 两次退出"
+        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-U/D 滚动 · Ctrl-C 两次退出"
     ));
 
     let mut cancel = CancellationToken::new();

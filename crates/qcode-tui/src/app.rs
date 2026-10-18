@@ -248,11 +248,22 @@ impl App {
                 return Some(UiAction::Submit(text));
             }
             KeyCode::Esc => return self.status.running.then_some(UiAction::Cancel),
+            // Laptops and compact keyboards often lack PageUp/PageDown, and
+            // some terminals swallow them; Ctrl-U / Ctrl-D are the portable
+            // equivalents (the same keys less/vim use).
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_add(SCROLL_STEP);
                 return None;
             }
+            KeyCode::Char('u') if ctrl => {
+                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
+                return None;
+            }
             KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
+                return None;
+            }
+            KeyCode::Char('d') if ctrl => {
                 self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
                 return None;
             }
@@ -468,6 +479,11 @@ mod tests {
         assert_eq!(app.scroll, 20);
 
         app.handle_key(key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 10);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.scroll, 20);
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
         assert_eq!(app.scroll, 10);
 
         app.handle_key(key(KeyCode::Char('x')));
