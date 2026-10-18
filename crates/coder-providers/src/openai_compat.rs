@@ -272,8 +272,12 @@ fn convert_message(message: &Message) -> Result<Value, ProviderError> {
     let role = match message.role {
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
     };
     let mut value = json!({ "role": role, "content": text });
+    if let Some(call_id) = &message.tool_call_id {
+        value["tool_call_id"] = json!(call_id);
+    }
     if !tool_calls.is_empty() {
         value["tool_calls"] = Value::Array(tool_calls);
     }

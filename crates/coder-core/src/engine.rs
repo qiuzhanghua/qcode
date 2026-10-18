@@ -132,6 +132,7 @@ where
             blocks: vec![ContentBlock::Text {
                 text: options.input.to_string(),
             }],
+            tool_call_id: None,
         }],
         tools: Vec::new(),
         max_output_tokens: None,

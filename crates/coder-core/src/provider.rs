@@ -44,12 +44,15 @@ pub struct CompletionRequest {
 pub enum Role {
     User,
     Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Message {
     pub role: Role,
     pub blocks: Vec<ContentBlock>,
+    /// Set for `Role::Tool`: the tool call this message is answering.
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

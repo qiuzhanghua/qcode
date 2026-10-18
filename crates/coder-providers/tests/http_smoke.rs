@@ -39,6 +39,7 @@ fn request() -> CompletionRequest {
             blocks: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],
+            tool_call_id: None,
         }],
         tools: Vec::new(),
         max_output_tokens: None,
