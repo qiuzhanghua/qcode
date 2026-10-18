@@ -1,8 +1,12 @@
 use std::io::Write;
+use std::path::Path;
 
-use coder_core::engine::{RunOptions, run_turn};
+use coder_core::approval::AutoApprove;
+use coder_core::engine::{RunOptions, TurnContext, run_turn};
 use coder_core::event::{EventKind, SessionStarted, TurnStatus};
+use coder_core::policy::Policy;
 use coder_core::store::SessionStore;
+use coder_core::tool::ToolRegistry;
 use coder_providers::MockProvider;
 
 fn meta() -> SessionStarted {
@@ -14,6 +18,16 @@ fn meta() -> SessionStarted {
     }
 }
 
+fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
+    RunOptions {
+        session_id,
+        model: "mock-1",
+        input: "hi",
+        workspace: workspace.to_path_buf(),
+        max_turns: 4,
+    }
+}
+
 #[tokio::test]
 async fn mock_turn_persists_and_replays() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -21,17 +35,19 @@ async fn mock_turn_persists_and_replays() {
     let (id, _) = store.create(&meta()).expect("create session");
 
     let provider = MockProvider::text("hello world");
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
     let mut seen = Vec::new();
 
     let outcome = run_turn(
-        &store,
-        &provider,
-        RunOptions {
-            session_id: &id,
-            model: "mock-1",
-            input: "hi",
-            max_turns: 4,
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
         },
+        options(&id, dir.path()),
         |event| seen.push(event.clone()),
     )
     .await
@@ -70,15 +86,18 @@ async fn torn_final_line_is_dropped_on_load() {
     let (id, _) = store.create(&meta()).expect("create session");
 
     let provider = MockProvider::text("ok");
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
+
     run_turn(
-        &store,
-        &provider,
-        RunOptions {
-            session_id: &id,
-            model: "mock-1",
-            input: "hi",
-            max_turns: 4,
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
         },
+        options(&id, dir.path()),
         |_| {},
     )
     .await

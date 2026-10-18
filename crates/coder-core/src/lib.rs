@@ -7,6 +7,7 @@
 pub mod approval;
 pub mod engine;
 pub mod event;
+pub mod history;
 pub mod policy;
 pub mod provider;
 pub mod state;
@@ -14,7 +15,9 @@ pub mod store;
 pub mod tool;
 
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
-pub use engine::{EngineError, RunOptions, RunOutcome, SYSTEM_PROMPT, SessionWriter, run_turn};
+pub use engine::{
+    EngineError, RunOptions, RunOutcome, SYSTEM_PROMPT, SessionWriter, TurnContext, run_turn,
+};
 pub use event::*;
 pub use policy::{Action, Decision, Policy, Rule};
 pub use provider::*;

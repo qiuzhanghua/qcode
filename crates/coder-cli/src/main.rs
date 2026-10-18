@@ -2,16 +2,20 @@ mod config;
 mod doctor;
 mod logging;
 
+use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use coder_core::engine::{RunOptions, run_turn};
+use coder_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
+use coder_core::engine::{RunOptions, TurnContext, run_turn};
 use coder_core::event::SessionStarted;
+use coder_core::policy::Policy;
 use coder_core::provider::Provider;
 use coder_core::store::SessionStore;
 use coder_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
+use coder_tools::builtin_registry;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -60,6 +64,12 @@ struct RunArgs {
     no_stream_usage: bool,
     #[arg(long, default_value_t = 8)]
     max_turns: u32,
+    /// Auto-approve anything the policy marks as ask.
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root for tools. Defaults to the current directory.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -114,6 +124,8 @@ async fn cmd_run(
         base_url,
         no_stream_usage,
         max_turns,
+        yes,
+        cwd,
     } = args;
 
     let prompt = match prompt {
@@ -149,7 +161,12 @@ async fn cmd_run(
     );
 
     let store = SessionStore::new(resolve_data_dir(data_dir));
-    let cwd = std::env::current_dir()?.display().to_string();
+    let workspace = match cwd {
+        Some(path) => path,
+        None => std::env::current_dir()?,
+    };
+    let workspace = workspace.canonicalize()?;
+    let cwd = workspace.display().to_string();
 
     let (session_id, first_event) = store.create(&SessionStarted {
         model: resolved.model.clone(),
@@ -178,13 +195,29 @@ async fn cmd_run(
         })?)
     };
 
+    let tools = builtin_registry();
+    let policy = Policy::new(loaded.approval.rules.clone());
+    let approver: Box<dyn Approver> = if yes {
+        Box::new(AutoApprove)
+    } else if std::io::stdin().is_terminal() {
+        Box::new(InteractiveApprover)
+    } else {
+        Box::new(AutoDeny)
+    };
+
     let outcome = run_turn(
-        &store,
-        provider.as_ref(),
+        TurnContext {
+            store: &store,
+            provider: provider.as_ref(),
+            tools: &tools,
+            policy: &policy,
+            approver: approver.as_ref(),
+        },
         RunOptions {
             session_id: &session_id,
             model: &resolved.model,
             input: &prompt,
+            workspace: workspace.clone(),
             max_turns,
         },
         |event| {

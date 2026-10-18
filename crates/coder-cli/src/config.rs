@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use coder_core::policy::Rule;
+
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/coder/config.toml";
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -18,6 +20,14 @@ pub struct Config {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub approval: ApprovalConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApprovalConfig {
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

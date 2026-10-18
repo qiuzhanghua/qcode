@@ -111,6 +111,21 @@ pub struct Usage {
     pub cache_write_tokens: Option<u64>,
 }
 
+impl Usage {
+    /// Accumulate another provider call's usage into this one.
+    pub fn merge(&mut self, other: &Usage) {
+        fn add(slot: &mut Option<u64>, value: Option<u64>) {
+            if let Some(value) = value {
+                *slot = Some(slot.unwrap_or(0) + value);
+            }
+        }
+        add(&mut self.input_tokens, other.input_tokens);
+        add(&mut self.output_tokens, other.output_tokens);
+        add(&mut self.cache_read_tokens, other.cache_read_tokens);
+        add(&mut self.cache_write_tokens, other.cache_write_tokens);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalRequested {
     pub call_id: String,

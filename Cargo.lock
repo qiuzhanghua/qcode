@@ -216,6 +216,7 @@ dependencies = [
  "clap",
  "coder-core",
  "coder-providers",
+ "coder-tools",
  "serde",
  "serde_json",
  "thiserror",

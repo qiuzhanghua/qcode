@@ -1,5 +1,10 @@
-//! Scripted provider for tests and for the M0 headless smoke path.
+//! Scripted provider for tests and for the offline smoke path.
+//!
+//! Each `stream` call pops one scripted response, which lets the engine tests
+//! drive a full tool loop (tool call -> tool result -> final text).
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,41 +15,70 @@ use coder_core::provider::{
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+type Script = Vec<Result<StreamEvent, ProviderError>>;
+type ScriptQueue = Arc<Mutex<VecDeque<Script>>>;
+
 #[derive(Debug, Clone)]
 pub struct MockProvider {
-    events: Vec<Result<StreamEvent, ProviderError>>,
+    scripts: ScriptQueue,
     capabilities: Capabilities,
 }
 
 impl MockProvider {
     /// Emit `text` in small deltas, then usage and a clean end.
     pub fn text(text: impl Into<String>) -> Self {
-        let text = text.into();
-        let chars: Vec<char> = text.chars().collect();
-        let mut events = vec![Ok(StreamEvent::Started)];
-        for chunk in chars.chunks(8) {
-            events.push(Ok(StreamEvent::TextDelta(chunk.iter().collect())));
-        }
-        events.push(Ok(StreamEvent::Usage(Usage {
-            input_tokens: Some(12),
-            output_tokens: Some((chars.len() as u64).div_ceil(4)),
-            ..Usage::default()
-        })));
-        events.push(Ok(StreamEvent::Ended {
-            stop_reason: StopReason::EndTurn,
-        }));
+        Self::scripted(vec![text_script(&text.into())])
+    }
+
+    /// One entry per provider call; each entry is a complete stream.
+    pub fn scripted(responses: Vec<Vec<StreamEvent>>) -> Self {
+        Self::scripted_results(
+            responses
+                .into_iter()
+                .map(|response| response.into_iter().map(Ok).collect())
+                .collect(),
+        )
+    }
+
+    pub fn with_events(events: Vec<Result<StreamEvent, ProviderError>>) -> Self {
+        Self::scripted_results(vec![events])
+    }
+
+    fn scripted_results(scripts: Vec<Script>) -> Self {
         Self {
-            events,
+            scripts: Arc::new(Mutex::new(scripts.into())),
             capabilities: Capabilities::default(),
         }
     }
 
-    pub fn with_events(events: Vec<Result<StreamEvent, ProviderError>>) -> Self {
-        Self {
-            events,
-            capabilities: Capabilities::default(),
-        }
+    fn next_script(&self) -> Script {
+        self.scripts
+            .lock()
+            .expect("mock script lock")
+            .pop_front()
+            .unwrap_or_else(|| {
+                vec![Ok(StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                })]
+            })
     }
+}
+
+fn text_script(text: &str) -> Vec<StreamEvent> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut events = vec![StreamEvent::Started];
+    for chunk in chars.chunks(8) {
+        events.push(StreamEvent::TextDelta(chunk.iter().collect()));
+    }
+    events.push(StreamEvent::Usage(Usage {
+        input_tokens: Some(12),
+        output_tokens: Some((chars.len() as u64).div_ceil(4)),
+        ..Usage::default()
+    }));
+    events.push(StreamEvent::Ended {
+        stop_reason: StopReason::EndTurn,
+    });
+    events
 }
 
 #[async_trait]
@@ -62,7 +96,7 @@ impl Provider for MockProvider {
         _request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
-        let events = self.events.clone();
+        let events = self.next_script();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
         tokio::spawn(async move {

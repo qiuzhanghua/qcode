@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 coder-core = { path = "../coder-core" }
 coder-providers = { path = "../coder-providers" }
+coder-tools = { path = "../coder-tools" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
