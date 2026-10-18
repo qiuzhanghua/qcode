@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/coder-core",
+  "crates/coder-providers",
+  "crates/coder-tools",
+  "crates/coder-mcp",
+  "crates/coder-cli",
+  "crates/coder-tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ulid = "1"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures-util = "0.3"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"

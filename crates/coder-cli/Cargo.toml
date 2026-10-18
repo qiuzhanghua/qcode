@@ -1,0 +1,17 @@
+[package]
+name = "coder-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "coder"
+path = "src/main.rs"
+
+[dependencies]
+coder-core = { path = "../coder-core" }
+coder-providers = { path = "../coder-providers" }
+serde_json.workspace = true
+clap.workspace = true
+tokio.workspace = true
