@@ -189,3 +189,14 @@ fn completed_turn_shows_final_state_and_cost() {
     assert!(screen.contains("completed"), "status missing:\n{screen}");
     assert!(screen.contains("$0.0000"), "cost missing:\n{screen}");
 }
+
+#[test]
+fn first_ctrl_c_shows_the_quit_hint() {
+    let mut app = App::new("mock", "mock-1");
+    app.quit_armed = true;
+    let screen = draw(&app, 80, 24);
+    assert!(
+        screen.contains("ctrl-c again to quit"),
+        "quit hint missing:\n{screen}"
+    );
+}

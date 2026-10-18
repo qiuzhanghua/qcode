@@ -106,6 +106,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
+    let mut engine_running = false;
     let mut engine: Pin<Box<dyn Future<Output = Result<RunOutcome, EngineError>> + '_>> =
         Box::pin(std::future::pending());
 
@@ -128,6 +129,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 // must not poison the next one.
                                 cancel = CancellationToken::new();
                                 pending_approval = None;
+                                engine_running = true;
                                 let turn_cancel = cancel.clone();
                                 let sender = tx.clone();
                                 engine = Box::pin(run_turn(
@@ -166,14 +168,16 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             }
                             UiAction::Cancel => cancel.cancel(),
                             UiAction::Quit => {
-                                // Give run_shell a moment to kill its process
-                                // group before we drop the engine future.
-                                cancel.cancel();
-                                let _ = tokio::time::timeout(
-                                    Duration::from_secs(3),
-                                    &mut engine,
-                                )
-                                .await;
+                                // Only a live turn needs the shutdown grace: an
+                                // idle TUI must quit immediately.
+                                if engine_running {
+                                    cancel.cancel();
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(3),
+                                        &mut engine,
+                                    )
+                                    .await;
+                                }
                                 break Ok(());
                             }
                         }
@@ -185,6 +189,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
             }
             result = &mut engine => {
                 engine = Box::pin(std::future::pending());
+                engine_running = false;
                 if let Err(err) = result {
                     app.status.running = false;
                     app.status.last = Some(TurnStatus::Failed);

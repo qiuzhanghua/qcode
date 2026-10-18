@@ -36,6 +36,8 @@ fn status_label(app: &App) -> (&'static str, Color) {
         ("awaiting approval", Color::Yellow)
     } else if app.status.running {
         ("running", Color::Cyan)
+    } else if app.quit_armed {
+        ("ctrl-c again to quit", Color::Yellow)
     } else {
         match app.status.last {
             Some(TurnStatus::Completed) => ("completed", Color::Green),
