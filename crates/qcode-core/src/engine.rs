@@ -574,15 +574,13 @@ where
             }),
             on_event,
         )?;
-        let answer = tokio::select! {
-            biased;
-            _ = tool_context.cancel.cancelled() => {
-                aborted = true;
-                Answer::Deny
-            }
-            answer = ctx.approver.approve(&request) => answer,
-        };
+        let answer = ctx
+            .approver
+            .approve(&request, tool_context.cancel.clone())
+            .await;
         allowed = answer == Answer::Allow;
+        // A denial that raced with cancellation is not a user decision.
+        aborted = tool_context.cancel.is_cancelled();
     }
 
     let scope = if rule_id.is_some() {

@@ -92,8 +92,8 @@
   孙进程（`cargo` / `make` / `node` worker）不会成为孤儿；输出保留并标 `cancelled`。
 - 审批中取消会写 deny 决策 + `cancelled` 结果；同一批里未执行的调用补 `cancelled` 结果，
   保持 `tool_call` → `tool_result` 一一对应。
-- 已知限制：交互式审批用同步 stdin 读取，等待输入时第一次 Ctrl-C 要等该行返回；
-  再按一次 Ctrl-C 立即退出（M1-10 一并处理）。
+- 审批等待可取消：`Approver` 收到取消令牌；交互式实现把阻塞的 stdin 读取移到 blocking 线程，
+  Ctrl-C 立即以 `cancelled` 收尾（读取线程随进程退出）。
 - CLI：Ctrl-C 取消当前 turn（再按一次立即退出），取消的 turn 以退出码 130 结束。
 - 验收：引擎取消 2 条 + 进程组清理 2 条（取消与超时后后台 `sleep` 均消失）
   + CLI 端到端 1 条（真实 `qc` 进程对不响应的服务按 Ctrl-C，退出码 130 且 `turn_ended(cancelled)`）。
@@ -125,6 +125,8 @@
 
 - 在真实终端里手工跑一次 `run_shell` 的 ask → allow / deny。
 - 验收：审批文案能看懂、拒绝后模型能继续。
+- 代码侧的取消支持已完成（见 M1-9）；自动化仍阻塞：本机沙箱禁止 `openpty`
+  （`script: openpty: Operation not permitted`），pty 模拟真终端跑不了，需在普通终端验收。
 
 
 ## 已知限制
