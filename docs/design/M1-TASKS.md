@@ -131,16 +131,19 @@
   受限网络下可只跑 `cargo deny check licenses bans sources`。
 - 同时给 workspace 内部 path 依赖补上 `version`，避免 `wildcards` 把本地依赖误判为 `*`。
 
-## 待完成（M1-10 起）
+### M1-10 交互式审批回归 ✅
 
-### M1-10 交互式审批回归
+- 2026-10-18 在真实终端用 `qc run demo --provider mock-approval` 手工验收：
+  - allow：`[approval] allowed` → `tool_result ok`(20 bytes) → turn completed；
+  - deny：`[approval] denied` → `tool_result error`(34 bytes) → 模型继续并收尾，turn completed；
+  - 审批提示处 Ctrl-C：立即取消，`tool_result cancelled` + `turn_ended(cancelled)`，退出码 130。
+- 离线演练入口已固化（脚本化 `run_shell`，默认 ask）；非 TTY 自动 deny + 模型继续
+  有 headless 自动化回归。pty 自动化仍受沙箱限制（openpty 被拒），故保留人工验收记录。
 
-- 在真实终端里手工跑一次 `run_shell` 的 ask → allow / deny。
-- 验收：审批文案能看懂、拒绝后模型能继续。
-- 代码侧的取消支持已完成（见 M1-9）；自动化仍阻塞：本机沙箱禁止 `openpty`
-  （`script: openpty: Operation not permitted`），pty 模拟真终端跑不了，需在普通终端验收。
-- 离线演练入口：`qc run demo --provider mock-approval`（脚本化 `run_shell`，
-  默认为 ask）；非 TTY 自动 deny + 模型继续的路径已有自动化回归。
+## M1 状态
+
+M1 全部完成（2026-10-18）：取消与进程清理、成本上限、事件 schema 快照、
+依赖审计、交互式审批回归均已验收。下一步进入 M2（TUI、MCP、上下文压缩、AGENTS.md）。
 
 
 ## 已知限制

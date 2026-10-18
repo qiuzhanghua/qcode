@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 核心循环可用**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
