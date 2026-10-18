@@ -231,3 +231,6 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 - M2 增加“transcript 虚拟化”和“CJK / IME 测试”两项任务。
 - M2 开始前不引入 ratatui 依赖，`qcode-tui` 保持空壳。
+- 2026-10-18：M2 开工，pin `ratatui = "=0.29.0"`（与 `tui-textarea 0.7` 的 `^0.29`
+  配套，避免同进程两个 ratatui）；ratatui 0.29 仍依赖的 `paste` 已被标记 unmaintained，
+  在 `deny.toml` 记录豁免，升级到 0.30 + 新版 tui-textarea 时一并撤销。

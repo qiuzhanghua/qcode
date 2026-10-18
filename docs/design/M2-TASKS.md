@@ -1,0 +1,64 @@
+# M2 任务清单
+
+> 周期：第 6–8 周。目标：TUI 前端、上下文压缩、AGENTS.md、MCP client（仅 tools）。
+> 状态截至 2026-10-18。设计依据：[SPEC §14](./SPEC.md)、[ADR-0001](./DECISIONS.md)。
+
+## M2 完成定义
+
+- `qc`（无子命令）进入 TUI：状态栏、流式 transcript、工具调用折叠、审批浮层、多行输入。
+- Esc 取消当前 turn；Ctrl-C 两次退出；审批在浮层内 allow / deny；取消复用 M1-9 路径。
+- 上下文占用 ≥ 78% 触发压缩并写 `compaction` 事件，replay 后上下文一致。
+- workspace 的 `AGENTS.md` 注入 system prompt；MCP tools 以 `mcp__<server>__<tool>` 暴露，默认 ask。
+- `cargo fmt` / `cargo clippy -D warnings` / `cargo test` / `cargo deny check` 全绿。
+
+## 任务
+
+### M2-1 TUI 基础：状态投影与渲染 ✅
+
+- `qcode-tui` 引入 `ratatui = "=0.29.0"`；`App` 只持有状态，渲染是纯函数
+  `ui::render(frame, &App)`，便于 `TestBackend` 快照。
+- `App::apply(&Event)` 把事件投影成 transcript：用户消息、助手文本、工具调用（默认折叠）、
+  通知、审批浮层；`TurnEnded` 更新状态栏与成本。用户消息只由事件投影，提交时不重复插入。
+- 键位状态机：Enter 提交、Esc 取消、Ctrl-C 两次退出、Ctrl-O 展开最近一次工具调用；
+  `handle_key` 返回 `UiAction`，不直接做 IO。
+- 验收：事件投影/键位单测 8 条 + `TestBackend` 渲染 4 条（状态栏、transcript、
+  工具折叠、审批浮层）。
+
+### M2-2 引擎接线
+
+- 后台 `run_turn` + 事件通道；审批走正向请求/反向应答 channel；Esc 取消 token。
+- `qc` 无子命令时启动 TUI；`qc run` 保持 headless；非 TTY 仍走 `AutoDeny`。
+- 流式 delta 由引擎新增的「瞬时回调」送入 UI（不入事件日志），60Hz 合并重绘。
+
+### M2-3 transcript 虚拟化与工具折叠
+
+- 只布局可见行；工具调用一行摘要（名称 + 参数 + 状态 + 耗时），Ctrl-O 展开完整输出。
+- 验收：1 万行 transcript 下的滚动性能测试（无全量布局）。
+
+### M2-4 多行输入
+
+- 用 `tui-textarea`（与 ratatui 版本配套）；Shift+Enter 换行、粘贴、光标移动。
+- CJK 宽度、IME、粘贴必须有测试；默认不捕获鼠标。
+
+### M2-5 上下文压缩
+
+- 触发阈值 78%；摘要调用走 provider；写 `compaction` 事件（`replaced_from/to`、token 数）。
+- 压缩后 replay 与 resume 的上下文一致。
+
+### M2-6 AGENTS.md
+
+- workspace 根 `AGENTS.md` 注入 system prompt；加大小上限与路径校验；记录命中来源。
+
+### M2-7 MCP client（tools only）
+
+- stdio JSON-RPC：`initialize` → `tools/list` → `tools/call`；工具名 `mcp__<server>__<tool>`。
+- 默认 ask；请求超时、进程退出、协议错误都转成 `tool_result` 错误，不静默挂起。
+
+### M2-8 并行只读工具
+
+- 同一批 tool calls 中只读工具并发执行；写与 shell 仍串行；事件顺序稳定。
+
+## 版本决定
+
+- `ratatui = "=0.29.0"`：与 `tui-textarea 0.7`（依赖 `ratatui ^0.29`）配套，避免同一进程里
+  出现两个 ratatui 版本。升级 ratatui 当独立任务，连同 `tui-textarea` 一起评估。

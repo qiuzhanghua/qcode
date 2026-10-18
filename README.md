@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI 基础）**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -108,7 +108,8 @@ action = "deny"
 - [v1 实现规格](docs/design/SPEC.md) —— 架构、事件模型、工具契约
 - [评测方案](docs/design/EVAL.md) —— 离线 fixture 与 5 条任务
 - [M0 任务清单](docs/design/M0-TASKS.md) —— 基础设施与人工验收
-- [M1 任务清单](docs/design/M1-TASKS.md) —— 工具循环、审批与下一步
+- [M1 任务清单](docs/design/M1-TASKS.md) —— 工具循环、审批与取消
+- [M2 任务清单](docs/design/M2-TASKS.md) —— TUI、压缩、AGENTS.md 与 MCP
 - [资料来源](docs/design/SOURCES.md) —— clean-room 白名单
 
 ## 布局
@@ -119,7 +120,7 @@ crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
 crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell
 crates/qcode-mcp         MCP client（M2）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
-crates/qcode-tui         ratatui 前端（M2）
+crates/qcode-tui         ratatui 前端（M2：状态投影与渲染）
 ```
 
 ## License

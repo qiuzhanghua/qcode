@@ -1,0 +1,238 @@
+//! Rendering: a pure function from [`App`] to a frame.
+//!
+//! Keeping layout and drawing separate from the event loop lets the whole
+//! screen be rendered into `TestBackend` in tests, with no terminal required.
+
+use ratatui::{
+    Frame,
+    layout::{Constraint, Flex, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block as UiBlock, Clear, Paragraph, Wrap},
+};
+
+use crate::app::{App, ApprovalPrompt, Block, ToolEntry};
+use qcode_core::event::{ToolStatus, TurnStatus};
+
+pub fn render(frame: &mut Frame, app: &App) {
+    let areas = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(3),
+    ])
+    .split(frame.area());
+
+    render_status(frame, app, areas[0]);
+    render_transcript(frame, app, areas[1]);
+    render_composer(frame, app, areas[2]);
+
+    if let Some(prompt) = &app.approval {
+        render_approval(frame, prompt);
+    }
+}
+
+fn status_label(app: &App) -> (&'static str, Color) {
+    if app.approval.is_some() {
+        ("awaiting approval", Color::Yellow)
+    } else if app.status.running {
+        ("running", Color::Cyan)
+    } else {
+        match app.status.last {
+            Some(TurnStatus::Completed) => ("completed", Color::Green),
+            Some(TurnStatus::Cancelled) => ("cancelled", Color::Yellow),
+            Some(TurnStatus::Failed) => ("failed", Color::Red),
+            None => ("idle", Color::DarkGray),
+        }
+    }
+}
+
+fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+    let (label, color) = status_label(app);
+    let muted = Style::default().fg(Color::Gray);
+    let line = Line::from(vec![
+        Span::styled(
+            " qcode",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("{}:{}", app.status.provider, app.status.model),
+            muted,
+        ),
+        Span::raw("  "),
+        Span::styled(format!("turn {}", app.status.turn), muted),
+        Span::raw("  "),
+        Span::styled(format!("${:.4}", app.status.cost_usd), muted),
+        Span::raw("  "),
+        Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(transcript_lines(app)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn transcript_lines(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for block in &app.blocks {
+        match block {
+            Block::User(text) => {
+                push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan))
+            }
+            Block::Assistant(text) => {
+                push_text(&mut lines, "  ", text, Style::default());
+            }
+            Block::Notice(text) => {
+                push_text(&mut lines, "· ", text, Style::default().fg(Color::DarkGray))
+            }
+            Block::Tool(tool) => push_tool(&mut lines, tool),
+        }
+    }
+    lines
+}
+
+fn push_text(lines: &mut Vec<Line<'static>>, prefix: &'static str, text: &str, style: Style) {
+    for (index, chunk) in text.split('\n').enumerate() {
+        let lead = if index == 0 { prefix } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(lead, style),
+            Span::styled(chunk.to_string(), style),
+        ]));
+    }
+}
+
+fn status_glyph(status: Option<ToolStatus>) -> (&'static str, &'static str, Color) {
+    match status {
+        None => ("⏺", "running", Color::Cyan),
+        Some(ToolStatus::Ok) => ("✔", "ok", Color::Green),
+        Some(ToolStatus::Error) => ("✘", "error", Color::Red),
+        Some(ToolStatus::Cancelled) => ("◼", "cancelled", Color::Yellow),
+        Some(ToolStatus::Interrupted) => ("◼", "interrupted", Color::Magenta),
+    }
+}
+
+fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
+    let (glyph, status, color) = status_glyph(tool.status);
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {glyph} "), Style::default().fg(color)),
+        Span::styled(
+            tool.name.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(tool.summary.clone(), Style::default().fg(Color::Gray)),
+        Span::raw(" "),
+        Span::styled(format!("[{status}]"), Style::default().fg(color)),
+    ]));
+
+    if !tool.expanded {
+        return;
+    }
+    if tool.output.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    (no output yet)",
+            Style::default().fg(Color::DarkGray),
+        )));
+        return;
+    }
+    for chunk in tool.output.split('\n') {
+        lines.push(Line::from(Span::styled(
+            format!("    │ {chunk}"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+}
+
+fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
+    let border = if app.status.running {
+        Color::DarkGray
+    } else {
+        Color::Cyan
+    };
+    let paragraph = Paragraph::new(Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Cyan)),
+        Span::raw(app.input.clone()),
+    ]))
+    .block(
+        UiBlock::bordered()
+            .title(" message ")
+            .border_style(Style::default().fg(border)),
+    );
+    frame.render_widget(paragraph, area);
+
+    let max_x = area.x + area.width.saturating_sub(2);
+    let max_y = area.y + area.height.saturating_sub(2);
+    let cursor_x = area.x + 3 + app.input.chars().count() as u16;
+    frame.set_cursor_position((cursor_x.min(max_x), max_y.min(area.y + 1)));
+}
+
+fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt) {
+    let area = centered(72, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let label = Style::default().fg(Color::Gray);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("tool    ", label),
+            Span::raw(prompt.tool.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("call    ", label),
+            Span::raw(prompt.summary.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("reason  ", label),
+            Span::raw(prompt.reason.clone()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[y] allow",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("     "),
+            Span::styled(
+                "[n] deny",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            UiBlock::bordered()
+                .title(" Approval ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn centered(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .flex(Flex::Center)
+    .split(area);
+    let horizontal = Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .flex(Flex::Center)
+    .split(vertical[1]);
+    horizontal[1]
+}
