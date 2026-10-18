@@ -98,6 +98,15 @@
 - 验收：引擎取消 2 条 + 进程组清理 2 条（取消与超时后后台 `sleep` 均消失）
   + CLI 端到端 1 条（真实 `qc` 进程对不响应的服务按 Ctrl-C，退出码 130 且 `turn_ended(cancelled)`）。
 
+### M1-12 事件 schema 黄金测试 ✅
+
+`crates/qcode-core/tests/event_schema.rs`。
+
+- 每个 `EventKind` 变体都有 JSON 快照（含 `type` / `data` 包装与可省略字段的缺省行为），
+  并断言「序列化 → 反序列化」往返相等。
+- 覆盖 assistant 的三种 content block、usage、tool metadata 默认值、turn 三种状态。
+- 字段改名或丢弃会同时打破快照与往返，迫使改动显式升级 `EVENT_SCHEMA_VERSION`。
+
 ## 待完成（M1-10 起）
 
 ### M1-10 交互式审批回归
