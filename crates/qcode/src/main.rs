@@ -239,6 +239,7 @@ async fn cmd_run(
             pricing,
             max_cost_usd: max_cost,
             on_delta: None,
+            context_window: Some(loaded.context.window_tokens),
         },
         |event| {
             if json {
@@ -320,6 +321,7 @@ async fn cmd_tui(
         pricing,
         max_cost_usd: None,
         max_turns: 8,
+        context_window: Some(loaded.context.window_tokens),
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;

@@ -68,6 +68,8 @@ Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底
   `sessions show` 可完整 replay。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
+- **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
+  `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
@@ -84,6 +86,10 @@ default_provider = "deepseek"
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"   # 只存变量名，不存 key
 default_model = "deepseek-flash"
+
+# 上下文窗口（token），用于 78% 压缩阈值；按模型实际窗口调整。
+[context]
+window_tokens = 128000
 
 # 成本估算与 --max-cost 的价目表（USD / 百万 token）。
 # 数值为示例，按服务商当前价目表填写；未配置的模型成本按 0 计。

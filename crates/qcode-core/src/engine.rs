@@ -11,11 +11,12 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::approval::{Answer, ApprovalRequest, Approver};
+use crate::compact;
 use crate::cost::Pricing;
 use crate::event::{
-    ApprovalDecided, ApprovalRequested, AssistantMessage, ContentBlock, Decision, ErrorEvent,
-    Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus,
-    Usage, UserMessage,
+    ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
+    ErrorEvent, Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted,
+    TurnStatus, Usage, UserMessage,
 };
 use crate::history;
 use crate::policy::{Action, Policy};
@@ -101,6 +102,10 @@ pub struct RunOptions<'a> {
     pub max_cost_usd: Option<f64>,
     /// Optional live stream for the frontend. Deltas are not persisted.
     pub on_delta: Option<DeltaSink>,
+    /// Context window in tokens; `None` disables compaction. When the estimated
+    /// context reaches 78% of it, older turns are summarized into a
+    /// `compaction` event.
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,8 +195,9 @@ where
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
     writer.begin_turn(&options.input, &mut on_event)?;
 
-    let events = ctx.store.load(options.session_id)?;
+    let mut events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events(&events);
+    let mut compaction_disabled = false;
     let tool_context =
         ToolContext::new(options.workspace.clone()).with_cancel(options.cancel.clone());
 
@@ -232,6 +238,105 @@ where
                 &mut on_event,
             )?;
             return Err(EngineError::MaxTurns(options.max_turns));
+        }
+
+        if let Some(window) = options.context_window
+            && !compaction_disabled
+            && compact::estimate_tokens(&messages) >= compact::threshold(window)
+        {
+            events = ctx.store.load(options.session_id)?;
+            if let Some(boundary) = compact::keep_from(&events, compact::KEEP_TURNS) {
+                let transcript = compact::summary_input(&events, boundary);
+                let summary_request = CompletionRequest {
+                    model: options.model.to_string(),
+                    system: compact::SUMMARY_SYSTEM.to_string(),
+                    messages: vec![Message {
+                        role: Role::User,
+                        blocks: vec![ContentBlock::Text { text: transcript }],
+                        tool_call_id: None,
+                    }],
+                    tools: Vec::new(),
+                    max_output_tokens: Some(1024),
+                };
+
+                match collect_stream(ctx.provider, summary_request, &options.cancel, None).await {
+                    Ok(summarized) => {
+                        total_usage.merge(&summarized.usage);
+                        if let Some(pricing) = &options.pricing {
+                            total_cost += pricing.cost_usd(&summarized.usage);
+                        }
+                        if summarized.cancelled {
+                            return finish(
+                                &mut writer,
+                                TurnStatus::Cancelled,
+                                total_usage,
+                                total_cost,
+                                String::new(),
+                                StopReason::EndTurn,
+                                options.session_id,
+                                turns,
+                                &mut on_event,
+                            );
+                        }
+
+                        let summary = blocks_text(&summarized.blocks).trim().to_string();
+                        if summary.is_empty() {
+                            compaction_disabled = true;
+                            writer.append(
+                                EventKind::Error(ErrorEvent {
+                                    kind: "compaction_empty".to_string(),
+                                    message: "summarizer returned no text; keeping full context"
+                                        .to_string(),
+                                    retryable: true,
+                                }),
+                                &mut on_event,
+                            )?;
+                        } else {
+                            let kept: Vec<Event> = events
+                                .iter()
+                                .filter(|event| event.seq >= boundary)
+                                .cloned()
+                                .collect();
+                            let mut kept_messages = vec![Message {
+                                role: Role::User,
+                                blocks: vec![ContentBlock::Text {
+                                    text: history::summary_text(&summary),
+                                }],
+                                tool_call_id: None,
+                            }];
+                            kept_messages.extend(history::messages_from_events(&kept));
+                            let tokens_after = compact::estimate_tokens(&kept_messages);
+                            let replaced_from =
+                                compact::first_message_seq_before(&events, boundary).unwrap_or(1);
+
+                            writer.append(
+                                EventKind::Compaction(Compaction {
+                                    trigger: compact::TRIGGER.to_string(),
+                                    summary,
+                                    replaced_from: replaced_from as u32,
+                                    replaced_to: (boundary - 1) as u32,
+                                    tokens_before: compact::estimate_tokens(&messages),
+                                    tokens_after,
+                                }),
+                                &mut on_event,
+                            )?;
+
+                            messages = kept_messages;
+                        }
+                    }
+                    Err(err) => {
+                        compaction_disabled = true;
+                        writer.append(
+                            EventKind::Error(ErrorEvent {
+                                kind: "compaction_failed".to_string(),
+                                message: err.to_string(),
+                                retryable: true,
+                            }),
+                            &mut on_event,
+                        )?;
+                    }
+                }
+            }
         }
 
         let request = CompletionRequest {

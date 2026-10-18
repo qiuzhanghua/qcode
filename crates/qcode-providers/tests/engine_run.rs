@@ -31,6 +31,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         pricing: None,
         max_cost_usd: None,
         on_delta: None,
+        context_window: None,
     }
 }
 

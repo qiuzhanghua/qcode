@@ -76,6 +76,7 @@ fn options<'a>(
         pricing: Some(pricing()),
         max_cost_usd,
         on_delta: None,
+        context_window: None,
     }
 }
 

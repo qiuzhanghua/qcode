@@ -57,10 +57,20 @@
 - 验收：CJK 多行提交、Ctrl-N / Shift+Enter / Alt+Enter 换行单测、输入框增高渲染测试。
 - 已知限制：IME 组合与系统粘贴仍需要真终端手工确认（本机沙箱无法分配 tty）。
 
-### M2-5 上下文压缩
+### M2-5 上下文压缩 ✅
 
-- 触发阈值 78%；摘要调用走 provider；写 `compaction` 事件（`replaced_from/to`、token 数）。
-- 压缩后 replay 与 resume 的上下文一致。
+- 预算来自 `[context] window_tokens`（默认 128000）；token 估算 = 消息字符数 / 4，
+  达到 78% 触发。
+- 压缩发生在每次 provider 调用前、工具执行之外：保留最近 2 个 turn 原文，更早的事件交给
+  **同一个模型**做结构化摘要（独立 system prompt），写 `compaction` 事件（trigger、summary、
+  `replaced_from/to`、tokens_before/after）。
+- `history::messages_from_events` 应用 compaction 的 seq 区间：replay / resume / fork 都得到
+  同一条摘要 + 最近 2 轮，老事件不再进入上下文。
+- 摘要调用计入 usage 与成本；摘要为空或失败只写 `error(compaction_empty|compaction_failed)`
+  并退回全量上下文，不会让 turn 失败；取消则按取消收尾。
+- 未做：把大工具输出驱逐到文件（等全文落盘能力补齐后接上）。
+- 验收：阈值/估算/切分单测 5 条 + 历史投影单测 1 条 + 引擎端到端 2 条
+  （触发压缩并验证 replay、宽窗口不压缩）。
 
 ### M2-6 AGENTS.md
 

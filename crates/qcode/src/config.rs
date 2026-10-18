@@ -27,6 +27,27 @@ pub struct Config {
     /// unknown (reported as zero) and `--max-cost` refuses to run.
     #[serde(default)]
     pub pricing: BTreeMap<String, Pricing>,
+    /// Context window used for compaction.
+    #[serde(default)]
+    pub context: ContextConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextConfig {
+    #[serde(default = "default_context_window")]
+    pub window_tokens: u64,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            window_tokens: default_context_window(),
+        }
+    }
+}
+
+fn default_context_window() -> u64 {
+    128_000
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -423,6 +444,15 @@ mod tests {
         let config: Config = toml::from_str(r#"default_provider = "mystery""#).unwrap();
         let error = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap_err();
         assert!(matches!(error, ConfigError::UnknownProvider(_)));
+    }
+
+    #[test]
+    fn context_window_defaults_and_overrides() {
+        let config = Config::default();
+        assert_eq!(config.context.window_tokens, 128_000);
+
+        let config: Config = toml::from_str("[context]\nwindow_tokens = 32000\n").unwrap();
+        assert_eq!(config.context.window_tokens, 32_000);
     }
 
     #[test]

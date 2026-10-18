@@ -8,10 +8,35 @@ use crate::event::{ContentBlock, Event, EventKind};
 use crate::provider::{Message, Role};
 
 pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
+    // A compaction event replaces the seq range it names. Older compactions
+    // nested inside a newer range are dropped with the rest of that range, so
+    // only the newest summary survives.
+    let replaced: Vec<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Compaction(compaction) => Some((
+                compaction.replaced_from as u64,
+                compaction.replaced_to as u64,
+            )),
+            _ => None,
+        })
+        .collect();
+    let is_replaced = |seq: u64| replaced.iter().any(|(from, to)| seq >= *from && seq <= *to);
+
     let mut messages = Vec::new();
 
     for event in events {
+        if is_replaced(event.seq) {
+            continue;
+        }
         match &event.kind {
+            EventKind::Compaction(compaction) => messages.push(Message {
+                role: Role::User,
+                blocks: vec![ContentBlock::Text {
+                    text: summary_text(&compaction.summary),
+                }],
+                tool_call_id: None,
+            }),
             EventKind::UserMessage(message) => messages.push(Message {
                 role: Role::User,
                 blocks: vec![ContentBlock::Text {
@@ -38,6 +63,12 @@ pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
     messages
 }
 
+/// Prefix makes the summary unmistakable to the model and to anyone reading
+/// the rebuilt context.
+pub fn summary_text(summary: &str) -> String {
+    format!("Conversation summary (compacted):\n{summary}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +77,59 @@ mod tests {
 
     fn event(seq: u64, kind: EventKind) -> Event {
         Event::new(seq, "s", 1, kind)
+    }
+
+    #[test]
+    fn compaction_replaces_its_range_with_a_summary() {
+        use crate::event::Compaction;
+
+        let events = vec![
+            event(
+                1,
+                EventKind::UserMessage(UserMessage {
+                    text: "old question".into(),
+                    attachments: vec![],
+                }),
+            ),
+            event(
+                2,
+                EventKind::AssistantMessage(AssistantMessage {
+                    blocks: vec![ContentBlock::Text {
+                        text: "old answer".into(),
+                    }],
+                    provider_raw: json!({}),
+                    usage: Default::default(),
+                }),
+            ),
+            event(
+                3,
+                EventKind::Compaction(Compaction {
+                    trigger: "context_78_percent".into(),
+                    summary: "old work".into(),
+                    replaced_from: 1,
+                    replaced_to: 2,
+                    tokens_before: 100,
+                    tokens_after: 10,
+                }),
+            ),
+            event(
+                4,
+                EventKind::UserMessage(UserMessage {
+                    text: "new question".into(),
+                    attachments: vec![],
+                }),
+            ),
+        ];
+
+        let messages = messages_from_events(&events);
+        assert_eq!(messages.len(), 2, "summary + newest message");
+        assert_eq!(messages[0].role, Role::User);
+        let glued = serde_json::to_string(&messages[0].blocks).unwrap();
+        assert!(glued.contains("Conversation summary (compacted)"));
+        assert!(glued.contains("old work"));
+        assert!(!glued.contains("old question"));
+        let glued = serde_json::to_string(&messages[1].blocks).unwrap();
+        assert!(glued.contains("new question"));
     }
 
     #[test]

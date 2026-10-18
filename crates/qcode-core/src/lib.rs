@@ -5,6 +5,7 @@
 //! crates and are injected through the traits defined here.
 
 pub mod approval;
+pub mod compact;
 pub mod cost;
 pub mod engine;
 pub mod event;
