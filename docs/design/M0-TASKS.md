@@ -132,7 +132,7 @@
 
 ### M0-14 文档与 LICENSE ✅
 
-- `LICENSE`（Apache-2.0 全文）与 `NOTICE`。
+- `LICENSE`（MIT，版权人 qiuzhanghua）与 `NOTICE`。
 - README 增加配置示例、优先级说明与 doctor 用法。
 - 验收：按 README 的快速开始可直接跑通 mock 路径。
 

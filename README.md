@@ -87,4 +87,4 @@ crates/coder-tui         ratatui 前端（M2）
 
 ## License
 
-Apache-2.0，见 [LICENSE](LICENSE)。第三方依赖许可证用 cargo-deny 审计（M1 接入）。
+MIT，见 [LICENSE](LICENSE)。版权归 qiuzhanghua。第三方依赖许可证用 cargo-deny 审计（M1 接入）。
