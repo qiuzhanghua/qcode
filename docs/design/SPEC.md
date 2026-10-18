@@ -252,6 +252,10 @@ stdout 只输出 JSONL 事件；日志与进度走 stderr。
 - 工具调用默认折叠为一行（名称 + 参数摘要 + 状态 + 耗时），可展开看完整输出。
 - diff 用红绿行；审批面板展示 argv、cwd、触发规则、沙箱模式。
 - 渲染 60Hz 合并流式 delta，避免逐 token 重绘。
+- 长 transcript 只渲染可见行（虚拟化），不能全量布局。
+- 默认不捕获鼠标，保留终端原生选择/复制。
+- 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标纳入测试。
+- 框架选型与约束见 [DECISIONS.md](./DECISIONS.md) 的 ADR-0001。
 
 ## 15. 存储
 

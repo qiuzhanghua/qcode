@@ -200,3 +200,33 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 2026-10-18：L3 锁定（Q17–Q21 按推荐；Q22 取 `rig-core` + 自写 loop）。
 - 2026-10-18：L4 锁定（Q23–Q26 按推荐）。
 - 2026-10-18：L5/L6 锁定（Q27–Q31 按推荐；评测采用合成 fixture）。
+
+## 9. ADR
+
+### ADR-0001：TUI 框架选 ratatui
+
+- 状态：接受（2026-10-18）
+- 背景：需要一个能承载流式 transcript、可折叠工具调用、diff、审批浮层和多行输入的终端前端。
+- 候选：ratatui、cursive、iocraft、tui-realm。
+- 决定：ratatui，M2 引入时 pin 精确版本。
+
+**理由**
+
+1. transcript 本质是事件日志的投影，immediate mode 的“每帧从状态重画”与事件驱动模型一致；
+   retained mode 反而要维护一棵会跟事件流打架的视图树。
+2. `TestBackend` + insta 支持关键帧快照，直接满足 SPEC §4.15 的测试要求；
+   cursive / iocraft 没有同等成熟的快照方案。
+3. 生态最大（`tui-textarea` 等），MIT 许可证。
+
+**约束**
+
+1. ratatui 只做渲染；事件循环、焦点、键位映射由 `coder-tui` 自己实现。
+2. 长 transcript 必须虚拟化，只渲染可见行。
+3. 默认不捕获鼠标，保留终端原生的选择/复制。
+4. 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标必须有测试。
+5. ratatui 的用法限制在 `coder-tui` 内，版本 pin 死；升级当独立任务。
+
+**后果**
+
+- M2 增加“transcript 虚拟化”和“CJK / IME 测试”两项任务。
+- M2 开始前不引入 ratatui 依赖，`coder-tui` 保持空壳。
