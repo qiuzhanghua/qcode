@@ -126,6 +126,15 @@ fn status_bar_shows_the_sandbox_mode() {
 #[test]
 fn child_agent_progress_is_rendered_nested() {
     let mut app = App::new("mock", "mock-1");
+    apply(
+        &mut app,
+        1,
+        EventKind::ToolCall(ToolCall {
+            call_id: "p1".to_string(),
+            name: "subagent".to_string(),
+            arguments: json!({"task": "investigate"}),
+        }),
+    );
     let child = |seq: u64, kind: EventKind| Event::new(seq, "child-1", 1, kind);
     app.apply_child(&child(
         1,
@@ -169,13 +178,18 @@ fn child_agent_progress_is_rendered_nested() {
     assert!(screen.contains("child says hi"), "{screen}");
     assert!(screen.contains("read_file"), "{screen}");
     assert!(screen.contains("a.txt"), "{screen}");
+    assert!(
+        screen.contains("3 nested"),
+        "parent row lacks count:\n{screen}"
+    );
 
-    // Ctrl-B folds child progress without touching parent rows.
-    app.show_child = false;
+    // Ctrl-B (or /subagents N) folds only this group.
+    app.toggle_child_group("child-1");
     let screen = draw(&app, 100, 20);
     assert!(!screen.contains("child says hi"), "{screen}");
     assert!(!screen.contains("read_file"), "{screen}");
-    assert!(screen.contains("child hidden"), "{screen}");
+    assert!(screen.contains("3 nested (folded)"), "{screen}");
+    assert!(screen.contains("child folded"), "{screen}");
 }
 
 #[test]

@@ -161,10 +161,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
     ];
-    if !app.show_child {
+    if !app.collapsed_children.is_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            "child hidden",
+            "child folded",
             Style::default().fg(Color::Yellow),
         ));
     }
@@ -196,13 +196,17 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph.scroll((offset as u16, 0)), area);
 }
 
-/// Child progress can be folded independently of tool output (Ctrl-B).
-fn is_child_block(block: &Block) -> bool {
+/// Child progress is grouped by the child session id and folded per group.
+fn child_group(block: &Block) -> Option<&str> {
     match block {
-        Block::Subagent(_) => true,
-        Block::Tool(tool) => tool.child,
-        _ => false,
+        Block::Subagent { group, .. } => Some(group),
+        Block::Tool(tool) if tool.child => tool.group.as_deref(),
+        _ => None,
     }
+}
+
+fn block_hidden(app: &App, block: &Block) -> bool {
+    child_group(block).is_some_and(|group| app.child_group_folded(group))
 }
 
 fn block_rows(block: &Block) -> usize {
@@ -211,7 +215,7 @@ fn block_rows(block: &Block) -> usize {
         | Block::Assistant(text)
         | Block::Notice(text)
         | Block::Skill(text)
-        | Block::Subagent(text) => text.split('\n').count().max(1),
+        | Block::Subagent { text, .. } => text.split('\n').count().max(1),
         Block::Todo(items) => 1 + items.len(),
         Block::Tool(tool) => {
             1 + if tool.expanded {
@@ -233,7 +237,7 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
     let mut selected = Vec::new();
     let mut rows = 0;
     for block in app.blocks.iter().rev() {
-        if !app.show_child && is_child_block(block) {
+        if block_hidden(app, block) {
             continue;
         }
         selected.push(block);
@@ -259,11 +263,18 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             Block::Skill(text) => {
                 push_text(&mut lines, "◆ ", text, Style::default().fg(Color::Magenta))
             }
-            Block::Subagent(text) => {
+            Block::Subagent { text, .. } => {
                 push_text(&mut lines, "  ↳ ", text, Style::default().fg(Color::Blue))
             }
             Block::Todo(items) => push_todo(&mut lines, items),
-            Block::Tool(tool) => push_tool(&mut lines, tool),
+            Block::Tool(tool) => {
+                let nested = tool
+                    .group
+                    .as_deref()
+                    .filter(|_| !tool.child)
+                    .map(|group| (app.child_block_count(group), app.child_group_folded(group)));
+                push_tool(&mut lines, tool, nested);
+            }
         }
     }
 
@@ -297,13 +308,13 @@ fn status_glyph(status: Option<ToolStatus>) -> (&'static str, &'static str, Colo
     }
 }
 
-fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
+fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(usize, bool)>) {
     let (glyph, status, color) = status_glyph(tool.status);
     let elapsed = tool
         .elapsed
         .map(|duration| format!(" · {}", format_duration(duration)))
         .unwrap_or_default();
-    lines.push(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("{}{glyph} ", if tool.child { "  ↳ " } else { " " }),
             Style::default().fg(color),
@@ -316,7 +327,18 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
         Span::styled(tool.summary.clone(), Style::default().fg(Color::Gray)),
         Span::raw(" "),
         Span::styled(format!("[{status}{elapsed}]"), Style::default().fg(color)),
-    ]));
+    ];
+    if let Some((count, folded)) = nested
+        && count > 0
+    {
+        let label = if folded {
+            format!(" · {count} nested (folded)")
+        } else {
+            format!(" · {count} nested")
+        };
+        spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
+    }
+    lines.push(Line::from(spans));
 
     if !tool.expanded {
         return;

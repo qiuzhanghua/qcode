@@ -148,7 +148,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     app.sandbox = options.sandbox.clone();
     app.context_window = options.context_window;
     app.push_notice(format!(
-        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子进度 · Ctrl-T ctx 显示 · Ctrl-U/D 滚动 · /skills 查看技能 · Ctrl-C 两次退出"
+        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · Ctrl-C 两次退出"
     ));
 
     let mut cancel = CancellationToken::new();

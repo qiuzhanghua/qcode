@@ -494,8 +494,10 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
 2. 子工具集 = 父工具集去掉 `subagent`，因此深度固定为 1，不能递归；子 agent 与父共用
    workspace、provider、policy 和 approver，但**看不到父对话**（无 AGENTS.md / skills 索引）。
 3. 每次调用创建独立 session（独立 JSONL）。TUI 通过 `TuiMsg::Child` 把子事件渲染成嵌套
-   进度块（`↳` 文本 / 工具行，不改父状态机）；headless 不转发，父只收到工具结果：最终文本
-   + 子 session id + turn 数。空结果用占位文本。
+   进度块（`↳` 文本 / 工具行，不改父状态机）；块按子 session id 分组，并绑定到父
+   `subagent` 工具行（显示 `N nested`）。Ctrl-B 切换最近一组，`/subagents [n]`
+   列出/切换任意组。headless 不转发，父只收到工具结果：最终文本 + 子 session id +
+   turn 数。空结果用占位文本。
 4. 参数：`task` 必填；`max_turns` 默认 20、上限 40。`ApprovalClass::External`（默认 ask、
    串行）；子工具调用仍逐个走策略与审批，权限不能放大。
 5. 子会话的 usage/cost 通过 `SubagentOutcome` → `ToolOutput` → engine 汇总进父 turn；

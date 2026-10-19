@@ -4,6 +4,8 @@
 //! `UiAction` for the caller to execute, which keeps the key map unit-testable
 //! and lets the renderer be exercised with `TestBackend`.
 
+use std::collections::HashSet;
+
 use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
 use qcode_core::todo::{self, TodoItem};
@@ -23,7 +25,11 @@ pub enum Block {
     Assistant(String),
     Tool(ToolEntry),
     /// Progress from a child agent: text, notices and a nested tool row.
-    Subagent(String),
+    /// `group` is the child session id, shared with its parent `subagent` row.
+    Subagent {
+        text: String,
+        group: String,
+    },
     /// The session todo list as returned by `todo_write`. Rendered inline so
     /// every update stays visible in the transcript.
     Todo(Vec<TodoItem>),
@@ -62,6 +68,9 @@ pub struct ToolEntry {
     pub elapsed: Option<Duration>,
     /// True for a child agent's tool call (rendered nested).
     pub child: bool,
+    /// Child session id for a nested tool row, or the linked child session for
+    /// the parent `subagent` row.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,8 +145,10 @@ pub struct App {
     pub context_window: Option<u64>,
     /// Status-bar format for context usage (Ctrl-T cycles Auto/Percent/Tokens).
     pub context_display: ContextDisplay,
-    /// Show child-agent progress blocks (Ctrl-B). Parent rows stay visible.
-    pub show_child: bool,
+    /// Child groups in order, one per `subagent` call (child session ids).
+    pub child_groups: Vec<String>,
+    /// Child groups whose nested blocks are folded.
+    pub collapsed_children: HashSet<String>,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
@@ -164,7 +175,8 @@ impl App {
             context_tokens: 0,
             context_window: None,
             context_display: ContextDisplay::default(),
-            show_child: true,
+            child_groups: Vec::new(),
+            collapsed_children: HashSet::new(),
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
@@ -214,6 +226,7 @@ impl App {
                     started: event.ts,
                     elapsed: None,
                     child: false,
+                    group: None,
                 }));
             }
             EventKind::ToolResult(result) => {
@@ -274,25 +287,48 @@ impl App {
     /// appends nested transcript rows. Tool call ids are namespaced with the
     /// child session id to avoid clashing with parent calls.
     pub fn apply_child(&mut self, event: &Event) {
+        let group = event.session.clone();
         match &event.kind {
             EventKind::SessionStarted(started) => {
-                self.blocks.push(Block::Subagent(format!(
-                    "subagent {} started ({}/{})",
-                    short_id(&event.session),
-                    started.provider,
-                    started.model
-                )));
+                if !self.child_groups.iter().any(|known| known == &group) {
+                    self.child_groups.push(group.clone());
+                }
+                // Bind the child session to the parent `subagent` row that
+                // spawned it. Sub-agent calls are serial, so the newest
+                // unbound row is the right one.
+                if let Some(tool) = self.blocks.iter_mut().rev().find_map(|block| match block {
+                    Block::Tool(tool)
+                        if !tool.child && tool.name == "subagent" && tool.group.is_none() =>
+                    {
+                        Some(tool)
+                    }
+                    _ => None,
+                }) {
+                    tool.group = Some(group.clone());
+                }
+                self.blocks.push(Block::Subagent {
+                    text: format!(
+                        "subagent {} started ({}/{})",
+                        short_id(&group),
+                        started.provider,
+                        started.model
+                    ),
+                    group,
+                });
             }
             EventKind::AssistantMessage(message) => {
                 for block in &message.blocks {
                     if let ContentBlock::Text { text } = block {
-                        self.blocks.push(Block::Subagent(text.clone()));
+                        self.blocks.push(Block::Subagent {
+                            text: text.clone(),
+                            group: group.clone(),
+                        });
                     }
                 }
             }
             EventKind::ToolCall(call) => {
                 self.blocks.push(Block::Tool(ToolEntry {
-                    call_id: child_call_id(&event.session, &call.call_id),
+                    call_id: child_call_id(&group, &call.call_id),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
                     arguments: call.arguments.clone(),
@@ -302,10 +338,11 @@ impl App {
                     started: event.ts,
                     elapsed: None,
                     child: true,
+                    group: Some(group),
                 }));
             }
             EventKind::ToolResult(result) => {
-                let call_id = child_call_id(&event.session, &result.call_id);
+                let call_id = child_call_id(&group, &result.call_id);
                 if let Some(tool) = self.tool_mut(&call_id) {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
@@ -313,18 +350,22 @@ impl App {
                 }
             }
             EventKind::Error(error) => {
-                self.blocks.push(Block::Subagent(format!(
-                    "error: {}: {}",
-                    error.kind, error.message
-                )));
+                self.blocks.push(Block::Subagent {
+                    text: format!("error: {}: {}", error.kind, error.message),
+                    group,
+                });
             }
             EventKind::Compaction(_) => {
-                self.blocks
-                    .push(Block::Subagent("context compacted".to_string()));
+                self.blocks.push(Block::Subagent {
+                    text: "context compacted".to_string(),
+                    group,
+                });
             }
             EventKind::TurnEnded(ended) => {
-                self.blocks
-                    .push(Block::Subagent(format!("finished ({:?})", ended.status)));
+                self.blocks.push(Block::Subagent {
+                    text: format!("finished ({:?})", ended.status),
+                    group,
+                });
             }
             // Approval prompts come through the approver channel; the child
             // never owns the parent status line.
@@ -333,6 +374,29 @@ impl App {
             | EventKind::ApprovalRequested(_)
             | EventKind::ApprovalDecided(_) => {}
         }
+    }
+
+    /// Fold or unfold one sub-agent group.
+    pub fn toggle_child_group(&mut self, group: &str) {
+        if !self.collapsed_children.remove(group) {
+            self.collapsed_children.insert(group.to_string());
+        }
+    }
+
+    pub fn child_group_folded(&self, group: &str) -> bool {
+        self.collapsed_children.contains(group)
+    }
+
+    /// Number of nested blocks belonging to a group (parent row label).
+    pub fn child_block_count(&self, group: &str) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| match block {
+                Block::Subagent { group: id, .. } => id == group,
+                Block::Tool(tool) => tool.child && tool.group.as_deref() == Some(group),
+                _ => false,
+            })
+            .count()
     }
 
     /// Turn a key press into an action. Unhandled keys return `None`.
@@ -447,7 +511,9 @@ impl App {
                 return None;
             }
             KeyCode::Char('b') if ctrl => {
-                self.show_child = !self.show_child;
+                if let Some(group) = self.child_groups.last().cloned() {
+                    self.toggle_child_group(&group);
+                }
                 return None;
             }
             _ => {}
@@ -474,6 +540,11 @@ impl App {
             None => (raw, ""),
         };
 
+        if command == "/subagents" {
+            self.handle_subagents(argument);
+            return None;
+        }
+
         if command == "/skills" {
             if argument.is_empty() {
                 self.show_skills();
@@ -486,7 +557,7 @@ impl App {
         let name = command.strip_prefix('/').unwrap_or_default();
         let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
             self.push_notice(format!(
-                "unknown command '{command}'; try /skills, or /<skill-name>"
+                "unknown command '{command}'; try /skills, /subagents, or /<skill-name>"
             ));
             return None;
         };
@@ -505,6 +576,53 @@ impl App {
         }
         self.status.running = true;
         Some(UiAction::Submit(text))
+    }
+
+    /// `/subagents` lists child groups; `/subagents N` folds/unfolds one.
+    fn handle_subagents(&mut self, argument: &str) {
+        if self.child_groups.is_empty() {
+            self.push_notice("no sub-agent runs in this session");
+            return;
+        }
+
+        if argument.is_empty() {
+            let groups = self.child_groups.clone();
+            let mut text = format!("sub-agent groups ({}):", groups.len());
+            for (index, group) in groups.iter().enumerate() {
+                let state = if self.child_group_folded(group) {
+                    "folded"
+                } else {
+                    "shown"
+                };
+                text.push_str(&format!(
+                    "\n  {}. {} · {} nested · {state}",
+                    index + 1,
+                    short_id(group),
+                    self.child_block_count(group),
+                ));
+            }
+            text.push_str("\n\nUse /subagents <n> to toggle one; Ctrl-B toggles the newest.");
+            self.push_notice(text);
+            return;
+        }
+
+        let parsed = argument.parse::<usize>().ok();
+        match parsed {
+            Some(index) if index >= 1 && index <= self.child_groups.len() => {
+                let group = self.child_groups[index - 1].clone();
+                self.toggle_child_group(&group);
+                let state = if self.child_group_folded(&group) {
+                    "folded"
+                } else {
+                    "shown"
+                };
+                self.push_notice(format!("sub-agent group {index}: {state}"));
+            }
+            _ => self.push_notice(format!(
+                "usage: /subagents [1..{}]",
+                self.child_groups.len()
+            )),
+        }
     }
 
     fn show_skills(&mut self) {
@@ -1096,6 +1214,7 @@ mod tests {
             })
             .expect("parent tool row");
         assert_eq!(parent.status, None);
+        assert_eq!(parent.group.as_deref(), Some("child-1"));
 
         let child_tool = app
             .blocks
@@ -1108,16 +1227,14 @@ mod tests {
         assert_eq!(child_tool.status, Some(ToolStatus::Ok));
         assert_eq!(child_tool.output, "contents");
 
-        assert!(
-            app.blocks
-                .iter()
-                .any(|block| matches!(block, Block::Subagent(text) if text == "child thinking"))
-        );
-        assert!(
-            app.blocks
-                .iter()
-                .any(|block| matches!(block, Block::Subagent(text) if text.contains("finished")))
-        );
+        assert!(app.blocks.iter().any(
+            |block| matches!(block, Block::Subagent { text, .. } if text == "child thinking")
+        ));
+        assert!(app.blocks.iter().any(
+            |block| matches!(block, Block::Subagent { text, .. } if text.contains("finished"))
+        ));
+        assert_eq!(app.child_groups, vec!["child-1"]);
+        assert_eq!(app.child_block_count("child-1"), 4);
     }
 
     #[test]
@@ -1135,15 +1252,66 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_b_toggles_child_progress_independently() {
+    fn ctrl_b_folds_the_newest_child_group() {
         let mut app = App::new("mock", "mock-1");
-        assert!(app.show_child);
+        assert!(app.child_groups.is_empty());
+
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "p1".to_string(),
+            name: "subagent".to_string(),
+            arguments: json!({"task": "x"}),
+        })));
+        app.apply_child(&Event::new(
+            1,
+            "child-1",
+            1,
+            EventKind::SessionStarted(SessionStarted {
+                model: "mock-1".to_string(),
+                provider: "mock".to_string(),
+                cwd: "/tmp".to_string(),
+                version: "0.1.0".to_string(),
+            }),
+        ));
+        assert_eq!(app.child_groups, vec!["child-1"]);
+        assert!(!app.child_group_folded("child-1"));
 
         let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
         app.handle_key(ctrl_b);
-        assert!(!app.show_child);
+        assert!(app.child_group_folded("child-1"));
         app.handle_key(ctrl_b);
-        assert!(app.show_child);
+        assert!(!app.child_group_folded("child-1"));
+    }
+
+    #[test]
+    fn subagents_command_lists_and_toggles_groups() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "p1".to_string(),
+            name: "subagent".to_string(),
+            arguments: json!({"task": "x"}),
+        })));
+        app.apply_child(&Event::new(
+            1,
+            "child-1",
+            1,
+            EventKind::SessionStarted(SessionStarted {
+                model: "mock-1".to_string(),
+                provider: "mock".to_string(),
+                cwd: "/tmp".to_string(),
+                version: "0.1.0".to_string(),
+            }),
+        ));
+
+        type_text(&mut app, "/subagents");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("sub-agent groups (1)") && text.contains("shown")
+        ));
+
+        type_text(&mut app, "/subagents 1");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(app.child_group_folded("child-1"));
     }
 
     #[test]
