@@ -19,6 +19,10 @@ pub struct ApprovalRequest {
     pub summary: String,
     pub reason: String,
     pub rule_id: Option<String>,
+    /// Command/path shown as `argv` in the approval panel.
+    pub argv: Option<String>,
+    /// Effective working directory for shell calls.
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,15 @@ impl Approver for InteractiveApprover {
 
             eprintln!();
             eprintln!("[approval] {}: {}", request.tool, request.summary);
+            if let Some(argv) = &request.argv {
+                eprintln!("  argv: {argv}");
+            }
+            if let Some(cwd) = &request.cwd {
+                eprintln!("  cwd: {cwd}");
+            }
+            if let Some(rule) = &request.rule_id {
+                eprintln!("  rule: {rule}");
+            }
             eprintln!("  reason: {}", request.reason);
             eprint!("  allow? [y/N] ");
             let _ = std::io::stderr().flush();

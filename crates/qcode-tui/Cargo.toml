@@ -12,3 +12,6 @@ ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
 tui-textarea = { version = "=0.7.0", default-features = false, features = ["crossterm"] }
 time.workspace = true
+
+[dev-dependencies]
+insta = "1"

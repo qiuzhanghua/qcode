@@ -76,6 +76,9 @@ enum TuiMsg {
         tool: String,
         summary: String,
         reason: String,
+        rule: Option<String>,
+        argv: Option<String>,
+        cwd: Option<String>,
         reply: oneshot::Sender<Answer>,
     },
 }
@@ -97,6 +100,9 @@ impl Approver for TuiApprover {
                 tool: request.tool.clone(),
                 summary: request.summary.clone(),
                 reason: request.reason.clone(),
+                rule: request.rule_id.clone(),
+                argv: request.argv.clone(),
+                cwd: request.cwd.clone(),
                 reply,
             })
             .is_err()
@@ -282,6 +288,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                         tool,
                         summary,
                         reason,
+                        rule,
+                        argv,
+                        cwd,
                         reply,
                     } => {
                         // Child agents do not forward their tool events, so the
@@ -291,6 +300,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             tool,
                             summary,
                             reason,
+                            rule,
+                            argv,
+                            cwd,
                         });
                         pending_approval = Some((call_id, reply));
                     }
@@ -427,6 +439,8 @@ mod tests {
             summary: "echo hi".to_string(),
             reason: "process execution".to_string(),
             rule_id: None,
+            argv: Some("echo hi".to_string()),
+            cwd: Some("/tmp".to_string()),
         }
     }
 

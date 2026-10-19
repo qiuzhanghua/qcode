@@ -5,7 +5,7 @@ use qcode_core::event::{
     ApprovalRequested, AssistantMessage, ContentBlock, Event, EventKind, SessionStarted, ToolCall,
     ToolResult, ToolStatus, TurnStarted, TurnStatus, Usage, UserMessage,
 };
-use qcode_tui::{App, ContextDisplay, render};
+use qcode_tui::{App, ApprovalPrompt, ContextDisplay, render};
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 
@@ -219,6 +219,81 @@ fn status_bar_shows_context_usage() {
     app.context_tokens = 128_000;
     let screen = draw(&app, 120, 10);
     assert!(screen.contains("ctx 128k/128k"), "{screen}");
+}
+
+#[test]
+fn transcript_snapshot() {
+    let app = app_with_transcript();
+    let screen = draw(&app, 80, 24);
+    insta::assert_snapshot!(screen);
+}
+
+#[test]
+fn approval_overlay_shows_rule_argv_and_cwd() {
+    let mut app = App::new("mock", "mock-1");
+    app.approval = Some(ApprovalPrompt {
+        call_id: "c1".to_string(),
+        tool: "run_shell".to_string(),
+        summary: "cargo test".to_string(),
+        reason: "default: process execution".to_string(),
+        rule: Some("allow-cargo".to_string()),
+        argv: Some("cargo test --workspace".to_string()),
+        cwd: Some("/work/repo".to_string()),
+    });
+    let screen = draw(&app, 100, 30);
+    assert!(screen.contains("allow-cargo"), "{screen}");
+    assert!(screen.contains("cargo test --workspace"), "{screen}");
+    assert!(screen.contains("/work/repo"), "{screen}");
+    assert!(screen.contains("sandbox none"), "{screen}");
+}
+
+#[test]
+fn apply_patch_output_uses_red_and_green() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Color;
+
+    let mut app = App::new("mock", "mock-1");
+    apply(
+        &mut app,
+        1,
+        EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"diff": "..."}),
+        }),
+    );
+    apply(
+        &mut app,
+        2,
+        EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new".to_string(),
+            metadata: Default::default(),
+        }),
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal.draw(|frame| render(frame, &app)).expect("draw");
+    let buffer = terminal.backend().buffer();
+
+    let mut green = false;
+    let mut red = false;
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if row.contains("+new") {
+            green |= (0..buffer.area.width).any(|x| buffer[(x, y)].fg == Color::Green);
+        }
+        if row.contains("-old") {
+            red |= (0..buffer.area.width).any(|x| buffer[(x, y)].fg == Color::Red);
+        }
+    }
+    assert!(green, "added diff line is not green");
+    assert!(red, "removed diff line is not red");
 }
 
 #[test]

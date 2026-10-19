@@ -3,7 +3,7 @@
 //! The engine owns the state machine, the event log and the policy boundary.
 //! Providers only stream; tools only execute; approvers only answer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1034,6 +1034,25 @@ where
             summary: summarize_call(&call.name, &call.arguments),
             reason: reason.clone(),
             rule_id: rule_id.clone(),
+            argv: call
+                .arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    call.arguments
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(|path| format!("path {path}"))
+                }),
+            cwd: (call.name == "run_shell").then(|| {
+                let cwd = call.arguments.get("cwd").and_then(Value::as_str);
+                match cwd.filter(|cwd| !cwd.is_empty()) {
+                    Some(cwd) if Path::new(cwd).is_absolute() => cwd.to_string(),
+                    Some(cwd) => tool_context.workspace.join(cwd).display().to_string(),
+                    None => tool_context.workspace.display().to_string(),
+                }
+            }),
         };
         writer.append(
             EventKind::ApprovalRequested(ApprovalRequested {

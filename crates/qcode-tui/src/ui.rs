@@ -350,6 +350,7 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(u
         )));
         return;
     }
+    let diff_tool = matches!(tool.name.as_str(), "apply_patch" | "edit_file");
     for (rendered, chunk) in tool.output.split('\n').enumerate() {
         if rendered == TOOL_OUTPUT_LINES {
             let total = tool.output.split('\n').count();
@@ -362,10 +363,34 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(u
             )));
             break;
         }
-        lines.push(Line::from(Span::styled(
-            format!("    │ {chunk}"),
-            Style::default().fg(Color::DarkGray),
-        )));
+        let style = if diff_tool {
+            diff_style(chunk)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(Span::styled(format!("    │ {chunk}"), style)));
+    }
+}
+
+/// Red/green colouring for unified diffs in apply_patch/edit_file output.
+fn diff_style(line: &str) -> Style {
+    if line.starts_with("+++") || line.starts_with("---") {
+        let color = if line.starts_with("+++") {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    } else if line.starts_with("@@") {
+        Style::default().fg(Color::Cyan)
+    } else if line.starts_with('+') {
+        Style::default().fg(Color::Green)
+    } else if line.starts_with('-') {
+        Style::default().fg(Color::Red)
+    } else if line.starts_with("diff ") || line.starts_with("index ") {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
     }
 }
 
@@ -420,7 +445,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
-    let area = centered(72, 40, frame.area());
+    let area = centered(72, 60, frame.area());
     frame.render_widget(Clear, area);
 
     let label = Style::default().fg(Color::Gray);
@@ -436,6 +461,18 @@ fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
         Line::from(vec![
             Span::styled("reason  ", label),
             Span::raw(prompt.reason.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("rule    ", label),
+            Span::raw(prompt.rule.clone().unwrap_or_else(|| "—".to_string())),
+        ]),
+        Line::from(vec![
+            Span::styled("argv    ", label),
+            Span::raw(prompt.argv.clone().unwrap_or_else(|| "—".to_string())),
+        ]),
+        Line::from(vec![
+            Span::styled("cwd     ", label),
+            Span::raw(prompt.cwd.clone().unwrap_or_else(|| "—".to_string())),
         ]),
         Line::from(vec![
             Span::styled("sandbox ", label),

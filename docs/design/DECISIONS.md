@@ -633,3 +633,26 @@ TOML。
 - 暂不支持把 server 写到项目配置（没有 `--project`）；避免仓库自动获得外部工具。
 - 暂不支持 `env` 字段（MCP 配置 schema 目前没有该字段）。
 - `config edit` 依赖交互式 `$EDITOR`，CI 里不应调用。
+
+## ADR-0019：TUI diff 着色、审批细节与快照（2026-10-19）
+
+**背景**：SPEC §14 要求 diff 用红绿行、审批面板展示 argv/cwd/触发规则；§16 要求 TUI
+关键帧快照。此前审批只有 tool/summary/reason/sandbox，工具输出全部灰色，渲染测试只有
+字符串断言。
+
+**决定**
+
+1. `ApprovalRequest` 增加 `argv`（shell command 或 `path …`）与 `cwd`（shell 的有效
+   cwd），TUI 审批浮层展示 rule / argv / cwd；`InteractiveApprover` 的 stderr 提示也带上。
+2. `apply_patch` / `edit_file` 的展开输出按行着色：`+++`/`+` 绿、`---`/`-` 红、`@@` 青、
+   `diff`/`index` 粗体；其它工具保持灰色。
+3. 审批浮层高度从 40% 提到 60%，避免新增行把 `[y]/[n]` 挤出屏幕。
+4. `qcode-tui` 引入 `insta` dev-dependency，`render::transcript_snapshot` 固化一帧
+   80×24 的 transcript；更新快照用
+   `INSTA_UPDATE=always cargo test -p qcode-tui --test render transcript_snapshot`。
+
+**后果**
+
+- 快照对布局/文案变化敏感，是有意的回归信号；UI 改动需要一起更新 `.snap`。
+- argv 对超长命令可能换行；浮层使用 `Wrap`，极端长度仍可能挤占按钮空间。
+- diff 着色是行首启发式，不是语法分析；非 diff 工具的 `+`/`-` 行不受影响。

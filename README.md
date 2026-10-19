@@ -83,7 +83,8 @@ Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底
 运行状态（有子组折叠时显示 `child folded`）；ctx 默认随终端宽度在 `ctx 12%` 与
 `ctx 15.4k/128k` 之间切换，Ctrl-T 可强制
 切换，达到 50% / 78% 时变黄 / 变红；审批浮层里 `sandbox` 一行再次标明当前生效
-的沙箱。审批浮层里 `y` 允许、`n` 拒绝。子 agent 进度按每次调用分组，父工具行显示
+的沙箱；审批浮层还展示 rule id、argv 与 cwd，diff 工具的展开输出按红/绿着色。
+审批浮层里 `y` 允许、`n` 拒绝。子 agent 进度按每次调用分组，父工具行显示
 `N nested`（折叠时 `N nested (folded)`）；Ctrl-B 切换最近一组，`/subagents` 列出各组、
 `/subagents <n>` 单独折叠/展开。输入 `/skills` 列出发现的 skill，`/skills <name>`
 直接查看正文；输入 `/<skill-name>`（可带任务，如 `/dev-env-inventory 盘点本机`）

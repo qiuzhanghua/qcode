@@ -89,6 +89,9 @@ pub struct ApprovalPrompt {
     pub tool: String,
     pub summary: String,
     pub reason: String,
+    pub rule: Option<String>,
+    pub argv: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// What the event loop should do after a key press.
@@ -259,6 +262,9 @@ impl App {
                     tool,
                     summary,
                     reason: request.reason.clone(),
+                    rule: request.rule_id.clone(),
+                    argv: None,
+                    cwd: None,
                 });
             }
             EventKind::ApprovalDecided(_) => {

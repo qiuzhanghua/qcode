@@ -1,0 +1,28 @@
+---
+source: crates/qcode-tui/tests/render.rs
+expression: screen
+---
+" qcode  mock:mock-1  ctx —  sandbox none  turn 1  $0.0000  running              "
+"❯ fix tests                                                                     "
+"  running the suite                                                             "
+" ✔ run_shell cargo test [ok · 0ms]                                              "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"┌ message ─────────────────────────────────────────────────────────────────────┐"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
