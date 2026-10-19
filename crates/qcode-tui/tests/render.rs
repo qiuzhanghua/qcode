@@ -113,6 +113,17 @@ fn renders_status_transcript_and_composer() {
 }
 
 #[test]
+fn status_bar_shows_the_sandbox_mode() {
+    let mut app = App::new("mock", "mock-1");
+    let screen = draw(&app, 80, 10);
+    assert!(screen.contains("sandbox none"), "{screen}");
+
+    app.sandbox = "bwrap".to_string();
+    let screen = draw(&app, 80, 10);
+    assert!(screen.contains("sandbox bwrap"), "{screen}");
+}
+
+#[test]
 fn collapsed_tool_hides_output_until_expanded() {
     let app = app_with_transcript();
     let screen = draw(&app, 80, 24);

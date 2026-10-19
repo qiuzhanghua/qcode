@@ -39,7 +39,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_composer(frame, app, areas[2]);
 
     if let Some(prompt) = &app.approval {
-        render_approval(frame, prompt);
+        render_approval(frame, prompt, &app.sandbox);
+    }
+}
+
+fn sandbox_style(sandbox: &str) -> Style {
+    if sandbox == "none" {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     }
 }
 
@@ -74,6 +84,11 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             format!("{}:{}", app.status.provider, app.status.model),
             muted,
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("sandbox {}", app.sandbox),
+            sandbox_style(&app.sandbox),
         ),
         Span::raw("  "),
         Span::styled(format!("turn {}", app.status.turn), muted),
@@ -294,7 +309,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(&app.textarea, area);
 }
 
-fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt) {
+fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
     let area = centered(72, 40, frame.area());
     frame.render_widget(Clear, area);
 
@@ -311,6 +326,10 @@ fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt) {
         Line::from(vec![
             Span::styled("reason  ", label),
             Span::raw(prompt.reason.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("sandbox ", label),
+            Span::raw(sandbox.to_string()),
         ]),
         Line::from(""),
         Line::from(vec![

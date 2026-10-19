@@ -65,7 +65,8 @@ export DEEPSEEK_API_KEY=...
 TUI 键位：Enter 发送、**Ctrl-N 换行**（支持 Kitty 键盘协议的终端里 Shift+Enter 也可）、
 Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
 Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底部；
-审批浮层里 `y` 允许、`n` 拒绝。输入 `/skills` 列出发现的 skill，`/skills <name>`
+顶部状态栏显示 provider:model、**sandbox 模式**、turn、成本与运行状态，审批浮层里
+`sandbox` 一行再次标明当前生效的沙箱。审批浮层里 `y` 允许、`n` 拒绝。输入 `/skills` 列出发现的 skill，`/skills <name>`
 直接查看正文；输入 `/<skill-name>`（可带任务，如 `/dev-env-inventory 盘点本机`）
 直接激活：正文作为用户消息提交，不必等模型决定是否调用工具。激活不经过 `skill` 工具、
 也不新增事件类型，事件日志里保留完整的 user_message。助手文本按 ≤60Hz 合并流式显示，

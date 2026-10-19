@@ -365,7 +365,7 @@ async fn cmd_tui(
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
     let provider = build_provider(&resolved)?;
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox.clone()).await;
 
     tui::run(tui::TuiOptions {
         store: &store,
@@ -382,6 +382,7 @@ async fn cmd_tui(
         agents_md,
         skills_prompt,
         skills: skill_views,
+        sandbox: sandbox.name().to_string(),
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;

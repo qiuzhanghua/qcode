@@ -100,6 +100,9 @@ pub struct App {
     /// Rows scrolled up from the bottom of the transcript (0 = follow tail).
     pub scroll: usize,
     pub status: Status,
+    /// Active sandbox backend (`none`, `sandbox-exec`, `bwrap`, `landlock`).
+    /// Kept as a string so the TUI does not depend on `qcode-tools`.
+    pub sandbox: String,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
@@ -122,6 +125,7 @@ impl App {
                 running: false,
                 last: None,
             },
+            sandbox: "none".to_string(),
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
