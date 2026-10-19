@@ -32,6 +32,22 @@ jobs:
           cargo test -p qcode-tools --lib sandbox::linux_tests -- --nocapture
           cargo test -p qcode-tools --lib sandbox::landlock_runtime -- --nocapture
 
+  windows-build:
+    name: windows (build + smoke)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # Full runtime tests still need the PowerShell/cmd shell work; this job
+      # catches compile/link regressions before that lands.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --no-run
+      - name: mock smoke
+        run: cargo run -p qcode -- run "hi" --provider mock --json --data-dir .tmp/windows-data
+
   msrv:
     name: msrv (1.95)
     runs-on: ubuntu-latest
