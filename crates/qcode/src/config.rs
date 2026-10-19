@@ -193,6 +193,12 @@ pub enum ConfigError {
     InvalidMaxCost,
     #[error("invalid MCP configuration: {0}")]
     Mcp(#[from] McpConfigError),
+    #[error("invalid config document: {0}")]
+    InvalidDocument(String),
+    #[error("MCP server '{0}' already exists")]
+    McpExists(String),
+    #[error("MCP server '{0}' not found")]
+    McpMissing(String),
 }
 
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
@@ -286,6 +292,143 @@ pub fn load_policy(path: &Path) -> Result<Vec<Rule>, ConfigError> {
 pub fn default_path() -> Result<PathBuf, ConfigError> {
     let home = std::env::var("HOME").map_err(|_| ConfigError::NoHome)?;
     Ok(PathBuf::from(home).join(DEFAULT_CONFIG_RELATIVE))
+}
+
+/// The file `qc config edit` / `qc mcp add|remove` should modify.
+pub fn edit_path(explicit: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    if let Ok(path) = std::env::var("QCODE_CONFIG") {
+        return Ok(PathBuf::from(path));
+    }
+    default_path()
+}
+
+fn read_document(path: &Path) -> Result<toml::Value, ConfigError> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::Table::new()));
+    }
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    text.parse::<toml::Table>()
+        .map(toml::Value::Table)
+        .map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn write_document(path: &Path, document: &toml::Value) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    let text = toml::to_string_pretty(document)
+        .map_err(|err| ConfigError::InvalidDocument(err.to_string()))?;
+    let temp = path.with_extension("qcode-tmp");
+    std::fs::write(&temp, text).map_err(|source| ConfigError::Read {
+        path: temp.clone(),
+        source,
+    })?;
+    std::fs::rename(&temp, path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn validate_document(document: &toml::Value) -> Result<(), ConfigError> {
+    let text = toml::to_string_pretty(document)
+        .map_err(|err| ConfigError::InvalidDocument(err.to_string()))?;
+    let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        path: PathBuf::from("<edit>"),
+        source,
+    })?;
+    config.mcp.validate()?;
+    Ok(())
+}
+
+/// Append one `[[mcp.servers]]` entry to the config file.
+pub fn mcp_add(
+    path: &Path,
+    name: &str,
+    command: &str,
+    args: &[String],
+    enabled: bool,
+    timeout_secs: Option<u64>,
+) -> Result<(), ConfigError> {
+    let mut document = read_document(path)?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::InvalidDocument("root must be a table".to_string()))?;
+    let mcp = root
+        .entry("mcp")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::InvalidDocument("mcp must be a table".to_string()))?;
+    let servers = mcp
+        .entry("servers")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| ConfigError::InvalidDocument("mcp.servers must be an array".to_string()))?;
+
+    if servers
+        .iter()
+        .any(|server| server.get("name").and_then(toml::Value::as_str) == Some(name))
+    {
+        return Err(ConfigError::McpExists(name.to_string()));
+    }
+
+    let mut server = toml::Table::new();
+    server.insert("name".to_string(), toml::Value::String(name.to_string()));
+    server.insert(
+        "command".to_string(),
+        toml::Value::String(command.to_string()),
+    );
+    if !args.is_empty() {
+        server.insert(
+            "args".to_string(),
+            toml::Value::Array(
+                args.iter()
+                    .map(|arg| toml::Value::String(arg.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if !enabled {
+        server.insert("enabled".to_string(), toml::Value::Boolean(false));
+    }
+    if let Some(seconds) = timeout_secs {
+        server.insert(
+            "timeout_secs".to_string(),
+            toml::Value::Integer(seconds as i64),
+        );
+    }
+    servers.push(toml::Value::Table(server));
+
+    validate_document(&document)?;
+    write_document(path, &document)
+}
+
+/// Remove `[[mcp.servers]]` by name.
+pub fn mcp_remove(path: &Path, name: &str) -> Result<(), ConfigError> {
+    let mut document = read_document(path)?;
+    let servers = document
+        .get_mut("mcp")
+        .and_then(|mcp| mcp.get_mut("servers"))
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| ConfigError::McpMissing(name.to_string()))?;
+    let before = servers.len();
+    servers.retain(|server| server.get("name").and_then(toml::Value::as_str) != Some(name));
+    if servers.len() == before {
+        return Err(ConfigError::McpMissing(name.to_string()));
+    }
+    validate_document(&document)?;
+    write_document(path, &document)
 }
 
 #[derive(Debug, Default)]
@@ -880,5 +1023,41 @@ mod tests {
         let config = load_project(dir.path()).expect("project config");
         assert_eq!(config.approval.rules.len(), 1);
         assert_eq!(config.approval.rules[0].scope, Some(Scope::Project));
+    }
+
+    #[test]
+    fn mcp_add_and_remove_edit_the_config_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+
+        mcp_add(
+            &path,
+            "filesystem",
+            "npx",
+            &["-y".to_string(), "server".to_string()],
+            false,
+            Some(30),
+        )
+        .expect("add");
+        let config = load(&path).expect("load");
+        assert_eq!(config.mcp.servers.len(), 1);
+        let server = &config.mcp.servers[0];
+        assert_eq!(server.name, "filesystem");
+        assert_eq!(server.args, vec!["-y", "server"]);
+        assert!(!server.enabled);
+        assert_eq!(server.timeout_secs, 30);
+
+        assert!(matches!(
+            mcp_add(&path, "filesystem", "npx", &[], true, None),
+            Err(ConfigError::McpExists(_))
+        ));
+
+        mcp_remove(&path, "filesystem").expect("remove");
+        let config = load(&path).expect("load after remove");
+        assert!(config.mcp.servers.is_empty());
+        assert!(matches!(
+            mcp_remove(&path, "filesystem"),
+            Err(ConfigError::McpMissing(_))
+        ));
     }
 }

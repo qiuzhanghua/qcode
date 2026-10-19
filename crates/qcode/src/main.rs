@@ -57,8 +57,54 @@ enum Command {
     Sessions(SessionsArgs),
     /// Inspect discovered Agent Skills.
     Skills(SkillsArgs),
+    /// Show or edit the config file.
+    Config(ConfigArgs),
+    /// Manage configured MCP servers.
+    Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
+}
+
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Print the effective (merged) configuration.
+    Show,
+    /// Open the user config in $EDITOR.
+    Edit,
+}
+
+#[derive(Debug, Args)]
+struct McpArgs {
+    #[command(subcommand)]
+    command: McpCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpCommand {
+    /// List configured servers.
+    List,
+    /// Append a server to the user config.
+    Add {
+        name: String,
+        #[arg(long)]
+        command: String,
+        /// Repeatable: one argument for the server command.
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        /// Add the server but leave it disabled.
+        #[arg(long)]
+        disabled: bool,
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+    },
+    /// Remove a server by name.
+    Remove { name: String },
 }
 
 #[derive(Debug, Args)]
@@ -168,6 +214,8 @@ async fn main() -> ExitCode {
         }
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
         Some(Command::Skills(args)) => cmd_skills(args, config),
+        Some(Command::Config(args)) => cmd_config(args, config),
+        Some(Command::Mcp(args)) => cmd_mcp(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
@@ -498,6 +546,119 @@ fn cmd_sessions(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_config(
+    args: ConfigArgs,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match args.command {
+        ConfigCommand::Show => {
+            let workspace = std::env::current_dir()?.canonicalize()?;
+            let loaded = load_config(config_path, &workspace)?;
+            print_config(&loaded);
+        }
+        ConfigCommand::Edit => {
+            let path = config::edit_path(config_path)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if !path.exists() {
+                std::fs::write(&path, "# qcode config\n")?;
+            }
+            let editor = std::env::var("EDITOR")
+                .or_else(|_| std::env::var("VISUAL"))
+                .unwrap_or_else(|_| {
+                    if cfg!(windows) {
+                        "notepad".to_string()
+                    } else {
+                        "vi".to_string()
+                    }
+                });
+            let mut parts = editor.split_whitespace();
+            let program = parts.next().unwrap_or("vi");
+            let status = std::process::Command::new(program)
+                .args(parts)
+                .arg(&path)
+                .status()?;
+            if !status.success() {
+                return Err(format!("editor exited with {status}").into());
+            }
+            match config::load(&path) {
+                Ok(_) => println!("config ok: {}", path.display()),
+                Err(err) => eprintln!("warning: {err}"),
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_mcp(
+    args: McpArgs,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    match args.command {
+        McpCommand::List => {
+            let loaded = load_config(config_path, &workspace)?;
+            print_mcp(&loaded.mcp);
+        }
+        McpCommand::Add {
+            name,
+            command,
+            args,
+            disabled,
+            timeout_secs,
+        } => {
+            let path = config::edit_path(config_path)?;
+            config::mcp_add(&path, &name, &command, &args, !disabled, timeout_secs)?;
+            println!("added MCP server '{name}' to {}", path.display());
+        }
+        McpCommand::Remove { name } => {
+            let path = config::edit_path(config_path)?;
+            config::mcp_remove(&path, &name)?;
+            println!("removed MCP server '{name}' from {}", path.display());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_config(config: &config::Config) {
+    println!("default_provider = {:?}", config.default_provider);
+    println!("providers ({}):", config.providers.len());
+    for (name, provider) in &config.providers {
+        println!(
+            "  {name}: base_url={:?} model={:?} api_key_env={:?} stream_usage={}",
+            provider.base_url, provider.default_model, provider.api_key_env, provider.stream_usage
+        );
+    }
+    println!("context.window_tokens = {}", config.context.window_tokens);
+    println!(
+        "sandbox.mode = {:?}, network = {}",
+        config.sandbox.mode, config.sandbox.network
+    );
+    println!(
+        "skills.enabled = {}, roots = {:?}",
+        config.skills.enabled, config.skills.roots
+    );
+    println!("approval rules ({}):", config.approval.rules.len());
+    for rule in &config.approval.rules {
+        println!(
+            "  {} action={:?} tool={:?} prefix={:?} glob={:?} scope={:?}",
+            rule.id, rule.action, rule.tool, rule.command_prefix, rule.path_glob, rule.scope
+        );
+    }
+    print_mcp(&config.mcp);
+}
+
+fn print_mcp(config: &McpConfig) {
+    println!("mcp servers ({}):", config.servers.len());
+    for server in &config.servers {
+        println!(
+            "  {} enabled={} timeout={}s command={:?} args={:?}",
+            server.name, server.enabled, server.timeout_secs, server.command, server.args
+        );
+    }
 }
 
 async fn cmd_doctor(

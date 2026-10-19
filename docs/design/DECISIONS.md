@@ -609,3 +609,27 @@ torn-line 丢弃，`interrupted` 状态从未写入。
 - 项目配置的 `context` / `sandbox` 段本轮不合并（避免无法区分“未设置”与默认值）。
 - 项目可覆盖 provider/pricing 仍可能改变行为；如需更严格，后续再限制可覆盖字段。
 - `Scope` 只写进审批事件，不改变规则存储位置。
+
+## ADR-0018：config / mcp 管理命令（2026-10-19）
+
+**背景**：SPEC §13 列出 `qc config edit/show` 与 `qc mcp list/add/remove`；此前只能手改
+TOML。
+
+**决定**
+
+1. `qc config show` 打印合并后的有效配置：provider（只显示 `api_key_env` 名称）、context、
+   sandbox、skills、审批规则与 MCP servers。密钥从不落盘，因此无需额外脱敏。
+2. `qc config edit` 解析 `--config` / `QCODE_CONFIG` / `~/.config/qcode/config.toml`，
+   创建父目录与空文件后交给 `$EDITOR`（退回 `$VISUAL`、`vi`/`notepad`），退出后再解析
+   一次并报告错误。
+3. `qc mcp add NAME --command CMD [--arg ...] [--disabled] [--timeout-secs N]` 与
+   `qc mcp remove NAME` 操作**用户配置**文件：用 `toml::Table` 读改写，写前解析成
+   `Config` 并跑 `McpConfig::validate`；未知/重复 server 报错。
+4. `qc mcp list` 读取合并配置（含项目配置），只读展示。
+
+**后果**
+
+- add/remove 会重写整个 TOML 文件，注释与键顺序丢失；复杂编辑仍用 `config edit`。
+- 暂不支持把 server 写到项目配置（没有 `--project`）；避免仓库自动获得外部工具。
+- 暂不支持 `env` 字段（MCP 配置 schema 目前没有该字段）。
+- `config edit` 依赖交互式 `$EDITOR`，CI 里不应调用。

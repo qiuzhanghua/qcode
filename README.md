@@ -59,6 +59,13 @@ cargo test --workspace
 ./target/debug/qc sessions fork <session-id> --at 42   # 打印新 session id
 ./target/debug/qc sessions gc --older-than-days 30     # dry run；加 --yes 才删除
 
+# 配置与 MCP 管理
+./target/debug/qc config show
+./target/debug/qc config edit
+./target/debug/qc mcp list
+./target/debug/qc mcp add filesystem --command npx --arg=-y --arg=@modelcontextprotocol/server-filesystem
+./target/debug/qc mcp remove filesystem
+
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
 # 不写 --model 时，DeepSeek 默认使用 deepseek-flash
@@ -294,6 +301,10 @@ enabled = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock
 network = false      # bwrap/sandbox-exec 生效；landlock 只做文件系统
 ```
+
+`qc config show` 打印合并后的有效配置（只显示 `api_key_env` 变量名，不显示密钥）；
+`qc config edit` 用 `$EDITOR`/`$VISUAL` 打开用户配置文件。`qc mcp list` 读取合并配置，
+`qc mcp add/remove` 直接重写用户配置里的 `[[mcp.servers]]`（会丢失该文件的注释）。
 
 `qc skills list` 打印实际发现结果与被检查的根，排查“skill 没生效”时先跑它。
 
