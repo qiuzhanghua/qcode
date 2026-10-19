@@ -38,6 +38,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         context_window: None,
         agents_md: None,
         skills: None,
+        network: None,
     }
 }
 

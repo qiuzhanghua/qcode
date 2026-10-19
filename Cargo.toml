@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/qcode-core",
+  "crates/qcode-net",
   "crates/qcode-providers",
   "crates/qcode-tools",
   "crates/qcode-mcp",
@@ -28,6 +29,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 async-trait = "0.1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 globset = "0.4"

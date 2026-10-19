@@ -13,6 +13,7 @@ use qcode_core::approval::Approver;
 use qcode_core::cost::Pricing;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, SessionStarted};
+use qcode_core::network::SharedNetwork;
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
@@ -33,6 +34,7 @@ pub struct EngineSubagent {
     model: String,
     context_window: Option<u64>,
     pricing: Option<Pricing>,
+    network: Option<SharedNetwork>,
     on_event: Option<ChildEventSink>,
 }
 
@@ -51,6 +53,7 @@ pub fn build(
     model: &str,
     context_window: Option<u64>,
     pricing: Option<Pricing>,
+    network: Option<SharedNetwork>,
     on_event: Option<ChildEventSink>,
 ) -> Arc<dyn SubagentRunner> {
     Arc::new(EngineSubagent {
@@ -63,6 +66,7 @@ pub fn build(
         model: model.to_string(),
         context_window,
         pricing,
+        network,
         on_event,
     })
 }
@@ -106,6 +110,7 @@ impl SubagentRunner for EngineSubagent {
             // Isolation: the child gets neither AGENTS.md nor the skills index.
             agents_md: None,
             skills: None,
+            network: self.network.clone(),
         };
 
         let sink = self.on_event.clone();
@@ -176,6 +181,7 @@ mod tests {
                 output_usd_per_mtok: 2.0,
                 ..Pricing::default()
             }),
+            None,
             Some(sink),
         );
 

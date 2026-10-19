@@ -131,6 +131,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             context_window: Some(1_000),
             agents_md: None,
             skills: None,
+            network: None,
         },
         |_| {},
     )
@@ -206,6 +207,7 @@ async fn a_roomy_window_skips_compaction() {
             context_window: Some(10_000_000),
             agents_md: None,
             skills: None,
+            network: None,
         },
         |_| {},
     )

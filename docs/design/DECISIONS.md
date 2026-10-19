@@ -763,6 +763,19 @@ shell/MCP 的任意 socket，需要明确边界。
 - 仅工具内 allowlist、不起代理：无法统一审计与多工具复用。
 - v2.0 直接上 OS 级强制：Windows 成本过高，会拖垮 v2.0。
 
+
+### ADR-0023 实现状态（2026-10-19）
+
+- 新增 `qcode-net`：loopback HTTP CONNECT 代理、session token、host allowlist、
+  wildcard/端口规则、SSRF 私网拦截、JSONL 审计；provider / `web_fetch` /
+  `web_search`（后续）统一用 `Network::client()`。
+- shell 与 MCP 子进程注入 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY`；
+  MCP 仍然共用 session token/allowlist（简化实现）。
+- `unknown = "ask"` 目前由 `web_fetch` 的工具审批兑现：审批通过后把 host 加入
+  session allowlist；shell/MCP 没有交互式 ask，未知 host 直接拒绝。
+- 未做：per-session token（ACP 多会话）、shell/MCP 的异步 ask、`network.mode = strict`
+  的 OS 级强制。它们分别留到 ACP 与 v2.2。
+
 ## ADR-0024：ACP 集成与 fs/terminal 委托边界（2026-10-19）
 
 **背景**：v2.1 通过 Agent Client Protocol 接入 Zed/Neovim；ACP client 可以提供文件与

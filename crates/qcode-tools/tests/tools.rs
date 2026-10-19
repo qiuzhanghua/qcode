@@ -1,10 +1,12 @@
 use std::path::Path;
+use std::sync::Arc;
 #[cfg(unix)]
 use std::time::Duration;
 
-#[cfg(unix)]
 use qcode_core::event::ToolStatus;
 use qcode_core::tool::{Tool, ToolContext};
+use qcode_net::{Egress, EgressOptions};
+use qcode_tools::fetch::WebFetch;
 use qcode_tools::fs::{EditFile, ListDir, ReadFile, WriteFile};
 use qcode_tools::shell::RunShell;
 use serde_json::json;
@@ -245,4 +247,67 @@ async fn timeout_kills_the_whole_process_group() {
         wait_until_gone(pid).await,
         "grandchild {pid} survived the timeout"
     );
+}
+
+#[tokio::test]
+async fn web_fetch_goes_through_the_egress_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let server = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut socket, _) = server.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                return;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .await
+            .unwrap();
+    });
+
+    let egress = Egress::start(EgressOptions {
+        allow: vec![format!("127.0.0.1:{port}")],
+        allow_private: true,
+        ..EgressOptions::default()
+    })
+    .await
+    .expect("egress");
+    let ctx = context(Path::new(".")).with_network(Arc::new(egress));
+
+    let output = WebFetch
+        .execute(&ctx, json!({"url": format!("http://127.0.0.1:{port}/")}))
+        .await
+        .expect("fetch");
+    assert_eq!(output.status, ToolStatus::Ok);
+    assert!(output.output.contains("hello"), "{}", output.output);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_receives_the_proxy_environment() {
+    let egress = Egress::start(EgressOptions::default())
+        .await
+        .expect("egress");
+    let proxy_url = egress.proxy_url().to_string();
+    let ctx = context(Path::new(".")).with_network(Arc::new(egress));
+
+    let output = RunShell::default()
+        .execute(
+            &ctx,
+            json!({"command": "printf '%s' \"$HTTPS_PROXY\"", "timeout_secs": 10}),
+        )
+        .await
+        .expect("shell");
+    assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
+    assert!(output.output.contains(&proxy_url), "{}", output.output);
 }

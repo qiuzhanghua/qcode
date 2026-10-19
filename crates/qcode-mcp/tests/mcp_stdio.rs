@@ -25,7 +25,7 @@ fn config(name: &str) -> McpServerConfig {
 
 async fn connect(config: McpServerConfig) -> (TempDir, Vec<Arc<dyn Tool>>) {
     let dir = tempfile::tempdir().unwrap();
-    let tools = connect_all(&[config], dir.path(), &dir.path().join("logs")).await;
+    let tools = connect_all(&[config], dir.path(), &dir.path().join("logs"), &[]).await;
     (dir, tools)
 }
 
@@ -167,7 +167,13 @@ async fn disabled_and_missing_servers_degrade_to_no_tools() {
         timeout_secs: 2,
     };
 
-    let tools = connect_all(&[disabled, missing], dir.path(), &dir.path().join("logs")).await;
+    let tools = connect_all(
+        &[disabled, missing],
+        dir.path(),
+        &dir.path().join("logs"),
+        &[],
+    )
+    .await;
     assert!(tools.is_empty(), "got {:?}", names(&tools));
     assert!(Path::new(STUB).exists());
 }

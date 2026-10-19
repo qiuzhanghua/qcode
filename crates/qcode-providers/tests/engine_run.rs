@@ -34,6 +34,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         context_window: None,
         agents_md: None,
         skills: None,
+        network: None,
     }
 }
 

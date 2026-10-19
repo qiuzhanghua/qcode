@@ -24,7 +24,7 @@ pub async fn run(
     doctor.check_data_dir(&data_dir);
     let config = doctor.check_config(&config_path);
     doctor.check_provider(&config);
-    doctor.check_connectivity(&config).await;
+    doctor.check_connectivity(&config, &data_dir).await;
     doctor.check_toolchain();
     doctor.check_sandbox(&config);
 
@@ -142,7 +142,7 @@ impl Doctor {
         }
     }
 
-    async fn check_connectivity(&mut self, config: &Config) {
+    async fn check_connectivity(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
         let resolved = match config::resolve(config, &config::Overrides::default(), &|key| {
             std::env::var(key).ok()
         }) {
@@ -155,7 +155,18 @@ impl Doctor {
             return;
         }
 
-        let provider = match crate::build_provider(&resolved) {
+        let dir = crate::resolve_data_dir(data_dir.clone());
+        let egress = match crate::build_egress(config, &dir, resolved.base_url.as_deref()).await {
+            Ok(egress) => egress,
+            Err(err) => {
+                self.fail("connectivity", format!("cannot start egress proxy: {err}"));
+                return;
+            }
+        };
+        let provider = match crate::build_provider(
+            &resolved,
+            egress.as_ref().map(|egress| egress.proxy_url()),
+        ) {
             Ok(provider) => provider,
             Err(err) => {
                 self.fail("connectivity", err.to_string());

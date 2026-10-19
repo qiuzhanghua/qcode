@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::event::{ToolMetadata, ToolStatus, Usage};
+use crate::network::Network;
 use crate::provider::ToolSpec;
 
 /// Everything a tool is allowed to know about its surroundings.
@@ -24,6 +25,8 @@ use crate::provider::ToolSpec;
 pub struct ToolContext {
     pub workspace: PathBuf,
     pub cancel: CancellationToken,
+    /// Egress proxy for tools that make network calls.
+    pub network: Option<Arc<dyn Network>>,
 }
 
 impl ToolContext {
@@ -31,11 +34,17 @@ impl ToolContext {
         Self {
             workspace: workspace.into(),
             cancel: CancellationToken::new(),
+            network: None,
         }
     }
 
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    pub fn with_network(mut self, network: Arc<dyn Network>) -> Self {
+        self.network = Some(network);
         self
     }
 }

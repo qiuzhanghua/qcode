@@ -150,6 +150,11 @@ impl Tool for RunShell {
                 command.env(key, value);
             }
         }
+        if let Some(network) = &ctx.network {
+            for (key, value) in network.env() {
+                command.env(key, value);
+            }
+        }
 
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or(0);

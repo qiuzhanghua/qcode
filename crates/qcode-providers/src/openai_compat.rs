@@ -29,6 +29,8 @@ pub struct OpenAiCompatConfig {
     pub api_key: Option<String>,
     /// Ask for a final usage chunk via `stream_options.include_usage`.
     pub stream_usage: bool,
+    /// Session egress proxy; `None` uses a direct connection (tests/offline).
+    pub proxy_url: Option<String>,
 }
 
 impl std::fmt::Debug for OpenAiCompatConfig {
@@ -38,6 +40,7 @@ impl std::fmt::Debug for OpenAiCompatConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("stream_usage", &self.stream_usage)
+            .field("proxy_url", &self.proxy_url)
             .finish()
     }
 }
@@ -50,8 +53,13 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(config: OpenAiCompatConfig) -> Result<Self, ProviderError> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+        let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+        if let Some(proxy) = &config.proxy_url {
+            let proxy = reqwest::Proxy::all(proxy)
+                .map_err(|err| ProviderError::Network(err.to_string()))?;
+            builder = builder.proxy(proxy).no_proxy();
+        }
+        let client = builder
             .build()
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         Ok(Self { client, config })
@@ -555,6 +563,7 @@ mod tests {
             base_url: "https://example.com/v1".to_string(),
             api_key: Some("sk-secret-value".to_string()),
             stream_usage: true,
+            proxy_url: None,
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-secret-value"));

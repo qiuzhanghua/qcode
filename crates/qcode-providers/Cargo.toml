@@ -18,4 +18,5 @@ async-trait.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+qcode-net = { version = "0.1.0", path = "../qcode-net" }
 tempfile.workspace = true

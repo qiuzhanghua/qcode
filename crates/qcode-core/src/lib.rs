@@ -10,6 +10,7 @@ pub mod cost;
 pub mod engine;
 pub mod event;
 pub mod history;
+pub mod network;
 pub mod policy;
 pub mod provider;
 pub mod state;
@@ -24,6 +25,7 @@ pub use engine::{
     TurnContext, run_turn,
 };
 pub use event::*;
+pub use network::{Network, SharedNetwork};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use provider::*;
 pub use state::{TransitionError, Trigger, TurnState};

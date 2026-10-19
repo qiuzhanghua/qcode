@@ -142,6 +142,8 @@ pub struct RunOptions<'a> {
     /// Rendered `# Skills` index. The `skill` tool loads bodies on demand;
     /// only names and descriptions live in the system prompt.
     pub skills: Option<String>,
+    /// Egress proxy shared with tools that make network calls.
+    pub network: Option<crate::network::SharedNetwork>,
 }
 
 #[derive(Debug, Clone)]
@@ -249,8 +251,11 @@ where
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);
     let mut compaction_disabled = false;
-    let tool_context =
+    let mut tool_context =
         ToolContext::new(options.workspace.clone()).with_cancel(options.cancel.clone());
+    if let Some(network) = &options.network {
+        tool_context = tool_context.with_network(network.clone());
+    }
 
     let mut turns = 0;
     let mut total_usage = Usage::default();

@@ -210,6 +210,11 @@ cargo build -p qcode-eval
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。首 token 之前最多 3 次
   指数退避（尊重 `Retry-After`），首 token 之后失败直接终止本 turn；只读工具并发由
   provider 的 `parallel_tools` 能力决定。
+- **网络出口（v2 基础版）**：进程内在 `127.0.0.1` 起 CONNECT 代理，provider /
+  `web_fetch` 强制经代理，失败关闭；域名 allowlist + 私网/loopback 拦截防 SSRF；
+  shell/MCP 通过 `HTTP(S)_PROXY` 尽力而为。`unknown = "ask"` 由工具审批层处理
+  （`web_fetch` 批准后加入 session allowlist）；shell/MCP 的未知域名直接拒绝。
+  审计写 `<data>/logs/network.jsonl`；`[network] enabled = false` 才显式关闭。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
 - **Skills**：默认发现 `~/.agents/skills`、`~/.config/agents/skills`（`npx skills -g`
@@ -303,6 +308,14 @@ enabled = true
 [skills]
 enabled = true
 # roots = ["~/space/skills/skills"]
+
+# 应用级出口策略（v2）。provider 的 host 会自动加入 allowlist。
+[network]
+enabled = true
+allow = ["api.openai.com", "api.deepseek.com", "registry.npmjs.org"]
+allow_private = false   # 本地 Ollama/测试才打开
+unknown = "ask"         # ask | deny | allow；shell/MCP 的未知域名按 deny
+audit = true
 
 # OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS，bwrap/landlock 仅 Linux：
 # 启动时用同一套规则 preflight，失败则拒绝启动；landlock 不管网络。

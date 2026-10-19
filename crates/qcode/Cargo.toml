@@ -14,9 +14,11 @@ qcode-core = { version = "0.1.0", path = "../qcode-core" }
 qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 qcode-tools = { version = "0.1.0", path = "../qcode-tools" }
 qcode-mcp = { version = "0.1.0", path = "../qcode-mcp" }
+qcode-net = { version = "0.1.0", path = "../qcode-net" }
 qcode-tui = { version = "0.1.0", path = "../qcode-tui" }
 async-trait.workspace = true
 ratatui.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

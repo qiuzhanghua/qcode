@@ -79,6 +79,7 @@ fn options<'a>(
         context_window: None,
         agents_md: None,
         skills: None,
+        network: None,
     }
 }
 

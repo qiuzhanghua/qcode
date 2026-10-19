@@ -17,11 +17,13 @@ use clap::{Args, Parser, Subcommand};
 use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
+use qcode_core::network::SharedNetwork;
 use qcode_core::policy::Policy;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
+use qcode_net::{Egress, EgressOptions, UnknownPolicy};
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::Sandbox;
@@ -338,9 +340,22 @@ async fn cmd_run(
         print_event(event, include_raw);
     }
 
-    let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
+    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let network: Option<SharedNetwork> = egress
+        .as_ref()
+        .map(|egress| egress.clone() as SharedNetwork);
+    let provider: Arc<dyn Provider> =
+        build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
 
-    let mut tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
+    let mut tools = build_tools(
+        &loaded.mcp,
+        &workspace,
+        &data_dir,
+        &skills,
+        sandbox,
+        network.as_ref().map(|network| network.env()),
+    )
+    .await;
     let approver: Arc<dyn Approver> = if yes {
         Arc::new(AutoApprove)
     } else if std::io::stdin().is_terminal() {
@@ -360,6 +375,7 @@ async fn cmd_run(
         &resolved.model,
         Some(loaded.context.window_tokens),
         pricing,
+        network.clone(),
         None,
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
@@ -400,6 +416,7 @@ async fn cmd_run(
             context_window: Some(loaded.context.window_tokens),
             agents_md,
             skills: skills_prompt,
+            network: network.clone(),
         },
         |event| {
             if json {
@@ -474,8 +491,21 @@ async fn cmd_tui(
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
-    let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox.clone()).await;
+    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let network: Option<SharedNetwork> = egress
+        .as_ref()
+        .map(|egress| egress.clone() as SharedNetwork);
+    let provider: Arc<dyn Provider> =
+        build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
+    let tools = build_tools(
+        &loaded.mcp,
+        &workspace,
+        &data_dir,
+        &skills,
+        sandbox.clone(),
+        network.as_ref().map(|network| network.env()),
+    )
+    .await;
 
     tui::run(tui::TuiOptions {
         store: &store,
@@ -494,6 +524,7 @@ async fn cmd_tui(
         skills: skill_views,
         sandbox: sandbox.name().to_string(),
         resume,
+        network,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
@@ -658,6 +689,14 @@ fn print_config(config: &config::Config) {
             provider.base_url, provider.default_model, provider.api_key_env, provider.stream_usage
         );
     }
+    println!(
+        "network.enabled = {}, allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
+        config.network.enabled,
+        config.network.allow,
+        config.network.allow_private,
+        config.network.unknown,
+        config.network.audit
+    );
     println!("context.window_tokens = {}", config.context.window_tokens);
     println!(
         "sandbox.mode = {:?}, network = {}",
@@ -708,9 +747,16 @@ async fn build_tools(
     data_dir: &Path,
     skills: &Arc<SkillSet>,
     sandbox: Arc<dyn Sandbox>,
+    network_env: Option<Vec<(String, String)>>,
 ) -> ToolRegistry {
     let mut tools = builtin_registry_with(sandbox);
-    let mcp_tools = qcode_mcp::connect_all(&mcp.servers, workspace, &data_dir.join("logs")).await;
+    let mcp_tools = qcode_mcp::connect_all(
+        &mcp.servers,
+        workspace,
+        &data_dir.join("logs"),
+        network_env.as_deref().unwrap_or(&[]),
+    )
+    .await;
     if !mcp_tools.is_empty() {
         tracing::info!(count = mcp_tools.len(), "registered MCP tools");
     }
@@ -864,6 +910,7 @@ fn skill_views(skills: &SkillSet) -> Vec<SkillView> {
 
 fn build_provider(
     resolved: &config::Resolved,
+    proxy_url: Option<&str>,
 ) -> Result<Box<dyn Provider>, Box<dyn std::error::Error>> {
     Ok(match resolved.name.as_str() {
         "mock" => Box::new(MockProvider::text(
@@ -986,6 +1033,7 @@ fn build_provider(
                 .expect("non-mock provider always has a base URL"),
             api_key: resolved.api_key.clone(),
             stream_usage: resolved.stream_usage,
+            proxy_url: proxy_url.map(str::to_string),
         })?),
     })
 }
@@ -1036,6 +1084,41 @@ fn build_policy(
         None => loaded.approval.rules.clone(),
     };
     Ok(Policy::new(rules))
+}
+
+async fn build_egress(
+    loaded: &config::Config,
+    data_dir: &Path,
+    base_url: Option<&str>,
+) -> Result<Option<Arc<Egress>>, Box<dyn std::error::Error>> {
+    if !loaded.network.enabled {
+        return Ok(None);
+    }
+    let mut allow = loaded.network.allow.clone();
+    if let Some(base_url) = base_url
+        && let Ok(url) = reqwest::Url::parse(base_url)
+        && let Some(host) = url.host_str()
+    {
+        let port = url.port_or_known_default().unwrap_or(443);
+        allow.push(format!("{host}:{port}"));
+    }
+    let unknown = match loaded.network.unknown {
+        config::UnknownHost::Allow => UnknownPolicy::Allow,
+        config::UnknownHost::Ask | config::UnknownHost::Deny => UnknownPolicy::Deny,
+    };
+    let audit_path = loaded
+        .network
+        .audit
+        .then(|| data_dir.join("logs").join("network.jsonl"));
+    let egress = Egress::start(EgressOptions {
+        allow,
+        allow_private: loaded.network.allow_private,
+        unknown,
+        audit_path,
+    })
+    .await?;
+    tracing::info!(port = egress.port(), "egress proxy started");
+    Ok(Some(Arc::new(egress)))
 }
 
 fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {

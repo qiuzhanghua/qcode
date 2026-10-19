@@ -5,6 +5,7 @@ use qcode_core::event::ContentBlock;
 use qcode_core::provider::{
     CompletionRequest, Message, Provider, ProviderError, Role, StreamEvent,
 };
+use qcode_net::{Egress, EgressOptions};
 use qcode_providers::{OpenAiCompatConfig, OpenAiCompatProvider};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -47,11 +48,16 @@ fn request() -> CompletionRequest {
 }
 
 fn provider(base_url: String) -> OpenAiCompatProvider {
+    provider_with_proxy(base_url, None)
+}
+
+fn provider_with_proxy(base_url: String, proxy_url: Option<String>) -> OpenAiCompatProvider {
     OpenAiCompatProvider::new(OpenAiCompatConfig {
         name: "test".to_string(),
         base_url,
         api_key: Some("test-key".to_string()),
         stream_usage: true,
+        proxy_url,
     })
     .expect("provider")
 }
@@ -70,6 +76,37 @@ async fn streams_text_over_http() {
         .await
         .expect("start stream");
 
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        if let StreamEvent::TextDelta(delta) = item.expect("stream item") {
+            text.push_str(&delta);
+        }
+    }
+    assert_eq!(text, "Hello world");
+}
+
+#[tokio::test]
+async fn streams_through_the_egress_proxy() {
+    let body = include_str!("fixtures/openai_text.sse");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+    );
+    let base_url = serve_once(response).await;
+    let url = reqwest::Url::parse(&base_url).expect("url");
+    let port = url.port().expect("port");
+    let egress = Egress::start(EgressOptions {
+        allow: vec![format!("127.0.0.1:{port}")],
+        allow_private: true,
+        ..EgressOptions::default()
+    })
+    .await
+    .expect("egress");
+    let provider = provider_with_proxy(base_url, Some(egress.proxy_url().to_string()));
+
+    let mut stream = provider
+        .stream(request(), CancellationToken::new())
+        .await
+        .expect("start stream");
     let mut text = String::new();
     while let Some(item) = stream.next().await {
         if let StreamEvent::TextDelta(delta) = item.expect("stream item") {

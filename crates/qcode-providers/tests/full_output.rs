@@ -106,6 +106,7 @@ async fn truncated_output_is_written_to_disk() {
             context_window: None,
             agents_md: None,
             skills: None,
+            network: None,
         },
         |_| {},
     )

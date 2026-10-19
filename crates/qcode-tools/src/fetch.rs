@@ -61,12 +61,22 @@ impl Tool for WebFetch {
             serde_json::from_value(args).map_err(|error| ToolError::Invalid(error.to_string()))?;
         let url = validate_url(&args.url)?;
 
-        let client = Client::builder()
-            .timeout(TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-            .user_agent(concat!("qcode/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| ToolError::Network(error.to_string()))?;
+        let client = if let Some(network) = &ctx.network {
+            // The tool approval already ran; add the host to the session
+            // allowlist so the proxy accepts it. Redirects to other hosts are
+            // still checked by the proxy and fail closed.
+            if let Some(host) = url.host_str() {
+                network.allow_host(host);
+            }
+            network.client()
+        } else {
+            Client::builder()
+                .timeout(TIMEOUT)
+                .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+                .user_agent(concat!("qcode/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .map_err(|error| ToolError::Network(error.to_string()))?
+        };
 
         let response = tokio::select! {
             _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled("web_fetch cancelled")),

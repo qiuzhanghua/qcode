@@ -85,6 +85,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         context_window: None,
         agents_md: None,
         skills: None,
+        network: None,
     }
 }
 

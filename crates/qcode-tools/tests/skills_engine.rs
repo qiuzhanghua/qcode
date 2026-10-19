@@ -89,6 +89,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             context_window: None,
             agents_md: None,
             skills: Some(prompt),
+            network: None,
         },
         |_| {},
     )

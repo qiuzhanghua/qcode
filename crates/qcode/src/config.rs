@@ -42,6 +42,50 @@ pub struct Config {
     /// OS sandbox for `run_shell`. Defaults to `none` (approval is the boundary).
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    /// Application-level egress policy (ADR-0023).
+    #[serde(default)]
+    pub network: NetworkConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkConfig {
+    /// Start the local proxy. Disable only for offline/testing workflows.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Host patterns; provider hosts are added automatically.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Allow loopback/private/link-local destinations (local Ollama, tests).
+    #[serde(default)]
+    pub allow_private: bool,
+    /// Unknown host policy. `ask` is enforced by the tool layer; the proxy
+    /// itself can only deny or allow, because it cannot block on UI.
+    #[serde(default)]
+    pub unknown: UnknownHost,
+    /// Append allowed/denied connections to `<data>/logs/network.jsonl`.
+    #[serde(default = "default_true")]
+    pub audit: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow: Vec::new(),
+            allow_private: false,
+            unknown: UnknownHost::Ask,
+            audit: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownHost {
+    #[default]
+    Ask,
+    Deny,
+    Allow,
 }
 
 /// Skills are on by default; `enabled = false` skips discovery entirely.
@@ -1059,6 +1103,32 @@ mod tests {
         let config = load_project(dir.path()).expect("project config");
         assert_eq!(config.approval.rules.len(), 1);
         assert_eq!(config.approval.rules[0].scope, Some(Scope::Project));
+    }
+
+    #[test]
+    fn network_defaults_and_overrides() {
+        let defaults: Config = toml::from_str("").unwrap();
+        assert!(defaults.network.enabled);
+        assert!(defaults.network.audit);
+        assert_eq!(defaults.network.unknown, UnknownHost::Ask);
+        assert!(!defaults.network.allow_private);
+
+        let config: Config = toml::from_str(
+            r#"
+            [network]
+            enabled = false
+            allow = ["api.example.com", "*.internal.test"]
+            allow_private = true
+            unknown = "deny"
+            audit = false
+            "#,
+        )
+        .unwrap();
+        assert!(!config.network.enabled);
+        assert_eq!(config.network.allow.len(), 2);
+        assert!(config.network.allow_private);
+        assert_eq!(config.network.unknown, UnknownHost::Deny);
+        assert!(!config.network.audit);
     }
 
     #[test]

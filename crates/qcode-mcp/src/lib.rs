@@ -59,6 +59,7 @@ pub async fn connect_all(
     servers: &[McpServerConfig],
     workspace: &Path,
     log_dir: &Path,
+    env: &[(String, String)],
 ) -> Vec<Arc<dyn Tool>> {
     if let Err(error) = std::fs::create_dir_all(log_dir) {
         tracing::warn!(
@@ -70,7 +71,7 @@ pub async fn connect_all(
 
     let mut tools = Vec::new();
     for server in servers.iter().filter(|server| server.enabled) {
-        match connect_server(server, workspace, log_dir).await {
+        match connect_server(server, workspace, log_dir, env).await {
             Ok(mut found) => {
                 tracing::info!(
                     server = %server.name,
@@ -91,6 +92,7 @@ async fn connect_server(
     server: &McpServerConfig,
     workspace: &Path,
     log_dir: &Path,
+    env: &[(String, String)],
 ) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     tracing::info!(
         server = %server.name,
@@ -103,6 +105,7 @@ async fn connect_server(
     command
         .args(&server.args)
         .current_dir(workspace)
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .kill_on_drop(true);
 
     let transport = TokioChildProcess::builder(command)

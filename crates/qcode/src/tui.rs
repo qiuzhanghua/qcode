@@ -62,6 +62,8 @@ pub struct TuiOptions<'a> {
     pub sandbox: String,
     /// Existing session to resume; `None` creates a new one.
     pub resume: Option<String>,
+    /// Egress proxy shared with tools and child agents.
+    pub network: Option<qcode_core::network::SharedNetwork>,
 }
 
 enum TuiMsg {
@@ -159,6 +161,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         options.model,
         options.context_window,
         options.pricing,
+        options.network.clone(),
         Some(on_child),
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
@@ -249,6 +252,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         context_window: options.context_window,
                                         agents_md: options.agents_md.clone(),
                                         skills: options.skills_prompt.clone(),
+                                        network: options.network.clone(),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));

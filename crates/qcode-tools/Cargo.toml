@@ -23,6 +23,7 @@ tracing.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+qcode-net = { version = "0.1.0", path = "../qcode-net" }
 qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 tempfile.workspace = true
 tokio-util.workspace = true

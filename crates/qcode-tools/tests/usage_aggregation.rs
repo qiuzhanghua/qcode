@@ -115,6 +115,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             context_window: None,
             agents_md: None,
             skills: None,
+            network: None,
         },
         |_| {},
     )

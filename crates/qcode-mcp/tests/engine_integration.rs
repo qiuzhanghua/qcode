@@ -25,7 +25,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
         enabled: true,
         timeout_secs: 10,
     };
-    let tools = connect_all(&[server], workspace.path(), &data.path().join("logs")).await;
+    let tools = connect_all(&[server], workspace.path(), &data.path().join("logs"), &[]).await;
     assert_eq!(tools.len(), 7);
 
     let mut registry = ToolRegistry::new(Vec::new());
@@ -83,6 +83,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             context_window: None,
             agents_md: None,
             skills: None,
+            network: None,
         },
         |_| {},
     )
