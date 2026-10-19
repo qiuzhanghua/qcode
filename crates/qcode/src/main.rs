@@ -24,6 +24,7 @@ use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
+use qcode_tui::SkillView;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
@@ -338,6 +339,7 @@ async fn cmd_tui(
     let agents_md = agents::load(&workspace)?;
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
+    let skill_views = skill_views(&skills);
     let provider = build_provider(&resolved)?;
     let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
     let policy = Policy::new(loaded.approval.rules.clone());
@@ -355,7 +357,8 @@ async fn cmd_tui(
         max_turns: 8,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
-        skills: skills_prompt,
+        skills_prompt,
+        skills: skill_views,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
@@ -520,6 +523,21 @@ fn cmd_skills(
     }
     println!("\n{} skill(s)", skills.len());
     Ok(ExitCode::SUCCESS)
+}
+
+fn skill_views(skills: &SkillSet) -> Vec<SkillView> {
+    skills
+        .iter()
+        .map(|skill| SkillView {
+            name: skill.name.clone(),
+            source: skill.source.label().to_string(),
+            description: skill.description.clone(),
+            dir: skill.dir.display().to_string(),
+            body: skill.body.clone(),
+            files: skill.files.clone(),
+            files_truncated: skill.files_truncated,
+        })
+        .collect()
 }
 
 fn build_provider(

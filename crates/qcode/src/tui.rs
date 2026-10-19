@@ -26,7 +26,7 @@ use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
-use qcode_tui::{App, UiAction, render};
+use qcode_tui::{App, SkillView, UiAction, render};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
@@ -53,7 +53,10 @@ pub struct TuiOptions<'a> {
     pub max_turns: u32,
     pub context_window: Option<u64>,
     pub agents_md: Option<String>,
-    pub skills: Option<String>,
+    /// Rendered `# Skills` index for the system prompt.
+    pub skills_prompt: Option<String>,
+    /// Skills for the local `/skills` debug command.
+    pub skills: Vec<SkillView>,
 }
 
 enum TuiMsg {
@@ -109,8 +112,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let mut terminal = TerminalGuard::enter()?;
 
     let mut app = App::new(options.provider_name, options.model);
+    app.skills = options.skills.clone();
     app.push_notice(format!(
-        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-U/D 滚动 · Ctrl-C 两次退出"
+        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-U/D 滚动 · /skills 查看技能 · Ctrl-C 两次退出"
     ));
 
     let mut cancel = CancellationToken::new();
@@ -174,7 +178,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         })),
                                         context_window: options.context_window,
                                         agents_md: options.agents_md.clone(),
-                                        skills: options.skills.clone(),
+                                        skills: options.skills_prompt.clone(),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));

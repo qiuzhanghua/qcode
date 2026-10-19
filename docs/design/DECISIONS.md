@@ -334,3 +334,23 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - `apply_patch` 不支持 rename / mode 变更 / 二进制 patch；需要时用 `write_file` 或 shell。
 - `web_fetch` 可能访问内网地址，安全上依赖用户审批；模型能看到最终 URL 与状态。
 - `todo_write` 与 `web_search` 不在 M3 范围。
+
+## ADR-0007：TUI slash commands（2026-10-19）
+
+**背景**：想在不离开 TUI、也不消耗模型调用的前提下检查 skill 发现与正文；CLI 的
+`qc skills list` 每次都要退出 TUI。
+
+**决定**
+
+1. 以 `/` 开头的输入由 `App::handle_key` 本地处理，不进入 engine，也不写事件日志：
+   - `/skills`：列出 `name [source] files=N` 与 description；空集合时提示跑 `qc skills list`。
+   - `/skills <name>`：显示来源目录、附件清单与正文，正文用独立的 `Block::Skill` 渲染。
+   - 其他命令只提示 `unknown command`。
+2. 命令在 turn 运行期间也可用；普通文本提交仍受 running 状态限制。
+3. TUI 拿到的是 `SkillView` 快照（main 从 `SkillSet` 投影），不把 `qcode-tools` 依赖塞进
+   `qcode-tui`；修改 skill 后仍需重启 qc。
+
+**后果**
+
+- 以 `/` 开头的正常提问会被当成命令；目前没有转义，必要时改写开头。
+- 命令集保持最小，不做 `/model`、`/clear` 等；需要时按同样机制扩展。

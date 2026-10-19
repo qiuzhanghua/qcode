@@ -114,7 +114,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
 fn block_rows(block: &Block) -> usize {
     match block {
-        Block::User(text) | Block::Assistant(text) | Block::Notice(text) => {
+        Block::User(text) | Block::Assistant(text) | Block::Notice(text) | Block::Skill(text) => {
             text.split('\n').count().max(1)
         }
         Block::Tool(tool) => {
@@ -156,6 +156,9 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             }
             Block::Notice(text) => {
                 push_text(&mut lines, "· ", text, Style::default().fg(Color::DarkGray))
+            }
+            Block::Skill(text) => {
+                push_text(&mut lines, "◆ ", text, Style::default().fg(Color::Magenta))
             }
             Block::Tool(tool) => push_tool(&mut lines, tool),
         }

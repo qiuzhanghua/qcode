@@ -46,6 +46,14 @@ qcode 只解释两个字段：
 
 这样，不使用 skill 的 turn 只付一次索引的 token；正文与附件不进入上下文。
 
+### TUI 快速检查
+
+- `/skills`：列出 `name [source] files=N` 和 description；没有发现时提示去跑
+  `qc skills list` 看根目录。
+- `/skills <name>`：直接显示正文、来源目录与附件清单，不经过模型、不写事件日志。
+- 命令在 turn 运行期间也可用；修改 skill 或 config 后仍需重启 qc 才会重新发现。
+- 以 `/` 开头的输入一律先当 UI 命令处理；要让模型看到以 `/` 开头的文本，目前需要改写。
+
 ## 5. 工具契约
 
 `skill(name, file?)`，`ApprovalClass::Read`（只读本地文件，默认 allow）。

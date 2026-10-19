@@ -263,6 +263,8 @@ stdout 只输出 JSONL 事件；日志与进度走 stderr。
 - 长 transcript 只渲染可见行（虚拟化），不能全量布局。
 - 默认不捕获鼠标，保留终端原生选择/复制。
 - 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标纳入测试。
+- 以 `/` 开头的输入先交给 UI 命令处理（当前 `/skills`、`/skills <name>`），不进入 engine；
+  命令只写本地 transcript，不产生事件。
 - 框架选型与约束见 [DECISIONS.md](./DECISIONS.md) 的 ADR-0001。
 
 ## 15. 存储

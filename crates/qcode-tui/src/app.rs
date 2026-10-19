@@ -22,6 +22,20 @@ pub enum Block {
     Assistant(String),
     Tool(ToolEntry),
     Notice(String),
+    /// A skill body loaded through the `/skills <name>` debug command.
+    Skill(String),
+}
+
+/// Read-only skill metadata handed to the UI for `/skills`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillView {
+    pub name: String,
+    pub source: String,
+    pub description: String,
+    pub dir: String,
+    pub body: String,
+    pub files: Vec<String>,
+    pub files_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +95,8 @@ pub struct App {
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
+    /// Skills available to this session, for the `/skills` debug commands.
+    pub skills: Vec<SkillView>,
 }
 
 impl App {
@@ -100,6 +116,7 @@ impl App {
             },
             approval: None,
             quit_armed: false,
+            skills: Vec::new(),
         }
     }
 
@@ -235,11 +252,19 @@ impl App {
                 return None;
             }
             KeyCode::Enter => {
-                if self.status.running {
-                    return None;
-                }
                 let text = self.textarea.lines().join("\n");
                 if text.trim().is_empty() {
+                    return None;
+                }
+                // Slash commands are handled by the UI and never reach the
+                // model. They stay available while a turn is running.
+                if text.trim_start().starts_with('/') {
+                    self.clear_composer();
+                    self.scroll = 0;
+                    self.run_command(text.trim());
+                    return None;
+                }
+                if self.status.running {
                     return None;
                 }
                 self.clear_composer();
@@ -290,6 +315,68 @@ impl App {
     fn clear_composer(&mut self) {
         self.textarea.select_all();
         self.textarea.cut();
+    }
+
+    /// Slash commands are local UI actions; the model never sees them.
+    fn run_command(&mut self, raw: &str) {
+        let (command, argument) = match raw.split_once(char::is_whitespace) {
+            Some((command, argument)) => (command, argument.trim()),
+            None => (raw, ""),
+        };
+        match command {
+            "/skills" => {
+                if argument.is_empty() {
+                    self.show_skills();
+                } else {
+                    self.show_skill(argument);
+                }
+            }
+            other => self.push_notice(format!("unknown command '{other}'; try /skills")),
+        }
+    }
+
+    fn show_skills(&mut self) {
+        if self.skills.is_empty() {
+            self.push_notice(
+                "no skills discovered; run `qc skills list` to see the roots that were checked",
+            );
+            return;
+        }
+
+        let mut text = format!("skills ({}):", self.skills.len());
+        for skill in &self.skills {
+            text.push_str(&format!(
+                "\n  {} [{}] files={}\n    {}",
+                skill.name,
+                skill.source,
+                skill.files.len(),
+                skill.description.replace(['\n', '\r'], " ")
+            ));
+        }
+        text.push_str("\n\nUse /skills <name> to show the full instructions.");
+        self.push_notice(text);
+    }
+
+    fn show_skill(&mut self, name: &str) {
+        let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
+            self.push_notice(format!("unknown skill '{name}'; try /skills"));
+            return;
+        };
+
+        let mut text = format!(
+            "# Skill: {}\nsource: {} ({})\n",
+            skill.name, skill.source, skill.dir
+        );
+        if !skill.files.is_empty() {
+            text.push_str(&format!("files: {}", skill.files.join(", ")));
+            if skill.files_truncated {
+                text.push_str(" …");
+            }
+            text.push('\n');
+        }
+        text.push('\n');
+        text.push_str(skill.body.trim());
+        self.blocks.push(Block::Skill(text));
     }
 
     /// Append a transient stream delta. Reasoning is acknowledged but not
@@ -371,6 +458,80 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+    }
+
+    fn demo_skill() -> SkillView {
+        SkillView {
+            name: "demo".to_string(),
+            source: "config".to_string(),
+            description: "demo skill".to_string(),
+            dir: "/tmp/demo".to_string(),
+            body: "Follow the steps.".to_string(),
+            files: vec!["references/x.md".to_string()],
+            files_truncated: false,
+        }
+    }
+
+    #[test]
+    fn slash_skills_lists_and_shows_a_skill() {
+        let mut app = App::new("mock", "mock-1");
+        app.skills = vec![demo_skill()];
+
+        type_text(&mut app, "/skills");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(!app.status.running);
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text))
+                if text.contains("demo [config]") && text.contains("demo skill")
+        ));
+
+        type_text(&mut app, "/skills demo");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Skill(text))
+                if text.contains("# Skill: demo")
+                    && text.contains("references/x.md")
+                    && text.contains("Follow the steps.")
+        ));
+    }
+
+    #[test]
+    fn slash_skills_reports_unknown_and_empty_cases() {
+        let mut app = App::new("mock", "mock-1");
+        type_text(&mut app, "/skills");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("no skills discovered")
+        ));
+
+        app.skills = vec![demo_skill()];
+        type_text(&mut app, "/skills nope");
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("unknown skill 'nope'")
+        ));
+    }
+
+    #[test]
+    fn unknown_slash_command_is_not_sent_to_the_model() {
+        let mut app = App::new("mock", "mock-1");
+        type_text(&mut app, "/nope");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(!app.status.running);
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("unknown command '/nope'")
+        ));
     }
 
     #[test]

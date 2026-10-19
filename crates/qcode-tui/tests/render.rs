@@ -321,3 +321,37 @@ fn composer_grows_with_multiline_input() {
         "composer did not grow:\n{single_screen}\n---\n{multi_screen}"
     );
 }
+
+#[test]
+fn slash_skills_lists_and_shows_skill_content() {
+    use qcode_tui::SkillView;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = App::new("mock", "mock-1");
+    app.skills = vec![SkillView {
+        name: "demo".to_string(),
+        source: "config".to_string(),
+        description: "demo skill".to_string(),
+        dir: "/tmp/demo".to_string(),
+        body: "Follow the steps.".to_string(),
+        files: vec!["references/x.md".to_string()],
+        files_truncated: false,
+    }];
+
+    for character in "/skills".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let screen = draw(&app, 80, 30);
+    assert!(screen.contains("skills (1)"), "{screen}");
+    assert!(screen.contains("demo"), "{screen}");
+    assert!(screen.contains("demo skill"), "{screen}");
+
+    for character in "/skills demo".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let screen = draw(&app, 80, 40);
+    assert!(screen.contains("# Skill: demo"), "{screen}");
+    assert!(screen.contains("Follow the steps."), "{screen}");
+}
