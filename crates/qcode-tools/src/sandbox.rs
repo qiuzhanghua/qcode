@@ -1125,7 +1125,13 @@ mod landlock_runtime {
     use super::*;
 
     fn landlock_or_skip(workspace: &Path) -> Option<Landlock> {
-        let sandbox = Landlock::new(workspace).expect("landlock");
+        let sandbox = match Landlock::new(workspace) {
+            Ok(sandbox) => sandbox,
+            Err(err) => {
+                eprintln!("skipping: landlock unavailable here: {err}");
+                return None;
+            }
+        };
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
