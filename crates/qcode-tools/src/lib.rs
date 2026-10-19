@@ -1,7 +1,9 @@
 //! Built-in tools. Every path is resolved against the workspace and every
 //! write is atomic (temp file + rename).
 
+pub mod fetch;
 pub mod fs;
+pub mod patch;
 pub mod path;
 pub mod search;
 pub mod shell;
@@ -16,9 +18,11 @@ pub fn builtin_registry() -> ToolRegistry {
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
         Arc::new(fs::EditFile),
+        Arc::new(patch::ApplyPatch),
         Arc::new(fs::ListDir),
         Arc::new(search::GlobTool),
         Arc::new(search::GrepTool),
+        Arc::new(fetch::WebFetch),
         Arc::new(shell::RunShell),
     ])
 }
@@ -64,4 +68,16 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
         index += 1;
     }
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_exposes_the_m3_tools() {
+        let registry = builtin_registry();
+        assert!(registry.get("apply_patch").is_some());
+        assert!(registry.get("web_fetch").is_some());
+    }
 }

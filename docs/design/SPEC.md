@@ -9,7 +9,7 @@
 
 - macOS / Linux 单机 CLI + TUI。
 - 单 agent、多轮工具调用、人工审批、JSONL 持久化、崩溃恢复、对话 fork。
-- 内置 11 个工具、MCP client（仅 tools）、AGENTS.md、skills、上下文压缩。
+- 内置工具（含 `apply_patch`、`web_fetch`）、MCP client（仅 tools）、AGENTS.md、skills、上下文压缩。
 - headless 模式（JSONL 事件流），可进 CI。
 
 **v1 不包含**
@@ -157,8 +157,8 @@ scope = "user"          # user | project | session
 4. 项目配置只能产生 `deny` / `ask`，不能新增 `allow`。
 5. 每次判定 append `approval_decided`，含 `rule_id`。
 
-默认策略：workspace 内读/写 allow；workspace 外一律 ask；`run_shell`、`web_fetch`、
-MCP 工具默认 ask。`--yes` 只把 ask 降为 allow，不覆盖 deny。
+默认策略：workspace 内读/写 allow；workspace 外一律 ask；`run_shell`、`apply_patch`、
+`web_fetch`、MCP 工具默认 ask。`--yes` 只把 ask 降为 allow，不覆盖 deny。
 
 ## 9. 上下文装配
 

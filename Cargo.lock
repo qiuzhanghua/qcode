@@ -1346,6 +1346,7 @@ dependencies = [
  "qcode-core",
  "qcode-providers",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

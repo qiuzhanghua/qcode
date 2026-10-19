@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M2 完成，skills 已接入；下一步 M3**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M3 完成（apply_patch、web_fetch；sandbox runner 保持 stretch）**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -131,9 +131,9 @@ Windows 上（PowerShell）：
 
 ## 当前能力
 
-- **工具循环**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` /
-  `grep` / `run_shell`，多轮调用直到任务完成。`glob` 与 `grep` 遵守 `.gitignore`，
-  跳过隐藏与构建目录。
+- **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
+  `glob` / `grep` / `run_shell` / `web_fetch`，多轮调用直到任务完成。`glob` 与 `grep`
+  遵守 `.gitignore`，跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
   每次决策写事件，含命中的 rule id。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
@@ -159,13 +159,18 @@ Windows 上（PowerShell）：
   `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
+- **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
+  先解析并计算全部文件再 staging + 备份 + rename；任一 hunk 失败则什么都不写。绝对路径、
+  `..`、rename、symlink 逃逸拒绝；默认 ask。
+- **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
+  URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
 - **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：子 agent、OS 沙箱（M3/M4 范围）。
+尚未实现：子 agent、OS 沙箱（sandbox runner 保持 stretch）；`todo_write` 未做。
 
 ## 配置
 
@@ -234,6 +239,7 @@ MCP 工具；规则按工具名精确匹配。
 - [M0 任务清单](docs/design/M0-TASKS.md) —— 基础设施与人工验收
 - [M1 任务清单](docs/design/M1-TASKS.md) —— 工具循环、审批与取消
 - [M2 任务清单](docs/design/M2-TASKS.md) —— TUI、压缩、AGENTS.md 与 MCP
+- [M3 任务清单](docs/design/M3-TASKS.md) —— apply_patch、web_fetch、打包与 sandbox 取舍
 - [Skills 设计](docs/design/SKILLS.md) —— 发现、渐进披露与安全边界
 - [资料来源](docs/design/SOURCES.md) —— clean-room 白名单
 
@@ -242,7 +248,7 @@ MCP 工具；规则按工具名精确匹配。
 ```
 crates/qcode-core        domain、event、store、state、policy、tool、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
-crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell / skill
+crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）

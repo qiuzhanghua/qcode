@@ -50,6 +50,12 @@ pub enum ApprovalClass {
     /// An MCP tool: its side effects are unknown to the engine, so it is never
     /// treated as a read. The default policy asks before every call.
     External,
+    /// A multi-file write (`apply_patch`). Default ask even though the targets
+    /// are inside the workspace.
+    BulkWrite,
+    /// A network read (`web_fetch`). Default ask; the network is outside the
+    /// workspace boundary.
+    Network,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +116,8 @@ pub enum ToolError {
     Invalid(String),
     #[error("path escapes the workspace: {0}")]
     PathEscape(String),
+    #[error("network error: {0}")]
+    Network(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

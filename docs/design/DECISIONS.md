@@ -290,3 +290,26 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 不使用 skill 的 turn 只付索引 token；使用时要多一次 `skill` 工具往返。
 - 用户级 skill 在 workspace 外，只能由 `skill` 工具读取，`read_file` 的 workspace 边界不变。
 - 暂不支持 imports、远程安装、slash command 与自动激活；`tools/list` 式的动态刷新也不需要。
+
+## ADR-0005：apply_patch、web_fetch 与 sandbox（2026-10-19）
+
+**决定**
+
+1. `apply_patch` 接受标准 unified diff（create / delete / modify），整包先解析并计算；
+   任一 hunk 失败就不落盘。写入用 staging + 备份 + rename，尽量把 I/O 失败也收敛成回滚。
+   路径走 `path::resolve`，拒绝绝对路径、`..`、rename 与 symlink 逃逸；默认 ask
+   （`ApprovalClass::BulkWrite`）。
+2. `web_fetch` 只支持 http(s)，15s 超时、5 次 redirect、100KiB 流式截断；只返回文本类
+   内容，拒绝 URL 内凭据。默认 ask（`ApprovalClass::Network`），不注入凭据。
+   **不做 SSRF 白名单**：引擎没有可靠的出网边界，审批提示里展示完整 URL 是当前的控制手段；
+   v2 的网络代理边界再补域名策略。
+3. sandbox runner 继续作为 stretch，不在本版实现。macOS `sandbox-exec` 已 deprecated 且
+   嵌套 EPERM；Linux bubblewrap/Landlock 各有取舍。v1 的执行边界仍是审批 + workspace
+   路径封闭 + `run_shell` 的进程组/环境清洗/超时/取消。
+4. 打包沿用现有 `build-for-release` 矩阵；M3 只验证门禁与 `--list`。
+
+**后果**
+
+- `apply_patch` 不支持 rename / mode 变更 / 二进制 patch；需要时用 `write_file` 或 shell。
+- `web_fetch` 可能访问内网地址，安全上依赖用户审批；模型能看到最终 URL 与状态。
+- `todo_write` 与 `web_search` 不在 M3 范围。

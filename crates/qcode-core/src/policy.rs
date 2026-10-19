@@ -103,6 +103,8 @@ impl Policy {
             ApprovalClass::WriteOutside => (Action::Ask, "default: write outside workspace"),
             ApprovalClass::Execute => (Action::Ask, "default: process execution"),
             ApprovalClass::External => (Action::Ask, "default: external tool"),
+            ApprovalClass::BulkWrite => (Action::Ask, "default: multi-file write"),
+            ApprovalClass::Network => (Action::Ask, "default: network access"),
         };
         Decision {
             action,
@@ -156,6 +158,18 @@ mod tests {
         assert_eq!(
             policy
                 .evaluate("mcp__filesystem__read", ApprovalClass::External, &json!({}))
+                .action,
+            Action::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate("apply_patch", ApprovalClass::BulkWrite, &json!({}))
+                .action,
+            Action::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate("web_fetch", ApprovalClass::Network, &json!({}))
                 .action,
             Action::Ask
         );
