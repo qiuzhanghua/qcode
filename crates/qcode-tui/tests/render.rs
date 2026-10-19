@@ -5,7 +5,7 @@ use qcode_core::event::{
     ApprovalRequested, AssistantMessage, ContentBlock, Event, EventKind, SessionStarted, ToolCall,
     ToolResult, ToolStatus, TurnStarted, TurnStatus, Usage, UserMessage,
 };
-use qcode_tui::{App, render};
+use qcode_tui::{App, ContextDisplay, render};
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 
@@ -131,12 +131,25 @@ fn status_bar_shows_context_usage() {
 
     app.context_window = Some(128_000);
     app.context_tokens = 15_360;
+
+    // Auto: narrow terminals use a percent, wide ones the absolute values.
     let screen = draw(&app, 90, 10);
     assert!(screen.contains("ctx 12%"), "{screen}");
+    let screen = draw(&app, 120, 10);
+    assert!(screen.contains("ctx 15.4k/128k"), "{screen}");
+
+    // Ctrl-T overrides the width-based choice in both directions.
+    app.context_display = ContextDisplay::Percent;
+    let screen = draw(&app, 120, 10);
+    assert!(screen.contains("ctx 12%"), "{screen}");
+
+    app.context_display = ContextDisplay::Tokens;
+    let screen = draw(&app, 90, 10);
+    assert!(screen.contains("ctx 15.4k/128k"), "{screen}");
 
     app.context_tokens = 128_000;
-    let screen = draw(&app, 90, 10);
-    assert!(screen.contains("ctx 100%"), "{screen}");
+    let screen = draw(&app, 120, 10);
+    assert!(screen.contains("ctx 128k/128k"), "{screen}");
 }
 
 #[test]

@@ -7,5 +7,5 @@
 pub mod app;
 pub mod ui;
 
-pub use app::{App, ApprovalPrompt, Block, SkillView, Status, ToolEntry, UiAction};
+pub use app::{App, ApprovalPrompt, Block, ContextDisplay, SkillView, Status, ToolEntry, UiAction};
 pub use ui::render;

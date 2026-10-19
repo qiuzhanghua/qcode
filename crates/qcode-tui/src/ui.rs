@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block as UiBlock, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{App, ApprovalPrompt, Block, ToolEntry};
+use crate::app::{App, ApprovalPrompt, Block, ContextDisplay, ToolEntry};
 
 /// Expanded tool output is capped so one huge result cannot dominate a frame.
 const TOOL_OUTPUT_LINES: usize = 400;
@@ -59,10 +59,47 @@ fn context_percent(app: &App) -> Option<f64> {
     Some((app.context_tokens as f64 / window as f64 * 100.0).clamp(0.0, 100.0))
 }
 
-fn context_label(app: &App) -> String {
-    match context_percent(app) {
-        Some(percent) => format!("ctx {percent:.0}%"),
-        None => "ctx —".to_string(),
+/// Wide terminals fit `ctx 15.4k/128k`; narrower ones fall back to a percent.
+const CONTEXT_TOKENS_WIDTH: u16 = 100;
+
+fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    if tokens < 1_000_000 {
+        let thousands = tokens as f64 / 1_000.0;
+        if (thousands - thousands.round()).abs() < 0.05 {
+            return format!("{thousands:.0}k");
+        }
+        return format!("{thousands:.1}k");
+    }
+    let millions = tokens as f64 / 1_000_000.0;
+    if (millions - millions.round()).abs() < 0.05 {
+        format!("{millions:.0}M")
+    } else {
+        format!("{millions:.1}M")
+    }
+}
+
+fn context_label(app: &App, width: u16) -> String {
+    let Some(window) = app.context_window.filter(|window| *window > 0) else {
+        return "ctx —".to_string();
+    };
+
+    let absolute = match app.context_display {
+        ContextDisplay::Auto => width >= CONTEXT_TOKENS_WIDTH,
+        ContextDisplay::Percent => false,
+        ContextDisplay::Tokens => true,
+    };
+    if absolute {
+        format!(
+            "ctx {}/{}",
+            format_tokens(app.context_tokens),
+            format_tokens(window)
+        )
+    } else {
+        let percent = context_percent(app).unwrap_or(0.0);
+        format!("ctx {percent:.0}%")
     }
 }
 
@@ -108,7 +145,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             muted,
         ),
         Span::raw("  "),
-        Span::styled(context_label(app), context_style(app)),
+        Span::styled(context_label(app, area.width), context_style(app)),
         Span::raw("  "),
         Span::styled(
             format!("sandbox {}", app.sandbox),

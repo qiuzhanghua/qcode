@@ -87,6 +87,28 @@ pub enum UiAction {
     Quit,
 }
 
+/// How the status bar renders context usage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContextDisplay {
+    /// Percent on narrow terminals, absolute tokens on wide ones.
+    #[default]
+    Auto,
+    /// Always `ctx 42%`.
+    Percent,
+    /// Always `ctx 15.4k/128k`.
+    Tokens,
+}
+
+impl ContextDisplay {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Percent,
+            Self::Percent => Self::Tokens,
+            Self::Tokens => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub blocks: Vec<Block>,
@@ -108,6 +130,8 @@ pub struct App {
     /// Context window from `[context] window_tokens`; `None` until configured
     /// or reported by the engine.
     pub context_window: Option<u64>,
+    /// Status-bar format for context usage (Ctrl-T cycles Auto/Percent/Tokens).
+    pub context_display: ContextDisplay,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
@@ -133,6 +157,7 @@ impl App {
             sandbox: "none".to_string(),
             context_tokens: 0,
             context_window: None,
+            context_display: ContextDisplay::default(),
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
@@ -340,6 +365,10 @@ impl App {
             }
             KeyCode::Char('o') if ctrl => {
                 self.toggle_last_tool();
+                return None;
+            }
+            KeyCode::Char('t') if ctrl => {
+                self.context_display = self.context_display.next();
                 return None;
             }
             _ => {}
@@ -914,6 +943,20 @@ mod tests {
         });
         assert_eq!(app.context_tokens, 15_360);
         assert_eq!(app.context_window, Some(128_000));
+    }
+
+    #[test]
+    fn ctrl_t_cycles_the_context_display() {
+        let mut app = App::new("mock", "mock-1");
+        assert_eq!(app.context_display, ContextDisplay::Auto);
+
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl_t);
+        assert_eq!(app.context_display, ContextDisplay::Percent);
+        app.handle_key(ctrl_t);
+        assert_eq!(app.context_display, ContextDisplay::Tokens);
+        app.handle_key(ctrl_t);
+        assert_eq!(app.context_display, ContextDisplay::Auto);
     }
 
     #[test]
