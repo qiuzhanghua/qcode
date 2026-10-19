@@ -117,7 +117,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let history = options
         .resume
         .as_ref()
-        .map(|id| options.store.load(id))
+        .map(|id| options.store.repair_interrupted(id))
         .transpose()?;
     let session_id = match (&options.resume, &history) {
         (Some(id), Some(_)) => id.clone(),

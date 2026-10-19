@@ -23,7 +23,7 @@ use crate::policy::{Action, Policy};
 use crate::provider::{
     CompletionRequest, Message, Provider, ProviderError, Role, StopReason, StreamEvent,
 };
-use crate::store::{SessionStore, StoreError};
+use crate::store::{SessionLock, SessionStore, StoreError};
 use crate::todo::{self, TodoItem};
 use crate::tool::{ApprovalClass, Tool, ToolContext, ToolOutput, ToolRegistry};
 
@@ -162,10 +162,15 @@ pub struct SessionWriter<'a> {
     session_id: String,
     seq: u64,
     turn: u32,
+    /// Held for the lifetime of the turn; two writers cannot share a session.
+    _lock: SessionLock,
 }
 
 impl<'a> SessionWriter<'a> {
     pub fn resume(store: &'a SessionStore, session_id: &str) -> Result<Self, StoreError> {
+        let lock = store.lock(session_id)?;
+        // A previous run may have died between `tool_call` and `tool_result`.
+        store.repair_interrupted(session_id)?;
         let events = store.load(session_id)?;
         let seq = events.last().map(|event| event.seq).unwrap_or(0);
         let turn = events.last().map(|event| event.turn).unwrap_or(0);
@@ -174,6 +179,7 @@ impl<'a> SessionWriter<'a> {
             session_id: session_id.to_string(),
             seq,
             turn,
+            _lock: lock,
         })
     }
 

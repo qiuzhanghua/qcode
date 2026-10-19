@@ -57,6 +57,7 @@ cargo test --workspace
 ./target/debug/qc run "继续" --resume <session-id>
 ./target/debug/qc resume <session-id>              # 在 TUI 里恢复
 ./target/debug/qc sessions fork <session-id> --at 42   # 打印新 session id
+./target/debug/qc sessions gc --older-than-days 30     # dry run；加 --yes 才删除
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
@@ -187,8 +188,10 @@ cargo build -p qcode-eval
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
 - **超时**：`--timeout <秒>` 给整个 turn 设墙钟上限，超时走同一条取消路径
   （含进程组清理），退出码 124 以便与手工取消区分。
-- **事件日志**：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃；
-  `sessions show` 可完整 replay。
+- **事件日志**：append-only JSONL，`seq` 连续校验，崩溃尾行丢弃；`turn_ended` 时
+  `fsync`，同一 session 由 flock 保证单写者（第二个写者被拒绝，读仍可用）；
+  resume 时给悬挂的 `tool_call` 补 `tool_result(interrupted)`。`sessions show` 可完整
+  replay，`sessions fork` 分叉，`sessions gc --older-than-days N [--yes]` 清理旧会话。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或

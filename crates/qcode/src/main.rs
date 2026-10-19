@@ -128,6 +128,14 @@ enum SessionsCommand {
         #[arg(long, value_name = "SEQ")]
         at: Option<u64>,
     },
+    /// Remove sessions whose last event is older than N days.
+    Gc {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: u64,
+        /// Actually delete; without it, only print candidates.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -471,6 +479,21 @@ fn cmd_sessions(
         SessionsCommand::Fork { id, at } => {
             let forked = store.fork(&id, at)?;
             println!("{forked}");
+        }
+        SessionsCommand::Gc {
+            older_than_days,
+            yes,
+        } => {
+            let ids = store.gc(older_than_days, yes)?;
+            if ids.is_empty() {
+                println!("nothing to clean");
+            }
+            for id in ids {
+                println!("{} {id}", if yes { "removed" } else { "would remove" });
+            }
+            if !yes {
+                println!("dry run; pass --yes to delete");
+            }
         }
     }
 

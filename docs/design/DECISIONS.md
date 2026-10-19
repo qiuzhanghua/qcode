@@ -534,3 +534,30 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
 - 分叉后的 seq 与 session 与原日志不同，便于独立继续；`sessions list` 会看到两条记录。
 - 当前没有交互式“从某条消息分叉”的 TUI 命令，边界用 `--at` 指定；需要时再加 UI。
 - 尚未处理悬挂 `tool_call` 的 `interrupted` 标记（归入存储/崩溃恢复项）。
+
+## ADR-0015：存储可靠性与 gc（2026-10-19）
+
+**背景**：SPEC §15 要求单写者、turn 边界 fsync、清理与崩溃恢复；此前只有 append +
+torn-line 丢弃，`interrupted` 状态从未写入。
+
+**决定**
+
+1. `SessionStore::lock` 用 `locks/<id>.lock` + `flock(LOCK_EX|LOCK_NB)`；`SessionWriter`
+   持有锁直到 turn 结束。第二个写者得到 `StoreError::Locked`，只读命令（`sessions
+   list/show`）不受影响。
+2. `append` 在写入 `turn_ended` 后 `sync_all`；其余事件只 `flush`，与“turn 边界持久化”
+   一致。
+3. `SessionWriter::resume` 的顺序是 lock → `repair_interrupted` → load；repair 为每个
+   没有对应 `tool_result` 的 `tool_call` 追加 `interrupted` 结果（保留原 turn），幂等。
+   TUI resume 复用同一 repair，因此 replay 能看到中断的工具。
+4. `qc sessions gc --older-than-days N [--yes]`：按最后事件 `ts` 选过期 session；
+   默认 dry-run，`--yes` 删除 JSONL、`sessions/<id>/` 与对应 lock。`delete_session`
+   也清理 per-session 目录。
+
+**后果**
+
+- 仍未实现 `index.sqlite`，`sessions list` 依旧全量扫描；大数量下会慢。
+- 仍未生成 `outputs/<call_id>.txt`，`ToolMetadata.full_output_path` 保持为空。
+- 锁是进程级 advisory lock；NFS 等文件系统上的行为取决于底层 flock 支持。
+- repair 假设 `tool_call` 事件自身是执行记录；如果崩溃发生在 assistant_message 与
+  tool_call 之间，还没有可补的结果。
