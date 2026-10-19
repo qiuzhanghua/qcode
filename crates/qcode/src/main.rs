@@ -6,7 +6,7 @@ mod tui;
 
 use std::io::IsTerminal;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,8 @@ use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::policy::Policy;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
+use qcode_core::tool::ToolRegistry;
+use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry;
 use tokio_util::sync::CancellationToken;
@@ -176,7 +178,8 @@ async fn cmd_run(
         "provider resolved"
     );
 
-    let store = SessionStore::new(resolve_data_dir(data_dir));
+    let data_dir = resolve_data_dir(data_dir);
+    let store = SessionStore::new(data_dir.clone());
     let workspace = match cwd {
         Some(path) => path,
         None => std::env::current_dir()?,
@@ -201,7 +204,7 @@ async fn cmd_run(
 
     let provider = build_provider(&resolved)?;
 
-    let tools = builtin_registry();
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir).await;
     let policy = Policy::new(loaded.approval.rules.clone());
     let approver: Box<dyn Approver> = if yes {
         Box::new(AutoApprove)
@@ -310,11 +313,12 @@ async fn cmd_tui(
         "starting TUI"
     );
 
-    let store = SessionStore::new(resolve_data_dir(data_dir));
+    let data_dir = resolve_data_dir(data_dir);
+    let store = SessionStore::new(data_dir.clone());
     let workspace = std::env::current_dir()?.canonicalize()?;
     let agents_md = agents::load(&workspace)?;
     let provider = build_provider(&resolved)?;
-    let tools = builtin_registry();
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir).await;
     let policy = Policy::new(loaded.approval.rules.clone());
 
     tui::run(tui::TuiOptions {
@@ -377,6 +381,18 @@ async fn cmd_doctor(
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Built-in tools plus whatever the enabled MCP servers advertise. A server
+/// that fails to start only removes its own tools; `connect_all` logs why.
+async fn build_tools(mcp: &McpConfig, workspace: &Path, data_dir: &Path) -> ToolRegistry {
+    let mut tools = builtin_registry();
+    let mcp_tools = qcode_mcp::connect_all(&mcp.servers, workspace, &data_dir.join("logs")).await;
+    if !mcp_tools.is_empty() {
+        tracing::info!(count = mcp_tools.len(), "registered MCP tools");
+    }
+    tools.extend(mcp_tools);
+    tools
 }
 
 fn build_provider(

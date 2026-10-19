@@ -37,3 +37,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 ratatui = "=0.29.0"
+# MCP SDK. Pinned: the client API is still pre-1.0 and changes between minors.
+rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-child-process"] }

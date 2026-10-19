@@ -47,6 +47,9 @@ pub enum ApprovalClass {
     WriteInside,
     WriteOutside,
     Execute,
+    /// An MCP tool: its side effects are unknown to the engine, so it is never
+    /// treated as a read. The default policy asks before every call.
+    External,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +143,15 @@ impl ToolRegistry {
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
+    }
+
+    /// Add tools, typically MCP tools discovered at startup. Later tools win on
+    /// a name collision; MCP names are prefixed with `mcp__`, so they cannot
+    /// shadow a built-in tool.
+    pub fn extend(&mut self, tools: impl IntoIterator<Item = Arc<dyn Tool>>) {
+        for tool in tools {
+            self.tools.insert(tool.name().to_string(), tool);
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {

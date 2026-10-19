@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use qcode_core::cost::Pricing;
 use qcode_core::policy::Rule;
+use qcode_mcp::{McpConfig, McpConfigError};
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 
@@ -30,6 +31,9 @@ pub struct Config {
     /// Context window used for compaction.
     #[serde(default)]
     pub context: ContextConfig,
+    /// stdio MCP servers. Disabled entries are kept for quick toggling.
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +125,8 @@ pub enum ConfigError {
     InvalidPricing { model: String },
     #[error("--max-cost must be a finite, non-negative USD amount")]
     InvalidMaxCost,
+    #[error("invalid MCP configuration: {0}")]
+    Mcp(#[from] McpConfigError),
 }
 
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
@@ -128,10 +134,13 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
-    toml::from_str(&text).map_err(|source| ConfigError::Parse {
+    let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
-    })
+    })?;
+    // Fail before spawning anything if the MCP section is malformed.
+    config.mcp.validate()?;
+    Ok(config)
 }
 
 pub fn default_path() -> Result<PathBuf, ConfigError> {
@@ -513,6 +522,47 @@ mod tests {
         assert!(matches!(
             pricing_for(&config, "m", Some(1.0)),
             Err(ConfigError::InvalidPricing { .. })
+        ));
+    }
+
+    #[test]
+    fn mcp_servers_parse_with_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [[mcp.servers]]
+            name = "filesystem"
+            command = "npx"
+            args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+            "#,
+        )
+        .unwrap();
+        config.mcp.validate().unwrap();
+
+        assert_eq!(config.mcp.servers.len(), 1);
+        let server = &config.mcp.servers[0];
+        assert_eq!(server.name, "filesystem");
+        assert_eq!(server.args.len(), 3);
+        assert!(server.enabled);
+        assert_eq!(server.timeout_secs, 120);
+    }
+
+    #[test]
+    fn duplicate_mcp_server_names_are_rejected() {
+        let config: Config = toml::from_str(
+            r#"
+            [[mcp.servers]]
+            name = "fs"
+            command = "a"
+
+            [[mcp.servers]]
+            name = "fs"
+            command = "b"
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            config.mcp.validate(),
+            Err(McpConfigError::DuplicateName(_))
         ));
     }
 

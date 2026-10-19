@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI 已接线）**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI、压缩、AGENTS.md、MCP 已接线）**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -34,6 +34,13 @@ cargo test --workspace
 
 # 交互式审批演练：run_shell 默认 ask（在真实终端里跑；y 执行，n 拒绝）
 ./target/debug/qc run "demo" --provider mock-approval
+
+# MCP：在 config.toml 里配置 stdio server，工具以 mcp__<server>__<tool> 暴露
+# [[mcp.servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+# 默认每次调用都要审批；server 起不来只丢它自己的工具，不影响 session。
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
@@ -138,13 +145,17 @@ Windows 上（PowerShell）：
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
+- **MCP（仅 tools）**：启动时连接启用的 stdio server，`tools/list` 后以
+  `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
+  有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
+  `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
 - **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：MCP、上下文压缩、AGENTS.md、子 agent、OS 沙箱；TUI 处于 M2 接线阶段。
+尚未实现：子 agent、OS 沙箱；M2 只剩并行只读工具（M2-8）。
 
 ## 配置
 
@@ -180,7 +191,18 @@ id = "deny-force-push"
 tool = "run_shell"
 command_prefix = "git push --force"
 action = "deny"
+
+# MCP：stdio server（v1 只支持 tools）。enabled 默认 true，timeout_secs 默认 120。
+# 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+enabled = true
 ```
+
+`[[approval.rules]]` 的 `tool` 写完整工具名（如 `mcp__filesystem__read_file`）来放行单个
+MCP 工具；规则按工具名精确匹配。
 
 优先级：CLI flags > 环境变量（`QCODE_PROVIDER` / `QCODE_MODEL` / `QCODE_BASE_URL`）>
 配置文件 > 内置默认。keyless 服务把 `api_key_env` 设为 `""`。
@@ -206,7 +228,7 @@ action = "deny"
 crates/qcode-core        domain、event、store、state、policy、tool、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
 crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell
-crates/qcode-mcp         MCP client（M2）
+crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
 ```

@@ -1,7 +1,7 @@
 # M2 任务清单
 
 > 周期：第 6–8 周。目标：TUI 前端、上下文压缩、AGENTS.md、MCP client（仅 tools）。
-> 状态截至 2026-10-18。设计依据：[SPEC §14](./SPEC.md)、[ADR-0001](./DECISIONS.md)。
+> 状态截至 2026-10-19。设计依据：[SPEC §14](./SPEC.md)、[ADR-0001](./DECISIONS.md)。
 
 ## M2 完成定义
 
@@ -82,10 +82,21 @@
   就是 cwd，根即最近一层）。
 - 验收：加载器 5 条（缺失、裁剪、空白、超限、symlink）+ system prompt 组合单测。
 
-### M2-7 MCP client（tools only）
+### M2-7 MCP client（tools only）✅
 
 - stdio JSON-RPC：`initialize` → `tools/list` → `tools/call`；工具名 `mcp__<server>__<tool>`。
 - 默认 ask；请求超时、进程退出、协议错误都转成 `tool_result` 错误，不静默挂起。
+- 实现：`rmcp = "=3.2.0"`（仅 `client` + `transport-child-process`）。构建工具清单时连接所有
+  enabled server——`tools/list` 必须先于模型选择工具，所以连接发生在启动而不是首次调用。
+- 单个 server 失败只降级自己：spawn / 握手 / `tools/list` 任一失败都 `warn` 并跳过；stderr 落
+  `<data-dir>/logs/mcp-<server>.log`。
+- `tools/call` 套 per-server `timeout_secs`（默认 120s）与 turn 的 CancellationToken；超时/崩溃/
+  协议错误 → `tool_result(error)`，取消 → `cancelled`。输出加 `[mcp:<server>]` 来源标记，
+  与内置工具共用 32KB 截断。
+- `ApprovalClass::External`：策略默认 ask，规则可按完整工具名放行。
+- 验收：配置校验 5 条、内容映射/截断 6 条、stub server 端到端 9 条（列表、调用、error、
+  崩溃、超时、取消、截断、畸形结果、缺失/禁用 server 降级）、引擎端到端 1 条
+  （默认 ask → 审批 → `mcp__stub__echo` → tool_result）。
 
 ### M2-8 并行只读工具
 

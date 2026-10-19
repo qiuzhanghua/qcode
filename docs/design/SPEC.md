@@ -201,12 +201,15 @@ name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 enabled = true
+timeout_secs = 120        # 握手之后每次请求的上限；默认 120
 ```
 
-- 懒连接：首次调用前启动，`list_tools` 结果缓存 5 分钟。
+- 连接时机：构建工具清单时启动（`initialize` → `tools/list`）。`tools/list` 必须先于模型
+  选择工具，因此不做“首次调用才连接”的懒加载；单个 server 握手慢只会拖慢启动。
 - 工具名 `mcp__<server>__<tool>`；权限按工具粒度，默认 ask。
-- server stderr 写入独立日志；server 崩溃只降级该 server，不终止 session。
-- 输出同样走 32KB 截断与外置；进上下文时加来源标记。
+- server stderr 写入 `<data-dir>/logs/mcp-<server>.log`；spawn / 握手 / `tools/list` /
+  `tools/call` 失败或超时只降级该 server，不终止 session。
+- 输出同样走 32KB 截断；进上下文时加 `[mcp:<server>]` 来源标记。
 - v1 只支持 tools；resources / prompts / sampling / elicitation 不进 v1。
 
 ## 12. 配置与凭据

@@ -174,8 +174,8 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
   依赖 pin 死 `=0.44.0`，外面包一层自有 `Provider` trait 做防腐层。
 - 事件日志存 provider wire JSON，不存 rig 类型；禁用 `Agent::resume` / `RUN_FORMAT`。
 - rig 自带的 terminal coding agent 只允许看 API 用法示例，不作为架构与 prompt 参考。
-- rmcp 3.x：stdio + streamable HTTP；v1 不支持 2024-11-05 legacy SSE；
-  `call_tool` 外层自包 timeout（库没有 per-request deadline）。
+- rmcp 3.2.0（pin `=3.2.0`）：v1 只用 stdio + tools；streamable HTTP 与 2024-11-05 legacy SSE
+  不进 v1。`call_tool` 外层自包 timeout（库没有 per-request deadline）。
 - provider v1：OpenAI-compatible（DeepSeek / Ollama / vLLM）+ Anthropic 原生。
 - DeepSeek 默认模型：`deepseek-flash`（2026-10-18 用户选择；可用 `--model` 覆盖）。
 - 已知成本：rig 强制 `serde_json` 的 `preserve_order` + `float_roundtrip`。
@@ -234,3 +234,25 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 2026-10-18：M2 开工，pin `ratatui = "=0.29.0"`（与 `tui-textarea 0.7` 的 `^0.29`
   配套，避免同进程两个 ratatui）；ratatui 0.29 仍依赖的 `paste` 已被标记 unmaintained，
   在 `deny.toml` 记录豁免，升级到 0.30 + 新版 tui-textarea 时一并撤销。
+
+## ADR-0002：MCP 客户端（2026-10-19）
+
+**背景**：M2-7 要接 stdio MCP server。SPEC 原先写“懒连接”，但 `tools/list` 的结果决定了
+发给模型的工具定义，连接无法推迟到第一次 `tools/call`。
+
+**决定**
+
+1. 用 `rmcp = "=3.2.0"`，只开 `client` + `transport-child-process`。
+2. 在构建 registry 时串行连接所有 enabled server，`tools/list` 后立即注册；握手上限 20s。
+   失败只 `warn` 并跳过该 server（spawn / 握手 / list 都是）。
+3. 每 server `timeout_secs`（默认 120）同时约束 `tools/list` 与 `tools/call`；取消走
+   `CancellationToken`，两者都映射成 `tool_result`（error / cancelled）。
+4. MCP 工具用 `ApprovalClass::External`，默认 ask；规则按完整工具名精确匹配。
+5. stderr 每 server 一个日志文件；输出加 `[mcp:<server>]` 并做 32KB 截断。
+
+**后果**
+
+- 启动延迟随 enabled server 数量线性增长。后续若要并行连接，只改 `connect_all`，
+  工具契约不变。
+- `tools/list` 不缓存 TTL：进程生命周期内只列一次；长会话里 server 动态增删工具需重启 qc。
+- `rmcp` pre-1.0，升级必须连同 `call_tool` 返回类型与工具生命周期一起评估。

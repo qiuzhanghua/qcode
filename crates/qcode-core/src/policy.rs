@@ -102,6 +102,7 @@ impl Policy {
             ApprovalClass::WriteInside => (Action::Allow, "default: write inside workspace"),
             ApprovalClass::WriteOutside => (Action::Ask, "default: write outside workspace"),
             ApprovalClass::Execute => (Action::Ask, "default: process execution"),
+            ApprovalClass::External => (Action::Ask, "default: external tool"),
         };
         Decision {
             action,
@@ -149,6 +150,12 @@ mod tests {
         assert_eq!(
             policy
                 .evaluate("run_shell", ApprovalClass::Execute, &json!({}))
+                .action,
+            Action::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate("mcp__filesystem__read", ApprovalClass::External, &json!({}))
                 .action,
             Action::Ask
         );
