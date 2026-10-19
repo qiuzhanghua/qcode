@@ -169,6 +169,13 @@ fn child_agent_progress_is_rendered_nested() {
     assert!(screen.contains("child says hi"), "{screen}");
     assert!(screen.contains("read_file"), "{screen}");
     assert!(screen.contains("a.txt"), "{screen}");
+
+    // Ctrl-B folds child progress without touching parent rows.
+    app.show_child = false;
+    let screen = draw(&app, 100, 20);
+    assert!(!screen.contains("child says hi"), "{screen}");
+    assert!(!screen.contains("read_file"), "{screen}");
+    assert!(screen.contains("child hidden"), "{screen}");
 }
 
 #[test]

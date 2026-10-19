@@ -136,6 +136,8 @@ pub struct App {
     pub context_window: Option<u64>,
     /// Status-bar format for context usage (Ctrl-T cycles Auto/Percent/Tokens).
     pub context_display: ContextDisplay,
+    /// Show child-agent progress blocks (Ctrl-B). Parent rows stay visible.
+    pub show_child: bool,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
@@ -162,6 +164,7 @@ impl App {
             context_tokens: 0,
             context_window: None,
             context_display: ContextDisplay::default(),
+            show_child: true,
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
@@ -441,6 +444,10 @@ impl App {
             }
             KeyCode::Char('t') if ctrl => {
                 self.context_display = self.context_display.next();
+                return None;
+            }
+            KeyCode::Char('b') if ctrl => {
+                self.show_child = !self.show_child;
                 return None;
             }
             _ => {}
@@ -1125,6 +1132,18 @@ mod tests {
         });
         assert_eq!(app.context_tokens, 15_360);
         assert_eq!(app.context_window, Some(128_000));
+    }
+
+    #[test]
+    fn ctrl_b_toggles_child_progress_independently() {
+        let mut app = App::new("mock", "mock-1");
+        assert!(app.show_child);
+
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl_b);
+        assert!(!app.show_child);
+        app.handle_key(ctrl_b);
+        assert!(app.show_child);
     }
 
     #[test]

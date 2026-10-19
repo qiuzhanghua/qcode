@@ -161,6 +161,13 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
     ];
+    if !app.show_child {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "child hidden",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
     if app.scroll > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -187,6 +194,15 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(app.scroll)
         .min(u16::MAX as usize);
     frame.render_widget(paragraph.scroll((offset as u16, 0)), area);
+}
+
+/// Child progress can be folded independently of tool output (Ctrl-B).
+fn is_child_block(block: &Block) -> bool {
+    match block {
+        Block::Subagent(_) => true,
+        Block::Tool(tool) => tool.child,
+        _ => false,
+    }
 }
 
 fn block_rows(block: &Block) -> usize {
@@ -217,6 +233,9 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
     let mut selected = Vec::new();
     let mut rows = 0;
     for block in app.blocks.iter().rev() {
+        if !app.show_child && is_child_block(block) {
+            continue;
+        }
         selected.push(block);
         rows += block_rows(block);
         if rows >= budget || selected.len() >= MAX_WINDOW_BLOCKS {
