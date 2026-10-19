@@ -451,3 +451,31 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
   `qc doctor` 会直接报出 preflight 的错误。
 - 只读根不含 `/` 与用户 home：读取范围比 macOS profile 更窄；需要额外路径时再扩参数。
 - 仍未实现 Landlock；`qc sandbox exec` 不对外提供。
+
+## ADR-0012：Linux Landlock 后端（2026-10-19）
+
+**背景**：bwrap 依赖外部二进制与 unprivileged user namespaces（Ubuntu 24.04 需 AppArmor
+放行）。Landlock 自 Linux 5.13 起是非特权进程可用的内核 LSM，适合做无依赖的文件系统收敛。
+
+**决定**
+
+1. `SandboxMode::Landlock`；直接使用 syscall 444/445/446（`landlock_create_ruleset` /
+   `add_rule` / `restrict_self`），不引入新 crate。
+2. ruleset 在父进程构建；`run_shell` 的 `pre_exec` 中只做 `prctl(PR_SET_NO_NEW_PRIVS)` +
+   `landlock_restrict_self` 两个原始系统调用（fork 后不分配内存），因此只限制子进程，
+   qc 本身与其它工具不受影响。
+3. 规则：`/usr /bin /sbin /lib /lib64 /etc /opt /sys /proc /run /dev` 只读，常用设备
+   （`/dev/null`、`/dev/urandom` 等）读写，workspace、`/tmp`、`/var/tmp` 与 Cargo/Rustup
+   目录读写；`handled_access_fs` 取当前 ABI 支持的全部文件系统位（ABI 1/2/3/5 递增）。
+4. preflight 用 `/bin/true` 走同一 `pre_exec`；内核不支持则拒绝启动。CI 在 Ubuntu 上直接
+   跑 Landlock 运行时测试，失败（内核过旧/被禁用）则跳过。
+5. 网络不限制：Landlock ABI 4 仅覆盖 TCP bind/connect，且需要额外请求网络权限；需要网络
+   隔离时用 `bwrap`。
+
+**后果**
+
+- 优点：无外部依赖、无需 userns，workspace 外写入在 fork 后即被内核拒绝。
+- 限制：只约束文件系统；不能像 bwrap 那样隔离 `/tmp`、PID、网络与挂载。`qc doctor`
+  会显示 `Landlock filesystem confinement (network not restricted)`。
+- `handled_access_fs` 包含当前内核支持的全部位，旧内核会少管一些新访问类型；preflight
+  只保证按当前 ABI 成功应用，不保证未来 ABI 的语义。

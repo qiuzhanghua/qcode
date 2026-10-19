@@ -431,7 +431,10 @@ mod tests {
         let config: Config = toml::from_str("[sandbox]\nmode = \"bwrap\"\n").unwrap();
         assert_eq!(config.sandbox.mode, SandboxMode::Bwrap);
 
-        let error = toml::from_str::<Config>("[sandbox]\nmode = \"landlock\"\n").unwrap_err();
+        let config: Config = toml::from_str("[sandbox]\nmode = \"landlock\"\n").unwrap();
+        assert_eq!(config.sandbox.mode, SandboxMode::Landlock);
+
+        let error = toml::from_str::<Config>("[sandbox]\nmode = \"seccomp\"\n").unwrap_err();
         assert!(error.to_string().contains("unknown variant"), "{error}");
     }
 

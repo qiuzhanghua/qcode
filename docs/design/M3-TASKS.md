@@ -39,12 +39,13 @@
   取舍（Landlock 管不住 unix socket，Ubuntu 24.04 还需 AppArmor profile）。
 - v1 的边界仍是审批 + workspace 路径封闭；`run_shell` 已有独立进程组、环境清洗、超时与取消。
 - 本次补齐 `qcode-tools::sandbox`：`Sandbox` trait、`NoSandbox`（默认）、`SandboxExec`
-  （macOS）、`Bwrap`（Linux），由 `[sandbox] mode` 显式开启。启用时用同一套规则做
-  preflight，失败即拒绝启动，不静默降级；默认 deny，网络默认拒绝。
+  （macOS）、`Bwrap` / `Landlock`（Linux），由 `[sandbox] mode` 显式开启。启用时用同一套
+  规则做 preflight，失败即拒绝启动，不静默降级；默认 deny，网络默认拒绝（Landlock 仅
+  文件系统，不接管网络）。
 - 非嵌套 macOS 上已验证：workspace 内写入成功、workspace 外写入被拒、preflight 通过。
-- Linux 后端通过纯参数单测 + `--target x86_64-unknown-linux-gnu` 交叉编译检查；运行时
-  测试在 Ubuntu CI 装 bubblewrap 后执行，preflight 失败则跳过。Landlock 仍未实现；
-  `qc sandbox exec` 仍不提供。
+- Linux 后端通过纯参数单测 + `--target x86_64-unknown-linux-gnu` 交叉编译检查；bwrap
+  运行时测试在 Ubuntu CI 装 bubblewrap 后执行，Landlock 测试直接用内核能力，preflight
+  失败则跳过。`qc sandbox exec` 仍不提供。
 
 ### M3-4 打包 ✅
 

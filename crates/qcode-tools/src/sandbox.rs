@@ -1,7 +1,7 @@
 //! Sandbox abstraction for process execution.
 //!
 //! v1 keeps "no sandbox + approval" as the default (ADR-0005). This module adds
-//! the seam for an OS sandbox and one experimental backend:
+//! the seam for OS sandboxes and three experimental backends:
 //!
 //! - [`NoSandbox`]: the default; approval and workspace path checks are the
 //!   boundary.
@@ -10,14 +10,24 @@
 //!   EPERM and because the profile is still experimental. Enabling it runs a
 //!   preflight; a failure aborts startup instead of silently running
 //!   unsandboxed.
+//! - `Bwrap` (Linux): bubblewrap with a minimal read-only root.
+//! - `Landlock` (Linux): unprivileged filesystem confinement applied in the
+//!   child between `fork` and `exec` (no external binary, no mount namespace).
+//!   It does not restrict network access; use bwrap when that matters.
 //!
-//! Linux (bubblewrap) is intentionally not implemented yet: it needs an
-//! AppArmor profile on Ubuntu 24.04 and cannot be validated from a macOS host.
+//! Every backend is preflighted at startup and fails closed.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+
+#[cfg(target_os = "linux")]
+use std::os::fd::RawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 
 use serde::Deserialize;
 
@@ -42,6 +52,8 @@ pub enum SandboxMode {
     SandboxExec,
     /// Linux bubblewrap (experimental).
     Bwrap,
+    /// Linux Landlock (experimental, filesystem only).
+    Landlock,
 }
 
 impl SandboxMode {
@@ -50,6 +62,7 @@ impl SandboxMode {
             Self::None => "none",
             Self::SandboxExec => "sandbox-exec",
             Self::Bwrap => "bwrap",
+            Self::Landlock => "landlock",
         }
     }
 }
@@ -110,6 +123,19 @@ pub fn build(
             {
                 let _ = (workspace, network);
                 Err(SandboxError::Unsupported("bwrap"))
+            }
+        }
+        SandboxMode::Landlock => {
+            #[cfg(target_os = "linux")]
+            {
+                let sandbox = Landlock::new(workspace)?;
+                sandbox.check()?;
+                Ok(Arc::new(sandbox))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (workspace, network);
+                Err(SandboxError::Unsupported("landlock"))
             }
         }
     }
@@ -397,6 +423,308 @@ impl Sandbox for Bwrap {
             detail,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Landlock (Linux)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+const LL_EXECUTE: u64 = 1 << 0;
+#[cfg(target_os = "linux")]
+const LL_READ_FILE: u64 = 1 << 2;
+#[cfg(target_os = "linux")]
+const LL_READ_DIR: u64 = 1 << 3;
+
+/// Access bits this kernel's Landlock ABI can handle.
+///
+/// ABI 1 handles bits 0..=12 (the filesystem rights); 2 adds REFER, 3 adds
+/// TRUNCATE, 5 adds IOCTL_DEV. Newer features (network, scopes, audit, threads)
+/// are not requested here.
+#[cfg(any(target_os = "linux", test))]
+fn landlock_handled(abi: i64) -> u64 {
+    let mut bits = (1 << 13) - 1;
+    if abi >= 2 {
+        bits |= 1 << 13;
+    }
+    if abi >= 3 {
+        bits |= 1 << 14;
+    }
+    if abi >= 5 {
+        bits |= 1 << 15;
+    }
+    bits
+}
+
+#[cfg(target_os = "linux")]
+const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
+#[cfg(target_os = "linux")]
+const SYS_LANDLOCK_ADD_RULE: libc::c_long = 445;
+#[cfg(target_os = "linux")]
+const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
+
+/// `struct landlock_ruleset_attr` (v1 shape: one u64).
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct LandlockRulesetAttr {
+    handled_access_fs: u64,
+}
+
+/// `struct landlock_path_beneath_attr`. The kernel declares it packed.
+#[cfg(target_os = "linux")]
+#[repr(C, packed)]
+struct LandlockPathBeneathAttr {
+    allowed_access: u64,
+    parent_fd: libc::c_int,
+}
+
+/// Linux Landlock backend: filesystem confinement without an external binary.
+///
+/// The ruleset is built in the parent; the child applies it with
+/// `landlock_restrict_self()` in a `pre_exec` hook, so only `run_shell` and its
+/// descendants are confined.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct Landlock {
+    workspace: PathBuf,
+    ruleset_fd: RawFd,
+}
+
+#[cfg(target_os = "linux")]
+impl Landlock {
+    pub fn new(workspace: &Path) -> Result<Self, SandboxError> {
+        if workspace == Path::new("/") {
+            return Err(SandboxError::Setup(
+                "refusing to sandbox the filesystem root as the workspace".to_string(),
+            ));
+        }
+
+        let abi = landlock_abi()?;
+        let handled = landlock_handled(abi);
+        let ruleset_fd = create_ruleset(handled)?;
+        let sandbox = Self {
+            workspace: workspace.to_path_buf(),
+            ruleset_fd,
+        };
+        if let Err(err) = sandbox.install_rules(abi) {
+            // `Drop` closes the fd.
+            return Err(err);
+        }
+        Ok(sandbox)
+    }
+
+    fn install_rules(&self, abi: i64) -> Result<(), SandboxError> {
+        let allowed = landlock_handled(abi);
+        let read_only = LL_EXECUTE | LL_READ_FILE | LL_READ_DIR;
+
+        for path in [
+            "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/sys", "/proc", "/run",
+            "/dev",
+        ] {
+            let path = Path::new(path);
+            if path.exists() {
+                add_path_rule(self.ruleset_fd, path, read_only)?;
+            }
+        }
+
+        // Devices need writes; grant them explicitly instead of making /dev rw.
+        for path in [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/full",
+            "/dev/random",
+            "/dev/urandom",
+            "/dev/tty",
+        ] {
+            let path = Path::new(path);
+            if path.exists() {
+                add_path_rule(self.ruleset_fd, path, allowed)?;
+            }
+        }
+
+        let mut writable = vec![self.workspace.clone(), PathBuf::from("/tmp")];
+        if Path::new("/var/tmp").exists() {
+            writable.push(PathBuf::from("/var/tmp"));
+        }
+        writable.extend(writable_paths());
+        for path in writable {
+            if path.exists() {
+                add_path_rule(self.ruleset_fd, &path, allowed)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build(&self, program: &OsStr, args: &[OsString], cwd: &Path) -> Command {
+        let mut command = Command::new(program);
+        command.args(args).current_dir(cwd);
+
+        let ruleset_fd = self.ruleset_fd;
+        // SAFETY: between fork and exec; only raw syscalls and no allocation.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::syscall(
+                    SYS_LANDLOCK_RESTRICT_SELF,
+                    ruleset_fd as libc::c_long,
+                    0 as libc::c_long,
+                ) == -1
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Landlock {
+    fn drop(&mut self) {
+        // SAFETY: the fd is owned by this struct.
+        unsafe {
+            libc::close(self.ruleset_fd);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Sandbox for Landlock {
+    fn name(&self) -> &'static str {
+        "landlock"
+    }
+
+    fn describe(&self) -> String {
+        "Landlock filesystem confinement (network not restricted)".to_string()
+    }
+
+    fn command(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        cwd: &Path,
+    ) -> Result<Command, SandboxError> {
+        Ok(self.build(program, args, cwd))
+    }
+
+    fn check(&self) -> Result<(), SandboxError> {
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
+        let output = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|err| SandboxError::Setup(format!("cannot apply Landlock: {err}")))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let detail = if detail.is_empty() {
+            format!("exit code {:?}", output.status.code())
+        } else {
+            detail.to_string()
+        };
+        Err(SandboxError::Preflight {
+            name: "landlock",
+            detail,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn landlock_abi() -> Result<i64, SandboxError> {
+    // SAFETY: the version query takes a null attribute pointer and size 0.
+    let version = unsafe {
+        libc::syscall(
+            SYS_LANDLOCK_CREATE_RULESET,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            1u32,
+        )
+    };
+    if version < 0 {
+        return Err(SandboxError::Setup(format!(
+            "Landlock is unavailable: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(version)
+}
+
+#[cfg(target_os = "linux")]
+fn create_ruleset(handled_access_fs: u64) -> Result<RawFd, SandboxError> {
+    let attr = LandlockRulesetAttr { handled_access_fs };
+    // SAFETY: `attr` lives for the duration of the syscall and the struct
+    // layout matches the kernel's v1 ABI.
+    let fd = unsafe {
+        libc::syscall(
+            SYS_LANDLOCK_CREATE_RULESET,
+            &attr as *const LandlockRulesetAttr,
+            std::mem::size_of::<LandlockRulesetAttr>(),
+            0u32,
+        )
+    };
+    if fd < 0 {
+        return Err(SandboxError::Setup(format!(
+            "cannot create Landlock ruleset: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(fd as RawFd)
+}
+
+#[cfg(target_os = "linux")]
+fn add_path_rule(ruleset_fd: RawFd, path: &Path, allowed_access: u64) -> Result<(), SandboxError> {
+    let path_bytes = path.as_os_str().as_bytes();
+    let c_path = std::ffi::CString::new(path_bytes).map_err(|_| {
+        SandboxError::Setup(format!("path contains a NUL byte: {}", path.display()))
+    })?;
+
+    // SAFETY: `open` with O_PATH only creates a reference, no IO happens.
+    let parent_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+    if parent_fd < 0 {
+        return Err(SandboxError::Setup(format!(
+            "cannot open {} for Landlock: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let attr = LandlockPathBeneathAttr {
+        allowed_access,
+        parent_fd,
+    };
+    // SAFETY: the ruleset fd is open and the attribute struct matches the
+    // kernel's packed layout.
+    let result = unsafe {
+        libc::syscall(
+            SYS_LANDLOCK_ADD_RULE,
+            ruleset_fd,
+            1u32, // LANDLOCK_RULE_PATH_BENEATH
+            &attr as *const LandlockPathBeneathAttr,
+            0u32,
+        )
+    };
+    // SAFETY: this function owns the reference from `open`.
+    unsafe {
+        libc::close(parent_fd);
+    }
+
+    if result < 0 {
+        return Err(SandboxError::Setup(format!(
+            "cannot add Landlock rule for {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
 }
 
 /// Build the SBPL profile.
@@ -755,6 +1083,92 @@ mod linux_tests {
             return;
         };
         let outside = home.join(format!("qcode-bwrap-escape-{}", std::process::id()));
+
+        let mut command = sandbox
+            .command(
+                OsStr::new("/bin/sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from(format!("printf x > '{}'", outside.display())),
+                ],
+                workspace.path(),
+            )
+            .expect("command");
+        let output = command.output().expect("run");
+        let _ = std::fs::remove_file(&outside);
+
+        assert!(
+            !output.status.success(),
+            "sandbox allowed a write outside the workspace"
+        );
+        assert!(!outside.exists(), "sandbox created {}", outside.display());
+    }
+}
+
+#[cfg(test)]
+mod landlock_tests {
+    use super::*;
+
+    #[test]
+    fn handled_access_grows_with_abi() {
+        let v1 = landlock_handled(1);
+        assert_eq!(v1, (1 << 13) - 1);
+        assert_eq!(landlock_handled(2), v1 | (1 << 13));
+        assert_eq!(landlock_handled(3), v1 | (1 << 13) | (1 << 14));
+        assert_eq!(landlock_handled(5), v1 | (1 << 13) | (1 << 14) | (1 << 15));
+        assert_eq!(landlock_handled(9), landlock_handled(5));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod landlock_runtime {
+    use super::*;
+
+    fn landlock_or_skip(workspace: &Path) -> Option<Landlock> {
+        let sandbox = Landlock::new(workspace).expect("landlock");
+        match sandbox.check() {
+            Ok(()) => Some(sandbox),
+            Err(err) => {
+                eprintln!("skipping: landlock unavailable here: {err}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn allows_writes_inside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let Some(sandbox) = landlock_or_skip(workspace.path()) else {
+            return;
+        };
+
+        let mut command = sandbox
+            .command(
+                OsStr::new("/bin/sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from("printf hi > inside.txt && cat inside.txt"),
+                ],
+                workspace.path(),
+            )
+            .expect("command");
+        let output = command.output().expect("run");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hi");
+        assert!(workspace.path().join("inside.txt").is_file());
+    }
+
+    #[test]
+    fn denies_writes_outside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let Some(sandbox) = landlock_or_skip(workspace.path()) else {
+            return;
+        };
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            eprintln!("skipping: HOME is not set");
+            return;
+        };
+        let outside = home.join(format!("qcode-landlock-escape-{}", std::process::id()));
 
         let mut command = sandbox
             .command(
