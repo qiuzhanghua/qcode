@@ -14,15 +14,19 @@ skill 里让模型跑的命令仍然走正常的策略与审批。
 
 | 来源 | 目录 |
 |---|---|
+| global | `~/.agents/skills/<name>/SKILL.md`（`npx skills -g` 的通用位置） |
+| global | `~/.config/agents/skills/<name>/SKILL.md`（universal agent 位置） |
 | user | `~/.config/qcode/skills/<name>/SKILL.md` |
 | config | `[skills] roots = [...]` 里的目录，按列出顺序 |
-| project | `<workspace>/.qcode/skills/<name>/SKILL.md` |
+| project | `<workspace>/.agents/skills/<name>/SKILL.md` |
+| project | `<workspace>/.qcode/skills/<name>/SKILL.md`（qcode 专属，最高） |
 
-- 优先级 user → config → project，后者覆盖前者；`roots` 支持 `~/`，相对路径按 workspace 解析。
-- 同名时 project 覆盖 config 再覆盖 user；其余按名字排序。
+- 优先级 global → user → config → project(.agents) → project(.qcode)，后者覆盖前者；
+  `roots` 支持 `~/`，相对路径按 workspace 解析。
+- 同名时后加载的覆盖先加载的；其余按名字排序。
 - 目录名必须与 frontmatter 的 `name` 一致；不合法、缺字段、超限、symlink 的 skill 会
   `warn` 并跳过，不影响 qc 启动。
-- 没有 `HOME` 时只丢 user 根，config / project 根照常工作。
+- 没有 `HOME` 时只丢 global / user 根，config / project 根照常工作。
 - `[skills] enabled = false` 完全跳过发现；`qc skills list` 可打印发现结果与被检查的根。
 
 ## 3. Frontmatter 子集
@@ -39,7 +43,7 @@ qcode 只解释两个字段：
 ## 4. 渐进披露
 
 1. **启动**：只读 frontmatter，把 `name` + `description` 组进 system prompt 的
-   `# Skills` 段（上限 8KiB，超出截断并注明）。
+   `# Skills` 段（上限 16KiB，超出截断并注明）。
 2. **激活**：模型调用 `skill` 工具，返回 `# Skill: <name>`、来源目录、完整正文和附件清单。
 3. **附件**：模型用 `skill(name=..., file="references/X.md")` 读取单个文件；也可在得到
    绝对路径后用 `run_shell` 调 `scripts/` 里的脚本（仍按 shell 审批）。
@@ -68,7 +72,7 @@ qcode 只解释两个字段：
 |---|---|
 | `SKILL.md` 大小 | 64KiB |
 | description | 1024 字符 |
-| system prompt 索引 | 8KiB |
+| system prompt 索引 | 16KiB |
 | 列出的附件数 | 200 |
 | 单个附件读取 | 256KiB（输出截断到 32KiB） |
 | 附件扫描深度 | 8 层 |

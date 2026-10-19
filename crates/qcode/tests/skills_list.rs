@@ -34,11 +34,21 @@ fn list(config: &Path, workspace: &Path, home: &Path) -> String {
 }
 
 #[test]
-fn lists_configured_project_and_tilde_roots() {
+fn lists_global_configured_and_project_roots() {
     let home = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
     let extra = TempDir::new().unwrap();
 
+    write_skill(
+        &home.path().join(".agents/skills"),
+        "global-one",
+        "from the npx skills global root",
+    );
+    write_skill(
+        &home.path().join(".config/agents/skills"),
+        "global-two",
+        "from the universal agent root",
+    );
     write_skill(extra.path(), "delta", "from an absolute config root");
     write_skill(
         &home.path().join("home-skills"),
@@ -46,9 +56,14 @@ fn lists_configured_project_and_tilde_roots() {
         "from a tilde config root",
     );
     write_skill(
+        &workspace.path().join(".agents/skills"),
+        "project-agents",
+        "from the project agents root",
+    );
+    write_skill(
         &workspace.path().join(".qcode/skills"),
         "project-skill",
-        "from the project root",
+        "from the qcode project root",
     );
 
     let config = workspace.path().join("config.toml");
@@ -62,10 +77,13 @@ fn lists_configured_project_and_tilde_roots() {
     .unwrap();
 
     let stdout = list(&config, workspace.path(), home.path());
+    assert!(stdout.contains("global-one  [global]"), "{stdout}");
+    assert!(stdout.contains("global-two  [global]"), "{stdout}");
     assert!(stdout.contains("delta  [config]"), "{stdout}");
     assert!(stdout.contains("tilde  [config]"), "{stdout}");
+    assert!(stdout.contains("project-agents  [project]"), "{stdout}");
     assert!(stdout.contains("project-skill  [project]"), "{stdout}");
-    assert!(stdout.contains("3 skill(s)"), "{stdout}");
+    assert!(stdout.contains("6 skill(s)"), "{stdout}");
 }
 
 #[test]
@@ -77,6 +95,7 @@ fn reports_disabled_and_empty_discovery() {
     std::fs::write(&config, "").unwrap();
     let stdout = list(&config, workspace.path(), home.path());
     assert!(stdout.contains("no skills discovered"), "{stdout}");
+    assert!(stdout.contains("[global]"), "{stdout}");
     assert!(stdout.contains("[user]"), "{stdout}");
     assert!(stdout.contains("[project]"), "{stdout}");
 

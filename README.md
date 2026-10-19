@@ -151,10 +151,12 @@ Windows 上（PowerShell）：
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
-- **Skills**：发现 `~/.config/qcode/skills`、`[skills] roots` 与 `<workspace>/.qcode/skills`
-  下的 `SKILL.md`（公开 Agent Skills 格式）。system prompt 只放 `name` / `description`；
-  模型调用 `skill` 工具按需加载正文，或用 `file` 参数读 `references/` 等附件。非法/超限/
-  symlink 的 skill 跳过并告警，project > config > user。`qc skills list` 可查看发现结果。
+- **Skills**：默认发现 `~/.agents/skills`、`~/.config/agents/skills`（`npx skills -g`
+  安装的位置）、`~/.config/qcode/skills`、`[skills] roots`、`<workspace>/.agents/skills`
+  与 `<workspace>/.qcode/skills` 下的 `SKILL.md`（公开 Agent Skills 格式）。system prompt
+  只放 `name` / `description`；模型调用 `skill` 工具按需加载正文，或用 `file` 参数读
+  `references/` 等附件。非法/超限/symlink 的 skill 跳过并告警，
+  global < user < config < project(.agents) < project(.qcode)。`qc skills list` 可查看全部发现结果。
 - **MCP（仅 tools）**：启动时连接启用的 stdio server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
@@ -218,7 +220,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 enabled = true
 
 # Skills：默认开启；enabled = false 可完全跳过发现。
-# roots 是额外目录（可选），按顺序覆盖 user；project 仍最高优先级。
+# 默认还会扫描 ~/.agents/skills（npx skills -g）、~/.config/agents/skills、
+# ~/.config/qcode/skills、<workspace>/.agents/skills、<workspace>/.qcode/skills。
+# roots 是额外目录（可选），按顺序覆盖 global/user；project 仍最高优先级。
 [skills]
 enabled = true
 # roots = ["~/space/skills/skills"]

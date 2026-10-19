@@ -13,9 +13,11 @@
 //!
 //! Discovery roots, in increasing precedence:
 //!
-//! 1. `~/.config/qcode/skills` (user)
-//! 2. `[skills] roots` from the config file, in listed order (config)
-//! 3. `<workspace>/.qcode/skills` (project)
+//! 1. `~/.agents/skills` and `~/.config/agents/skills` (global, e.g. `npx skills -g`)
+//! 2. `~/.config/qcode/skills` (user)
+//! 3. `[skills] roots` from the config file, in listed order (config)
+//! 4. `<workspace>/.agents/skills` (project, agent ecosystem)
+//! 5. `<workspace>/.qcode/skills` (project, qcode-specific)
 //!
 //! A later skill with the same name wins. Invalid skills are skipped with a
 //! warning; one broken skill never prevents qc from starting.
@@ -40,9 +42,9 @@ pub const SKILL_FILE: &str = "SKILL.md";
 pub const MAX_SKILL_MD_BYTES: u64 = 64 * 1024;
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 pub const MAX_SKILL_NAME_CHARS: usize = 64;
-/// The index is always in the system prompt; cap it so a large collection
-/// cannot crowd out the actual conversation.
-pub const MAX_PROMPT_BYTES: usize = 8 * 1024;
+/// The index is always in the system prompt; capped so a large collection
+/// (e.g. 45 globally installed skills) still fits without crowding the turn.
+pub const MAX_PROMPT_BYTES: usize = 16 * 1024;
 pub const MAX_LISTED_FILES: usize = 200;
 /// Largest bundled file the skill tool will read before truncating output.
 pub const MAX_REFERENCE_BYTES: u64 = 256 * 1024;
@@ -52,6 +54,7 @@ const MAX_SCAN_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SkillSource {
+    Global,
     User,
     Config,
     Project,
@@ -60,6 +63,7 @@ pub enum SkillSource {
 impl SkillSource {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Global => "global",
             Self::User => "user",
             Self::Config => "config",
             Self::Project => "project",

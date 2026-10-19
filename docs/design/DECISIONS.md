@@ -354,3 +354,24 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 - 以 `/` 开头的正常提问会被当成命令；目前没有转义，必要时改写开头。
 - 命令集保持最小，不做 `/model`、`/clear` 等；需要时按同样机制扩展。
+
+## ADR-0008：兼容 `npx skills` 的全局目录（2026-10-19）
+
+**背景**：`npx skills list -g` 在 `~/.agents/skills` 维护 45 个全局 skill，qcode 只扫
+`~/.config/qcode/skills` 与 workspace，所以 `qc skills list` 看不到它们。
+
+**决定**
+
+1. 默认发现 `~/.agents/skills` 与 `~/.config/agents/skills`（来源 `global`）；项目级增加
+   `<workspace>/.agents/skills`；qcode 专属 `<workspace>/.qcode/skills` 仍最高。
+2. 优先级 global → user → config → project(`.agents`) → project(`.qcode`)，同名后加载者胜。
+   仍拒绝单个 symlink skill 目录；`npx skills` 安装的是实体目录，不受影响。
+3. system prompt 的 skills 索引上限从 8KiB 提到 16KiB：45 个全局 skill 的
+   name + description 合计约 8.7KiB，8KiB 会截掉最后几个。
+4. 不扫描 `~/.claude/skills`：它只是指向 `~/.agents/skills` 的 symlink，且属于特定产品目录。
+
+**后果**
+
+- 默认启动会带 45 个全局 skill 的索引（约 4k token）；不需要时可在 config 中禁用 skills，
+  或把 `roots` 收窄（未来可加 `exclude`）。
+- `qc skills list` 与 TUI `/skills` 直接显示 global 来源，和 `npx skills list -g` 对齐。
