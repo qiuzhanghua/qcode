@@ -40,6 +40,8 @@ pub enum SandboxMode {
     None,
     /// macOS `sandbox-exec` with a generated profile (experimental).
     SandboxExec,
+    /// Linux bubblewrap (experimental).
+    Bwrap,
 }
 
 impl SandboxMode {
@@ -47,6 +49,7 @@ impl SandboxMode {
         match self {
             Self::None => "none",
             Self::SandboxExec => "sandbox-exec",
+            Self::Bwrap => "bwrap",
         }
     }
 }
@@ -94,6 +97,19 @@ pub fn build(
             {
                 let _ = (workspace, network);
                 Err(SandboxError::Unsupported("sandbox-exec"))
+            }
+        }
+        SandboxMode::Bwrap => {
+            #[cfg(target_os = "linux")]
+            {
+                let sandbox = Bwrap::new(workspace, network)?;
+                sandbox.check()?;
+                Ok(Arc::new(sandbox))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (workspace, network);
+                Err(SandboxError::Unsupported("bwrap"))
             }
         }
     }
@@ -201,6 +217,183 @@ impl Sandbox for SandboxExec {
         };
         Err(SandboxError::Preflight {
             name: "sandbox-exec",
+            detail,
+        })
+    }
+}
+
+/// Bubblewrap argument construction.
+///
+/// Kept free of `cfg(target_os)` so the argument list is unit-testable on any
+/// host; the Linux backend below is the only caller.
+#[cfg(any(target_os = "linux", test))]
+fn bwrap_args(workspace: &Path, cwd: &Path, network: bool, writable: &[PathBuf]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+
+    for flag in [
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+    ] {
+        args.push(flag.into());
+    }
+    if !network {
+        args.push("--unshare-net".into());
+    }
+
+    // A minimal read-only root. `/` itself is intentionally not bound: the
+    // workspace and the toolchain directories are all the agent may read.
+    for path in [
+        "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/sys", "/run",
+    ] {
+        if Path::new(path).exists() {
+            args.push("--ro-bind".into());
+            args.push(path.into());
+            args.push(path.into());
+        }
+    }
+    args.push("--proc".into());
+    args.push("/proc".into());
+    args.push("--dev".into());
+    args.push("/dev".into());
+    // A workspace under /tmp cannot be bound after a tmpfs is mounted over the
+    // source path, so only give /tmp a private tmpfs when it is safe.
+    if !workspace.starts_with("/tmp") {
+        args.push("--tmpfs".into());
+        args.push("/tmp".into());
+    }
+    // The host may point TMPDIR at a path that is not mounted in here.
+    args.push("--setenv".into());
+    args.push("TMPDIR".into());
+    args.push("/tmp".into());
+
+    args.push("--bind".into());
+    args.push(workspace.into());
+    args.push(workspace.into());
+    for path in writable {
+        if path.as_path() == workspace {
+            continue;
+        }
+        args.push("--bind".into());
+        args.push(path.into());
+        args.push(path.into());
+    }
+
+    args.push("--chdir".into());
+    args.push(cwd.into());
+    args
+}
+
+/// Cargo/Rustup homes are build caches: bind them read-write, like the macOS
+/// profile. They are outside the workspace, so they are called out in the docs.
+#[cfg(target_os = "linux")]
+fn writable_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut push = |path: PathBuf| {
+        if path.is_dir() && !paths.contains(&path) {
+            paths.push(path);
+        }
+    };
+
+    for key in ["CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                push(path);
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        push(home.join(".cargo"));
+        push(home.join(".rustup"));
+    }
+    paths
+}
+
+/// Linux bubblewrap backend.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub struct Bwrap {
+    workspace: PathBuf,
+    network: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Bwrap {
+    pub fn new(workspace: &Path, network: bool) -> Result<Self, SandboxError> {
+        if workspace == Path::new("/") {
+            return Err(SandboxError::Setup(
+                "refusing to sandbox the filesystem root as the workspace".to_string(),
+            ));
+        }
+        Ok(Self {
+            workspace: workspace.to_path_buf(),
+            network,
+        })
+    }
+
+    fn build(&self, program: &OsStr, args: &[OsString], cwd: &Path) -> Command {
+        let mut command = Command::new("bwrap");
+        command.args(bwrap_args(
+            &self.workspace,
+            cwd,
+            self.network,
+            &writable_paths(),
+        ));
+        command.arg(program).args(args);
+        command
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Sandbox for Bwrap {
+    fn name(&self) -> &'static str {
+        "bwrap"
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "bubblewrap (network {})",
+            if self.network { "allowed" } else { "denied" }
+        )
+    }
+
+    fn command(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        cwd: &Path,
+    ) -> Result<Command, SandboxError> {
+        Ok(self.build(program, args, cwd))
+    }
+
+    fn check(&self) -> Result<(), SandboxError> {
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
+        let output = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|err| SandboxError::Setup(format!("cannot run bwrap: {err}")))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let detail = if detail.is_empty() {
+            format!("exit code {:?}", output.status.code())
+        } else {
+            detail.to_string()
+        };
+        Err(SandboxError::Preflight {
+            name: "bwrap",
             detail,
         })
     }
@@ -419,6 +612,153 @@ mod tests {
         let mut command = sandbox
             .command(
                 OsStr::new("sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from(format!("printf x > '{}'", outside.display())),
+                ],
+                workspace.path(),
+            )
+            .expect("command");
+        let output = command.output().expect("run");
+        let _ = std::fs::remove_file(&outside);
+
+        assert!(
+            !output.status.success(),
+            "sandbox allowed a write outside the workspace"
+        );
+        assert!(!outside.exists(), "sandbox created {}", outside.display());
+    }
+}
+
+#[cfg(test)]
+mod bwrap_tests {
+    use super::*;
+
+    fn strings(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn workspace() -> PathBuf {
+        PathBuf::from("/home/qcode-bwrap-tests/workspace")
+    }
+
+    fn cwd() -> PathBuf {
+        workspace().join("sub")
+    }
+
+    #[test]
+    fn binds_workspace_read_write_and_chdirs() {
+        let args = strings(&bwrap_args(&workspace(), &cwd(), false, &[]));
+        assert!(
+            args.windows(3).any(|window| window
+                == [
+                    "--bind",
+                    "/home/qcode-bwrap-tests/workspace",
+                    "/home/qcode-bwrap-tests/workspace"
+                ]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|window| window == ["--chdir", "/home/qcode-bwrap-tests/workspace/sub"]),
+            "{args:?}"
+        );
+        assert!(args.contains(&"--tmpfs".to_string()));
+        assert!(args.contains(&"--die-with-parent".to_string()));
+    }
+
+    #[test]
+    fn workspace_under_tmp_skips_the_tmpfs_mount() {
+        let workspace = PathBuf::from("/tmp/ws");
+        let args = strings(&bwrap_args(&workspace, &workspace, false, &[]));
+        assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
+        assert!(
+            args.windows(2)
+                .any(|window| window == ["--setenv", "TMPDIR"])
+        );
+    }
+
+    #[test]
+    fn network_is_denied_unless_opted_in() {
+        let denied = strings(&bwrap_args(&workspace(), &cwd(), false, &[]));
+        assert!(denied.contains(&"--unshare-net".to_string()));
+
+        let allowed = strings(&bwrap_args(&workspace(), &cwd(), true, &[]));
+        assert!(!allowed.contains(&"--unshare-net".to_string()));
+    }
+
+    #[test]
+    fn extra_writable_paths_are_bound_once() {
+        let cargo = PathBuf::from("/tmp/qcode-bwrap-tests/cargo");
+        let args = strings(&bwrap_args(
+            &workspace(),
+            &cwd(),
+            false,
+            std::slice::from_ref(&cargo),
+        ));
+        let binds = args
+            .windows(3)
+            .filter(|window| window[0] == "--bind" && window[1] == cargo.to_string_lossy())
+            .count();
+        assert_eq!(binds, 1, "{args:?}");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    fn bwrap_or_skip(workspace: &Path) -> Option<Bwrap> {
+        let sandbox = Bwrap::new(workspace, false).expect("sandbox");
+        match sandbox.check() {
+            Ok(()) => Some(sandbox),
+            Err(err) => {
+                eprintln!("skipping: bwrap unavailable here: {err}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn allows_writes_inside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let Some(sandbox) = bwrap_or_skip(workspace.path()) else {
+            return;
+        };
+
+        let mut command = sandbox
+            .command(
+                OsStr::new("/bin/sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from("printf hi > inside.txt && cat inside.txt"),
+                ],
+                workspace.path(),
+            )
+            .expect("command");
+        let output = command.output().expect("run");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hi");
+        assert!(workspace.path().join("inside.txt").is_file());
+    }
+
+    #[test]
+    fn denies_writes_outside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let Some(sandbox) = bwrap_or_skip(workspace.path()) else {
+            return;
+        };
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            eprintln!("skipping: HOME is not set");
+            return;
+        };
+        let outside = home.join(format!("qcode-bwrap-escape-{}", std::process::id()));
+
+        let mut command = sandbox
+            .command(
+                OsStr::new("/bin/sh"),
                 &[
                     OsString::from("-c"),
                     OsString::from(format!("printf x > '{}'", outside.display())),

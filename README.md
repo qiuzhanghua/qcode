@@ -164,10 +164,11 @@ cargo build -p qcode-eval
   每次决策写事件，含命中的 rule id。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
-- **沙箱（实验）**：`[sandbox] mode = "sandbox-exec"` 时 `run_shell` 由 macOS
-  `sandbox-exec` 包裹：profile 默认 deny，只读系统路径与 workspace，只写 workspace /
+- **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）或 `bwrap`（Linux）。
+  `run_shell` 由对应工具包裹：默认 deny，只读系统路径与 workspace，只写 workspace /
   临时目录 / Cargo 目录，网络默认拒绝。启用时先 preflight，失败则 `qc` 拒绝启动
-  （嵌套沙箱里会 EPERM）；默认 `none`，审批仍是主边界。
+  （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
+  unprivileged userns）；默认 `none`，审批仍是主边界。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
   `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
@@ -258,10 +259,10 @@ enabled = true
 enabled = true
 # roots = ["~/space/skills/skills"]
 
-# OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS 且为实验性：
-# 启动时用同一 profile preflight，失败则拒绝启动；network 默认拒绝。
+# OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS，bwrap 仅 Linux，均为实验性：
+# 启动时用同一套规则 preflight，失败则拒绝启动；network 默认拒绝。
 [sandbox]
-mode = "none"        # none | sandbox-exec
+mode = "none"        # none | sandbox-exec | bwrap
 network = false
 ```
 

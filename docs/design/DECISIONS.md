@@ -424,3 +424,30 @@ stretch 往前推，但 macOS `sandbox-exec` 已 deprecated、嵌套调用 EPERM
   closed，不会静默降级。
 - Profile 仍是实验性：mach 服务、特殊工具链可能需要追加 allow；不把它当作完整安全边界。
 - 非嵌套 macOS 上已验证 workspace 内可写、workspace 外被拒、preflight 通过。
+
+## ADR-0011：Linux bwrap 后端（2026-10-19）
+
+**背景**：ADR-0010 只落地 macOS `sandbox-exec`。Linux 侧倾向 bubblewrap（Landlock 管不住
+unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
+
+**决定**
+
+1. `SandboxMode::Bwrap`；参数构造做成与平台无关的纯函数 `bwrap_args`，可在 macOS 单测，
+   Linux 后端只负责拼 `Command` 与 preflight。
+2. 最小只读根：`--ro-bind` 系统目录（`/usr /bin /sbin /lib /lib64 /etc /opt /sys /run`，
+   不存在的自动跳过）+ `--proc` + `--dev`；workspace 读写 bind；`CARGO_HOME`/`RUSTUP_HOME`/
+   `CARGO_TARGET_DIR` 读写 bind；`--tmpfs /tmp` 在 workspace 位于 `/tmp` 下时跳过，避免
+   tmpfs 覆盖 bind 源；`TMPDIR=/tmp`。
+3. 隔离：`--unshare-user/pid/ipc/uts/cgroup-try`，`network = false` 时额外 `--unshare-net`；
+   `--die-with-parent --new-session` 保持取消/超时能回收整棵树。
+4. preflight 用同一套参数运行 `/bin/true`；`bwrap` 缺失、userns 被 AppArmor 限制或 bind
+   失败都拒绝启动。Linux 运行时测试在 preflight 失败时跳过；Ubuntu CI 安装 bubblewrap 后
+   执行。
+
+**后果**
+
+- Ubuntu 24.04 默认限制 unprivileged user namespaces，需 `sysctl
+  kernel.apparmor_restrict_unprivileged_userns=0` 或为 bwrap 提供 AppArmor profile；
+  `qc doctor` 会直接报出 preflight 的错误。
+- 只读根不含 `/` 与用户 home：读取范围比 macOS profile 更窄；需要额外路径时再扩参数。
+- 仍未实现 Landlock；`qc sandbox exec` 不对外提供。

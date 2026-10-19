@@ -24,6 +24,12 @@ jobs:
       - run: cargo test --workspace
       - name: fixture self-check
         run: bash eval/fixtures/workspace/scripts/ci.sh
+      - name: linux sandbox tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          cargo test -p qcode-tools --lib sandbox::linux_tests -- --nocapture
 
   msrv:
     name: msrv (1.95)
