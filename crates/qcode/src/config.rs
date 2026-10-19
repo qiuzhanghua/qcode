@@ -84,6 +84,24 @@ pub struct ApprovalConfig {
     pub rules: Vec<Rule>,
 }
 
+/// Standalone approval policy file (`--approval-policy`).
+///
+/// The shape matches the config's rule list, but at the root so a policy file
+/// can be checked in and audited on its own:
+///
+/// ```toml
+/// [[rules]]
+/// id = "allow-cargo-test"
+/// tool = "run_shell"
+/// command_prefix = "cargo test"
+/// action = "allow"
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PolicyFile {
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     #[serde(default)]
@@ -121,6 +139,16 @@ pub enum ConfigError {
     },
     #[error("cannot parse config {path}: {source}")]
     Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("cannot read approval policy {path}: {source}")]
+    ReadPolicy {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot parse approval policy {path}: {source}")]
+    ParsePolicy {
         path: PathBuf,
         source: toml::de::Error,
     },
@@ -165,6 +193,22 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
     Ok(config)
+}
+
+/// Load a standalone `--approval-policy` file.
+///
+/// The returned rules replace (not extend) `[[approval.rules]]` from the config
+/// for this invocation: a policy file is an explicit, auditable decision.
+pub fn load_policy(path: &Path) -> Result<Vec<Rule>, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadPolicy {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file: PolicyFile = toml::from_str(&text).map_err(|source| ConfigError::ParsePolicy {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(file.rules)
 }
 
 pub fn default_path() -> Result<PathBuf, ConfigError> {
@@ -352,6 +396,53 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         move |key| map.get(key).cloned()
+    }
+
+    #[test]
+    fn loads_a_standalone_policy_file() {
+        use qcode_core::policy::Action;
+
+        let dir = std::env::temp_dir().join(format!("qcode-policy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("policy.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [[rules]]
+            id = "allow-shell"
+            tool = "run_shell"
+            action = "allow"
+            "#,
+        )
+        .unwrap();
+
+        let rules = load_policy(&path).expect("load policy");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "allow-shell");
+        assert_eq!(rules[0].tool.as_deref(), Some("run_shell"));
+        assert_eq!(rules[0].action, Action::Allow);
+    }
+
+    #[test]
+    fn policy_file_errors_name_the_path() {
+        let dir = std::env::temp_dir().join(format!("qcode-policy-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("missing.toml");
+        match load_policy(&missing) {
+            Err(ConfigError::ReadPolicy { path, .. }) => assert_eq!(path, missing),
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        let invalid = dir.join("invalid.toml");
+        std::fs::write(&invalid, "rules = 1").unwrap();
+        match load_policy(&invalid) {
+            Err(ConfigError::ParsePolicy { path, .. }) => assert_eq!(path, invalid),
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 
     #[test]

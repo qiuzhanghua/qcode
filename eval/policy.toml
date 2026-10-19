@@ -1,0 +1,22 @@
+# Unattended approval policy for qc-eval.
+#
+# Reads and in-workspace writes are allowed by the default policy. This file
+# adds the two classes that would otherwise ask — and a non-interactive run
+# treats every ask as deny:
+#
+# - shell execution (the fixture tasks need cargo);
+# - apply_patch, which is a multi-file write and asks even inside the workspace.
+#
+# Writes outside the workspace still ask, which non-interactive runs deny.
+# `run_shell` itself is not path-confined: OS-level isolation is still the
+# sandbox stretch item, so tasks must stay trustworthy.
+
+[[rules]]
+id = "eval-allow-shell"
+tool = "run_shell"
+action = "allow"
+
+[[rules]]
+id = "eval-allow-apply-patch"
+tool = "apply_patch"
+action = "allow"

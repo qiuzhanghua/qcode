@@ -152,8 +152,8 @@ cargo build -p qcode-eval
 ./target/debug/qc-eval               # 全部任务；日志在 eval/runs/<ts>/
 ```
 
-详见 [评测方案](docs/design/EVAL.md)。runner 用 `--yes` 自动批准（`--approval-policy`
-尚未实现）；`--agent-cmd` 可替换 agent 做离线自测。
+详见 [评测方案](docs/design/EVAL.md)。runner 用 `eval/policy.toml`（`--approval-policy`）
+放行 shell 与 apply_patch；非 TTY 下其余 ask 一律 deny。`--agent-cmd` 可替换 agent 做离线自测。
 
 ## 当前能力
 
@@ -260,12 +260,24 @@ enabled = true
 `[[approval.rules]]` 的 `tool` 写完整工具名（如 `mcp__filesystem__read_file`）来放行单个
 MCP 工具；规则按工具名精确匹配。
 
+`--approval-policy <path>` 读取独立策略文件：根级 `[[rules]]`，规则**替换** config 里的
+`[[approval.rules]]`（不合并）。适合 CI / eval 固定权限；文件不存在或 TOML 非法会在创建
+session 之前报错。非 TTY 下策略判为 ask 的调用仍然拒绝。
+
+```toml
+# eval-policy.toml
+[[rules]]
+id = "allow-shell"
+tool = "run_shell"
+action = "allow"
+```
+
 优先级：CLI flags > 环境变量（`QCODE_PROVIDER` / `QCODE_MODEL` / `QCODE_BASE_URL`）>
 配置文件 > 内置默认。keyless 服务把 `api_key_env` 设为 `""`。
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`。
+常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`。
 `--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档

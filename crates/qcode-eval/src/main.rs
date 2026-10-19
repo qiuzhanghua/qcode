@@ -39,6 +39,8 @@ usage: qc-eval [options]
   --eval-dir DIR         eval root (default: <repo>/eval)
   --runs DIR             run output directory (default: <eval-dir>/runs)
   --qc PATH              qc binary (default: <repo>/target/debug/qc)
+  --policy PATH          approval policy passed to qc
+                         (default: <eval-dir>/policy.toml)
   --agent-cmd CMD        replace the agent with `bash -c CMD` (harness tests)
   --keep                 keep temporary workspaces even when a task passes
   -h, --help             print this help
@@ -132,6 +134,7 @@ struct Options {
     eval_dir: PathBuf,
     runs_dir: PathBuf,
     qc: PathBuf,
+    policy: Option<PathBuf>,
     agent_cmd: Option<String>,
     only: Option<String>,
     keep: bool,
@@ -202,10 +205,21 @@ fn run(options: Options) -> Result<()> {
     fs::create_dir_all(&run_dir)
         .map_err(|err| format!("cannot create {}: {err}", run_dir.display()))?;
 
+    let policy = options
+        .policy
+        .clone()
+        .unwrap_or_else(|| options.eval_dir.join("policy.toml"));
+
     if options.agent_cmd.is_none() && !options.qc.is_file() {
         return Err(format!(
             "qc binary not found at {}; run `cargo build -p qcode` or pass --qc",
             options.qc.display()
+        ));
+    }
+    if options.agent_cmd.is_none() && !policy.is_file() {
+        return Err(format!(
+            "approval policy not found at {}; pass --policy",
+            policy.display()
         ));
     }
 
@@ -218,7 +232,7 @@ fn run(options: Options) -> Result<()> {
     let mut results = Vec::new();
     for entry in &tasks {
         println!("[run ] {}", entry.task.id);
-        let result = run_task(entry, &fixture, &options, &run_dir);
+        let result = run_task(entry, &fixture, &options, &policy, &run_dir);
         match result {
             Ok(result) => {
                 print_result(&result);
@@ -292,6 +306,7 @@ fn run_task(
     entry: &TaskEntry,
     fixture: &Path,
     options: &Options,
+    policy: &Path,
     run_dir: &Path,
 ) -> Result<TaskResult> {
     let task = &entry.task;
@@ -309,7 +324,7 @@ fn run_task(
     let events = log_dir.join("events.jsonl");
     let agent_stderr = log_dir.join("agent.stderr");
     let start = Instant::now();
-    let agent = run_agent(task, &workspace, options, &events, &agent_stderr)?;
+    let agent = run_agent(task, &workspace, options, policy, &events, &agent_stderr)?;
     let wall = start.elapsed();
 
     let mut error = None;
@@ -387,6 +402,7 @@ fn run_agent(
     task: &Task,
     workspace: &Path,
     options: &Options,
+    policy: &Path,
     events: &Path,
     stderr: &Path,
 ) -> Result<Outcome> {
@@ -410,7 +426,8 @@ fn run_agent(
             .arg("--cwd")
             .arg(workspace)
             .arg("--json")
-            .arg("--yes")
+            .arg("--approval-policy")
+            .arg(policy)
             .arg("--max-turns")
             .arg(task.max_turns.to_string())
             .arg("--timeout")
@@ -702,6 +719,7 @@ fn parse_args() -> Result<Options> {
         eval_dir: root.join("eval"),
         runs_dir: root.join("eval/runs"),
         qc: root.join("target/debug/qc"),
+        policy: None,
         agent_cmd: None,
         only: None,
         keep: false,
@@ -717,6 +735,7 @@ fn parse_args() -> Result<Options> {
             "--eval-dir" => options.eval_dir = PathBuf::from(next("--eval-dir")?),
             "--runs" => options.runs_dir = PathBuf::from(next("--runs")?),
             "--qc" => options.qc = PathBuf::from(next("--qc")?),
+            "--policy" => options.policy = Some(PathBuf::from(next("--policy")?)),
             "--task" => options.only = Some(next("--task")?),
             "--agent-cmd" => options.agent_cmd = Some(next("--agent-cmd")?),
             "--help" | "-h" => {

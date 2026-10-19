@@ -36,6 +36,9 @@ struct Cli {
     /// Config file. Defaults to ~/.config/qcode/config.toml.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Approval policy file ([[rules]]). Replaces the config's approval rules.
+    #[arg(long, global = true, value_name = "PATH")]
+    approval_policy: Option<PathBuf>,
     /// Without a subcommand, qc starts the TUI.
     #[command(subcommand)]
     command: Option<Command>,
@@ -125,15 +128,16 @@ async fn main() -> ExitCode {
     let Cli {
         data_dir,
         config,
+        approval_policy,
         command,
     } = Cli::parse();
 
     let result = match command {
-        Some(Command::Run(args)) => cmd_run(args, data_dir, config).await,
+        Some(Command::Run(args)) => cmd_run(args, data_dir, config, approval_policy).await,
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
         Some(Command::Skills(args)) => cmd_skills(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
-        None => cmd_tui(data_dir, config).await,
+        None => cmd_tui(data_dir, config, approval_policy).await,
     };
 
     match result {
@@ -149,6 +153,7 @@ async fn cmd_run(
     args: RunArgs,
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let RunArgs {
         prompt,
@@ -190,6 +195,9 @@ async fn cmd_run(
     )?;
 
     let pricing = config::pricing_for(&loaded, &resolved.model, max_cost)?;
+    // Resolve the policy before creating a session: a bad policy file should
+    // not leave an empty session behind.
+    let policy = build_policy(&loaded, approval_policy.as_deref())?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -232,7 +240,6 @@ async fn cmd_run(
     let provider = build_provider(&resolved)?;
 
     let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
-    let policy = Policy::new(loaded.approval.rules.clone());
     let approver: Box<dyn Approver> = if yes {
         Box::new(AutoApprove)
     } else if std::io::stdin().is_terminal() {
@@ -323,6 +330,7 @@ async fn cmd_run(
 async fn cmd_tui(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err("TUI needs a terminal; use `qc run \"...\"` for headless mode".into());
@@ -333,6 +341,7 @@ async fn cmd_tui(
         std::env::var(key).ok()
     })?;
     let pricing = config::pricing_for(&loaded, &resolved.model, None)?;
+    let policy = build_policy(&loaded, approval_policy.as_deref())?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -350,7 +359,6 @@ async fn cmd_tui(
     let skill_views = skill_views(&skills);
     let provider = build_provider(&resolved)?;
     let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
-    let policy = Policy::new(loaded.approval.rules.clone());
 
     tui::run(tui::TuiOptions {
         store: &store,
@@ -683,6 +691,28 @@ fn load_config(explicit: Option<PathBuf>) -> Result<config::Config, Box<dyn std:
     } else {
         Ok(config::Config::default())
     }
+}
+
+/// Resolve the approval policy for this invocation.
+///
+/// `--approval-policy` is an explicit, auditable decision, so its rules replace
+/// the config's `[[approval.rules]]` instead of extending them. Without the
+/// flag the config rules (or the built-in defaults) apply unchanged.
+fn build_policy(
+    loaded: &config::Config,
+    explicit: Option<&Path>,
+) -> Result<Policy, Box<dyn std::error::Error>> {
+    let rules = match explicit {
+        Some(path) => {
+            if !path.exists() {
+                return Err(format!("approval policy not found: {}", path.display()).into());
+            }
+            tracing::info!(path = %path.display(), "loaded approval policy file");
+            config::load_policy(path)?
+        }
+        None => loaded.approval.rules.clone(),
+    };
+    Ok(Policy::new(rules))
 }
 
 fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {

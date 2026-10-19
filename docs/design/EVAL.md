@@ -70,8 +70,8 @@ expect_exit = 0
    注入隐藏测试；执行 checks。
 6. 记录指标与事件日志路径；删除临时目录（失败时保留并打印路径）。
 
-`eval/policy.toml` 固定一条策略：workspace 内读写 allow，shell allow，
-workspace 外 deny——保证评测可无人值守运行。
+`eval/policy.toml` 固定策略：workspace 内读写 allow，`run_shell` 与 `apply_patch` allow，
+其余 ask（非 TTY 即 deny）——保证评测可无人值守运行。
 
 ## 6. 指标
 
@@ -113,10 +113,12 @@ eval/tasks/01-fix-bug/
 
 - **snapshot**：fixture 的干净版本 + `planted/` 覆盖层，构成任务的固定起点；
   不再维护每个任务一份完整副本。
-- **runner**：复制 fixture 到临时目录 → 应用 `planted/` → `qc run … --json --yes`
-  → 恢复 `AGENTS.md`、`scripts/`、`*/tests/` → 注入 `hidden/` → 执行 checks。
-- **审批**：当前用 `--yes`；EVAL §5 里的 `--approval-policy` 尚未实现，等策略文件
-  落地后再替换。
+- **runner**：复制 fixture 到临时目录 → 应用 `planted/` → `qc run … --json
+  --approval-policy eval/policy.toml` → 恢复 `AGENTS.md`、`scripts/`、`*/tests/` → 注入
+  `hidden/` → 执行 checks。
+- **审批**：`eval/policy.toml` 放行 `run_shell` 与 `apply_patch`；workspace 内读写走默认
+  allow，其余 ask 在非 TTY 下等于 deny。`--approval-policy` 的规则替换 config 里的
+  `[[approval.rules]]`，runner 可用 `--policy` 换文件。
 - **结果**：`eval/runs/<timestamp>/` 下保存每个任务的 `events.jsonl`、
   `agent.stderr`、check 日志和 `summary.md`；失败任务的临时 workspace 保留并打印路径。
   该目录已 gitignore。
