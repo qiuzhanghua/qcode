@@ -23,7 +23,9 @@ jobs:
       - name: clippy
         shell: bash
         run: bash scripts/ci-clippy.sh
-      - run: cargo test --workspace
+      - name: test
+        shell: bash
+        run: bash scripts/ci-test.sh
       - name: fixture self-check
         run: bash eval/fixtures/workspace/scripts/ci.sh
       - name: linux sandbox tests
