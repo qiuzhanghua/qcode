@@ -237,7 +237,8 @@ impl Tool for RunShell {
         }
         text.push_str(&combined);
 
-        let (text, truncated) = crate::truncate(&text, OUTPUT_LIMIT);
+        let raw = text;
+        let (text, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
         let status = if cancelled_by_user {
             ToolStatus::Cancelled
         } else if timed_out {
@@ -257,6 +258,7 @@ impl Tool for RunShell {
             },
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: truncated.then(|| raw.clone()),
         })
     }
 }

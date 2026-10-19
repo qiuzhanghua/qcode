@@ -68,6 +68,9 @@ pub struct ToolOutput {
     pub usage: Usage,
     /// Estimated USD for that work, using the parent's pricing.
     pub cost_usd: f64,
+    /// Untruncated output when `metadata.truncated` is set; the engine writes it
+    /// to `sessions/<id>/outputs/<call_id>.txt` and records the path.
+    pub full_output: Option<String>,
 }
 
 impl ToolOutput {
@@ -82,6 +85,7 @@ impl ToolOutput {
             output,
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: None,
         }
     }
 
@@ -96,7 +100,16 @@ impl ToolOutput {
             output,
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: None,
         }
+    }
+
+    /// Attach the untruncated text. Ignored when `truncated` is false.
+    pub fn with_full_output(mut self, full: impl Into<String>, truncated: bool) -> Self {
+        if truncated {
+            self.full_output = Some(full.into());
+        }
+        self
     }
 
     pub fn with_metadata(mut self, metadata: ToolMetadata) -> Self {
@@ -117,6 +130,7 @@ impl ToolOutput {
             output,
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: None,
         }
     }
 }

@@ -656,3 +656,32 @@ TOML。
 - 快照对布局/文案变化敏感，是有意的回归信号；UI 改动需要一起更新 `.snap`。
 - argv 对超长命令可能换行；浮层使用 `Wrap`，极端长度仍可能挤占按钮空间。
 - diff 着色是行首启发式，不是语法分析；非 diff 工具的 `+`/`-` 行不受影响。
+
+## ADR-0020：大输出落盘与 SQLite 索引（2026-10-19）
+
+**背景**：SPEC §15 要求 `sessions/<ulid>/outputs/<call_id>.txt` 与 `index.sqlite`；此前
+`full_output_path` 永远为空，`sessions list` 全量解析每个 JSONL。
+
+**决定**
+
+1. `ToolOutput` 增加 `full_output: Option<String>`；各工具在截断时把原文附上
+   （shell、read/list、glob/grep、MCP、skills、subagent）。只有
+   `metadata.truncated && full_output.is_some()` 时引擎才写文件，避免无谓 IO。
+2. 引擎在写 `tool_result` 前调用 `SessionStore::write_output`，路径为
+   `sessions/<id>/outputs/<call_id>.txt`；call_id 里的 `/`、`..` 等被替换/裁剪，最长
+   120 字符，防止模型控制的 id 逃出 outputs 目录。写入失败只 warn，不影响工具结果。
+3. `index.sqlite` 在 `<data>/index.sqlite`，表 `sessions(id, started_at, model, provider,
+   cwd, version, turns, last_seq, cost_usd)`。`append` 在 `session_started` 时 upsert，
+   在 `turn_ended` 时累加 cost/turns/last_seq；索引错误绝不失败 session 写入。
+4. `list` 优先读索引；索引缺失、表损坏或行数与 JSONL 数量不一致时，扫描全部日志并重建。
+   `delete_session` / `gc` 同步删索引行。
+5. 旧索引没有 `cost_usd` 列时，`open_index` 尝试 `ALTER TABLE ... ADD COLUMN`，失败
+   （已存在）被忽略。
+
+**后果**
+
+- 大输出仍会在工具返回时短暂驻留内存；截断上限由各工具控制，最大是 shell 的 1MiB 量级。
+- `gc` 删除 `sessions/<id>/`，因此 outputs 一并清理。
+- 索引是缓存，不是真相来源；删除后自动重建。当前顺序按 id（ULID 时间序），未单独建
+  started_at 索引。
+- 未做 schema 版本表；后续列变更继续用 `ALTER TABLE` 幂等补列。

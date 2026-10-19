@@ -8,6 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use rusqlite::{Connection, params};
 use time::{Duration, OffsetDateTime};
 
 use crate::event::{Event, EventKind, SessionStarted, ToolResult, ToolStatus};
@@ -28,6 +29,8 @@ pub enum StoreError {
     InvalidFork { boundary: u64, last: u64 },
     #[error("session is already open for writing: {0}")]
     Locked(String),
+    #[error("index error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 /// Exclusive writer lock for one session, held for the duration of a turn.
@@ -46,8 +49,12 @@ pub struct SessionStore {
 pub struct SessionSummary {
     pub id: String,
     pub started: SessionStarted,
+    /// RFC 3339 timestamp of the first event.
+    pub started_at: String,
     pub turns: u32,
     pub last_seq: u64,
+    /// Sum of `turn_ended.cost_usd` in this session.
+    pub cost_usd: f64,
 }
 
 impl SessionStore {
@@ -65,6 +72,20 @@ impl SessionStore {
 
     pub fn session_path(&self, id: &str) -> PathBuf {
         self.sessions_dir().join(format!("{id}.jsonl"))
+    }
+
+    pub fn outputs_dir(&self, id: &str) -> PathBuf {
+        self.sessions_dir().join(id).join("outputs")
+    }
+
+    /// Persist an untruncated tool output and return its path.
+    pub fn write_output(&self, id: &str, call_id: &str, text: &str) -> Result<PathBuf, StoreError> {
+        self.validate_id(id)?;
+        let dir = self.outputs_dir(id);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.txt", sanitize_output_name(call_id)));
+        fs::write(&path, text)?;
+        Ok(path)
     }
 
     /// Create a new session file and append its `session_started` event.
@@ -91,6 +112,14 @@ impl SessionStore {
         // events are replayed up to the last complete line.
         if matches!(event.kind, EventKind::TurnEnded(_)) {
             file.sync_all()?;
+        }
+        // The index is a cache: a failure must never fail a session write.
+        if matches!(
+            &event.kind,
+            EventKind::SessionStarted(_) | EventKind::TurnEnded(_)
+        ) && let Err(err) = self.index_event(event)
+        {
+            tracing::warn!(%err, session = %event.session, "failed to update session index");
         }
         Ok(())
     }
@@ -221,6 +250,132 @@ impl SessionStore {
     }
 
     pub fn list(&self) -> Result<Vec<SessionSummary>, StoreError> {
+        match self.list_indexed() {
+            Ok(Some(summaries)) => return Ok(summaries),
+            Ok(None) => {}
+            Err(err) => tracing::warn!(%err, "session index unavailable; scanning"),
+        }
+
+        let summaries = self.scan_sessions()?;
+        if let Err(err) = self.rebuild_index(&summaries) {
+            tracing::warn!(%err, "failed to rebuild the session index");
+        }
+        Ok(summaries)
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.root.join("index.sqlite")
+    }
+
+    fn open_index(&self) -> Result<Connection, StoreError> {
+        fs::create_dir_all(&self.root)?;
+        let conn = Connection::open(self.index_path())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                version TEXT NOT NULL,
+                turns INTEGER NOT NULL,
+                last_seq INTEGER NOT NULL,
+                cost_usd REAL NOT NULL DEFAULT 0
+            );",
+        )?;
+        // Add the cost column to indexes created before it existed.
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0",
+            [],
+        );
+        Ok(conn)
+    }
+
+    fn index_event(&self, event: &Event) -> Result<(), StoreError> {
+        match &event.kind {
+            EventKind::SessionStarted(meta) => {
+                let conn = self.open_index()?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO sessions
+                     (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                    params![
+                        event.session,
+                        event.ts.to_string(),
+                        meta.model,
+                        meta.provider,
+                        meta.cwd,
+                        meta.version,
+                        event.turn,
+                        event.seq,
+                    ],
+                )?;
+            }
+            EventKind::TurnEnded(ended) => {
+                let conn = self.open_index()?;
+                conn.execute(
+                    "UPDATE sessions SET turns = ?1, last_seq = ?2,
+                     cost_usd = cost_usd + ?3 WHERE id = ?4",
+                    params![event.turn, event.seq, ended.cost_usd, event.session],
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn count_session_files(&self) -> Result<usize, StoreError> {
+        let dir = self.sessions_dir();
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    fn list_indexed(&self) -> Result<Option<Vec<SessionSummary>>, StoreError> {
+        if !self.index_path().exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open(self.index_path())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd
+             FROM sessions ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionSummary {
+                id: row.get(0)?,
+                started: SessionStarted {
+                    model: row.get(2)?,
+                    provider: row.get(3)?,
+                    cwd: row.get(4)?,
+                    version: row.get(5)?,
+                },
+                started_at: row.get(1)?,
+                turns: row.get(6)?,
+                last_seq: row.get(7)?,
+                cost_usd: row.get(8)?,
+            })
+        })?;
+        let mut summaries = Vec::new();
+        for row in rows {
+            summaries.push(row?);
+        }
+        // A missing row means the index is stale; rebuild from the logs.
+        if summaries.len() == self.count_session_files()? {
+            Ok(Some(summaries))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn scan_sessions(&self) -> Result<Vec<SessionSummary>, StoreError> {
         let dir = self.sessions_dir();
         if !dir.exists() {
             return Ok(Vec::new());
@@ -245,17 +400,51 @@ impl SessionStore {
             let EventKind::SessionStarted(started) = &first.kind else {
                 continue;
             };
+            let cost_usd = events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::TurnEnded(ended) => Some(ended.cost_usd),
+                    _ => None,
+                })
+                .sum();
             summaries.push(SessionSummary {
                 id: id.to_string(),
                 started: started.clone(),
+                started_at: first.ts.to_string(),
                 turns: events.last().map(|event| event.turn).unwrap_or(0),
                 last_seq: events.last().map(|event| event.seq).unwrap_or(0),
+                cost_usd,
             });
         }
 
-        // ULIDs are time-sortable; newest first.
         summaries.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(summaries)
+    }
+
+    fn rebuild_index(&self, summaries: &[SessionSummary]) -> Result<(), StoreError> {
+        let mut conn = self.open_index()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM sessions", [])?;
+        for summary in summaries {
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions
+                 (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    summary.id,
+                    summary.started_at,
+                    summary.started.model,
+                    summary.started.provider,
+                    summary.started.cwd,
+                    summary.started.version,
+                    summary.turns,
+                    summary.last_seq,
+                    summary.cost_usd,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Conversation fork: copy events up to and including `at_seq` into a new
@@ -334,6 +523,9 @@ impl SessionStore {
         if lock.exists() {
             fs::remove_file(lock)?;
         }
+        if let Ok(conn) = self.open_index() {
+            let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]);
+        }
         Ok(())
     }
 
@@ -360,10 +552,30 @@ impl SessionStore {
     }
 }
 
+/// Tool call ids are model-controlled; keep them from escaping `outputs/`.
+fn sanitize_output_name(call_id: &str) -> String {
+    let name: String = call_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = name.trim_matches('.').to_string();
+    if name.is_empty() {
+        "output".to_string()
+    } else {
+        name.chars().take(120).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{ToolCall, TurnStarted, UserMessage};
+    use crate::event::{ToolCall, TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage};
 
     fn meta() -> SessionStarted {
         SessionStarted {
@@ -514,5 +726,40 @@ mod tests {
         let deleted = store.gc(0, true).expect("delete");
         assert!(deleted.contains(&source));
         assert!(!store.session_path(&source).exists());
+    }
+
+    #[test]
+    fn index_lists_sessions_and_rebuilds_from_logs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let source = seed(&store);
+        store
+            .append(&Event::new(
+                5,
+                &source,
+                1,
+                EventKind::TurnEnded(TurnEnded {
+                    status: TurnStatus::Completed,
+                    usage: Usage::default(),
+                    cost_usd: 0.25,
+                }),
+            ))
+            .expect("turn ended");
+
+        let listed = store.list().expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].turns, 1);
+        assert!((listed[0].cost_usd - 0.25).abs() < 1e-9);
+        assert!(!listed[0].started_at.is_empty());
+        assert!(store.root().join("index.sqlite").exists());
+
+        // Losing the index is harmless: the next list rebuilds it.
+        std::fs::remove_file(store.root().join("index.sqlite")).expect("remove index");
+        let rebuilt = store.list().expect("rebuild");
+        assert_eq!(rebuilt.len(), 1);
+        assert!(store.root().join("index.sqlite").exists());
+
+        store.delete_session(&source).expect("delete");
+        assert!(store.list().expect("after delete").is_empty());
     }
 }

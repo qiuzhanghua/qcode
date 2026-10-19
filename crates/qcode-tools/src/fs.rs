@@ -107,7 +107,8 @@ impl Tool for ReadFile {
         for (index, line) in lines[start..end].iter().enumerate() {
             output.push_str(&format!("{:>6}| {}\n", start + index + 1, line));
         }
-        let (output, truncated) = crate::truncate(&output, OUTPUT_LIMIT);
+        let raw = output;
+        let (output, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
 
         Ok(ToolOutput {
             status: ToolStatus::Ok,
@@ -119,6 +120,7 @@ impl Tool for ReadFile {
             },
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: truncated.then(|| raw.clone()),
         })
     }
 }
@@ -327,9 +329,9 @@ impl Tool for ListDir {
         }
         entries.sort();
 
-        let output = entries.join("\n");
-        let bytes = output.len() as u64;
-        let (output, truncated) = crate::truncate(&output, OUTPUT_LIMIT);
+        let raw = entries.join("\n");
+        let bytes = raw.len() as u64;
+        let (output, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
         Ok(ToolOutput {
             status: ToolStatus::Ok,
             output,
@@ -340,6 +342,7 @@ impl Tool for ListDir {
             },
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: truncated.then(|| raw.clone()),
         })
     }
 }

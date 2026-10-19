@@ -676,13 +676,16 @@ fn render_skill(skill: &Skill) -> ToolOutput {
         ));
     }
 
-    let bytes = output.len() as u64;
-    let (output, truncated) = truncate(&output, OUTPUT_LIMIT);
-    ToolOutput::ok(output).with_metadata(ToolMetadata {
-        truncated,
-        bytes,
-        ..ToolMetadata::default()
-    })
+    let raw = output;
+    let bytes = raw.len() as u64;
+    let (output, truncated) = truncate(&raw, OUTPUT_LIMIT);
+    ToolOutput::ok(output)
+        .with_metadata(ToolMetadata {
+            truncated,
+            bytes,
+            ..ToolMetadata::default()
+        })
+        .with_full_output(raw, truncated)
 }
 
 fn read_bundled_file(skill: &Skill, requested: &str) -> Result<ToolOutput, ToolError> {
@@ -738,12 +741,15 @@ fn read_bundled_file(skill: &Skill, requested: &str) -> Result<ToolOutput, ToolE
 
     let body = format!("[skill:{}] {requested}\n\n{text}", skill.name);
     let bytes = body.len() as u64;
-    let (output, truncated) = truncate(&body, OUTPUT_LIMIT);
-    Ok(ToolOutput::ok(output).with_metadata(ToolMetadata {
-        truncated,
-        bytes,
-        ..ToolMetadata::default()
-    }))
+    let raw = body;
+    let (output, truncated) = truncate(&raw, OUTPUT_LIMIT);
+    Ok(ToolOutput::ok(output)
+        .with_metadata(ToolMetadata {
+            truncated,
+            bytes,
+            ..ToolMetadata::default()
+        })
+        .with_full_output(raw, truncated))
 }
 
 #[cfg(test)]

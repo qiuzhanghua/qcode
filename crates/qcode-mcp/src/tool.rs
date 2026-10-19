@@ -160,9 +160,13 @@ fn render_result(server: &str, result: CallToolResult) -> ToolOutput {
     };
 
     if is_error == Some(true) {
-        ToolOutput::error(output).with_metadata(metadata)
+        ToolOutput::error(output)
+            .with_metadata(metadata)
+            .with_full_output(full, truncated)
     } else {
-        ToolOutput::ok(output).with_metadata(metadata)
+        ToolOutput::ok(output)
+            .with_metadata(metadata)
+            .with_full_output(full, truncated)
     }
 }
 

@@ -164,6 +164,7 @@ impl Tool for SubagentTool {
             },
             usage: outcome.usage,
             cost_usd: outcome.cost_usd,
+            full_output: truncated.then(|| raw.clone()),
         })
     }
 }

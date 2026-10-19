@@ -514,8 +514,12 @@ fn cmd_sessions(
             }
             for session in sessions {
                 println!(
-                    "{}  turns={}  model={}  cwd={}",
-                    session.id, session.turns, session.started.model, session.started.cwd
+                    "{}  turns={}  cost=${:.4}  model={}  cwd={}",
+                    session.id,
+                    session.turns,
+                    session.cost_usd,
+                    session.started.model,
+                    session.started.cwd
                 );
             }
         }

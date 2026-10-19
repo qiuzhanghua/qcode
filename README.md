@@ -200,6 +200,9 @@ cargo build -p qcode-eval
   `fsync`，同一 session 由 flock 保证单写者（第二个写者被拒绝，读仍可用）；
   resume 时给悬挂的 `tool_call` 补 `tool_result(interrupted)`。`sessions show` 可完整
   replay，`sessions fork` 分叉，`sessions gc --older-than-days N [--yes]` 清理旧会话。
+- **大输出与索引**：工具输出被截断时，全文写到 `sessions/<id>/outputs/<call_id>.txt`，
+  `tool_result.metadata.full_output_path` 记录路径；`index.sqlite` 缓存 session 元数据
+  （turns、cost），索引缺失或与日志数量不一致时自动全量重建。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。首 token 之前最多 3 次
   指数退避（尊重 `Retry-After`），首 token 之后失败直接终止本 turn；只读工具并发由

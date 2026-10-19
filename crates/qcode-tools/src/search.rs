@@ -130,6 +130,7 @@ impl Tool for GlobTool {
             },
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: truncated.then(|| joined.clone()),
         })
     }
 }
@@ -267,7 +268,8 @@ impl Tool for GrepTool {
         }
 
         let bytes = output.len() as u64;
-        let (output, truncated) = crate::truncate(&output, OUTPUT_LIMIT);
+        let raw = output;
+        let (output, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
         Ok(ToolOutput {
             status: ToolStatus::Ok,
             output,
@@ -278,6 +280,7 @@ impl Tool for GrepTool {
             },
             usage: Usage::default(),
             cost_usd: 0.0,
+            full_output: truncated.then(|| raw.clone()),
         })
     }
 }

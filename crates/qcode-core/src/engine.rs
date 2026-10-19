@@ -184,6 +184,10 @@ impl<'a> SessionWriter<'a> {
         })
     }
 
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn append(
         &mut self,
         kind: EventKind,
@@ -1122,12 +1126,26 @@ fn append_result<F>(
 where
     F: FnMut(&Event),
 {
+    let mut metadata = output.metadata.clone();
+    // Large outputs stay out of the transcript but remain readable on disk.
+    if metadata.truncated
+        && let Some(full) = &output.full_output
+    {
+        match writer
+            .store
+            .write_output(writer.session_id(), call_id, full)
+        {
+            Ok(path) => metadata.full_output_path = Some(path.display().to_string()),
+            Err(err) => tracing::warn!(%err, call_id, "failed to persist full tool output"),
+        }
+    }
+
     writer.append(
         EventKind::ToolResult(ToolResult {
             call_id: call_id.to_string(),
             status: output.status,
             output: output.output.clone(),
-            metadata: output.metadata.clone(),
+            metadata,
         }),
         on_event,
     )?;
