@@ -241,6 +241,7 @@ shell 环境清洗：只传 `PATH HOME USER SHELL LANG LC_* TERM TMPDIR` 与用�
 | `qc run "prompt"` | headless；prompt 也可从 stdin 读 |
 | `qcode resume <id>` | 恢复会话（TUI） |
 | `qc sessions list/show` | 会话管理 |
+| `qc skills list` | 查看发现的 skills 与被检查的根 |
 | `qc config edit/show` | 配置 |
 | `qc mcp list/add/remove` | MCP 管理 |
 | `qc doctor` | 自检（toolchain、路径、provider 连通性） |

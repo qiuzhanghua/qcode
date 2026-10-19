@@ -45,6 +45,7 @@ cargo test --workspace
 # Skills：项目级放在 .qcode/skills/<name>/SKILL.md（公开 Agent Skills 格式）
 # 用户级放在 ~/.config/qcode/skills/<name>/SKILL.md；同名 project 覆盖 user。
 # 启动时只注入 name/description，模型通过 skill 工具按需加载正文与附件。
+./target/debug/qc skills list   # 查看发现结果与被检查的根
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
@@ -149,10 +150,10 @@ Windows 上（PowerShell）：
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
-- **Skills**：发现 `~/.config/qcode/skills` 与 `<workspace>/.qcode/skills` 下的 `SKILL.md`
-  （公开 Agent Skills 格式）。system prompt 只放 `name` / `description`；模型调用 `skill`
-  工具按需加载正文，或用 `file` 参数读 `references/` 等附件。非法/超限/symlink 的 skill
-  跳过并告警，项目同名 skill 覆盖用户级。
+- **Skills**：发现 `~/.config/qcode/skills`、`[skills] roots` 与 `<workspace>/.qcode/skills`
+  下的 `SKILL.md`（公开 Agent Skills 格式）。system prompt 只放 `name` / `description`；
+  模型调用 `skill` 工具按需加载正文，或用 `file` 参数读 `references/` 等附件。非法/超限/
+  symlink 的 skill 跳过并告警，project > config > user。`qc skills list` 可查看发现结果。
 - **MCP（仅 tools）**：启动时连接启用的 stdio server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
@@ -216,9 +217,13 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 enabled = true
 
 # Skills：默认开启；enabled = false 可完全跳过发现。
+# roots 是额外目录（可选），按顺序覆盖 user；project 仍最高优先级。
 [skills]
 enabled = true
+# roots = ["~/space/skills/skills"]
 ```
+
+`qc skills list` 打印实际发现结果与被检查的根，排查“skill 没生效”时先跑它。
 
 `[[approval.rules]]` 的 `tool` 写完整工具名（如 `mcp__filesystem__read_file`）来放行单个
 MCP 工具；规则按工具名精确匹配。

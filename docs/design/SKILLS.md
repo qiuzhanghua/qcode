@@ -15,13 +15,15 @@ skill 里让模型跑的命令仍然走正常的策略与审批。
 | 来源 | 目录 |
 |---|---|
 | user | `~/.config/qcode/skills/<name>/SKILL.md` |
+| config | `[skills] roots = [...]` 里的目录，按列出顺序 |
 | project | `<workspace>/.qcode/skills/<name>/SKILL.md` |
 
-- 同名时 project 覆盖 user；其余按名字排序。
+- 优先级 user → config → project，后者覆盖前者；`roots` 支持 `~/`，相对路径按 workspace 解析。
+- 同名时 project 覆盖 config 再覆盖 user；其余按名字排序。
 - 目录名必须与 frontmatter 的 `name` 一致；不合法、缺字段、超限、symlink 的 skill 会
   `warn` 并跳过，不影响 qc 启动。
-- 没有 `HOME` 时只丢 user 根，project 根照常工作。
-- `[skills] enabled = false` 完全跳过发现。
+- 没有 `HOME` 时只丢 user 根，config / project 根照常工作。
+- `[skills] enabled = false` 完全跳过发现；`qc skills list` 可打印发现结果与被检查的根。
 
 ## 3. Frontmatter 子集
 
@@ -56,7 +58,7 @@ qcode 只解释两个字段：
 
 | 项 | 上限 |
 |---|---|
-| `SKILL.md` 大小 | 32KiB |
+| `SKILL.md` 大小 | 64KiB |
 | description | 1024 字符 |
 | system prompt 索引 | 8KiB |
 | 列出的附件数 | 200 |
@@ -75,6 +77,7 @@ qcode 只解释两个字段：
 ```toml
 [skills]
 enabled = true   # 默认 true
+roots = ["~/space/skills/skills"]   # 额外目录，可选
 ```
 
 ## 9. 测试

@@ -14,10 +14,11 @@
 //! Discovery roots, in increasing precedence:
 //!
 //! 1. `~/.config/qcode/skills` (user)
-//! 2. `<workspace>/.qcode/skills` (project)
+//! 2. `[skills] roots` from the config file, in listed order (config)
+//! 3. `<workspace>/.qcode/skills` (project)
 //!
-//! A project skill with the same name as a user skill wins. Invalid skills are
-//! skipped with a warning; one broken skill never prevents qc from starting.
+//! A later skill with the same name wins. Invalid skills are skipped with a
+//! warning; one broken skill never prevents qc from starting.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,9 +34,10 @@ use serde_json::{Value, json};
 use crate::truncate;
 
 pub const SKILL_FILE: &str = "SKILL.md";
-/// SKILL.md is loaded whole when a skill is activated; keep it small enough to
-/// fit the same budget as AGENTS.md. References belong in bundled files.
-pub const MAX_SKILL_MD_BYTES: u64 = 32 * 1024;
+/// SKILL.md is loaded whole when a skill is activated. 64KiB accommodates real
+/// multi-language skills while still bounding a single tool result; detailed
+/// material belongs in bundled files.
+pub const MAX_SKILL_MD_BYTES: u64 = 64 * 1024;
 pub const MAX_DESCRIPTION_CHARS: usize = 1024;
 pub const MAX_SKILL_NAME_CHARS: usize = 64;
 /// The index is always in the system prompt; cap it so a large collection
@@ -51,6 +53,7 @@ const MAX_SCAN_DEPTH: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SkillSource {
     User,
+    Config,
     Project,
 }
 
@@ -58,6 +61,7 @@ impl SkillSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::User => "user",
+            Self::Config => "config",
             Self::Project => "project",
         }
     }
@@ -523,6 +527,10 @@ impl SkillSet {
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|skill| skill.name == name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Skill> {
+        self.skills.iter()
     }
 
     /// The block appended to the system prompt. `None` when no skill exists.

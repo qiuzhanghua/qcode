@@ -291,6 +291,27 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 用户级 skill 在 workspace 外，只能由 `skill` 工具读取，`read_file` 的 workspace 边界不变。
 - 暂不支持 imports、远程安装、slash command 与自动激活；`tools/list` 式的动态刷新也不需要。
 
+## ADR-0006：可配置 skill roots（2026-10-19）
+
+**背景**：用户已有一份 DSH 风格的 skills 目录（`/Users/q/space/skills/skills`），qcode 只扫
+`~/.config/qcode/skills` 与 `<workspace>/.qcode/skills`，所以 `dev-env-inventory` 在 TUI 里
+不可见；把真实 skill 复制两份也无法长期维护。
+
+**决定**
+
+1. `[skills] roots = ["..."]` 增加额外发现根，优先级 user → config roots（按列出顺序）→
+   project；支持 `~/`，相对路径按 workspace 解析。
+2. 新增 `qc skills list`：打印 name、来源、目录、附件数、description，以及没有发现时检查过
+   的根；`enabled = false` 时直接说明。
+3. `SKILL.md` 上限从 32KiB 提到 64KiB：真实多语言 skill（如 40KB 的 `send-to-filehelper`）
+   不应因为字节数被静默跳过；正文仍由 `skill` 工具按需加载。
+4. 仍拒绝单个 symlink skill 目录；要复用外部目录，用 `roots` 或 symlink 整个根目录。
+
+**后果**
+
+- 多份 skill 来源可以共存，project 仍可覆盖任意来源。
+- 64KiB 的正文最多约 1.6 万 token，是否加载由模型按 description 决定。
+
 ## ADR-0005：apply_patch、web_fetch 与 sandbox（2026-10-19）
 
 **决定**

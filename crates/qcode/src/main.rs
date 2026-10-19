@@ -46,6 +46,8 @@ enum Command {
     Run(RunArgs),
     /// Inspect persisted sessions.
     Sessions(SessionsArgs),
+    /// Inspect discovered Agent Skills.
+    Skills(SkillsArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
 }
@@ -100,6 +102,18 @@ enum SessionsCommand {
     Show { id: String },
 }
 
+#[derive(Debug, Args)]
+struct SkillsArgs {
+    #[command(subcommand)]
+    command: SkillsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillsCommand {
+    /// List discovered skills and the roots that were checked.
+    List,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     logging::init();
@@ -113,6 +127,7 @@ async fn main() -> ExitCode {
     let result = match command {
         Some(Command::Run(args)) => cmd_run(args, data_dir, config).await,
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
+        Some(Command::Skills(args)) => cmd_skills(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         None => cmd_tui(data_dir, config).await,
     };
@@ -414,13 +429,17 @@ async fn build_tools(
     tools
 }
 
-/// Discover user and project skills unless the config disables them. A missing
-/// `HOME` only loses the user-level root; the project root still works.
+/// Discover skills unless the config disables them. A missing `HOME` only
+/// loses the user-level root; configured and project roots still work.
 fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet> {
     if !config.enabled {
         return Arc::new(SkillSet::default());
     }
+    Arc::new(SkillSet::discover(&skill_roots(config, workspace)))
+}
 
+/// All discovery roots in increasing precedence: user, configured, project.
+fn skill_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push((
@@ -428,9 +447,79 @@ fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet>
             PathBuf::from(home).join(".config/qcode/skills"),
         ));
     }
+    roots.extend(config_roots(config, workspace));
     roots.push((SkillSource::Project, workspace.join(".qcode/skills")));
+    roots
+}
 
-    Arc::new(SkillSet::discover(&roots))
+fn config_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    config
+        .roots
+        .iter()
+        .map(|root| {
+            (
+                SkillSource::Config,
+                expand_root(root, workspace, home.as_deref()),
+            )
+        })
+        .collect()
+}
+
+fn expand_root(path: &Path, workspace: &Path, home: Option<&Path>) -> PathBuf {
+    if let Some(home) = home {
+        if path == Path::new("~") {
+            return home.to_path_buf();
+        }
+        if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix("~/")) {
+            return home.join(rest);
+        }
+    }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    }
+}
+
+fn cmd_skills(
+    args: SkillsArgs,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match args.command {
+        SkillsCommand::List => {}
+    }
+
+    let loaded = load_config(config_path)?;
+    if !loaded.skills.enabled {
+        println!("skills are disabled ([skills] enabled = false)");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let roots = skill_roots(&loaded.skills, &workspace);
+    let skills = SkillSet::discover(&roots);
+
+    if skills.is_empty() {
+        println!("no skills discovered; checked:");
+        for (source, path) in &roots {
+            println!("  [{}] {}", source.label(), path.display());
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    for skill in skills.iter() {
+        println!(
+            "{}  [{}]  files={}",
+            skill.name,
+            skill.source.label(),
+            skill.files.len()
+        );
+        println!("  {}", skill.dir.display());
+        println!("  {}", skill.description.replace('\n', " "));
+    }
+    println!("\n{} skill(s)", skills.len());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn build_provider(

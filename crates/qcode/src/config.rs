@@ -44,11 +44,19 @@ pub struct Config {
 pub struct SkillsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Extra skill roots, loaded after the user root and before the project
+    /// root (later roots win). `~/` is expanded; relative paths resolve against
+    /// the workspace.
+    #[serde(default)]
+    pub roots: Vec<PathBuf>,
 }
 
 impl Default for SkillsConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            roots: Vec::new(),
+        }
     }
 }
 
@@ -545,9 +553,14 @@ mod tests {
     fn skills_are_enabled_by_default_and_can_be_disabled() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.skills.enabled);
+        assert!(config.skills.roots.is_empty());
 
-        let config: Config = toml::from_str("[skills]\nenabled = false\n").unwrap();
+        let config: Config = toml::from_str(
+            "[skills]\nenabled = false\nroots = [\"/tmp/skills\", \"~/space/skills\"]\n",
+        )
+        .unwrap();
         assert!(!config.skills.enabled);
+        assert_eq!(config.skills.roots.len(), 2);
     }
 
     #[test]
