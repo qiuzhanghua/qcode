@@ -51,12 +51,20 @@ struct Cli {
 enum Command {
     /// Run a single headless turn.
     Run(RunArgs),
+    /// Resume a stored session in the TUI.
+    Resume(ResumeArgs),
     /// Inspect persisted sessions.
     Sessions(SessionsArgs),
     /// Inspect discovered Agent Skills.
     Skills(SkillsArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
+}
+
+#[derive(Debug, Args)]
+struct ResumeArgs {
+    /// Session id to resume.
+    id: String,
 }
 
 #[derive(Debug, Args)]
@@ -88,6 +96,9 @@ struct RunArgs {
     /// Workspace root for tools. Defaults to the current directory.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Resume an existing session instead of creating a new one.
+    #[arg(long, value_name = "ID")]
+    resume: Option<String>,
     /// Stop once the estimated cost exceeds this many USD. Requires a
     /// [pricing."<model>"] entry in the config file.
     #[arg(long, value_name = "USD")]
@@ -110,6 +121,13 @@ enum SessionsCommand {
     List,
     /// Replay one session as JSON.
     Show { id: String },
+    /// Copy a conversation prefix into a new session.
+    Fork {
+        id: String,
+        /// Fork after this event seq (default: the whole session).
+        #[arg(long, value_name = "SEQ")]
+        at: Option<u64>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -137,10 +155,13 @@ async fn main() -> ExitCode {
 
     let result = match command {
         Some(Command::Run(args)) => cmd_run(args, data_dir, config, approval_policy).await,
+        Some(Command::Resume(args)) => {
+            cmd_tui(data_dir, config, approval_policy, Some(args.id)).await
+        }
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
         Some(Command::Skills(args)) => cmd_skills(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
-        None => cmd_tui(data_dir, config, approval_policy).await,
+        None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
     match result {
@@ -169,6 +190,7 @@ async fn cmd_run(
         max_turns,
         yes,
         cwd,
+        resume,
         max_cost,
         timeout,
     } = args;
@@ -232,15 +254,27 @@ async fn cmd_run(
     };
     let cwd = workspace.display().to_string();
 
-    let (session_id, first_event) = store.create(&SessionStarted {
-        model: resolved.model.clone(),
-        provider: resolved.name.clone(),
-        cwd,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    })?;
-    tracing::info!(session = %session_id, "session created");
-    if json {
-        println!("{}", serde_json::to_string(&first_event)?);
+    let (session_id, first_event) = match resume {
+        Some(id) => {
+            // Validate before the engine writes anything; a typo should not
+            // create a new session file.
+            store.load(&id)?;
+            tracing::info!(session = %id, "session resumed");
+            (id, None)
+        }
+        None => {
+            let (id, event) = store.create(&SessionStarted {
+                model: resolved.model.clone(),
+                provider: resolved.name.clone(),
+                cwd,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            })?;
+            tracing::info!(session = %id, "session created");
+            (id, Some(event))
+        }
+    };
+    if json && let Some(event) = &first_event {
+        println!("{}", serde_json::to_string(event)?);
     }
 
     let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
@@ -352,6 +386,7 @@ async fn cmd_tui(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
     approval_policy: Option<PathBuf>,
+    resume: Option<String>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err("TUI needs a terminal; use `qc run \"...\"` for headless mode".into());
@@ -400,6 +435,7 @@ async fn cmd_tui(
         skills_prompt,
         skills: skill_views,
         sandbox: sandbox.name().to_string(),
+        resume,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
@@ -431,6 +467,10 @@ fn cmd_sessions(
             for event in store.load(&id)? {
                 println!("{}", serde_json::to_string_pretty(&event)?);
             }
+        }
+        SessionsCommand::Fork { id, at } => {
+            let forked = store.fork(&id, at)?;
+            println!("{forked}");
         }
     }
 

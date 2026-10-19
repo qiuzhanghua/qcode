@@ -60,6 +60,8 @@ pub struct TuiOptions<'a> {
     pub skills: Vec<SkillView>,
     /// Active sandbox backend name, shown in the status bar.
     pub sandbox: String,
+    /// Existing session to resume; `None` creates a new one.
+    pub resume: Option<String>,
 }
 
 enum TuiMsg {
@@ -111,12 +113,24 @@ impl Approver for TuiApprover {
 }
 
 pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
-    let (session_id, _) = options.store.create(&SessionStarted {
-        model: options.model.to_string(),
-        provider: options.provider_name.to_string(),
-        cwd: options.workspace.display().to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    })?;
+    // Validate the session before touching the terminal.
+    let history = options
+        .resume
+        .as_ref()
+        .map(|id| options.store.load(id))
+        .transpose()?;
+    let session_id = match (&options.resume, &history) {
+        (Some(id), Some(_)) => id.clone(),
+        _ => {
+            let (id, _) = options.store.create(&SessionStarted {
+                model: options.model.to_string(),
+                provider: options.provider_name.to_string(),
+                cwd: options.workspace.display().to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            })?;
+            id
+        }
+    };
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let approver: Arc<dyn Approver> = Arc::new(TuiApprover { tx: tx.clone() });
@@ -147,9 +161,24 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     app.skills = options.skills.clone();
     app.sandbox = options.sandbox.clone();
     app.context_window = options.context_window;
-    app.push_notice(format!(
-        "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · Ctrl-C 两次退出"
-    ));
+    if let Some(events) = &history {
+        for event in events {
+            app.apply(event);
+        }
+        // A resumed session is idle even if its last turn was interrupted.
+        app.streaming.clear();
+        app.status.running = false;
+        app.status.provider = options.provider_name.to_string();
+        app.status.model = options.model.to_string();
+        app.push_notice(format!(
+            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · /subagents 子组 · Ctrl-C 两次退出",
+            events.len()
+        ));
+    } else {
+        app.push_notice(format!(
+            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · Ctrl-C 两次退出"
+        ));
+    }
 
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;

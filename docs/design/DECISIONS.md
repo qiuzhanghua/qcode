@@ -513,3 +513,24 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
 - TUI 的嵌套进度只读：子 `turn_ended` 不会结束父 turn，子 `session_started` 不会覆盖父
   provider/model；完整事件仍以子 session 为准。
 - 深度 1 是刻意的：避免递归成本与审批套娃；需要更深时再加显式 `depth` 预算。
+
+## ADR-0014：resume 与对话 fork（2026-10-19）
+
+**背景**：SPEC §1 把“对话 fork”列入 v1，§4.3 规定 v1 只做对话 fork、文件不动。此前引擎已有
+`SessionWriter::resume`，但没有用户入口。
+
+**决定**
+
+1. `qc run --resume <id>` 在已有 session 上追加一个 turn；不重复写 `session_started`。
+   `qc resume <id>` 在 TUI 里恢复：先 replay 已有事件，再按正常 `run_turn` 追加。
+2. `qc sessions fork <id> [--at SEQ]` 把 seq ≤ 边界的 events 复制到新 session：
+   新 ULID、`session` 改写、`seq` 从 1 重新编号，`ts`/`turn`/内容保持；默认复制全部。
+   边界必须落在已有 seq 上，否则报错。
+3. fork 只是会话分叉：不改 workspace 文件、不复制 outputs；文件回滚仍交给 git。
+4. 新 session 可继续 `--resume` 或 TUI resume；原 session 不受影响。
+
+**后果**
+
+- 分叉后的 seq 与 session 与原日志不同，便于独立继续；`sessions list` 会看到两条记录。
+- 当前没有交互式“从某条消息分叉”的 TUI 命令，边界用 `--at` 指定；需要时再加 UI。
+- 尚未处理悬挂 `tool_call` 的 `interrupted` 标记（归入存储/崩溃恢复项）。

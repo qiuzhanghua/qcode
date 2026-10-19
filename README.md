@@ -53,6 +53,11 @@ cargo test --workspace
 # 直接激活一个 skill（等价于 TUI 里输入 /dev-env-inventory）
 ./target/debug/qc run "盘点本机" --provider deepseek --skill dev-env-inventory
 
+# 会话恢复 / fork（id 来自 events 里的 session_started 或 sessions list）
+./target/debug/qc run "继续" --resume <session-id>
+./target/debug/qc resume <session-id>              # 在 TUI 里恢复
+./target/debug/qc sessions fork <session-id> --at 42   # 打印新 session id
+
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
 # 不写 --model 时，DeepSeek 默认使用 deepseek-flash
@@ -301,7 +306,7 @@ action = "allow"
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`。
+常用 flag：`--yes`、`--cwd`、`--resume`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`。
 `--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档
