@@ -20,7 +20,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy
+        shell: bash
+        run: bash scripts/ci-clippy.sh
       - run: cargo test --workspace
       - name: fixture self-check
         run: bash eval/fixtures/workspace/scripts/ci.sh
@@ -43,7 +45,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Full runtime tests still need the PowerShell/cmd shell work; this job
       # catches compile/link regressions before that lands.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy
+        shell: bash
+        run: bash scripts/ci-clippy.sh
       - run: cargo test --workspace --no-run
       - name: mock smoke
         run: cargo run -p qcode -- run "hi" --provider mock --json --data-dir .tmp/windows-data
