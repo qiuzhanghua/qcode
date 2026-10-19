@@ -685,3 +685,21 @@ TOML。
 - 索引是缓存，不是真相来源；删除后自动重建。当前顺序按 id（ULID 时间序），未单独建
   started_at 索引。
 - 未做 schema 版本表；后续列变更继续用 `ALTER TABLE` 幂等补列。
+
+## ADR-0021：macOS notarize 占位（2026-10-19）
+
+**背景**：M4 要求 notarize，但当前环境既没有 Developer ID Application 证书，也没有
+Apple ID / team / app-specific password。
+
+**决定**
+
+- 增加 `notarize-macos.sh`：对每个产物做 `codesign --options runtime --timestamp`、
+  打 zip、`xcrun notarytool submit --wait`。所有凭据从环境变量读取，缺失即报错退出。
+- 脚本不接入 `build-for-release`；打包与签名/公证保持分离，避免无凭据时阻塞普通构建。
+- 裸 Mach-O 不能 `stapler`，脚本不假装离线票据可用；需要时把 CLI 包进 `.app`/`.pkg`/
+  `.dmg` 再扩展。
+
+**后果**
+
+- M4 的 notarize 仍是“流程占位”，不算完成；需要真实证书后跑一次并记录 ticket。
+- Windows 代码签名（Authenticode）同样未做，v1 不包含。

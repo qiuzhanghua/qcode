@@ -151,6 +151,8 @@ Windows 上（PowerShell）：
   找不到静态库只警告，产物在干净机器上可能加载失败。
 - **musl 用 rust-lld**：不需要额外 gcc，也不用 `cross`。
 - 交叉产物跑不起来，脚本只做静态核对；`--version` 一致性检查只在本机目标上执行。
+- **notarize（占位）**：`notarize-macos.sh` 需要 Developer ID 证书与 app-specific
+  password，只做 codesign + zip + notarytool submit；本机/CI 没有凭据时不运行。
 - **发布门禁**：`make check` / `./build-for-release --check` 跑 fmt、`clippy -D warnings`、
   `cargo test --workspace` 和 `cargo deny check`，与 CI 的 ci.yml 对齐；`make release`
   先过门禁再打全平台归档。cargo-deny 装在 `$CARGO_HOME/bin`，脚本会把它补进 PATH。
