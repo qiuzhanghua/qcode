@@ -266,6 +266,12 @@ tool = "run_shell"
 command_prefix = "git push --force"
 action = "deny"
 
+[[approval.rules]]
+id = "deny-secrets-edit"
+tool = "write_file"
+path_glob = ".env*"
+action = "deny"
+
 # MCP：stdio server（v1 只支持 tools）。enabled 默认 true，timeout_secs 默认 120。
 # 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
 [[mcp.servers]]
@@ -293,6 +299,14 @@ network = false      # bwrap/sandbox-exec 生效；landlock 只做文件系统
 
 `[[approval.rules]]` 的 `tool` 写完整工具名（如 `mcp__filesystem__read_file`）来放行单个
 MCP 工具；规则按工具名精确匹配。
+
+规则字段：`tool`、`command_prefix`、`path_glob`（匹配 `path` 参数）、`action`、
+`scope`（`user` / `project` / `session`，默认 user）。匹配顺序：任一 deny 胜出；否则
+约束最多、scope 最窄、前缀/glob 更长者优先。
+
+项目配置放在 `<workspace>/.qcode/config.toml`，叠加在用户配置之上：可覆盖
+providers / pricing、追加 MCP server、追加 skills roots，并追加审批规则。项目规则强制
+`scope = "project"`，且 `allow` 会降级为 `ask`——仓库不能给自己提权。
 
 `--approval-policy <path>` 读取独立策略文件：根级 `[[rules]]`，规则**替换** config 里的
 `[[approval.rules]]`（不合并）。适合 CI / eval 固定权限；文件不存在或 TOML 非法会在创建

@@ -166,7 +166,9 @@ async fn denial_is_reported_to_the_model() {
         id: "deny-fake".to_string(),
         tool: Some("fake".to_string()),
         command_prefix: None,
+        path_glob: None,
         action: Action::Deny,
+        scope: None,
     }]);
 
     let outcome = run_turn(

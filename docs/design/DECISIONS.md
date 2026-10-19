@@ -586,3 +586,26 @@ torn-line 丢弃，`interrupted` 状态从未写入。
 - 网络抖动/限流在首 token 前可自愈；流开始后不会静默重放，避免重复工具调用。
 - 非并行 provider 的批量只读调用会变慢，但语义正确。
 - 重试只记 `tracing::warn`，不写事件日志；需要审计时再补 `error(retry)` 事件。
+
+## ADR-0017：path_glob、scope 与项目配置（2026-10-19）
+
+**背景**：SPEC §8 的规则要求 `path_glob` 与 scope；§12 要求 CLI > env > project > user。
+此前规则只有 tool/command_prefix，且只有一份配置文件。
+
+**决定**
+
+1. `Rule` 增加 `path_glob`（匹配 `path` 参数）与 `scope`（`user|project|session`，默认
+   user）。求值仍是 deny 优先；否则按（约束数、scope 窄度、command_prefix 长度、
+   path_glob 长度）取最大。
+2. `ApprovalDecided.scope` 现在来自命中的规则；无规则命中/默认策略仍记 `session`。
+3. 新增 `<workspace>/.qcode/config.toml`：叠加到用户/显式配置上，合并 providers、
+   pricing、MCP servers、skills roots 与 approval rules。项目规则强制 project scope，
+   `allow` 降级为 `ask`。
+4. `--approval-policy` 的规则标记为 session scope，仍替换（而非追加）配置规则。
+
+**后果**
+
+- `path_glob` 只作用于带 `path` 参数的工具；`apply_patch` 不接受该参数，因此不会命中。
+- 项目配置的 `context` / `sandbox` 段本轮不合并（避免无法区分“未设置”与默认值）。
+- 项目可覆盖 provider/pricing 仍可能改变行为；如需更严格，后续再限制可覆盖字段。
+- `Scope` 只写进审批事件，不改变规则存储位置。

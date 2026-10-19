@@ -215,7 +215,12 @@ async fn cmd_run(
         return Err("prompt is empty".into());
     }
 
-    let loaded = load_config(config_path)?;
+    let workspace = match cwd {
+        Some(path) => path,
+        None => std::env::current_dir()?,
+    };
+    let workspace = workspace.canonicalize()?;
+    let loaded = load_config(config_path, &workspace)?;
     let resolved = config::resolve(
         &loaded,
         &config::Overrides {
@@ -242,11 +247,6 @@ async fn cmd_run(
 
     let data_dir = resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
-    let workspace = match cwd {
-        Some(path) => path,
-        None => std::env::current_dir()?,
-    };
-    let workspace = workspace.canonicalize()?;
     let sandbox =
         qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
     tracing::info!(sandbox = sandbox.name(), "sandbox configured");
@@ -400,7 +400,8 @@ async fn cmd_tui(
         return Err("TUI needs a terminal; use `qc run \"...\"` for headless mode".into());
     }
 
-    let loaded = load_config(config_path)?;
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let loaded = load_config(config_path, &workspace)?;
     let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
         std::env::var(key).ok()
     })?;
@@ -416,7 +417,6 @@ async fn cmd_tui(
 
     let data_dir = resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
-    let workspace = std::env::current_dir()?.canonicalize()?;
     let sandbox =
         qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
     tracing::info!(sandbox = sandbox.name(), "sandbox configured");
@@ -600,13 +600,13 @@ fn cmd_skills(
         SkillsCommand::List => {}
     }
 
-    let loaded = load_config(config_path)?;
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let loaded = load_config(config_path, &workspace)?;
     if !loaded.skills.enabled {
         println!("skills are disabled ([skills] enabled = false)");
         return Ok(ExitCode::SUCCESS);
     }
 
-    let workspace = std::env::current_dir()?.canonicalize()?;
     let roots = skill_roots(&loaded.skills, &workspace);
     let skills = SkillSet::discover(&roots);
 
@@ -804,21 +804,24 @@ fn build_provider(
     })
 }
 
-fn load_config(explicit: Option<PathBuf>) -> Result<config::Config, Box<dyn std::error::Error>> {
+fn load_config(
+    explicit: Option<PathBuf>,
+    workspace: &Path,
+) -> Result<config::Config, Box<dyn std::error::Error>> {
     let explicit = explicit.or_else(|| std::env::var("QCODE_CONFIG").ok().map(PathBuf::from));
 
     if let Some(path) = explicit {
         if !path.exists() {
             return Err(format!("config file not found: {}", path.display()).into());
         }
-        return Ok(config::load(&path)?);
+        return Ok(config::load_merged(&path, workspace)?);
     }
 
     let path = config::default_path()?;
     if path.exists() {
-        Ok(config::load(&path)?)
+        Ok(config::load_merged(&path, workspace)?)
     } else {
-        Ok(config::Config::default())
+        Ok(config::load_project(workspace)?)
     }
 }
 
@@ -837,7 +840,12 @@ fn build_policy(
                 return Err(format!("approval policy not found: {}", path.display()).into());
             }
             tracing::info!(path = %path.display(), "loaded approval policy file");
-            config::load_policy(path)?
+            let mut rules = config::load_policy(path)?;
+            // A policy file is scoped to this invocation.
+            for rule in &mut rules {
+                rule.scope = Some(qcode_core::event::Scope::Session);
+            }
+            rules
         }
         None => loaded.approval.rules.clone(),
     };

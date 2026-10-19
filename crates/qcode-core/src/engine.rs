@@ -1052,11 +1052,8 @@ where
         aborted = tool_context.cancel.is_cancelled();
     }
 
-    let scope = if rule_id.is_some() {
-        Scope::User
-    } else {
-        Scope::Session
-    };
+    // A matched rule carries its provenance; defaults are session-scoped.
+    let scope = decision.scope.unwrap_or(Scope::Session);
 
     writer.append(
         EventKind::ApprovalDecided(ApprovalDecided {

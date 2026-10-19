@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use qcode_core::cost::Pricing;
-use qcode_core::policy::Rule;
+use qcode_core::event::Scope;
+use qcode_core::policy::{Action, Rule};
 use qcode_mcp::{McpConfig, McpConfigError};
 use qcode_tools::sandbox::SandboxMode;
 
@@ -206,6 +207,64 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
     Ok(config)
+}
+
+/// Project-level config, loaded from `<workspace>/.qcode/config.toml`.
+pub const PROJECT_CONFIG_RELATIVE: &str = ".qcode/config.toml";
+
+/// Load a config file and overlay the workspace's project config.
+pub fn load_merged(path: &Path, workspace: &Path) -> Result<Config, ConfigError> {
+    let mut config = load(path)?;
+    merge_project_file(&mut config, workspace)?;
+    Ok(config)
+}
+
+/// Config built from defaults plus the workspace project config.
+pub fn load_project(workspace: &Path) -> Result<Config, ConfigError> {
+    let mut config = Config::default();
+    merge_project_file(&mut config, workspace)?;
+    Ok(config)
+}
+
+fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigError> {
+    let path = workspace.join(PROJECT_CONFIG_RELATIVE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let project = load(&path)?;
+    merge_project(base, project);
+    base.mcp.validate()?;
+    Ok(())
+}
+
+/// Merge a project config over a user/explicit one.
+///
+/// Project approval rules are forced to `Scope::Project` and may only tighten:
+/// an `allow` becomes `ask`, because a repository must not grant itself more
+/// permission than the user configured.
+pub fn merge_project(base: &mut Config, project: Config) {
+    if project.default_provider.is_some() {
+        base.default_provider = project.default_provider;
+    }
+    base.providers.extend(project.providers);
+    base.pricing.extend(project.pricing);
+    base.mcp.servers.extend(project.mcp.servers);
+    if !project.skills.enabled {
+        base.skills.enabled = false;
+    }
+    base.skills.roots.extend(project.skills.roots);
+
+    for mut rule in project.approval.rules {
+        rule.scope = Some(Scope::Project);
+        if rule.action == Action::Allow {
+            tracing::warn!(
+                rule = %rule.id,
+                "project approval rules cannot allow; downgraded to ask"
+            );
+            rule.action = Action::Ask;
+        }
+        base.approval.rules.push(rule);
+    }
 }
 
 /// Load a standalone `--approval-policy` file.
@@ -755,5 +814,71 @@ mod tests {
             Some("http://127.0.0.1:1234/v1")
         );
         assert!(resolved.api_key.is_none());
+    }
+
+    #[test]
+    fn project_rules_are_scoped_and_cannot_allow() {
+        let mut base: Config = toml::from_str(
+            r#"
+            [[approval.rules]]
+            id = "user-allow"
+            tool = "run_shell"
+            action = "allow"
+            "#,
+        )
+        .unwrap();
+        let project: Config = toml::from_str(
+            r#"
+            [[approval.rules]]
+            id = "proj-allow"
+            tool = "read_file"
+            action = "allow"
+
+            [[approval.rules]]
+            id = "proj-deny"
+            tool = "run_shell"
+            command_prefix = "git push"
+            action = "deny"
+            "#,
+        )
+        .unwrap();
+
+        merge_project(&mut base, project);
+        assert_eq!(base.approval.rules.len(), 3);
+        let proj_allow = base
+            .approval
+            .rules
+            .iter()
+            .find(|rule| rule.id == "proj-allow")
+            .expect("project allow");
+        assert_eq!(proj_allow.action, Action::Ask);
+        assert_eq!(proj_allow.scope, Some(Scope::Project));
+        let proj_deny = base
+            .approval
+            .rules
+            .iter()
+            .find(|rule| rule.id == "proj-deny")
+            .expect("project deny");
+        assert_eq!(proj_deny.action, Action::Deny);
+    }
+
+    #[test]
+    fn project_config_loads_from_the_workspace() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(dir.path().join(".qcode")).unwrap();
+        std::fs::write(
+            dir.path().join(".qcode/config.toml"),
+            r#"
+            [[approval.rules]]
+            id = "repo-deny"
+            tool = "run_shell"
+            action = "deny"
+            "#,
+        )
+        .unwrap();
+
+        let config = load_project(dir.path()).expect("project config");
+        assert_eq!(config.approval.rules.len(), 1);
+        assert_eq!(config.approval.rules[0].scope, Some(Scope::Project));
     }
 }

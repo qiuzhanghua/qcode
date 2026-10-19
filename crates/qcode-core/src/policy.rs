@@ -4,9 +4,11 @@
 //! match, the default depends on the call class: reads and workspace-internal
 //! writes are allowed, writes outside the workspace and process execution ask.
 
+use globset::Glob;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::event::Scope;
 use crate::tool::ApprovalClass;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -25,7 +27,13 @@ pub struct Rule {
     /// Matches when the `command` argument starts with this prefix.
     #[serde(default)]
     pub command_prefix: Option<String>,
+    /// Matches the `path` argument against a glob (e.g. `src/**`).
+    #[serde(default)]
+    pub path_glob: Option<String>,
     pub action: Action,
+    /// Where the rule came from; project rules are downgraded to ask on load.
+    #[serde(default)]
+    pub scope: Option<Scope>,
 }
 
 impl Rule {
@@ -41,11 +49,32 @@ impl Rule {
                 return false;
             }
         }
+        if let Some(pattern) = &self.path_glob {
+            let Some(path) = args.get("path").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            let Ok(glob) = Glob::new(pattern) else {
+                return false;
+            };
+            if !glob.compile_matcher().is_match(path) {
+                return false;
+            }
+        }
         true
     }
 
     fn specificity(&self) -> usize {
-        usize::from(self.tool.is_some()) + usize::from(self.command_prefix.is_some())
+        usize::from(self.tool.is_some())
+            + usize::from(self.command_prefix.is_some())
+            + usize::from(self.path_glob.is_some())
+    }
+
+    fn scope_rank(&self) -> u8 {
+        match self.scope.unwrap_or(Scope::User) {
+            Scope::Session => 2,
+            Scope::Project => 1,
+            Scope::User => 0,
+        }
     }
 }
 
@@ -59,6 +88,8 @@ pub struct Decision {
     pub action: Action,
     pub rule_id: Option<String>,
     pub reason: String,
+    /// Scope of the matching rule; `None` for defaults or an empty policy.
+    pub scope: Option<Scope>,
 }
 
 impl Policy {
@@ -82,18 +113,27 @@ impl Policy {
                 action: Action::Deny,
                 rule_id: Some(rule.id.clone()),
                 reason: format!("denied by rule '{}'", rule.id),
+                scope: Some(rule.scope.unwrap_or(Scope::User)),
             };
         }
 
         if let Some(rule) = matching
             .iter()
             .filter(|rule| rule.action != Action::Deny)
-            .max_by_key(|rule| rule.specificity())
+            .max_by_key(|rule| {
+                (
+                    rule.specificity(),
+                    rule.scope_rank(),
+                    rule.command_prefix.as_deref().map_or(0, str::len),
+                    rule.path_glob.as_deref().map_or(0, str::len),
+                )
+            })
         {
             return Decision {
                 action: rule.action,
                 rule_id: Some(rule.id.clone()),
                 reason: format!("matched rule '{}'", rule.id),
+                scope: Some(rule.scope.unwrap_or(Scope::User)),
             };
         }
 
@@ -110,6 +150,7 @@ impl Policy {
             action,
             rule_id: None,
             reason: reason.to_string(),
+            scope: None,
         }
     }
 }
@@ -124,7 +165,9 @@ mod tests {
             id: id.to_string(),
             tool: tool.map(str::to_string),
             command_prefix: prefix.map(str::to_string),
+            path_glob: None,
             action,
+            scope: None,
         }
     }
 
@@ -272,5 +315,64 @@ mod tests {
                 .action,
             Action::Ask
         );
+    }
+
+    #[test]
+    fn path_glob_matches_the_path_argument() {
+        let policy = Policy::new(vec![Rule {
+            id: "deny-src".to_string(),
+            tool: Some("write_file".to_string()),
+            command_prefix: None,
+            path_glob: Some("src/**".to_string()),
+            action: Action::Deny,
+            scope: None,
+        }]);
+
+        assert_eq!(
+            policy
+                .evaluate(
+                    "write_file",
+                    ApprovalClass::WriteInside,
+                    &json!({"path": "src/lib.rs"})
+                )
+                .action,
+            Action::Deny
+        );
+        assert_eq!(
+            policy
+                .evaluate(
+                    "write_file",
+                    ApprovalClass::WriteInside,
+                    &json!({"path": "README.md"})
+                )
+                .action,
+            Action::Allow
+        );
+        // No path argument: the rule does not apply.
+        assert_eq!(
+            policy
+                .evaluate("write_file", ApprovalClass::WriteInside, &json!({}))
+                .action,
+            Action::Allow
+        );
+    }
+
+    #[test]
+    fn scope_breaks_ties_toward_the_narrower_scope() {
+        let policy = Policy::new(vec![
+            rule("user-allow", Some("run_shell"), None, Action::Allow),
+            Rule {
+                id: "project-ask".to_string(),
+                tool: Some("run_shell".to_string()),
+                command_prefix: None,
+                path_glob: None,
+                action: Action::Ask,
+                scope: Some(Scope::Project),
+            },
+        ]);
+
+        let decision = policy.evaluate("run_shell", ApprovalClass::Execute, &json!({}));
+        assert_eq!(decision.action, Action::Ask);
+        assert_eq!(decision.scope, Some(Scope::Project));
     }
 }

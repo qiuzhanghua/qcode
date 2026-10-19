@@ -92,9 +92,19 @@ impl Doctor {
             return Config::default();
         }
 
-        match config::load(&path) {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        match config::load_merged(&path, &workspace) {
             Ok(config) => {
                 self.ok("config", path.display().to_string());
+                if workspace.join(config::PROJECT_CONFIG_RELATIVE).exists() {
+                    self.ok(
+                        "project config",
+                        workspace
+                            .join(config::PROJECT_CONFIG_RELATIVE)
+                            .display()
+                            .to_string(),
+                    );
+                }
                 config
             }
             Err(err) => {
