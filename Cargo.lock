@@ -1302,6 +1302,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-eval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "qcode-mcp"
 version = "0.1.0"
 dependencies = [

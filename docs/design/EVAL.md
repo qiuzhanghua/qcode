@@ -98,3 +98,36 @@ workspace 外 deny——保证评测可无人值守运行。
 - 不做主观打分（“代码优雅”之类）。
 - 不做大规模 SWE-bench 式评测（成本高、与自用目标无关）。
 - 不把 eval 结果当营销数字——它是回归工具，不是 benchmark 成绩。
+
+## 9. 实现（M4）
+
+代码在 `crates/qcode-eval`（二进制 `qc-eval`），fixture 在
+`eval/fixtures/workspace`，任务在 `eval/tasks/<id>/`：
+
+```text
+eval/tasks/01-fix-bug/
+  task.toml            # prompt / timeout / max_turns / checks
+  planted/             # 可选：覆盖到 fixture 上的“坏状态”
+  hidden/              # 可选：agent 结束后注入的隐藏测试
+```
+
+- **snapshot**：fixture 的干净版本 + `planted/` 覆盖层，构成任务的固定起点；
+  不再维护每个任务一份完整副本。
+- **runner**：复制 fixture 到临时目录 → 应用 `planted/` → `qc run … --json --yes`
+  → 恢复 `AGENTS.md`、`scripts/`、`*/tests/` → 注入 `hidden/` → 执行 checks。
+- **审批**：当前用 `--yes`；EVAL §5 里的 `--approval-policy` 尚未实现，等策略文件
+  落地后再替换。
+- **结果**：`eval/runs/<timestamp>/` 下保存每个任务的 `events.jsonl`、
+  `agent.stderr`、check 日志和 `summary.md`；失败任务的临时 workspace 保留并打印路径。
+  该目录已 gitignore。
+
+```bash
+cargo build -p qcode-eval
+./target/debug/qc-eval --list
+./target/debug/qc-eval --task 01-fix-bug
+./target/debug/qc-eval                 # 全部 5 条
+```
+
+`--agent-cmd CMD` 用 `bash -c CMD` 替代 agent（环境里有 `QC_EVAL_WORKSPACE` 和
+`QC_EVAL_PROMPT`），用于离线验证 runner 本身；`--keep` 保留通过的 workspace。
+

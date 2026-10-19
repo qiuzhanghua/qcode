@@ -1,0 +1,12 @@
+[package]
+name = "fixture-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cli"
+path = "src/main.rs"
+
+[dependencies]
+fixture-store = { workspace = true }

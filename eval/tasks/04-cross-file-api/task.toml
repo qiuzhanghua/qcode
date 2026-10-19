@@ -1,0 +1,21 @@
+id = "04-cross-file-api"
+snapshot = "v1"
+prompt = """
+Add a delete operation to the store and the CLI.
+
+- `Store::delete(&self, key: &str) -> io::Result<bool>` removes the key and
+  returns `true` when a value existed, `false` when it did not. Invalid keys
+  keep returning `io::ErrorKind::InvalidInput`.
+- `cli --root DIR delete KEY` exits 0 when the key was removed and 1 when it
+  was missing (with an error on stderr).
+
+Update every caller, keep existing tests green, and make
+`bash scripts/ci.sh` pass.
+"""
+timeout_secs = 600
+max_turns = 40
+allowed_tools = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "glob", "grep", "run_shell"]
+
+[[checks]]
+cmd = "bash scripts/ci.sh"
+expect_exit = 0

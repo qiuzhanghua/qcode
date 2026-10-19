@@ -22,6 +22,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: fixture self-check
+        run: bash eval/fixtures/workspace/scripts/ci.sh
 
   msrv:
     name: msrv (1.95)

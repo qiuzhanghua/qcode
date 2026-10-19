@@ -1,0 +1,17 @@
+id = "01-fix-bug"
+snapshot = "v1"
+prompt = """
+`cargo test` fails in this workspace. The failure is a truncation bug in
+`core`: `truncate` must respect UTF-8 character boundaries for every input.
+
+Find the bug, fix it without changing the public API, and make
+`bash scripts/ci.sh` pass. Add a regression test if the visible tests do not
+already cover the failing case.
+"""
+timeout_secs = 600
+max_turns = 40
+allowed_tools = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "glob", "grep", "run_shell"]
+
+[[checks]]
+cmd = "bash scripts/ci.sh"
+expect_exit = 0

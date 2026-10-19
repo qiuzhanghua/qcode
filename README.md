@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M3 完成（apply_patch、web_fetch；sandbox runner 保持 stretch）**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M3 完成（apply_patch、web_fetch；sandbox runner 保持 stretch）；M4 eval fixture + runner 已落地**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -139,6 +139,22 @@ Windows 上（PowerShell）：
   冲突，或该目录不可写（沙箱），先 `export CARGO_HOME="$PWD/.cargo-home"` 再跑 ——
   这与上面「快速开始」里的做法一致。
 
+## 评测
+
+`eval/fixtures/workspace` 是一个纯 std 的三 crate fixture；`eval/tasks/` 下 5 条任务
+（修 bug / 加功能 / 重构 / 跨文件 API / 修 CI）各自带 `planted/` 坏状态和 `hidden/` 隐藏测试。
+`qc-eval` 复制 fixture、跑 headless agent、恢复测试与脚本、注入隐藏测试，再执行 checks：
+
+```bash
+cargo build -p qcode-eval
+./target/debug/qc-eval --list        # 任务与 prompt
+./target/debug/qc-eval --task 01-fix-bug
+./target/debug/qc-eval               # 全部任务；日志在 eval/runs/<ts>/
+```
+
+详见 [评测方案](docs/design/EVAL.md)。runner 用 `--yes` 自动批准（`--approval-policy`
+尚未实现）；`--agent-cmd` 可替换 agent 做离线自测。
+
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
@@ -271,6 +287,7 @@ crates/qcode-core        domain、event、store、state、policy、tool、todo�
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
 crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / todo_write / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
+crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
 ```

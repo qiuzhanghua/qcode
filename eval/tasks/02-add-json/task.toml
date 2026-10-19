@@ -1,0 +1,23 @@
+id = "02-add-json"
+snapshot = "v1"
+prompt = """
+Add a `--format` flag to the CLI. It accepts `text` (the default) and `json`.
+
+JSON shapes (compact, no spaces after `:` or `,`):
+
+- `cli --root DIR --format json get KEY` prints exactly
+  `{"key":"KEY","value":"VALUE"}` followed by a newline.
+- `cli --root DIR --format json list` prints exactly `["a","b"]` followed by a
+  newline, sorted.
+- Any other `--format` value exits non-zero with an error on stderr.
+
+The default text output must not change. Keep the existing tests green and make
+`bash scripts/ci.sh` pass.
+"""
+timeout_secs = 600
+max_turns = 40
+allowed_tools = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "glob", "grep", "run_shell"]
+
+[[checks]]
+cmd = "bash scripts/ci.sh"
+expect_exit = 0

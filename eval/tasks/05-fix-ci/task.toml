@@ -1,0 +1,17 @@
+id = "05-fix-ci"
+snapshot = "v1"
+prompt = """
+`bash scripts/ci.sh` fails because of formatting and lint problems in the
+workspace. Fix the code so that `cargo fmt --check`, `cargo clippy -D warnings`
+and all tests pass.
+
+Do not edit `scripts/ci.sh` or relax the checks; the evaluator restores the
+script before running it.
+"""
+timeout_secs = 600
+max_turns = 40
+allowed_tools = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "glob", "grep", "run_shell"]
+
+[[checks]]
+cmd = "bash scripts/ci.sh"
+expect_exit = 0

@@ -1,0 +1,26 @@
+id = "03-remove-duplication"
+snapshot = "v1"
+prompt = """
+`core` and `store` each carry a private copy of the same whitespace
+normalization. Unify them: `store` must call
+`fixture_core::normalize_whitespace` and its own `normalize` helper must be
+deleted. Do not change public APIs or observable behavior.
+
+Make `bash scripts/ci.sh` pass. A reviewer will also check that the duplicate
+function is gone and that the call site uses the core helper.
+"""
+timeout_secs = 600
+max_turns = 40
+allowed_tools = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "glob", "grep", "run_shell"]
+
+[[checks]]
+cmd = "bash scripts/ci.sh"
+expect_exit = 0
+
+[[checks]]
+cmd = "! grep -R -q 'fn normalize' store/src"
+expect_exit = 0
+
+[[checks]]
+cmd = "grep -R -q 'fixture_core::normalize_whitespace' store/src"
+expect_exit = 0

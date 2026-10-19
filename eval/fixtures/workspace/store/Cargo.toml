@@ -1,0 +1,8 @@
+[package]
+name = "fixture-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fixture-core = { workspace = true }

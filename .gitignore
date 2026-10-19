@@ -3,6 +3,8 @@
 /.tmp
 /dist
 /.toolchains
+/eval/runs
+/eval/fixtures/workspace/target
 
 # General
 .DS_Store
