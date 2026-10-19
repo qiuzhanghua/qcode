@@ -561,3 +561,28 @@ torn-line 丢弃，`interrupted` 状态从未写入。
 - 锁是进程级 advisory lock；NFS 等文件系统上的行为取决于底层 flock 支持。
 - repair 假设 `tool_call` 事件自身是执行记录；如果崩溃发生在 assistant_message 与
   tool_call 之间，还没有可补的结果。
+
+## ADR-0016：Provider 重试与能力门控（2026-10-19）
+
+**背景**：SPEC §10 要求首 token 前重试（最多 3 次、指数退避 + jitter、尊重 `Retry-After`），
+且并发只读工具只在 provider 支持时启用。此前 `stream()` 只调用一次，`parallel_tools`
+能力被忽略。
+
+**决定**
+
+1. `collect_stream` 拆成重试外壳 + `collect_once`：仅 `RateLimit` / `Server` / `Network`
+   在**首 token 之前**重试，最多 3 次；`Retry-After` 优先，否则 250ms 起指数退避加
+   subsecond jitter。退避期间收到取消立即按 cancelled 结束。
+2. 一旦收到 text / reasoning / tool-call 增量或完整工具调用，就不再重试；失败直接
+   返回错误并终止本 turn。当前实现不会把已生成的部分写成 `assistant_message`（后续可补
+   “partial + incomplete”事件）。
+3. `execute_calls` 读取 `provider.capabilities().parallel_tools`；为 false 时只读工具也按
+   调用顺序串行执行。`MockProvider` 默认声明完整能力，测试可用 `with_capabilities`
+   降级。
+4. 请求参数裁剪与 token 计数仍未实现：当前请求没有需要按能力删除的可选参数。
+
+**后果**
+
+- 网络抖动/限流在首 token 前可自愈；流开始后不会静默重放，避免重复工具调用。
+- 非并行 provider 的批量只读调用会变慢，但语义正确。
+- 重试只记 `tracing::warn`，不写事件日志；需要审计时再补 `error(retry)` 事件。

@@ -193,7 +193,9 @@ cargo build -p qcode-eval
   resume 时给悬挂的 `tool_call` 补 `tool_result(interrupted)`。`sessions show` 可完整
   replay，`sessions fork` 分叉，`sessions gc --older-than-days N [--yes]` 清理旧会话。
 - **Provider**：mock + OpenAI-compatible（OpenAI / DeepSeek / Ollama / vLLM），
-  支持文本、reasoning、工具参数增量、usage、取消与错误映射。
+  支持文本、reasoning、工具参数增量、usage、取消与错误映射。首 token 之前最多 3 次
+  指数退避（尊重 `Retry-After`），首 token 之后失败直接终止本 turn；只读工具并发由
+  provider 的 `parallel_tools` 能力决定。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
 - **Skills**：默认发现 `~/.agents/skills`、`~/.config/agents/skills`（`npx skills -g`

@@ -50,9 +50,22 @@ impl MockProvider {
     fn scripted_results(scripts: Vec<Script>) -> Self {
         Self {
             scripts: Arc::new(Mutex::new(scripts.into())),
-            capabilities: Capabilities::default(),
+            // The mock stands in for a fully capable provider; tests that need
+            // a reduced feature set call `with_capabilities`.
+            capabilities: Capabilities {
+                tools: true,
+                parallel_tools: true,
+                streaming_tool_args: true,
+                ..Capabilities::default()
+            },
             requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Override the advertised capabilities (e.g. disable parallel tools).
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// Requests seen so far, oldest first.

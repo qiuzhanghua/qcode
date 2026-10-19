@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -602,6 +603,83 @@ async fn collect_stream(
     cancel: &CancellationToken,
     on_delta: Option<&DeltaSink>,
 ) -> Result<Collected, EngineError> {
+    // SPEC §10: retry only before the first token, at most three attempts.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        match collect_once(provider, request.clone(), cancel, on_delta).await {
+            Ok(collected) => return Ok(collected),
+            Err(AttemptFailure::Fatal(error)) => return Err(error),
+            Err(AttemptFailure::Provider { error, started }) => {
+                if started || attempt >= MAX_ATTEMPTS || !is_retryable(&error) {
+                    return Err(error.into());
+                }
+
+                let delay = retry_delay(attempt, &error);
+                tracing::warn!(
+                    attempt,
+                    error = %error,
+                    delay_ms = delay.as_millis(),
+                    "provider failed before the first token; retrying"
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        return Ok(Collected {
+                            blocks: Vec::new(),
+                            usage: Usage::default(),
+                            stop_reason: StopReason::EndTurn,
+                            cancelled: true,
+                        });
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
+        }
+    }
+}
+
+enum AttemptFailure {
+    /// The stream failed; `started` records whether any token was emitted.
+    Provider { error: ProviderError, started: bool },
+    /// Not retryable at this layer (e.g. a truncated stream).
+    Fatal(EngineError),
+}
+
+fn is_retryable(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::RateLimit { .. } | ProviderError::Server(_) | ProviderError::Network(_)
+    )
+}
+
+/// Exponential backoff with jitter. `Retry-After` wins when the server sent it
+/// (tests use zero to stay fast).
+fn retry_delay(attempt: u32, error: &ProviderError) -> Duration {
+    if let ProviderError::RateLimit {
+        retry_after_secs: Some(seconds),
+    } = error
+    {
+        return Duration::from_secs(*seconds);
+    }
+
+    let base = 250u64.saturating_mul(1 << attempt.saturating_sub(1).min(4));
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::from(duration.subsec_millis()))
+        .unwrap_or(0)
+        % (base / 2 + 1);
+    Duration::from_millis(base + jitter)
+}
+
+async fn collect_once(
+    provider: &dyn Provider,
+    request: CompletionRequest,
+    cancel: &CancellationToken,
+    on_delta: Option<&DeltaSink>,
+) -> Result<Collected, AttemptFailure> {
     let mut stream = match provider.stream(request, cancel.clone()).await {
         Ok(stream) => stream,
         // Providers check the token while opening the connection (DNS, TLS,
@@ -615,7 +693,12 @@ async fn collect_stream(
                 cancelled: true,
             });
         }
-        Err(err) => return Err(err.into()),
+        Err(error) => {
+            return Err(AttemptFailure::Provider {
+                error,
+                started: false,
+            });
+        }
     };
 
     let mut text = String::new();
@@ -625,6 +708,7 @@ async fn collect_stream(
     let mut stop_reason = StopReason::EndTurn;
     let mut ended = false;
     let mut cancelled = false;
+    let mut started = false;
 
     loop {
         // `biased` makes cancellation win over a stream item that is ready in
@@ -644,26 +728,34 @@ async fn collect_stream(
 
         match item {
             Ok(StreamEvent::TextDelta(delta)) => {
+                started = true;
                 if let Some(sink) = on_delta {
                     sink.emit(Delta::Text(delta.clone()));
                 }
                 text.push_str(&delta);
             }
             Ok(StreamEvent::ReasoningDelta(delta)) => {
+                started = true;
                 if let Some(sink) = on_delta {
                     sink.emit(Delta::Reasoning(delta.clone()));
                 }
                 reasoning.push_str(&delta);
             }
+            Ok(StreamEvent::ToolCallDelta { .. }) => {
+                started = true;
+            }
             Ok(StreamEvent::ToolCallDone {
                 call_id,
                 name,
                 arguments,
-            }) => tool_blocks.push(ContentBlock::ToolCall {
-                call_id,
-                name,
-                arguments,
-            }),
+            }) => {
+                started = true;
+                tool_blocks.push(ContentBlock::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                });
+            }
             Ok(StreamEvent::Usage(reported)) => usage = reported,
             Ok(StreamEvent::Ended {
                 stop_reason: reason,
@@ -672,14 +764,16 @@ async fn collect_stream(
                 ended = true;
                 break;
             }
-            Ok(StreamEvent::Started | StreamEvent::ToolCallDelta { .. }) => {}
+            Ok(StreamEvent::Started) => {}
             // A provider that notices the token before we do reports Cancelled
             // instead of ending the stream; that is a cancellation, not a bug.
             Err(ProviderError::Cancelled) => {
                 cancelled = true;
                 break;
             }
-            Err(err) => return Err(err.into()),
+            Err(error) => {
+                return Err(AttemptFailure::Provider { error, started });
+            }
         }
     }
 
@@ -706,7 +800,7 @@ async fn collect_stream(
     }
 
     if !ended {
-        return Err(EngineError::IncompleteStream);
+        return Err(AttemptFailure::Fatal(EngineError::IncompleteStream));
     }
 
     blocks.extend(tool_blocks);
@@ -772,6 +866,8 @@ where
     let mut outputs: Vec<Option<ToolOutput>> = planned.iter().map(|_| None).collect();
     let mut halted = false;
     let mut index = 0;
+    // SPEC §4.9: parallel reads only when the provider advertises them.
+    let parallel_reads = ctx.provider.capabilities().parallel_tools;
 
     while index < planned.len() {
         if halted || tool_context.cancel.is_cancelled() {
@@ -792,7 +888,7 @@ where
             continue;
         }
 
-        if planned[index].class == Some(ApprovalClass::Read) {
+        if parallel_reads && planned[index].class == Some(ApprovalClass::Read) {
             let start = index;
             while index < planned.len()
                 && planned[index].terminal.is_none()
