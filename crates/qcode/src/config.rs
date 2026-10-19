@@ -260,7 +260,7 @@ pub fn resolve(
         .or_else(|| config.default_provider.clone())
         .unwrap_or_else(|| "mock".to_string());
 
-    if name == "mock" || name == "mock-tools" || name == "mock-approval" {
+    if name == "mock" || name == "mock-tools" || name == "mock-approval" || name == "mock-todo" {
         let model = overrides
             .model
             .clone()

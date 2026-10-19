@@ -629,6 +629,32 @@ fn build_provider(
                 },
             ],
         ])),
+        "mock-todo" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "todo-1".to_string(),
+                    name: "todo_write".to_string(),
+                    arguments: serde_json::json!({
+                        "items": [
+                            {"content": "读 SPEC 的工具契约", "status": "completed"},
+                            {"content": "实现 todo_write", "status": "in_progress"},
+                            {"content": "跑测试与 TUI 验收"}
+                        ]
+                    }),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("待办清单已更新。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
         _ => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
             name: resolved.name.clone(),
             base_url: resolved

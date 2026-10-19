@@ -8,6 +8,7 @@ pub mod path;
 pub mod search;
 pub mod shell;
 pub mod skills;
+pub mod todo;
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub fn builtin_registry() -> ToolRegistry {
         Arc::new(search::GrepTool),
         Arc::new(fetch::WebFetch),
         Arc::new(shell::RunShell),
+        Arc::new(todo::TodoWrite),
     ])
 }
 
@@ -79,5 +81,6 @@ mod tests {
         let registry = builtin_registry();
         assert!(registry.get("apply_patch").is_some());
         assert!(registry.get("web_fetch").is_some());
+        assert!(registry.get("todo_write").is_some());
     }
 }

@@ -32,6 +32,9 @@ cargo test --workspace
 # 离线演示工具循环：list_dir，不联网
 ./target/debug/qc run "demo" --provider mock-tools --yes
 
+# 离线演示 todo_write：transcript 里出现 checklist
+./target/debug/qc run "demo" --provider mock-todo
+
 # 交互式审批演练：run_shell 默认 ask（在真实终端里跑；y 执行，n 拒绝）
 ./target/debug/qc run "demo" --provider mock-approval
 
@@ -139,7 +142,7 @@ Windows 上（PowerShell）：
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
-  `glob` / `grep` / `run_shell` / `web_fetch`，多轮调用直到任务完成。`glob` 与 `grep`
+  `glob` / `grep` / `run_shell` / `web_fetch` / `todo_write`，多轮调用直到任务完成。`glob` 与 `grep`
   遵守 `.gitignore`，跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
   每次决策写事件，含命中的 rule id。
@@ -173,13 +176,16 @@ Windows 上（PowerShell）：
   `..`、rename、symlink 逃逸拒绝；默认 ask。
 - **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
+- **todo_write**：session 待办清单（pending / in_progress / completed），不写文件系统。
+  每次成功调用后清单进入 system prompt，TUI 在 transcript 里渲染成 checklist；空数组清空，
+  至多一个 in_progress，上限 50 项、每项 200 字符。resume / replay 从事件日志重建状态。
 - **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：子 agent、OS 沙箱（sandbox runner 保持 stretch）；`todo_write` 未做。
+尚未实现：子 agent、OS 沙箱（sandbox runner 保持 stretch）；`web_search` 不在 v1 范围。
 
 ## 配置
 
@@ -261,9 +267,9 @@ MCP 工具；规则按工具名精确匹配。
 ## 布局
 
 ```
-crates/qcode-core        domain、event、store、state、policy、tool、engine
+crates/qcode-core        domain、event、store、state、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
-crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / skill
+crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / todo_write / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）

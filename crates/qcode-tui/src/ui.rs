@@ -18,6 +18,7 @@ const TOOL_OUTPUT_LINES: usize = 400;
 /// Hard bound on the block window even when every block is a single line.
 const MAX_WINDOW_BLOCKS: usize = 2_000;
 use qcode_core::event::{ToolStatus, TurnStatus};
+use qcode_core::todo::{TodoItem, TodoStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
     // The composer grows with the number of lines, up to a third of the
@@ -117,6 +118,7 @@ fn block_rows(block: &Block) -> usize {
         Block::User(text) | Block::Assistant(text) | Block::Notice(text) | Block::Skill(text) => {
             text.split('\n').count().max(1)
         }
+        Block::Todo(items) => 1 + items.len(),
         Block::Tool(tool) => {
             1 + if tool.expanded {
                 tool.output
@@ -160,6 +162,7 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             Block::Skill(text) => {
                 push_text(&mut lines, "◆ ", text, Style::default().fg(Color::Magenta))
             }
+            Block::Todo(items) => push_todo(&mut lines, items),
             Block::Tool(tool) => push_tool(&mut lines, tool),
         }
     }
@@ -238,6 +241,42 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
             format!("    │ {chunk}"),
             Style::default().fg(Color::DarkGray),
         )));
+    }
+}
+
+fn push_todo(lines: &mut Vec<Line<'static>>, items: &[TodoItem]) {
+    let done = items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    lines.push(Line::from(vec![
+        Span::styled(" ☰ ", Style::default().fg(Color::Blue)),
+        Span::styled("todo", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(
+            format!("{done}/{} done", items.len()),
+            Style::default().fg(Color::Gray),
+        ),
+    ]));
+
+    for (index, item) in items.iter().enumerate() {
+        let (glyph, color) = match item.status {
+            TodoStatus::Completed => ("[x]", Color::DarkGray),
+            TodoStatus::InProgress => ("[~]", Color::Cyan),
+            TodoStatus::Pending => ("[ ]", Color::Gray),
+        };
+        let mut content_style = Style::default();
+        if item.status == TodoStatus::Completed {
+            content_style = content_style.fg(Color::DarkGray);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("   {}. ", index + 1),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(format!("{glyph} "), Style::default().fg(color)),
+            Span::styled(item.content.clone(), content_style),
+        ]));
     }
 }
 

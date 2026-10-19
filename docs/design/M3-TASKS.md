@@ -51,5 +51,6 @@
 
 ## 遗留
 
-- `todo_write`（TUI 渲染 session todo）与 `web_search` 仍不在 M3；`web_search` 不在 v1 范围。
+- `todo_write`（session todo，TUI 渲染 checklist，状态按 SPEC §9 进入 system prompt）已在 M3
+  收尾补齐；`web_search` 仍不在 v1 范围。
 - `apply_patch` 不支持 rename / mode 变更 / 二进制 patch；需要时用 `write_file` 或 `run_shell`。

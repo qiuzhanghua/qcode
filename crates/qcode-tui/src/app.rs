@@ -6,6 +6,7 @@
 
 use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
+use qcode_core::todo::{self, TodoItem};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Block as UiBlock;
@@ -21,6 +22,9 @@ pub enum Block {
     User(String),
     Assistant(String),
     Tool(ToolEntry),
+    /// The session todo list as returned by `todo_write`. Rendered inline so
+    /// every update stays visible in the transcript.
+    Todo(Vec<TodoItem>),
     Notice(String),
     /// A skill body loaded through the `/skills <name>` debug command.
     Skill(String),
@@ -43,6 +47,10 @@ pub struct ToolEntry {
     pub call_id: String,
     pub name: String,
     pub summary: String,
+    /// Kept so a successful `todo_write` result can be turned back into a
+    /// todo block (and, on replay, so the state does not depend on tool output
+    /// being re-parsed).
+    pub arguments: serde_json::Value,
     /// `None` while the tool is still running.
     pub status: Option<ToolStatus>,
     pub output: String,
@@ -156,6 +164,7 @@ impl App {
                     call_id: call.call_id.clone(),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
+                    arguments: call.arguments.clone(),
                     status: None,
                     output: String::new(),
                     expanded: false,
@@ -164,10 +173,23 @@ impl App {
                 }));
             }
             EventKind::ToolResult(result) => {
-                if let Some(tool) = self.tool_mut(&result.call_id) {
+                let todo_update = self.tool_mut(&result.call_id).and_then(|tool| {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    if tool.name == "todo_write" && result.status == ToolStatus::Ok {
+                        todo::from_arguments(&tool.arguments).ok()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(items) = todo_update {
+                    if items.is_empty() {
+                        self.blocks
+                            .push(Block::Notice("todo list cleared".to_string()));
+                    } else {
+                        self.blocks.push(Block::Todo(items));
+                    }
                 }
             }
             EventKind::ApprovalRequested(request) => {
@@ -756,6 +778,93 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
         assert!(matches!(app.blocks.last(), Some(Block::Tool(tool)) if tool.expanded));
+    }
+
+    #[test]
+    fn todo_write_result_becomes_a_todo_block() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "todo_write".to_string(),
+            arguments: json!({"items": [
+                {"content": "read spec", "status": "completed"},
+                {"content": "build tool", "status": "in_progress"},
+                {"content": "run tests"},
+            ]}),
+        })));
+        app.apply(&event(EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "Todo list (1/3 done):".to_string(),
+            metadata: Default::default(),
+        })));
+
+        match app.blocks.last() {
+            Some(Block::Todo(items)) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0].status, qcode_core::todo::TodoStatus::Completed);
+                assert_eq!(items[2].content, "run tests");
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_todo_write_does_not_replace_the_list() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "todo_write".to_string(),
+            arguments: json!({"items": [{"content": "ok"}]}),
+        })));
+        app.apply(&event(EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "Todo list (0/1 done):".to_string(),
+            metadata: Default::default(),
+        })));
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c2".to_string(),
+            name: "todo_write".to_string(),
+            arguments: json!({"items": [{"content": ""}]}),
+        })));
+        app.apply(&event(EventKind::ToolResult(ToolResult {
+            call_id: "c2".to_string(),
+            status: ToolStatus::Error,
+            output: "item 1 has empty `content`".to_string(),
+            metadata: Default::default(),
+        })));
+
+        assert_eq!(
+            app.blocks
+                .iter()
+                .filter(|block| matches!(block, Block::Todo(_)))
+                .count(),
+            1,
+            "{:?}",
+            app.blocks
+        );
+    }
+
+    #[test]
+    fn empty_todo_write_clears_the_list_with_a_notice() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "todo_write".to_string(),
+            arguments: json!({"items": []}),
+        })));
+        app.apply(&event(EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "todo list cleared".to_string(),
+            metadata: Default::default(),
+        })));
+
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("cleared")
+        ));
     }
 
     #[test]

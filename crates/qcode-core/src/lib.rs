@@ -14,6 +14,7 @@ pub mod policy;
 pub mod provider;
 pub mod state;
 pub mod store;
+pub mod todo;
 pub mod tool;
 
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
@@ -27,4 +28,5 @@ pub use policy::{Action, Decision, Policy, Rule};
 pub use provider::*;
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};
+pub use todo::{TodoItem, TodoStatus};
 pub use tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};

@@ -24,6 +24,7 @@ use crate::provider::{
     CompletionRequest, Message, Provider, ProviderError, Role, StopReason, StreamEvent,
 };
 use crate::store::{SessionStore, StoreError};
+use crate::todo::{self, TodoItem};
 use crate::tool::{ApprovalClass, Tool, ToolContext, ToolOutput, ToolRegistry};
 
 /// A streamed delta. Deltas are transient: they drive the UI while the model
@@ -63,8 +64,10 @@ pub const SYSTEM_PROMPT: &str = "You are qcode, a terminal coding agent. Be conc
 
 /// Compose the static prompt with workspace and skill instructions. AGENTS.md
 /// comes first, then the skills index, so the project rules stay closest to
-/// the base prompt.
-pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>) -> String {
+/// the base prompt. The todo section is separate: it changes mid-turn, so the
+/// engine recomputes it for every request instead of baking it into the
+/// rebuildable part of the prompt.
+pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>, todos: &[TodoItem]) -> String {
     let mut prompt = SYSTEM_PROMPT.to_string();
     if let Some(text) = agents_md.map(str::trim).filter(|text| !text.is_empty()) {
         prompt.push_str("\n\n# AGENTS.md\n\n");
@@ -73,6 +76,11 @@ pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>) -> String {
     if let Some(text) = skills.map(str::trim).filter(|text| !text.is_empty()) {
         prompt.push_str("\n\n");
         prompt.push_str(text);
+    }
+    let todo_section = todo::prompt_section(todos);
+    if !todo_section.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&todo_section);
     }
     prompt
 }
@@ -218,6 +226,9 @@ where
 
     let mut events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events(&events);
+    // The todo list is session state rebuilt from the log, so a resumed or
+    // forked session starts with the list the model last saw.
+    let mut todos = todo::current(&events);
     let mut compaction_disabled = false;
     let tool_context =
         ToolContext::new(options.workspace.clone()).with_cancel(options.cancel.clone());
@@ -362,7 +373,11 @@ where
 
         let request = CompletionRequest {
             model: options.model.to_string(),
-            system: system_prompt(options.agents_md.as_deref(), options.skills.as_deref()),
+            system: system_prompt(
+                options.agents_md.as_deref(),
+                options.skills.as_deref(),
+                todos.as_deref().unwrap_or(&[]),
+            ),
             messages: messages.clone(),
             tools: ctx.tools.specs(),
             max_output_tokens: None,
@@ -477,6 +492,7 @@ where
             &mut writer,
             calls,
             &mut messages,
+            &mut todos,
             &mut on_event,
         )
         .await?
@@ -711,6 +727,7 @@ async fn execute_calls<F>(
     writer: &mut SessionWriter<'_>,
     calls: Vec<ToolCallBlock>,
     messages: &mut Vec<Message>,
+    todos: &mut Option<Vec<TodoItem>>,
     on_event: &mut F,
 ) -> Result<bool, EngineError>
 where
@@ -807,6 +824,15 @@ where
     let mut finished = false;
     for (index, planned) in planned.into_iter().enumerate() {
         let output = outputs[index].take().expect("every call has a result");
+        // `todo_write` is session state: keep the in-memory copy in sync so the
+        // next request's system prompt sees the list. The tool result remains
+        // the audit trail and the replay source (`todo::current`).
+        if output.status == ToolStatus::Ok
+            && planned.call.name == "todo_write"
+            && let Ok(items) = todo::from_arguments(&planned.call.arguments)
+        {
+            *todos = (!items.is_empty()).then_some(items);
+        }
         append_result(writer, &planned.call.call_id, &output, on_event)?;
         if output.status == ToolStatus::Cancelled {
             finished = true;
@@ -989,16 +1015,33 @@ mod tests {
 
     #[test]
     fn agents_md_and_skills_are_appended_to_the_system_prompt() {
-        assert_eq!(system_prompt(None, None), SYSTEM_PROMPT);
-        assert_eq!(system_prompt(Some("   "), None), SYSTEM_PROMPT);
+        assert_eq!(system_prompt(None, None, &[]), SYSTEM_PROMPT);
+        assert_eq!(system_prompt(Some("   "), None, &[]), SYSTEM_PROMPT);
 
-        let with_rules = system_prompt(Some("  use tabs  "), None);
+        let with_rules = system_prompt(Some("  use tabs  "), None, &[]);
         assert!(with_rules.starts_with(SYSTEM_PROMPT));
         assert!(with_rules.contains("# AGENTS.md"));
         assert!(with_rules.ends_with("use tabs"));
 
-        let with_skills = system_prompt(Some("use tabs"), Some("# Skills\n\n- `x` (user): y"));
+        let with_skills = system_prompt(Some("use tabs"), Some("# Skills\n\n- `x` (user): y"), &[]);
         assert!(with_skills.contains("# AGENTS.md"));
         assert!(with_skills.ends_with("- `x` (user): y"));
+    }
+
+    #[test]
+    fn todo_section_is_appended_after_skills() {
+        let todos = vec![TodoItem {
+            content: "write tests".to_string(),
+            status: crate::todo::TodoStatus::InProgress,
+        }];
+        let prompt = system_prompt(
+            Some("use tabs"),
+            Some("# Skills\n\n- `x` (user): y"),
+            &todos,
+        );
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("# Todo"));
+        assert!(prompt.contains("[~] write tests"));
+        assert!(prompt.ends_with("[~] write tests"));
     }
 }

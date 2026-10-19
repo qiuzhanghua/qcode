@@ -138,6 +138,49 @@ fn block_toggle(block: &mut qcode_tui::Block) {
 }
 
 #[test]
+fn todo_block_shows_progress_and_items() {
+    let mut app = App::new("mock", "mock-1");
+    apply(
+        &mut app,
+        1,
+        EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "todo_write".to_string(),
+            arguments: json!({"items": [
+                {"content": "read spec", "status": "completed"},
+                {"content": "build tool", "status": "in_progress"},
+                {"content": "run tests"},
+            ]}),
+        }),
+    );
+    apply(
+        &mut app,
+        2,
+        EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "Todo list (1/3 done):".to_string(),
+            metadata: Default::default(),
+        }),
+    );
+
+    let screen = draw(&app, 80, 24);
+    assert!(screen.contains("1/3 done"), "progress missing:\n{screen}");
+    assert!(
+        screen.contains("[x] read spec"),
+        "done item missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("[~] build tool"),
+        "in-progress item missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("[ ] run tests"),
+        "pending item missing:\n{screen}"
+    );
+}
+
+#[test]
 fn approval_overlay_shows_what_will_run() {
     let mut app = App::new("mock", "mock-1");
     apply(

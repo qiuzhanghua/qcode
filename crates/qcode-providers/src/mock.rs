@@ -22,6 +22,9 @@ type ScriptQueue = Arc<Mutex<VecDeque<Script>>>;
 pub struct MockProvider {
     scripts: ScriptQueue,
     capabilities: Capabilities,
+    /// Every request the engine sent, in order. Tests use this to assert what
+    /// actually reached the provider (system prompt, tools, messages).
+    requests: Arc<Mutex<Vec<CompletionRequest>>>,
 }
 
 impl MockProvider {
@@ -48,7 +51,13 @@ impl MockProvider {
         Self {
             scripts: Arc::new(Mutex::new(scripts.into())),
             capabilities: Capabilities::default(),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Requests seen so far, oldest first.
+    pub fn requests(&self) -> Vec<CompletionRequest> {
+        self.requests.lock().expect("mock requests lock").clone()
     }
 
     fn next_script(&self) -> Script {
@@ -93,9 +102,13 @@ impl Provider for MockProvider {
 
     async fn stream(
         &self,
-        _request: CompletionRequest,
+        request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
+        self.requests
+            .lock()
+            .expect("mock requests lock")
+            .push(request);
         let events = self.next_script();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
