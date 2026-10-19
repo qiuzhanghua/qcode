@@ -1,6 +1,8 @@
 /target
 /.cargo-home
 /.tmp
+/dist
+/.toolchains
 
 # General
 .DS_Store

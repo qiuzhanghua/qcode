@@ -50,6 +50,74 @@ Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底
 审批浮层里 `y` 允许、`n` 拒绝。助手文本按 ≤60Hz 合并流式显示，完成后落盘为一条
 `assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
 
+## 发布构建（多平台）
+
+产物命名沿用 tdp 插件约定：`qcode_<version>_<os>_<arch>[_gnu|_musl|_msvc][.exe]`，
+统一落 `dist/`（已 gitignore）。版本只有一个来源——workspace `Cargo.toml` 的
+`[workspace.package] version`；本机目标构建完会跑一遍 `qc --version` 对账，
+产物名与二进制报的版本对不上直接失败。
+
+```bash
+c                    # 激活 cot（rust + 各目标 std 已装好）
+make list            # 看矩阵与就绪状态
+make                 # 本机平台
+make all             # 本机能产出的全部平台
+make windows-arm64   # 单个平台（也可 make linux-musl-amd64）
+make archive         # 全部平台，额外打 tar.gz / zip
+make check           # 发布门禁：fmt / clippy / test / cargo-deny
+make release         # 门禁通过后打全部平台归档
+```
+
+Windows 上（PowerShell）：
+
+```powershell
+.\build-for-release.ps1
+.\build-for-release.ps1 -Target aarch64-pc-windows-gnullvm -Archive
+```
+
+| 目标 | rust target | 前置条件 |
+|---|---|---|
+| `linux-amd64` | `x86_64-unknown-linux-gnu` | x86_64 的 cc |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | `aarch64-linux-gnu-gcc`，或 zig（自动用 zig cc） |
+| `linux-musl-amd64` | `x86_64-unknown-linux-musl` | sysroot 里的 `rust-lld`（静态链接，不依赖 glibc） |
+| `linux-musl-arm64` | `aarch64-unknown-linux-musl` | 同上，另需 `aarch64-linux-musl-gcc`，或 zig（同上） |
+| `windows-amd64` | `x86_64-pc-windows-gnullvm` | cot 的 llvm-mingw 插件（`x86_64-w64-mingw32-clang`） |
+| `windows-arm64` | `aarch64-pc-windows-gnullvm` | 同上（`aarch64-w64-mingw32-clang`） |
+| `darwin-amd64` / `darwin-arm64` | `*-apple-darwin` | 只能在 macOS 上构建（需要 Apple SDK） |
+
+几个容易踩的点：
+
+- **std 不是 cargo 现下的**：cot 的 rust 插件把交叉 std 一起装进了 sysroot；脚本先查
+  `lib/rustlib/<target>/lib`，缺了就直说缺什么，不会把 cargo 的报错原样甩给人。
+- **跨架构不只是 std**：`aws-lc-sys`（rustls 的 C 依赖）要编 C 源码，rust-lld 只管
+  Rust 的链接步骤；所以 `linux-musl-arm64` / `linux-arm64` 还需要对应的**交叉 C 编译器**。
+  有真的 `<triple>-gcc` 就用真的；没有就自动找 zig（`$ZIG` → `PATH` → `~/cot/lib/zig_*/zig`
+  → `./.toolchains/`），生成 `zig cc -target aarch64-linux-{gnu,musl}` 的 wrapper。
+- **为什么不用 llvm-mingw 编 aarch64 Linux**：llvm-mingw 只带 Windows 目标的 sysroot，
+  它的 clang 虽然能 `--target=aarch64-linux-gnu`，但包里没有 aarch64 的 glibc/musl 头和库，
+  到 `stdio.h` / `-lc` 就断了，改 `pack-llvm-mingw.py` 也补不出来。要 Linux 交叉就去装
+  gnu 的 `gcc-aarch64-linux-gnu`、musl 的 `aarch64-linux-musl-cross`，或者用 zig —— 一份
+  zig 自带两套 sysroot，不加 root 也能编。
+- **zig 兜底要绕三个坑**（脚本生成的 wrapper 里都处理了）：cc-rs 会把
+  `--target=aarch64-unknown-linux-gnu` 塞给编译器，而 zig 只认 `-target aarch64-linux-gnu`；
+  zig 在 `-O0` 下默认插 UBSan，aws-lc-sys 的 jitterentropy 正好按 `-O0` 编，不关掉会在链接时
+  缺 `__ubsan_handle_*`；rustc 给 aarch64 gnu 传的 `--fix-cortex-a53-843419` 是 GNU ld 专属，
+  zig 的 lld 不认识。
+- **windows-gnullvm 不需要 MSVC**：链接器是 llvm-mingw 的 clang。它自带的
+  `libunwind.dll.a` 会让产物运行期依赖 `libunwind.dll`，所以脚本优先用
+  `libunwind-static/<target>/libunwind.a`（pack-rust.py 抽出来的静态库），插到 `-L` 最前面；
+  找不到静态库只警告，产物在干净机器上可能加载失败。
+- **musl 用 rust-lld**：不需要额外 gcc，也不用 `cross`。
+- 交叉产物跑不起来，脚本只做静态核对；`--version` 一致性检查只在本机目标上执行。
+- **发布门禁**：`make check` / `./build-for-release --check` 跑 fmt、`clippy -D warnings`、
+  `cargo test --workspace` 和 `cargo deny check`，与 CI 的 ci.yml 对齐；`make release`
+  先过门禁再打全平台归档。cargo-deny 装在 `$CARGO_HOME/bin`，脚本会把它补进 PATH。
+  advisory-db 默认从 GitHub 拉，连不上时会卡到超时：本地已有库则自动 `cargo deny --offline check`，
+  更新库用 `cargo deny fetch`（给 git 配代理）；完全没有本地库时才需要一次在线拉取。
+- 如果 cot 的 `CARGO_HOME`（`~/cot/repo/cargo`）与 `~/.cargo/config.toml` 里的换源定义
+  冲突，或该目录不可写（沙箱），先 `export CARGO_HOME="$PWD/.cargo-home"` 再跑 ——
+  这与上面「快速开始」里的做法一致。
+
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `list_dir` / `glob` /

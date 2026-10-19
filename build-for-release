@@ -1,0 +1,620 @@
+#!/usr/bin/env bash
+#
+# 打包发布产物，文件名沿用 tdp 插件命名约定：
+#
+#     qcode_<version>_<os>_<arch>[_gnu|_musl][.exe]
+#
+# 用法：
+#   ./build-for-release                 # 本机平台（等价于 native）
+#   ./build-for-release --list          # 列出矩阵，以及每个目标在本机是否就绪
+#   ./build-for-release linux-amd64     # 指定平台，可写多个
+#   ./build-for-release all             # 本机能产出的全部目标
+#   ./build-for-release --archive all   # 额外打成 tar.gz / zip
+#
+# 为什么这么写
+# ------------
+# * 版本只有一个来源：workspace 的 Cargo.toml（`[workspace.package] version`）。
+#   本机构建的产物会真跑一遍 `--version` 做断言 —— 产物名和二进制报的版本对不上就直接
+#   失败，而不是等人到了 Release 页面才发现。交叉产物跑不起来，只能静态核对。
+# * 交叉工具链不自己配：cot 的 rust 插件已经把各目标的 std 装进 sysroot，并用
+#   CARGO_TARGET_*_LINKER / _RUSTFLAGS 指好链接器（musl -> rust-lld，
+#   windows-gnullvm -> llvm-mingw 的 clang + 静态 libunwind）。脚本只在变量缺失时按
+#   同样的规则补一份，于是「没激活 cot」的 shell 里也能跑起来，并且不覆盖用户已有的配置。
+# * 产物落 dist/，不动 target/ 里的中间产物；--archive 的包内目录名与包名一致。
+#
+# 目标矩阵（本机为 Linux 时）
+#   linux-amd64         x86_64-unknown-linux-gnu    需要 x86_64 的 cc
+#   linux-arm64         aarch64-unknown-linux-gnu   aarch64-linux-gnu-gcc，或 zig（自动用 zig cc）
+#   linux-musl-amd64    x86_64-unknown-linux-musl   静态链接，只需要 sysroot 里的 rust-lld
+#   linux-musl-arm64    aarch64-unknown-linux-musl  同上 + aarch64-linux-musl-gcc 或 zig
+#   windows-amd64       x86_64-pc-windows-gnullvm   需要 llvm-mingw 插件
+#   windows-arm64       aarch64-pc-windows-gnullvm  同上
+#   darwin-*            *-apple-darwin              只能在 macOS 上构建（需要 SDK）
+#
+# 跨架构要编 C：aws-lc-sys（rustls 的 C 依赖）不接受「只有 rust-lld」；真的 gcc 优先，
+# 没有就用 zig cc（`zig cc -target aarch64-linux-*` 自带 glibc/musl 两套 sysroot）。
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+ROOT=$(pwd)
+
+OUT_DIR="${OUT_DIR:-$ROOT/dist}"
+ARCHIVE=0
+LIST=0
+CHECK=0
+REQUESTED=()
+
+usage() {
+    cat <<'EOF'
+用法: ./build-for-release [选项] [平台...]
+
+平台（可写友好名，也可直接写 rust target）：
+  linux-amd64        x86_64-unknown-linux-gnu
+  linux-arm64        aarch64-unknown-linux-gnu
+  linux-musl-amd64   x86_64-unknown-linux-musl
+  linux-musl-arm64   aarch64-unknown-linux-musl
+  windows-amd64      x86_64-pc-windows-gnullvm
+  windows-arm64      aarch64-pc-windows-gnullvm
+  darwin-amd64       x86_64-apple-darwin      （只能在 macOS 上构建）
+  darwin-arm64       aarch64-apple-darwin      （只能在 macOS 上构建）
+  native             本机平台（默认）
+  all                本机能产出的全部平台
+
+选项：
+  -l, --list          只列出矩阵与就绪状态，不构建
+  -a, --archive       额外打包 dist/<名>.tar.gz（Windows 目标为 .zip）
+  -o, --out-dir DIR   产物目录（默认 dist）
+  -c, --check         只跑发布门禁（fmt / clippy / test / cargo-deny），不构建
+  -h, --help          显示本帮助
+EOF
+}
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------- 元数据
+
+# 产物名干 <name> 来自 crate 包名，可执行文件名 <bin> 来自 [[bin]] —— 两者在 qcode 里
+# 不同（包 qcode / 命令 qc），所以不能像 cot 那样共用一个变量。
+PKG=$(grep -m1 '^name[[:space:]]*=' crates/qcode/Cargo.toml | cut -d'"' -f2)
+BIN=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' crates/qcode/Cargo.toml | sed -n '2p')
+[ -n "$PKG" ] || die "读不出 crates/qcode/Cargo.toml 的包名"
+[ -n "$BIN" ] || die "读不出 crates/qcode/Cargo.toml 的 [[bin]] 名"
+
+VERSION=$(grep -m1 '^version[[:space:]]*=' Cargo.toml | cut -d'"' -f2)
+[ -n "$VERSION" ] || die "读不出 Cargo.toml 的 [workspace.package] version"
+
+command -v cargo >/dev/null 2>&1 || die "PATH 上没有 cargo（先执行 c 激活 cot）"
+command -v rustc >/dev/null 2>&1 || die "PATH 上没有 rustc（先执行 c 激活 cot）"
+
+SYSROOT=$(rustc --print sysroot)
+HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+
+case "$HOST_TRIPLE" in
+*-apple-darwin) HOST_OS=darwin ;;
+*-linux-*) HOST_OS=linux ;;
+*-windows-*) HOST_OS=windows ;;
+*) HOST_OS=unknown ;;
+esac
+
+# ---------------------------------------------------------------- 目标矩阵
+
+# 友好名 -> rust target。也接受直接写 triple。
+resolve_target() {
+    case "$1" in
+    native | local | host) echo "$HOST_TRIPLE" ;;
+    linux-amd64 | linux_amd64) echo x86_64-unknown-linux-gnu ;;
+    linux-arm64 | linux_arm64) echo aarch64-unknown-linux-gnu ;;
+    linux-musl-amd64 | linux-amd64-musl | linux_musl_amd64) echo x86_64-unknown-linux-musl ;;
+    linux-musl-arm64 | linux-arm64-musl | linux_musl_arm64) echo aarch64-unknown-linux-musl ;;
+    windows-amd64 | windows_amd64) echo x86_64-pc-windows-gnullvm ;;
+    windows-arm64 | windows_arm64) echo aarch64-pc-windows-gnullvm ;;
+    darwin-amd64 | darwin_amd64) echo x86_64-apple-darwin ;;
+    darwin-arm64 | darwin_arm64) echo aarch64-apple-darwin ;;
+    *-*-*) echo "$1" ;;
+    *) return 1 ;;
+    esac
+}
+
+# 全部矩阵（顺序即输出顺序）；`all` 按宿主裁剪。
+ALL_TARGETS=(
+    x86_64-unknown-linux-gnu
+    aarch64-unknown-linux-gnu
+    x86_64-unknown-linux-musl
+    aarch64-unknown-linux-musl
+    x86_64-pc-windows-gnullvm
+    aarch64-pc-windows-gnullvm
+    x86_64-apple-darwin
+    aarch64-apple-darwin
+)
+
+target_os() {
+    case "$1" in
+    *-apple-darwin) echo darwin ;;
+    *-linux-*) echo linux ;;
+    *-windows-*) echo windows ;;
+    *) echo unknown ;;
+    esac
+}
+
+target_arch() {
+    case "$1" in
+    x86_64-*) echo amd64 ;;
+    aarch64-*) echo arm64 ;;
+    i686-*) echo 386 ;;
+    armv7-*) echo arm ;;
+    *) echo unknown ;;
+    esac
+}
+
+target_libc() {
+    case "$1" in
+    *-linux-gnu*) echo gnu ;;
+    *-linux-musl*) echo musl ;;
+    *) echo "" ;;
+    esac
+}
+
+exe_suffix() {
+    case "$1" in
+    *-windows-*) echo .exe ;;
+    *) echo "" ;;
+    esac
+}
+
+artifact_name() {
+    local target=$1 os arch libc
+    os=$(target_os "$target")
+    arch=$(target_arch "$target")
+    libc=$(target_libc "$target")
+    if [ -n "$libc" ]; then
+        echo "${PKG}_${VERSION}_${os}_${arch}_${libc}"
+    else
+        echo "${PKG}_${VERSION}_${os}_${arch}"
+    fi
+}
+
+# ---------------------------------------------------------------- 就绪检查
+
+mingw_triple() {
+    case "$1" in
+    x86_64-pc-windows-gnullvm) echo x86_64-w64-mingw32 ;;
+    aarch64-pc-windows-gnullvm) echo aarch64-w64-mingw32 ;;
+    *) return 1 ;;
+    esac
+}
+
+# 交叉 gnu 目标用的 gcc 名字（tdp 架构名 -> target 前缀）
+gnu_gcc() {
+    case "$(target_arch "$1")" in
+    amd64) echo x86_64-linux-gnu-gcc ;;
+    arm64) echo aarch64-linux-gnu-gcc ;;
+    *) return 1 ;;
+    esac
+}
+
+# musl 跨架构构建时编 C 用的交叉 gcc（同架构用宿主 cc 就行）
+musl_cross_cc() {
+    case "$(target_arch "$1")" in
+    amd64) echo x86_64-linux-musl-gcc ;;
+    arm64) echo aarch64-linux-musl-gcc ;;
+    *) return 1 ;;
+    esac
+}
+
+# zig cc：没有 root / 没装 aarch64 交叉 gcc 时的退路 —— 一份 zig 自带 glibc 与 musl
+# 两套 sysroot，`zig cc -target aarch64-linux-{gnu,musl}` 就能编 C。
+# 查找顺序：$ZIG > PATH > 仓库 .toolchains/ > cot 的 zig 插件。
+find_zig() {
+    local candidate
+    if [ -n "${ZIG:-}" ] && [ -x "$ZIG" ]; then
+        echo "$ZIG"
+        return 0
+    fi
+    if candidate=$(command -v zig 2>/dev/null); then
+        echo "$candidate"
+        return 0
+    fi
+    for candidate in "$ROOT"/.toolchains/zig*/zig "$HOME"/cot/lib/zig_*/zig; do
+        if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# rust triple -> zig target（zig 只认 aarch64-linux-gnu 这种短名）
+zig_triple() {
+    case "$1" in
+    *-linux-gnu) echo "$(echo "$1" | cut -d- -f1)-linux-gnu" ;;
+    *-linux-musl) echo "$(echo "$1" | cut -d- -f1)-linux-musl" ;;
+    *) return 1 ;;
+    esac
+}
+
+# 生成一个冒充 <zig triple>-gcc 的 wrapper。三处坑都是实测踩出来的：
+#  * cc-rs 认出 clang 后会追加 --target=<rust triple>，zig 不认这种长 triple
+#    （UnknownOperatingSystem），得先摘掉；
+#  * zig 在 -O0 下默认插 UBSan 检查，而 aws-lc-sys 的 jitterentropy 正好按 -O0 编，
+#    不关掉最终链接会缺 __ubsan_handle_*；
+#  * rustc 给 aarch64-unknown-linux-gnu 传 GNU ld 专属的 --fix-cortex-a53-843419，
+#    zig 的 lld 不认识（那是 cortex-a53 erratum 的变通，丢掉不影响正确性）。
+zig_cc_wrapper() {
+    local zig=$1 triple=$2 dir="$ROOT/.tmp/zig-cc" wrapper
+    mkdir -p "$dir" "$ROOT/.tmp/zig-cache/global" "$ROOT/.tmp/zig-cache/local"
+    wrapper="$dir/$triple-gcc"
+    cat >"$wrapper" <<EOF
+#!/usr/bin/env bash
+# 由 build-for-release 生成：zig cc 冒充 $triple-gcc
+export ZIG_GLOBAL_CACHE_DIR="$ROOT/.tmp/zig-cache/global"
+export ZIG_LOCAL_CACHE_DIR="$ROOT/.tmp/zig-cache/local"
+args=()
+skip=0
+for a in "\$@"; do
+    if [ "\$skip" = 1 ]; then skip=0; continue; fi
+    case "\$a" in
+    --target=*) continue ;;
+    --target | -target) skip=1; continue ;;
+    -Wl,--fix-cortex-a53-843419) continue ;;
+    esac
+    args+=("\$a")
+done
+exec "$zig" cc -target "$triple" -fno-sanitize=undefined "\${args[@]}"
+EOF
+    chmod +x "$wrapper"
+    echo "$wrapper"
+}
+
+# 交叉 C 编译器：真的 <triple>-gcc 优先，没有就用 zig cc 顶。
+cross_cc() {
+    local target=$1 real
+    case "$target" in
+    *-linux-gnu) real=$(gnu_gcc "$target") || return 1 ;;
+    *-linux-musl) real=$(musl_cross_cc "$target") || return 1 ;;
+    *) return 1 ;;
+    esac
+    if command -v "$real" >/dev/null 2>&1; then
+        command -v "$real"
+        return 0
+    fi
+    real=$(find_zig) || return 1
+    zig_cc_wrapper "$real" "$(zig_triple "$target")"
+}
+
+have_cross_cc() {
+    local target=$1 real
+    case "$target" in
+    *-linux-gnu) real=$(gnu_gcc "$target") ;;
+    *-linux-musl) real=$(musl_cross_cc "$target") ;;
+    *) return 1 ;;
+    esac
+    if command -v "$real" >/dev/null 2>&1; then
+        return 0
+    fi
+    find_zig >/dev/null 2>&1
+}
+
+# llvm-mingw 的 clang 包装器：PATH 优先，其次 cot 插件导出的 LLVM_MINGW_DIR。
+find_mingw_clang() {
+    local triple=$1 candidate
+    if candidate=$(command -v "$triple-clang" 2>/dev/null); then
+        echo "$candidate"
+        return 0
+    fi
+    if [ -n "${LLVM_MINGW_DIR:-}" ] && [ -x "$LLVM_MINGW_DIR/bin/$triple-clang" ]; then
+        echo "$LLVM_MINGW_DIR/bin/$triple-clang"
+        return 0
+    fi
+    return 1
+}
+
+# 输出为空表示就绪；否则输出原因。--list 与 `all` 都靠它决定跳过谁。
+not_ready_reason() {
+    local target=$1 os
+    os=$(target_os "$target")
+    case "$os" in
+    darwin)
+        if [ "$HOST_OS" != darwin ]; then
+            echo "只能在 macOS 上构建（需要 Apple SDK）"
+            return
+        fi
+        ;;
+    esac
+    if [ ! -d "$SYSROOT/lib/rustlib/$target/lib" ]; then
+        echo "sysroot 里没有该目标的 std（重新装 cot 的 rust 插件）"
+        return
+    fi
+    case "$target" in
+    *-unknown-linux-musl)
+        if [ ! -x "$SYSROOT/lib/rustlib/$HOST_TRIPLE/bin/rust-lld" ]; then
+            echo "sysroot 里没有 rust-lld（musl 的链接器）"
+            return
+        fi
+        # 跨架构时 C 侧也要编译器：aws-lc-sys（rustls 的 C 依赖）会编 C 源码，
+        # rust-lld 只管 Rust 的链接步骤。
+        if [ "$(target_arch "$target")" != "$(target_arch "$HOST_TRIPLE")" ]; then
+            local cc key
+            cc=$(musl_cross_cc "$target")
+            key="CC_${target//-/_}"
+            if [ -z "${!key:-}" ] && ! have_cross_cc "$target"; then
+                echo "跨架构需要 $cc（aws-lc-sys 编 C 用）或 zig，也可用 $key 指定"
+            fi
+        fi
+        ;;
+    *-pc-windows-gnullvm)
+        if ! find_mingw_clang "$(mingw_triple "$target")" >/dev/null; then
+            echo "PATH 上没有 $(mingw_triple "$target")-clang（装 cot 的 llvm-mingw 插件）"
+        fi
+        ;;
+    *-linux-gnu)
+        if [ "$target" != "$HOST_TRIPLE" ]; then
+            local gcc
+            gcc=$(gnu_gcc "$target") || gcc="交叉 gcc"
+            if ! have_cross_cc "$target"; then
+                echo "需要 $gcc（或 zig，会自动用 zig cc）"
+            fi
+        fi
+        ;;
+    esac
+}
+
+# ---------------------------------------------------------------- 构建环境
+
+# cargo 的目标级环境变量名：CARGO_TARGET_<TRIPLE>_<SUFFIX>
+# 用 tr 而不是 ${x^^}：macOS 自带的 bash 3.2 不支持大小写展开。
+env_key() {
+    echo "CARGO_TARGET_$1_$2" | tr '[:lower:]-' '[:upper:]_'
+}
+
+# 只在变量缺失时补链接器/参数，绝不覆盖用户（或 cot 插件）已有的设置。
+prepare_target() {
+    local target=$1 suffix
+    case "$target" in
+    *-unknown-linux-musl)
+        suffix=$(env_key "$target" LINKER)
+        if [ -z "${!suffix:-}" ]; then
+            export "$suffix=$SYSROOT/lib/rustlib/$HOST_TRIPLE/bin/rust-lld"
+        fi
+        if [ "$(target_arch "$target")" != "$(target_arch "$HOST_TRIPLE")" ]; then
+            local cc key
+            key="CC_${target//-/_}"
+            if [ -z "${!key:-}" ]; then
+                cc=$(cross_cc "$target") || die "找不到 $target 的 C 交叉编译器（装交叉 gcc 或 zig）"
+                export "$key=$cc"
+            fi
+        fi
+        ;;
+    *-pc-windows-gnullvm)
+        suffix=$(env_key "$target" LINKER)
+        if [ -z "${!suffix:-}" ]; then
+            export "$suffix=$(find_mingw_clang "$(mingw_triple "$target")")"
+        fi
+        # llvm-mingw 的 libunwind.dll.a 会让默认链接变成「运行期依赖 libunwind.dll」；
+        # 静态库在 libunwind-static/<target>/ 里（pack-rust.py 抽出来的），插到 -L 最前面。
+        suffix=$(env_key "$target" RUSTFLAGS)
+        if [ -z "${!suffix:-}" ]; then
+            if [ -f "$SYSROOT/libunwind-static/$target/libunwind.a" ]; then
+                export "$suffix=-Lnative=$SYSROOT/libunwind-static/$target"
+            else
+                echo "  提醒：sysroot 里没有 libunwind-static/$target/libunwind.a" >&2
+                echo "        产物运行期会依赖 libunwind.dll（干净的 Windows 上可能加载失败）" >&2
+            fi
+        fi
+        ;;
+    *-linux-gnu)
+        if [ "$target" != "$HOST_TRIPLE" ]; then
+            local key cc
+            key="CC_${target//-/_}"
+            if [ -z "${!key:-}" ]; then
+                cc=$(cross_cc "$target") || die "找不到 $target 的 C 交叉编译器（装交叉 gcc 或 zig）"
+                export "$key=$cc"
+            fi
+            # gnu 目标没有自带的 libc，链接也得靠这个交叉 gcc（musl 才用 rust-lld）
+            suffix=$(env_key "$target" LINKER)
+            [ -n "${!suffix:-}" ] || export "$suffix=${!key}"
+        fi
+        ;;
+    esac
+}
+
+# ---------------------------------------------------------------- 输出
+
+pack_archive() {
+    local name=$1 target=$2 binary=$3
+    local stage inner
+    stage=$(mktemp -d)
+    inner="$stage/$name"
+    mkdir -p "$inner"
+    # 包内是可执行文件名（qc / qc.exe），与产物名区分
+    cp "$binary" "$inner/$BIN$(exe_suffix "$target")"
+    case "$(exe_suffix "$target")" in
+    .exe)
+        command -v zip >/dev/null 2>&1 || die "打 Windows 的 zip 需要 zip 命令"
+        rm -f "$OUT_DIR/$name.zip"
+        (cd "$stage" && zip -qr "$OUT_DIR/$name.zip" "$name")
+        echo "  archive: $OUT_DIR/$name.zip"
+        ;;
+    *)
+        rm -f "$OUT_DIR/$name.tar.gz"
+        tar czf "$OUT_DIR/$name.tar.gz" -C "$stage" "$name"
+        echo "  archive: $OUT_DIR/$name.tar.gz"
+        ;;
+    esac
+    rm -rf "$stage"
+}
+
+build_one() {
+    local target=$1 name dest binary
+    name=$(artifact_name "$target")
+    dest="$OUT_DIR/$name$(exe_suffix "$target")"
+    binary="target/$target/release/$BIN$(exe_suffix "$target")"
+
+    echo "==> $target"
+    prepare_target "$target"
+    cargo build --locked --release --target "$target" -p "$PKG"
+    [ -f "$binary" ] || die "没有构建出 $binary"
+
+    mkdir -p "$OUT_DIR"
+    cp "$binary" "$dest"
+    chmod +x "$dest" 2>/dev/null || true
+
+    # 本机目标能真跑：拿产物自己去报版本，与文件名的版本对账。
+    if [ "$target" = "$HOST_TRIPLE" ]; then
+        local reported
+        reported=$("$dest" --version | awk '{print $NF}')
+        if [ "$reported" != "$VERSION" ]; then
+            die "产物报的版本是 $reported，文件名里却是 $VERSION（Cargo.toml 没 bump？）"
+        fi
+        echo "  version: $reported"
+    else
+        echo "  version: $VERSION（交叉产物，静态核对）"
+    fi
+
+    echo "  dist: $dest ($(du -h "$dest" | cut -f1))"
+    if [ "$ARCHIVE" = 1 ]; then
+        pack_archive "$name" "$target" "$dest"
+    fi
+}
+
+# ---------------------------------------------------------------- 预检
+
+# 发布门禁，与 .github/workflows/ci.yml 对齐：fmt / clippy / test / cargo-deny。
+#
+# cargo 只在 PATH 上找子命令，而 `cargo install` 的产物落在 $CARGO_HOME/bin，
+# 这个目录不会自动进 PATH（cot 的 rust 插件用的是 ${TDP_HOME}/repo/cargo/bin，
+# 但 README 又建议把 CARGO_HOME 指到仓库内的 .cargo-home），所以几个候选都补上，
+# 免得「装了 cargo-deny，却 cargo deny: no such command」。
+preflight() {
+    local dir
+    for dir in "${CARGO_HOME:-}/bin" "${TDP_HOME:-$HOME/cot}/repo/cargo/bin" "$HOME/.cargo/bin"; do
+        [ -n "$dir" ] && [ -d "$dir" ] || continue
+        case ":$PATH:" in
+        *":$dir:"*) ;;
+        *) PATH="$dir:$PATH" ;;
+        esac
+    done
+    export PATH
+
+    echo "==> cargo fmt --all --check"
+    cargo fmt --all --check
+
+    echo "==> cargo clippy --workspace --all-targets -- -D warnings"
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+
+    echo "==> cargo test --workspace"
+    cargo test --workspace --locked
+
+    echo "==> cargo deny check"
+    command -v cargo-deny >/dev/null 2>&1 ||
+        die "PATH 上没有 cargo-deny（cargo install cargo-deny；它会落在 \$CARGO_HOME/bin）"
+    # advisory-db 默认从 GitHub 拉；内网/墙内经常连不上（git clone 会卡到超时）。
+    # 本地已经有库就先离线用，避免每次门禁都等一次网络；要更新就 cargo deny fetch。
+    # 没有本地库才走在线拉取（第一次需要能访问 GitHub 或配好代理）。
+    if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/advisory-dbs" ] &&
+        [ -n "$(ls -A "$CARGO_HOME/advisory-dbs" 2>/dev/null)" ]; then
+        echo "    （用本地 advisory 库 $CARGO_HOME/advisory-dbs；更新用 cargo deny fetch）"
+        cargo deny --offline check
+    else
+        cargo deny check
+    fi
+}
+
+# ---------------------------------------------------------------- 参数
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    -l | --list)
+        LIST=1
+        ;;
+    -a | --archive)
+        ARCHIVE=1
+        ;;
+    -c | --check)
+        CHECK=1
+        ;;
+    -o | --out-dir)
+        [ $# -ge 2 ] || die "--out-dir 需要一个目录"
+        OUT_DIR=$2
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    -*)
+        die "不认识的选项 $1（--help 看用法）"
+        ;;
+    *)
+        REQUESTED+=("$1")
+        ;;
+    esac
+    shift
+done
+
+[ ${#REQUESTED[@]} -eq 0 ] && REQUESTED=(native)
+
+# `all` 展开成本机可产出的矩阵；不可就绪的目标在 --list 里能看到原因，all 时跳过。
+TARGETS=()
+for item in "${REQUESTED[@]}"; do
+    if [ "$item" = all ]; then
+        for target in "${ALL_TARGETS[@]}"; do
+            [ "$(target_os "$target")" = darwin ] && [ "$HOST_OS" != darwin ] && continue
+            TARGETS+=("$target")
+        done
+        continue
+    fi
+    target=$(resolve_target "$item") || die "不认识的平台 $item（--list 看可选）"
+    TARGETS+=("$target")
+done
+
+if [ "$LIST" = 1 ]; then
+    printf '%-32s %-34s %s\n' TARGET ARTIFACT STATUS
+    for target in "${TARGETS[@]}"; do
+        reason=$(not_ready_reason "$target")
+        if [ -z "$reason" ]; then
+            status="ready"
+        else
+            status="skip: $reason"
+        fi
+        printf '%-32s %-34s %s\n' "$target" "$(artifact_name "$target")" "$status"
+    done
+    exit 0
+fi
+
+if [ "$CHECK" = 1 ]; then
+    preflight
+    exit 0
+fi
+
+built=0
+skipped=0
+
+# 相对路径的 -o 先转绝对：pack_archive 里会 cd 进临时目录，相对路径会指错地方。
+mkdir -p "$OUT_DIR"
+OUT_DIR=$(cd "$OUT_DIR" && pwd)
+
+for target in "${TARGETS[@]}"; do
+    reason=$(not_ready_reason "$target")
+    if [ -n "$reason" ]; then
+        # 显式点名的目标不给就过：说清楚缺什么，比悄悄产出个空目录强。
+        if [ ${#REQUESTED[@]} -eq 1 ] && [ "${REQUESTED[0]}" != all ]; then
+            die "$target 不可构建：$reason"
+        fi
+        echo "==> $target（跳过：$reason）"
+        skipped=$((skipped + 1))
+        continue
+    fi
+    build_one "$target"
+    built=$((built + 1))
+done
+
+echo
+echo "完成：$built 个产物 -> $OUT_DIR，跳过 $skipped 个"

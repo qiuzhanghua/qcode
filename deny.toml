@@ -4,6 +4,10 @@
 
 [advisories]
 version = 2
+# The advisory database is cloned from GitHub by default. On networks where
+# github.com is unreachable, either pre-seed the database and run
+# `cargo deny --offline check`, or point db-urls at a mirror, e.g.
+#   db-urls = ["https://gitcode.com/gh_mirrors/ad/advisory-db"]
 # A yanked release can disappear from the registry at any time; do not ship it.
 yanked = "deny"
 ignore = [
