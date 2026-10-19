@@ -33,13 +33,16 @@
   出网边界；审批提示里能看到完整 URL）。
 - 验收：本地 HTTP server 覆盖 200、404、非文本、非法 scheme/凭据、超大 body 截断 4 条测试。
 
-### M3-3 sandbox runner ⏸（stretch，本版不做）
+### M3-3 sandbox runner ✅（抽象 + 实验性 macOS 后端，默认关闭）
 
 - macOS `sandbox-exec` 已 deprecated 且嵌套调用 EPERM；Linux bubblewrap / Landlock 各有
   取舍（Landlock 管不住 unix socket，Ubuntu 24.04 还需 AppArmor profile）。
-- v1 的边界是审批 + workspace 路径封闭；`run_shell` 已有独立进程组、环境清洗、超时与取消。
-- 结论：不引入半成品的 OS 沙箱；等平台能力稳定后按 [DECISIONS §3](./DECISIONS.md) 的
-  sandbox trait 单独实现。`qc sandbox exec` 因此不提供。
+- v1 的边界仍是审批 + workspace 路径封闭；`run_shell` 已有独立进程组、环境清洗、超时与取消。
+- 本次补齐 `qcode-tools::sandbox`：`Sandbox` trait、`NoSandbox`（默认）、`SandboxExec`
+  （macOS，`[sandbox] mode = "sandbox-exec"` 显式开启）。启用时用同一 profile 做
+  preflight，失败即拒绝启动，不静默降级；profile 默认 deny，网络默认拒绝。
+- 非嵌套 macOS 上已验证：workspace 内写入成功、workspace 外写入被拒、preflight 通过。
+- Linux bwrap/Landlock 仍未实现（无法在 macOS 宿主验证）；`qc sandbox exec` 仍不提供。
 
 ### M3-4 打包 ✅
 

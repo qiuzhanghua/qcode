@@ -12,6 +12,7 @@ use serde::Deserialize;
 use qcode_core::cost::Pricing;
 use qcode_core::policy::Rule;
 use qcode_mcp::{McpConfig, McpConfigError};
+use qcode_tools::sandbox::SandboxMode;
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 
@@ -37,6 +38,9 @@ pub struct Config {
     /// Agent Skills discovered from the user and project config trees.
     #[serde(default)]
     pub skills: SkillsConfig,
+    /// OS sandbox for `run_shell`. Defaults to `none` (approval is the boundary).
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 /// Skills are on by default; `enabled = false` skips discovery entirely.
@@ -82,6 +86,15 @@ fn default_context_window() -> u64 {
 pub struct ApprovalConfig {
     #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SandboxConfig {
+    #[serde(default)]
+    pub mode: SandboxMode,
+    /// Allow outbound/inbound network inside the sandbox. Default: deny.
+    #[serde(default)]
+    pub network: bool,
 }
 
 /// Standalone approval policy file (`--approval-policy`).
@@ -396,6 +409,27 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         move |key| map.get(key).cloned()
+    }
+
+    #[test]
+    fn sandbox_mode_parses_and_defaults_to_none() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.sandbox.mode, SandboxMode::None);
+        assert!(!config.sandbox.network);
+
+        let config: Config = toml::from_str(
+            r#"
+            [sandbox]
+            mode = "sandbox-exec"
+            network = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.sandbox.mode, SandboxMode::SandboxExec);
+        assert!(config.sandbox.network);
+
+        let error = toml::from_str::<Config>("[sandbox]\nmode = \"bwrap\"\n").unwrap_err();
+        assert!(error.to_string().contains("unknown variant"), "{error}");
     }
 
     #[test]

@@ -118,6 +118,8 @@ pub enum ToolError {
     PathEscape(String),
     #[error("network error: {0}")]
     Network(String),
+    #[error("sandbox error: {0}")]
+    Sandbox(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

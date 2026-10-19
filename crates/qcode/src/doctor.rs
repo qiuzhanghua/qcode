@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use qcode_tools::sandbox::{self, SandboxMode};
+
 use crate::config::{self, Config};
 
 pub fn run(
@@ -18,7 +20,7 @@ pub fn run(
     let config = doctor.check_config(&config_path);
     doctor.check_provider(&config);
     doctor.check_toolchain();
-    doctor.check_sandbox();
+    doctor.check_sandbox(&config);
 
     println!();
     if doctor.failures == 0 {
@@ -135,10 +137,22 @@ impl Doctor {
         }
     }
 
-    fn check_sandbox(&self) {
-        self.warn(
-            "sandbox",
-            "none in v1; tool calls require approval (see SPEC §3)",
-        );
+    fn check_sandbox(&mut self, config: &Config) {
+        if config.sandbox.mode == SandboxMode::None {
+            self.warn(
+                "sandbox",
+                "none; approval and workspace path checks are the boundary",
+            );
+            return;
+        }
+
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        match sandbox::build(config.sandbox.mode, &workspace, config.sandbox.network) {
+            Ok(sandbox) => self.ok("sandbox", sandbox.describe()),
+            Err(err) => self.fail("sandbox", err.to_string()),
+        }
     }
 }

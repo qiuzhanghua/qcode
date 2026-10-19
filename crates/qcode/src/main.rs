@@ -22,7 +22,8 @@ use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
-use qcode_tools::builtin_registry;
+use qcode_tools::builtin_registry_with;
+use qcode_tools::sandbox::Sandbox;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use qcode_tui::SkillView;
 use tokio_util::sync::CancellationToken;
@@ -214,6 +215,9 @@ async fn cmd_run(
         None => std::env::current_dir()?,
     };
     let workspace = workspace.canonicalize()?;
+    let sandbox =
+        qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
+    tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
     if agents_md.is_some() {
         tracing::info!("loaded AGENTS.md from the workspace root");
@@ -239,7 +243,7 @@ async fn cmd_run(
 
     let provider = build_provider(&resolved)?;
 
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
     let approver: Box<dyn Approver> = if yes {
         Box::new(AutoApprove)
     } else if std::io::stdin().is_terminal() {
@@ -353,12 +357,15 @@ async fn cmd_tui(
     let data_dir = resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
     let workspace = std::env::current_dir()?.canonicalize()?;
+    let sandbox =
+        qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
+    tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
     let provider = build_provider(&resolved)?;
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
 
     tui::run(tui::TuiOptions {
         store: &store,
@@ -432,8 +439,9 @@ async fn build_tools(
     workspace: &Path,
     data_dir: &Path,
     skills: &Arc<SkillSet>,
+    sandbox: Arc<dyn Sandbox>,
 ) -> ToolRegistry {
-    let mut tools = builtin_registry();
+    let mut tools = builtin_registry_with(sandbox);
     let mcp_tools = qcode_mcp::connect_all(&mcp.servers, workspace, &data_dir.join("logs")).await;
     if !mcp_tools.is_empty() {
         tracing::info!(count = mcp_tools.len(), "registered MCP tools");

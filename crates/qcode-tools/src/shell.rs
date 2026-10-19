@@ -7,7 +7,9 @@
 //! and timeout can take down the whole tree (`sh`, `cargo`, `make`, workers)
 //! with one signal instead of orphaning grandchildren.
 
+use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,6 +21,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
 use crate::path;
+use crate::sandbox::{NoSandbox, Sandbox};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 /// How long a cancelled or timed-out group gets to exit on SIGTERM before the
@@ -45,7 +48,25 @@ const ENV_ALLOWLIST: &[&str] = &[
     "CARGO_TARGET_DIR",
 ];
 
-pub struct RunShell;
+pub struct RunShell {
+    sandbox: Arc<dyn Sandbox>,
+}
+
+impl RunShell {
+    pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
+        Self { sandbox }
+    }
+
+    pub fn unsandboxed() -> Self {
+        Self::new(Arc::new(NoSandbox))
+    }
+}
+
+impl Default for RunShell {
+    fn default() -> Self {
+        Self::unsandboxed()
+    }
+}
 
 #[derive(Deserialize)]
 struct ShellArgs {
@@ -101,10 +122,15 @@ impl Tool for RunShell {
             return Ok(ToolOutput::cancelled("cancelled by user\n"));
         }
 
-        let mut command = tokio::process::Command::new("sh");
+        let shell_args = [OsString::from("-c"), OsString::from(args.command)];
+        // The sandbox builds the real `Command`. On error we fail closed: the
+        // command is never executed without the configured confinement.
+        let mut command = tokio::process::Command::from(
+            self.sandbox
+                .command(OsStr::new("sh"), &shell_args, &cwd)
+                .map_err(|err| ToolError::Sandbox(err.to_string()))?,
+        );
         command
-            .arg("-c")
-            .arg(&args.command)
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

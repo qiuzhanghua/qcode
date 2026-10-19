@@ -397,3 +397,30 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 正文会占上下文（最大 64KiB）；长 skill 可能加速触发 78% 压缩。
 - 以 `/` 开头的普通提问仍会被当成命令；要发字面 `/` 需改写。
 - 若将来需要“只对一轮生效”，再增加显式 `/use --once` 或 system 注入模式。
+
+## ADR-0010：sandbox 抽象与实验性 sandbox-exec（2026-10-19）
+
+**背景**：M3-3 把 OS 沙箱列为 stretch，v1 只有“审批 + workspace 路径封闭”。后续要求把
+stretch 往前推，但 macOS `sandbox-exec` 已 deprecated、嵌套调用 EPERM，Linux bwrap/Landlock
+也无法在 macOS 宿主验证。
+
+**决定**
+
+1. `qcode-tools::sandbox` 定义 `Sandbox` trait 与两种模式：`none`（默认）与
+   `sandbox-exec`（仅 macOS）。`run_shell` 经 trait 构造命令，构造失败即工具失败，绝不
+   回退到未沙箱命令。
+2. `sandbox-exec` 由 `[sandbox] mode = "sandbox-exec"` 显式开启（config 或 TUI 共用），
+   启动时用同一 profile 跑 preflight；失败则 `qc` 拒绝启动，`qc doctor` 报 fail。
+3. Profile：`deny default`；只读 `/`、系统目录与 workspace，只写 workspace、临时目录、
+   `CARGO_HOME`/`RUSTUP_HOME`/`CARGO_TARGET_DIR`；`network = true` 才 allow 网络。
+   `run_shell` 仍是独立进程组，取消/超时路径不变。
+4. Linux bubblewrap/Landlock 不在本次实现：无法在当前平台验证，且 Ubuntu 24.04 需要
+   AppArmor profile；`qc sandbox exec` 仍不对外提供。
+
+**后果**
+
+- 默认行为不变：`mode = "none"`，审批仍是主边界。
+- 在已有沙箱内（CI 容器、DSH runner）启用会因嵌套 EPERM 而启动失败；这是有意的 fail
+  closed，不会静默降级。
+- Profile 仍是实验性：mach 服务、特殊工具链可能需要追加 allow；不把它当作完整安全边界。
+- 非嵌套 macOS 上已验证 workspace 内可写、workspace 外被拒、preflight 通过。

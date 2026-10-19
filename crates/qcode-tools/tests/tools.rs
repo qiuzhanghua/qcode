@@ -120,7 +120,7 @@ async fn shell_reports_exit_code_and_scrubs_env() {
 
     // SAFETY: tests use a unique variable name; no other test reads it.
     unsafe { std::env::set_var("QCODE_TEST_SECRET", "sk-should-not-leak") };
-    let output = RunShell
+    let output = RunShell::default()
         .execute(
             &ctx,
             json!({"command": "printf '%s' \"${QCODE_TEST_SECRET:-missing}\""}),
@@ -134,7 +134,7 @@ async fn shell_reports_exit_code_and_scrubs_env() {
     assert_eq!(output.metadata.exit_code, Some(0));
 
     if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
-        let output = RunShell
+        let output = RunShell::default()
             .execute(
                 &ctx,
                 json!({"command": "printf '%s' \"${CARGO_HOME:-missing}\""}),
@@ -144,7 +144,7 @@ async fn shell_reports_exit_code_and_scrubs_env() {
         assert!(output.output.contains(&cargo_home));
     }
 
-    let failed = RunShell
+    let failed = RunShell::default()
         .execute(&ctx, json!({"command": "exit 3"}))
         .await
         .unwrap();
@@ -192,7 +192,8 @@ async fn cancellation_kills_the_whole_process_group() {
     let ctx = context(dir.path()).with_cancel(cancel.clone());
     let pid_file = dir.path().join("child.pid");
 
-    let run = RunShell.execute(
+    let shell = RunShell::default();
+    let run = shell.execute(
         &ctx,
         json!({"command": "sleep 30 & echo $! > child.pid; wait"}),
     );
@@ -218,7 +219,7 @@ async fn timeout_kills_the_whole_process_group() {
 
     // The pid file is written before the timeout fires; the tool call itself
     // is what has to wait one second.
-    let output = RunShell
+    let output = RunShell::default()
         .execute(
             &ctx,
             json!({

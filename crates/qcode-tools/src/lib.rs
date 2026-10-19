@@ -5,6 +5,7 @@ pub mod fetch;
 pub mod fs;
 pub mod patch;
 pub mod path;
+pub mod sandbox;
 pub mod search;
 pub mod shell;
 pub mod skills;
@@ -14,7 +15,15 @@ use std::sync::Arc;
 
 use qcode_core::tool::ToolRegistry;
 
+use crate::sandbox::{NoSandbox, Sandbox};
+
+/// Built-ins with no OS sandbox (the v1 default).
 pub fn builtin_registry() -> ToolRegistry {
+    builtin_registry_with(Arc::new(NoSandbox))
+}
+
+/// Built-ins with the configured sandbox applied to `run_shell`.
+pub fn builtin_registry_with(sandbox: Arc<dyn Sandbox>) -> ToolRegistry {
     ToolRegistry::new(vec![
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
@@ -24,7 +33,7 @@ pub fn builtin_registry() -> ToolRegistry {
         Arc::new(search::GlobTool),
         Arc::new(search::GrepTool),
         Arc::new(fetch::WebFetch),
-        Arc::new(shell::RunShell),
+        Arc::new(shell::RunShell::new(sandbox)),
         Arc::new(todo::TodoWrite),
     ])
 }
