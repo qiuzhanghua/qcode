@@ -2,12 +2,17 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
+use futures_util::StreamExt;
+use qcode_core::event::ContentBlock;
+use qcode_core::provider::{CompletionRequest, Message, ProviderError, Role};
 use qcode_tools::sandbox::{self, SandboxMode};
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{self, Config};
 
-pub fn run(
+pub async fn run(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -19,6 +24,7 @@ pub fn run(
     doctor.check_data_dir(&data_dir);
     let config = doctor.check_config(&config_path);
     doctor.check_provider(&config);
+    doctor.check_connectivity(&config).await;
     doctor.check_toolchain();
     doctor.check_sandbox(&config);
 
@@ -133,6 +139,60 @@ impl Doctor {
                 }
             }
             Err(err) => self.fail("provider", err.to_string()),
+        }
+    }
+
+    async fn check_connectivity(&mut self, config: &Config) {
+        let resolved = match config::resolve(config, &config::Overrides::default(), &|key| {
+            std::env::var(key).ok()
+        }) {
+            Ok(resolved) => resolved,
+            // check_provider already reported the resolution failure.
+            Err(_) => return,
+        };
+        if resolved.is_mock {
+            self.ok("connectivity", "skipped (mock provider)");
+            return;
+        }
+
+        let provider = match crate::build_provider(&resolved) {
+            Ok(provider) => provider,
+            Err(err) => {
+                self.fail("connectivity", err.to_string());
+                return;
+            }
+        };
+        let request = CompletionRequest {
+            model: resolved.model.clone(),
+            system: String::new(),
+            messages: vec![Message {
+                role: Role::User,
+                blocks: vec![ContentBlock::Text {
+                    text: "Reply with the single word ok.".to_string(),
+                }],
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(8),
+        };
+        let cancel = CancellationToken::new();
+        let probe = async {
+            let mut stream = provider.stream(request, cancel.clone()).await?;
+            // One event (headers/first chunk) is enough to prove reachability.
+            let _ = stream.next().await;
+            Ok::<(), ProviderError>(())
+        };
+
+        match tokio::time::timeout(Duration::from_secs(10), probe).await {
+            Ok(Ok(())) => self.ok("connectivity", "provider responded"),
+            Ok(Err(ProviderError::Auth(err))) => {
+                self.fail("connectivity", format!("authentication failed: {err}"));
+            }
+            Ok(Err(ProviderError::InvalidRequest(err))) => {
+                self.fail("connectivity", format!("invalid request: {err}"));
+            }
+            Ok(Err(err)) => self.warn("connectivity", err.to_string()),
+            Err(_) => self.warn("connectivity", "timed out after 10s"),
         }
     }
 

@@ -237,10 +237,33 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
     if !path.exists() {
         return Ok(());
     }
-    let project = load(&path)?;
-    merge_project(base, project);
+    let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    let document: toml::Table = text.parse().map_err(|source| ConfigError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    let project: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    let sections = ProjectSections {
+        context: document.contains_key("context"),
+        sandbox: document.contains_key("sandbox"),
+    };
+    merge_project(base, project, sections);
     base.mcp.validate()?;
     Ok(())
+}
+
+/// Which optional sections the project file actually contains. Absent sections
+/// must not reset user values to their defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProjectSections {
+    pub context: bool,
+    pub sandbox: bool,
 }
 
 /// Merge a project config over a user/explicit one.
@@ -248,7 +271,7 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
 /// Project approval rules are forced to `Scope::Project` and may only tighten:
 /// an `allow` becomes `ask`, because a repository must not grant itself more
 /// permission than the user configured.
-pub fn merge_project(base: &mut Config, project: Config) {
+pub fn merge_project(base: &mut Config, project: Config, sections: ProjectSections) {
     if project.default_provider.is_some() {
         base.default_provider = project.default_provider;
     }
@@ -259,6 +282,12 @@ pub fn merge_project(base: &mut Config, project: Config) {
         base.skills.enabled = false;
     }
     base.skills.roots.extend(project.skills.roots);
+    if sections.context {
+        base.context = project.context;
+    }
+    if sections.sandbox {
+        base.sandbox = project.sandbox;
+    }
 
     for mut rule in project.approval.rules {
         rule.scope = Some(Scope::Project);
@@ -986,7 +1015,7 @@ mod tests {
         )
         .unwrap();
 
-        merge_project(&mut base, project);
+        merge_project(&mut base, project, ProjectSections::default());
         assert_eq!(base.approval.rules.len(), 3);
         let proj_allow = base
             .approval
@@ -1059,5 +1088,33 @@ mod tests {
             mcp_remove(&path, "filesystem"),
             Err(ConfigError::McpMissing(_))
         ));
+    }
+
+    #[test]
+    fn project_context_and_sandbox_only_override_when_present() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let base_path = dir.path().join("config.toml");
+        std::fs::write(
+            &base_path,
+            "[context]\nwindow_tokens = 100000\n[sandbox]\nnetwork = false\n",
+        )
+        .unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(workspace.join(".qcode")).unwrap();
+
+        std::fs::write(
+            workspace.join(".qcode/config.toml"),
+            "[context]\nwindow_tokens = 32000\n[sandbox]\nnetwork = true\n",
+        )
+        .unwrap();
+        let merged = load_merged(&base_path, &workspace).expect("merged");
+        assert_eq!(merged.context.window_tokens, 32_000);
+        assert!(merged.sandbox.network);
+
+        // A project file without these sections must not reset the user values.
+        std::fs::write(workspace.join(".qcode/config.toml"), "\n").unwrap();
+        let merged = load_merged(&base_path, &workspace).expect("merged without sections");
+        assert_eq!(merged.context.window_tokens, 100_000);
+        assert!(!merged.sandbox.network);
     }
 }

@@ -703,3 +703,27 @@ Apple ID / team / app-specific password。
 
 - M4 的 notarize 仍是“流程占位”，不算完成；需要真实证书后跑一次并记录 ticket。
 - Windows 代码签名（Authenticode）同样未做，v1 不包含。
+
+## ADR-0022：v1 收尾四项（2026-10-19）
+
+**背景**：v1 剩余边角：`provider_raw` 默认输出、doctor 无连通性探测、压缩未驱逐大输出、
+项目配置不合并 context/sandbox。
+
+**决定**
+
+1. `--json` 打印事件前删除 `data.provider_raw`；`--include-raw` 保留。磁盘日志始终完整，
+   因此 replay/调试不受影响。
+2. `qc doctor` 对非 mock provider 发一条极小的 `Reply with the single word ok.` 请求，
+   10s 超时；Auth/InvalidRequest 记 fail，其它 provider/网络错误记 warn，超时记 warn。
+   这会消耗一次极小请求并可能产生费用。
+3. 压缩的摘要输入先把 >4k 字符的旧 `tool_result` 截成前 1k + 省略标记；保留的最近 2 轮
+   不受影响。事件日志本身仍保留完整输出（大输出另有 `outputs/` 全文）。
+4. 项目配置只有显式出现 `[context]` / `[sandbox]` 时才覆盖用户值；通过解析 TOML 文档
+   判断 section 是否存在，避免把“未设置”当成默认值覆盖。
+
+**后果**
+
+- `provider_raw` 默认不出现在 CI 的 JSONL 里，需要时显式加 flag。
+- doctor 不再是纯离线命令；离线环境会显示 connectivity warn，但不会因此失败。
+- 压缩摘要对旧工具输出是有损的；模型仍可通过 `outputs/` 路径或重新读取文件获得细节。
+- 项目配置仍不能放宽审批；sandbox 项目覆盖仍需人工审计。

@@ -231,8 +231,9 @@ cargo build -p qcode-eval
 - **todo_write**：session 待办清单（pending / in_progress / completed），不写文件系统。
   每次成功调用后清单进入 system prompt，TUI 在 transcript 里渲染成 checklist；空数组清空，
   至多一个 in_progress，上限 50 项、每项 200 字符。resume / replay 从事件日志重建状态。
-- **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
-  `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
+- **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮；先把旧工具输出中超过 4k 字符的
+  部分驱逐出摘要输入，再把更早历史用同一模型摘要成 `compaction` 事件；replay / resume
+  应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **子 agent**：`subagent` 工具把独立任务交给新会话运行（同 provider / policy / approver、
@@ -240,7 +241,8 @@ cargo build -p qcode-eval
   返回最终文本与子 session id；子会话的 usage/cost 汇总进父 `turn_ended` 与 TUI 成本。
   TUI 里子 agent 的文本与工具调用以 `↳` 嵌套显示，不改父状态机。默认 ask（`External`），
   非交互模式需要 `--yes` 或策略放行 `subagent`。
-- **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
+- **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain，并对非 mock provider 做一次
+  真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
 
 尚未实现：`web_search` 不在 v1 范围；sandbox 三个后端仍是实验性。
 
@@ -322,7 +324,8 @@ MCP 工具；规则按工具名精确匹配。
 约束最多、scope 最窄、前缀/glob 更长者优先。
 
 项目配置放在 `<workspace>/.qcode/config.toml`，叠加在用户配置之上：可覆盖
-providers / pricing、追加 MCP server、追加 skills roots，并追加审批规则。项目规则强制
+providers / pricing、追加 MCP server、追加 skills roots，并追加审批规则；文件里出现
+`[context]` / `[sandbox]` 时才覆盖对应段（缺省不会把用户值重置为默认）。项目规则强制
 `scope = "project"`，且 `allow` 会降级为 `ask`——仓库不能给自己提权。
 
 `--approval-policy <path>` 读取独立策略文件：根级 `[[rules]]`，规则**替换** config 里的
@@ -342,7 +345,7 @@ action = "allow"
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--resume`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`。
+常用 flag：`--yes`、`--cwd`、`--resume`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`、`--include-raw`（`--json` 下保留 `provider_raw`）。
 `--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档

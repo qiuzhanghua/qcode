@@ -20,6 +20,8 @@ pub const THRESHOLD_PERCENT: u64 = 78;
 pub const KEEP_TURNS: usize = 2;
 /// Cap on the transcript handed to the summarizer.
 const SUMMARY_INPUT_CHARS: usize = 60_000;
+/// Tool results larger than this are elided before summarization (SPEC §4.6).
+const EVICT_TOOL_OUTPUT_CHARS: usize = 4_000;
 
 pub const SUMMARY_SYSTEM: &str = "You compact the earlier part of a coding session for \\
      another model that will continue it. Preserve the user's goal, decisions made, files \\
@@ -88,11 +90,12 @@ pub fn is_message_event(kind: &EventKind) -> bool {
 /// summarizer. Old compactions are already folded into their summaries by
 /// `messages_from_events`.
 pub fn summary_input(events: &[Event], boundary: u64) -> String {
-    let old: Vec<Event> = events
+    let mut old: Vec<Event> = events
         .iter()
         .filter(|event| event.seq < boundary)
         .cloned()
         .collect();
+    evict_large_tool_outputs(&mut old);
     let messages = crate::history::messages_from_events(&old);
     let mut text = String::new();
     for message in messages {
@@ -126,6 +129,23 @@ pub fn summary_input(events: &[Event], boundary: u64) -> String {
     truncate_middle(&text, SUMMARY_INPUT_CHARS)
 }
 
+/// Hybrid compaction, step one: keep huge tool results out of the summarizer
+/// input. Kept turns still see the original event; only the summary prompt is
+/// reduced.
+fn evict_large_tool_outputs(events: &mut [Event]) {
+    for event in events {
+        let EventKind::ToolResult(result) = &mut event.kind else {
+            continue;
+        };
+        let total = result.output.chars().count();
+        if total > EVICT_TOOL_OUTPUT_CHARS {
+            let head: String = result.output.chars().take(1_000).collect();
+            result.output =
+                format!("{head}\n… (tool output elided before summarization: {total} chars) …");
+        }
+    }
+}
+
 fn truncate_middle(text: &str, limit: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= limit {
@@ -139,7 +159,9 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{AssistantMessage, TurnStarted, UserMessage};
+    use crate::event::{
+        AssistantMessage, ToolMetadata, ToolResult, ToolStatus, TurnStarted, UserMessage,
+    };
     use serde_json::json;
 
     fn event(seq: u64, kind: EventKind) -> Event {
@@ -259,5 +281,42 @@ mod tests {
         assert!(text.contains("User: "));
         assert!(text.contains("Assistant called read_file"));
         assert!(text.len() <= SUMMARY_INPUT_CHARS * 4 + 100);
+    }
+
+    #[test]
+    fn summary_input_elides_large_tool_results() {
+        let huge = "x".repeat(10_000);
+        let events = vec![
+            event(
+                1,
+                EventKind::TurnStarted(TurnStarted {
+                    input: "go".to_string(),
+                }),
+            ),
+            user(2, "read it"),
+            event(
+                3,
+                EventKind::ToolResult(ToolResult {
+                    call_id: "c1".to_string(),
+                    status: ToolStatus::Ok,
+                    output: huge.clone(),
+                    metadata: ToolMetadata::default(),
+                }),
+            ),
+            event(
+                4,
+                EventKind::TurnStarted(TurnStarted {
+                    input: "next".to_string(),
+                }),
+            ),
+        ];
+
+        let text = summary_input(&events, 4);
+        assert!(text.contains("tool output elided"), "{text}");
+        assert!(
+            text.len() < 5_000,
+            "summary input was not reduced: {}",
+            text.len()
+        );
     }
 }

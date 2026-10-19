@@ -28,6 +28,7 @@ use qcode_tools::sandbox::Sandbox;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use qcode_tools::subagent::SubagentTool;
 use qcode_tui::SkillView;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
@@ -123,6 +124,9 @@ struct RunArgs {
     /// Emit the event stream as JSONL on stdout.
     #[arg(long)]
     json: bool,
+    /// Include provider_raw in --json output (hidden by default).
+    #[arg(long)]
+    include_raw: bool,
     /// Provider name: mock, openai, deepseek, ollama, or a custom entry.
     #[arg(long)]
     provider: Option<String>,
@@ -239,6 +243,7 @@ async fn cmd_run(
         prompt,
         skill,
         json,
+        include_raw,
         provider,
         model,
         base_url,
@@ -330,7 +335,7 @@ async fn cmd_run(
         }
     };
     if json && let Some(event) = &first_event {
-        println!("{}", serde_json::to_string(event)?);
+        print_event(event, include_raw);
     }
 
     let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
@@ -398,10 +403,7 @@ async fn cmd_run(
         },
         |event| {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(event).expect("event should serialize")
-                );
+                print_event(event, include_raw);
             } else {
                 progress(event);
             }
@@ -497,6 +499,26 @@ async fn cmd_tui(
     .map_err(|err| redactor.redact(&err.to_string()))?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// JSONL on stdout. `provider_raw` is diagnostic noise for most consumers, so
+/// it is hidden unless `--include-raw` is passed (the log on disk keeps it).
+fn print_event(event: &Event, include_raw: bool) {
+    if include_raw {
+        println!(
+            "{}",
+            serde_json::to_string(event).expect("event should serialize")
+        );
+        return;
+    }
+    let mut value = serde_json::to_value(event).expect("event should serialize");
+    if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
+        data.remove("provider_raw");
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&value).expect("event should serialize")
+    );
 }
 
 fn cmd_sessions(
@@ -669,7 +691,7 @@ async fn cmd_doctor(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let healthy = doctor::run(data_dir, config_path)?;
+    let healthy = doctor::run(data_dir, config_path).await?;
     Ok(if healthy {
         ExitCode::SUCCESS
     } else {
