@@ -264,6 +264,7 @@ async fn cmd_run(
         &workspace,
         &resolved.model,
         Some(loaded.context.window_tokens),
+        None,
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 

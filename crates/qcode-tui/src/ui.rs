@@ -191,9 +191,11 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
 fn block_rows(block: &Block) -> usize {
     match block {
-        Block::User(text) | Block::Assistant(text) | Block::Notice(text) | Block::Skill(text) => {
-            text.split('\n').count().max(1)
-        }
+        Block::User(text)
+        | Block::Assistant(text)
+        | Block::Notice(text)
+        | Block::Skill(text)
+        | Block::Subagent(text) => text.split('\n').count().max(1),
         Block::Todo(items) => 1 + items.len(),
         Block::Tool(tool) => {
             1 + if tool.expanded {
@@ -238,6 +240,9 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             Block::Skill(text) => {
                 push_text(&mut lines, "◆ ", text, Style::default().fg(Color::Magenta))
             }
+            Block::Subagent(text) => {
+                push_text(&mut lines, "  ↳ ", text, Style::default().fg(Color::Blue))
+            }
             Block::Todo(items) => push_todo(&mut lines, items),
             Block::Tool(tool) => push_tool(&mut lines, tool),
         }
@@ -280,7 +285,10 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry) {
         .map(|duration| format!(" · {}", format_duration(duration)))
         .unwrap_or_default();
     lines.push(Line::from(vec![
-        Span::styled(format!(" {glyph} "), Style::default().fg(color)),
+        Span::styled(
+            format!("{}{glyph} ", if tool.child { "  ↳ " } else { " " }),
+            Style::default().fg(color),
+        ),
         Span::styled(
             tool.name.clone(),
             Style::default().add_modifier(Modifier::BOLD),

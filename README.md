@@ -211,8 +211,9 @@ cargo build -p qcode-eval
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **子 agent**：`subagent` 工具把独立任务交给新会话运行（同 provider / policy / approver、
   同 workspace、独立 JSONL；工具集去掉 `subagent`，深度固定为 1）。默认 20 轮、上限 40，
-  返回最终文本与子 session id；子会话成本不计入父 turn。默认 ask（`External`），
-  非交互模式需要 `--yes` 或策略放行 `subagent`。
+  返回最终文本与子 session id；子会话成本不计入父 turn。TUI 里子 agent 的文本与工具调用
+  以 `↳` 嵌套显示，不改父状态机。默认 ask（`External`），非交互模式需要 `--yes` 或
+  策略放行 `subagent`。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
 尚未实现：`web_search` 不在 v1 范围；sandbox 三个后端仍是实验性。

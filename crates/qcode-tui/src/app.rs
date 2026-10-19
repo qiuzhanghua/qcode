@@ -22,6 +22,8 @@ pub enum Block {
     User(String),
     Assistant(String),
     Tool(ToolEntry),
+    /// Progress from a child agent: text, notices and a nested tool row.
+    Subagent(String),
     /// The session todo list as returned by `todo_write`. Rendered inline so
     /// every update stays visible in the transcript.
     Todo(Vec<TodoItem>),
@@ -58,6 +60,8 @@ pub struct ToolEntry {
     /// When the call started, kept to show a duration once it finishes.
     pub started: OffsetDateTime,
     pub elapsed: Option<Duration>,
+    /// True for a child agent's tool call (rendered nested).
+    pub child: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +210,7 @@ impl App {
                     expanded: false,
                     started: event.ts,
                     elapsed: None,
+                    child: false,
                 }));
             }
             EventKind::ToolResult(result) => {
@@ -257,6 +262,73 @@ impl App {
                 self.blocks
                     .push(Block::Notice("context compacted".to_string()));
             }
+        }
+    }
+
+    /// Project an event from a child agent.
+    ///
+    /// Child turns must not move the parent status machine, so this only
+    /// appends nested transcript rows. Tool call ids are namespaced with the
+    /// child session id to avoid clashing with parent calls.
+    pub fn apply_child(&mut self, event: &Event) {
+        match &event.kind {
+            EventKind::SessionStarted(started) => {
+                self.blocks.push(Block::Subagent(format!(
+                    "subagent {} started ({}/{})",
+                    short_id(&event.session),
+                    started.provider,
+                    started.model
+                )));
+            }
+            EventKind::AssistantMessage(message) => {
+                for block in &message.blocks {
+                    if let ContentBlock::Text { text } = block {
+                        self.blocks.push(Block::Subagent(text.clone()));
+                    }
+                }
+            }
+            EventKind::ToolCall(call) => {
+                self.blocks.push(Block::Tool(ToolEntry {
+                    call_id: child_call_id(&event.session, &call.call_id),
+                    name: call.name.clone(),
+                    summary: summarize_call(&call.name, &call.arguments),
+                    arguments: call.arguments.clone(),
+                    status: None,
+                    output: String::new(),
+                    expanded: false,
+                    started: event.ts,
+                    elapsed: None,
+                    child: true,
+                }));
+            }
+            EventKind::ToolResult(result) => {
+                let call_id = child_call_id(&event.session, &result.call_id);
+                if let Some(tool) = self.tool_mut(&call_id) {
+                    tool.status = Some(result.status);
+                    tool.output = result.output.clone();
+                    tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                }
+            }
+            EventKind::Error(error) => {
+                self.blocks.push(Block::Subagent(format!(
+                    "error: {}: {}",
+                    error.kind, error.message
+                )));
+            }
+            EventKind::Compaction(_) => {
+                self.blocks
+                    .push(Block::Subagent("context compacted".to_string()));
+            }
+            EventKind::TurnEnded(ended) => {
+                self.blocks
+                    .push(Block::Subagent(format!("finished ({:?})", ended.status)));
+            }
+            // Approval prompts come through the approver channel; the child
+            // never owns the parent status line.
+            EventKind::UserMessage(_)
+            | EventKind::TurnStarted(_)
+            | EventKind::ApprovalRequested(_)
+            | EventKind::ApprovalDecided(_) => {}
         }
     }
 
@@ -506,6 +578,21 @@ impl App {
     }
 }
 
+/// Namespaced id so a child call cannot update a parent tool row.
+fn child_call_id(session: &str, call_id: &str) -> String {
+    format!("{session}:{call_id}")
+}
+
+/// Last few characters of a session id, enough to tell child runs apart.
+fn short_id(id: &str) -> String {
+    let count = id.chars().count();
+    if count <= 6 {
+        return id.to_string();
+    }
+    let suffix: String = id.chars().skip(count - 6).collect();
+    format!("…{suffix}")
+}
+
 /// One-line argument summary for the collapsed tool row.
 /// User messages produced by `/<skill-name>` start with this marker; the UI
 /// renders them as an activation notice instead of echoing the whole body.
@@ -551,7 +638,8 @@ fn composer() -> TextArea<'static> {
 #[cfg(test)]
 mod tests {
     use qcode_core::event::{
-        AssistantMessage, Event, EventKind, ToolCall, ToolResult, TurnStarted, Usage, UserMessage,
+        AssistantMessage, Event, EventKind, SessionStarted, ToolCall, ToolResult, TurnStarted,
+        Usage, UserMessage,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
@@ -929,6 +1017,100 @@ mod tests {
             usage: Usage::default(),
         })));
         assert_eq!(app.blocks, vec![Block::Assistant("done".to_string())]);
+    }
+
+    #[test]
+    fn child_events_are_nested_and_do_not_move_parent_status() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        })));
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "subagent".to_string(),
+            arguments: json!({"task": "investigate"}),
+        })));
+
+        let child = |seq: u64, kind: EventKind| Event::new(seq, "child-1", 1, kind);
+        app.apply_child(&child(
+            1,
+            EventKind::SessionStarted(SessionStarted {
+                model: "mock-1".to_string(),
+                provider: "mock".to_string(),
+                cwd: "/tmp".to_string(),
+                version: "0.1.0".to_string(),
+            }),
+        ));
+        app.apply_child(&child(
+            2,
+            EventKind::AssistantMessage(AssistantMessage {
+                blocks: vec![ContentBlock::Text {
+                    text: "child thinking".to_string(),
+                }],
+                provider_raw: json!({}),
+                usage: Usage::default(),
+            }),
+        ));
+        // Same call_id as the parent: the session prefix must keep them apart.
+        app.apply_child(&child(
+            3,
+            EventKind::ToolCall(ToolCall {
+                call_id: "c1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "a.txt"}),
+            }),
+        ));
+        app.apply_child(&child(
+            4,
+            EventKind::ToolResult(ToolResult {
+                call_id: "c1".to_string(),
+                status: ToolStatus::Ok,
+                output: "contents".to_string(),
+                metadata: Default::default(),
+            }),
+        ));
+        app.apply_child(&child(
+            5,
+            EventKind::TurnEnded(qcode_core::event::TurnEnded {
+                status: TurnStatus::Completed,
+                usage: Usage::default(),
+                cost_usd: 0.0,
+            }),
+        ));
+
+        // Parent turn is still running and the parent tool row is untouched.
+        assert!(app.status.running);
+        let parent = app
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Tool(tool) if !tool.child && tool.call_id == "c1" => Some(tool),
+                _ => None,
+            })
+            .expect("parent tool row");
+        assert_eq!(parent.status, None);
+
+        let child_tool = app
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Tool(tool) if tool.child && tool.name == "read_file" => Some(tool),
+                _ => None,
+            })
+            .expect("child tool row");
+        assert_eq!(child_tool.status, Some(ToolStatus::Ok));
+        assert_eq!(child_tool.output, "contents");
+
+        assert!(
+            app.blocks
+                .iter()
+                .any(|block| matches!(block, Block::Subagent(text) if text == "child thinking"))
+        );
+        assert!(
+            app.blocks
+                .iter()
+                .any(|block| matches!(block, Block::Subagent(text) if text.contains("finished")))
+        );
     }
 
     #[test]

@@ -493,8 +493,9 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
    `Arc<dyn Approver>`。
 2. 子工具集 = 父工具集去掉 `subagent`，因此深度固定为 1，不能递归；子 agent 与父共用
    workspace、provider、policy 和 approver，但**看不到父对话**（无 AGENTS.md / skills 索引）。
-3. 每次调用创建独立 session（独立 JSONL），子事件不转发到父 TUI；父只收到工具结果：
-   最终文本 + 子 session id + turn 数。空结果用占位文本。
+3. 每次调用创建独立 session（独立 JSONL）。TUI 通过 `TuiMsg::Child` 把子事件渲染成嵌套
+   进度块（`↳` 文本 / 工具行，不改父状态机）；headless 不转发，父只收到工具结果：最终文本
+   + 子 session id + turn 数。空结果用占位文本。
 4. 参数：`task` 必填；`max_turns` 默认 20、上限 40。`ApprovalClass::External`（默认 ask、
    串行）；子工具调用仍逐个走策略与审批，权限不能放大。
 5. 子会话的 usage 与 cost 不并入父 turn；需要审计时看子 session。父 turn 的 `--max-cost`
@@ -506,5 +507,6 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
 
 - 子 agent 适合“调研 / 独立改动”，任务描述必须自包含；子 agent 不能请求父对话补充。
 - 父 turn 成本被低估（子成本单独记录）；未来可在 `SubagentOutcome` 里回传 usage 并汇总。
-- 子工具调用不实时显示，只在审批时可见；完整过程见子 session。
+- TUI 的嵌套进度只读：子 `turn_ended` 不会结束父 turn，子 `session_started` 不会覆盖父
+  provider/model；完整事件仍以子 session 为准。
 - 深度 1 是刻意的：避免递归成本与审批套娃；需要更深时再加显式 `depth` 预算。

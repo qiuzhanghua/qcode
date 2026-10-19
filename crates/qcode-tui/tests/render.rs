@@ -124,6 +124,54 @@ fn status_bar_shows_the_sandbox_mode() {
 }
 
 #[test]
+fn child_agent_progress_is_rendered_nested() {
+    let mut app = App::new("mock", "mock-1");
+    let child = |seq: u64, kind: EventKind| Event::new(seq, "child-1", 1, kind);
+    app.apply_child(&child(
+        1,
+        EventKind::SessionStarted(SessionStarted {
+            model: "mock-1".to_string(),
+            provider: "mock".to_string(),
+            cwd: "/tmp".to_string(),
+            version: "0.1.0".to_string(),
+        }),
+    ));
+    app.apply_child(&child(
+        2,
+        EventKind::AssistantMessage(AssistantMessage {
+            blocks: vec![ContentBlock::Text {
+                text: "child says hi".to_string(),
+            }],
+            provider_raw: json!({}),
+            usage: Usage::default(),
+        }),
+    ));
+    app.apply_child(&child(
+        3,
+        EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path": "a.txt"}),
+        }),
+    ));
+    app.apply_child(&child(
+        4,
+        EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "contents".to_string(),
+            metadata: Default::default(),
+        }),
+    ));
+
+    let screen = draw(&app, 100, 20);
+    assert!(screen.contains("↳"), "nested marker missing:\n{screen}");
+    assert!(screen.contains("child says hi"), "{screen}");
+    assert!(screen.contains("read_file"), "{screen}");
+    assert!(screen.contains("a.txt"), "{screen}");
+}
+
+#[test]
 fn status_bar_shows_context_usage() {
     let mut app = App::new("mock", "mock-1");
     let screen = draw(&app, 90, 10);

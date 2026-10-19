@@ -11,13 +11,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use qcode_core::approval::Approver;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
-use qcode_core::event::SessionStarted;
+use qcode_core::event::{Event, SessionStarted};
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_tools::subagent::{SubagentOutcome, SubagentRequest, SubagentRunner};
 use tokio_util::sync::CancellationToken;
+
+/// Receives child events for live progress in a frontend.
+pub type ChildEventSink = Arc<dyn Fn(&Event) + Send + Sync>;
 
 pub struct EngineSubagent {
     store: SessionStore,
@@ -28,11 +31,13 @@ pub struct EngineSubagent {
     workspace: PathBuf,
     model: String,
     context_window: Option<u64>,
+    on_event: Option<ChildEventSink>,
 }
 
 /// Build the runner used by the `subagent` tool. The caller extends the parent
 /// registry with `SubagentTool::new(runner)`; `tools` here is the *child*
-/// registry (no subagent tool).
+/// registry (no subagent tool). `on_event` forwards child progress to the
+/// frontend; headless runs pass `None`.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     store: &SessionStore,
@@ -43,6 +48,7 @@ pub fn build(
     workspace: &Path,
     model: &str,
     context_window: Option<u64>,
+    on_event: Option<ChildEventSink>,
 ) -> Arc<dyn SubagentRunner> {
     Arc::new(EngineSubagent {
         store: store.clone(),
@@ -53,6 +59,7 @@ pub fn build(
         workspace: workspace.to_path_buf(),
         model: model.to_string(),
         context_window,
+        on_event,
     })
 }
 
@@ -63,7 +70,7 @@ impl SubagentRunner for EngineSubagent {
         request: SubagentRequest,
         cancel: CancellationToken,
     ) -> Result<SubagentOutcome, String> {
-        let (session_id, _) = self
+        let (session_id, first_event) = self
             .store
             .create(&SessionStarted {
                 model: self.model.clone(),
@@ -72,6 +79,11 @@ impl SubagentRunner for EngineSubagent {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .map_err(|err| format!("cannot create subagent session: {err}"))?;
+        // `store.create` writes session_started outside `run_turn`; forward it
+        // too so the TUI can show the child id before its first tool call.
+        if let Some(sink) = &self.on_event {
+            sink(&first_event);
+        }
 
         let options = RunOptions {
             session_id: &session_id,
@@ -91,6 +103,7 @@ impl SubagentRunner for EngineSubagent {
             skills: None,
         };
 
+        let sink = self.on_event.clone();
         let outcome = run_turn(
             TurnContext {
                 store: &self.store,
@@ -100,7 +113,11 @@ impl SubagentRunner for EngineSubagent {
                 approver: self.approver.as_ref(),
             },
             options,
-            |_| {},
+            move |event| {
+                if let Some(sink) = &sink {
+                    sink(event);
+                }
+            },
         )
         .await
         .map_err(|err| err.to_string())?;
@@ -130,6 +147,13 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(MockProvider::text("child answer"));
         let tools = ToolRegistry::default();
         let policy = Policy::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = {
+            let seen = seen.clone();
+            Arc::new(move |event: &Event| {
+                seen.lock().expect("event lock").push(event.clone());
+            }) as ChildEventSink
+        };
 
         let runner = build(
             &store,
@@ -140,6 +164,7 @@ mod tests {
             workspace.path(),
             "mock-1",
             Some(128_000),
+            Some(sink),
         );
 
         let outcome = runner
@@ -156,6 +181,21 @@ mod tests {
         assert_eq!(outcome.text, "child answer");
         assert_eq!(outcome.turns, 1);
         assert!(!outcome.cancelled);
+
+        let forwarded = seen.lock().expect("event lock");
+        assert!(
+            matches!(forwarded[0].kind, EventKind::SessionStarted(_)),
+            "first forwarded event should open the child session"
+        );
+        assert_eq!(forwarded[0].session, outcome.session_id);
+        assert!(forwarded.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AssistantMessage(message)
+                if message.blocks.iter().any(|block| matches!(
+                    block,
+                    qcode_core::event::ContentBlock::Text { text } if text == "child answer"
+                ))
+        )));
 
         let events = store.load(&outcome.session_id).expect("child session");
         assert!(matches!(events[0].kind, EventKind::SessionStarted(_)));

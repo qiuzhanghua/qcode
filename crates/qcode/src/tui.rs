@@ -64,6 +64,9 @@ pub struct TuiOptions<'a> {
 
 enum TuiMsg {
     Event(Event),
+    /// Progress from a child agent, rendered nested and not applied to the
+    /// parent status machine.
+    Child(Event),
     Delta(Delta),
     Key(KeyEvent),
     Approval {
@@ -122,6 +125,10 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     // The child registry excludes `subagent`, so nesting stops at depth one.
     let mut tools = options.tools.clone();
+    let child_sender = tx.clone();
+    let on_child: crate::subagent::ChildEventSink = Arc::new(move |event: &Event| {
+        let _ = child_sender.send(TuiMsg::Child(event.clone()));
+    });
     let runner = crate::subagent::build(
         options.store,
         options.provider.clone(),
@@ -131,6 +138,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         &options.workspace,
         options.model,
         options.context_window,
+        Some(on_child),
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 
@@ -169,6 +177,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                 let Some(message) = message else { break Ok(()) };
                 match message {
                     TuiMsg::Event(event) => app.apply(&event),
+                    TuiMsg::Child(event) => app.apply_child(&event),
                     TuiMsg::Key(key) => {
                         let Some(action) = app.handle_key(key) else { continue };
                         match action {
