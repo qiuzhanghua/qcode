@@ -98,9 +98,16 @@
   崩溃、超时、取消、截断、畸形结果、缺失/禁用 server 降级）、引擎端到端 1 条
   （默认 ask → 审批 → `mcp__stub__echo` → tool_result）。
 
-### M2-8 并行只读工具
+### M2-8 并行只读工具 ✅
 
 - 同一批 tool calls 中只读工具并发执行；写与 shell 仍串行；事件顺序稳定。
+- 实现：只并发**相邻**的 `ApprovalClass::Read` 调用（`buffer_unordered(4)`）；写、shell、
+  MCP（`External`）在原位置单独执行，因此读不会跨过同批的写。
+- 先规划整批（`tool_call` + 审批事件按 provider 顺序落盘），再执行，最后按调用顺序写
+  `tool_result`：每个调用恰好一个结果，重放与 TUI 投影不依赖完成顺序。
+- 取消共享 turn 的 CancellationToken；并行段保留已产生的输出，未执行的调用补 `cancelled`，
+  turn 以 `turn_ended(cancelled)` 收尾。
+- 验收：3 个读并发且结果有序、读-写-读不交叉、8 个读并发上限 4、取消收尾 4 条。
 
 ## 版本决定
 

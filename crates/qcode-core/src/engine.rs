@@ -24,7 +24,7 @@ use crate::provider::{
     CompletionRequest, Message, Provider, ProviderError, Role, StopReason, StreamEvent,
 };
 use crate::store::{SessionStore, StoreError};
-use crate::tool::{ToolContext, ToolOutput, ToolRegistry};
+use crate::tool::{ApprovalClass, Tool, ToolContext, ToolOutput, ToolRegistry};
 
 /// A streamed delta. Deltas are transient: they drive the UI while the model
 /// is talking and are never written to the event log. The completed blocks are
@@ -463,37 +463,16 @@ where
             );
         }
 
-        let mut halted = false;
-        for call in calls {
-            if halted || tool_context.cancel.is_cancelled() {
-                // Keep the one-call-one-result invariant even when the run is
-                // going away; replay and resume depend on it.
-                halted = true;
-                append_result(
-                    &mut writer,
-                    &call.call_id,
-                    &ToolOutput::cancelled("cancelled by user"),
-                    &mut on_event,
-                )?;
-                continue;
-            }
-
-            let output =
-                execute_call(&ctx, &tool_context, &mut writer, &call, &mut on_event).await?;
-            if output.status == ToolStatus::Cancelled {
-                halted = true;
-                continue;
-            }
-            messages.push(Message {
-                role: Role::Tool,
-                blocks: vec![ContentBlock::Text {
-                    text: output.output,
-                }],
-                tool_call_id: Some(call.call_id),
-            });
-        }
-
-        if halted {
+        if execute_calls(
+            &ctx,
+            &tool_context,
+            &mut writer,
+            calls,
+            &mut messages,
+            &mut on_event,
+        )
+        .await?
+        {
             return finish(
                 &mut writer,
                 TurnStatus::Cancelled,
@@ -687,13 +666,165 @@ async fn collect_stream(
     })
 }
 
-async fn execute_call<F>(
+/// Adjacent read-only calls in one provider batch run together. Writes, shell
+/// and MCP calls keep their original position and run alone, so a read never
+/// jumps over a write that could change what it sees.
+const MAX_PARALLEL_READS: usize = 4;
+
+struct PlannedCall {
+    call: ToolCallBlock,
+    class: Option<ApprovalClass>,
+    tool: Option<Arc<dyn Tool>>,
+    /// A result that was decided before execution: unknown tool, denied, or
+    /// cancelled while waiting for approval.
+    terminal: Option<ToolOutput>,
+}
+
+impl PlannedCall {
+    fn terminal(call: ToolCallBlock, class: Option<ApprovalClass>, output: ToolOutput) -> Self {
+        Self {
+            call,
+            class,
+            tool: None,
+            terminal: Some(output),
+        }
+    }
+}
+
+/// Plan, execute and log one batch of tool calls.
+///
+/// Planning appends `tool_call` and approval events in provider order. Only
+/// then are tools executed, so every call has exactly one result and the
+/// results are written in that same order even when reads run concurrently.
+/// Returns `true` when the turn has to end as cancelled.
+async fn execute_calls<F>(
     ctx: &TurnContext<'_>,
     tool_context: &ToolContext,
     writer: &mut SessionWriter<'_>,
-    call: &ToolCallBlock,
+    calls: Vec<ToolCallBlock>,
+    messages: &mut Vec<Message>,
     on_event: &mut F,
-) -> Result<ToolOutput, EngineError>
+) -> Result<bool, EngineError>
+where
+    F: FnMut(&Event),
+{
+    let mut planned = Vec::with_capacity(calls.len());
+    for call in calls {
+        planned.push(plan_call(ctx, tool_context, writer, call, on_event).await?);
+    }
+
+    let mut outputs: Vec<Option<ToolOutput>> = planned.iter().map(|_| None).collect();
+    let mut halted = false;
+    let mut index = 0;
+
+    while index < planned.len() {
+        if halted || tool_context.cancel.is_cancelled() {
+            // Keep the one-call-one-result invariant even when the run is
+            // going away; replay and resume depend on it.
+            outputs[index] = Some(ToolOutput::cancelled("cancelled by user"));
+            halted = true;
+            index += 1;
+            continue;
+        }
+
+        if let Some(output) = planned[index].terminal.take() {
+            if output.status == ToolStatus::Cancelled {
+                halted = true;
+            }
+            outputs[index] = Some(output);
+            index += 1;
+            continue;
+        }
+
+        if planned[index].class == Some(ApprovalClass::Read) {
+            let start = index;
+            while index < planned.len()
+                && planned[index].terminal.is_none()
+                && planned[index].class == Some(ApprovalClass::Read)
+            {
+                index += 1;
+            }
+
+            let results: Vec<(usize, ToolOutput)> =
+                futures_util::stream::iter((start..index).map(|slot| {
+                    let tool = planned[slot]
+                        .tool
+                        .as_ref()
+                        .expect("read call has a tool")
+                        .clone();
+                    let arguments = planned[slot].call.arguments.clone();
+                    async move {
+                        let output = match tool.execute(tool_context, arguments).await {
+                            Ok(output) => output,
+                            Err(err) => ToolOutput::error(err.to_string()),
+                        };
+                        (slot, output)
+                    }
+                }))
+                .buffer_unordered(MAX_PARALLEL_READS)
+                .collect()
+                .await;
+
+            for (slot, output) in results {
+                if output.status == ToolStatus::Cancelled {
+                    halted = true;
+                }
+                outputs[slot] = Some(output);
+            }
+            if tool_context.cancel.is_cancelled() {
+                halted = true;
+            }
+            continue;
+        }
+
+        let tool = planned[index]
+            .tool
+            .as_ref()
+            .expect("planned call has a tool")
+            .clone();
+        let output = match tool
+            .execute(tool_context, planned[index].call.arguments.clone())
+            .await
+        {
+            Ok(output) => output,
+            Err(err) => ToolOutput::error(err.to_string()),
+        };
+        if output.status == ToolStatus::Cancelled || tool_context.cancel.is_cancelled() {
+            halted = true;
+        }
+        outputs[index] = Some(output);
+        index += 1;
+    }
+
+    let mut finished = false;
+    for (index, planned) in planned.into_iter().enumerate() {
+        let output = outputs[index].take().expect("every call has a result");
+        append_result(writer, &planned.call.call_id, &output, on_event)?;
+        if output.status == ToolStatus::Cancelled {
+            finished = true;
+        }
+        if finished {
+            continue;
+        }
+        messages.push(Message {
+            role: Role::Tool,
+            blocks: vec![ContentBlock::Text {
+                text: output.output,
+            }],
+            tool_call_id: Some(planned.call.call_id),
+        });
+    }
+
+    Ok(finished)
+}
+
+async fn plan_call<F>(
+    ctx: &TurnContext<'_>,
+    tool_context: &ToolContext,
+    writer: &mut SessionWriter<'_>,
+    call: ToolCallBlock,
+    on_event: &mut F,
+) -> Result<PlannedCall, EngineError>
 where
     F: FnMut(&Event),
 {
@@ -707,15 +838,20 @@ where
     )?;
 
     if tool_context.cancel.is_cancelled() {
-        let output = ToolOutput::cancelled("cancelled by user");
-        append_result(writer, &call.call_id, &output, on_event)?;
-        return Ok(output);
+        return Ok(PlannedCall::terminal(
+            call,
+            None,
+            ToolOutput::cancelled("cancelled by user"),
+        ));
     }
 
     let Some(tool) = ctx.tools.get(&call.name) else {
-        let output = ToolOutput::error(format!("unknown tool: {}", call.name));
-        append_result(writer, &call.call_id, &output, on_event)?;
-        return Ok(output);
+        let message = format!("unknown tool: {}", call.name);
+        return Ok(PlannedCall::terminal(
+            call,
+            None,
+            ToolOutput::error(message),
+        ));
     };
 
     let class = tool.approval(tool_context, &call.arguments);
@@ -772,24 +908,28 @@ where
     )?;
 
     if aborted {
-        // The approver was still waiting when the run was cancelled. Log the
-        // tool result so the call/result invariant holds, then unwind.
-        let output = ToolOutput::cancelled("cancelled by user");
-        append_result(writer, &call.call_id, &output, on_event)?;
-        return Ok(output);
+        // The approver was still waiting when the run was cancelled.
+        return Ok(PlannedCall::terminal(
+            call,
+            Some(class),
+            ToolOutput::cancelled("cancelled by user"),
+        ));
     }
 
-    let output = if allowed {
-        match tool.execute(tool_context, call.arguments.clone()).await {
-            Ok(output) => output,
-            Err(err) => ToolOutput::error(err.to_string()),
-        }
-    } else {
-        ToolOutput::error(format!("denied: {reason}"))
-    };
+    if !allowed {
+        return Ok(PlannedCall::terminal(
+            call,
+            Some(class),
+            ToolOutput::error(format!("denied: {reason}")),
+        ));
+    }
 
-    append_result(writer, &call.call_id, &output, on_event)?;
-    Ok(output)
+    Ok(PlannedCall {
+        call,
+        class: Some(class),
+        tool: Some(tool),
+        terminal: None,
+    })
 }
 
 fn append_result<F>(

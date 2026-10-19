@@ -111,7 +111,9 @@
 3. 流式过程中只向前端推 delta，不逐 token 落盘。
 4. 流结束：append `assistant_message`（含 `provider_raw` 与 usage）。
 5. 无 tool_calls → append `turn_ended`，回到 Idle。
-6. 有 tool_calls：按只读/写分组 → 策略求值 → 必要审批 → 执行 → append `tool_result`。
+6. 有 tool_calls：按 provider 顺序规划（策略求值 → 必要审批，append `tool_call` / 审批事件）；
+   相邻只读调用最多 4 路并发执行，写、shell 与 MCP 调用在原位置单独串行；
+   全部完成后按调用顺序 append `tool_result`。
 7. 回到 2；每轮检查 `--max-turns` 与 `--max-cost`，超限则终止并标记失败原因。
 
 ## 7. 工具契约

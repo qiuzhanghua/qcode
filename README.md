@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 进行中（TUI、压缩、AGENTS.md、MCP 已接线）**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 完成（TUI、压缩、AGENTS.md、MCP、并行只读工具）**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -149,13 +149,15 @@ Windows 上（PowerShell）：
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
   `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
+- **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
+  串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **上下文压缩**：估算达到窗口 78% 时，保留最近 2 轮，把更早历史用同一模型摘要成
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：子 agent、OS 沙箱；M2 只剩并行只读工具（M2-8）。
+尚未实现：子 agent、OS 沙箱（M3/M4 范围）。
 
 ## 配置
 
