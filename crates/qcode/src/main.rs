@@ -19,10 +19,11 @@ use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::policy::Policy;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
-use qcode_core::tool::ToolRegistry;
+use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry;
+use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
@@ -189,6 +190,8 @@ async fn cmd_run(
     if agents_md.is_some() {
         tracing::info!("loaded AGENTS.md from the workspace root");
     }
+    let skills = load_skills(&loaded.skills, &workspace);
+    let skills_prompt = skills.prompt_section();
     let cwd = workspace.display().to_string();
 
     let (session_id, first_event) = store.create(&SessionStarted {
@@ -204,7 +207,7 @@ async fn cmd_run(
 
     let provider = build_provider(&resolved)?;
 
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir).await;
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
     let policy = Policy::new(loaded.approval.rules.clone());
     let approver: Box<dyn Approver> = if yes {
         Box::new(AutoApprove)
@@ -249,6 +252,7 @@ async fn cmd_run(
             on_delta: None,
             context_window: Some(loaded.context.window_tokens),
             agents_md,
+            skills: skills_prompt,
         },
         |event| {
             if json {
@@ -317,8 +321,10 @@ async fn cmd_tui(
     let store = SessionStore::new(data_dir.clone());
     let workspace = std::env::current_dir()?.canonicalize()?;
     let agents_md = agents::load(&workspace)?;
+    let skills = load_skills(&loaded.skills, &workspace);
+    let skills_prompt = skills.prompt_section();
     let provider = build_provider(&resolved)?;
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir).await;
+    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills).await;
     let policy = Policy::new(loaded.approval.rules.clone());
 
     tui::run(tui::TuiOptions {
@@ -334,6 +340,7 @@ async fn cmd_tui(
         max_turns: 8,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
+        skills: skills_prompt,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
@@ -383,16 +390,47 @@ async fn cmd_doctor(
     })
 }
 
-/// Built-in tools plus whatever the enabled MCP servers advertise. A server
-/// that fails to start only removes its own tools; `connect_all` logs why.
-async fn build_tools(mcp: &McpConfig, workspace: &Path, data_dir: &Path) -> ToolRegistry {
+/// Built-in tools plus whatever the enabled MCP servers advertise and the
+/// `skill` tool when skills were discovered. A server that fails to start only
+/// removes its own tools; `connect_all` logs why.
+async fn build_tools(
+    mcp: &McpConfig,
+    workspace: &Path,
+    data_dir: &Path,
+    skills: &Arc<SkillSet>,
+) -> ToolRegistry {
     let mut tools = builtin_registry();
     let mcp_tools = qcode_mcp::connect_all(&mcp.servers, workspace, &data_dir.join("logs")).await;
     if !mcp_tools.is_empty() {
         tracing::info!(count = mcp_tools.len(), "registered MCP tools");
     }
     tools.extend(mcp_tools);
+
+    if !skills.is_empty() {
+        tracing::info!(count = skills.len(), "registered the skill tool");
+        tools.extend([Arc::new(SkillTool::new(skills.clone())) as Arc<dyn Tool>]);
+    }
+
     tools
+}
+
+/// Discover user and project skills unless the config disables them. A missing
+/// `HOME` only loses the user-level root; the project root still works.
+fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet> {
+    if !config.enabled {
+        return Arc::new(SkillSet::default());
+    }
+
+    let mut roots = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push((
+            SkillSource::User,
+            PathBuf::from(home).join(".config/qcode/skills"),
+        ));
+    }
+    roots.push((SkillSource::Project, workspace.join(".qcode/skills")));
+
+    Arc::new(SkillSet::discover(&roots))
 }
 
 fn build_provider(

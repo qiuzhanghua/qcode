@@ -61,15 +61,20 @@ impl std::fmt::Debug for DeltaSink {
 pub const SYSTEM_PROMPT: &str = "You are qcode, a terminal coding agent. Be concise. Use the available tools when they are \
      needed, and verify your work before finishing.";
 
-/// Compose the static prompt with workspace instructions. AGENTS.md goes last
-/// so the user's project rules win over the generic text.
-pub fn system_prompt(agents_md: Option<&str>) -> String {
-    match agents_md {
-        Some(text) if !text.trim().is_empty() => {
-            format!("{SYSTEM_PROMPT}\n\n# AGENTS.md\n\n{}", text.trim())
-        }
-        _ => SYSTEM_PROMPT.to_string(),
+/// Compose the static prompt with workspace and skill instructions. AGENTS.md
+/// comes first, then the skills index, so the project rules stay closest to
+/// the base prompt.
+pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>) -> String {
+    let mut prompt = SYSTEM_PROMPT.to_string();
+    if let Some(text) = agents_md.map(str::trim).filter(|text| !text.is_empty()) {
+        prompt.push_str("\n\n# AGENTS.md\n\n");
+        prompt.push_str(text);
     }
+    if let Some(text) = skills.map(str::trim).filter(|text| !text.is_empty()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(text);
+    }
+    prompt
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +124,9 @@ pub struct RunOptions<'a> {
     pub context_window: Option<u64>,
     /// Contents of the workspace `AGENTS.md`, injected into the system prompt.
     pub agents_md: Option<String>,
+    /// Rendered `# Skills` index. The `skill` tool loads bodies on demand;
+    /// only names and descriptions live in the system prompt.
+    pub skills: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -354,7 +362,7 @@ where
 
         let request = CompletionRequest {
             model: options.model.to_string(),
-            system: system_prompt(options.agents_md.as_deref()),
+            system: system_prompt(options.agents_md.as_deref(), options.skills.as_deref()),
             messages: messages.clone(),
             tools: ctx.tools.specs(),
             max_output_tokens: None,
@@ -980,13 +988,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agents_md_is_appended_to_the_system_prompt() {
-        assert_eq!(system_prompt(None), SYSTEM_PROMPT);
-        assert_eq!(system_prompt(Some("   ")), SYSTEM_PROMPT);
+    fn agents_md_and_skills_are_appended_to_the_system_prompt() {
+        assert_eq!(system_prompt(None, None), SYSTEM_PROMPT);
+        assert_eq!(system_prompt(Some("   "), None), SYSTEM_PROMPT);
 
-        let with_rules = system_prompt(Some("  use tabs  "));
+        let with_rules = system_prompt(Some("  use tabs  "), None);
         assert!(with_rules.starts_with(SYSTEM_PROMPT));
         assert!(with_rules.contains("# AGENTS.md"));
         assert!(with_rules.ends_with("use tabs"));
+
+        let with_skills = system_prompt(Some("use tabs"), Some("# Skills\n\n- `x` (user): y"));
+        assert!(with_skills.contains("# AGENTS.md"));
+        assert!(with_skills.ends_with("- `x` (user): y"));
     }
 }

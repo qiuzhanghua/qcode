@@ -82,6 +82,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )

@@ -1,6 +1,6 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：M1 完成，M2 完成（TUI、压缩、AGENTS.md、MCP、并行只读工具）**
+终端 coding agent，Rust 实现，clean-room。**当前状态：M2 完成，skills 已接入；下一步 M3**
 （多轮工具调用、审批、workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -41,6 +41,10 @@ cargo test --workspace
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 # 默认每次调用都要审批；server 起不来只丢它自己的工具，不影响 session。
+
+# Skills：项目级放在 .qcode/skills/<name>/SKILL.md（公开 Agent Skills 格式）
+# 用户级放在 ~/.config/qcode/skills/<name>/SKILL.md；同名 project 覆盖 user。
+# 启动时只注入 name/description，模型通过 skill 工具按需加载正文与附件。
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
@@ -145,6 +149,10 @@ Windows 上（PowerShell）：
   支持文本、reasoning、工具参数增量、usage、取消与错误映射。
 - **AGENTS.md**：workspace 根的 `AGENTS.md` 注入 system prompt；超过 32KiB、非普通文件或
   symlink 会被拒绝（避免把 workspace 外内容喂给模型）。
+- **Skills**：发现 `~/.config/qcode/skills` 与 `<workspace>/.qcode/skills` 下的 `SKILL.md`
+  （公开 Agent Skills 格式）。system prompt 只放 `name` / `description`；模型调用 `skill`
+  工具按需加载正文，或用 `file` 参数读 `references/` 等附件。非法/超限/symlink 的 skill
+  跳过并告警，项目同名 skill 覆盖用户级。
 - **MCP（仅 tools）**：启动时连接启用的 stdio server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
@@ -201,6 +209,10 @@ name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 enabled = true
+
+# Skills：默认开启；enabled = false 可完全跳过发现。
+[skills]
+enabled = true
 ```
 
 `[[approval.rules]]` 的 `tool` 写完整工具名（如 `mcp__filesystem__read_file`）来放行单个
@@ -222,6 +234,7 @@ MCP 工具；规则按工具名精确匹配。
 - [M0 任务清单](docs/design/M0-TASKS.md) —— 基础设施与人工验收
 - [M1 任务清单](docs/design/M1-TASKS.md) —— 工具循环、审批与取消
 - [M2 任务清单](docs/design/M2-TASKS.md) —— TUI、压缩、AGENTS.md 与 MCP
+- [Skills 设计](docs/design/SKILLS.md) —— 发现、渐进披露与安全边界
 - [资料来源](docs/design/SOURCES.md) —— clean-room 白名单
 
 ## 布局
@@ -229,7 +242,7 @@ MCP 工具；规则按工具名精确匹配。
 ```
 crates/qcode-core        domain、event、store、state、policy、tool、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
-crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell
+crates/qcode-tools       read_file / write_file / edit_file / list_dir / glob / grep / run_shell / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）

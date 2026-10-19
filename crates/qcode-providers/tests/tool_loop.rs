@@ -129,6 +129,7 @@ async fn executes_tool_and_continues() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )
@@ -188,6 +189,7 @@ async fn denial_is_reported_to_the_model() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )
@@ -238,6 +240,7 @@ async fn asking_without_a_tty_denies() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )
@@ -291,6 +294,7 @@ async fn max_turns_stops_the_loop() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )
@@ -389,6 +393,7 @@ async fn cancellation_stops_a_running_tool() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     );
@@ -447,6 +452,7 @@ async fn cancellation_stops_a_hanging_stream() {
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     );

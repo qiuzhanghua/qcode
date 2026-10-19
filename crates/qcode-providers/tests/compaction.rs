@@ -130,6 +130,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             on_delta: None,
             context_window: Some(1_000),
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )
@@ -204,6 +205,7 @@ async fn a_roomy_window_skips_compaction() {
             on_delta: None,
             context_window: Some(10_000_000),
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )

@@ -33,6 +33,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         on_delta: None,
         context_window: None,
         agents_md: None,
+        skills: None,
     }
 }
 

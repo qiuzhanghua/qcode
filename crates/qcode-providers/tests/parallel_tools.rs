@@ -160,6 +160,7 @@ async fn run(
             on_delta: None,
             context_window: None,
             agents_md: None,
+            skills: None,
         },
         |_| {},
     )

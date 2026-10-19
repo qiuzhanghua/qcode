@@ -78,6 +78,7 @@ fn options<'a>(
         on_delta: None,
         context_window: None,
         agents_md: None,
+        skills: None,
     }
 }
 

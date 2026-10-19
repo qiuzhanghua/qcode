@@ -5,6 +5,7 @@ pub mod fs;
 pub mod path;
 pub mod search;
 pub mod shell;
+pub mod skills;
 
 use std::sync::Arc;
 

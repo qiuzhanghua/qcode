@@ -9,12 +9,12 @@
 
 - macOS / Linux 单机 CLI + TUI。
 - 单 agent、多轮工具调用、人工审批、JSONL 持久化、崩溃恢复、对话 fork。
-- 内置 10 个工具、MCP client（仅 tools）、AGENTS.md、上下文压缩。
+- 内置 11 个工具、MCP client（仅 tools）、AGENTS.md、skills、上下文压缩。
 - headless 模式（JSONL 事件流），可进 CI。
 
 **v1 不包含**
 
-- Windows、子 agent、skills、`web_search`、图片输入、自动更新、服务端/多租户。
+- Windows、子 agent、`web_search`、图片输入、自动更新、服务端/多租户。
 
 ## 2. 术语
 
@@ -130,6 +130,7 @@
 | `glob` | `pattern, path?` | 无 | allow | 结果排序；上限 1000 |
 | `grep` | `pattern, path?, glob?, context?` | 无 | allow | 内部 ripgrep；遵守 .gitignore |
 | `run_shell` | `command, cwd?, timeout?` | 执行 | ask | 独立进程组；清洗环境变量；默认超时 120s |
+| `skill` | `name, file?` | 读本地 skill | allow | 加载 SKILL.md 正文或附件；路径限制在 skill 目录 |
 | `todo_write` | `items[]` | session 状态 | allow | 渲染在 TUI，不进文件系统 |
 | `web_fetch` | `url` | 网络 | ask | 仅 http/https；上限 100KB；域名策略 |
 
@@ -166,9 +167,10 @@ MCP 工具默认 ask。`--yes` 只把 ask 降为 allow，不覆盖 deny。
 1. 基础 system prompt（静态、带版本号，不含时间戳）。
 2. 工具定义（静态、按名字排序）。
 3. `AGENTS.md`：user-level → repo root → … → cwd，越近优先级越高，带来源标注。
-4. `todo_write` 的当前状态。
-5. compaction 摘要（若有）。
-6. 最近的历史 turn（默认保留最近 2 轮原文）。
+4. Skills 索引：只列 `name` + `description`（上限 8KiB）；正文与附件由 `skill` 工具按需加载。
+5. `todo_write` 的当前状态。
+6. compaction 摘要（若有）。
+7. 最近的历史 turn（默认保留最近 2 轮原文）。
 
 预算：上下文窗口的 78% 触发压缩；为输出预留 20%。
 压缩第一步驱逐大工具输出（替换为“已落盘，路径 …”），第二步用**同一个模型**做结构化摘要

@@ -133,7 +133,7 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 - 从 cwd 向上到 repo root（`.git` 边界），越近优先级越高；user-level 最低。
 - 合并时带来源标注；总预算 32KB，超出截断并提示。
-- v1 不做 imports；skills 放 v2。
+- v1 不做 imports；skills 提前实现，格式与边界见 [SKILLS.md](./SKILLS.md) 与 ADR-0004。
 - UI 显示“已加载项目指令”；项目指令不能放宽权限。
 
 ### 4.12 TUI（v1）
@@ -267,3 +267,26 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 3. 取消共享 turn token；并行段保留已产生的输出，未执行的调用补 `cancelled`。
 
 **后果**：混合批的墙钟收益只来自连续读段；换来的是不引入跨写读的竞态。
+
+## ADR-0004：Agent Skills（2026-10-19）
+
+**背景**：原计划把 skills 放到 v2；用户要求先于 M3 实现。格式采用公开的
+[Agent Skills specification](https://agentskills.io/specification)，不参考任何竞品实现。
+
+**决定**
+
+1. 发现根：`~/.config/qcode/skills`（user）与 `<workspace>/.qcode/skills`（project）；
+   同名 project 覆盖 user。非法 / 超限 / symlink 的 skill 跳过并 `warn`。
+2. system prompt 只放 `name` + `description` 的索引（≤8KiB）；正文由 `skill` 工具按需加载，
+   附件通过 `skill(name, file=...)` 读取。这就是渐进披露，避免把全部 skill 内容塞进上下文。
+3. frontmatter 只解释 `name` / `description`，支持单行、引号、`|`、`>`；`allowed-tools`
+   被刻意忽略，skill 不能放宽审批。`SKILL.md` 上限 32KiB，附件读取上限 256KiB / 输出 32KiB。
+4. `skill` 工具是 `ApprovalClass::Read`；附件路径 canonicalize 后必须仍在 skill 目录内，
+   目录与文件都拒绝 symlink。
+5. 配置：`[skills] enabled = true`（默认）；关闭时完全不发现、不注册工具。
+
+**后果**
+
+- 不使用 skill 的 turn 只付索引 token；使用时要多一次 `skill` 工具往返。
+- 用户级 skill 在 workspace 外，只能由 `skill` 工具读取，`read_file` 的 workspace 边界不变。
+- 暂不支持 imports、远程安装、slash command 与自动激活；`tools/list` 式的动态刷新也不需要。

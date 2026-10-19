@@ -34,6 +34,22 @@ pub struct Config {
     /// stdio MCP servers. Disabled entries are kept for quick toggling.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Agent Skills discovered from the user and project config trees.
+    #[serde(default)]
+    pub skills: SkillsConfig,
+}
+
+/// Skills are on by default; `enabled = false` skips discovery entirely.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -523,6 +539,15 @@ mod tests {
             pricing_for(&config, "m", Some(1.0)),
             Err(ConfigError::InvalidPricing { .. })
         ));
+    }
+
+    #[test]
+    fn skills_are_enabled_by_default_and_can_be_disabled() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.skills.enabled);
+
+        let config: Config = toml::from_str("[skills]\nenabled = false\n").unwrap();
+        assert!(!config.skills.enabled);
     }
 
     #[test]

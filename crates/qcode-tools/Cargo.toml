@@ -15,10 +15,12 @@ tokio.workspace = true
 globset.workspace = true
 ignore.workspace = true
 regex.workspace = true
+tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [dev-dependencies]
+qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 tempfile.workspace = true
 tokio-util.workspace = true
