@@ -15,13 +15,12 @@ tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
 async-trait.workspace = true
+tracing.workspace = true
+globset.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-
-tracing.workspace = true
-globset.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"] }

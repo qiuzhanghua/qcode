@@ -1,11 +1,14 @@
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use qcode_core::event::ToolStatus;
 use qcode_core::tool::{Tool, ToolContext};
 use qcode_tools::fs::{EditFile, ListDir, ReadFile, WriteFile};
 use qcode_tools::shell::RunShell;
 use serde_json::json;
+#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
 fn context(dir: &Path) -> ToolContext {

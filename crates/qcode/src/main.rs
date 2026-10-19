@@ -737,8 +737,7 @@ fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet>
 /// project. The `.agents/skills` paths are what `npx skills` manages.
 fn skill_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
     let mut roots = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = config::home_dir() {
         roots.push((SkillSource::Global, home.join(".agents/skills")));
         roots.push((SkillSource::Global, home.join(".config/agents/skills")));
         roots.push((SkillSource::User, home.join(".config/qcode/skills")));
@@ -750,7 +749,7 @@ fn skill_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSou
 }
 
 fn config_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = config::home_dir();
     config
         .roots
         .iter()

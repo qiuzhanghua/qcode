@@ -318,9 +318,16 @@ pub fn load_policy(path: &Path) -> Result<Vec<Rule>, ConfigError> {
     Ok(file.rules)
 }
 
+/// Home directory across platforms. Windows has no `HOME` by default.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 pub fn default_path() -> Result<PathBuf, ConfigError> {
-    let home = std::env::var("HOME").map_err(|_| ConfigError::NoHome)?;
-    Ok(PathBuf::from(home).join(DEFAULT_CONFIG_RELATIVE))
+    let home = home_dir().ok_or(ConfigError::NoHome)?;
+    Ok(home.join(DEFAULT_CONFIG_RELATIVE))
 }
 
 /// The file `qc config edit` / `qc mcp add|remove` should modify.

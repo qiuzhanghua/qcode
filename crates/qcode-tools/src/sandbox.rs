@@ -18,7 +18,9 @@
 //! Every backend is preflighted at startup and fails closed.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[allow(unused_imports)]
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -506,10 +508,8 @@ impl Landlock {
             workspace: workspace.to_path_buf(),
             ruleset_fd,
         };
-        if let Err(err) = sandbox.install_rules(abi) {
-            // `Drop` closes the fd.
-            return Err(err);
-        }
+        // `Drop` closes the fd on error.
+        sandbox.install_rules(abi)?;
         Ok(sandbox)
     }
 
