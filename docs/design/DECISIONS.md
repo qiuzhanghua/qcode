@@ -727,3 +727,82 @@ Apple ID / team / app-specific password。
 - doctor 不再是纯离线命令；离线环境会显示 connectivity warn，但不会因此失败。
 - 压缩摘要对旧工具输出是有损的；模型仍可通过 `outputs/` 路径或重新读取文件获得细节。
 - 项目配置仍不能放宽审批；sandbox 项目覆盖仍需人工审计。
+
+## ADR-0023：统一网络出口与本地代理（2026-10-19）
+
+**背景**：v2 决定所有网络统一走本地代理，并要求域名策略与审计。应用级代理无法覆盖
+shell/MCP 的任意 socket，需要明确边界。
+
+**决定**
+
+1. qcode 启动进程内 HTTP CONNECT 代理，只监听 `127.0.0.1:0`；每个 qcode 进程一个
+   session token，放在代理 URL userinfo。
+2. provider、`web_fetch`、`web_search` 的 HTTP client 必须经代理，失败关闭，不回落直连；
+   代码只允许通过 `net::client()` 构造 client。
+3. shell/MCP 注入 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，属于
+   **尽力而为**，不是硬边界。v2.0 的 MCP 使用 session 共享 token 与 allowlist，简化实现；
+   每 server 隔离留到后续版本。
+4. allowlist 以 host:port 为单位；未知域名交互式 ask、非交互 deny；批准只对当前 session
+   生效；项目配置只能收紧。HTTPS 只检查 CONNECT host，不做 TLS 中间人。
+5. 解析到 private/loopback/link-local 的地址默认拒绝（`allow_private` 才放行），防 SSRF。
+6. 审计写 `logs/network.jsonl`；交互式网络决策写入 session 事件，保证 replay 可审计。
+7. OS 级 hard mode 放 v2.2：macOS Seatbelt 先做；Linux netns + relay 调研；Windows
+   WFP/AppContainer 放 v3。
+
+**后果**
+
+- 能阻止模型/工具误连未知域名，但不能阻止 `--noproxy`、raw socket、DoH 等本地绕过；
+  威胁模型是“防误操作”，不是防恶意本机代码。
+- shell/MCP 不遵守代理时策略失效；文档与 `qc doctor` 必须提示。
+- 代理不解决 DNS 泄漏；DNS 由代理进程解析，但仍可能有系统级解析。
+- 服务端/多租户不在本期；未来若需要集中审计，再把代理拆成 `qcode-proxyd`。
+
+**被否方案**
+
+- 系统代理/全局 DNS 拦截：影响整机，权限与可移植性差。
+- 仅工具内 allowlist、不起代理：无法统一审计与多工具复用。
+- v2.0 直接上 OS 级强制：Windows 成本过高，会拖垮 v2.0。
+
+## ADR-0024：ACP 集成与 fs/terminal 委托边界（2026-10-19）
+
+**背景**：v2.1 通过 Agent Client Protocol 接入 Zed/Neovim；ACP client 可以提供文件与
+终端能力，若直接使用会绕过 qcode 的路径策略与沙箱。
+
+**决定**
+
+1. 新增 `qc acp`，stdio JSON-RPC；实现 `initialize`、`session/new`、`session/load`、
+   `session/prompt`、`session/cancel` 与 `session/update`。
+2. 默认把 `fs/read_text_file`、`fs/write_text_file`、`terminal/*` 委托给 client，以尊重
+   未保存 buffer 与编辑器终端；client 不支持时回落本地工具。
+3. 所有写操作仍走 qcode 审批；路径必须 absolute，canonicalize 后必须在 workspace 内。
+   client 终端产生的网络流量不受 qcode 代理控制，属于 client 边界。
+4. 事件映射：assistant chunk、tool call/update、plan（todo）、compaction、notice；
+   `session/request_permission` 复用 `Approver`。
+5. pin ACP schema 版本，CI 跑 compatibility kit；Zed/Neovim 手工验收后再宣布支持。
+
+**后果**
+
+- 编辑器获得原生体验，qcode 不必先做 GUI；但 ACP 协议仍在演进，适配层需隔离。
+- 委托路径必须持续测试路径穿越、symlink、Windows 绝对路径。
+- 不在 v2.1 做多 agent 会话或 ACP registry 发布。
+
+## ADR-0025：v2 分期与 GUI 位置（2026-10-19）
+
+**决定**
+
+- v2.0：Windows、egress proxy、`web_search`、subagent 正式化、分发/更新。
+- v2.1：ACP、MCP resources/prompts、ACP 兼容性。
+- v2.2：图片输入、checkpoint/回滚、GUI spike、macOS 网络 hard mode。
+- v3：完整 GUI；服务端/多租户推迟。
+
+**GUI**
+
+- v2.2 只做 2 周 spike，同一组 3 个界面（transcript、diff、审批）分别用 egui 与
+  GPUI Kit 实现，记录性能/CJK/编辑器/体积/API 稳定性；v3 再决定并完整开发。
+- 独立 `qcode-desktop` crate，消费 core 事件投影，不改 TUI。
+- 当前倾向：产品级 GUI 用 GPUI Kit；内部/轻量面板用 egui；以 spike 为准。
+
+**后果**
+
+- v2.0/v2.1 不被 GUI 拖慢；Windows 与网络边界优先。
+- GUI 决策延后，但 spike 的验收标准已固定，避免无限期讨论。
