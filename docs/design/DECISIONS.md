@@ -375,3 +375,25 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 - 默认启动会带 45 个全局 skill 的索引（约 4k token）；不需要时可在 config 中禁用 skills，
   或把 `roots` 收窄（未来可加 `exclude`）。
 - `qc skills list` 与 TUI `/skills` 直接显示 global 来源，和 `npx skills list -g` 对齐。
+
+## ADR-0009：`/<skill-name>` 直接激活（2026-10-19）
+
+**背景**：模型是否调用 `skill` 工具不可控；`/skills` 只能查看，不能把 skill 指令交给模型。
+
+**决定**
+
+1. TUI 中任何 `/<name>` 若匹配已发现的 skill，构造一条 user message：
+   `[skill:<name>]\n<正文>\n\n<task 或默认指令>`，交给正常的 `run_turn`；不经过 `skill`
+   工具，也不改 system prompt。`/skills`、`/skills <name>` 仍只读。
+2. TUI 的 `UserMessage` 投影识别 `[skill:` 前缀，只显示 `activated skill <name>` 一行，
+   避免正文刷屏；事件日志保存完整 user_message，可审计、可 replay。
+3. `qc run --skill <name>` 是 headless 等价物；未知名字在创建 session 之前失败并列出候选。
+4. 激活是一次 user message，不是一次性 system 注入：正文留在历史里，后续 turn 仍可见，
+   直到 compaction；这符合“激活后继续按它工作”的预期。
+5. 审批不变：skill 里的 shell 命令仍按正常规则 ask/deny；skill 不能放宽权限。
+
+**后果**
+
+- 正文会占上下文（最大 64KiB）；长 skill 可能加速触发 78% 压缩。
+- 以 `/` 开头的普通提问仍会被当成命令；要发字面 `/` 需改写。
+- 若将来需要“只对一轮生效”，再增加显式 `/use --once` 或 system 注入模式。

@@ -248,7 +248,7 @@ shell 环境清洗：只传 `PATH HOME USER SHELL LANG LC_* TERM TMPDIR` 与用�
 | `qc sandbox exec` | 内部使用，不对外承诺 |
 
 `run` 的关键 flag：`--json`、`--model`、`--provider`、`--approval-policy`、`--yes`、
-`--max-turns`、`--max-cost`、`--timeout`、`--cwd`、`--config`。
+`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--cwd`、`--config`。
 stdout 只输出 JSONL 事件；日志与进度走 stderr。
 `--json` 默认不输出 `provider_raw`，`--include-raw` 才输出。
 
@@ -263,8 +263,8 @@ stdout 只输出 JSONL 事件；日志与进度走 stderr。
 - 长 transcript 只渲染可见行（虚拟化），不能全量布局。
 - 默认不捕获鼠标，保留终端原生选择/复制。
 - 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标纳入测试。
-- 以 `/` 开头的输入先交给 UI 命令处理（当前 `/skills`、`/skills <name>`），不进入 engine；
-  命令只写本地 transcript，不产生事件。
+- 以 `/` 开头的输入先交给 UI 命令处理：`/skills` 与 `/skills <name>` 只读本地 transcript；
+  `/<skill-name> [task]` 把 skill 正文作为 user message 提交并开始 turn（走正常事件流）。
 - 框架选型与约束见 [DECISIONS.md](./DECISIONS.md) 的 ADR-0001。
 
 ## 15. 存储

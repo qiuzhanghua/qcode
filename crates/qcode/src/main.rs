@@ -57,6 +57,9 @@ enum Command {
 struct RunArgs {
     /// Prompt text. Read from stdin when omitted.
     prompt: Option<String>,
+    /// Activate a discovered skill by prepending its instructions to the prompt.
+    #[arg(long, value_name = "NAME")]
+    skill: Option<String>,
     /// Emit the event stream as JSONL on stdout.
     #[arg(long)]
     json: bool,
@@ -149,6 +152,7 @@ async fn cmd_run(
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let RunArgs {
         prompt,
+        skill,
         json,
         provider,
         model,
@@ -208,6 +212,10 @@ async fn cmd_run(
     }
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
+    let prompt = match skill {
+        Some(name) => activated_prompt(&skills, &name, prompt)?,
+        None => prompt,
+    };
     let cwd = workspace.display().to_string();
 
     let (session_id, first_event) = store.create(&SessionStarted {
@@ -525,6 +533,35 @@ fn cmd_skills(
     }
     println!("\n{} skill(s)", skills.len());
     Ok(ExitCode::SUCCESS)
+}
+
+fn activated_prompt(
+    skills: &SkillSet,
+    name: &str,
+    task: String,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let Some(skill) = skills.get(name) else {
+        let available: Vec<&str> = skills
+            .iter()
+            .take(20)
+            .map(|skill| skill.name.as_str())
+            .collect();
+        return Err(format!(
+            "unknown skill '{name}'; available: {}",
+            available.join(", ")
+        )
+        .into());
+    };
+    let task = if task.trim().is_empty() {
+        "Follow the skill instructions above now.".to_string()
+    } else {
+        task
+    };
+    Ok(format!(
+        "[skill:{}]\n{}\n\n{task}",
+        skill.name,
+        skill.body.trim()
+    ))
 }
 
 fn skill_views(skills: &SkillSet) -> Vec<SkillView> {

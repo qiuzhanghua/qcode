@@ -134,7 +134,12 @@ impl App {
                 self.streaming.clear();
             }
             EventKind::UserMessage(message) => {
-                self.blocks.push(Block::User(message.text.clone()));
+                if let Some(name) = activated_skill(&message.text) {
+                    self.blocks
+                        .push(Block::Skill(format!("activated skill {name}")));
+                } else {
+                    self.blocks.push(Block::User(message.text.clone()));
+                }
             }
             EventKind::AssistantMessage(message) => {
                 // The completed message supersedes the streamed preview, which
@@ -261,7 +266,9 @@ impl App {
                 if text.trim_start().starts_with('/') {
                     self.clear_composer();
                     self.scroll = 0;
-                    self.run_command(text.trim());
+                    if let Some(action) = self.run_command(text.trim()) {
+                        return Some(action);
+                    }
                     return None;
                 }
                 if self.status.running {
@@ -318,21 +325,45 @@ impl App {
     }
 
     /// Slash commands are local UI actions; the model never sees them.
-    fn run_command(&mut self, raw: &str) {
+    /// `/skills` inspects, `/<skill-name>` activates a skill by submitting a
+    /// user message that contains its instructions.
+    fn run_command(&mut self, raw: &str) -> Option<UiAction> {
         let (command, argument) = match raw.split_once(char::is_whitespace) {
             Some((command, argument)) => (command, argument.trim()),
             None => (raw, ""),
         };
-        match command {
-            "/skills" => {
-                if argument.is_empty() {
-                    self.show_skills();
-                } else {
-                    self.show_skill(argument);
-                }
+
+        if command == "/skills" {
+            if argument.is_empty() {
+                self.show_skills();
+            } else {
+                self.show_skill(argument);
             }
-            other => self.push_notice(format!("unknown command '{other}'; try /skills")),
+            return None;
         }
+
+        let name = command.strip_prefix('/').unwrap_or_default();
+        let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
+            self.push_notice(format!(
+                "unknown command '{command}'; try /skills, or /<skill-name>"
+            ));
+            return None;
+        };
+
+        if self.status.running {
+            self.push_notice("a turn is already running; Esc cancels it before activating a skill");
+            return None;
+        }
+
+        let mut text = format!("[skill:{}]\n{}\n", skill.name, skill.body.trim());
+        if argument.is_empty() {
+            text.push_str("\nFollow the skill instructions above now.");
+        } else {
+            text.push('\n');
+            text.push_str(argument);
+        }
+        self.status.running = true;
+        Some(UiAction::Submit(text))
     }
 
     fn show_skills(&mut self) {
@@ -409,6 +440,14 @@ impl App {
 }
 
 /// One-line argument summary for the collapsed tool row.
+/// User messages produced by `/<skill-name>` start with this marker; the UI
+/// renders them as an activation notice instead of echoing the whole body.
+fn activated_skill(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("[skill:")?;
+    let end = rest.find(']')?;
+    Some(&rest[..end])
+}
+
 pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
     let raw = match name {
         "run_shell" => arguments
@@ -531,6 +570,45 @@ mod tests {
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Notice(text)) if text.contains("unknown command '/nope'")
+        ));
+    }
+
+    #[test]
+    fn slash_skill_name_activates_it_as_a_user_message() {
+        let mut app = App::new("mock", "mock-1");
+        app.skills = vec![demo_skill()];
+
+        type_text(&mut app, "/demo 盘点本机");
+        let action = app.handle_key(key(KeyCode::Enter));
+        let Some(UiAction::Submit(text)) = action else {
+            panic!("expected a submit action");
+        };
+        assert!(text.starts_with("[skill:demo]\n"));
+        assert!(text.contains("Follow the steps."));
+        assert!(text.ends_with("盘点本机"));
+        assert!(app.status.running);
+
+        app.apply(&event(EventKind::UserMessage(UserMessage {
+            text,
+            attachments: Vec::new(),
+        })));
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Skill(text)) if text == "activated skill demo"
+        ));
+    }
+
+    #[test]
+    fn slash_skill_activation_is_rejected_while_running() {
+        let mut app = App::new("mock", "mock-1");
+        app.skills = vec![demo_skill()];
+        app.status.running = true;
+
+        type_text(&mut app, "/demo");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert!(matches!(
+            app.blocks.last(),
+            Some(Block::Notice(text)) if text.contains("already running")
         ));
     }
 

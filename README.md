@@ -43,9 +43,12 @@ cargo test --workspace
 # 默认每次调用都要审批；server 起不来只丢它自己的工具，不影响 session。
 
 # Skills：项目级放在 .qcode/skills/<name>/SKILL.md（公开 Agent Skills 格式）
-# 用户级放在 ~/.config/qcode/skills/<name>/SKILL.md；同名 project 覆盖 user。
-# 启动时只注入 name/description，模型通过 skill 工具按需加载正文与附件。
+# 用户级放在 ~/.config/qcode/skills/<name>/SKILL.md；global 默认扫 ~/.agents/skills。
+# 启动时只注入 name/description；/<skill-name> 直接激活，skill 工具按需加载。
 ./target/debug/qc skills list   # 查看发现结果与被检查的根
+
+# 直接激活一个 skill（等价于 TUI 里输入 /dev-env-inventory）
+./target/debug/qc run "盘点本机" --provider deepseek --skill dev-env-inventory
 
 # 真实 provider：可以读写文件、跑命令
 export DEEPSEEK_API_KEY=...
@@ -60,8 +63,10 @@ TUI 键位：Enter 发送、**Ctrl-N 换行**（支持 Kitty 键盘协议的终�
 Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
 Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底部；
 审批浮层里 `y` 允许、`n` 拒绝。输入 `/skills` 列出发现的 skill，`/skills <name>`
-直接查看正文（不经过模型，方便测试）。助手文本按 ≤60Hz 合并流式显示，完成后落盘为一条
-`assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
+直接查看正文；输入 `/<skill-name>`（可带任务，如 `/dev-env-inventory 盘点本机`）
+直接激活：正文作为用户消息提交，不必等模型决定是否调用工具。激活不经过 `skill` 工具、
+也不新增事件类型，事件日志里保留完整的 user_message。助手文本按 ≤60Hz 合并流式显示，
+完成后落盘为一条 `assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
 
 ## 发布构建（多平台）
 
@@ -238,7 +243,7 @@ MCP 工具；规则按工具名精确匹配。
 `default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
-常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--data-dir`、`--config`。
+常用 flag：`--yes`、`--cwd`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`。
 `--max-cost` 必须有对应 `[pricing."<model>"]`，否则启动即报错（避免把预算当成无限制）。
 
 ## 文档
