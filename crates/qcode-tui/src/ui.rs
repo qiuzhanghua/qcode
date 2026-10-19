@@ -53,6 +53,28 @@ fn sandbox_style(sandbox: &str) -> Style {
     }
 }
 
+/// Estimated context usage, capped to 0–100%.
+fn context_percent(app: &App) -> Option<f64> {
+    let window = app.context_window.filter(|window| *window > 0)?;
+    Some((app.context_tokens as f64 / window as f64 * 100.0).clamp(0.0, 100.0))
+}
+
+fn context_label(app: &App) -> String {
+    match context_percent(app) {
+        Some(percent) => format!("ctx {percent:.0}%"),
+        None => "ctx —".to_string(),
+    }
+}
+
+fn context_style(app: &App) -> Style {
+    match context_percent(app) {
+        Some(percent) if percent >= 78.0 => Style::default().fg(Color::Red),
+        Some(percent) if percent >= 50.0 => Style::default().fg(Color::Yellow),
+        Some(_) => Style::default().fg(Color::Gray),
+        None => Style::default().fg(Color::DarkGray),
+    }
+}
+
 fn status_label(app: &App) -> (&'static str, Color) {
     if app.approval.is_some() {
         ("awaiting approval", Color::Yellow)
@@ -85,6 +107,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             format!("{}:{}", app.status.provider, app.status.model),
             muted,
         ),
+        Span::raw("  "),
+        Span::styled(context_label(app), context_style(app)),
         Span::raw("  "),
         Span::styled(
             format!("sandbox {}", app.sandbox),

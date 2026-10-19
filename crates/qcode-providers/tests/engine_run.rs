@@ -166,3 +166,53 @@ async fn stream_deltas_reach_the_frontend() {
     assert_eq!(outcome.text, "hello world");
     assert_eq!(&*seen.lock().expect("buffer lock"), "hello world");
 }
+
+#[tokio::test]
+async fn context_usage_is_reported_to_the_frontend() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::new(dir.path());
+    let (id, _) = store.create(&meta()).expect("create session");
+
+    let provider = MockProvider::text("hello");
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let seen = seen.clone();
+        DeltaSink::new(move |delta: Delta| {
+            seen.lock().expect("delta lock").push(delta);
+        })
+    };
+
+    let mut options = options(&id, dir.path());
+    // The estimator counts characters / 4, so make the prompt big enough to
+    // produce a non-zero estimate.
+    options.input = "x".repeat(400);
+    options.context_window = Some(16_000);
+    options.on_delta = Some(sink);
+
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+        },
+        options,
+        |_| {},
+    )
+    .await
+    .expect("run turn");
+
+    let seen = seen.lock().expect("delta lock");
+    let (tokens, window) = seen
+        .iter()
+        .find_map(|delta| match delta {
+            Delta::Context { tokens, window } => Some((*tokens, *window)),
+            _ => None,
+        })
+        .expect("context delta");
+    assert_eq!(window, 16_000);
+    assert!(tokens > 0);
+}

@@ -34,6 +34,12 @@ use crate::tool::{ApprovalClass, Tool, ToolContext, ToolOutput, ToolRegistry};
 pub enum Delta {
     Text(String),
     Reasoning(String),
+    /// Estimated prompt size for the status bar. Sent once per provider call,
+    /// after compaction and before the stream starts.
+    Context {
+        tokens: u64,
+        window: u64,
+    },
 }
 
 /// `Fn` wrapper so `RunOptions` can stay `Clone + Debug` while holding a
@@ -382,6 +388,17 @@ where
             tools: ctx.tools.specs(),
             max_output_tokens: None,
         };
+
+        // Transient UI signal only: the estimate is recomputed on every call,
+        // after compaction, and never enters the event log.
+        if let Some(window) = options.context_window
+            && let Some(sink) = &options.on_delta
+        {
+            sink.emit(Delta::Context {
+                tokens: compact::estimate_tokens(&messages),
+                window,
+            });
+        }
 
         let collected = collect_stream(
             ctx.provider,

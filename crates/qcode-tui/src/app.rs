@@ -103,6 +103,11 @@ pub struct App {
     /// Active sandbox backend (`none`, `sandbox-exec`, `bwrap`, `landlock`).
     /// Kept as a string so the TUI does not depend on `qcode-tools`.
     pub sandbox: String,
+    /// Estimated prompt tokens reported by the engine before the last call.
+    pub context_tokens: u64,
+    /// Context window from `[context] window_tokens`; `None` until configured
+    /// or reported by the engine.
+    pub context_window: Option<u64>,
     pub approval: Option<ApprovalPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
@@ -126,6 +131,8 @@ impl App {
                 last: None,
             },
             sandbox: "none".to_string(),
+            context_tokens: 0,
+            context_window: None,
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
@@ -439,8 +446,13 @@ impl App {
     /// Append a transient stream delta. Reasoning is acknowledged but not
     /// rendered yet (M2 keeps the transcript focused on visible output).
     pub fn apply_delta(&mut self, delta: &Delta) {
-        if let Delta::Text(text) = delta {
-            self.streaming.push_str(text);
+        match delta {
+            Delta::Text(text) => self.streaming.push_str(text),
+            Delta::Context { tokens, window } => {
+                self.context_tokens = *tokens;
+                self.context_window = Some(*window);
+            }
+            Delta::Reasoning(_) => {}
         }
     }
 
@@ -888,6 +900,20 @@ mod tests {
             usage: Usage::default(),
         })));
         assert_eq!(app.blocks, vec![Block::Assistant("done".to_string())]);
+    }
+
+    #[test]
+    fn context_deltas_update_the_status_fields() {
+        let mut app = App::new("mock", "mock-1");
+        assert_eq!(app.context_tokens, 0);
+        assert_eq!(app.context_window, None);
+
+        app.apply_delta(&Delta::Context {
+            tokens: 15_360,
+            window: 128_000,
+        });
+        assert_eq!(app.context_tokens, 15_360);
+        assert_eq!(app.context_window, Some(128_000));
     }
 
     #[test]

@@ -124,6 +124,22 @@ fn status_bar_shows_the_sandbox_mode() {
 }
 
 #[test]
+fn status_bar_shows_context_usage() {
+    let mut app = App::new("mock", "mock-1");
+    let screen = draw(&app, 90, 10);
+    assert!(screen.contains("ctx —"), "{screen}");
+
+    app.context_window = Some(128_000);
+    app.context_tokens = 15_360;
+    let screen = draw(&app, 90, 10);
+    assert!(screen.contains("ctx 12%"), "{screen}");
+
+    app.context_tokens = 128_000;
+    let screen = draw(&app, 90, 10);
+    assert!(screen.contains("ctx 100%"), "{screen}");
+}
+
+#[test]
 fn collapsed_tool_hides_output_until_expanded() {
     let app = app_with_transcript();
     let screen = draw(&app, 80, 24);
