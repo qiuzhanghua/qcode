@@ -150,6 +150,8 @@ pub struct RunOutcome {
     pub text: String,
     pub stop_reason: StopReason,
     pub cancelled: bool,
+    /// Total tokens for the turn, including nested sub-agent work.
+    pub usage: Usage,
     /// Estimated USD for the whole turn, zero when no pricing is configured.
     pub cost_usd: f64,
 }
@@ -510,6 +512,8 @@ where
             calls,
             &mut messages,
             &mut todos,
+            &mut total_usage,
+            &mut total_cost,
             &mut on_event,
         )
         .await?
@@ -557,7 +561,7 @@ where
     writer.append(
         EventKind::TurnEnded(TurnEnded {
             status,
-            usage,
+            usage: usage.clone(),
             cost_usd,
         }),
         on_event,
@@ -568,6 +572,7 @@ where
         text,
         stop_reason,
         cancelled: status == TurnStatus::Cancelled,
+        usage,
         cost_usd,
     })
 }
@@ -738,6 +743,7 @@ impl PlannedCall {
 /// then are tools executed, so every call has exactly one result and the
 /// results are written in that same order even when reads run concurrently.
 /// Returns `true` when the turn has to end as cancelled.
+#[allow(clippy::too_many_arguments)]
 async fn execute_calls<F>(
     ctx: &TurnContext<'_>,
     tool_context: &ToolContext,
@@ -745,6 +751,8 @@ async fn execute_calls<F>(
     calls: Vec<ToolCallBlock>,
     messages: &mut Vec<Message>,
     todos: &mut Option<Vec<TodoItem>>,
+    total_usage: &mut Usage,
+    total_cost: &mut f64,
     on_event: &mut F,
 ) -> Result<bool, EngineError>
 where
@@ -841,6 +849,10 @@ where
     let mut finished = false;
     for (index, planned) in planned.into_iter().enumerate() {
         let output = outputs[index].take().expect("every call has a result");
+        // A tool may have done work on the engine's behalf (a sub-agent).
+        // Fold its usage/cost into the parent turn before the output moves.
+        total_usage.merge(&output.usage);
+        *total_cost += output.cost_usd;
         // `todo_write` is session state: keep the in-memory copy in sync so the
         // next request's system prompt sees the list. The tool result remains
         // the audit trail and the replay source (`todo::current`).

@@ -9,7 +9,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
-use qcode_core::event::{ToolMetadata, ToolStatus};
+use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use regex::Regex;
@@ -128,6 +128,8 @@ impl Tool for GlobTool {
                 bytes,
                 ..ToolMetadata::default()
             },
+            usage: Usage::default(),
+            cost_usd: 0.0,
         })
     }
 }
@@ -274,6 +276,8 @@ impl Tool for GrepTool {
                 bytes,
                 ..ToolMetadata::default()
             },
+            usage: Usage::default(),
+            cost_usd: 0.0,
         })
     }
 }

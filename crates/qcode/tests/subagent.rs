@@ -53,4 +53,13 @@ fn mock_subagent_runs_a_child_session() {
         .expect("sessions dir")
         .count();
     assert_eq!(sessions, 2, "parent + child session expected");
+
+    // Child usage is folded into the parent turn: 12 input tokens from the
+    // child's mock call + 12 from the parent's final call.
+    let ended = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|value| value["type"] == "turn_ended")
+        .expect("turn_ended event");
+    assert_eq!(ended["data"]["usage"]["input_tokens"], 24, "{ended}");
 }

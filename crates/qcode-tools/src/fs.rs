@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use qcode_core::event::{ToolMetadata, ToolStatus};
+use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -117,6 +117,8 @@ impl Tool for ReadFile {
                 bytes: text.len() as u64,
                 ..ToolMetadata::default()
             },
+            usage: Usage::default(),
+            cost_usd: 0.0,
         })
     }
 }
@@ -336,6 +338,8 @@ impl Tool for ListDir {
                 bytes,
                 ..ToolMetadata::default()
             },
+            usage: Usage::default(),
+            cost_usd: 0.0,
         })
     }
 }

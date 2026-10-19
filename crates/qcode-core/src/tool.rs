@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::event::{ToolMetadata, ToolStatus};
+use crate::event::{ToolMetadata, ToolStatus, Usage};
 use crate::provider::ToolSpec;
 
 /// Everything a tool is allowed to know about its surroundings.
@@ -63,6 +63,11 @@ pub struct ToolOutput {
     pub status: ToolStatus,
     pub output: String,
     pub metadata: ToolMetadata,
+    /// Tokens consumed by work the tool performed on the engine's behalf (a
+    /// sub-agent). The engine merges this into the parent turn's usage.
+    pub usage: Usage,
+    /// Estimated USD for that work, using the parent's pricing.
+    pub cost_usd: f64,
 }
 
 impl ToolOutput {
@@ -75,6 +80,8 @@ impl ToolOutput {
             },
             status: ToolStatus::Ok,
             output,
+            usage: Usage::default(),
+            cost_usd: 0.0,
         }
     }
 
@@ -87,6 +94,8 @@ impl ToolOutput {
             },
             status: ToolStatus::Error,
             output,
+            usage: Usage::default(),
+            cost_usd: 0.0,
         }
     }
 
@@ -106,6 +115,8 @@ impl ToolOutput {
             },
             status: ToolStatus::Cancelled,
             output,
+            usage: Usage::default(),
+            cost_usd: 0.0,
         }
     }
 }

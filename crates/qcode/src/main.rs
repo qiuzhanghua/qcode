@@ -264,6 +264,7 @@ async fn cmd_run(
         &workspace,
         &resolved.model,
         Some(loaded.context.window_tokens),
+        pricing,
         None,
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
@@ -706,6 +707,11 @@ fn build_provider(
             vec![
                 StreamEvent::Started,
                 StreamEvent::TextDelta("子 agent：仓库有 core/store/cli 三个 crate。".to_string()),
+                StreamEvent::Usage(qcode_core::event::Usage {
+                    input_tokens: Some(12),
+                    output_tokens: Some(6),
+                    ..qcode_core::event::Usage::default()
+                }),
                 StreamEvent::Ended {
                     stop_reason: StopReason::EndTurn,
                 },
@@ -713,6 +719,11 @@ fn build_provider(
             vec![
                 StreamEvent::Started,
                 StreamEvent::TextDelta("父 agent 收到子任务结果。".to_string()),
+                StreamEvent::Usage(qcode_core::event::Usage {
+                    input_tokens: Some(12),
+                    output_tokens: Some(6),
+                    ..qcode_core::event::Usage::default()
+                }),
                 StreamEvent::Ended {
                     stop_reason: StopReason::EndTurn,
                 },

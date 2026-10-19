@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use qcode_core::event::{ToolMetadata, ToolStatus};
+use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -28,12 +28,16 @@ pub struct SubagentRequest {
     pub max_turns: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubagentOutcome {
     pub text: String,
     pub session_id: String,
     pub turns: u32,
     pub cancelled: bool,
+    /// Tokens spent by the child turn; the engine folds this into the parent.
+    pub usage: Usage,
+    /// Child USD estimate under the parent's pricing.
+    pub cost_usd: f64,
 }
 
 /// Runs a child agent. Implementations own the child session and inherit the
@@ -158,6 +162,8 @@ impl Tool for SubagentTool {
                 bytes: raw.len() as u64,
                 ..ToolMetadata::default()
             },
+            usage: outcome.usage,
+            cost_usd: outcome.cost_usd,
         })
     }
 }
@@ -190,6 +196,12 @@ mod tests {
                 session_id: "child-1".to_string(),
                 turns: 3,
                 cancelled: false,
+                usage: Usage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(5),
+                    ..Usage::default()
+                },
+                cost_usd: 0.25,
             })
         }
     }
@@ -215,6 +227,9 @@ mod tests {
                 .contains("subagent session child-1 (3 turn(s))")
         );
         assert!(output.output.contains("child answer"));
+        assert_eq!(output.usage.input_tokens, Some(11));
+        assert_eq!(output.usage.output_tokens, Some(5));
+        assert!((output.cost_usd - 0.25).abs() < f64::EPSILON);
 
         let seen = runner.seen.lock().expect("seen lock");
         let (request, _) = seen.as_ref().expect("runner called");

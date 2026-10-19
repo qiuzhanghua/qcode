@@ -498,15 +498,16 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
    + 子 session id + turn 数。空结果用占位文本。
 4. 参数：`task` 必填；`max_turns` 默认 20、上限 40。`ApprovalClass::External`（默认 ask、
    串行）；子工具调用仍逐个走策略与审批，权限不能放大。
-5. 子会话的 usage 与 cost 不并入父 turn；需要审计时看子 session。父 turn 的 `--max-cost`
-   因此只覆盖父调用。
+5. 子会话的 usage/cost 通过 `SubagentOutcome` → `ToolOutput` → engine 汇总进父 turn；
+   `turn_ended.usage/cost_usd` 与 TUI 成本包含子 agent。子 session 仍独立记录自己的 usage。
+   `--max-cost` 在子 agent 返回后的下一次 provider 响应检查时生效。
 6. TUI 的审批提示改为由 `ApprovalRequest`（tool/summary/reason）驱动；否则子 agent 的
    审批没有父 transcript 行可查，用户看不到提示内容。
 
 **后果**
 
 - 子 agent 适合“调研 / 独立改动”，任务描述必须自包含；子 agent 不能请求父对话补充。
-- 父 turn 成本被低估（子成本单独记录）；未来可在 `SubagentOutcome` 里回传 usage 并汇总。
+- 父 turn 的 usage/cost 已包含子 agent；需要拆分时看子 session 的 `turn_ended`。
 - TUI 的嵌套进度只读：子 `turn_ended` 不会结束父 turn，子 `session_started` 不会覆盖父
   provider/model；完整事件仍以子 session 为准。
 - 深度 1 是刻意的：避免递归成本与审批套娃；需要更深时再加显式 `depth` 预算。

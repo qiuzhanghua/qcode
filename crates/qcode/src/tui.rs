@@ -138,6 +138,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         &options.workspace,
         options.model,
         options.context_window,
+        options.pricing,
         Some(on_child),
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);

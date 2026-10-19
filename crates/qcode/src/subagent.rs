@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use qcode_core::approval::Approver;
+use qcode_core::cost::Pricing;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, SessionStarted};
 use qcode_core::policy::Policy;
@@ -31,6 +32,7 @@ pub struct EngineSubagent {
     workspace: PathBuf,
     model: String,
     context_window: Option<u64>,
+    pricing: Option<Pricing>,
     on_event: Option<ChildEventSink>,
 }
 
@@ -48,6 +50,7 @@ pub fn build(
     workspace: &Path,
     model: &str,
     context_window: Option<u64>,
+    pricing: Option<Pricing>,
     on_event: Option<ChildEventSink>,
 ) -> Arc<dyn SubagentRunner> {
     Arc::new(EngineSubagent {
@@ -59,6 +62,7 @@ pub fn build(
         workspace: workspace.to_path_buf(),
         model: model.to_string(),
         context_window,
+        pricing,
         on_event,
     })
 }
@@ -94,7 +98,8 @@ impl SubagentRunner for EngineSubagent {
             cancel,
             // Child cost is not folded into the parent turn; the child session
             // records its own usage.
-            pricing: None,
+            // Child usage/cost is folded into the parent turn by the engine.
+            pricing: self.pricing,
             max_cost_usd: None,
             on_delta: None,
             context_window: self.context_window,
@@ -127,6 +132,8 @@ impl SubagentRunner for EngineSubagent {
             session_id,
             turns: outcome.turns,
             cancelled: outcome.cancelled,
+            usage: outcome.usage,
+            cost_usd: outcome.cost_usd,
         })
     }
 }
@@ -164,6 +171,11 @@ mod tests {
             workspace.path(),
             "mock-1",
             Some(128_000),
+            Some(Pricing {
+                input_usd_per_mtok: 1.0,
+                output_usd_per_mtok: 2.0,
+                ..Pricing::default()
+            }),
             Some(sink),
         );
 
@@ -181,6 +193,8 @@ mod tests {
         assert_eq!(outcome.text, "child answer");
         assert_eq!(outcome.turns, 1);
         assert!(!outcome.cancelled);
+        assert_eq!(outcome.usage.input_tokens, Some(12));
+        assert!(outcome.cost_usd > 0.0, "child cost should be priced");
 
         let forwarded = seen.lock().expect("event lock");
         assert!(

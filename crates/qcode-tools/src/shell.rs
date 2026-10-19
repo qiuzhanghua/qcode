@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use qcode_core::event::{ToolMetadata, ToolStatus};
+use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -255,6 +255,8 @@ impl Tool for RunShell {
                 exit_code,
                 ..ToolMetadata::default()
             },
+            usage: Usage::default(),
+            cost_usd: 0.0,
         })
     }
 }
