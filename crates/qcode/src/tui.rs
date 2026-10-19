@@ -25,8 +25,9 @@ use qcode_core::event::{Event, SessionStarted, TurnStatus};
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
-use qcode_core::tool::ToolRegistry;
-use qcode_tui::{App, SkillView, UiAction, render};
+use qcode_core::tool::{Tool, ToolRegistry};
+use qcode_tools::subagent::SubagentTool;
+use qcode_tui::{App, ApprovalPrompt, SkillView, UiAction, render};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
@@ -42,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct TuiOptions<'a> {
     pub store: &'a SessionStore,
-    pub provider: &'a dyn Provider,
+    pub provider: Arc<dyn Provider>,
     pub tools: &'a ToolRegistry,
     pub policy: &'a Policy,
     pub workspace: PathBuf,
@@ -67,6 +68,9 @@ enum TuiMsg {
     Key(KeyEvent),
     Approval {
         call_id: String,
+        tool: String,
+        summary: String,
+        reason: String,
         reply: oneshot::Sender<Answer>,
     },
 }
@@ -85,6 +89,9 @@ impl Approver for TuiApprover {
             .tx
             .send(TuiMsg::Approval {
                 call_id: request.call_id.clone(),
+                tool: request.tool.clone(),
+                summary: request.summary.clone(),
+                reason: request.reason.clone(),
                 reply,
             })
             .is_err()
@@ -109,9 +116,23 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     })?;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let approver = TuiApprover { tx: tx.clone() };
+    let approver: Arc<dyn Approver> = Arc::new(TuiApprover { tx: tx.clone() });
     let input = InputThread::spawn(tx.clone());
     let mut terminal = TerminalGuard::enter()?;
+
+    // The child registry excludes `subagent`, so nesting stops at depth one.
+    let mut tools = options.tools.clone();
+    let runner = crate::subagent::build(
+        options.store,
+        options.provider.clone(),
+        tools.clone(),
+        options.policy,
+        approver.clone(),
+        &options.workspace,
+        options.model,
+        options.context_window,
+    );
+    tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 
     let mut app = App::new(options.provider_name, options.model);
     app.skills = options.skills.clone();
@@ -163,10 +184,10 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 engine = Box::pin(run_turn(
                                     TurnContext {
                                         store: options.store,
-                                        provider: options.provider,
-                                        tools: options.tools,
+                                        provider: options.provider.as_ref(),
+                                        tools: &tools,
                                         policy: options.policy,
-                                        approver: &approver,
+                                        approver: approver.as_ref(),
                                     },
                                     RunOptions {
                                         session_id: &session_id,
@@ -217,7 +238,21 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                         }
                     }
                     TuiMsg::Delta(delta) => app.apply_delta(&delta),
-                    TuiMsg::Approval { call_id, reply } => {
+                    TuiMsg::Approval {
+                        call_id,
+                        tool,
+                        summary,
+                        reason,
+                        reply,
+                    } => {
+                        // Child agents do not forward their tool events, so the
+                        // prompt has to come from the approval request itself.
+                        app.approval = Some(ApprovalPrompt {
+                            call_id: call_id.clone(),
+                            tool,
+                            summary,
+                            reason,
+                        });
                         pending_approval = Some((call_id, reply));
                     }
                 }
@@ -365,7 +400,8 @@ mod tests {
                 async move { approver.approve(&request(), CancellationToken::new()).await },
             );
 
-        let TuiMsg::Approval { call_id, reply } = rx.recv().await.expect("approval message") else {
+        let TuiMsg::Approval { call_id, reply, .. } = rx.recv().await.expect("approval message")
+        else {
             panic!("unexpected message");
         };
         assert_eq!(call_id, "call-1");

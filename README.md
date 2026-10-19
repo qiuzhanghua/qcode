@@ -162,8 +162,8 @@ cargo build -p qcode-eval
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
-  `glob` / `grep` / `run_shell` / `web_fetch` / `todo_write`，多轮调用直到任务完成。`glob` 与 `grep`
-  遵守 `.gitignore`，跳过隐藏与构建目录。
+  `glob` / `grep` / `run_shell` / `web_fetch` / `todo_write` / `subagent`，多轮调用直到任务完成。
+  `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
   每次决策写事件，含命中的 rule id。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
@@ -209,9 +209,13 @@ cargo build -p qcode-eval
   `compaction` 事件；replay / resume 应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
   `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
+- **子 agent**：`subagent` 工具把独立任务交给新会话运行（同 provider / policy / approver、
+  同 workspace、独立 JSONL；工具集去掉 `subagent`，深度固定为 1）。默认 20 轮、上限 40，
+  返回最终文本与子 session id；子会话成本不计入父 turn。默认 ask（`External`），
+  非交互模式需要 `--yes` 或策略放行 `subagent`。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录与 toolchain。
 
-尚未实现：子 agent、OS 沙箱（sandbox runner 保持 stretch）；`web_search` 不在 v1 范围。
+尚未实现：`web_search` 不在 v1 范围；sandbox 三个后端仍是实验性。
 
 ## 配置
 
@@ -313,7 +317,7 @@ action = "allow"
 ```
 crates/qcode-core        domain、event、store、state、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
-crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / todo_write / skill
+crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / todo_write / subagent / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor

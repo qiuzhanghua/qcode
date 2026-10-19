@@ -2,6 +2,7 @@ mod agents;
 mod config;
 mod doctor;
 mod logging;
+mod subagent;
 mod tui;
 
 use std::io::IsTerminal;
@@ -25,6 +26,7 @@ use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::Sandbox;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
+use qcode_tools::subagent::SubagentTool;
 use qcode_tui::SkillView;
 use tokio_util::sync::CancellationToken;
 
@@ -241,16 +243,29 @@ async fn cmd_run(
         println!("{}", serde_json::to_string(&first_event)?);
     }
 
-    let provider = build_provider(&resolved)?;
+    let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
 
-    let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
-    let approver: Box<dyn Approver> = if yes {
-        Box::new(AutoApprove)
+    let mut tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox).await;
+    let approver: Arc<dyn Approver> = if yes {
+        Arc::new(AutoApprove)
     } else if std::io::stdin().is_terminal() {
-        Box::new(InteractiveApprover)
+        Arc::new(InteractiveApprover)
     } else {
-        Box::new(AutoDeny)
+        Arc::new(AutoDeny)
     };
+
+    // The child registry excludes `subagent`, so nesting stops at depth one.
+    let runner = subagent::build(
+        &store,
+        provider.clone(),
+        tools.clone(),
+        &policy,
+        approver.clone(),
+        &workspace,
+        &resolved.model,
+        Some(loaded.context.window_tokens),
+    );
+    tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 
     if timeout == Some(0) {
         return Err("--timeout must be at least 1 second".into());
@@ -364,12 +379,12 @@ async fn cmd_tui(
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
-    let provider = build_provider(&resolved)?;
+    let provider: Arc<dyn Provider> = build_provider(&resolved)?.into();
     let tools = build_tools(&loaded.mcp, &workspace, &data_dir, &skills, sandbox.clone()).await;
 
     tui::run(tui::TuiOptions {
         store: &store,
-        provider: provider.as_ref(),
+        provider,
         tools: &tools,
         policy: &policy,
         workspace,
@@ -667,6 +682,36 @@ fn build_provider(
             vec![
                 StreamEvent::Started,
                 StreamEvent::TextDelta("待办清单已更新。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        "mock-subagent" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "sub-1".to_string(),
+                    name: "subagent".to_string(),
+                    arguments: serde_json::json!({
+                        "task": "在子会话里总结仓库结构",
+                        "max_turns": 4
+                    }),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("子 agent：仓库有 core/store/cli 三个 crate。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("父 agent 收到子任务结果。".to_string()),
                 StreamEvent::Ended {
                     stop_reason: StopReason::EndTurn,
                 },

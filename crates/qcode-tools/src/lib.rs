@@ -9,6 +9,7 @@ pub mod sandbox;
 pub mod search;
 pub mod shell;
 pub mod skills;
+pub mod subagent;
 pub mod todo;
 
 use std::sync::Arc;

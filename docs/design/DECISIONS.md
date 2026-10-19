@@ -100,7 +100,8 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 ### 4.7 子 agent
 
-- v1 只定义契约（tool 接口 + 权限继承规则），不做实现。
+- v1 只定义契约（tool 接口 + 权限继承规则）；ADR-0013 实现深度 1 的 `subagent`
+  （独立 session、同 provider/policy/approver、子工具集去掉 `subagent`）。
 
 ### 4.8 评测
 
@@ -479,3 +480,31 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
   会显示 `Landlock filesystem confinement (network not restricted)`。
 - `handled_access_fs` 包含当前内核支持的全部位，旧内核会少管一些新访问类型；preflight
   只保证按当前 ABI 成功应用，不保证未来 ABI 的语义。
+
+## ADR-0013：subagent（深度 1）（2026-10-19）
+
+**背景**：DECISIONS §4.7 只定义了 tool 接口与权限继承契约。主 agent 的上下文会被子任务的
+中间输出占满；需要一个隔离的子会话，只把最终答案带回父对话。
+
+**决定**
+
+1. `qcode-tools::subagent` 定义 `SubagentRunner` trait 与 `subagent` 工具；`qcode::subagent`
+   实现 runner，拥有子 `SessionStore`、`Arc<dyn Provider>`、子 `ToolRegistry`、`Policy` 与
+   `Arc<dyn Approver>`。
+2. 子工具集 = 父工具集去掉 `subagent`，因此深度固定为 1，不能递归；子 agent 与父共用
+   workspace、provider、policy 和 approver，但**看不到父对话**（无 AGENTS.md / skills 索引）。
+3. 每次调用创建独立 session（独立 JSONL），子事件不转发到父 TUI；父只收到工具结果：
+   最终文本 + 子 session id + turn 数。空结果用占位文本。
+4. 参数：`task` 必填；`max_turns` 默认 20、上限 40。`ApprovalClass::External`（默认 ask、
+   串行）；子工具调用仍逐个走策略与审批，权限不能放大。
+5. 子会话的 usage 与 cost 不并入父 turn；需要审计时看子 session。父 turn 的 `--max-cost`
+   因此只覆盖父调用。
+6. TUI 的审批提示改为由 `ApprovalRequest`（tool/summary/reason）驱动；否则子 agent 的
+   审批没有父 transcript 行可查，用户看不到提示内容。
+
+**后果**
+
+- 子 agent 适合“调研 / 独立改动”，任务描述必须自包含；子 agent 不能请求父对话补充。
+- 父 turn 成本被低估（子成本单独记录）；未来可在 `SubagentOutcome` 里回传 usage 并汇总。
+- 子工具调用不实时显示，只在审批时可见；完整过程见子 session。
+- 深度 1 是刻意的：避免递归成本与审批套娃；需要更深时再加显式 `depth` 预算。
