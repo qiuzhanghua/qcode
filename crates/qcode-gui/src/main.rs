@@ -167,7 +167,11 @@ impl Shell {
                 UiEvent::Delta(delta) => self.app.apply_delta(&delta),
                 UiEvent::Approval(view) => self.approval = Some(view),
                 UiEvent::ApprovalClosed { call_id } => {
-                    if self.approval.as_ref().is_some_and(|view| view.call_id == call_id) {
+                    if self
+                        .approval
+                        .as_ref()
+                        .is_some_and(|view| view.call_id == call_id)
+                    {
                         self.approval = None;
                     }
                 }
@@ -221,27 +225,15 @@ impl Render for Shell {
                             .flex()
                             .flex_row()
                             .gap_2()
-                            .child(
-                                Button::new("allow")
-                                    .label("Allow")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.answer(true, false, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("allow-session")
-                                    .label("Always")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.answer(true, true, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("deny")
-                                    .label("Reject")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.answer(false, false, cx)
-                                    })),
-                            ),
+                            .child(Button::new("allow").label("Allow").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
+                            ))
+                            .child(Button::new("allow-session").label("Always").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
+                            ))
+                            .child(Button::new("deny").label("Reject").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
+                            )),
                     )
             }))
             .child(

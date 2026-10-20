@@ -1,5 +1,4 @@
 mod agents;
-mod config;
 mod doctor;
 mod logging;
 #[cfg(windows)]
@@ -25,6 +24,7 @@ use qcode_core::policy::Policy;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
+use qcode_kernel::config;
 use qcode_mcp::McpConfig;
 use qcode_net::{Egress, EgressOptions, UnknownPolicy};
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};

@@ -149,7 +149,7 @@ impl Default for UpdateConfig {
             enabled: true,
             check: true,
             check_days: 7,
-            repo: crate::update::DEFAULT_REPO.to_string(),
+            repo: crate::DEFAULT_REPO.to_string(),
             base_url: None,
         }
     }
