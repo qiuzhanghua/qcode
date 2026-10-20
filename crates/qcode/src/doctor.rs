@@ -27,6 +27,8 @@ pub async fn run(
     doctor.check_provider(&config);
     doctor.check_connectivity(&config, &data_dir).await;
     doctor.check_toolchain();
+    #[cfg(windows)]
+    doctor.check_token();
     doctor.check_sandbox(&config);
 
     println!();
@@ -243,6 +245,37 @@ impl Doctor {
             }
             Ok(_) => self.warn("rustc", "`rustc --version` failed"),
             Err(_) => self.warn("rustc", "not found on PATH (only needed to build)"),
+        }
+    }
+
+    /// The token decides whether the sandbox can create its private temp, and a
+    /// refused `create_dir_all` there is otherwise reported only as a warning
+    /// from deep inside the helper. Print the facts next to the other checks.
+    #[cfg(windows)]
+    fn check_token(&self) {
+        let lines = qcode_tools::windows_acl::diagnose();
+        let field = |prefix: &str| {
+            lines
+                .iter()
+                .find_map(|line| line.strip_prefix(prefix))
+                .map(|value| value.trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+        self.ok(
+            "token",
+            format!(
+                "integrity {}; restricted sids {}",
+                field("token integrity:"),
+                field("token restricted sids:")
+            ),
+        );
+        for line in lines.iter().filter(|line| line.starts_with("create ")) {
+            if line.contains(": error:") {
+                self.warn(
+                    "temp",
+                    format!("{line}; a sandboxed shell falls back to a temp inside the workspace"),
+                );
+            }
         }
     }
 
