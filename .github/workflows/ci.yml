@@ -51,6 +51,15 @@ jobs:
         shell: bash
         run: bash scripts/ci-clippy.sh
       - run: cargo test --workspace --no-run
+      - name: default build carries no GPU stack
+        shell: pwsh
+        run: |
+          $tree = cargo tree -p qcode --offline
+          if ($tree | Select-String -Pattern 'gpui') {
+            throw "the default qc build must not pull gpui (ADR-0038)"
+          }
+          Write-Host "ok: no gpui in the default tree"
+
       - name: mock smoke
         run: cargo run -p qcode -- run "hi" --provider mock --json --data-dir .tmp/windows-data
 
