@@ -19,7 +19,6 @@ use clap::{Args, Parser, Subcommand};
 use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
-use qcode_core::network::SharedNetwork;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::Tool;
@@ -639,12 +638,17 @@ async fn cmd_tui(
     }
 
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
-    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
-        std::env::var(key).ok()
-    })?;
-    let pricing = config::pricing_for(&loaded, &resolved.model, None)?;
-    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
+    let kernel = qcode_kernel::assemble(
+        config_path,
+        &workspace,
+        data_dir,
+        approval_policy.as_deref(),
+        config::Overrides::default(),
+    )
+    .await?;
+    let loaded = &kernel.config;
+    let resolved = &kernel.resolved;
+    let pricing = config::pricing_for(loaded, &resolved.model, None)?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -653,37 +657,15 @@ async fn cmd_tui(
         "starting TUI"
     );
 
-    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
-    let store = SessionStore::new(data_dir.clone());
-    let sandbox = qcode_tools::sandbox::build(
-        loaded.sandbox.mode,
-        &workspace,
-        loaded.sandbox.network,
-        &loaded.sandbox.extra_writable,
-    )?;
-    tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
-    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
+    let skills = kernel.skills.clone();
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
-    let egress =
-        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
-    let network: Option<SharedNetwork> = egress
-        .as_ref()
-        .map(|egress| egress.clone() as SharedNetwork);
-    let provider: Arc<dyn Provider> =
-        qcode_kernel::build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?
-            .into();
-    let tools = qcode_kernel::build_tools(
-        &loaded.mcp,
-        &loaded.search,
-        &workspace,
-        &data_dir,
-        &skills,
-        sandbox.clone(),
-        network.as_ref().map(|network| network.env()),
-    )
-    .await;
+    let policy = kernel.policy;
+    let store = kernel.store;
+    let tools = kernel.tools;
+    let network = kernel.network;
+    let provider: Arc<dyn Provider> = kernel.provider.into();
 
     tui::run(tui::TuiOptions {
         store: &store,
@@ -701,7 +683,7 @@ async fn cmd_tui(
         agents_md,
         skills_prompt,
         skills: skill_views,
-        sandbox: sandbox.name().to_string(),
+        sandbox: kernel.sandbox.clone(),
         resume,
         network,
     })

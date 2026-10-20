@@ -93,6 +93,8 @@ pub struct Kernel {
     pub egress: Option<Arc<Egress>>,
     /// The egress proxy as the network the tools and the engine share.
     pub network: Option<qcode_core::network::SharedNetwork>,
+    /// The sandbox the tools run under, for status bars.
+    pub sandbox: String,
 }
 
 use std::path::PathBuf;
@@ -434,6 +436,8 @@ pub struct Assembled {
     pub egress: Option<Arc<Egress>>,
     /// The egress proxy as the network the tools and the engine share.
     pub network: Option<qcode_core::network::SharedNetwork>,
+    /// The sandbox the tools run under, for status bars.
+    pub sandbox: String,
 }
 
 /// Assemble the kernel for one workspace.
@@ -462,6 +466,7 @@ pub async fn assemble(
         &loaded.sandbox.extra_writable,
     )?;
     let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let sandbox_name = sandbox.name().to_string();
     // The proxy doubles as the network the tools and the engine share, so its
     // environment is derived here instead of by every frontend.
     let network: Option<qcode_core::network::SharedNetwork> = egress
@@ -490,5 +495,6 @@ pub async fn assemble(
         provider,
         egress,
         network,
+        sandbox: sandbox_name,
     })
 }
