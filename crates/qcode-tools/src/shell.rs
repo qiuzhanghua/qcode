@@ -7,7 +7,7 @@
 //! and timeout can take down the whole tree (`sh`, `cargo`, `make`, workers)
 //! with one signal instead of orphaning grandchildren.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +47,84 @@ const ENV_ALLOWLIST: &[&str] = &[
     "RUSTUP_HOME",
     "CARGO_TARGET_DIR",
 ];
+
+/// Windows programs break without these: `cmd.exe` wants `ComSpec`, most
+/// installers want `TEMP`, and `PATH` lookups depend on `PATHEXT`.
+const ENV_WINDOWS: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "ComSpec",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+];
+
+/// The program and arguments that run `command` as a shell command line.
+///
+/// Windows has no `sh`. Spawning one anyway made every `run_shell` fail with a
+/// bare "cannot find the file" — the tool was unusable there. Use the chain the
+/// design notes describe: `pwsh`, then Windows PowerShell, then `cmd.exe`.
+fn shell_invocation(command: &str) -> Result<(OsString, Vec<OsString>), ToolError> {
+    #[cfg(not(windows))]
+    {
+        Ok((
+            OsString::from("sh"),
+            vec![OsString::from("-c"), OsString::from(command)],
+        ))
+    }
+    #[cfg(windows)]
+    {
+        if let Some(program) = find_program(&["pwsh.exe", "pwsh"]) {
+            return Ok((
+                program,
+                vec![
+                    OsString::from("-NoLogo"),
+                    OsString::from("-NoProfile"),
+                    OsString::from("-NonInteractive"),
+                    OsString::from("-Command"),
+                    OsString::from(command),
+                ],
+            ));
+        }
+        if let Some(program) = find_program(&["powershell.exe"]) {
+            return Ok((
+                program,
+                vec![
+                    OsString::from("-NoLogo"),
+                    OsString::from("-NoProfile"),
+                    OsString::from("-NonInteractive"),
+                    OsString::from("-Command"),
+                    OsString::from(command),
+                ],
+            ));
+        }
+        if let Some(program) = find_program(&["cmd.exe"]) {
+            return Ok((program, vec![OsString::from("/C"), OsString::from(command)]));
+        }
+        Err(ToolError::Invalid(
+            "no shell on PATH (tried pwsh, powershell.exe and cmd.exe)".to_string(),
+        ))
+    }
+}
+
+/// Absolute path of the first `name` found on `PATH`, so the child still finds
+/// its shell after `env_clear`.
+#[cfg(windows)]
+fn find_program(names: &[&str]) -> Option<OsString> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate.into_os_string());
+            }
+        }
+    }
+    None
+}
 
 pub struct RunShell {
     sandbox: Arc<dyn Sandbox>,
@@ -122,12 +200,12 @@ impl Tool for RunShell {
             return Ok(ToolOutput::cancelled("cancelled by user\n"));
         }
 
-        let shell_args = [OsString::from("-c"), OsString::from(args.command)];
+        let (program, shell_args) = shell_invocation(&args.command)?;
         // The sandbox builds the real `Command`. On error we fail closed: the
         // command is never executed without the configured confinement.
         let mut command = tokio::process::Command::from(
             self.sandbox
-                .command(OsStr::new("sh"), &shell_args, &cwd)
+                .command(program.as_os_str(), &shell_args, &cwd)
                 .map_err(|err| ToolError::Sandbox(err.to_string()))?,
         );
         command
@@ -146,6 +224,12 @@ impl Tool for RunShell {
 
         command.env_clear();
         for key in ENV_ALLOWLIST {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
+        #[cfg(windows)]
+        for key in ENV_WINDOWS {
             if let Ok(value) = std::env::var(key) {
                 command.env(key, value);
             }
@@ -324,4 +408,47 @@ fn signal_group(pid: u32, _signal: i32) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_command_line_reaches_the_shell_verbatim() {
+        let command = "echo hi && echo bye";
+        let (program, args) = shell_invocation(command).expect("a shell");
+        assert!(!program.is_empty());
+        let joined: Vec<String> = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            joined.iter().any(|arg| arg == command),
+            "{joined:?} should carry the command unchanged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_runs_the_command_through_sh() {
+        let (program, args) = shell_invocation("true").expect("sh");
+        assert_eq!(program, OsString::from("sh"));
+        assert_eq!(args, vec![OsString::from("-c"), OsString::from("true")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_finds_a_real_shell_on_path() {
+        let (program, _) = shell_invocation("echo hi").expect("pwsh, powershell or cmd");
+        let name = program.to_string_lossy().to_lowercase();
+        assert!(
+            name.ends_with("pwsh.exe")
+                || name.ends_with("powershell.exe")
+                || name.ends_with("cmd.exe"),
+            "{name} is not a shell"
+        );
+        // An absolute path, because the child runs with a cleared environment.
+        assert!(std::path::Path::new(&program).is_absolute(), "{name}");
+    }
 }
