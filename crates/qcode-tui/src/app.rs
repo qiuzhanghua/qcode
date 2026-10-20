@@ -98,7 +98,12 @@ pub struct ApprovalPrompt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
     Submit(String),
-    Approve { call_id: String, allow: bool },
+    Approve {
+        call_id: String,
+        allow: bool,
+        /// `a`: allow this tool for the rest of the session, no prompt again.
+        session: bool,
+    },
     Cancel,
     Quit,
 }
@@ -432,6 +437,17 @@ impl App {
                     return Some(UiAction::Approve {
                         call_id: prompt.call_id,
                         allow: true,
+                        session: false,
+                    });
+                }
+                // `a` answers yes and stops asking for this tool in this
+                // session: a skill run shells out dozens of times.
+                KeyCode::Char('a' | 'A') => {
+                    self.approval = None;
+                    return Some(UiAction::Approve {
+                        call_id: prompt.call_id,
+                        allow: true,
+                        session: true,
                     });
                 }
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => {
@@ -439,6 +455,7 @@ impl App {
                     return Some(UiAction::Approve {
                         call_id: prompt.call_id,
                         allow: false,
+                        session: false,
                     });
                 }
                 _ => return None,
@@ -959,7 +976,35 @@ mod tests {
             action,
             Some(UiAction::Approve {
                 call_id: "c1".to_string(),
-                allow: true
+                allow: true,
+                session: false,
+            })
+        );
+        assert!(app.approval.is_none());
+    }
+
+    #[test]
+    fn a_answers_allow_for_the_session() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "run_shell".to_string(),
+            arguments: json!({"command": "cargo test"}),
+        })));
+        app.apply(&event(EventKind::ApprovalRequested(
+            qcode_core::event::ApprovalRequested {
+                call_id: "c1".to_string(),
+                rule_id: None,
+                reason: "process execution".to_string(),
+            },
+        )));
+
+        assert_eq!(
+            app.handle_key(key(KeyCode::Char('a'))),
+            Some(UiAction::Approve {
+                call_id: "c1".to_string(),
+                allow: true,
+                session: true,
             })
         );
         assert!(app.approval.is_none());

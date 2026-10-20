@@ -89,11 +89,33 @@ enum TuiMsg {
 /// one-shot; the UI answers it when the user presses y or n.
 pub struct TuiApprover {
     tx: mpsc::UnboundedSender<TuiMsg>,
+    /// Tools the user allowed for the rest of the session. A skill run asks for
+    /// `run_shell` dozens of times; answering every one is friction, not
+    /// safety, because a denial is one keystroke away either way.
+    session_allowed: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl TuiApprover {
+    fn new(tx: mpsc::UnboundedSender<TuiMsg>) -> Self {
+        Self {
+            tx,
+            session_allowed: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        }
+    }
 }
 
 #[async_trait]
 impl Approver for TuiApprover {
     async fn approve(&self, request: &ApprovalRequest, cancel: CancellationToken) -> Answer {
+        if self
+            .session_allowed
+            .lock()
+            .map(|allowed| allowed.contains(&request.tool))
+            .unwrap_or(false)
+        {
+            return Answer::Allow;
+        }
+
         let (reply, answer) = oneshot::channel();
         if self
             .tx
@@ -112,11 +134,17 @@ impl Approver for TuiApprover {
             return Answer::Deny;
         }
 
-        tokio::select! {
+        let answer = tokio::select! {
             biased;
             _ = cancel.cancelled() => Answer::Deny,
             answer = answer => answer.unwrap_or(Answer::Deny),
+        };
+        if answer == Answer::AllowSession
+            && let Ok(mut allowed) = self.session_allowed.lock()
+        {
+            allowed.insert(request.tool.clone());
         }
+        answer
     }
 }
 
@@ -141,7 +169,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let approver: Arc<dyn Approver> = Arc::new(TuiApprover { tx: tx.clone() });
+    let approver: Arc<dyn Approver> = Arc::new(TuiApprover::new(tx.clone()));
     let input = InputThread::spawn(tx.clone());
     let mut terminal = TerminalGuard::enter()?;
 
@@ -259,14 +287,18 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     },
                                 ));
                             }
-                            UiAction::Approve { call_id, allow } => {
+                            UiAction::Approve {
+                                call_id,
+                                allow,
+                                session,
+                            } => {
                                 if let Some((pending_call, reply)) = pending_approval.take()
                                     && pending_call == call_id
                                 {
-                                    let _ = reply.send(if allow {
-                                        Answer::Allow
-                                    } else {
-                                        Answer::Deny
+                                    let _ = reply.send(match (allow, session) {
+                                        (true, true) => Answer::AllowSession,
+                                        (true, false) => Answer::Allow,
+                                        (false, _) => Answer::Deny,
                                     });
                                 }
                             }
@@ -476,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn approval_round_trips_through_the_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let approver = TuiApprover { tx };
+        let approver = TuiApprover::new(tx);
         let handle =
             tokio::spawn(
                 async move { approver.approve(&request(), CancellationToken::new()).await },
@@ -492,9 +524,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_answer_stops_asking_for_that_tool() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let approver = std::sync::Arc::new(TuiApprover::new(tx));
+
+        let first = {
+            let approver = approver.clone();
+            tokio::spawn(
+                async move { approver.approve(&request(), CancellationToken::new()).await },
+            )
+        };
+        let TuiMsg::Approval { reply, .. } = rx.recv().await.expect("approval message") else {
+            panic!("unexpected message");
+        };
+        reply.send(Answer::AllowSession).expect("send answer");
+        assert_eq!(first.await.expect("join"), Answer::AllowSession);
+
+        // The second call is answered without another prompt.
+        let second = approver.approve(&request(), CancellationToken::new()).await;
+        assert_eq!(second, Answer::Allow);
+        assert!(rx.try_recv().is_err(), "the UI should not be asked again");
+    }
+
+    #[tokio::test]
     async fn cancellation_denies_without_an_answer() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let approver = TuiApprover { tx };
+        let approver = TuiApprover::new(tx);
         let cancel = CancellationToken::new();
         let turn_cancel = cancel.clone();
         let handle = tokio::spawn(async move { approver.approve(&request(), turn_cancel).await });
@@ -509,7 +564,7 @@ mod tests {
     async fn a_closed_ui_channel_denies() {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);
-        let approver = TuiApprover { tx };
+        let approver = TuiApprover::new(tx);
         let answer = approver.approve(&request(), CancellationToken::new()).await;
         assert_eq!(answer, Answer::Deny);
     }

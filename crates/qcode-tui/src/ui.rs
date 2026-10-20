@@ -488,6 +488,13 @@ fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
             ),
             Span::raw("     "),
             Span::styled(
+                "[a] allow this tool for the session",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("     "),
+            Span::styled(
                 "[n] deny",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),

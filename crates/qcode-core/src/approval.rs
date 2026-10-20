@@ -28,7 +28,17 @@ pub struct ApprovalRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
     Allow,
+    /// Allow, and remember this tool for the rest of the session so the same
+    /// question is not asked again. Only the approver that asked can honour it;
+    /// the engine treats it exactly like [`Answer::Allow`].
+    AllowSession,
     Deny,
+}
+
+impl Answer {
+    pub fn is_allow(self) -> bool {
+        matches!(self, Self::Allow | Self::AllowSession)
+    }
 }
 
 #[async_trait]
@@ -100,6 +110,9 @@ impl Approver for InteractiveApprover {
 fn parse_answer(line: &str) -> Answer {
     match line.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => Answer::Allow,
+        // Headless runs have no session store, so this only saves the caller
+        // from re-typing y for a command it already allowed once.
+        "a" | "all" | "session" => Answer::AllowSession,
         _ => Answer::Deny,
     }
 }
@@ -112,8 +125,16 @@ mod tests {
     fn answer_parsing_is_forgiving_but_defaults_to_deny() {
         assert_eq!(parse_answer("y\n"), Answer::Allow);
         assert_eq!(parse_answer(" YES \n"), Answer::Allow);
+        assert_eq!(parse_answer("a\n"), Answer::AllowSession);
         assert_eq!(parse_answer("n\n"), Answer::Deny);
         assert_eq!(parse_answer("\n"), Answer::Deny);
         assert_eq!(parse_answer("sure\n"), Answer::Deny);
+    }
+
+    #[test]
+    fn a_session_answer_still_counts_as_allowed() {
+        assert!(Answer::Allow.is_allow());
+        assert!(Answer::AllowSession.is_allow());
+        assert!(!Answer::Deny.is_allow());
     }
 }

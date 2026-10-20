@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{Answer, ApprovalRequest, Approver};
+use crate::approval::{ApprovalRequest, Approver};
 use crate::compact;
 use crate::cost::Pricing;
 use crate::event::{
@@ -1075,7 +1075,7 @@ where
             .approver
             .approve(&request, tool_context.cancel.clone())
             .await;
-        allowed = answer == Answer::Allow;
+        allowed = answer.is_allow();
         // A denial that raced with cancellation is not a user decision.
         aborted = tool_context.cancel.is_cancelled();
     }
