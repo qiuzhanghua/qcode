@@ -666,7 +666,27 @@ async fn cmd_gui(
         kernel.tools.len(),
         kernel.skills.len()
     ));
-    qcode_gui::run(app);
+    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
+        .with_shell(kernel.config.agent.snapshot_shell);
+    let engine = qcode_gui::Engine {
+        store: kernel.store,
+        provider: kernel.provider.into(),
+        tools: kernel.tools,
+        policy: kernel.policy,
+        workspace: workspace.clone(),
+        model: kernel.resolved.model.clone(),
+        pricing: config::pricing_for(
+            &kernel.config,
+            &kernel.resolved.model,
+            kernel.config.agent.max_cost_usd,
+        )?,
+        max_turns: kernel.config.agent.max_turns,
+        max_cost_usd: kernel.config.agent.max_cost_usd,
+        context_window: Some(kernel.config.context.window_tokens),
+        network: kernel.network,
+        snapshots: Some(snapshots),
+    };
+    qcode_gui::run(app, Some(engine));
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

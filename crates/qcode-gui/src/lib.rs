@@ -253,12 +253,30 @@ impl Render for Shell {
     }
 }
 
+/// The pieces a running window needs to execute turns.
+///
+/// Everything here comes from `qcode_kernel::assemble`; the window never wires
+/// its own provider or tools. The engine thread (next step) consumes it.
+pub struct Engine {
+    pub store: qcode_core::store::SessionStore,
+    pub provider: std::sync::Arc<dyn qcode_core::provider::Provider>,
+    pub tools: qcode_core::tool::ToolRegistry,
+    pub policy: qcode_core::policy::Policy,
+    pub workspace: std::path::PathBuf,
+    pub model: String,
+    pub pricing: Option<qcode_core::cost::Pricing>,
+    pub max_turns: u32,
+    pub max_cost_usd: Option<f64>,
+    pub context_window: Option<u64>,
+    pub network: Option<qcode_core::network::SharedNetwork>,
+    pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
+}
 /// Open the window and drive it until the user closes it.
 ///
 /// `app` is the projection the caller already filled in (the `qc gui`
 /// subcommand seeds it from the assembled kernel), so the window owns no
 /// transcript state of its own.
-pub fn run(app: App) {
+pub fn run(app: App, _engine: Option<Engine>) {
     // The kernel half is where the engine will run; the spike only proves the
     // UI side of the channel for now.
     let (ui, _kernel) = channels();
