@@ -91,6 +91,8 @@ pub struct Kernel {
     pub config: config::Config,
     pub resolved: config::Resolved,
     pub egress: Option<Arc<Egress>>,
+    /// The egress proxy as the network the tools and the engine share.
+    pub network: Option<qcode_core::network::SharedNetwork>,
 }
 
 use std::path::PathBuf;
@@ -430,6 +432,8 @@ pub struct Assembled {
     pub provider: Box<dyn Provider>,
     /// Kept so the proxy lives exactly as long as the kernel does.
     pub egress: Option<Arc<Egress>>,
+    /// The egress proxy as the network the tools and the engine share.
+    pub network: Option<qcode_core::network::SharedNetwork>,
 }
 
 /// Assemble the kernel for one workspace.
@@ -442,7 +446,6 @@ pub async fn assemble(
     config_path: Option<std::path::PathBuf>,
     workspace: &Path,
     sandbox: Arc<dyn Sandbox>,
-    network_env: Option<Vec<(String, String)>>,
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
     let loaded = load_config(config_path, workspace)?;
     let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
@@ -451,6 +454,11 @@ pub async fn assemble(
     let policy = build_policy(&loaded, None)?;
     let data_dir = resolve_data_dir(None);
     let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    // The proxy doubles as the network the tools and the engine share, so its
+    // environment is derived here instead of by every frontend.
+    let network: Option<qcode_core::network::SharedNetwork> = egress
+        .clone()
+        .map(|egress| egress as qcode_core::network::SharedNetwork);
     let provider = build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?;
     let skills = load_skills(&loaded.skills, workspace);
     let tools = build_tools(
@@ -460,7 +468,7 @@ pub async fn assemble(
         &data_dir,
         &skills,
         sandbox,
-        network_env,
+        network.as_ref().map(|network| network.env()),
     )
     .await;
     let store = qcode_core::store::SessionStore::new(data_dir);
@@ -473,5 +481,6 @@ pub async fn assemble(
         skills,
         provider,
         egress,
+        network,
     })
 }
