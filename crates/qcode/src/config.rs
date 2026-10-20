@@ -457,6 +457,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "sandbox",
             "network",
             "search",
+            "update",
         ],
     ),
     ("approval", &["rules"]),
@@ -1665,6 +1666,13 @@ mod tests {
              api_key_env = "BRAVE_API_KEY"
              max_results = 5
              base_url = "https://api.search.brave.com"
+
+             [update]
+             enabled = true
+             check = false
+             check_days = 7
+             repo = "qiuzhanghua/qcode"
+             base_url = "https://api.github.com"
 
              [providers.ollama]
              base_url = "http://127.0.0.1:11434/v1"
