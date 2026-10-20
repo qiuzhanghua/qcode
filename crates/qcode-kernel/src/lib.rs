@@ -445,14 +445,23 @@ pub struct Assembled {
 pub async fn assemble(
     config_path: Option<std::path::PathBuf>,
     workspace: &Path,
-    sandbox: Arc<dyn Sandbox>,
+    data_dir: Option<std::path::PathBuf>,
+    approval_policy: Option<&Path>,
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
     let loaded = load_config(config_path, workspace)?;
     let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
         std::env::var(key).ok()
     })?;
-    let policy = build_policy(&loaded, None)?;
-    let data_dir = resolve_data_dir(None);
+    let policy = build_policy(&loaded, approval_policy)?;
+    let data_dir = resolve_data_dir(data_dir);
+    // The sandbox is configuration, not a frontend choice: mode, network flag
+    // and extra writable roots all come from `[sandbox]`.
+    let sandbox: Arc<dyn Sandbox> = qcode_tools::sandbox::build(
+        loaded.sandbox.mode,
+        workspace,
+        loaded.sandbox.network,
+        &loaded.sandbox.extra_writable,
+    )?;
     let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     // The proxy doubles as the network the tools and the engine share, so its
     // environment is derived here instead of by every frontend.

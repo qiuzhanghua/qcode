@@ -609,65 +609,41 @@ async fn cmd_acp(
     approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
-    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
-        std::env::var(key).ok()
-    })?;
-    let pricing = config::pricing_for(&loaded, &resolved.model, loaded.agent.max_cost_usd)?;
-    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
-
-    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
-    let sandbox = qcode_tools::sandbox::build(
-        loaded.sandbox.mode,
+    let kernel = qcode_kernel::assemble(
+        config_path,
         &workspace,
-        loaded.sandbox.network,
-        &loaded.sandbox.extra_writable,
+        data_dir,
+        approval_policy.as_deref(),
+    )
+    .await?;
+    let pricing = config::pricing_for(
+        &kernel.config,
+        &kernel.resolved.model,
+        kernel.config.agent.max_cost_usd,
     )?;
     let agents_md = agents::load(&workspace)?;
-    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
-    let skills_prompt = skills.prompt_section();
-
-    let egress =
-        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
-    let network: Option<SharedNetwork> = egress
-        .as_ref()
-        .map(|egress| egress.clone() as SharedNetwork);
-    let provider: Arc<dyn Provider> =
-        qcode_kernel::build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?
-            .into();
-    // The ACP client owns approval, so no sub-agent tool here: its approver is
-    // captured when the tool is built, and a client cannot answer for a child.
-    let tools = qcode_kernel::build_tools(
-        &loaded.mcp,
-        &loaded.search,
-        &workspace,
-        &data_dir,
-        &skills,
-        sandbox,
-        network.as_ref().map(|network| network.env()),
-    )
-    .await;
+    let skills_prompt = kernel.skills.prompt_section();
 
     tracing::info!(
-        provider = %resolved.name,
-        model = %resolved.model,
+        provider = %kernel.resolved.name,
+        model = %kernel.resolved.model,
         "acp server starting"
     );
     let deps = qcode_acp::Deps {
-        store: SessionStore::new(data_dir),
-        provider,
-        tools,
-        policy,
+        store: kernel.store,
+        provider: kernel.provider.into(),
+        tools: kernel.tools,
+        policy: kernel.policy,
         workspace,
-        model: resolved.model.clone(),
+        model: kernel.resolved.model.clone(),
         pricing,
-        max_turns: loaded.agent.max_turns,
-        snapshot_shell: loaded.agent.snapshot_shell,
-        max_cost_usd: loaded.agent.max_cost_usd,
-        context_window: Some(loaded.context.window_tokens),
+        max_turns: kernel.config.agent.max_turns,
+        snapshot_shell: kernel.config.agent.snapshot_shell,
+        max_cost_usd: kernel.config.agent.max_cost_usd,
+        context_window: Some(kernel.config.context.window_tokens),
         agents_md,
         skills: skills_prompt,
-        network,
+        network: kernel.network,
     };
     qcode_acp::stdio::run(Arc::new(deps)).await?;
     Ok(ExitCode::SUCCESS)
