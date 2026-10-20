@@ -11,10 +11,13 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
-use qcode_ui_bridge::{ApprovalView, UiCommand, UiEvent, channels};
+use qcode_core::engine::{RunOptions, TurnContext, run_turn};
+use qcode_core::event::SessionStarted;
+use qcode_ui_bridge::{ApprovalView, KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::rc::Rc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 
 /// How many blocks the window draws. A virtual list would make this unbounded.
 /// Row height for the virtual list. Uniform rows keep the size table cheap.
@@ -276,10 +279,14 @@ pub struct Engine {
 /// `app` is the projection the caller already filled in (the `qc gui`
 /// subcommand seeds it from the assembled kernel), so the window owns no
 /// transcript state of its own.
-pub fn run(app: App, _engine: Option<Engine>) {
-    // The kernel half is where the engine will run; the spike only proves the
-    // UI side of the channel for now.
-    let (ui, _kernel) = channels();
+pub fn run(app: App, engine: Option<Engine>) {
+    let (ui, port) = channels();
+    let mut commands = port.take_commands().expect("commands");
+    if let Some(engine) = engine {
+        spawn_engine(engine, port, &mut commands);
+    }
+    // One channel pair: the engine thread answers approvals on the kernel half,
+    // the window reads and writes the UI half.
     let events = ui.events;
     let commands = ui.commands;
     gpui_kit::application().run(|cx| {
@@ -288,5 +295,89 @@ pub fn run(app: App, _engine: Option<Engine>) {
             cx.new(|cx| Shell::new(app, events, commands, window, cx))
         })
         .expect("failed to open the window");
+    });
+}
+
+/// Run the engine on its own thread: `run_turn` is async, the window is not.
+fn spawn_engine(engine: Engine, port: KernelPort, commands: &mut UnboundedReceiver<UiCommand>) {
+    let mut commands = std::mem::replace(
+        commands,
+        UnboundedReceiver::from(tokio::sync::mpsc::unbounded_channel().1),
+    );
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("qcode-gui: cannot start the runtime: {error}");
+                return;
+            }
+        };
+        runtime.block_on(async move {
+            let approver = std::sync::Arc::new(port.approver());
+            let session = match engine.store.create(&SessionStarted {
+                model: engine.model.clone(),
+                provider: String::new(),
+                cwd: engine.workspace.display().to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            }) {
+                Ok((id, _)) => id,
+                Err(error) => {
+                    eprintln!("qcode-gui: cannot create a session: {error}");
+                    return;
+                }
+            };
+            while let Some(command) = commands.recv().await {
+                match command {
+                    UiCommand::Answer {
+                        call_id,
+                        allow,
+                        session: remember,
+                    } => port.dispatch(UiCommand::Answer {
+                        call_id,
+                        allow,
+                        session: remember,
+                    }),
+                    UiCommand::Cancel => {}
+                    UiCommand::Prompt { text, attachments } => {
+                        let sink = port.clone();
+                        let options = RunOptions {
+                            session_id: &session,
+                            model: &engine.model,
+                            input: text,
+                            workspace: engine.workspace.clone(),
+                            max_turns: engine.max_turns,
+                            cancel: CancellationToken::new(),
+                            pricing: engine.pricing,
+                            max_cost_usd: engine.max_cost_usd,
+                            on_delta: None,
+                            context_window: engine.context_window,
+                            agents_md: None,
+                            skills: None,
+                            network: engine.network.clone(),
+                            attachments,
+                        };
+                        let result = run_turn(
+                            TurnContext {
+                                store: &engine.store,
+                                provider: engine.provider.as_ref(),
+                                tools: &engine.tools,
+                                policy: &engine.policy,
+                                approver: approver.as_ref(),
+                                snapshots: engine.snapshots.as_ref(),
+                            },
+                            options,
+                            move |event| sink.send_event(event),
+                        )
+                        .await;
+                        if let Err(error) = result {
+                            eprintln!("qcode-gui: turn failed: {error}");
+                        }
+                    }
+                }
+            }
+        });
     });
 }

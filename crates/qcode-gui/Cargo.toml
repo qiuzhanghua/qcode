@@ -21,6 +21,7 @@ qcode-ui-bridge = { version = "0.1.0", path = "../qcode-ui-bridge" }
 gpui-kit = "0.7.3"
 qcode-image = { version = "0.1.0", path = "../qcode-image" }
 base64.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tokio-util.workspace = true
 time.workspace = true
 serde_json.workspace = true
