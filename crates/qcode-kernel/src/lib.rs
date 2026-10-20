@@ -418,3 +418,60 @@ pub fn build_provider(
         })?),
     })
 }
+
+/// Everything a frontend needs, assembled once.
+pub struct Assembled {
+    pub config: config::Config,
+    pub resolved: config::Resolved,
+    pub policy: qcode_core::policy::Policy,
+    pub store: qcode_core::store::SessionStore,
+    pub tools: ToolRegistry,
+    pub skills: Arc<SkillSet>,
+    pub provider: Box<dyn Provider>,
+    /// Kept so the proxy lives exactly as long as the kernel does.
+    pub egress: Option<Arc<Egress>>,
+}
+
+/// Assemble the kernel for one workspace.
+///
+/// ADR-0036: this is the only place that wires configuration, policy, egress,
+/// tools, skills and the provider together, so the TUI, ACP and GUI cannot
+/// drift apart. `sandbox` and `network_env` stay parameters because they depend
+/// on how the frontend was started (TUI probes, ACP does not).
+pub async fn assemble(
+    config_path: Option<std::path::PathBuf>,
+    workspace: &Path,
+    sandbox: Arc<dyn Sandbox>,
+    network_env: Option<Vec<(String, String)>>,
+) -> Result<Assembled, Box<dyn std::error::Error>> {
+    let loaded = load_config(config_path, workspace)?;
+    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
+        std::env::var(key).ok()
+    })?;
+    let policy = build_policy(&loaded, None)?;
+    let data_dir = resolve_data_dir(None);
+    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let provider = build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?;
+    let skills = load_skills(&loaded.skills, workspace);
+    let tools = build_tools(
+        &loaded.mcp,
+        &loaded.search,
+        workspace,
+        &data_dir,
+        &skills,
+        sandbox,
+        network_env,
+    )
+    .await;
+    let store = qcode_core::store::SessionStore::new(data_dir);
+    Ok(Assembled {
+        config: loaded,
+        resolved,
+        policy,
+        store,
+        tools,
+        skills,
+        provider,
+        egress,
+    })
+}
