@@ -995,3 +995,105 @@ cargo build -p qcode
 `a_newer_config_version_is_rejected_with_the_supported_one`、`a_zero_config_version_is_rejected`、
 `a_project_config_cannot_declare_a_newer_version`、
 `typos_are_reported_as_unknown_keys_but_still_load`、`every_section_key_the_build_reads_is_known`。
+
+## ADR-0029：自动更新以内置 `qc update` 为载体（2026-10-20）
+
+**决定**
+
+1. 更新器是二进制的一部分（`crates/qcode/src/update.rs`），不额外分发脚本：
+   `qc update --check` 只报告，`qc update` 下载并就地替换当前可执行文件。
+2. 发布物只提供**裸二进制**与一份 `SHA256SUMS`。资产名固定为
+   `qc-<version>-<os>-<arch>[.exe]`，`os`/`arch` 与 `std::env::consts` 一致
+   （`windows|macos|linux` × `x86_64|aarch64`），由 `asset_name()` 与两个发布脚本
+   各写一半（`release_asset` / `Get-ReleaseAsset`，两处必须同步；`update.rs` 的单测
+   固定这个形状）。归档（`.tar.gz`/`.zip`）是给人的，更新器不解压任何东西。
+3. 信任模型：走 `https://api.github.com/repos/<repo>/releases/latest`（或 `[update] base_url`
+   指定的同形状镜像），资产只从 API 返回的 `browser_download_url` 取；下载后必须匹配
+   `SHA256SUMS` 里的 sha256（sha256 在 `update.rs` 内自带实现，不引依赖）。
+   校验和缺失或不符 → 不落盘、报错退出。
+4. 替换方式：先把正在运行的 exe 改名为 `<exe>.old-<unix 秒>`，再把写好的
+   `<exe>.new-<unix 秒>` rename 到目标名；目标原本不存在（新装）时直接写，不留备份。
+   旧文件不自动删除，`cleanup_backups` 只在成功路径清理自己那次的 staged 文件。
+5. 启动时只做「便宜的检查」：结果缓存在 `<data-dir>/update-check.json`，超过
+   `[update] check_days`（默认 7）天才发一次 3s 超时的请求；失败静默。
+   它只往 stderr 打一行通知，绝不进入 `--json` 事件流，也绝不让 `qc run` 失败。
+   `enabled = false` 或 `check = false` 完全关闭（企业内网默认关）。
+6. 会话内 HTTP 走 egress 代理这条规则（ADR-0023）**不适用于更新器**：它是 bootstrap 通道，
+   必须在用户配置损坏、出口策略拦掉一切的时候仍能工作。代价写在「后果」里。
+
+**理由**
+
+- 手工下载 Releases 再替换是当前唯一的升级方式；在 Windows 上这还是最容易被杀软拦住的
+  一类操作。把「检查 + 校验 + 替换」做成同一条命令，才有版本一致性可言。
+- 不解压归档 = 没有 zip-slip、没有 tar 解包器、没有 `tar` 依赖；更新器只要会写文件。
+- 校验和必须与资产在同一个 release 里，否则「镜像挂了但旧文件还在」这类故障无法区分。
+- 版本比较只比数字核心（去掉 `-rc1` 这类后缀按数字段比较），不实现 semver 预发布优先级：
+  qcode 的预发布只是标注，不参与选择。
+
+**后果**
+
+- 信任锚点是 GitHub + release 里的 `SHA256SUMS`：账号被攻破时两者都会被替换，
+  这与 `curl | sh` 同级。没有签名、没有 transparency log。
+- 没有增量更新（每次 ~全量下载）、没有 `qc update --rollback`（`.old-<ts>` 是手工退路）、
+  没有后台常驻检查（只在 `qc run`/`qc update` 时发生）。
+- 更新器绕过会话出口策略是**已知偏离**：它只连 `base_url` 与 API 返回的资产 URL，
+  不读用户 allowlist，也不写 network.jsonl 审计。需要审计的环境应关闭 `[update] check`
+  并手工升级。这条要在 v2.1 重新评估（把更新器挂到 egress 上需要先有「无配置也能建代理」的路径）。
+- 没有 Apple 公证 / Windows 代码签名：macOS 的 `notarize-macos.sh` 已在仓库里，
+  但 CI 还没有 secrets；Windows 上首次运行会撞 SmartScreen。
+- 从 GitHub 之外的渠道（brew/scoop/winget）装的副本，`qc update` 会替换包管理器管理的
+  文件，包管理器随后会认为「文件被改过」。README 明确写了这一点：用包管理器装就别开自动更新。
+
+**验证**：`qc update --check`（未发版时得到「no published release」而不是网络错误）、
+`versions_compare_numerically_not_lexically`、`a_prerelease_is_older_than_its_release`、
+`sha256_matches_known_vectors`、`install_replaces_the_target_and_keeps_a_backup`、
+`a_fresh_target_is_written_without_a_backup`、`a_stale_cache_produces_a_notice`、
+`tests/update.rs` 的四条端到端（本地 HTTP 服务扮演 release API：check 报告较新/相同版本、
+校验通过则替换目标并留备份、校验不符则目标原样、不可达时给出 HTTP 错误）。
+
+## ADR-0030：发布流水线统一产出归档、裸二进制与安装清单（2026-10-20）
+
+**决定**
+
+1. `.github/workflows/release.yml` 在 `v*` tag 上按矩阵构建：`ubuntu-latest`（linux amd64/arm64）、
+   `macos-14`（darwin arm64 + 交叉 amd64）、`windows-latest`（windows amd64/arm64 msvc）。
+   每个 job 调 `build-for-release --archive --release`（PowerShell 版同参数 `-Archive -Release`），
+   上传整个 `dist/`。
+2. 两个发布脚本新增「发布物」职责：`--release` 额外产出
+   `dist/qc-<version>-<os>-<arch>[.exe]` 并维护 `dist/SHA256SUMS`（LF 行尾）。
+   归档命名保持既有约定 `qcode_<version>_<os>_<arch>[_libc][.ext]`。
+3. `publish` job 做三件事，全部在合并后的 `dist/` 上：
+   - **规整**：Windows msvc 目标的 `_msvc` 后缀与包内顶层目录改成
+     `qcode_<version>_windows_<arch>`（清单模板只认这一个名字）；
+   - **重算** `SHA256SUMS`：覆盖 `dist/` 里所有文件，而不是合并各 job 各自的那份；
+   - **渲染清单**：`packaging/render.sh` 从 `dist/` 的归档实际字节算 sha256，
+     填进 Homebrew formula / Scoop manifest / winget 三件套，输出 `dist/manifests/`。
+4. `render.sh` 缺任何一个平台归档就失败——宁可发布失败，也不生成指向不存在文件的清单。
+5. 发布前校验 tag 与 `[workspace.package] version` 相等；不相等直接失败。
+   `gh release create` 上传裸二进制、归档、`SHA256SUMS` 与 `dist/manifests`。
+6. 清单落地方式是**渲染产物 + 人工提交**：Homebrew 进 tap 仓库（`qiuzhanghua/tap`），
+   Scoop 进 bucket，winget 按三件套提 PR。仓库里存的是 `.in` 模板，不存成品。
+7. 不做 npm wrapper：多一条供应链与一个 registry 账号，只换来「`npx qc` 能装」这一种入口。
+
+**理由**
+
+- 清单里的 sha256 必须来自真正上传的字节。手工抄写是这类发布最常见的事故源，
+  而「从 `dist/` 现算」把这类事故变成不可能。
+- 归档名在 CI 里被 msvc 后缀带偏过一次，规整步骤让「包管理器看到的名字」与
+  「update.rs 看到的名字」互不干扰。
+- 模板而不是成品：版本一 bump，成品清单就全部过期；模板只有一个来源
+  （`Cargo.toml` 的版本 + `dist/` 的字节）。
+
+**后果**
+
+- 任一平台构建失败会让整个 release 失败。这是有意的：半套清单比没有清单更糟。
+- Windows arm64 依赖 runner 上的 MSVC ARM64 工具链（`aarch64-pc-windows-msvc`）。
+  runner 镜像变动导致该目标失败时，只能先去掉这个资产（更新器对缺失资产报 410 并给出
+  可用名字，不是静默跳过）。
+- macOS 归档未公证（缺 secrets），Scoop/winget 的包未签名：首次安装会有系统警告。
+- `dist/manifests` 是 gitignore 的产物；需要留档时随 release 附件保存。
+
+**验证**：`./build-for-release --release` 在本机产出 `dist/qc-0.1.0-windows-x86_64.exe`
+与 `dist/SHA256SUMS`（`sha256sum -c` 可过）；`./packaging/render.sh` 在六个归档齐全时
+输出 5 份清单、缺归档时报错；release workflow 的 publish job 对 tag/版本不一致会失败。
+

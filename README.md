@@ -27,6 +27,9 @@ cargo test --workspace
 # 环境自检
 ./target/debug/qc doctor
 
+# 有没有新版本（只报告，不下载）
+./target/debug/qc update --check
+
 # 离线冒烟（mock provider，不调用工具）
 ./target/debug/qc run "say hi" --json --data-dir .tmp/data
 
@@ -110,6 +113,12 @@ make archive         # 全部平台，额外打 tar.gz / zip
 make check           # 发布门禁：fmt / clippy / test / cargo-deny
 make release         # 门禁通过后打全部平台归档
 ```
+
+`--release`（PowerShell 版 `-Release`）在归档之外再产出自更新器消费的裸二进制
+`dist/qc-<version>-<os>-<arch>[.exe]` 与 `dist/SHA256SUMS`。打 tag（`v*`）由
+`.github/workflows/release.yml` 跑完整矩阵、重算校验和、渲染安装清单并发布：
+Homebrew formula / Scoop / winget 三件套由 `packaging/render.sh` 从 `dist/` 里
+**实际归档的字节**生成（模板在 `packaging/`，成品只存在于 release 与各仓库 PR 里）。
 
 Windows 上（PowerShell）：
 
@@ -261,8 +270,16 @@ cargo build -p qcode-eval
   非交互模式需要 `--yes` 或策略放行 `subagent`。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain、`web_search` 配置，并对非 mock
   provider 做一次真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
+- **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
+  `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
+  只认 GitHub Releases API 给出的 `browser_download_url`，校验和不符则不落盘——没有归档解包器，
+  也没有自签名单。启动时最多每 `[update] check_days` 天查一次，只在 stderr 提一句
+  `notice: qc <x> is available`；`enabled = false` 或 `check = false` 可关（企业内网默认关）。
+  用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
+  包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v2.0 剩余：自动更新与分发、config schema 版本化；sandbox 三个后端仍是实验性。
+v2.0 剩余：sandbox 三个后端仍是实验性（windows-acl 只限制写，且为 partial）。
+分发产物（发布工作流、SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
 ACP（v2.1）尚未开始。
 
 ## 配置
@@ -350,6 +367,16 @@ audit = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # bwrap/sandbox-exec 生效；landlock 只做文件系统
 extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
+
+# 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。
+# check_days 是启动时查询新版本的最小间隔（结果缓存进 data-dir）；repo / base_url
+# 让 fork 与内网镜像可用，base_url 需是 GitHub Releases API 形状。
+[update]
+enabled = true
+check = true
+check_days = 7
+repo = "qiuzhanghua/qcode"
+# base_url = "https://api.github.com"
 ```
 
 `qc config show` 打印合并后的有效配置（只显示 `api_key_env` 变量名，不显示密钥）；
@@ -414,6 +441,8 @@ crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
+packaging/               安装清单模板（Homebrew / Scoop / winget）与 render.sh
+.github/workflows/       ci.yml（门禁）、release.yml（tag 发布）
 ```
 
 ## License

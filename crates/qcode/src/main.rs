@@ -6,6 +6,7 @@ mod logging;
 mod sandbox_probe;
 mod subagent;
 mod tui;
+mod update;
 
 use std::io::IsTerminal;
 use std::io::Read;
@@ -69,6 +70,8 @@ enum Command {
     Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
+    /// Check for a newer release, or install it.
+    Update(update::UpdateArgs),
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
     #[command(hide = true)]
@@ -271,6 +274,7 @@ async fn main() -> ExitCode {
         Some(Command::Config(args)) => cmd_config(args, config),
         Some(Command::Mcp(args)) => cmd_mcp(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
+        Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
         #[cfg(windows)]
@@ -544,6 +548,26 @@ async fn cmd_run(
         }
     }
 
+    // A stale, cached version check only ever prints: `qc run` must not fail
+    // because GitHub is unreachable, and the JSONL stream stays on stdout.
+    if loaded.update.checks_on_startup()
+        && let Some(notice) = update::notice(&loaded.update, &data_dir).await
+    {
+        eprintln!("[update] {notice}");
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_update(
+    args: update::UpdateArgs,
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let data_dir = resolve_data_dir(data_dir);
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let loaded = load_config(config_path, &workspace)?;
+    update::run(args, &loaded.update, &data_dir).await?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -805,6 +829,14 @@ fn print_config(config: &config::Config) {
         config.search.key_env_name(),
         config.search.max_results,
         config.search.base_url
+    );
+    println!(
+        "update.enabled = {}, check = {}, check_days = {}, repo = {}, base_url = {:?}",
+        config.update.enabled,
+        config.update.check,
+        config.update.check_days,
+        config.update.repo,
+        config.update.base_url
     );
     println!(
         "sandbox.mode = {}, network = {}, extra_writable = {:?}",

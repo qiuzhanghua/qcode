@@ -24,6 +24,7 @@ pub async fn run(
     doctor.check_data_dir(&data_dir);
     let config = doctor.check_config(&config_path);
     doctor.check_search(&config);
+    doctor.check_update(&config, &data_dir);
     doctor.check_provider(&config);
     doctor.check_connectivity(&config, &data_dir).await;
     doctor.check_toolchain();
@@ -284,6 +285,50 @@ impl Doctor {
                     format!("{line}; a sandboxed shell falls back to a temp inside the workspace"),
                 );
             }
+        }
+    }
+
+    fn check_update(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
+        let update = &config.update;
+        if !update.enabled {
+            self.warn("update", "disabled; qc never looks for new releases");
+            return;
+        }
+
+        let directory = crate::resolve_data_dir(data_dir.clone());
+        let schedule = if update.check {
+            format!("every {} day(s)", update.check_days)
+        } else {
+            "only via `qc update`".to_string()
+        };
+        let detail = format!(
+            "current {}, checks {schedule} (repo {})",
+            crate::update::CURRENT_VERSION,
+            update.repo
+        );
+
+        let Some((checked_at, latest)) = crate::update::cached(&directory) else {
+            self.ok("update", format!("{detail}; no cached check yet"));
+            return;
+        };
+        let age = crate::update::cache_age_days(checked_at);
+        match latest {
+            Some(latest) if crate::update::is_newer(&latest, crate::update::CURRENT_VERSION) => {
+                self.warn(
+                    "update",
+                    format!(
+                        "{detail}; {latest} is available (last check {age}d ago, run `qc update`)"
+                    ),
+                );
+            }
+            Some(latest) => self.ok(
+                "update",
+                format!("{detail}; latest seen {latest} (last check {age}d ago)"),
+            ),
+            None => self.ok(
+                "update",
+                format!("{detail}; last check {age}d ago found nothing"),
+            ),
         }
     }
 

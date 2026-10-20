@@ -22,7 +22,9 @@ param(
     # 产物目录
     [string]$OutDir = "dist",
     # 额外打 zip（包内目录名与包名一致）
-    [switch]$Archive
+    [switch]$Archive,
+    # 额外产出自动更新器消费的裸二进制与 SHA256SUMS
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +74,44 @@ switch -Regex ($Target) {
 $Suffix = ''
 if ($Target -match '-msvc$') { $Suffix = '_msvc' }
 $Artifact = "${Pkg}_${Version}_windows_${Arch}${Suffix}"
+
+# ------------------------------------------------- 自动更新的资产名（-Release）
+#
+# crates\qcode\src\update.rs 只认一个形状：qc-<version>-<os>-<arch>[.exe]，
+# 其中的 os / arch 与 Rust 的 std::env::consts 一致（x86_64 / aarch64，
+# 不是 amd64 / arm64）。bash 版是同一份约定的另一半。
+
+function Get-ReleaseArch([string]$Triple) {
+    switch -Regex ($Triple) {
+        '^x86_64-' { return 'x86_64' }
+        '^aarch64-' { return 'aarch64' }
+        '^i686-' { return 'x86' }
+        default { Fail "自动更新没有为 $Triple 定义架构名" }
+    }
+}
+
+function Get-ReleaseAsset([string]$Triple) {
+    "qc-${Version}-windows-$(Get-ReleaseArch $Triple).exe"
+}
+
+function Get-Sha256([string]$Path) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Publish-ReleaseAsset([string]$Triple, [string]$Source) {
+    $name = Get-ReleaseAsset $Triple
+    $dest = Join-Path $OutDir $name
+    Copy-Item -LiteralPath $Source -Destination $dest -Force
+    $sums = Join-Path $OutDir 'SHA256SUMS'
+    $lines = @()
+    if (Test-Path $sums) {
+        $lines = @(Get-Content -LiteralPath $sums | Where-Object { $_ -notmatch "  $([regex]::Escape($name))$" })
+    }
+    $lines += "$(Get-Sha256 $dest)  $name"
+    # LF，不是 CRLF：Linux 的 `sha256sum -c` 会拒绝带 \r 的行。
+    [System.IO.File]::WriteAllText((Resolve-Path $OutDir).Path + '\SHA256SUMS', ($lines -join "`n") + "`n")
+    Write-Host "  release: $dest"
+}
 
 # ---------------------------------------------------------------- 交叉环境
 
@@ -130,6 +170,10 @@ if ($Target -eq $HostTriple) {
 
 $Size = [math]::Round((Get-Item $Dest).Length / 1MB, 1)
 Write-Host "  dist: $Dest ($Size MB)"
+
+if ($Release) {
+    Publish-ReleaseAsset $Target $Dest
+}
 
 if ($Archive) {
     $Stage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())

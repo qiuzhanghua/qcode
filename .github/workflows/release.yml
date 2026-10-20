@@ -1,0 +1,144 @@
+# 打 tag（v*）时构建全部平台、发布 GitHub Release，并渲染安装清单。
+#
+# 一条硬约束：发布物名与 crates/qcode/src/update.rs 的约定必须一致 —— 裸二进制
+# qc-<version>-<os>-<arch>[.exe] + SHA256SUMS。更新器只认这一个形状，因此
+# 归档（给人 / 给包管理器）与裸二进制（给 qc update）同时上传。
+#
+# 另一条：归档名在各 job 里由 build-for-release 生成，Windows 的 msvc 目标会带
+# `_msvc` 后缀；publish job 会把它们规整成 `qcode_<ver>_windows_<arch>.zip`
+# （清单模板只认这一个名字），并把包内顶层目录改成同名。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: linux-amd64 linux-arm64
+          - os: macos-14
+            targets: darwin-arm64 darwin-amd64
+          - os: windows-latest
+            targets: windows-amd64 windows-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rust targets (linux)
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          ./build-for-release --archive --release ${{ matrix.targets }}
+
+      - name: rust targets (macos)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          ./build-for-release --archive --release ${{ matrix.targets }}
+
+      - name: build (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          ./build-for-release.ps1 -Target x86_64-pc-windows-msvc -Archive -Release
+          ./build-for-release.ps1 -Target aarch64-pc-windows-msvc -Archive -Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: normalise archive names
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Get-ChildItem artifacts -File | Copy-Item -Destination dist -Force
+          # msvc 目标的名字里多一个 _msvc，清单模板与 qc update 都不认它。
+          Get-ChildItem dist -Filter 'qcode_*_windows_*_msvc.zip' | ForEach-Object {
+            $canonical = $_.Name -replace '_msvc\.zip$', '.zip'
+            $stage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+            Expand-Archive -LiteralPath $_.FullName -DestinationPath $stage -Force
+            $inner = Get-ChildItem $stage -Directory | Select-Object -First 1
+            Rename-Item -LiteralPath $inner.FullName -NewName ($canonical -replace '\.zip$', '')
+            Remove-Item -LiteralPath $_.FullName
+            $zip = Join-Path (Resolve-Path dist).Path $canonical
+            Compress-Archive -Path $inner.FullName -DestinationPath $zip
+            Remove-Item -Recurse -Force $stage
+            Write-Host "normalised: $canonical"
+          }
+
+      - name: checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lines = Get-ChildItem dist -File |
+            Where-Object { $_.Name -ne 'SHA256SUMS' } |
+            Sort-Object Name |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name }
+          # LF: `sha256sum -c` 不接受带 \r 的行。
+          [System.IO.File]::WriteAllText((Resolve-Path dist).Path + '/SHA256SUMS', (($lines -join "`n") + "`n"))
+          Get-Content dist/SHA256SUMS
+
+      - name: manifests
+        run: ./packaging/render.sh
+
+      - name: release notes
+        run: |
+          version=$(grep -m1 '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "error: tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          {
+            echo "## Install"
+            echo
+            echo '```'
+            echo "# Homebrew (tap: qiuzhanghua/tap)"
+            echo "brew install qiuzhanghua/tap/qc"
+            echo "# Scoop / winget"
+            echo "scoop install qc    /    winget install Qiuzhanghua.qcode"
+            echo "# self-update"
+            echo "qc update --check"
+            echo '```'
+            echo
+            echo "Manifests were rendered by \`packaging/render.sh\` and are attached below."
+          } > NOTES.md
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh 只收文件路径：manifest 目录用 find 展开，别指望它递归。
+          manifests=$(find dist/manifests -type f | sort)
+          gh release create "$GITHUB_REF_NAME" \
+            --title "qcode $GITHUB_REF_NAME" \
+            --notes-file NOTES.md \
+            dist/qc-* dist/SHA256SUMS dist/*.tar.gz dist/*.zip $manifests

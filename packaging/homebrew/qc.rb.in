@@ -1,0 +1,37 @@
+# qcode 的 Homebrew formula 模板。由 packaging/render.sh 用 dist/ 里的归档与
+# Cargo.toml 的版本填充，发版后提交到 tap 仓库（见 docs/design/DECISIONS.md ADR-0030）。
+class Qc < Formula
+  desc "Terminal coding agent with a tool loop, approvals and MCP"
+  homepage "https://github.com/qiuzhanghua/qcode"
+  version "@@VERSION@@"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/qiuzhanghua/qcode/releases/download/v#{version}/qcode_@@VERSION@@_darwin_arm64.tar.gz"
+      sha256 "@@SHA_DARWIN_ARM64@@"
+    else
+      url "https://github.com/qiuzhanghua/qcode/releases/download/v#{version}/qcode_@@VERSION@@_darwin_amd64.tar.gz"
+      sha256 "@@SHA_DARWIN_AMD64@@"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.arm?
+      url "https://github.com/qiuzhanghua/qcode/releases/download/v#{version}/qcode_@@VERSION@@_linux_arm64.tar.gz"
+      sha256 "@@SHA_LINUX_ARM64@@"
+    else
+      url "https://github.com/qiuzhanghua/qcode/releases/download/v#{version}/qcode_@@VERSION@@_linux_amd64.tar.gz"
+      sha256 "@@SHA_LINUX_AMD64@@"
+    end
+  end
+
+  def install
+    # 归档里是 qcode_<version>_<os>_<arch>/qc（与包名同名的顶层目录）。
+    bin.install Dir["qcode_*/qc"].first
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/qc --version")
+  end
+end

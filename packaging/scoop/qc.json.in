@@ -1,0 +1,22 @@
+{
+  "version": "@@VERSION@@",
+  "description": "Terminal coding agent with a tool loop, approvals and MCP",
+  "homepage": "https://github.com/qiuzhanghua/qcode",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_amd64.zip",
+      "hash": "@@SHA_WINDOWS_AMD64@@",
+      "extract_dir": "qcode_@@VERSION@@_windows_amd64"
+    },
+    "arm64": {
+      "url": "https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_arm64.zip",
+      "hash": "@@SHA_WINDOWS_ARM64@@",
+      "extract_dir": "qcode_@@VERSION@@_windows_arm64"
+    }
+  },
+  "bin": "qc.exe",
+  "checkver": {
+    "github": "https://github.com/qiuzhanghua/qcode"
+  }
+}

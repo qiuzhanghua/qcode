@@ -1,0 +1,19 @@
+PackageIdentifier: Qiuzhanghua.qcode
+PackageVersion: @@VERSION@@
+PackageLocale: en-US
+Publisher: qiuzhanghua
+PublisherUrl: https://github.com/qiuzhanghua
+PackageName: qcode
+PackageUrl: https://github.com/qiuzhanghua/qcode
+License: MIT
+LicenseUrl: https://github.com/qiuzhanghua/qcode/blob/master/LICENSE
+ShortDescription: Terminal coding agent with a tool loop, approvals and MCP
+Description: A terminal coding agent. It runs a model-driven tool loop in one process, asks for approval per tool call, enforces a workspace path boundary and keeps an append-only event log that sessions can be resumed from.
+Moniker: qc
+Tags:
+  - agent
+  - cli
+  - coding-agent
+  - llm
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

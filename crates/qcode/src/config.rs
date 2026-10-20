@@ -60,6 +60,9 @@ pub struct Config {
     /// `web_search` backend and key (v2.0).
     #[serde(default)]
     pub search: SearchConfig,
+    /// Version checks and `qc update` (v2.0).
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 fn default_version() -> u32 {
@@ -80,6 +83,7 @@ impl Default for Config {
             sandbox: SandboxConfig::default(),
             network: NetworkConfig::default(),
             search: SearchConfig::default(),
+            update: UpdateConfig::default(),
         }
     }
 }
@@ -118,6 +122,39 @@ impl Default for SearchConfig {
             max_results: default_search_results(),
             base_url: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Version checks at all. Enterprise images turn this off.
+    pub enabled: bool,
+    /// Check on startup (cached for `check_days`, never replaces anything).
+    pub check: bool,
+    pub check_days: u64,
+    /// GitHub repository whose releases are the update channel.
+    pub repo: String,
+    /// API origin override: a mirror, or a local server in tests.
+    pub base_url: Option<String>,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check: true,
+            check_days: 7,
+            repo: crate::update::DEFAULT_REPO.to_string(),
+            base_url: None,
+        }
+    }
+}
+
+impl UpdateConfig {
+    /// Whether `qc run` should spend a request on the startup notice.
+    pub fn checks_on_startup(&self) -> bool {
+        self.enabled && self.check
     }
 }
 
@@ -440,6 +477,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "max_results",
             "base_url",
         ],
+    ),
+    (
+        "update",
+        &["enabled", "check", "check_days", "repo", "base_url"],
     ),
 ];
 

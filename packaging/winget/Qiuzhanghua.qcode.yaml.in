@@ -1,0 +1,7 @@
+# winget 的版本清单（模板）。winget-pkgs 要求三件套：version / installer /
+# locale。由 packaging/render.sh 渲染成 dist/manifests/winget/ 下的三个 yaml。
+PackageIdentifier: Qiuzhanghua.qcode
+PackageVersion: @@VERSION@@
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

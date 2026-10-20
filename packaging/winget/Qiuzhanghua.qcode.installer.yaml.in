@@ -1,0 +1,22 @@
+PackageIdentifier: Qiuzhanghua.qcode
+PackageVersion: @@VERSION@@
+InstallerLocale: en-US
+InstallerType: zip
+NestedInstallerType: portable
+Commands:
+  - qc
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_amd64.zip
+    InstallerSha256: @@SHA_WINDOWS_AMD64@@
+    NestedInstallerFiles:
+      - RelativeFilePath: qcode_@@VERSION@@_windows_amd64\qc.exe
+        PortableCommandAlias: qc
+  - Architecture: arm64
+    InstallerUrl: https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_arm64.zip
+    InstallerSha256: @@SHA_WINDOWS_ARM64@@
+    NestedInstallerFiles:
+      - RelativeFilePath: qcode_@@VERSION@@_windows_arm64\qc.exe
+        PortableCommandAlias: qc
+ManifestType: installer
+ManifestVersion: 1.6.0

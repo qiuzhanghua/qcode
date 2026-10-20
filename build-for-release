@@ -41,6 +41,7 @@ ROOT=$(pwd)
 
 OUT_DIR="${OUT_DIR:-$ROOT/dist}"
 ARCHIVE=0
+RELEASE=0
 LIST=0
 CHECK=0
 REQUESTED=()
@@ -64,6 +65,7 @@ usage() {
 选项：
   -l, --list          只列出矩阵与就绪状态，不构建
   -a, --archive       额外打包 dist/<名>.tar.gz（Windows 目标为 .zip）
+  -r, --release       额外产出自动更新器消费的裸二进制与 dist/SHA256SUMS
   -o, --out-dir DIR   产物目录（默认 dist）
   -c, --check         只跑发布门禁（fmt / clippy / test / cargo-deny），不构建
   -h, --help          显示本帮助
@@ -175,6 +177,60 @@ artifact_name() {
     else
         echo "${PKG}_${VERSION}_${os}_${arch}"
     fi
+}
+
+# ------------------------------------------------- 自动更新的资产名（--release）
+#
+# crates/qcode/src/update.rs 只认一个形状：qc-<version>-<os>-<arch>[.exe]，
+# 其中的 os/arch 与 Rust 的 std::env::consts 一致（macOS 是 macos，不是 darwin；
+# 架构是 x86_64 / aarch64，不是 amd64 / arm64）。这里是同一份约定的另一半。
+
+release_os() {
+    case "$1" in
+    *-apple-darwin) echo macos ;;
+    *) target_os "$1" ;;
+    esac
+}
+
+release_arch() {
+    case "$1" in
+    x86_64-*) echo x86_64 ;;
+    aarch64-*) echo aarch64 ;;
+    i686-*) echo x86 ;;
+    armv7-*) echo arm ;;
+    *) target_arch "$1" ;;
+    esac
+}
+
+release_asset() {
+    local target=$1
+    echo "qc-${VERSION}-$(release_os "$target")-$(release_arch "$target")$(exe_suffix "$target")"
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        die "需要 sha256sum 或 shasum 来写 SHA256SUMS"
+    fi
+}
+
+# 裸二进制 + 一行校验和。发布流水线把同一份 SHA256SUMS 合并成一个文件，
+# `qc update` 就靠它拒绝下载被替换过的产物。
+publish_release_asset() {
+    local target=$1 src=$2 name sums
+    name=$(release_asset "$target")
+    cp "$src" "$OUT_DIR/$name"
+    chmod +x "$OUT_DIR/$name" 2>/dev/null || true
+    sums="$OUT_DIR/SHA256SUMS"
+    if [ -f "$sums" ]; then
+        grep -vF "  $name" "$sums" > "$sums.tmp" || true
+        mv "$sums.tmp" "$sums"
+    fi
+    printf '%s  %s\n' "$(sha256_of "$OUT_DIR/$name")" "$name" >> "$sums"
+    echo "  release: $OUT_DIR/$name"
 }
 
 # ---------------------------------------------------------------- 就绪检查
@@ -475,6 +531,9 @@ build_one() {
     fi
 
     echo "  dist: $dest ($(du -h "$dest" | cut -f1))"
+    if [ "$RELEASE" = 1 ]; then
+        publish_release_asset "$target" "$dest"
+    fi
     if [ "$ARCHIVE" = 1 ]; then
         pack_archive "$name" "$target" "$dest"
     fi
@@ -536,6 +595,9 @@ while [ $# -gt 0 ]; do
         ;;
     -a | --archive)
         ARCHIVE=1
+        ;;
+    -r | --release)
+        RELEASE=1
         ;;
     -c | --check)
         CHECK=1
