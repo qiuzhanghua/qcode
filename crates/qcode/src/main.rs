@@ -614,6 +614,7 @@ async fn cmd_acp(
         &workspace,
         data_dir,
         approval_policy.as_deref(),
+        config::Overrides::default(),
     )
     .await?;
     let pricing = config::pricing_for(

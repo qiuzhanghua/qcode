@@ -447,11 +447,10 @@ pub async fn assemble(
     workspace: &Path,
     data_dir: Option<std::path::PathBuf>,
     approval_policy: Option<&Path>,
+    overrides: config::Overrides,
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
     let loaded = load_config(config_path, workspace)?;
-    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
-        std::env::var(key).ok()
-    })?;
+    let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
     let policy = build_policy(&loaded, approval_policy)?;
     let data_dir = resolve_data_dir(data_dir);
     // The sandbox is configuration, not a frontend choice: mode, network flag
