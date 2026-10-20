@@ -147,6 +147,7 @@ async fn run(
             tools: &registry,
             policy: &Policy::default(),
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &session,
@@ -162,6 +163,7 @@ async fn run(
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

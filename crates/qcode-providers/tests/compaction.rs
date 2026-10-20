@@ -117,6 +117,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &session,
@@ -132,6 +133,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )
@@ -165,6 +167,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
         .map(|block| match block {
             ContentBlock::Text { text } | ContentBlock::Reasoning { text, .. } => text.clone(),
             ContentBlock::ToolCall { .. } => String::new(),
+            ContentBlock::Image { .. } => String::new(),
         })
         .collect();
     assert!(flattened.contains("Conversation summary (compacted):"));
@@ -193,6 +196,7 @@ async fn a_roomy_window_skips_compaction() {
             tools: &ToolRegistry::default(),
             policy: &Policy::default(),
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &session,
@@ -208,6 +212,7 @@ async fn a_roomy_window_skips_compaction() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

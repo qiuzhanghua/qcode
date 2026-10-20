@@ -86,6 +86,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         agents_md: None,
         skills: None,
         network: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -118,6 +119,7 @@ async fn retries_before_the_first_token() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -149,6 +151,7 @@ async fn does_not_retry_after_the_first_token() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -236,6 +239,7 @@ async fn parallel_reads_require_provider_capability() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path()),
         |_| {},

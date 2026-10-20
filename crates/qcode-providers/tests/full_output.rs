@@ -92,6 +92,7 @@ async fn truncated_output_is_written_to_disk() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -107,6 +108,7 @@ async fn truncated_output_is_written_to_disk() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

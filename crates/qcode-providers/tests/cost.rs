@@ -80,6 +80,7 @@ fn options<'a>(
         agents_md: None,
         skills: None,
         network: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -100,6 +101,7 @@ async fn cost_is_reported_when_under_budget() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), Some(1.0)),
         |_| {},
@@ -154,6 +156,7 @@ async fn exceeding_the_budget_fails_the_turn_before_tools_run() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), Some(0.5)),
         |_| {},
@@ -232,6 +235,7 @@ async fn cost_accumulates_across_provider_calls() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), Some(15.0)),
         |_| {},
@@ -282,6 +286,7 @@ async fn missing_pricing_is_rejected_by_the_engine() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options,
         |_| {},
@@ -312,6 +317,7 @@ async fn without_pricing_cost_stays_zero() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options,
         |_| {},

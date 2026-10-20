@@ -35,6 +35,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         agents_md: None,
         skills: None,
         network: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -56,6 +57,7 @@ async fn mock_turn_persists_and_replays() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path()),
         |event| seen.push(event.clone()),
@@ -106,6 +108,7 @@ async fn torn_final_line_is_dropped_on_load() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -157,6 +160,7 @@ async fn stream_deltas_reach_the_frontend() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options,
         |_| {},
@@ -199,6 +203,7 @@ async fn context_usage_is_reported_to_the_frontend() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options,
         |_| {},

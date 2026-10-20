@@ -1284,6 +1284,35 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 **验证**：新增 4 条 core 测试——树快照能还原 shell 式编辑（改一个、删一个、新建一个）、
 超过 4 MB 的文件被跳过并计数、gc 删除会话 + 清理孤儿树、shell 开关默认关闭且可打开。
 
+## ADR-0035：图片输入只走一条路——`--image` + 多模态消息（2026-10-22）
+
+**背景**：DeepSeek 当前模型支持 vision，`Capabilities.images` 早已预留，但用户消息一直是纯文本。
+
+**决定**
+
+1. 输入面只有 `qc run --image <path>`（可重复）：读文件、按扩展名定 mime（PNG/JPEG/WebP/GIF），
+   超过 8 MB 直接报错，base64 后作为 `Attachment { mime_type, data_base64 }` 交给引擎。
+2. `ContentBlock` 增加 `Image { mime_type, data_base64 }`；引擎把它挂到**最后一条 user 消息**上。
+   OpenAI 兼容层在有图片时把 `content` 从字符串换成 typed parts
+   （`{"type":"text"}` + `{"type":"image_url","image_url":{"url":"data:<mime>;base64,..."}}`），
+   没有图片时保持纯字符串——兼容端最认这个形状。
+3. 能力门控在引擎：`provider.capabilities().images == false` 且带图，直接
+   `EngineError::ImagesUnsupported`，不把图片发出去再让服务端 400。
+4. 压缩：`estimate` 里按 `base64.len()/4` 计图片的 token 量级；摘要输入**丢弃**图片块
+   （摘要模型读不了，base64 还会把输入撑爆）。
+5. 事件日志仍只存文本（`user_message.attachments` 留空），所以 resume 重放的消息**没有图片**。
+
+**没做 / 边界**
+
+- TUI 没有附件上传（粘贴/拖拽），ACP 也没有 image prompt（`promptCapabilities.image = false`）；
+  两处都留到真正需要时再说，避免先做一套没有验证路径的交互。
+- 图片不落盘：只在本次请求的内存里存在；`--image` 的文件仍需用户自己保管。
+- 不支持 HEIC/AVIF 等格式；不做缩放/压缩，用户传多大就发多大（只挡 8 MB 上限）。
+
+**验证**：`qcode-providers` 2 条——带图消息序列化成 `content` 数组（text + image_url 的
+data URI），纯文本消息仍保持字符串；`cargo test -p qcode-providers --lib` 13 条全绿；
+引擎门控与压缩改动由既有 core 测试覆盖（56 条）。
+
 
 
 

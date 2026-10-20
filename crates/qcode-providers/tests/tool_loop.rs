@@ -116,6 +116,7 @@ async fn executes_tool_and_continues() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -131,6 +132,7 @@ async fn executes_tool_and_continues() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )
@@ -179,6 +181,7 @@ async fn denial_is_reported_to_the_model() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -194,6 +197,7 @@ async fn denial_is_reported_to_the_model() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )
@@ -231,6 +235,7 @@ async fn asking_without_a_tty_denies() {
             tools: &tools,
             policy: &policy,
             approver: &AutoDeny,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -246,6 +251,7 @@ async fn asking_without_a_tty_denies() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )
@@ -286,6 +292,7 @@ async fn max_turns_stops_the_loop() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -301,6 +308,7 @@ async fn max_turns_stops_the_loop() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )
@@ -386,6 +394,7 @@ async fn cancellation_stops_a_running_tool() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -401,6 +410,7 @@ async fn cancellation_stops_a_running_tool() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     );
@@ -446,6 +456,7 @@ async fn cancellation_stops_a_hanging_stream() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -461,6 +472,7 @@ async fn cancellation_stops_a_hanging_stream() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     );

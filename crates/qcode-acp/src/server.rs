@@ -295,6 +295,7 @@ impl Agent {
                 agents_md: deps.agents_md.clone(),
                 skills: deps.skills.clone(),
                 network: deps.network.clone(),
+                attachments: Vec::new(),
             },
             notify,
         )

@@ -92,6 +92,12 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// An image the user attached. Base64 payload, no data URI prefix: the
+    /// provider layer adds that when it builds the wire format.
+    Image {
+        mime_type: String,
+        data_base64: String,
+    },
     ToolCall {
         call_id: String,
         name: String,

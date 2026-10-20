@@ -258,6 +258,7 @@ fn build_body(request: &CompletionRequest, include_usage: bool) -> Result<Value,
 fn convert_message(message: &Message) -> Result<Value, ProviderError> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut images = Vec::new();
 
     for block in &message.blocks {
         match block {
@@ -265,6 +266,16 @@ fn convert_message(message: &Message) -> Result<Value, ProviderError> {
             // Reasoning is replayed as part of `provider_raw` in M1; the
             // normalized request path only carries text for now.
             ContentBlock::Reasoning { .. } => {}
+            // The OpenAI wire format wants a `content` array with typed parts
+            // as soon as an image is involved. Text stays a plain string when
+            // there is no image, which every compatible endpoint accepts.
+            ContentBlock::Image {
+                mime_type,
+                data_base64,
+            } => images.push(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime_type};base64,{data_base64}") },
+            })),
             ContentBlock::ToolCall {
                 call_id,
                 name,
@@ -282,7 +293,17 @@ fn convert_message(message: &Message) -> Result<Value, ProviderError> {
         Role::Assistant => "assistant",
         Role::Tool => "tool",
     };
-    let mut value = json!({ "role": role, "content": text });
+    let content = if images.is_empty() {
+        json!(text)
+    } else {
+        let mut parts = Vec::new();
+        if !text.is_empty() {
+            parts.push(json!({ "type": "text", "text": text }));
+        }
+        parts.extend(images);
+        Value::Array(parts)
+    };
+    let mut value = json!({ "role": role, "content": content });
     if let Some(call_id) = &message.tool_call_id {
         value["tool_call_id"] = json!(call_id);
     }
@@ -470,6 +491,43 @@ fn map_status(status: u16, body: &str, retry_after: Option<u64>) -> ProviderErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_turns_the_message_content_into_typed_parts() {
+        let message = Message {
+            role: Role::User,
+            blocks: vec![
+                ContentBlock::Text {
+                    text: "what is this?".to_string(),
+                },
+                ContentBlock::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "aGk=".to_string(),
+                },
+            ],
+            tool_call_id: None,
+        };
+        let value = convert_message(&message).expect("json");
+        let parts = value["content"].as_array().expect("content array");
+        assert_eq!(parts.len(), 2, "{value}");
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "what is this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,aGk=");
+    }
+
+    #[test]
+    fn a_text_only_message_keeps_the_plain_string_content() {
+        let message = Message {
+            role: Role::User,
+            blocks: vec![ContentBlock::Text {
+                text: "plain".to_string(),
+            }],
+            tool_call_id: None,
+        };
+        let value = convert_message(&message).expect("json");
+        assert_eq!(value["content"], "plain");
+    }
 
     fn collect(sse: &str) -> Vec<StreamEvent> {
         let mut decoder = SseDecoder::new();

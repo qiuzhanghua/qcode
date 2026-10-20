@@ -210,6 +210,10 @@ struct RunArgs {
     /// [pricing."<model>"] entry in the config file.
     #[arg(long, value_name = "USD")]
     max_cost: Option<f64>,
+    /// Attach an image (PNG/JPEG/WebP/GIF) to this message. Repeatable; needs a
+    /// provider that accepts images.
+    #[arg(long = "image", value_name = "PATH")]
+    image: Vec<PathBuf>,
     /// Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled
     /// (same path as Ctrl-C, including process-group cleanup) and qc exits 124.
     #[arg(long, value_name = "SECS")]
@@ -357,6 +361,7 @@ async fn cmd_run(
         base_url,
         no_stream_usage,
         max_turns,
+        image,
         yes,
         cwd,
         resume,
@@ -401,6 +406,8 @@ async fn cmd_run(
     // Resolve the policy before creating a session: a bad policy file should
     // not leave an empty session behind.
     let policy = build_policy(&loaded, approval_policy.as_deref())?;
+
+    let attachments = read_images(&image)?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -539,6 +546,7 @@ async fn cmd_run(
             agents_md,
             skills: skills_prompt,
             network: network.clone(),
+            attachments,
         },
         |event| {
             if json {
@@ -1053,6 +1061,51 @@ async fn cmd_doctor(
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Read `--image` files into base64 attachments.
+///
+/// Validating here keeps the engine's error path about capabilities only; a
+/// missing or oversized file is a user error, not a model error.
+fn read_images(
+    paths: &[PathBuf],
+) -> Result<Vec<qcode_core::engine::Attachment>, Box<dyn std::error::Error>> {
+    const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+    let mut attachments = Vec::new();
+    for path in paths {
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        if metadata.len() > MAX_IMAGE_BYTES {
+            return Err(format!("{} is larger than 8 MB", path.display()).into());
+        }
+        let mime = match path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => {
+                return Err(format!(
+                    "{}: only PNG, JPEG, WebP and GIF are supported",
+                    path.display()
+                )
+                .into());
+            }
+        };
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        use base64::Engine as _;
+        let data_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        attachments.push(qcode_core::engine::Attachment {
+            mime_type: mime.to_string(),
+            data_base64,
+        });
+    }
+    Ok(attachments)
 }
 
 /// Built-in tools plus whatever the enabled MCP servers advertise and the

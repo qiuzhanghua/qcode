@@ -49,6 +49,9 @@ fn message_chars(message: &Message) -> usize {
             ContentBlock::ToolCall {
                 name, arguments, ..
             } => name.chars().count() + arguments.to_string().chars().count(),
+            // The payload is not sent back to the model, but it is part of the
+            // context the provider has to carry.
+            ContentBlock::Image { data_base64, .. } => data_base64.len() / 4,
         })
         .sum()
 }
@@ -113,6 +116,9 @@ pub fn summary_input(events: &[Event], boundary: u64) -> String {
                     text.push_str(&chunk);
                     text.push('\n');
                 }
+                // Images are never replayed into a summary: the summarizer
+                // cannot read them, and their base64 would dwarf the text.
+                ContentBlock::Image { .. } => {}
                 ContentBlock::ToolCall {
                     name, arguments, ..
                 } => {

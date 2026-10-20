@@ -288,6 +288,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         agents_md: options.agents_md.clone(),
                                         skills: options.skills_prompt.clone(),
                                         network: options.network.clone(),
+                                        attachments: Vec::new(),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));

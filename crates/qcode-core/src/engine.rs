@@ -114,6 +114,8 @@ pub enum EngineError {
     MaxCost { spent: f64, limit: f64 },
     #[error("--max-cost requires pricing for the model")]
     MissingPricing,
+    #[error("this provider does not accept image input")]
+    ImagesUnsupported,
 }
 
 /// How many consecutive rounds may repeat the exact same tool call before the
@@ -204,6 +206,15 @@ pub struct RunOptions<'a> {
     pub skills: Option<String>,
     /// Egress proxy shared with tools that make network calls.
     pub network: Option<crate::network::SharedNetwork>,
+    /// Images the user attached to this message (base64, no data-URI prefix).
+    pub attachments: Vec<Attachment>,
+}
+
+/// One image attached to a user message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attachment {
+    pub mime_type: String,
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone)]
@@ -301,12 +312,27 @@ where
     if options.max_cost_usd.is_some() && options.pricing.is_none() {
         return Err(EngineError::MissingPricing);
     }
+    if !options.attachments.is_empty() && !ctx.provider.capabilities().images {
+        return Err(EngineError::ImagesUnsupported);
+    }
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
     writer.begin_turn(&options.input, &mut on_event)?;
 
     let mut events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events(&events);
+    // Images ride on the last user message. The event log keeps the text only,
+    // so a resumed turn replays without them (ADR-0035).
+    if !options.attachments.is_empty()
+        && let Some(message) = messages.iter_mut().rev().find(|m| m.role == Role::User)
+    {
+        for attachment in &options.attachments {
+            message.blocks.push(ContentBlock::Image {
+                mime_type: attachment.mime_type.clone(),
+                data_base64: attachment.data_base64.clone(),
+            });
+        }
+    }
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);
