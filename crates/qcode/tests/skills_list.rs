@@ -69,8 +69,9 @@ fn lists_global_configured_and_project_roots() {
     let config = workspace.path().join("config.toml");
     std::fs::write(
         &config,
+        // Literal strings: a Windows path's backslashes are not escapes there.
         format!(
-            "[skills]\nroots = [\"{}\", \"~/home-skills\"]\n",
+            "[skills]\nroots = ['{}', '~/home-skills']\n",
             extra.path().display()
         ),
     )
