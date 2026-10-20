@@ -1515,6 +1515,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-ui-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "qcode-core",
+ "time",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "qcode-ui-state"
 version = "0.1.0"
 dependencies = [

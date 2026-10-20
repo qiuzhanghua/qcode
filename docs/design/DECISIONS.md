@@ -1409,3 +1409,64 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
 - GUI spike 的验收项：用同一事件流驱动 egui 版 transcript（复用投影）、三个界面原型
   （流式 transcript 含 CJK/IME、diff 逐 hunk、审批浮层）、1 万事件性能基线、
   产物体积/许可证/Windows 可用性/API 稳定性（egui vs GPUI Kit）。
+
+## ADR-0037：GUI 目标是对齐 DSH 主界面；先做 UI 桥，再做 A/B spike（2026-10-22）
+
+**背景**：GUI spike 的目标升级为「至少达到 DeepSeek Harness 主界面的效果」——一个信息密集、
+带 Markdown/代码高亮、工具卡片、审批浮层、流式文本、图片粘贴、用量计费与多面板的界面。
+上一轮对比过 egui 与 GPUI Kit；用户批准放开一次网络刷新依赖。
+
+**决定**
+
+1. **先做与框架无关的桥，再选框架**。新增 `crates/qcode-ui-bridge`：内核侧
+   `KernelPort`（`send_event`/`send_child`/`send_delta`、`approver()`、`answer()`、
+   `take_commands()`）与 UI 侧 `UiPort`（`events`、`commands`）。审批按 `call_id` 路由
+   （`UiCommand::Answer` → `KernelPort::dispatch`），不把 oneshot 塞进事件里，这样 GUI 可以在
+   任意任务里作答；UI 消失时审批 fail-closed 为 `Deny`，turn 取消时立即返回 `Deny` 而不挂起。
+   这个 crate 不知道任何渲染框架，TUI 以后可以改用它，GUI 直接用它。
+2. **框架选择走 A/B spike，不辩论定稿**。候选与定位：
+   - **GPUI Kit**（Longbridge，Apache-2.0，v0.7.x，[gpui-kit.com](https://gpui-kit.com/)）：
+     建在 Zed 的 GPUI 上，声称覆盖 macOS/Windows/Linux/WASM，75+ 组件，自带虚拟列表/数据表、
+     Rope+Tree-sitter+LSP 编辑器、Dock、AccessKit 无障碍、headless UI 集成测试。信息密集型
+     coding agent 需要的东西基本齐了，是**上限最高的候选**。
+   - **egui**：成熟、轻、immediate mode，与「mpsc → 投影」几乎零适配；但没有内置编辑器/Dock/
+     数据表，diff 与虚拟化要自研，CJK 需要打包字体。是**风险最低的兜底**。
+   - **本地 Web UI（选项 C，暂不做）**：起 loopback 服务把事件流推到浏览器。DSH 本身就是 Web GUI，
+     这条路线在产品形态上最接近目标，且天然支持远程/手机；代价是重做一套前端技术栈，并把
+     ADR-0036 的「共享内核/IPC」问题提前。**如果原生两条都达不到 DSH 的观感，再启动 C。**
+3. **spike 验收标准（提前写死，两天内跑完）**：
+   1. 投影复用：`qcode-ui-state` 的 `App` 与 `qcode-ui-bridge` 驱动窗口，不复制投影逻辑；
+   2. transcript 灌 10,000 条事件：首次打开 <1s、滚动不掉帧、内存 <300MB；
+   3. 中文输入法：`你好，世界` 输入、光标移动、候选窗不遮挡、粘贴多行；
+   4. 一个真实 diff（`apply_patch` 的 hunk）可读、可逐 hunk 折叠；
+   5. 审批浮层：y/a/n 与按钮两条路径都通，键盘焦点可切换；
+   6. 图片粘贴：`Ctrl-V` → `UiCommand::Prompt { attachments }`。
+   判定：GPUI Kit 通过 1–6 且 Windows 上无窗口/IME 级坑 → 选它；否则 egui 通过 1–6 → 选 egui
+   （diff 与虚拟化作为自研模块）。两条都不通过 → 启动选项 C。
+4. **依赖刷新是一次性的、受控的**：执行一次带网络的 `cargo update` + `cargo fetch`，把
+   `Cargo.lock` 一起提交；若仍保留 vendored registry，则同步更新该目录并在 README 记录命令。
+   刷新后立刻离线验证 `cargo build --offline` 仍可用，避免把离线构建能力弄丢。
+
+**理由**
+
+- DSH 主界面的观感（Markdown、代码高亮、流畅滚动、主题）在浏览器里是最便宜的；在原生框架里，
+  要么用组件齐全的 GPUI Kit，要么自己造编辑器与虚拟列表。egui 的强项是集成成本，不是观感上限。
+- 桥先行让框架选择变成「可替换的窗口层」：无论选谁，投影、事件流、审批、图片粘贴都已就绪，
+  spike 只写窗口代码，失败也不浪费。
+- 审批按 id 路由而不是携带 oneshot，是 GUI 与传统 TUI 的关键差异（GUI 的作答发生在另一任务/
+  另一帧），先把这层定对，后面不会返工。
+
+**后果 / 风险**
+
+- GPUI Kit 处于 0.7.x，GPUI 本身也在重构，升级要跟；GPUI 有自己的执行器，需要把 tokio 事件
+  通过 `cx.notify()` 搬回 UI 线程（本轮桥已经把「谁在哪个线程产生事件」隔离掉）。
+- egui 需要内置 CJK 字体，diff 视图要自研，长期维护成本高。
+- 选项 C 会把 ADR-0036 的 owner/审批/生命周期问题提前，不走是因为成本，不是因为不认可。
+- 一次性网络刷新后，若依赖版本漂移，需要在 CI 里固定 `Cargo.lock` 并跑 `--offline` 验证。
+
+**验证**
+
+- `crates/qcode-ui-bridge` 4 条测试：UI 看到提示并在 `call_id` 上作答后 turn 解除阻塞、
+  取消时立即 `Deny` 不挂起、`UiCommand::Answer` 经 `dispatch` 路由（未知 id 为 no-op）、
+  事件与 delta 保序。TUI/GUI 共用同一 API。
+- spike 的 6 项验收标准如上，结果记入本 ADR 的后续补充。
