@@ -11,7 +11,7 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
-use qcode_ui_bridge::{UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{ApprovalView, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::rc::Rc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -53,6 +53,8 @@ struct Shell {
     diff: Option<Entity<DiffState>>,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
+    /// A pending approval: the turn is blocked until one of these is clicked.
+    approval: Option<ApprovalView>,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -76,6 +78,7 @@ impl Shell {
             last_text: Default::default(),
             diff: None,
             attachments: Vec::new(),
+            approval: None,
             events,
         }
     }
@@ -145,15 +148,29 @@ impl Shell {
         cx.notify();
     }
 
+    fn answer(&mut self, allow: bool, session: bool, cx: &mut Context<Self>) {
+        let Some(view) = self.approval.take() else {
+            return;
+        };
+        let _ = self.commands.send(UiCommand::Answer {
+            call_id: view.call_id,
+            allow,
+            session,
+        });
+        cx.notify();
+    }
+
     fn poll(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 UiEvent::Event(event) | UiEvent::Child(event) => self.app.apply(&event),
                 UiEvent::Delta(delta) => self.app.apply_delta(&delta),
-                UiEvent::Approval(view) => self
-                    .app
-                    .push_notice(format!("approval needed: {} {}", view.tool, view.summary)),
-                UiEvent::ApprovalClosed { .. } => {}
+                UiEvent::Approval(view) => self.approval = Some(view),
+                UiEvent::ApprovalClosed { call_id } => {
+                    if self.approval.as_ref().is_some_and(|view| view.call_id == call_id) {
+                        self.approval = None;
+                    }
+                }
             }
         }
     }
@@ -188,6 +205,45 @@ impl Render for Shell {
                     .as_ref()
                     .map(|state| div().h(px(220.0)).child(Diff::new(state))),
             )
+            .children(self.approval.as_ref().map(|view| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .child(div().child(format!(
+                        "approval needed · {} · {}",
+                        view.tool, view.summary
+                    )))
+                    .child(div().child(format!("reason: {}", view.reason)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("allow")
+                                    .label("Allow")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.answer(true, false, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("allow-session")
+                                    .label("Always")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.answer(true, true, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("deny")
+                                    .label("Reject")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.answer(false, false, cx)
+                                    })),
+                            ),
+                    )
+            }))
             .child(
                 div()
                     .flex()

@@ -1475,3 +1475,35 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
 `danger-full-access` 后成功（拉取 GPUI/GPUI Kit 依赖树，`Cargo.lock` 已更新）。随后
 `cargo build -p qcode-gui --offline` 与既有测试在 `--offline` 下均通过，离线构建能力保持。
 刷新命令：`cargo fetch`（一次性、需网络）。
+### ADR-0037 spike 结论（2026-10-22）：GPUI Kit 通过
+
+**实测结果**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 1 投影复用 | 通过 | 窗口只持 `App` + 桥 + 输入框；`render` 里无转写状态 |
+| 2 一万事件 | 通过 | `tests/spike.rs`：投影 ≈10 ms（预算 500 ms） |
+| 2' 虚拟列表 | 通过 | `component::v_virtual_list` 只渲染可见区间 |
+| 3 中文 IME | 通过（用户实测） | 组件 `Input` 走平台文本栈，微软拼音可正常输入 |
+| 4 diff 视图 | 通过 | `DiffFile::parse` + `DiffState` + `Diff` 渲染真实 patch，不用自研 hunk |
+| 5 审批浮层 | 通过 | `UiEvent::Approval` → 三按钮 → `UiCommand::Answer` → `KernelPort::dispatch` |
+| 6 图片粘贴 | 通过 | `qcode-image` 读 `CF_DIB` → PNG → `Attachment` 随 `Prompt` 发出（按钮触发） |
+| 体积 | 通过 | release ≈24 MB（debug 638 MB） |
+
+**API 漂移清单（0.7.3 实测，供升级时对照）**
+
+- `div().v_flex()`（文档示例）不存在，用 `.flex().flex_col()`；
+- `flex_grow` 需要参数：`.flex_grow(1.0)`；
+- `v_virtual_list` 只能从 `gpui_kit::component::v_virtual_list` 导入（`gpui-component::virtual_list` 模块是 private）；
+- 输入渲染器叫 `Input`（不是 `TextInput`），`InputState` 在 `gpui-base::input::base::state`，构造 `InputState::new(window, cx)`；
+- `set_value(value, window, cx)` 的参数顺序是值在前；
+- 链接 gpui-kit 的 crate 里放 `#[test]` 会让 rustc **栈溢出**，单测必须放 `tests/` 集成测试（二进制另加 `#![recursion_limit = "512"]`）。
+
+**决定**：GUI 采用 **GPUI Kit**（egui 作为不再启用的兜底，选项 C 的本地 Web UI 留作远程形态）。
+
+**遗留（不影响结论）**
+
+- `Ctrl-V` 键位绑定（现在靠按钮）与 `apply_patch` 结果自动填入 diff 视图；
+- 引擎真正跑在窗口后面：需要把 `qc gui` 子命令接上，用 `KernelPort` 驱动一次真实 turn；
+- 真窗口下的一万事件滚动帧率/内存未测（投影侧已达标）；
+- release 24 MB 的发布策略（qcode 本体 + GUI 分开打包还是合并）。
