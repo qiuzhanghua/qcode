@@ -380,26 +380,26 @@ async fn cmd_run(
         None => std::env::current_dir()?,
     };
     let workspace = workspace.canonicalize()?;
-    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
-    // The flag wins, then the config, then the built-in default: a skill run
-    // needs far more turns than a single question does.
-    let max_turns = max_turns.unwrap_or(loaded.agent.max_turns);
-    let max_cost = max_cost.or(loaded.agent.max_cost_usd);
-    let resolved = config::resolve(
-        &loaded,
-        &config::Overrides {
+    let kernel = qcode_kernel::assemble(
+        config_path,
+        &workspace,
+        data_dir,
+        approval_policy.as_deref(),
+        config::Overrides {
             provider,
             model,
             base_url,
             stream_usage: no_stream_usage.then_some(false),
         },
-        &|key| std::env::var(key).ok(),
-    )?;
-
-    let pricing = config::pricing_for(&loaded, &resolved.model, max_cost)?;
-    // Resolve the policy before creating a session: a bad policy file should
-    // not leave an empty session behind.
-    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
+    )
+    .await?;
+    let loaded = &kernel.config;
+    // The flag wins, then the config, then the built-in default: a skill run
+    // needs far more turns than a single question does.
+    let max_turns = max_turns.unwrap_or(loaded.agent.max_turns);
+    let max_cost = max_cost.or(loaded.agent.max_cost_usd);
+    let resolved = &kernel.resolved;
+    let pricing = config::pricing_for(loaded, &resolved.model, max_cost)?;
 
     let attachments = read_images(&image)?;
 
@@ -411,26 +411,23 @@ async fn cmd_run(
         "provider resolved"
     );
 
-    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
-    let store = SessionStore::new(data_dir.clone());
-    let sandbox = qcode_tools::sandbox::build(
-        loaded.sandbox.mode,
-        &workspace,
-        loaded.sandbox.network,
-        &loaded.sandbox.extra_writable,
-    )?;
-    tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
     if agents_md.is_some() {
         tracing::info!("loaded AGENTS.md from the workspace root");
     }
-    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
+    let skills = kernel.skills.clone();
     let skills_prompt = skills.prompt_section();
     let prompt = match skill {
         Some(name) => activated_prompt(&skills, &name, prompt)?,
         None => prompt,
     };
     let cwd = workspace.display().to_string();
+    let data_dir = kernel.store.root().to_path_buf();
+    let policy = kernel.policy;
+    let store = kernel.store;
+    let mut tools = kernel.tools;
+    let network = kernel.network;
+    let provider: Arc<dyn Provider> = kernel.provider.into();
 
     let (session_id, first_event) = match resume {
         Some(id) => {
@@ -455,25 +452,6 @@ async fn cmd_run(
         print_event(event, include_raw);
     }
 
-    let egress =
-        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
-    let network: Option<SharedNetwork> = egress
-        .as_ref()
-        .map(|egress| egress.clone() as SharedNetwork);
-    let provider: Arc<dyn Provider> =
-        qcode_kernel::build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?
-            .into();
-
-    let mut tools = qcode_kernel::build_tools(
-        &loaded.mcp,
-        &loaded.search,
-        &workspace,
-        &data_dir,
-        &skills,
-        sandbox,
-        network.as_ref().map(|network| network.env()),
-    )
-    .await;
     let approver: Arc<dyn Approver> = if yes {
         Arc::new(AutoApprove)
     } else if std::io::stdin().is_terminal() {
