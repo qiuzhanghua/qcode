@@ -4,7 +4,7 @@
 //! share one definition of a server. Validation is a pure function: it runs
 //! when the config is loaded, before any process is spawned.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -23,6 +23,11 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Environment for the server process, on top of the inherited one.
+    /// Servers that need a token or a cache directory get it here instead of a
+    /// wrapper script.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Per-request timeout for the handshake, `tools/list` and `tools/call`.
@@ -102,6 +107,7 @@ mod tests {
             name: name.to_string(),
             command: "true".to_string(),
             args: Vec::new(),
+            env: Default::default(),
             enabled: true,
             timeout_secs: 120,
         }

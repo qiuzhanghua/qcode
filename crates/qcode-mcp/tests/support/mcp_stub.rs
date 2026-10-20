@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    // Optional capabilities come from the environment so a test can prove the
+    // client passes `[[mcp.servers]] env` through to the server process.
+    let caps = std::env::var("MCP_STUB_CAPS").unwrap_or_else(|_| "tools".to_string());
+    let has = |capability: &str| caps.split(',').any(|name| name.trim() == capability);
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else {
@@ -28,15 +32,24 @@ fn main() {
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
 
         match method {
-            "initialize" => respond(
-                &mut stdout,
-                id,
-                json!({
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "mcp-stub", "version": "0.0.1"}
-                }),
-            ),
+            "initialize" => {
+                let mut capabilities = json!({"tools": {}});
+                if has("resources") {
+                    capabilities["resources"] = json!({});
+                }
+                if has("prompts") {
+                    capabilities["prompts"] = json!({});
+                }
+                respond(
+                    &mut stdout,
+                    id,
+                    json!({
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": capabilities,
+                        "serverInfo": {"name": "mcp-stub", "version": "0.0.1"}
+                    }),
+                )
+            }
             "notifications/initialized" => {}
             "tools/list" => respond(&mut stdout, id, json!({"tools": tools()})),
             "tools/call" => {
@@ -49,6 +62,55 @@ fn main() {
                     .cloned()
                     .unwrap_or(Value::Null);
                 call(&mut stdout, id, name, arguments);
+            }
+            "resources/list" if has("resources") => respond(
+                &mut stdout,
+                id,
+                json!({
+                    "resources": [
+                        {
+                            "uri": "file:///notes.md",
+                            "name": "notes",
+                            "mimeType": "text/markdown"
+                        }
+                    ]
+                }),
+            ),
+            "resources/read" if has("resources") => {
+                let uri = message
+                    .pointer("/params/uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                respond(
+                    &mut stdout,
+                    id,
+                    json!({
+                        "contents": [
+                            {"uri": uri, "mimeType": "text/markdown", "text": "# notes\nfrom the stub"}
+                        ]
+                    }),
+                );
+            }
+            "prompts/list" if has("prompts") => respond(
+                &mut stdout,
+                id,
+                json!({"prompts": [{"name": "greet", "description": "Say hello"}]}),
+            ),
+            "prompts/get" if has("prompts") => {
+                let name = message
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                respond(
+                    &mut stdout,
+                    id,
+                    json!({
+                        "description": "greeting",
+                        "messages": [
+                            {"role": "user", "content": {"type": "text", "text": format!("hello from {name}")}}
+                        ]
+                    }),
+                );
             }
             _ => {
                 if id.is_some() {

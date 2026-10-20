@@ -18,8 +18,21 @@ fn config(name: &str) -> McpServerConfig {
         name: name.to_string(),
         command: STUB.to_string(),
         args: Vec::new(),
+        env: std::collections::BTreeMap::new(),
         enabled: true,
         timeout_secs: 10,
+    }
+}
+
+/// The stub advertises optional capabilities from `MCP_STUB_CAPS`, which is
+/// exactly what proves `env` reaches the child process.
+fn config_with_env(name: &str, env: &[(&str, &str)]) -> McpServerConfig {
+    McpServerConfig {
+        env: env
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect(),
+        ..config(name)
     }
 }
 
@@ -163,6 +176,7 @@ async fn disabled_and_missing_servers_degrade_to_no_tools() {
         name: "missing".to_string(),
         command: dir.path().join("does-not-exist").display().to_string(),
         args: Vec::new(),
+        env: Default::default(),
         enabled: true,
         timeout_secs: 2,
     };
@@ -222,4 +236,55 @@ async fn a_confine_that_refuses_the_server_skips_it() {
     )
     .await;
     assert!(tools.is_empty());
+}
+
+#[tokio::test]
+async fn a_server_without_resources_or_prompts_gets_no_extra_tools() {
+    let (_, tools) = connect(config("stub")).await;
+    assert_eq!(tools.len(), 7, "got {:?}", names(&tools));
+    assert!(!names(&tools).contains(&"mcp__stub__list_resources"));
+}
+
+#[tokio::test]
+async fn env_reaches_the_server_and_unlocks_resources_and_prompts() {
+    let server = config_with_env("stub", &[("MCP_STUB_CAPS", "tools,resources,prompts")]);
+    let (dir, tools) = connect(server).await;
+    let names = names(&tools);
+    for expected in [
+        "mcp__stub__list_resources",
+        "mcp__stub__read_resource",
+        "mcp__stub__list_prompts",
+        "mcp__stub__get_prompt",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "missing {expected}; have {names:?}"
+        );
+    }
+
+    let context = ToolContext::new(dir.path());
+    let read = find(&tools, "mcp__stub__read_resource").clone();
+    let output = read
+        .execute(&context, json!({"uri": "file:///notes.md"}))
+        .await
+        .unwrap();
+    assert_eq!(output.status, ToolStatus::Ok);
+    assert!(output.output.contains("from the stub"), "{}", output.output);
+
+    // A missing uri is a tool error, not a panic or a silent empty result.
+    let output = read.execute(&context, json!({})).await.unwrap();
+    assert_eq!(output.status, ToolStatus::Error);
+    assert!(output.output.contains("uri"), "{}", output.output);
+
+    let prompt = find(&tools, "mcp__stub__get_prompt").clone();
+    let output = prompt
+        .execute(&context, json!({"name": "greet"}))
+        .await
+        .unwrap();
+    assert_eq!(output.status, ToolStatus::Ok);
+    assert!(
+        output.output.contains("hello from greet"),
+        "{}",
+        output.output
+    );
 }

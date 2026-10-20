@@ -241,10 +241,15 @@ cargo build -p qcode-eval
   只放 `name` / `description`；模型调用 `skill` 工具按需加载正文，或用 `file` 参数读
   `references/` 等附件。非法/超限/symlink 的 skill 跳过并告警，
   global < user < config < project(.agents) < project(.qcode)。`qc skills list` 可查看全部发现结果。
-- **MCP（仅 tools）**：启动时连接启用的 stdio server，`tools/list` 后以
+- **MCP（tools + resources + prompts）**：启动时连接启用的 stdio server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
   `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
+  server 声明了 resources / prompts 能力时，再注册
+  `mcp__<server>__list_resources` / `read_resource` / `list_prompts` / `get_prompt`
+  四个工具（能力靠握手时的一次 `list` 探测，服务器不支持就只丢这四个）。
+  `[[mcp.servers]] env` 把变量追加到子进程环境，需要 token 或自建缓存目录的 server
+  不必再写 wrapper 脚本；出口代理变量在这些之后注入，仍以 qcode 的代理为准。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
@@ -352,12 +357,15 @@ tool = "write_file"
 path_glob = ".env*"
 action = "deny"
 
-# MCP：stdio server（v1 只支持 tools）。enabled 默认 true，timeout_secs 默认 120。
+# MCP：stdio server。enabled 默认 true，timeout_secs 默认 120；env 追加到子进程环境。
 # 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
+# server 声明 resources / prompts 能力时，额外注册
+# mcp__<server>__list_resources / read_resource / list_prompts / get_prompt 四个工具。
 [[mcp.servers]]
 name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+env = { GITHUB_TOKEN = "..." }   # 可选；需要 token/缓存目录的 server 用它，不必写 wrapper 脚本
 enabled = true
 
 # Skills：默认开启；enabled = false 可完全跳过发现。

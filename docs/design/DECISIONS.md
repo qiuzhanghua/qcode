@@ -1190,5 +1190,42 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 `initialize` + `session/new` 两行，回 `protocolVersion: 1` 与一个新 sessionId；
 `qc doctor` 打印 `acp: protocol v1 over stdio`。
 
+## ADR-0033：MCP 的 env、resources 与 prompts（2026-10-20）
+
+**决定**
+
+1. `[[mcp.servers]]` 增加 `env`（字符串表），在 spawn 时 `envs` 到子进程。
+   顺序是**先 config env，后出口代理变量**：server 自己写的 `HTTPS_PROXY` 不能把业务流量
+   从 qcode 的代理下偷走。
+2. resources 与 prompts 用**工具**暴露，因为引擎只认识工具。每个能力两个工具：
+   `mcp__<server>__list_resources` / `read_resource`（参数 `uri`）、
+   `mcp__<server>__list_prompts` / `get_prompt`（参数 `name`、可选 `arguments`）。
+   列表工具每次调用都向 server 现取，不做缓存。
+3. 能力探测靠**试一次**：握手后调 `resources/list` 与 `prompts/list`，成功才注册对应工具，
+   报错只记 `debug` 并跳过。没有引入"读 server capabilities 决定注册"的第二套判定——
+   rmcp 的 capability 结构与我们的注册逻辑会重复表达同一件事，而试一次的代价是两次请求。
+4. 请求参数用 serde 从 JSON 构造（`json!({"uri": ...})` → `ReadResourceRequestParams`），
+   不直接写 struct 字面量：rmcp 的协议结构体加字段时这里不用跟着改。
+5. 结果按 JSON 文本返回（`serde_json::to_string_pretty`），沿用 32KB 头尾截断与
+   `full_output`。审批级别与 MCP 工具一致：`External`，默认 ask。
+6. 参数缺失是**工具错误**（`status=Error` + 说明），不是空结果：`read_resource` 没有
+   `uri`、`get_prompt` 没有 `name` 都要报出来。
+
+**后果**
+
+- 一个声明两种能力的 server 会多出 4 个工具；模型看到的工具数变多，但名字带前缀，
+  审批规则可以按名字精确放行。
+- `list_*` 是"现取"，server 端资源变化立刻可见，代价是每次调用一次往返。
+- 探测失败只有 debug 日志：默认日志级别下看不到"这个 server 没有 resources"，
+  需要时用 `RUST_LOG=debug`。
+- 不做 `resources/subscribe`（更新推送）、不把 prompts 自动塞进 system prompt：
+  prompt 模板由模型显式 `get_prompt` 取用。
+
+**验证**：`qcode-mcp` 14 个单测 + 13 个集成；新增两条集成用 stub server 的
+`MCP_STUB_CAPS` 环境变量反向证明 `env` 真的传到了子进程：设成
+`tools,resources,prompts` 时四个额外工具出现且 `read_resource` 返回 stub 正文、
+缺 `uri` 报错、`get_prompt` 返回渲染后的消息；不设时仍然只有 7 个工具。
+
+
 
 

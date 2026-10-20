@@ -1,14 +1,16 @@
-//! MCP client (tools only).
+//! MCP client (tools, resources and prompts).
 //!
 //! Enabled servers are started when the tool registry is built, because
 //! `tools/list` has to run before the model can pick a tool. Servers are spoken
 //! to over stdio with the `rmcp` SDK; a server that fails to start, times out
 //! or dies only loses its own tools. It never aborts the session.
 //!
-//! v1 deliberately supports the tools capability only: resources, prompts,
-//! sampling and elicitation stay out.
+//! Resources and prompts are optional capabilities: the client asks for the
+//! matching list once during the handshake and registers list/read tools only
+//! when the server answers. Sampling and elicitation stay out.
 
 mod config;
+mod extras;
 mod tool;
 
 use std::ffi::{OsStr, OsString};
@@ -22,6 +24,7 @@ use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 
 pub use config::{McpConfig, McpConfigError, McpServerConfig};
+pub use extras::{Extra, McpExtra};
 pub use tool::McpTool;
 
 /// How long a server gets to answer `initialize`. `tools/list` and `tools/call`
@@ -137,6 +140,9 @@ async fn connect_server(
     };
     let mut command = Command::from(command);
     command
+        // Config env first, then the egress variables: the proxy token must
+        // win over a server's own HTTP(S)_PROXY.
+        .envs(server.env.iter())
         .envs(env.iter().map(|(key, value)| (key, value)))
         .kill_on_drop(true);
 
@@ -176,7 +182,7 @@ async fn connect_server(
         })?;
 
     let service = Arc::new(service);
-    Ok(listed
+    let mut tools: Vec<Arc<dyn Tool>> = listed
         .into_iter()
         .map(|definition| {
             let name = server.tool_name(&definition.name);
@@ -188,7 +194,55 @@ async fn connect_server(
                 timeout,
             )) as Arc<dyn Tool>
         })
-        .collect())
+        .collect();
+
+    // Resources and prompts are optional. Asking once is the detection: a
+    // server that does not implement the capability answers with an error and
+    // simply gets no extra tools.
+    match tokio::time::timeout(timeout, service.list_resources(None)).await {
+        Ok(Ok(_)) => {
+            for kind in [Extra::ListResources, Extra::ReadResource] {
+                tools.push(extra_tool(server, kind, &service, timeout));
+            }
+        }
+        Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no resources capability"),
+        Err(_) => tracing::warn!(
+            server = %server.name,
+            secs = server.timeout_secs,
+            "resources/list timed out; skipping resource tools"
+        ),
+    }
+
+    match tokio::time::timeout(timeout, service.list_prompts(None)).await {
+        Ok(Ok(_)) => {
+            for kind in [Extra::ListPrompts, Extra::GetPrompt] {
+                tools.push(extra_tool(server, kind, &service, timeout));
+            }
+        }
+        Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no prompts capability"),
+        Err(_) => tracing::warn!(
+            server = %server.name,
+            secs = server.timeout_secs,
+            "prompts/list timed out; skipping prompt tools"
+        ),
+    }
+
+    Ok(tools)
+}
+
+fn extra_tool(
+    server: &McpServerConfig,
+    kind: Extra,
+    service: &Arc<rmcp::service::RunningService<rmcp::RoleClient, ()>>,
+    timeout: std::time::Duration,
+) -> Arc<dyn Tool> {
+    Arc::new(McpExtra::new(
+        server.tool_name(kind.suffix()),
+        server.name.clone(),
+        kind,
+        service.clone(),
+        timeout,
+    ))
 }
 
 /// One log file per server, append-only. If it cannot be opened, inherit the

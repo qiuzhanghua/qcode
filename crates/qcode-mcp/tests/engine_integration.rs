@@ -22,6 +22,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
         name: "stub".to_string(),
         command: env!("CARGO_BIN_EXE_mcp-stub").to_string(),
         args: Vec::new(),
+        env: Default::default(),
         enabled: true,
         timeout_secs: 10,
     };
