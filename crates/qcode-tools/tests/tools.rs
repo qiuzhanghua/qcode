@@ -125,11 +125,15 @@ async fn shell_reports_exit_code_and_scrubs_env() {
 
     // SAFETY: tests use a unique variable name; no other test reads it.
     unsafe { std::env::set_var("QCODE_TEST_SECRET", "sk-should-not-leak") };
+    // `run_shell` uses a POSIX shell on Unix and PowerShell on Windows, so the
+    // script has to be written for the platform it runs on.
+    let script = if cfg!(windows) {
+        "if ($env:QCODE_TEST_SECRET) { $env:QCODE_TEST_SECRET } else { Write-Output 'missing' }"
+    } else {
+        "printf '%s' \"${QCODE_TEST_SECRET:-missing}\""
+    };
     let output = RunShell::default()
-        .execute(
-            &ctx,
-            json!({"command": "printf '%s' \"${QCODE_TEST_SECRET:-missing}\""}),
-        )
+        .execute(&ctx, json!({ "command": script }))
         .await
         .unwrap();
     unsafe { std::env::remove_var("QCODE_TEST_SECRET") };
@@ -142,7 +146,11 @@ async fn shell_reports_exit_code_and_scrubs_env() {
         let output = RunShell::default()
             .execute(
                 &ctx,
-                json!({"command": "printf '%s' \"${CARGO_HOME:-missing}\""}),
+                json!({"command": if cfg!(windows) {
+                    "Write-Output $env:CARGO_HOME"
+                } else {
+                    "printf '%s' \"${CARGO_HOME:-missing}\""
+                }}),
             )
             .await
             .unwrap();
@@ -150,7 +158,10 @@ async fn shell_reports_exit_code_and_scrubs_env() {
     }
 
     let failed = RunShell::default()
-        .execute(&ctx, json!({"command": "exit 3"}))
+        .execute(
+            &ctx,
+            json!({"command": if cfg!(windows) { "exit 3" } else { "exit 3" }}),
+        )
         .await
         .unwrap();
     assert_eq!(failed.metadata.exit_code, Some(3));
