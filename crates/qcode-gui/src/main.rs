@@ -6,16 +6,24 @@
 //! swapping in gpui-kit's `VirtualList` is the next step.
 #![recursion_limit = "512"]
 
+use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
 use qcode_ui_bridge::{UiEvent, channels};
 use qcode_ui_state::{App, Block};
+use std::rc::Rc;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// How many blocks the window draws. A virtual list would make this unbounded.
-const VISIBLE_BLOCKS: usize = 200;
+/// Row height for the virtual list. Uniform rows keep the size table cheap.
+const ROW_HEIGHT: f32 = 22.0;
 
 /// Draw one projection block as a line. Real rendering (markdown, code blocks,
 /// tool cards) replaces this once the spike passes.
+/// Uniform row sizes for `v_virtual_list`.
+fn row_sizes(count: usize) -> Rc<Vec<Size<Pixels>>> {
+    Rc::new((0..count).map(|_| size(px(0.0), px(ROW_HEIGHT))).collect())
+}
+
 fn block_text(block: &Block) -> String {
     match block {
         Block::User(text) => format!("you › {text}"),
@@ -30,6 +38,8 @@ fn block_text(block: &Block) -> String {
 
 struct Shell {
     app: App,
+    /// One size per block, rebuilt only when the block count changes.
+    sizes: Rc<Vec<Size<Pixels>>>,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -37,7 +47,15 @@ struct Shell {
 
 impl Shell {
     fn new(app: App, events: UnboundedReceiver<UiEvent>) -> Self {
-        Self { app, events }
+        let sizes = row_sizes(app.blocks.len());
+        Self { app, sizes, events }
+    }
+
+    /// Rebuild the size table when the transcript grew.
+    fn refresh_sizes(&mut self) {
+        if self.sizes.len() != self.app.blocks.len() {
+            self.sizes = row_sizes(self.app.blocks.len());
+        }
     }
 
     fn poll(&mut self) {
@@ -55,27 +73,27 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll();
-        let blocks = &self.app.blocks;
-        let shown = blocks.len().saturating_sub(VISIBLE_BLOCKS);
-        let mut column = div().flex().flex_col().gap_1().p_4().w_full();
-        if blocks.is_empty() {
-            column = column.child(div().child("no events yet"));
-        }
-        for block in &blocks[shown..] {
-            column = column.child(div().child(block_text(block)));
-        }
+        self.refresh_sizes();
+        let entity = cx.entity();
+        let sizes = self.sizes.clone();
+        let total = self.app.blocks.len();
+        let list = v_virtual_list(entity, "transcript", sizes, |shell, range, _window, _cx| {
+            range
+                .map(|index| {
+                    div()
+                        .h(px(ROW_HEIGHT))
+                        .child(block_text(&shell.app.blocks[index]))
+                })
+                .collect()
+        });
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(div().child(format!(
-                "{} block(s), showing the last {}",
-                blocks.len(),
-                blocks.len() - shown
-            )))
-            .child(column)
+            .child(div().child(format!("{total} block(s)")))
+            .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
     }
 }
 
