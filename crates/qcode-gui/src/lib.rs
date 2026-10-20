@@ -9,6 +9,7 @@
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
 
@@ -225,7 +226,15 @@ impl Render for Shell {
             .flex_col()
             .on_action(cx.listener(|this, _: &PasteImage, _window, cx| this.paste_clipboard(cx)))
             .child(div().child(format!("{total} block(s)")))
-            .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_grow(1.0)
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(list),
+            )
             .children(
                 self.diff
                     .as_ref()
