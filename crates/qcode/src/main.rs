@@ -1296,11 +1296,10 @@ fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
     if let Ok(path) = std::env::var("XDG_DATA_HOME") {
         return PathBuf::from(path).join("qcode");
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("qcode")
+    // Windows has no `HOME` by default; falling back to "." put the store in
+    // the current directory, so sessions landed in whatever repo qc ran from.
+    let home = config::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    home.join(".local").join("share").join("qcode")
 }
 
 /// Ctrl-C asks the engine to stop; a second Ctrl-C wins immediately.
