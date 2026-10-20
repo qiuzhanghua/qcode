@@ -70,6 +70,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             tools: &registry,
             policy: &Policy::default(),
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &session,
@@ -85,6 +86,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

@@ -97,6 +97,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &id,
@@ -116,6 +117,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             agents_md: None,
             skills: None,
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

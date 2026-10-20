@@ -75,6 +75,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             tools: &registry,
             policy: &Policy::default(),
             approver: &AutoApprove,
+            snapshots: None,
         },
         RunOptions {
             session_id: &session,
@@ -90,6 +91,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             agents_md: None,
             skills: Some(prompt),
             network: None,
+            attachments: Vec::new(),
         },
         |_| {},
     )

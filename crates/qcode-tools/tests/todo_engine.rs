@@ -39,6 +39,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         agents_md: None,
         skills: None,
         network: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -87,6 +88,7 @@ async fn todo_state_is_injected_and_survives_resume() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), "plan the work"),
         |_| {},
@@ -127,6 +129,7 @@ async fn todo_state_is_injected_and_survives_resume() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), "continue"),
         |_| {},
@@ -181,6 +184,7 @@ async fn an_empty_write_clears_the_prompt_section() {
             tools: &tools,
             policy: &policy,
             approver: &AutoApprove,
+            snapshots: None,
         },
         options(&id, dir.path(), "clear it"),
         |_| {},
