@@ -12,6 +12,7 @@ members = [
   "crates/qcode-acp",
   "crates/qcode-ui-state",
   "crates/qcode-ui-bridge",
+  "crates/qcode-gui",
 ]
 
 [workspace.package]

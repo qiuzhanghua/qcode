@@ -1470,3 +1470,8 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
   取消时立即 `Deny` 不挂起、`UiCommand::Answer` 经 `dispatch` 路由（未知 id 为 no-op）、
   事件与 delta 保序。TUI/GUI 共用同一 API。
 - spike 的 6 项验收标准如上，结果记入本 ADR 的后续补充。
+**补充（2026-10-22，依赖刷新执行记录）**：`crates/qcode-gui` 已加入 workspace 并依赖 `gpui-kit 0.7.3`；
+`cargo fetch` 在受限沙箱下因 schannel 报 `SEC_E_NO_CREDENTIALS` 失败，改用一次
+`danger-full-access` 后成功（拉取 GPUI/GPUI Kit 依赖树，`Cargo.lock` 已更新）。随后
+`cargo build -p qcode-gui --offline` 与既有测试在 `--offline` 下均通过，离线构建能力保持。
+刷新命令：`cargo fetch`（一次性、需网络）。
