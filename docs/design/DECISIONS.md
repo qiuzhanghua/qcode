@@ -1339,3 +1339,73 @@ data URI），纯文本消息仍保持字符串；`cargo test -p qcode-providers
 `png` 三条：CRC32/Adler32 已知向量、PNG 签名与 IHDR/IEND、IDAT 里的 zlib 头与原始行）；
 `qcode-tui` 新增 1 条（`Ctrl+V` 映射成 `PasteImage` 且不改输入框）。`cargo test -p qcode --bins`
 67 条、`-p qcode-tui --lib` 31 条全绿；clippy 干净。
+
+## ADR-0036：前端与内核的边界——先进程内，后 IPC（2026-10-22）
+
+**背景**：讨论 GUI spike 时提出一个问题——能不能把 TUI / ACP 拆开，让 GUI 探测一个「只带
+ACP 的内核」是否在运行，在就直接用、不在就自己起；探测靠端口还是进程名？这个问题值得先
+写清楚，因为它决定了 GUI 是一个「进程」还是一个「客户端」。
+
+**决定**
+
+1. **内核 = `qcode-core` + `qcode-tools` + `qcode-net` + `qcode-mcp` + 一次性装配**
+   （provider、egress、policy、store、skills）。CLI、TUI、ACP、GUI 都是**前端**；
+   `qcode-acp` 是前端的协议适配器，不是内核 API。因此「只带 ACP 的内核」这个说法作废。
+2. **stdio ACP 天生一对一**：Zed 拉起 `qc acp` 时给两个管道，进程寿命绑定那一个客户端，
+   没有端点可被第二个进程接上。所以「探测有没有 ACP 内核在跑」在 stdio 模型下没有意义，
+   即使探测到也无法复用。
+3. **第一阶段（GUI spike 期间）不做 daemon**：GUI 是新二进制，在**自己进程内**嵌入内核，
+   和 TUI 一样。代价是每个前端各有一份 MCP server、egress 代理与连接池；换来零 IPC、
+   零多客户端语义、完全隔离。以当前规模（内核进程几十 MB、启动几百 ms），这个代价小于
+   引入 daemon 的正确性成本。
+4. **第二阶段是纯重构**：把「装配内核」抽成 `Kernel` 外观（`new(配置)` → `run_turn`、
+   `open_session`、`events`），CLI/TUI/ACP/GUI 不再各自拼 `Deps`。这一步不引入 IPC，
+   但它决定以后能不能平滑加 daemon。
+5. **第三阶段（只有被实测需求触发才做）**：`qc kernel` 守护进程 + 「先连、连不上再 spawn」。
+   触发条件必须可测量：GUI 冷启动不可接受（>1s）、MCP server 启动昂贵、或用户明确要求
+   TUI 与 GUI 打开同一条会话。若痛点只是「启动慢」，优先做预热/懒加载，而不是 IPC。
+6. **发现与传输（如果走到第三阶段）**：
+   - 发现用**运行时文件**：Windows `%LOCALAPPDATA%\qcode\run\kernel.json`，Unix
+     `$XDG_RUNTIME_DIR/qcode/`，内容 `{pid, start_time, socket, protocol_version, user_sid}`；
+   - 传输用**命名管道 / UDS**，不用 TCP。管道 DACL 只放当前用户 SID，UDS 放 0700 目录；
+     socket 名带用户 SID，避免多用户撞名；
+   - 握手校验 `protocol_version` 与 `pid + start_time`；连接失败、版本不符、pid 已被复用
+     都视为过期：删文件、**spawn 新内核**，不杀旧进程。
+   - **不用**「固定端口」，也不用「扫进程名」。前者等于把任意代码执行暴露给同机任意进程，
+     还会撞端口、触发防火墙；后者只说明「有个 qc 在跑」，拿不到端点且有竞态。
+7. **第三阶段之前必须先定的三条语义**（否则一定返工）：
+   - **会话归属**：一个 session 只有一个 owner 客户端，其他客户端只读观察；
+   - **审批归属**：`session/request_permission` 只发给 owner，不广播（避免「还没看完就被
+     另一个窗口点了允许」）；
+   - **生命周期**：空闲超时退出、崩溃后重连并 replay、前后端版本不一致时拒绝连接。
+8. **ACP 永远保留 stdio-child 模式**：Zed 的设计就是自己 spawn；最多让 ACP 适配器内部
+   支持「转发到已存在的内核」，对外仍是 stdio 子进程。
+9. **GUI 与 TUI 真正该共享的是状态投影，不是进程**：`qcode-tui` 里的 `App`（事件投影）与
+   `ui.rs`（ratatui 渲染）已经分离，GUI 应复用前者。若抽取 `qcode-ui-state` 失败（投影与
+   ratatui 耦合太深），那么**投影抽取优先于 GUI，也优先于 daemon**。
+
+**理由**
+
+- ACP 的 stdio 语义决定了它不可能成为共享内核的协议；把 GUI 需求硬塞进 ACP 的形状
+  （编辑器会话、权限弹窗）会牺牲 GUI 需要的能力（多会话、并行线程、更细的流式粒度）。
+- 多客户端共享会立刻引入 owner/审批/生命周期三个问题；在没有实测需求前解决它们，是在为
+  假想负载付复杂度。
+- 安全上，本地 IPC 的信任边界是文件系统权限，不是「端口没被发现」。TCP 方案在 Windows 上
+  连「同用户」都不保证，直接排除。
+
+**后果**
+
+- GUI spike 期间会有两份内核进程（TUI 与 GUI 各一），MCP server 与 egress 代理各起一份；
+  这可接受，且与 ACP 的 stdio 模型一致。
+- `Kernel` 外观是后续 daemon 的前置条件；如果一直没做，它仍然让四个前端共用同一装配路径，
+  减少「TUI 能跑、ACP 不能跑」这类分叉。
+- 本 ADR 的第三阶段是条件性决定：触发条件写在上面，命中时再开新 ADR 记录协议细节
+  （帧格式、鉴权、多客户端广播、owner 切换）。
+
+**验证**
+
+- 第二阶段完成后：CLI/TUI/ACP 的所有测试保持不变且通过，且它们只通过 `Kernel` 构造引擎
+  依赖（代码评审检查没有第二处 `build_tools`/`build_egress` 装配）。
+- GUI spike 的验收项：用同一事件流驱动 egui 版 transcript（复用投影）、三个界面原型
+  （流式 transcript 含 CJK/IME、diff 逐 hunk、审批浮层）、1 万事件性能基线、
+  产物体积/许可证/Windows 可用性/API 稳定性（egui vs GPUI Kit）。
