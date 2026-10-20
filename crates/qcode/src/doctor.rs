@@ -210,7 +210,7 @@ impl Doctor {
                     return;
                 }
             };
-        let provider = match crate::build_provider(
+        let provider = match qcode_kernel::build_provider(
             &resolved,
             egress.as_ref().map(|egress| egress.proxy_url()),
         ) {

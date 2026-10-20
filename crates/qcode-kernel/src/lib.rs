@@ -95,8 +95,11 @@ pub struct Kernel {
 
 use std::path::PathBuf;
 
+use qcode_core::provider::Provider;
+use qcode_core::provider::{StopReason, StreamEvent};
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
+use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::Sandbox;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
@@ -284,4 +287,134 @@ pub fn writable_dir(path: &Path) -> bool {
         let _ = std::fs::remove_file(&probe);
     }
     ok
+}
+
+pub fn build_provider(
+    resolved: &config::Resolved,
+    proxy_url: Option<&str>,
+) -> Result<Box<dyn Provider>, Box<dyn std::error::Error>> {
+    Ok(match resolved.name.as_str() {
+        "mock" => Box::new(MockProvider::text(
+            "Hello from the mock provider. The event log and replay path are working.",
+        )),
+        // Offline rehearsal of the approval UI: one run_shell call (ask by
+        // default) followed by a closing message. Deliberately tiny so the
+        // manual M1-10 walkthrough stays readable.
+        "mock-approval" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "approval-1".to_string(),
+                    name: "run_shell".to_string(),
+                    arguments: serde_json::json!({"command": "echo qcode-approval-demo"}),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("审批流程演示结束。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        "mock-tools" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "demo-1".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"path": "."}),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("工具循环跑通了。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        "mock-todo" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "todo-1".to_string(),
+                    name: "todo_write".to_string(),
+                    arguments: serde_json::json!({
+                        "items": [
+                            {"content": "读 SPEC 的工具契约", "status": "completed"},
+                            {"content": "实现 todo_write", "status": "in_progress"},
+                            {"content": "跑测试与 TUI 验收"}
+                        ]
+                    }),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("待办清单已更新。".to_string()),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        "mock-subagent" => Box::new(MockProvider::scripted(vec![
+            vec![
+                StreamEvent::Started,
+                StreamEvent::ToolCallDone {
+                    call_id: "sub-1".to_string(),
+                    name: "subagent".to_string(),
+                    arguments: serde_json::json!({
+                        "task": "在子会话里总结仓库结构",
+                        "max_turns": 4
+                    }),
+                },
+                StreamEvent::Ended {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("子 agent：仓库有 core/store/cli 三个 crate。".to_string()),
+                StreamEvent::Usage(qcode_core::event::Usage {
+                    input_tokens: Some(12),
+                    output_tokens: Some(6),
+                    ..qcode_core::event::Usage::default()
+                }),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            vec![
+                StreamEvent::Started,
+                StreamEvent::TextDelta("父 agent 收到子任务结果。".to_string()),
+                StreamEvent::Usage(qcode_core::event::Usage {
+                    input_tokens: Some(12),
+                    output_tokens: Some(6),
+                    ..qcode_core::event::Usage::default()
+                }),
+                StreamEvent::Ended {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+        ])),
+        _ => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
+            name: resolved.name.clone(),
+            base_url: resolved
+                .base_url
+                .clone()
+                .expect("non-mock provider always has a base URL"),
+            api_key: resolved.api_key.clone(),
+            stream_usage: resolved.stream_usage,
+            proxy_url: proxy_url.map(str::to_string),
+        })?),
+    })
 }
