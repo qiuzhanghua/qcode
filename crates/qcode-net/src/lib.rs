@@ -157,10 +157,13 @@ impl Drop for Egress {
 impl Network for Egress {
     fn client(&self) -> reqwest::Client {
         let proxy = reqwest::Proxy::all(&self.inner.proxy_url)
-            .unwrap_or_else(|err| panic!("session proxy URL is invalid: {err}"));
+            .unwrap_or_else(|err| panic!("session proxy URL is invalid: {err}"))
+            // `None` drops the `NO_PROXY` exception list, including the one read
+            // from the environment: every request must traverse the proxy,
+            // loopback destinations included.
+            .no_proxy(None);
         reqwest::Client::builder()
             .proxy(proxy)
-            .no_proxy()
             .timeout(Duration::from_secs(120))
             .redirect(reqwest::redirect::Policy::limited(10))
             .user_agent(concat!("qcode/", env!("CARGO_PKG_VERSION")))
@@ -747,6 +750,8 @@ mod tests {
 
     #[tokio::test]
     async fn plain_http_requests_are_proxied() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("network.jsonl");
         let server = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = server.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -772,6 +777,7 @@ mod tests {
         let egress = Egress::start(EgressOptions {
             allow: vec![format!("127.0.0.1:{port}")],
             allow_private: true,
+            audit_path: Some(audit.clone()),
             ..EgressOptions::default()
         })
         .await
@@ -785,5 +791,12 @@ mod tests {
             .expect("request");
         assert!(response.status().is_success());
         assert_eq!(response.text().await.unwrap(), "ok");
+
+        // A direct client would also receive `ok`; only the audit line proves
+        // the request was accepted by the egress proxy.
+        let log = std::fs::read_to_string(&audit).expect("audit");
+        assert!(log.contains("\"result\":\"allowed\""), "{log}");
+        assert!(log.contains("\"reason\":\"http\""), "{log}");
+        assert!(log.contains("127.0.0.1"), "{log}");
     }
 }

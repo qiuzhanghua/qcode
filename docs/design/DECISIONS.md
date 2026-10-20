@@ -776,6 +776,13 @@ shell/MCP 的任意 socket，需要明确边界。
 - 未做：per-session token（ACP 多会话）、shell/MCP 的异步 ask、`network.mode = strict`
   的 OS 级强制。它们分别留到 ACP 与 v2.2。
 
+### ADR-0023 修正（2026-10-20）
+
+- `Egress::client()` 原先在 `Proxy::all` 之后调用 `ClientBuilder::no_proxy()`；reqwest
+  里这个方法会 **清空代理配置**（不是「忽略 NO_PROXY」），所有请求其实都直连，
+  allowlist/审计/SSRF 拦截全部失效。改为 `Proxy::no_proxy(None)`，并给
+  `plain_http_requests_are_proxied` 增加审计断言作为回归测试。
+
 ## ADR-0024：ACP 集成与 fs/terminal 委托边界（2026-10-19）
 
 **背景**：v2.1 通过 Agent Client Protocol 接入 Zed/Neovim；ACP client 可以提供文件与
