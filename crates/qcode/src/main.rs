@@ -67,6 +67,8 @@ enum Command {
     Update(update::UpdateArgs),
     /// Serve the Agent Client Protocol over stdio (for editors).
     Acp,
+    /// Open the desktop window (GPUI Kit; experimental).
+    Gui,
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
     #[command(hide = true)]
@@ -289,6 +291,7 @@ async fn main() -> ExitCode {
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,
+        Some(Command::Gui) => cmd_gui(data_dir, config, approval_policy).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
         #[cfg(windows)]
@@ -627,6 +630,36 @@ async fn cmd_acp(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Open the desktop window (ADR-0037).
+///
+/// The window itself lives in the `qcode-gui` binary for now; this subcommand
+/// assembles the kernel first so the GUI can be handed the same pieces as the
+/// other frontends.
+async fn cmd_gui(
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    approval_policy: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let kernel = qcode_kernel::assemble(
+        config_path,
+        &workspace,
+        data_dir,
+        approval_policy.as_deref(),
+        config::Overrides::default(),
+    )
+    .await?;
+    println!(
+        "gui: provider={} model={} sandbox={} tools={} skills={}",
+        kernel.resolved.name,
+        kernel.resolved.model,
+        kernel.sandbox,
+        kernel.tools.len(),
+        kernel.skills.len()
+    );
+    println!("gui: the window is still the `qcode-gui` binary; wiring it to this kernel is next");
+    Ok(ExitCode::SUCCESS)
+}
 async fn cmd_tui(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
