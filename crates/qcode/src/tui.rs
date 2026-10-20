@@ -254,7 +254,14 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     TuiMsg::Event(event) => app.apply(&event),
                     TuiMsg::Child(event) => app.apply_child(&event),
                     TuiMsg::Key(key) => {
-                        let Some(action) = app.handle_key(key) else { continue };
+                        let Some(press) = qcode_tui::translate(key) else {
+                            continue;
+                        };
+                        let action = match press {
+                            qcode_tui::KeyPress::Input(event) => app.handle_input(event),
+                            qcode_tui::KeyPress::Action(action) => app.handle_action(action),
+                        };
+                        let Some(action) = action else { continue };
                         match action {
                             UiAction::Submit(text) => {
                                 // A fresh token per turn: cancelling one turn

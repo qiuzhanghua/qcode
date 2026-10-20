@@ -1,6 +1,6 @@
 //! TUI state: a projection of the event log plus the composer.
 //!
-//! This module deliberately performs no terminal IO. `handle_key` returns a
+//! This module deliberately performs no terminal IO. `handle_action` returns a
 //! `UiAction` for the caller to execute, which keeps the key map unit-testable
 //! and lets the renderer be exercised with `TestBackend`.
 
@@ -13,7 +13,6 @@ pub use composer::{Composer, InputEvent};
 use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
 use qcode_core::todo::{self, TodoItem};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use time::{Duration, OffsetDateTime};
 
 /// Rows moved by PageUp / PageDown. The UI clamps this to the transcript.
@@ -93,6 +92,33 @@ pub struct ApprovalPrompt {
     pub rule: Option<String>,
     pub argv: Option<String>,
     pub cwd: Option<String>,
+}
+
+/// Frontend-neutral actions that are not text editing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppAction {
+    Submit,
+    Newline,
+    /// Ctrl-C: cancel a running turn, quit on the second press.
+    Interrupt,
+    /// Esc: cancel a running turn, or reject a pending approval.
+    Escape,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    /// Ctrl-End: jump back to the live tail.
+    ScrollToTail,
+    /// Ctrl-O: expand or collapse the last tool block.
+    ExpandLastTool,
+    /// Ctrl-T: cycle the context meter between used/left/percent.
+    CycleContext,
+    /// Ctrl-B: fold or unfold the last child group.
+    ToggleChildGroup,
+    /// Ctrl-V: attach the clipboard image.
+    PasteImage,
+    /// Answer a pending approval: (allow, remember for the session).
+    Approval(bool, bool),
 }
 
 /// What the event loop should do after a key press.
@@ -418,15 +444,32 @@ impl App {
     }
 
     /// Turn a key press into an action. Unhandled keys return `None`.
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<UiAction> {
-        if key.kind == KeyEventKind::Release {
-            return None;
+    /// Apply one editing event. While an approval prompt is up, `y`/`a`/`n`
+    /// answer it and everything else is swallowed.
+    pub fn handle_input(&mut self, event: InputEvent) -> Option<UiAction> {
+        self.quit_armed = false;
+        if self.approval.is_some() {
+            let InputEvent::Insert(ch) = event else {
+                return None;
+            };
+            return match ch {
+                'y' | 'Y' => self.answer(true, false),
+                'a' | 'A' => self.answer(true, true),
+                'n' | 'N' => self.answer(false, false),
+                _ => None,
+            };
         }
+        // Typing while scrolled up returns to the live tail.
+        self.scroll = 0;
+        self.composer.apply(event);
+        None
+    }
 
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-
-        // Ctrl-C: first press cancels a running turn, second press quits.
-        if ctrl && matches!(key.code, KeyCode::Char('c')) {
+    /// A non-text action from the frontend: submit, scroll, approve, quit…
+    pub fn handle_action(&mut self, action: AppAction) -> Option<UiAction> {
+        // Ctrl-C is special: the first press cancels a running turn, the second
+        // quits, and any other key disarms it.
+        if let AppAction::Interrupt = action {
             if self.quit_armed {
                 return Some(UiAction::Quit);
             }
@@ -437,139 +480,102 @@ impl App {
 
         // An approval prompt swallows everything except its own answers; the
         // event loop must not mutate the turn while a decision is pending.
-        if let Some(prompt) = self.approval.clone() {
-            match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    self.approval = None;
-                    return Some(UiAction::Approve {
-                        call_id: prompt.call_id,
-                        allow: true,
-                        session: false,
-                    });
-                }
-                // `a` answers yes and stops asking for this tool in this
-                // session: a skill run shells out dozens of times.
-                KeyCode::Char('a' | 'A') => {
-                    self.approval = None;
-                    return Some(UiAction::Approve {
-                        call_id: prompt.call_id,
-                        allow: true,
-                        session: true,
-                    });
-                }
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                    self.approval = None;
-                    return Some(UiAction::Approve {
-                        call_id: prompt.call_id,
-                        allow: false,
-                        session: false,
-                    });
-                }
-                _ => return None,
-            }
+        if self.approval.is_some() {
+            return match action {
+                AppAction::Approval(allow, session) => self.answer(allow, session),
+                AppAction::Escape => self.answer(false, false),
+                _ => None,
+            };
         }
 
-        match key.code {
-            // Terminals without the Kitty keyboard protocol cannot tell
-            // Shift+Enter from Enter, so Ctrl-N is the reliable newline key.
-            KeyCode::Char('n') if ctrl => {
+        match action {
+            AppAction::Interrupt => None,
+            AppAction::Approval(..) => None,
+            AppAction::Newline => {
                 self.composer.apply(InputEvent::Newline);
-                return None;
+                None
             }
-            KeyCode::Enter
-                if key.modifiers.contains(KeyModifiers::SHIFT)
-                    || key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.composer.apply(InputEvent::Newline);
-                return None;
+            AppAction::Submit => self.submit(),
+            AppAction::Escape => self.status.running.then_some(UiAction::Cancel),
+            AppAction::PageUp => {
+                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
+                None
             }
-            KeyCode::Enter => {
-                let text = self.composer.text();
-                if text.trim().is_empty() {
-                    return None;
+            AppAction::PageDown => {
+                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
+                None
+            }
+            // Arrows scroll only while the draft is a single line: a multi-line
+            // draft still needs them to move the cursor.
+            AppAction::Up => {
+                if self.composer.line_count() <= 1 {
+                    self.scroll = self.scroll.saturating_add(SCROLL_STEP);
+                } else {
+                    self.composer.apply(InputEvent::MoveUp);
                 }
-                // Slash commands are handled by the UI and never reach the
-                // model. They stay available while a turn is running.
-                if text.trim_start().starts_with('/') {
-                    self.clear_composer();
-                    self.scroll = 0;
-                    if let Some(action) = self.run_command(text.trim()) {
-                        return Some(action);
-                    }
-                    return None;
+                None
+            }
+            AppAction::Down => {
+                if self.composer.line_count() <= 1 {
+                    self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
+                } else {
+                    self.composer.apply(InputEvent::MoveDown);
                 }
-                if self.status.running {
-                    return None;
-                }
-                self.clear_composer();
+                None
+            }
+            AppAction::ScrollToTail => {
                 self.scroll = 0;
-                self.status.running = true;
-                return Some(UiAction::Submit(text));
+                None
             }
-            KeyCode::Esc => return self.status.running.then_some(UiAction::Cancel),
-            // Laptops and compact keyboards often lack PageUp/PageDown, and
-            // some terminals swallow them; Ctrl-U / Ctrl-D are the portable
-            // equivalents (the same keys less/vim use).
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
-                return None;
-            }
-            KeyCode::Char('u') if ctrl => {
-                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
-                return None;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
-                return None;
-            }
-            KeyCode::Char('d') if ctrl => {
-                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
-                return None;
-            }
-            // Arrows scroll the transcript too, but only while the draft is a
-            // single line: a multi-line draft still needs them to move the
-            // cursor, and Ctrl-U / Ctrl-D remain the scroll keys there.
-            KeyCode::Up if self.composer.line_count() <= 1 => {
-                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
-                return None;
-            }
-            KeyCode::Down if self.composer.line_count() <= 1 => {
-                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
-                return None;
-            }
-            // Plain End belongs to the textarea (end of line); Ctrl+End jumps
-            // the transcript back to the tail.
-            KeyCode::End if ctrl => {
-                self.scroll = 0;
-                return None;
-            }
-            // Ctrl-V attaches a clipboard image; the loop reads it because the
-            // UI layer has no clipboard access.
-            KeyCode::Char('v') if ctrl => return Some(UiAction::PasteImage),
-            KeyCode::Char('o') if ctrl => {
+            AppAction::ExpandLastTool => {
                 self.toggle_last_tool();
-                return None;
+                None
             }
-            KeyCode::Char('t') if ctrl => {
+            AppAction::CycleContext => {
                 self.context_display = self.context_display.next();
-                return None;
+                None
             }
-            KeyCode::Char('b') if ctrl => {
+            AppAction::ToggleChildGroup => {
                 if let Some(group) = self.child_groups.last().cloned() {
                     self.toggle_child_group(&group);
                 }
-                return None;
+                None
             }
-            _ => {}
+            AppAction::PasteImage => Some(UiAction::PasteImage),
         }
+    }
 
-        // Any other key edits the composer; typing while scrolled up returns
-        // to the live tail.
-        self.scroll = 0;
-        if let Some(event) = input_event(key) {
-            self.composer.apply(event);
+    fn answer(&mut self, allow: bool, session: bool) -> Option<UiAction> {
+        let prompt = self.approval.take()?;
+        Some(UiAction::Approve {
+            call_id: prompt.call_id,
+            allow,
+            session,
+        })
+    }
+
+    /// Enter: slash commands run locally, everything else goes to the model.
+    fn submit(&mut self) -> Option<UiAction> {
+        let text = self.composer.text();
+        if text.trim().is_empty() {
+            return None;
         }
-        None
+        // Slash commands never reach the model, and stay usable mid-turn.
+        if text.trim_start().starts_with('/') {
+            self.clear_composer();
+            self.scroll = 0;
+            if let Some(action) = self.run_command(text.trim()) {
+                return Some(action);
+            }
+            return None;
+        }
+        if self.status.running {
+            return None;
+        }
+        self.clear_composer();
+        self.scroll = 0;
+        self.status.running = true;
+        Some(UiAction::Submit(text))
     }
 
     fn clear_composer(&mut self) {
@@ -814,34 +820,12 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
     }
 }
 
-/// Map a terminal key press onto an editing event. Anything else (Ctrl
-/// combinations, function keys) is not an edit and is handled by the caller.
-fn input_event(key: KeyEvent) -> Option<InputEvent> {
-    if key.kind == KeyEventKind::Release {
-        return None;
-    }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Char(ch) if !ctrl => Some(InputEvent::Insert(ch)),
-        KeyCode::Backspace => Some(InputEvent::Backspace),
-        KeyCode::Delete => Some(InputEvent::Delete),
-        KeyCode::Left => Some(InputEvent::MoveLeft),
-        KeyCode::Right => Some(InputEvent::MoveRight),
-        KeyCode::Up => Some(InputEvent::MoveUp),
-        KeyCode::Down => Some(InputEvent::MoveDown),
-        KeyCode::Home => Some(InputEvent::Home),
-        KeyCode::End => Some(InputEvent::End),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use qcode_core::event::{
         AssistantMessage, Event, EventKind, SessionStarted, ToolCall, ToolResult, TurnStarted,
         Usage, UserMessage,
     };
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
     use super::*;
@@ -850,16 +834,36 @@ mod tests {
         Event::new(1, "s1", 1, kind)
     }
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn type_text(app: &mut App, text: &str) {
-        for character in text.chars() {
-            app.handle_key(key(KeyCode::Char(character)));
+    /// Send one named key, the way a frontend would: text goes in as input
+    /// events, everything else as an action.
+    fn press(app: &mut App, name: &str) -> Option<UiAction> {
+        match name {
+            "enter" => app.handle_action(AppAction::Submit),
+            "esc" => app.handle_action(AppAction::Escape),
+            "up" => app.handle_action(AppAction::Up),
+            "down" => app.handle_action(AppAction::Down),
+            "page-up" | "ctrl-u" => app.handle_action(AppAction::PageUp),
+            "page-down" | "ctrl-d" => app.handle_action(AppAction::PageDown),
+            "ctrl-c" => app.handle_action(AppAction::Interrupt),
+            "ctrl-n" | "shift-enter" | "alt-enter" => app.handle_action(AppAction::Newline),
+            "ctrl-end" => app.handle_action(AppAction::ScrollToTail),
+            "ctrl-o" => app.handle_action(AppAction::ExpandLastTool),
+            "ctrl-t" => app.handle_action(AppAction::CycleContext),
+            "ctrl-b" => app.handle_action(AppAction::ToggleChildGroup),
+            "ctrl-v" => app.handle_action(AppAction::PasteImage),
+            other => {
+                let mut chars = other.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) => app.handle_input(InputEvent::Insert(ch)),
+                    _ => None,
+                }
+            }
         }
     }
 
+    fn type_text(app: &mut App, text: &str) {
+        app.handle_input(InputEvent::InsertStr(text.to_string()));
+    }
     fn demo_skill() -> SkillView {
         SkillView {
             name: "demo".to_string(),
@@ -878,7 +882,7 @@ mod tests {
         app.skills = vec![demo_skill()];
 
         type_text(&mut app, "/skills");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(!app.status.running);
         assert!(matches!(
             app.blocks.last(),
@@ -887,7 +891,7 @@ mod tests {
         ));
 
         type_text(&mut app, "/skills demo");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Skill(text))
@@ -901,7 +905,7 @@ mod tests {
     fn slash_skills_reports_unknown_and_empty_cases() {
         let mut app = App::new("mock", "mock-1");
         type_text(&mut app, "/skills");
-        app.handle_key(key(KeyCode::Enter));
+        press(&mut app, "enter");
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Notice(text)) if text.contains("no skills discovered")
@@ -909,7 +913,7 @@ mod tests {
 
         app.skills = vec![demo_skill()];
         type_text(&mut app, "/skills nope");
-        app.handle_key(key(KeyCode::Enter));
+        press(&mut app, "enter");
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Notice(text)) if text.contains("unknown skill 'nope'")
@@ -920,7 +924,7 @@ mod tests {
     fn unknown_slash_command_is_not_sent_to_the_model() {
         let mut app = App::new("mock", "mock-1");
         type_text(&mut app, "/nope");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(!app.status.running);
         assert!(matches!(
             app.blocks.last(),
@@ -934,7 +938,7 @@ mod tests {
         app.skills = vec![demo_skill()];
 
         type_text(&mut app, "/demo 盘点本机");
-        let action = app.handle_key(key(KeyCode::Enter));
+        let action = press(&mut app, "enter");
         let Some(UiAction::Submit(text)) = action else {
             panic!("expected a submit action");
         };
@@ -960,7 +964,7 @@ mod tests {
         app.status.running = true;
 
         type_text(&mut app, "/demo");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Notice(text)) if text.contains("already running")
@@ -971,9 +975,9 @@ mod tests {
     fn enter_submits_and_clears_the_composer() {
         let mut app = App::new("mock", "mock-1");
         for character in "fix tests".chars() {
-            app.handle_key(key(KeyCode::Char(character)));
+            press(&mut app, &character.to_string());
         }
-        let action = app.handle_key(key(KeyCode::Enter));
+        let action = press(&mut app, "enter");
         assert_eq!(action, Some(UiAction::Submit("fix tests".to_string())));
         assert!(app.composer.is_empty());
         assert!(app.blocks.is_empty());
@@ -983,12 +987,12 @@ mod tests {
     #[test]
     fn esc_cancels_only_while_running() {
         let mut app = App::new("mock", "mock-1");
-        assert_eq!(app.handle_key(key(KeyCode::Esc)), None);
+        assert_eq!(press(&mut app, "esc"), None);
 
         app.apply(&event(EventKind::TurnStarted(TurnStarted {
             input: "go".to_string(),
         })));
-        assert_eq!(app.handle_key(key(KeyCode::Esc)), Some(UiAction::Cancel));
+        assert_eq!(press(&mut app, "esc"), Some(UiAction::Cancel));
     }
 
     #[test]
@@ -997,10 +1001,9 @@ mod tests {
         app.apply(&event(EventKind::TurnStarted(TurnStarted {
             input: "go".to_string(),
         })));
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-        assert_eq!(app.handle_key(ctrl_c), Some(UiAction::Cancel));
-        assert_eq!(app.handle_key(ctrl_c), Some(UiAction::Quit));
+        assert_eq!(press(&mut app, "ctrl-c"), Some(UiAction::Cancel));
+        assert_eq!(press(&mut app, "ctrl-c"), Some(UiAction::Quit));
     }
 
     #[test]
@@ -1023,7 +1026,7 @@ mod tests {
         assert_eq!(prompt.tool, "run_shell");
         assert_eq!(prompt.summary, "cargo test");
 
-        let action = app.handle_key(key(KeyCode::Char('y')));
+        let action = press(&mut app, "y");
         assert_eq!(
             action,
             Some(UiAction::Approve {
@@ -1052,7 +1055,7 @@ mod tests {
         )));
 
         assert_eq!(
-            app.handle_key(key(KeyCode::Char('a'))),
+            press(&mut app, "a"),
             Some(UiAction::Approve {
                 call_id: "c1".to_string(),
                 allow: true,
@@ -1066,13 +1069,13 @@ mod tests {
     fn composer_supports_cjk_and_shift_enter_newlines() {
         let mut app = App::new("mock", "mock-1");
         for character in "中文".chars() {
-            app.handle_key(key(KeyCode::Char(character)));
+            press(&mut app, &character.to_string());
         }
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-        app.handle_key(key(KeyCode::Char('!')));
+        press(&mut app, "shift-enter");
+        press(&mut app, "!");
         assert_eq!(app.composer.text(), "中文\n!");
 
-        let action = app.handle_key(key(KeyCode::Enter));
+        let action = press(&mut app, "enter");
         assert_eq!(action, Some(UiAction::Submit("中文\n!".to_string())));
         assert!(app.composer.is_empty());
     }
@@ -1080,35 +1083,35 @@ mod tests {
     #[test]
     fn ctrl_n_and_modified_enter_insert_newlines() {
         let mut app = App::new("mock", "mock-1");
-        app.handle_key(key(KeyCode::Char('a')));
-        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
-        app.handle_key(key(KeyCode::Char('b')));
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-        app.handle_key(key(KeyCode::Char('c')));
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        app.handle_key(key(KeyCode::Char('d')));
+        press(&mut app, "a");
+        press(&mut app, "ctrl-n");
+        press(&mut app, "b");
+        press(&mut app, "shift-enter");
+        press(&mut app, "c");
+        press(&mut app, "alt-enter");
+        press(&mut app, "d");
         assert_eq!(app.composer.text(), "a\nb\nc\nd");
 
-        let action = app.handle_key(key(KeyCode::Enter));
+        let action = press(&mut app, "enter");
         assert_eq!(action, Some(UiAction::Submit("a\nb\nc\nd".to_string())));
     }
 
     #[test]
     fn page_keys_move_the_scroll_offset() {
         let mut app = App::new("mock", "mock-1");
-        app.handle_key(key(KeyCode::PageUp));
-        app.handle_key(key(KeyCode::PageUp));
+        press(&mut app, "page-up");
+        press(&mut app, "page-up");
         assert_eq!(app.scroll, 20);
 
-        app.handle_key(key(KeyCode::PageDown));
+        press(&mut app, "page-down");
         assert_eq!(app.scroll, 10);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        press(&mut app, "ctrl-u");
         assert_eq!(app.scroll, 20);
-        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        press(&mut app, "ctrl-d");
         assert_eq!(app.scroll, 10);
 
-        app.handle_key(key(KeyCode::Char('x')));
+        press(&mut app, "x");
         assert_eq!(app.scroll, 0);
         assert_eq!(app.composer.text(), "x");
     }
@@ -1116,10 +1119,10 @@ mod tests {
     #[test]
     fn arrows_scroll_when_the_draft_is_a_single_line() {
         let mut app = App::new("mock", "mock-1");
-        app.handle_key(key(KeyCode::Up));
-        app.handle_key(key(KeyCode::Up));
+        press(&mut app, "up");
+        press(&mut app, "up");
         assert_eq!(app.scroll, 20);
-        app.handle_key(key(KeyCode::Down));
+        press(&mut app, "down");
         assert_eq!(app.scroll, 10);
     }
 
@@ -1127,11 +1130,11 @@ mod tests {
     fn arrows_edit_the_composer_when_the_draft_has_multiple_lines() {
         let mut app = App::new("mock", "mock-1");
         type_text(&mut app, "a");
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        press(&mut app, "shift-enter");
         type_text(&mut app, "b");
         assert_eq!(app.composer.line_count(), 2);
 
-        app.handle_key(key(KeyCode::Up));
+        press(&mut app, "up");
         assert_eq!(app.scroll, 0, "a multi-line draft keeps the arrow");
     }
 
@@ -1141,7 +1144,7 @@ mod tests {
             let mut app = App::new("mock", "mock-1");
             type_text(&mut app, command);
             assert_eq!(
-                app.handle_key(key(KeyCode::Enter)),
+                press(&mut app, "enter"),
                 Some(UiAction::Quit),
                 "{command} should quit"
             );
@@ -1152,20 +1155,14 @@ mod tests {
     fn slash_checkpoint_and_rollback_are_local_actions() {
         let mut app = App::new("mock", "mock-1");
         type_text(&mut app, "/checkpoint");
-        assert_eq!(
-            app.handle_key(key(KeyCode::Enter)),
-            Some(UiAction::Checkpoints)
-        );
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::Checkpoints));
 
         type_text(&mut app, "/rollback 3");
-        assert_eq!(
-            app.handle_key(key(KeyCode::Enter)),
-            Some(UiAction::Rollback(3))
-        );
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::Rollback(3)));
 
         // A turn number is required; the UI explains instead of guessing.
         type_text(&mut app, "/rollback");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         let notices: Vec<&str> = app
             .blocks
             .iter()
@@ -1185,8 +1182,8 @@ mod tests {
     #[test]
     fn ctrl_v_asks_the_loop_to_paste_an_image() {
         let mut app = App::new("mock", "mock-1");
-        let paste = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        assert_eq!(app.handle_key(paste), Some(UiAction::PasteImage));
+
+        assert_eq!(press(&mut app, "ctrl-v"), Some(UiAction::PasteImage));
         // The UI has no clipboard access, so the key must not touch the composer.
         assert!(app.composer.text().is_empty());
     }
@@ -1215,7 +1212,7 @@ mod tests {
             other => panic!("unexpected block: {other:?}"),
         }
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        press(&mut app, "ctrl-o");
         assert!(matches!(app.blocks.last(), Some(Block::Tool(tool)) if tool.expanded));
     }
 
@@ -1456,10 +1453,9 @@ mod tests {
         assert_eq!(app.child_groups, vec!["child-1"]);
         assert!(!app.child_group_folded("child-1"));
 
-        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
-        app.handle_key(ctrl_b);
+        press(&mut app, "ctrl-b");
         assert!(app.child_group_folded("child-1"));
-        app.handle_key(ctrl_b);
+        press(&mut app, "ctrl-b");
         assert!(!app.child_group_folded("child-1"));
     }
 
@@ -1484,14 +1480,14 @@ mod tests {
         ));
 
         type_text(&mut app, "/subagents");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(matches!(
             app.blocks.last(),
             Some(Block::Notice(text)) if text.contains("sub-agent groups (1)") && text.contains("shown")
         ));
 
         type_text(&mut app, "/subagents 1");
-        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(press(&mut app, "enter"), None);
         assert!(app.child_group_folded("child-1"));
     }
 
@@ -1500,12 +1496,11 @@ mod tests {
         let mut app = App::new("mock", "mock-1");
         assert_eq!(app.context_display, ContextDisplay::Auto);
 
-        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
-        app.handle_key(ctrl_t);
+        press(&mut app, "ctrl-t");
         assert_eq!(app.context_display, ContextDisplay::Percent);
-        app.handle_key(ctrl_t);
+        press(&mut app, "ctrl-t");
         assert_eq!(app.context_display, ContextDisplay::Tokens);
-        app.handle_key(ctrl_t);
+        press(&mut app, "ctrl-t");
         assert_eq!(app.context_display, ContextDisplay::Auto);
     }
 
@@ -1550,7 +1545,7 @@ mod tests {
     fn submitted_text_is_rendered_once_the_event_arrives() {
         let mut app = App::new("mock", "mock-1");
         app.composer.apply(InputEvent::InsertStr("hi".to_string()));
-        app.handle_key(key(KeyCode::Enter));
+        press(&mut app, "enter");
         app.apply(&event(EventKind::UserMessage(UserMessage {
             text: "hi".to_string(),
             attachments: Vec::new(),

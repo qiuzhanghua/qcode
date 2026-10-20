@@ -1519,10 +1519,8 @@ name = "qcode-ui-state"
 version = "0.1.0"
 dependencies = [
  "qcode-core",
- "ratatui",
  "serde_json",
  "time",
- "tui-textarea",
 ]
 
 [[package]]
