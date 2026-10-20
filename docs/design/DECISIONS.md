@@ -932,3 +932,20 @@ cargo build -p qcode
 - 子进程拿不到独立环境块（`lpEnvironment` 必须 NULL，见上），所以 helper 在 spawn 前把
   `TMP`/`TEMP`/`TMPDIR` 指到已授权的私有 temp。这也意味着需要自己缓存目录的 MCP server
   （`npx` 的 npm cache 之类）要进 `extra_writable`，否则只能写 workspace 与私有 temp。
+
+**已知问题：私有 temp 的基座回落（2026-10-20）**
+
+开发机上出现过一种还没查清的现象：同一个用户在 pwsh 里 `New-Item` 能建出
+`%LOCALAPPDATA%\qcode\sandbox\tmp\...` 与 `%TEMP%\qcode-sandbox-tmp\...`（`icacls` 里没有 deny，
+`%TEMP%\qcode-sandbox-tmp` 甚至带着 `(I)(F)`），但 `qc.exe` 在同样的父目录里 `create_dir_all`
+一律 `拒绝访问 (5)`；同一个 exe 复制到 `%TEMP%` 反而能正常运行。
+
+沙箱不能因此不启动，所以 `private_temp()` 是三级回落：`%LOCALAPPDATA%\qcode\sandbox\tmp` →
+`%TEMP%\qcode-sandbox-tmp` → **工作区内 `.tmp\qcode-sandbox-tmp`**；命中第三级时打一条 warn
+并写明用了哪条路径，`describe()`/`qc doctor` 里也能看到实际 temp。工作区本来就是已授权根，
+所以第三级不扩大写边界（代价是 temp 落在仓库里，`/.tmp` 已在 gitignore 中）。
+
+排查工具已就位：`qc whoami`（隐藏）打印自身令牌的完整性级别、restricted SID 列表、
+AppContainer/提权标志、`TEMP`/`LOCALAPPDATA`，以及**自己能否**在各基座里建子目录；
+配合 `whoami /all` 就能判断差异在令牌，还是在别的拦截层（智能应用控制、策略、
+对象管理器重定向）。
