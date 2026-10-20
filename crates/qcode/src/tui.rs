@@ -336,6 +336,26 @@ struct TerminalGuard {
     restored: bool,
 }
 
+/// Restore the terminal before a panic message is printed.
+///
+/// The default hook writes to stderr, which inside the alternate screen is a
+/// buffer thrown away on restore: a panic during the first frame looked like
+/// "the TUI silently exited" with no message at all. Leaving the screen first
+/// keeps the message where the user can read it.
+fn install_panic_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags, LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            default_hook(info);
+        }));
+    });
+}
+
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
@@ -351,6 +371,7 @@ impl TerminalGuard {
             let _ = disable_raw_mode();
             return Err(err);
         }
+        install_panic_hook();
 
         match Terminal::new(CrosstermBackend::new(stdout)) {
             Ok(terminal) => Ok(Self {
