@@ -112,7 +112,7 @@ impl WindowsAcl {
                 workspace.display()
             ))
         })?;
-        let temp = private_temp()?;
+        let temp = private_temp(&workspace)?;
         let helper = std::env::current_exe()
             .map_err(|err| SandboxError::Setup(format!("current_exe: {err}")))?;
 
@@ -219,11 +219,12 @@ impl Drop for WindowsAcl {
 }
 
 /// A fresh directory under `%LOCALAPPDATA%\qcode\sandbox\tmp`, falling back to
-/// the session temp directory when the local app data tree is not writable.
+/// the session temp directory and finally to the workspace when neither accepts
+/// new directories.
 ///
 /// The directory is ours and gets a capability ACE of its own; the surrounding
 /// temp directory is never granted, so this is not an implicit writable root.
-fn private_temp() -> Result<PathBuf, SandboxError> {
+fn private_temp(workspace: &Path) -> Result<PathBuf, SandboxError> {
     let unique = format!(
         "{}-{:x}",
         std::process::id(),
@@ -242,18 +243,32 @@ fn private_temp() -> Result<PathBuf, SandboxError> {
         );
     }
     bases.push(std::env::temp_dir().join("qcode-sandbox-tmp"));
+    // Some machines refuse new directories under both `%LOCALAPPDATA%` and
+    // `%TEMP%` — an ACL oddity observed in the wild — and the workspace is
+    // already a granted root, so a private temp inside it keeps the boundary.
+    bases.push(workspace.join(".tmp").join("qcode-sandbox-tmp"));
 
-    let mut last = None;
-    for base in bases {
+    let mut failures = Vec::new();
+    for (index, base) in bases.into_iter().enumerate() {
         let temp = base.join(&unique);
         match std::fs::create_dir_all(&temp) {
-            Ok(()) => return Ok(temp),
-            Err(err) => last = Some(format!("create private temp {}: {err}", temp.display())),
+            Ok(()) => {
+                if index > 1 {
+                    tracing::warn!(
+                        path = %temp.display(),
+                        "no writable system temp for the sandbox; using a private temp inside the workspace"
+                    );
+                }
+                return Ok(temp);
+            }
+            Err(err) => failures.push(format!("create private temp {}: {err}", temp.display())),
         }
     }
-    Err(SandboxError::Setup(last.unwrap_or_else(|| {
+    Err(SandboxError::Setup(if failures.is_empty() {
         "no usable temp directory for the sandbox".to_string()
-    })))
+    } else {
+        failures.join("; ")
+    }))
 }
 
 /// Runs `qc sandbox-run ...`. Returns the process exit code.
