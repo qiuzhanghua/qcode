@@ -14,6 +14,7 @@ use qcode_core::event::Scope;
 use qcode_core::policy::{Action, Rule};
 use qcode_mcp::{McpConfig, McpConfigError};
 use qcode_tools::sandbox::SandboxMode;
+use qcode_tools::web_search::{SearchBackend, SearchSettings};
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 
@@ -45,6 +46,73 @@ pub struct Config {
     /// Application-level egress policy (ADR-0023).
     #[serde(default)]
     pub network: NetworkConfig,
+    /// `web_search` backend and key (v2.0).
+    #[serde(default)]
+    pub search: SearchConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchConfig {
+    /// Expose the `web_search` tool. On by default; without a usable backend
+    /// the tool is not registered and `qc doctor` says what is missing.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub backend: SearchBackend,
+    /// Environment variable holding the API key. Empty means the backend's
+    /// conventional variable (`BRAVE_API_KEY` / `TAVILY_API_KEY`); SearXNG is
+    /// keyless.
+    #[serde(default)]
+    pub api_key_env: String,
+    /// Results requested when the tool call does not say otherwise.
+    #[serde(default = "default_search_results")]
+    pub max_results: u32,
+    /// API origin override, e.g. a self-hosted SearXNG instance.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+fn default_search_results() -> u32 {
+    5
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: SearchBackend::default(),
+            api_key_env: String::new(),
+            max_results: default_search_results(),
+            base_url: None,
+        }
+    }
+}
+
+impl SearchConfig {
+    /// Resolve the environment variable name: explicit config wins, otherwise
+    /// the backend's convention. `None` means keyless.
+    pub fn key_env_name(&self) -> Option<String> {
+        if !self.api_key_env.trim().is_empty() {
+            return Some(self.api_key_env.trim().to_string());
+        }
+        self.backend.default_api_key_env().map(str::to_string)
+    }
+
+    pub fn settings(&self, env: &dyn Fn(&str) -> Option<String>) -> SearchSettings {
+        SearchSettings {
+            backend: self.backend,
+            api_key: self.key_env_name().and_then(|name| env(&name)),
+            base_url: self
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string),
+            max_results: self
+                .max_results
+                .clamp(1, qcode_tools::web_search::MAX_RESULTS),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -296,6 +364,7 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
     let sections = ProjectSections {
         context: document.contains_key("context"),
         sandbox: document.contains_key("sandbox"),
+        search: document.contains_key("search"),
     };
     merge_project(base, project, sections);
     base.mcp.validate()?;
@@ -308,6 +377,9 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
 pub struct ProjectSections {
     pub context: bool,
     pub sandbox: bool,
+    /// A project may point `web_search` at its own endpoint; it still cannot
+    /// bypass tool approval or the egress allowlist.
+    pub search: bool,
 }
 
 /// Merge a project config over a user/explicit one.
@@ -331,6 +403,9 @@ pub fn merge_project(base: &mut Config, project: Config, sections: ProjectSectio
     }
     if sections.sandbox {
         base.sandbox = project.sandbox;
+    }
+    if sections.search {
+        base.search = project.search;
     }
 
     for mut rule in project.approval.rules {
@@ -1129,6 +1204,101 @@ mod tests {
         assert!(config.network.allow_private);
         assert_eq!(config.network.unknown, UnknownHost::Deny);
         assert!(!config.network.audit);
+    }
+
+    #[test]
+    fn search_defaults_and_overrides() {
+        let defaults: Config = toml::from_str("").unwrap();
+        assert!(defaults.search.enabled);
+        assert_eq!(defaults.search.backend, SearchBackend::Brave);
+        assert_eq!(defaults.search.max_results, 5);
+        assert_eq!(
+            defaults.search.key_env_name().as_deref(),
+            Some("BRAVE_API_KEY")
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+            [search]
+            enabled = false
+            backend = "searxng"
+            max_results = 100
+            base_url = "http://localhost:8888/"
+            "#,
+        )
+        .unwrap();
+        assert!(!config.search.enabled);
+        assert_eq!(config.search.backend, SearchBackend::Searxng);
+        assert_eq!(config.search.key_env_name(), None);
+        assert_eq!(config.search.max_results, 100);
+        let settings = config.search.settings(&|_| None);
+        assert_eq!(settings.max_results, 20);
+        assert_eq!(settings.base_url.as_deref(), Some("http://localhost:8888/"));
+        assert!(settings.is_usable());
+    }
+
+    #[test]
+    fn search_resolves_the_configured_key_variable() {
+        let config: Config = toml::from_str(
+            r#"
+            [search]
+            backend = "tavily"
+            api_key_env = "MY_SEARCH_KEY"
+            "#,
+        )
+        .unwrap();
+        assert!(!config.search.settings(&|_| None).is_usable());
+        let settings = config
+            .search
+            .settings(&|name| (name == "MY_SEARCH_KEY").then(|| "tvly-x".to_string()));
+        assert!(settings.is_usable());
+        assert_eq!(settings.api_key.as_deref(), Some("tvly-x"));
+    }
+
+    #[test]
+    fn project_search_section_replaces_only_when_present() {
+        let base = Config {
+            search: SearchConfig {
+                base_url: Some("https://api.search.brave.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let project = Config {
+            search: SearchConfig {
+                backend: SearchBackend::Searxng,
+                base_url: Some("http://host.docker.internal:8888".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut merged = base.clone();
+        merge_project(
+            &mut merged,
+            project.clone(),
+            ProjectSections {
+                context: false,
+                sandbox: false,
+                search: false,
+            },
+        );
+        assert_eq!(merged.search.backend, SearchBackend::Brave);
+
+        merge_project(
+            &mut merged,
+            project,
+            ProjectSections {
+                context: false,
+                sandbox: false,
+                search: true,
+            },
+        );
+        assert_eq!(merged.search.backend, SearchBackend::Searxng);
+        assert_eq!(
+            merged.search.base_url.as_deref(),
+            Some("http://host.docker.internal:8888")
+        );
     }
 
     #[test]

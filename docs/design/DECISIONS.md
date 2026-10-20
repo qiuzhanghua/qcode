@@ -826,3 +826,31 @@ shell/MCP 的任意 socket，需要明确边界。
 
 - v2.0/v2.1 不被 GUI 拖慢；Windows 与网络边界优先。
 - GUI 决策延后，但 spike 的验收标准已固定，避免无限期讨论。
+
+## ADR-0026：web_search 作为独立工具与多后端（2026-10-19）
+
+**决定**
+
+- `web_search` 是 qcode-tools 里的普通工具（`WebSearch`），不是 provider 的一个开关：
+  模型直接调用，结果带 `title` / `url` / `snippet`，与 `web_fetch` 互补（搜索定位、
+  fetch 取正文）。
+- 后端用枚举而非动态插件：`brave`（默认）/ `tavily` / `searxng`。Brave 与 Tavily 是
+  托管 API，key 只从环境变量读（默认 `BRAVE_API_KEY` / `TAVILY_API_KEY`，可用
+  `api_key_env` 改名）；searxng 是自建/本地实例，用 `base_url`（缺省
+  `http://localhost:8888`，显式写 `http://` 时自动补 `/search`）。
+- 配置在 `[search]`（`enabled` / `backend` / `api_key_env` / `max_results` / `base_url`），
+  默认 `enabled = true`。缺 key（searxng 缺 `base_url`）时**不注册工具**并在
+  `qc doctor` 里 warn：模型看不到一个必然失败的工具，比运行时 401 更好。
+- 出口与审批复用现有面：`ApprovalClass::Network`（与 `web_fetch` 同一条 ask 记录）、
+  `ToolContext.network` 的代理 client（`allow_host` 把后端 host 加入 session
+  allowlist）；没有 network 时退化为直连 client（单测用）。
+- 响应解析不看 `Content-Type`：Brave/Searxng 可能回 `text/html`，统一 `response.json()`
+  再按后端形状校验；错误体截断 500 字符，凭据绝不回显。
+
+**后果**
+
+- `[providers]` 与 `[search]` 的 key 都是 env 名字，`.qcode/config.toml` 可以进版本库
+  （已有 `deny` 规则拦 `.env*`）。
+- 新增后端只改 `web_search.rs` 的 match 与 `key_env_name`，不触碰 engine/TUI。
+- searxng 的 `base_url` 若指向 loopback，需要 `[network] allow_private = true` 才能穿过
+  egress 的 SSRF 拦截——这是有意的失败关闭。

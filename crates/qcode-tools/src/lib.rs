@@ -11,6 +11,7 @@ pub mod shell;
 pub mod skills;
 pub mod subagent;
 pub mod todo;
+pub mod web_search;
 
 use std::sync::Arc;
 

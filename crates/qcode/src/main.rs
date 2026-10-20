@@ -29,6 +29,7 @@ use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::Sandbox;
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use qcode_tools::subagent::SubagentTool;
+use qcode_tools::web_search::WebSearch;
 use qcode_tui::SkillView;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -349,6 +350,7 @@ async fn cmd_run(
 
     let mut tools = build_tools(
         &loaded.mcp,
+        &loaded.search,
         &workspace,
         &data_dir,
         &skills,
@@ -499,6 +501,7 @@ async fn cmd_tui(
         build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
     let tools = build_tools(
         &loaded.mcp,
+        &loaded.search,
         &workspace,
         &data_dir,
         &skills,
@@ -699,6 +702,14 @@ fn print_config(config: &config::Config) {
     );
     println!("context.window_tokens = {}", config.context.window_tokens);
     println!(
+        "search.enabled = {}, backend = {:?}, api_key_env = {:?}, max_results = {}, base_url = {:?}",
+        config.search.enabled,
+        config.search.backend,
+        config.search.key_env_name(),
+        config.search.max_results,
+        config.search.base_url
+    );
+    println!(
         "sandbox.mode = {:?}, network = {}",
         config.sandbox.mode, config.sandbox.network
     );
@@ -743,6 +754,7 @@ async fn cmd_doctor(
 /// removes its own tools; `connect_all` logs why.
 async fn build_tools(
     mcp: &McpConfig,
+    search: &config::SearchConfig,
     workspace: &Path,
     data_dir: &Path,
     skills: &Arc<SkillSet>,
@@ -750,6 +762,18 @@ async fn build_tools(
     network_env: Option<Vec<(String, String)>>,
 ) -> ToolRegistry {
     let mut tools = builtin_registry_with(sandbox);
+    if search.enabled {
+        let settings = search.settings(&|key| std::env::var(key).ok());
+        if settings.is_usable() {
+            tracing::info!(backend = settings.backend.name(), "registered web_search");
+            tools.extend([Arc::new(WebSearch::new(settings)) as Arc<dyn Tool>]);
+        } else {
+            tracing::warn!(
+                backend = settings.backend.name(),
+                "web_search is enabled but not configured; the tool is not registered"
+            );
+        }
+    }
     let mcp_tools = qcode_mcp::connect_all(
         &mcp.servers,
         workspace,

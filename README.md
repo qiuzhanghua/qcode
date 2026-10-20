@@ -182,7 +182,7 @@ cargo build -p qcode-eval
 ## 当前能力
 
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
-  `glob` / `grep` / `run_shell` / `web_fetch` / `todo_write` / `subagent`，多轮调用直到任务完成。
+  `glob` / `grep` / `run_shell` / `web_fetch` / `web_search` / `todo_write` / `subagent`，多轮调用直到任务完成。
   `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
   每次决策写事件，含命中的 rule id。
@@ -211,7 +211,7 @@ cargo build -p qcode-eval
   指数退避（尊重 `Retry-After`），首 token 之后失败直接终止本 turn；只读工具并发由
   provider 的 `parallel_tools` 能力决定。
 - **网络出口（v2 基础版）**：进程内在 `127.0.0.1` 起 CONNECT 代理，provider /
-  `web_fetch` 强制经代理，失败关闭；域名 allowlist + 私网/loopback 拦截防 SSRF；
+  `web_fetch` / `web_search` 强制经代理，失败关闭；域名 allowlist + 私网/loopback 拦截防 SSRF；
   shell/MCP 通过 `HTTP(S)_PROXY` 尽力而为。`unknown = "ask"` 由工具审批层处理
   （`web_fetch` 批准后加入 session allowlist）；shell/MCP 的未知域名直接拒绝。
   审计写 `<data>/logs/network.jsonl`；`[network] enabled = false` 才显式关闭。
@@ -234,6 +234,11 @@ cargo build -p qcode-eval
   `..`、rename、symlink 逃逸拒绝；默认 ask。
 - **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
+- **web_search**：`[search]` 开启后注册（默认 `brave`，也支持 `tavily` / `searxng`），
+  返回 `title` / `url` / `snippet`，`max_results` 上限 20；key 只从环境变量读
+  （`BRAVE_API_KEY` / `TAVILY_API_KEY`，或用 `api_key_env` 指定），searxng 需 `base_url`。
+  默认 ask（`Network`，与 `web_fetch` 同一套审批与 session allowlist），走同一个出口代理；
+  带 `page_age` 时输出新鲜度，凭据不进 transcript。
 - **todo_write**：session 待办清单（pending / in_progress / completed），不写文件系统。
   每次成功调用后清单进入 system prompt，TUI 在 transcript 里渲染成 checklist；空数组清空，
   至多一个 in_progress，上限 50 项、每项 200 字符。resume / replay 从事件日志重建状态。
@@ -247,10 +252,11 @@ cargo build -p qcode-eval
   返回最终文本与子 session id；子会话的 usage/cost 汇总进父 `turn_ended` 与 TUI 成本。
   TUI 里子 agent 的文本与工具调用以 `↳` 嵌套显示，不改父状态机。默认 ask（`External`），
   非交互模式需要 `--yes` 或策略放行 `subagent`。
-- **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain，并对非 mock provider 做一次
-  真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
+- **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain、`web_search` 配置，并对非 mock
+  provider 做一次真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
 
-尚未实现：`web_search` 不在 v1 范围；sandbox 三个后端仍是实验性。
+v2.0 剩余：自动更新与分发、config schema 版本化；sandbox 三个后端仍是实验性。
+ACP（v2.1）尚未开始。
 
 ## 配置
 
@@ -266,6 +272,17 @@ default_model = "deepseek-flash"
 # 上下文窗口（token），用于 78% 压缩阈值；按模型实际窗口调整。
 [context]
 window_tokens = 128000
+
+# Web 搜索（v2.0）。enabled 默认 true；未配置 key 时不注册 web_search 工具，
+# 由 qc doctor 提示。backend: brave | tavily | searxng。
+# key 只从环境变量读：默认 BRAVE_API_KEY / TAVILY_API_KEY，可用 api_key_env 改名；
+# 也可指向 .env 风格的变量名，不写进配置文件。searxng 自建实例用 base_url。
+[search]
+enabled = true
+backend = "brave"
+# api_key_env = "BRAVE_API_KEY"
+max_results = 5     # 1..=20
+# base_url = "http://localhost:8888"   # searxng 必填；brave/tavily 可选覆盖端点
 
 # 成本估算与 --max-cost 的价目表（USD / 百万 token）。
 # 数值为示例，按服务商当前价目表填写；未配置的模型成本按 0 计。
@@ -380,7 +397,7 @@ action = "allow"
 ```
 crates/qcode-core        domain、event、store、state、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
-crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / todo_write / subagent / skill
+crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor

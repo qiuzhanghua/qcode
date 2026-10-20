@@ -23,6 +23,7 @@ pub async fn run(
 
     doctor.check_data_dir(&data_dir);
     let config = doctor.check_config(&config_path);
+    doctor.check_search(&config);
     doctor.check_provider(&config);
     doctor.check_connectivity(&config, &data_dir).await;
     doctor.check_toolchain();
@@ -117,6 +118,33 @@ impl Doctor {
                 self.fail("config", err.to_string());
                 Config::default()
             }
+        }
+    }
+
+    fn check_search(&mut self, config: &Config) {
+        if !config.search.enabled {
+            self.ok("web_search", "disabled ([search] enabled = false)");
+            return;
+        }
+        let settings = config.search.settings(&|key| std::env::var(key).ok());
+        if settings.is_usable() {
+            self.ok(
+                "web_search",
+                format!("backend '{}' is ready", settings.backend.name()),
+            );
+        } else if settings.backend == qcode_tools::web_search::SearchBackend::Searxng {
+            self.warn(
+                "web_search",
+                "backend 'searxng' needs [search] base_url; the tool is not registered",
+            );
+        } else {
+            self.warn(
+                "web_search",
+                format!(
+                    "export {} (or set [search] api_key_env); the tool is not registered",
+                    config.search.key_env_name().unwrap_or_default()
+                ),
+            );
         }
     }
 
