@@ -6,6 +6,7 @@
 //! swapping in gpui-kit's `VirtualList` is the next step.
 #![recursion_limit = "512"]
 
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
 use qcode_ui_bridge::{UiEvent, channels};
@@ -40,15 +41,28 @@ struct Shell {
     app: App,
     /// One size per block, rebuilt only when the block count changes.
     sizes: Rc<Vec<Size<Pixels>>>,
+    /// The composer: a real text input, so IME and CJK go through the platform.
+    input: Entity<InputState>,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
 }
 
 impl Shell {
-    fn new(app: App, events: UnboundedReceiver<UiEvent>) -> Self {
+    fn new(
+        app: App,
+        events: UnboundedReceiver<UiEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sizes = row_sizes(app.blocks.len());
-        Self { app, sizes, events }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask qcode…"));
+        Self {
+            app,
+            sizes,
+            input,
+            events,
+        }
     }
 
     /// Rebuild the size table when the transcript grew.
@@ -94,6 +108,7 @@ impl Render for Shell {
             .flex_col()
             .child(div().child(format!("{total} block(s)")))
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+            .child(div().p_2().child(Input::new(&self.input)))
     }
 }
 
@@ -105,8 +120,8 @@ fn main() {
     let events = ui.events;
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
-        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-            cx.new(|_| Shell::new(app, events))
+        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| Shell::new(app, events, window, cx))
         })
         .expect("failed to open the window");
     });
