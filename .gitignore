@@ -71,3 +71,5 @@ tmbootpicker.efi
 
 # Fallback data dir when the user profile is not writable
 /.qcode-data
+
+# Sogou IME writes its engine log into the current directory when the GUI\n# window's input field takes focus; it is not ours.\ndebug.log
