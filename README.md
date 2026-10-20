@@ -189,9 +189,11 @@ cargo build -p qcode-eval
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）。`run_shell` 由对应工具包裹：默认 deny，只读系统路径与 workspace，
-  只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec` 可拒绝网络，`landlock`
-  只做文件系统（网络仍由审批控制）。启用时先 preflight，失败则 `qc` 拒绝启动
+  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
+  只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
+  可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
+  （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
+  与命名管道不在覆盖范围，因此报 `partial`）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
   unprivileged userns）；默认 `none`，审批仍是主边界。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
@@ -334,11 +336,12 @@ allow_private = false   # 本地 Ollama/测试才打开
 unknown = "ask"         # ask | deny | allow；shell/MCP 的未知域名按 deny
 audit = true
 
-# OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS，bwrap/landlock 仅 Linux：
-# 启动时用同一套规则 preflight，失败则拒绝启动；landlock 不管网络。
+# OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS，bwrap/landlock 仅 Linux，
+# windows-acl 仅 Windows（只限制写；启动时 preflight，失败则拒绝启动）：
 [sandbox]
-mode = "none"        # none | sandbox-exec | bwrap | landlock
+mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # bwrap/sandbox-exec 生效；landlock 只做文件系统
+extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
 ```
 
 `qc config show` 打印合并后的有效配置（只显示 `api_key_env` 变量名，不显示密钥）；

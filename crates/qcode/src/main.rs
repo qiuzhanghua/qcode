@@ -73,6 +73,18 @@ enum Command {
     #[cfg(windows)]
     #[command(hide = true)]
     SandboxProbe(sandbox_probe::ProbeArgs),
+    /// Run one command under the Windows ACL sandbox (internal).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    SandboxRun(SandboxRunArgs),
+}
+
+#[cfg(windows)]
+#[derive(Debug, Args)]
+struct SandboxRunArgs {
+    /// Everything after `--` is the command to run.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -232,6 +244,10 @@ async fn main() -> ExitCode {
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
+        #[cfg(windows)]
+        Some(Command::SandboxRun(args)) => Ok(ExitCode::from(
+            qcode_tools::windows_acl::run_helper(&args.args) as u8,
+        )),
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
@@ -311,8 +327,12 @@ async fn cmd_run(
 
     let data_dir = resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
-    let sandbox =
-        qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
+    let sandbox = qcode_tools::sandbox::build(
+        loaded.sandbox.mode,
+        &workspace,
+        loaded.sandbox.network,
+        &loaded.sandbox.extra_writable,
+    )?;
     tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
     if agents_md.is_some() {
@@ -494,8 +514,12 @@ async fn cmd_tui(
 
     let data_dir = resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
-    let sandbox =
-        qcode_tools::sandbox::build(loaded.sandbox.mode, &workspace, loaded.sandbox.network)?;
+    let sandbox = qcode_tools::sandbox::build(
+        loaded.sandbox.mode,
+        &workspace,
+        loaded.sandbox.network,
+        &loaded.sandbox.extra_writable,
+    )?;
     tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
     let skills = load_skills(&loaded.skills, &workspace);
@@ -718,8 +742,10 @@ fn print_config(config: &config::Config) {
         config.search.base_url
     );
     println!(
-        "sandbox.mode = {:?}, network = {}",
-        config.sandbox.mode, config.sandbox.network
+        "sandbox.mode = {}, network = {}, extra_writable = {:?}",
+        config.sandbox.mode.label(),
+        config.sandbox.network,
+        config.sandbox.extra_writable
     );
     println!(
         "skills.enabled = {}, roots = {:?}",

@@ -206,8 +206,15 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub mode: SandboxMode,
     /// Allow outbound/inbound network inside the sandbox. Default: deny.
+    ///
+    /// Only `bwrap` can enforce this (`--unshare-net`); the other backends
+    /// record the setting and leave the network reachable.
     #[serde(default)]
     pub network: bool,
+    /// Extra roots the `windows-acl` backend grants write access to, besides the
+    /// workspace and its private temp directory.
+    #[serde(default)]
+    pub extra_writable: Vec<PathBuf>,
 }
 
 /// Standalone approval policy file (`--approval-policy`).

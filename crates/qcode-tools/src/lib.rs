@@ -12,6 +12,8 @@ pub mod skills;
 pub mod subagent;
 pub mod todo;
 pub mod web_search;
+#[cfg(windows)]
+pub mod windows_acl;
 
 use std::sync::Arc;
 

@@ -854,3 +854,70 @@ shell/MCP 的任意 socket，需要明确边界。
 - 新增后端只改 `web_search.rs` 的 match 与 `key_env_name`，不触碰 engine/TUI。
 - searxng 的 `base_url` 若指向 loopback，需要 `[network] allow_private = true` 才能穿过
   egress 的 SSRF 拦截——这是有意的失败关闭。
+
+## ADR-0027：Windows 沙箱用写受限令牌 + 能力 SID（2026-10-20）
+
+**背景**
+
+- v2.0 要求 Windows 上 `run_shell` 也有一条内核边界（ADR-0025）。AppContainer 连读都要预
+  授权，loopback 默认封闭还要 `CheckNetIsolation` 提权，与本产品"任意路径读 + 本地 egress
+  代理"直接冲突；mxc 需要 24H2+ 与 feature 开关，回落的仍是 AppContainer 形状。
+- 机制先用隐藏子命令 `qc sandbox-probe` 在真机实测（M0），再落实现（M1）。探针保留在仓库里，
+  作为这套机制的可重跑证明。
+
+**决定**
+
+1. 进程模型沿用"不动 trait"的 A 方案：`Sandbox::command()` 返回
+   `qc sandbox-run --workspace <w> --temp <t> --cwd <c> [--extra <p>]... -- <program> <args>`，
+   helper 建令牌、铺 ACE、拉起子进程并透传退出码；自身失败打印一行
+   `qc-sandbox-run: <detail>` 后 exit 127，绝不降级成不受限 spawn。
+2. 令牌：`CreateRestrictedToken(0x1|0x4|0x8)`，restricting SID = 登录 SID + `Everyone` +
+   工作区 SID + 本次 temp SID；失败依次降级 `0x9` / `0x8` / `0`，全失败即 `Setup` 报错。
+   `lpEnvironment` 必须是 NULL（显式环境块实测 `ERROR_INVALID_PARAMETER`）。
+3. 能力 SID：`S-1-4-x-y`（non-unique authority），由 (canonical 路径, 域) 的 FNV-1a 派生。
+   工作区 SID 跨 session 稳定，ACE 一次铺好后 `tree_granted` 命中即跳过（O(1)）；temp SID
+   每次运行新建（`%LOCALAPPDATA%\qcode\sandbox\tmp\<pid>-<ts>`，不可写时回落会话 temp 下的
+   私有子目录），两个会话不能互写 temp。
+4. 授权：`GetNamedSecurityInfoW` + `SetEntriesInAclW` + `SetNamedSecurityInfoW`，给能力 SID
+   一条 `FILE_ALL_ACCESS` + `OI|CI` 继承 ACE。并发用命名互斥量
+   `Local\qcode-sandbox-grant-<sid>` 串行化 read-merge-write，否则两个 qc 同时启动会互相覆盖
+   DACL。ACE 是常驻的，撤销留给 `qc sandbox revoke`（M2）。
+5. 令牌默认 DACL：把 temp SID **追加**进去而不是替换。子进程自己创建的匿名管道按默认 DACL
+   设安全描述符，缺了这条第二遍访问检查不过，piped stdio 全废（M0 实测）。
+6. 进程创建：`CreateProcessAsUserW` + `CREATE_SUSPENDED` → 加入 kill-on-close job object →
+   `ResumeThread`。stdio 从 helper 继承（`GetStdHandle` + `SetHandleInformation(INHERIT)`，
+   句柄缺失时退回 NUL）；不能加 `CREATE_NO_WINDOW`，否则 DLL init 阶段 `0xC0000142`。
+7. 启动 preflight：`WindowsAcl::check()` 真的经 helper 跑一次 `cmd.exe /c exit 0`，失败
+   `SandboxError::Preflight` 让 qc 拒绝启动。
+
+**M0 实测（本机未受限 pwsh，2026-10-20）**
+
+- 非管理员可以建 `0xd` 受限令牌并 `CreateProcessAsUserW` 起子进程（child exit 0）。
+- 只挂能力 ACE 就够：工作区与私有 temp 内写/删/嵌套写全 `allowed`，工作区外的写、删、改名
+  全部 `拒绝访问 (5)`。原因：写受限只做写检查，而 restricting SID 不必为父目录的
+  `FILE_DELETE_CHILD` 共同签字，删除逃逸被堵住。
+- 匿名管道（孙进程 piped stdio）在"追加 temp SID 到默认 DACL"后 `allowed`；替换默认 DACL
+  则全废 —— 这正是把默认 DACL 设为"追加"的原因。
+- Low 完整性标签打不上：`SetNamedSecurityInfoW(SACL)` 返回 1314（标签在 SACL，需要
+  `WRITE_OWNER`/`SeSecurityPrivilege`）。因此标签层**没有**进实现，`token` 与 `full` 两模式
+  观察结果一致。
+- 未覆盖：父进程已是 Medium 且能写 `%PUBLIC%` 时的删除面（本机 `%PUBLIC%` 不可写，测不到）。
+
+**后果与边界**（`describe()` / README / doctor 都标 `partial`）
+
+- 只限制写：读与网络不受限（网络仍靠 egress 代理的 env，shell 可以绕过）。
+- 硬链接是文件对象别名，路径限制无效；受限孙进程打不开命名管道，Node `stdio: 'pipe'`
+  会 EPERM（继承/匿名管道正常）。
+- 永久 ACL 变更：ACE 常驻，改名后的旧 SID 成为惰性残留。
+- `[sandbox] network` 对 windows-acl 不生效，配置注释里已写明。
+
+**验证**
+
+```powershell
+cargo build -p qcode
+.\target\debug\qc.exe sandbox-run --workspace .tmp\acltest\ws --temp .tmp\acltest\tmp --cwd .tmp\acltest\ws -- cmd.exe /c "echo hi"
+.\target\debug\qc.exe doctor        # [ok] sandbox: windows-acl (partial): ...
+```
+
+在嵌套/受限 shell 里跑会得到 `SetNamedSecurityInfoW(..): win32 5` 并 exit 127 —— 失败关闭，
+不会退回不受限执行（本仓库的自测就是在这样的 shell 里做的）。

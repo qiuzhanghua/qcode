@@ -259,7 +259,12 @@ impl Doctor {
             .ok()
             .and_then(|path| path.canonicalize().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        match sandbox::build(config.sandbox.mode, &workspace, config.sandbox.network) {
+        match sandbox::build(
+            config.sandbox.mode,
+            &workspace,
+            config.sandbox.network,
+            &config.sandbox.extra_writable,
+        ) {
             Ok(sandbox) => self.ok("sandbox", sandbox.describe()),
             Err(err) => self.fail("sandbox", err.to_string()),
         }

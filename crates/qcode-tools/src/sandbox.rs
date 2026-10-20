@@ -14,6 +14,10 @@
 //! - `Landlock` (Linux): unprivileged filesystem confinement applied in the
 //!   child between `fork` and `exec` (no external binary, no mount namespace).
 //!   It does not restrict network access; use bwrap when that matters.
+//! - `WindowsAcl` (Windows): a write-restricted token whose write access is
+//!   limited to the workspace and a private temp directory by capability SIDs
+//!   (ADR-0027). Reads and network access are not confined; see
+//!   [`crate::windows_acl`] for the boundaries.
 //!
 //! Every backend is preflighted at startup and fails closed.
 
@@ -56,6 +60,8 @@ pub enum SandboxMode {
     Bwrap,
     /// Linux Landlock (experimental, filesystem only).
     Landlock,
+    /// Windows write-restricted token (experimental, write confinement only).
+    WindowsAcl,
 }
 
 impl SandboxMode {
@@ -65,6 +71,7 @@ impl SandboxMode {
             Self::SandboxExec => "sandbox-exec",
             Self::Bwrap => "bwrap",
             Self::Landlock => "landlock",
+            Self::WindowsAcl => "windows-acl",
         }
     }
 }
@@ -98,46 +105,64 @@ pub fn build(
     mode: SandboxMode,
     workspace: &Path,
     network: bool,
+    extra_writable: &[PathBuf],
 ) -> Result<Arc<dyn Sandbox>, SandboxError> {
     match mode {
         SandboxMode::None => Ok(Arc::new(NoSandbox)),
         SandboxMode::SandboxExec => {
             #[cfg(target_os = "macos")]
             {
+                let _ = extra_writable;
                 let sandbox = SandboxExec::new(workspace, network)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (workspace, network);
+                let _ = (workspace, network, extra_writable);
                 Err(SandboxError::Unsupported("sandbox-exec"))
             }
         }
         SandboxMode::Bwrap => {
             #[cfg(target_os = "linux")]
             {
+                let _ = extra_writable;
                 let sandbox = Bwrap::new(workspace, network)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (workspace, network);
+                let _ = (workspace, network, extra_writable);
                 Err(SandboxError::Unsupported("bwrap"))
             }
         }
         SandboxMode::Landlock => {
             #[cfg(target_os = "linux")]
             {
+                let _ = extra_writable;
                 let sandbox = Landlock::new(workspace)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (workspace, network);
+                let _ = (workspace, network, extra_writable);
                 Err(SandboxError::Unsupported("landlock"))
+            }
+        }
+        SandboxMode::WindowsAcl => {
+            #[cfg(windows)]
+            {
+                let _ = network;
+                let sandbox = crate::windows_acl::WindowsAcl::new(workspace, extra_writable)?;
+                sandbox.check()?;
+                Ok(Arc::new(sandbox))
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (workspace, network, extra_writable);
+                Err(SandboxError::Unsupported("windows-acl"))
             }
         }
     }
