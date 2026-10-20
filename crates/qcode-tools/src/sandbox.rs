@@ -983,7 +983,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod bwrap_tests {
     use super::*;
 

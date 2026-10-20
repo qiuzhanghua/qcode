@@ -420,7 +420,10 @@ fn plan_file(ctx: &ToolContext, patch: &FilePatch) -> Result<PlannedOp, ToolErro
 
 fn validate_relative(raw: &str) -> Result<(), ToolError> {
     let path = Path::new(raw);
-    if path.is_absolute() {
+    // `has_root` also catches a Windows path like `/etc/passwd`, which is not
+    // `is_absolute` there but would still escape the workspace by resolving
+    // against the drive root.
+    if path.is_absolute() || path.has_root() {
         return Err(ToolError::Invalid(format!(
             "absolute paths are not allowed: {raw}"
         )));
