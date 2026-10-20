@@ -378,10 +378,13 @@ fn derive_sid(path: &Path, domain: &str) -> Result<SidBuf, String> {
     let canonical = path
         .canonicalize()
         .map_err(|err| format!("canonicalize {}: {err}", path.display()))?;
-    let seed = format!(
-        "qcode-sandbox|{domain}|{}",
-        canonical.display().to_string().to_lowercase()
-    );
+    sid_for_root(&canonical.display().to_string().to_lowercase(), domain)
+}
+
+/// Capability SID for one root, derived from its canonical (lowercased) path and
+/// the domain it is used in.
+fn sid_for_root(root: &str, domain: &str) -> Result<SidBuf, String> {
+    let seed = format!("qcode-sandbox|{domain}|{root}");
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in seed.as_bytes() {
         hash ^= u64::from(*byte);
@@ -1177,15 +1180,14 @@ mod tests {
 
     #[test]
     fn capability_sids_are_stable_per_root_and_domain() {
-        let root = std::env::temp_dir().join(format!("qcode-acl-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let a = sid_string(derive_sid(&root, "ws").unwrap().as_sid());
-        let b = sid_string(derive_sid(&root, "ws").unwrap().as_sid());
-        let c = sid_string(derive_sid(&root, "tmp").unwrap().as_sid());
+        let a = sid_string(sid_for_root(r"c:\work", "ws").unwrap().as_sid());
+        let b = sid_string(sid_for_root(r"c:\work", "ws").unwrap().as_sid());
+        let c = sid_string(sid_for_root(r"c:\work", "tmp").unwrap().as_sid());
+        let d = sid_string(sid_for_root(r"c:\other", "ws").unwrap().as_sid());
         assert_eq!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
         assert!(a.starts_with("S-1-4-"), "{a}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
