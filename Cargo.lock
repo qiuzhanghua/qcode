@@ -5287,6 +5287,9 @@ dependencies = [
  "qcode-core",
  "qcode-ui-bridge",
  "qcode-ui-state",
+ "serde_json",
+ "time",
+ "tokio",
 ]
 
 [[package]]
