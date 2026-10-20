@@ -12,7 +12,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
-use qcode_core::event::SessionStarted;
+use qcode_core::event::{EventKind, SessionStarted};
 use qcode_ui_bridge::{ApprovalView, KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::rc::Rc;
@@ -167,10 +167,22 @@ impl Shell {
         cx.notify();
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self, cx: &mut Context<Self>) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                UiEvent::Event(event) | UiEvent::Child(event) => self.app.apply(&event),
+                UiEvent::Event(event) | UiEvent::Child(event) => {
+                    // A patch the agent just applied becomes the diff view, so
+                    // the review pane needs no separate plumbing.
+                    if let EventKind::ToolCall(call) = &event.kind
+                        && call.name == "apply_patch"
+                        && let Some(patch) =
+                            call.arguments.get("patch").and_then(|value| value.as_str())
+                        && let Ok(files) = DiffFile::parse(patch)
+                    {
+                        self.diff = Some(cx.new(|cx| DiffState::new(files, cx)));
+                    }
+                    self.app.apply(&event);
+                }
                 UiEvent::Delta(delta) => self.app.apply_delta(&delta),
                 UiEvent::Approval(view) => self.approval = Some(view),
                 UiEvent::ApprovalClosed { call_id } => {
@@ -189,7 +201,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.poll();
+        self.poll(cx);
         self.submit_on_enter(window, cx);
         self.ensure_diff(cx);
         self.refresh_sizes();
