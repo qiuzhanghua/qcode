@@ -1296,10 +1296,51 @@ fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
     if let Ok(path) = std::env::var("XDG_DATA_HOME") {
         return PathBuf::from(path).join("qcode");
     }
-    // Windows has no `HOME` by default; falling back to "." put the store in
-    // the current directory, so sessions landed in whatever repo qc ran from.
-    let home = config::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".local").join("share").join("qcode")
+    // Windows has no `HOME` in pwsh; the config path already resolves
+    // HOME-or-USERPROFILE, and the store must use the same home.
+    let preferred = match config::home_dir() {
+        Some(home) => home.join(".local").join("share").join("qcode"),
+        None => PathBuf::from(".local").join("share").join("qcode"),
+    };
+    if writable_dir(&preferred) {
+        return preferred;
+    }
+    // A sandboxed shell that may only write its workspace cannot create the
+    // store under the user profile. Losing sessions is worse than keeping them
+    // beside the code, so fall back once, loudly, instead of failing at startup.
+    let fallback = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".qcode-data");
+    if writable_dir(&fallback) {
+        // resolve_data_dir runs from several subcommands; say this once.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                preferred = %preferred.display(),
+                fallback = %fallback.display(),
+                "data dir is not writable; using a workspace-local store (\
+                 set --data-dir or QCODE_DATA_DIR to choose another)"
+            );
+        });
+        return fallback;
+    }
+    // Neither candidate works: hand back the preferred one so the caller's
+    // error names the path the user would expect.
+    preferred
+}
+
+/// Create `path` and prove it accepts a file. Cheap enough for startup, and it
+/// is the only way to tell "missing but creatable" from "sandboxed".
+fn writable_dir(path: &Path) -> bool {
+    if std::fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(format!(".write-probe-{}", std::process::id()));
+    let ok = std::fs::write(&probe, b"probe").is_ok();
+    if ok {
+        let _ = std::fs::remove_file(&probe);
+    }
+    ok
 }
 
 /// Ctrl-C asks the engine to stop; a second Ctrl-C wins immediately.

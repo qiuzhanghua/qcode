@@ -68,3 +68,6 @@ tmbootpicker.efi
 
 # Data dir written when HOME is unset (should be under the user profile)
 /.local
+
+# Fallback data dir when the user profile is not writable
+/.qcode-data
