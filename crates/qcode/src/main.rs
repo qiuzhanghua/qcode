@@ -481,7 +481,8 @@ async fn cmd_run(
 
     // Pre-images for rollback: every write the agent makes records what was
     // there first.
-    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(&data_dir);
+    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(&data_dir)
+        .with_shell(loaded.agent.snapshot_shell);
 
     // The child registry excludes `subagent`, so nesting stops at depth one.
     let runner = subagent::build(
@@ -655,6 +656,7 @@ async fn cmd_acp(
         model: resolved.model.clone(),
         pricing,
         max_turns: loaded.agent.max_turns,
+        snapshot_shell: loaded.agent.snapshot_shell,
         max_cost_usd: loaded.agent.max_cost_usd,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
@@ -731,6 +733,7 @@ async fn cmd_tui(
         pricing,
         max_cost_usd: loaded.agent.max_cost_usd,
         max_turns: loaded.agent.max_turns,
+        snapshot_shell: loaded.agent.snapshot_shell,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
         skills_prompt,
@@ -806,10 +809,35 @@ fn cmd_sessions(
             if ids.is_empty() {
                 println!("nothing to clean");
             }
-            for id in ids {
-                println!("{} {id}", if yes { "removed" } else { "would remove" });
+            let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
+            let mut freed = 0u64;
+            for id in &ids {
+                let size = snapshots.size(id).unwrap_or(0);
+                freed += size;
+                println!(
+                    "{} {id} (snapshots: {:.1} MB)",
+                    if yes { "removed" } else { "would remove" },
+                    size as f64 / (1024.0 * 1024.0)
+                );
             }
-            if !yes {
+            if yes {
+                for id in &ids {
+                    if let Err(error) = snapshots.remove_session(id) {
+                        println!("cannot remove snapshots for {id}: {error}");
+                    }
+                }
+                // Snapshot trees whose session is gone (deleted by hand, or by an
+                // older qc that did not clean up) are orphans.
+                let keep: Vec<String> = store.list()?.into_iter().map(|s| s.id).collect();
+                match snapshots.sweep(&keep) {
+                    Ok(removed) if !removed.is_empty() => {
+                        println!("removed {} orphan snapshot tree(s)", removed.len());
+                    }
+                    Ok(_) => {}
+                    Err(error) => println!("cannot sweep snapshots: {error}"),
+                }
+                println!("freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
+            } else {
                 println!("dry run; pass --yes to delete");
             }
         }
@@ -968,6 +996,7 @@ fn print_config(config: &config::Config) {
     println!("context.window_tokens = {}", config.context.window_tokens);
     println!("agent.max_turns = {}", config.agent.max_turns);
     println!("agent.max_cost_usd = {:?}", config.agent.max_cost_usd);
+    println!("agent.snapshot_shell = {}", config.agent.snapshot_shell);
     println!(
         "search.enabled = {}, backend = {:?}, api_key_env = {:?}, max_results = {}, base_url = {:?}",
         config.search.enabled,

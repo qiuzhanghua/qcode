@@ -1261,6 +1261,29 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 （脚本让 provider 调 `write_file`，断言 store 出现 turn 1 的 absent 记录，回滚后文件被删除）；
 `qcode-tui` 1 条（`/checkpoint` 与 `/rollback 3` 解析成 UiAction，缺参数给提示）。
 
+## ADR-0034 补充：GC 与 `run_shell` 覆盖（2026-10-20）
+
+**决定**
+
+1. `[agent] snapshot_shell`（默认 `true`）：执行 `run_shell` 之前对整个工作区做一次**受限**
+   快照——跳过 `.git` / `target` / `node_modules` / `dist` / `.tmp` / `.qcode-data` /
+   `.venv` / `__pycache__`，单文件超过 4 MB 跳过，总量超过 64 MB 置 `capped` 并停止（打 warn）。
+   同一 turn 内已存过的路径不再复制，所以一个 turn 里第 2、3 条 shell 只付出遍历成本。
+   这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，而不是只有三个内置写工具。
+2. `qc sessions gc --older-than N --yes` 删除会话时顺带删掉该会话的 snapshots，并按现存会话
+   列表清理孤儿树（`SnapshotStore::sweep`）；报告每个会话的快照体积与总释放量。
+3. 树快照**不记录 absent**：shell 新建的文件在回滚时不会被删除（只有写工具记录的 absent
+   会被删）。这是有意的不对称——树快照只知道「当时存在什么」。
+
+**后果 / 边界更新**
+
+- 大仓库上每条 shell 命令都要走一遍工作区（有上限）；`snapshot_shell = false` 可关。
+- 快照随 turn 累积；被跳过的目录（`target` 等）里的改动不会被回滚。
+- gc 只清理「会话已删除」与「没有对应会话」的快照，不按天数清理仍在用的会话。
+
+**验证**：新增 4 条 core 测试——树快照能还原 shell 式编辑（改一个、删一个、新建一个）、
+超过 4 MB 的文件被跳过并计数、gc 删除会话 + 清理孤儿树、shell 开关默认关闭且可打开。
+
 
 
 

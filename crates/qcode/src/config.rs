@@ -287,6 +287,11 @@ pub struct AgentConfig {
     /// `[pricing."<model>"]` entry; the `--max-cost` flag wins over it.
     #[serde(default)]
     pub max_cost_usd: Option<f64>,
+    /// Snapshot the whole workspace before `run_shell`, which can write
+    /// anywhere. Costs one copy per shell turn (capped at 64 MB) and makes
+    /// rollback cover shell- and MCP-driven edits; disable it on huge repos.
+    #[serde(default = "default_true")]
+    pub snapshot_shell: bool,
 }
 
 impl Default for AgentConfig {
@@ -294,6 +299,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: default_max_turns(),
             max_cost_usd: None,
+            snapshot_shell: true,
         }
     }
 }
@@ -494,7 +500,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("approval", &["rules"]),
     ("context", &["window_tokens"]),
-    ("agent", &["max_turns", "max_cost_usd"]),
+    ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     ("mcp", &["servers"]),
     ("skills", &["enabled", "roots"]),
     ("sandbox", &["mode", "network", "extra_writable"]),
@@ -1220,11 +1226,18 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.agent.max_turns, 8);
         assert_eq!(config.agent.max_cost_usd, None);
+        assert!(
+            config.agent.snapshot_shell,
+            "workspace snapshots are on by default"
+        );
 
-        let config: Config =
-            toml::from_str("[agent]\nmax_turns = 32\nmax_cost_usd = 0.25\n").unwrap();
+        let config: Config = toml::from_str(
+            "[agent]\nmax_turns = 32\nmax_cost_usd = 0.25\nsnapshot_shell = false\n",
+        )
+        .unwrap();
         assert_eq!(config.agent.max_turns, 32);
         assert_eq!(config.agent.max_cost_usd, Some(0.25));
+        assert!(!config.agent.snapshot_shell);
     }
 
     #[test]

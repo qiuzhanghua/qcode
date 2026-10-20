@@ -62,6 +62,8 @@ pub struct TuiOptions<'a> {
     pub sandbox: String,
     /// Existing session to resume; `None` creates a new one.
     pub resume: Option<String>,
+    /// Also snapshot the workspace before run_shell ([agent] snapshot_shell).
+    pub snapshot_shell: bool,
     /// Egress proxy shared with tools and child agents.
     pub network: Option<qcode_core::network::SharedNetwork>,
 }
@@ -180,7 +182,8 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         let _ = child_sender.send(TuiMsg::Child(event.clone()));
     });
     // Pre-images for `/rollback`: same data dir as the session log.
-    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(options.store.root());
+    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(options.store.root())
+        .with_shell(options.snapshot_shell);
     let runner = crate::subagent::build(
         options.store,
         options.provider.clone(),

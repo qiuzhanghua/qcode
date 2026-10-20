@@ -81,16 +81,58 @@ pub struct RestoreReport {
 #[derive(Debug, Clone)]
 pub struct SnapshotStore {
     root: PathBuf,
+    /// Also snapshot the whole workspace before `run_shell`, which can write
+    /// anywhere. Off by default in tests, on by default from the config.
+    shell: bool,
+}
+
+/// Limits for a workspace-wide snapshot taken before a shell command.
+const TREE_MAX_FILE: u64 = 4 * 1024 * 1024;
+const TREE_MAX_TOTAL: u64 = 64 * 1024 * 1024;
+/// Directories a shell command rarely means to edit, and that are large.
+const TREE_SKIP: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "target",
+    "node_modules",
+    "dist",
+    ".tmp",
+    ".qcode-data",
+    ".venv",
+    "__pycache__",
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeReport {
+    pub files: usize,
+    pub bytes: u64,
+    pub skipped_large: usize,
+    /// The total cap was hit; the snapshot is partial.
+    pub capped: bool,
 }
 
 impl SnapshotStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            shell: false,
+        }
     }
 
     /// `<data-dir>/snapshots`, the same place the session log lives under.
     pub fn at_data_dir(data_dir: &Path) -> Self {
         Self::new(data_dir.join("snapshots"))
+    }
+
+    /// Snapshot the workspace before shell commands (`[agent] snapshot_shell`).
+    pub fn with_shell(mut self, shell: bool) -> Self {
+        self.shell = shell;
+        self
+    }
+
+    pub fn shell_enabled(&self) -> bool {
+        self.shell
     }
 
     pub fn root(&self) -> &Path {
@@ -140,6 +182,128 @@ impl SnapshotStore {
             }
         }
         Ok(recorded)
+    }
+
+    /// Copy the whole workspace as the pre-image for `turn`, bounded by
+    /// [`TREE_MAX_FILE`] / [`TREE_MAX_TOTAL`] and skipping build/VCS trees.
+    ///
+    /// Used before `run_shell`, which can write any file: the alternative is
+    /// guessing paths from a command line, and a wrong guess loses the file.
+    pub fn snapshot_tree(
+        &self,
+        session: &str,
+        turn: u32,
+        workspace: &Path,
+    ) -> io::Result<TreeReport> {
+        let dir = self
+            .session_dir(session)
+            .join(turn.to_string())
+            .join("files");
+        let mut report = TreeReport::default();
+        let mut stack = vec![workspace.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if !TREE_SKIP.contains(&name.as_ref()) {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                let Ok(relative) = path.strip_prefix(workspace) else {
+                    continue;
+                };
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
+                if metadata.len() > TREE_MAX_FILE {
+                    report.skipped_large += 1;
+                    continue;
+                }
+                if report.bytes + metadata.len() > TREE_MAX_TOTAL {
+                    report.capped = true;
+                    break;
+                }
+                let stored = dir.join(relative);
+                if stored.exists() {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                if let Some(parent) = stored.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&stored, &bytes)?;
+                report.files += 1;
+                report.bytes += bytes.len() as u64;
+            }
+            if report.capped {
+                break;
+            }
+        }
+        Ok(report)
+    }
+
+    /// Drop everything recorded for one session (used by `sessions gc`).
+    pub fn remove_session(&self, session: &str) -> io::Result<bool> {
+        let dir = self.session_dir(session);
+        if !dir.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_dir_all(&dir)?;
+        Ok(true)
+    }
+
+    /// Remove snapshot directories whose session no longer exists. Returns the
+    /// names that were removed.
+    pub fn sweep(&self, keep: &[String]) -> io::Result<Vec<String>> {
+        let mut removed = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Ok(removed);
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if keep.iter().any(|session| sanitize(session) == name) {
+                continue;
+            }
+            std::fs::remove_dir_all(entry.path())?;
+            removed.push(name);
+        }
+        removed.sort();
+        Ok(removed)
+    }
+
+    /// Bytes currently stored for one session, for the gc report.
+    pub fn size(&self, session: &str) -> io::Result<u64> {
+        fn walk(dir: &Path, total: &mut u64) -> io::Result<()> {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return Ok(());
+            };
+            for entry in entries.flatten() {
+                let metadata = entry.metadata()?;
+                if metadata.is_dir() {
+                    walk(&entry.path(), total)?;
+                } else {
+                    *total += metadata.len();
+                }
+            }
+            Ok(())
+        }
+        let mut total = 0;
+        walk(&self.session_dir(session), &mut total)?;
+        Ok(total)
     }
 
     /// Turns that have at least one recorded pre-image, oldest first.
@@ -460,5 +624,82 @@ mod tests {
         let (_dir, store, workspace) = fixture();
         let report = store.restore("nope", 1, &workspace).expect("restore");
         assert_eq!(report, RestoreReport::default());
+    }
+
+    #[test]
+    fn a_workspace_snapshot_covers_files_a_shell_command_edits() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/a.rs"), "v1").unwrap();
+        std::fs::write(workspace.join("b.txt"), "keep").unwrap();
+        std::fs::create_dir_all(workspace.join("target")).unwrap();
+        std::fs::write(workspace.join("target/junk"), "build output").unwrap();
+
+        let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        // `target/` is on the skip list: two files, not three.
+        assert_eq!(report.files, 2, "{report:?}");
+        assert!(!report.capped);
+
+        // What a shell command might do: edit one file, delete another, create a
+        // third.
+        std::fs::write(workspace.join("src/a.rs"), "v2").unwrap();
+        std::fs::remove_file(workspace.join("b.txt")).unwrap();
+        std::fs::write(workspace.join("new.txt"), "created by the shell").unwrap();
+
+        let report = store.restore("s1", 1, &workspace).expect("restore");
+        assert_eq!(report.restored, 2);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("src/a.rs")).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("b.txt")).unwrap(),
+            "keep"
+        );
+        // Created files are only removed when the tool that made them was one of
+        // the writers that record `absent`; a tree snapshot cannot know.
+        assert!(workspace.join("new.txt").exists());
+    }
+
+    #[test]
+    fn a_workspace_snapshot_skips_files_over_the_size_limit() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("small.txt"), "ok").unwrap();
+        let big = vec![b'x'; (TREE_MAX_FILE + 1) as usize];
+        std::fs::write(workspace.join("big.bin"), &big).unwrap();
+
+        let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert_eq!(report.files, 1, "{report:?}");
+        assert_eq!(report.skipped_large, 1);
+    }
+
+    #[test]
+    fn gc_removes_a_session_and_sweeps_orphans() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("a.txt"), "pre").unwrap();
+        store
+            .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("s1");
+        store
+            .record("s2", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("s2");
+
+        assert!(store.size("s1").expect("size") > 0);
+        assert!(store.remove_session("s1").expect("remove"));
+        assert!(!store.remove_session("s1").expect("remove again"));
+
+        // s2 is kept, s1 is already gone, s3 is an orphan tree.
+        std::fs::create_dir_all(store.root().join("s3").join("1")).unwrap();
+        let removed = store.sweep(&["s2".to_string()]).expect("sweep");
+        assert_eq!(removed, vec!["s3".to_string()]);
+        assert!(store.root().join("s2").exists());
+        assert!(!store.root().join("s3").exists());
+    }
+
+    #[test]
+    fn the_shell_flag_is_off_unless_asked_for() {
+        let store = SnapshotStore::new(std::env::temp_dir().join("qcode-snapshot-flag"));
+        assert!(!store.shell_enabled());
+        assert!(store.with_shell(true).shell_enabled());
     }
 }

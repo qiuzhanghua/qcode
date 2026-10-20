@@ -623,6 +623,21 @@ where
         // write still has to happen.
         if let Some(snapshots) = ctx.snapshots {
             for call in &calls {
+                // A shell command can write anywhere, so guessing paths from the
+                // command line would lose files. When enabled, copy the tree.
+                if call.name == "run_shell" && snapshots.shell_enabled() {
+                    match snapshots.snapshot_tree(options.session_id, turns, &options.workspace) {
+                        Ok(report) if report.capped => tracing::warn!(
+                            files = report.files,
+                            bytes = report.bytes,
+                            "workspace snapshot hit its size cap; rollback may be partial"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "cannot snapshot the workspace before run_shell")
+                        }
+                    }
+                }
                 let paths = crate::snapshot::write_hints(&call.name, &call.arguments);
                 if paths.is_empty() {
                     continue;

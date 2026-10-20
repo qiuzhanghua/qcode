@@ -255,11 +255,13 @@ cargo build -p qcode-eval
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
   先解析并计算全部文件再 staging + 备份 + rename；任一 hunk 失败则什么都不写。绝对路径、
   `..`、rename、symlink 逃逸拒绝；默认 ask。
-- **checkpoint / rollback**：每个 turn 里 `write_file` / `edit_file` / `apply_patch` 动手之前，
-  把目标文件当前内容记进 `<data-dir>/snapshots/<session>/<turn>/`（不存在的文件记为
-  absent）。`qc sessions checkpoints <id>` 看记录，`qc sessions rollback <id> --to <turn> --yes`
-  或 TUI 里 `/rollback <turn>` 把工作区还原到该 turn 之前。只覆盖这几个工具写过的文件——
-  `run_shell`、MCP 与子进程的写入不在记录范围（详见 ADR-0034）。
+- **checkpoint / rollback**：`write_file` / `edit_file` / `apply_patch` 动手之前，把目标文件
+  当前内容记进 `<data-dir>/snapshots/<session>/<turn>/`（不存在的文件记为 absent）；
+  `[agent] snapshot_shell`（默认 true）还会在每条 `run_shell` 前对整个工作区做一次受限快照
+  （跳过 `.git`/`target`/`node_modules` 等，单文件 4 MB、总量 64 MB 封顶），因此 shell 与 MCP
+  驱动的编辑也能回滚。`qc sessions checkpoints <id>` 看记录，
+  `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
+  `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
 - **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
 - **web_search**：`[search]` 开启后注册（默认 `brave`，也支持 `tavily` / `searxng`），
@@ -324,6 +326,7 @@ window_tokens = 128000
 [agent]
 max_turns = 8
 # max_cost_usd = 0.50    # 需要 [pricing]；`--max-cost` 覆盖它，比轮数更贴近真实代价
+snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB 总量封顶）；大仓库可关
 
 # Web 搜索（v2.0）。enabled 默认 true；未配置 key 时不注册 web_search 工具，
 # 由 qc doctor 提示。backend: brave | tavily | searxng。

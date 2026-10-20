@@ -43,6 +43,8 @@ pub struct Deps {
     pub agents_md: Option<String>,
     pub skills: Option<String>,
     pub network: Option<qcode_core::network::SharedNetwork>,
+    /// Snapshot the workspace before run_shell (shell can write anywhere).
+    pub snapshot_shell: bool,
 }
 
 /// The only way the agent talks to its peer outside a response.
@@ -113,7 +115,8 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(deps: Arc<Deps>) -> Self {
-        let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(deps.store.root());
+        let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(deps.store.root())
+            .with_shell(deps.snapshot_shell);
         Self {
             deps,
             snapshots,

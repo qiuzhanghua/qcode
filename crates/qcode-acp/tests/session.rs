@@ -194,6 +194,7 @@ fn fixture_with(provider: MockProvider, tools: ToolRegistry, calls: Arc<AtomicUs
         agents_md: None,
         skills: None,
         network: None,
+        snapshot_shell: true,
     };
 
     Fixture {
