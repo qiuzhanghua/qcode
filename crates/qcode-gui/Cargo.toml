@@ -9,10 +9,6 @@ rust-version.workspace = true
 name = "qcode_gui"
 path = "src/lib.rs"
 
-[[bin]]
-name = "qcode-gui"
-path = "src/bin/placeholder.rs"
-
 [dependencies]
 qcode-core = { version = "0.1.0", path = "../qcode-core" }
 qcode-ui-state = { version = "0.1.0", path = "../qcode-ui-state" }

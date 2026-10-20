@@ -68,7 +68,6 @@ enum Command {
     /// Serve the Agent Client Protocol over stdio (for editors).
     Acp,
     /// Open the desktop window (GPUI Kit; needs a gui build).
-    #[cfg(feature = "gui")]
     Gui,
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
@@ -292,7 +291,6 @@ async fn main() -> ExitCode {
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,
-        #[cfg(feature = "gui")]
         Some(Command::Gui) => cmd_gui(data_dir, config, approval_policy).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
@@ -632,12 +630,23 @@ async fn cmd_acp(
     Ok(ExitCode::SUCCESS)
 }
 
-#[cfg(feature = "gui")]
 /// Open the desktop window (ADR-0037).
 ///
 /// The window itself lives in the `qcode-gui` binary for now; this subcommand
 /// assembles the kernel first so the GUI can be handed the same pieces as the
 /// other frontends.
+/// The lean build keeps the subcommand so the error explains what to download
+/// instead of letting clap call it an unknown command.
+#[cfg(not(feature = "gui"))]
+async fn cmd_gui(
+    _data_dir: Option<PathBuf>,
+    _config_path: Option<PathBuf>,
+    _approval_policy: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    eprintln!("this build has no GUI support; download the desktop build (qcode-desktop)");
+    Ok(ExitCode::from(2))
+}
+#[cfg(feature = "gui")]
 async fn cmd_gui(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
