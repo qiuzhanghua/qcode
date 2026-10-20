@@ -151,6 +151,10 @@ impl Shell {
         cx.notify();
     }
 
+    fn stop(&mut self) {
+        let _ = self.commands.send(UiCommand::Cancel);
+    }
+
     fn answer(&mut self, allow: bool, session: bool, cx: &mut Context<Self>) {
         let Some(view) = self.approval.take() else {
             return;
@@ -246,6 +250,12 @@ impl Render for Shell {
                     .gap_2()
                     .items_center()
                     .p_2()
+                    .child(Button::new("stop").label("Stop").on_click(cx.listener(
+                        |this, _, _window, cx| {
+                            this.stop();
+                            cx.notify();
+                        },
+                    )))
                     .child(
                         Button::new("paste")
                             .label(format!("Paste image ({})", self.attachments.len()))
@@ -329,6 +339,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, commands: &mut UnboundedReceiv
                     return;
                 }
             };
+            let mut active: Option<CancellationToken> = None;
             while let Some(command) = commands.recv().await {
                 match command {
                     UiCommand::Answer {
@@ -340,16 +351,24 @@ fn spawn_engine(engine: Engine, port: KernelPort, commands: &mut UnboundedReceiv
                         allow,
                         session: remember,
                     }),
-                    UiCommand::Cancel => {}
+                    // Cancelling only matters for the turn in flight; the token
+                    // is what `run_turn` and the tools watch.
+                    UiCommand::Cancel => {
+                        if let Some(token) = &active {
+                            token.cancel();
+                        }
+                    }
                     UiCommand::Prompt { text, attachments } => {
                         let sink = port.clone();
+                        let token = CancellationToken::new();
+                        active = Some(token.clone());
                         let options = RunOptions {
                             session_id: &session,
                             model: &engine.model,
                             input: text,
                             workspace: engine.workspace.clone(),
                             max_turns: engine.max_turns,
-                            cancel: CancellationToken::new(),
+                            cancel: token,
                             pricing: engine.pricing,
                             max_cost_usd: engine.max_cost_usd,
                             on_delta: None,
