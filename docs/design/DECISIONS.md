@@ -1529,3 +1529,46 @@ GPUI Kit 已定稿，`qc gui` 现在能跑真实回合：引擎线程执行 `run
 
 **仍未做**（都不阻塞结论）：`Ctrl-V` 键位绑定（当前用按钮）、`apply_patch` 结果自动填进 diff、
 一万事件的真实窗口帧率/内存，以及 GUI 与 qcode 本体的打包策略。
+## ADR-0038：GUI 打包策略——精简默认，GUI 走可选特性（2026-10-22）
+
+**背景**：`qc gui` 让 `qc` 链接了 GPUI Kit。实测 release 体积：默认构建 **20.2 MB**，
+带 `gui` 特性 **46.9 MB**（wgpu / accesskit / tree-sitter 等）。同一个二进制既要做服务器上的
+CLI/ACP，又要做桌面窗口，两者需求冲突：服务器不需要 GPU 栈，也不该为它付出构建依赖
+（Linux 上还要 X11/Wayland 头文件）。
+
+**决定**
+
+1. **默认构建保持精简**：`qcode-gui` 是 `qc` 的**可选依赖**，由特性 `gui` 打开
+   （`qcode-gui = { ..., optional = true }`，`gui = ["dep:qcode-gui"]`）。默认 `cargo build`
+   产出 20.2 MB、零 GPU 依赖的 `qc`。
+2. **发布两个产物**：`qc`（默认特性）与桌面版（`--features gui`，同一份代码）。桌面版单独命名，
+   例如 `qcode-desktop.exe`，避免用户下载 47 MB 却发现只有 CLI。
+3. **`qc gui` 在精简构建里给出明确提示**：子命令保留（不被 `cfg` 掉），执行时打印
+   「this build has no GUI support; download the desktop build」。当前实现是 `cfg` 掉整个子命令，
+   按本 ADR 应改为「保留子命令 + 特性内实现」，避免 clap 报 `unrecognized subcommand`
+   让用户以为装错了。
+4. **`qcode-gui` 只作为库**：它的 `src/bin/placeholder.rs` 是 spike 遗留，等桌面产物就绪后删除，
+   避免出现「两个都能开窗」的第三个二进制。
+5. **平台顺序**：Windows 先行（GPUI 的 Windows 后端已在 Zed 上验证）；macOS 需另建构建与
+   签名/公证流程（公证要求可执行文件带 hardening）；Linux 走 AppImage 或 deb，并在 CI 里
+   明确 GUI 构建需要 X11/Wayland 开发包。
+6. **更新机制**：`qc update` 继续只更新精简二进制；桌面版要么自带更新逻辑，要么由安装器
+   （MSI/dmg/AppImage）负责。两者共享版本号。
+
+**理由**
+
+- 47 MB 与 GPU 依赖对服务器、CI 与 ACP 使用者都是纯负担；而桌面用户不在乎多下一个 27 MB。
+- 用 Cargo 特性而不是两个 crate，保证四个前端（CLI/TUI/ACP/GUI）始终走同一个
+  `qcode_kernel::assemble`（ADR-0036），不会分叉成两套代码。
+- 保留 `qc gui` 子命令而不是让 clap 报错，是为了让「下载错了」这件事自解释。
+
+**后果 / 边界**
+
+- 发布流水线要产出两个二进制，并在 release notes 里说明差异；
+- 精简构建的 `cargo tree` 里不应出现 `gpui*`（可作为 CI 断言）；
+- 桌面版体积仍会随 GPUI 版本增长，必要时再评估 `lto = "fat"` / `strip = true` / 静态 CRT 等
+  裁剪手段，本 ADR 不做承诺；
+- Linux 的 GUI 构建依赖 X11/Wayland 开发包，服务器构建不得引入。
+
+**验证**：`cargo build --release -p qcode` → 20.2 MB 且 `cargo tree -p qcode | grep gpui` 为空；
+`cargo build --release -p qcode --features gui` → 46.9 MB 且 `qc gui` 可用（已实测两种构建均通过）。
