@@ -1,3 +1,8 @@
+/// The tools print paths with the platform separator, so expectations do too.
+fn p(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 use qcode_core::tool::{Tool, ToolContext};
 use qcode_tools::search::{GlobTool, GrepTool};
 use serde_json::json;
@@ -34,10 +39,10 @@ async fn glob_respects_gitignore_and_build_dirs() {
         .await
         .unwrap();
 
-    assert!(output.output.contains("src/main.rs"));
-    assert!(output.output.contains("src/lib.rs"));
-    assert!(!output.output.contains("target/generated.rs"));
-    assert!(!output.output.contains("ignored/skip.rs"));
+    assert!(output.output.contains(&p("src/main.rs")));
+    assert!(output.output.contains(&p("src/lib.rs")));
+    assert!(!output.output.contains(&p("target/generated.rs")));
+    assert!(!output.output.contains(&p("ignored/skip.rs")));
 }
 
 #[tokio::test]
@@ -49,7 +54,7 @@ async fn glob_without_slash_matches_basenames() {
         .execute(&ctx, json!({"pattern": "*.rs"}))
         .await
         .unwrap();
-    assert!(output.output.contains("src/main.rs"));
+    assert!(output.output.contains(&p("src/main.rs")));
 }
 
 #[tokio::test]
@@ -62,10 +67,10 @@ async fn grep_reports_path_and_line() {
         .await
         .unwrap();
 
-    assert!(output.output.contains("src/main.rs:2:"));
-    assert!(!output.output.contains("target/generated.rs"));
-    assert!(!output.output.contains("ignored/skip.rs"));
-    assert!(!output.output.contains("blob.bin"));
+    assert!(output.output.contains(&p("src/main.rs:2:")));
+    assert!(!output.output.contains(&p("target/generated.rs")));
+    assert!(!output.output.contains(&p("ignored/skip.rs")));
+    assert!(!output.output.contains(&p("blob.bin")));
 }
 
 #[tokio::test]
@@ -78,9 +83,9 @@ async fn grep_supports_context_lines() {
         .await
         .unwrap();
 
-    assert!(output.output.contains("src/main.rs:2:"));
-    assert!(output.output.contains("src/main.rs-1-fn main()"));
-    assert!(output.output.contains("src/main.rs-3-}"));
+    assert!(output.output.contains(&p("src/main.rs:2:")));
+    assert!(output.output.contains(&p("src/main.rs-1-fn main()")));
+    assert!(output.output.contains(&p("src/main.rs-3-}")));
 }
 
 #[tokio::test]
@@ -93,8 +98,8 @@ async fn grep_filters_by_glob() {
         .await
         .unwrap();
 
-    assert!(output.output.contains("src/main.rs:2:"));
-    assert!(!output.output.contains("lib.rs"));
+    assert!(output.output.contains(&p("src/main.rs:2:")));
+    assert!(!output.output.contains(&p("lib.rs")));
 }
 
 #[tokio::test]
