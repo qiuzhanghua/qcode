@@ -45,6 +45,9 @@ pub struct Config {
     /// Context window used for compaction.
     #[serde(default)]
     pub context: ContextConfig,
+    /// Turn budget for one user message.
+    #[serde(default)]
+    pub agent: AgentConfig,
     /// stdio MCP servers. Disabled entries are kept for quick toggling.
     #[serde(default)]
     pub mcp: McpConfig,
@@ -78,6 +81,7 @@ impl Default for Config {
             approval: ApprovalConfig::default(),
             pricing: BTreeMap::new(),
             context: ContextConfig::default(),
+            agent: AgentConfig::default(),
             mcp: McpConfig::default(),
             skills: SkillsConfig::default(),
             sandbox: SandboxConfig::default(),
@@ -271,6 +275,28 @@ pub struct ApprovalConfig {
     pub rules: Vec<Rule>,
 }
 
+/// Turn budget for one user message.
+///
+/// Eight is enough for "read a file and answer" but not for a skill that walks
+/// the machine; the TUI has no `--max-turns` flag, so this is where it is set.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentConfig {
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: default_max_turns(),
+        }
+    }
+}
+
+fn default_max_turns() -> u32 {
+    8
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SandboxConfig {
     #[serde(default)]
@@ -452,6 +478,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "approval",
             "pricing",
             "context",
+            "agent",
             "mcp",
             "skills",
             "sandbox",
@@ -462,6 +489,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("approval", &["rules"]),
     ("context", &["window_tokens"]),
+    ("agent", &["max_turns"]),
     ("mcp", &["servers"]),
     ("skills", &["enabled", "roots"]),
     ("sandbox", &["mode", "network", "extra_writable"]),
@@ -1183,6 +1211,15 @@ mod tests {
     }
 
     #[test]
+    fn the_turn_budget_defaults_to_eight_and_can_be_raised() {
+        let config = Config::default();
+        assert_eq!(config.agent.max_turns, 8);
+
+        let config: Config = toml::from_str("[agent]\nmax_turns = 32\n").unwrap();
+        assert_eq!(config.agent.max_turns, 32);
+    }
+
+    #[test]
     fn pricing_table_parses_and_resolves() {
         let config: Config = toml::from_str(
             r#"
@@ -1643,6 +1680,9 @@ mod tests {
 
              [context]
              window_tokens = 64000
+
+             [agent]
+             max_turns = 24
 
              [skills]
              enabled = true

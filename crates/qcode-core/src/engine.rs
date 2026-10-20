@@ -100,7 +100,10 @@ pub enum EngineError {
     Provider(#[from] ProviderError),
     #[error("stream ended without an end event")]
     IncompleteStream,
-    #[error("exceeded max turns ({0})")]
+    #[error(
+        "exceeded max turns ({0}): raise [agent] max_turns or pass --max-turns, \
+         or send another message to keep going"
+    )]
     MaxTurns(u32),
     #[error("estimated cost ${spent:.6} exceeded --max-cost ${limit:.6}")]
     MaxCost { spent: f64, limit: f64 },
@@ -277,10 +280,15 @@ where
 
         turns += 1;
         if turns > options.max_turns {
+            let message = format!(
+                "exceeded max turns ({}): raise [agent] max_turns or pass --max-turns, \
+                 or send another message to keep going",
+                options.max_turns
+            );
             writer.append(
                 EventKind::Error(ErrorEvent {
                     kind: "max_turns".to_string(),
-                    message: format!("exceeded max turns ({})", options.max_turns),
+                    message,
                     retryable: false,
                 }),
                 &mut on_event,

@@ -191,8 +191,10 @@ struct RunArgs {
     /// Do not ask the server for a usage chunk.
     #[arg(long)]
     no_stream_usage: bool,
-    #[arg(long, default_value_t = 8)]
-    max_turns: u32,
+    /// Maximum model calls for this turn. Defaults to [agent] max_turns
+    /// (8 unless the config says otherwise).
+    #[arg(long)]
+    max_turns: Option<u32>,
     /// Auto-approve anything the policy marks as ask.
     #[arg(long)]
     yes: bool,
@@ -365,6 +367,9 @@ async fn cmd_run(
     };
     let workspace = workspace.canonicalize()?;
     let loaded = load_config(config_path, &workspace)?;
+    // The flag wins, then the config, then the built-in default: a skill run
+    // needs far more turns than a single question does.
+    let max_turns = max_turns.unwrap_or(loaded.agent.max_turns);
     let resolved = config::resolve(
         &loaded,
         &config::Overrides {
@@ -636,7 +641,7 @@ async fn cmd_tui(
         model: &resolved.model,
         pricing,
         max_cost_usd: None,
-        max_turns: 8,
+        max_turns: loaded.agent.max_turns,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
         skills_prompt,
@@ -822,6 +827,7 @@ fn print_config(config: &config::Config) {
         config.network.audit
     );
     println!("context.window_tokens = {}", config.context.window_tokens);
+    println!("agent.max_turns = {}", config.agent.max_turns);
     println!(
         "search.enabled = {}, backend = {:?}, api_key_env = {:?}, max_results = {}, base_url = {:?}",
         config.search.enabled,
