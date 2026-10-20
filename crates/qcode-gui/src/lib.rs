@@ -253,8 +253,12 @@ impl Render for Shell {
     }
 }
 
-fn main() {
-    let app = App::new("deepseek", "deepseek-flash");
+/// Open the window and drive it until the user closes it.
+///
+/// `app` is the projection the caller already filled in (the `qc gui`
+/// subcommand seeds it from the assembled kernel), so the window owns no
+/// transcript state of its own.
+pub fn run(app: App) {
     // The kernel half is where the engine will run; the spike only proves the
     // UI side of the channel for now.
     let (ui, _kernel) = channels();

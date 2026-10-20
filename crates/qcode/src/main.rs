@@ -657,7 +657,16 @@ async fn cmd_gui(
         kernel.tools.len(),
         kernel.skills.len()
     );
-    println!("gui: the window is still the `qcode-gui` binary; wiring it to this kernel is next");
+    // Seed the projection with what the kernel resolved, then hand the window
+    // the same App the TUI would render.
+    let mut app = qcode_tui::App::new(kernel.resolved.name.clone(), kernel.resolved.model.clone());
+    app.push_notice(format!(
+        "kernel: sandbox={} tools={} skills={}",
+        kernel.sandbox,
+        kernel.tools.len(),
+        kernel.skills.len()
+    ));
+    qcode_gui::run(app);
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

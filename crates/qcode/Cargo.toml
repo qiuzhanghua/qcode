@@ -19,6 +19,7 @@ qcode-tui = { version = "0.1.0", path = "../qcode-tui" }
 qcode-acp = { version = "0.1.0", path = "../qcode-acp" }
 qcode-image = { version = "0.1.0", path = "../qcode-image" }
 qcode-kernel = { version = "0.1.0", path = "../qcode-kernel" }
+qcode-gui = { version = "0.1.0", path = "../qcode-gui" }
 async-trait.workspace = true
 base64.workspace = true
 ratatui.workspace = true
