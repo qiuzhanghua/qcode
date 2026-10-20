@@ -262,6 +262,9 @@ cargo build -p qcode-eval
   驱动的编辑也能回滚。`qc sessions checkpoints <id>` 看记录，
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
+- **GUI（实验）**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037）：与 `qc run` / `qc acp` / `qc tui`
+  使用同一个 `qcode_kernel::assemble`，可跑真实回合、审批浮层、图片粘贴、diff 视图与中断；
+  release 约 24 MB。
 - **图片输入**：`qc run --image shot.png "看看这个"`（可重复，PNG/JPEG/WebP/GIF，单张 ≤8 MB）
   把图片作为多模态消息发给 provider；provider 的 `Capabilities.images` 为 false 时直接报
   `this provider does not accept image input`，不会先发再让服务端 400。

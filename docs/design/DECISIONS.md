@@ -1507,3 +1507,25 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
 - 引擎真正跑在窗口后面：需要把 `qc gui` 子命令接上，用 `KernelPort` 驱动一次真实 turn；
 - 真窗口下的一万事件滚动帧率/内存未测（投影侧已达标）；
 - release 24 MB 的发布策略（qcode 本体 + GUI 分开打包还是合并）。
+## ADR-0036 / ADR-0037 收尾状态（2026-10-22）
+
+**ADR-0036 第二阶段完成**：`crates/qcode-kernel` 拥有配置、策略、egress、沙箱、工具、skills、
+provider 与 store，并由唯一的 `assemble(...) -> Assembled` 串起来。四个前端都只经它：
+
+| 入口 | 状态 |
+|---|---|
+| `qc run` | 只经 `assemble` |
+| `qc acp` | 只经 `assemble` |
+| `qc tui` | 只经 `assemble` |
+| `qc gui` | 只经 `assemble`，并把 `Assembled` 转成 `qcode_gui::Engine` |
+
+只读命令（`doctor` / `sessions` / `config` / `update`）仍直接调用 kernel 的 `load_config` 等零件，
+它们不构建内核。第三阶段（`qc kernel` 守护进程）按 ADR 的条件继续搁置。
+
+**ADR-0037 验收完成**：六项验收全过（投影复用、1 万事件投影 ≈10 ms、虚拟列表、中文 IME
+用户实测通过、真实 patch 的 diff 视图、审批浮层、图片粘贴），release 约 24 MB。GUI 走
+GPUI Kit 已定稿，`qc gui` 现在能跑真实回合：引擎线程执行 `run_turn`，事件与审批经
+`qcode-ui-bridge` 双向流动，Stop 按钮取消进行中的回合。
+
+**仍未做**（都不阻塞结论）：`Ctrl-V` 键位绑定（当前用按钮）、`apply_patch` 结果自动填进 diff、
+一万事件的真实窗口帧率/内存，以及 GUI 与 qcode 本体的打包策略。
