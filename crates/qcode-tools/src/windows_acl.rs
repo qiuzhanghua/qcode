@@ -44,8 +44,9 @@ use windows_sys::Win32::Foundation::{
     LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, SE_FILE_OBJECT,
-    SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, REVOKE_ACCESS,
+    SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
+    TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, AllocateAndInitializeSid, CONTAINER_INHERIT_ACE,
@@ -529,6 +530,134 @@ fn grant_root(root: &Path, sid: PSID) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+/// Grants the workspace capability ACE on `path` and everything below it.
+///
+/// This is what `qc sandbox grant` calls: it makes a directory writable for the
+/// sandbox without running a command in it first.
+pub fn grant_path(path: &Path) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(path)
+        .map_err(|err| format!("canonicalize {}: {err}", path.display()))?;
+    let sid = derive_sid(&root, "ws")?;
+    grant_root(&root, sid.as_sid())?;
+    Ok(root)
+}
+
+/// Removes the workspace capability ACE from `path` and everything below it.
+///
+/// Returns the canonical root and how many objects lost an ACE. Directories are
+/// walked explicitly because removing the inheritable ACE from the root does not
+/// reach the copies that inheritance already wrote onto existing children.
+pub fn revoke_path(path: &Path) -> Result<(PathBuf, usize), String> {
+    let root = std::fs::canonicalize(path)
+        .map_err(|err| format!("canonicalize {}: {err}", path.display()))?;
+    let sid = derive_sid(&root, "ws")?;
+    let mut removed = 0usize;
+    let mut pending = vec![root.clone()];
+    while let Some(dir) = pending.pop() {
+        removed += revoke_object(&dir, sid.as_sid())?;
+        let entries =
+            std::fs::read_dir(&dir).map_err(|err| format!("read_dir {}: {err}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| format!("read_dir {}: {err}", dir.display()))?;
+            let kind = entry
+                .file_type()
+                .map_err(|err| format!("file_type {}: {err}", entry.path().display()))?;
+            if kind.is_dir() {
+                if !kind.is_symlink() {
+                    pending.push(entry.path());
+                }
+            } else {
+                removed += revoke_object(&entry.path(), sid.as_sid())?;
+            }
+        }
+    }
+    Ok((root, removed))
+}
+
+fn revoke_object(path: &Path, sid: PSID) -> Result<usize, String> {
+    let name = wide(path.as_os_str());
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let rc = GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut sd,
+        );
+        if rc != 0 {
+            return Err(format!(
+                "GetNamedSecurityInfoW({}): win32 {rc}",
+                path.display()
+            ));
+        }
+        let owned = if dacl.is_null() {
+            0
+        } else {
+            count_aces_for(&*dacl, sid)
+        };
+        if owned == 0 {
+            LocalFree(sd);
+            return Ok(0);
+        }
+        // A blank `grfAccessPermissions` with REVOKE_ACCESS drops every ACE that
+        // names this trustee, whatever mask or inheritance flags it carries.
+        let entries = [explicit_access(sid, 0, REVOKE_ACCESS, 0)];
+        let mut new_acl: *mut ACL = std::ptr::null_mut();
+        let rc = SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), dacl, &mut new_acl);
+        if rc != 0 {
+            LocalFree(sd);
+            return Err(format!(
+                "SetEntriesInAclW(revoke {}, {}): win32 {rc}",
+                path.display(),
+                sid_string(sid)
+            ));
+        }
+        let rc = SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            new_acl,
+            std::ptr::null_mut(),
+        );
+        LocalFree(new_acl as *mut std::ffi::c_void);
+        LocalFree(sd);
+        if rc != 0 {
+            return Err(format!(
+                "SetNamedSecurityInfoW({}): win32 {rc}",
+                path.display()
+            ));
+        }
+        Ok(owned)
+    }
+}
+
+/// Counts the ACEs that name `sid`, ignoring type and inheritance.
+fn count_aces_for(acl: &ACL, sid: PSID) -> usize {
+    let mut count = 0;
+    unsafe {
+        let mut cursor = (acl as *const ACL as *const u8).add(std::mem::size_of::<ACL>());
+        for _ in 0..acl.AceCount {
+            let header = &*(cursor as *const ACE_HEADER);
+            let ace = &*(cursor as *const ACCESS_ALLOWED_ACE);
+            if EqualSid(&ace.SidStart as *const u32 as PSID, sid) != 0 {
+                count += 1;
+            }
+            if header.AceSize == 0 {
+                break;
+            }
+            cursor = cursor.add(header.AceSize as usize);
+        }
+    }
+    count
 }
 
 /// True when `root` already carries an inheritable allow ACE for `sid`.
@@ -1028,7 +1157,11 @@ mod tests {
         assert_eq!(quote_arg(OsStr::new("plain")), "plain");
         assert_eq!(quote_arg(OsStr::new("two words")), "\"two words\"");
         assert_eq!(quote_arg(OsStr::new("say \"hi\"")), r#""say \"hi\"""#);
-        assert_eq!(quote_arg(OsStr::new("keep\\")), r#""keep\\""#);
+        // Without a space or quote there is nothing to protect, so the trailing
+        // backslash stays as it is; it only has to be doubled when the argument
+        // is quoted and the backslash lands right before the closing quote.
+        assert_eq!(quote_arg(OsStr::new("keep\\")), "keep\\");
+        assert_eq!(quote_arg(OsStr::new("keep \\")), r#""keep \\""#);
         assert_eq!(quote_arg(OsStr::new("")), "\"\"");
     }
 

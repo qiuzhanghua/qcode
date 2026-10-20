@@ -881,7 +881,8 @@ shell/MCP 的任意 socket，需要明确边界。
 4. 授权：`GetNamedSecurityInfoW` + `SetEntriesInAclW` + `SetNamedSecurityInfoW`，给能力 SID
    一条 `FILE_ALL_ACCESS` + `OI|CI` 继承 ACE。并发用命名互斥量
    `Local\qcode-sandbox-grant-<sid>` 串行化 read-merge-write，否则两个 qc 同时启动会互相覆盖
-   DACL。ACE 是常驻的，撤销留给 `qc sandbox revoke`（M2）。
+   DACL。ACE 是常驻的，由 `qc sandbox grant <路径>` / `qc sandbox revoke <路径>` 显式铺设与
+   撤销（撤销要逐对象删 ACE：继承写下的副本不会随根上的 ACE 一起消失）。
 5. 令牌默认 DACL：把 temp SID **追加**进去而不是替换。子进程自己创建的匿名管道按默认 DACL
    设安全描述符，缺了这条第二遍访问检查不过，piped stdio 全废（M0 实测）。
 6. 进程创建：`CreateProcessAsUserW` + `CREATE_SUSPENDED` → 加入 kill-on-close job object →
@@ -908,7 +909,8 @@ shell/MCP 的任意 socket，需要明确边界。
 - 只限制写：读与网络不受限（网络仍靠 egress 代理的 env，shell 可以绕过）。
 - 硬链接是文件对象别名，路径限制无效；受限孙进程打不开命名管道，Node `stdio: 'pipe'`
   会 EPERM（继承/匿名管道正常）。
-- 永久 ACL 变更：ACE 常驻，改名后的旧 SID 成为惰性残留。
+- 永久 ACL 变更：ACE 常驻，改名后的旧 SID 成为惰性残留；`qc sandbox revoke` 会遍历整棵树
+  逐对象删掉该 SID 的 ACE。
 - `[sandbox] network` 对 windows-acl 不生效，配置注释里已写明。
 
 **验证**

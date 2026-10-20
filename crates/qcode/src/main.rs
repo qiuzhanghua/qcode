@@ -77,6 +77,31 @@ enum Command {
     #[cfg(windows)]
     #[command(hide = true)]
     SandboxRun(SandboxRunArgs),
+    /// Inspect or repair the Windows ACL sandbox grants.
+    #[cfg(windows)]
+    Sandbox(SandboxArgs),
+}
+
+#[cfg(windows)]
+#[derive(Debug, Args)]
+struct SandboxArgs {
+    #[command(subcommand)]
+    command: SandboxCommand,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Subcommand)]
+enum SandboxCommand {
+    /// Give the sandbox write access to a directory tree.
+    Grant {
+        /// Directory to grant. Defaults to the current directory.
+        path: Option<PathBuf>,
+    },
+    /// Remove a grant from a directory tree.
+    Revoke {
+        /// Directory to revoke. Defaults to the current directory.
+        path: Option<PathBuf>,
+    },
 }
 
 #[cfg(windows)]
@@ -248,6 +273,8 @@ async fn main() -> ExitCode {
         Some(Command::SandboxRun(args)) => Ok(ExitCode::from(
             qcode_tools::windows_acl::run_helper(&args.args) as u8,
         )),
+        #[cfg(windows)]
+        Some(Command::Sandbox(args)) => cmd_sandbox(args),
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
@@ -258,6 +285,28 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(windows)]
+fn cmd_sandbox(args: SandboxArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let path = match &args.command {
+        SandboxCommand::Grant { path } | SandboxCommand::Revoke { path } => {
+            path.clone().unwrap_or_else(|| PathBuf::from("."))
+        }
+    };
+    match args.command {
+        SandboxCommand::Grant { .. } => {
+            let root =
+                qcode_tools::windows_acl::grant_path(&path).map_err(std::io::Error::other)?;
+            println!("granted windows-acl write access to {}", root.display());
+        }
+        SandboxCommand::Revoke { .. } => {
+            let (root, removed) =
+                qcode_tools::windows_acl::revoke_path(&path).map_err(std::io::Error::other)?;
+            println!("revoked {removed} ACE(s) under {}", root.display());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn cmd_run(

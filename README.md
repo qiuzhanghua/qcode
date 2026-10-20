@@ -193,7 +193,9 @@ cargo build -p qcode-eval
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
   （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
-  与命名管道不在覆盖范围，因此报 `partial`）。启用时先 preflight，失败则 `qc` 拒绝启动
+  与命名管道不在覆盖范围，因此报 `partial`）。`windows-acl` 的授权是常驻 ACE：
+  `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
+  启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
   unprivileged userns）；默认 `none`，审批仍是主边界。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
