@@ -2,6 +2,8 @@ mod agents;
 mod config;
 mod doctor;
 mod logging;
+#[cfg(windows)]
+mod sandbox_probe;
 mod subagent;
 mod tui;
 
@@ -67,6 +69,10 @@ enum Command {
     Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
+    /// Probe the Windows ACL sandbox (experiment, hidden).
+    #[cfg(windows)]
+    #[command(hide = true)]
+    SandboxProbe(sandbox_probe::ProbeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -224,6 +230,8 @@ async fn main() -> ExitCode {
         Some(Command::Config(args)) => cmd_config(args, config),
         Some(Command::Mcp(args)) => cmd_mcp(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
+        #[cfg(windows)]
+        Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
