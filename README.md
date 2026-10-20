@@ -452,6 +452,7 @@ action = "allow"
 - [M2 任务清单](docs/design/M2-TASKS.md) —— TUI、压缩、AGENTS.md 与 MCP
 - [M3 任务清单](docs/design/M3-TASKS.md) —— apply_patch、web_fetch、打包与 sandbox 取舍
 - [Skills 设计](docs/design/SKILLS.md) —— 发现、渐进披露与安全边界
+- [ACP 接入](docs/design/ACP.md) —— Zed / Neovim 配置、验收清单与兼容性测试
 - [资料来源](docs/design/SOURCES.md) —— clean-room 白名单
 
 ## 布局
