@@ -11,6 +11,7 @@
 mod config;
 mod tool;
 
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -26,6 +27,14 @@ pub use tool::McpTool;
 /// How long a server gets to answer `initialize`. `tools/list` and `tools/call`
 /// use the per-server `timeout_secs` instead.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 20;
+
+/// Builds the command that starts one server.
+///
+/// The CLI supplies this so a server runs under the same sandbox as
+/// `run_shell`; `None` starts it directly. Keeping it a callback (rather than a
+/// dependency on the tools crate) keeps this crate to one job: speaking MCP.
+pub type Confine =
+    dyn Fn(&OsStr, &[OsString], &Path) -> Result<std::process::Command, String> + Send + Sync;
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -61,6 +70,17 @@ pub async fn connect_all(
     log_dir: &Path,
     env: &[(String, String)],
 ) -> Vec<Arc<dyn Tool>> {
+    connect_all_with(servers, workspace, log_dir, env, None).await
+}
+
+/// `connect_all` with a sandbox: every server is started through `confine`.
+pub async fn connect_all_with(
+    servers: &[McpServerConfig],
+    workspace: &Path,
+    log_dir: &Path,
+    env: &[(String, String)],
+    confine: Option<&Confine>,
+) -> Vec<Arc<dyn Tool>> {
     if let Err(error) = std::fs::create_dir_all(log_dir) {
         tracing::warn!(
             path = %log_dir.display(),
@@ -71,7 +91,7 @@ pub async fn connect_all(
 
     let mut tools = Vec::new();
     for server in servers.iter().filter(|server| server.enabled) {
-        match connect_server(server, workspace, log_dir, env).await {
+        match connect_server(server, workspace, log_dir, env, confine).await {
             Ok(mut found) => {
                 tracing::info!(
                     server = %server.name,
@@ -93,6 +113,7 @@ async fn connect_server(
     workspace: &Path,
     log_dir: &Path,
     env: &[(String, String)],
+    confine: Option<&Confine>,
 ) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     tracing::info!(
         server = %server.name,
@@ -101,10 +122,21 @@ async fn connect_server(
         "starting MCP server"
     );
 
-    let mut command = Command::new(&server.command);
+    let program = OsStr::new(&server.command);
+    let args: Vec<OsString> = server.args.iter().map(OsString::from).collect();
+    let command = match confine {
+        Some(confine) => confine(program, &args, workspace).map_err(|detail| McpError::Spawn {
+            server: server.name.clone(),
+            source: std::io::Error::other(format!("sandbox refused to start it: {detail}")),
+        })?,
+        None => {
+            let mut command = std::process::Command::new(program);
+            command.args(&args).current_dir(workspace);
+            command
+        }
+    };
+    let mut command = Command::from(command);
     command
-        .args(&server.args)
-        .current_dir(workspace)
         .envs(env.iter().map(|(key, value)| (key, value)))
         .kill_on_drop(true);
 

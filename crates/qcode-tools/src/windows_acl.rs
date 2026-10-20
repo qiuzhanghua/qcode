@@ -333,6 +333,17 @@ fn execute_helper(argv: &[String]) -> Result<i32, String> {
     }
 
     let token = build_token(&workspace_sid, &temp_sid)?;
+    // The child inherits this process's environment block (`lpEnvironment` has
+    // to stay NULL), so the only way to hand it a writable temp is to point
+    // TMP/TEMP at the granted private directory here. `shell.rs` clears the
+    // environment before spawning the helper, so setting this on the command
+    // line would not survive; the helper is a short-lived `sandbox-run`
+    // invocation whose other threads do not read the environment.
+    unsafe {
+        std::env::set_var("TMP", &temp);
+        std::env::set_var("TEMP", &temp);
+        std::env::set_var("TMPDIR", &temp);
+    }
     let code = spawn_confined(
         &token.handle,
         Path::new(&program),

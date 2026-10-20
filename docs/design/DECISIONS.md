@@ -923,3 +923,12 @@ cargo build -p qcode
 
 在嵌套/受限 shell 里跑会得到 `SetNamedSecurityInfoW(..): win32 5` 并 exit 127 —— 失败关闭，
 不会退回不受限执行（本仓库的自测就是在这样的 shell 里做的）。
+
+**补充：MCP 与 TMP 交接（2026-10-20）**
+
+- MCP stdio server 也走同一道边界：`qcode_mcp::connect_all_with` 接受一个
+  `Confine` 回调（`main.rs` 用 `Sandbox::command` 构造），server 因此和 `run_shell`
+  一样被 helper 拉起；`connect_all` 保持原签名（无 confine）给测试用。
+- 子进程拿不到独立环境块（`lpEnvironment` 必须 NULL，见上），所以 helper 在 spawn 前把
+  `TMP`/`TEMP`/`TMPDIR` 指到已授权的私有 temp。这也意味着需要自己缓存目录的 MCP server
+  （`npx` 的 npm cache 之类）要进 `extra_writable`，否则只能写 workspace 与私有 temp。

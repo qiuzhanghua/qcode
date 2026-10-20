@@ -844,6 +844,7 @@ async fn build_tools(
     sandbox: Arc<dyn Sandbox>,
     network_env: Option<Vec<(String, String)>>,
 ) -> ToolRegistry {
+    let confine_sandbox = sandbox.clone();
     let mut tools = builtin_registry_with(sandbox);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
@@ -857,11 +858,20 @@ async fn build_tools(
             );
         }
     }
-    let mcp_tools = qcode_mcp::connect_all(
+    // MCP servers get the same write boundary as `run_shell`. They are started
+    // through the sandbox's command builder instead of `Command::new`, so a
+    // server cannot write outside the workspace either.
+    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
+        confine_sandbox
+            .command(program, args, cwd)
+            .map_err(|error| error.to_string())
+    });
+    let mcp_tools = qcode_mcp::connect_all_with(
         &mcp.servers,
         workspace,
         &data_dir.join("logs"),
         network_env.as_deref().unwrap_or(&[]),
+        Some(confine.as_ref()),
     )
     .await;
     if !mcp_tools.is_empty() {

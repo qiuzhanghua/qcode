@@ -189,11 +189,14 @@ cargo build -p qcode-eval
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
+  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 与 MCP stdio server 都
+  由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
   （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
-  与命名管道不在覆盖范围，因此报 `partial`）。`windows-acl` 的授权是常驻 ACE：
+  与命名管道不在覆盖范围，因此报 `partial`）。`windows-acl` 下子进程的 `TMP`/`TEMP`
+  指向本次运行的私有 temp；需要自己缓存目录的 MCP server（例如 `npx` 的 npm cache）
+  要把它加进 `extra_writable`。`windows-acl` 的授权是常驻 ACE：
   `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
   启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开

@@ -177,3 +177,49 @@ async fn disabled_and_missing_servers_degrade_to_no_tools() {
     assert!(tools.is_empty(), "got {:?}", names(&tools));
     assert!(Path::new(STUB).exists());
 }
+
+#[tokio::test]
+async fn a_confine_decides_how_the_server_is_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let recorder = seen.clone();
+    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
+        recorder.lock().unwrap().push(format!(
+            "{} {:?} {}",
+            program.to_string_lossy(),
+            args,
+            cwd.display()
+        ));
+        let mut command = std::process::Command::new(program);
+        command.args(args).current_dir(cwd);
+        Ok(command)
+    });
+    let tools = qcode_mcp::connect_all_with(
+        &[config("stub")],
+        dir.path(),
+        &dir.path().join("logs"),
+        &[],
+        Some(confine.as_ref()),
+    )
+    .await;
+
+    assert_eq!(tools.len(), 7, "got {:?}", names(&tools));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(seen[0].starts_with(STUB), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_confine_that_refuses_the_server_skips_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let refuse: Box<qcode_mcp::Confine> = Box::new(|_, _, _| Err("no sandbox here".to_string()));
+    let tools = qcode_mcp::connect_all_with(
+        &[config("stub")],
+        dir.path(),
+        &dir.path().join("logs"),
+        &[],
+        Some(refuse.as_ref()),
+    )
+    .await;
+    assert!(tools.is_empty());
+}
