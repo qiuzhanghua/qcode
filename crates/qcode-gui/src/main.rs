@@ -9,10 +9,10 @@
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
-use qcode_ui_bridge::{UiEvent, channels};
+use qcode_ui_bridge::{UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::rc::Rc;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// How many blocks the window draws. A virtual list would make this unbounded.
 /// Row height for the virtual list. Uniform rows keep the size table cheap.
@@ -43,6 +43,10 @@ struct Shell {
     sizes: Rc<Vec<Size<Pixels>>>,
     /// The composer: a real text input, so IME and CJK go through the platform.
     input: Entity<InputState>,
+    /// Where prompts go (the kernel half of the bridge).
+    commands: UnboundedSender<UiCommand>,
+    /// The composer text on the previous frame, to notice a submit.
+    last_text: String,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -52,6 +56,7 @@ impl Shell {
     fn new(
         app: App,
         events: UnboundedReceiver<UiEvent>,
+        commands: UnboundedSender<UiCommand>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -61,6 +66,8 @@ impl Shell {
             app,
             sizes,
             input,
+            commands,
+            last_text: Default::default(),
             events,
         }
     }
@@ -70,6 +77,28 @@ impl Shell {
         if self.sizes.len() != self.app.blocks.len() {
             self.sizes = row_sizes(self.app.blocks.len());
         }
+    }
+
+    /// Notice "text then Enter": the component has no submit hook we rely on,
+    /// so a trailing newline in the composer is the submit gesture.
+    fn submit_on_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).value().to_string();
+        if text.ends_with('\n') && !text.trim().is_empty() {
+            let prompt = text.trim_end().to_string();
+            let _ = self.commands.send(UiCommand::Prompt {
+                text: prompt.clone(),
+                attachments: Vec::new(),
+            });
+            self.app.push_notice(format!(
+                "sent: {}",
+                prompt.lines().next().unwrap_or_default()
+            ));
+            self.input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                cx.notify();
+            });
+        }
+        self.last_text = text;
     }
 
     fn poll(&mut self) {
@@ -87,8 +116,9 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll();
+        self.submit_on_enter(window, cx);
         self.refresh_sizes();
         let entity = cx.entity();
         let sizes = self.sizes.clone();
@@ -118,10 +148,11 @@ fn main() {
     // UI side of the channel for now.
     let (ui, _kernel) = channels();
     let events = ui.events;
+    let commands = ui.commands;
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Shell::new(app, events, window, cx))
+            cx.new(|cx| Shell::new(app, events, commands, window, cx))
         })
         .expect("failed to open the window");
     });
