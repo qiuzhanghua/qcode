@@ -35,8 +35,9 @@ fn synthetic(count: usize) -> Vec<Event> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut app = App::new("deepseek", "deepseek-flash");
+    let bench_only = std::env::args().any(|arg| arg == "--bench-only");
     if let Some(flag) = args.next()
-        && flag == "--bench"
+        && (flag == "--bench" || flag == "--bench-only")
         && let Some(count) = args.next().and_then(|value| value.parse::<usize>().ok())
     {
         let events = synthetic(count);
@@ -49,6 +50,9 @@ fn main() {
             started.elapsed(),
             app.blocks.len()
         );
+    }
+    if bench_only {
+        return;
     }
     qcode_gui::run(app, None);
 }
