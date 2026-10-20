@@ -39,12 +39,18 @@ qcode 不跨轮记住选择：客户端应自己缓存 `allow_always` 的选择�
 {
   "agent_servers": {
     "qcode": {
+      "type": "custom",
       "command": "C:\\Users\\you\\space\\research\\qcode\\target\\debug\\qc.exe",
-      "args": ["acp"]
+      "args": ["acp"],
+      "env": { "RUST_LOG": "info" }
     }
   }
 }
 ```
+
+`type: "custom"` 是 Zed 区分「注册表安装」与「手写条目」的标记，缺了它新版本可能不显示该 agent。
+`env` 可选：需要让 agent 进程看到某个变量（如 `RUST_LOG`）时用它；provider 的 key 建议用
+用户级环境变量，不要写进这里。
 
 要点：
 
@@ -55,6 +61,11 @@ qcode 不跨轮记住选择：客户端应自己缓存 `allow_always` 的选择�
   （这是全局参数，对 `acp` 子命令同样生效）。
 
 打开方式：Zed 里 `Ctrl-?` 打开 agent panel → 选择 `qcode` → 输入一句话 → 回车。
+Zed 会自动检测 `settings.json` 的改动（不必重启），但**环境变量**变了要新开一个线程
+（或重启 Zed）才会重新 spawn agent 进程。
+
+排查协议收发用命令面板的 `dev: open acp logs`：它按时间显示 Zed ↔ agent 的每条 JSON-RPC，
+是判断「agent 没起来 / 起来但回了错误 / 权限请求被自动拒」最快的地方。
 
 ### 在 Zed 里验收的清单
 
