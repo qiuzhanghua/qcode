@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block as UiBlock, Clear, Paragraph, Wrap},
 };
 
-use crate::app::{App, ApprovalPrompt, Block, ContextDisplay, ToolEntry};
+use qcode_ui_state::{App, ApprovalPrompt, Block, ContextDisplay, ToolEntry};
 
 /// Expanded tool output is capped so one huge result cannot dominate a frame.
 const TOOL_OUTPUT_LINES: usize = 400;

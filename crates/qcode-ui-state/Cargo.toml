@@ -1,0 +1,15 @@
+[package]
+name = "qcode-ui-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+qcode-core = { version = "0.1.0", path = "../qcode-core" }
+# The projection still maps terminal key events (a GUI translates its own) and
+# stores composer text in a tui-textarea. Neither renders anything.
+ratatui = { workspace = true }
+tui-textarea = { version = "=0.7.0", default-features = false, features = ["crossterm"] }
+time.workspace = true
+serde_json.workspace = true

@@ -10,6 +10,7 @@ members = [
   "crates/qcode-tui",
   "crates/qcode-eval",
   "crates/qcode-acp",
+  "crates/qcode-ui-state",
 ]
 
 [workspace.package]
