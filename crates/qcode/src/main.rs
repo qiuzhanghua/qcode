@@ -370,6 +370,7 @@ async fn cmd_run(
     // The flag wins, then the config, then the built-in default: a skill run
     // needs far more turns than a single question does.
     let max_turns = max_turns.unwrap_or(loaded.agent.max_turns);
+    let max_cost = max_cost.or(loaded.agent.max_cost_usd);
     let resolved = config::resolve(
         &loaded,
         &config::Overrides {
@@ -640,7 +641,7 @@ async fn cmd_tui(
         provider_name: &resolved.name,
         model: &resolved.model,
         pricing,
-        max_cost_usd: None,
+        max_cost_usd: loaded.agent.max_cost_usd,
         max_turns: loaded.agent.max_turns,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
@@ -828,6 +829,7 @@ fn print_config(config: &config::Config) {
     );
     println!("context.window_tokens = {}", config.context.window_tokens);
     println!("agent.max_turns = {}", config.agent.max_turns);
+    println!("agent.max_cost_usd = {:?}", config.agent.max_cost_usd);
     println!(
         "search.enabled = {}, backend = {:?}, api_key_env = {:?}, max_results = {}, base_url = {:?}",
         config.search.enabled,

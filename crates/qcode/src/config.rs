@@ -283,12 +283,17 @@ pub struct ApprovalConfig {
 pub struct AgentConfig {
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// Stop the turn once the estimated cost passes this many USD. Needs a
+    /// `[pricing."<model>"]` entry; the `--max-cost` flag wins over it.
+    #[serde(default)]
+    pub max_cost_usd: Option<f64>,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             max_turns: default_max_turns(),
+            max_cost_usd: None,
         }
     }
 }
@@ -489,7 +494,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("approval", &["rules"]),
     ("context", &["window_tokens"]),
-    ("agent", &["max_turns"]),
+    ("agent", &["max_turns", "max_cost_usd"]),
     ("mcp", &["servers"]),
     ("skills", &["enabled", "roots"]),
     ("sandbox", &["mode", "network", "extra_writable"]),
@@ -1214,9 +1219,12 @@ mod tests {
     fn the_turn_budget_defaults_to_eight_and_can_be_raised() {
         let config = Config::default();
         assert_eq!(config.agent.max_turns, 8);
+        assert_eq!(config.agent.max_cost_usd, None);
 
-        let config: Config = toml::from_str("[agent]\nmax_turns = 32\n").unwrap();
+        let config: Config =
+            toml::from_str("[agent]\nmax_turns = 32\nmax_cost_usd = 0.25\n").unwrap();
         assert_eq!(config.agent.max_turns, 32);
+        assert_eq!(config.agent.max_cost_usd, Some(0.25));
     }
 
     #[test]
@@ -1683,6 +1691,7 @@ mod tests {
 
              [agent]
              max_turns = 24
+             max_cost_usd = 0.50
 
              [skills]
              enabled = true

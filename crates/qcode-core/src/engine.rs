@@ -105,10 +105,64 @@ pub enum EngineError {
          or send another message to keep going"
     )]
     MaxTurns(u32),
+    #[error(
+        "no progress: `{tool}` was called with identical arguments {rounds} rounds in a row; \
+         stopping instead of burning the turn budget"
+    )]
+    NoProgress { tool: String, rounds: u32 },
     #[error("estimated cost ${spent:.6} exceeded --max-cost ${limit:.6}")]
     MaxCost { spent: f64, limit: f64 },
     #[error("--max-cost requires pricing for the model")]
     MissingPricing,
+}
+
+/// How many consecutive rounds may repeat the exact same tool call before the
+/// turn is stopped. Three is enough to catch a loop while leaving room for a
+/// deliberate retry (`cargo test` twice).
+const MAX_IDENTICAL_ROUNDS: u32 = 3;
+
+/// Guards against a model that keeps asking for the same call.
+///
+/// Compares *consecutive rounds* by name+arguments: a retry with different
+/// arguments is progress, the same call three times is not.
+struct ProgressGuard {
+    signature: Option<String>,
+    repeats: u32,
+}
+
+impl ProgressGuard {
+    fn new() -> Self {
+        Self {
+            signature: None,
+            repeats: 0,
+        }
+    }
+
+    /// Returns the number of identical rounds if the limit was reached.
+    fn observe(&mut self, signature: &str) -> Option<u32> {
+        if self.signature.as_deref() == Some(signature) {
+            self.repeats += 1;
+            if self.repeats + 1 >= MAX_IDENTICAL_ROUNDS {
+                return Some(self.repeats + 1);
+            }
+        } else {
+            self.signature = Some(signature.to_string());
+            self.repeats = 0;
+        }
+        None
+    }
+}
+
+/// One round's calls as a single comparable string.
+fn call_signature(calls: &[ToolCallBlock]) -> String {
+    let mut signature = String::new();
+    for call in calls {
+        signature.push_str(&call.name);
+        signature.push(' ');
+        signature.push_str(&call.arguments.to_string());
+        signature.push('\n');
+    }
+    signature
 }
 
 pub struct TurnContext<'a> {
@@ -261,6 +315,7 @@ where
     }
 
     let mut turns = 0;
+    let mut progress = ProgressGuard::new();
     let mut total_usage = Usage::default();
     let mut total_cost = 0.0;
     loop {
@@ -527,6 +582,37 @@ where
                 turns,
                 &mut on_event,
             );
+        }
+
+        // The model repeating itself is not progress; stop before the turn
+        // budget is spent on identical calls.
+        if let Some(rounds) = progress.observe(&call_signature(&calls)) {
+            let tool = calls
+                .first()
+                .map(|call| call.name.clone())
+                .unwrap_or_default();
+            let message = format!(
+                "no progress: `{tool}` was called with identical arguments {rounds} rounds \
+                 in a row; stopping. Change the approach, raise [agent] max_turns, or \
+                 send a different instruction"
+            );
+            writer.append(
+                EventKind::Error(ErrorEvent {
+                    kind: "no_progress".to_string(),
+                    message,
+                    retryable: false,
+                }),
+                &mut on_event,
+            )?;
+            writer.append(
+                EventKind::TurnEnded(TurnEnded {
+                    status: TurnStatus::Failed,
+                    usage: total_usage.clone(),
+                    cost_usd: total_cost,
+                }),
+                &mut on_event,
+            )?;
+            return Err(EngineError::NoProgress { tool, rounds });
         }
 
         if execute_calls(
@@ -1190,6 +1276,46 @@ fn summarize_call(name: &str, args: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_rounds_are_caught_but_different_ones_reset() {
+        let mut guard = ProgressGuard::new();
+        assert_eq!(guard.observe("a"), None);
+        assert_eq!(guard.observe("a"), None);
+        assert_eq!(
+            guard.observe("a"),
+            Some(3),
+            "the third identical round stops"
+        );
+
+        let mut guard = ProgressGuard::new();
+        assert_eq!(guard.observe("a"), None);
+        assert_eq!(guard.observe("b"), None, "a different call is progress");
+        assert_eq!(guard.observe("b"), None);
+        assert_eq!(guard.observe("b"), Some(3));
+    }
+
+    #[test]
+    fn a_signature_tracks_the_tool_and_the_arguments() {
+        let call = |name: &str, args: &str| ToolCallBlock {
+            call_id: "c1".to_string(),
+            name: name.to_string(),
+            arguments: serde_json::from_str(args).expect("json"),
+        };
+        let shell_ls = call_signature(&[call("run_shell", r#"{"command":"ls"}"#)]);
+        assert_eq!(
+            shell_ls,
+            call_signature(&[call("run_shell", r#"{"command":"ls"}"#)])
+        );
+        assert_ne!(
+            shell_ls,
+            call_signature(&[call("run_shell", r#"{"command":"ls -l"}"#)])
+        );
+        assert_ne!(
+            shell_ls,
+            call_signature(&[call("list_dir", r#"{"command":"ls"}"#)])
+        );
+    }
 
     #[test]
     fn agents_md_and_skills_are_appended_to_the_system_prompt() {

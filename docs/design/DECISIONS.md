@@ -1097,3 +1097,40 @@ cargo build -p qcode
 与 `dist/SHA256SUMS`（`sha256sum -c` 可过）；`./packaging/render.sh` 在六个归档齐全时
 输出 5 份清单、缺归档时报错；release workflow 的 publish job 对 tag/版本不一致会失败。
 
+## ADR-0031：跑飞兜底——无进展检测与预算（2026-10-20）
+
+**背景**：一次技能实跑在 `exceeded max turns (8)` 处停住，而这 8 轮里有一半是把同一条
+命令换个写法再试；把 `max_turns` 调到 40 能让它跑完，但也让「模型原地打转」花掉 40 轮的钱。
+
+**决定**
+
+1. **无进展检测**（引擎层）：连续 3 轮都发出**工具名与参数完全相同**的调用即终止 turn，
+   写 `error(no_progress)` 事件、`turn_ended(failed)`，返回 `EngineError::NoProgress`。
+   只比连续轮次：第 4 轮换了参数就是进展，计数清零。
+2. 判据用「调用签名」而不是「结果文本」：结果相等需要按工具归一化（`git status` 两次输出
+   相同往往正当），而参数相同加结果相同是同一个事实的两个投影。签名即 `name + JSON(args)`。
+3. 阈值是常量 `MAX_IDENTICAL_ROUNDS = 3`，**不做成配置**：一个能关掉保护的开关会让人在
+   卡住时先关它，而不是改方法。真需要重复三次以上同一条命令时，改参数（带计数器）即可。
+4. **预算**：`[agent] max_turns`（默认 8）与 `[agent] max_cost_usd`（默认无）进配置，
+   `--max-turns` / `--max-cost` 覆盖；TUI 没有这些 flag，从此都读配置。
+   `max_cost_usd` 仍需 `[pricing."<model>"]`，否则启动即报错（原有语义不变）。
+5. 停止顺序：模型不再调工具（正常）→ 取消 → 超预算 → 无进展 → 超轮数。先报更具体的原因，
+   用户才知道该改什么。
+6. **不做**（本轮）：命中上限自动续一个预算窗口。它会把「原地打转」伪装成「任务很长」，
+   等无进展检测跑一段时间、有了真实数据再评估；时间预算目前只有 `--timeout`（TUI 无）。
+
+**后果**
+
+- 合法的「重试同一条命令看是否偶发失败」最多两次；第三次会被拦。这是有意的取舍：
+  连续三次同样输入说明模型没有新信息。
+- `no_progress` 与 `max_turns` 都是 turn 级失败，不写 agent 级状态；会话可继续
+  （再发一条消息即新 turn，预算重新计算）。
+- TUI 的时间上限仍未实现：`TuiOptions` 里没有 deadline，加它需要在事件循环里竞速一个
+  计时器，留到有真实需求时再做。
+
+**验证**：`identical_rounds_are_caught_but_different_ones_reset`、
+`a_signature_tracks_the_tool_and_the_arguments`、
+`the_turn_budget_defaults_to_eight_and_can_be_raised`（含 `max_cost_usd` 解析）；
+手工：让模型连续调用同一条命令，第 3 轮出现 `error(no_progress)` 并停止。
+
+

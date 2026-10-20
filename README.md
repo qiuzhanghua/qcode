@@ -194,7 +194,9 @@ cargo build -p qcode-eval
   `glob` / `grep` / `run_shell` / `web_fetch` / `web_search` / `todo_write` / `subagent`，多轮调用直到任务完成。
   `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
-  每次决策写事件，含命中的 rule id。
+  每次决策写事件，含命中的 rule id。TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
+- **跑飞兜底**：同一个工具带**完全相同参数**连续 3 轮（例如模型反复重跑同一条命令）即终止
+  turn，写 `error(no_progress)`；`[agent] max_turns` 与 `[agent] max_cost_usd` 是另外两道预算。
 - **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
@@ -299,6 +301,12 @@ default_model = "deepseek-flash"
 # 上下文窗口（token），用于 78% 压缩阈值；按模型实际窗口调整。
 [context]
 window_tokens = 128000
+
+# 一次用户消息最多几次模型调用。正常结束是模型不再调工具，这只是防跑飞的兜底；
+# 技能/勘察类任务给 30–50，`qc run --max-turns N` 覆盖它（TUI 用这个值）。
+[agent]
+max_turns = 8
+# max_cost_usd = 0.50    # 需要 [pricing]；`--max-cost` 覆盖它，比轮数更贴近真实代价
 
 # Web 搜索（v2.0）。enabled 默认 true；未配置 key 时不注册 web_search 工具，
 # 由 qc doctor 提示。backend: brave | tavily | searxng。
