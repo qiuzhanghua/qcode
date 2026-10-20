@@ -1133,4 +1133,62 @@ cargo build -p qcode
 `the_turn_budget_defaults_to_eight_and_can_be_raised`（含 `max_cost_usd` 解析）；
 手工：让模型连续调用同一条命令，第 3 轮出现 `error(no_progress)` 并停止。
 
+## ADR-0032：`qc acp` —— ACP v1 over stdio（2026-10-20）
+
+**范围**：新 crate `qcode-acp`，把引擎接到 Agent Client Protocol 上，入口 `qc acp`。
+目标是编辑器（Zed、Neovim）能直接拉起 qcode 当 agent，与 CLI/TUI 共用同一引擎。
+
+**决定**
+
+1. 传输是 stdio 上的每行一个 JSON-RPC 2.0 对象（`jsonrpc.rs` 只做信封分类：
+   有 id + method 是请求，有 method 无 id 是通知，有 id 无 method 是响应）。
+2. 方法集：`initialize`、`authenticate`（无认证，直接成功）、`session/new`、
+   `session/load`、`session/prompt`、`session/cancel`（通知）。
+   未知方法回 `-32601`，参数错误回 `-32602`。
+3. 能力协商：`protocolVersion` 回显客户端版本（它高于 v1 时回 v1，由客户端决定是否断开）；
+   `agentCapabilities.loadSession = true`；`promptCapabilities` 里 image/audio 为 false、
+   embeddedContext 为 true；`authMethods` 为空。
+4. `session/new` 用请求里的 `cwd` 建会话并写 `session_started`；`cwd` 必须是绝对路径。
+   `session/load` 读 JSONL 事件并逐个重放成 `user_message_chunk` / `agent_message_chunk` /
+   `tool_call` / `tool_call_update`，然后这个会话可以继续 `session/prompt`。
+5. `session/prompt` 用 `run_turn` 跑一轮：先拼 prompt 文本（text 与带 text 的 resource 直接
+   用，resource_link 写成 `[name](uri)`；image/audio/二进制 resource 直接回 `-32602`，
+   不静默丢内容），然后把引擎事件映射成通知（下表），最后按结果回 `stopReason`：
+   `cancelled` / `max_turn_requests`（命中 max_turns）/ 其它 `end_turn`。
+6. 审批走 `session/request_permission`：三个选项 `allow-once`、`allow-session`
+   （kind `allow_always`）、`reject-once`；客户端回 `selected` 或 `cancelled`。
+   `allow-session` 只对**本轮**有意义：qcode 不跨轮记住选择，客户端应自己缓存
+   `allow_always` 并在下次直接作答（这是 ACP 客户端的常规做法）。
+7. `session/prompt` 在独立任务里跑，读循环同时继续读 `session/cancel`；
+   取消与 `request_permission` 用 `tokio::select!` 竞速，取消先赢。
+8. 事件映射：`assistant_message` 的 Text→`agent_message_chunk`、Reasoning→
+   `agent_thought_chunk`（空文本丢弃）；`tool_call`→`tool_call`（kind 由工具名映射，
+   `rawInput` 带参数）；`tool_result`→`tool_call_update`（`completed`/`failed`，
+   content 是文本，`rawOutput` 是输出字符串）；`error`→一条 `agent_message_chunk`
+   文本（失败不能是静默的）。`plan`/`usage_update`/`notice` 本轮不发。
+
+**没有做（明确记录）**
+
+- `fs/*` 与 `terminal/*` 委托：工具仍在本机执行，忽略客户端能力位。委托要先把工具层
+  抽象成"执行器"，属于 v2.2 之后的事。
+- 客户端传来的 `mcpServers` 被忽略：MCP server 仍由 qcode 配置决定并预先启动。
+- 图像/音频 prompt、`session/set_mode`、`session/list`、notices、compaction 更新。
+- 逐 token 流式：每条 assistant 消息发一个 chunk，`on_delta` 传 `None`。
+- ACP 会话里没有 `subagent` 工具：它的 approver 在构建工具时固定，而客户端只能替当前
+  会话作答。
+
+**风险**
+
+- 没有在本机对着 Zed 手工验收（无编辑器环境）；协议形状按 v1 文档与 schema 实现，
+  smoke 用的是真实 stdio + mock provider。Zed 的接入配置以它自己的文档为准。
+- `session/load` 重放的是完整事件流，长会话会给客户端推很多通知；v1 先这样。
+
+**验证**：`qcode-acp` 9 个单测（信封分类、update 判别字段、permission outcome 解析、
+工具名→kind、prompt 拼接与拒绝）+ 5 个集成测试（initialize 协商、prompt 流式回答与
+`end_turn`、工具调用先要权限再回报 `completed`、拒绝则不执行、`session/load` 重放
+user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml` 喂
+`initialize` + `session/new` 两行，回 `protocolVersion: 1` 与一个新 sessionId；
+`qc doctor` 打印 `acp: protocol v1 over stdio`。
+
+
 

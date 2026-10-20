@@ -16,6 +16,7 @@ qcode-tools = { version = "0.1.0", path = "../qcode-tools" }
 qcode-mcp = { version = "0.1.0", path = "../qcode-mcp" }
 qcode-net = { version = "0.1.0", path = "../qcode-net" }
 qcode-tui = { version = "0.1.0", path = "../qcode-tui" }
+qcode-acp = { version = "0.1.0", path = "../qcode-acp" }
 async-trait.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true

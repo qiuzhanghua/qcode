@@ -31,6 +31,13 @@ pub async fn run(
     #[cfg(windows)]
     doctor.check_token();
     doctor.check_sandbox(&config);
+    doctor.ok(
+        "acp",
+        format!(
+            "protocol v{} over stdio (`qc acp`)",
+            qcode_acp::PROTOCOL_VERSION
+        ),
+    );
 
     println!();
     if doctor.failures == 0 {

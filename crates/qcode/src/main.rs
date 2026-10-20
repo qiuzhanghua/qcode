@@ -72,6 +72,8 @@ enum Command {
     Doctor,
     /// Check for a newer release, or install it.
     Update(update::UpdateArgs),
+    /// Serve the Agent Client Protocol over stdio (for editors).
+    Acp,
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
     #[command(hide = true)]
@@ -277,6 +279,7 @@ async fn main() -> ExitCode {
         Some(Command::Mcp(args)) => cmd_mcp(args, config),
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
+        Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
         #[cfg(windows)]
@@ -574,6 +577,73 @@ async fn cmd_update(
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let loaded = load_config(config_path, &workspace)?;
     update::run(args, &loaded.update, &data_dir).await?;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_acp(
+    data_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    approval_policy: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let loaded = load_config(config_path, &workspace)?;
+    let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
+        std::env::var(key).ok()
+    })?;
+    let pricing = config::pricing_for(&loaded, &resolved.model, loaded.agent.max_cost_usd)?;
+    let policy = build_policy(&loaded, approval_policy.as_deref())?;
+
+    let data_dir = resolve_data_dir(data_dir);
+    let sandbox = qcode_tools::sandbox::build(
+        loaded.sandbox.mode,
+        &workspace,
+        loaded.sandbox.network,
+        &loaded.sandbox.extra_writable,
+    )?;
+    let agents_md = agents::load(&workspace)?;
+    let skills = load_skills(&loaded.skills, &workspace);
+    let skills_prompt = skills.prompt_section();
+
+    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let network: Option<SharedNetwork> = egress
+        .as_ref()
+        .map(|egress| egress.clone() as SharedNetwork);
+    let provider: Arc<dyn Provider> =
+        build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
+    // The ACP client owns approval, so no sub-agent tool here: its approver is
+    // captured when the tool is built, and a client cannot answer for a child.
+    let tools = build_tools(
+        &loaded.mcp,
+        &loaded.search,
+        &workspace,
+        &data_dir,
+        &skills,
+        sandbox,
+        network.as_ref().map(|network| network.env()),
+    )
+    .await;
+
+    tracing::info!(
+        provider = %resolved.name,
+        model = %resolved.model,
+        "acp server starting"
+    );
+    let deps = qcode_acp::Deps {
+        store: SessionStore::new(data_dir),
+        provider,
+        tools,
+        policy,
+        workspace,
+        model: resolved.model.clone(),
+        pricing,
+        max_turns: loaded.agent.max_turns,
+        max_cost_usd: loaded.agent.max_cost_usd,
+        context_window: Some(loaded.context.window_tokens),
+        agents_md,
+        skills: skills_prompt,
+        network,
+    };
+    qcode_acp::stdio::run(Arc::new(deps)).await?;
     Ok(ExitCode::SUCCESS)
 }
 

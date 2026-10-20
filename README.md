@@ -270,6 +270,13 @@ cargo build -p qcode-eval
   返回最终文本与子 session id；子会话的 usage/cost 汇总进父 `turn_ended` 与 TUI 成本。
   TUI 里子 agent 的文本与工具调用以 `↳` 嵌套显示，不改父状态机。默认 ask（`External`），
   非交互模式需要 `--yes` 或策略放行 `subagent`。
+- **ACP**：`qc acp` 在 stdio 上讲 ACP v1，编辑器可直接把 qcode 当 agent（Zed 的
+  `agent_servers` 里 `command` 指向 `qc`、`args = ["acp"]`）。支持 `initialize` /
+  `session/new` / `session/load` / `session/prompt` / `session/cancel`，
+  引擎事件映射成 `session/update`（文本、思维、工具调用与结果），
+  审批映射成 `session/request_permission`（allow-once / allow-session / reject）。
+  工具仍在本机执行，目前不委托客户端 `fs/*`、`terminal/*`，也不接受客户端传入的
+  MCP server；`qc doctor` 打印协商的协议版本。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain、`web_search` 配置，并对非 mock
   provider 做一次真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
 - **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
@@ -282,7 +289,7 @@ cargo build -p qcode-eval
 
 v2.0 剩余：sandbox 三个后端仍是实验性（windows-acl 只限制写，且为 partial）。
 分发产物（发布工作流、SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
-ACP（v2.1）尚未开始。
+v2.1 已落地 ACP v1（`qc acp`）；MCP `env` 与 resources/prompts 尚未开始。
 
 ## 配置
 
@@ -449,6 +456,7 @@ crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
+crates/qcode-acp         ACP v1 服务端（`qc acp`：stdio JSON-RPC，供编辑器接入）
 packaging/               安装清单模板（Homebrew / Scoop / winget）与 render.sh
 .github/workflows/       ci.yml（门禁）、release.yml（tag 发布）
 ```

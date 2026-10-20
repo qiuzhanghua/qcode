@@ -9,6 +9,7 @@ members = [
   "crates/qcode",
   "crates/qcode-tui",
   "crates/qcode-eval",
+  "crates/qcode-acp",
 ]
 
 [workspace.package]

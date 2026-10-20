@@ -1358,6 +1358,7 @@ dependencies = [
  "async-trait",
  "clap",
  "futures-util",
+ "qcode-acp",
  "qcode-core",
  "qcode-mcp",
  "qcode-net",
@@ -1376,6 +1377,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "qcode-acp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "qcode-core",
+ "qcode-providers",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
