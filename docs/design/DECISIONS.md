@@ -933,19 +933,25 @@ cargo build -p qcode
   `TMP`/`TEMP`/`TMPDIR` 指到已授权的私有 temp。这也意味着需要自己缓存目录的 MCP server
   （`npx` 的 npm cache 之类）要进 `extra_writable`，否则只能写 workspace 与私有 temp。
 
-**已知问题：私有 temp 的基座回落（2026-10-20）**
+**已知问题：私有 temp 建目录被按 exe 路径拦（2026-10-20）**
 
-开发机上出现过一种还没查清的现象：同一个用户在 pwsh 里 `New-Item` 能建出
-`%LOCALAPPDATA%\qcode\sandbox\tmp\...` 与 `%TEMP%\qcode-sandbox-tmp\...`（`icacls` 里没有 deny，
-`%TEMP%\qcode-sandbox-tmp` 甚至带着 `(I)(F)`），但 `qc.exe` 在同样的父目录里 `create_dir_all`
-一律 `拒绝访问 (5)`；同一个 exe 复制到 `%TEMP%` 反而能正常运行。
+开发机上 `qc.exe` 在 `%LOCALAPPDATA%\qcode\sandbox\tmp\...` 与 `%TEMP%\qcode-sandbox-tmp\...`
+下 `create_dir_all` 一律 `拒绝访问 (5)`。对照实验把范围缩到「按镜像路径」：
+
+- `qc whoami` 在两边打印同一个令牌：`integrity S-1-16-4096`（Low）、`restricted sids 0`、
+  `app container 0`，`TEMP`/`LOCALAPPDATA` 也完全相同；
+- 同一份二进制，放在仓库里（`target\debug\qc.exe`、`.tmp\qc-copy.exe`）两个基座都 `error 5`；
+  复制到 `C:\Users\qiuzh\qc-copy.exe` 后两个基座都 `ok`；
+- `%TEMP%` 的 DACL 没有 deny（`Get-Acl` 的 Sddl 里只有 SYSTEM/Administrators/用户 的
+  继承全权和一个域的继承 ACE），同一 shell 下的 `cmd /c mkdir` 与 `New-Item` 对**已存在**
+  目录也会报成功/已存在，所以早先那两条「pwsh 能建」不构成反证。
+
+结论：同样的令牌、同样的父目录，只有镜像路径不同就出现两种结果，因此拦截层在进程之外
+（安全产品/策略按镜像路径或目录做限制），不是 qc 的 ACL 逻辑，也不是我们读错的令牌字段。
+按用户要求不再深挖该机器；`qc whoami` 与 `qc doctor` 的 `[ok] token` / `[warn] temp`
+两行保留了复现所需的全部事实。
 
 沙箱不能因此不启动，所以 `private_temp()` 是三级回落：`%LOCALAPPDATA%\qcode\sandbox\tmp` →
 `%TEMP%\qcode-sandbox-tmp` → **工作区内 `.tmp\qcode-sandbox-tmp`**；命中第三级时打一条 warn
 并写明用了哪条路径，`describe()`/`qc doctor` 里也能看到实际 temp。工作区本来就是已授权根，
 所以第三级不扩大写边界（代价是 temp 落在仓库里，`/.tmp` 已在 gitignore 中）。
-
-排查工具已就位：`qc whoami`（隐藏）打印自身令牌的完整性级别、restricted SID 列表、
-AppContainer/提权标志、`TEMP`/`LOCALAPPDATA`，以及**自己能否**在各基座里建子目录；
-配合 `whoami /all` 就能判断差异在令牌，还是在别的拦截层（智能应用控制、策略、
-对象管理器重定向）。
