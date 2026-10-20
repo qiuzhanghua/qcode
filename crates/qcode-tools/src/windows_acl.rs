@@ -805,7 +805,7 @@ fn spawn_confined(
         .chain(std::iter::once(0))
         .collect();
     let exe_name = wide(program.as_os_str());
-    let cwd_name = wide(cwd.as_os_str());
+    let cwd_name = wide(plain_path(cwd).as_os_str());
 
     let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
@@ -930,6 +930,23 @@ impl Drop for InheritedHandle {
     }
 }
 
+/// Turns a verbatim (`\\?\`) path back into a plain DOS path.
+///
+/// Grants need the verbatim form, but a child such as `cmd.exe` reads `\\?\C:\x`
+/// as a UNC path, refuses it as its current directory and silently falls back to
+/// the Windows directory. The workspace is canonicalized (which yields the
+/// verbatim form), so strip it again right before the child starts.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
 /// Resolves `program` against `PATH` only.
 ///
 /// `CreateProcessAsUserW` searches the current directory before `PATH`, and the
@@ -1013,6 +1030,16 @@ mod tests {
         assert_eq!(quote_arg(OsStr::new("say \"hi\"")), r#""say \"hi\"""#);
         assert_eq!(quote_arg(OsStr::new("keep\\")), r#""keep\\""#);
         assert_eq!(quote_arg(OsStr::new("")), "\"\"");
+    }
+
+    #[test]
+    fn verbatim_paths_lose_their_prefix_before_the_child_starts() {
+        assert_eq!(plain_path(Path::new(r"\\?\C:\work")), Path::new(r"C:\work"));
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\server\share")),
+            Path::new(r"\\server\share")
+        );
+        assert_eq!(plain_path(Path::new(r"C:\work")), Path::new(r"C:\work"));
     }
 
     #[test]
