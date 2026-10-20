@@ -11,6 +11,8 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
+
+gpui_kit::actions!(qcode_gui, [PasteImage]);
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{EventKind, SessionStarted};
 use qcode_ui_bridge::{ApprovalView, KernelPort, UiCommand, UiEvent, channels};
@@ -221,6 +223,7 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_col()
+            .on_action(cx.listener(|this, _: &PasteImage, _window, cx| this.paste_clipboard(cx)))
             .child(div().child(format!("{total} block(s)")))
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
             .children(
@@ -313,6 +316,9 @@ pub fn run(app: App, engine: Option<Engine>) {
     let commands = ui.commands;
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
+        // Ctrl-V pastes a clipboard image into the composer; the same code path
+        // as the Paste button, just bound to the key people expect.
+        cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, None)]);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             cx.new(|cx| Shell::new(app, events, commands, window, cx))
         })
