@@ -110,6 +110,8 @@ pub enum UiAction {
     Checkpoints,
     /// /rollback N: restore the workspace to the state before turn N.
     Rollback(u32),
+    /// Ctrl-V: attach the image on the clipboard to the next message.
+    PasteImage,
 }
 
 /// How the status bar renders context usage.
@@ -540,6 +542,9 @@ impl App {
                 self.scroll = 0;
                 return None;
             }
+            // Ctrl-V attaches a clipboard image; the loop reads it because the
+            // UI layer has no clipboard access.
+            KeyCode::Char('v') if ctrl => return Some(UiAction::PasteImage),
             KeyCode::Char('o') if ctrl => {
                 self.toggle_last_tool();
                 return None;
@@ -1164,6 +1169,15 @@ mod tests {
                 .any(|notice| notice.contains("/rollback <turn>")),
             "{notices:?}"
         );
+    }
+
+    #[test]
+    fn ctrl_v_asks_the_loop_to_paste_an_image() {
+        let mut app = App::new("mock", "mock-1");
+        let paste = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(app.handle_key(paste), Some(UiAction::PasteImage));
+        // The UI has no clipboard access, so the key must not touch the composer.
+        assert!(app.textarea.lines()[0].is_empty());
     }
 
     #[test]

@@ -1313,6 +1313,29 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 data URI），纯文本消息仍保持字符串；`cargo test -p qcode-providers --lib` 13 条全绿；
 引擎门控与压缩改动由既有 core 测试覆盖（56 条）。
 
+## ADR-0035 补充：TUI 粘贴图片（2026-10-22）
 
+**决定**
 
+1. TUI 里 `Ctrl-V` 读 Windows 剪贴板的 `CF_DIB`，转成 RGBA 后由内置的极简 PNG 编码器
+   （`crates/qcode/src/png.rs`）编码——离线环境拿不到 `png`/`flate2`/`arboard`，而截图
+   是几帧几百 KB，用 stored（未压缩）deflate 输出的文件偏大但一定合法。
+2. 只处理 `BI_RGB` 的 24/32 位位图，两种方向都支持；alpha 一律置 255（`CF_DIB` 的 32 位
+   像素 alpha 通常是 0，直接用它会粘贴出全透明图）。其它格式/压缩方式返回明确错误。
+3. `Ctrl-V` 只产生 `UiAction::PasteImage`：UI crate 没有剪贴板权限，读取与编码在 CLI 的
+   事件循环里做，成功后把 attachment 放进 `pending_images`，下一条消息提交时一并发送
+   （`RunOptions.attachments`）。提示行会显示尺寸、KB 与待发数量。
+4. 与 `--image` 共用同一条下游路径（`Attachment` → `ContentBlock::Image` → 多模态 parts），
+   所以能力门控、压缩、日志限制完全一致。
 
+**边界**
+
+- 仅 Windows；macOS/Linux 的粘贴返回 "only implemented on Windows"。
+- 不做缩放/压缩，只受 provider 的体积限制；超大截图会被 8 MB 的 `--image` 同类限制挡住
+  （粘贴路径没有单独的大小检查，靠 base64 后 provider 的上限）。
+- 非 TUI 前端（ACP）仍没有图片输入。
+
+**验证**：`qcode` 新增 6 条（`decode_dib` 三条：24 位倒序、32 位/正序、拒绝 8 位与压缩；
+`png` 三条：CRC32/Adler32 已知向量、PNG 签名与 IHDR/IEND、IDAT 里的 zlib 头与原始行）；
+`qcode-tui` 新增 1 条（`Ctrl+V` 映射成 `PasteImage` 且不改输入框）。`cargo test -p qcode --bins`
+67 条、`-p qcode-tui --lib` 31 条全绿；clippy 干净。

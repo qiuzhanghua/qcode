@@ -214,15 +214,17 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         app.status.provider = options.provider_name.to_string();
         app.status.model = options.model.to_string();
         app.push_notice(format!(
-            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · /exit 退出 · Ctrl-C 两次退出",
+            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出",
             events.len()
         ));
     } else {
         app.push_notice(format!(
-            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · /exit 退出 · Ctrl-C 两次退出"
+            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
         ));
     }
 
+    // Pasted images wait here until the next submit.
+    let mut pending_images: Vec<qcode_core::engine::Attachment> = Vec::new();
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
     let mut engine_running = false;
@@ -288,7 +290,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         agents_md: options.agents_md.clone(),
                                         skills: options.skills_prompt.clone(),
                                         network: options.network.clone(),
-                                        attachments: Vec::new(),
+                                        attachments: std::mem::take(&mut pending_images),
                                     },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));
@@ -310,6 +312,25 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     });
                                 }
                             }
+                            UiAction::PasteImage => match crate::clipboard::read_image() {
+                                Ok(image) => {
+                                    use base64::Engine as _;
+                                    let size_kb = image.png.len() / 1024;
+                                    pending_images.push(qcode_core::engine::Attachment {
+                                        mime_type: "image/png".to_string(),
+                                        data_base64: base64::engine::general_purpose::STANDARD
+                                            .encode(&image.png),
+                                    });
+                                    app.push_notice(format!(
+                                        "image attached: {}x{} ({} KB) — sent with the next message ({} pending)",
+                                        image.width,
+                                        image.height,
+                                        size_kb,
+                                        pending_images.len()
+                                    ));
+                                }
+                                Err(error) => app.push_notice(format!("paste failed: {error}")),
+                            },
                             UiAction::Cancel => cancel.cancel(),
                             UiAction::Checkpoints => {
                                 let turns = snapshots.turns(&session_id).unwrap_or_default();

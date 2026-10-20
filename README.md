@@ -264,8 +264,9 @@ cargo build -p qcode-eval
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
 - **图片输入**：`qc run --image shot.png "看看这个"`（可重复，PNG/JPEG/WebP/GIF，单张 ≤8 MB）
   把图片作为多模态消息发给 provider；provider 的 `Capabilities.images` 为 false 时直接报
-  `this provider does not accept image input`，不会先发再让服务端 400。事件日志只留文本，
-  所以 resume 的历史不含图片；TUI/ACP 的上传尚未实现（详见 ADR-0035）。
+  `this provider does not accept image input`，不会先发再让服务端 400。
+  TUI 里 `Ctrl-V` 直接粘贴剪贴板图片（Windows 的 `CF_DIB` → 内置 PNG 编码器），随下一条消息发出。
+  事件日志只留文本，所以 resume 的历史不含图片；ACP 的图片输入尚未实现（详见 ADR-0035）。
 - **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
 - **web_search**：`[search]` 开启后注册（默认 `brave`，也支持 `tavily` / `searxng`），
