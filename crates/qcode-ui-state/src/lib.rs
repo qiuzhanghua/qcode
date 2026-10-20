@@ -14,10 +14,7 @@ use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
 use qcode_core::todo::{self, TodoItem};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::Block as UiBlock;
 use time::{Duration, OffsetDateTime};
-use tui_textarea::TextArea;
 
 /// Rows moved by PageUp / PageDown. The UI clamps this to the transcript.
 const SCROLL_STEP: usize = 10;
@@ -146,10 +143,10 @@ pub struct App {
     /// Text streamed for the message currently being generated. Cleared when
     /// the authoritative `assistant_message` event arrives.
     pub streaming: String,
-    /// Multi-line composer. tui-textarea owns editing keys, CJK width and
+    /// Multi-line composer. Editing is toolkit-neutral; the renderer draws it.
     /// cursor movement; the app only decides when Enter submits (Ctrl-N and
     /// Shift/Alt+Enter insert a newline).
-    pub textarea: TextArea<'static>,
+    pub composer: Composer,
     /// Rows scrolled up from the bottom of the transcript (0 = follow tail).
     pub scroll: usize,
     pub status: Status,
@@ -179,7 +176,7 @@ impl App {
         Self {
             blocks: Vec::new(),
             streaming: String::new(),
-            textarea: composer(),
+            composer: Composer::new(),
             scroll: 0,
             status: Status {
                 provider: provider.into(),
@@ -476,18 +473,18 @@ impl App {
             // Terminals without the Kitty keyboard protocol cannot tell
             // Shift+Enter from Enter, so Ctrl-N is the reliable newline key.
             KeyCode::Char('n') if ctrl => {
-                self.textarea.insert_newline();
+                self.composer.apply(InputEvent::Newline);
                 return None;
             }
             KeyCode::Enter
                 if key.modifiers.contains(KeyModifiers::SHIFT)
                     || key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.textarea.insert_newline();
+                self.composer.apply(InputEvent::Newline);
                 return None;
             }
             KeyCode::Enter => {
-                let text = self.textarea.lines().join("\n");
+                let text = self.composer.text();
                 if text.trim().is_empty() {
                     return None;
                 }
@@ -532,11 +529,11 @@ impl App {
             // Arrows scroll the transcript too, but only while the draft is a
             // single line: a multi-line draft still needs them to move the
             // cursor, and Ctrl-U / Ctrl-D remain the scroll keys there.
-            KeyCode::Up if self.textarea.lines().len() <= 1 => {
+            KeyCode::Up if self.composer.line_count() <= 1 => {
                 self.scroll = self.scroll.saturating_add(SCROLL_STEP);
                 return None;
             }
-            KeyCode::Down if self.textarea.lines().len() <= 1 => {
+            KeyCode::Down if self.composer.line_count() <= 1 => {
                 self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
                 return None;
             }
@@ -569,13 +566,14 @@ impl App {
         // Any other key edits the composer; typing while scrolled up returns
         // to the live tail.
         self.scroll = 0;
-        self.textarea.input(key);
+        if let Some(event) = input_event(key) {
+            self.composer.apply(event);
+        }
         None
     }
 
     fn clear_composer(&mut self) {
-        self.textarea.select_all();
-        self.textarea.cut();
+        self.composer = Composer::new();
     }
 
     /// Slash commands are local UI actions; the model never sees them.
@@ -816,16 +814,25 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
     }
 }
 
-/// Composer styling lives here so the renderer only has to draw `&TextArea`.
-fn composer() -> TextArea<'static> {
-    let mut textarea = TextArea::default();
-    textarea.set_block(
-        UiBlock::bordered()
-            .title(" message ")
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-    textarea.set_cursor_line_style(Style::default());
-    textarea
+/// Map a terminal key press onto an editing event. Anything else (Ctrl
+/// combinations, function keys) is not an edit and is handled by the caller.
+fn input_event(key: KeyEvent) -> Option<InputEvent> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char(ch) if !ctrl => Some(InputEvent::Insert(ch)),
+        KeyCode::Backspace => Some(InputEvent::Backspace),
+        KeyCode::Delete => Some(InputEvent::Delete),
+        KeyCode::Left => Some(InputEvent::MoveLeft),
+        KeyCode::Right => Some(InputEvent::MoveRight),
+        KeyCode::Up => Some(InputEvent::MoveUp),
+        KeyCode::Down => Some(InputEvent::MoveDown),
+        KeyCode::Home => Some(InputEvent::Home),
+        KeyCode::End => Some(InputEvent::End),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -968,7 +975,7 @@ mod tests {
         }
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Some(UiAction::Submit("fix tests".to_string())));
-        assert_eq!(app.textarea.lines(), [""]);
+        assert!(app.composer.is_empty());
         assert!(app.blocks.is_empty());
         assert!(app.status.running);
     }
@@ -1063,11 +1070,11 @@ mod tests {
         }
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         app.handle_key(key(KeyCode::Char('!')));
-        assert_eq!(app.textarea.lines(), ["中文", "!"]);
+        assert_eq!(app.composer.text(), "中文\n!");
 
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Some(UiAction::Submit("中文\n!".to_string())));
-        assert_eq!(app.textarea.lines(), [""]);
+        assert!(app.composer.is_empty());
     }
 
     #[test]
@@ -1080,7 +1087,7 @@ mod tests {
         app.handle_key(key(KeyCode::Char('c')));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
         app.handle_key(key(KeyCode::Char('d')));
-        assert_eq!(app.textarea.lines(), ["a", "b", "c", "d"]);
+        assert_eq!(app.composer.text(), "a\nb\nc\nd");
 
         let action = app.handle_key(key(KeyCode::Enter));
         assert_eq!(action, Some(UiAction::Submit("a\nb\nc\nd".to_string())));
@@ -1103,7 +1110,7 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(app.scroll, 0);
-        assert_eq!(app.textarea.lines()[0], "x");
+        assert_eq!(app.composer.text(), "x");
     }
 
     #[test]
@@ -1122,7 +1129,7 @@ mod tests {
         type_text(&mut app, "a");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         type_text(&mut app, "b");
-        assert_eq!(app.textarea.lines().len(), 2);
+        assert_eq!(app.composer.line_count(), 2);
 
         app.handle_key(key(KeyCode::Up));
         assert_eq!(app.scroll, 0, "a multi-line draft keeps the arrow");
@@ -1181,7 +1188,7 @@ mod tests {
         let paste = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert_eq!(app.handle_key(paste), Some(UiAction::PasteImage));
         // The UI has no clipboard access, so the key must not touch the composer.
-        assert!(app.textarea.lines()[0].is_empty());
+        assert!(app.composer.text().is_empty());
     }
 
     #[test]
@@ -1542,7 +1549,7 @@ mod tests {
     #[test]
     fn submitted_text_is_rendered_once_the_event_arrives() {
         let mut app = App::new("mock", "mock-1");
-        app.textarea.insert_str("hi");
+        app.composer.apply(InputEvent::InsertStr("hi".to_string()));
         app.handle_key(key(KeyCode::Enter));
         app.apply(&event(EventKind::UserMessage(UserMessage {
             text: "hi".to_string(),

@@ -23,7 +23,7 @@ use qcode_core::todo::{TodoItem, TodoStatus};
 pub fn render(frame: &mut Frame, app: &App) {
     // The composer grows with the number of lines, up to a third of the
     // screen, so multi-line prompts stay readable.
-    let lines = app.textarea.lines().len() as u16;
+    let lines = app.composer.line_count() as u16;
     let max_composer = (frame.area().height / 3).max(3);
     let composer_height = (lines + 2).clamp(3, max_composer);
 
@@ -440,8 +440,32 @@ fn format_duration(duration: time::Duration) -> String {
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
-    // tui-textarea draws its own block and cursor.
-    frame.render_widget(&app.textarea, area);
+    // The composer is toolkit-neutral, so the block and cursor are drawn here.
+    // Long lines are truncated rather than wrapped: wrapping is a known
+    // follow-up, and a prompt longer than the screen is rarer than one line.
+    let block = UiBlock::bordered()
+        .title(" message ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let (cursor_row, cursor_col) = app.composer.cursor();
+    let lines: Vec<Line> = app
+        .composer
+        .text()
+        .split('\n')
+        .take(inner.height as usize)
+        .map(|line| Line::from(line.to_string()))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+
+    // Clamp so a cursor past the right edge or below the fold stays visible.
+    let x = inner.x + (cursor_col.saturating_sub(1) as u16).min(inner.width.saturating_sub(1));
+    let y = inner.y + (cursor_row.saturating_sub(1) as u16).min(inner.height.saturating_sub(1));
+    frame.set_cursor_position((x, y));
 }
 
 fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
