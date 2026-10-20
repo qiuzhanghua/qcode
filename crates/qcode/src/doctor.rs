@@ -105,6 +105,14 @@ impl Doctor {
         match config::load_merged(&path, &workspace) {
             Ok(config) => {
                 self.ok("config", path.display().to_string());
+                self.ok(
+                    "config schema",
+                    format!(
+                        "version {} (this build supports {})",
+                        config.version,
+                        config::CONFIG_VERSION
+                    ),
+                );
                 if workspace.join(config::PROJECT_CONFIG_RELATIVE).exists() {
                     self.ok(
                         "project config",

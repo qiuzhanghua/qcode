@@ -269,6 +269,9 @@ ACP（v2.1）尚未开始。
 
 ```toml
 # ~/.config/qcode/config.toml
+# 架构版本。缺省即 1；声明比本 build 更新的版本会启动失败（先升级 qcode），
+# 未识别的键只告警、不阻塞（新版本加的键能在旧 build 上原样加载）。
+version = 1
 default_provider = "deepseek"
 
 [providers.deepseek]
@@ -365,7 +368,8 @@ MCP 工具；规则按工具名精确匹配。
 项目配置放在 `<workspace>/.qcode/config.toml`，叠加在用户配置之上：可覆盖
 providers / pricing、追加 MCP server、追加 skills roots，并追加审批规则；文件里出现
 `[context]` / `[sandbox]` 时才覆盖对应段（缺省不会把用户值重置为默认）。项目规则强制
-`scope = "project"`，且 `allow` 会降级为 `ask`——仓库不能给自己提权。
+`scope = "project"`，且 `allow` 会降级为 `ask`——仓库不能给自己提权。项目文件同样受
+`version` 约束：声明超出本 build 支持的版本会拒绝启动，未识别键只告警。
 
 `--approval-policy <path>` 读取独立策略文件：根级 `[[rules]]`，规则**替换** config 里的
 `[[approval.rules]]`（不合并）。适合 CI / eval 固定权限；文件不存在或 TOML 非法会在创建

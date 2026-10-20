@@ -955,3 +955,43 @@ cargo build -p qcode
 `%TEMP%\qcode-sandbox-tmp` → **工作区内 `.tmp\qcode-sandbox-tmp`**；命中第三级时打一条 warn
 并写明用了哪条路径，`describe()`/`qc doctor` 里也能看到实际 temp。工作区本来就是已授权根，
 所以第三级不扩大写边界（代价是 temp 落在仓库里，`/.tmp` 已在 gitignore 中）。
+
+## ADR-0028：config schema 版本化与未知键告警（2026-10-20）
+
+**决定**
+
+1. 顶级键 `version`，缺省为 1，`CONFIG_VERSION = 1`。没有该键的文件**就是**当前版本：
+   老配置不需要迁移就能加载，版本号不是必填项。
+2. 声明的版本高于 `CONFIG_VERSION` 时**启动失败**（`ConfigError::VersionTooNew`，错误里给出
+   文件、声明版本、本 build 支持的上限，以及「升级 qcode 或删掉 version」）。项目层
+   `<workspace>/.qcode/config.toml` 同样受检——仓库不能替用户打开一个用户版 qcode 读不懂的 schema。
+3. `version = 0` 视为非法文档（版本从 1 起）。
+4. 未知键只告警、不失败。`unknown_keys()` 对已知表逐键比对（顶层与
+   `approval` / `context` / `mcp` / `skills` / `sandbox` / `network` / `search`）；
+   `providers.*`、`pricing.*`、`mcp.servers[]` 的子键是用户命名空间，不校验。
+   告警走 `tracing::warn!`（`RUST_LOG=info` 可见），stdout 的 JSONL 不受影响。
+5. 加载顺序：读文件 → 解析成 `toml::Table`（未知键检查需要原始文档）→ 反序列化 →
+   `check_version` → 未知键告警 → `mcp.validate()`。
+6. `qc config edit` 的种子文件写入 `version = 1`；`qc config show` 与 `qc doctor` 都打印
+   声明版本与本 build 支持的上限。
+
+**理由**
+
+- 配置是数据：新版本添加的可选键（更多 search 参数、额外 sandbox 根）应当能被旧 build
+  原样加载并忽略，硬失败会让「降级回滚 qcode」变成不可能的操作。
+- 但键名写错（`[search] bakend`）会被 serde 静默丢弃、退化成默认值——这是真正危险的一类，
+  所以至少要在日志里点名到 `段.键`。
+- 版本检查只保留一个方向：拒绝更新的版本。旧 build 无法理解新语义时，猜着跑比拒跑风险更大。
+- 单向要求使迁移成本恒为零：本 ADR 之后新增的每个键都只需 `#[serde(default)]`。
+
+**后果**
+
+- `KNOWN_KEYS` 是手写清单，加段/加键时必须同步；遗漏会让合法键被误报。测试
+  `every_section_key_the_build_reads_is_known` 用一份覆盖全部段的文档守着它。
+- `version` 之外的已知键不含任何必填项：配置文件整体仍可以是空文件。
+- 未知键不进入 `--json` 事件流，只进日志；需要机器可读诊断时用 `qc config show` 的版本行。
+
+**验证**：`a_config_without_a_version_is_the_current_schema`、
+`a_newer_config_version_is_rejected_with_the_supported_one`、`a_zero_config_version_is_rejected`、
+`a_project_config_cannot_declare_a_newer_version`、
+`typos_are_reported_as_unknown_keys_but_still_load`、`every_section_key_the_build_reads_is_known`。

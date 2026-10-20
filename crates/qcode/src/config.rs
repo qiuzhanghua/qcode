@@ -18,8 +18,19 @@ use qcode_tools::web_search::{SearchBackend, SearchSettings};
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 
-#[derive(Debug, Clone, Default, Deserialize)]
+/// Schema version this build writes and the newest one it accepts.
+///
+/// A file without `version` is the current version: every config written before
+/// versioning existed must keep loading unchanged. A file that declares a
+/// *newer* version is an error, because this build cannot know which of its
+/// interpretations changed.
+pub const CONFIG_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// Schema version of the file. Absent means [`CONFIG_VERSION`].
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// Provider used when neither `--provider` nor `QCODE_PROVIDER` is set.
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -49,6 +60,28 @@ pub struct Config {
     /// `web_search` backend and key (v2.0).
     #[serde(default)]
     pub search: SearchConfig,
+}
+
+fn default_version() -> u32 {
+    CONFIG_VERSION
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_VERSION,
+            default_provider: None,
+            providers: BTreeMap::new(),
+            approval: ApprovalConfig::default(),
+            pricing: BTreeMap::new(),
+            context: ContextConfig::default(),
+            mcp: McpConfig::default(),
+            skills: SkillsConfig::default(),
+            sandbox: SandboxConfig::default(),
+            network: NetworkConfig::default(),
+            search: SearchConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -314,6 +347,16 @@ pub enum ConfigError {
     Mcp(#[from] McpConfigError),
     #[error("invalid config document: {0}")]
     InvalidDocument(String),
+    #[error(
+        "config {} declares version {found}, but this build supports up to {supported}; \
+         upgrade qcode or delete the version key",
+        path.display()
+    )]
+    VersionTooNew {
+        path: PathBuf,
+        found: u32,
+        supported: u32,
+    },
     #[error("MCP server '{0}' already exists")]
     McpExists(String),
     #[error("MCP server '{0}' not found")]
@@ -325,13 +368,120 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
+    let document: toml::Table = text.parse().map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
     })?;
+    check_version(path, config.version)?;
+    warn_unknown_keys(path, &document);
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
     Ok(config)
+}
+
+/// Reject a version this build cannot interpret; anything older is migrated by
+/// the current parser in place (version 1 has no predecessors).
+fn check_version(path: &Path, version: u32) -> Result<(), ConfigError> {
+    if version == 0 {
+        return Err(ConfigError::InvalidDocument(format!(
+            "{}: version must be 1 or greater",
+            path.display()
+        )));
+    }
+    if version > CONFIG_VERSION {
+        return Err(ConfigError::VersionTooNew {
+            path: path.to_path_buf(),
+            found: version,
+            supported: CONFIG_VERSION,
+        });
+    }
+    Ok(())
+}
+
+/// Keys each table may contain, per table path. Tables whose children are
+/// user-chosen names (`providers`, `pricing`, `mcp.servers` entries) are not
+/// listed, since any key is a name there.
+const KNOWN_KEYS: &[(&str, &[&str])] = &[
+    (
+        "",
+        &[
+            "version",
+            "default_provider",
+            "providers",
+            "approval",
+            "pricing",
+            "context",
+            "mcp",
+            "skills",
+            "sandbox",
+            "network",
+            "search",
+        ],
+    ),
+    ("approval", &["rules"]),
+    ("context", &["window_tokens"]),
+    ("mcp", &["servers"]),
+    ("skills", &["enabled", "roots"]),
+    ("sandbox", &["mode", "network", "extra_writable"]),
+    (
+        "network",
+        &["enabled", "allow", "allow_private", "unknown", "audit"],
+    ),
+    (
+        "search",
+        &[
+            "enabled",
+            "backend",
+            "api_key_env",
+            "max_results",
+            "base_url",
+        ],
+    ),
+];
+
+/// Keys in `document` that this build does not read, as `section.key` paths.
+///
+/// Unknown keys are reported, never fatal: a config written for a newer qcode
+/// keeps working under an older one as long as the new keys are optional. The
+/// point is to catch typos, which serde would otherwise drop silently.
+pub fn unknown_keys(document: &toml::Table) -> Vec<String> {
+    let mut unknown = Vec::new();
+    for (section, known) in KNOWN_KEYS {
+        let table = if section.is_empty() {
+            document
+        } else {
+            match document.get(*section).and_then(toml::Value::as_table) {
+                Some(table) => table,
+                None => continue,
+            }
+        };
+        for key in table.keys() {
+            if !known.contains(&key.as_str()) {
+                unknown.push(if section.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{section}.{key}")
+                });
+            }
+        }
+    }
+    unknown
+}
+
+fn warn_unknown_keys(path: &Path, document: &toml::Table) {
+    let unknown = unknown_keys(document);
+    if unknown.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        path = %path.display(),
+        keys = %unknown.join(", "),
+        "unknown config keys are ignored"
+    );
 }
 
 /// Project-level config, loaded from `<workspace>/.qcode/config.toml`.
@@ -368,6 +518,8 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
         path: path.clone(),
         source,
     })?;
+    check_version(&path, project.version)?;
+    warn_unknown_keys(&path, &document);
     let sections = ProjectSections {
         context: document.contains_key("context"),
         sandbox: document.contains_key("sandbox"),
@@ -1370,5 +1522,123 @@ mod tests {
         let merged = load_merged(&base_path, &workspace).expect("merged without sections");
         assert_eq!(merged.context.window_tokens, 100_000);
         assert!(!merged.sandbox.network);
+    }
+
+    #[test]
+    fn a_config_without_a_version_is_the_current_schema() {
+        let config: Config = toml::from_str("").expect("empty config");
+        assert_eq!(config.version, CONFIG_VERSION);
+        assert_eq!(Config::default().version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn a_newer_config_version_is_rejected_with_the_supported_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "version = 99\n").unwrap();
+
+        let error = load(&path).expect_err("newer version").to_string();
+        assert!(error.contains("declares version 99"), "{error}");
+        assert!(
+            error.contains(&format!("up to {CONFIG_VERSION}")),
+            "{error}"
+        );
+        assert!(error.contains("upgrade qcode"), "{error}");
+    }
+
+    #[test]
+    fn a_zero_config_version_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "version = 0\n").unwrap();
+
+        let error = load(&path).expect_err("zero version").to_string();
+        assert!(error.contains("version must be 1"), "{error}");
+    }
+
+    #[test]
+    fn a_project_config_cannot_declare_a_newer_version() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "version = 1\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".qcode")).unwrap();
+        std::fs::write(dir.path().join(".qcode/config.toml"), "version = 7\n").unwrap();
+
+        let error = load_merged(&path, dir.path())
+            .expect_err("newer project version")
+            .to_string();
+        assert!(error.contains("declares version 7"), "{error}");
+    }
+
+    #[test]
+    fn typos_are_reported_as_unknown_keys_but_still_load() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "defualt_provider = \"mock\"\n[search]\nbakend = \"tavily\"\n",
+        )
+        .unwrap();
+
+        // Serde ignores both keys, so the file loads; the typo list is what a
+        // caller reports. Unknown keys must never be fatal: a newer qcode may
+        // add optional keys that this build simply does not read.
+        load(&path).expect("unknown keys are not fatal");
+        let document: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let mut unknown = unknown_keys(&document);
+        unknown.sort();
+        assert_eq!(unknown, vec!["defualt_provider", "search.bakend"]);
+    }
+
+    #[test]
+    fn every_section_key_the_build_reads_is_known() {
+        let document: toml::Table = r#"
+             version = 1
+             default_provider = "mock"
+
+             [approval]
+             rules = []
+
+             [context]
+             window_tokens = 64000
+
+             [skills]
+             enabled = true
+             roots = []
+
+             [sandbox]
+             mode = "none"
+             network = false
+             extra_writable = []
+
+             [network]
+             enabled = true
+             allow = []
+             allow_private = false
+             unknown = "ask"
+             audit = true
+
+             [search]
+             enabled = true
+             backend = "brave"
+             api_key_env = "BRAVE_API_KEY"
+             max_results = 5
+             base_url = "https://api.search.brave.com"
+
+             [providers.ollama]
+             base_url = "http://127.0.0.1:11434/v1"
+
+             [[mcp.servers]]
+             name = "filesystem"
+             command = "npx"
+        "#
+        .parse()
+        .expect("document");
+
+        assert!(
+            unknown_keys(&document).is_empty(),
+            "{:?}",
+            unknown_keys(&document)
+        );
     }
 }

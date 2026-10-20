@@ -716,7 +716,7 @@ fn cmd_config(
                 std::fs::create_dir_all(parent)?;
             }
             if !path.exists() {
-                std::fs::write(&path, "# qcode config\n")?;
+                std::fs::write(&path, "# qcode config\nversion = 1\n")?;
             }
             let editor = std::env::var("EDITOR")
                 .or_else(|_| std::env::var("VISUAL"))
@@ -776,6 +776,11 @@ fn cmd_mcp(
 }
 
 fn print_config(config: &config::Config) {
+    println!(
+        "version = {} (this build supports {})",
+        config.version,
+        config::CONFIG_VERSION
+    );
     println!("default_provider = {:?}", config.default_provider);
     println!("providers ({}):", config.providers.len());
     for (name, provider) in &config.providers {
