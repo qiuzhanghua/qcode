@@ -6,10 +6,11 @@
 //! swapping in gpui-kit's `VirtualList` is the next step.
 #![recursion_limit = "512"]
 
+use gpui_kit::component::VirtualListScrollHandle;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
 
@@ -61,6 +62,8 @@ struct Shell {
     attachments: Vec<qcode_core::engine::Attachment>,
     /// A pending approval: the turn is blocked until one of these is clicked.
     approval: Option<ApprovalView>,
+    /// The transcript scroll state, shared with the scrollbar.
+    scroll: VirtualListScrollHandle,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -85,6 +88,7 @@ impl Shell {
             diff: None,
             attachments: Vec::new(),
             approval: None,
+            scroll: VirtualListScrollHandle::new(),
             events,
         }
     }
@@ -219,7 +223,8 @@ impl Render for Shell {
                         .child(block_text(&shell.app.blocks[index]))
                 })
                 .collect()
-        });
+        })
+        .track_scroll(&self.scroll);
         div()
             .size_full()
             .flex()
@@ -232,7 +237,7 @@ impl Render for Shell {
                     .flex_col()
                     .flex_grow(1.0)
                     .min_h_0()
-                    .overflow_y_scrollbar()
+                    .scrollbar(&self.scroll, ScrollbarAxis::Vertical)
                     .child(list),
             )
             .children(
