@@ -1,9 +1,7 @@
 mod agents;
-mod clipboard;
 mod config;
 mod doctor;
 mod logging;
-mod png;
 #[cfg(windows)]
 mod sandbox_probe;
 mod subagent;

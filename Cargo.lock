@@ -5214,6 +5214,7 @@ dependencies = [
  "futures-util",
  "qcode-acp",
  "qcode-core",
+ "qcode-image",
  "qcode-mcp",
  "qcode-net",
  "qcode-providers",
@@ -5283,13 +5284,22 @@ dependencies = [
 name = "qcode-gui"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "gpui-kit",
  "qcode-core",
+ "qcode-image",
  "qcode-ui-bridge",
  "qcode-ui-state",
  "serde_json",
  "time",
  "tokio",
+]
+
+[[package]]
+name = "qcode-image"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

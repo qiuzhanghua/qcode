@@ -319,7 +319,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     });
                                 }
                             }
-                            UiAction::PasteImage => match crate::clipboard::read_image() {
+                            UiAction::PasteImage => match qcode_image::clipboard::read_image() {
                                 Ok(image) => {
                                     use base64::Engine as _;
                                     let size_kb = image.png.len() / 1024;

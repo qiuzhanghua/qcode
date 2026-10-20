@@ -6,6 +6,7 @@
 //! swapping in gpui-kit's `VirtualList` is the next step.
 #![recursion_limit = "512"]
 
+use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
@@ -50,6 +51,8 @@ struct Shell {
     last_text: String,
     /// A real patch rendered read-only: `apply_patch` output for the spike.
     diff: Option<Entity<DiffState>>,
+    /// Images pasted since the last submit.
+    attachments: Vec<qcode_core::engine::Attachment>,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -72,6 +75,7 @@ impl Shell {
             commands,
             last_text: Default::default(),
             diff: None,
+            attachments: Vec::new(),
             events,
         }
     }
@@ -91,7 +95,7 @@ impl Shell {
             let prompt = text.trim_end().to_string();
             let _ = self.commands.send(UiCommand::Prompt {
                 text: prompt.clone(),
-                attachments: Vec::new(),
+                attachments: std::mem::take(&mut self.attachments),
             });
             self.app.push_notice(format!(
                 "sent: {}",
@@ -116,6 +120,29 @@ impl Shell {
             Err(_) => return,
         };
         self.diff = Some(cx.new(|cx| DiffState::new(files, cx)));
+    }
+
+    /// Ctrl-V is not bound yet; the button proves the paste path end to end.
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        match qcode_image::clipboard::read_image() {
+            Ok(image) => {
+                use base64::Engine as _;
+                let kb = image.png.len() / 1024;
+                self.attachments.push(qcode_core::engine::Attachment {
+                    mime_type: "image/png".to_string(),
+                    data_base64: base64::engine::general_purpose::STANDARD.encode(&image.png),
+                });
+                self.app.push_notice(format!(
+                    "attached {}x{} ({} KB), {} pending",
+                    image.width,
+                    image.height,
+                    kb,
+                    self.attachments.len()
+                ));
+            }
+            Err(error) => self.app.push_notice(error),
+        }
+        cx.notify();
     }
 
     fn poll(&mut self) {
@@ -161,7 +188,20 @@ impl Render for Shell {
                     .as_ref()
                     .map(|state| div().h(px(220.0)).child(Diff::new(state))),
             )
-            .child(div().p_2().child(Input::new(&self.input)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .items_center()
+                    .p_2()
+                    .child(
+                        Button::new("paste")
+                            .label(format!("Paste image ({})", self.attachments.len()))
+                            .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
+                    )
+                    .child(div().flex_grow(1.0).child(Input::new(&self.input))),
+            )
     }
 }
 
