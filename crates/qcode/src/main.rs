@@ -67,7 +67,8 @@ enum Command {
     Update(update::UpdateArgs),
     /// Serve the Agent Client Protocol over stdio (for editors).
     Acp,
-    /// Open the desktop window (GPUI Kit; experimental).
+    /// Open the desktop window (GPUI Kit; needs a gui build).
+    #[cfg(feature = "gui")]
     Gui,
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
@@ -291,6 +292,7 @@ async fn main() -> ExitCode {
         Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,
+        #[cfg(feature = "gui")]
         Some(Command::Gui) => cmd_gui(data_dir, config, approval_policy).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
@@ -630,6 +632,7 @@ async fn cmd_acp(
     Ok(ExitCode::SUCCESS)
 }
 
+#[cfg(feature = "gui")]
 /// Open the desktop window (ADR-0037).
 ///
 /// The window itself lives in the `qcode-gui` binary for now; this subcommand

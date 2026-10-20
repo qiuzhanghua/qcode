@@ -19,7 +19,7 @@ qcode-tui = { version = "0.1.0", path = "../qcode-tui" }
 qcode-acp = { version = "0.1.0", path = "../qcode-acp" }
 qcode-image = { version = "0.1.0", path = "../qcode-image" }
 qcode-kernel = { version = "0.1.0", path = "../qcode-kernel" }
-qcode-gui = { version = "0.1.0", path = "../qcode-gui" }
+qcode-gui = { version = "0.1.0", path = "../qcode-gui", optional = true }
 async-trait.workspace = true
 base64.workspace = true
 ratatui.workspace = true
@@ -51,3 +51,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 tempfile.workspace = true
+[features]
+# Off by default: CLI, TUI and ACP stay lean; the GPU stack only ships in
+# the desktop build.
+gui = ["dep:qcode-gui"]
