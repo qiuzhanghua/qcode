@@ -4,7 +4,11 @@
 //! `UiAction` for the caller to execute, which keeps the key map unit-testable
 //! and lets the renderer be exercised with `TestBackend`.
 
+pub mod composer;
+
 use std::collections::HashSet;
+
+pub use composer::{Composer, InputEvent};
 
 use qcode_core::engine::Delta;
 use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
