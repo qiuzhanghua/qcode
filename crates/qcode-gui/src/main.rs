@@ -6,6 +6,7 @@
 //! swapping in gpui-kit's `VirtualList` is the next step.
 #![recursion_limit = "512"]
 
+use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::v_virtual_list;
 use gpui_kit::{div, prelude::*, *};
@@ -47,6 +48,8 @@ struct Shell {
     commands: UnboundedSender<UiCommand>,
     /// The composer text on the previous frame, to notice a submit.
     last_text: String,
+    /// A real patch rendered read-only: `apply_patch` output for the spike.
+    diff: Option<Entity<DiffState>>,
     /// Events from the bridge. Polled once per frame: the spike needs the
     /// channel wired, not a scheduler.
     events: UnboundedReceiver<UiEvent>,
@@ -68,6 +71,7 @@ impl Shell {
             input,
             commands,
             last_text: Default::default(),
+            diff: None,
             events,
         }
     }
@@ -101,6 +105,19 @@ impl Shell {
         self.last_text = text;
     }
 
+    /// Build the diff view once, from a patch the engine would hand over.
+    fn ensure_diff(&mut self, cx: &mut Context<Self>) {
+        if self.diff.is_some() {
+            return;
+        }
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn main() {\n-    println!(\"hi\");\n+    println!(\"hello\");\n+    println!(\"from qcode\");\n }\n";
+        let files = match DiffFile::parse(patch) {
+            Ok(files) => files,
+            Err(_) => return,
+        };
+        self.diff = Some(cx.new(|cx| DiffState::new(files, cx)));
+    }
+
     fn poll(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -119,6 +136,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll();
         self.submit_on_enter(window, cx);
+        self.ensure_diff(cx);
         self.refresh_sizes();
         let entity = cx.entity();
         let sizes = self.sizes.clone();
@@ -138,6 +156,11 @@ impl Render for Shell {
             .flex_col()
             .child(div().child(format!("{total} block(s)")))
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+            .children(
+                self.diff
+                    .as_ref()
+                    .map(|state| div().h(px(220.0)).child(Diff::new(state))),
+            )
             .child(div().p_2().child(Input::new(&self.input)))
     }
 }
