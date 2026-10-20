@@ -360,18 +360,22 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        // Ask terminals that understand the Kitty protocol to report
-        // modifiers (Shift+Enter / Esc) distinctly. Others ignore the sequence
-        // and keep using Ctrl-N for newlines.
-        if let Err(err) = execute!(
-            stdout,
-            EnterAlternateScreen,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        ) {
+        if let Err(err) = execute!(stdout, EnterAlternateScreen) {
             let _ = disable_raw_mode();
             return Err(err);
         }
         install_panic_hook();
+
+        // Progressive keyboard enhancement is a nicety: it makes Shift+Enter
+        // and Esc arrive as distinct keys. The legacy Windows console API does
+        // not implement it and answers with an error, which must not abort the
+        // TUI — Ctrl-N still inserts a newline there.
+        if let Err(err) = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        ) {
+            tracing::debug!(%err, "terminal has no keyboard enhancement; Ctrl-N for newline");
+        }
 
         match Terminal::new(CrosstermBackend::new(stdout)) {
             Ok(terminal) => Ok(Self {
