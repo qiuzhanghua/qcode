@@ -99,6 +99,15 @@ pub enum ContentBlock {
     },
 }
 
+/// One provider call's token counters.
+///
+/// `input_tokens` is the **total** prompt size, cached tokens included — that is
+/// what `prompt_tokens` means in the OpenAI/DeepSeek wire format, and the only
+/// provider this build talks to. `cache_read_tokens` is the cached subset of
+/// that total, not an extra count; `Pricing::cost_usd` therefore bills
+/// `input_tokens - cache_read_tokens` at the input rate. A provider that
+/// reports cache hits outside `prompt_tokens` must add them back before
+/// filling this struct.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]

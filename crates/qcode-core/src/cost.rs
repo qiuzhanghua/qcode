@@ -22,13 +22,19 @@ pub struct Pricing {
 
 impl Pricing {
     /// Estimate one provider call. Missing counters count as zero; cache rates
-    /// default to zero, i.e. cached tokens are free unless configured.
+    /// default to zero, i.e. cached tokens are billed at the input rate unless
+    /// a cheaper rate is configured.
+    ///
+    /// Cached tokens are a subset of `input_tokens`, so they are billed once —
+    /// at the cache-read rate — instead of being counted twice.
     pub fn cost_usd(&self, usage: &Usage) -> f64 {
         const MTOK: f64 = 1_000_000.0;
         let tokens = |count: Option<u64>| count.unwrap_or(0) as f64;
-        let input = tokens(usage.input_tokens) * self.input_usd_per_mtok;
+        let cached = usage.cache_read_tokens.unwrap_or(0);
+        let uncached = usage.input_tokens.unwrap_or(0).saturating_sub(cached);
+        let input = uncached as f64 * self.input_usd_per_mtok;
         let output = tokens(usage.output_tokens) * self.output_usd_per_mtok;
-        let cache_read = tokens(usage.cache_read_tokens) * self.cache_read_usd_per_mtok;
+        let cache_read = cached as f64 * self.cache_read_usd_per_mtok;
         let cache_write = tokens(usage.cache_write_tokens) * self.cache_write_usd_per_mtok;
         (input + output + cache_read + cache_write) / MTOK
     }
@@ -63,6 +69,43 @@ mod tests {
             ..Usage::default()
         };
         assert!((pricing.cost_usd(&usage) - 2.0).abs() < 1e-12);
+    }
+
+    /// The exact counters a real DeepSeek turn reported on 2026-10-20:
+    /// 2718 prompt tokens of which 2560 were cache hits. Before the fix this
+    /// priced the hits twice and returned $0.00119556; the true cost of the
+    /// turn was $0.00042756.
+    #[test]
+    fn cached_tokens_are_billed_once() {
+        let pricing = Pricing {
+            input_usd_per_mtok: 0.30,
+            output_usd_per_mtok: 1.20,
+            cache_read_usd_per_mtok: 0.006,
+            cache_write_usd_per_mtok: 0.0,
+        };
+        let usage = Usage {
+            input_tokens: Some(2_718),
+            output_tokens: Some(304),
+            cache_read_tokens: Some(2_560),
+            cache_write_tokens: None,
+        };
+        let cost = pricing.cost_usd(&usage);
+        assert!((cost - 0.000_427_56).abs() < 1e-12, "cost was {cost}");
+    }
+
+    #[test]
+    fn cache_hits_larger_than_input_do_not_go_negative() {
+        let pricing = Pricing {
+            input_usd_per_mtok: 1.0,
+            ..Pricing::default()
+        };
+        let usage = Usage {
+            input_tokens: Some(10),
+            cache_read_tokens: Some(1_000_000),
+            ..Usage::default()
+        };
+        // Nothing is billed at the input rate, and the cache rate is zero.
+        assert_eq!(pricing.cost_usd(&usage), 0.0);
     }
 
     #[test]

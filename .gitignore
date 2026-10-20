@@ -65,3 +65,6 @@ Backups.backupdb
 .MobileBackups.trash
 MobileBackups.trash
 tmbootpicker.efi
+
+# Data dir written when HOME is unset (should be under the user profile)
+/.local
