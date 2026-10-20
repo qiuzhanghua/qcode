@@ -209,3 +209,79 @@ pub fn expand_root(path: &Path, workspace: &Path, home: Option<&Path>) -> PathBu
         workspace.join(path)
     }
 }
+
+pub fn load_config(
+    explicit: Option<PathBuf>,
+    workspace: &Path,
+) -> Result<config::Config, Box<dyn std::error::Error>> {
+    let explicit = explicit.or_else(|| std::env::var("QCODE_CONFIG").ok().map(PathBuf::from));
+
+    if let Some(path) = explicit {
+        if !path.exists() {
+            return Err(format!("config file not found: {}", path.display()).into());
+        }
+        return Ok(config::load_merged(&path, workspace)?);
+    }
+
+    let path = config::default_path()?;
+    if path.exists() {
+        Ok(config::load_merged(&path, workspace)?)
+    } else {
+        Ok(config::load_project(workspace)?)
+    }
+}
+
+pub fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path;
+    }
+    if let Ok(path) = std::env::var("QCODE_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
+        return PathBuf::from(path).join("qcode");
+    }
+    // Windows has no `HOME` in pwsh; the config path already resolves
+    // HOME-or-USERPROFILE, and the store must use the same home.
+    let preferred = match config::home_dir() {
+        Some(home) => home.join(".local").join("share").join("qcode"),
+        None => PathBuf::from(".local").join("share").join("qcode"),
+    };
+    if writable_dir(&preferred) {
+        return preferred;
+    }
+    // A sandboxed shell that may only write its workspace cannot create the
+    // store under the user profile. Losing sessions is worse than keeping them
+    // beside the code, so fall back once, loudly, instead of failing at startup.
+    let fallback = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".qcode-data");
+    if writable_dir(&fallback) {
+        // resolve_data_dir runs from several subcommands; say this once.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                preferred = %preferred.display(),
+                fallback = %fallback.display(),
+                "data dir is not writable; using a workspace-local store (\
+                 set --data-dir or QCODE_DATA_DIR to choose another)"
+            );
+        });
+        return fallback;
+    }
+    // Neither candidate works: hand back the preferred one so the caller's
+    // error names the path the user would expect.
+    preferred
+}
+
+pub fn writable_dir(path: &Path) -> bool {
+    if std::fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(format!(".write-probe-{}", std::process::id()));
+    let ok = std::fs::write(&probe, b"probe").is_ok();
+    if ok {
+        let _ = std::fs::remove_file(&probe);
+    }
+    ok
+}

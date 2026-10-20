@@ -9,7 +9,7 @@ mod update;
 
 use std::io::IsTerminal;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -381,7 +381,7 @@ async fn cmd_run(
         None => std::env::current_dir()?,
     };
     let workspace = workspace.canonicalize()?;
-    let loaded = load_config(config_path, &workspace)?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     // The flag wins, then the config, then the built-in default: a skill run
     // needs far more turns than a single question does.
     let max_turns = max_turns.unwrap_or(loaded.agent.max_turns);
@@ -412,7 +412,7 @@ async fn cmd_run(
         "provider resolved"
     );
 
-    let data_dir = resolve_data_dir(data_dir);
+    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
     let sandbox = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
@@ -596,9 +596,9 @@ async fn cmd_update(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let data_dir = resolve_data_dir(data_dir);
+    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let loaded = load_config(config_path, &workspace)?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     update::run(args, &loaded.update, &data_dir).await?;
     Ok(ExitCode::SUCCESS)
 }
@@ -609,14 +609,14 @@ async fn cmd_acp(
     approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let loaded = load_config(config_path, &workspace)?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
         std::env::var(key).ok()
     })?;
     let pricing = config::pricing_for(&loaded, &resolved.model, loaded.agent.max_cost_usd)?;
     let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
 
-    let data_dir = resolve_data_dir(data_dir);
+    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
     let sandbox = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
         &workspace,
@@ -683,7 +683,7 @@ async fn cmd_tui(
     }
 
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let loaded = load_config(config_path, &workspace)?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     let resolved = config::resolve(&loaded, &config::Overrides::default(), &|key| {
         std::env::var(key).ok()
     })?;
@@ -697,7 +697,7 @@ async fn cmd_tui(
         "starting TUI"
     );
 
-    let data_dir = resolve_data_dir(data_dir);
+    let data_dir = qcode_kernel::resolve_data_dir(data_dir);
     let store = SessionStore::new(data_dir.clone());
     let sandbox = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
@@ -778,7 +778,7 @@ fn cmd_sessions(
     args: SessionsArgs,
     data_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let store = SessionStore::new(resolve_data_dir(data_dir));
+    let store = SessionStore::new(qcode_kernel::resolve_data_dir(data_dir));
 
     match args.command {
         SessionsCommand::List => {
@@ -909,7 +909,7 @@ fn cmd_config(
     match args.command {
         ConfigCommand::Show => {
             let workspace = std::env::current_dir()?.canonicalize()?;
-            let loaded = load_config(config_path, &workspace)?;
+            let loaded = qcode_kernel::load_config(config_path, &workspace)?;
             print_config(&loaded);
         }
         ConfigCommand::Edit => {
@@ -954,7 +954,7 @@ fn cmd_mcp(
     let workspace = std::env::current_dir()?.canonicalize()?;
     match args.command {
         McpCommand::List => {
-            let loaded = load_config(config_path, &workspace)?;
+            let loaded = qcode_kernel::load_config(config_path, &workspace)?;
             print_mcp(&loaded.mcp);
         }
         McpCommand::Add {
@@ -1118,7 +1118,7 @@ fn cmd_skills(
     }
 
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let loaded = load_config(config_path, &workspace)?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     if !loaded.skills.enabled {
         println!("skills are disabled ([skills] enabled = false)");
         return Ok(ExitCode::SUCCESS);
@@ -1323,94 +1323,6 @@ fn build_provider(
     })
 }
 
-fn load_config(
-    explicit: Option<PathBuf>,
-    workspace: &Path,
-) -> Result<config::Config, Box<dyn std::error::Error>> {
-    let explicit = explicit.or_else(|| std::env::var("QCODE_CONFIG").ok().map(PathBuf::from));
-
-    if let Some(path) = explicit {
-        if !path.exists() {
-            return Err(format!("config file not found: {}", path.display()).into());
-        }
-        return Ok(config::load_merged(&path, workspace)?);
-    }
-
-    let path = config::default_path()?;
-    if path.exists() {
-        Ok(config::load_merged(&path, workspace)?)
-    } else {
-        Ok(config::load_project(workspace)?)
-    }
-}
-
-/// Resolve the approval policy for this invocation.
-///
-/// `--approval-policy` is an explicit, auditable decision, so its rules replace
-/// the config's `[[approval.rules]]` instead of extending them. Without the
-/// flag the config rules (or the built-in defaults) apply unchanged.
-fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
-    if let Some(path) = explicit {
-        return path;
-    }
-    if let Ok(path) = std::env::var("QCODE_DATA_DIR") {
-        return PathBuf::from(path);
-    }
-    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(path).join("qcode");
-    }
-    // Windows has no `HOME` in pwsh; the config path already resolves
-    // HOME-or-USERPROFILE, and the store must use the same home.
-    let preferred = match config::home_dir() {
-        Some(home) => home.join(".local").join("share").join("qcode"),
-        None => PathBuf::from(".local").join("share").join("qcode"),
-    };
-    if writable_dir(&preferred) {
-        return preferred;
-    }
-    // A sandboxed shell that may only write its workspace cannot create the
-    // store under the user profile. Losing sessions is worse than keeping them
-    // beside the code, so fall back once, loudly, instead of failing at startup.
-    let fallback = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".qcode-data");
-    if writable_dir(&fallback) {
-        // resolve_data_dir runs from several subcommands; say this once.
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| {
-            tracing::warn!(
-                preferred = %preferred.display(),
-                fallback = %fallback.display(),
-                "data dir is not writable; using a workspace-local store (\
-                 set --data-dir or QCODE_DATA_DIR to choose another)"
-            );
-        });
-        return fallback;
-    }
-    // Neither candidate works: hand back the preferred one so the caller's
-    // error names the path the user would expect.
-    preferred
-}
-
-/// Create `path` and prove it accepts a file. Cheap enough for startup, and it
-/// is the only way to tell "missing but creatable" from "sandboxed".
-fn writable_dir(path: &Path) -> bool {
-    if std::fs::create_dir_all(path).is_err() {
-        return false;
-    }
-    let probe = path.join(format!(".write-probe-{}", std::process::id()));
-    let ok = std::fs::write(&probe, b"probe").is_ok();
-    if ok {
-        let _ = std::fs::remove_file(&probe);
-    }
-    ok
-}
-
-/// Ctrl-C asks the engine to stop; a second Ctrl-C wins immediately.
-///
-/// The first press cancels the token, which makes the engine abort the stream
-/// and lets `run_shell` kill its process group before the tool result is
-/// written. Pressing again is the escape hatch for a wedged process.
 fn install_ctrl_c(cancel: CancellationToken) {
     tokio::spawn(async move {
         let mut presses = 0u32;

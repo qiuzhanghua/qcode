@@ -68,7 +68,7 @@ impl Doctor {
     }
 
     fn check_data_dir(&mut self, explicit: &Option<PathBuf>) {
-        let dir = crate::resolve_data_dir(explicit.clone());
+        let dir = qcode_kernel::resolve_data_dir(explicit.clone());
         let result = std::fs::create_dir_all(&dir).and_then(|()| {
             let probe = dir.join(".qcode-doctor-write");
             std::fs::write(&probe, b"ok")?;
@@ -201,7 +201,7 @@ impl Doctor {
             return;
         }
 
-        let dir = crate::resolve_data_dir(data_dir.clone());
+        let dir = qcode_kernel::resolve_data_dir(data_dir.clone());
         let egress =
             match qcode_kernel::build_egress(config, &dir, resolved.base_url.as_deref()).await {
                 Ok(egress) => egress,
@@ -303,7 +303,7 @@ impl Doctor {
             return;
         }
 
-        let directory = crate::resolve_data_dir(data_dir.clone());
+        let directory = qcode_kernel::resolve_data_dir(data_dir.clone());
         let schedule = if update.check {
             format!("every {} day(s)", update.check_days)
         } else {
