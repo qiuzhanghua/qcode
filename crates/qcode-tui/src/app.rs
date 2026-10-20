@@ -519,6 +519,17 @@ impl App {
                 self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
                 return None;
             }
+            // Arrows scroll the transcript too, but only while the draft is a
+            // single line: a multi-line draft still needs them to move the
+            // cursor, and Ctrl-U / Ctrl-D remain the scroll keys there.
+            KeyCode::Up if self.textarea.lines().len() <= 1 => {
+                self.scroll = self.scroll.saturating_add(SCROLL_STEP);
+                return None;
+            }
+            KeyCode::Down if self.textarea.lines().len() <= 1 => {
+                self.scroll = self.scroll.saturating_sub(SCROLL_STEP);
+                return None;
+            }
             // Plain End belongs to the textarea (end of line); Ctrl+End jumps
             // the transcript back to the tail.
             KeyCode::End if ctrl => {
@@ -568,6 +579,12 @@ impl App {
             return None;
         }
 
+        // Three spellings: /exit is the documented one, /quit is what vim users
+        // type, /q is the shortest that does not collide with a skill name.
+        if matches!(command, "/exit" | "/quit" | "/q") {
+            return Some(UiAction::Quit);
+        }
+
         if command == "/skills" {
             if argument.is_empty() {
                 self.show_skills();
@@ -580,7 +597,7 @@ impl App {
         let name = command.strip_prefix('/').unwrap_or_default();
         let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
             self.push_notice(format!(
-                "unknown command '{command}'; try /skills, /subagents, or /<skill-name>"
+                "unknown command '{command}'; try /skills, /subagents, /exit, or /<skill-name>"
             ));
             return None;
         };
@@ -1059,6 +1076,41 @@ mod tests {
         app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(app.scroll, 0);
         assert_eq!(app.textarea.lines()[0], "x");
+    }
+
+    #[test]
+    fn arrows_scroll_when_the_draft_is_a_single_line() {
+        let mut app = App::new("mock", "mock-1");
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 20);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.scroll, 10);
+    }
+
+    #[test]
+    fn arrows_edit_the_composer_when_the_draft_has_multiple_lines() {
+        let mut app = App::new("mock", "mock-1");
+        type_text(&mut app, "a");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        type_text(&mut app, "b");
+        assert_eq!(app.textarea.lines().len(), 2);
+
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 0, "a multi-line draft keeps the arrow");
+    }
+
+    #[test]
+    fn slash_exit_quits_in_three_spellings() {
+        for command in ["/exit", "/quit", "/q"] {
+            let mut app = App::new("mock", "mock-1");
+            type_text(&mut app, command);
+            assert_eq!(
+                app.handle_key(key(KeyCode::Enter)),
+                Some(UiAction::Quit),
+                "{command} should quit"
+            );
+        }
     }
 
     #[test]
