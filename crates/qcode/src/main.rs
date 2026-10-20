@@ -22,15 +22,12 @@ use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::network::SharedNetwork;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
-use qcode_core::tool::{Tool, ToolRegistry};
+use qcode_core::tool::Tool;
 use qcode_kernel::config;
 use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
-use qcode_tools::builtin_registry_with;
-use qcode_tools::sandbox::Sandbox;
-use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
+use qcode_tools::skills::SkillSet;
 use qcode_tools::subagent::SubagentTool;
-use qcode_tools::web_search::WebSearch;
 use qcode_tui::SkillView;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -428,7 +425,7 @@ async fn cmd_run(
     if agents_md.is_some() {
         tracing::info!("loaded AGENTS.md from the workspace root");
     }
-    let skills = load_skills(&loaded.skills, &workspace);
+    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let prompt = match skill {
         Some(name) => activated_prompt(&skills, &name, prompt)?,
@@ -467,7 +464,7 @@ async fn cmd_run(
     let provider: Arc<dyn Provider> =
         build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
 
-    let mut tools = build_tools(
+    let mut tools = qcode_kernel::build_tools(
         &loaded.mcp,
         &loaded.search,
         &workspace,
@@ -627,7 +624,7 @@ async fn cmd_acp(
         &loaded.sandbox.extra_writable,
     )?;
     let agents_md = agents::load(&workspace)?;
-    let skills = load_skills(&loaded.skills, &workspace);
+    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
 
     let egress =
@@ -639,7 +636,7 @@ async fn cmd_acp(
         build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
     // The ACP client owns approval, so no sub-agent tool here: its approver is
     // captured when the tool is built, and a client cannot answer for a child.
-    let tools = build_tools(
+    let tools = qcode_kernel::build_tools(
         &loaded.mcp,
         &loaded.search,
         &workspace,
@@ -710,7 +707,7 @@ async fn cmd_tui(
     )?;
     tracing::info!(sandbox = sandbox.name(), "sandbox configured");
     let agents_md = agents::load(&workspace)?;
-    let skills = load_skills(&loaded.skills, &workspace);
+    let skills = qcode_kernel::load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
     let egress =
@@ -720,7 +717,7 @@ async fn cmd_tui(
         .map(|egress| egress.clone() as SharedNetwork);
     let provider: Arc<dyn Provider> =
         build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?.into();
-    let tools = build_tools(
+    let tools = qcode_kernel::build_tools(
         &loaded.mcp,
         &loaded.search,
         &workspace,
@@ -1112,112 +1109,6 @@ fn read_images(
 /// Built-in tools plus whatever the enabled MCP servers advertise and the
 /// `skill` tool when skills were discovered. A server that fails to start only
 /// removes its own tools; `connect_all` logs why.
-async fn build_tools(
-    mcp: &McpConfig,
-    search: &config::SearchConfig,
-    workspace: &Path,
-    data_dir: &Path,
-    skills: &Arc<SkillSet>,
-    sandbox: Arc<dyn Sandbox>,
-    network_env: Option<Vec<(String, String)>>,
-) -> ToolRegistry {
-    let confine_sandbox = sandbox.clone();
-    let mut tools = builtin_registry_with(sandbox);
-    if search.enabled {
-        let settings = search.settings(&|key| std::env::var(key).ok());
-        if settings.is_usable() {
-            tracing::info!(backend = settings.backend.name(), "registered web_search");
-            tools.extend([Arc::new(WebSearch::new(settings)) as Arc<dyn Tool>]);
-        } else {
-            tracing::warn!(
-                backend = settings.backend.name(),
-                "web_search is enabled but not configured; the tool is not registered"
-            );
-        }
-    }
-    // MCP servers get the same write boundary as `run_shell`. They are started
-    // through the sandbox's command builder instead of `Command::new`, so a
-    // server cannot write outside the workspace either.
-    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
-        confine_sandbox
-            .command(program, args, cwd)
-            .map_err(|error| error.to_string())
-    });
-    let mcp_tools = qcode_mcp::connect_all_with(
-        &mcp.servers,
-        workspace,
-        &data_dir.join("logs"),
-        network_env.as_deref().unwrap_or(&[]),
-        Some(confine.as_ref()),
-    )
-    .await;
-    if !mcp_tools.is_empty() {
-        tracing::info!(count = mcp_tools.len(), "registered MCP tools");
-    }
-    tools.extend(mcp_tools);
-
-    if !skills.is_empty() {
-        tracing::info!(count = skills.len(), "registered the skill tool");
-        tools.extend([Arc::new(SkillTool::new(skills.clone())) as Arc<dyn Tool>]);
-    }
-
-    tools
-}
-
-/// Discover skills unless the config disables them. A missing `HOME` only
-/// loses the user-level root; configured and project roots still work.
-fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet> {
-    if !config.enabled {
-        return Arc::new(SkillSet::default());
-    }
-    Arc::new(SkillSet::discover(&skill_roots(config, workspace)))
-}
-
-/// All discovery roots in increasing precedence: global, user, configured,
-/// project. The `.agents/skills` paths are what `npx skills` manages.
-fn skill_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
-    let mut roots = Vec::new();
-    if let Some(home) = config::home_dir() {
-        roots.push((SkillSource::Global, home.join(".agents/skills")));
-        roots.push((SkillSource::Global, home.join(".config/agents/skills")));
-        roots.push((SkillSource::User, home.join(".config/qcode/skills")));
-    }
-    roots.extend(config_roots(config, workspace));
-    roots.push((SkillSource::Project, workspace.join(".agents/skills")));
-    roots.push((SkillSource::Project, workspace.join(".qcode/skills")));
-    roots
-}
-
-fn config_roots(config: &config::SkillsConfig, workspace: &Path) -> Vec<(SkillSource, PathBuf)> {
-    let home = config::home_dir();
-    config
-        .roots
-        .iter()
-        .map(|root| {
-            (
-                SkillSource::Config,
-                expand_root(root, workspace, home.as_deref()),
-            )
-        })
-        .collect()
-}
-
-fn expand_root(path: &Path, workspace: &Path, home: Option<&Path>) -> PathBuf {
-    if let Some(home) = home {
-        if path == Path::new("~") {
-            return home.to_path_buf();
-        }
-        if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix("~/")) {
-            return home.join(rest);
-        }
-    }
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace.join(path)
-    }
-}
-
 fn cmd_skills(
     args: SkillsArgs,
     config_path: Option<PathBuf>,
@@ -1233,7 +1124,7 @@ fn cmd_skills(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let roots = skill_roots(&loaded.skills, &workspace);
+    let roots = qcode_kernel::skill_roots(&loaded.skills, &workspace);
     let skills = SkillSet::discover(&roots);
 
     if skills.is_empty() {
