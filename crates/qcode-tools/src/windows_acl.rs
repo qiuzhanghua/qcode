@@ -53,7 +53,9 @@ use windows_sys::Win32::Security::{
     CreateRestrictedToken, DACL_SECURITY_INFORMATION, EqualSid, GetLengthSid, GetTokenInformation,
     OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY,
     SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
-    TOKEN_DUPLICATE, TOKEN_QUERY, TokenDefaultDacl, TokenLogonSid,
+    TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TOKEN_USER, TokenDefaultDacl, TokenElevation, TokenGroups, TokenIntegrityLevel,
+    TokenIsAppContainer, TokenLogonSid, TokenRestrictedSids, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -1175,6 +1177,148 @@ fn wide(value: &OsStr) -> Vec<u16> {
 
 fn last_error(what: &str) -> String {
     format!("{what}: {}", io::Error::last_os_error())
+}
+
+/// What the process token and the temp bases look like, for `qc whoami`.
+///
+/// This is a diagnostic, not part of the boundary: it exists because a shell and
+/// the programs it starts can disagree about which directories accept a new
+/// subdirectory, and the reason (integrity level, restricted SIDs, an
+/// AppContainer, an object manager redirect) is invisible from the outside.
+pub fn diagnose() -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("pid: {}", std::process::id()));
+    lines.push(format!(
+        "exe: {}",
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|err| format!("error: {err}"))
+    ));
+    lines.push(format!(
+        "cwd: {}",
+        std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|err| format!("error: {err}"))
+    ));
+    match token_facts() {
+        Ok(facts) => lines.extend(facts),
+        Err(err) => lines.push(format!("token: error: {err}")),
+    }
+    for key in ["TEMP", "TMP", "LOCALAPPDATA", "USERPROFILE"] {
+        match std::env::var_os(key) {
+            Some(value) => lines.push(format!("env {key}={}", value.to_string_lossy())),
+            None => lines.push(format!("env {key}: unset")),
+        }
+    }
+    let mut bases = vec![("temp_dir", std::env::temp_dir())];
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        bases.push((
+            "local_app_data",
+            PathBuf::from(local)
+                .join("qcode")
+                .join("sandbox")
+                .join("tmp"),
+        ));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|span| span.subsec_nanos())
+        .unwrap_or_default();
+    for (label, base) in bases {
+        let probe = base.join(format!("qcode-diagnose-{}-{nanos}", std::process::id()));
+        match std::fs::create_dir_all(&probe) {
+            Ok(()) => {
+                lines.push(format!("create {label} {}: ok", probe.display()));
+                let _ = std::fs::remove_dir_all(&probe);
+            }
+            Err(err) => lines.push(format!("create {label} {}: error: {err}", probe.display())),
+        }
+    }
+    lines
+}
+
+fn token_facts() -> Result<Vec<String>, String> {
+    struct Guard(HANDLE);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    let mut handle: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
+        return Err(last_error("OpenProcessToken"));
+    }
+    let _guard = Guard(handle);
+
+    let mut lines = Vec::new();
+    if let Ok(buffer) = query_token(handle, TokenUser) {
+        let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+        lines.push(format!("token user: {}", sid_string(user.User.Sid)));
+    }
+    match query_token(handle, TokenIntegrityLevel) {
+        Ok(buffer) => {
+            let label = unsafe { &*(buffer.as_ptr() as *const TOKEN_MANDATORY_LABEL) };
+            lines.push(format!("token integrity: {}", sid_string(label.Label.Sid)));
+        }
+        Err(err) => lines.push(format!("token integrity: error: {err}")),
+    }
+    match query_token(handle, TokenRestrictedSids) {
+        Ok(buffer) => {
+            let groups = unsafe { &*(buffer.as_ptr() as *const TOKEN_GROUPS) };
+            let entries = groups.Groups.as_ptr();
+            let mut sids = Vec::new();
+            for index in 0..groups.GroupCount as usize {
+                let sid = unsafe { (*entries.add(index)).Sid };
+                sids.push(sid_string(sid));
+            }
+            lines.push(format!(
+                "token restricted sids: {} [{}]",
+                groups.GroupCount,
+                sids.join(", ")
+            ));
+        }
+        Err(err) => lines.push(format!("token restricted sids: error: {err}")),
+    }
+    match query_token(handle, TokenGroups) {
+        Ok(buffer) => {
+            let groups = unsafe { &*(buffer.as_ptr() as *const TOKEN_GROUPS) };
+            lines.push(format!("token groups: {}", groups.GroupCount));
+        }
+        Err(err) => lines.push(format!("token groups: error: {err}")),
+    }
+    if let Ok(buffer) = query_token(handle, TokenIsAppContainer) {
+        lines.push(format!("token app container: {}", unsafe {
+            *buffer.as_ptr()
+        }));
+    }
+    if let Ok(buffer) = query_token(handle, TokenElevation) {
+        lines.push(format!("token elevated: {}", unsafe { *buffer.as_ptr() }));
+    }
+    Ok(lines)
+}
+
+fn query_token(handle: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u32>, String> {
+    let mut needed: u32 = 0;
+    unsafe { GetTokenInformation(handle, class, std::ptr::null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return Err(last_error("GetTokenInformation(size)"));
+    }
+    let mut buffer = vec![0u32; (needed as usize).div_ceil(4)];
+    let ok = unsafe {
+        GetTokenInformation(
+            handle,
+            class,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    };
+    if ok == 0 {
+        return Err(last_error("GetTokenInformation"));
+    }
+    Ok(buffer)
 }
 
 #[cfg(test)]

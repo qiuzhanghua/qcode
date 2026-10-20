@@ -80,6 +80,10 @@ enum Command {
     /// Inspect or repair the Windows ACL sandbox grants.
     #[cfg(windows)]
     Sandbox(SandboxArgs),
+    /// Print the process token and temp bases this build sees (internal).
+    #[cfg(windows)]
+    #[command(hide = true, name = "whoami")]
+    Whoami,
 }
 
 #[cfg(windows)]
@@ -275,6 +279,13 @@ async fn main() -> ExitCode {
         )),
         #[cfg(windows)]
         Some(Command::Sandbox(args)) => cmd_sandbox(args),
+        #[cfg(windows)]
+        Some(Command::Whoami) => {
+            for line in qcode_tools::windows_acl::diagnose() {
+                println!("{line}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
