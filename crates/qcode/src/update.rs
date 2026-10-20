@@ -17,8 +17,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-pub use qcode_kernel::DEFAULT_REPO;
-
 /// The version this binary was built as; compared against the newest release.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 

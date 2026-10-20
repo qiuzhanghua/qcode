@@ -20,7 +20,6 @@ use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover}
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Decision, Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::network::SharedNetwork;
-use qcode_core::policy::Policy;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
@@ -405,7 +404,7 @@ async fn cmd_run(
     let pricing = config::pricing_for(&loaded, &resolved.model, max_cost)?;
     // Resolve the policy before creating a session: a bad policy file should
     // not leave an empty session behind.
-    let policy = build_policy(&loaded, approval_policy.as_deref())?;
+    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
 
     let attachments = read_images(&image)?;
 
@@ -618,7 +617,7 @@ async fn cmd_acp(
         std::env::var(key).ok()
     })?;
     let pricing = config::pricing_for(&loaded, &resolved.model, loaded.agent.max_cost_usd)?;
-    let policy = build_policy(&loaded, approval_policy.as_deref())?;
+    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
 
     let data_dir = resolve_data_dir(data_dir);
     let sandbox = qcode_tools::sandbox::build(
@@ -691,7 +690,7 @@ async fn cmd_tui(
         std::env::var(key).ok()
     })?;
     let pricing = config::pricing_for(&loaded, &resolved.model, None)?;
-    let policy = build_policy(&loaded, approval_policy.as_deref())?;
+    let policy = qcode_kernel::build_policy(&loaded, approval_policy.as_deref())?;
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(
@@ -1457,28 +1456,6 @@ fn load_config(
 /// `--approval-policy` is an explicit, auditable decision, so its rules replace
 /// the config's `[[approval.rules]]` instead of extending them. Without the
 /// flag the config rules (or the built-in defaults) apply unchanged.
-fn build_policy(
-    loaded: &config::Config,
-    explicit: Option<&Path>,
-) -> Result<Policy, Box<dyn std::error::Error>> {
-    let rules = match explicit {
-        Some(path) => {
-            if !path.exists() {
-                return Err(format!("approval policy not found: {}", path.display()).into());
-            }
-            tracing::info!(path = %path.display(), "loaded approval policy file");
-            let mut rules = config::load_policy(path)?;
-            // A policy file is scoped to this invocation.
-            for rule in &mut rules {
-                rule.scope = Some(qcode_core::event::Scope::Session);
-            }
-            rules
-        }
-        None => loaded.approval.rules.clone(),
-    };
-    Ok(Policy::new(rules))
-}
-
 async fn build_egress(
     loaded: &config::Config,
     data_dir: &Path,
