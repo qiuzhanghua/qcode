@@ -255,6 +255,11 @@ cargo build -p qcode-eval
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
   先解析并计算全部文件再 staging + 备份 + rename；任一 hunk 失败则什么都不写。绝对路径、
   `..`、rename、symlink 逃逸拒绝；默认 ask。
+- **checkpoint / rollback**：每个 turn 里 `write_file` / `edit_file` / `apply_patch` 动手之前，
+  把目标文件当前内容记进 `<data-dir>/snapshots/<session>/<turn>/`（不存在的文件记为
+  absent）。`qc sessions checkpoints <id>` 看记录，`qc sessions rollback <id> --to <turn> --yes`
+  或 TUI 里 `/rollback <turn>` 把工作区还原到该 turn 之前。只覆盖这几个工具写过的文件——
+  `run_shell`、MCP 与子进程的写入不在记录范围（详见 ADR-0034）。
 - **web_fetch**：http(s) 文本抓取，15s 超时、5 次 redirect、100KiB 截断；非文本、二进制、
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
 - **web_search**：`[search]` 开启后注册（默认 `brave`，也支持 `tavily` / `searxng`），

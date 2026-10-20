@@ -17,6 +17,7 @@ use qcode_acp::{Agent, Client, Deps};
 use qcode_core::event::Usage;
 use qcode_core::policy::Policy;
 use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
+use qcode_core::snapshot::SnapshotStore;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_providers::MockProvider;
@@ -121,16 +122,47 @@ struct Fixture {
     client: Arc<FakeClient>,
     store: SessionStore,
     workspace: PathBuf,
+    data_dir: PathBuf,
     calls: Arc<AtomicUsize>,
 }
 
-fn fixture(provider: MockProvider, with_tool: bool) -> Fixture {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let workspace = dir.path().join("ws");
-    std::fs::create_dir_all(&workspace).expect("workspace");
-    let store = SessionStore::new(dir.path().join("data"));
-    let calls = Arc::new(AtomicUsize::new(0));
+/// A tool the snapshot store knows by name (`write_file`), so a prompt that
+/// calls it exercises the checkpoint hook inside the engine.
+struct WriteFileTool;
 
+#[async_trait]
+impl Tool for WriteFileTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "write_file".to_string(),
+            description: "write a file".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"]
+            }),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &Value) -> ApprovalClass {
+        ApprovalClass::WriteInside
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        let path = args["path"].as_str().unwrap_or("a.txt");
+        let content = args["content"].as_str().unwrap_or_default();
+        std::fs::write(ctx.workspace.join(path), content)
+            .map_err(|error| ToolError::Invalid(error.to_string()))?;
+        Ok(ToolOutput::ok(format!("wrote {path}")))
+    }
+}
+
+fn fixture(provider: MockProvider, with_tool: bool) -> Fixture {
+    let calls = Arc::new(AtomicUsize::new(0));
     let tools = if with_tool {
         ToolRegistry::new(vec![Arc::new(EchoTool {
             calls: calls.clone(),
@@ -138,6 +170,15 @@ fn fixture(provider: MockProvider, with_tool: bool) -> Fixture {
     } else {
         ToolRegistry::new(Vec::new())
     };
+    fixture_with(provider, tools, calls)
+}
+
+fn fixture_with(provider: MockProvider, tools: ToolRegistry, calls: Arc<AtomicUsize>) -> Fixture {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let workspace = dir.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let data_dir = dir.path().join("data");
+    let store = SessionStore::new(&data_dir);
 
     let deps = Deps {
         store: store.clone(),
@@ -161,6 +202,7 @@ fn fixture(provider: MockProvider, with_tool: bool) -> Fixture {
         client: Arc::new(FakeClient::allowing_once()),
         store,
         workspace,
+        data_dir,
         calls,
     }
 }
@@ -206,6 +248,75 @@ fn text_script(text: &str) -> Vec<StreamEvent> {
             stop_reason: StopReason::EndTurn,
         },
     ]
+}
+
+fn write_script() -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::Started,
+        StreamEvent::ToolCallDone {
+            call_id: "call-1".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "a.txt", "content": "hello"}),
+        },
+        StreamEvent::Usage(Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            ..Usage::default()
+        }),
+        StreamEvent::Ended {
+            stop_reason: StopReason::ToolUse,
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_write_records_a_pre_image_and_rollback_removes_the_new_file() {
+    let provider = MockProvider::scripted(vec![write_script(), text_script("done")]);
+    let fixture = fixture_with(
+        provider,
+        ToolRegistry::new(vec![Arc::new(WriteFileTool) as Arc<dyn Tool>]),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let session = fixture
+        .agent
+        .new_session(NewSessionRequest {
+            cwd: fixture.workspace.display().to_string(),
+            mcp_servers: Vec::new(),
+            additional_directories: Vec::new(),
+        })
+        .await
+        .expect("session");
+    fixture
+        .agent
+        .prompt(
+            text_prompt(&session.session_id, "write a file"),
+            fixture.client.clone(),
+        )
+        .await
+        .expect("prompt");
+
+    assert!(
+        fixture.workspace.join("a.txt").exists(),
+        "the tool wrote the file"
+    );
+    let snapshots = SnapshotStore::at_data_dir(&fixture.data_dir);
+    assert_eq!(
+        snapshots.turns(&session.session_id).expect("turns"),
+        vec![1]
+    );
+    assert_eq!(
+        snapshots.files(&session.session_id, 1).expect("files"),
+        vec!["a.txt (absent)".to_string()]
+    );
+
+    let report = snapshots
+        .restore(&session.session_id, 1, &fixture.workspace)
+        .expect("restore");
+    assert_eq!(report.deleted, 1);
+    assert!(
+        !fixture.workspace.join("a.txt").exists(),
+        "rollback removed it"
+    );
 }
 
 #[tokio::test]

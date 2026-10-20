@@ -179,6 +179,8 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let on_child: crate::subagent::ChildEventSink = Arc::new(move |event: &Event| {
         let _ = child_sender.send(TuiMsg::Child(event.clone()));
     });
+    // Pre-images for `/rollback`: same data dir as the session log.
+    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(options.store.root());
     let runner = crate::subagent::build(
         options.store,
         options.provider.clone(),
@@ -190,6 +192,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         options.context_window,
         options.pricing,
         options.network.clone(),
+        Some(snapshots.clone()),
         Some(on_child),
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
@@ -208,12 +211,12 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         app.status.provider = options.provider_name.to_string();
         app.status.model = options.model.to_string();
         app.push_notice(format!(
-            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /exit 退出 · Ctrl-C 两次退出",
+            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · /exit 退出 · Ctrl-C 两次退出",
             events.len()
         ));
     } else {
         app.push_notice(format!(
-            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /exit 退出 · Ctrl-C 两次退出"
+            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · /exit 退出 · Ctrl-C 两次退出"
         ));
     }
 
@@ -264,6 +267,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         tools: &tools,
                                         policy: options.policy,
                                         approver: approver.as_ref(),
+                                        snapshots: Some(&snapshots),
                                     },
                                     RunOptions {
                                         session_id: &session_id,
@@ -303,6 +307,37 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 }
                             }
                             UiAction::Cancel => cancel.cancel(),
+                            UiAction::Checkpoints => {
+                                let turns = snapshots.turns(&session_id).unwrap_or_default();
+                                if turns.is_empty() {
+                                    app.push_notice(
+                                        "no checkpoints yet: they are recorded when the agent writes a file"
+                                            .to_string(),
+                                    );
+                                } else {
+                                    for turn in turns {
+                                        let files = snapshots
+                                            .files(&session_id, turn)
+                                            .unwrap_or_default();
+                                        app.push_notice(format!(
+                                            "turn {turn}: {} file(s) · {}",
+                                            files.len(),
+                                            files.join(", ")
+                                        ));
+                                    }
+                                }
+                            }
+                            UiAction::Rollback(turn) => {
+                                match snapshots.restore(&session_id, turn, &options.workspace) {
+                                    Ok(report) => app.push_notice(format!(
+                                        "rolled back to before turn {turn}: restored {}, removed {} created (turns {:?})",
+                                        report.restored, report.deleted, report.turns
+                                    )),
+                                    Err(error) => {
+                                        app.push_notice(format!("rollback failed: {error}"))
+                                    }
+                                }
+                            }
                             UiAction::Quit => {
                                 // Only a live turn needs the shutdown grace: an
                                 // idle TUI must quit immediately.

@@ -105,14 +105,18 @@ impl SessionState {
 
 pub struct Agent {
     deps: Arc<Deps>,
+    /// Pre-images for session rollback tooling (one store per process).
+    snapshots: qcode_core::snapshot::SnapshotStore,
     sessions: Mutex<HashMap<String, SessionState>>,
     next_request_id: AtomicI64,
 }
 
 impl Agent {
     pub fn new(deps: Arc<Deps>) -> Self {
+        let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(deps.store.root());
         Self {
             deps,
+            snapshots,
             sessions: Mutex::new(HashMap::new()),
             next_request_id: AtomicI64::new(1),
         }
@@ -272,6 +276,7 @@ impl Agent {
                 tools: &tools,
                 policy: &deps.policy,
                 approver: &approver,
+                snapshots: Some(&self.snapshots),
             },
             RunOptions {
                 session_id: &session_id,

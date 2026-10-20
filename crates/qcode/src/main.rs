@@ -243,6 +243,18 @@ enum SessionsCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// List the checkpoints (file pre-images) a session recorded.
+    Checkpoints { id: String },
+    /// Put the workspace back to the state before a turn.
+    Rollback {
+        id: String,
+        /// Turn to roll back to: files are restored to their state before it.
+        #[arg(long, value_name = "TURN")]
+        to: u32,
+        /// Restore without asking for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -467,6 +479,10 @@ async fn cmd_run(
         Arc::new(AutoDeny)
     };
 
+    // Pre-images for rollback: every write the agent makes records what was
+    // there first.
+    let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(&data_dir);
+
     // The child registry excludes `subagent`, so nesting stops at depth one.
     let runner = subagent::build(
         &store,
@@ -479,6 +495,7 @@ async fn cmd_run(
         Some(loaded.context.window_tokens),
         pricing,
         network.clone(),
+        Some(snapshots.clone()),
         None,
     );
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
@@ -505,6 +522,7 @@ async fn cmd_run(
             tools: &tools,
             policy: &policy,
             approver: approver.as_ref(),
+            snapshots: Some(&snapshots),
         },
         RunOptions {
             session_id: &session_id,
@@ -793,6 +811,56 @@ fn cmd_sessions(
             }
             if !yes {
                 println!("dry run; pass --yes to delete");
+            }
+        }
+        SessionsCommand::Checkpoints { id } => {
+            let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
+            let turns = snapshots.turns(&id)?;
+            if turns.is_empty() {
+                println!("no checkpoints for {id}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            for turn in turns {
+                let files = snapshots.files(&id, turn)?;
+                println!("turn {turn}: {} file(s)", files.len());
+                for file in files {
+                    println!("  {file}");
+                }
+            }
+        }
+        SessionsCommand::Rollback { id, to, yes } => {
+            // The workspace being restored is the one the session recorded, not
+            // the current directory: rolling back from another repo would
+            // otherwise write files into the wrong tree.
+            let session = store
+                .list()?
+                .into_iter()
+                .find(|session| session.id == id)
+                .ok_or_else(|| format!("no such session: {id}"))?;
+            let workspace = PathBuf::from(&session.started.cwd);
+            let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
+            let turns = snapshots.turns(&id)?;
+            let affected: Vec<u32> = turns.into_iter().filter(|turn| *turn >= to).collect();
+            if affected.is_empty() {
+                println!("nothing recorded at or after turn {to}; nothing to do");
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!(
+                "would restore {} turn(s) into {}",
+                affected.len(),
+                workspace.display()
+            );
+            if !yes {
+                println!("dry run; pass --yes to restore");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let report = snapshots.restore(&id, to, &workspace)?;
+            println!(
+                "restored {} file(s), removed {} created file(s) (turns {:?})",
+                report.restored, report.deleted, report.turns
+            );
+            for refused in &report.refused {
+                println!("skipped {refused}");
             }
         }
     }

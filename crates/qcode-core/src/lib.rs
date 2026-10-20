@@ -13,6 +13,7 @@ pub mod history;
 pub mod network;
 pub mod policy;
 pub mod provider;
+pub mod snapshot;
 pub mod state;
 pub mod store;
 pub mod todo;

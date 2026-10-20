@@ -1226,6 +1226,41 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 `tools,resources,prompts` 时四个额外工具出现且 `read_resource` 返回 stub 正文、
 缺 `uri` 报错、`get_prompt` 返回渲染后的消息；不设时仍然只有 7 个工具。
 
+## ADR-0034：checkpoint / rollback 只记录「即将被改的文件」（2026-10-20）
+
+**背景**：agent 改坏代码时，`sessions fork` 只能分叉对话，不能把工作区还原。
+
+**决定**
+
+1. checkpoint 不是工作区快照，而是**写入前的文件副本**：引擎在每个工具调用执行前，按工具名
+   推断它将要改哪些路径（`write_hints`：`write_file`/`edit_file` 的 `path`，`apply_patch`
+   里的 `*** Update/Add/Delete File:` 与 `*** Move to:`），把当前内容存进
+   `<data-dir>/snapshots/<session>/<turn>/files/<相对路径>`；不存在的文件记进同目录的
+   `absent.txt`。同一 turn 内同一路径只记第一次，那才是回滚要还原的状态。
+2. 回滚到 turn N = 取 `>= N` 的每条路径**最早**的那份副本写回，`absent` 的路径删除；
+   没被 agent 碰过的文件不动。
+3. 入口：`qc sessions checkpoints <id>`（按 turn 列出记录）、
+   `qc sessions rollback <id> --to <turn> --yes`；TUI 里 `/checkpoint` 与 `/rollback <turn>`。
+   CLI 回滚用的是**会话记录的 cwd**，不是当前目录。
+4. 引擎通过 `TurnContext.snapshots: Option<&SnapshotStore>` 拿到 store：`qc run`、TUI、
+   `qc acp` 都传，subagent 继承同一个 store；记录失败只 warn，绝不因此让写入失败。
+5. 拒绝越界路径：相对路径先拼 workspace 再规范化，`..` 与工作区外的绝对路径直接丢弃。
+6. 回滚不碰 git：未提交改动会被文件内容覆盖。这是有意的——它是「回到某个 turn 之前」的
+   文件级还原，不是 git 操作。
+
+**边界（必须知道）**
+
+- 只有三个内置写工具被记录。`run_shell` 里的 `Set-Content`/`sed -i`、MCP 工具的写入、
+  子进程的副作用**都不会**被回滚——引擎不知道它们动了哪些文件。
+- 没有快照 GC：每次写入都留一份副本，长期使用要手工清 `<data-dir>/snapshots`。
+- 目标路径当前是目录时跳过并报告，不递归删除。
+- 只还原文件内容，不还原权限位、符号链接目标与 mtime。
+
+**验证**：`qcode-core` 6 条（提示路径解析、新建文件记 absent 并被删除、按 turn 取最早副本、
+越界路径丢弃、同 turn 首写优先、缺失会话无副作用）；`qcode-acp` 新增 1 条端到端
+（脚本让 provider 调 `write_file`，断言 store 出现 turn 1 的 absent 记录，回滚后文件被删除）；
+`qcode-tui` 1 条（`/checkpoint` 与 `/rollback 3` 解析成 UiAction，缺参数给提示）。
+
 
 
 

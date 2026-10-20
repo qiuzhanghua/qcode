@@ -171,6 +171,9 @@ pub struct TurnContext<'a> {
     pub tools: &'a ToolRegistry,
     pub policy: &'a Policy,
     pub approver: &'a dyn Approver,
+    /// Pre-images of files the agent is about to write, so a later rollback can
+    /// put the workspace back. `None` disables checkpointing for this turn.
+    pub snapshots: Option<&'a crate::snapshot::SnapshotStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -613,6 +616,27 @@ where
                 &mut on_event,
             )?;
             return Err(EngineError::NoProgress { tool, rounds });
+        }
+
+        // Capture the pre-image of everything these writers are about to touch,
+        // before they touch it. A snapshot failure must not fail the turn: the
+        // write still has to happen.
+        if let Some(snapshots) = ctx.snapshots {
+            for call in &calls {
+                let paths = crate::snapshot::write_hints(&call.name, &call.arguments);
+                if paths.is_empty() {
+                    continue;
+                }
+                if let Err(error) =
+                    snapshots.record(options.session_id, turns, &options.workspace, &paths)
+                {
+                    tracing::warn!(
+                        %error,
+                        tool = %call.name,
+                        "cannot record a checkpoint pre-image"
+                    );
+                }
+            }
         }
 
         if execute_calls(

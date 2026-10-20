@@ -106,6 +106,10 @@ pub enum UiAction {
     },
     Cancel,
     Quit,
+    /// /checkpoint: list the recorded checkpoints for this session.
+    Checkpoints,
+    /// /rollback N: restore the workspace to the state before turn N.
+    Rollback(u32),
 }
 
 /// How the status bar renders context usage.
@@ -573,6 +577,21 @@ impl App {
             Some((command, argument)) => (command, argument.trim()),
             None => (raw, ""),
         };
+
+        if command == "/checkpoint" {
+            return Some(UiAction::Checkpoints);
+        }
+
+        if command == "/rollback" {
+            let turn = argument.parse::<u32>().map_err(|_| ()).ok();
+            return match turn {
+                Some(turn) => Some(UiAction::Rollback(turn)),
+                None => {
+                    self.push_notice("usage: /rollback <turn> (see /checkpoint)".to_string());
+                    None
+                }
+            };
+        }
 
         if command == "/subagents" {
             self.handle_subagents(argument);
@@ -1111,6 +1130,40 @@ mod tests {
                 "{command} should quit"
             );
         }
+    }
+
+    #[test]
+    fn slash_checkpoint_and_rollback_are_local_actions() {
+        let mut app = App::new("mock", "mock-1");
+        type_text(&mut app, "/checkpoint");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Some(UiAction::Checkpoints)
+        );
+
+        type_text(&mut app, "/rollback 3");
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            Some(UiAction::Rollback(3))
+        );
+
+        // A turn number is required; the UI explains instead of guessing.
+        type_text(&mut app, "/rollback");
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), None);
+        let notices: Vec<&str> = app
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Notice(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("/rollback <turn>")),
+            "{notices:?}"
+        );
     }
 
     #[test]

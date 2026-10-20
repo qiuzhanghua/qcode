@@ -16,6 +16,7 @@ use qcode_core::event::{Event, SessionStarted};
 use qcode_core::network::SharedNetwork;
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
+use qcode_core::snapshot::SnapshotStore;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_tools::subagent::{SubagentOutcome, SubagentRequest, SubagentRunner};
@@ -35,6 +36,7 @@ pub struct EngineSubagent {
     context_window: Option<u64>,
     pricing: Option<Pricing>,
     network: Option<SharedNetwork>,
+    snapshots: Option<SnapshotStore>,
     on_event: Option<ChildEventSink>,
 }
 
@@ -54,6 +56,7 @@ pub fn build(
     context_window: Option<u64>,
     pricing: Option<Pricing>,
     network: Option<SharedNetwork>,
+    snapshots: Option<SnapshotStore>,
     on_event: Option<ChildEventSink>,
 ) -> Arc<dyn SubagentRunner> {
     Arc::new(EngineSubagent {
@@ -67,6 +70,7 @@ pub fn build(
         context_window,
         pricing,
         network,
+        snapshots,
         on_event,
     })
 }
@@ -121,6 +125,7 @@ impl SubagentRunner for EngineSubagent {
                 tools: &self.tools,
                 policy: &self.policy,
                 approver: self.approver.as_ref(),
+                snapshots: self.snapshots.as_ref(),
             },
             options,
             move |event| {
@@ -181,6 +186,7 @@ mod tests {
                 output_usd_per_mtok: 2.0,
                 ..Pricing::default()
             }),
+            None,
             None,
             Some(sink),
         );
