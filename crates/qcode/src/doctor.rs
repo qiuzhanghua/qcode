@@ -202,13 +202,14 @@ impl Doctor {
         }
 
         let dir = crate::resolve_data_dir(data_dir.clone());
-        let egress = match crate::build_egress(config, &dir, resolved.base_url.as_deref()).await {
-            Ok(egress) => egress,
-            Err(err) => {
-                self.fail("connectivity", format!("cannot start egress proxy: {err}"));
-                return;
-            }
-        };
+        let egress =
+            match qcode_kernel::build_egress(config, &dir, resolved.base_url.as_deref()).await {
+                Ok(egress) => egress,
+                Err(err) => {
+                    self.fail("connectivity", format!("cannot start egress proxy: {err}"));
+                    return;
+                }
+            };
         let provider = match crate::build_provider(
             &resolved,
             egress.as_ref().map(|egress| egress.proxy_url()),

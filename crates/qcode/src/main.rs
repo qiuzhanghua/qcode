@@ -25,7 +25,6 @@ use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_kernel::config;
 use qcode_mcp::McpConfig;
-use qcode_net::{Egress, EgressOptions, UnknownPolicy};
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::Sandbox;
@@ -460,7 +459,8 @@ async fn cmd_run(
         print_event(event, include_raw);
     }
 
-    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let egress =
+        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let network: Option<SharedNetwork> = egress
         .as_ref()
         .map(|egress| egress.clone() as SharedNetwork);
@@ -630,7 +630,8 @@ async fn cmd_acp(
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
 
-    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let egress =
+        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let network: Option<SharedNetwork> = egress
         .as_ref()
         .map(|egress| egress.clone() as SharedNetwork);
@@ -712,7 +713,8 @@ async fn cmd_tui(
     let skills = load_skills(&loaded.skills, &workspace);
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
-    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let egress =
+        qcode_kernel::build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let network: Option<SharedNetwork> = egress
         .as_ref()
         .map(|egress| egress.clone() as SharedNetwork);
@@ -1456,41 +1458,6 @@ fn load_config(
 /// `--approval-policy` is an explicit, auditable decision, so its rules replace
 /// the config's `[[approval.rules]]` instead of extending them. Without the
 /// flag the config rules (or the built-in defaults) apply unchanged.
-async fn build_egress(
-    loaded: &config::Config,
-    data_dir: &Path,
-    base_url: Option<&str>,
-) -> Result<Option<Arc<Egress>>, Box<dyn std::error::Error>> {
-    if !loaded.network.enabled {
-        return Ok(None);
-    }
-    let mut allow = loaded.network.allow.clone();
-    if let Some(base_url) = base_url
-        && let Ok(url) = reqwest::Url::parse(base_url)
-        && let Some(host) = url.host_str()
-    {
-        let port = url.port_or_known_default().unwrap_or(443);
-        allow.push(format!("{host}:{port}"));
-    }
-    let unknown = match loaded.network.unknown {
-        config::UnknownHost::Allow => UnknownPolicy::Allow,
-        config::UnknownHost::Ask | config::UnknownHost::Deny => UnknownPolicy::Deny,
-    };
-    let audit_path = loaded
-        .network
-        .audit
-        .then(|| data_dir.join("logs").join("network.jsonl"));
-    let egress = Egress::start(EgressOptions {
-        allow,
-        allow_private: loaded.network.allow_private,
-        unknown,
-        audit_path,
-    })
-    .await?;
-    tracing::info!(port = egress.port(), "egress proxy started");
-    Ok(Some(Arc::new(egress)))
-}
-
 fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
     if let Some(path) = explicit {
         return path;
