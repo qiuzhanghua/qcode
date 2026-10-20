@@ -794,6 +794,7 @@ fn spawn_confined(
     args: &[OsString],
     cwd: &Path,
 ) -> io::Result<u32> {
+    let program = resolve_program(program.as_os_str());
     let mut command_line = quote_arg(program.as_os_str());
     for arg in args {
         command_line.push(' ');
@@ -842,7 +843,11 @@ fn spawn_confined(
             &mut process,
         );
         if ok == 0 {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            return Err(io::Error::other(format!(
+                "start {}: {err}",
+                program.display()
+            )));
         }
 
         // Kill the whole tree when the helper dies, including on a panic.
@@ -923,6 +928,40 @@ impl Drop for InheritedHandle {
             unsafe { CloseHandle(self.handle) };
         }
     }
+}
+
+/// Resolves `program` against `PATH` only.
+///
+/// `CreateProcessAsUserW` searches the current directory before `PATH`, and the
+/// current directory here is the workspace the agent is working in, so a file
+/// named `sh.exe` in the repository would win over the real shell. Resolving
+/// explicitly keeps the workspace out of the lookup.
+fn resolve_program(program: &OsStr) -> PathBuf {
+    let path = Path::new(program);
+    let text = program.to_string_lossy();
+    if path.is_absolute() || text.contains(['\\', '/']) {
+        return path.to_path_buf();
+    }
+    let mut names = vec![program.to_os_string()];
+    if path.extension().is_none() {
+        let mut with_exe = program.to_os_string();
+        with_exe.push(".exe");
+        names.push(with_exe);
+    }
+    if let Some(entries) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&entries) {
+            if dir.as_os_str().is_empty() || dir == Path::new(".") {
+                continue;
+            }
+            for name in &names {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 /// Quotes one argument for a `CreateProcessW` command line.
