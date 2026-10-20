@@ -115,7 +115,9 @@ make release         # 门禁通过后打全部平台归档
 ```
 
 `--release`（PowerShell 版 `-Release`）在归档之外再产出自更新器消费的裸二进制
-`dist/qc-<version>-<os>-<arch>[.exe]` 与 `dist/SHA256SUMS`。打 tag（`v*`）由
+`dist/qc-<version>-<os>-<arch>[.exe]`（精简版，20 MB）、
+`dist/qcode-desktop-<version>-windows-<arch>.exe`（带 GUI 特性，约 47 MB）与 `dist/SHA256SUMS`。
+桌面版目前只出 Windows 产物；`qc gui` 在精简版里会提示下载桌面版（ADR-0038）。打 tag（`v*`）由
 `.github/workflows/release.yml` 跑完整矩阵、重算校验和、渲染安装清单并发布：
 Homebrew formula / Scoop / winget 三件套由 `packaging/render.sh` 从 `dist/` 里
 **实际归档的字节**生成（模板在 `packaging/`，成品只存在于 release 与各仓库 PR 里）。
