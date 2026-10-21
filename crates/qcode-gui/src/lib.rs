@@ -280,6 +280,10 @@ struct Shell {
     /// Turn selected by the rail/header.
     selected_turn: Option<usize>,
     turn_picker_open: bool,
+    /// Hide every turn's process rows (Collapse all).
+    collapse_all: bool,
+    /// Force every reasoning/tool row to its one-line form (Collapse to list).
+    collapse_to_list: bool,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -379,6 +383,8 @@ impl Shell {
             expanded_code: HashSet::new(),
             selected_turn: None,
             turn_picker_open: false,
+            collapse_all: false,
+            collapse_to_list: false,
             last_blocks,
             backend,
             sessions,
@@ -396,7 +402,10 @@ impl Shell {
         self.expanded_reasoning.clear();
         self.collapsed_reasoning.clear();
         self.collapsed_tools.clear();
+        self.collapsed_reasoning.clear();
         self.expanded_code.clear();
+        self.collapse_all = false;
+        self.collapse_to_list = false;
         self.units = display_units(&self.app);
         let count = self.units.len();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
@@ -658,6 +667,46 @@ impl Shell {
         }
     }
 
+    fn jump_to_last(&mut self, cx: &mut Context<Self>) {
+        let Some(last) = self.app.turns.len().checked_sub(1) else {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_end(cx));
+            return;
+        };
+        self.selected_turn = Some(last);
+        self.turn_picker_open = false;
+        if let Some(unit) = self.turn_unit_index(last) {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_item(unit, cx));
+        } else {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_end(cx));
+        }
+        cx.notify();
+    }
+
+    fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
+        self.collapse_all = true;
+        self.collapse_to_list = true;
+        self.expanded_reasoning.clear();
+        self.expanded_code.clear();
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
+        cx.notify();
+    }
+
+    fn collapse_to_list(&mut self, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
+        self.collapse_all = false;
+        self.collapse_to_list = true;
+        self.expanded_reasoning.clear();
+        self.expanded_code.clear();
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
+        cx.notify();
+    }
+
     fn set_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
         self.mode = mode;
         self.prefs.display_mode = mode.as_str().to_string();
@@ -670,17 +719,16 @@ impl Shell {
     }
 
     fn reasoning_expanded(&self, block: usize) -> bool {
-        if self.collapsed_reasoning.contains(&block) {
+        if self.collapse_all || self.collapse_to_list || self.collapsed_reasoning.contains(&block) {
             false
-        } else if self.expanded_reasoning.contains(&block) {
-            true
         } else {
-            self.mode == DisplayMode::Detailed
+            self.expanded_reasoning.contains(&block)
         }
     }
 
     fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
+        self.collapse_to_list = false;
         if self.reasoning_expanded(block) {
             self.expanded_reasoning.remove(&block);
             self.collapsed_reasoning.insert(block);
@@ -707,6 +755,7 @@ impl Shell {
 
     fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
+        self.collapse_to_list = false;
         if self.tool_expanded(call_id) {
             self.collapsed_tools.insert(call_id.to_string());
             self.app.set_tool_expanded(call_id, false);
@@ -1035,6 +1084,32 @@ impl Shell {
                     .child(div().w(px(200.0)).child(
                         Input::new(&self.model_input).aria_label("Model for the next turn"),
                     )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .pb_1()
+                    .child(
+                        Button::new("jump-to-last")
+                            .label("Jump to Last")
+                            .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
+                    )
+                    .child(
+                        Button::new("collapse-all")
+                            .label("Collapse all")
+                            .on_click(cx.listener(|this, _, _window, cx| this.collapse_all(cx))),
+                    )
+                    .child(
+                        Button::new("collapse-to-list")
+                            .label("Collapse to list")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.collapse_to_list(cx);
+                            })),
+                    ),
             )
             .children(self.turn_picker_open.then(|| {
                 let mut picker = div().flex().flex_row().gap_1().px_2().pb_1();
@@ -1662,9 +1737,10 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 
     let has_process =
         !turn.process.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
-    let show_process = shell.mode != DisplayMode::Compact
-        || turn.running()
-        || turn.status == Some(qcode_core::event::TurnStatus::Failed);
+    let show_process = !shell.collapse_all
+        && (shell.mode != DisplayMode::Compact
+            || turn.running()
+            || turn.status == Some(qcode_core::event::TurnStatus::Failed));
     let mut process = div().flex().flex_col().gap_0().w_full().items_start();
 
     if has_process && show_process {

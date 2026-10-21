@@ -372,3 +372,11 @@ trait Backend {
 - 思考行显示首行预览；工具行使用中文标签与对应图标，成功不再显示 `ok`。
 - 最终回答使用独立字号（15/24），与 13/20 的过程行区分。
 - Standard 折叠细节、Detailed 默认展开、Compact 隐藏过程；流式 reasoning 在首次 delta 时占位，保持时间顺序。
+
+### 默认折叠与批量操作（2026-10-21）
+
+- 运行中的思考/工具默认不展开；Standard/Detailed 都以单行列表为默认。
+- Header 下方并排：Jump to Last、Collapse all、Collapse to list。
+- Collapse all：隐藏所有 Turn 的过程行，保留输入/最终回答。
+- Collapse to list：保留过程列表（思考+运行命令），但强制所有详情收起。
+- 点击单行会取消 Collapse to list 的强制收起。
