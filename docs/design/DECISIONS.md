@@ -2174,6 +2174,9 @@ P0 只注册以下命令：
 
 ## ADR-0044：Session 浏览器最简——冻结当前 workspace 平铺列表（2026-10-21）
 
+> 2026-10-21 追加：Task/Root 方向确认后，本 ADR 的 workspace 平铺列表只作为过渡实现；
+> 新的领域模型见 ADR-0047。不要继续在这个浏览器上增加树形、搜索或 workspace 分组。
+
 **背景**：DSH 的 Session 浏览器有分组、树形、pin、archive、fork、搜索、状态点、水位线、
 拖拽排序、subagent 目录和 Schedule 标记。这些能力依赖一套稳定的 Workspace/Session 领域
 模型；而 qcode 后续还会发生重大需求变化（工作区、远程、会话归属与协作形态都可能重做）。
@@ -2486,3 +2489,186 @@ Allow all run_shell for this session  [danger]
 - 审批从“每次一个决定”变成“决定 + 作用域”，UI 和测试增加。
 - `run_shell` 的默认建议不再是 Always；这会改变现有用户习惯。
 - 若不做 C，长任务仍可能在不同 Turn 反复询问；需要靠 Turn grant 和低风险策略缓解。
+
+## ADR-0047（草案）：Task / Root 领域模型——任务为核心、目录是可授权根（2026-10-21）
+
+**状态**：方向已确认（Task:Session = 1:1；动态根；`@root` 别名；Windows 只读 = 不可写；
+保留 Workspace 作为兼容概念）；细节待确认，不实现。
+
+**背景**：当前产品以 Workspace 为顶层，Workspace 一定绑定一个目录，Session 挂在
+Workspace 下。这个模型有两个硬伤：
+
+1. **路径就是身份**：目录改名/移动后，Session 找不到原来的工作区。
+2. **任务可能跨目录**：开发工具目录要读写、代码目录要读写、参考项目/文档只能读；任务也可
+   完全不绑定目录，只是问问题。
+
+因此把顶层从 Workspace 改为 **Task**，把目录降级为 Task 的 **Root**（可授权根）。
+
+**术语**
+
+- **Task**：一次用户任务，用户可见的顶层对象。
+- **Session**：Task 的对话/事件日志视图；本 ADR 中 Task:Session = **1:1**。
+- **Root**：Task 挂载的一个目录，带 `read-only` / `read-write`、稳定 ID 和别名。
+- **Workspace**：兼容术语；旧模型的一个 Workspace 迁移为 Task 的一个 primary Root。
+
+## 1. Task 与 Session 1:1
+
+**决定**
+
+```text
+Task
+  id            // 同时也是 Session id（同一 ULID）
+  title
+  roots: Vec<Root>
+  primary_root  // 可选
+  created_at / updated_at
+  turn log
+```
+
+- 一个 Task 只有一个 Session；没有 `task.sessions` 列表。
+- `task_id == session_id`，避免两套 ID 和映射。
+- Task 是元数据 + Root 配置 + Turn 日志的聚合；Session 是它的运行时/投影视图。
+- 子 agent（subagent / background job）的 Session 是**子会话**，不是用户可见 Task，也不进入
+  Task 浏览器。
+- 不做 Task 模板、一个 Task 多会话、Task fork、Task 分享；这些都会破坏 1:1 简化。
+
+**理由**
+
+- 1:1 让存储、恢复、浏览器、URL/链接都只需一个 ID。
+- “任务”本身就是对话边界；需要另一条独立对话时新建 Task。
+- 子会话仍可有自己的日志，但不参与用户级 1:1 约束。
+
+**后果**
+
+- 不能在一个任务里保留多个并行对话；这是有意的简化。
+- 如果未来需要 Task 分叉，必须新 ADR 把 1:1 改成 1:N；不要在现有模型上偷偷加。
+- Browser 的列表单位从 Session 变成 Task；ADR-0044 的 workspace 平铺只作过渡。
+
+## 2. Root 模型
+
+```text
+Root
+  id            // 稳定 ID，不是路径
+  label         // 任务内唯一，例如 code / docs / reference
+  path          // 可变
+  access        // read-only | read-write
+  primary       // 是否 shell 默认 cwd；最多一个
+```
+
+规则：
+
+- 一个 Task 可以有 **0..N 个 Root**。
+- `roots = []` 是合法的纯问答 Task：文件工具和 shell 不可用；仍可聊天、使用其他非文件工具。
+- 每个 Root 的 `label` 在 Task 内唯一；`primary` 最多一个。
+- 没有 primary 但有 Root 时，shell 不可用或要求用户选 primary；v1 建议要求显式 primary。
+- Root 的路径必须存在且是目录；添加时校验，不自动创建。
+- v1 限制最多 8 个 Root；不允许 Root 互相嵌套/重叠。
+
+### 2.1 Root 身份与目录改名
+
+- Root 的身份是 `Root.id`，不是 `path`。
+- 目录改名/移动后，Task 仍持有同一个 Root ID；用户通过 **relink** 指向新路径。
+- 路径缺失时标记 `missing`，不自动猜测新目录，不静默新建 Root。
+- 正在运行的 shell 若 cwd 失效，停止并在下一个 Turn 重建；不要静默切换路径。
+- Session/Turn 日志记录 Root ID + 当时的 path 版本，便于审计和回放。
+
+### 2.2 Root 别名与模型可见路径
+
+- 模型和工具使用 `@label/path` 形式，例如 `@code/src/main.rs`、`@docs/README.md`。
+- 兼容绝对路径：绝对路径必须 canonicalize 后落在某个 Root 内，否则拒绝。
+- Shell 里使用真实绝对路径；系统提示给出 Root 别名到绝对路径的映射。
+- 文件工具输出使用 `@label/path` 显示；避免同一路径在不同 Root 下产生歧义。
+- 没有 Root 的 Task 不接受 `@...` 路径；文件工具直接报告“no roots”。
+
+### 2.3 只读语义
+
+- `read-only`：文件工具可读、不可写；shell 以只读方式挂载。
+- `read-write`：文件工具可读写；shell 可写。
+- 写只读根：直接拒绝，不弹“是否允许”的审批；要写就显式把 Root 改成 RW（用户操作）。
+- 越界路径：拒绝；不自动提权。
+- 符号链接：先 canonicalize；只读根里的 symlink 不能指向可写根绕过检查。
+- 临时目录：系统临时目录仍可写（构建缓存需要）；是否允许 task 私有 temp 由 sandbox 配置，
+  不把它算作 Root。
+
+### 2.4 Windows 的只读语义
+
+- Windows 当前 ACL 后端只能限制**写**，不能限制读。
+- 因此 Windows v1 的 `read-only` 语义是：**不可写，但仍可读**。
+- UI/文档必须明确这一点；不能承诺“参考目录不可读”。
+- 需要“不可读”时，Windows 暂不支持，或另立 ADR 用 AppContainer/Job Object 等实现。
+
+## 3. 动态 Root 变更
+
+用户确认：Root 可以在运行中增删/改权限，但必须显式审批，并在下一个 Turn 生效。
+
+规则：
+
+- 添加 Root：用户选择目录、label、access、primary；这是 **Task 配置变更**，不是工具审批。
+- 删除 Root：从下一个 Turn 起不可见；正在运行的 shell 在下一个 Turn 重建。
+- RO ↔ RW：必须显式确认；下一个 Turn 生效。
+- relink：更新 path；若当前 shell 正在使用旧路径，停止当前 shell。
+- Root 变更写入 Task 的审计事件；Session 记录变更前后的快照。
+- 模型不能自行添加/修改 Root；v1 只允许用户界面操作。
+- 当前 Turn 仍使用 Turn 开始时的 Root 权限快照；不能在 Turn 中途扩大权限。
+- Root 变更后 sandbox 必须重建；不能复用旧进程的权限。
+
+## 4. 权限执行分两层
+
+1. **逻辑层**：文件工具、路径解析、Root access 检查。
+2. **OS 层**：`run_shell` 的 sandbox（macOS SBPL、Linux bwrap/Landlock、Windows ACL）。
+
+两层必须同时实现：
+
+- 只改 sandbox，`write_file` 会绕过。
+- 只改文件工具，shell 子进程会绕过。
+
+具体 sandbox 能力矩阵、SBPL/`--ro-bind`/Landlock 的多根实现放在 **ADR-0048**。
+
+## 5. 与审批模型的关系
+
+- Root access 是**权限配置**，不是 ADR-0046 的 grant。
+- 添加/修改 Root 必须由用户显式操作，并可审计；不能用 `Allow once` 绕过。
+- 在 RW Root 内是否还要逐条审批，由 ADR-0046 的 Turn/Session grant 决定；本 ADR 不规定。
+- RO Root 的写入是拒绝，不是 Ask；否则用户会误以为“批准一次就能写只读目录”。
+
+## 6. Workspace 兼容与迁移
+
+- `Workspace` 保留为兼容术语，但不再是所有权边界。
+- 旧 Workspace 会话迁移为 Task：
+  - 生成 `task_id`（可与旧 session id 相同或新 ULID）；
+  - 旧 cwd 成为唯一 Root，label = `workspace`，access = `read-write`，primary = true；
+  - Root ID 新生成；旧 Session 记录建立映射。
+- 旧路径失效时进入 `missing`，要求 relink；不按 basename 自动匹配。
+- UI 可以继续把 primary Root 显示为 “Workspace”，但内部模型是 Task + Root。
+- ADR-0044 的平铺浏览器只作为过渡；新的 Task 浏览器另立 ADR。
+
+## 7. 非目标
+
+- 一个 Task 多个 Session、Task 模板、Task fork/分享。
+- Root 自动发现/自动重命名匹配。
+- 重叠 Root、Root 内嵌套 Root、跨设备同步。
+- Windows 的“不可读”只读语义。
+- 模型自主修改 Root 权限。
+- 完整 sandbox 后端实现（见 ADR-0048）。
+- 远程/多用户 Task 所有权。
+
+## 8. 工作量与阶段
+
+- 领域模型 + 存储/migration：约 3–5 天。
+- 文件工具多 Root + `@alias` 路径：约 3–5 天。
+- Root 变更/审计/快照：约 2–3 天。
+- Task 浏览器（替代 ADR-0044）：约 2–4 天。
+- macOS/Linux 多根 sandbox：约 3–5 天。
+- Windows 写限制与文档：约 1–2 天。
+
+v1（单 Root 兼容 + 无根 Task + 最多 8 Root，macOS/Linux 完整，Windows 只写限制）约
+**2–3 周**；完整跨平台/迁移/安全评审更久。
+
+**推荐实现顺序**
+
+1. Task/Turn 日志 1:1 + 单 Root 迁移（不破坏现有 usage）。
+2. 无根 Task + `@alias` + 文件工具能力检查。
+3. 多 Root 逻辑权限 + RO 拒绝。
+4. macOS/Linux 多根 sandbox。
+5. Root 动态变更/relink/审计。
+6. Task 浏览器；最后再删 ADR-0044 的 workspace 假设。
