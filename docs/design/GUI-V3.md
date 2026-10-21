@@ -431,3 +431,15 @@ trait Backend {
   - 过滤器仍按当前 workspace 的 primary root
 - 底层仍使用 `SessionStore`、`session_started` 和事件字段 `session`；Task 是用户层聚合。
 - `Backend::sessions` 已改为 `Backend::tasks`，旧 `workspace_sessions` 仅保留为兼容/测试辅助。
+
+### Root 显示/编辑（2026-10-21）
+
+- Task 侧栏显示 active Task 的 Roots：`@label · RO/RW · primary`、截断路径。
+- 可操作：
+  - `+ Root`：原生目录选择器，自动生成 `root-N` slug
+  - `RO/RW`：切换访问模式
+  - `★/☆`：设置 primary root
+  - `×`：移除 Root
+- Root 变更写入 `roots_changed`，刷新 Task 视图。
+- 运行中隐藏编辑控件，并提示 Stop 后再改。
+- 当前仅持久化/Root UI；执行层（文件工具/sandbox）仍只使用原 workspace，下一步接入 RootResolver。
