@@ -20,7 +20,7 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check perf release archive clean $(PLATFORMS)
+.PHONY: all native list check perf release archive clean gui $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -49,3 +49,10 @@ clean:
 
 $(PLATFORMS):
 	./build-for-release $@
+
+# Build a GUI-enabled qc without letting the next plain `cargo build` /
+# `make check` overwrite it. The normal target/debug/qc is the lean binary.
+gui:
+	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode --features gui
+	cp target/debug/qc target/debug/qc-gui
+	@echo "GUI binary: ./target/debug/qc-gui gui"
