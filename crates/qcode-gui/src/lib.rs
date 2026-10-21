@@ -1073,6 +1073,16 @@ impl Render for Shell {
             } else {
                 "Chat"
             })
+            .on_key_down({
+                let entity = cx.entity();
+                move |event, window, cx| {
+                    if event.keystroke.key == "enter" && event.keystroke.modifiers.platform {
+                        entity.update(cx, |shell, cx| {
+                            shell.send_prompt(window, cx);
+                        });
+                    }
+                }
+            })
             .on_action(cx.listener(|this, _: &PasteImage, _window, cx| this.paste_clipboard(cx)))
             .on_action(
                 cx.listener(|this, _: &ApproveOnce, _window, cx| this.answer(true, false, cx)),
