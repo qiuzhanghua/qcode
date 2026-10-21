@@ -50,6 +50,7 @@ use crate::gui_prefs::GuiPreferences;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
+use qcode_core::task::Task;
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
 use std::collections::HashSet;
@@ -131,13 +132,36 @@ pub fn workspace_sessions(
     sessions
 }
 
+/// A Task view for the sidebar. Task:Session is 1:1, but the row keeps the
+/// loaded log summary alongside the Task aggregate.
+#[derive(Debug, Clone)]
+pub struct TaskRow {
+    pub task: Task,
+    pub summary: SessionSummary,
+}
+
+/// Task rows shown in the sidebar: only the current workspace, newest first.
+#[doc(hidden)]
+pub fn workspace_tasks(mut tasks: Vec<TaskRow>, workspace: &Path) -> Vec<TaskRow> {
+    let workspace = workspace.display().to_string();
+    tasks.retain(|row| {
+        row.task
+            .primary_root()
+            .map(|root| root.path.display().to_string() == workspace)
+            .unwrap_or(false)
+            || row.summary.started.cwd == workspace
+    });
+    tasks.sort_by(|left, right| right.summary.started_at.cmp(&left.summary.started_at));
+    tasks
+}
+
 /// Everything the window needs from a kernel, local or remote.
 ///
 /// P0 has exactly one implementation. The methods are synchronous because the
 /// local backend only sends commands; the event channel carries the output.
 pub trait Backend {
     fn workspace(&self) -> &Path;
-    fn sessions(&self) -> Result<Vec<SessionSummary>, String>;
+    fn tasks(&self) -> Result<Vec<TaskRow>, String>;
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {
         None
@@ -187,9 +211,20 @@ impl Backend for LocalBackend {
         &self.workspace
     }
 
-    fn sessions(&self) -> Result<Vec<SessionSummary>, String> {
-        let sessions = self.store.list().map_err(|error| error.to_string())?;
-        Ok(workspace_sessions(sessions, &self.workspace))
+    fn tasks(&self) -> Result<Vec<TaskRow>, String> {
+        let summaries = self.store.list().map_err(|error| error.to_string())?;
+        let tasks = summaries
+            .into_iter()
+            .filter_map(|summary| {
+                let task = self
+                    .store
+                    .task(&summary.id)
+                    .or_else(|_| summary.legacy_task())
+                    .ok()?;
+                Some(TaskRow { task, summary })
+            })
+            .collect();
+        Ok(workspace_tasks(tasks, &self.workspace))
     }
 
     fn title(&self, id: &str) -> Option<String> {
@@ -289,7 +324,7 @@ struct Shell {
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
-    sessions: Vec<SessionSummary>,
+    tasks: Vec<TaskRow>,
     titles: std::collections::BTreeMap<String, String>,
     active: Option<String>,
     workspace: String,
@@ -310,16 +345,16 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Self {
         let workspace = backend.workspace().display().to_string();
-        let sessions = backend.sessions().unwrap_or_else(|error| {
-            app.push_notice(format!("cannot list sessions: {error}"));
+        let tasks = backend.tasks().unwrap_or_else(|error| {
+            app.push_notice(format!("cannot list tasks: {error}"));
             Vec::new()
         });
-        let titles = session_titles(&sessions, backend.as_ref());
+        let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
         prefs.record_workspace(Path::new(&workspace));
         let mut active = None;
         if let Some(id) = prefs.last_session.clone()
-            && sessions.iter().any(|session| session.id == id)
+            && tasks.iter().any(|row| row.task.id == id)
         {
             match backend.resume(&id) {
                 Ok(events) => {
@@ -387,7 +422,7 @@ impl Shell {
             collapse_to_list: false,
             last_blocks,
             backend,
-            sessions,
+            tasks,
             titles,
             active,
             workspace,
@@ -426,15 +461,15 @@ impl Shell {
         self.last_blocks = count;
     }
 
-    fn refresh_sessions(&mut self) {
-        match self.backend.sessions() {
-            Ok(sessions) => {
-                self.titles = session_titles(&sessions, self.backend.as_ref());
-                self.sessions = sessions;
+    fn refresh_tasks(&mut self) {
+        match self.backend.tasks() {
+            Ok(tasks) => {
+                self.titles = task_titles(&tasks, self.backend.as_ref());
+                self.tasks = tasks;
             }
             Err(error) => self
                 .app
-                .push_notice(format!("cannot refresh sessions: {error}")),
+                .push_notice(format!("cannot refresh tasks: {error}")),
         }
     }
 
@@ -468,7 +503,7 @@ impl Shell {
         self.active = None;
         self.diff = None;
         self.approvals = ApprovalQueue::default();
-        self.refresh_sessions();
+        self.refresh_tasks();
         self.app.push_notice("new session");
         self.reset_scroller(cx);
         if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
@@ -501,7 +536,7 @@ impl Shell {
                 self.diff = None;
                 self.approvals = ApprovalQueue::default();
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
-                self.refresh_sessions();
+                self.refresh_tasks();
             }
             Err(error) => {
                 self.resetting = false;
@@ -620,7 +655,7 @@ impl Shell {
                     }
                     changed = true;
                     if turn_ended {
-                        self.refresh_sessions();
+                        self.refresh_tasks();
                     }
                 }
                 UiEvent::Delta(delta) => {
@@ -636,7 +671,7 @@ impl Shell {
                         self.app
                             .push_notice(format!("cannot save gui.json: {error}"));
                     }
-                    self.refresh_sessions();
+                    self.refresh_tasks();
                 }
                 UiEvent::TurnFailed { message } => {
                     self.app.status.running = false;
@@ -958,31 +993,32 @@ impl Shell {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sessions = self
-            .sessions
+        let tasks = self
+            .tasks
             .iter()
-            .map(|session| {
-                let id = session.id.clone();
-                let marker = if self.active.as_deref() == Some(session.id.as_str()) {
+            .map(|row| {
+                let id = row.task.id.clone();
+                let marker = if self.active.as_deref() == Some(row.task.id.as_str()) {
                     "●"
                 } else {
                     "○"
                 };
                 let title = self
                     .titles
-                    .get(&session.id)
+                    .get(&row.task.id)
                     .map(String::as_str)
-                    .unwrap_or_else(|| short_id(&session.id))
+                    .unwrap_or_else(|| short_id(&row.task.id))
                     .chars()
                     .take(22)
                     .collect::<String>();
                 let label = format!(
-                    "{marker} {title} · {} · {}t · ${:.2}",
-                    short_time(&session.started_at),
-                    session.turns,
-                    session.cost_usd
+                    "{marker} {title} · {} · {}t · ${:.2} · {}r",
+                    short_time(&row.summary.started_at),
+                    row.summary.turns,
+                    row.summary.cost_usd,
+                    row.task.roots.len()
                 );
-                Button::new(format!("session-{}", session.id))
+                Button::new(format!("task-{}", row.task.id))
                     .label(label)
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.resume(id.clone(), window, cx)),
@@ -1014,7 +1050,7 @@ impl Shell {
                     .label("Settings")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
-            .children(sessions)
+            .children(tasks)
     }
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1315,16 +1351,16 @@ fn display_units(app: &App) -> Vec<DisplayUnit> {
     units.into_iter().map(|(_, unit)| unit).collect()
 }
 
-fn session_titles(
-    sessions: &[SessionSummary],
+fn task_titles(
+    tasks: &[TaskRow],
     backend: &dyn Backend,
 ) -> std::collections::BTreeMap<String, String> {
-    sessions
+    tasks
         .iter()
-        .filter_map(|session| {
+        .filter_map(|row| {
             backend
-                .title(&session.id)
-                .map(|title| (session.id.clone(), title))
+                .title(&row.task.id)
+                .map(|title| (row.task.id.clone(), title))
         })
         .collect()
 }

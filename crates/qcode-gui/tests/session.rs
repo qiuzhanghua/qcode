@@ -2,7 +2,8 @@ use std::path::Path;
 
 use qcode_core::event::SessionStarted;
 use qcode_core::store::SessionSummary;
-use qcode_gui::{short_id, workspace_sessions};
+use qcode_core::task::Task;
+use qcode_gui::{TaskRow, short_id, workspace_sessions, workspace_tasks};
 
 fn summary(id: &str, cwd: &str, started_at: &str) -> SessionSummary {
     SessionSummary {
@@ -30,6 +31,26 @@ fn sidebar_keeps_only_the_current_workspace() {
     let filtered = workspace_sessions(sessions, Path::new("/work/a"));
     let ids: Vec<&str> = filtered.iter().map(|session| session.id.as_str()).collect();
     assert_eq!(ids, ["c", "a"]);
+}
+
+fn task_row(id: &str, cwd: &str, started_at: &str) -> TaskRow {
+    TaskRow {
+        task: Task::from_legacy_session(id, cwd).expect("task"),
+        summary: summary(id, cwd, started_at),
+    }
+}
+
+#[test]
+fn task_sidebar_keeps_only_the_current_workspace() {
+    let tasks = vec![
+        task_row("a", "/work/a", "2026-10-21T10:00:00Z"),
+        task_row("b", "/work/b", "2026-10-21T11:00:00Z"),
+        task_row("c", "/work/a", "2026-10-21T12:00:00Z"),
+    ];
+    let filtered = workspace_tasks(tasks, Path::new("/work/a"));
+    let ids: Vec<&str> = filtered.iter().map(|row| row.task.id.as_str()).collect();
+    assert_eq!(ids, ["c", "a"]);
+    assert_eq!(filtered[0].task.roots.len(), 1);
 }
 
 #[test]

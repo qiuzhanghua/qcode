@@ -422,3 +422,12 @@ trait Backend {
 - `SessionStore::create_task` 用于 GUI/ACP/TUI/subagent 新会话。
 - `SessionStore::task` 从事件流重建 Task；旧日志回退到 cwd 单 Root。
 - 事件 schema 升到 v2；旧 v1 日志仍可读。
+
+### Task 侧栏视图（2026-10-21）
+
+- GUI 侧栏从 `Vec<SessionSummary>` 改为 `Vec<TaskRow>`：
+  - 每行持有 `Task`（roots/id）与底层 `SessionSummary`（turns/cost/时间）
+  - 行显示 `任务标题 · 时间 · turns · cost · N roots`
+  - 过滤器仍按当前 workspace 的 primary root
+- 底层仍使用 `SessionStore`、`session_started` 和事件字段 `session`；Task 是用户层聚合。
+- `Backend::sessions` 已改为 `Backend::tasks`，旧 `workspace_sessions` 仅保留为兼容/测试辅助。
