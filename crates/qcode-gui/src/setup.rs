@@ -1049,6 +1049,7 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            window.activate_window();
             cx.new(|cx| SetupView::new(path, data_dir, true, window, cx))
         })
         .expect("failed to open the setup window");
@@ -1060,6 +1061,7 @@ pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            window.activate_window();
             cx.new(|cx| SetupView::new(path, data_dir, false, window, cx))
         })
         .expect("failed to open the settings window");

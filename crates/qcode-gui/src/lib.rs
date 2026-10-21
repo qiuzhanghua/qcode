@@ -358,6 +358,9 @@ impl Shell {
     }
 
     fn new_session(&mut self, cx: &mut Context<Self>) {
+        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+            eprintln!("qcode-gui: new_session handler");
+        }
         if self.app.status.running {
             self.app
                 .push_notice("stop the running turn before switching sessions");
@@ -403,6 +406,9 @@ impl Shell {
     }
 
     fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+            eprintln!("qcode-gui: send_prompt handler");
+        }
         if self.app.status.running {
             self.app
                 .push_notice("stop the running turn before sending another message");
@@ -1158,6 +1164,7 @@ pub fn run(
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        cx.activate(true);
         prefs.apply(cx);
         let window_options = prefs
             .window_geometry
@@ -1188,6 +1195,7 @@ pub fn run(
             KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
         ]);
         gpui_kit::open_window(window_options, cx, |window, cx| {
+            window.activate_window();
             cx.new(|cx| {
                 Shell::new(
                     app,
