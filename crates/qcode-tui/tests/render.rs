@@ -6,8 +6,29 @@ use qcode_core::event::{
     ToolResult, ToolStatus, TurnStarted, TurnStatus, Usage, UserMessage,
 };
 use qcode_tui::{App, ApprovalPrompt, ContextDisplay, render};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
+
+/// The render tests predate the split into `handle_input` / `handle_action`;
+/// keep their key-driven call sites while exercising the production translator.
+trait HandleKey {
+    fn handle_key(&mut self, key: KeyEvent);
+}
+
+impl HandleKey for App {
+    fn handle_key(&mut self, key: KeyEvent) {
+        match qcode_tui::translate(key) {
+            Some(qcode_tui::KeyPress::Input(event)) => {
+                self.handle_input(event);
+            }
+            Some(qcode_tui::KeyPress::Action(action)) => {
+                self.handle_action(action);
+            }
+            None => {}
+        }
+    }
+}
 
 fn apply(app: &mut App, seq: u64, kind: EventKind) {
     app.apply(&Event::new(seq, "s1", 1, kind));
