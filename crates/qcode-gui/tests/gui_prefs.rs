@@ -12,6 +12,13 @@ fn defaults_and_round_trip() {
         code_font: "JetBrains Mono".to_string(),
         density: "compact".to_string(),
         recent_workspaces: vec!["/w/a".to_string(), "/w/b".to_string()],
+        last_session: Some("s-1".to_string()),
+        window_geometry: Some(qcode_gui::gui_prefs::WindowGeometry {
+            x: 10.0,
+            y: 20.0,
+            width: 1200.0,
+            height: 800.0,
+        }),
     };
     prefs.save(dir.path()).expect("save");
     assert_eq!(GuiPreferences::load(dir.path()), prefs);

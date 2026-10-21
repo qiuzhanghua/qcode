@@ -50,6 +50,7 @@ pub struct SetupView {
     next_row_id: u64,
     error: Option<String>,
     info: Option<String>,
+    repair: Option<String>,
     saved: bool,
 }
 
@@ -61,7 +62,13 @@ impl SetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let config = config::load(&path).unwrap_or_else(|_| Config::default());
+        let loaded = config::load(&path);
+        let repair = if path.exists() {
+            loaded.as_ref().err().map(ToString::to_string)
+        } else {
+            None
+        };
+        let config = loaded.unwrap_or_else(|_| Config::default());
         let prefs = GuiPreferences::load(&data_dir);
         let edit = ConfigEdit::open(&path).unwrap_or_else(|_| ConfigEdit::empty(&path));
         let mut view = Self {
@@ -71,7 +78,7 @@ impl SetupView {
             config: config.clone(),
             prefs: prefs.clone(),
             edit,
-            page: 0,
+            page: if wizard { 0 } else { 1 },
             inputs: BTreeMap::new(),
             bools: BTreeMap::new(),
             selects: BTreeMap::new(),
@@ -79,6 +86,7 @@ impl SetupView {
             next_row_id: 0,
             error: None,
             info: None,
+            repair,
             saved: false,
         };
         for field in forms::FIELDS {
@@ -168,7 +176,7 @@ impl SetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> RowState {
-        self.row(
+        let mut row = self.row(
             [
                 ("name", name.to_string()),
                 ("base_url", provider.base_url.clone().unwrap_or_default()),
@@ -194,7 +202,10 @@ impl SetupView {
             [],
             window,
             cx,
-        )
+        );
+        row.cells
+            .insert("__key", secret_input(window, cx, "API key (Keychain)"));
+        row
     }
 
     fn price_row(
@@ -295,6 +306,63 @@ impl SetupView {
             bools: bools.into_iter().collect(),
             selects: selects.into_iter().collect(),
         }
+    }
+
+    fn add_provider_preset(
+        &mut self,
+        preset: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (name, base_url, key_env, model) = match preset {
+            "deepseek" => (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "DEEPSEEK_API_KEY",
+                "deepseek-flash",
+            ),
+            "openai" => (
+                "openai",
+                "https://api.openai.com/v1",
+                "OPENAI_API_KEY",
+                "gpt-4.1",
+            ),
+            "anthropic" => (
+                "anthropic",
+                "https://api.anthropic.com",
+                "ANTHROPIC_API_KEY",
+                "claude-sonnet-4-5",
+            ),
+            "ollama" => ("ollama", "http://localhost:11434/v1", "", "llama3.2"),
+            _ => return,
+        };
+        let row = self.row(
+            [
+                ("name", name.to_string()),
+                ("base_url", base_url.to_string()),
+                ("api_key_env", key_env.to_string()),
+                ("api_key_command", String::new()),
+                ("default_model", model.to_string()),
+                ("__key", String::new()),
+            ],
+            [("stream_usage", true)],
+            [],
+            window,
+            cx,
+        );
+        let mut row = row;
+        row.cells
+            .insert("__key", secret_input(window, cx, "API key (Keychain)"));
+        if let Some(state) = self.tables.get_mut("providers") {
+            state.rows.push(row);
+        }
+        if let Some(input) = self.inputs.get("default_provider") {
+            input.update(cx, |input, cx| {
+                input.set_value(name, window, cx);
+                cx.notify();
+            });
+        }
+        cx.notify();
     }
 
     fn add_row(&mut self, table: &'static TableSpec, window: &mut Window, cx: &mut Context<Self>) {
@@ -439,7 +507,7 @@ impl SetupView {
         Ok(())
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn build_config(&self, cx: &Context<Self>, validate: bool) -> Result<Config, String> {
         let mut config = self.config.clone();
         for field in forms::FIELDS {
             let key = field.path.join(".");
@@ -452,17 +520,27 @@ impl SetupView {
                     .map(|input| input.read(cx).value().to_string())
                     .unwrap_or_default(),
             };
-            if let Err(error) = apply_scalar(&mut config, field.path, &value) {
+            apply_scalar(&mut config, field.path, &value)?;
+        }
+        self.apply_tables(&mut config, cx)?;
+        if validate {
+            config::resolve(&config, &config::Overrides::default(), &|key| {
+                std::env::var(key).ok()
+            })
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(config)
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        let config = match self.build_config(cx, true) {
+            Ok(config) => config,
+            Err(error) => {
                 self.error = Some(error);
                 cx.notify();
                 return;
             }
-        }
-        if let Err(error) = self.apply_tables(&mut config, cx) {
-            self.error = Some(error);
-            cx.notify();
-            return;
-        }
+        };
         let mut prefs = self.prefs.clone();
         prefs.theme = self
             .selects
@@ -610,6 +688,18 @@ fn input(
     let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.to_string()));
     input.update(cx, |input, cx| input.set_value(value, window, cx));
     input
+}
+
+fn secret_input(
+    window: &mut Window,
+    cx: &mut Context<SetupView>,
+    placeholder: &str,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        InputState::new(window, cx)
+            .masked(true)
+            .placeholder(placeholder.to_string())
+    })
 }
 
 fn scalar_string(config: &Config, path: &[&str], options: &[&str]) -> String {
@@ -933,6 +1023,15 @@ fn unknown_host(policy: &UnknownHost) -> &'static str {
     }
 }
 
+fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    std::process::Command::new(editor)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("cannot open editor: {error}"))
+}
+
 /// Open the first-run/setup wizard. Returns when the user saves (which quits
 /// the GPUI app) or closes the window.
 pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
@@ -966,7 +1065,76 @@ impl Render for SetupView {
                     "setup-welcome",
                     "# Welcome to qcode\n\nThis wizard creates the config file and keeps every setting editable later.",
                 ))
-                .child(format!("Config: {}", self.path.display()));
+                .child(format!("Config: {}", self.path.display()))
+                .child(format!("Data dir: {}", self.data_dir.display()));
+            if let Some(repair) = &self.repair {
+                body = body
+                    .child(format!(
+                        "existing config could not be parsed: {repair}\nSaving will keep a .bak backup before replacing it."
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("repair-editor")
+                                    .label("Open in editor")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        if let Err(error) = open_in_editor(&this.path) {
+                                            this.error = Some(error);
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("repair-quit")
+                                    .label("Quit")
+                                    .on_click(cx.listener(|_this, _, _window, cx| cx.quit())),
+                            ),
+                    );
+            }
+        } else if page == Page::Review && !self.wizard {
+            body = body
+                .child(TextView::markdown(
+                    "settings-about",
+                    "## About\n\nqcode desktop. Provider, sandbox and network changes take effect after restart; model changes apply to the next turn.",
+                ))
+                .child(format!("qcode {}", env!("CARGO_PKG_VERSION")))
+                .child(format!("Config: {}", self.path.display()))
+                .child(format!("Data dir: {}", self.data_dir.display()));
+            match self.build_config(cx, false) {
+                Ok(config) => {
+                    body = body
+                        .child(format!(
+                            "provider: {} · model: {}",
+                            config.default_provider.as_deref().unwrap_or("(none)"),
+                            config
+                                .default_provider
+                                .as_ref()
+                                .and_then(|name| config.providers.get(name))
+                                .and_then(|provider| provider.default_model.as_deref())
+                                .unwrap_or("(provider default)")
+                        ))
+                        .child(format!(
+                            "providers: {} · pricing: {} · approval rules: {} · MCP servers: {}",
+                            config.providers.len(),
+                            config.pricing.len(),
+                            config.approval.rules.len(),
+                            config.mcp.servers.len()
+                        ));
+                }
+                Err(error) => body = body.child(format!("cannot read config: {error}")),
+            }
+            if let Some(repair) = &self.repair {
+                body = body.child(format!("config warning: {repair}"));
+            }
+            if let Some(error) = &self.error {
+                body = body.child(format!("error: {error}"));
+            }
+            if let Some(info) = &self.info {
+                body = body.child(format!("info: {info}"));
+            }
         } else if page == Page::Review {
             body = body
                 .child(TextView::markdown(
@@ -974,7 +1142,38 @@ impl Render for SetupView {
                     "## Review\n\nSave to write the config atomically. A `.bak` backup is kept when the file already exists.",
                 ))
                 .child(format!("Config: {}", self.path.display()))
+                .child(format!("Data dir: {}", self.data_dir.display()))
                 .child(format!("Saved: {}", self.saved));
+            match self.build_config(cx, false) {
+                Ok(config) => {
+                    body = body
+                        .child(format!(
+                            "default provider: {} · model: {}",
+                            config.default_provider.as_deref().unwrap_or("(none)"),
+                            config
+                                .default_provider
+                                .as_ref()
+                                .and_then(|name| config.providers.get(name))
+                                .and_then(|provider| provider.default_model.as_deref())
+                                .unwrap_or("(provider default)")
+                        ))
+                        .child(format!(
+                            "providers: {} · pricing: {} · approval rules: {} · MCP servers: {}",
+                            config.providers.len(),
+                            config.pricing.len(),
+                            config.approval.rules.len(),
+                            config.mcp.servers.len()
+                        ))
+                        .child(format!(
+                            "sandbox: {:?} · network: {:?}",
+                            config.sandbox.mode, config.network.mode
+                        ));
+                }
+                Err(error) => body = body.child(format!("cannot preview config: {error}")),
+            }
+            if let Some(repair) = &self.repair {
+                body = body.child(format!("repair warning: {repair}"));
+            }
             if let Some(error) = &self.error {
                 body = body.child(format!("error: {error}"));
             }
@@ -991,15 +1190,28 @@ impl Render for SetupView {
             for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
                 body = body.child(self.render_field(field, cx));
             }
+            if !self.wizard && matches!(page, Page::Provider | Page::NetworkSandbox) {
+                body = body.child(
+                    "Restart required: provider, sandbox and network changes apply after restarting qcode.",
+                );
+            }
         }
 
         let mut nav = div().flex().flex_row().gap_1().p_2();
         if !self.wizard {
             for (index, item) in Page::ALL.iter().enumerate() {
+                if *item == Page::Welcome {
+                    continue;
+                }
                 let marker = if index == self.page { "●" } else { "○" };
+                let title = if *item == Page::Review {
+                    "About"
+                } else {
+                    item.title()
+                };
                 nav = nav.child(
                     Button::new(format!("settings-page-{index}"))
-                        .label(format!("{marker} {}", item.title()))
+                        .label(format!("{marker} {title}"))
                         .on_click(cx.listener(move |this, _, _window, cx| {
                             this.page = index;
                             this.error = None;
@@ -1028,6 +1240,52 @@ impl Render for SetupView {
                 .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
         );
 
+        let mut steps = div().w(px(200.0)).h_full().flex().flex_col().gap_1().p_2();
+        if self.wizard {
+            for (index, item) in Page::ALL.iter().enumerate() {
+                let marker = if index == self.page {
+                    "▶"
+                } else if index < self.page {
+                    "✓"
+                } else {
+                    "·"
+                };
+                steps = steps.child(
+                    Button::new(format!("setup-step-{index}"))
+                        .label(format!("{marker} {index}. {}", item.title()))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.page = index;
+                            this.error = None;
+                            cx.notify();
+                        })),
+                );
+            }
+        }
+        let scroll = div()
+            .flex()
+            .flex_col()
+            .flex_grow(1.0)
+            .min_h_0()
+            .id(if self.wizard {
+                "setup-scroll"
+            } else {
+                "settings-scroll"
+            })
+            .overflow_y_scroll()
+            .child(body);
+        let content = if self.wizard {
+            div()
+                .flex()
+                .flex_row()
+                .flex_grow(1.0)
+                .min_h_0()
+                .child(steps)
+                .child(scroll)
+                .into_any_element()
+        } else {
+            scroll.into_any_element()
+        };
+
         div()
             .size_full()
             .flex()
@@ -1043,7 +1301,11 @@ impl Render for SetupView {
                     } else {
                         "Settings".to_string()
                     })
-                    .child(page.title()),
+                    .child(if !self.wizard && page == Page::Review {
+                        "About"
+                    } else {
+                        page.title()
+                    }),
             )
             .child(nav)
             .children(
@@ -1056,16 +1318,7 @@ impl Render for SetupView {
                     .as_ref()
                     .map(|info| div().px_2().child(format!("info: {info}"))),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_grow(1.0)
-                    .min_h_0()
-                    .id("setup-scroll")
-                    .overflow_y_scroll()
-                    .child(body),
-            )
+            .child(content)
             .child(footer)
     }
 }
@@ -1256,15 +1509,34 @@ impl SetupView {
             .unwrap_or_default();
 
         let table_key = key.clone();
-        div()
+        let mut table_view = div()
             .flex()
             .flex_col()
             .gap_2()
             .child(div().child(table.title))
-            .children(rows)
+            .children(rows);
+        if table.path == ["mcp", "servers"] {
+            table_view = table_view.child(
+                "MCP env values are stored in config.toml. Prefer a minimal-scope token; Keychain-backed MCP secrets are not implemented yet.",
+            );
+        }
+        if table.path == ["providers"] {
+            let mut presets = div().flex().flex_row().gap_1();
+            for preset in ["deepseek", "openai", "anthropic", "ollama"] {
+                presets = presets.child(
+                    Button::new(format!("preset-{preset}"))
+                        .label(format!("Add {preset}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.add_provider_preset(preset, window, cx);
+                        })),
+                );
+            }
+            table_view = table_view.child(presets);
+        }
+        table_view
             .child(
                 Button::new(format!("add-{key}"))
-                    .label("Add row")
+                    .label("Add custom row")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let spec = forms::TABLES
                             .iter()

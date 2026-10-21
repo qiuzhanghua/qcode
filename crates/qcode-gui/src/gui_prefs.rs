@@ -10,6 +10,14 @@ use gpui_kit::{App, px};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiPreferences {
     pub theme: String,
@@ -18,6 +26,9 @@ pub struct GuiPreferences {
     pub density: String,
     /// Most-recent first; absolute paths. Capped to 10.
     pub recent_workspaces: Vec<String>,
+    /// Session to reopen on the next launch, when it still exists.
+    pub last_session: Option<String>,
+    pub window_geometry: Option<WindowGeometry>,
 }
 
 impl Default for GuiPreferences {
@@ -28,6 +39,8 @@ impl Default for GuiPreferences {
             code_font: "SF Mono".to_string(),
             density: "comfortable".to_string(),
             recent_workspaces: Vec::new(),
+            last_session: None,
+            window_geometry: None,
         }
     }
 }

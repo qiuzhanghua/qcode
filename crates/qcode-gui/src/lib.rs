@@ -32,6 +32,8 @@ gpui_kit::actions!(
         RejectApproval,
         NewSessionShortcut,
         OpenSettingsShortcut,
+        OpenWorkspaceShortcut,
+        CloseWindowShortcut,
         StopTurnShortcut,
         SendMessage,
     ]
@@ -219,7 +221,7 @@ struct Shell {
 impl Shell {
     fn new(
         mut app: App,
-        backend: Box<dyn Backend>,
+        mut backend: Box<dyn Backend>,
         config_path: PathBuf,
         data_dir: PathBuf,
         approval_policy: Option<PathBuf>,
@@ -231,6 +233,25 @@ impl Shell {
             app.push_notice(format!("cannot list sessions: {error}"));
             Vec::new()
         });
+        let mut prefs = GuiPreferences::load(&data_dir);
+        prefs.record_workspace(Path::new(&workspace));
+        let mut active = None;
+        if let Some(id) = prefs.last_session.clone()
+            && sessions.iter().any(|session| session.id == id)
+        {
+            match backend.resume(&id) {
+                Ok(events) => {
+                    for event in &events {
+                        app.apply(event);
+                    }
+                    active = Some(id);
+                }
+                Err(error) => app.push_notice(format!("cannot restore last session: {error}")),
+            }
+        }
+        if let Err(error) = prefs.save(&data_dir) {
+            app.push_notice(format!("cannot save gui.json: {error}"));
+        }
         let last_blocks = app.blocks.len();
         let scroller = cx.new(|cx| MessageScrollerState::new(app.blocks.len(), cx));
         let input = cx.new(|cx| {
@@ -241,11 +262,6 @@ impl Shell {
         let model = app.status.model.clone();
         let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
-        let mut prefs = GuiPreferences::load(&data_dir);
-        prefs.record_workspace(Path::new(&workspace));
-        if let Err(error) = prefs.save(&data_dir) {
-            app.push_notice(format!("cannot save gui.json: {error}"));
-        }
         Self {
             app,
             input,
@@ -257,7 +273,7 @@ impl Shell {
             last_blocks,
             backend,
             sessions,
-            active: None,
+            active,
             workspace,
             config_path,
             data_dir,
@@ -428,7 +444,12 @@ impl Shell {
                 UiEvent::Approval(view) => self.approvals.push(view),
                 UiEvent::ApprovalClosed { call_id } => self.approvals.closed(&call_id),
                 UiEvent::SessionChanged { id } => {
-                    self.active = id;
+                    self.active = id.clone();
+                    self.prefs.last_session = id;
+                    if let Err(error) = self.prefs.save(&self.data_dir) {
+                        self.app
+                            .push_notice(format!("cannot save gui.json: {error}"));
+                    }
                     self.refresh_sessions();
                 }
             }
@@ -631,6 +652,7 @@ impl Shell {
                 if let Some(cwd) = &view.cwd {
                     card = card.child(format!("cwd: {cwd}"));
                 }
+                card = card.child(format!("sandbox: {}", self.app.sandbox));
                 card.child(
                     div()
                         .flex()
@@ -897,6 +919,19 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bounds = window.bounds();
+        let geometry = crate::gui_prefs::WindowGeometry {
+            x: bounds.origin.x.as_f32(),
+            y: bounds.origin.y.as_f32(),
+            width: bounds.size.width.as_f32(),
+            height: bounds.size.height.as_f32(),
+        };
+        if self.prefs.window_geometry.as_ref() != Some(&geometry) {
+            self.prefs.window_geometry = Some(geometry);
+            if let Err(error) = self.prefs.save(&self.data_dir) {
+                eprintln!("qcode-gui: cannot save window geometry: {error}");
+            }
+        }
         div()
             .size_full()
             .flex()
@@ -922,6 +957,10 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &OpenWorkspaceShortcut, _window, cx| this.open_workspace(cx)),
+            )
+            .on_action(|_: &CloseWindowShortcut, window, _cx| window.remove_window())
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
             )
@@ -967,6 +1006,17 @@ pub fn run(
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         prefs.apply(cx);
+        let window_options = prefs
+            .window_geometry
+            .as_ref()
+            .map(|geometry| WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(geometry.x), px(geometry.y)),
+                    size(px(geometry.width), px(geometry.height)),
+                ))),
+                ..Default::default()
+            })
+            .unwrap_or_default();
         cx.bind_keys([
             KeyBinding::new("ctrl-v", PasteImage, None),
             KeyBinding::new("y", ApproveOnce, Some("Approval")),
@@ -974,10 +1024,12 @@ pub fn run(
             KeyBinding::new("n", RejectApproval, Some("Approval")),
             KeyBinding::new("cmd-n", NewSessionShortcut, None),
             KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
+            KeyBinding::new("cmd-o", OpenWorkspaceShortcut, None),
+            KeyBinding::new("cmd-w", CloseWindowShortcut, None),
             KeyBinding::new("cmd-.", StopTurnShortcut, None),
             KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
         ]);
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        gpui_kit::open_window(window_options, cx, |window, cx| {
             cx.new(|cx| {
                 Shell::new(
                     app,

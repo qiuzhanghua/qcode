@@ -47,3 +47,19 @@ fn ten_thousand_events_project_quickly() {
         "projecting 10k events took {elapsed:?}"
     );
 }
+
+#[test]
+fn hundred_thousand_events_project_within_budget() {
+    let events = synthetic_events(100_000);
+    let mut app = App::new("deepseek", "deepseek-flash");
+    let started = Instant::now();
+    for event in &events {
+        app.apply(event);
+    }
+    let elapsed = started.elapsed();
+    assert_eq!(app.blocks.len(), 100_000);
+    assert!(
+        elapsed.as_secs() < 5,
+        "projecting 100k events took {elapsed:?}"
+    );
+}
