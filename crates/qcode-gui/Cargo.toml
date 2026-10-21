@@ -14,7 +14,7 @@ qcode-core = { version = "0.1.0", path = "../qcode-core" }
 qcode-ui-state = { version = "0.1.0", path = "../qcode-ui-state" }
 qcode-ui-bridge = { version = "0.1.0", path = "../qcode-ui-bridge" }
 # Spike candidate A (ADR-0037): components, virtual lists, code editor, a11y.
-gpui-kit = "0.7.3"
+gpui-kit = "0.8.0"
 qcode-image = { version = "0.1.0", path = "../qcode-image" }
 base64.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
