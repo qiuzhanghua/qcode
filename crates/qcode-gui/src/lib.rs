@@ -22,7 +22,17 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
 use gpui_kit::{div, prelude::*, *};
 
-gpui_kit::actions!(qcode_gui, [PasteImage]);
+gpui_kit::actions!(
+    qcode_gui,
+    [
+        PasteImage,
+        ApproveOnce,
+        ApproveSession,
+        RejectApproval,
+        NewSessionShortcut,
+        OpenSettingsShortcut,
+    ]
+);
 use crate::approvals::ApprovalQueue;
 use crate::gui_prefs::GuiPreferences;
 use gpui_kit::component::{Theme, ThemeMode};
@@ -645,7 +655,27 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_row()
+            .key_context(if self.approvals.current().is_some() {
+                "Approval"
+            } else {
+                "Chat"
+            })
             .on_action(cx.listener(|this, _: &PasteImage, _window, cx| this.paste_clipboard(cx)))
+            .on_action(
+                cx.listener(|this, _: &ApproveOnce, _window, cx| this.answer(true, false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ApproveSession, _window, cx| this.answer(true, true, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &RejectApproval, _window, cx| this.answer(false, false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NewSessionShortcut, _window, cx| this.new_session(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
+            )
             .child(self.render_sidebar(cx))
             .child(self.render_main(window, cx))
     }
@@ -690,7 +720,14 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             theme.mono_font_size = font_size;
             theme.mono_font_family = prefs.code_font.clone().into();
         });
-        cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, None)]);
+        cx.bind_keys([
+            KeyBinding::new("ctrl-v", PasteImage, None),
+            KeyBinding::new("y", ApproveOnce, Some("Approval")),
+            KeyBinding::new("a", ApproveSession, Some("Approval")),
+            KeyBinding::new("n", RejectApproval, Some("Approval")),
+            KeyBinding::new("cmd-n", NewSessionShortcut, None),
+            KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
+        ]);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
         })
