@@ -11,7 +11,7 @@ use std::collections::HashSet;
 pub use composer::{Composer, InputEvent};
 
 use qcode_core::engine::Delta;
-use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus};
+use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus, Usage};
 use qcode_core::todo::{self, TodoItem};
 use time::{Duration, OffsetDateTime};
 
@@ -36,6 +36,45 @@ pub enum Block {
     Notice(String),
     /// A skill body loaded through the `/skills <name>` debug command.
     Skill(String),
+    /// Model reasoning. Kept separate from the final answer.
+    Reasoning(ReasoningEntry),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasoningEntry {
+    pub text: String,
+    pub started_at: OffsetDateTime,
+    pub elapsed: Option<Duration>,
+}
+
+/// One user turn: its input, process rows and final answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Turn {
+    /// Stable id derived from the `turn_started` event sequence.
+    pub id: u64,
+    pub number: u32,
+    pub started_at: OffsetDateTime,
+    pub ended_at: Option<OffsetDateTime>,
+    pub status: Option<TurnStatus>,
+    /// Block index of the user message (or activated-skill row).
+    pub input_block: Option<usize>,
+    /// Block indices for reasoning/tool/notice/subagent/todo rows.
+    pub process: Vec<usize>,
+    /// Block index of the final assistant answer.
+    pub answer_block: Option<usize>,
+    pub usage: Usage,
+    pub cost_usd: f64,
+}
+
+impl Turn {
+    pub fn duration(&self) -> Option<Duration> {
+        self.ended_at
+            .map(|ended| (ended - self.started_at).max(Duration::ZERO))
+    }
+
+    pub fn running(&self) -> bool {
+        self.status.is_none() && self.ended_at.is_none()
+    }
 }
 
 /// Read-only skill metadata handed to the UI for `/skills`.
@@ -71,6 +110,32 @@ pub struct ToolEntry {
     /// Child session id for a nested tool row, or the linked child session for
     /// the parent `subagent` row.
     pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    Compact,
+    #[default]
+    Standard,
+    Detailed,
+}
+
+impl DisplayMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Standard => "standard",
+            Self::Detailed => "detailed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "compact" => Self::Compact,
+            "detailed" => Self::Detailed,
+            _ => Self::Standard,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +231,14 @@ impl ContextDisplay {
 #[derive(Debug, Clone)]
 pub struct App {
     pub blocks: Vec<Block>,
+    /// Turn view over `blocks`; block indices are stable for the session.
+    pub turns: Vec<Turn>,
+    /// The open turn, if any.
+    pub current_turn: Option<usize>,
+    /// Blocks that are not part of a turn (pre-session notices, skill dumps).
+    pub loose_blocks: Vec<usize>,
+    /// Live reasoning for the open turn, replaced by the authoritative message.
+    pub reasoning_streaming: String,
     /// Text streamed for the message currently being generated. Cleared when
     /// the authoritative `assistant_message` event arrives.
     pub streaming: String,
@@ -201,6 +274,10 @@ impl App {
     pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             blocks: Vec::new(),
+            turns: Vec::new(),
+            current_turn: None,
+            loose_blocks: Vec::new(),
+            reasoning_streaming: String::new(),
             streaming: String::new(),
             composer: Composer::new(),
             scroll: 0,
@@ -230,6 +307,10 @@ impl App {
     /// the replayed `session_started` event refreshes the provider and model.
     pub fn reset_transcript(&mut self) {
         self.blocks.clear();
+        self.turns.clear();
+        self.current_turn = None;
+        self.loose_blocks.clear();
+        self.reasoning_streaming.clear();
         self.streaming.clear();
         self.scroll = 0;
         self.status.turn = 0;
@@ -240,6 +321,81 @@ impl App {
         self.child_groups.clear();
         self.collapsed_children.clear();
         self.approval = None;
+    }
+
+    fn start_turn(&mut self, event: &Event) {
+        if let Some(index) = self.current_turn.take() {
+            // A malformed/truncated log may start a turn without ending the
+            // previous one. Close it at this timestamp instead of leaving it
+            // permanently "running".
+            if self.turns[index].ended_at.is_none() {
+                self.turns[index].ended_at = Some(event.ts);
+            }
+        }
+        let index = self.turns.len();
+        self.turns.push(Turn {
+            id: event.seq,
+            number: event.turn,
+            started_at: event.ts,
+            ended_at: None,
+            status: None,
+            input_block: None,
+            process: Vec::new(),
+            answer_block: None,
+            usage: Usage::default(),
+            cost_usd: 0.0,
+        });
+        self.current_turn = Some(index);
+    }
+
+    fn ensure_turn(&mut self, event: &Event) -> usize {
+        match self.current_turn {
+            Some(index) => index,
+            None => {
+                self.start_turn(event);
+                self.current_turn.expect("just started")
+            }
+        }
+    }
+
+    fn append_block(&mut self, block: Block) -> usize {
+        let index = self.blocks.len();
+        self.blocks.push(block);
+        index
+    }
+
+    fn push_process(&mut self, block: Block) -> usize {
+        let index = self.append_block(block);
+        match self.current_turn {
+            Some(turn) => self.turns[turn].process.push(index),
+            None => self.loose_blocks.push(index),
+        }
+        index
+    }
+
+    fn push_input(&mut self, block: Block) -> usize {
+        let index = self.append_block(block);
+        match self.current_turn {
+            Some(turn) => {
+                if self.turns[turn].input_block.is_none() {
+                    self.turns[turn].input_block = Some(index);
+                } else {
+                    self.turns[turn].process.push(index);
+                }
+            }
+            None => self.loose_blocks.push(index),
+        }
+        index
+    }
+
+    fn close_turn(&mut self, event: &Event, status: TurnStatus, usage: Usage, cost_usd: f64) {
+        if let Some(index) = self.current_turn.take() {
+            let turn = &mut self.turns[index];
+            turn.ended_at = Some(event.ts);
+            turn.status = Some(status);
+            turn.usage = usage;
+            turn.cost_usd = cost_usd;
+        }
     }
 
     /// Project a persisted event into the transcript and status line.
@@ -254,27 +410,46 @@ impl App {
                 self.status.running = true;
                 self.status.last = None;
                 self.streaming.clear();
+                self.reasoning_streaming.clear();
+                self.start_turn(event);
             }
             EventKind::UserMessage(message) => {
+                self.ensure_turn(event);
                 if let Some(name) = activated_skill(&message.text) {
-                    self.blocks
-                        .push(Block::Skill(format!("activated skill {name}")));
+                    self.push_input(Block::Skill(format!("activated skill {name}")));
                 } else {
-                    self.blocks.push(Block::User(message.text.clone()));
+                    self.push_input(Block::User(message.text.clone()));
                 }
             }
             EventKind::AssistantMessage(message) => {
-                // The completed message supersedes the streamed preview, which
+                // The completed message supersedes the streamed previews, which
                 // may have been cut short by cancellation.
                 self.streaming.clear();
+                self.reasoning_streaming.clear();
+                self.ensure_turn(event);
+                let turn = self.current_turn.expect("ensured turn");
                 for block in &message.blocks {
-                    if let ContentBlock::Text { text } = block {
-                        self.blocks.push(Block::Assistant(text.clone()));
+                    match block {
+                        ContentBlock::Reasoning { text, .. } => {
+                            let elapsed =
+                                (event.ts - self.turns[turn].started_at).max(Duration::ZERO);
+                            self.push_process(Block::Reasoning(ReasoningEntry {
+                                text: text.clone(),
+                                started_at: self.turns[turn].started_at,
+                                elapsed: Some(elapsed),
+                            }));
+                        }
+                        ContentBlock::Text { text } => {
+                            let index = self.append_block(Block::Assistant(text.clone()));
+                            self.turns[turn].answer_block = Some(index);
+                        }
+                        _ => {}
                     }
                 }
             }
             EventKind::ToolCall(call) => {
-                self.blocks.push(Block::Tool(ToolEntry {
+                self.ensure_turn(event);
+                self.push_process(Block::Tool(ToolEntry {
                     call_id: call.call_id.clone(),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -293,6 +468,9 @@ impl App {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    if result.status != ToolStatus::Ok {
+                        tool.expanded = true;
+                    }
                     if tool.name == "todo_write" && result.status == ToolStatus::Ok {
                         todo::from_arguments(&tool.arguments).ok()
                     } else {
@@ -301,10 +479,9 @@ impl App {
                 });
                 if let Some(items) = todo_update {
                     if items.is_empty() {
-                        self.blocks
-                            .push(Block::Notice("todo list cleared".to_string()));
+                        self.push_process(Block::Notice("todo list cleared".to_string()));
                     } else {
-                        self.blocks.push(Block::Todo(items));
+                        self.push_process(Block::Todo(items));
                     }
                 }
             }
@@ -328,17 +505,17 @@ impl App {
             }
             EventKind::TurnEnded(ended) => {
                 self.streaming.clear();
+                self.reasoning_streaming.clear();
                 self.status.running = false;
                 self.status.last = Some(ended.status);
                 self.status.cost_usd = ended.cost_usd;
+                self.close_turn(event, ended.status, ended.usage.clone(), ended.cost_usd);
             }
             EventKind::Error(error) => {
-                self.blocks
-                    .push(Block::Notice(format!("{}: {}", error.kind, error.message)));
+                self.push_process(Block::Notice(format!("{}: {}", error.kind, error.message)));
             }
             EventKind::Compaction(_) => {
-                self.blocks
-                    .push(Block::Notice("context compacted".to_string()));
+                self.push_process(Block::Notice("context compacted".to_string()));
             }
         }
     }
@@ -368,7 +545,7 @@ impl App {
                 }) {
                     tool.group = Some(group.clone());
                 }
-                self.blocks.push(Block::Subagent {
+                self.push_process(Block::Subagent {
                     text: format!(
                         "subagent {} started ({}/{})",
                         short_id(&group),
@@ -381,7 +558,7 @@ impl App {
             EventKind::AssistantMessage(message) => {
                 for block in &message.blocks {
                     if let ContentBlock::Text { text } = block {
-                        self.blocks.push(Block::Subagent {
+                        self.push_process(Block::Subagent {
                             text: text.clone(),
                             group: group.clone(),
                         });
@@ -389,7 +566,7 @@ impl App {
                 }
             }
             EventKind::ToolCall(call) => {
-                self.blocks.push(Block::Tool(ToolEntry {
+                self.push_process(Block::Tool(ToolEntry {
                     call_id: child_call_id(&group, &call.call_id),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -412,19 +589,19 @@ impl App {
                 }
             }
             EventKind::Error(error) => {
-                self.blocks.push(Block::Subagent {
+                self.push_process(Block::Subagent {
                     text: format!("error: {}: {}", error.kind, error.message),
                     group,
                 });
             }
             EventKind::Compaction(_) => {
-                self.blocks.push(Block::Subagent {
+                self.push_process(Block::Subagent {
                     text: "context compacted".to_string(),
                     group,
                 });
             }
             EventKind::TurnEnded(ended) => {
-                self.blocks.push(Block::Subagent {
+                self.push_process(Block::Subagent {
                     text: format!("finished ({:?})", ended.status),
                     group,
                 });
@@ -756,11 +933,11 @@ impl App {
         }
         text.push('\n');
         text.push_str(skill.body.trim());
-        self.blocks.push(Block::Skill(text));
+        self.push_process(Block::Skill(text));
     }
 
-    /// Append a transient stream delta. Reasoning is acknowledged but not
-    /// rendered yet (M2 keeps the transcript focused on visible output).
+    /// Append a transient stream delta. Reasoning is kept in its own buffer
+    /// so the GUI can show a Thinking row before the authoritative message.
     pub fn apply_delta(&mut self, delta: &Delta) {
         match delta {
             Delta::Text(text) => self.streaming.push_str(text),
@@ -768,12 +945,12 @@ impl App {
                 self.context_tokens = *tokens;
                 self.context_window = Some(*window);
             }
-            Delta::Reasoning(_) => {}
+            Delta::Reasoning(text) => self.reasoning_streaming.push_str(text),
         }
     }
 
     pub fn push_notice(&mut self, text: impl Into<String>) {
-        self.blocks.push(Block::Notice(text.into()));
+        self.push_process(Block::Notice(text.into()));
     }
 
     fn tool_mut(&mut self, call_id: &str) -> Option<&mut ToolEntry> {
@@ -1348,7 +1525,174 @@ mod tests {
             provider_raw: json!({}),
             usage: Usage::default(),
         })));
-        assert_eq!(app.blocks, vec![Block::Assistant("done".to_string())]);
+        assert_eq!(app.blocks.len(), 2);
+        assert!(matches!(
+            &app.blocks[0],
+            Block::Reasoning(entry) if entry.text == "thinking"
+        ));
+        assert_eq!(app.blocks[1], Block::Assistant("done".to_string()));
+        assert_eq!(app.turns.len(), 1);
+        assert_eq!(app.turns[0].process, vec![0]);
+        assert_eq!(app.turns[0].answer_block, Some(1));
+    }
+
+    #[test]
+    fn turns_track_input_process_answer_and_usage() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&Event::new(
+            1,
+            "s1",
+            1,
+            EventKind::TurnStarted(TurnStarted {
+                input: "go".to_string(),
+            }),
+        ));
+        app.apply(&Event::new(
+            2,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                text: "go".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+        app.apply(&Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::ToolCall(ToolCall {
+                call_id: "c1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/lib.rs"}),
+            }),
+        ));
+        app.apply(&Event::new(
+            4,
+            "s1",
+            1,
+            EventKind::AssistantMessage(AssistantMessage {
+                blocks: vec![
+                    ContentBlock::Reasoning {
+                        text: "look first".to_string(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "answer".to_string(),
+                    },
+                ],
+                provider_raw: json!({}),
+                usage: Usage::default(),
+            }),
+        ));
+        app.apply(&Event::new(
+            5,
+            "s1",
+            1,
+            EventKind::TurnEnded(qcode_core::event::TurnEnded {
+                status: TurnStatus::Completed,
+                usage: Usage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(3),
+                    ..Usage::default()
+                },
+                cost_usd: 0.01,
+            }),
+        ));
+
+        assert_eq!(app.turns.len(), 1);
+        let turn = &app.turns[0];
+        assert_eq!(turn.number, 1);
+        assert_eq!(turn.status, Some(TurnStatus::Completed));
+        assert!(turn.input_block.is_some());
+        assert!(turn.answer_block.is_some());
+        assert_eq!(turn.process.len(), 2);
+        assert_eq!(turn.usage.output_tokens, Some(3));
+        assert_eq!(turn.cost_usd, 0.01);
+    }
+
+    #[test]
+    fn turns_are_closed_and_indexed_independently() {
+        let mut app = App::new("mock", "mock-1");
+        for (turn, input, answer) in [(1u32, "first", "one"), (2u32, "second", "two")] {
+            app.apply(&Event::new(
+                u64::from(turn * 10),
+                "s1",
+                turn,
+                EventKind::TurnStarted(TurnStarted {
+                    input: input.to_string(),
+                }),
+            ));
+            app.apply(&Event::new(
+                u64::from(turn * 10 + 1),
+                "s1",
+                turn,
+                EventKind::UserMessage(UserMessage {
+                    text: input.to_string(),
+                    attachments: Vec::new(),
+                }),
+            ));
+            app.apply(&Event::new(
+                u64::from(turn * 10 + 2),
+                "s1",
+                turn,
+                EventKind::AssistantMessage(AssistantMessage {
+                    blocks: vec![ContentBlock::Text {
+                        text: answer.to_string(),
+                    }],
+                    provider_raw: json!({}),
+                    usage: Usage::default(),
+                }),
+            ));
+            app.apply(&Event::new(
+                u64::from(turn * 10 + 3),
+                "s1",
+                turn,
+                EventKind::TurnEnded(qcode_core::event::TurnEnded {
+                    status: TurnStatus::Completed,
+                    usage: Usage::default(),
+                    cost_usd: 0.0,
+                }),
+            ));
+        }
+        assert_eq!(app.turns.len(), 2);
+        assert_eq!(app.turns[0].number, 1);
+        assert_eq!(app.turns[1].number, 2);
+        assert!(app.turns[0].duration().is_some());
+        assert!(app.turns[1].duration().is_some());
+        assert_eq!(app.turns[0].input_block, Some(0));
+        assert_eq!(app.turns[1].input_block, Some(2));
+        assert_eq!(app.turns[0].answer_block, Some(1));
+        assert_eq!(app.turns[1].answer_block, Some(3));
+    }
+
+    #[test]
+    fn reasoning_delta_is_kept_until_the_authoritative_message() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        })));
+        app.apply_delta(&Delta::Reasoning("step ".to_string()));
+        app.apply_delta(&Delta::Reasoning("two".to_string()));
+        assert_eq!(app.reasoning_streaming, "step two");
+
+        app.apply(&event(EventKind::AssistantMessage(AssistantMessage {
+            blocks: vec![
+                ContentBlock::Reasoning {
+                    text: "step two".to_string(),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "done".to_string(),
+                },
+            ],
+            provider_raw: json!({}),
+            usage: Usage::default(),
+        })));
+        assert!(app.reasoning_streaming.is_empty());
+        assert!(matches!(
+            &app.blocks[0],
+            Block::Reasoning(entry) if entry.text == "step two"
+        ));
     }
 
     #[test]

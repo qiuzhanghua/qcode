@@ -216,6 +216,7 @@ fn block_rows(block: &Block) -> usize {
         | Block::Notice(text)
         | Block::Skill(text)
         | Block::Subagent { text, .. } => text.split('\n').count().max(1),
+        Block::Reasoning(entry) => entry.text.split('\n').count().max(1),
         Block::Todo(items) => 1 + items.len(),
         Block::Tool(tool) => {
             1 + if tool.expanded {
@@ -266,6 +267,12 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             Block::Subagent { text, .. } => {
                 push_text(&mut lines, "  ↳ ", text, Style::default().fg(Color::Blue))
             }
+            Block::Reasoning(entry) => push_text(
+                &mut lines,
+                "✻ ",
+                &entry.text,
+                Style::default().fg(Color::DarkGray),
+            ),
             Block::Todo(items) => push_todo(&mut lines, items),
             Block::Tool(tool) => {
                 let nested = tool

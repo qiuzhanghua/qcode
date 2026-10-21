@@ -24,6 +24,8 @@ pub struct GuiPreferences {
     pub font_size: u32,
     pub code_font: String,
     pub density: String,
+    /// Conversation display mode: compact | standard | detailed.
+    pub display_mode: String,
     /// Most-recent first; absolute paths. Capped to 10.
     pub recent_workspaces: Vec<String>,
     /// Session to reopen on the next launch, when it still exists.
@@ -38,6 +40,7 @@ impl Default for GuiPreferences {
             font_size: 14,
             code_font: "SF Mono".to_string(),
             density: "comfortable".to_string(),
+            display_mode: "standard".to_string(),
             recent_workspaces: Vec::new(),
             last_session: None,
             window_geometry: None,
@@ -112,6 +115,12 @@ impl GuiPreferences {
         }
         if !matches!(self.density.as_str(), "comfortable" | "compact") {
             self.density = "comfortable".to_string();
+        }
+        if !matches!(
+            self.display_mode.as_str(),
+            "compact" | "standard" | "detailed"
+        ) {
+            self.display_mode = "standard".to_string();
         }
         let mut seen = std::collections::BTreeSet::new();
         self.recent_workspaces

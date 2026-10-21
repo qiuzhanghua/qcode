@@ -37,6 +37,8 @@ gpui_kit::actions!(
         ToggleSidebarShortcut,
         ToggleThemeShortcut,
         StopTurnShortcut,
+        PrevTurnShortcut,
+        NextTurnShortcut,
         SendMessage,
     ]
 );
@@ -46,7 +48,8 @@ use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
-use qcode_ui_state::{App, Block};
+use qcode_ui_state::{App, Block, DisplayMode, Turn};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
@@ -218,6 +221,12 @@ impl Backend for LocalBackend {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DisplayUnit {
+    Loose(usize),
+    Turn(usize),
+}
+
 struct Shell {
     app: App,
     /// A real text input, so IME and CJK go through the platform.
@@ -240,7 +249,16 @@ struct Shell {
     approvals: ApprovalQueue,
     /// Variable-height virtual transcript with tail following.
     scroller: Entity<MessageScrollerState>,
-    /// Row count last reported to the scroller (blocks + streaming preview).
+    /// Turn/loose-block rows currently rendered.
+    units: Vec<DisplayUnit>,
+    mode: DisplayMode,
+    /// Per-turn process fold overrides; absent uses the mode default.
+    process_overrides: BTreeMap<u64, bool>,
+    /// Reasoning rows the reader expanded, keyed by block index.
+    expanded_reasoning: HashSet<usize>,
+    /// Turn selected by the rail/header.
+    selected_turn: Option<usize>,
+    /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
     sessions: Vec<SessionSummary>,
@@ -288,8 +306,10 @@ impl Shell {
         if let Err(error) = prefs.save(&data_dir) {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
-        let last_blocks = app.blocks.len();
-        let scroller = cx.new(|cx| MessageScrollerState::new(app.blocks.len(), cx));
+        let mode = DisplayMode::parse(&prefs.display_mode);
+        let units = display_units(&app);
+        let last_blocks = units.len();
+        let scroller = cx.new(|cx| MessageScrollerState::new(units.len(), cx));
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 6)
@@ -329,6 +349,11 @@ impl Shell {
             attachments: Vec::new(),
             approvals: ApprovalQueue::default(),
             scroller,
+            units,
+            mode,
+            process_overrides: BTreeMap::new(),
+            expanded_reasoning: HashSet::new(),
+            selected_turn: None,
             last_blocks,
             backend,
             sessions,
@@ -343,13 +368,15 @@ impl Shell {
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
-        let count = self.app.blocks.len();
+        self.units = display_units(&self.app);
+        let count = self.units.len();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
         self.last_blocks = count;
     }
 
     fn sync_scroller(&mut self, cx: &mut Context<Self>) {
-        let count = self.app.blocks.len() + usize::from(!self.app.streaming.is_empty());
+        self.units = display_units(&self.app);
+        let count = self.units.len();
         if count < self.last_blocks {
             self.scroller.update(cx, |state, cx| state.reset(count, cx));
         } else if count > self.last_blocks {
@@ -550,8 +577,12 @@ impl Shell {
                     {
                         self.diff = Some(cx.new(|cx| DiffState::new(files, cx)));
                     }
+                    let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
                     self.app.apply(&event);
+                    if turn_started {
+                        self.selected_turn = self.app.turns.len().checked_sub(1);
+                    }
                     changed = true;
                     if turn_ended {
                         self.refresh_sessions();
@@ -584,6 +615,87 @@ impl Shell {
         if changed {
             self.sync_scroller(cx);
         }
+    }
+
+    fn set_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
+        self.mode = mode;
+        self.prefs.display_mode = mode.as_str().to_string();
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.app
+                .push_notice(format!("cannot save gui.json: {error}"));
+        }
+        self.sync_scroller(cx);
+        cx.notify();
+    }
+
+    fn process_expanded(&self, turn: &Turn) -> bool {
+        if turn.running() {
+            return true;
+        }
+        if let Some(value) = self.process_overrides.get(&turn.id) {
+            return *value;
+        }
+        match self.mode {
+            DisplayMode::Detailed => true,
+            _ => turn.status == Some(qcode_core::event::TurnStatus::Failed),
+        }
+    }
+
+    fn toggle_process(&mut self, turn_index: usize, cx: &mut Context<Self>) {
+        let Some(turn) = self.app.turns.get(turn_index) else {
+            return;
+        };
+        let next = !self.process_expanded(turn);
+        self.process_overrides.insert(turn.id, next);
+        self.sync_scroller(cx);
+        cx.notify();
+    }
+
+    fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
+        if !self.expanded_reasoning.remove(&block) {
+            self.expanded_reasoning.insert(block);
+        }
+        self.sync_scroller(cx);
+        cx.notify();
+    }
+
+    fn turn_unit_index(&self, turn_index: usize) -> Option<usize> {
+        self.units
+            .iter()
+            .position(|unit| matches!(unit, DisplayUnit::Turn(index) if *index == turn_index))
+    }
+
+    fn jump_to_turn(&mut self, turn_index: usize, cx: &mut Context<Self>) {
+        if turn_index >= self.app.turns.len() {
+            return;
+        }
+        self.selected_turn = Some(turn_index);
+        if let Some(unit) = self.turn_unit_index(turn_index) {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_item(unit, cx));
+        }
+        cx.notify();
+    }
+
+    fn step_turn(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.app.turns.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_turn
+            .unwrap_or_else(|| self.app.turns.len().saturating_sub(1));
+        let next = if delta < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(self.app.turns.len() - 1)
+        };
+        self.jump_to_turn(next, cx);
+    }
+
+    fn active_turn_index(&self) -> Option<usize> {
+        self.selected_turn
+            .filter(|index| *index < self.app.turns.len())
+            .or_else(|| self.app.turns.len().checked_sub(1))
     }
 
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
@@ -670,6 +782,25 @@ impl Shell {
         }
     }
 
+    fn render_turn_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
+            return div().into_any_element();
+        }
+        let active = self.active_turn_index();
+        let mut rail = div().w(px(20.0)).flex().flex_col().gap_1().py_2();
+        for (index, _turn) in self.app.turns.iter().enumerate() {
+            let marker = if active == Some(index) { "●" } else { "·" };
+            rail = rail.child(
+                Button::new(format!("turn-rail-{index}"))
+                    .label(marker)
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.jump_to_turn(index, cx);
+                    })),
+            );
+        }
+        rail.into_any_element()
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = self
             .sessions
@@ -741,7 +872,7 @@ impl Shell {
             let entity = entity.clone();
             move |index, _window, cx| {
                 let shell = entity.read(cx);
-                block_row(index, shell, &entity)
+                unit_row(index, shell, &entity)
             }
         })
         .scrollbar(true)
@@ -760,18 +891,83 @@ impl Shell {
                     .gap_2()
                     .p_2()
                     .child(format!(
-                        "{} · {} block(s)",
+                        "{} · {} turn(s)",
                         self.active
                             .as_deref()
                             .map(short_id)
                             .unwrap_or("new session"),
-                        self.app.blocks.len()
+                        self.app.turns.len()
                     ))
+                    .child(
+                        Button::new("mode-compact")
+                            .label(if self.mode == DisplayMode::Compact {
+                                "● Compact"
+                            } else {
+                                "Compact"
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.set_mode(DisplayMode::Compact, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("mode-standard")
+                            .label(if self.mode == DisplayMode::Standard {
+                                "● Standard"
+                            } else {
+                                "Standard"
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.set_mode(DisplayMode::Standard, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("mode-detailed")
+                            .label(if self.mode == DisplayMode::Detailed {
+                                "● Detailed"
+                            } else {
+                                "Detailed"
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.set_mode(DisplayMode::Detailed, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("turn-prev")
+                            .label("↑")
+                            .on_click(cx.listener(|this, _, _window, cx| this.step_turn(-1, cx))),
+                    )
+                    .child(
+                        Button::new("turn-picker")
+                            .label(match self.active_turn_index() {
+                                Some(index) => {
+                                    format!("Turn {}/{}", index + 1, self.app.turns.len())
+                                }
+                                None => "Turn -".to_string(),
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.step_turn(1, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("turn-next")
+                            .label("↓")
+                            .on_click(cx.listener(|this, _, _window, cx| this.step_turn(1, cx))),
+                    )
+                    .child(div().flex_grow(1.0))
                     .child(div().w(px(200.0)).child(
                         Input::new(&self.model_input).aria_label("Model for the next turn"),
                     )),
             )
-            .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+            .child({
+                let rail = self.render_turn_rail(window, cx);
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_grow(1.0)
+                    .min_h_0()
+                    .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+                    .child(rail)
+            })
             .children(self.diff.as_ref().map(|state| {
                 let height = if self.diff_expanded {
                     px(480.0)
@@ -917,6 +1113,31 @@ impl Shell {
     }
 }
 
+fn display_units(app: &App) -> Vec<DisplayUnit> {
+    let mut units = Vec::with_capacity(app.loose_blocks.len() + app.turns.len());
+    for index in &app.loose_blocks {
+        units.push((*index, DisplayUnit::Loose(*index)));
+    }
+    for (turn_index, turn) in app.turns.iter().enumerate() {
+        let start = turn
+            .input_block
+            .or_else(|| turn.process.first().copied())
+            .or(turn.answer_block)
+            .unwrap_or(usize::MAX);
+        units.push((start, DisplayUnit::Turn(turn_index)));
+    }
+    units.sort_by_key(|(start, unit)| {
+        (
+            *start,
+            match unit {
+                DisplayUnit::Loose(_) => 0u8,
+                DisplayUnit::Turn(_) => 1u8,
+            },
+        )
+    });
+    units.into_iter().map(|(_, unit)| unit).collect()
+}
+
 fn session_titles(
     sessions: &[SessionSummary],
     backend: &dyn Backend,
@@ -1044,6 +1265,277 @@ fn pick_workspace() -> Result<Option<PathBuf>, String> {
     }
 }
 
+fn unit_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    match shell.units.get(index).copied() {
+        Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
+        Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
+        None => div().into_any_element(),
+    }
+}
+
+fn format_duration(duration: time::Duration) -> String {
+    let seconds = duration.whole_seconds().max(0) as u64;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m{}s", seconds / 60, seconds % 60)
+    }
+}
+
+fn turn_time(started: time::OffsetDateTime) -> String {
+    format!("{:02}:{:02}", started.hour(), started.minute())
+}
+
+fn compact_user_row(text: &str) -> AnyElement {
+    let summary: String = text.chars().take(140).collect();
+    let suffix = if text.chars().count() > 140 {
+        "…"
+    } else {
+        ""
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_6()
+        .py_2()
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(rgb(0x888888))
+                .child("You"),
+        )
+        .child(
+            div()
+                .text_size(px(14.0))
+                .line_height(px(22.0))
+                .child(format!("{summary}{suffix}")),
+        )
+        .into_any_element()
+}
+
+fn reasoning_row(
+    block: usize,
+    entry: &qcode_ui_state::ReasoningEntry,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let expanded = shell.expanded_reasoning.contains(&block);
+    let label = entry
+        .elapsed
+        .map(|elapsed| format!("Thought for {}", format_duration(elapsed)))
+        .unwrap_or_else(|| "Thought".to_string());
+    let marker = if expanded { "▾" } else { "▸" };
+    let mut row = div().flex().flex_col().gap_1().px_6().py_1();
+    row = row.child(
+        Button::new(format!("reasoning-toggle-{block}"))
+            .label(format!("{marker} {label}"))
+            .on_click({
+                let entity = entity.clone();
+                move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.toggle_reasoning(block, cx));
+                }
+            }),
+    );
+    if expanded {
+        row = row.child(
+            div()
+                .px_6()
+                .pb_2()
+                .text_size(px(13.0))
+                .line_height(px(20.0))
+                .child(
+                    TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
+                        .text_size(px(13.0))
+                        .line_height(px(20.0)),
+                ),
+        );
+    }
+    row.into_any_element()
+}
+
+fn process_summary(turn: &Turn, shell: &Shell) -> String {
+    let tools = turn
+        .process
+        .iter()
+        .filter(|block| matches!(shell.app.blocks[**block], Block::Tool(_)))
+        .count();
+    let notes = turn
+        .process
+        .iter()
+        .filter(|block| matches!(shell.app.blocks[**block], Block::Notice(_)))
+        .count();
+    let thinking = turn
+        .process
+        .iter()
+        .any(|block| matches!(shell.app.blocks[*block], Block::Reasoning(_)));
+    let mut parts = Vec::new();
+    if thinking {
+        parts.push("thought".to_string());
+    }
+    if tools > 0 {
+        parts.push(format!("{tools} tools"));
+    }
+    if notes > 0 {
+        parts.push(format!("{notes} notes"));
+    }
+    if parts.is_empty() {
+        parts.push("process".to_string());
+    }
+    parts.join(" · ")
+}
+
+fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let turn = &shell.app.turns[index];
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .max_w(px(900.0))
+        .mx_auto();
+
+    let status = match turn.status {
+        Some(qcode_core::event::TurnStatus::Completed) => "done",
+        Some(qcode_core::event::TurnStatus::Failed) => "failed",
+        Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+        None if turn.running() => "running",
+        None => "done",
+    };
+    let duration = turn
+        .duration()
+        .map(format_duration)
+        .unwrap_or_else(|| "…".to_string());
+    card = card.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_6()
+            .pt_4()
+            .text_size(px(11.0))
+            .text_color(rgb(0x888888))
+            .child(format!("Turn {}", turn.number))
+            .child(turn_time(turn.started_at))
+            .child(duration)
+            .child(status)
+            .child(format!("${:.4}", turn.cost_usd)),
+    );
+
+    if let Some(block) = turn.input_block {
+        if shell.mode == DisplayMode::Compact && !turn.running() {
+            if let Block::User(text) = &shell.app.blocks[block] {
+                card = card.child(compact_user_row(text));
+            } else {
+                card = card.child(block_row(block, shell, entity));
+            }
+        } else {
+            card = card.child(block_row(block, shell, entity));
+        }
+    }
+
+    let has_process =
+        !turn.process.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
+    let expanded = shell.process_expanded(turn);
+    let show_process = shell.mode != DisplayMode::Compact
+        || turn.running()
+        || turn.status == Some(qcode_core::event::TurnStatus::Failed);
+    let mut process = div().flex().flex_col().gap_1();
+
+    if has_process && show_process {
+        if expanded {
+            if !turn.running() {
+                process = process.child(
+                    Button::new(format!("process-collapse-{index}"))
+                        .label(format!("▾ {}", process_summary(turn, shell)))
+                        .on_click({
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                entity.update(cx, |shell, cx| {
+                                    shell.toggle_process(index, cx);
+                                });
+                            }
+                        }),
+                );
+            }
+            for block in &turn.process {
+                if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
+                    process = process.child(reasoning_row(*block, entry, shell, entity));
+                } else {
+                    process = process.child(block_row(*block, shell, entity));
+                }
+            }
+            if turn.running() && !shell.app.reasoning_streaming.is_empty() {
+                let live_key = usize::MAX;
+                let live_expanded = shell.expanded_reasoning.contains(&live_key);
+                let marker = if live_expanded { "▾" } else { "▸" };
+                process = process.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_6()
+                        .child(
+                            Button::new("reasoning-live-toggle")
+                                .label(format!("{marker} Thinking…"))
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        entity.update(cx, |shell, cx| {
+                                            shell.toggle_reasoning(usize::MAX, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .children(live_expanded.then(|| {
+                            div()
+                                .px_6()
+                                .text_size(px(13.0))
+                                .line_height(px(20.0))
+                                .child(shell.app.reasoning_streaming.clone())
+                        })),
+                );
+            }
+        } else {
+            process = process.child(
+                Button::new(format!("process-toggle-{index}"))
+                    .label(format!("▸ {}", process_summary(turn, shell)))
+                    .on_click({
+                        let entity = entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |shell, cx| {
+                                shell.toggle_process(index, cx);
+                            });
+                        }
+                    }),
+            );
+        }
+        card = card.child(process);
+    }
+
+    if let Some(block) = turn.answer_block {
+        card = card.child(block_row(block, shell, entity));
+    } else if turn.running() && !shell.app.streaming.is_empty() {
+        card = card.child(
+            div()
+                .px_6()
+                .py_2()
+                .text_size(px(14.0))
+                .line_height(px(22.0))
+                .child(
+                    TextView::markdown(
+                        format!("streaming-turn-{index}"),
+                        shell.app.streaming.clone(),
+                    )
+                    .text_size(px(14.0))
+                    .line_height(px(22.0)),
+                ),
+        );
+    }
+    card.into_any_element()
+}
+
 fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     if index >= shell.app.blocks.len() {
         return div()
@@ -1058,17 +1550,42 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
 
     match &shell.app.blocks[index] {
         Block::User(text) => div()
-            .px_4()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_6()
             .py_2()
-            .child(TextView::markdown(format!("user-{index}"), text.clone()))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x888888))
+                    .child("You"),
+            )
+            .child(
+                div()
+                    .bg(rgba(0x7f7f7f18))
+                    .rounded(px(8.0))
+                    .px_3()
+                    .py_2()
+                    .text_size(px(14.0))
+                    .line_height(px(22.0))
+                    .child(
+                        TextView::markdown(format!("user-{index}"), text.clone())
+                            .text_size(px(14.0))
+                            .line_height(px(22.0)),
+                    ),
+            )
             .into_any_element(),
         Block::Assistant(text) => div()
-            .px_4()
+            .px_6()
             .py_2()
-            .child(TextView::markdown(
-                format!("assistant-{index}"),
-                text.clone(),
-            ))
+            .text_size(px(14.0))
+            .line_height(px(22.0))
+            .child(
+                TextView::markdown(format!("assistant-{index}"), text.clone())
+                    .text_size(px(14.0))
+                    .line_height(px(22.0)),
+            )
             .into_any_element(),
         Block::Tool(tool) => {
             let marker = if tool.expanded { "▾" } else { "▸" };
@@ -1076,21 +1593,27 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .flex()
                 .flex_col()
                 .gap_1()
+                .mx_6()
+                .my_1()
+                .rounded(px(6.0))
+                .bg(rgba(0x7f7f7f0c))
                 .p_2()
+                .text_size(px(13.0))
                 .child(
                     div()
                         .flex()
                         .flex_row()
                         .gap_2()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0x999999))
                         .child(format!("{marker} {}", tool.name))
                         .child(tool_status(tool.status)),
                 )
                 .child(div().child(tool.summary.clone()));
             if tool.expanded {
                 if !tool.output.is_empty() {
-                    card = card.child(TextView::markdown(
-                        format!("tool-output-{index}"),
-                        tool.output.clone(),
+                    card = card.child(div().text_size(px(12.0)).line_height(px(18.0)).child(
+                        TextView::markdown(format!("tool-output-{index}"), tool.output.clone()),
                     ));
                 }
                 if let Some(elapsed) = tool.elapsed {
@@ -1109,25 +1632,51 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .into_any_element()
         }
         Block::Subagent { text, .. } => div()
-            .px_4()
-            .py_2()
+            .px_6()
+            .py_1()
+            .text_size(px(12.0))
+            .text_color(rgb(0x888888))
             .child(format!("child › {text}"))
             .into_any_element(),
+        Block::Reasoning(entry) => div()
+            .px_6()
+            .py_1()
+            .text_size(px(13.0))
+            .line_height(px(20.0))
+            .text_color(rgb(0x999999))
+            .child(
+                TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
+                    .text_size(px(13.0))
+                    .line_height(px(20.0)),
+            )
+            .into_any_element(),
         Block::Todo(items) => div()
-            .px_4()
-            .py_2()
+            .mx_6()
+            .my_1()
+            .rounded(px(6.0))
+            .bg(rgba(0x7f7f7f0c))
+            .p_2()
+            .text_size(px(13.0))
             .child(format!("todos › {} item(s)", items.len()))
             .children(items.iter().map(|item| div().child(item.content.clone())))
             .into_any_element(),
         Block::Notice(text) => div()
-            .px_4()
-            .py_2()
+            .px_6()
+            .py_1()
+            .text_size(px(12.0))
+            .text_color(rgb(0x999999))
             .child(format!("note › {text}"))
             .into_any_element(),
         Block::Skill(text) => div()
-            .px_4()
+            .px_6()
             .py_2()
-            .child(TextView::markdown(format!("skill-{index}"), text.clone()))
+            .text_size(px(13.0))
+            .line_height(px(20.0))
+            .child(
+                TextView::markdown(format!("skill-{index}"), text.clone())
+                    .text_size(px(13.0))
+                    .line_height(px(20.0)),
+            )
             .into_any_element(),
     }
 }
@@ -1207,6 +1756,12 @@ impl Render for Shell {
                 this.stop();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &PrevTurnShortcut, _window, cx| {
+                this.step_turn(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextTurnShortcut, _window, cx| {
+                this.step_turn(1, cx);
+            }))
             .children(if self.sidebar_visible {
                 Some(self.render_sidebar(cx).into_any_element())
             } else {
@@ -1273,6 +1828,8 @@ pub fn run(
             KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
             KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
             KeyBinding::new("cmd-.", StopTurnShortcut, None),
+            KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
+            KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
             KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
             // The focused Textarea owns the "Input" context, so bind there too
             // or the root handler never sees Cmd+Enter.
