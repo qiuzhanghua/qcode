@@ -675,9 +675,16 @@ async fn cmd_gui(
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?.canonicalize()?;
     let setup_path = config::edit_path(config_path.clone())?;
-    let needs_setup = !setup_path.exists() || config::load(&setup_path).is_err();
+    let needs_setup = match config::load(&setup_path) {
+        Ok(loaded) => config::resolve(&loaded, &config::Overrides::default(), &|key| {
+            std::env::var(key).ok()
+        })
+        .is_err(),
+        Err(_) => true,
+    };
     if needs_setup {
-        qcode_gui::run_setup(setup_path.clone());
+        let setup_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
+        qcode_gui::run_setup(setup_path.clone(), setup_data_dir);
         if config::load(&setup_path).is_err() {
             return Err("config was not created; run `qc gui` again to configure".into());
         }

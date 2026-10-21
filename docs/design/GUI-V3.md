@@ -312,11 +312,15 @@ trait Backend {
   的完整渲染（G1）。
 
 
-### G3 进行中（2026-10-21）
+### G3 完成（2026-10-21）
 
 - ✅ `ConfigEdit`：保留注释/未知字段、原子写、备份、验证；`apply_config` 覆盖全部配置 section。
 - ✅ 表单 schema：11 页、所有已知配置键、Provider/Pricing/Rules/MCP 表定义；覆盖率测试。
-- ✅ `SetupView`：分页导航、标量输入、Switch、分段 Select、四类动态表（增删行）、Review/Save。
-- ✅ `qc gui` 在配置缺失/损坏时打开 Setup；保存后退出并 re-exec（临时方案，尚非无缝切换）。
-- ⏳ 尚未完成：GUI 偏好（theme/font）落盘、Keychain 密钥输入、provider/key 可用性修复入口、无缝
-  Save & Start、Setup 的真窗口手工验收。
+- ✅ `SetupView`：11 页分页导航、标量输入、Switch、分段 Select、四类动态表（增删行）、Review/Save。
+- ✅ GUI 偏好：`gui.json`（theme / font_size / code_font / density），损坏时回退默认。
+- ✅ Keychain：provider 页可按 provider 写入平台密钥库，配置只落 `api_key_command`；macOS
+  使用 `security`，Linux 使用 `secret-tool`，其他平台明确报未支持。
+- ✅ `qc gui` 在配置缺失、无法解析或 provider/key 不可用时打开 Setup；保存后退出并 re-exec
+  同一 argv（临时方案，尚非无缝窗口切换）。
+- ✅ `run_settings` 复用同一套页面并提供分类导航；菜单入口留给 G4。
+- ⚠️ 尚未做真窗口手工验收；Setup 的 Save & Start 仍是一次进程重启。

@@ -5296,6 +5296,7 @@ dependencies = [
  "qcode-tools",
  "qcode-ui-bridge",
  "qcode-ui-state",
+ "serde",
  "serde_json",
  "tempfile",
  "time",

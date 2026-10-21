@@ -8,8 +8,9 @@
 #![recursion_limit = "512"]
 
 pub mod forms;
+pub mod gui_prefs;
 pub mod setup;
-pub use setup::run_setup;
+pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::component::button::Button;

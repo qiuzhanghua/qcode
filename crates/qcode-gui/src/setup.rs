@@ -21,6 +21,7 @@ use qcode_tools::sandbox::SandboxMode;
 use qcode_tools::web_search::SearchBackend;
 
 use crate::forms::{self, FieldKind, FieldSpec, Page, TableSpec};
+use crate::gui_prefs::GuiPreferences;
 
 /// One editable cell in a table row.
 struct RowState {
@@ -36,7 +37,10 @@ struct TableState {
 
 pub struct SetupView {
     path: PathBuf,
+    data_dir: PathBuf,
+    wizard: bool,
     config: Config,
+    prefs: GuiPreferences,
     edit: ConfigEdit,
     page: usize,
     inputs: BTreeMap<String, Entity<InputState>>,
@@ -45,16 +49,27 @@ pub struct SetupView {
     tables: BTreeMap<String, TableState>,
     next_row_id: u64,
     error: Option<String>,
+    info: Option<String>,
     saved: bool,
 }
 
 impl SetupView {
-    pub fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        data_dir: PathBuf,
+        wizard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = config::load(&path).unwrap_or_else(|_| Config::default());
+        let prefs = GuiPreferences::load(&data_dir);
         let edit = ConfigEdit::open(&path).unwrap_or_else(|_| ConfigEdit::empty(&path));
         let mut view = Self {
             path,
+            data_dir,
+            wizard,
             config: config.clone(),
+            prefs: prefs.clone(),
             edit,
             page: 0,
             inputs: BTreeMap::new(),
@@ -63,6 +78,7 @@ impl SetupView {
             tables: BTreeMap::new(),
             next_row_id: 0,
             error: None,
+            info: None,
             saved: false,
         };
         for field in forms::FIELDS {
@@ -79,6 +95,21 @@ impl SetupView {
                     let value = scalar_string(&config, field.path, &[]);
                     view.inputs
                         .insert(key, input(window, cx, value, field.label));
+                }
+            }
+        }
+        for field in forms::GUI_FIELDS {
+            let key = field.path.join(".");
+            match field.kind {
+                FieldKind::Select(options) => {
+                    view.selects
+                        .insert(key, gui_string(&prefs, field.path, options));
+                }
+                _ => {
+                    view.inputs.insert(
+                        key,
+                        input(window, cx, gui_string(&prefs, field.path, &[]), field.label),
+                    );
                 }
             }
         }
@@ -157,6 +188,7 @@ impl SetupView {
                     "default_model",
                     provider.default_model.clone().unwrap_or_default(),
                 ),
+                ("__key", String::new()),
             ],
             [("stream_usage", provider.stream_usage)],
             [],
@@ -298,6 +330,11 @@ impl SetupView {
                 })
                 .collect(),
         };
+        let mut row = row;
+        if table.path == ["providers"] {
+            row.cells
+                .insert("__key", input(window, cx, String::new(), "API key"));
+        }
         state.rows.push(row);
         cx.notify();
     }
@@ -305,6 +342,52 @@ impl SetupView {
     fn remove_row(&mut self, table_key: &str, row_id: u64, cx: &mut Context<Self>) {
         if let Some(table) = self.tables.get_mut(table_key) {
             table.rows.retain(|row| row.id != row_id);
+        }
+        cx.notify();
+    }
+
+    fn store_provider_key(&mut self, row_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id) else {
+            return;
+        };
+        let name = row
+            .cells
+            .get("name")
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let key = row
+            .cells
+            .get("__key")
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        if name.is_empty() || key.is_empty() {
+            self.error = Some("provider name and API key are required".to_string());
+            cx.notify();
+            return;
+        }
+        match keychain_store(&name, &key) {
+            Ok(argv) => {
+                if let Some(command) = row.cells.get("api_key_command") {
+                    command.update(cx, |input, cx| {
+                        input.set_value(argv.join("\n"), window, cx);
+                        cx.notify();
+                    });
+                }
+                if let Some(secret) = row.cells.get("__key") {
+                    secret.update(cx, |input, cx| {
+                        input.set_value("", window, cx);
+                        cx.notify();
+                    });
+                }
+                self.info = Some(format!(
+                    "stored the key for {name} in the platform keychain"
+                ));
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
         }
         cx.notify();
     }
@@ -341,6 +424,9 @@ impl SetupView {
                     .map(|input| input.read(cx).value().to_string())
                     .unwrap_or_default();
                 if value.trim().is_empty() {
+                    if field.path == ["agent", "max_cost_usd"] {
+                        continue;
+                    }
                     return Err(format!("{}: required", field.label));
                 }
                 if matches!(field.kind, FieldKind::Integer) {
@@ -377,6 +463,32 @@ impl SetupView {
             cx.notify();
             return;
         }
+        let mut prefs = self.prefs.clone();
+        prefs.theme = self
+            .selects
+            .get("gui.theme")
+            .cloned()
+            .unwrap_or_else(|| prefs.theme.clone());
+        prefs.density = self
+            .selects
+            .get("gui.density")
+            .cloned()
+            .unwrap_or_else(|| prefs.density.clone());
+        prefs.font_size = self
+            .inputs
+            .get("gui.font_size")
+            .and_then(|input| input.read(cx).value().parse().ok())
+            .unwrap_or(prefs.font_size);
+        prefs.code_font = self
+            .inputs
+            .get("gui.code_font")
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_else(|| prefs.code_font.clone());
+        if let Err(error) = prefs.save(&self.data_dir) {
+            self.error = Some(format!("cannot save gui.json: {error}"));
+            cx.notify();
+            return;
+        }
         match self
             .edit
             .apply_config(&config)
@@ -384,11 +496,15 @@ impl SetupView {
         {
             Ok(()) => {
                 self.config = config;
+                self.prefs = prefs;
                 self.saved = true;
                 self.error = None;
-                // The caller (qc gui) re-execs after run_setup returns; quitting
-                // here turns Save into a clean restart with the new config.
-                cx.quit();
+                self.info = Some("saved".to_string());
+                // The first-run wizard is followed by a process re-exec; the
+                // settings view stays open for further edits.
+                if self.wizard {
+                    cx.quit();
+                }
             }
             Err(error) => self.error = Some(error.to_string()),
         }
@@ -726,6 +842,80 @@ fn parse_scope(value: Option<&str>) -> Scope {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, String> {
+    let status = std::process::Command::new("security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            "qcode",
+            "-a",
+            provider,
+            "-w",
+            key,
+        ])
+        .status()
+        .map_err(|error| format!("security: {error}"))?;
+    if !status.success() {
+        return Err("security add-generic-password failed".to_string());
+    }
+    Ok(vec![
+        "security".to_string(),
+        "find-generic-password".to_string(),
+        "-w".to_string(),
+        "-s".to_string(),
+        "qcode".to_string(),
+        "-a".to_string(),
+        provider.to_string(),
+    ])
+}
+
+#[cfg(target_os = "linux")]
+fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, String> {
+    use std::io::Write as _;
+
+    let mut child = std::process::Command::new("secret-tool")
+        .args([
+            "store", "--label", "qcode", "service", "qcode", "user", provider,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("secret-tool: {error}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "secret-tool stdin unavailable".to_string())?
+        .write_all(key.as_bytes())
+        .map_err(|error| error.to_string())?;
+    if !child.wait().map_err(|error| error.to_string())?.success() {
+        return Err("secret-tool store failed".to_string());
+    }
+    Ok(vec![
+        "secret-tool".to_string(),
+        "lookup".to_string(),
+        "service".to_string(),
+        "qcode".to_string(),
+        "user".to_string(),
+        provider.to_string(),
+    ])
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn keychain_store(_provider: &str, _key: &str) -> Result<Vec<String>, String> {
+    Err("keychain setup is not implemented on this platform yet".to_string())
+}
+
+fn gui_string(prefs: &GuiPreferences, path: &[&str], options: &[&str]) -> String {
+    match path {
+        ["gui", "theme"] => prefs.theme.clone(),
+        ["gui", "font_size"] => prefs.font_size.to_string(),
+        ["gui", "code_font"] => prefs.code_font.clone(),
+        ["gui", "density"] => prefs.density.clone(),
+        _ => options.first().unwrap_or(&"").to_string(),
+    }
+}
+
 fn network_mode(mode: &NetworkMode) -> &'static str {
     match mode {
         NetworkMode::Off => "off",
@@ -744,13 +934,24 @@ fn unknown_host(policy: &UnknownHost) -> &'static str {
 
 /// Open the first-run/setup wizard. Returns when the user saves (which quits
 /// the GPUI app) or closes the window.
-pub fn run_setup(path: PathBuf) {
+pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| SetupView::new(path, window, cx))
+            cx.new(|cx| SetupView::new(path, data_dir, true, window, cx))
         })
         .expect("failed to open the setup window");
+    });
+}
+
+/// Open the same form pages as a settings window (no wizard restart).
+pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
+    gpui_kit::application().run(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| SetupView::new(path, data_dir, false, window, cx))
+        })
+        .expect("failed to open the settings window");
     });
 }
 
@@ -776,6 +977,9 @@ impl Render for SetupView {
             if let Some(error) = &self.error {
                 body = body.child(format!("error: {error}"));
             }
+            if let Some(info) = &self.info {
+                body = body.child(format!("info: {info}"));
+            }
         } else {
             for field in forms::fields_for(page) {
                 body = body.child(self.render_field(field, cx));
@@ -783,7 +987,45 @@ impl Render for SetupView {
             for table in forms::tables_for(page) {
                 body = body.child(self.render_table(table, cx));
             }
+            for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
+                body = body.child(self.render_field(field, cx));
+            }
         }
+
+        let mut nav = div().flex().flex_row().gap_1().p_2();
+        if !self.wizard {
+            for (index, item) in Page::ALL.iter().enumerate() {
+                let marker = if index == self.page { "●" } else { "○" };
+                nav = nav.child(
+                    Button::new(format!("settings-page-{index}"))
+                        .label(format!("{marker} {}", item.title()))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.page = index;
+                            this.error = None;
+                            cx.notify();
+                        })),
+                );
+            }
+        }
+        let mut footer = div().flex().flex_row().gap_2().p_2();
+        if self.wizard {
+            footer = footer
+                .child(
+                    Button::new("setup-back")
+                        .label("Back")
+                        .on_click(cx.listener(|this, _, _window, cx| this.back(cx))),
+                )
+                .child(
+                    Button::new("setup-next")
+                        .label("Next")
+                        .on_click(cx.listener(|this, _, _window, cx| this.next(cx))),
+                );
+        }
+        footer = footer.child(
+            Button::new("setup-save")
+                .label(if self.wizard { "Save & Start" } else { "Save" })
+                .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
+        );
 
         div()
             .size_full()
@@ -795,8 +1037,23 @@ impl Render for SetupView {
                     .flex_row()
                     .gap_2()
                     .p_2()
-                    .child(format!("Setup {}/{}", self.page + 1, Page::ALL.len()))
+                    .child(if self.wizard {
+                        format!("Setup {}/{}", self.page + 1, Page::ALL.len())
+                    } else {
+                        "Settings".to_string()
+                    })
                     .child(page.title()),
+            )
+            .child(nav)
+            .children(
+                self.error
+                    .as_ref()
+                    .map(|error| div().px_2().child(format!("error: {error}"))),
+            )
+            .children(
+                self.info
+                    .as_ref()
+                    .map(|info| div().px_2().child(format!("info: {info}"))),
             )
             .child(
                 div()
@@ -808,28 +1065,7 @@ impl Render for SetupView {
                     .overflow_y_scroll()
                     .child(body),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        Button::new("setup-back")
-                            .label("Back")
-                            .on_click(cx.listener(|this, _, _window, cx| this.back(cx))),
-                    )
-                    .child(
-                        Button::new("setup-next")
-                            .label("Next")
-                            .on_click(cx.listener(|this, _, _window, cx| this.next(cx))),
-                    )
-                    .child(
-                        Button::new("setup-save")
-                            .label("Save & Start")
-                            .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
-                    ),
-            )
+            .child(footer)
     }
 }
 
@@ -978,6 +1214,29 @@ impl SetupView {
                                     .gap_1()
                                     .child(div().child(column.label))
                                     .child(control),
+                            );
+                        }
+                        if table.path == ["providers"]
+                            && let Some(secret) = row.cells.get("__key")
+                        {
+                            let key_row_id = row.id;
+                            card = card.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .child("API key (stored in Keychain, not config.toml)"),
+                                    )
+                                    .child(Input::new(secret))
+                                    .child(
+                                        Button::new(format!("store-key-{key}-{key_row_id}"))
+                                            .label("Store key")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.store_provider_key(key_row_id, window, cx);
+                                            })),
+                                    ),
                             );
                         }
                         let table_key = key.clone();
