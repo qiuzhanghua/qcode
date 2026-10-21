@@ -1,7 +1,7 @@
-# qcode v2 — 实现规格（草案）
+# qcode v2 — 实现规格
 
-> 状态：draft，2026-10-19。v1 代码功能已基本完成；真实 macOS notarize 仍缺证书，
-> 属于 v1 发布门禁，不阻塞本文件的 v2 规划。
+> 状态：v2.2 完成（2026-10-21）；v3 方向待定。v1 代码功能已完成；真实 macOS notarize
+> 仍缺证书，属于 v1 发布门禁，不阻塞 v2 规划。
 >
 > 依赖决策见 [DECISIONS.md](./DECISIONS.md)。v1 规格见 [SPEC.md](./SPEC.md)。
 > 本文件只描述 v2 的范围、分期与验收，不包含实现代码。
@@ -72,13 +72,14 @@
 
 - 图片输入：至少 PNG/JPEG，经 provider 多模态接口发送；TUI 显示附件占位；超限/不支持
   的 provider 给出明确错误。
-- checkpoint：`/checkpoint` 或等价命令创建标记；`/rollback <n>` 恢复工作区文件；与
-  git 状态冲突时拒绝并说明。
+- checkpoint：`/checkpoint` 或等价命令创建标记；`/rollback <n>` 恢复工作区文件。
+  rollback 不操作 git，按文件级 pre-image 还原；未提交改动会被覆盖（ADR-0034）。
 - GUI spike：同一组 3 个界面（流式 transcript、diff 审查、审批浮层）分别用 egui 与
   GPUI Kit 实现；记录性能、CJK/IME、代码编辑、构建体积、API 稳定性；给出 go/no-go。
 - macOS hard mode：Seatbelt 只允许连 loopback 代理端口，shell 直连被拒；文档说明
   Linux/Windows 的后续路径。
 - 性能：10 万事件会话的 `sessions list`、TUI 打开、resume 时间有基线；索引不退化。
+  2026-10-21 基线见 [PERF.md](./PERF.md)：load 570 ms、索引 list 210 µs、replay 4.5 ms。
 
 ## 3. 网络出口（ADR-0023）
 

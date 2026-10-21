@@ -4,6 +4,7 @@
 #   make all             # 本机能产出的全部平台（Linux 宿主：linux gnu/musl + windows gnullvm）
 #   make list            # 矩阵与就绪状态
 #   make check           # 发布门禁：fmt / clippy / test / cargo-deny
+#   make perf            # 10 万事件会话性能基线（不进入默认 CI）
 #   make release         # 门禁 + 全平台归档
 #   make linux-musl-amd64 windows-arm64
 #   make archive         # 全部平台 + tar.gz/zip
@@ -19,7 +20,7 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check release archive clean $(PLATFORMS)
+.PHONY: all native list check perf release archive clean $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -32,6 +33,9 @@ list:
 
 check:
 	./build-for-release --check
+
+perf:
+	./scripts/perf-session.sh
 
 release:
 	./build-for-release --check

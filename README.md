@@ -1,8 +1,8 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：v1 功能完成（macOS notarize 仍待证书）；v2 规划草案见
-[docs/design/V2-SPEC.md](docs/design/V2-SPEC.md)**（多轮工具调用、审批、workspace 路径封闭、
-事件日志与 replay）。
+终端 coding agent，Rust 实现，clean-room。**当前状态：v2.2 功能完成（macOS notarize 仍待证书）**；
+v2 分期与验收见 [docs/design/V2-SPEC.md](docs/design/V2-SPEC.md)（多轮工具调用、审批、
+workspace 路径封闭、事件日志与 replay）。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
 
@@ -468,6 +468,7 @@ action = "allow"
 - [v1 实现规格](docs/design/SPEC.md) —— 架构、事件模型、工具契约
 - [v2 实现规格（草案）](docs/design/V2-SPEC.md) —— Windows、网络出口、ACP、GUI 分期
 - [评测方案](docs/design/EVAL.md) —— 离线 fixture 与 5 条任务
+- [性能基线](docs/design/PERF.md) —— 10 万事件会话的 load / list / replay
 - [M0 任务清单](docs/design/M0-TASKS.md) —— 基础设施与人工验收
 - [M1 任务清单](docs/design/M1-TASKS.md) —— 工具循环、审批与取消
 - [M2 任务清单](docs/design/M2-TASKS.md) —— TUI、压缩、AGENTS.md 与 MCP
