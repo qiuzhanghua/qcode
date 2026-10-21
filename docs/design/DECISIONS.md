@@ -2492,7 +2492,8 @@ Allow all run_shell for this session  [danger]
 
 ## ADR-0047（草案）：Task / Root 领域模型——任务为核心、目录是可授权根（2026-10-21）
 
-**状态**：Accepted（2026-10-21）。未实现。已确认：Task:Session = 1:1；Root label 仅 slug；
+**状态**：Accepted（2026-10-21）。实现中：core Task/Root 模型与旧 Session 单 Root 迁移已落地；
+Root 持久化、动态变更与 Task 浏览器仍待实现。已确认：Task:Session = 1:1；Root label 仅 slug；
 无根 Task 允许在 Turn 私有临时目录运行 shell；Root 变更等 Turn 结束；旧 Session 的 task_id
 复用旧 session id；`@root` 别名；Windows 只读 = 不可写；保留 Workspace 作为兼容概念。
 

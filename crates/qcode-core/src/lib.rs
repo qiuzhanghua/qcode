@@ -16,6 +16,7 @@ pub mod provider;
 pub mod snapshot;
 pub mod state;
 pub mod store;
+pub mod task;
 pub mod todo;
 pub mod tool;
 
@@ -31,5 +32,6 @@ pub use policy::{Action, Decision, Policy, Rule};
 pub use provider::*;
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};
+pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};

@@ -1000,7 +1000,7 @@ impl Shell {
             .child(div().child(self.workspace.clone()))
             .child(
                 Button::new("new-session")
-                    .label("New session")
+                    .label("New task")
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
             )
             .child(
@@ -1048,10 +1048,7 @@ impl Shell {
                     .p_2()
                     .child(format!(
                         "{} · {} turn(s)",
-                        self.active
-                            .as_deref()
-                            .map(short_id)
-                            .unwrap_or("new session"),
+                        self.active.as_deref().map(short_id).unwrap_or("new task"),
                         self.app.turns.len()
                     ))
                     .child(

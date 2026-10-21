@@ -398,3 +398,18 @@ trait Backend {
 - GUI 的 `Always (this session)` 现在真正记住工具；同 Session 同工具不再重复弹审批。
 - 并行同工具审批在 Always 后一并结算。
 - `[agent] max_turns` 默认从 8 提到 64；本机已安装配置也同步改为 64。
+
+### Task 模型 Phase 1（2026-10-21）
+
+- `qcode-core::task` 新增 `Task` / `Root` / `RootAccess`：
+  - `task.id == session.id`
+  - 最多 16 个 Root
+  - label 仅允许 slug
+  - 至多一个 primary Root
+- `SessionSummary::task()` 将旧 workspace Session 迁移为单 Root Task：
+  - label `workspace`
+  - access read-write
+  - primary
+  - path 来自旧 `SessionStarted.cwd`
+- GUI 侧栏入口从 “New session” 改为 “New task”。
+- 多 Root、Root 持久化/relink、Task 浏览器仍未实现。

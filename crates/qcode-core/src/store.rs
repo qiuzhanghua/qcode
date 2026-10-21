@@ -12,6 +12,7 @@ use rusqlite::{Connection, params};
 use time::{Duration, OffsetDateTime};
 
 use crate::event::{Event, EventKind, SessionStarted, ToolResult, ToolStatus};
+use crate::task::{Task, TaskError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -55,6 +56,16 @@ pub struct SessionSummary {
     pub last_seq: u64,
     /// Sum of `turn_ended.cost_usd` in this session.
     pub cost_usd: f64,
+}
+
+impl SessionSummary {
+    /// Migrate this legacy session to the Task model.
+    ///
+    /// The session id is reused as the task id; its cwd becomes the single
+    /// read-write primary root. Task/config events will extend this later.
+    pub fn task(&self) -> Result<Task, TaskError> {
+        Task::from_legacy_session(self.id.clone(), self.started.cwd.clone())
+    }
 }
 
 impl SessionStore {
@@ -726,6 +737,22 @@ mod tests {
         let deleted = store.gc(0, true).expect("delete");
         assert!(deleted.contains(&source));
         assert!(!store.session_path(&source).exists());
+    }
+
+    #[test]
+    fn legacy_session_migrates_to_a_single_root_task() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let id = seed(&store);
+        let listed = store.list().expect("list");
+        let summary = listed.iter().find(|item| item.id == id).expect("summary");
+        let task = summary.task().expect("task");
+        assert_eq!(task.id, id);
+        assert_eq!(task.session_id(), id);
+        assert_eq!(task.roots.len(), 1);
+        assert_eq!(task.roots[0].label, "workspace");
+        assert_eq!(task.roots[0].path, std::path::PathBuf::from("/tmp"));
+        assert!(task.roots[0].primary);
     }
 
     #[test]
