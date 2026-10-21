@@ -167,6 +167,11 @@ impl SessionStore {
     /// single-root task when no task event exists.
     pub fn task(&self, id: &str) -> Result<Task, StoreError> {
         let events = self.load(id)?;
+        self.task_from_events(id, &events)
+    }
+
+    /// Rebuild a Task from an already-loaded event slice.
+    pub fn task_from_events(&self, id: &str, events: &[Event]) -> Result<Task, StoreError> {
         let Some(started) = events.first().and_then(|event| match &event.kind {
             EventKind::SessionStarted(started) => Some(started),
             _ => None,
@@ -174,7 +179,7 @@ impl SessionStore {
             return Err(StoreError::NotFound(id.to_string()));
         };
         let mut task = Task::from_legacy_session(id.to_string(), started.cwd.clone())?;
-        for event in &events {
+        for event in events {
             match &event.kind {
                 EventKind::TaskConfigured(configured) => {
                     task = Task::new(id.to_string(), configured.roots.clone())?;

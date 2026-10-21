@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
-use crate::path;
+use crate::path::{self, Access};
 use crate::sandbox::{NoSandbox, Sandbox};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
@@ -192,8 +192,14 @@ impl Tool for RunShell {
         }
 
         let cwd = match args.cwd.as_deref() {
-            Some(cwd) if !cwd.is_empty() => path::resolve(&ctx.workspace, cwd)?,
-            _ => ctx.workspace.clone(),
+            Some(cwd) if !cwd.is_empty() => path::resolve_ctx(ctx, cwd, Access::Read)?.path,
+            _ => ctx
+                .roots
+                .iter()
+                .find(|root| root.primary)
+                .or_else(|| ctx.roots.first())
+                .map(|root| root.path.clone())
+                .unwrap_or_else(|| ctx.workspace.clone()),
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
 

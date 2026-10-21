@@ -442,4 +442,18 @@ trait Backend {
   - `×`：移除 Root
 - Root 变更写入 `roots_changed`，刷新 Task 视图。
 - 运行中隐藏编辑控件，并提示 Stop 后再改。
-- 当前仅持久化/Root UI；执行层（文件工具/sandbox）仍只使用原 workspace，下一步接入 RootResolver。
+- 文件工具已接入 RootResolver：`@label/path`、绝对路径、只读拒绝、无根拒绝。
+- Shell 的 cwd 使用 primary Root，但多根 sandbox 尚未接入；越界访问仍依赖后续 ADR-0048 实现。
+
+### RootResolver（2026-10-21）
+
+- `ToolContext` 携带 Task roots，engine 从 `task_configured` / `roots_changed` 重建。
+- `path::resolve_ctx` 支持：
+  - `@label/path`
+  - primary Root 相对路径
+  - 绝对路径必须落在 Root 内
+  - read-only 写入拒绝
+  - 无 Root 时文件工具拒绝
+- `read_file` / `write_file` / `edit_file` / `list_dir` / glob / grep / apply_patch 已切到 resolver。
+- System prompt 注入 `@label` 到绝对路径的映射。
+- Shell 的 cwd 取 primary Root；多根 shell sandbox 仍待 ADR-0048 实现。

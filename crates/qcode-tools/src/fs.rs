@@ -9,7 +9,7 @@ use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::path;
+use crate::path::{self, Access};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 
@@ -23,13 +23,6 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
 
 fn parse<T: for<'de> Deserialize<'de>>(args: Value) -> Result<T, ToolError> {
     serde_json::from_value(args).map_err(|err| ToolError::Invalid(err.to_string()))
-}
-
-fn display_path(workspace: &Path, path: &Path) -> String {
-    path.strip_prefix(workspace)
-        .unwrap_or(path)
-        .display()
-        .to_string()
 }
 
 fn atomic_write(path: &Path, contents: &str) -> Result<(), ToolError> {
@@ -88,8 +81,8 @@ impl Tool for ReadFile {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: ReadArgs = parse(args)?;
-        let path = path::resolve(&ctx.workspace, &args.path)?;
-        let bytes = std::fs::read(&path)?;
+        let resolved = path::resolve_ctx(ctx, &args.path, Access::Read)?;
+        let bytes = std::fs::read(&resolved.path)?;
 
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Ok(ToolOutput::error("binary file; refusing to read as text"));
@@ -164,7 +157,9 @@ impl Tool for WriteFile {
             .get("path")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if path::resolve(&ctx.workspace, path).is_ok() {
+        if let Ok(resolved) = path::resolve_ctx(ctx, path, Access::Read)
+            && resolved.root.access == qcode_core::task::RootAccess::ReadWrite
+        {
             ApprovalClass::WriteInside
         } else {
             ApprovalClass::WriteOutside
@@ -173,12 +168,12 @@ impl Tool for WriteFile {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: WriteArgs = parse(args)?;
-        let path = path::resolve(&ctx.workspace, &args.path)?;
-        atomic_write(&path, &args.content)?;
+        let resolved = path::resolve_ctx(ctx, &args.path, Access::Write)?;
+        atomic_write(&resolved.path, &args.content)?;
         Ok(ToolOutput::ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
-            display_path(&ctx.workspace, &path)
+            resolved.display
         )))
     }
 }
@@ -227,7 +222,9 @@ impl Tool for EditFile {
             .get("path")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if path::resolve(&ctx.workspace, path).is_ok() {
+        if let Ok(resolved) = path::resolve_ctx(ctx, path, Access::Read)
+            && resolved.root.access == qcode_core::task::RootAccess::ReadWrite
+        {
             ApprovalClass::WriteInside
         } else {
             ApprovalClass::WriteOutside
@@ -245,21 +242,22 @@ impl Tool for EditFile {
             ));
         }
 
-        let path = path::resolve(&ctx.workspace, &args.path)?;
-        let original = std::fs::read_to_string(&path)?;
+        let resolved = path::resolve_ctx(ctx, &args.path, Access::Write)?;
+        let path = &resolved.path;
+        let original = std::fs::read_to_string(path)?;
         let matches = original.matches(&args.old_string).count();
 
         if matches == 0 {
             return Ok(ToolOutput::error(format!(
                 "old_string not found in {}",
-                display_path(&ctx.workspace, &path)
+                resolved.display
             )));
         }
         if matches > 1 && !args.replace_all {
             return Ok(ToolOutput::error(format!(
                 "old_string appears {matches} times in {}; add context to make it unique \
                  or pass replace_all",
-                display_path(&ctx.workspace, &path)
+                resolved.display
             )));
         }
 
@@ -268,11 +266,11 @@ impl Tool for EditFile {
         } else {
             original.replacen(&args.old_string, &args.new_string, 1)
         };
-        atomic_write(&path, &updated)?;
+        atomic_write(path, &updated)?;
 
         Ok(ToolOutput::ok(format!(
             "replaced {matches} occurrence(s) in {}",
-            display_path(&ctx.workspace, &path)
+            resolved.display
         )))
     }
 }
@@ -314,10 +312,11 @@ impl Tool for ListDir {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: ListArgs = parse(args)?;
-        let path = path::resolve(&ctx.workspace, args.path.as_deref().unwrap_or("."))?;
+        let resolved = path::resolve_ctx(ctx, args.path.as_deref().unwrap_or("."), Access::Read)?;
+        let path = &resolved.path;
 
         let mut entries = Vec::new();
-        for entry in std::fs::read_dir(&path)? {
+        for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
             if matches!(name.as_str(), ".git" | "target" | "node_modules") {

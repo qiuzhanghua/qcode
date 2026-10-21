@@ -16,12 +16,22 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::path;
+use crate::path::{self, Access};
+use qcode_core::task::Root;
 
 const MAX_GLOB_RESULTS: usize = 1000;
 const MAX_GREP_MATCHES: usize = 200;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const OUTPUT_LIMIT: usize = 32 * 1024;
+
+fn display_in(root: &Root, path: &Path) -> String {
+    let relative = path.strip_prefix(&root.path).unwrap_or(path);
+    if relative.as_os_str().is_empty() {
+        format!("@{}", root.label)
+    } else {
+        format!("@{}/{}", root.label, relative.display())
+    }
+}
 
 fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     ToolSpec {
@@ -94,10 +104,10 @@ impl Tool for GlobTool {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: GlobArgs = parse(args)?;
         let matcher = compile_glob(&args.pattern)?;
-        let root = path::resolve(&ctx.workspace, args.path.as_deref().unwrap_or("."))?;
+        let resolved = path::resolve_ctx(ctx, args.path.as_deref().unwrap_or("."), Access::Read)?;
 
         let mut matches = Vec::new();
-        for entry in WalkBuilder::new(&root).require_git(false).build() {
+        for entry in WalkBuilder::new(&resolved.path).require_git(false).build() {
             let Ok(entry) = entry else {
                 continue;
             };
@@ -106,10 +116,10 @@ impl Tool for GlobTool {
             }
             let relative = entry
                 .path()
-                .strip_prefix(&ctx.workspace)
+                .strip_prefix(&resolved.root.path)
                 .unwrap_or(entry.path());
             if matches_glob(&matcher, relative) {
-                matches.push(relative.display().to_string());
+                matches.push(display_in(resolved.root, entry.path()));
                 if matches.len() >= MAX_GLOB_RESULTS {
                     break;
                 }
@@ -183,13 +193,13 @@ impl Tool for GrepTool {
             .map_err(|err| ToolError::Invalid(format!("invalid regex: {err}")))?;
         let glob_filter = args.glob.as_deref().map(compile_glob).transpose()?;
         let context = args.context.unwrap_or(0).min(5);
-        let root = path::resolve(&ctx.workspace, args.path.as_deref().unwrap_or("."))?;
+        let resolved = path::resolve_ctx(ctx, args.path.as_deref().unwrap_or("."), Access::Read)?;
 
         // (path, line number, text, is_match)
         let mut results: Vec<(String, usize, String, bool)> = Vec::new();
         let mut matched = 0;
 
-        'walk: for entry in WalkBuilder::new(&root).require_git(false).build() {
+        'walk: for entry in WalkBuilder::new(&resolved.path).require_git(false).build() {
             let Ok(entry) = entry else {
                 continue;
             };
@@ -198,7 +208,7 @@ impl Tool for GrepTool {
             }
 
             let path = entry.path();
-            let relative = path.strip_prefix(&ctx.workspace).unwrap_or(path);
+            let relative = path.strip_prefix(&resolved.root.path).unwrap_or(path);
             if glob_filter
                 .as_ref()
                 .is_some_and(|matcher| !matches_glob(matcher, relative))
@@ -224,7 +234,7 @@ impl Tool for GrepTool {
 
             let text = String::from_utf8_lossy(&bytes);
             let lines: Vec<&str> = text.lines().collect();
-            let display = relative.display().to_string();
+            let display = display_in(resolved.root, path);
 
             for (index, line) in lines.iter().enumerate() {
                 if !regex.is_match(line) {

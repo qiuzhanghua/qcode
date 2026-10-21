@@ -17,7 +17,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::path;
+use crate::path::{self, Access};
 
 const MAX_PATCH_BYTES: usize = 256 * 1024;
 const MAX_FILES: usize = 20;
@@ -370,7 +370,8 @@ fn plan_file(ctx: &ToolContext, patch: &FilePatch) -> Result<PlannedOp, ToolErro
         }
     }
 
-    let target = path::resolve(&ctx.workspace, trimmed)?;
+    let resolved = path::resolve_ctx(ctx, trimmed, Access::Write)?;
+    let target = resolved.path;
     let metadata = std::fs::symlink_metadata(&target).ok();
     let existed = metadata.is_some();
 
@@ -886,7 +887,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("escapes the workspace"));
+        assert!(error.to_string().contains("escapes the authorized roots"));
         assert_eq!(read(&secret), "secret\n");
     }
 }

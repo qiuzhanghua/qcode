@@ -92,6 +92,39 @@ pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>, todos: &[Tod
     prompt
 }
 
+/// Compose the model-visible task roots section.
+pub fn roots_prompt(roots: &[crate::task::Root]) -> String {
+    let mut prompt = String::from("\n\n# Task roots\n\n");
+    if roots.is_empty() {
+        prompt.push_str(
+            "No roots are configured. File tools are unavailable; use run_shell only for \
+             temporary work in the task's private directory.",
+        );
+        return prompt;
+    }
+    prompt.push_str(
+        "File paths use `@label/path`. Relative paths resolve against the primary root. \
+         Shell commands use the real absolute paths below. Read-only roots reject writes.\n\n",
+    );
+    for root in roots {
+        prompt.push_str(&format!(
+            "- `@{}`: {} ({}, {})\n",
+            root.label,
+            root.path.display(),
+            match root.access {
+                crate::task::RootAccess::ReadOnly => "read-only",
+                crate::task::RootAccess::ReadWrite => "read-write",
+            },
+            if root.primary {
+                "primary"
+            } else {
+                "not primary"
+            }
+        ));
+    }
+    prompt
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error(transparent)]
@@ -336,9 +369,11 @@ where
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);
+    let task = ctx.store.task_from_events(options.session_id, &events)?;
     let mut compaction_disabled = false;
-    let mut tool_context =
-        ToolContext::new(options.workspace.clone()).with_cancel(options.cancel.clone());
+    let mut tool_context = ToolContext::new(options.workspace.clone())
+        .with_roots(task.roots.clone())
+        .with_cancel(options.cancel.clone());
     if let Some(network) = &options.network {
         tool_context = tool_context.with_network(network.clone());
     }
@@ -487,13 +522,15 @@ where
             }
         }
 
+        let mut system = system_prompt(
+            options.agents_md.as_deref(),
+            options.skills.as_deref(),
+            todos.as_deref().unwrap_or(&[]),
+        );
+        system.push_str(&roots_prompt(&task.roots));
         let request = CompletionRequest {
             model: options.model.to_string(),
-            system: system_prompt(
-                options.agents_md.as_deref(),
-                options.skills.as_deref(),
-                todos.as_deref().unwrap_or(&[]),
-            ),
+            system,
             messages: messages.clone(),
             tools: ctx.tools.specs(),
             max_output_tokens: None,
@@ -1380,6 +1417,32 @@ mod tests {
             shell_ls,
             call_signature(&[call("list_dir", r#"{"command":"ls"}"#)])
         );
+    }
+
+    #[test]
+    fn roots_prompt_lists_aliases_and_access() {
+        use crate::task::{Root, RootAccess};
+        assert!(roots_prompt(&[]).contains("No roots are configured"));
+        let prompt = roots_prompt(&[
+            Root {
+                id: "a".into(),
+                label: "code".into(),
+                path: "/src".into(),
+                access: RootAccess::ReadWrite,
+                primary: true,
+            },
+            Root {
+                id: "b".into(),
+                label: "docs".into(),
+                path: "/docs".into(),
+                access: RootAccess::ReadOnly,
+                primary: false,
+            },
+        ]);
+        assert!(prompt.contains("@code"));
+        assert!(prompt.contains("read-write"));
+        assert!(prompt.contains("@docs"));
+        assert!(prompt.contains("read-only"));
     }
 
     #[test]

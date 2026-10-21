@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::event::{ToolMetadata, ToolStatus, Usage};
 use crate::network::Network;
 use crate::provider::ToolSpec;
+use crate::task::{Root, RootAccess};
 
 /// Everything a tool is allowed to know about its surroundings.
 ///
@@ -24,6 +25,8 @@ use crate::provider::ToolSpec;
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace: PathBuf,
+    /// Authorized task roots. `workspace` is the legacy primary root.
+    pub roots: Vec<Root>,
     pub cancel: CancellationToken,
     /// Egress proxy for tools that make network calls.
     pub network: Option<Arc<dyn Network>>,
@@ -31,11 +34,26 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        let roots = vec![Root {
+            id: "workspace".to_string(),
+            label: "workspace".to_string(),
+            path: workspace.clone(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        }];
         Self {
-            workspace: workspace.into(),
+            workspace,
+            roots,
             cancel: CancellationToken::new(),
             network: None,
         }
+    }
+
+    /// Replace the default single root with the task's authorized roots.
+    pub fn with_roots(mut self, roots: Vec<Root>) -> Self {
+        self.roots = roots;
+        self
     }
 
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
@@ -148,8 +166,12 @@ impl ToolOutput {
 pub enum ToolError {
     #[error("{0}")]
     Invalid(String),
-    #[error("path escapes the workspace: {0}")]
+    #[error("path escapes the authorized roots: {0}")]
     PathEscape(String),
+    #[error("task has no roots; file tools are unavailable")]
+    NoRoots,
+    #[error("root `{0}` is read-only")]
+    ReadOnly(String),
     #[error("network error: {0}")]
     Network(String),
     #[error("sandbox error: {0}")]

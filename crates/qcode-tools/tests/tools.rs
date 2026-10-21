@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use qcode_core::event::ToolStatus;
+use qcode_core::task::{Root, RootAccess};
 use qcode_core::tool::{Tool, ToolContext};
 use qcode_net::{Egress, EgressOptions};
 use qcode_tools::fetch::WebFetch;
@@ -15,6 +16,50 @@ use tokio_util::sync::CancellationToken;
 
 fn context(dir: &Path) -> ToolContext {
     ToolContext::new(dir.to_path_buf())
+}
+
+#[tokio::test]
+async fn file_tools_respect_alias_roots_and_readonly_access() {
+    let code = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    std::fs::write(docs.path().join("guide.md"), "guide\n").unwrap();
+    let ctx = ToolContext::new(code.path()).with_roots(vec![
+        Root {
+            id: "code".into(),
+            label: "code".into(),
+            path: code.path().to_path_buf(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        },
+        Root {
+            id: "docs".into(),
+            label: "docs".into(),
+            path: docs.path().to_path_buf(),
+            access: RootAccess::ReadOnly,
+            primary: false,
+        },
+    ]);
+
+    WriteFile
+        .execute(&ctx, json!({"path": "@code/new.txt", "content": "new\n"}))
+        .await
+        .unwrap();
+    assert!(code.path().join("new.txt").exists());
+
+    let read = ReadFile
+        .execute(&ctx, json!({"path": "@docs/guide.md"}))
+        .await
+        .unwrap();
+    assert!(read.output.contains("guide"));
+
+    let error = EditFile
+        .execute(
+            &ctx,
+            json!({"path": "@docs/guide.md", "old_string": "guide", "new_string": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"));
 }
 
 #[tokio::test]
