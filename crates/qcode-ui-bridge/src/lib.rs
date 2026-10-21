@@ -12,7 +12,7 @@
 //! channel, so a GUI can answer from a different task than the one that drew
 //! the prompt.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -104,7 +104,8 @@ pub struct UiPort {
 #[derive(Clone)]
 pub struct KernelPort {
     events: mpsc::UnboundedSender<UiEvent>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Answer>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    session_allowed: Arc<Mutex<HashSet<String>>>,
     commands: Arc<Mutex<Option<mpsc::UnboundedReceiver<UiCommand>>>>,
 }
 
@@ -116,6 +117,7 @@ pub fn channels() -> (UiPort, KernelPort) {
     let port = KernelPort {
         events: events_tx,
         pending: Arc::new(Mutex::new(HashMap::new())),
+        session_allowed: Arc::new(Mutex::new(HashSet::new())),
         commands: Arc::new(Mutex::new(Some(commands_rx))),
     };
     let ui = UiPort {
@@ -151,18 +153,55 @@ impl KernelPort {
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,
     /// which happens if the turn was cancelled while it was on screen.
     pub fn answer(&self, call_id: &str, answer: Answer) -> bool {
-        let sender = self
+        let pending = self
             .pending
             .lock()
             .expect("approval registry")
             .remove(call_id);
-        let Some(sender) = sender else {
+        let Some(pending) = pending else {
             return false;
         };
+
+        if answer == Answer::AllowSession {
+            let tool = pending.tool.clone();
+            self.session_allowed
+                .lock()
+                .expect("session approval registry")
+                .insert(tool.clone());
+            // Parallel calls of the same tool were already queued before the
+            // user chose "Always"; settle them too instead of asking again.
+            let mut others = Vec::new();
+            {
+                let mut registry = self.pending.lock().expect("approval registry");
+                let ids: Vec<String> = registry
+                    .iter()
+                    .filter(|(_, other)| other.tool == tool)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in ids {
+                    if let Some(other) = registry.remove(&id) {
+                        others.push((id, other));
+                    }
+                }
+            }
+            for (id, other) in others {
+                let _ = self.events.send(UiEvent::ApprovalClosed { call_id: id });
+                let _ = other.sender.send(Answer::AllowSession);
+            }
+        }
+
         let _ = self.events.send(UiEvent::ApprovalClosed {
             call_id: call_id.to_string(),
         });
-        sender.send(answer).is_ok()
+        pending.sender.send(answer).is_ok()
+    }
+
+    /// Forget the current session's "Always" decisions.
+    pub fn clear_session_allow(&self) {
+        self.session_allowed
+            .lock()
+            .expect("session approval registry")
+            .clear();
     }
 
     /// Answer from a [`UiCommand`]; non-answer commands are ignored here.
@@ -194,14 +233,22 @@ impl KernelPort {
         BridgeApprover {
             events: self.events.clone(),
             pending: self.pending.clone(),
+            session_allowed: self.session_allowed.clone(),
         }
     }
 }
 
 /// An [`Approver`] that asks the UI and waits for [`KernelPort::answer`].
+#[derive(Clone)]
 pub struct BridgeApprover {
     events: mpsc::UnboundedSender<UiEvent>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Answer>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    session_allowed: Arc<Mutex<HashSet<String>>>,
+}
+
+struct PendingApproval {
+    tool: String,
+    sender: oneshot::Sender<Answer>,
 }
 
 impl std::fmt::Debug for BridgeApprover {
@@ -213,11 +260,22 @@ impl std::fmt::Debug for BridgeApprover {
 #[async_trait]
 impl Approver for BridgeApprover {
     async fn approve(&self, request: &ApprovalRequest, cancel: CancellationToken) -> Answer {
-        let (tx, rx) = oneshot::channel();
-        self.pending
+        if self
+            .session_allowed
             .lock()
-            .expect("approval registry")
-            .insert(request.call_id.clone(), tx);
+            .expect("session approval registry")
+            .contains(&request.tool)
+        {
+            return Answer::AllowSession;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().expect("approval registry").insert(
+            request.call_id.clone(),
+            PendingApproval {
+                tool: request.tool.clone(),
+                sender: tx,
+            },
+        );
         if self
             .events
             .send(UiEvent::Approval(ApprovalView::from(request)))
@@ -244,9 +302,13 @@ mod tests {
     use qcode_core::approval::ApprovalRequest;
 
     fn request() -> ApprovalRequest {
+        request_with("c1", "run_shell")
+    }
+
+    fn request_with(call_id: &str, tool: &str) -> ApprovalRequest {
         ApprovalRequest {
-            call_id: "c1".to_string(),
-            tool: "run_shell".to_string(),
+            call_id: call_id.to_string(),
+            tool: tool.to_string(),
             summary: "npm test".to_string(),
             reason: "rule: ask".to_string(),
             rule_id: None,
@@ -288,6 +350,100 @@ mod tests {
         cancel.cancel();
         let answer = approver.approve(&request(), cancel).await;
         assert_eq!(answer, Answer::Deny);
+    }
+
+    #[tokio::test]
+    async fn allow_session_skips_later_prompts_for_the_same_tool() {
+        let (mut ui, kernel) = channels();
+        let approver = kernel.approver();
+        let first = tokio::spawn({
+            let approver = approver.clone();
+            async move {
+                approver
+                    .approve(&request_with("c1", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt") else {
+            panic!("expected approval");
+        };
+        kernel.answer("c1", Answer::AllowSession);
+        assert_eq!(first.await.expect("join"), Answer::AllowSession);
+        let UiEvent::ApprovalClosed { .. } = ui.events.recv().await.expect("closed") else {
+            panic!("expected close");
+        };
+
+        let second = approver
+            .approve(&request_with("c2", "run_shell"), CancellationToken::new())
+            .await;
+        assert_eq!(second, Answer::AllowSession);
+        assert!(
+            ui.events.try_recv().is_err(),
+            "session allow must not enqueue another prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_the_session_allowlist_prompts_again() {
+        let (mut ui, kernel) = channels();
+        let approver = kernel.approver();
+        let first = tokio::spawn({
+            let approver = approver.clone();
+            async move {
+                approver
+                    .approve(&request_with("c1", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt") else {
+            panic!("expected approval");
+        };
+        kernel.answer("c1", Answer::AllowSession);
+        let _ = first.await.expect("join");
+        let _ = ui.events.recv().await.expect("closed");
+
+        kernel.clear_session_allow();
+        let second = tokio::spawn({
+            let approver = approver.clone();
+            async move {
+                approver
+                    .approve(&request_with("c2", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt again") else {
+            panic!("expected approval");
+        };
+        kernel.answer("c2", Answer::Deny);
+        assert_eq!(second.await.expect("join"), Answer::Deny);
+    }
+
+    #[tokio::test]
+    async fn always_settles_parallel_prompts_for_the_same_tool() {
+        let (mut ui, kernel) = channels();
+        let approver = kernel.approver();
+        let first = tokio::spawn({
+            let approver = approver.clone();
+            async move {
+                approver
+                    .approve(&request_with("c1", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let second = tokio::spawn({
+            let approver = approver.clone();
+            async move {
+                approver
+                    .approve(&request_with("c2", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let _ = ui.events.recv().await.expect("first prompt");
+        let _ = ui.events.recv().await.expect("second prompt");
+
+        kernel.answer("c1", Answer::AllowSession);
+        assert_eq!(first.await.expect("join"), Answer::AllowSession);
+        assert_eq!(second.await.expect("join"), Answer::AllowSession);
     }
 
     #[tokio::test]

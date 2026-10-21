@@ -354,7 +354,7 @@ window_tokens = 128000
 # 一次用户消息最多几次模型调用。正常结束是模型不再调工具，这只是防跑飞的兜底；
 # 技能/勘察类任务给 30–50，`qc run --max-turns N` 覆盖它（TUI 用这个值）。
 [agent]
-max_turns = 8
+max_turns = 64
 # max_cost_usd = 0.50    # 需要 [pricing]；`--max-cost` 覆盖它，比轮数更贴近真实代价
 snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB 总量封顶）；大仓库可关
 

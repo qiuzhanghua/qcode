@@ -1111,7 +1111,7 @@ cargo build -p qcode
    相同往往正当），而参数相同加结果相同是同一个事实的两个投影。签名即 `name + JSON(args)`。
 3. 阈值是常量 `MAX_IDENTICAL_ROUNDS = 3`，**不做成配置**：一个能关掉保护的开关会让人在
    卡住时先关它，而不是改方法。真需要重复三次以上同一条命令时，改参数（带计数器）即可。
-4. **预算**：`[agent] max_turns`（默认 8）与 `[agent] max_cost_usd`（默认无）进配置，
+4. **预算**：`[agent] max_turns`（当时默认 8；ADR-0045 调至 64）与 `[agent] max_cost_usd`（默认无）进配置，
    `--max-turns` / `--max-cost` 覆盖；TUI 没有这些 flag，从此都读配置。
    `max_cost_usd` 仍需 `[pricing."<model>"]`，否则启动即报错（原有语义不变）。
 5. 停止顺序：模型不再调工具（正常）→ 取消 → 超预算 → 无进展 → 超轮数。先报更具体的原因，
@@ -2288,3 +2288,37 @@ P0 只注册以下命令：
 5. 切换 workspace 后只列新 workspace 的 Session；旧列表不混入。
 6. 侧栏不因 pending interaction 增加额外计数/标记；切回 Session 后 Composer 仍显示请求。
 7. 现有 Session 相关测试保持通过；无新增浏览器专用后端字段。
+
+
+## ADR-0045：GUI 的 Always 真正生效，默认预算提高到 64（2026-10-21）
+
+**背景**：qcode GUI 的审批面板有 `Always (this session)`，但 bridge 只把答案映射成
+`Answer::AllowSession`，engine 又把它当成普通 `Allow` 处理；只有 TUI 的 approver 自己维护了
+`session_allowed`。结果是用户点多少次 Always，下一条 `run_shell` 仍然会再问。
+
+同时，`[agent] max_turns` 的默认值是 8；一次项目分析很容易耗尽，用户机器上的配置又被设成
+16，导致 turn 以 `exceeded max turns (16)` 失败。DSH 的长任务不是按 16 次 provider call 切段。
+
+**决定**
+
+1. `BridgeApprover` 维护会话级工具 allowlist。用户在 GUI 选择 `Always` 后，同一 Session 内
+   同名工具直接返回 `AllowSession`，不再入队审批。
+2. 已排队的同工具并行请求一并结算为 `AllowSession`，并发送 `ApprovalClosed`，避免用户回答
+   完一个后还要回答其余同工具请求。
+3. `NewSession` / `Resume` 清空该 allowlist；allowlist 不跨 Session。
+4. `[agent] max_turns` 默认值从 8 提到 **64**。显式配置仍优先；`--max-turns` 仍可覆盖。
+5. 这是提高上限，不是自动续跑；超过 64 仍以 `max_turns` 失败，用户可继续发消息或调高。
+
+**非目标**
+
+- 不做命令前缀 / 路径级的会话允许；`Always` 仍按工具名，和 TUI 一致。
+- 不做 allow-always 持久化；会话结束即失效。
+- 不做命中上限自动续一个预算窗口；自动续跑需要单独的 goal/round 设计。
+- 不改变 engine 的 fail-closed、审批事件记录或 TUI 行为。
+
+**后果**
+
+- `run_shell` 点一次 Always 后，该 Session 内所有 shell 命令都不再问；这是方便与风险的直接
+  交换，需要用户理解。
+- 默认 64 次模型调用会增加失控任务的成本上限；`max_cost_usd` 和无进展检测仍是兜底。
+- GUI 的 Always 与 TUI 的 `session_allowed` 语义一致。

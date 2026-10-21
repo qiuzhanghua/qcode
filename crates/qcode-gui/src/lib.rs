@@ -2313,6 +2313,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                     pending = Some(UiCommand::NewSession);
                                 } else {
                                     session = None;
+                                    port.clear_session_allow();
                                     port.send_session_changed(None);
                                 }
                             }
@@ -2322,6 +2323,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                     pending = Some(UiCommand::Resume { id });
                                 } else {
                                     session = Some(id.clone());
+                                    port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }
                             }
@@ -2426,10 +2428,12 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                             match pending {
                                 UiCommand::NewSession => {
                                     session = None;
+                                    port.clear_session_allow();
                                     port.send_session_changed(None);
                                 }
                                 UiCommand::Resume { id } => {
                                     session = Some(id.clone());
+                                    port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }
                                 _ => {}

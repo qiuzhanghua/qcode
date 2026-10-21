@@ -310,8 +310,9 @@ pub struct ApprovalConfig {
 
 /// Turn budget for one user message.
 ///
-/// Eight is enough for "read a file and answer" but not for a skill that walks
-/// the machine; the TUI has no `--max-turns` flag, so this is where it is set.
+/// Long analysis can spend dozens of model calls on reads, searches and
+/// shell commands. The default leaves room for that while `--max-turns` and
+/// `[agent] max_turns` still bound a runaway loop.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     #[serde(default = "default_max_turns")]
@@ -338,7 +339,7 @@ impl Default for AgentConfig {
 }
 
 fn default_max_turns() -> u32 {
-    8
+    64
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1464,7 +1465,7 @@ api_key_command = ["cmd", "/C", "exit 3"]
     #[test]
     fn the_turn_budget_defaults_to_eight_and_can_be_raised() {
         let config = Config::default();
-        assert_eq!(config.agent.max_turns, 8);
+        assert_eq!(config.agent.max_turns, 64);
         assert_eq!(config.agent.max_cost_usd, None);
         assert!(
             config.agent.snapshot_shell,

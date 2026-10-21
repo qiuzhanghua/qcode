@@ -392,3 +392,9 @@ trait Backend {
 - 同一时间只允许展开一个思考/工具行；展开新行会自动收起上一行。
 - 默认、Collapse all、Collapse to list 均把所有过程行收为单行。
 - Composer 保持不变。
+
+### 审批与预算修复（2026-10-21）
+
+- GUI 的 `Always (this session)` 现在真正记住工具；同 Session 同工具不再重复弹审批。
+- 并行同工具审批在 Always 后一并结算。
+- `[agent] max_turns` 默认从 8 提到 64；本机已安装配置也同步改为 64。
