@@ -298,6 +298,8 @@ impl Shell {
         let model = app.status.model.clone();
         let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
+        let input_focus = input.read(cx).focus_handle(cx);
+        window.focus(&input_focus, cx);
         Self {
             app,
             input,
@@ -1078,6 +1080,11 @@ impl Render for Shell {
                 "Approval"
             } else {
                 "Chat"
+            })
+            .on_mouse_down(MouseButton::Left, |_event, _window, _cx| {
+                if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+                    eprintln!("qcode-gui root mouse down");
+                }
             })
             .on_key_down({
                 let entity = cx.entity();
