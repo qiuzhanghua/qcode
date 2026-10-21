@@ -34,6 +34,8 @@ gpui_kit::actions!(
         OpenSettingsShortcut,
         OpenWorkspaceShortcut,
         CloseWindowShortcut,
+        ToggleSidebarShortcut,
+        ToggleThemeShortcut,
         StopTurnShortcut,
         SendMessage,
     ]
@@ -216,6 +218,7 @@ struct Shell {
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
     diff_expanded: bool,
+    sidebar_visible: bool,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
     /// Pending approvals, shown one at a time in arrival order.
@@ -286,6 +289,7 @@ impl Shell {
             model_input,
             diff: None,
             diff_expanded: false,
+            sidebar_visible: true,
             attachments: Vec::new(),
             approvals: ApprovalQueue::default(),
             scroller,
@@ -480,6 +484,20 @@ impl Shell {
         if changed {
             self.sync_scroller(cx);
         }
+    }
+
+    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        self.prefs.theme = if self.prefs.theme == "dark" {
+            "light".to_string()
+        } else {
+            "dark".to_string()
+        };
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.app
+                .push_notice(format!("cannot save gui.json: {error}"));
+        }
+        self.prefs.apply(cx);
+        cx.notify();
     }
 
     fn open_workspace(&mut self, cx: &mut Context<Self>) {
@@ -1035,6 +1053,13 @@ impl Render for Shell {
                 cx.listener(|this, _: &OpenWorkspaceShortcut, _window, cx| this.open_workspace(cx)),
             )
             .on_action(|_: &CloseWindowShortcut, window, _cx| window.remove_window())
+            .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
+                this.sidebar_visible = !this.sidebar_visible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
+                this.toggle_theme(cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
             )
@@ -1042,7 +1067,11 @@ impl Render for Shell {
                 this.stop();
                 cx.notify();
             }))
-            .child(self.render_sidebar(cx))
+            .children(if self.sidebar_visible {
+                Some(self.render_sidebar(cx).into_any_element())
+            } else {
+                None
+            })
             .child(self.render_main(window, cx))
     }
 }
@@ -1100,6 +1129,8 @@ pub fn run(
             KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
             KeyBinding::new("cmd-o", OpenWorkspaceShortcut, None),
             KeyBinding::new("cmd-w", CloseWindowShortcut, None),
+            KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
+            KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
             KeyBinding::new("cmd-.", StopTurnShortcut, None),
             KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
         ]);
