@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use qcode_core::event::EventKind;
+use qcode_core::event::{EventKind, TurnStatus};
 use qcode_core::policy::Policy;
+use qcode_core::provider::{StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_gui::{Backend, Engine, LocalBackend};
@@ -10,9 +11,13 @@ use qcode_providers::MockProvider;
 use qcode_ui_bridge::UiEvent;
 
 fn engine(workspace: &std::path::Path, store: SessionStore) -> Engine {
+    engine_with(workspace, store, MockProvider::text("hello"))
+}
+
+fn engine_with(workspace: &std::path::Path, store: SessionStore, provider: MockProvider) -> Engine {
     Engine {
         store,
-        provider: Arc::new(MockProvider::text("hello")),
+        provider: Arc::new(provider),
         provider_name: "mock".to_string(),
         tools: ToolRegistry::new(Vec::new()),
         policy: Policy::new(Vec::new()),
@@ -98,4 +103,47 @@ async fn cancel_is_a_noop_when_no_turn_is_running() {
     backend.prompt("after cancel".to_string(), Vec::new());
     let events = wait_for_turn(&mut backend);
     assert!(!events.is_empty());
+}
+
+#[tokio::test]
+async fn cancel_is_processed_while_a_slow_turn_is_running() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut script = vec![StreamEvent::Started];
+    for _ in 0..5_000 {
+        script.push(StreamEvent::TextDelta("x".to_string()));
+    }
+    script.push(StreamEvent::Ended {
+        stop_reason: StopReason::EndTurn,
+    });
+    let mut backend = LocalBackend::new(engine_with(
+        workspace.path(),
+        store,
+        MockProvider::scripted(vec![script]),
+    ));
+    backend.prompt("slow".to_string(), Vec::new());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::Event(event)) = backend.try_recv()
+            && matches!(event.kind, EventKind::TurnStarted(_))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    backend.cancel();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::Event(event)) = backend.try_recv()
+            && let EventKind::TurnEnded(ended) = event.kind
+        {
+            assert_eq!(ended.status, TurnStatus::Cancelled);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("cancel was not processed while the turn was running");
 }
