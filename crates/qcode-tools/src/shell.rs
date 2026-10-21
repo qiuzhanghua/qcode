@@ -194,11 +194,15 @@ impl Tool for RunShell {
         let cwd = match args.cwd.as_deref() {
             Some(cwd) if !cwd.is_empty() => path::resolve_ctx(ctx, cwd, Access::Read)?.path,
             _ => ctx
-                .roots
-                .iter()
-                .find(|root| root.primary)
-                .or_else(|| ctx.roots.first())
-                .map(|root| root.path.clone())
+                .temp_dir
+                .clone()
+                .or_else(|| {
+                    ctx.roots
+                        .iter()
+                        .find(|root| root.primary)
+                        .or_else(|| ctx.roots.first())
+                        .map(|root| root.path.clone())
+                })
                 .unwrap_or_else(|| ctx.workspace.clone()),
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
@@ -215,6 +219,12 @@ impl Tool for RunShell {
                 .command(program.as_os_str(), &shell_args, &cwd)
                 .map_err(|err| ToolError::Sandbox(err.to_string()))?,
         );
+        if let Some(temp) = &ctx.temp_dir {
+            command
+                .env("TMPDIR", temp)
+                .env("TMP", temp)
+                .env("TEMP", temp);
+        }
         command
             .current_dir(&cwd)
             .stdin(Stdio::null())

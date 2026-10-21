@@ -149,6 +149,17 @@ pub enum EngineError {
     MissingPricing,
     #[error("this provider does not accept image input")]
     ImagesUnsupported,
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// A rootless task's turn-private shell directory, removed on drop.
+struct TurnTemp(PathBuf);
+
+impl Drop for TurnTemp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// How many consecutive rounds may repeat the exact same tool call before the
@@ -370,10 +381,27 @@ where
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);
     let task = ctx.store.task_from_events(options.session_id, &events)?;
+    let turn_no = events.last().map(|event| event.turn).unwrap_or(0);
+    let turn_temp = if task.roots.is_empty() {
+        let path = ctx
+            .store
+            .root()
+            .join("tasks")
+            .join(options.session_id)
+            .join("tmp")
+            .join(format!("turn-{turn_no}"));
+        std::fs::create_dir_all(&path)?;
+        Some(TurnTemp(path))
+    } else {
+        None
+    };
     let mut compaction_disabled = false;
     let mut tool_context = ToolContext::new(options.workspace.clone())
         .with_roots(task.roots.clone())
         .with_cancel(options.cancel.clone());
+    if let Some(temp) = &turn_temp {
+        tool_context = tool_context.with_temp_dir(temp.0.clone());
+    }
     if let Some(network) = &options.network {
         tool_context = tool_context.with_network(network.clone());
     }

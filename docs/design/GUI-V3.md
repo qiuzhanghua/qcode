@@ -457,3 +457,11 @@ trait Backend {
 - `read_file` / `write_file` / `edit_file` / `list_dir` / glob / grep / apply_patch 已切到 resolver。
 - System prompt 注入 `@label` 到绝对路径的映射。
 - Shell 的 cwd 取 primary Root；多根 shell sandbox 仍待 ADR-0048 实现。
+
+### 无根 Task 的 shell（2026-10-21）
+
+- 无 Root 的 Task 在每个 Turn 创建私有 temp：`<data>/tasks/<id>/tmp/turn-<n>`。
+- 该 Turn 的 `run_shell` cwd 指向 temp，并设置 `TMPDIR`/`TMP`/`TEMP`。
+- Turn 结束（包括失败/取消）自动删除 temp。
+- 文件工具在无根 Task 中直接返回 `NoRoots`。
+- 该 temp 仅用于无根 shell；多根 sandbox 的 temp 约束仍由 ADR-0048 处理。

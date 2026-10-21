@@ -27,6 +27,8 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Authorized task roots. `workspace` is the legacy primary root.
     pub roots: Vec<Root>,
+    /// Turn-private directory for a rootless task's shell.
+    pub temp_dir: Option<PathBuf>,
     pub cancel: CancellationToken,
     /// Egress proxy for tools that make network calls.
     pub network: Option<Arc<dyn Network>>,
@@ -45,6 +47,7 @@ impl ToolContext {
         Self {
             workspace,
             roots,
+            temp_dir: None,
             cancel: CancellationToken::new(),
             network: None,
         }
@@ -53,6 +56,12 @@ impl ToolContext {
     /// Replace the default single root with the task's authorized roots.
     pub fn with_roots(mut self, roots: Vec<Root>) -> Self {
         self.roots = roots;
+        self
+    }
+
+    /// Set the turn-private directory used by a rootless task's shell.
+    pub fn with_temp_dir(mut self, temp: impl Into<PathBuf>) -> Self {
+        self.temp_dir = Some(temp.into());
         self
     }
 

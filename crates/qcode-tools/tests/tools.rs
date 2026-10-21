@@ -18,6 +18,23 @@ fn context(dir: &Path) -> ToolContext {
     ToolContext::new(dir.to_path_buf())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn rootless_shell_uses_the_turn_temp() {
+    let workspace = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let expected = temp.path().canonicalize().unwrap();
+    let ctx = ToolContext::new(workspace.path())
+        .with_roots(Vec::new())
+        .with_temp_dir(temp.path());
+
+    let output = RunShell::default()
+        .execute(&ctx, json!({"command": "pwd"}))
+        .await
+        .unwrap();
+    assert!(output.output.contains(expected.to_str().unwrap()));
+}
+
 #[tokio::test]
 async fn file_tools_respect_alias_roots_and_readonly_access() {
     let code = tempfile::tempdir().unwrap();
