@@ -17,7 +17,7 @@ use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
@@ -215,6 +215,9 @@ struct Shell {
     input: Entity<TextareaState>,
     /// Model used for the next turn; editable without restarting the kernel.
     model_input: Entity<InputState>,
+    /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
+    pending_send: bool,
+    _input_subscription: gpui_kit::Subscription,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
     diff_expanded: bool,
@@ -280,6 +283,18 @@ impl Shell {
                 .auto_grow(1, 6)
                 .placeholder("Ask qcode…")
         });
+        let input_subscription = cx.subscribe(&input, |shell, _input, event: &InputEvent, cx| {
+            if matches!(
+                event,
+                InputEvent::PressEnter {
+                    secondary: true,
+                    shift: false
+                }
+            ) {
+                shell.pending_send = true;
+                cx.notify();
+            }
+        });
         let model = app.status.model.clone();
         let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
@@ -287,6 +302,8 @@ impl Shell {
             app,
             input,
             model_input,
+            pending_send: false,
+            _input_subscription: input_subscription,
             diff: None,
             diff_expanded: false,
             sidebar_visible: true,
@@ -628,8 +645,12 @@ impl Shell {
             .children(sessions)
     }
 
-    fn render_main(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll(cx);
+        if self.pending_send {
+            self.pending_send = false;
+            self.send_prompt(window, cx);
+        }
         let entity = cx.entity();
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
