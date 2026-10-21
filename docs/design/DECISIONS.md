@@ -1644,3 +1644,233 @@ denied）；不加 sandbox 时 `:45679` 返回 0。说明 `localhost` 过滤确�
 - `localhost` 过滤匹配 `127.0.0.1` 已在当前 macOS 验证；若未来系统行为变化，shell 的代理
   连接会被拒，这是 fail closed，不会放行直连。
 - Linux 的 netns + relay、Windows WFP 仍未做；`strict` 在这两个平台明确报未支持。
+
+## ADR-0041：Conversation v4 —— Turn 化、展示档位、思考与轮次导航（2026-10-21）
+
+**背景**：GUI 当前把 session 投影成扁平的 `Block` 列表：`User` / `Assistant` / `Tool` /
+`Notice` / `Skill` / `Todo` / `Subagent` 同级，没有 Turn、Step 或 Process 层级；`Block` 上
+也没有 reasoning。`qcode-ui-state` 的 `apply_delta` 明确忽略 `Delta::Reasoning`，持久化的
+`ContentBlock::Reasoning` 也没有进入 transcript 投影，因此“思考”不是显示得不好，而是根本
+没有进入 UI 数据。GUI 的 `block_row` 对所有 Block 使用几乎相同的 `px_4 + py_2 +
+TextView::markdown` 容器；用户消息、过程、工具输出和最终答案没有排版层级。结果是用户反馈的
+“看不清、没有字体变化、没有折叠、没有思考显示、没有轮次选择”。
+
+ADR-0037 已确定 GUI 主界面对齐 DSH。本 ADR 只把 Conversation 的对齐范围定下来；右侧 Dock、
+Composer takeover、命令注册表不在这里做，由后续 ADR 分别处理。这样 Conversation 的状态机
+可以先独立稳定，不会被输入区和侧栏的改动拖住。
+
+**决定**
+
+### 1. Turn 是 GUI transcript 的顶层单位
+
+Transcript 从 `Block[]` 变为 `Turn[]`：
+
+```text
+Turn
+  ├─ id / index
+  ├─ status: running | completed | failed | cancelled
+  ├─ started_at / ended_at
+  ├─ input: 用户文本 + 附件
+  ├─ process: ProcessItem[]
+  ├─ answer: 最终 Assistant Markdown
+  ├─ usage: tokens / cost / duration
+  └─ deliverables: changed files / presented files
+```
+
+`ProcessItem` 至少包含：
+
+```text
+Reasoning | ToolCall | Notice | Subagent | Todo
+```
+
+现有 `Block` 保留为 TUI 兼容层；GUI 使用新的 Turn 投影。TUI 不要求在同一批改动里迁移，
+可以先通过适配器从 Turn 投影生成现有 Block 视图。Turn 的 `id` 必须稳定；折叠、重放、分页
+和重新加载后仍能定位同一个 Turn。
+
+### 2. Reasoning 是一等 Block
+
+- 持久化的 `ContentBlock::Reasoning` 进入 Turn 的 `process`；
+- 流式 `Delta::Reasoning` 进入 transient reasoning 缓冲区；
+- 最终 `AssistantMessage` 到达时，用权威 reasoning 替换流式预览，不能重复显示；
+- provider 不返回 reasoning 时不显示该行；
+- reasoning 不并入最终回答，不参与“复制答案”；
+- 不展示 reasoning signature、加密字段或 provider 原始结构。
+
+Reasoning 行的行为：
+
+- 运行中：`Thinking…` 加轻量状态动画，默认只显示一行状态；用户点击后才展开当前流式内容；
+- 完成：`Thought for 8s`，默认折叠；
+- `Standard` 不显示 reasoning 预览，只显示标题行；
+- `Detailed` 允许展开全文；
+- 失败/中断保留已经产生的 reasoning，并标注“未完成”；
+- 手动展开状态在展示模式切换时保留。
+
+### 3. 三档展示模式
+
+只做三档，不照搬 DSH 的四档：
+
+| 模式 | 用户输入 | 过程 | 思考 | 工具 | 最终答案 |
+|---|---|---|---|---|---|
+| Compact | 摘要 | 一行摘要 | 隐藏 | 隐藏 | 显示 |
+| Standard（默认） | 显示 | 一行摘要 | 只显示标题，默认折叠 | 收起，可展开 | 显示 |
+| Detailed | 显示 | 展开 | 可展开全文 | 摘要 + 输出 | 显示 |
+
+规则：
+
+- 最终答案在任何模式下都显示；
+- 当前运行中的 Turn 始终展开过程；
+- 已完成 Turn 在 Compact 下整轮收起；
+- Standard 下已完成 Turn 的过程收起为一行摘要，例如
+  `Thought for 8s · 2 tools · 1 note`；
+- 模式只影响 UI，不改变事件、日志、prompt 或 provider 请求；
+- 每个 Session 记住自己的模式，写入 `gui.json` 的会话 UI 状态；没有记录时使用 Standard。
+
+### 4. 四层折叠
+
+1. **Turn 折叠**：Compact 下已完成轮次收起；Standard/Detailed 不整轮收起。
+2. **Process 折叠**：完成后收起为一行摘要；运行中展开；失败/拒绝/中断自动展开对应失败项。
+3. **Tool 折叠**：完成默认收起；失败/拒绝/中断默认展开；展开输出最大高度 320px，超出提供
+   “Open full”。
+4. **Code 折叠**：超过 20 行的代码块默认显示 12 行和 “Show N more lines”；复制按钮常驻。
+
+折叠规则：
+
+- 切换展示模式保留用户手动展开/收起的 Turn、Process、Tool 和 Code 状态；
+- 新 Turn 使用当前模式的默认值；
+- 折叠/展开不能把用户正在阅读的内容顶走，必须保持阅读锚点；
+- 折叠只是显示层，不删除事件、不改变复制内容和模型上下文。
+
+### 5. 排版 token
+
+Conversation 使用独立排版层级，不再复用同一套 `TextView` 容器：
+
+| Token | 用途 | 建议值 |
+|---|---|---|
+| text | 正文 / 助手回答 | 14 px / 22 px |
+| text-secondary | 过程摘要、时间、usage | 13 px / 20 px |
+| text-caption | Turn 编号、状态、脚注 | 11 px / 16 px |
+| code | 代码块、工具输出 | 12 px / 18 px |
+| heading-1/2/3 | Markdown 标题 | 相对正文 1.5 / 1.25 / 1.1 |
+| inline-code | 行内代码 | 0.9em 正文 |
+
+布局规则：
+
+- 内容最大宽度 860–900 px；
+- 段落间距 8 px，过程行间距 6 px，Turn 间距 24 px；
+- 用户消息使用浅背景气泡；助手回答不套气泡，保持阅读感；
+- 助手回答与过程行之间留 12 px；
+- 工具输出、路径、usage 使用等宽字体；
+- 错误、警告、成功使用语义色，不只依赖红点；
+- 正文不使用大量色块，层级主要靠字号、字重、间距和弱化色。
+
+### 6. 轮次选择与导航
+
+**Header 选择器**：
+
+```text
+Turn 3 / 12 · 16:20 · 8s · $0.0012
+```
+
+点击打开 Turn 列表，支持搜索和跳转。
+
+**Turn 轨道**：
+
+- Conversation 右侧窄轨道；
+- 每个 Turn 一个刻度；
+- 当前 Turn 高亮；
+- 失败 Turn 使用警告色；
+- hover 预览：用户输入前 50 字、答案前 3 行、时间/耗时/工具数；
+- 点击滚动到稳定的 Turn 锚点；
+- 内容宽度小于 900 px 时隐藏轨道，Header 选择器仍可用。
+
+**键盘**：
+
+- `Cmd+Option+↑/↓` 上一轮 / 下一轮；
+- `Cmd+Option+Home/End` 第一轮 / 最后一轮；
+- `Esc Esc` 停止当前 Turn；
+- 跳转后焦点留在 Conversation，不抢 Composer。
+
+**滚动**：
+
+- 只有用户位于底部时才自动跟随；
+- 用户上滚后暂停跟随，显示 “Jump to latest”；
+- 折叠/展开/切换模式保持当前阅读锚点；
+- Turn 跳转使用稳定 Turn ID，不使用行号；
+- 分页加载更早历史时，锚点补偿优先于几何位置。
+
+### 7. 架构边界
+
+- `qcode-ui-state` 增加 Turn / ProcessItem / Reasoning / Usage / Deliverables 投影；
+- `qcode-gui` 增加 `ConversationController`：展示模式、折叠状态、轮次导航、滚动锚点；
+- `TurnList`、`TurnRow`、`ProcessGroup`、`ReasoningRow`、`ToolCard`、`TurnRail`、
+  `TurnPicker` 作为独立组件，不继续堆在 `Shell::block_row` 里；
+- `MessageScroller` 继续承担可变高度虚拟列表，但行粒度从 Block 变为 Turn/ProcessRow；
+- GUI 不直接改模型请求；本 ADR 全部是 UI-only，对 KV cache 无直接影响。
+
+### 8. 范围与非目标
+
+本 ADR 明确包含：
+
+- Turn/Process/Reasoning 投影；
+- 三档展示模式；
+- 四层折叠；
+- 排版 token；
+- Header 轮次选择、Turn 轨道、键盘导航、阅读锚点。
+
+本 ADR 明确不包含：
+
+- 右侧 Dock；
+- 完整插件/slot 系统；
+- Workspace 树形、pin/archive/fork；
+- Trajectory 独立视图；
+- Composer takeover、审批/问题/计划队列；
+- 命令注册表；
+- 修改 session 日志格式或模型请求。
+
+右侧 Dock 不做；文件/diff 继续使用底部 diff 抽屉和文件预览。  
+Session 侧栏只做简化版：单层列表、状态点、搜索、展开更多；不做树形/pin/archive/fork。  
+这些边界避免 Conversation v4 变成一次 GUI 全量重写。
+
+**理由**
+
+- 没有 Turn 模型，折叠和轮次导航只能靠特判，最终会变成不可维护的行号逻辑；
+- Reasoning 是用户明确要求的能力，必须在投影层保留，不能只在 UI 里临时拼接；
+- 排版层级是“看不清”的直接解药，比继续加按钮更有效；
+- DSH 的强项是渐进披露和稳定导航，不是某个具体组件；
+- 先做 Conversation，再做 Composer takeover 和命令注册表，避免同时改三个状态机；
+- 三档模式、四层折叠和两处轮次入口已经覆盖主要使用场景；四档和完整 DSH slot 系统的
+  边际收益不足以抵消复杂度。
+
+**后果 / 边界**
+
+- `qcode-ui-state` 的投影和测试会明显增加；
+- TUI 需要保持兼容，不能强制迁移；
+- Reasoning 会增加内存和渲染量，需要沿用可变高度列表、折叠和虚拟化；
+- 折叠/展开必须保持锚点，否则会引入“内容跳动”问题；
+- 展示模式需要持久化到 `gui.json` 的会话 UI 状态；
+- 不改变 session 日志格式，但 UI 投影需要新增字段；
+- 需要为 Turn 投影补投影测试、折叠状态测试、锚点/跳转测试和 10 万事件性能回归。
+
+**验证**
+
+1. 一个包含 reasoning、2 个工具和最终答案的 Turn，在 Standard 下：
+   - 过程显示一行摘要；
+   - `Thought for 8s` 默认折叠，不显示 reasoning 预览；
+   - 最终答案可见；
+   - 点击摘要/思考标题可展开 reasoning 和工具；
+   - reasoning 先流式出现，最终被权威内容替换且不重复。
+2. Compact 下过程隐藏，最终答案仍可见。
+3. Detailed 下过程展开；失败工具自动展开。
+4. N 个 Turn 的 Header 选择器和轨道数量一致；点击和键盘跳转正确。
+5. 折叠/展开/切换模式不改变阅读位置。
+6. 10 万事件投影测试仍通过；不产生额外模型请求。
+7. 关键控件有 accessibility label；跳转后焦点不丢失。
+
+**后续 ADR**
+
+- ADR-0042：Composer 与 Pending Interaction  
+  Composer takeover、Approval/PlanReview/Question 队列、Queue/Steer、`Cmd+Enter` 语义。
+- ADR-0043：Command Registry  
+  `/display`、`/thinking`、`/model`、`/permission`、`/plan` 的统一注册、可用性与“不静默退化”。
+- ADR-0044：简化 Session 浏览器  
+  状态点、搜索、展开更多；明确不做树形/pin/archive/fork。
