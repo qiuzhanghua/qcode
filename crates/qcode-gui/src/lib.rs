@@ -71,6 +71,15 @@ fn context_label(app: &App) -> String {
     }
 }
 
+/// Whether a keystroke is the composer send shortcut.
+///
+/// GPUI maps physical Command to `platform` on macOS and `secondary-enter`
+/// inside the input; accepting either keeps the handlers aligned.
+#[doc(hidden)]
+pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
+    keystroke.key == "enter" && (keystroke.modifiers.platform || keystroke.modifiers.secondary())
+}
+
 fn short_time(rfc3339: &str) -> String {
     use time::format_description::well_known::Rfc3339;
     time::OffsetDateTime::parse(rfc3339, &Rfc3339)
@@ -359,9 +368,18 @@ impl Shell {
         }
     }
 
-    fn new_session(&mut self, cx: &mut Context<Self>) {
+    fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            eprintln!("qcode-gui: new_session handler");
+            eprintln!(
+                "qcode-gui: new_session handler blocks={} running={}",
+                self.app.blocks.len(),
+                self.app.status.running
+            );
         }
         if self.app.status.running {
             self.app
@@ -377,10 +395,11 @@ impl Shell {
         self.approvals = ApprovalQueue::default();
         self.refresh_sessions();
         self.app.push_notice("new session");
+        self.focus_composer(window, cx);
         cx.notify();
     }
 
-    fn resume(&mut self, id: String, cx: &mut Context<Self>) {
+    fn resume(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.app.status.running {
             self.app
                 .push_notice("stop the running turn before switching sessions");
@@ -404,12 +423,19 @@ impl Shell {
                 .app
                 .push_notice(format!("cannot resume {}: {error}", short_id(&id))),
         }
+        self.focus_composer(window, cx);
         cx.notify();
     }
 
     fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            eprintln!("qcode-gui: send_prompt handler");
+            let value = self.input.read(cx).value();
+            eprintln!(
+                "qcode-gui: send_prompt handler len={} running={} value={:?}",
+                value.trim().len(),
+                self.app.status.running,
+                value.chars().take(20).collect::<String>()
+            );
         }
         if self.app.status.running {
             self.app
@@ -432,6 +458,7 @@ impl Shell {
             input.set_value("", window, cx);
             cx.notify();
         });
+        self.focus_composer(window, cx);
         self.sync_scroller(cx);
     }
 
@@ -622,7 +649,9 @@ impl Shell {
                 );
                 Button::new(format!("session-{}", session.id))
                     .label(label)
-                    .on_click(cx.listener(move |this, _, _window, cx| this.resume(id.clone(), cx)))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.resume(id.clone(), window, cx)),
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -637,7 +666,7 @@ impl Shell {
             .child(
                 Button::new("new-session")
                     .label("New session")
-                    .on_click(cx.listener(|this, _, _window, cx| this.new_session(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
             )
             .child(
                 Button::new("open-workspace")
@@ -804,9 +833,7 @@ impl Shell {
                                         event.keystroke.modifiers.shift,
                                     );
                                 }
-                                if event.keystroke.key == "enter"
-                                    && event.keystroke.modifiers.platform
-                                {
+                                if is_send_shortcut(&event.keystroke) {
                                     entity.update(cx, |shell, cx| {
                                         shell.send_prompt(window, cx);
                                     });
@@ -1089,7 +1116,7 @@ impl Render for Shell {
             .on_key_down({
                 let entity = cx.entity();
                 move |event, window, cx| {
-                    if event.keystroke.key == "enter" && event.keystroke.modifiers.platform {
+                    if is_send_shortcut(&event.keystroke) {
                         entity.update(cx, |shell, cx| {
                             shell.send_prompt(window, cx);
                         });
@@ -1107,7 +1134,9 @@ impl Render for Shell {
                 cx.listener(|this, _: &RejectApproval, _window, cx| this.answer(false, false, cx)),
             )
             .on_action(
-                cx.listener(|this, _: &NewSessionShortcut, _window, cx| this.new_session(cx)),
+                cx.listener(|this, _: &NewSessionShortcut, window, cx| {
+                    this.new_session(window, cx)
+                }),
             )
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
