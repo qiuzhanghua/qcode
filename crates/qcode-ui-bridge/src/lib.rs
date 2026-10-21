@@ -39,6 +39,8 @@ pub enum UiEvent {
     /// The active session changed. `None` means a new draft session that has
     /// not written a log yet.
     SessionChanged { id: Option<String> },
+    /// run_turn returned an error before it could emit TurnEnded.
+    TurnFailed { message: String },
 }
 
 /// The approval prompt, without the reply channel: answer it with
@@ -140,6 +142,10 @@ impl KernelPort {
     /// Tell the UI which session the engine will use next.
     pub fn send_session_changed(&self, id: Option<String>) {
         let _ = self.events.send(UiEvent::SessionChanged { id });
+    }
+
+    pub fn send_turn_failed(&self, message: String) {
+        let _ = self.events.send(UiEvent::TurnFailed { message });
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,

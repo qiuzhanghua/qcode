@@ -389,6 +389,11 @@ impl Shell {
         }
         self.backend.new_session();
         self.app.reset_transcript();
+        self.attachments.clear();
+        self.input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            cx.notify();
+        });
         self.reset_scroller(cx);
         self.active = None;
         self.diff = None;
@@ -530,6 +535,13 @@ impl Shell {
                             .push_notice(format!("cannot save gui.json: {error}"));
                     }
                     self.refresh_sessions();
+                }
+                UiEvent::TurnFailed { message } => {
+                    self.app.status.running = false;
+                    self.app.status.last = None;
+                    self.approvals = ApprovalQueue::default();
+                    self.app.push_notice(format!("turn failed: {message}"));
+                    changed = true;
                 }
             }
         }
@@ -1265,99 +1277,159 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
             let approver = std::sync::Arc::new(port.approver());
             let mut session: Option<String> = None;
             let mut active: Option<CancellationToken> = None;
+            let mut pending: Option<UiCommand> = None;
             let mut model = engine.model.clone();
             let mut pricing = engine.pricing;
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
 
-            while let Some(command) = commands.recv().await {
-                match command {
-                    UiCommand::Answer {
-                        call_id,
-                        allow,
-                        session: remember,
-                    } => port.dispatch(UiCommand::Answer {
-                        call_id,
-                        allow,
-                        session: remember,
-                    }),
-                    UiCommand::Cancel => {
-                        if let Some(token) = &active {
-                            token.cancel();
-                        }
-                    }
-                    UiCommand::NewSession => {
-                        if let Some(token) = active.take() {
-                            token.cancel();
-                        }
-                        session = None;
-                        port.send_session_changed(None);
-                    }
-                    UiCommand::Resume { id } => {
-                        if let Some(token) = active.take() {
-                            token.cancel();
-                        }
-                        session = Some(id.clone());
-                        port.send_session_changed(Some(id));
-                    }
-                    UiCommand::SetModel { model: next } => {
-                        model = next;
-                        pricing = engine.pricing_table.get(&model).copied();
-                    }
-                    UiCommand::Prompt { text, attachments } => {
-                        let session_id = match session.clone() {
-                            Some(id) => id,
-                            None => {
-                                let (id, started) = match engine.store.create(&SessionStarted {
-                                    model: model.clone(),
-                                    provider: engine.provider_name.clone(),
-                                    cwd: engine.workspace.display().to_string(),
-                                    version: env!("CARGO_PKG_VERSION").to_string(),
-                                }) {
-                                    Ok(created) => created,
-                                    Err(error) => {
-                                        eprintln!("qcode-gui: cannot create a session: {error}");
-                                        continue;
+            loop {
+                tokio::select! {
+                    command = commands.recv() => {
+                        let Some(command) = command else {
+                            break;
+                        };
+                        match command {
+                            UiCommand::Answer {
+                                call_id,
+                                allow,
+                                session: remember,
+                            } => port.dispatch(UiCommand::Answer {
+                                call_id,
+                                allow,
+                                session: remember,
+                            }),
+                            UiCommand::Cancel => {
+                                if let Some(token) = &active {
+                                    token.cancel();
+                                }
+                            }
+                            UiCommand::NewSession => {
+                                if let Some(token) = &active {
+                                    token.cancel();
+                                    pending = Some(UiCommand::NewSession);
+                                } else {
+                                    session = None;
+                                    port.send_session_changed(None);
+                                }
+                            }
+                            UiCommand::Resume { id } => {
+                                if let Some(token) = &active {
+                                    token.cancel();
+                                    pending = Some(UiCommand::Resume { id });
+                                } else {
+                                    session = Some(id.clone());
+                                    port.send_session_changed(Some(id));
+                                }
+                            }
+                            UiCommand::SetModel { model: next } => {
+                                model = next;
+                                pricing = engine.pricing_table.get(&model).copied();
+                            }
+                            UiCommand::Prompt { text, attachments } => {
+                                if active.is_some() {
+                                    // The composer disables Send while running; a
+                                    // second prompt here is a stale UI event.
+                                    continue;
+                                }
+                                let session_id = match session.clone() {
+                                    Some(id) => id,
+                                    None => {
+                                        let (id, started) =
+                                            match engine.store.create(&SessionStarted {
+                                                model: model.clone(),
+                                                provider: engine.provider_name.clone(),
+                                                cwd: engine.workspace.display().to_string(),
+                                                version: env!("CARGO_PKG_VERSION").to_string(),
+                                            }) {
+                                                Ok(created) => created,
+                                                Err(error) => {
+                                                    eprintln!(
+                                                        "qcode-gui: cannot create a session: {error}"
+                                                    );
+                                                    port.send_turn_failed(error.to_string());
+                                                    continue;
+                                                }
+                                            };
+                                        port.send_event(&started);
+                                        port.send_session_changed(Some(id.clone()));
+                                        session = Some(id.clone());
+                                        id
                                     }
                                 };
-                                port.send_event(&started);
-                                port.send_session_changed(Some(id.clone()));
-                                session = Some(id.clone());
-                                id
+
+                                let sink = port.clone();
+                                let token = CancellationToken::new();
+                                active = Some(token.clone());
+                                let store = engine.store.clone();
+                                let provider = engine.provider.clone();
+                                let tools = engine.tools.clone();
+                                let policy = engine.policy.clone();
+                                let snapshots = engine.snapshots.clone();
+                                let network = engine.network.clone();
+                                let workspace = engine.workspace.clone();
+                                let max_turns = engine.max_turns;
+                                let max_cost_usd = engine.max_cost_usd;
+                                let context_window = engine.context_window;
+                                let task_model = model.clone();
+                                let task_session = session_id.clone();
+                                let task_approver = approver.clone();
+                                let done = done_tx.clone();
+                                let cancel = token.clone();
+
+                                tokio::spawn(async move {
+                                    let options = RunOptions {
+                                        session_id: &task_session,
+                                        model: &task_model,
+                                        input: text,
+                                        workspace,
+                                        max_turns,
+                                        cancel,
+                                        pricing,
+                                        max_cost_usd,
+                                        on_delta: None,
+                                        context_window,
+                                        agents_md: None,
+                                        skills: None,
+                                        network,
+                                        attachments,
+                                    };
+                                    let result = run_turn(
+                                        TurnContext {
+                                            store: &store,
+                                            provider: provider.as_ref(),
+                                            tools: &tools,
+                                            policy: &policy,
+                                            approver: task_approver.as_ref(),
+                                            snapshots: snapshots.as_ref(),
+                                        },
+                                        options,
+                                        move |event| sink.send_event(event),
+                                    )
+                                    .await;
+                                    let _ = done
+                                        .send(result.map(|_| ()).map_err(|error| error.to_string()));
+                                });
                             }
-                        };
-                        let sink = port.clone();
-                        let token = CancellationToken::new();
-                        active = Some(token.clone());
-                        let options = RunOptions {
-                            session_id: &session_id,
-                            model: &model,
-                            input: text,
-                            workspace: engine.workspace.clone(),
-                            max_turns: engine.max_turns,
-                            cancel: token,
-                            pricing,
-                            max_cost_usd: engine.max_cost_usd,
-                            on_delta: None,
-                            context_window: engine.context_window,
-                            agents_md: None,
-                            skills: None,
-                            network: engine.network.clone(),
-                            attachments,
-                        };
-                        let result = run_turn(
-                            TurnContext {
-                                store: &engine.store,
-                                provider: engine.provider.as_ref(),
-                                tools: &engine.tools,
-                                policy: &engine.policy,
-                                approver: approver.as_ref(),
-                                snapshots: engine.snapshots.as_ref(),
-                            },
-                            options,
-                            move |event| sink.send_event(event),
-                        )
-                        .await;
+                        }
+                    }
+                    Some(result) = done_rx.recv() => {
+                        active = None;
                         if let Err(error) = result {
                             eprintln!("qcode-gui: turn failed: {error}");
+                            port.send_turn_failed(error);
+                        }
+                        if let Some(pending) = pending.take() {
+                            match pending {
+                                UiCommand::NewSession => {
+                                    session = None;
+                                    port.send_session_changed(None);
+                                }
+                                UiCommand::Resume { id } => {
+                                    session = Some(id.clone());
+                                    port.send_session_changed(Some(id));
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
