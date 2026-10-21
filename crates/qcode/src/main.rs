@@ -771,13 +771,7 @@ async fn cmd_gui(
         snapshots: Some(snapshots),
     };
     let backend = qcode_gui::LocalBackend::new(engine);
-    qcode_gui::run(
-        app,
-        Box::new(backend),
-        setup_path,
-        gui_data_dir,
-        approval_policy,
-    );
+    qcode_gui::run(app, Box::new(backend), setup_path, gui_data_dir);
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

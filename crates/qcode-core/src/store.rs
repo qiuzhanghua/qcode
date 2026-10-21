@@ -144,6 +144,31 @@ impl SessionStore {
         })
     }
 
+    /// Create a task with an explicit root set, including the empty set.
+    pub fn create_task_with_roots(
+        &self,
+        meta: &SessionStarted,
+        roots: Vec<Root>,
+    ) -> Result<CreatedTask, StoreError> {
+        let id = ulid::Ulid::new().to_string();
+        let task = Task::new(id.clone(), roots)?;
+        fs::create_dir_all(self.sessions_dir())?;
+        let started = Event::new(1, &id, 0, EventKind::SessionStarted(meta.clone()));
+        self.append(&started)?;
+        let configured = Event::new(
+            2,
+            &id,
+            0,
+            EventKind::TaskConfigured(TaskConfigured { roots: task.roots }),
+        );
+        self.append(&configured)?;
+        Ok(CreatedTask {
+            id,
+            started,
+            configured,
+        })
+    }
+
     /// Replace a task's root list and append a `roots_changed` event.
     ///
     /// The caller is responsible for applying this at a turn boundary.
@@ -856,6 +881,21 @@ mod tests {
         assert_eq!(task.roots.len(), 1);
         assert_eq!(task.roots[0].label, "workspace");
         assert!(task.roots[0].primary);
+    }
+
+    #[test]
+    fn empty_task_is_created_with_no_roots() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store
+            .create_task_with_roots(&meta(), Vec::new())
+            .expect("empty task");
+        let task = store.task(&created.id).expect("task");
+        assert!(task.roots.is_empty());
+        assert!(task.primary_root().is_none());
+        let events = store.load(&created.id).expect("load");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[1].kind, EventKind::TaskConfigured(_)));
     }
 
     #[test]

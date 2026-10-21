@@ -324,7 +324,7 @@ async fn a_fatal_provider_error_resets_the_turn_and_keeps_the_loop_alive() {
     backend.new_session();
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if let Some(UiEvent::SessionChanged { id: None }) = backend.try_recv() {
+        if let Some(UiEvent::SessionChanged { id: Some(_) }) = backend.try_recv() {
             return;
         }
         std::thread::sleep(Duration::from_millis(5));

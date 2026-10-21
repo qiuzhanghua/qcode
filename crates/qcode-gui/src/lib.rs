@@ -35,7 +35,6 @@ gpui_kit::actions!(
         RejectApproval,
         NewSessionShortcut,
         OpenSettingsShortcut,
-        OpenWorkspaceShortcut,
         CloseWindowShortcut,
         ToggleSidebarShortcut,
         ToggleThemeShortcut,
@@ -50,7 +49,7 @@ use crate::gui_prefs::GuiPreferences;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
-use qcode_core::task::{Root, RootAccess, Task};
+use qcode_core::task::{Root, RootAccess, Task, is_slug};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
 use std::collections::HashSet;
@@ -244,7 +243,7 @@ impl Backend for LocalBackend {
                 Some(TaskRow { task, summary })
             })
             .collect();
-        Ok(workspace_tasks(tasks, &self.workspace))
+        Ok(tasks)
     }
 
     fn title(&self, id: &str) -> Option<String> {
@@ -362,7 +361,6 @@ struct Shell {
     workspace: String,
     config_path: PathBuf,
     data_dir: PathBuf,
-    approval_policy: Option<PathBuf>,
     prefs: GuiPreferences,
 }
 
@@ -372,7 +370,6 @@ impl Shell {
         mut backend: Box<dyn Backend>,
         config_path: PathBuf,
         data_dir: PathBuf,
-        approval_policy: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -462,7 +459,6 @@ impl Shell {
             workspace,
             config_path,
             data_dir,
-            approval_policy,
             prefs,
         }
     }
@@ -898,65 +894,6 @@ impl Shell {
         cx.notify();
     }
 
-    fn open_workspace(&mut self, cx: &mut Context<Self>) {
-        if self.app.status.running {
-            self.app
-                .push_notice("stop the running turn before switching workspace");
-            cx.notify();
-            return;
-        }
-        match pick_workspace() {
-            Ok(Some(path)) => self.switch_workspace(path, cx),
-            Ok(None) => {}
-            Err(error) => {
-                self.app.push_notice(error);
-                cx.notify();
-            }
-        }
-    }
-
-    fn switch_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !path.is_dir() {
-            self.app
-                .push_notice(format!("not a directory: {}", path.display()));
-            cx.notify();
-            return;
-        }
-        self.prefs.record_workspace(&path);
-        if let Err(error) = self.prefs.save(&self.data_dir) {
-            self.app
-                .push_notice(format!("cannot save gui.json: {error}"));
-            cx.notify();
-            return;
-        }
-        let exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(error) => {
-                self.app.push_notice(format!("cannot locate qc: {error}"));
-                cx.notify();
-                return;
-            }
-        };
-        let args = reexec_args(
-            std::env::args_os().skip(1),
-            &self.config_path,
-            &self.data_dir,
-            self.approval_policy.as_deref(),
-        );
-        match std::process::Command::new(exe)
-            .args(args)
-            .current_dir(&path)
-            .spawn()
-        {
-            Ok(_) => cx.quit(),
-            Err(error) => {
-                self.app
-                    .push_notice(format!("cannot open workspace: {error}"));
-                cx.notify();
-            }
-        }
-    }
-
     fn open_settings(&self, cx: &mut Context<Self>) {
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
@@ -1061,8 +998,7 @@ impl Shell {
                 cx.notify();
             }
             Err(error) => {
-                self.app
-                    .push_notice(format!("cannot update roots: {error}"));
+                self.app.push_notice(format!("无法更新目录: {error}"));
                 cx.notify();
             }
         }
@@ -1076,15 +1012,14 @@ impl Shell {
             self.pending_roots = Some((task_id, roots));
             return;
         }
-        self.app.push_notice("applying pending root changes");
+        self.app.push_notice("正在应用待处理的目录变更");
         self.apply_roots_now(&task_id, roots, cx);
     }
 
     fn update_task_roots(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
         if self.turn_in_flight {
             self.pending_roots = Some((task_id.to_string(), roots));
-            self.app
-                .push_notice("root changes will apply after the current turn");
+            self.app.push_notice("目录变更将在当前 Turn 结束后应用");
             cx.notify();
             return;
         }
@@ -1111,18 +1046,36 @@ impl Shell {
         };
         if roots.iter().any(|root| root.path == path) {
             self.app
-                .push_notice(format!("root already exists: {}", path.display()));
+                .push_notice(format!("目录已存在: {}", path.display()));
             cx.notify();
             return;
         }
-        let mut index = 1;
-        let label = loop {
-            let candidate = format!("root-{index}");
-            if !roots.iter().any(|root| root.label == candidate) {
-                break candidate;
-            }
-            index += 1;
+        let base = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("dir")
+            .to_ascii_lowercase()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        let base = base.trim_matches('-').chars().take(32).collect::<String>();
+        let base = if is_slug(&base) {
+            base
+        } else {
+            "dir".to_string()
         };
+        let mut label = base.clone();
+        let mut index = 2;
+        while roots.iter().any(|root| root.label == label) {
+            label = format!("{}-{}", base.trim_end_matches('-'), index);
+            index += 1;
+        }
         let root = Root {
             id: format!("{task_id}-{label}"),
             label,
@@ -1177,7 +1130,7 @@ impl Shell {
                 .text_size(px(CAPTION_SIZE))
                 .text_color(rgb(0x888888))
                 .child(format!(
-                    "Roots · {}{}",
+                    "目录 · {}{}",
                     roots.len(),
                     if pending { " · pending" } else { "" }
                 )),
@@ -1187,7 +1140,7 @@ impl Shell {
                 div()
                     .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
-                    .child("No roots — chat only"),
+                    .child("无目录 · 纯对话"),
             );
         }
         for root in roots {
@@ -1224,7 +1177,7 @@ impl Shell {
                         .child(
                             Button::new(format!("root-access-{task_id}-{label}"))
                                 .label(access)
-                                .tooltip("Toggle read-only/read-write")
+                                .tooltip("切换只读 / 读写")
                                 .on_click({
                                     let task_id = task_id.clone();
                                     let label = label.clone();
@@ -1236,7 +1189,7 @@ impl Shell {
                         .child(
                             Button::new(format!("root-primary-{task_id}-{label}"))
                                 .label(primary)
-                                .tooltip("Set as shell primary root")
+                                .tooltip("设为主目录")
                                 .on_click({
                                     let task_id = task_id.clone();
                                     let label = label.clone();
@@ -1248,7 +1201,7 @@ impl Shell {
                         .child(
                             Button::new(format!("root-remove-{task_id}-{label}"))
                                 .label("×")
-                                .tooltip("Remove root")
+                                .tooltip("移除目录")
                                 .on_click({
                                     let task_id = task_id.clone();
                                     let label = label.clone();
@@ -1265,61 +1218,60 @@ impl Shell {
                 div()
                     .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
-                    .child("Changes apply after the current turn"),
+                    .child("当前 Turn 结束后应用"),
             );
         } else if self.turn_in_flight {
             section = section.child(
                 div()
                     .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
-                    .child("Edits apply after this turn"),
+                    .child("Turn 结束后应用"),
             );
         }
         section
             .child(
                 Button::new("add-task-root")
-                    .label("+ Root")
+                    .label("+ 目录")
                     .on_click(cx.listener(|this, _, _window, cx| this.add_task_root(cx))),
             )
             .into_any_element()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tasks = self
-            .tasks
-            .iter()
-            .map(|row| {
-                let id = row.task.id.clone();
-                let marker = if self.active.as_deref() == Some(row.task.id.as_str()) {
-                    "●"
-                } else {
-                    "○"
-                };
-                let title = self
-                    .titles
-                    .get(&row.task.id)
-                    .map(String::as_str)
-                    .unwrap_or_else(|| short_id(&row.task.id))
-                    .chars()
-                    .take(22)
-                    .collect::<String>();
-                let label = format!(
-                    "{marker} {title} · {} · {}t · ${:.2} · {}r",
-                    short_time(&row.summary.started_at),
-                    row.summary.turns,
-                    row.summary.cost_usd,
-                    row.task.roots.len()
-                );
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for row in &self.tasks {
+            let id = row.task.id.clone();
+            let active = self.active.as_deref() == Some(row.task.id.as_str());
+            let marker = if active { "●" } else { "○" };
+            let title = self
+                .titles
+                .get(&row.task.id)
+                .map(String::as_str)
+                .unwrap_or("新任务")
+                .chars()
+                .take(22)
+                .collect::<String>();
+            let label = format!(
+                "{marker} {title} · {} · {}t · {} 目录",
+                short_time(&row.summary.started_at),
+                row.summary.turns,
+                row.task.roots.len()
+            );
+            rows.push(
                 Button::new(format!("task-{}", row.task.id))
                     .label(label)
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.resume(id.clone(), window, cx)),
                     )
-            })
-            .collect::<Vec<_>>();
+                    .into_any_element(),
+            );
+            if active {
+                rows.push(self.render_task_roots(cx));
+            }
+        }
 
         div()
-            .w(px(220.0))
+            .w(px(240.0))
             .h_full()
             .flex()
             .flex_col()
@@ -1327,25 +1279,28 @@ impl Shell {
             .p_2()
             .id("task-sidebar")
             .overflow_y_scroll()
-            .child(div().child(self.workspace.clone()))
-            .child(
-                Button::new("new-session")
-                    .label("New task")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
-            )
-            .child(
-                Button::new("open-workspace")
-                    .label("Open workspace…")
-                    .on_click(cx.listener(|this, _, _window, cx| this.open_workspace(cx))),
-            )
-            .children(recent_workspaces(self, cx))
             .child(
                 Button::new("open-settings")
                     .label("Settings")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
-            .children(tasks)
-            .child(self.render_task_roots(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child("我的任务")
+                    .child(
+                        Button::new("new-task")
+                            .label("+")
+                            .tooltip("新建任务")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_session(window, cx);
+                            })),
+                    ),
+            )
+            .children(rows)
     }
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1658,77 +1613,6 @@ fn task_titles(
                 .map(|title| (row.task.id.clone(), title))
         })
         .collect()
-}
-
-fn recent_workspaces(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
-    shell
-        .prefs
-        .recent_workspaces()
-        .filter(|path| *path != shell.workspace)
-        .take(5)
-        .map(|path| {
-            let label = Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(path);
-            let path = PathBuf::from(path);
-            Button::new(format!("recent-workspace-{path:?}"))
-                .label(format!("↩ {label}"))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.switch_workspace(path.clone(), cx);
-                }))
-                .into_any_element()
-        })
-        .collect()
-}
-
-fn reexec_args(
-    args: impl Iterator<Item = std::ffi::OsString>,
-    config_path: &Path,
-    data_dir: &Path,
-    approval_policy: Option<&Path>,
-) -> Vec<std::ffi::OsString> {
-    let mut out = Vec::new();
-    let mut args = args.peekable();
-    while let Some(arg) = args.next() {
-        let text = arg.to_string_lossy();
-        let replacement = if text == "--config" {
-            Some(config_path)
-        } else if text == "--data-dir" {
-            Some(data_dir)
-        } else if text == "--approval-policy" {
-            approval_policy
-        } else {
-            None
-        };
-        if let Some(replacement) = replacement {
-            out.push(arg);
-            if args.peek().is_some() {
-                args.next();
-            }
-            out.push(replacement.as_os_str().to_owned());
-            continue;
-        }
-        if let Some(value) = text.strip_prefix("--config=") {
-            let _ = value;
-            out.push(format!("--config={}", config_path.display()).into());
-            continue;
-        }
-        if let Some(value) = text.strip_prefix("--data-dir=") {
-            let _ = value;
-            out.push(format!("--data-dir={}", data_dir.display()).into());
-            continue;
-        }
-        if let Some(value) = text.strip_prefix("--approval-policy=") {
-            let _ = value;
-            if let Some(approval_policy) = approval_policy {
-                out.push(format!("--approval-policy={}", approval_policy.display()).into());
-                continue;
-            }
-        }
-        out.push(arg);
-    }
-    out
 }
 
 fn pick_workspace() -> Result<Option<PathBuf>, String> {
@@ -2475,9 +2359,6 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &OpenWorkspaceShortcut, _window, cx| this.open_workspace(cx)),
-            )
             .on_action(|_: &CloseWindowShortcut, window, _cx| window.remove_window())
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
                 this.sidebar_visible = !this.sidebar_visible;
@@ -2530,13 +2411,7 @@ pub struct Engine {
 }
 
 /// Open the window and drive it until the user closes it.
-pub fn run(
-    app: App,
-    backend: Box<dyn Backend>,
-    config_path: PathBuf,
-    data_dir: PathBuf,
-    approval_policy: Option<PathBuf>,
-) {
+pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
@@ -2562,7 +2437,6 @@ pub fn run(
                 KeyBinding::new("n", RejectApproval, Some("Approval")),
                 KeyBinding::new("cmd-n", NewSessionShortcut, None),
                 KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
-                KeyBinding::new("cmd-o", OpenWorkspaceShortcut, None),
                 KeyBinding::new("cmd-w", CloseWindowShortcut, None),
                 KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
                 KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
@@ -2576,23 +2450,37 @@ pub fn run(
             ]);
             gpui_kit::open_window(window_options, cx, |window, cx| {
                 window.activate_window();
-                cx.new(|cx| {
-                    Shell::new(
-                        app,
-                        backend,
-                        config_path,
-                        data_dir,
-                        approval_policy,
-                        window,
-                        cx,
-                    )
-                })
+                cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
             })
             .expect("failed to open the window");
         });
 }
 
 /// Run the engine on its own thread: `run_turn` is async, the window is not.
+/// Create a fresh empty task (no roots) and tell the UI to switch to it.
+fn create_empty_task(engine: &Engine, port: &KernelPort, model: &str) -> Option<String> {
+    let meta = SessionStarted {
+        model: model.to_string(),
+        provider: engine.provider_name.clone(),
+        cwd: engine.workspace.display().to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    match engine.store.create_task_with_roots(&meta, Vec::new()) {
+        Ok(created) => {
+            port.send_event(&created.started);
+            port.send_event(&created.configured);
+            port.clear_session_allow();
+            port.send_session_changed(Some(created.id.clone()));
+            Some(created.id)
+        }
+        Err(error) => {
+            eprintln!("qcode-gui: cannot create task: {error}");
+            port.send_turn_failed(error.to_string());
+            None
+        }
+    }
+}
+
 fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceiver<UiCommand>) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -2640,9 +2528,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                     token.cancel();
                                     pending = Some(UiCommand::NewSession);
                                 } else {
-                                    session = None;
-                                    port.clear_session_allow();
-                                    port.send_session_changed(None);
+                                    session = create_empty_task(&engine, &port, &model);
                                 }
                             }
                             UiCommand::Resume { id } => {
@@ -2758,9 +2644,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                         if let Some(pending) = pending.take() {
                             match pending {
                                 UiCommand::NewSession => {
-                                    session = None;
-                                    port.clear_session_allow();
-                                    port.send_session_changed(None);
+                                    session = create_empty_task(&engine, &port, &model);
                                 }
                                 UiCommand::Resume { id } => {
                                     session = Some(id.clone());

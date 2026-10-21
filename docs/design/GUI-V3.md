@@ -428,13 +428,13 @@ trait Backend {
 - GUI 侧栏从 `Vec<SessionSummary>` 改为 `Vec<TaskRow>`：
   - 每行持有 `Task`（roots/id）与底层 `SessionSummary`（turns/cost/时间）
   - 行显示 `任务标题 · 时间 · turns · cost · N roots`
-  - 过滤器仍按当前 workspace 的 primary root
+  - 列表不再按 workspace 过滤；显示 data-dir 中的全部 Task
 - 底层仍使用 `SessionStore`、`session_started` 和事件字段 `session`；Task 是用户层聚合。
 - `Backend::sessions` 已改为 `Backend::tasks`，旧 `workspace_sessions` 仅保留为兼容/测试辅助。
 
 ### Root 显示/编辑（2026-10-21）
 
-- Task 侧栏显示 active Task 的 Roots：`@label · RO/RW · primary`、截断路径。
+- Task 侧栏显示 active Task 的目录：`@label · RO/RW · 主目录`、截断路径。
 - 可操作：
   - `+ Root`：原生目录选择器，自动生成 `root-N` slug
   - `RO/RW`：切换访问模式
@@ -484,3 +484,13 @@ trait Backend {
 - `TurnFinished`（引擎任务真正返回、session lock 释放）后写入 `roots_changed`。
 - 同一 Task 多次编辑以最后一次 pending 为准。
 - 切 New task/Resume 会清空 pending。
+
+### 我的任务侧栏（最终形态，2026-10-21）
+
+- 左上只有 `Settings`；下面是 `我的任务` + 右侧 `+` 新建按钮。
+- 任务列表显示 data-dir 中的全部 Task，不按 workspace 过滤。
+- 点击任务：切换到该 Task、展开其目录列表，其他任务目录收起。
+- 每个目录显示：`@label · RO/RW · 主目录`、路径、访问切换、主目录、移除。
+- `+ 目录` 打开原生目录选择器；目录名自动转为 slug alias。
+- UI 使用“目录 / Dir”，底层领域类型仍叫 `Root`。
+- 新建 `+` 立即创建一个空 Task（无目录），可在其下添加目录或直接纯对话。
