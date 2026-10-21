@@ -20,6 +20,20 @@ pub struct ConfigEdit {
 }
 
 impl ConfigEdit {
+    /// Start with an empty document, keeping the path for save/backup.
+    ///
+    /// Used by the repair flow when the existing file cannot be parsed: saving
+    /// still backs it up to `.bak` before replacing it.
+    pub fn empty(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let existed = path.exists();
+        Self {
+            path,
+            document: DocumentMut::new(),
+            existed,
+        }
+    }
+
     /// Open `path`. A missing file yields an empty document with `existed =
     /// false`; the caller decides which defaults/template to add.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {

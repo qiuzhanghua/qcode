@@ -310,3 +310,13 @@ trait Backend {
   workspace；运行中禁止切换；`App::reset_transcript`；后端生命周期测试（mock provider）。
 - 尚未包含：Setup 向导/全字段表单（G3）、workspace 原生选择器（G4）、Markdown/工具卡片
   的完整渲染（G1）。
+
+
+### G3 进行中（2026-10-21）
+
+- ✅ `ConfigEdit`：保留注释/未知字段、原子写、备份、验证；`apply_config` 覆盖全部配置 section。
+- ✅ 表单 schema：11 页、所有已知配置键、Provider/Pricing/Rules/MCP 表定义；覆盖率测试。
+- ✅ `SetupView`：分页导航、标量输入、Switch、分段 Select、四类动态表（增删行）、Review/Save。
+- ✅ `qc gui` 在配置缺失/损坏时打开 Setup；保存后退出并 re-exec（临时方案，尚非无缝切换）。
+- ⏳ 尚未完成：GUI 偏好（theme/font）落盘、Keychain 密钥输入、provider/key 可用性修复入口、无缝
+  Save & Start、Setup 的真窗口手工验收。

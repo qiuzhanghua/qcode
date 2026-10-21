@@ -674,6 +674,20 @@ async fn cmd_gui(
     approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?.canonicalize()?;
+    let setup_path = config::edit_path(config_path.clone())?;
+    let needs_setup = !setup_path.exists() || config::load(&setup_path).is_err();
+    if needs_setup {
+        qcode_gui::run_setup(setup_path.clone());
+        if config::load(&setup_path).is_err() {
+            return Err("config was not created; run `qc gui` again to configure".into());
+        }
+        // GPUI cannot restart its application loop in-process. Re-exec with the
+        // same argv so the just-written config is assembled cleanly.
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args(std::env::args_os().skip(1))
+            .status()?;
+        return Ok(ExitCode::from(status.code().unwrap_or(1) as u8));
+    }
     let kernel = qcode_kernel::assemble(
         config_path,
         &workspace,
