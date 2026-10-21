@@ -2559,14 +2559,16 @@ Root
 规则：
 
 - 一个 Task 可以有 **0..N 个 Root**。
-- `roots = []` 是合法的纯问答 Task：文件工具不可用；`run_shell` 仍可在 Task 私有临时目录
-  中运行（不把临时目录算作 Root）；仍可聊天、使用其他非文件工具。
+- `roots = []` 是合法的纯问答 Task：文件工具不可用；`run_shell` 仍可在 **Turn 私有临时目录**
+  中运行（每 Turn 创建、Turn 结束清理，不跨 Turn 保留，也不把临时目录算作 Root）；仍可聊天、
+  使用其他非文件工具。
 - 每个 Root 的 `label` 在 Task 内唯一，且只允许 ASCII slug：`[a-z0-9][a-z0-9-]*`，
   最长 32 字符；中文和空格只出现在 title/display name，不出现在 `@label` 中。
 - `primary` 最多一个。
 - 没有 primary 但有 Root 时，shell 不可用或要求用户选 primary；v1 建议要求显式 primary。
+- primary 可以是只读 Root；允许作为 shell cwd，但 `qc doctor` 要提示写入会失败。
 - Root 的路径必须存在且是目录；添加时校验，不自动创建。
-- v1 限制最多 8 个 Root；不允许 Root 互相嵌套/重叠。
+- v1 限制最多 **16** 个 Root；不允许 Root 互相嵌套/重叠。
 
 ### 2.1 Root 身份与目录改名
 
@@ -2591,8 +2593,8 @@ Root
 - 写只读根：直接拒绝，不弹“是否允许”的审批；要写就显式把 Root 改成 RW（用户操作）。
 - 越界路径：拒绝；不自动提权。
 - 符号链接：先 canonicalize；只读根里的 symlink 不能指向可写根绕过检查。
-- 临时目录：系统临时目录与 Task 私有 temp 可写（构建缓存需要），不把它们算作 Root。
-- 无根 Task 的 shell：cwd 为 Task 私有 temp；可以读写该 temp，但看不到用户文件；网络仍按
+- 临时目录：系统临时目录与 **Turn 私有 temp** 可写；Turn 私有 temp 不跨 Turn 保留。
+- 无根 Task 的 shell：cwd 为 Turn 私有 temp；可以读写该 temp，但看不到用户文件；网络仍按
   Session 网络策略。
 
 ### 2.4 Windows 的只读语义
@@ -2668,7 +2670,7 @@ Root
 - macOS/Linux 多根 sandbox：约 3–5 天。
 - Windows 写限制与文档：约 1–2 天。
 
-v1（单 Root 兼容 + 无根 Task + 最多 8 Root，macOS/Linux 完整，Windows 只写限制）约
+v1（单 Root 兼容 + 无根 Task + 最多 16 Root，macOS/Linux 完整，Windows 只写限制）约
 **2–3 周**；完整跨平台/迁移/安全评审更久。
 
 **推荐实现顺序**
@@ -2682,7 +2684,7 @@ v1（单 Root 兼容 + 无根 Task + 最多 8 Root，macOS/Linux 完整，Window
 
 ## ADR-0048（草案）：多根 Sandbox 与路径能力（2026-10-21）
 
-**状态**：草案，未实现。依赖 ADR-0047 的 Task/Root 模型。
+**状态**：细节已确认，未实现。依赖 ADR-0047 的 Task/Root 模型。
 
 **背景**：Task 可以有 0..N 个 Root，Root 有 `read-only` / `read-write`，并且无根 Task 仍允许
 在私有临时目录运行 shell。qcode 现有 sandbox 是“单 workspace”假设：
@@ -2714,12 +2716,12 @@ v1（单 Root 兼容 + 无根 Task + 最多 8 Root，macOS/Linux 完整，Window
 ```text
 Root(read-write)  → 文件工具读写；shell bind/bind rw
 Root(read-only)   → 文件工具只读；shell bind ro
-Task 私有 temp     → shell cwd/读写；文件工具不可直接访问（除非作为 temp API）
-无根 Task          → 无文件工具；shell cwd=私有 temp，只能读写 temp
-System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计）
+Turn 私有 temp     → shell cwd/读写；文件工具不可直接访问（除非作为 temp API）
+无根 Task          → 无文件工具；shell cwd=Turn 私有 temp，只能读写 temp
+System/toolchain   → 只读；Cargo/Rustup 等缓存默认可写（显式例外，须审计）
 ```
 
-- Root 不允许重叠/嵌套；v1 最多 8 个。
+- Root 不允许重叠/嵌套；v1 最多 **16** 个。
 - 绝对路径必须 canonicalize 后落在某个 Root 内；否则拒绝。
 - `@label/path` 先解析 Root，再做 canonicalize + 越界检查。
 - 只读根里的 symlink 不能指向可写根；canonicalize 后再判断。
@@ -2730,10 +2732,10 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计�
 ### macOS `sandbox-exec`
 
 - 生成一个 profile，而不是每个 workspace 一个 profile。
-- `file-read*`：系统目录 + 所有 Root（RO/RW 都可读）+ 私有 temp。
-- `file-write*`：仅 RW Root + 私有 temp + 显式 toolchain cache。
+- `file-read*`：系统目录 + 所有 Root（RO/RW 都可读）+ Turn 私有 temp。
+- `file-write*`：仅 RW Root + Turn 私有 temp + 显式 toolchain cache。
 - RO Root 绝不能出现在 `file-write*` 的 `subpath` 中。
-- 无根 Task：只读系统目录 + 私有 temp；不包含用户 home。
+- 无根 Task：只读系统目录 + Turn 私有 temp；不包含用户 home。
 - `extra_writable` 必须真正进入 profile；当前 macOS 分支忽略它是 bug。
 - `sandbox-exec` 是实验/已弃用接口，预检失败必须 fail closed，不能退回无 sandbox。
 
@@ -2742,8 +2744,8 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计�
 - 系统目录 `--ro-bind`。
 - RO Root：`--ro-bind`。
 - RW Root：`--bind`。
-- Task 私有 temp：`--bind` 或私有 tmpfs。
-- cwd 必须是已 bind 的路径；无根 Task 使用私有 temp。
+- Turn 私有 temp：`--bind` 或私有 tmpfs。
+- cwd 必须是已 bind 的路径；无根 Task 使用 Turn 私有 temp。
 - `--unshare-net` 由网络策略决定，不由 Root 矩阵决定。
 - 多根时允许绝对路径；不做 alias 的 shell 重写。
 
@@ -2756,14 +2758,15 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计�
 
 ### Windows ACL
 
-- 只限制**写**：RW Root + 私有 temp + 显式 cache 可写；其他位置不可写。
+- 只限制**写**：RW Root + Turn 私有 temp + 显式 cache 可写；其他位置不可写。
 - 读不受限，所以 RO Root 的语义是“不可写，但仍可读”。
-- 无根 Task：只给私有 temp 写权限；读仍不受限。
+- 无根 Task：只给 Turn 私有 temp 写权限；读仍不受限。
 - UI/文档必须明确这个限制；不能承诺“参考目录不可读”。
 
 ## 3. 无根 Task 的 shell
 
-- 为每个 Task 创建私有 temp 目录（例如 `data/tasks/<id>/tmp`），生命周期绑定 Task。
+- 为每个 **Turn** 创建私有 temp 目录（例如 `data/tasks/<id>/tmp/<turn>`），Turn 结束清理；
+  不跨 Turn 保留。
 - shell cwd 指向该 temp；可以读写 temp，不能看到用户文件。
 - macOS/Linux：sandbox 只读系统目录 + temp；不 bind home。
 - Windows：ACL 只允许 temp 写；读仍可能看到用户可读文件，这是 ACL 的限制。
@@ -2823,10 +2826,11 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计�
 **工作量**：文件工具与路径 3–5 天；macOS 2–3 天；bwrap 2–3 天；Landlock 2 天；Windows 1–2 天；
 测试与安全评审 3–5 天。v1 约 **2–3 周**。
 
-## 9. 未决问题
+## 9. 已确认的细节
 
-1. Toolchain cache（Cargo/Rustup）是否默认允许写？建议允许但列入 `qc doctor` 和审计。
-2. Root 数量上限是否 8？还是按 sandbox 参数长度动态限制？
-3. 无根 Task 的 temp 是否跨 Turn 保留？建议保留到 Task 结束，便于构建缓存。
-4. 只读 primary Root 是否允许作为 shell cwd？建议允许，但 `qc doctor` 警告写入会失败。
-5. Windows 是否接受“读不受限”作为正式产品语义？当前确认接受。
+1. Toolchain cache（Cargo/Rustup）**默认允许写**；它们不是 Root，必须在 `qc doctor` 与审计中
+   列为显式例外。
+2. Root 上限为 **16**。
+3. 无根 Task 的 temp **不跨 Turn 保留**；每 Turn 创建，Turn 结束清理。
+4. 只读 primary Root **允许**作为 shell cwd；写入会失败，`qc doctor` 给出警告。
+5. Windows 的“只读 = 不可写，但仍可读”作为**正式产品语义**；UI 必须明确说明读不受限。
