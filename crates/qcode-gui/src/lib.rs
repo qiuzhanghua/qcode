@@ -50,7 +50,7 @@ use crate::gui_prefs::GuiPreferences;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
-use qcode_core::task::Task;
+use qcode_core::task::{Root, RootAccess, Task};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
 use std::collections::HashSet;
@@ -116,6 +116,24 @@ fn short_time(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.chars().take(16).collect())
 }
 
+fn short_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if text.chars().count() <= 30 {
+        text
+    } else {
+        format!(
+            "…{}",
+            text.chars()
+                .rev()
+                .take(29)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        )
+    }
+}
+
 pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -166,6 +184,8 @@ pub trait Backend {
     fn title(&self, _id: &str) -> Option<String> {
         None
     }
+    /// Replace a Task's roots; persists a `roots_changed` event.
+    fn set_roots(&mut self, id: &str, roots: Vec<Root>) -> Result<(), String>;
     /// Start a draft. The first prompt creates the session log.
     fn new_session(&mut self);
     /// Load the transcript, then point the engine at the session.
@@ -236,6 +256,13 @@ impl Backend for LocalBackend {
             }
             _ => None,
         })
+    }
+
+    fn set_roots(&mut self, id: &str, roots: Vec<Root>) -> Result<(), String> {
+        self.store
+            .replace_roots(id, roots)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn new_session(&mut self) {
@@ -992,6 +1019,227 @@ impl Shell {
         rail.into_any_element()
     }
 
+    fn active_task_row(&self) -> Option<&TaskRow> {
+        let id = self.active.as_deref()?;
+        self.tasks.iter().find(|row| row.task.id == id)
+    }
+
+    fn update_task_roots(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
+        if self.app.status.running {
+            self.app
+                .push_notice("stop the running turn before editing roots");
+            cx.notify();
+            return;
+        }
+        match self.backend.set_roots(task_id, roots) {
+            Ok(()) => {
+                self.refresh_tasks();
+                cx.notify();
+            }
+            Err(error) => {
+                self.app
+                    .push_notice(format!("cannot update roots: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    fn add_task_root(&mut self, cx: &mut Context<Self>) {
+        if self.app.status.running {
+            self.app
+                .push_notice("stop the running turn before editing roots");
+            cx.notify();
+            return;
+        }
+        let Some(task_id) = self.active.clone() else {
+            return;
+        };
+        let Some(row) = self.active_task_row() else {
+            return;
+        };
+        let mut roots = row.task.roots.clone();
+        let picked = pick_workspace();
+        let path = match picked {
+            Ok(Some(path)) => path,
+            Ok(None) => return,
+            Err(error) => {
+                self.app.push_notice(error);
+                cx.notify();
+                return;
+            }
+        };
+        if roots.iter().any(|root| root.path == path) {
+            self.app
+                .push_notice(format!("root already exists: {}", path.display()));
+            cx.notify();
+            return;
+        }
+        let mut index = 1;
+        let label = loop {
+            let candidate = format!("root-{index}");
+            if !roots.iter().any(|root| root.label == candidate) {
+                break candidate;
+            }
+            index += 1;
+        };
+        let root = Root {
+            id: format!("{task_id}-{label}"),
+            label,
+            path,
+            access: RootAccess::ReadWrite,
+            primary: roots.is_empty(),
+        };
+        roots.push(root);
+        self.update_task_roots(&task_id, roots, cx);
+    }
+
+    fn remove_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
+            return;
+        };
+        let mut roots = row.task.roots.clone();
+        roots.retain(|root| root.label != label);
+        if !roots.is_empty() && !roots.iter().any(|root| root.primary) {
+            roots[0].primary = true;
+        }
+        self.update_task_roots(task_id, roots, cx);
+    }
+
+    fn toggle_task_root_access(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
+            return;
+        };
+        let mut roots = row.task.roots.clone();
+        if let Some(root) = roots.iter_mut().find(|root| root.label == label) {
+            root.access = match root.access {
+                RootAccess::ReadOnly => RootAccess::ReadWrite,
+                RootAccess::ReadWrite => RootAccess::ReadOnly,
+            };
+        }
+        self.update_task_roots(task_id, roots, cx);
+    }
+
+    fn set_task_primary_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
+            return;
+        };
+        let mut roots = row.task.roots.clone();
+        for root in &mut roots {
+            root.primary = root.label == label;
+        }
+        self.update_task_roots(task_id, roots, cx);
+    }
+
+    fn render_task_roots(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.active_task_row() else {
+            return div().into_any_element();
+        };
+        let task_id = row.task.id.clone();
+        let roots = row.task.roots.clone();
+        let running = self.app.status.running;
+        let mut section = div().flex().flex_col().gap_1().pt_2().child(
+            div()
+                .text_size(px(CAPTION_SIZE))
+                .text_color(rgb(0x888888))
+                .child(format!("Roots · {}", roots.len())),
+        );
+        if roots.is_empty() {
+            section = section.child(
+                div()
+                    .text_size(px(CAPTION_SIZE))
+                    .text_color(rgb(0x888888))
+                    .child("No roots — chat only"),
+            );
+        }
+        for root in roots {
+            let label = root.label.clone();
+            let short = short_path(&root.path);
+            let access = match root.access {
+                RootAccess::ReadOnly => "RO",
+                RootAccess::ReadWrite => "RW",
+            };
+            let primary = if root.primary { "★" } else { "☆" };
+            let mut line = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(format!("@{label} · {access} · {primary}")),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(0x777777))
+                        .child(short),
+                );
+            if !running {
+                line = line.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .child(
+                            Button::new(format!("root-access-{task_id}-{label}"))
+                                .label(access)
+                                .tooltip("Toggle read-only/read-write")
+                                .on_click({
+                                    let task_id = task_id.clone();
+                                    let label = label.clone();
+                                    cx.listener(move |this, _, _window, cx| {
+                                        this.toggle_task_root_access(&task_id, &label, cx);
+                                    })
+                                }),
+                        )
+                        .child(
+                            Button::new(format!("root-primary-{task_id}-{label}"))
+                                .label(primary)
+                                .tooltip("Set as shell primary root")
+                                .on_click({
+                                    let task_id = task_id.clone();
+                                    let label = label.clone();
+                                    cx.listener(move |this, _, _window, cx| {
+                                        this.set_task_primary_root(&task_id, &label, cx);
+                                    })
+                                }),
+                        )
+                        .child(
+                            Button::new(format!("root-remove-{task_id}-{label}"))
+                                .label("×")
+                                .tooltip("Remove root")
+                                .on_click({
+                                    let task_id = task_id.clone();
+                                    let label = label.clone();
+                                    cx.listener(move |this, _, _window, cx| {
+                                        this.remove_task_root(&task_id, &label, cx);
+                                    })
+                                }),
+                        ),
+                );
+            }
+            section = section.child(line);
+        }
+        if running {
+            section = section.child(
+                div()
+                    .text_size(px(CAPTION_SIZE))
+                    .text_color(rgb(0x888888))
+                    .child("Stop the turn to edit roots"),
+            );
+        } else {
+            section = section.child(
+                Button::new("add-task-root")
+                    .label("+ Root")
+                    .on_click(cx.listener(|this, _, _window, cx| this.add_task_root(cx))),
+            );
+        }
+        section.into_any_element()
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tasks = self
             .tasks
@@ -1033,6 +1281,8 @@ impl Shell {
             .flex_col()
             .gap_1()
             .p_2()
+            .id("task-sidebar")
+            .overflow_y_scroll()
             .child(div().child(self.workspace.clone()))
             .child(
                 Button::new("new-session")
@@ -1051,6 +1301,7 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
             .children(tasks)
+            .child(self.render_task_roots(cx))
     }
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

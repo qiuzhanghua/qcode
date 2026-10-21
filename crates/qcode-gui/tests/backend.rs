@@ -8,6 +8,7 @@ use qcode_core::provider::{
     ToolSpec,
 };
 use qcode_core::store::SessionStore;
+use qcode_core::task::{Root, RootAccess};
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_gui::{Backend, Engine, LocalBackend};
 use qcode_providers::MockProvider;
@@ -103,6 +104,40 @@ async fn a_draft_becomes_a_logged_session_on_the_first_prompt() {
     backend.prompt("again".to_string(), Vec::new());
     let _ = wait_for_turn(&mut backend);
     assert_eq!(backend.tasks().expect("tasks").len(), 2);
+}
+
+#[tokio::test]
+async fn roots_can_be_replaced_and_are_reflected_in_tasks() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut backend = LocalBackend::new(engine(workspace.path(), store));
+
+    backend.prompt("hi".to_string(), Vec::new());
+    let _ = wait_for_turn(&mut backend);
+    let tasks = backend.tasks().expect("tasks");
+    let task_id = tasks[0].task.id.clone();
+    let roots = vec![
+        Root {
+            id: "code-root".to_string(),
+            label: "code".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        },
+        Root {
+            id: "docs-root".to_string(),
+            label: "docs".to_string(),
+            path: workspace.path().join("docs"),
+            access: RootAccess::ReadOnly,
+            primary: false,
+        },
+    ];
+    backend.set_roots(&task_id, roots).expect("set roots");
+    let tasks = backend.tasks().expect("tasks after roots");
+    assert_eq!(tasks[0].task.roots.len(), 2);
+    assert_eq!(tasks[0].task.roots[1].label, "docs");
+    assert_eq!(tasks[0].task.roots[1].access, RootAccess::ReadOnly);
 }
 
 #[tokio::test]
