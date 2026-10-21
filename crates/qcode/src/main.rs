@@ -704,6 +704,7 @@ async fn cmd_gui(
     let engine = qcode_gui::Engine {
         store: kernel.store,
         provider: kernel.provider.into(),
+        provider_name: kernel.resolved.name.clone(),
         tools: kernel.tools,
         policy: kernel.policy,
         workspace: workspace.clone(),
@@ -719,7 +720,8 @@ async fn cmd_gui(
         network: kernel.network,
         snapshots: Some(snapshots),
     };
-    qcode_gui::run(app, Some(engine));
+    let backend = qcode_gui::LocalBackend::new(engine);
+    qcode_gui::run(app, Box::new(backend));
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

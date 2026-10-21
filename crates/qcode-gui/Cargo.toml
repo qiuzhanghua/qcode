@@ -8,6 +8,9 @@ rust-version.workspace = true
 [lib]
 name = "qcode_gui"
 path = "src/lib.rs"
+# The GPUI macro expansion overflows rustc in a lib test harness; integration
+# tests live in tests/ instead (ADR-0037).
+test = false
 
 [dependencies]
 qcode-core = { version = "0.1.0", path = "../qcode-core" }
@@ -21,3 +24,7 @@ tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tokio-util.workspace = true
 time.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
+tempfile.workspace = true

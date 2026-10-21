@@ -224,6 +224,24 @@ impl App {
         }
     }
 
+    /// Clear the transcript before replaying a resumed session.
+    ///
+    /// Provider/model/sandbox/skills are configuration, not transcript state;
+    /// the replayed `session_started` event refreshes the provider and model.
+    pub fn reset_transcript(&mut self) {
+        self.blocks.clear();
+        self.streaming.clear();
+        self.scroll = 0;
+        self.status.turn = 0;
+        self.status.cost_usd = 0.0;
+        self.status.running = false;
+        self.status.last = None;
+        self.context_tokens = 0;
+        self.child_groups.clear();
+        self.collapsed_children.clear();
+        self.approval = None;
+    }
+
     /// Project a persisted event into the transcript and status line.
     pub fn apply(&mut self, event: &Event) {
         match &event.kind {
@@ -1551,5 +1569,26 @@ mod tests {
             attachments: Vec::new(),
         })));
         assert_eq!(app.blocks, vec![Block::User("hi".to_string())]);
+    }
+
+    #[test]
+    fn reset_transcript_keeps_configuration_and_clears_state() {
+        let mut app = App::new("deepseek", "deepseek-flash");
+        app.push_notice("old");
+        app.status.running = true;
+        app.status.turn = 3;
+        app.status.cost_usd = 1.5;
+        app.context_tokens = 42;
+        app.child_groups.push("child".to_string());
+        app.reset_transcript();
+        assert!(app.blocks.is_empty());
+        assert!(app.streaming.is_empty());
+        assert!(!app.status.running);
+        assert_eq!(app.status.turn, 0);
+        assert_eq!(app.status.cost_usd, 0.0);
+        assert_eq!(app.status.provider, "deepseek");
+        assert_eq!(app.status.model, "deepseek-flash");
+        assert_eq!(app.context_tokens, 0);
+        assert!(app.child_groups.is_empty());
     }
 }

@@ -36,6 +36,9 @@ pub enum UiEvent {
     ApprovalClosed { call_id: String },
     /// An approval is blocking the turn until the UI answers.
     Approval(ApprovalView),
+    /// The active session changed. `None` means a new draft session that has
+    /// not written a log yet.
+    SessionChanged { id: Option<String> },
 }
 
 /// The approval prompt, without the reply channel: answer it with
@@ -81,6 +84,10 @@ pub enum UiCommand {
         allow: bool,
         session: bool,
     },
+    /// Start a new draft session; the first prompt creates the log.
+    NewSession,
+    /// Switch the engine to an existing session.
+    Resume { id: String },
 }
 
 /// The UI's end of the bridge: drain events, send commands.
@@ -126,6 +133,11 @@ impl KernelPort {
 
     pub fn send_delta(&self, delta: Delta) {
         let _ = self.events.send(UiEvent::Delta(delta));
+    }
+
+    /// Tell the UI which session the engine will use next.
+    pub fn send_session_changed(&self, id: Option<String>) {
+        let _ = self.events.send(UiEvent::SessionChanged { id });
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,

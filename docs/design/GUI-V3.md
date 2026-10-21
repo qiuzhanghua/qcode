@@ -300,3 +300,11 @@ trait Backend {
 - 主题是否只做 system/light/dark，还是允许自定义色板。
 - Anthropic 默认模型 `claude-sonnet-4-5` 是否随发布更新。
 - macOS notarize / 签名凭据。
+
+
+## 9. 实现进度
+
+- **G0 ✅ 2026-10-21**：`Backend` trait + `LocalBackend`；草稿/新建/恢复会话；侧栏只列当前
+  workspace；运行中禁止切换；`App::reset_transcript`；后端生命周期测试（mock provider）。
+- 尚未包含：Setup 向导/全字段表单（G3）、workspace 原生选择器（G4）、Markdown/工具卡片
+  的完整渲染（G1）。
