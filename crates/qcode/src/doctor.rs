@@ -53,6 +53,38 @@ struct Doctor {
     failures: usize,
 }
 
+/// Where to keep the key so it is not a plaintext file or registry value.
+///
+/// The hints are platform-specific because the mechanisms are: Keychain on
+/// macOS, libsecret on Linux, the credential store on Windows. The API key
+/// itself is never printed, only the command that would store it.
+fn key_store_hint() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            "store it: security add-generic-password -a \"$USER\" -s qcode -w".to_string(),
+            "then: api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"qcode\", \"-a\", \"$USER\"]".to_string(),
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            "store it: secret-tool store --label qcode service qcode user deepseek".to_string(),
+            "then: api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"qcode\", \"user\", \"deepseek\"]".to_string(),
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            "store it in the Windows credential store (or DPAPI), not HKCU: the registry value is plaintext".to_string(),
+            "then: api_key_command = [\"powershell\", \"-NoProfile\", \"-Command\", \"...\"]".to_string(),
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Vec::new()
+    }
+}
 impl Doctor {
     fn ok(&self, label: &str, detail: impl AsRef<str>) {
         println!("[ok]   {label}: {}", detail.as_ref());
@@ -188,7 +220,16 @@ impl Doctor {
                     self.ok("credentials", "keyless provider");
                 }
             }
-            Err(err) => self.fail("provider", err.to_string()),
+            Err(err) => {
+                let missing_key =
+                    matches!(err, qcode_kernel::config::ConfigError::MissingKey { .. });
+                self.fail("provider", err.to_string());
+                if missing_key {
+                    for line in key_store_hint() {
+                        self.warn("key storage", &line);
+                    }
+                }
+            }
         }
     }
 
