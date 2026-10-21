@@ -344,6 +344,11 @@ struct Shell {
     /// Turn selected by the rail/header.
     selected_turn: Option<usize>,
     turn_picker_open: bool,
+    /// True until the engine task has fully returned; Stop only clears the
+    /// visual running flag, not this.
+    turn_in_flight: bool,
+    /// Root edits made during a turn, applied after the engine task returns.
+    pending_roots: Option<(String, Vec<Root>)>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -445,6 +450,8 @@ impl Shell {
             expanded_code: HashSet::new(),
             selected_turn: None,
             turn_picker_open: false,
+            turn_in_flight: false,
+            pending_roots: None,
             collapse_all: false,
             collapse_to_list: false,
             last_blocks,
@@ -530,6 +537,8 @@ impl Shell {
         self.active = None;
         self.diff = None;
         self.approvals = ApprovalQueue::default();
+        self.pending_roots = None;
+        self.turn_in_flight = false;
         self.refresh_tasks();
         self.app.push_notice("new session");
         self.reset_scroller(cx);
@@ -562,6 +571,8 @@ impl Shell {
                 self.active = Some(id.clone());
                 self.diff = None;
                 self.approvals = ApprovalQueue::default();
+                self.pending_roots = None;
+                self.turn_in_flight = false;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
             }
@@ -602,6 +613,7 @@ impl Shell {
         }
         self.backend
             .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
+        self.turn_in_flight = true;
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
             cx.notify();
@@ -705,6 +717,11 @@ impl Shell {
                     self.app.status.last = None;
                     self.approvals = ApprovalQueue::default();
                     self.app.push_notice(format!("turn failed: {message}"));
+                    changed = true;
+                }
+                UiEvent::TurnFinished { session } => {
+                    self.turn_in_flight = false;
+                    self.apply_pending_roots(session.as_deref(), cx);
                     changed = true;
                 }
             }
@@ -1024,13 +1041,20 @@ impl Shell {
         self.tasks.iter().find(|row| row.task.id == id)
     }
 
-    fn update_task_roots(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
-        if self.app.status.running {
-            self.app
-                .push_notice("stop the running turn before editing roots");
-            cx.notify();
-            return;
+    fn task_roots_for_edit(&self, task_id: &str) -> Vec<Root> {
+        if let Some((pending_id, roots)) = &self.pending_roots
+            && pending_id == task_id
+        {
+            return roots.clone();
         }
+        self.tasks
+            .iter()
+            .find(|row| row.task.id == task_id)
+            .map(|row| row.task.roots.clone())
+            .unwrap_or_default()
+    }
+
+    fn apply_roots_now(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
         match self.backend.set_roots(task_id, roots) {
             Ok(()) => {
                 self.refresh_tasks();
@@ -1044,20 +1068,37 @@ impl Shell {
         }
     }
 
-    fn add_task_root(&mut self, cx: &mut Context<Self>) {
-        if self.app.status.running {
+    fn apply_pending_roots(&mut self, session: Option<&str>, cx: &mut Context<Self>) {
+        let Some((task_id, roots)) = self.pending_roots.take() else {
+            return;
+        };
+        if session.is_some_and(|id| id != task_id) {
+            self.pending_roots = Some((task_id, roots));
+            return;
+        }
+        self.app.push_notice("applying pending root changes");
+        self.apply_roots_now(&task_id, roots, cx);
+    }
+
+    fn update_task_roots(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
+        if self.turn_in_flight {
+            self.pending_roots = Some((task_id.to_string(), roots));
             self.app
-                .push_notice("stop the running turn before editing roots");
+                .push_notice("root changes will apply after the current turn");
             cx.notify();
             return;
         }
+        self.apply_roots_now(task_id, roots, cx);
+    }
+
+    fn add_task_root(&mut self, cx: &mut Context<Self>) {
         let Some(task_id) = self.active.clone() else {
             return;
         };
-        let Some(row) = self.active_task_row() else {
+        if self.active_task_row().is_none() {
             return;
-        };
-        let mut roots = row.task.roots.clone();
+        }
+        let mut roots = self.task_roots_for_edit(&task_id);
         let picked = pick_workspace();
         let path = match picked {
             Ok(Some(path)) => path,
@@ -1094,10 +1135,7 @@ impl Shell {
     }
 
     fn remove_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
-        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
-            return;
-        };
-        let mut roots = row.task.roots.clone();
+        let mut roots = self.task_roots_for_edit(task_id);
         roots.retain(|root| root.label != label);
         if !roots.is_empty() && !roots.iter().any(|root| root.primary) {
             roots[0].primary = true;
@@ -1106,10 +1144,7 @@ impl Shell {
     }
 
     fn toggle_task_root_access(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
-        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
-            return;
-        };
-        let mut roots = row.task.roots.clone();
+        let mut roots = self.task_roots_for_edit(task_id);
         if let Some(root) = roots.iter_mut().find(|root| root.label == label) {
             root.access = match root.access {
                 RootAccess::ReadOnly => RootAccess::ReadWrite,
@@ -1120,10 +1155,7 @@ impl Shell {
     }
 
     fn set_task_primary_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
-        let Some(row) = self.tasks.iter().find(|row| row.task.id == task_id) else {
-            return;
-        };
-        let mut roots = row.task.roots.clone();
+        let mut roots = self.task_roots_for_edit(task_id);
         for root in &mut roots {
             root.primary = root.label == label;
         }
@@ -1135,13 +1167,20 @@ impl Shell {
             return div().into_any_element();
         };
         let task_id = row.task.id.clone();
-        let roots = row.task.roots.clone();
-        let running = self.app.status.running;
+        let roots = self.task_roots_for_edit(&task_id);
+        let pending = self
+            .pending_roots
+            .as_ref()
+            .is_some_and(|(id, _)| id == &task_id);
         let mut section = div().flex().flex_col().gap_1().pt_2().child(
             div()
                 .text_size(px(CAPTION_SIZE))
                 .text_color(rgb(0x888888))
-                .child(format!("Roots · {}", roots.len())),
+                .child(format!(
+                    "Roots · {}{}",
+                    roots.len(),
+                    if pending { " · pending" } else { "" }
+                )),
         );
         if roots.is_empty() {
             section = section.child(
@@ -1159,7 +1198,7 @@ impl Shell {
                 RootAccess::ReadWrite => "RW",
             };
             let primary = if root.primary { "★" } else { "☆" };
-            let mut line = div()
+            let line = div()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -1176,9 +1215,8 @@ impl Shell {
                         .text_size(px(10.0))
                         .text_color(rgb(0x777777))
                         .child(short),
-                );
-            if !running {
-                line = line.child(
+                )
+                .child(
                     div()
                         .flex()
                         .flex_row()
@@ -1220,24 +1258,30 @@ impl Shell {
                                 }),
                         ),
                 );
-            }
             section = section.child(line);
         }
-        if running {
+        if pending {
             section = section.child(
                 div()
                     .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
-                    .child("Stop the turn to edit roots"),
+                    .child("Changes apply after the current turn"),
             );
-        } else {
+        } else if self.turn_in_flight {
             section = section.child(
+                div()
+                    .text_size(px(CAPTION_SIZE))
+                    .text_color(rgb(0x888888))
+                    .child("Edits apply after this turn"),
+            );
+        }
+        section
+            .child(
                 Button::new("add-task-root")
                     .label("+ Root")
                     .on_click(cx.listener(|this, _, _window, cx| this.add_task_root(cx))),
-            );
-        }
-        section.into_any_element()
+            )
+            .into_any_element()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2710,6 +2754,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                             eprintln!("qcode-gui: turn failed: {error}");
                             port.send_turn_failed(error);
                         }
+                        port.send_turn_finished(session.clone());
                         if let Some(pending) = pending.take() {
                             match pending {
                                 UiCommand::NewSession => {

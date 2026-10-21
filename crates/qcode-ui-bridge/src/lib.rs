@@ -41,6 +41,8 @@ pub enum UiEvent {
     SessionChanged { id: Option<String> },
     /// run_turn returned an error before it could emit TurnEnded.
     TurnFailed { message: String },
+    /// The engine task has fully returned and the session lock is released.
+    TurnFinished { session: Option<String> },
 }
 
 /// The approval prompt, without the reply channel: answer it with
@@ -148,6 +150,10 @@ impl KernelPort {
 
     pub fn send_turn_failed(&self, message: String) {
         let _ = self.events.send(UiEvent::TurnFailed { message });
+    }
+
+    pub fn send_turn_finished(&self, session: Option<String>) {
+        let _ = self.events.send(UiEvent::TurnFinished { session });
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,

@@ -441,7 +441,8 @@ trait Backend {
   - `★/☆`：设置 primary root
   - `×`：移除 Root
 - Root 变更写入 `roots_changed`，刷新 Task 视图。
-- 运行中隐藏编辑控件，并提示 Stop 后再改。
+- 运行中仍可编辑；变更先标为 pending，等当前 Turn 的引擎任务完全返回后写入
+  `roots_changed`，下一个 Turn 生效。
 - 文件工具已接入 RootResolver：`@label/path`、绝对路径、只读拒绝、无根拒绝。
 - Shell 的 cwd 使用 primary Root，但多根 sandbox 尚未接入；越界访问仍依赖后续 ADR-0048 实现。
 
@@ -475,3 +476,11 @@ trait Backend {
   - `extra_writable` 真正进入 profile
 - `run_shell` 在 roots > 1 或无根 temp 场景使用按 Task 重建的 sandbox。
 - Linux `bwrap`/Landlock 和 Windows ACL 的多根重建仍待实现；当前会 fail closed。
+
+### Pending Root 变更（2026-10-21）
+
+- Root 编辑不再要求 Stop。
+- Turn 进行中编辑时，UI 显示 `pending` 和拟议 Roots，但当前 Turn 仍使用旧快照。
+- `TurnFinished`（引擎任务真正返回、session lock 释放）后写入 `roots_changed`。
+- 同一 Task 多次编辑以最后一次 pending 为准。
+- 切 New task/Resume 会清空 pending。
