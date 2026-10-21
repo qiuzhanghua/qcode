@@ -1377,7 +1377,7 @@ impl SetupView {
                 let Some(input) = self.inputs.get(&key) else {
                     return div().into_any_element();
                 };
-                Input::new(input).into_any_element()
+                Input::new(input).aria_label(field.label).into_any_element()
             }
         };
         div()
@@ -1469,7 +1469,9 @@ impl SetupView {
                                     let Some(input) = row.cells.get(column.key) else {
                                         continue;
                                     };
-                                    Input::new(input).into_any_element()
+                                    Input::new(input)
+                                        .aria_label(column.label)
+                                        .into_any_element()
                                 }
                             };
                             card = card.child(
@@ -1494,7 +1496,10 @@ impl SetupView {
                                         div()
                                             .child("API key (stored in Keychain, not config.toml)"),
                                     )
-                                    .child(Input::new(secret))
+                                    .child(
+                                        Input::new(secret)
+                                            .aria_label("Provider API key for Keychain"),
+                                    )
                                     .child(
                                         Button::new(format!("store-key-{key}-{key_row_id}"))
                                             .label("Store key")

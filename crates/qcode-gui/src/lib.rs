@@ -215,6 +215,7 @@ struct Shell {
     model_input: Entity<InputState>,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
+    diff_expanded: bool,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
     /// Pending approvals, shown one at a time in arrival order.
@@ -284,6 +285,7 @@ impl Shell {
             input,
             model_input,
             diff: None,
+            diff_expanded: false,
             attachments: Vec::new(),
             approvals: ApprovalQueue::default(),
             scroller,
@@ -641,21 +643,46 @@ impl Shell {
                             .unwrap_or("new session"),
                         self.app.blocks.len()
                     ))
-                    .child(div().w(px(200.0)).child(Input::new(&self.model_input))),
+                    .child(div().w(px(200.0)).child(
+                        Input::new(&self.model_input).aria_label("Model for the next turn"),
+                    )),
             )
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
             .children(self.diff.as_ref().map(|state| {
+                let height = if self.diff_expanded {
+                    px(480.0)
+                } else {
+                    px(220.0)
+                };
                 div()
                     .flex()
                     .flex_col()
-                    .h(px(220.0))
+                    .h(height)
                     .child(
-                        Button::new("close-diff")
-                            .label("Close diff")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.diff = None;
-                                cx.notify();
-                            })),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_1()
+                            .child(
+                                Button::new("toggle-diff")
+                                    .label(if self.diff_expanded {
+                                        "Collapse diff"
+                                    } else {
+                                        "Expand diff"
+                                    })
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.diff_expanded = !this.diff_expanded;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("close-diff")
+                                    .label("Close")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.diff = None;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(Diff::new(state))
             }))
@@ -716,7 +743,11 @@ impl Shell {
                             .label(format!("Paste image ({})", self.attachments.len()))
                             .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
                     )
-                    .child(div().flex_grow(1.0).child(Textarea::new(&self.input)))
+                    .child(
+                        div()
+                            .flex_grow(1.0)
+                            .child(Textarea::new(&self.input).aria_label("Message qcode")),
+                    )
                     .child(
                         Button::new("send")
                             .label("Send")

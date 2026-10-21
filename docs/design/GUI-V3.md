@@ -329,8 +329,9 @@ trait Backend {
 
 - ✅ 审批队列：多个 pending approval 按到达顺序展示，回答/取消后自动前进；弹层补充 rule/argv/cwd。
 - ✅ `y` / `a` / `n` 在 Approval key context 下分别 Allow / Always / Reject；`Cmd+N` 新会话、`Cmd+,` 设置。
-- ✅ diff 面板可关闭；逐 hunk 交互仍由 GPUI Kit Diff 组件提供，未单独包一层。
+- ✅ diff 面板可关闭、可展开；逐 hunk 交互仍由 GPUI Kit Diff 组件提供，未单独包一层。
 - ✅ 侧栏显示首条 user message 标题、开始时间、turn 数、cost。
+- ✅ 关键输入加 accessibility label（composer/model/设置字段/Keychain key）。
 - ⚠️ 审批并发/快捷键仍需真窗口手工验收。
 
 ### G4 完成（除 .app 菜单/Dock/签名，2026-10-21）
