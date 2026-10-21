@@ -1872,8 +1872,8 @@ Session 侧栏只做简化版：单层列表、状态点、搜索、展开更多
   Composer takeover、Approval/PlanReview/Question 队列、Queue/Steer、`Cmd+Enter` 语义。
 - ADR-0043：Command Registry  
   `/display`、`/thinking`、`/model`、`/permission`、`/plan` 的统一注册、可用性与“不静默退化”。
-- ADR-0044：简化 Session 浏览器  
-  状态点、搜索、展开更多；明确不做树形/pin/archive/fork。
+- ADR-0044：Session 浏览器最简  
+  当前 workspace 的平铺列表；不做搜索、状态聚合、树形、pin/archive/fork。
 
 ## ADR-0042：Composer 与 Pending Interaction —— 一个输入面、一个待处理队列（2026-10-21）
 
@@ -2171,3 +2171,120 @@ P0 只注册以下命令：
 5. 命令 chip 在切 Session/刷新后恢复；删除 chip 后恢复字面 token。
 6. 不可用命令显示原因，Enter 不执行；选中后不发生静默提交。
 7. 命令菜单、选择器、Esc/Enter/Tab 导航与 accessibility label 通过。
+
+## ADR-0044：Session 浏览器最简——冻结当前 workspace 平铺列表（2026-10-21）
+
+**背景**：DSH 的 Session 浏览器有分组、树形、pin、archive、fork、搜索、状态点、水位线、
+拖拽排序、subagent 目录和 Schedule 标记。这些能力依赖一套稳定的 Workspace/Session 领域
+模型；而 qcode 后续还会发生重大需求变化（工作区、远程、会话归属与协作形态都可能重做）。
+现在把 Session 浏览器做深，等于把未来的领域模型提前锁死。
+
+因此本 ADR 明确：**Session 浏览器冻结在最简形态，只服务当前单窗口、单 workspace 的使用。**
+它不是最终形态，也不为未来的树形/搜索/协作预留 UI 抽象；需求变化时重新写 ADR，而不是在
+这个浏览器上继续加特判。
+
+**决定**
+
+### 1. 只做当前 workspace 的平铺列表
+
+- 侧栏只列 **当前 workspace** 的 Session；不列其他 workspace，不做多 workspace 同屏。
+- 单层平铺，不分组、不树形、不折叠 workspace。
+- 按最近活动时间倒序；不做手动排序、置顶、拖拽、水位线。
+- 不做 subagent 子会话、Schedule 标记、未读完成提醒或后台 job 聚合。
+
+### 2. 行内容只保留最小信息
+
+每行只显示：
+
+- 首条 user message 的标题；
+- 相对时间。
+
+不再扩展：
+
+- turn 数、cost；
+- 运行状态点、pending 审批点、unread/done 点；
+- token 用量、provider/model；
+- hover 卡片、上下文菜单、行内操作按钮。
+
+当前已有 `turns/cost` 字段可以保留在数据层，但浏览器 UI 不再把它们作为主要信息；后续如果
+需要，必须先改本 ADR。
+
+### 3. 操作只有三个
+
+- **New session**
+- **Open workspace**
+- **点击行 Resume**
+
+规则保持现状：
+
+- 运行中禁止 Resume/New session，先 Stop；
+- 空 Session 在新会话页面处理；
+- 当前 active Session 仍用 `●` 标记；
+- Resume 后清空旧 transcript、重置 scroller、恢复输入焦点。
+
+不做：
+
+- rename、pin、archive、fork、delete、复制 ID；
+- 搜索（标题/内容）；
+- 右键菜单、行内 hover 操作；
+- 多选、拖拽、批量操作。
+
+### 4. Workspace 保持最小
+
+- Header 只显示当前 workspace 路径。
+- 保留 `Open workspace…` 原生选择器。
+- 不做 workspace 树、最近列表、重命名、删除、归档、分组顺序。
+- 如果现有最近 workspace 列表已经存在，可以保留为简单入口，但不再扩展；未来的 workspace
+  模型变化时一并重做。
+
+### 5. 不新增浏览器专用领域抽象
+
+- 不引入 `SessionBrowser`、`WorkspaceTree`、`SessionStatus` 等新模型。
+- 不扩展 `SessionSummary` 以便浏览器显示状态；浏览器只读 `Backend::sessions()` 和现有
+  `title()`。
+- 不把 DSH 的 slot/registry/watermark 搬过来。
+- 侧栏不持久化布局、排序、展开状态、搜索历史。
+
+### 6. 状态与 pending interaction 的边界
+
+- 当前 Session 的 pending interaction 只出现在 Composer（ADR-0042），不聚合到侧栏。
+- 如果用户切走，pending 请求仍属于该 Session；切回来时 Composer 会恢复。侧栏不显示“待审批”
+  点，避免为此提前引入跨 Session 状态投影。
+- 运行中标记只标记当前 active Session；不计算所有 Session 的运行状态。
+
+**理由**
+
+- Session/Workspace 领域模型还会大改；现在做树形、搜索、pin/archive 会迫使未来兼容旧 UI。
+- 单窗口本地 P0 的真实需求是“新建、切换、继续”，不是管理几百个会话。
+- 少做浏览器，可以把预算放在 Conversation（ADR-0041）和 Composer（ADR-0042）这两个直接
+  影响日常使用的面上。
+- 不引入状态聚合，避免为了侧栏点而提前改 `SessionSummary`/projection。
+- 明确的“冻结”比含糊的“简化”更容易在 review 时拒绝范围蔓延。
+
+**后果 / 边界**
+
+- 会话多时只能滚动；没有搜索和归档，属于已知限制。
+- 切走带 pending 的 Session 后，侧栏不会提示；用户必须切回该 Session 才看到 Composer 中的
+  请求。
+- 没有 workspace 最近列表/树形；打开其他 workspace 需要原生选择器。
+- 未来若引入远程、多 workspace、团队协作、会话分享或大规模历史，必须重新写 ADR；不要在本
+  ADR 上追加例外。
+
+**非目标**
+
+- DSH 的 Workspace 分组/树形/拖拽/水位线；
+- pin、archive、fork、rename、delete、复制 Session ID；
+- 标题/内容搜索；
+- 状态点、未读、Schedule、subagent 目录；
+- 多窗口/多 workspace 同屏；
+- 任何浏览器专用持久化布局。
+
+**验证**
+
+1. 侧栏只出现当前 workspace 的 Session，按最近活动排序。
+2. 行只显示标题和相对时间；不显示 turn/cost/状态点。
+3. New session、Open workspace、Resume 三个动作可用；运行中 Resume/New session 被拒绝。
+4. 没有搜索框、没有右键菜单、没有 pin/archive/fork/delete 入口。
+5. 切换 workspace 后只列新 workspace 的 Session；旧列表不混入。
+6. 侧栏不因 pending interaction 增加额外计数/标记；切回 Session 后 Composer 仍显示请求。
+7. 现有 Session 相关测试保持通过；无新增浏览器专用后端字段。
