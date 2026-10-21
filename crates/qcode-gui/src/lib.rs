@@ -107,6 +107,10 @@ pub fn workspace_sessions(
 pub trait Backend {
     fn workspace(&self) -> &Path;
     fn sessions(&self) -> Result<Vec<SessionSummary>, String>;
+    /// First user message in a session, for the sidebar.
+    fn title(&self, _id: &str) -> Option<String> {
+        None
+    }
     /// Start a draft. The first prompt creates the session log.
     fn new_session(&mut self);
     /// Load the transcript, then point the engine at the session.
@@ -155,6 +159,17 @@ impl Backend for LocalBackend {
     fn sessions(&self) -> Result<Vec<SessionSummary>, String> {
         let sessions = self.store.list().map_err(|error| error.to_string())?;
         Ok(workspace_sessions(sessions, &self.workspace))
+    }
+
+    fn title(&self, id: &str) -> Option<String> {
+        let events = self.store.load(id).ok()?;
+        events.iter().find_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => {
+                let text = message.text.trim().replace('\n', " ");
+                (!text.is_empty()).then(|| text.chars().take(48).collect())
+            }
+            _ => None,
+        })
     }
 
     fn new_session(&mut self) {
@@ -210,6 +225,7 @@ struct Shell {
     last_blocks: usize,
     backend: Box<dyn Backend>,
     sessions: Vec<SessionSummary>,
+    titles: std::collections::BTreeMap<String, String>,
     active: Option<String>,
     workspace: String,
     config_path: PathBuf,
@@ -233,6 +249,7 @@ impl Shell {
             app.push_notice(format!("cannot list sessions: {error}"));
             Vec::new()
         });
+        let titles = session_titles(&sessions, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
         prefs.record_workspace(Path::new(&workspace));
         let mut active = None;
@@ -273,6 +290,7 @@ impl Shell {
             last_blocks,
             backend,
             sessions,
+            titles,
             active,
             workspace,
             config_path,
@@ -306,7 +324,10 @@ impl Shell {
 
     fn refresh_sessions(&mut self) {
         match self.backend.sessions() {
-            Ok(sessions) => self.sessions = sessions,
+            Ok(sessions) => {
+                self.titles = session_titles(&sessions, self.backend.as_ref());
+                self.sessions = sessions;
+            }
             Err(error) => self
                 .app
                 .push_notice(format!("cannot refresh sessions: {error}")),
@@ -540,8 +561,16 @@ impl Shell {
                 } else {
                     "○"
                 };
+                let title = self
+                    .titles
+                    .get(&session.id)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| short_id(&session.id))
+                    .chars()
+                    .take(22)
+                    .collect::<String>();
                 let label = format!(
-                    "{marker} {} · {}t · ${:.3}",
+                    "{marker} {title} · {} · {}t · ${:.2}",
                     short_time(&session.started_at),
                     session.turns,
                     session.cost_usd
@@ -714,6 +743,20 @@ impl Shell {
                     }),
             )
     }
+}
+
+fn session_titles(
+    sessions: &[SessionSummary],
+    backend: &dyn Backend,
+) -> std::collections::BTreeMap<String, String> {
+    sessions
+        .iter()
+        .filter_map(|session| {
+            backend
+                .title(&session.id)
+                .map(|title| (session.id.clone(), title))
+        })
+        .collect()
 }
 
 fn recent_workspaces(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {

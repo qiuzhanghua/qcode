@@ -1024,9 +1024,20 @@ fn unknown_host(policy: &UnknownHost) -> &'static str {
 }
 
 fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    std::process::Command::new(editor)
-        .arg(path)
+    let mut command = if let Ok(editor) = std::env::var("EDITOR") {
+        let mut command = std::process::Command::new(editor);
+        command.arg(path);
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("open");
+        command.arg("-e").arg(path);
+        command
+    } else {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+    command
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("cannot open editor: {error}"))
