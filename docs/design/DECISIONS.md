@@ -2492,9 +2492,9 @@ Allow all run_shell for this session  [danger]
 
 ## ADR-0047（草案）：Task / Root 领域模型——任务为核心、目录是可授权根（2026-10-21）
 
-**状态**：方向与关键细节已确认（Task:Session = 1:1；Root label 仅 slug；无根 Task 允许在
-私有临时目录运行 shell；Root 变更等 Turn 结束；旧 Session 的 task_id 复用旧 session id；
-`@root` 别名；Windows 只读 = 不可写；保留 Workspace 作为兼容概念）。仍为草案，未实现。
+**状态**：Accepted（2026-10-21）。未实现。已确认：Task:Session = 1:1；Root label 仅 slug；
+无根 Task 允许在 Turn 私有临时目录运行 shell；Root 变更等 Turn 结束；旧 Session 的 task_id
+复用旧 session id；`@root` 别名；Windows 只读 = 不可写；保留 Workspace 作为兼容概念。
 
 **背景**：当前产品以 Workspace 为顶层，Workspace 一定绑定一个目录，Session 挂在
 Workspace 下。这个模型有两个硬伤：
@@ -2684,7 +2684,7 @@ v1（单 Root 兼容 + 无根 Task + 最多 16 Root，macOS/Linux 完整，Windo
 
 ## ADR-0048（草案）：多根 Sandbox 与路径能力（2026-10-21）
 
-**状态**：细节已确认，未实现。依赖 ADR-0047 的 Task/Root 模型。
+**状态**：Accepted（2026-10-21）。未实现。依赖 ADR-0047 的 Task/Root 模型。
 
 **背景**：Task 可以有 0..N 个 Root，Root 有 `read-only` / `read-write`，并且无根 Task 仍允许
 在私有临时目录运行 shell。qcode 现有 sandbox 是“单 workspace”假设：
