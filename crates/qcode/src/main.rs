@@ -128,6 +128,27 @@ enum ConfigCommand {
     Show,
     /// Open the user config in $EDITOR.
     Edit,
+    /// Store an API key in the platform key store (ADR-0039).
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum KeyCommand {
+    /// Read the key from stdin and store it, then print the config line.
+    Set {
+        /// Config provider name, e.g. deepseek.
+        #[arg(long, default_value = "deepseek")]
+        provider: String,
+        /// Key store service name.
+        #[arg(long, default_value = "qcode")]
+        service: String,
+        /// Account name inside the service.
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -915,6 +936,121 @@ fn cmd_sessions(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Store an API key in the platform key store and tell the user what to paste.
+///
+/// The key arrives on stdin so it never shows up in the process list, and the
+/// printed snippet uses `api_key_command` (ADR-0039) instead of a plaintext
+/// environment variable.
+fn store_key(
+    provider: &str,
+    service: &str,
+    account: Option<&str>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use std::io::Read;
+
+    let account = account.unwrap_or(provider);
+    let mut key = String::new();
+    std::io::stdin().read_to_string(&mut key)?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("no key on stdin; try: echo <key> | qc config key set".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("security")
+            .args([
+                "add-generic-password",
+                "-U",
+                "-a",
+                account,
+                "-s",
+                service,
+                "-w",
+                key,
+            ])
+            .status()?;
+        if !status.success() {
+            return Err("`security add-generic-password` failed".into());
+        }
+        println!(
+            "stored in the keychain; add to your config:\n\
+             api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"{service}\", \"-a\", \"{account}\"]"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("secret-tool")
+            .args([
+                "store", "--label", service, "service", service, "user", account,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(key.as_bytes())?;
+        if !child.wait()?.success() {
+            return Err("`secret-tool store` failed".into());
+        }
+        println!(
+            "stored in libsecret; add to your config:\n\
+             api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // DPAPI keeps it user-scoped and encrypted; HKCU would be plaintext.
+        let data_dir = qcode_kernel::resolve_data_dir(None);
+        std::fs::create_dir_all(&data_dir)?;
+        let path = data_dir.join(format!("{service}-{account}.cred"));
+        let script = format!(
+            "$s = [Console]::In.ReadLine(); \
+             $s | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString | Set-Content -NoNewline '{}'",
+            path.display()
+        );
+        use std::io::Write as _;
+        // `pwsh` is what most machines running qc will have on PATH; powershell
+        // is the fallback for a clean Windows install.
+        let shell = if std::process::Command::new("pwsh")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("exit 0")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+        {
+            "pwsh"
+        } else {
+            "powershell"
+        };
+        let mut child = std::process::Command::new(shell)
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(format!("{key}\n").as_bytes())?;
+        if !child.wait()?.success() {
+            return Err("storing the key with DPAPI failed".into());
+        }
+        println!(
+            "stored (DPAPI, user-scoped) in {}; add to your config:\n\
+             api_key_command = [\"{shell}\", \"-NoProfile\", \"-Command\", \"$s = Get-Content '{}' | ConvertTo-SecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))\"]",
+            path.display(),
+            path.display()
+        );
+    }
+
+    let _ = provider;
+    Ok(ExitCode::SUCCESS)
+}
 fn cmd_config(
     args: ConfigArgs,
     config_path: Option<PathBuf>,
@@ -925,6 +1061,13 @@ fn cmd_config(
             let loaded = qcode_kernel::load_config(config_path, &workspace)?;
             print_config(&loaded);
         }
+        ConfigCommand::Key { command } => match command {
+            KeyCommand::Set {
+                provider,
+                service,
+                account,
+            } => return store_key(&provider, &service, account.as_deref()),
+        },
         ConfigCommand::Edit => {
             let path = config::edit_path(config_path)?;
             if let Some(parent) = path.parent() {
