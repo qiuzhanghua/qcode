@@ -226,6 +226,9 @@ struct Shell {
     model_input: Entity<InputState>,
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pending_send: bool,
+    /// Drop transcript events from the old turn until the backend confirms the
+    /// session switch.
+    resetting: bool,
     _input_subscription: gpui_kit::Subscription,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
@@ -318,6 +321,7 @@ impl Shell {
             input,
             model_input,
             pending_send: false,
+            resetting: false,
             _input_subscription: input_subscription,
             diff: None,
             diff_expanded: false,
@@ -392,18 +396,26 @@ impl Shell {
             return;
         }
         self.backend.new_session();
+        self.resetting = true;
         self.app.reset_transcript();
         self.attachments.clear();
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
             cx.notify();
         });
-        self.reset_scroller(cx);
         self.active = None;
         self.diff = None;
         self.approvals = ApprovalQueue::default();
         self.refresh_sessions();
         self.app.push_notice("new session");
+        self.reset_scroller(cx);
+        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+            eprintln!(
+                "qcode-gui: new_session applied blocks={} resetting={}",
+                self.app.blocks.len(),
+                self.resetting
+            );
+        }
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -415,6 +427,7 @@ impl Shell {
             cx.notify();
             return;
         }
+        self.resetting = true;
         match self.backend.resume(&id) {
             Ok(events) => {
                 self.app.reset_transcript();
@@ -428,9 +441,11 @@ impl Shell {
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_sessions();
             }
-            Err(error) => self
-                .app
-                .push_notice(format!("cannot resume {}: {error}", short_id(&id))),
+            Err(error) => {
+                self.resetting = false;
+                self.app
+                    .push_notice(format!("cannot resume {}: {error}", short_id(&id)));
+            }
         }
         self.focus_composer(window, cx);
         cx.notify();
@@ -519,6 +534,12 @@ impl Shell {
     fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         while let Some(event) = self.backend.try_recv() {
+            if self.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
+                continue;
+            }
+            if self.resetting {
+                self.resetting = false;
+            }
             match event {
                 UiEvent::Event(event) | UiEvent::Child(event) => {
                     if let EventKind::ToolCall(call) = &event.kind
