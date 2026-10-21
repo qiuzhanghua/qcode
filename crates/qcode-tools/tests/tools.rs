@@ -158,10 +158,7 @@ async fn shell_reports_exit_code_and_scrubs_env() {
     }
 
     let failed = RunShell::default()
-        .execute(
-            &ctx,
-            json!({"command": if cfg!(windows) { "exit 3" } else { "exit 3" }}),
-        )
+        .execute(&ctx, json!({"command": "exit 3"}))
         .await
         .unwrap();
     assert_eq!(failed.metadata.exit_code, Some(3));

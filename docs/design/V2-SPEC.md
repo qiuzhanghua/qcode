@@ -140,6 +140,11 @@ audit = true
   v2.2 调研。
 - Windows：WFP/AppContainer 成本高，v3 再评估；v2 只保证“应用级 + 环境变量”。
 - hard mode 是 opt-in（`network.mode = "strict"`），默认 `proxy`。
+- 实现状态（2026-10-21）：`strict` + `[sandbox] mode = "sandbox-exec"` 已接入。kernel 先启动
+  egress 代理，再把端口传给 Seatbelt profile；profile 只含
+  `(allow network-outbound (remote tcp "localhost:<port>"))`，其余由 `(deny default)` 拒绝。
+  只作用于 `run_shell` 子进程；MCP 仍是应用级代理。`strict` 与 bwrap/landlock/windows-acl
+  或 `mode = "none"` 组合会拒绝启动，不假装已隔离。
 
 ## 4. Windows
 

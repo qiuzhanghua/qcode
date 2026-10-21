@@ -76,6 +76,18 @@ impl SandboxMode {
     }
 }
 
+/// Network policy passed to an OS sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxNetwork {
+    /// No network at all.
+    Deny,
+    /// Unrestricted network; only useful when approval is the boundary.
+    Allow,
+    /// Outbound TCP only to the loopback egress proxy. This is macOS "hard
+    /// mode": raw sockets, DNS and direct connections are denied by Seatbelt.
+    ProxyOnly { port: u16 },
+}
+
 pub trait Sandbox: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
 
@@ -104,9 +116,14 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
 pub fn build(
     mode: SandboxMode,
     workspace: &Path,
-    network: bool,
+    network: SandboxNetwork,
     extra_writable: &[PathBuf],
 ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+    if matches!(network, SandboxNetwork::ProxyOnly { .. }) && mode != SandboxMode::SandboxExec {
+        return Err(SandboxError::Setup(
+            "network hard mode (proxy-only) is only implemented for macOS sandbox-exec".to_string(),
+        ));
+    }
     match mode {
         SandboxMode::None => Ok(Arc::new(NoSandbox)),
         SandboxMode::SandboxExec => {
@@ -127,7 +144,7 @@ pub fn build(
             #[cfg(target_os = "linux")]
             {
                 let _ = extra_writable;
-                let sandbox = Bwrap::new(workspace, network)?;
+                let sandbox = Bwrap::new(workspace, matches!(network, SandboxNetwork::Allow))?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
@@ -141,6 +158,7 @@ pub fn build(
             #[cfg(target_os = "linux")]
             {
                 let _ = extra_writable;
+                let _ = network;
                 let sandbox = Landlock::new(workspace)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
@@ -198,14 +216,14 @@ impl Sandbox for NoSandbox {
 #[derive(Debug, Clone)]
 pub struct SandboxExec {
     profile: String,
-    network: bool,
+    network: SandboxNetwork,
 }
 
 #[cfg(target_os = "macos")]
 impl SandboxExec {
     const EXEC: &'static str = "/usr/bin/sandbox-exec";
 
-    pub fn new(workspace: &Path, network: bool) -> Result<Self, SandboxError> {
+    pub fn new(workspace: &Path, network: SandboxNetwork) -> Result<Self, SandboxError> {
         Ok(Self {
             profile: profile_for(workspace, network)?,
             network,
@@ -224,10 +242,13 @@ impl Sandbox for SandboxExec {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "sandbox-exec (network {})",
-            if self.network { "allowed" } else { "denied" }
-        )
+        match self.network {
+            SandboxNetwork::Deny => "sandbox-exec (network denied)".to_string(),
+            SandboxNetwork::Allow => "sandbox-exec (network allowed)".to_string(),
+            SandboxNetwork::ProxyOnly { port } => {
+                format!("sandbox-exec (network proxy-only on localhost:{port})")
+            }
+        }
     }
 
     fn command(
@@ -279,7 +300,7 @@ impl Sandbox for SandboxExec {
 ///
 /// Kept free of `cfg(target_os)` so the argument list is unit-testable on any
 /// host; the Linux backend below is the only caller.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn bwrap_args(workspace: &Path, cwd: &Path, network: bool, writable: &[PathBuf]) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
@@ -758,7 +779,7 @@ fn add_path_rule(ruleset_fd: RawFd, path: &Path, allowed_access: u64) -> Result<
 /// temporary directories and the Cargo/Rustup homes (needed for builds). Network
 /// is denied unless explicitly enabled.
 #[cfg(target_os = "macos")]
-fn profile_for(workspace: &Path, network: bool) -> Result<String, SandboxError> {
+fn profile_for(workspace: &Path, network: SandboxNetwork) -> Result<String, SandboxError> {
     if workspace == Path::new("/") {
         return Err(SandboxError::Setup(
             "refusing to sandbox the filesystem root as the workspace".to_string(),
@@ -825,8 +846,17 @@ fn profile_for(workspace: &Path, network: bool) -> Result<String, SandboxError> 
     }
     profile.push_str(")\n");
 
-    if network {
-        profile.push_str("(allow network*)\n");
+    match network {
+        SandboxNetwork::Deny => {}
+        SandboxNetwork::Allow => profile.push_str("(allow network*)\n"),
+        SandboxNetwork::ProxyOnly { port } => {
+            // Seatbelt cannot name a literal IP in this filter; `localhost` is
+            // resolved to loopback by the sandbox. The egress proxy listens on
+            // 127.0.0.1, and everything else is denied by `(deny default)`.
+            profile.push_str(&format!(
+                "(allow network-outbound (remote tcp \"localhost:{port}\"))\n"
+            ));
+        }
     }
 
     Ok(profile)
@@ -858,7 +888,7 @@ mod tests {
 
     #[test]
     fn profile_denies_by_default_and_scopes_writes() {
-        let sandbox = SandboxExec::new(&workspace(), false).expect("profile");
+        let sandbox = SandboxExec::new(&workspace(), SandboxNetwork::Deny).expect("profile");
         let profile = sandbox.profile();
         assert!(profile.starts_with("(version 1)\n(deny default)"));
         assert!(profile.contains("(subpath \"/tmp/qcode-sandbox-tests/workspace\")"));
@@ -868,14 +898,40 @@ mod tests {
 
     #[test]
     fn network_is_opt_in() {
-        let sandbox = SandboxExec::new(&workspace(), true).expect("profile");
+        let sandbox = SandboxExec::new(&workspace(), SandboxNetwork::Allow).expect("profile");
         assert!(sandbox.profile().contains("(allow network*)"));
         assert!(sandbox.describe().contains("network allowed"));
     }
 
     #[test]
+    fn hard_mode_allows_only_the_proxy_port() {
+        let sandbox = SandboxExec::new(&workspace(), SandboxNetwork::ProxyOnly { port: 43123 })
+            .expect("profile");
+        let profile = sandbox.profile();
+        assert!(profile.contains("(allow network-outbound (remote tcp \"localhost:43123\"))"));
+        assert!(!profile.contains("(allow network*)"));
+        assert!(sandbox.describe().contains("proxy-only on localhost:43123"));
+    }
+
+    #[test]
+    fn hard_mode_requires_an_os_sandbox() {
+        let error = build(
+            SandboxMode::None,
+            &workspace(),
+            SandboxNetwork::ProxyOnly { port: 43123 },
+            &[],
+        )
+        .expect_err("rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("only implemented for macOS sandbox-exec")
+        );
+    }
+
+    #[test]
     fn command_wraps_the_program() {
-        let sandbox = SandboxExec::new(&workspace(), false).expect("profile");
+        let sandbox = SandboxExec::new(&workspace(), SandboxNetwork::Deny).expect("profile");
         let command = sandbox
             .command(
                 OsStr::new("sh"),
@@ -896,7 +952,8 @@ mod tests {
 
     #[test]
     fn rejects_paths_that_break_the_profile() {
-        let error = SandboxExec::new(Path::new("/tmp/has\"quote"), false).expect_err("rejected");
+        let error = SandboxExec::new(Path::new("/tmp/has\"quote"), SandboxNetwork::Deny)
+            .expect_err("rejected");
         assert!(error.to_string().contains("cannot represent"), "{error}");
     }
 
@@ -917,7 +974,7 @@ mod tests {
     /// anything outside a nested sandbox. Inside one (CI containers, the DSH
     /// runner) the preflight fails with EPERM and the test returns early.
     fn sandbox_or_skip(workspace: &Path) -> Option<SandboxExec> {
-        let sandbox = SandboxExec::new(workspace, false).expect("profile");
+        let sandbox = SandboxExec::new(workspace, SandboxNetwork::Deny).expect("profile");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -925,6 +982,62 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Runtime check for the hard-mode profile: the proxy port is reachable,
+    /// another live loopback port is not. Skipped when nested sandbox-exec is
+    /// unavailable (CI containers, the DSH runner).
+    #[test]
+    fn hard_mode_denies_other_loopback_ports() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let proxy_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("proxy listener");
+        let other_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("other listener");
+        let proxy_port = proxy_listener.local_addr().expect("proxy addr").port();
+        let other_port = other_listener.local_addr().expect("other addr").port();
+
+        let sandbox = SandboxExec::new(
+            workspace.path(),
+            SandboxNetwork::ProxyOnly { port: proxy_port },
+        )
+        .expect("profile");
+        if let Err(err) = sandbox.check() {
+            let detail = err.to_string();
+            // Only nested sandboxes are expected to refuse sandbox-exec. Any
+            // other preflight failure (for example an invalid profile) is a
+            // real failure, not a skip.
+            if detail.contains("Operation not permitted") || detail.contains("EPERM") {
+                eprintln!("skipping: nested sandbox-exec is not permitted here: {err}");
+                return;
+            }
+            panic!("sandbox-exec preflight failed: {err}");
+        }
+
+        let connect = |port: u16| {
+            sandbox
+                .command(
+                    OsStr::new("/usr/bin/nc"),
+                    &[
+                        OsString::from("-z"),
+                        OsString::from("127.0.0.1"),
+                        OsString::from(port.to_string()),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command")
+                .output()
+                .expect("run nc")
+        };
+
+        let allowed = connect(proxy_port);
+        assert!(
+            allowed.status.success(),
+            "the proxy port must stay reachable: {allowed:?}"
+        );
+        let denied = connect(other_port);
+        assert!(
+            !denied.status.success(),
+            "a non-proxy loopback port must be denied: {denied:?}"
+        );
     }
 
     #[test]

@@ -52,7 +52,7 @@ pub async fn build_egress(
     data_dir: &Path,
     base_url: Option<&str>,
 ) -> Result<Option<Arc<Egress>>, Box<dyn std::error::Error>> {
-    if !loaded.network.enabled {
+    if !loaded.network.enabled || loaded.network.mode == config::NetworkMode::Off {
         return Ok(None);
     }
     let mut allow = loaded.network.allow.clone();
@@ -82,6 +82,37 @@ pub async fn build_egress(
     Ok(Some(Arc::new(egress)))
 }
 
+/// Resolve the OS sandbox network policy from `[network]`/`[sandbox]`.
+///
+/// `strict` is the macOS hard mode: the Seatbelt profile may only connect to
+/// the loopback egress proxy port. It needs both the proxy (for the port) and
+/// `sandbox-exec` (the only backend that can enforce it today); anything else
+/// fails closed instead of pretending to be confined.
+fn sandbox_network(
+    loaded: &config::Config,
+    egress: Option<&Egress>,
+) -> Result<SandboxNetwork, Box<dyn std::error::Error>> {
+    if loaded.network.mode == config::NetworkMode::Strict {
+        if loaded.sandbox.mode != SandboxMode::SandboxExec {
+            return Err(
+                "network.mode = \"strict\" requires [sandbox] mode = \"sandbox-exec\" (macOS)"
+                    .into(),
+            );
+        }
+        let egress = egress.ok_or(
+            "network.mode = \"strict\" requires [network] enabled = true (the proxy is the only allowed destination)",
+        )?;
+        return Ok(SandboxNetwork::ProxyOnly {
+            port: egress.port(),
+        });
+    }
+    Ok(if loaded.sandbox.network {
+        SandboxNetwork::Allow
+    } else {
+        SandboxNetwork::Deny
+    })
+}
+
 /// The assembled kernel: everything a frontend needs, built once.
 ///
 /// ADR-0036: the pieces are assembled in one place so the TUI, ACP and GUI
@@ -105,7 +136,7 @@ use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
 use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
 use qcode_tools::builtin_registry_with;
-use qcode_tools::sandbox::Sandbox;
+use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork};
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use qcode_tools::web_search::WebSearch;
 pub async fn build_tools(
@@ -457,15 +488,18 @@ pub async fn assemble(
     let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
     let policy = build_policy(&loaded, approval_policy)?;
     let data_dir = resolve_data_dir(data_dir);
-    // The sandbox is configuration, not a frontend choice: mode, network flag
-    // and extra writable roots all come from `[sandbox]`.
+    // The egress proxy must exist before the sandbox in strict mode: the
+    // Seatbelt profile is built around the proxy's loopback port.
+    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
+    let sandbox_network = sandbox_network(&loaded, egress.as_deref())?;
+    // The sandbox is configuration, not a frontend choice: mode, network
+    // policy and extra writable roots all come from `[sandbox]`/`[network]`.
     let sandbox: Arc<dyn Sandbox> = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
         workspace,
-        loaded.sandbox.network,
+        sandbox_network,
         &loaded.sandbox.extra_writable,
     )?;
-    let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let sandbox_name = sandbox.name().to_string();
     // The proxy doubles as the network the tools and the engine share, so its
     // environment is derived here instead of by every frontend.
@@ -497,4 +531,37 @@ pub async fn assemble(
         network,
         sandbox: sandbox_name,
     })
+}
+
+#[cfg(test)]
+mod sandbox_network_tests {
+    use super::*;
+    use crate::config::NetworkMode;
+
+    #[test]
+    fn strict_requires_sandbox_exec() {
+        let cfg: config::Config =
+            toml::from_str("[network]\nmode = \"strict\"\n[sandbox]\nmode = \"none\"\n").unwrap();
+        let error = sandbox_network(&cfg, None).unwrap_err();
+        assert!(error.to_string().contains("sandbox-exec"), "{error}");
+    }
+
+    #[test]
+    fn strict_requires_the_proxy() {
+        let cfg: config::Config =
+            toml::from_str("[network]\nmode = \"strict\"\n[sandbox]\nmode = \"sandbox-exec\"\n")
+                .unwrap();
+        let error = sandbox_network(&cfg, None).unwrap_err();
+        assert!(error.to_string().contains("proxy"), "{error}");
+    }
+
+    #[test]
+    fn proxy_mode_maps_the_coarse_sandbox_switch() {
+        let cfg: config::Config = toml::from_str("[sandbox]\nnetwork = true\n").unwrap();
+        assert!(matches!(
+            sandbox_network(&cfg, None).unwrap(),
+            SandboxNetwork::Allow
+        ));
+        assert_eq!(cfg.network.mode, NetworkMode::Proxy);
+    }
 }

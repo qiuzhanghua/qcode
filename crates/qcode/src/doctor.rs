@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use qcode_core::event::ContentBlock;
 use qcode_core::provider::{CompletionRequest, Message, ProviderError, Role};
-use qcode_tools::sandbox::{self, SandboxMode};
+use qcode_tools::sandbox::{self, SandboxMode, SandboxNetwork};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{self, Config};
@@ -214,7 +214,7 @@ impl Doctor {
                     // The source, never the value: `env NAME`, `command NAME`.
                     self.ok(
                         "credentials",
-                        &format!("API key present ({})", resolved.api_key_source),
+                        format!("API key present ({})", resolved.api_key_source),
                     );
                 } else {
                     self.ok("credentials", "keyless provider");
@@ -386,13 +386,49 @@ impl Doctor {
     }
 
     fn check_sandbox(&mut self, config: &Config) {
+        let strict = config.network.mode == config::NetworkMode::Strict;
         if config.sandbox.mode == SandboxMode::None {
+            if strict {
+                self.fail(
+                    "network hard mode",
+                    "requires [sandbox] mode = \"sandbox-exec\" (macOS)",
+                );
+                return;
+            }
             self.warn(
                 "sandbox",
                 "none; approval and workspace path checks are the boundary",
             );
             return;
         }
+
+        if strict {
+            if config.sandbox.mode != SandboxMode::SandboxExec {
+                self.fail(
+                    "network hard mode",
+                    "requires [sandbox] mode = \"sandbox-exec\" (macOS)",
+                );
+                return;
+            }
+            if !config.network.enabled {
+                self.fail(
+                    "network hard mode",
+                    "requires [network] enabled = true (the proxy is the only allowed destination)",
+                );
+                return;
+            }
+        }
+
+        // A Deny profile only exercises the filesystem rules; the proxy-only
+        // profile is built at startup once the egress port is known. Keep the
+        // preflight independent of a live proxy.
+        let network = if strict {
+            SandboxNetwork::Deny
+        } else if config.sandbox.network {
+            SandboxNetwork::Allow
+        } else {
+            SandboxNetwork::Deny
+        };
 
         let workspace = std::env::current_dir()
             .ok()
@@ -401,10 +437,18 @@ impl Doctor {
         match sandbox::build(
             config.sandbox.mode,
             &workspace,
-            config.sandbox.network,
+            network,
             &config.sandbox.extra_writable,
         ) {
-            Ok(sandbox) => self.ok("sandbox", sandbox.describe()),
+            Ok(sandbox) => {
+                self.ok("sandbox", sandbox.describe());
+                if strict {
+                    self.ok(
+                        "network hard mode",
+                        "proxy-only via sandbox-exec; the proxy port is assigned at startup",
+                    );
+                }
+            }
             Err(err) => self.fail("sandbox", err.to_string()),
         }
     }

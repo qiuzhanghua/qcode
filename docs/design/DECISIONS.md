@@ -1609,3 +1609,38 @@ CLI/ACP，又要做桌面窗口，两者需求冲突：服务器不需要 GPU �
 
 **验证**：单元测试覆盖优先级（env 优先、命令回退、两者都缺时的报错文案、命令超时）；
 `qc doctor` 能分别报告三种来源。
+
+## ADR-0040：macOS 网络 hard mode（2026-10-21）
+
+**背景**：ADR-0023 的代理是应用级边界，`--noproxy`/raw socket 可以绕过。v2.2 要求
+macOS 先用 Seatbelt 把 shell 的出口收敛到代理端口。
+
+**决定**
+
+1. `[network] mode = "off" | "proxy" | "strict"`，默认 `proxy`。`off` 不启动代理；
+   `strict` 是 hard mode。
+2. `strict` 要求 `[network] enabled = true` 且 `[sandbox] mode = "sandbox-exec"`；其他
+   sandbox 后端或 `mode = "none"` 直接拒绝启动，不静默退回应用级代理。`strict` 覆盖
+   `[sandbox] network`（后者在 hard mode 下没有意义）。
+3. kernel 先启动 loopback egress 代理，再把端口传给 `SandboxNetwork::ProxyOnly`；Seatbelt
+   profile 只有 `(allow network-outbound (remote tcp "localhost:<port>"))`，其余网络由
+   `(deny default)` 拒绝。SBPL 不接受字面 IP，所以规则写 `localhost`；代理仍监听
+   `127.0.0.1`。
+4. 作用域是 `run_shell` 子进程（`sandbox-exec` 只套在工具进程边界）；qcode 自身进程和
+   MCP server 仍走应用级代理。Unix socket/DNS/直连都被拒，shell 只应使用 `HTTP(S)_PROXY`。
+5. `qc doctor` 校验配置组合，并用无网络文件系统 profile 做 preflight；代理端口只在启动时
+   才存在。profile 生成有单测；集成测试只在嵌套 `sandbox-exec` 返回 EPERM 时跳过，其它 preflight 失败视为失败，
+   非嵌套 macOS 上会实际验证代理端口可达、其它 loopback 端口被拒。
+
+**验证（2026-10-21，非嵌套 macOS）**：同时监听 `127.0.0.1:45678` 与 `:45679`，profile 只放行
+`localhost:45678`。`sandbox-exec … nc -z 127.0.0.1 45678` 返回 0；`:45679` 返回 1（connection
+denied）；不加 sandbox 时 `:45679` 返回 0。说明 `localhost` 过滤确实匹配 `127.0.0.1`，且直连
+其它端口被拒。对应集成测试 `hard_mode_denies_other_loopback_ports`。
+
+**后果**
+
+- 启用后 `curl --noproxy '*'`、raw socket、DoH 在 shell 内应失败；使用代理的 curl/git/npm
+  仍可用。代理进程本身不沙箱，allowlist 仍是应用级策略。
+- `localhost` 过滤匹配 `127.0.0.1` 已在当前 macOS 验证；若未来系统行为变化，shell 的代理
+  连接会被拒，这是 fail closed，不会放行直连。
+- Linux 的 netns + relay、Windows WFP 仍未做；`strict` 在这两个平台明确报未支持。

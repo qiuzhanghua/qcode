@@ -50,6 +50,7 @@ const ENV_ALLOWLIST: &[&str] = &[
 
 /// Windows programs break without these: `cmd.exe` wants `ComSpec`, most
 /// installers want `TEMP`, and `PATH` lookups depend on `PATHEXT`.
+#[cfg(windows)]
 const ENV_WINDOWS: &[&str] = &[
     "SystemRoot",
     "SystemDrive",

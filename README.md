@@ -396,17 +396,20 @@ enabled = true
 
 # 应用级出口策略（v2）。provider 的 host 会自动加入 allowlist。
 [network]
+mode = "proxy"          # off | proxy | strict；strict 仅 macOS sandbox-exec
 enabled = true
 allow = ["api.openai.com", "api.deepseek.com", "registry.npmjs.org"]
 allow_private = false   # 本地 Ollama/测试才打开
 unknown = "ask"         # ask | deny | allow；shell/MCP 的未知域名按 deny
 audit = true
 
+# strict 网络 hard mode：需 mode = "sandbox-exec"（macOS），Seatbelt 只放行
+# loopback 代理端口，shell 直连被拒。
 # OS 沙箱（可选，默认 none）。sandbox-exec 仅 macOS，bwrap/landlock 仅 Linux，
 # windows-acl 仅 Windows（只限制写；启动时 preflight，失败则拒绝启动）：
 [sandbox]
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
-network = false      # bwrap/sandbox-exec 生效；landlock 只做文件系统
+network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
 extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
 
 # 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。

@@ -189,8 +189,25 @@ impl SearchConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkMode {
+    /// Do not start the egress proxy.
+    Off,
+    /// Application-level loopback proxy (default). Shell/MCP get proxy env vars,
+    /// but a raw socket can bypass them.
+    #[default]
+    Proxy,
+    /// macOS hard mode: the proxy runs as usual and the Seatbelt profile only
+    /// allows outbound TCP to its loopback port.
+    Strict,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
+    /// Egress mode. `strict` requires `[sandbox] mode = "sandbox-exec"`.
+    #[serde(default)]
+    pub mode: NetworkMode,
     /// Start the local proxy. Disable only for offline/testing workflows.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -212,6 +229,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
+            mode: NetworkMode::Proxy,
             enabled: true,
             allow: Vec::new(),
             allow_private: false,
@@ -312,10 +330,10 @@ fn default_max_turns() -> u32 {
 pub struct SandboxConfig {
     #[serde(default)]
     pub mode: SandboxMode,
-    /// Allow outbound/inbound network inside the sandbox. Default: deny.
-    ///
-    /// Only `bwrap` can enforce this (`--unshare-net`); the other backends
-    /// record the setting and leave the network reachable.
+    /// Proxy mode: allow unrestricted network inside the OS sandbox. Ignored in
+    /// strict mode, which always allows only the loopback proxy port.
+    /// Enforced by `sandbox-exec` and `bwrap`; Landlock and Windows ACL only
+    /// record the setting.
     #[serde(default)]
     pub network: bool,
     /// Extra roots the `windows-acl` backend grants write access to, besides the
@@ -588,7 +606,14 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("sandbox", &["mode", "network", "extra_writable"]),
     (
         "network",
-        &["enabled", "allow", "allow_private", "unknown", "audit"],
+        &[
+            "mode",
+            "enabled",
+            "allow",
+            "allow_private",
+            "unknown",
+            "audit",
+        ],
     ),
     (
         "search",
@@ -1597,6 +1622,7 @@ api_key_command = ["cmd", "/C", "exit 3"]
     #[test]
     fn network_defaults_and_overrides() {
         let defaults: Config = toml::from_str("").unwrap();
+        assert_eq!(defaults.network.mode, NetworkMode::Proxy);
         assert!(defaults.network.enabled);
         assert!(defaults.network.audit);
         assert_eq!(defaults.network.unknown, UnknownHost::Ask);
@@ -1605,6 +1631,7 @@ api_key_command = ["cmd", "/C", "exit 3"]
         let config: Config = toml::from_str(
             r#"
             [network]
+            mode = "strict"
             enabled = false
             allow = ["api.example.com", "*.internal.test"]
             allow_private = true
@@ -1613,6 +1640,7 @@ api_key_command = ["cmd", "/C", "exit 3"]
             "#,
         )
         .unwrap();
+        assert_eq!(config.network.mode, NetworkMode::Strict);
         assert!(!config.network.enabled);
         assert_eq!(config.network.allow.len(), 2);
         assert!(config.network.allow_private);
