@@ -330,11 +330,12 @@ trait Backend {
 
 - ✅ 审批队列：多个 pending approval 按到达顺序展示，回答/取消后自动前进；弹层补充 rule/argv/cwd。
 - ✅ `y` / `a` / `n` 在 Approval key context 下分别 Allow / Always / Reject；`Cmd+N` 新会话、`Cmd+,` 设置。
-- ⏳ diff 逐 hunk 交互、审批并发/快捷键的真窗口手工验收。
+- ✅ diff 面板可关闭；逐 hunk 交互仍由 GPUI Kit Diff 组件提供，未单独包一层。
+- ⏳ 审批并发/快捷键的真窗口手工验收。
 
 ### G4 进行中（2026-10-21）
 
 - ✅ 侧栏 Settings 按钮打开同一套表单（`SetupView` settings 模式）；分类导航，不退出当前对话窗口。
-- ✅ 启动时读取 `gui.json`，应用 light/dark、基础字号与等宽字号/字体。
-- ✅ `Cmd+N` / `Cmd+,` 快捷键；设置窗口复用表单。
+- ✅ 启动时读取 `gui.json`，应用 light/dark、基础字号与等宽字号/字体；设置保存后立即刷新所有窗口。
+- ✅ `Cmd+N` / `Cmd+,` / `Cmd+.`（停止）；设置窗口复用表单。
 - ⏳ `.app` 菜单、Dock、签名/公证；其余 Cmd 快捷键。

@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{App, px};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +54,23 @@ impl GuiPreferences {
             serde_json::to_vec_pretty(&self.clone().normalized()).map_err(std::io::Error::other)?;
         std::fs::write(&temp, bytes)?;
         std::fs::rename(&temp, &path)
+    }
+
+    /// Apply the appearance to every GPUI window.
+    pub fn apply(&self, cx: &mut App) {
+        if let Some(mode) = match self.theme.as_str() {
+            "light" => Some(ThemeMode::Light),
+            "dark" => Some(ThemeMode::Dark),
+            _ => None,
+        } {
+            Theme::change(mode, None, cx);
+        }
+        let font_size = px(self.font_size as f32);
+        Theme::update(cx, |theme| {
+            theme.font_size = font_size;
+            theme.mono_font_size = font_size;
+            theme.mono_font_family = self.code_font.clone().into();
+        });
     }
 
     fn normalized(mut self) -> Self {

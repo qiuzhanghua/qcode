@@ -31,11 +31,11 @@ gpui_kit::actions!(
         RejectApproval,
         NewSessionShortcut,
         OpenSettingsShortcut,
+        StopTurnShortcut,
     ]
 );
 use crate::approvals::ApprovalQueue;
 use crate::gui_prefs::GuiPreferences;
-use gpui_kit::component::{Theme, ThemeMode};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
@@ -474,11 +474,21 @@ impl Shell {
                 self.app.blocks.len()
             )))
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
-            .children(
-                self.diff
-                    .as_ref()
-                    .map(|state| div().h(px(220.0)).child(Diff::new(state))),
-            )
+            .children(self.diff.as_ref().map(|state| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .h(px(220.0))
+                    .child(
+                        Button::new("close-diff")
+                            .label("Close diff")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.diff = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(Diff::new(state))
+            }))
             .children(self.approvals.current().map(|view| {
                 let mut card = div()
                     .flex()
@@ -676,6 +686,10 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
+            .on_action(cx.listener(|this, _: &StopTurnShortcut, _window, cx| {
+                this.stop();
+                cx.notify();
+            }))
             .child(self.render_sidebar(cx))
             .child(self.render_main(window, cx))
     }
@@ -706,20 +720,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
-        let mode = match prefs.theme.as_str() {
-            "light" => Some(ThemeMode::Light),
-            "dark" => Some(ThemeMode::Dark),
-            _ => None,
-        };
-        if let Some(mode) = mode {
-            Theme::change(mode, None, cx);
-        }
-        let font_size = px(prefs.font_size as f32);
-        Theme::update(cx, |theme| {
-            theme.font_size = font_size;
-            theme.mono_font_size = font_size;
-            theme.mono_font_family = prefs.code_font.clone().into();
-        });
+        prefs.apply(cx);
         cx.bind_keys([
             KeyBinding::new("ctrl-v", PasteImage, None),
             KeyBinding::new("y", ApproveOnce, Some("Approval")),
@@ -727,6 +728,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             KeyBinding::new("n", RejectApproval, Some("Approval")),
             KeyBinding::new("cmd-n", NewSessionShortcut, None),
             KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
+            KeyBinding::new("cmd-.", StopTurnShortcut, None),
         ]);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))

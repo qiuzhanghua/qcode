@@ -489,6 +489,7 @@ impl SetupView {
             cx.notify();
             return;
         }
+        prefs.apply(cx);
         match self
             .edit
             .apply_config(&config)
