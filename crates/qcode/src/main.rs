@@ -695,6 +695,7 @@ async fn cmd_gui(
             .status()?;
         return Ok(ExitCode::from(status.code().unwrap_or(1) as u8));
     }
+    let gui_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
     let kernel = qcode_kernel::assemble(
         config_path,
         &workspace,
@@ -744,7 +745,7 @@ async fn cmd_gui(
         snapshots: Some(snapshots),
     };
     let backend = qcode_gui::LocalBackend::new(engine);
-    qcode_gui::run(app, Box::new(backend));
+    qcode_gui::run(app, Box::new(backend), setup_path, gui_data_dir);
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

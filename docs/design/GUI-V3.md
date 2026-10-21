@@ -324,3 +324,15 @@ trait Backend {
   同一 argv（临时方案，尚非无缝窗口切换）。
 - ✅ `run_settings` 复用同一套页面并提供分类导航；菜单入口留给 G4。
 - ⚠️ 尚未做真窗口手工验收；Setup 的 Save & Start 仍是一次进程重启。
+
+
+### G2 进行中（2026-10-21）
+
+- ✅ 审批队列：多个 pending approval 按到达顺序展示，回答/取消后自动前进；弹层补充 rule/argv/cwd。
+- ⏳ y/a/n 键盘响应、diff 逐 hunk 交互、审批并发的手工验收。
+
+### G4 进行中（2026-10-21）
+
+- ✅ 侧栏 Settings 按钮打开同一套表单（`SetupView` settings 模式）；分类导航，不退出当前对话窗口。
+- ✅ 启动时读取 `gui.json`，应用 light/dark、基础字号与等宽字号/字体。
+- ⏳ `.app` 菜单、`Cmd+,`/`Cmd+N` 等快捷键、Dock/签名/公证。

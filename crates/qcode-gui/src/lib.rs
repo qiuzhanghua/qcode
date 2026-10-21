@@ -7,6 +7,7 @@
 
 #![recursion_limit = "512"]
 
+pub mod approvals;
 pub mod forms;
 pub mod gui_prefs;
 pub mod setup;
@@ -22,10 +23,13 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::{div, prelude::*, *};
 
 gpui_kit::actions!(qcode_gui, [PasteImage]);
+use crate::approvals::ApprovalQueue;
+use crate::gui_prefs::GuiPreferences;
+use gpui_kit::component::{Theme, ThemeMode};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
-use qcode_ui_bridge::{ApprovalView, KernelPort, UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -162,8 +166,8 @@ struct Shell {
     diff: Option<Entity<DiffState>>,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
-    /// A pending approval: the turn is blocked until one of these is clicked.
-    approval: Option<ApprovalView>,
+    /// Pending approvals, shown one at a time in arrival order.
+    approvals: ApprovalQueue,
     /// Variable-height virtual transcript with tail following.
     scroller: Entity<MessageScrollerState>,
     /// Row count last reported to the scroller (blocks + streaming preview).
@@ -172,12 +176,16 @@ struct Shell {
     sessions: Vec<SessionSummary>,
     active: Option<String>,
     workspace: String,
+    config_path: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl Shell {
     fn new(
         mut app: App,
         backend: Box<dyn Backend>,
+        config_path: PathBuf,
+        data_dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -194,13 +202,15 @@ impl Shell {
             input,
             diff: None,
             attachments: Vec::new(),
-            approval: None,
+            approvals: ApprovalQueue::default(),
             scroller,
             last_blocks,
             backend,
             sessions,
             active: None,
             workspace,
+            config_path,
+            data_dir,
         }
     }
 
@@ -247,7 +257,7 @@ impl Shell {
         self.reset_scroller(cx);
         self.active = None;
         self.diff = None;
-        self.approval = None;
+        self.approvals = ApprovalQueue::default();
         self.refresh_sessions();
         self.app.push_notice("new session");
         cx.notify();
@@ -269,7 +279,7 @@ impl Shell {
                 self.reset_scroller(cx);
                 self.active = Some(id.clone());
                 self.diff = None;
-                self.approval = None;
+                self.approvals = ApprovalQueue::default();
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_sessions();
             }
@@ -328,7 +338,7 @@ impl Shell {
     }
 
     fn answer(&mut self, allow: bool, session: bool, cx: &mut Context<Self>) {
-        let Some(view) = self.approval.take() else {
+        let Some(view) = self.approvals.take_current() else {
             return;
         };
         self.backend.answer(view.call_id, allow, session);
@@ -359,16 +369,8 @@ impl Shell {
                     self.app.apply_delta(&delta);
                     changed = true;
                 }
-                UiEvent::Approval(view) => self.approval = Some(view),
-                UiEvent::ApprovalClosed { call_id } => {
-                    if self
-                        .approval
-                        .as_ref()
-                        .is_some_and(|view| view.call_id == call_id)
-                    {
-                        self.approval = None;
-                    }
-                }
+                UiEvent::Approval(view) => self.approvals.push(view),
+                UiEvent::ApprovalClosed { call_id } => self.approvals.closed(&call_id),
                 UiEvent::SessionChanged { id } => {
                     self.active = id;
                     self.refresh_sessions();
@@ -377,6 +379,17 @@ impl Shell {
         }
         if changed {
             self.sync_scroller(cx);
+        }
+    }
+
+    fn open_settings(&self, cx: &mut Context<Self>) {
+        let config_path = self.config_path.clone();
+        let data_dir = self.data_dir.clone();
+        let result = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx))
+        });
+        if let Err(error) = result {
+            eprintln!("qcode-gui: cannot open settings: {error}");
         }
     }
 
@@ -415,6 +428,11 @@ impl Shell {
                     .label("New session")
                     .on_click(cx.listener(|this, _, _window, cx| this.new_session(cx))),
             )
+            .child(
+                Button::new("open-settings")
+                    .label("Settings")
+                    .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
+            )
             .children(sessions)
     }
 
@@ -451,32 +469,43 @@ impl Shell {
                     .as_ref()
                     .map(|state| div().h(px(220.0)).child(Diff::new(state))),
             )
-            .children(self.approval.as_ref().map(|view| {
-                div()
+            .children(self.approvals.current().map(|view| {
+                let mut card = div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .p_2()
                     .child(div().child(format!(
-                        "approval needed · {} · {}",
-                        view.tool, view.summary
+                        "approval needed ({}) · {} · {}",
+                        self.approvals.len(),
+                        view.tool,
+                        view.summary
                     )))
-                    .child(div().child(format!("reason: {}", view.reason)))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(Button::new("allow").label("Allow").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
-                            ))
-                            .child(Button::new("allow-session").label("Always").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
-                            ))
-                            .child(Button::new("deny").label("Reject").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
-                            )),
-                    )
+                    .child(div().child(format!("reason: {}", view.reason)));
+                if let Some(rule) = &view.rule_id {
+                    card = card.child(format!("rule: {rule}"));
+                }
+                if let Some(argv) = &view.argv {
+                    card = card.child(format!("argv: {argv}"));
+                }
+                if let Some(cwd) = &view.cwd {
+                    card = card.child(format!("cwd: {cwd}"));
+                }
+                card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(Button::new("allow").label("Allow").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
+                        ))
+                        .child(Button::new("allow-session").label("Always").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
+                        ))
+                        .child(Button::new("deny").label("Reject").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
+                        )),
+                )
             }))
             .child(
                 div()
@@ -643,12 +672,27 @@ pub struct Engine {
 }
 
 /// Open the window and drive it until the user closes it.
-pub fn run(app: App, backend: Box<dyn Backend>) {
-    gpui_kit::application().run(|cx| {
+pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
+    let prefs = GuiPreferences::load(&data_dir);
+    gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        let mode = match prefs.theme.as_str() {
+            "light" => Some(ThemeMode::Light),
+            "dark" => Some(ThemeMode::Dark),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            Theme::change(mode, None, cx);
+        }
+        let font_size = px(prefs.font_size as f32);
+        Theme::update(cx, |theme| {
+            theme.font_size = font_size;
+            theme.mono_font_size = font_size;
+            theme.mono_font_family = prefs.code_font.clone().into();
+        });
         cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, None)]);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Shell::new(app, backend, window, cx))
+            cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
         })
         .expect("failed to open the window");
     });
