@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use qcode_core::event::{EventKind, TurnStatus};
 use qcode_core::policy::Policy;
-use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
+use qcode_core::provider::{
+    Capabilities, CompletionRequest, EventStream, Provider, ProviderError, StopReason, StreamEvent,
+    ToolSpec,
+};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_gui::{Backend, Engine, LocalBackend};
@@ -12,13 +15,21 @@ use qcode_ui_bridge::UiEvent;
 use serde_json::json;
 
 fn engine(workspace: &std::path::Path, store: SessionStore) -> Engine {
-    engine_with(workspace, store, MockProvider::text("hello"))
+    engine_with_provider(workspace, store, Arc::new(MockProvider::text("hello")))
 }
 
 fn engine_with(workspace: &std::path::Path, store: SessionStore, provider: MockProvider) -> Engine {
+    engine_with_provider(workspace, store, Arc::new(provider))
+}
+
+fn engine_with_provider(
+    workspace: &std::path::Path,
+    store: SessionStore,
+    provider: Arc<dyn Provider>,
+) -> Engine {
     Engine {
         store,
-        provider: Arc::new(provider),
+        provider,
         provider_name: "mock".to_string(),
         tools: ToolRegistry::new(Vec::new()),
         policy: Policy::new(Vec::new()),
@@ -149,6 +160,27 @@ async fn cancel_is_processed_while_a_slow_turn_is_running() {
     panic!("cancel was not processed while the turn was running");
 }
 
+struct AuthFailProvider;
+
+#[async_trait::async_trait]
+impl Provider for AuthFailProvider {
+    fn name(&self) -> &str {
+        "auth-fail"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<EventStream, ProviderError> {
+        Err(ProviderError::Auth("boom".to_string()))
+    }
+}
+
 struct EchoTool;
 
 #[async_trait::async_trait]
@@ -230,4 +262,36 @@ async fn an_approval_answer_is_processed_while_the_turn_waits() {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("approval answer was not processed during the turn");
+}
+
+#[tokio::test]
+async fn a_fatal_provider_error_resets_the_turn_and_keeps_the_loop_alive() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut engine = engine_with_provider(workspace.path(), store, Arc::new(AuthFailProvider));
+    engine.model = "mock-1".to_string();
+    let mut backend = LocalBackend::new(engine);
+    backend.prompt("fail".to_string(), Vec::new());
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failed = false;
+    while Instant::now() < deadline && !failed {
+        if let Some(UiEvent::TurnFailed { message }) = backend.try_recv() {
+            assert!(message.contains("boom"), "{message}");
+            failed = true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(failed, "TurnFailed was not emitted");
+
+    backend.new_session();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::SessionChanged { id: None }) = backend.try_recv() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("NewSession was not processed after a failed turn");
 }
