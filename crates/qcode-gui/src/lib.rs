@@ -309,6 +309,10 @@ impl Shell {
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
+        eprintln!(
+            "qcode-gui: window ready pid={} (focus fix + concurrent engine)",
+            std::process::id()
+        );
         Self {
             app,
             input,
@@ -490,6 +494,17 @@ impl Shell {
     }
 
     fn stop(&mut self) {
+        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+            eprintln!(
+                "qcode-gui: stop handler running={}",
+                self.app.status.running
+            );
+        }
+        // Make Stop visibly immediate even if the provider ignores the
+        // cancellation token for a moment; TurnEnded/TurnFailed will confirm.
+        self.app.status.running = false;
+        self.app.status.last = None;
+        self.approvals = ApprovalQueue::default();
         self.backend.cancel();
     }
 
