@@ -51,6 +51,18 @@ use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// ADR-0041 typography tokens. Keep conversation sizes in one place so the
+/// three display modes do not drift into per-row ad-hoc values.
+const BODY_SIZE: f32 = 14.0;
+const BODY_LINE: f32 = 22.0;
+const SECONDARY_SIZE: f32 = 13.0;
+const SECONDARY_LINE: f32 = 20.0;
+const CAPTION_SIZE: f32 = 11.0;
+const CODE_SIZE: f32 = 12.0;
+const CODE_LINE: f32 = 18.0;
+const TURN_MAX_WIDTH: f32 = 900.0;
+const TURN_RAIL_WIDTH: f32 = 20.0;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
@@ -819,7 +831,12 @@ impl Shell {
             return div().into_any_element();
         }
         let active = self.active_turn_index();
-        let mut rail = div().w(px(20.0)).flex().flex_col().gap_1().py_2();
+        let mut rail = div()
+            .w(px(TURN_RAIL_WIDTH))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .py_2();
         for (index, turn) in self.app.turns.iter().enumerate() {
             let marker = if active == Some(index) { "●" } else { "·" };
             rail = rail.child(
@@ -1348,14 +1365,14 @@ fn compact_user_row(text: &str) -> AnyElement {
         .py_2()
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(CAPTION_SIZE))
                 .text_color(rgb(0x888888))
                 .child("You"),
         )
         .child(
             div()
-                .text_size(px(14.0))
-                .line_height(px(22.0))
+                .text_size(px(BODY_SIZE))
+                .line_height(px(BODY_LINE))
                 .child(format!("{summary}{suffix}")),
         )
         .into_any_element()
@@ -1389,12 +1406,12 @@ fn reasoning_row(
             div()
                 .px_6()
                 .pb_2()
-                .text_size(px(13.0))
-                .line_height(px(20.0))
+                .text_size(px(SECONDARY_SIZE))
+                .line_height(px(SECONDARY_LINE))
                 .child(
                     TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
-                        .text_size(px(13.0))
-                        .line_height(px(20.0)),
+                        .text_size(px(SECONDARY_SIZE))
+                        .line_height(px(SECONDARY_LINE)),
                 ),
         );
     }
@@ -1481,7 +1498,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .flex_col()
         .gap_1()
         .w_full()
-        .max_w(px(900.0))
+        .max_w(px(TURN_MAX_WIDTH))
         .mx_auto();
 
     let status = match turn.status {
@@ -1503,7 +1520,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .gap_2()
             .px_6()
             .pt_4()
-            .text_size(px(11.0))
+            .text_size(px(CAPTION_SIZE))
             .text_color(rgb(0x888888))
             .child(format!("Turn {}", turn.number))
             .child(turn_time(turn.started_at))
@@ -1580,8 +1597,8 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                         .children(live_expanded.then(|| {
                             div()
                                 .px_6()
-                                .text_size(px(13.0))
-                                .line_height(px(20.0))
+                                .text_size(px(SECONDARY_SIZE))
+                                .line_height(px(SECONDARY_LINE))
                                 .child(shell.app.reasoning_streaming.clone())
                         })),
                 );
@@ -1610,15 +1627,15 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .px_6()
                 .py_2()
-                .text_size(px(14.0))
-                .line_height(px(22.0))
+                .text_size(px(BODY_SIZE))
+                .line_height(px(BODY_LINE))
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
-                    .text_size(px(14.0))
-                    .line_height(px(22.0)),
+                    .text_size(px(BODY_SIZE))
+                    .line_height(px(BODY_LINE)),
                 ),
         );
     }
@@ -1684,8 +1701,8 @@ fn markdown_with_folds(
             MarkdownSegment::Text(body) => {
                 column = column.child(
                     TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
-                        .text_size(px(14.0))
-                        .line_height(px(22.0)),
+                        .text_size(px(BODY_SIZE))
+                        .line_height(px(BODY_LINE)),
                 );
             }
             MarkdownSegment::Code { language, body } => {
@@ -1710,7 +1727,7 @@ fn markdown_with_folds(
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .text_size(px(11.0))
+                    .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child(if language.is_empty() {
                         format!("{line_count} lines")
@@ -1740,8 +1757,8 @@ fn markdown_with_folds(
                 let fence = format!("```{language}\n{visible}\n```");
                 block = block.child(header).child(
                     TextView::markdown(format!("assistant-code-{key}"), fence)
-                        .text_size(px(12.0))
-                        .line_height(px(18.0)),
+                        .text_size(px(CODE_SIZE))
+                        .line_height(px(CODE_LINE)),
                 );
                 column = column.child(block);
             }
@@ -1771,7 +1788,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .py_2()
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("You"),
             )
@@ -1781,12 +1798,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .rounded(px(8.0))
                     .px_3()
                     .py_2()
-                    .text_size(px(14.0))
-                    .line_height(px(22.0))
+                    .text_size(px(BODY_SIZE))
+                    .line_height(px(BODY_LINE))
                     .child(
                         TextView::markdown(format!("user-{index}"), text.clone())
-                            .text_size(px(14.0))
-                            .line_height(px(22.0)),
+                            .text_size(px(BODY_SIZE))
+                            .line_height(px(BODY_LINE)),
                     ),
             )
             .into_any_element(),
@@ -1802,13 +1819,13 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .rounded(px(6.0))
                 .bg(rgba(0x7f7f7f0c))
                 .p_2()
-                .text_size(px(13.0))
+                .text_size(px(SECONDARY_SIZE))
                 .child(
                     div()
                         .flex()
                         .flex_row()
                         .gap_2()
-                        .text_size(px(12.0))
+                        .text_size(px(CODE_SIZE))
                         .text_color(rgb(0x999999))
                         .child(format!("{marker} {}", tool.name))
                         .child(tool_status(tool.status)),
@@ -1816,9 +1833,15 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .child(div().child(tool.summary.clone()));
             if tool.expanded {
                 if !tool.output.is_empty() {
-                    card = card.child(div().text_size(px(12.0)).line_height(px(18.0)).child(
-                        TextView::markdown(format!("tool-output-{index}"), tool.output.clone()),
-                    ));
+                    card = card.child(
+                        div()
+                            .text_size(px(CODE_SIZE))
+                            .line_height(px(CODE_LINE))
+                            .child(TextView::markdown(
+                                format!("tool-output-{index}"),
+                                tool.output.clone(),
+                            )),
+                    );
                 }
                 if let Some(elapsed) = tool.elapsed {
                     card = card.child(format!("took {elapsed:?}"));
@@ -1838,20 +1861,20 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::Subagent { text, .. } => div()
             .px_6()
             .py_1()
-            .text_size(px(12.0))
+            .text_size(px(CODE_SIZE))
             .text_color(rgb(0x888888))
             .child(format!("child › {text}"))
             .into_any_element(),
         Block::Reasoning(entry) => div()
             .px_6()
             .py_1()
-            .text_size(px(13.0))
-            .line_height(px(20.0))
+            .text_size(px(SECONDARY_SIZE))
+            .line_height(px(SECONDARY_LINE))
             .text_color(rgb(0x999999))
             .child(
                 TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
-                    .text_size(px(13.0))
-                    .line_height(px(20.0)),
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE)),
             )
             .into_any_element(),
         Block::Todo(items) => div()
@@ -1860,26 +1883,26 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .rounded(px(6.0))
             .bg(rgba(0x7f7f7f0c))
             .p_2()
-            .text_size(px(13.0))
+            .text_size(px(SECONDARY_SIZE))
             .child(format!("todos › {} item(s)", items.len()))
             .children(items.iter().map(|item| div().child(item.content.clone())))
             .into_any_element(),
         Block::Notice(text) => div()
             .px_6()
             .py_1()
-            .text_size(px(12.0))
+            .text_size(px(CODE_SIZE))
             .text_color(rgb(0x999999))
             .child(format!("note › {text}"))
             .into_any_element(),
         Block::Skill(text) => div()
             .px_6()
             .py_2()
-            .text_size(px(13.0))
-            .line_height(px(20.0))
+            .text_size(px(SECONDARY_SIZE))
+            .line_height(px(SECONDARY_LINE))
             .child(
                 TextView::markdown(format!("skill-{index}"), text.clone())
-                    .text_size(px(13.0))
-                    .line_height(px(20.0)),
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE)),
             )
             .into_any_element(),
     }
