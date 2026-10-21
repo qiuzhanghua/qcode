@@ -2322,3 +2322,167 @@ P0 只注册以下命令：
   交换，需要用户理解。
 - 默认 64 次模型调用会增加失控任务的成本上限；`max_cost_usd` 和无进展检测仍是兜底。
 - GUI 的 Always 与 TUI 的 `session_allowed` 语义一致。
+
+## ADR-0046（草案）：审批 Grant 模型——Once / Turn / Session 与匹配粒度（2026-10-21）
+
+**状态**：提议，待确认；本轮只设计，不实现。
+
+**背景**：GUI 的 `Always` 修复后按工具名记住，`run_shell` 一旦允许，本 Session 内所有
+shell 命令都不再询问。它减少了弹窗，但把“信任一条命令”放大成“信任整个 shell 工具”。
+同时，分析项目时 qcode 仍然每条 `run_shell` 都可能 Ask；DSH 的审批次数少，主要靠 Session
+permission/sandbox 和 `run_code` 的整段授权，而不是更多 Always 按钮。
+
+本 ADR 只讨论 **grant（可复用授权）** 的模型，不讨论 sandbox 后端、组织级策略、远程审批、
+自动续跑，也不实现代码。
+
+**术语**
+
+- **Approval**：一次工具调用的待决请求，对应一个 `call_id`。
+- **Grant**：可复用的审批决定，由 `scope + matcher` 组成。
+- **Scope**：`Once` / `Turn` / `Session`。
+- **Matcher**：`tool`，以及可选的 `command_prefix` / `path_glob`。
+- **Preset**：会话级权限档位（只读 / workspace-write / full-access），不是 grant。
+
+**目标**
+
+1. 降低同一 Turn、同一工具族的重复审批。
+2. 不把“允许一条命令”静默放大成“允许所有命令”。
+3. 多前端（GUI/TUI/ACP）共享同一套 grant 语义与审计。
+4. 失败、取消、并行、切 Session 时行为可预测。
+
+**非目标**
+
+- 不实现 OS sandbox 或权限预设（另立 ADR）。
+- 不做组织级策略、远程审批、审批委托。
+- 不做 allow-always 的跨设备/跨用户持久化。
+- 不做 run_code / PTC 的嵌套工具授权。
+- 不改变 deny 优先、fail-closed、取消即拒绝的现有语义。
+
+## 选项 A：Turn 级工具 Grant
+
+**决定形态**
+
+- 只有 `Turn` 作用域；matcher 只有 `tool`。
+- 用户在审批面板可选：`Allow once` / `Allow this tool for this turn`。
+- Turn 结束、取消、失败时清空；不跨 Turn、不跨 Session。
+- 已排队的同 Turn 同工具请求一并结算。
+
+**优点**
+
+- 最小改动；不需要新的持久化 schema 或匹配器。
+- 对“读文件、列目录、搜索”这类低风险高频工具很有效。
+- 行为容易解释：只在本 Turn 内有效。
+
+**缺点**
+
+- 对 `run_shell` 仍然过宽：本 Turn 内所有 shell 命令都放行。
+- 每个新 Turn 仍要重新授权；长任务仍会反复问。
+- 不能表达“允许 `git status` / `cargo test`，但不允许 `git push`”。
+
+**工作量**：约 1–2 天 / 1–2 轮。
+
+**适用**：先缓解高频读工具；不适合作为最终模型。
+
+## 选项 B：Scoped Grant（推荐目标）
+
+**决定形态**
+
+- 作用域：`Once` / `Turn` / `Session`。
+- Matcher：`tool` + 可选 `command_prefix` 或 `path_glob`。
+- UI 决策按风险分层：
+  - 默认：`Allow once`
+  - 低风险读工具：`Allow tool for this turn`
+  - shell：`Allow this command prefix for this turn` / `for this session`
+  - `Always this tool`：保留，但标为高风险，不默认推荐给 shell
+- `Session` grant 只存在当前活动 Session 的运行时；**不跨 resume 自动恢复**。恢复后重新询问。
+- 一个 grant 命中后，已排队的匹配请求一并结算并写审计。
+- matcher 复用现有 `Rule` 的 `command_prefix` / `path_glob` 语义，不引入正则。
+
+**示例**
+
+```text
+Allow once
+Allow "git status" for this turn
+Allow "cargo test" for this session
+Allow read_file for this session
+Allow all run_shell for this session  [danger]
+```
+
+**优点**
+
+- 能真正减少审批，又不把整个 `run_shell` 放行。
+- 与现有 policy 的 matcher 语义一致，迁移成本低。
+- 可以逐步实现：先 Turn + tool，再加入 prefix/path 和 Session。
+- 审计能回答“为什么这次没问”。
+
+**缺点**
+
+- 审批 UI 变复杂，需要 primary action + 二级 scope 选择。
+- `command_prefix` 容易被绕过（`git status && rm ...`），必须明确是**前缀匹配，不是命令白名单**。
+- Session grant 的生命周期、并行结算、审计字段需要新增。
+- 需要处理 path 相对/绝对、workspace 内外、symlink。
+
+**工作量**：约 3–5 天 / 3–5 轮（不含 sandbox）。
+
+**适用**：qcode 当前最合适的增量模型。
+
+## 选项 C：Session Permission Preset（DSH 方向）
+
+**决定形态**
+
+- 每个 Session 选择权限档位：`read-only` / `workspace-write` / `full-access`。
+- 档位内的操作自动允许；越界操作或提权才 Ask。
+- 不提供 per-call grant 菜单，审批只处理“提权/越界”。
+- 与 OS sandbox 绑定，sandbox 是真正的执行边界。
+
+**优点**
+
+- 审批次数最少，用户心智最简单。
+- 最接近 DSH 的“Session 权限”体验。
+- 适合长期运行的 agent。
+
+**缺点**
+
+- 需要可靠的 sandbox 后端；qcode 的 sandbox-exec/bwrap 仍标注 experimental。
+- shell 能通过子进程、网络、写越界路径绕过 naive preset；边界必须由 OS 强制。
+- 跨平台（macOS/Linux/Windows）成本高。
+- 工作量约 1–2 周 / 6–10 轮，且需要单独安全评审。
+
+**适用**：sandbox 成熟之后；不建议现在直接做。
+
+## 对比
+
+| 维度 | A：Turn 工具 | B：Scoped Grant | C：Permission Preset |
+|---|---|---|---|
+| 减少审批 | 中 | 高 | 最高 |
+| `run_shell` 安全性 | 低（整个工具） | 中（前缀/路径） | 高（依赖 sandbox） |
+| UI 复杂度 | 低 | 中 | 低 |
+| 持久化 | 无 | 运行时 Session | Session 配置 |
+| 多前端一致性 | 容易 | 中 | 高 |
+| 工作量 | 小 | 中 | 大 |
+| DSH 对齐 | 低 | 中 | 高 |
+
+## 推荐
+
+**以 B 为目标，先实现 A 作为第一步。**
+
+具体顺序：
+
+1. **Phase 1（A）**：Turn + tool grant，同 Turn 同工具自动结算；默认仍 Once。
+2. **Phase 2（B-lite）**：为 `run_shell` 增加 command_prefix grant；Session grant 只存在运行时。
+3. **Phase 3（B-full）**：path_glob、审计字段、TUI/GUI/ACP 一致性、并行请求批量结算。
+4. **Preset（C）暂缓**：等 sandbox 后端可用并单独写 ADR；不要在审批 UI 里假装有 sandbox。
+
+**需要确认的产品决策**
+
+1. `Always this tool` 是否继续保留？建议保留但标红，且不作为 shell 的默认选项。
+2. Session grant 是否跨 resume？建议不跨；恢复后重新问。
+3. Turn grant 是否跨 cancel？建议不跨。
+4. `command_prefix` 是否接受 `&&`/`;` 复合命令？建议明确拒绝或只匹配第一段，不做 shell 解析。
+5. 审计事件是否记录 matcher/scope？建议记录，否则无法解释自动放行。
+
+**后果**
+
+- 审批从“每次一个决定”变成“决定 + 作用域”，UI 和测试增加。
+- `run_shell` 的默认建议不再是 Always；这会改变现有用户习惯。
+- 若不做 C，长任务仍可能在不同 Turn 反复询问；需要靠 Turn grant 和低风险策略缓解。
