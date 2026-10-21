@@ -358,3 +358,10 @@ trait Backend {
 - ✅ 字号层级：正文 14/22、次级 13/20、代码 12/18；Turn 最大宽度 900。
 - ✅ `gui.json` 持久化 `display_mode`。
 - ✅ 代码块折叠/展开（>20 行折叠到 12 行）、Turn 轨道 tooltip 预览、折叠时近似阅读锚点；Turn picker 目前是 Header 内列表。
+
+### DSH 风格对齐（2026-10-21）
+
+- 过程、思考、工具行加入 Lucide 图标：chevron、brain、terminal、文件/搜索/待办等。
+- 注册 `AllAssets` 图标资源。
+- 用户消息改为右侧气泡（DSH 布局）。
+- 工具输出改为代码块字体并保留列对齐；`SignedDuration { … }` 改为 `took 5.5s`。

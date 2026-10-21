@@ -14,13 +14,16 @@ pub mod setup;
 pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::{Icon, Size};
 use gpui_kit::{div, prelude::*, *};
 
 gpui_kit::actions!(
@@ -1337,6 +1340,12 @@ fn unit_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     }
 }
 
+fn conversation_icon(name: IconName) -> Icon {
+    Icon::new(name)
+        .with_size(Size::Small)
+        .text_color(rgb(0x888888))
+}
+
 fn format_duration(duration: time::Duration) -> String {
     let seconds = duration.whole_seconds().max(0) as u64;
     if seconds < 60 {
@@ -1360,17 +1369,17 @@ fn compact_user_row(text: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap_1()
+        .items_end()
+        .w_full()
         .px_6()
         .py_2()
         .child(
             div()
-                .text_size(px(CAPTION_SIZE))
-                .text_color(rgb(0x888888))
-                .child("You"),
-        )
-        .child(
-            div()
+                .max_w(px(560.0))
+                .rounded(px(12.0))
+                .bg(rgba(0x7f7f7f18))
+                .px_4()
+                .py_2()
                 .text_size(px(BODY_SIZE))
                 .line_height(px(BODY_LINE))
                 .child(format!("{summary}{suffix}")),
@@ -1389,7 +1398,6 @@ fn reasoning_row(
         .elapsed
         .map(|elapsed| format!("Thought for {}", format_duration(elapsed)))
         .unwrap_or_else(|| "Thought".to_string());
-    let marker = if expanded { "▾" } else { "▸" };
     let mut row = div()
         .flex()
         .flex_col()
@@ -1415,7 +1423,13 @@ fn reasoning_row(
                     entity.update(cx, |shell, cx| shell.toggle_reasoning(block, cx));
                 }
             })
-            .child(format!("{marker} {label}")),
+            .child(conversation_icon(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            }))
+            .child(conversation_icon(IconName::Brain))
+            .child(label),
     );
     if expanded {
         row = row.child(
@@ -1433,6 +1447,31 @@ fn reasoning_row(
         );
     }
     row.into_any_element()
+}
+
+fn tool_icon_name(name: &str) -> IconName {
+    match name {
+        "run_shell" | "shell" => IconName::SquareTerminal,
+        "list_dir" | "glob" => IconName::FolderSearch,
+        "grep" | "search" => IconName::Search,
+        "read_file" | "read" => IconName::FileText,
+        "write_file" | "edit_file" | "apply_patch" => IconName::FilePen,
+        "todo_write" | "todo" => IconName::ListChecks,
+        "subagent" | "task" => IconName::Bot,
+        _ => IconName::Wrench,
+    }
+}
+
+fn process_icon(turn: &Turn, shell: &Shell) -> IconName {
+    if turn
+        .process
+        .iter()
+        .any(|block| matches!(shell.app.blocks[*block], Block::Tool(_)))
+    {
+        IconName::SquareTerminal
+    } else {
+        IconName::Brain
+    }
 }
 
 fn process_summary(turn: &Turn, shell: &Shell) -> String {
@@ -1590,7 +1629,9 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                                 });
                             }
                         })
-                        .child(format!("▾ {}", process_summary(turn, shell))),
+                        .child(conversation_icon(IconName::ChevronDown))
+                        .child(conversation_icon(process_icon(turn, shell)))
+                        .child(process_summary(turn, shell)),
                 );
             }
             for block in &turn.process {
@@ -1603,7 +1644,6 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             if turn.running() && !shell.app.reasoning_streaming.is_empty() {
                 let live_key = usize::MAX;
                 let live_expanded = shell.expanded_reasoning.contains(&live_key);
-                let marker = if live_expanded { "▾" } else { "▸" };
                 process = process.child(
                     div()
                         .flex()
@@ -1629,7 +1669,13 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                                         });
                                     }
                                 })
-                                .child(format!("{marker} Thinking…")),
+                                .child(conversation_icon(if live_expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                }))
+                                .child(conversation_icon(IconName::Brain))
+                                .child("Thinking…"),
                         )
                         .children(live_expanded.then(|| {
                             div()
@@ -1662,7 +1708,9 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                             });
                         }
                     })
-                    .child(format!("▸ {}", process_summary(turn, shell))),
+                    .child(conversation_icon(IconName::ChevronRight))
+                    .child(conversation_icon(process_icon(turn, shell)))
+                    .child(process_summary(turn, shell)),
             );
         }
         card = card.child(process);
@@ -1831,20 +1879,16 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::User(text) => div()
             .flex()
             .flex_col()
-            .gap_1()
+            .items_end()
+            .w_full()
             .px_6()
             .py_2()
             .child(
                 div()
-                    .text_size(px(CAPTION_SIZE))
-                    .text_color(rgb(0x888888))
-                    .child("You"),
-            )
-            .child(
-                div()
+                    .max_w(px(560.0))
                     .bg(rgba(0x7f7f7f18))
-                    .rounded(px(8.0))
-                    .px_3()
+                    .rounded(px(12.0))
+                    .px_4()
                     .py_2()
                     .text_size(px(BODY_SIZE))
                     .line_height(px(BODY_LINE))
@@ -1857,13 +1901,13 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .into_any_element(),
         Block::Assistant(text) => markdown_with_folds(index, text, shell, entity),
         Block::Tool(tool) => {
-            let marker = if tool.expanded { "▾" } else { "▸" };
             let mut card = div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .self_start()
                 .items_start()
+                .max_w(px(760.0))
                 .mx_6()
                 .my_1()
                 .rounded(px(6.0))
@@ -1879,7 +1923,13 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                         .gap_2()
                         .text_size(px(CODE_SIZE))
                         .text_color(rgb(0x999999))
-                        .child(format!("{marker} {}", tool.name))
+                        .child(conversation_icon(if tool.expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        }))
+                        .child(conversation_icon(tool_icon_name(&tool.name)))
+                        .child(tool.name.clone())
                         .child(tool_status(tool.status)),
                 )
                 .child(div().child(tool.summary.clone()));
@@ -1891,12 +1941,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                             .line_height(px(CODE_LINE))
                             .child(TextView::markdown(
                                 format!("tool-output-{index}"),
-                                tool.output.clone(),
+                                format!("```\n{}\n```", tool.output),
                             )),
                     );
                 }
                 if let Some(elapsed) = tool.elapsed {
-                    card = card.child(format!("took {elapsed:?}"));
+                    card = card.child(format!("took {}", format_duration(elapsed)));
                 }
             }
             let call_id = tool.call_id.clone();
@@ -2082,56 +2132,58 @@ pub fn run(
     approval_policy: Option<PathBuf>,
 ) {
     let prefs = GuiPreferences::load(&data_dir);
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        cx.activate(true);
-        prefs.apply(cx);
-        let window_options = prefs
-            .window_geometry
-            .as_ref()
-            .map(|geometry| WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(geometry.x), px(geometry.y)),
-                    size(px(geometry.width), px(geometry.height)),
-                ))),
-                ..Default::default()
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            cx.activate(true);
+            prefs.apply(cx);
+            let window_options = prefs
+                .window_geometry
+                .as_ref()
+                .map(|geometry| WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(geometry.x), px(geometry.y)),
+                        size(px(geometry.width), px(geometry.height)),
+                    ))),
+                    ..Default::default()
+                })
+                .unwrap_or_default();
+            cx.bind_keys([
+                KeyBinding::new("ctrl-v", PasteImage, None),
+                KeyBinding::new("y", ApproveOnce, Some("Approval")),
+                KeyBinding::new("a", ApproveSession, Some("Approval")),
+                KeyBinding::new("n", RejectApproval, Some("Approval")),
+                KeyBinding::new("cmd-n", NewSessionShortcut, None),
+                KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
+                KeyBinding::new("cmd-o", OpenWorkspaceShortcut, None),
+                KeyBinding::new("cmd-w", CloseWindowShortcut, None),
+                KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
+                KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
+                KeyBinding::new("cmd-.", StopTurnShortcut, None),
+                KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
+                KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
+                KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
+                // The focused Textarea owns the "Input" context, so bind there too
+                // or the root handler never sees Cmd+Enter.
+                KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
+            ]);
+            gpui_kit::open_window(window_options, cx, |window, cx| {
+                window.activate_window();
+                cx.new(|cx| {
+                    Shell::new(
+                        app,
+                        backend,
+                        config_path,
+                        data_dir,
+                        approval_policy,
+                        window,
+                        cx,
+                    )
+                })
             })
-            .unwrap_or_default();
-        cx.bind_keys([
-            KeyBinding::new("ctrl-v", PasteImage, None),
-            KeyBinding::new("y", ApproveOnce, Some("Approval")),
-            KeyBinding::new("a", ApproveSession, Some("Approval")),
-            KeyBinding::new("n", RejectApproval, Some("Approval")),
-            KeyBinding::new("cmd-n", NewSessionShortcut, None),
-            KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
-            KeyBinding::new("cmd-o", OpenWorkspaceShortcut, None),
-            KeyBinding::new("cmd-w", CloseWindowShortcut, None),
-            KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
-            KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
-            KeyBinding::new("cmd-.", StopTurnShortcut, None),
-            KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
-            KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
-            KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
-            // The focused Textarea owns the "Input" context, so bind there too
-            // or the root handler never sees Cmd+Enter.
-            KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
-        ]);
-        gpui_kit::open_window(window_options, cx, |window, cx| {
-            window.activate_window();
-            cx.new(|cx| {
-                Shell::new(
-                    app,
-                    backend,
-                    config_path,
-                    data_dir,
-                    approval_policy,
-                    window,
-                    cx,
-                )
-            })
-        })
-        .expect("failed to open the window");
-    });
+            .expect("failed to open the window");
+        });
 }
 
 /// Run the engine on its own thread: `run_turn` is async, the window is not.
