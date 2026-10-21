@@ -256,6 +256,8 @@ struct Shell {
     process_overrides: BTreeMap<u64, bool>,
     /// Reasoning rows the reader expanded, keyed by block index.
     expanded_reasoning: HashSet<usize>,
+    /// Long code blocks the reader expanded, keyed by block/segment.
+    expanded_code: HashSet<String>,
     /// Turn selected by the rail/header.
     selected_turn: Option<usize>,
     turn_picker_open: bool,
@@ -354,6 +356,7 @@ impl Shell {
             mode,
             process_overrides: BTreeMap::new(),
             expanded_reasoning: HashSet::new(),
+            expanded_code: HashSet::new(),
             selected_turn: None,
             turn_picker_open: false,
             last_blocks,
@@ -619,6 +622,18 @@ impl Shell {
         }
     }
 
+    fn anchor(&self, cx: &Context<Self>) -> Option<usize> {
+        let state = self.scroller.read(cx);
+        (!state.is_following_tail()).then(|| state.logical_scroll_top().item_ix)
+    }
+
+    fn restore_anchor(&self, anchor: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(anchor) = anchor {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_item(anchor, cx));
+        }
+    }
+
     fn set_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
         self.mode = mode;
         self.prefs.display_mode = mode.as_str().to_string();
@@ -647,17 +662,31 @@ impl Shell {
         let Some(turn) = self.app.turns.get(turn_index) else {
             return;
         };
+        let anchor = self.anchor(cx);
         let next = !self.process_expanded(turn);
         self.process_overrides.insert(turn.id, next);
         self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
     fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
         if !self.expanded_reasoning.remove(&block) {
             self.expanded_reasoning.insert(block);
         }
         self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
+        cx.notify();
+    }
+
+    fn toggle_code(&mut self, key: String, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
+        if !self.expanded_code.remove(&key) {
+            self.expanded_code.insert(key);
+        }
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
@@ -791,11 +820,12 @@ impl Shell {
         }
         let active = self.active_turn_index();
         let mut rail = div().w(px(20.0)).flex().flex_col().gap_1().py_2();
-        for (index, _turn) in self.app.turns.iter().enumerate() {
+        for (index, turn) in self.app.turns.iter().enumerate() {
             let marker = if active == Some(index) { "●" } else { "·" };
             rail = rail.child(
                 Button::new(format!("turn-rail-{index}"))
                     .label(marker)
+                    .tooltip(turn_preview(turn, self))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.jump_to_turn(index, cx);
                     })),
@@ -1406,6 +1436,44 @@ fn process_summary(turn: &Turn, shell: &Shell) -> String {
     parts.join(" · ")
 }
 
+fn short_preview(text: &str, limit: usize) -> String {
+    let mut value: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(limit)
+        .collect();
+    if text.chars().count() > limit {
+        value.push('…');
+    }
+    value
+}
+
+fn turn_preview(turn: &Turn, shell: &Shell) -> String {
+    let input = turn
+        .input_block
+        .and_then(|index| match &shell.app.blocks[index] {
+            Block::User(text) | Block::Skill(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .map(|text| short_preview(text, 70))
+        .unwrap_or_default();
+    let answer = turn
+        .answer_block
+        .and_then(|index| match &shell.app.blocks[index] {
+            Block::Assistant(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .map(|text| short_preview(text, 140))
+        .unwrap_or_default();
+    if answer.is_empty() {
+        format!("You: {input}")
+    } else {
+        format!("You: {input}\nAssistant: {answer}")
+    }
+}
+
 fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let turn = &shell.app.turns[index];
     let mut card = div()
@@ -1557,6 +1625,131 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     card.into_any_element()
 }
 
+enum MarkdownSegment {
+    Text(String),
+    Code { language: String, body: String },
+}
+
+fn markdown_segments(text: &str) -> Vec<MarkdownSegment> {
+    let mut segments = Vec::new();
+    let mut text_buf = String::new();
+    let mut code_buf = String::new();
+    let mut language = String::new();
+    let mut in_code = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            if in_code {
+                segments.push(MarkdownSegment::Code {
+                    language: language.clone(),
+                    body: code_buf.trim_end_matches('\n').to_string(),
+                });
+                code_buf.clear();
+                in_code = false;
+            } else {
+                if !text_buf.is_empty() {
+                    segments.push(MarkdownSegment::Text(std::mem::take(&mut text_buf)));
+                }
+                language = trimmed.trim_start_matches('`').trim().to_string();
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            code_buf.push_str(line);
+        } else {
+            text_buf.push_str(line);
+        }
+    }
+    if in_code {
+        segments.push(MarkdownSegment::Code {
+            language,
+            body: code_buf.trim_end_matches('\n').to_string(),
+        });
+    } else if !text_buf.is_empty() {
+        segments.push(MarkdownSegment::Text(text_buf));
+    }
+    segments
+}
+
+fn markdown_with_folds(
+    index: usize,
+    text: &str,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+) -> AnyElement {
+    let mut column = div().flex().flex_col().gap_1().px_6().py_2();
+    for (segment_index, segment) in markdown_segments(text).into_iter().enumerate() {
+        match segment {
+            MarkdownSegment::Text(body) => {
+                column = column.child(
+                    TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
+                        .text_size(px(14.0))
+                        .line_height(px(22.0)),
+                );
+            }
+            MarkdownSegment::Code { language, body } => {
+                let line_count = body.lines().count();
+                let key = format!("{index}:{segment_index}");
+                let expanded = shell.expanded_code.contains(&key);
+                let visible = if expanded || line_count <= 20 {
+                    body.clone()
+                } else {
+                    body.lines().take(12).collect::<Vec<_>>().join("\n")
+                };
+                let mut block = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .my_1()
+                    .rounded(px(6.0))
+                    .bg(rgba(0x7f7f7f0c))
+                    .p_2();
+                let mut header = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x888888))
+                    .child(if language.is_empty() {
+                        format!("{line_count} lines")
+                    } else {
+                        format!("{language} · {line_count} lines")
+                    });
+                if line_count > 20 {
+                    let label = if expanded {
+                        "Collapse".to_string()
+                    } else {
+                        format!("Show {} more lines", line_count - 12)
+                    };
+                    header = header.child(
+                        Button::new(format!("code-toggle-{key}"))
+                            .label(label)
+                            .on_click({
+                                let key = key.clone();
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.toggle_code(key.clone(), cx);
+                                    });
+                                }
+                            }),
+                    );
+                }
+                let fence = format!("```{language}\n{visible}\n```");
+                block = block.child(header).child(
+                    TextView::markdown(format!("assistant-code-{key}"), fence)
+                        .text_size(px(12.0))
+                        .line_height(px(18.0)),
+                );
+                column = column.child(block);
+            }
+        }
+    }
+    column.into_any_element()
+}
+
 fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     if index >= shell.app.blocks.len() {
         return div()
@@ -1597,17 +1790,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     ),
             )
             .into_any_element(),
-        Block::Assistant(text) => div()
-            .px_6()
-            .py_2()
-            .text_size(px(14.0))
-            .line_height(px(22.0))
-            .child(
-                TextView::markdown(format!("assistant-{index}"), text.clone())
-                    .text_size(px(14.0))
-                    .line_height(px(22.0)),
-            )
-            .into_any_element(),
+        Block::Assistant(text) => markdown_with_folds(index, text, shell, entity),
         Block::Tool(tool) => {
             let marker = if tool.expanded { "▾" } else { "▸" };
             let mut card = div()

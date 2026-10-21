@@ -428,6 +428,7 @@ impl App {
                 self.reasoning_streaming.clear();
                 self.ensure_turn(event);
                 let turn = self.current_turn.expect("ensured turn");
+                let mut answer = String::new();
                 for block in &message.blocks {
                     match block {
                         ContentBlock::Reasoning { text, .. } => {
@@ -440,11 +441,17 @@ impl App {
                             }));
                         }
                         ContentBlock::Text { text } => {
-                            let index = self.append_block(Block::Assistant(text.clone()));
-                            self.turns[turn].answer_block = Some(index);
+                            if !answer.is_empty() {
+                                answer.push_str("\n\n");
+                            }
+                            answer.push_str(text);
                         }
                         _ => {}
                     }
+                }
+                if !answer.is_empty() {
+                    let index = self.append_block(Block::Assistant(answer));
+                    self.turns[turn].answer_block = Some(index);
                 }
             }
             EventKind::ToolCall(call) => {

@@ -357,4 +357,4 @@ trait Backend {
 - ✅ Header 轮次选择、上一轮/下一轮、可点击 Turn 列表、右侧 Turn 轨道；`Cmd+Alt+↑/↓` 跳转。
 - ✅ 字号层级：正文 14/22、次级 13/20、代码 12/18；Turn 最大宽度 900。
 - ✅ `gui.json` 持久化 `display_mode`。
-- ⏳ 仍待：代码块级折叠/展开、Turn 轨道 hover 预览、完整阅读锚点补偿、完整 Turn picker 弹层。
+- ✅ 代码块折叠/展开（>20 行折叠到 12 行）、Turn 轨道 tooltip 预览、折叠时近似阅读锚点；Turn picker 目前是 Header 内列表。

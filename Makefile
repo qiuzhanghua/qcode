@@ -55,6 +55,9 @@ $(PLATFORMS):
 gui:
 	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode --features gui
 	cp target/debug/qc target/debug/qc-gui
+	@if [ "$$(uname)" = Darwin ]; then \
+		codesign --force --sign - target/debug/qc-gui >/dev/null; \
+	fi
 	@echo "GUI binary: ./target/debug/qc-gui gui"
 
 # Unsigned local macOS app (ad-hoc signed, no Apple account required).
