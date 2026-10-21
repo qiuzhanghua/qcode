@@ -782,11 +782,21 @@ impl Shell {
                             .label(format!("Paste image ({})", self.attachments.len()))
                             .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
                     )
-                    .child(
+                    .child({
+                        let entity = cx.entity();
                         div()
                             .flex_grow(1.0)
-                            .child(Textarea::new(&self.input).aria_label("Message qcode")),
-                    )
+                            .on_key_down(move |event, window, cx| {
+                                if event.keystroke.key == "enter"
+                                    && event.keystroke.modifiers.platform
+                                {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.send_prompt(window, cx);
+                                    });
+                                }
+                            })
+                            .child(Textarea::new(&self.input).aria_label("Message qcode"))
+                    })
                     .child(
                         Button::new("send")
                             .label("Send")
