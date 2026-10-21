@@ -30,5 +30,6 @@ serde_json.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 tempfile.workspace = true

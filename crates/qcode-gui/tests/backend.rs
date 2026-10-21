@@ -3,12 +3,13 @@ use std::time::{Duration, Instant};
 
 use qcode_core::event::{EventKind, TurnStatus};
 use qcode_core::policy::Policy;
-use qcode_core::provider::{StopReason, StreamEvent};
+use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
 use qcode_core::store::SessionStore;
-use qcode_core::tool::ToolRegistry;
+use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_gui::{Backend, Engine, LocalBackend};
 use qcode_providers::MockProvider;
 use qcode_ui_bridge::UiEvent;
+use serde_json::json;
 
 fn engine(workspace: &std::path::Path, store: SessionStore) -> Engine {
     engine_with(workspace, store, MockProvider::text("hello"))
@@ -146,4 +147,87 @@ async fn cancel_is_processed_while_a_slow_turn_is_running() {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("cancel was not processed while the turn was running");
+}
+
+struct EchoTool;
+
+#[async_trait::async_trait]
+impl Tool for EchoTool {
+    fn name(&self) -> &str {
+        "echo"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "echo".to_string(),
+            description: "echo text".to_string(),
+            parameters: json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> ApprovalClass {
+        ApprovalClass::Execute
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("echoed"))
+    }
+}
+
+#[tokio::test]
+async fn an_approval_answer_is_processed_while_the_turn_waits() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let provider = MockProvider::scripted(vec![
+        vec![
+            StreamEvent::Started,
+            StreamEvent::ToolCallDone {
+                call_id: "c1".to_string(),
+                name: "echo".to_string(),
+                arguments: json!({"text": "hi"}),
+            },
+            StreamEvent::Ended {
+                stop_reason: StopReason::ToolUse,
+            },
+        ],
+        vec![
+            StreamEvent::Started,
+            StreamEvent::TextDelta("done".to_string()),
+            StreamEvent::Ended {
+                stop_reason: StopReason::EndTurn,
+            },
+        ],
+    ]);
+    let mut engine = engine_with(workspace.path(), store, provider);
+    engine.tools = ToolRegistry::new(vec![Arc::new(EchoTool)]);
+    let mut backend = LocalBackend::new(engine);
+
+    backend.prompt("run echo".to_string(), Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut call_id = None;
+    while Instant::now() < deadline && call_id.is_none() {
+        if let Some(UiEvent::Approval(view)) = backend.try_recv() {
+            call_id = Some(view.call_id);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let call_id = call_id.expect("approval prompt");
+    backend.answer(call_id, true, false);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::Event(event)) = backend.try_recv()
+            && let EventKind::TurnEnded(ended) = event.kind
+        {
+            assert_eq!(ended.status, TurnStatus::Completed);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("approval answer was not processed during the turn");
 }
