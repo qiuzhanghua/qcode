@@ -2492,8 +2492,9 @@ Allow all run_shell for this session  [danger]
 
 ## ADR-0047（草案）：Task / Root 领域模型——任务为核心、目录是可授权根（2026-10-21）
 
-**状态**：方向已确认（Task:Session = 1:1；动态根；`@root` 别名；Windows 只读 = 不可写；
-保留 Workspace 作为兼容概念）；细节待确认，不实现。
+**状态**：方向与关键细节已确认（Task:Session = 1:1；Root label 仅 slug；无根 Task 允许在
+私有临时目录运行 shell；Root 变更等 Turn 结束；旧 Session 的 task_id 复用旧 session id；
+`@root` 别名；Windows 只读 = 不可写；保留 Workspace 作为兼容概念）。仍为草案，未实现。
 
 **背景**：当前产品以 Workspace 为顶层，Workspace 一定绑定一个目录，Session 挂在
 Workspace 下。这个模型有两个硬伤：
@@ -2558,8 +2559,11 @@ Root
 规则：
 
 - 一个 Task 可以有 **0..N 个 Root**。
-- `roots = []` 是合法的纯问答 Task：文件工具和 shell 不可用；仍可聊天、使用其他非文件工具。
-- 每个 Root 的 `label` 在 Task 内唯一；`primary` 最多一个。
+- `roots = []` 是合法的纯问答 Task：文件工具不可用；`run_shell` 仍可在 Task 私有临时目录
+  中运行（不把临时目录算作 Root）；仍可聊天、使用其他非文件工具。
+- 每个 Root 的 `label` 在 Task 内唯一，且只允许 ASCII slug：`[a-z0-9][a-z0-9-]*`，
+  最长 32 字符；中文和空格只出现在 title/display name，不出现在 `@label` 中。
+- `primary` 最多一个。
 - 没有 primary 但有 Root 时，shell 不可用或要求用户选 primary；v1 建议要求显式 primary。
 - Root 的路径必须存在且是目录；添加时校验，不自动创建。
 - v1 限制最多 8 个 Root；不允许 Root 互相嵌套/重叠。
@@ -2569,7 +2573,7 @@ Root
 - Root 的身份是 `Root.id`，不是 `path`。
 - 目录改名/移动后，Task 仍持有同一个 Root ID；用户通过 **relink** 指向新路径。
 - 路径缺失时标记 `missing`，不自动猜测新目录，不静默新建 Root。
-- 正在运行的 shell 若 cwd 失效，停止并在下一个 Turn 重建；不要静默切换路径。
+- 正在运行的 shell 若 cwd 失效，不静默切换路径；当前 Turn 结束后再 relink/重建。
 - Session/Turn 日志记录 Root ID + 当时的 path 版本，便于审计和回放。
 
 ### 2.2 Root 别名与模型可见路径
@@ -2587,8 +2591,9 @@ Root
 - 写只读根：直接拒绝，不弹“是否允许”的审批；要写就显式把 Root 改成 RW（用户操作）。
 - 越界路径：拒绝；不自动提权。
 - 符号链接：先 canonicalize；只读根里的 symlink 不能指向可写根绕过检查。
-- 临时目录：系统临时目录仍可写（构建缓存需要）；是否允许 task 私有 temp 由 sandbox 配置，
-  不把它算作 Root。
+- 临时目录：系统临时目录与 Task 私有 temp 可写（构建缓存需要），不把它们算作 Root。
+- 无根 Task 的 shell：cwd 为 Task 私有 temp；可以读写该 temp，但看不到用户文件；网络仍按
+  Session 网络策略。
 
 ### 2.4 Windows 的只读语义
 
@@ -2599,17 +2604,19 @@ Root
 
 ## 3. 动态 Root 变更
 
-用户确认：Root 可以在运行中增删/改权限，但必须显式审批，并在下一个 Turn 生效。
+用户确认：Root 可以在运行中增删/改权限，但必须显式审批，并**等当前 Turn 结束后生效**。
 
 规则：
 
 - 添加 Root：用户选择目录、label、access、primary；这是 **Task 配置变更**，不是工具审批。
-- 删除 Root：从下一个 Turn 起不可见；正在运行的 shell 在下一个 Turn 重建。
-- RO ↔ RW：必须显式确认；下一个 Turn 生效。
-- relink：更新 path；若当前 shell 正在使用旧路径，停止当前 shell。
+- 删除 Root、RO ↔ RW、relink：先记录为 pending change，当前 Turn 继续使用开始时的权限快照；
+  Turn 结束后统一应用。
+- 当前 Turn 中途不停止 shell，也不扩大权限；Turn 结束后停止旧 shell、重建 sandbox。
+- 如果外部已经把 cwd 删掉/改名，shell 可能自行失败；仍然不在 Turn 中途静默切换路径，
+  Turn 结束后由用户 relink。
+- 正在运行的 shell 不因 pending change 被中途 kill；等 Turn 结束。
 - Root 变更写入 Task 的审计事件；Session 记录变更前后的快照。
 - 模型不能自行添加/修改 Root；v1 只允许用户界面操作。
-- 当前 Turn 仍使用 Turn 开始时的 Root 权限快照；不能在 Turn 中途扩大权限。
 - Root 变更后 sandbox 必须重建；不能复用旧进程的权限。
 
 ## 4. 权限执行分两层
@@ -2635,7 +2642,7 @@ Root
 
 - `Workspace` 保留为兼容术语，但不再是所有权边界。
 - 旧 Workspace 会话迁移为 Task：
-  - 生成 `task_id`（可与旧 session id 相同或新 ULID）；
+  - `task_id` 复用旧 session id（保持链接/恢复兼容），不生成第二套 ID；
   - 旧 cwd 成为唯一 Root，label = `workspace`，access = `read-write`，primary = true；
   - Root ID 新生成；旧 Session 记录建立映射。
 - 旧路径失效时进入 `missing`，要求 relink；不按 basename 自动匹配。
@@ -2672,3 +2679,154 @@ v1（单 Root 兼容 + 无根 Task + 最多 8 Root，macOS/Linux 完整，Window
 4. macOS/Linux 多根 sandbox。
 5. Root 动态变更/relink/审计。
 6. Task 浏览器；最后再删 ADR-0044 的 workspace 假设。
+
+## ADR-0048（草案）：多根 Sandbox 与路径能力（2026-10-21）
+
+**状态**：草案，未实现。依赖 ADR-0047 的 Task/Root 模型。
+
+**背景**：Task 可以有 0..N 个 Root，Root 有 `read-only` / `read-write`，并且无根 Task 仍允许
+在私有临时目录运行 shell。qcode 现有 sandbox 是“单 workspace”假设：
+
+- macOS [sandbox.rs](crates/qcode-tools/src/sandbox.rs:782) 的 SBPL profile 只接收一个
+  `workspace`；`build()` 对 `extra_writable` 在 macOS 分支直接忽略。
+- Linux `bwrap` 只把 workspace bind 成可写；额外目录只有可写，没有额外只读根。
+- Linux Landlock 只给 workspace 加规则。
+- Windows ACL 只限制写，读不受限。
+- 文件工具 [fs.rs](crates/qcode-tools/src/fs.rs:91) 的 `path::resolve` 只接受 workspace 内路径。
+
+**目标**
+
+1. 让 shell 与文件工具都遵守 Task 的 Root 访问矩阵。
+2. 只读根不可写，越界路径不可访问。
+3. macOS/Linux 支持多根；Windows 明确只做写限制。
+4. 无根 Task 的 shell 只在私有 temp 中运行。
+5. Root 变更只在 Turn 边界生效，sandbox 不复用旧权限。
+
+**非目标**
+
+- Windows 的“不可读”只读语义。
+- 允许 Root 重叠/嵌套。
+- 跨设备/远程 sandbox、网络策略重构、持久 shell。
+- 让模型自主修改 Root。
+
+## 1. 权限矩阵
+
+```text
+Root(read-write)  → 文件工具读写；shell bind/bind rw
+Root(read-only)   → 文件工具只读；shell bind ro
+Task 私有 temp     → shell cwd/读写；文件工具不可直接访问（除非作为 temp API）
+无根 Task          → 无文件工具；shell cwd=私有 temp，只能读写 temp
+System/toolchain   → 只读；Cargo/Rustup 等缓存例外可写（须审计）
+```
+
+- Root 不允许重叠/嵌套；v1 最多 8 个。
+- 绝对路径必须 canonicalize 后落在某个 Root 内；否则拒绝。
+- `@label/path` 先解析 Root，再做 canonicalize + 越界检查。
+- 只读根里的 symlink 不能指向可写根；canonicalize 后再判断。
+- 越界路径直接拒绝，不弹 `Allow once`；要访问新目录必须显式加 Root。
+
+## 2. 平台实现
+
+### macOS `sandbox-exec`
+
+- 生成一个 profile，而不是每个 workspace 一个 profile。
+- `file-read*`：系统目录 + 所有 Root（RO/RW 都可读）+ 私有 temp。
+- `file-write*`：仅 RW Root + 私有 temp + 显式 toolchain cache。
+- RO Root 绝不能出现在 `file-write*` 的 `subpath` 中。
+- 无根 Task：只读系统目录 + 私有 temp；不包含用户 home。
+- `extra_writable` 必须真正进入 profile；当前 macOS 分支忽略它是 bug。
+- `sandbox-exec` 是实验/已弃用接口，预检失败必须 fail closed，不能退回无 sandbox。
+
+### Linux `bwrap`
+
+- 系统目录 `--ro-bind`。
+- RO Root：`--ro-bind`。
+- RW Root：`--bind`。
+- Task 私有 temp：`--bind` 或私有 tmpfs。
+- cwd 必须是已 bind 的路径；无根 Task 使用私有 temp。
+- `--unshare-net` 由网络策略决定，不由 Root 矩阵决定。
+- 多根时允许绝对路径；不做 alias 的 shell 重写。
+
+### Linux `Landlock`
+
+- 每个 Root 加规则：RO 用 `LL_EXECUTE|LL_READ_FILE|LL_READ_DIR`，RW 用完整允许位。
+- 系统目录只读；temp/toolchain 可写。
+- Landlock 不限制网络，网络边界仍需 bwrap 或审批。
+- 多根 rule 必须在 `restrict_self` 前全部安装。
+
+### Windows ACL
+
+- 只限制**写**：RW Root + 私有 temp + 显式 cache 可写；其他位置不可写。
+- 读不受限，所以 RO Root 的语义是“不可写，但仍可读”。
+- 无根 Task：只给私有 temp 写权限；读仍不受限。
+- UI/文档必须明确这个限制；不能承诺“参考目录不可读”。
+
+## 3. 无根 Task 的 shell
+
+- 为每个 Task 创建私有 temp 目录（例如 `data/tasks/<id>/tmp`），生命周期绑定 Task。
+- shell cwd 指向该 temp；可以读写 temp，不能看到用户文件。
+- macOS/Linux：sandbox 只读系统目录 + temp；不 bind home。
+- Windows：ACL 只允许 temp 写；读仍可能看到用户可读文件，这是 ACL 的限制。
+- 文件工具在无根 Task 中不可用；模型得到明确“no roots”错误。
+- 纯问答 Task 不需要 Root；这是合法状态，不是错误。
+
+## 4. 路径能力层
+
+- 文件工具统一经过 `RootResolver`：
+  1. 解析 `@label/path` 或绝对路径；
+  2. 找 Root（v1 不允许重叠，因此唯一）；
+  3. canonicalize；
+  4. 检查目标在 Root 内；
+  5. 检查 access。
+- 不允许通过 `..`、symlink、大小写差异绕过。
+- 只读根写入在逻辑层先拒绝，再由 sandbox 兜底。
+- 工具输出路径统一显示 `@label/path`；绝对路径用于 shell 和调试。
+
+## 5. Root 变更与 sandbox 生命周期
+
+- 每个 Turn 开始时冻结 Root 权限快照。
+- Root 增删/RO↔RW/relink 进入 `pending_changes`；当前 Turn 不生效。
+- Turn 结束后：
+  1. 停止该 Turn 的 shell/子进程；
+  2. 应用 pending changes；
+  3. 重建 sandbox；
+  4. 下一个 Turn 使用新快照。
+- Root 变更必须写审计事件；Session 记录前后 Root 快照。
+- 如果外部路径在 Turn 中失效，不静默 relink；Turn 结束后由用户处理。
+- qcode 当前 `run_shell` 是逐命令进程；未来 persistent shell 必须同样在 Turn 边界重启。
+
+## 6. 与审批的关系
+
+- Root access 是权限配置，不是 ADR-0046 的 grant。
+- 写入 RO Root：Deny，不是 Ask。
+- 越界路径：Deny；要访问就加 Root。
+- RW Root 内的具体命令是否 Ask，由 ADR-0046 的 Turn/Session grant 决定。
+- 添加/修改 Root 是用户显式操作；模型不能通过 `Allow once` 提权。
+
+## 7. 失败与可观测性
+
+- sandbox 预检失败：拒绝启动该 Turn 的 shell，明确报错，不退回无 sandbox。
+- 如果平台无法表达 Root 矩阵（例如 Windows 读限制），启动时明确说明能力降级。
+- `qc doctor` 显示：backend、Root 数量、RO/RW、临时目录、toolchain 例外、网络策略。
+- 审计事件至少记录：task_id、root_id、path、access、sandbox backend、turn。
+
+## 8. 推荐实现顺序
+
+1. RootResolver + 文件工具多根（先不碰 sandbox）。
+2. 无根 Task + 私有 temp。
+3. macOS SBPL 多根 RO/RW。
+4. Linux bwrap 多根 RO/RW。
+5. Linux Landlock 多根。
+6. Windows ACL 写限制 + 能力提示。
+7. Root pending changes / 审计 / qc doctor。
+
+**工作量**：文件工具与路径 3–5 天；macOS 2–3 天；bwrap 2–3 天；Landlock 2 天；Windows 1–2 天；
+测试与安全评审 3–5 天。v1 约 **2–3 周**。
+
+## 9. 未决问题
+
+1. Toolchain cache（Cargo/Rustup）是否默认允许写？建议允许但列入 `qc doctor` 和审计。
+2. Root 数量上限是否 8？还是按 sandbox 参数长度动态限制？
+3. 无根 Task 的 temp 是否跨 Turn 保留？建议保留到 Task 结束，便于构建缓存。
+4. 只读 primary Root 是否允许作为 shell cwd？建议允许，但 `qc doctor` 警告写入会失败。
+5. Windows 是否接受“读不受限”作为正式产品语义？当前确认接受。
