@@ -1874,3 +1874,300 @@ Session 侧栏只做简化版：单层列表、状态点、搜索、展开更多
   `/display`、`/thinking`、`/model`、`/permission`、`/plan` 的统一注册、可用性与“不静默退化”。
 - ADR-0044：简化 Session 浏览器  
   状态点、搜索、展开更多；明确不做树形/pin/archive/fork。
+
+## ADR-0042：Composer 与 Pending Interaction —— 一个输入面、一个待处理队列（2026-10-21）
+
+**背景**：qcode 当前的 Composer 是“Textarea + Send/Stop”，运行中直接拒绝发送；审批是
+Composer 上方的一张独立卡片；没有排队、插话、草稿持久化，也没有计划审阅和用户提问的统一
+位置。ADR-0041 已把 Conversation 改为 Turn 模型，但 Turn 运行时会等待用户决策；如果审批、
+计划、提问仍然散落在不同浮层，Composer 就无法成为真正的交互控制面。
+
+DSH 的核心做法不是“审批做得更漂亮”，而是把 Approval / PlanReview / Question 都建模成
+**Pending Interaction**：同一时间只有一个 active request，附着在 Composer 位置，答复后恢复
+编辑器与焦点，请求本身属于 Session 投影。本 ADR 采用这个协议，但把 Steer 放到 P1，先保证
+Queue 和审批可靠。
+
+**决定**
+
+### 1. Composer 的四种状态
+
+Composer 由 `ComposerController` 拥有，状态为：
+
+```text
+Idle           可编辑，可发送
+Running        turn 正在运行；可 Queue（P0）或 Steer（P1）
+Pending        一个 Pending Interaction 占用 Composer
+Restoring      决策已提交，等待 Host/engine 确认，编辑器尚未恢复
+```
+
+- `Pending` 时默认编辑器隐藏，显示交互卡片；草稿、选区、附件仍然保留，不丢失。
+- 决策提交后进入 `Restoring`，只锁定该交互相关的提交，不阻塞窗口其他部分。
+- 交互关闭/超时/取消后恢复编辑器、草稿和焦点；恢复时不能把光标跳到开头。
+- 运行中的 Composer 仍然可编辑；发送动作根据状态变成 Queue 或 Steer，而不是直接拒绝。
+
+### 2. Pending Interaction 统一队列
+
+`PendingInteraction` 至少有三种：
+
+```text
+Approval      工具审批
+PlanReview    计划审阅
+Question      ask_user_question 类提问
+```
+
+统一字段：
+
+```text
+id / kind / session_id / created_at / deadline?
+payload（tool、argv、cwd、rule、plan、questions…）
+actions（允许/拒绝/要求修改/提交答案…）
+```
+
+规则：
+
+- 每个 Session 一个 FIFO 队列，同一时间只有一个 active interaction。
+- 同一 `id` 重复到达只保留一份；已关闭/已过期的请求不能再次回答。
+- 新请求到达时，如果当前请求尚未结算，进入等待队列；侧栏/Composer 显示“还有 N 个待处理”。
+- 当前请求结算后自动推进下一个，不依赖用户重新打开。
+- Turn 取消/失败时，关闭该 Turn 的所有 pending interaction；未回答的按 fail-closed 处理。
+- 交互请求属于 Session 投影；切换 Session 再回来仍能看到未完成请求。
+
+### 3. Approval
+
+- 占用 Composer 位置，显示 tool、summary、reason、rule、argv、cwd、sandbox。
+- 操作：`Allow once` / `Always (this session)` / `Reject`。
+- 键盘：`Enter` 允许一次，`Esc` 拒绝；保留 `Y/A/N` 作为别名。
+- 审批只做临时决定；长期规则仍由配置/审批策略拥有，UI 不改规则文件。
+- 多个审批按 FIFO 排队；一次只展示一个；已取消的请求立即从队列移除。
+- 审批失败/超时 fail-closed；UI 不伪造“已允许”。
+
+### 4. PlanReview
+
+- 计划正文在 diff/plan 抽屉中打开；Composer 位置显示紧凑审批卡片。
+- 操作：`Request changes` / `Approve`。
+- `Request changes` 恢复编辑器，让用户直接输入修改意见，不提交批准。
+- 计划批准是一次显式决策，不因为关闭卡片而视为批准。
+- 关闭卡片只隐藏，不丢失请求；可从 Turn 末尾的计划卡片重新打开。
+
+### 5. Question
+
+- 支持单选、多选、自由文本、跳过、分页。
+- 计时请求允许倒计时；聚焦、编辑或选择“慢慢回答”会暂停/转为无限等待。
+- 提交一批答案后才算回答；关闭不是回答。
+- 结束后可从对应工具行重新打开只读记录；未提交草稿按 Session 保存。
+- 超时按既定协议拒绝，并将 Composer 恢复到可编辑状态。
+
+### 6. 发送与运行中投递
+
+保留 qcode 现有 `Cmd+Enter` 发送习惯，同时允许后续切换：
+
+| 状态 | 主操作 | 键盘 |
+|---|---|---|
+| Idle | Send | `Cmd+Enter` 发送；`Shift+Enter` 换行 |
+| Running | Queue（默认） | `Cmd+Enter` 按 `busy_delivery` 投递；`Cmd+Shift+Enter` 使用互补模式 |
+| Running + Steer 能力 | Queue / Steer | 按钮或命令切换 |
+| Pending | 由交互卡片决定 | 交互自己的 Enter/Esc/方向键 |
+
+- `send_mode` 设置：默认 `cmd_enter`（当前行为）；可选 `enter`（Enter 发送、Cmd+Enter 互补）。
+  两种模式都必须保留 `Shift+Enter` 换行。
+- `busy_delivery` 设置：`queue`（默认）或 `steer`；Steer 只有在 engine 声明支持时显示。
+- Queue 是 P0；Steer 是 P1，先保留协议和按钮位置，不伪造能力。
+- 运行中主按钮在 Send / Stop / Queue / Steer 之间切换；Stop 始终可用。
+- 双 Esc 停止当前 Turn，并保留排队消息。
+
+### 7. Queue / Steer 语义
+
+**Queue**
+
+- 消息在 Composer 上方显示为待发送行，可编辑、删除、重新排序。
+- 队列消息不立即进入 transcript；被 engine 接收后才产生本地回显和权威消息。
+- Stop 后队列保留；用户可以继续编辑或清空。
+- 同一时间只有一个 in-flight turn；队列按 FIFO 逐步投递。
+
+**Steer（P1）**
+
+- 在当前 turn 的下一个 step 边界注入；不保证在任意工具执行中途生效。
+- 未注入前显示 pending 状态，可取消；已注入后按普通消息进入记录。
+- engine 不支持时隐藏 Steer，不显示假按钮。
+
+### 8. 乐观发送与失败恢复
+
+- 发送时立即清空编辑器并显示本地回显；回显带 request id。
+- 权威消息到达后原子替换回显；不能重复显示。
+- 失败时按提交顺序恢复草稿；保留用户随后输入的文字与附件。
+- 同一 request 的重复回显只结算一次。
+- 切 Session/刷新后，未提交草稿按 Session 保留；已提交未确认的请求显示“发送中”。
+
+### 9. 焦点与 IME
+
+- Composer 启动时聚焦；发送/New session/resume 后重新聚焦。
+- Pending 卡片出现时，只有卡片区域获得焦点；关闭后恢复到原草稿光标位置。
+- IME 组合输入期间，Enter 只确认候选，不触发发送/审批。
+- 关键控件有 accessibility label；审批/问题支持键盘导航与焦点恢复。
+
+### 10. 协议与所有权
+
+- engine/bridge 发出 `InteractionOpened` / `InteractionClosed` / `InteractionResolved`；
+  UI 只维护队列与展示，不推断“是否仍可回答”。
+- UI 发送 `Answer { id, decision }`、`Cancel { id }` 等命令；未知/过期 id 为 no-op。
+- 取消 turn 时 engine 负责关闭所有 pending；UI 不永久卡在 `Pending`。
+- 所有 pending interaction 与 turn 生命周期绑定；Turn 结束后不留下可回答的旧卡片。
+
+**范围 / 非目标**
+
+- 不做右侧 Dock；Plan 全文用现有 diff/plan 抽屉/弹层。
+- 不做动态插件化 Composer；先固定四种状态和三种 interaction。
+- 不做多客户端审批归属；P0 是单窗口。
+- 本 ADR 不定义命令注册表；`/model`、`/permission`、`/display` 见 ADR-0043。
+- 不改变现有审批策略与 fail-closed 语义。
+
+**理由**
+
+- Composer 是用户最常看的区域；把决策放在这里，比在多个浮层之间切换更接近 DSH 的体验。
+- 一个队列 + 一个 active request，消除了“多个审批互相覆盖”“运行中无法回答”的旧问题。
+- Queue 先于 Steer，是因为 Queue 不需要 engine 在 step 中途注入，风险低、可测试。
+- 保留 `Cmd+Enter` 作为默认，避免再次改变用户已经习惯的 qcode 行为；`enter` 模式留为设置。
+- Pending Interaction 属于 Session 投影，才能做到切会话、恢复、重开、超时一致。
+
+**后果**
+
+- Composer 从“输入框 + 两个按钮”变成显式状态机，测试量增加。
+- 需要 engine/bridge 补 interaction 协议；现有 `UiEvent::Approval` 需要升级而不是继续打补丁。
+- Queue 消息、草稿、待处理请求都需要持久化/恢复策略。
+- Steer 需要 engine 的 inbox/step 边界支持；未实现前必须隐藏，不能假装可用。
+- Composer takeover 会改变审批 UI 的布局和焦点测试。
+
+**验证**
+
+1. 运行中到达审批 → Composer 显示审批卡片 → Enter 允许 → turn 继续并完成。
+2. 同一 turn 到达两个审批 → 一次只显示一个；回答后自动推进；重复 id 不重复显示。
+3. 审批期间切 Session 再切回 → 请求仍在；草稿未丢。
+4. Cancel turn → 所有 pending 关闭；Composer 恢复可编辑。
+5. 运行中输入并 Queue → 当前 turn 结束后按 FIFO 投递；Stop 后队列仍保留。
+6. Idle `Cmd+Enter` 发送；`Shift+Enter` 换行；IME 组合期间 Enter 不误发。
+7. 发送失败 → 草稿恢复且不重复回显。
+8. 审批 Enter/Esc、Y/A/N、焦点恢复和 accessibility label 通过。
+
+## ADR-0043：Command Registry —— 斜杠命令、选择器与命令 chip（2026-10-21）
+
+**背景**：qcode 现在没有斜杠命令；模型、权限、显示模式等能力只能通过按钮或配置文件进入。
+用户希望引入命令注册表，并对齐 DSH 的 Composer 命令体验。DSH 的关键点不是“支持 `/`”，
+而是：命令有类型、会话级目录、可用性、键盘导航、命令 chip、不静默退化为普通提示词。
+
+**决定**
+
+### 1. 注册表
+
+新增 `CommandRegistry`，命令条目至少包含：
+
+```text
+id / title / description / aliases / icon / category
+kind: Action | Insert | Picker | Backend
+availability(session) -> enabled | disabled(reason)
+argument_hint?
+```
+
+- `Action`：纯 UI 动作，例如显示模式、打开轮次选择，不进入 transcript。
+- `Insert`：把文本/引用/命令 chip 插入草稿，不立即执行。
+- `Picker`：打开选择器，例如模型、权限、显示模式。
+- `Backend`：通过 `UiCommand` 交给 engine/kernel，例如 compact、plan、goal。
+- 同一 id 只能注册一次；别名冲突显式报错。
+- 注册项有 owner 与生命周期；移除 owner 时命令和菜单项一起移除。
+
+### 2. `/` 触发
+
+- 只在 Composer 开头或空白后触发；URL、路径、普通文本中的 `/` 不打开菜单。
+- 菜单按类别分组，支持模糊搜索、前缀优先；空查询显示常用命令。
+- 键盘：`↑/↓` 移动，`Tab`/`Enter` 接受，`Esc`/`Shift+Tab` 关闭；指针选择等价。
+- `/` 菜单和 `@` 引用共用同一套 trigger/overlay，但 source 与解析器分开。
+- 菜单打开期间 Composer 保持焦点，使用 `aria-activedescendant` 报告高亮项。
+
+### 3. 命令 chip
+
+- 已认领的命令是草稿开头的一个原子 chip，后面可以带普通参数。
+- chip 与认领同生共死：删除 chip 恢复字面 token；撤销恢复 chip 与认领。
+- 刷新/切 Session 后，按持久化的命令 token 重新解析；目录未就绪时保留字面 token。
+- 命令名与参数之间用空格分隔；命令参数仍按普通文本编辑。
+- chip 不改变命令的模型可见语义；是否进入日志由命令 owner 决定。
+
+### 4. 不静默退化
+
+- 已输入 `/` 且没有匹配命令时，不自动当普通提示词提交。
+- Composer 显示 `Unknown command` 内联提示，Enter 不发送；用户可以：
+  - 删除 `/` 改为普通文本；
+  - 或显式选择“Send as text”。
+- 命令存在但当前不可用时，菜单显示禁用与原因，Enter 不执行。
+- 命令执行失败显示内联错误，不把命令文本悄悄发给模型。
+
+### 5. 初始命令集
+
+P0 只注册以下命令：
+
+| 命令 | 类型 | 作用 |
+|---|---|---|
+| `/display compact|standard|detailed` | Action | 切换 Conversation 展示档位 |
+| `/thinking on|off` | Action | 显示/隐藏思考行（可选） |
+| `/turns` | Action | 打开轮次选择器 |
+| `/stop` | Action | 停止当前 turn |
+| `/model` | Picker | 选择模型/推理强度 |
+| `/permission` | Picker | 选择会话权限预设 |
+| `/help` | Action | 打开命令速查 |
+
+后续接入：
+
+- `/plan`、`/goal`、`/compact` 走 Backend 命令；
+- 不把未实现的命令放进菜单，避免“看起来能用”。
+
+### 6. 命令目录与可用性
+
+- 命令目录按 Session 解析；不可用命令不显示或显示禁用原因。
+- `Backend` 命令需要 engine 能力；能力缺失时不注册。
+- UI 命令不改变模型请求，不写入 session 日志。
+- Backend 命令产生的事件由 owner 负责；命令本身不直接构造 prompt。
+- 命令菜单和快捷键速查共用同一份命令名称/别名，避免两套词表。
+
+### 7. 选择器
+
+- `Picker` 命令打开 Composer 内嵌弹层，不新开窗口。
+- 选择器持有一份目录，支持搜索、分组、键盘导航、当前值高亮。
+- 选中即提交；取消不改变当前值。
+- 选择失败保留菜单与当前值，并显示可重试错误。
+- 模型/权限选择只在下一 turn 生效；运行中的 step 保留启动时的值。
+
+### 8. 持久化与历史
+
+- 草稿中的命令 chip token 随 Session 草稿保存。
+- 不要求命令历史；常用排序可以用静态 order。
+- 命令目录刷新时，已认领 chip 重新解析；解析失败退化为字面 token，不执行旧命令。
+
+**范围 / 非目标**
+
+- 不做动态插件市场或第三方命令包。
+- 不做完整 DSH 的 `popupSelect` 装饰/宿主命令生命周期；qcode 先做四类命令。
+- 不做 `@` 引用的完整文件/会话目录；引用触发只预留同一管线，后续单独 ADR。
+- 不改变模型请求；命令是否模型可见由 owner 决定。
+- 不在本 ADR 做 Composer takeover；见 ADR-0042。
+
+**理由**
+
+- 命令注册表把“模型、权限、显示模式、轮次”从散落按钮收进一个可发现入口。
+- 命令 chip 让命令可读、可编辑、可恢复，不会刷新后变成一段陌生文本。
+- “不静默退化”避免用户以为执行了命令，实际却把 `/model` 当提示词发给模型。
+- 四类命令足以覆盖 P0，避免一开始就做 DSH 的完整命令/装饰体系。
+
+**后果**
+
+- Composer 的 trigger/overlay/chip 状态增加，需要与 Pending Interaction 协调。
+- 命令可用性依赖 Session 能力，UI 需要处理目录刷新和失败。
+- 需要命令注册、别名冲突、键盘导航、chip 恢复的测试。
+- 命令和快捷键速查要共享词表，避免命名不一致。
+
+**验证**
+
+1. 输入 `/display` 打开菜单，选择 Standard 后 Conversation 档位切换，且不发送模型请求。
+2. `/model` 选择器按 provider 分组、搜索、键盘选择；选择只在下一 turn 生效。
+3. `/permission` 切换当前 Session 权限；高风险选项要求确认。
+4. 输入未知 `/foo`：显示 Unknown command，Enter 不发送；删除 `/` 后可正常发送。
+5. 命令 chip 在切 Session/刷新后恢复；删除 chip 后恢复字面 token。
+6. 不可用命令显示原因，Enter 不执行；选中后不发生静默提交。
+7. 命令菜单、选择器、Esc/Enter/Tab 导航与 accessibility label 通过。
