@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use time::{Duration, OffsetDateTime};
 
-use crate::event::{Event, EventKind, SessionStarted, ToolResult, ToolStatus};
-use crate::task::{Task, TaskError};
+use crate::event::{
+    Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, ToolResult, ToolStatus,
+};
+use crate::task::{Root, Task, TaskError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -32,6 +34,8 @@ pub enum StoreError {
     Locked(String),
     #[error("index error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Task(#[from] TaskError),
 }
 
 /// Exclusive writer lock for one session, held for the duration of a turn.
@@ -58,12 +62,21 @@ pub struct SessionSummary {
     pub cost_usd: f64,
 }
 
+/// A newly created task/session pair. `task_id == started.session`.
+#[derive(Debug, Clone)]
+pub struct CreatedTask {
+    pub id: String,
+    pub started: Event,
+    /// The initial `task_configured` event, to forward to the UI.
+    pub configured: Event,
+}
+
 impl SessionSummary {
-    /// Migrate this legacy session to the Task model.
+    /// Legacy migration view for a session that has no loaded log.
     ///
-    /// The session id is reused as the task id; its cwd becomes the single
-    /// read-write primary root. Task/config events will extend this later.
-    pub fn task(&self) -> Result<Task, TaskError> {
+    /// This ignores `task_configured` / `roots_changed`; use
+    /// [`SessionStore::task`] when the event log is available.
+    pub fn legacy_task(&self) -> Result<Task, TaskError> {
         Task::from_legacy_session(self.id.clone(), self.started.cwd.clone())
     }
 }
@@ -107,6 +120,72 @@ impl SessionStore {
         let event = Event::new(1, &id, 0, EventKind::SessionStarted(meta.clone()));
         self.append(&event)?;
         Ok((id, event))
+    }
+
+    /// Create a new task/session and persist its initial root configuration.
+    ///
+    /// The legacy single-cwd session is migrated to one read-write primary
+    /// `workspace` root. Callers that need a different root set can use
+    /// [`Self::replace_roots`] or construct the events explicitly later.
+    pub fn create_task(&self, meta: &SessionStarted) -> Result<CreatedTask, StoreError> {
+        let (id, started) = self.create(meta)?;
+        let task = Task::from_legacy_session(id.clone(), meta.cwd.clone())?;
+        let configured = Event::new(
+            2,
+            &id,
+            0,
+            EventKind::TaskConfigured(TaskConfigured { roots: task.roots }),
+        );
+        self.append(&configured)?;
+        Ok(CreatedTask {
+            id,
+            started,
+            configured,
+        })
+    }
+
+    /// Replace a task's root list and append a `roots_changed` event.
+    ///
+    /// The caller is responsible for applying this at a turn boundary.
+    pub fn replace_roots(&self, id: &str, roots: Vec<Root>) -> Result<Event, StoreError> {
+        let task = Task::new(id.to_string(), roots)?;
+        let _lock = self.lock(id)?;
+        let events = self.load(id)?;
+        let seq = events.last().map(|event| event.seq).unwrap_or(0) + 1;
+        let turn = events.last().map(|event| event.turn).unwrap_or(0);
+        let event = Event::new(
+            seq,
+            id,
+            turn,
+            EventKind::RootsChanged(RootsChanged { roots: task.roots }),
+        );
+        self.append(&event)?;
+        Ok(event)
+    }
+
+    /// Rebuild the Task view from the session log, falling back to a legacy
+    /// single-root task when no task event exists.
+    pub fn task(&self, id: &str) -> Result<Task, StoreError> {
+        let events = self.load(id)?;
+        let Some(started) = events.first().and_then(|event| match &event.kind {
+            EventKind::SessionStarted(started) => Some(started),
+            _ => None,
+        }) else {
+            return Err(StoreError::NotFound(id.to_string()));
+        };
+        let mut task = Task::from_legacy_session(id.to_string(), started.cwd.clone())?;
+        for event in &events {
+            match &event.kind {
+                EventKind::TaskConfigured(configured) => {
+                    task = Task::new(id.to_string(), configured.roots.clone())?;
+                }
+                EventKind::RootsChanged(changed) => {
+                    task = Task::new(id.to_string(), changed.roots.clone())?;
+                }
+                _ => {}
+            }
+        }
+        Ok(task)
     }
 
     pub fn append(&self, event: &Event) -> Result<(), StoreError> {
@@ -328,6 +407,13 @@ impl SessionStore {
                     "UPDATE sessions SET turns = ?1, last_seq = ?2,
                      cost_usd = cost_usd + ?3 WHERE id = ?4",
                     params![event.turn, event.seq, ended.cost_usd, event.session],
+                )?;
+            }
+            EventKind::TaskConfigured(_) | EventKind::RootsChanged(_) => {
+                let conn = self.open_index()?;
+                conn.execute(
+                    "UPDATE sessions SET last_seq = ?1 WHERE id = ?2",
+                    params![event.seq, event.session],
                 )?;
             }
             _ => {}
@@ -587,6 +673,7 @@ fn sanitize_output_name(call_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::event::{ToolCall, TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage};
+    use crate::task::{Root, RootAccess};
 
     fn meta() -> SessionStarted {
         SessionStarted {
@@ -739,6 +826,55 @@ mod tests {
         assert!(!store.session_path(&source).exists());
     }
 
+    fn root(label: &str, path: &str, access: RootAccess, primary: bool) -> Root {
+        Root {
+            id: format!("{label}-root"),
+            label: label.to_string(),
+            path: std::path::PathBuf::from(path),
+            access,
+            primary,
+        }
+    }
+
+    #[test]
+    fn create_task_writes_initial_config_and_reconstructs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        assert_eq!(created.id, created.started.session);
+        let events = store.load(&created.id).expect("load");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].kind, EventKind::SessionStarted(_)));
+        assert!(matches!(events[1].kind, EventKind::TaskConfigured(_)));
+        let task = store.task(&created.id).expect("task");
+        assert_eq!(task.id, created.id);
+        assert_eq!(task.roots.len(), 1);
+        assert_eq!(task.roots[0].label, "workspace");
+        assert!(task.roots[0].primary);
+    }
+
+    #[test]
+    fn replace_roots_appends_history_and_updates_task() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        let event = store
+            .replace_roots(
+                &created.id,
+                vec![
+                    root("code", "/src", RootAccess::ReadWrite, true),
+                    root("docs", "/docs", RootAccess::ReadOnly, false),
+                ],
+            )
+            .expect("replace roots");
+        assert!(matches!(event.kind, EventKind::RootsChanged(_)));
+        let task = store.task(&created.id).expect("task");
+        assert_eq!(task.roots.len(), 2);
+        assert_eq!(task.roots[0].label, "code");
+        assert_eq!(task.roots[1].access, RootAccess::ReadOnly);
+        assert!(task.primary_root().is_some());
+    }
+
     #[test]
     fn legacy_session_migrates_to_a_single_root_task() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -746,7 +882,7 @@ mod tests {
         let id = seed(&store);
         let listed = store.list().expect("list");
         let summary = listed.iter().find(|item| item.id == id).expect("summary");
-        let task = summary.task().expect("task");
+        let task = summary.legacy_task().expect("task");
         assert_eq!(task.id, id);
         assert_eq!(task.session_id(), id);
         assert_eq!(task.roots.len(), 1);

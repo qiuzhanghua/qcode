@@ -82,19 +82,21 @@ impl SubagentRunner for EngineSubagent {
         request: SubagentRequest,
         cancel: CancellationToken,
     ) -> Result<SubagentOutcome, String> {
-        let (session_id, first_event) = self
+        let created = self
             .store
-            .create(&SessionStarted {
+            .create_task(&SessionStarted {
                 model: self.model.clone(),
                 provider: self.provider.name().to_string(),
                 cwd: self.workspace.display().to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .map_err(|err| format!("cannot create subagent session: {err}"))?;
-        // `store.create` writes session_started outside `run_turn`; forward it
-        // too so the TUI can show the child id before its first tool call.
+        let session_id = created.id;
+        // Forward the task open events too so the parent sees the child id and
+        // its initial root configuration before the first tool call.
         if let Some(sink) = &self.on_event {
-            sink(&first_event);
+            sink(&created.started);
+            sink(&created.configured);
         }
 
         let options = RunOptions {

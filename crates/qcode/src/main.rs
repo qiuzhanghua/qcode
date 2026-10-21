@@ -452,27 +452,29 @@ async fn cmd_run(
     let network = kernel.network;
     let provider: Arc<dyn Provider> = kernel.provider.into();
 
-    let (session_id, first_event) = match resume {
+    let (session_id, initial_events) = match resume {
         Some(id) => {
             // Validate before the engine writes anything; a typo should not
             // create a new session file.
             store.load(&id)?;
             tracing::info!(session = %id, "session resumed");
-            (id, None)
+            (id, Vec::new())
         }
         None => {
-            let (id, event) = store.create(&SessionStarted {
+            let created = store.create_task(&SessionStarted {
                 model: resolved.model.clone(),
                 provider: resolved.name.clone(),
                 cwd,
                 version: env!("CARGO_PKG_VERSION").to_string(),
             })?;
-            tracing::info!(session = %id, "session created");
-            (id, Some(event))
+            tracing::info!(session = %created.id, "session created");
+            (created.id, vec![created.started, created.configured])
         }
     };
-    if json && let Some(event) = &first_event {
-        print_event(event, include_raw);
+    if json {
+        for event in &initial_events {
+            print_event(event, include_raw);
+        }
     }
 
     let approver: Arc<dyn Approver> = if yes {

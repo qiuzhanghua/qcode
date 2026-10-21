@@ -406,10 +406,19 @@ trait Backend {
   - 最多 16 个 Root
   - label 仅允许 slug
   - 至多一个 primary Root
-- `SessionSummary::task()` 将旧 workspace Session 迁移为单 Root Task：
+- `SessionStore::task()` 从事件流重建 Task；旧日志没有 task 事件时回退到 cwd 单 Root：
   - label `workspace`
   - access read-write
   - primary
   - path 来自旧 `SessionStarted.cwd`
+- `SessionSummary::legacy_task()` 只用于没有加载日志的旧视图。
+- 新 Task 追加 `task_configured`，Root 变更追加 `roots_changed`；事件 schema v2。
 - GUI 侧栏入口从 “New session” 改为 “New task”。
 - 多 Root、Root 持久化/relink、Task 浏览器仍未实现。
+
+### Task 事件（2026-10-21）
+
+- 新 Task 追加 `task_configured`，Root 变更追加 `roots_changed`。
+- `SessionStore::create_task` 用于 GUI/ACP/TUI/subagent 新会话。
+- `SessionStore::task` 从事件流重建 Task；旧日志回退到 cwd 单 Root。
+- 事件 schema 升到 v2；旧 v1 日志仍可读。

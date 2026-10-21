@@ -2492,8 +2492,9 @@ Allow all run_shell for this session  [danger]
 
 ## ADR-0047（草案）：Task / Root 领域模型——任务为核心、目录是可授权根（2026-10-21）
 
-**状态**：Accepted（2026-10-21）。实现中：core Task/Root 模型与旧 Session 单 Root 迁移已落地；
-Root 持久化、动态变更与 Task 浏览器仍待实现。已确认：Task:Session = 1:1；Root label 仅 slug；
+**状态**：Accepted（2026-10-21）。实现中：core Task/Root 模型、旧 Session 单 Root 迁移、
+`task_configured` / `roots_changed` 事件与日志重建已落地；动态变更 UI 与 Task 浏览器仍待实现。
+已确认：Task:Session = 1:1；Root label 仅 slug；
 无根 Task 允许在 Turn 私有临时目录运行 shell；Root 变更等 Turn 结束；旧 Session 的 task_id
 复用旧 session id；`@root` 别名；Windows 只读 = 不可写；保留 Workspace 作为兼容概念。
 
@@ -2604,6 +2605,17 @@ Root
 - 因此 Windows v1 的 `read-only` 语义是：**不可写，但仍可读**。
 - UI/文档必须明确这一点；不能承诺“参考目录不可读”。
 - 需要“不可读”时，Windows 暂不支持，或另立 ADR 用 AppContainer/Job Object 等实现。
+
+## 2.5 持久化事件
+
+- 新建 Task 时，在 `session_started` 后追加 `task_configured { roots }`。
+- Root 变更时追加 `roots_changed { roots }`，记录完整快照而不是增量。
+- `task_configured` / `roots_changed` 的 `turn` 使用当前最后 Turn 号，避免 SessionSummary 把
+  turns 归零。
+- 回放时以最后一个 `task_configured` / `roots_changed` 为准；旧日志没有这两个事件时，从
+  `session_started.cwd` 派生单 Root。
+- 事件 schema 升到 v2；旧 v1 日志仍可读。
+- Root 事件只记录配置，不改变 Turn 内容；审批与 sandbox 在下一个 Turn 使用新配置。
 
 ## 3. 动态 Root 变更
 

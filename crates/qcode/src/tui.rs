@@ -160,13 +160,15 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let session_id = match (&options.resume, &history) {
         (Some(id), Some(_)) => id.clone(),
         _ => {
-            let (id, _) = options.store.create(&SessionStarted {
-                model: options.model.to_string(),
-                provider: options.provider_name.to_string(),
-                cwd: options.workspace.display().to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            })?;
-            id
+            options
+                .store
+                .create_task(&SessionStarted {
+                    model: options.model.to_string(),
+                    provider: options.provider_name.to_string(),
+                    cwd: options.workspace.display().to_string(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                })?
+                .id
         }
     };
 

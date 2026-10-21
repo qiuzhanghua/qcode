@@ -2337,8 +2337,8 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                 let session_id = match session.clone() {
                                     Some(id) => id,
                                     None => {
-                                        let (id, started) =
-                                            match engine.store.create(&SessionStarted {
+                                        let created =
+                                            match engine.store.create_task(&SessionStarted {
                                                 model: model.clone(),
                                                 provider: engine.provider_name.clone(),
                                                 cwd: engine.workspace.display().to_string(),
@@ -2347,13 +2347,15 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                                 Ok(created) => created,
                                                 Err(error) => {
                                                     eprintln!(
-                                                        "qcode-gui: cannot create a session: {error}"
+                                                        "qcode-gui: cannot create a task: {error}"
                                                     );
                                                     port.send_turn_failed(error.to_string());
                                                     continue;
                                                 }
                                             };
-                                        port.send_event(&started);
+                                        let id = created.id.clone();
+                                        port.send_event(&created.started);
+                                        port.send_event(&created.configured);
                                         port.send_session_changed(Some(id.clone()));
                                         session = Some(id.clone());
                                         id

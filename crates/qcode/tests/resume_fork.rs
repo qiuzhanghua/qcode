@@ -63,11 +63,12 @@ fn headless_resume_appends_to_the_same_session() {
     );
 
     let events = events(dir.path(), &id);
-    assert_eq!(events.len(), 9, "first turn + second turn");
+    assert_eq!(events.len(), 10, "task config + first turn + second turn");
     assert_eq!(events[0]["type"], "session_started");
-    assert_eq!(events[8]["type"], "turn_ended");
-    assert_eq!(events[8]["turn"], 2);
-    assert_eq!(events[8]["data"]["status"], "completed");
+    assert_eq!(events[1]["type"], "task_configured");
+    assert_eq!(events[9]["type"], "turn_ended");
+    assert_eq!(events[9]["turn"], 2);
+    assert_eq!(events[9]["data"]["status"], "completed");
 
     let sessions = std::fs::read_dir(dir.path().join("sessions"))
         .expect("sessions dir")
@@ -104,7 +105,7 @@ fn fork_copies_a_prefix_and_can_be_resumed() {
             .collect::<Vec<_>>(),
         vec![Some(1), Some(2), Some(3)]
     );
-    assert_eq!(events(dir.path(), &source).len(), 5, "source untouched");
+    assert_eq!(events(dir.path(), &source).len(), 6, "source untouched");
 
     let resumed = qc(
         dir.path(),
@@ -127,5 +128,5 @@ fn fork_copies_a_prefix_and_can_be_resumed() {
     let grown = events(dir.path(), &fork);
     assert_eq!(grown.len(), 7, "3 copied + 4 new turn events");
     assert_eq!(grown.last().expect("last")["turn"], 2);
-    assert_eq!(events(dir.path(), &source).len(), 5);
+    assert_eq!(events(dir.path(), &source).len(), 6);
 }

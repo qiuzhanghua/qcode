@@ -171,16 +171,17 @@ impl Agent {
         request: NewSessionRequest,
     ) -> Result<NewSessionResponse, RpcError> {
         let cwd = self.session_cwd(&request.cwd)?;
-        let (session_id, _) = self
+        let created = self
             .deps
             .store
-            .create(&SessionStarted {
+            .create_task(&SessionStarted {
                 model: self.deps.model.clone(),
                 provider: self.deps.provider.name().to_string(),
                 cwd: cwd.display().to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             })
             .map_err(|err| RpcError::internal(err.to_string()))?;
+        let session_id = created.id;
         self.sessions
             .lock()
             .await

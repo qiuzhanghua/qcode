@@ -7,9 +7,10 @@
 
 use qcode_core::event::{
     ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
-    ErrorEvent, EventKind, Scope, SessionStarted, ToolCall, ToolMetadata, ToolResult, ToolStatus,
-    TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage,
+    ErrorEvent, EventKind, RootsChanged, Scope, SessionStarted, TaskConfigured, ToolCall,
+    ToolMetadata, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage,
 };
+use qcode_core::task::{Root, RootAccess};
 use serde_json::{Value, json};
 
 fn assert_snapshot(kind: EventKind, expected: Value) {
@@ -36,6 +37,73 @@ fn session_started_snapshot() {
                 "provider": "deepseek",
                 "cwd": "/work/repo",
                 "version": "0.1.0"
+            }
+        }),
+    );
+}
+
+fn root() -> Root {
+    Root {
+        id: "root-1".into(),
+        label: "workspace".into(),
+        path: "/work/repo".into(),
+        access: RootAccess::ReadWrite,
+        primary: true,
+    }
+}
+
+#[test]
+fn task_configured_snapshot() {
+    assert_snapshot(
+        EventKind::TaskConfigured(TaskConfigured {
+            roots: vec![root()],
+        }),
+        json!({
+            "type": "task_configured",
+            "data": {
+                "roots": [{
+                    "id": "root-1",
+                    "label": "workspace",
+                    "path": "/work/repo",
+                    "access": "read-write",
+                    "primary": true
+                }]
+            }
+        }),
+    );
+}
+
+#[test]
+fn roots_changed_snapshot() {
+    let mut docs = root();
+    docs.id = "root-2".into();
+    docs.label = "docs".into();
+    docs.path = "/work/docs".into();
+    docs.access = RootAccess::ReadOnly;
+    docs.primary = false;
+    assert_snapshot(
+        EventKind::RootsChanged(RootsChanged {
+            roots: vec![root(), docs],
+        }),
+        json!({
+            "type": "roots_changed",
+            "data": {
+                "roots": [
+                    {
+                        "id": "root-1",
+                        "label": "workspace",
+                        "path": "/work/repo",
+                        "access": "read-write",
+                        "primary": true
+                    },
+                    {
+                        "id": "root-2",
+                        "label": "docs",
+                        "path": "/work/docs",
+                        "access": "read-only",
+                        "primary": false
+                    }
+                ]
             }
         }),
     );

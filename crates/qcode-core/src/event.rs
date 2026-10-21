@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
+use crate::task::Root;
+
 /// Bumped whenever the on-disk shape changes in a breaking way.
-pub const EVENT_SCHEMA_VERSION: u32 = 1;
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -41,6 +43,8 @@ impl Event {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventKind {
     SessionStarted(SessionStarted),
+    TaskConfigured(TaskConfigured),
+    RootsChanged(RootsChanged),
     TurnStarted(TurnStarted),
     UserMessage(UserMessage),
     AssistantMessage(AssistantMessage),
@@ -59,6 +63,16 @@ pub struct SessionStarted {
     pub provider: String,
     pub cwd: String,
     pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskConfigured {
+    pub roots: Vec<Root>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RootsChanged {
+    pub roots: Vec<Root>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,7 +274,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let value: Value = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(value["v"], 1);
+        assert_eq!(value["v"], 2);
         assert_eq!(value["seq"], 1);
         assert_eq!(value["session"], "s1");
         assert_eq!(value["type"], "user_message");
