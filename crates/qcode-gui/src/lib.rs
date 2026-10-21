@@ -1390,20 +1390,37 @@ fn reasoning_row(
         .map(|elapsed| format!("Thought for {}", format_duration(elapsed)))
         .unwrap_or_else(|| "Thought".to_string());
     let marker = if expanded { "▾" } else { "▸" };
-    let mut row = div().flex().flex_col().gap_1().px_6().py_1();
+    let mut row = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .px_6()
+        .py_1()
+        .items_start();
     row = row.child(
-        Button::new(format!("reasoning-toggle-{block}"))
-            .label(format!("{marker} {label}"))
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_start()
+            .w_full()
+            .id(format!("reasoning-row-{block}"))
+            .cursor_pointer()
+            .text_size(px(SECONDARY_SIZE))
+            .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
                 move |_, _, cx| {
                     entity.update(cx, |shell, cx| shell.toggle_reasoning(block, cx));
                 }
-            }),
+            })
+            .child(format!("{marker} {label}")),
     );
     if expanded {
         row = row.child(
             div()
+                .w_full()
                 .px_6()
                 .pb_2()
                 .text_size(px(SECONDARY_SIZE))
@@ -1547,14 +1564,24 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let show_process = shell.mode != DisplayMode::Compact
         || turn.running()
         || turn.status == Some(qcode_core::event::TurnStatus::Failed);
-    let mut process = div().flex().flex_col().gap_1();
+    let mut process = div().flex().flex_col().gap_1().w_full().items_start();
 
     if has_process && show_process {
         if expanded {
             if !turn.running() {
                 process = process.child(
-                    Button::new(format!("process-collapse-{index}"))
-                        .label(format!("▾ {}", process_summary(turn, shell)))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_start()
+                        .w_full()
+                        .px_6()
+                        .py_1()
+                        .id(format!("process-collapse-row-{index}"))
+                        .cursor_pointer()
+                        .text_size(px(SECONDARY_SIZE))
+                        .text_color(rgb(0x888888))
                         .on_click({
                             let entity = entity.clone();
                             move |_, _, cx| {
@@ -1562,7 +1589,8 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                                     shell.toggle_process(index, cx);
                                 });
                             }
-                        }),
+                        })
+                        .child(format!("▾ {}", process_summary(turn, shell))),
                 );
             }
             for block in &turn.process {
@@ -1583,8 +1611,16 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                         .gap_1()
                         .px_6()
                         .child(
-                            Button::new("reasoning-live-toggle")
-                                .label(format!("{marker} Thinking…"))
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_start()
+                                .w_full()
+                                .id("reasoning-live-row")
+                                .cursor_pointer()
+                                .text_size(px(SECONDARY_SIZE))
+                                .text_color(rgb(0x888888))
                                 .on_click({
                                     let entity = entity.clone();
                                     move |_, _, cx| {
@@ -1592,7 +1628,8 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                                             shell.toggle_reasoning(usize::MAX, cx);
                                         });
                                     }
-                                }),
+                                })
+                                .child(format!("{marker} Thinking…")),
                         )
                         .children(live_expanded.then(|| {
                             div()
@@ -1605,8 +1642,18 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             }
         } else {
             process = process.child(
-                Button::new(format!("process-toggle-{index}"))
-                    .label(format!("▸ {}", process_summary(turn, shell)))
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_start()
+                    .w_full()
+                    .px_6()
+                    .py_1()
+                    .id(format!("process-toggle-row-{index}"))
+                    .cursor_pointer()
+                    .text_size(px(SECONDARY_SIZE))
+                    .text_color(rgb(0x888888))
                     .on_click({
                         let entity = entity.clone();
                         move |_, _, cx| {
@@ -1614,7 +1661,8 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                                 shell.toggle_process(index, cx);
                             });
                         }
-                    }),
+                    })
+                    .child(format!("▸ {}", process_summary(turn, shell))),
             );
         }
         card = card.child(process);
@@ -1814,6 +1862,8 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .flex()
                 .flex_col()
                 .gap_1()
+                .self_start()
+                .items_start()
                 .mx_6()
                 .my_1()
                 .rounded(px(6.0))
@@ -1824,6 +1874,8 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     div()
                         .flex()
                         .flex_row()
+                        .items_center()
+                        .justify_start()
                         .gap_2()
                         .text_size(px(CODE_SIZE))
                         .text_color(rgb(0x999999))
@@ -1878,6 +1930,8 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             )
             .into_any_element(),
         Block::Todo(items) => div()
+            .self_start()
+            .items_start()
             .mx_6()
             .my_1()
             .rounded(px(6.0))
