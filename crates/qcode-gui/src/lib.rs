@@ -1173,6 +1173,9 @@ pub fn run(
             KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
             KeyBinding::new("cmd-.", StopTurnShortcut, None),
             KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
+            // The focused Textarea owns the "Input" context, so bind there too
+            // or the root handler never sees Cmd+Enter.
+            KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
         ]);
         gpui_kit::open_window(window_options, cx, |window, cx| {
             cx.new(|cx| {
