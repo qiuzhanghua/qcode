@@ -14,9 +14,10 @@ pub mod setup;
 pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
@@ -32,6 +33,7 @@ gpui_kit::actions!(
         NewSessionShortcut,
         OpenSettingsShortcut,
         StopTurnShortcut,
+        SendMessage,
     ]
 );
 use crate::approvals::ApprovalQueue;
@@ -65,7 +67,21 @@ fn context_label(app: &App) -> String {
     }
 }
 
-#[doc(hidden)]
+fn short_time(rfc3339: &str) -> String {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::parse(rfc3339, &Rfc3339)
+        .map(|time| {
+            format!(
+                "{:02}-{:02} {:02}:{:02}",
+                time.month() as u8,
+                time.day(),
+                time.hour(),
+                time.minute()
+            )
+        })
+        .unwrap_or_else(|_| rfc3339.chars().take(16).collect())
+}
+
 pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -96,6 +112,8 @@ pub trait Backend {
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
     fn cancel(&mut self);
+    /// Change the model for subsequent turns.
+    fn set_model(&mut self, model: String);
     fn try_recv(&mut self) -> Option<UiEvent>;
 }
 
@@ -163,6 +181,10 @@ impl Backend for LocalBackend {
         self.send(UiCommand::Cancel);
     }
 
+    fn set_model(&mut self, model: String) {
+        self.send(UiCommand::SetModel { model });
+    }
+
     fn try_recv(&mut self) -> Option<UiEvent> {
         self.events.try_recv().ok()
     }
@@ -171,7 +193,9 @@ impl Backend for LocalBackend {
 struct Shell {
     app: App,
     /// A real text input, so IME and CJK go through the platform.
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
+    /// Model used for the next turn; editable without restarting the kernel.
+    model_input: Entity<InputState>,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
     /// Images pasted since the last submit.
@@ -188,6 +212,8 @@ struct Shell {
     workspace: String,
     config_path: PathBuf,
     data_dir: PathBuf,
+    approval_policy: Option<PathBuf>,
+    prefs: GuiPreferences,
 }
 
 impl Shell {
@@ -196,6 +222,7 @@ impl Shell {
         backend: Box<dyn Backend>,
         config_path: PathBuf,
         data_dir: PathBuf,
+        approval_policy: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -206,10 +233,23 @@ impl Shell {
         });
         let last_blocks = app.blocks.len();
         let scroller = cx.new(|cx| MessageScrollerState::new(app.blocks.len(), cx));
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask qcode…"));
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 6)
+                .placeholder("Ask qcode…")
+        });
+        let model = app.status.model.clone();
+        let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
+        model_input.update(cx, |input, cx| input.set_value(model, window, cx));
+        let mut prefs = GuiPreferences::load(&data_dir);
+        prefs.record_workspace(Path::new(&workspace));
+        if let Err(error) = prefs.save(&data_dir) {
+            app.push_notice(format!("cannot save gui.json: {error}"));
+        }
         Self {
             app,
             input,
+            model_input,
             diff: None,
             attachments: Vec::new(),
             approvals: ApprovalQueue::default(),
@@ -221,6 +261,8 @@ impl Shell {
             workspace,
             config_path,
             data_dir,
+            approval_policy,
+            prefs,
         }
     }
 
@@ -301,9 +343,20 @@ impl Shell {
     }
 
     fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.app.status.running {
+            self.app
+                .push_notice("stop the running turn before sending another message");
+            cx.notify();
+            return;
+        }
         let prompt = self.input.read(cx).value().trim().to_string();
         if prompt.is_empty() {
             return;
+        }
+        let model = self.model_input.read(cx).value().trim().to_string();
+        if !model.is_empty() && model != self.app.status.model {
+            self.backend.set_model(model.clone());
+            self.app.status.model = model;
         }
         self.backend
             .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
@@ -312,13 +365,6 @@ impl Shell {
             cx.notify();
         });
         self.sync_scroller(cx);
-    }
-
-    fn submit_on_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value().to_string();
-        if text.ends_with('\n') && !text.trim().is_empty() {
-            self.send_prompt(window, cx);
-        }
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -392,6 +438,65 @@ impl Shell {
         }
     }
 
+    fn open_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.app.status.running {
+            self.app
+                .push_notice("stop the running turn before switching workspace");
+            cx.notify();
+            return;
+        }
+        match pick_workspace() {
+            Ok(Some(path)) => self.switch_workspace(path, cx),
+            Ok(None) => {}
+            Err(error) => {
+                self.app.push_notice(error);
+                cx.notify();
+            }
+        }
+    }
+
+    fn switch_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.app
+                .push_notice(format!("not a directory: {}", path.display()));
+            cx.notify();
+            return;
+        }
+        self.prefs.record_workspace(&path);
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.app
+                .push_notice(format!("cannot save gui.json: {error}"));
+            cx.notify();
+            return;
+        }
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                self.app.push_notice(format!("cannot locate qc: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        let args = reexec_args(
+            std::env::args_os().skip(1),
+            &self.config_path,
+            &self.data_dir,
+            self.approval_policy.as_deref(),
+        );
+        match std::process::Command::new(exe)
+            .args(args)
+            .current_dir(&path)
+            .spawn()
+        {
+            Ok(_) => cx.quit(),
+            Err(error) => {
+                self.app
+                    .push_notice(format!("cannot open workspace: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
     fn open_settings(&self, cx: &mut Context<Self>) {
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
@@ -415,9 +520,10 @@ impl Shell {
                     "○"
                 };
                 let label = format!(
-                    "{marker} {} · {} turns",
-                    short_id(&session.id),
-                    session.turns
+                    "{marker} {} · {}t · ${:.3}",
+                    short_time(&session.started_at),
+                    session.turns,
+                    session.cost_usd
                 );
                 Button::new(format!("session-{}", session.id))
                     .label(label)
@@ -439,6 +545,12 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _window, cx| this.new_session(cx))),
             )
             .child(
+                Button::new("open-workspace")
+                    .label("Open workspace…")
+                    .on_click(cx.listener(|this, _, _window, cx| this.open_workspace(cx))),
+            )
+            .children(recent_workspaces(self, cx))
+            .child(
                 Button::new("open-settings")
                     .label("Settings")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
@@ -446,9 +558,8 @@ impl Shell {
             .children(sessions)
     }
 
-    fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_main(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll(cx);
-        self.submit_on_enter(window, cx);
         let entity = cx.entity();
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
@@ -465,14 +576,23 @@ impl Shell {
             .flex_col()
             .flex_grow(1.0)
             .min_w_0()
-            .child(div().p_2().child(format!(
-                "{} · {} block(s)",
-                self.active
-                    .as_deref()
-                    .map(short_id)
-                    .unwrap_or("new session"),
-                self.app.blocks.len()
-            )))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .child(format!(
+                        "{} · {} block(s)",
+                        self.active
+                            .as_deref()
+                            .map(short_id)
+                            .unwrap_or("new session"),
+                        self.app.blocks.len()
+                    ))
+                    .child(div().w(px(200.0)).child(Input::new(&self.model_input))),
+            )
             .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
             .children(self.diff.as_ref().map(|state| {
                 div()
@@ -545,11 +665,14 @@ impl Shell {
                             .label(format!("Paste image ({})", self.attachments.len()))
                             .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
                     )
-                    .child(div().flex_grow(1.0).child(Input::new(&self.input)))
+                    .child(div().flex_grow(1.0).child(Textarea::new(&self.input)))
                     .child(
-                        Button::new("send").label("Send").on_click(
-                            cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
-                        ),
+                        Button::new("send")
+                            .label("Send")
+                            .disabled(self.app.status.running)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
+                            ),
                     ),
             )
             .child(
@@ -568,6 +691,119 @@ impl Shell {
                         "idle"
                     }),
             )
+    }
+}
+
+fn recent_workspaces(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    shell
+        .prefs
+        .recent_workspaces()
+        .filter(|path| *path != shell.workspace)
+        .take(5)
+        .map(|path| {
+            let label = Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path);
+            let path = PathBuf::from(path);
+            Button::new(format!("recent-workspace-{path:?}"))
+                .label(format!("↩ {label}"))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.switch_workspace(path.clone(), cx);
+                }))
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn reexec_args(
+    args: impl Iterator<Item = std::ffi::OsString>,
+    config_path: &Path,
+    data_dir: &Path,
+    approval_policy: Option<&Path>,
+) -> Vec<std::ffi::OsString> {
+    let mut out = Vec::new();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        let text = arg.to_string_lossy();
+        let replacement = if text == "--config" {
+            Some(config_path)
+        } else if text == "--data-dir" {
+            Some(data_dir)
+        } else if text == "--approval-policy" {
+            approval_policy
+        } else {
+            None
+        };
+        if let Some(replacement) = replacement {
+            out.push(arg);
+            if args.peek().is_some() {
+                args.next();
+            }
+            out.push(replacement.as_os_str().to_owned());
+            continue;
+        }
+        if let Some(value) = text.strip_prefix("--config=") {
+            let _ = value;
+            out.push(format!("--config={}", config_path.display()).into());
+            continue;
+        }
+        if let Some(value) = text.strip_prefix("--data-dir=") {
+            let _ = value;
+            out.push(format!("--data-dir={}", data_dir.display()).into());
+            continue;
+        }
+        if let Some(value) = text.strip_prefix("--approval-policy=") {
+            let _ = value;
+            if let Some(approval_policy) = approval_policy {
+                out.push(format!("--approval-policy={}", approval_policy.display()).into());
+                continue;
+            }
+        }
+        out.push(arg);
+    }
+    out
+}
+
+fn pick_workspace() -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose folder with prompt \"Open a workspace\")",
+            ])
+            .output()
+            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+        if !output.status.success() {
+            // Cancel is a non-zero status with an AppleScript cancel message.
+            return Ok(None);
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(PathBuf::from(path.trim_end_matches('/'))))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args([
+                "--file-selection",
+                "--directory",
+                "--title=Open a workspace",
+            ])
+            .output()
+            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("native workspace picker is not implemented on this platform".to_string())
     }
 }
 
@@ -686,6 +922,9 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &StopTurnShortcut, _window, cx| {
                 this.stop();
                 cx.notify();
@@ -708,6 +947,7 @@ pub struct Engine {
     pub workspace: PathBuf,
     pub model: String,
     pub pricing: Option<qcode_core::cost::Pricing>,
+    pub pricing_table: std::collections::BTreeMap<String, qcode_core::cost::Pricing>,
     pub max_turns: u32,
     pub max_cost_usd: Option<f64>,
     pub context_window: Option<u64>,
@@ -716,7 +956,13 @@ pub struct Engine {
 }
 
 /// Open the window and drive it until the user closes it.
-pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
+pub fn run(
+    app: App,
+    backend: Box<dyn Backend>,
+    config_path: PathBuf,
+    data_dir: PathBuf,
+    approval_policy: Option<PathBuf>,
+) {
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
@@ -729,9 +975,20 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             KeyBinding::new("cmd-n", NewSessionShortcut, None),
             KeyBinding::new("cmd-,", OpenSettingsShortcut, None),
             KeyBinding::new("cmd-.", StopTurnShortcut, None),
+            KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
         ]);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
+            cx.new(|cx| {
+                Shell::new(
+                    app,
+                    backend,
+                    config_path,
+                    data_dir,
+                    approval_policy,
+                    window,
+                    cx,
+                )
+            })
         })
         .expect("failed to open the window");
     });
@@ -754,6 +1011,8 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
             let approver = std::sync::Arc::new(port.approver());
             let mut session: Option<String> = None;
             let mut active: Option<CancellationToken> = None;
+            let mut model = engine.model.clone();
+            let mut pricing = engine.pricing;
 
             while let Some(command) = commands.recv().await {
                 match command {
@@ -785,12 +1044,16 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                         session = Some(id.clone());
                         port.send_session_changed(Some(id));
                     }
+                    UiCommand::SetModel { model: next } => {
+                        model = next;
+                        pricing = engine.pricing_table.get(&model).copied();
+                    }
                     UiCommand::Prompt { text, attachments } => {
                         let session_id = match session.clone() {
                             Some(id) => id,
                             None => {
                                 let (id, started) = match engine.store.create(&SessionStarted {
-                                    model: engine.model.clone(),
+                                    model: model.clone(),
                                     provider: engine.provider_name.clone(),
                                     cwd: engine.workspace.display().to_string(),
                                     version: env!("CARGO_PKG_VERSION").to_string(),
@@ -812,12 +1075,12 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                         active = Some(token.clone());
                         let options = RunOptions {
                             session_id: &session_id,
-                            model: &engine.model,
+                            model: &model,
                             input: text,
                             workspace: engine.workspace.clone(),
                             max_turns: engine.max_turns,
                             cancel: token,
-                            pricing: engine.pricing,
+                            pricing,
                             max_cost_usd: engine.max_cost_usd,
                             on_delta: None,
                             context_window: engine.context_window,

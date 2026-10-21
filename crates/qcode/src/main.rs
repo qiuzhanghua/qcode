@@ -674,6 +674,29 @@ async fn cmd_gui(
     approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let workspace = std::env::current_dir()?.canonicalize()?;
+    // Workspace switching re-execs qc with current_dir set to the new
+    // workspace; relative --config/--data-dir values must be anchored first.
+    let config_path = config_path.map(|path| {
+        if path.is_relative() {
+            workspace.join(path)
+        } else {
+            path
+        }
+    });
+    let data_dir = data_dir.map(|path| {
+        if path.is_relative() {
+            workspace.join(path)
+        } else {
+            path
+        }
+    });
+    let approval_policy = approval_policy.map(|path| {
+        if path.is_relative() {
+            workspace.join(path)
+        } else {
+            path
+        }
+    });
     let setup_path = config::edit_path(config_path.clone())?;
     let needs_setup = match config::load(&setup_path) {
         Ok(loaded) => config::resolve(&loaded, &config::Overrides::default(), &|key| {
@@ -738,6 +761,7 @@ async fn cmd_gui(
             &kernel.resolved.model,
             kernel.config.agent.max_cost_usd,
         )?,
+        pricing_table: kernel.config.pricing.clone(),
         max_turns: kernel.config.agent.max_turns,
         max_cost_usd: kernel.config.agent.max_cost_usd,
         context_window: Some(kernel.config.context.window_tokens),
@@ -745,7 +769,13 @@ async fn cmd_gui(
         snapshots: Some(snapshots),
     };
     let backend = qcode_gui::LocalBackend::new(engine);
-    qcode_gui::run(app, Box::new(backend), setup_path, gui_data_dir);
+    qcode_gui::run(
+        app,
+        Box::new(backend),
+        setup_path,
+        gui_data_dir,
+        approval_policy,
+    );
     Ok(ExitCode::SUCCESS)
 }
 async fn cmd_tui(

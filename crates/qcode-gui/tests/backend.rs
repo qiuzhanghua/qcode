@@ -20,6 +20,7 @@ fn engine(workspace: &std::path::Path, store: SessionStore) -> Engine {
         model: "mock-1".to_string(),
         max_turns: 2,
         pricing: None,
+        pricing_table: std::collections::BTreeMap::new(),
         max_cost_usd: None,
         context_window: Some(128_000),
         network: None,

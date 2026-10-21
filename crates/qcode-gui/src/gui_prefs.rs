@@ -16,6 +16,8 @@ pub struct GuiPreferences {
     pub font_size: u32,
     pub code_font: String,
     pub density: String,
+    /// Most-recent first; absolute paths. Capped to 10.
+    pub recent_workspaces: Vec<String>,
 }
 
 impl Default for GuiPreferences {
@@ -25,6 +27,7 @@ impl Default for GuiPreferences {
             font_size: 14,
             code_font: "SF Mono".to_string(),
             density: "comfortable".to_string(),
+            recent_workspaces: Vec::new(),
         }
     }
 }
@@ -56,6 +59,19 @@ impl GuiPreferences {
         std::fs::rename(&temp, &path)
     }
 
+    /// Record `workspace` at the front of the recent list.
+    pub fn record_workspace(&mut self, workspace: &Path) {
+        let path = workspace.display().to_string();
+        self.recent_workspaces.retain(|known| known != &path);
+        self.recent_workspaces.insert(0, path);
+        self.recent_workspaces.truncate(10);
+    }
+
+    /// Recent workspaces in most-recent-first order.
+    pub fn recent_workspaces(&self) -> impl Iterator<Item = &str> {
+        self.recent_workspaces.iter().map(String::as_str)
+    }
+
     /// Apply the appearance to every GPUI window.
     pub fn apply(&self, cx: &mut App) {
         if let Some(mode) = match self.theme.as_str() {
@@ -84,6 +100,10 @@ impl GuiPreferences {
         if !matches!(self.density.as_str(), "comfortable" | "compact") {
             self.density = "comfortable".to_string();
         }
+        let mut seen = std::collections::BTreeSet::new();
+        self.recent_workspaces
+            .retain(|path| !path.trim().is_empty() && seen.insert(path.clone()));
+        self.recent_workspaces.truncate(10);
         self
     }
 }

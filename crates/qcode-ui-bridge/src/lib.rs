@@ -88,6 +88,8 @@ pub enum UiCommand {
     NewSession,
     /// Switch the engine to an existing session.
     Resume { id: String },
+    /// Change the model used by subsequent turns.
+    SetModel { model: String },
 }
 
 /// The UI's end of the bridge: drain events, send commands.

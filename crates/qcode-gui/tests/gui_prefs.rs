@@ -11,9 +11,29 @@ fn defaults_and_round_trip() {
         font_size: 16,
         code_font: "JetBrains Mono".to_string(),
         density: "compact".to_string(),
+        recent_workspaces: vec!["/w/a".to_string(), "/w/b".to_string()],
     };
     prefs.save(dir.path()).expect("save");
     assert_eq!(GuiPreferences::load(dir.path()), prefs);
+}
+
+#[test]
+fn recent_workspaces_are_deduplicated_and_capped() {
+    let mut prefs = GuiPreferences::default();
+    for index in 0..12 {
+        prefs.record_workspace(std::path::Path::new(&format!("/w/{index}")));
+    }
+    prefs.record_workspace(std::path::Path::new("/w/5"));
+    assert_eq!(prefs.recent_workspaces.len(), 10);
+    assert_eq!(prefs.recent_workspaces[0], "/w/5");
+    assert_eq!(
+        prefs
+            .recent_workspaces
+            .iter()
+            .filter(|p| *p == "/w/5")
+            .count(),
+        1
+    );
 }
 
 #[test]
