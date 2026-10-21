@@ -1007,16 +1007,6 @@ impl App {
     }
 
     /// Toggle one tool card by call id (GUI click).
-    pub fn set_tool_expanded(&mut self, call_id: &str, expanded: bool) {
-        if let Some(Block::Tool(tool)) = self
-            .blocks
-            .iter_mut()
-            .find(|block| matches!(block, Block::Tool(tool) if tool.call_id == call_id))
-        {
-            tool.expanded = expanded;
-        }
-    }
-
     pub fn toggle_tool(&mut self, call_id: &str) {
         if let Some(Block::Tool(tool)) = self
             .blocks

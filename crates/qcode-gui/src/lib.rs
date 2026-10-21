@@ -244,6 +244,12 @@ enum DisplayUnit {
     Turn(usize),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProcessKey {
+    Reasoning(usize),
+    Tool(String),
+}
+
 struct Shell {
     app: App,
     /// A real text input, so IME and CJK go through the platform.
@@ -269,12 +275,8 @@ struct Shell {
     /// Turn/loose-block rows currently rendered.
     units: Vec<DisplayUnit>,
     mode: DisplayMode,
-    /// Reasoning rows the reader expanded, keyed by block index.
-    expanded_reasoning: HashSet<usize>,
-    /// Reasoning rows explicitly collapsed in Detailed mode.
-    collapsed_reasoning: HashSet<usize>,
-    /// Tools explicitly collapsed in Detailed mode, keyed by call id.
-    collapsed_tools: HashSet<String>,
+    /// The single process row currently expanded (accordion).
+    expanded_process: Option<ProcessKey>,
     /// Long code blocks the reader expanded, keyed by block/segment.
     expanded_code: HashSet<String>,
     /// Turn selected by the rail/header.
@@ -377,9 +379,7 @@ impl Shell {
             scroller,
             units,
             mode,
-            expanded_reasoning: HashSet::new(),
-            collapsed_reasoning: HashSet::new(),
-            collapsed_tools: HashSet::new(),
+            expanded_process: None,
             expanded_code: HashSet::new(),
             selected_turn: None,
             turn_picker_open: false,
@@ -399,10 +399,7 @@ impl Shell {
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
-        self.expanded_reasoning.clear();
-        self.collapsed_reasoning.clear();
-        self.collapsed_tools.clear();
-        self.collapsed_reasoning.clear();
+        self.expanded_process = None;
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
@@ -689,7 +686,7 @@ impl Shell {
         let anchor = self.anchor(cx);
         self.collapse_all = true;
         self.collapse_to_list = true;
-        self.expanded_reasoning.clear();
+        self.expanded_process = None;
         self.expanded_code.clear();
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
@@ -700,7 +697,7 @@ impl Shell {
         let anchor = self.anchor(cx);
         self.collapse_all = false;
         self.collapse_to_list = true;
-        self.expanded_reasoning.clear();
+        self.expanded_process = None;
         self.expanded_code.clear();
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
@@ -719,50 +716,40 @@ impl Shell {
     }
 
     fn reasoning_expanded(&self, block: usize) -> bool {
-        if self.collapse_all || self.collapse_to_list || self.collapsed_reasoning.contains(&block) {
-            false
-        } else {
-            self.expanded_reasoning.contains(&block)
-        }
+        !self.collapse_all
+            && !self.collapse_to_list
+            && self.expanded_process == Some(ProcessKey::Reasoning(block))
     }
 
     fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
-        self.collapse_to_list = false;
-        if self.reasoning_expanded(block) {
-            self.expanded_reasoning.remove(&block);
-            self.collapsed_reasoning.insert(block);
+        let next = if self.reasoning_expanded(block) {
+            None
         } else {
-            self.collapsed_reasoning.remove(&block);
-            self.expanded_reasoning.insert(block);
-        }
+            Some(ProcessKey::Reasoning(block))
+        };
+        self.expanded_process = next;
+        self.collapse_to_list = false;
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
     fn tool_expanded(&self, call_id: &str) -> bool {
-        if self.collapsed_tools.contains(call_id) {
-            return false;
-        }
-        if self.mode == DisplayMode::Detailed {
-            return true;
-        }
-        self.app.blocks.iter().any(
-            |block| matches!(block, Block::Tool(tool) if tool.call_id == call_id && tool.expanded),
-        )
+        !self.collapse_all
+            && !self.collapse_to_list
+            && self.expanded_process == Some(ProcessKey::Tool(call_id.to_string()))
     }
 
     fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
-        self.collapse_to_list = false;
-        if self.tool_expanded(call_id) {
-            self.collapsed_tools.insert(call_id.to_string());
-            self.app.set_tool_expanded(call_id, false);
+        let next = if self.tool_expanded(call_id) {
+            None
         } else {
-            self.collapsed_tools.remove(call_id);
-            self.app.set_tool_expanded(call_id, true);
-        }
+            Some(ProcessKey::Tool(call_id.to_string()))
+        };
+        self.expanded_process = next;
+        self.collapse_to_list = false;
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
         cx.notify();

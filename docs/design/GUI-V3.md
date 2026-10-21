@@ -386,3 +386,9 @@ trait Backend {
 - 关闭 MessageScroller 自带浮动 ↓，在右下角使用自定义浮动操作条。
 - 三个图标并排：ArrowDown 跳最新、ChevronsDownUp 全收起、ListCollapse 收起到列表；均带 tooltip/aria label。
 - 保留 Composer 的 Send，不移除发送入口。
+
+### 过程手风琴（2026-10-21）
+
+- 同一时间只允许展开一个思考/工具行；展开新行会自动收起上一行。
+- 默认、Collapse all、Collapse to list 均把所有过程行收为单行。
+- Composer 保持不变。
