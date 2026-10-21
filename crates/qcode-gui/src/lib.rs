@@ -787,6 +787,15 @@ impl Shell {
                         div()
                             .flex_grow(1.0)
                             .on_key_down(move |event, window, cx| {
+                                if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+                                    eprintln!(
+                                        "qcode-gui key: key={} platform={} secondary={} shift={}",
+                                        event.keystroke.key,
+                                        event.keystroke.modifiers.platform,
+                                        event.keystroke.modifiers.secondary(),
+                                        event.keystroke.modifiers.shift,
+                                    );
+                                }
                                 if event.keystroke.key == "enter"
                                     && event.keystroke.modifiers.platform
                                 {
