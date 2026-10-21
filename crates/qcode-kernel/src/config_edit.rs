@@ -241,6 +241,235 @@ fn table_opt<'a>(root: &'a mut Table, path: &[&str]) -> Option<&'a mut Table> {
     Some(table)
 }
 
+impl ConfigEdit {
+    /// Write a complete [`Config`] into the document.
+    ///
+    /// Scalar sections are updated key by key, so comments around them survive.
+    /// Dynamic maps (providers, pricing) and arrays (approval rules, MCP
+    /// servers) are replaced as a unit; comments inside those tables are not
+    /// preserved. Unknown sections are never touched.
+    pub fn apply_config(&mut self, config: &crate::config::Config) -> Result<(), ConfigError> {
+        self.set_integer(&["version"], i64::from(config.version))?;
+        self.set_optional_str(&["default_provider"], config.default_provider.clone())?;
+
+        self.set_integer(
+            &["context", "window_tokens"],
+            config.context.window_tokens as i64,
+        )?;
+        self.set_integer(&["agent", "max_turns"], i64::from(config.agent.max_turns))?;
+        self.set_optional_float(&["agent", "max_cost_usd"], config.agent.max_cost_usd)?;
+        self.set_bool(&["agent", "snapshot_shell"], config.agent.snapshot_shell)?;
+
+        self.set_str(&["sandbox", "mode"], sandbox_mode(&config.sandbox.mode))?;
+        self.set_bool(&["sandbox", "network"], config.sandbox.network)?;
+        self.set_string_array(
+            &["sandbox", "extra_writable"],
+            config
+                .sandbox
+                .extra_writable
+                .iter()
+                .map(|path| path.display().to_string()),
+        )?;
+
+        self.set_str(&["network", "mode"], network_mode(&config.network.mode))?;
+        self.set_bool(&["network", "enabled"], config.network.enabled)?;
+        self.set_string_array(&["network", "allow"], config.network.allow.clone())?;
+        self.set_bool(&["network", "allow_private"], config.network.allow_private)?;
+        self.set_str(
+            &["network", "unknown"],
+            unknown_host(&config.network.unknown),
+        )?;
+        self.set_bool(&["network", "audit"], config.network.audit)?;
+
+        self.set_bool(&["skills", "enabled"], config.skills.enabled)?;
+        self.set_string_array(
+            &["skills", "roots"],
+            config
+                .skills
+                .roots
+                .iter()
+                .map(|path| path.display().to_string()),
+        )?;
+
+        self.set_bool(&["search", "enabled"], config.search.enabled)?;
+        self.set_str(&["search", "backend"], config.search.backend.name())?;
+        self.set_str(
+            &["search", "api_key_env"],
+            config.search.api_key_env.clone(),
+        )?;
+        self.set_optional_argv(
+            &["search", "api_key_command"],
+            config.search.api_key_command.clone(),
+        )?;
+        self.set_integer(
+            &["search", "max_results"],
+            i64::from(config.search.max_results),
+        )?;
+        self.set_optional_str(&["search", "base_url"], config.search.base_url.clone())?;
+
+        self.set_bool(&["update", "enabled"], config.update.enabled)?;
+        self.set_bool(&["update", "check"], config.update.check)?;
+        self.set_integer(&["update", "check_days"], config.update.check_days as i64)?;
+        self.set_str(&["update", "repo"], config.update.repo.clone())?;
+        self.set_optional_str(&["update", "base_url"], config.update.base_url.clone())?;
+
+        let mut providers = Table::new();
+        for (name, provider) in &config.providers {
+            let mut table = Table::new();
+            set_optional(&mut table, "base_url", provider.base_url.clone());
+            set_optional(&mut table, "api_key_env", provider.api_key_env.clone());
+            if let Some(argv) = &provider.api_key_command {
+                table.insert("api_key_command", Item::Value(argv_value(argv)));
+            }
+            set_optional(&mut table, "default_model", provider.default_model.clone());
+            table.insert(
+                "stream_usage",
+                Item::Value(Value::from(provider.stream_usage)),
+            );
+            providers.insert(name, Item::Table(table));
+        }
+        self.replace_table(&["providers"], providers)?;
+
+        let mut pricing = Table::new();
+        for (model, price) in &config.pricing {
+            let mut table = Table::new();
+            table.insert(
+                "input_usd_per_mtok",
+                Item::Value(Value::from(price.input_usd_per_mtok)),
+            );
+            table.insert(
+                "output_usd_per_mtok",
+                Item::Value(Value::from(price.output_usd_per_mtok)),
+            );
+            table.insert(
+                "cache_read_usd_per_mtok",
+                Item::Value(Value::from(price.cache_read_usd_per_mtok)),
+            );
+            table.insert(
+                "cache_write_usd_per_mtok",
+                Item::Value(Value::from(price.cache_write_usd_per_mtok)),
+            );
+            pricing.insert(model, Item::Table(table));
+        }
+        self.replace_table(&["pricing"], pricing)?;
+
+        let mut rules = Vec::new();
+        for rule in &config.approval.rules {
+            let mut table = Table::new();
+            table.insert("id", Item::Value(Value::from(rule.id.clone())));
+            set_optional(&mut table, "tool", rule.tool.clone());
+            set_optional(&mut table, "command_prefix", rule.command_prefix.clone());
+            set_optional(&mut table, "path_glob", rule.path_glob.clone());
+            table.insert("action", Item::Value(Value::from(action(&rule.action))));
+            if let Some(scope) = rule.scope {
+                table.insert("scope", Item::Value(Value::from(scope_name(scope))));
+            }
+            rules.push(table);
+        }
+        self.set_array_of_tables(&["approval", "rules"], rules)?;
+
+        let mut servers = Vec::new();
+        for server in &config.mcp.servers {
+            let mut table = Table::new();
+            table.insert("name", Item::Value(Value::from(server.name.clone())));
+            table.insert("command", Item::Value(Value::from(server.command.clone())));
+            table.insert("args", Item::Value(argv_value(&server.args)));
+            if !server.env.is_empty() {
+                let mut env = Table::new();
+                for (key, value) in &server.env {
+                    env.insert(key, Item::Value(Value::from(value.clone())));
+                }
+                table.insert("env", Item::Table(env));
+            }
+            table.insert("enabled", Item::Value(Value::from(server.enabled)));
+            table.insert(
+                "timeout_secs",
+                Item::Value(Value::from(server.timeout_secs as i64)),
+            );
+            servers.push(table);
+        }
+        self.set_array_of_tables(&["mcp", "servers"], servers)?;
+        Ok(())
+    }
+
+    fn set_optional_float(&mut self, path: &[&str], value: Option<f64>) -> Result<(), ConfigError> {
+        match value {
+            Some(value) => self.set_float(path, value),
+            None => {
+                self.remove(path);
+                Ok(())
+            }
+        }
+    }
+
+    fn set_optional_argv(
+        &mut self,
+        path: &[&str],
+        value: Option<Vec<String>>,
+    ) -> Result<(), ConfigError> {
+        match value {
+            Some(argv) => self.set_value(path, argv_value(&argv)),
+            None => {
+                self.remove(path);
+                Ok(())
+            }
+        }
+    }
+
+    fn replace_table(&mut self, path: &[&str], table: Table) -> Result<(), ConfigError> {
+        let (parents, key) = split_path(path)?;
+        let parent = table_mut(self.document.as_table_mut(), parents)?;
+        parent.insert(key, Item::Table(table));
+        Ok(())
+    }
+}
+
+fn set_optional(table: &mut Table, key: &str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        table.insert(key, Item::Value(Value::from(value)));
+    }
+}
+
+fn argv_value(argv: &[String]) -> Value {
+    Value::Array(argv.iter().cloned().map(Value::from).collect())
+}
+
+fn action(action: &qcode_core::policy::Action) -> &'static str {
+    match action {
+        qcode_core::policy::Action::Allow => "allow",
+        qcode_core::policy::Action::Ask => "ask",
+        qcode_core::policy::Action::Deny => "deny",
+    }
+}
+
+fn scope_name(scope: qcode_core::event::Scope) -> &'static str {
+    match scope {
+        qcode_core::event::Scope::Session => "session",
+        qcode_core::event::Scope::Project => "project",
+        qcode_core::event::Scope::User => "user",
+    }
+}
+
+fn sandbox_mode(mode: &qcode_tools::sandbox::SandboxMode) -> &'static str {
+    mode.label()
+}
+
+fn network_mode(mode: &crate::config::NetworkMode) -> &'static str {
+    match mode {
+        crate::config::NetworkMode::Off => "off",
+        crate::config::NetworkMode::Proxy => "proxy",
+        crate::config::NetworkMode::Strict => "strict",
+    }
+}
+
+fn unknown_host(policy: &crate::config::UnknownHost) -> &'static str {
+    match policy {
+        crate::config::UnknownHost::Ask => "ask",
+        crate::config::UnknownHost::Deny => "deny",
+        crate::config::UnknownHost::Allow => "allow",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +544,122 @@ mod tests {
         assert!(!error.to_string().is_empty());
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("\"deepseek\""), "{text}");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn apply_config_round_trips_all_sections() {
+        use crate::config::{NetworkMode, ProviderConfig, UnknownHost};
+        use qcode_core::cost::Pricing;
+        use qcode_core::event::Scope;
+        use qcode_core::policy::{Action, Rule};
+        use qcode_mcp::McpServerConfig;
+        use qcode_tools::sandbox::SandboxMode;
+        use qcode_tools::web_search::SearchBackend;
+        use std::collections::BTreeMap;
+
+        let mut config = crate::config::Config::default();
+        config.default_provider = Some("deepseek".to_string());
+        config.providers.insert(
+            "deepseek".to_string(),
+            ProviderConfig {
+                base_url: Some("https://api.deepseek.com/v1".to_string()),
+                api_key_env: Some("DEEPSEEK_API_KEY".to_string()),
+                api_key_command: Some(vec!["echo".to_string(), "secret".to_string()]),
+                default_model: Some("deepseek-flash".to_string()),
+                stream_usage: false,
+            },
+        );
+        config.context.window_tokens = 64_000;
+        config.agent.max_turns = 12;
+        config.agent.max_cost_usd = Some(0.5);
+        config.agent.snapshot_shell = false;
+        config.sandbox.mode = SandboxMode::SandboxExec;
+        config.sandbox.network = false;
+        config.sandbox.extra_writable = vec![std::path::PathBuf::from("/tmp/extra")];
+        config.network.mode = NetworkMode::Strict;
+        config.network.allow = vec!["api.example.com:443".to_string()];
+        config.network.allow_private = true;
+        config.network.unknown = UnknownHost::Deny;
+        config.network.audit = false;
+        config.skills.enabled = false;
+        config.skills.roots = vec![std::path::PathBuf::from("/skills")];
+        config.search.enabled = true;
+        config.search.backend = SearchBackend::Tavily;
+        config.search.api_key_env = "SEARCH_KEY".to_string();
+        config.search.api_key_command = Some(vec!["echo".to_string(), "search".to_string()]);
+        config.search.max_results = 9;
+        config.search.base_url = Some("https://search.example.com".to_string());
+        config.update.enabled = false;
+        config.update.check = false;
+        config.update.check_days = 3;
+        config.update.repo = "example/qcode".to_string();
+        config.update.base_url = Some("https://updates.example.com".to_string());
+        config.pricing.insert(
+            "deepseek-flash".to_string(),
+            Pricing {
+                input_usd_per_mtok: 0.1,
+                output_usd_per_mtok: 0.2,
+                cache_read_usd_per_mtok: 0.01,
+                cache_write_usd_per_mtok: 0.02,
+            },
+        );
+        config.approval.rules.push(Rule {
+            id: "allow-test".to_string(),
+            tool: Some("run_shell".to_string()),
+            command_prefix: Some("cargo test".to_string()),
+            path_glob: Some("src/**".to_string()),
+            action: Action::Allow,
+            scope: Some(Scope::Project),
+        });
+        config.mcp.servers.push(McpServerConfig {
+            name: "demo".to_string(),
+            command: "demo-server".to_string(),
+            args: vec!["--stdio".to_string()],
+            env: BTreeMap::from([("TOKEN".to_string(), "x".to_string())]),
+            enabled: false,
+            timeout_secs: 7,
+        });
+
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        edit.apply_config(&config).expect("apply");
+        edit.save().expect("save");
+        let loaded = config::load(&path).expect("valid");
+
+        assert_eq!(loaded.default_provider.as_deref(), Some("deepseek"));
+        assert_eq!(loaded.providers.len(), 1);
+        let provider = &loaded.providers["deepseek"];
+        assert_eq!(provider.default_model.as_deref(), Some("deepseek-flash"));
+        assert!(!provider.stream_usage);
+        assert_eq!(loaded.context.window_tokens, 64_000);
+        assert_eq!(loaded.agent.max_turns, 12);
+        assert_eq!(loaded.agent.max_cost_usd, Some(0.5));
+        assert!(!loaded.agent.snapshot_shell);
+        assert_eq!(loaded.sandbox.mode, SandboxMode::SandboxExec);
+        assert_eq!(loaded.sandbox.extra_writable.len(), 1);
+        assert_eq!(loaded.network.mode, NetworkMode::Strict);
+        assert_eq!(loaded.network.allow, ["api.example.com:443"]);
+        assert!(loaded.network.allow_private);
+        assert_eq!(loaded.network.unknown, UnknownHost::Deny);
+        assert!(!loaded.network.audit);
+        assert!(!loaded.skills.enabled);
+        assert_eq!(loaded.skills.roots.len(), 1);
+        assert_eq!(loaded.search.backend, SearchBackend::Tavily);
+        assert_eq!(
+            loaded.search.api_key_command.as_deref(),
+            Some(&["echo".to_string(), "search".to_string()][..])
+        );
+        assert_eq!(loaded.search.max_results, 9);
+        assert_eq!(loaded.update.repo, "example/qcode");
+        assert_eq!(loaded.pricing.len(), 1);
+        assert_eq!(loaded.approval.rules.len(), 1);
+        assert_eq!(loaded.approval.rules[0].action, Action::Allow);
+        assert_eq!(loaded.approval.rules[0].scope, Some(Scope::Project));
+        assert_eq!(loaded.mcp.servers.len(), 1);
+        assert_eq!(loaded.mcp.servers[0].timeout_secs, 7);
+        assert!(!loaded.mcp.servers[0].enabled);
     }
 
     #[test]

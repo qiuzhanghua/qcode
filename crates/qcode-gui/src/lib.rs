@@ -7,6 +7,8 @@
 
 #![recursion_limit = "512"]
 
+pub mod forms;
+
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};

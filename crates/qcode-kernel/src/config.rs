@@ -105,6 +105,10 @@ pub struct SearchConfig {
     /// keyless.
     #[serde(default)]
     pub api_key_env: String,
+    /// Command whose stdout is the key, used when the environment variable is
+    /// absent (Keychain/libsecret/credential manager).
+    #[serde(default)]
+    pub api_key_command: Option<Vec<String>>,
     /// Results requested when the tool call does not say otherwise.
     #[serde(default = "default_search_results")]
     pub max_results: u32,
@@ -123,6 +127,7 @@ impl Default for SearchConfig {
             enabled: true,
             backend: SearchBackend::default(),
             api_key_env: String::new(),
+            api_key_command: None,
             max_results: default_search_results(),
             base_url: None,
         }
@@ -173,9 +178,19 @@ impl SearchConfig {
     }
 
     pub fn settings(&self, env: &dyn Fn(&str) -> Option<String>) -> SearchSettings {
+        let api_key = self.key_env_name().and_then(|name| env(&name)).or_else(|| {
+            let argv = self.api_key_command.as_deref()?;
+            match key_from_command("web_search", argv) {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    tracing::warn!(%error, "search key command failed");
+                    None
+                }
+            }
+        });
         SearchSettings {
             backend: self.backend,
-            api_key: self.key_env_name().and_then(|name| env(&name)),
+            api_key,
             base_url: self
                 .base_url
                 .as_deref()
@@ -579,6 +594,14 @@ fn check_version(path: &Path, version: u32) -> Result<(), ConfigError> {
 /// Keys each table may contain, per table path. Tables whose children are
 /// user-chosen names (`providers`, `pricing`, `mcp.servers` entries) are not
 /// listed, since any key is a name there.
+///
+/// Exposed for the GUI schema-coverage test: every known key must have a form
+/// control (or an explicit "auto" exception such as `version`).
+#[doc(hidden)]
+pub fn known_keys() -> &'static [(&'static str, &'static [&'static str])] {
+    KNOWN_KEYS
+}
+
 const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "",

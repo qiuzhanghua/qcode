@@ -5290,6 +5290,7 @@ dependencies = [
  "gpui-kit",
  "qcode-core",
  "qcode-image",
+ "qcode-kernel",
  "qcode-providers",
  "qcode-ui-bridge",
  "qcode-ui-state",

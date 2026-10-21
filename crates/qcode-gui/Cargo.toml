@@ -28,3 +28,4 @@ serde_json.workspace = true
 [dev-dependencies]
 qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
 tempfile.workspace = true
+qcode-kernel = { version = "0.1.0", path = "../qcode-kernel" }
