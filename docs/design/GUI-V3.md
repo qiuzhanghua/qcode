@@ -380,3 +380,9 @@ trait Backend {
 - Collapse all：隐藏所有 Turn 的过程行，保留输入/最终回答。
 - Collapse to list：保留过程列表（思考+运行命令），但强制所有详情收起。
 - 点击单行会取消 Collapse to list 的强制收起。
+
+### 浮动操作条（2026-10-21）
+
+- 关闭 MessageScroller 自带浮动 ↓，在右下角使用自定义浮动操作条。
+- 三个图标并排：ArrowDown 跳最新、ChevronsDownUp 全收起、ListCollapse 收起到列表；均带 tooltip/aria label。
+- 保留 Composer 的 Send，不移除发送入口。

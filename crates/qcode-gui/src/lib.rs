@@ -902,6 +902,49 @@ impl Shell {
         }
     }
 
+    fn render_floating_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.app.turns.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .absolute()
+            .bottom(px(16.0))
+            .right(px(28.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .p_1()
+            .rounded(px(10.0))
+            .bg(rgba(0x7f7f7f20))
+            .border_1()
+            .border_color(rgba(0x7f7f7f20))
+            .child(
+                Button::new("jump-latest")
+                    .icon(IconName::ArrowDown)
+                    .accessibility_label("Jump to latest")
+                    .tooltip("Jump to latest")
+                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
+            )
+            .child(
+                Button::new("floating-collapse-all")
+                    .icon(IconName::ChevronsDownUp)
+                    .accessibility_label("Collapse all")
+                    .tooltip("Collapse all")
+                    .on_click(cx.listener(|this, _, _window, cx| this.collapse_all(cx))),
+            )
+            .child(
+                Button::new("floating-collapse-to-list")
+                    .icon(IconName::ListCollapse)
+                    .accessibility_label("Collapse to list")
+                    .tooltip("Collapse to list")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.collapse_to_list(cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_turn_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
@@ -1002,7 +1045,7 @@ impl Shell {
             }
         })
         .scrollbar(true)
-        .jump_button(true);
+        .jump_button(false);
 
         div()
             .flex()
@@ -1085,32 +1128,6 @@ impl Shell {
                         Input::new(&self.model_input).aria_label("Model for the next turn"),
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .pb_1()
-                    .child(
-                        Button::new("jump-to-last")
-                            .label("Jump to Last")
-                            .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
-                    )
-                    .child(
-                        Button::new("collapse-all")
-                            .label("Collapse all")
-                            .on_click(cx.listener(|this, _, _window, cx| this.collapse_all(cx))),
-                    )
-                    .child(
-                        Button::new("collapse-to-list")
-                            .label("Collapse to list")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.collapse_to_list(cx);
-                            })),
-                    ),
-            )
             .children(self.turn_picker_open.then(|| {
                 let mut picker = div().flex().flex_row().gap_1().px_2().pb_1();
                 for (index, turn) in self.app.turns.iter().enumerate() {
@@ -1127,12 +1144,22 @@ impl Shell {
             .child({
                 let rail = self.render_turn_rail(window, cx);
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .flex_grow(1.0)
                     .min_h_0()
-                    .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_grow(1.0)
+                            .min_h_0()
+                            .pb(px(56.0))
+                            .child(list),
+                    )
                     .child(rail)
+                    .child(self.render_floating_actions(cx))
             })
             .children(self.diff.as_ref().map(|state| {
                 let height = if self.diff_expanded {
