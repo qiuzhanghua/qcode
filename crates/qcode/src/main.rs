@@ -693,6 +693,8 @@ async fn cmd_gui(
     // Seed the projection with what the kernel resolved, then hand the window
     // the same App the TUI would render.
     let mut app = qcode_tui::App::new(kernel.resolved.name.clone(), kernel.resolved.model.clone());
+    app.sandbox = kernel.sandbox.clone();
+    app.context_window = Some(kernel.config.context.window_tokens);
     app.push_notice(format!(
         "kernel: sandbox={} tools={} skills={}",
         kernel.sandbox,

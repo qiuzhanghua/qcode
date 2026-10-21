@@ -7,41 +7,42 @@
 
 #![recursion_limit = "512"]
 
-use gpui_kit::component::VirtualListScrollHandle;
+use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
-use gpui_kit::component::v_virtual_list;
+use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::text::TextView;
 use gpui_kit::{div, prelude::*, *};
 
 gpui_kit::actions!(qcode_gui, [PasteImage]);
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
-use qcode_core::event::{Event, EventKind, SessionStarted};
+use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_ui_bridge::{ApprovalView, KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-/// Uniform row height keeps the virtual list's size table cheap.
-const ROW_HEIGHT: f32 = 22.0;
-
-fn row_sizes(count: usize) -> Rc<Vec<Size<Pixels>>> {
-    Rc::new((0..count).map(|_| size(px(0.0), px(ROW_HEIGHT))).collect())
+fn tool_status(status: Option<ToolStatus>) -> &'static str {
+    match status {
+        None => "running",
+        Some(ToolStatus::Ok) => "ok",
+        Some(ToolStatus::Error) => "error",
+        Some(ToolStatus::Cancelled) => "cancelled",
+        Some(ToolStatus::Interrupted) => "interrupted",
+    }
 }
 
-fn block_text(block: &Block) -> String {
-    match block {
-        Block::User(text) => format!("you › {text}"),
-        Block::Assistant(text) => format!("agent › {text}"),
-        Block::Tool(tool) => format!("tool › {} {}", tool.name, tool.summary),
-        Block::Subagent { text, .. } => format!("child › {text}"),
-        Block::Todo(items) => format!("todos › {} item(s)", items.len()),
-        Block::Notice(text) => format!("note › {text}"),
-        Block::Skill(text) => format!("skill › {text}"),
+fn context_label(app: &App) -> String {
+    match app.context_window.filter(|window| *window > 0) {
+        Some(window) => format!(
+            "ctx {:.0}%",
+            (app.context_tokens as f64 / window as f64 * 100.0).min(100.0)
+        ),
+        None => format!("ctx {}", app.context_tokens),
     }
 }
 
@@ -150,20 +151,18 @@ impl Backend for LocalBackend {
 
 struct Shell {
     app: App,
-    /// One size per block, rebuilt only when the block count changes.
-    sizes: Rc<Vec<Size<Pixels>>>,
     /// A real text input, so IME and CJK go through the platform.
     input: Entity<InputState>,
-    /// The composer text on the previous frame, to notice a submit.
-    last_text: String,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
     /// A pending approval: the turn is blocked until one of these is clicked.
     approval: Option<ApprovalView>,
-    /// The transcript scroll state, shared with the scrollbar.
-    scroll: VirtualListScrollHandle,
+    /// Variable-height virtual transcript with tail following.
+    scroller: Entity<MessageScrollerState>,
+    /// Row count last reported to the scroller (blocks + streaming preview).
+    last_blocks: usize,
     backend: Box<dyn Backend>,
     sessions: Vec<SessionSummary>,
     active: Option<String>,
@@ -182,17 +181,17 @@ impl Shell {
             app.push_notice(format!("cannot list sessions: {error}"));
             Vec::new()
         });
-        let sizes = row_sizes(app.blocks.len());
+        let last_blocks = app.blocks.len();
+        let scroller = cx.new(|cx| MessageScrollerState::new(app.blocks.len(), cx));
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask qcode…"));
         Self {
             app,
-            sizes,
             input,
-            last_text: Default::default(),
             diff: None,
             attachments: Vec::new(),
             approval: None,
-            scroll: VirtualListScrollHandle::new(),
+            scroller,
+            last_blocks,
             backend,
             sessions,
             active: None,
@@ -200,10 +199,26 @@ impl Shell {
         }
     }
 
-    fn refresh_sizes(&mut self) {
-        if self.sizes.len() != self.app.blocks.len() {
-            self.sizes = row_sizes(self.app.blocks.len());
+    fn reset_scroller(&mut self, cx: &mut Context<Self>) {
+        let count = self.app.blocks.len();
+        self.scroller.update(cx, |state, cx| state.reset(count, cx));
+        self.last_blocks = count;
+    }
+
+    fn sync_scroller(&mut self, cx: &mut Context<Self>) {
+        let count = self.app.blocks.len() + usize::from(!self.app.streaming.is_empty());
+        if count < self.last_blocks {
+            self.scroller.update(cx, |state, cx| state.reset(count, cx));
+        } else if count > self.last_blocks {
+            self.scroller.update(cx, |state, cx| {
+                state.append(count - self.last_blocks, cx);
+            });
+        } else {
+            // A tool result or the authoritative assistant message changes the
+            // height of an existing row.
+            self.scroller.update(cx, |state, cx| state.remeasure(cx));
         }
+        self.last_blocks = count;
     }
 
     fn refresh_sessions(&mut self) {
@@ -224,6 +239,7 @@ impl Shell {
         }
         self.backend.new_session();
         self.app.reset_transcript();
+        self.reset_scroller(cx);
         self.active = None;
         self.diff = None;
         self.approval = None;
@@ -245,6 +261,7 @@ impl Shell {
                 for event in &events {
                     self.app.apply(event);
                 }
+                self.reset_scroller(cx);
                 self.active = Some(id.clone());
                 self.diff = None;
                 self.approval = None;
@@ -258,22 +275,25 @@ impl Shell {
         cx.notify();
     }
 
+    fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = self.input.read(cx).value().trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        self.backend
+            .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
+        self.input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            cx.notify();
+        });
+        self.sync_scroller(cx);
+    }
+
     fn submit_on_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().to_string();
         if text.ends_with('\n') && !text.trim().is_empty() {
-            let prompt = text.trim_end().to_string();
-            self.backend
-                .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
-            self.app.push_notice(format!(
-                "sent: {}",
-                prompt.lines().next().unwrap_or_default()
-            ));
-            self.input.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-                cx.notify();
-            });
+            self.send_prompt(window, cx);
         }
-        self.last_text = text;
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -311,6 +331,7 @@ impl Shell {
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
         while let Some(event) = self.backend.try_recv() {
             match event {
                 UiEvent::Event(event) | UiEvent::Child(event) => {
@@ -324,11 +345,15 @@ impl Shell {
                     }
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
                     self.app.apply(&event);
+                    changed = true;
                     if turn_ended {
                         self.refresh_sessions();
                     }
                 }
-                UiEvent::Delta(delta) => self.app.apply_delta(&delta),
+                UiEvent::Delta(delta) => {
+                    self.app.apply_delta(&delta);
+                    changed = true;
+                }
                 UiEvent::Approval(view) => self.approval = Some(view),
                 UiEvent::ApprovalClosed { call_id } => {
                     if self
@@ -344,6 +369,9 @@ impl Shell {
                     self.refresh_sessions();
                 }
             }
+        }
+        if changed {
+            self.sync_scroller(cx);
         }
     }
 
@@ -388,43 +416,31 @@ impl Shell {
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll(cx);
         self.submit_on_enter(window, cx);
-        self.refresh_sizes();
         let entity = cx.entity();
-        let sizes = self.sizes.clone();
-        let total = self.app.blocks.len();
-        let list = v_virtual_list(entity, "transcript", sizes, |shell, range, _window, _cx| {
-            range
-                .map(|index| {
-                    div()
-                        .h(px(ROW_HEIGHT))
-                        .child(block_text(&shell.app.blocks[index]))
-                })
-                .collect()
+        let list = MessageScroller::new("transcript", self.scroller.clone(), {
+            let entity = entity.clone();
+            move |index, _window, cx| {
+                let shell = entity.read(cx);
+                block_row(index, shell, &entity)
+            }
         })
-        .track_scroll(&self.scroll);
+        .scrollbar(true)
+        .jump_button(true);
 
         div()
             .flex()
             .flex_col()
             .flex_grow(1.0)
             .min_w_0()
-            .child(div().child(format!(
-                    "{} · {} block(s)",
-                    self.active
-                        .as_deref()
-                        .map(short_id)
-                        .unwrap_or("new session"),
-                    total
-                )))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_grow(1.0)
-                    .min_h_0()
-                    .scrollbar(&self.scroll, ScrollbarAxis::Vertical)
-                    .child(list),
-            )
+            .child(div().p_2().child(format!(
+                "{} · {} block(s)",
+                self.active
+                    .as_deref()
+                    .map(short_id)
+                    .unwrap_or("new session"),
+                self.app.blocks.len()
+            )))
+            .child(div().flex().flex_col().flex_grow(1.0).min_h_0().child(list))
             .children(
                 self.diff
                     .as_ref()
@@ -475,8 +491,117 @@ impl Shell {
                             .label(format!("Paste image ({})", self.attachments.len()))
                             .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
                     )
-                    .child(div().flex_grow(1.0).child(Input::new(&self.input))),
+                    .child(div().flex_grow(1.0).child(Input::new(&self.input)))
+                    .child(
+                        Button::new("send").label("Send").on_click(
+                            cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
+                        ),
+                    ),
             )
+            .child(
+                StatusBar::new()
+                    .left(format!(
+                        "{}:{}",
+                        self.app.status.provider, self.app.status.model
+                    ))
+                    .left(self.workspace.clone())
+                    .right(context_label(&self.app))
+                    .right(format!("${:.4}", self.app.status.cost_usd))
+                    .right(format!("sandbox {}", self.app.sandbox))
+                    .right(if self.app.status.running {
+                        "running"
+                    } else {
+                        "idle"
+                    }),
+            )
+    }
+}
+
+fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    if index >= shell.app.blocks.len() {
+        return div()
+            .px_4()
+            .py_2()
+            .child(TextView::markdown(
+                format!("streaming-{index}"),
+                shell.app.streaming.clone(),
+            ))
+            .into_any_element();
+    }
+
+    match &shell.app.blocks[index] {
+        Block::User(text) => div()
+            .px_4()
+            .py_2()
+            .child(TextView::markdown(format!("user-{index}"), text.clone()))
+            .into_any_element(),
+        Block::Assistant(text) => div()
+            .px_4()
+            .py_2()
+            .child(TextView::markdown(
+                format!("assistant-{index}"),
+                text.clone(),
+            ))
+            .into_any_element(),
+        Block::Tool(tool) => {
+            let marker = if tool.expanded { "▾" } else { "▸" };
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(format!("{marker} {}", tool.name))
+                        .child(tool_status(tool.status)),
+                )
+                .child(div().child(tool.summary.clone()));
+            if tool.expanded {
+                if !tool.output.is_empty() {
+                    card = card.child(TextView::markdown(
+                        format!("tool-output-{index}"),
+                        tool.output.clone(),
+                    ));
+                }
+                if let Some(elapsed) = tool.elapsed {
+                    card = card.child(format!("took {elapsed:?}"));
+                }
+            }
+            let call_id = tool.call_id.clone();
+            let entity = entity.clone();
+            card.id(format!("tool-card-{index}"))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.app.toggle_tool(&call_id);
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        }
+        Block::Subagent { text, .. } => div()
+            .px_4()
+            .py_2()
+            .child(format!("child › {text}"))
+            .into_any_element(),
+        Block::Todo(items) => div()
+            .px_4()
+            .py_2()
+            .child(format!("todos › {} item(s)", items.len()))
+            .children(items.iter().map(|item| div().child(item.content.clone())))
+            .into_any_element(),
+        Block::Notice(text) => div()
+            .px_4()
+            .py_2()
+            .child(format!("note › {text}"))
+            .into_any_element(),
+        Block::Skill(text) => div()
+            .px_4()
+            .py_2()
+            .child(TextView::markdown(format!("skill-{index}"), text.clone()))
+            .into_any_element(),
     }
 }
 

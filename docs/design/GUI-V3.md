@@ -304,6 +304,8 @@ trait Backend {
 
 ## 9. 实现进度
 
+- **G1 ✅ 2026-10-21**：`MessageScroller` 变高虚拟列表/跟随尾部、Markdown `TextView`、
+  可展开工具卡片、流式预览、Send/Stop、底部状态栏。
 - **G0 ✅ 2026-10-21**：`Backend` trait + `LocalBackend`；草稿/新建/恢复会话；侧栏只列当前
   workspace；运行中禁止切换；`App::reset_transcript`；后端生命周期测试（mock provider）。
 - 尚未包含：Setup 向导/全字段表单（G3）、workspace 原生选择器（G4）、Markdown/工具卡片

@@ -783,6 +783,17 @@ impl App {
         })
     }
 
+    /// Toggle one tool card by call id (GUI click).
+    pub fn toggle_tool(&mut self, call_id: &str) {
+        if let Some(Block::Tool(tool)) = self
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, Block::Tool(tool) if tool.call_id == call_id))
+        {
+            tool.expanded = !tool.expanded;
+        }
+    }
+
     fn toggle_last_tool(&mut self) {
         if let Some(tool) = self.blocks.iter_mut().rev().find_map(|block| match block {
             Block::Tool(tool) => Some(tool),
@@ -1569,6 +1580,36 @@ mod tests {
             attachments: Vec::new(),
         })));
         assert_eq!(app.blocks, vec![Block::User("hi".to_string())]);
+    }
+
+    #[test]
+    fn toggle_tool_flips_only_the_requested_card() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::ToolCall(qcode_core::event::ToolCall {
+            call_id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "a"}),
+        })));
+        app.apply(&event(EventKind::ToolCall(qcode_core::event::ToolCall {
+            call_id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "b"}),
+        })));
+        app.toggle_tool("c1");
+        let expanded: Vec<bool> = app
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Tool(tool) => Some(tool.expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(expanded, [true, false]);
+        app.toggle_tool("c1");
+        assert!(matches!(
+            &app.blocks[0],
+            Block::Tool(tool) if !tool.expanded
+        ));
     }
 
     #[test]
