@@ -276,7 +276,7 @@ cargo build -p qcode-eval
   URL 内凭据拒绝。默认 ask，不注入任何 API key；不做 SSRF 白名单（审批提示里有完整 URL）。
 - **web_search**：`[search]` 开启后注册（默认 `brave`，也支持 `tavily` / `searxng`），
   返回 `title` / `url` / `snippet`，`max_results` 上限 20；key 只从环境变量读
-  （`BRAVE_API_KEY` / `TAVILY_API_KEY`，或用 `api_key_env` 指定），searxng 需 `base_url`。
+  （`BRAVE_API_KEY` / `TAVILY_API_KEY`，或用 `api_key_env` 指定，或用 `api_key_command` 从 Keychain / libsecret / 凭据管理器取），searxng 需 `base_url`。
   默认 ask（`Network`，与 `web_fetch` 同一套审批与 session allowlist），走同一个出口代理；
   带 `page_age` 时输出新鲜度，凭据不进 transcript。
 - **todo_write**：session 待办清单（pending / in_progress / completed），不写文件系统。

@@ -179,7 +179,11 @@ impl Doctor {
                 if resolved.is_mock {
                     self.warn("credentials", "mock provider; no network calls");
                 } else if resolved.api_key.is_some() {
-                    self.ok("credentials", "API key present");
+                    // The source, never the value: `env NAME`, `command NAME`.
+                    self.ok(
+                        "credentials",
+                        &format!("API key present ({})", resolved.api_key_source),
+                    );
                 } else {
                     self.ok("credentials", "keyless provider");
                 }

@@ -349,6 +349,10 @@ pub struct ProviderConfig {
     /// Name of the environment variable holding the key. Empty means keyless.
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// Command whose stdout is the key (Keychain, libsecret, credential
+    /// manager). Used when [`Self::api_key_env`] is unset or empty at runtime.
+    #[serde(default)]
+    pub api_key_command: Option<Vec<String>>,
     #[serde(default)]
     pub default_model: Option<String>,
     #[serde(default = "default_true")]
@@ -360,12 +364,88 @@ impl Default for ProviderConfig {
         Self {
             base_url: None,
             api_key_env: None,
+            api_key_command: None,
             default_model: None,
             stream_usage: true,
         }
     }
 }
 
+/// How long a key command may run before it is killed.
+const KEY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Read a secret from a command's stdout.
+///
+/// No shell is involved, so there is nothing to quote or escape; the output is
+/// never echoed, because it is the secret. The child is killed if it outlives
+/// [`KEY_COMMAND_TIMEOUT`].
+fn key_from_command(provider: &str, argv: &[String]) -> Result<String, ConfigError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let Some((program, rest)) = argv.split_first() else {
+        return Err(ConfigError::KeyCommand {
+            provider: provider.to_string(),
+            detail: "the command is empty".to_string(),
+        });
+    };
+    let mut child = Command::new(program)
+        .args(rest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| ConfigError::KeyCommand {
+            provider: provider.to_string(),
+            detail: error.to_string(),
+        })?;
+
+    // Read in a thread so a chatty child cannot deadlock on a full pipe.
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buffer = String::new();
+        let _ = stdout.read_to_string(&mut buffer);
+        let _ = tx.send(buffer);
+    });
+
+    let buffer = match rx.recv_timeout(KEY_COMMAND_TIMEOUT) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ConfigError::KeyCommand {
+                provider: provider.to_string(),
+                detail: format!("timed out after {KEY_COMMAND_TIMEOUT:?}"),
+            });
+        }
+    };
+    let status = child.wait().map_err(|error| ConfigError::KeyCommand {
+        provider: provider.to_string(),
+        detail: error.to_string(),
+    })?;
+    if !status.success() {
+        return Err(ConfigError::KeyCommand {
+            provider: provider.to_string(),
+            detail: format!("exited with {status}"),
+        });
+    }
+    let key = buffer.trim().to_string();
+    if key.is_empty() {
+        return Err(ConfigError::KeyCommand {
+            provider: provider.to_string(),
+            detail: "printed nothing on stdout".to_string(),
+        });
+    }
+    Ok(key)
+}
+
+/// Doctor-friendly description of where a key came from.
+fn command_source(argv: &[String]) -> String {
+    argv.first()
+        .map(|program| format!("command {program}"))
+        .unwrap_or_else(|| "command".to_string())
+}
 fn default_true() -> bool {
     true
 }
@@ -399,6 +479,8 @@ pub enum ConfigError {
          providers.{provider}.api_key_env = \"\" for a keyless server"
     )]
     MissingKey { provider: String, env: String },
+    #[error("provider '{provider}': key command failed ({detail})")]
+    KeyCommand { provider: String, detail: String },
     #[error(
         "provider '{provider}' has no model; pass --model or set \
          providers.{provider}.default_model"
@@ -514,6 +596,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "enabled",
             "backend",
             "api_key_env",
+            "api_key_command",
             "max_results",
             "base_url",
         ],
@@ -837,6 +920,8 @@ pub struct Overrides {
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub name: String,
+    /// `env NAME`, `command NAME`, or `keyless`, for doctor output.
+    pub api_key_source: String,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: String,
@@ -927,6 +1012,7 @@ pub fn resolve(
             .unwrap_or_else(|| "mock-1".to_string());
         return Ok(Resolved {
             name,
+            api_key_source: "mock".to_string(),
             base_url: None,
             api_key: None,
             model,
@@ -963,17 +1049,24 @@ pub fn resolve(
         })
         .unwrap_or_default();
 
-    let api_key = if api_key_env.is_empty() {
-        None
+    let command = entry.api_key_command.as_deref();
+    let (api_key, api_key_source) = if api_key_env.is_empty() {
+        match command {
+            Some(argv) => (Some(key_from_command(&name, argv)?), command_source(argv)),
+            None => (None, "keyless".to_string()),
+        }
     } else {
         match env(&api_key_env) {
-            Some(key) if !key.is_empty() => Some(key),
-            _ => {
-                return Err(ConfigError::MissingKey {
-                    provider: name,
-                    env: api_key_env,
-                });
-            }
+            Some(key) if !key.is_empty() => (Some(key), format!("env {api_key_env}")),
+            _ => match command {
+                Some(argv) => (Some(key_from_command(&name, argv)?), command_source(argv)),
+                None => {
+                    return Err(ConfigError::MissingKey {
+                        provider: name,
+                        env: api_key_env,
+                    });
+                }
+            },
         }
     };
 
@@ -993,6 +1086,7 @@ pub fn resolve(
 
     Ok(Resolved {
         name,
+        api_key_source,
         base_url: Some(base_url),
         api_key,
         model,
@@ -1186,6 +1280,67 @@ mod tests {
         assert!(error.to_string().contains("DEEPSEEK_API_KEY"));
     }
 
+    #[test]
+    fn the_key_comes_from_the_environment_before_the_command() {
+        let config: Config = toml::from_str(
+            r#"
+default_provider = "deepseek"
+
+[providers.deepseek]
+api_key_env = "DS_KEY"
+api_key_command = ["cmd", "/C", "echo from-command"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve(
+            &config,
+            &Overrides::default(),
+            &env_from(&[("DS_KEY", "from-env")]),
+        )
+        .unwrap();
+        assert_eq!(resolved.api_key.as_deref(), Some("from-env"));
+        assert_eq!(resolved.api_key_source, "env DS_KEY");
+    }
+
+    #[test]
+    fn a_missing_environment_variable_falls_back_to_the_command() {
+        let config: Config = toml::from_str(
+            r#"
+default_provider = "deepseek"
+
+[providers.deepseek]
+api_key_env = "DS_KEY"
+api_key_command = ["cmd", "/C", "echo from-command"]
+"#,
+        )
+        .unwrap();
+        if cfg!(windows) {
+            let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+            assert_eq!(resolved.api_key.as_deref(), Some("from-command"));
+            assert_eq!(resolved.api_key_source, "command cmd");
+        }
+    }
+
+    #[test]
+    fn a_failing_key_command_reports_the_reason_without_its_output() {
+        if !cfg!(windows) {
+            return;
+        }
+        let config: Config = toml::from_str(
+            r#"
+default_provider = "deepseek"
+
+[providers.deepseek]
+api_key_env = "DS_KEY"
+api_key_command = ["cmd", "/C", "exit 3"]
+"#,
+        )
+        .unwrap();
+        let error = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("key command failed"), "{text}");
+        assert!(text.contains("exited with"), "{text}");
+    }
     #[test]
     fn keyless_provider_needs_no_key() {
         let config: Config = toml::from_str(
