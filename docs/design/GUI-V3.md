@@ -308,8 +308,7 @@ trait Backend {
   可展开工具卡片、流式预览、Send/Stop、底部状态栏。
 - **G0 ✅ 2026-10-21**：`Backend` trait + `LocalBackend`；草稿/新建/恢复会话；侧栏只列当前
   workspace；运行中禁止切换；`App::reset_transcript`；后端生命周期测试（mock provider）。
-- 尚未包含：Setup 向导/全字段表单（G3）、workspace 原生选择器（G4）、Markdown/工具卡片
-  的完整渲染（G1）。
+- 后续里程碑见下面的 G2/G3/G4 状态；G1 的 Markdown/工具卡片已落地。
 
 
 ### G3 完成（2026-10-21）
@@ -326,15 +325,15 @@ trait Backend {
 - ⚠️ 尚未做真窗口手工验收；Setup 的 Save & Start 仍是一次进程重启。
 
 
-### G2 进行中（2026-10-21）
+### G2 完成（除 diff 逐 hunk 包装，2026-10-21）
 
 - ✅ 审批队列：多个 pending approval 按到达顺序展示，回答/取消后自动前进；弹层补充 rule/argv/cwd。
 - ✅ `y` / `a` / `n` 在 Approval key context 下分别 Allow / Always / Reject；`Cmd+N` 新会话、`Cmd+,` 设置。
 - ✅ diff 面板可关闭；逐 hunk 交互仍由 GPUI Kit Diff 组件提供，未单独包一层。
 - ✅ 侧栏显示首条 user message 标题、开始时间、turn 数、cost。
-- ⏳ 审批并发/快捷键的真窗口手工验收。
+- ⚠️ 审批并发/快捷键仍需真窗口手工验收。
 
-### G4 进行中（2026-10-21）
+### G4 完成（除 .app 菜单/Dock/签名，2026-10-21）
 
 - ✅ 侧栏 Settings 按钮打开同一套表单（`SetupView` settings 模式）；分类导航，不退出当前对话窗口。
 - ✅ 启动时读取 `gui.json`，应用 light/dark、基础字号与等宽字号/字体；设置保存后立即刷新所有窗口。
@@ -342,4 +341,5 @@ trait Backend {
 - ✅ workspace 原生选择器 + 最近列表；切换通过 re-exec 实现。
 - ✅ 设置 10 分类（About 复用 Review 页）；restart 提示；最近 workspace / last session / 窗口几何落 `gui.json`。
 - ✅ composer 多行 Textarea、`Cmd+Enter`、运行中禁用 Send；模型输入按 turn 生效。
-- ⏳ `.app` 菜单、Dock、签名/公证；其余 Cmd 快捷键。
+- ⚠️ `.app` 菜单、Dock、签名/公证未做（本次明确排除）；View 切侧栏/主题快捷键未做。
+- ⚠️ workspace 切换通过 re-exec；最近 workspace、last session、窗口几何已入 `gui.json`。
