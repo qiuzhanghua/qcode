@@ -75,3 +75,7 @@ tmbootpicker.efi
 # Sogou IME writes its engine log into the current directory when the GUI
 # window's input field takes focus; it is not ours.
 debug.log
+
+# Environment snapshots taken while debugging; they captured API keys and a PAT.
+.devprobe/
+.inv/
