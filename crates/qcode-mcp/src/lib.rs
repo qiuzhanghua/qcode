@@ -111,6 +111,7 @@ pub async fn connect_all_with(
     tools
 }
 
+#[allow(clippy::result_large_err)]
 async fn connect_server(
     server: &McpServerConfig,
     workspace: &Path,

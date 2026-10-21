@@ -15,6 +15,15 @@ ignore = [
     # unmaintained `paste` proc macro. Compile-time only, no known
     # vulnerability; revisit when ratatui/tui-textarea both move to 0.30.
     "RUSTSEC-2024-0436",
+    # GUI/accesskit transitive graph (2026-10): no fixed release exists yet.
+    # None are used on a request path outside the desktop dependency tree.
+    "RUSTSEC-2024-0384", # instant
+    "RUSTSEC-2025-0134", # rustls-pemfile
+    "RUSTSEC-2026-0206", # rustybuzz
+    "RUSTSEC-2026-0192", # ttf-parser
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
 ]
 
 [licenses]
@@ -32,6 +41,12 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CDLA-Permissive-2.0",
+    # GUI build/transitive deps (2026-10). MPL is file-level copyleft and is
+    # only used by cbindgen/dwrote during the GPUI build; 0BSD/CC0 are
+    # permissive.
+    "MPL-2.0",
+    "0BSD",
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 
