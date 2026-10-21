@@ -347,3 +347,14 @@ trait Backend {
   只用于本机 P0，Developer ID/notarization 仍未做。
 - ⚠️ 原生菜单/Dock 未做；View 切侧栏/主题快捷键已做。
 - ⚠️ workspace 切换通过 re-exec；最近 workspace、last session、窗口几何已入 `gui.json`。
+
+
+### Conversation v4 Phase 1（2026-10-21）
+
+- ✅ `Turn` / `Process` / `Reasoning` 投影：input、process、answer、usage、cost、status；`Block` 继续作为 TUI 兼容层。
+- ✅ GUI 按 Turn 渲染：Turn 标题、用户气泡、过程摘要、最终答案、reasoning 行。
+- ✅ Compact / Standard / Detailed 三档；过程默认折叠、失败自动展开；Turn / reasoning / tool 可手动展开。
+- ✅ Header 轮次选择、上一轮/下一轮、可点击 Turn 列表、右侧 Turn 轨道；`Cmd+Alt+↑/↓` 跳转。
+- ✅ 字号层级：正文 14/22、次级 13/20、代码 12/18；Turn 最大宽度 900。
+- ✅ `gui.json` 持久化 `display_mode`。
+- ⏳ 仍待：代码块级折叠/展开、Turn 轨道 hover 预览、完整阅读锚点补偿、完整 Turn picker 弹层。

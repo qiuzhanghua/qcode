@@ -258,6 +258,7 @@ struct Shell {
     expanded_reasoning: HashSet<usize>,
     /// Turn selected by the rail/header.
     selected_turn: Option<usize>,
+    turn_picker_open: bool,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -354,6 +355,7 @@ impl Shell {
             process_overrides: BTreeMap::new(),
             expanded_reasoning: HashSet::new(),
             selected_turn: None,
+            turn_picker_open: false,
             last_blocks,
             backend,
             sessions,
@@ -670,6 +672,7 @@ impl Shell {
             return;
         }
         self.selected_turn = Some(turn_index);
+        self.turn_picker_open = false;
         if let Some(unit) = self.turn_unit_index(turn_index) {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_item(unit, cx));
@@ -945,7 +948,8 @@ impl Shell {
                                 None => "Turn -".to_string(),
                             })
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.step_turn(1, cx);
+                                this.turn_picker_open = !this.turn_picker_open;
+                                cx.notify();
                             })),
                     )
                     .child(
@@ -958,6 +962,19 @@ impl Shell {
                         Input::new(&self.model_input).aria_label("Model for the next turn"),
                     )),
             )
+            .children(self.turn_picker_open.then(|| {
+                let mut picker = div().flex().flex_row().gap_1().px_2().pb_1();
+                for (index, turn) in self.app.turns.iter().enumerate() {
+                    picker = picker.child(
+                        Button::new(format!("turn-pick-{index}"))
+                            .label(format!("T{}", turn.number))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.jump_to_turn(index, cx);
+                            })),
+                    );
+                }
+                picker
+            }))
             .child({
                 let rail = self.render_turn_rail(window, cx);
                 div()
@@ -1371,7 +1388,11 @@ fn process_summary(turn: &Turn, shell: &Shell) -> String {
         .any(|block| matches!(shell.app.blocks[*block], Block::Reasoning(_)));
     let mut parts = Vec::new();
     if thinking {
-        parts.push("thought".to_string());
+        let duration = turn
+            .duration()
+            .map(format_duration)
+            .unwrap_or_else(|| "…".to_string());
+        parts.push(format!("thought for {duration}"));
     }
     if tools > 0 {
         parts.push(format!("{tools} tools"));
