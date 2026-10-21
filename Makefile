@@ -20,7 +20,7 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check perf release archive clean gui $(PLATFORMS)
+.PHONY: all native list check perf release archive clean gui app app-debug $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -56,3 +56,10 @@ gui:
 	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode --features gui
 	cp target/debug/qc target/debug/qc-gui
 	@echo "GUI binary: ./target/debug/qc-gui gui"
+
+# Unsigned local macOS app (ad-hoc signed, no Apple account required).
+app:
+	./scripts/build-macos-app.sh
+
+app-debug:
+	./scripts/build-macos-app.sh --debug

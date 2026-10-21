@@ -343,5 +343,7 @@ trait Backend {
 - ✅ workspace 原生选择器 + 最近列表；切换通过 re-exec 实现。
 - ✅ 设置 10 分类（About 复用 Review 页）；restart 提示；最近 workspace / last session / 窗口几何落 `gui.json`。
 - ✅ composer 多行 Textarea、`Cmd+Enter`、运行中禁用 Send；模型输入按 turn 生效。
-- ⚠️ `.app` 菜单、Dock、签名/公证未做（本次明确排除）；View 切侧栏/主题快捷键未做。
+- ✅ 本地 unsigned `.app`：`make app` 生成 `dist/QCode.app`，ad-hoc 签名，不需要 Apple 账号；
+  只用于本机 P0，Developer ID/notarization 仍未做。
+- ⚠️ 原生菜单/Dock 未做；View 切侧栏/主题快捷键已做。
 - ⚠️ workspace 切换通过 re-exec；最近 workspace、last session、窗口几何已入 `gui.json`。
