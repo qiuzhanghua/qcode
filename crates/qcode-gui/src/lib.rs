@@ -52,13 +52,15 @@ use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// ADR-0041 typography tokens. Keep conversation sizes in one place so the
 /// three display modes do not drift into per-row ad-hoc values.
 const BODY_SIZE: f32 = 14.0;
 const BODY_LINE: f32 = 22.0;
+const ANSWER_SIZE: f32 = 15.0;
+const ANSWER_LINE: f32 = 24.0;
 const SECONDARY_SIZE: f32 = 13.0;
 const SECONDARY_LINE: f32 = 20.0;
 const CAPTION_SIZE: f32 = 11.0;
@@ -267,10 +269,12 @@ struct Shell {
     /// Turn/loose-block rows currently rendered.
     units: Vec<DisplayUnit>,
     mode: DisplayMode,
-    /// Per-turn process fold overrides; absent uses the mode default.
-    process_overrides: BTreeMap<u64, bool>,
     /// Reasoning rows the reader expanded, keyed by block index.
     expanded_reasoning: HashSet<usize>,
+    /// Reasoning rows explicitly collapsed in Detailed mode.
+    collapsed_reasoning: HashSet<usize>,
+    /// Tools explicitly collapsed in Detailed mode, keyed by call id.
+    collapsed_tools: HashSet<String>,
     /// Long code blocks the reader expanded, keyed by block/segment.
     expanded_code: HashSet<String>,
     /// Turn selected by the rail/header.
@@ -369,8 +373,9 @@ impl Shell {
             scroller,
             units,
             mode,
-            process_overrides: BTreeMap::new(),
             expanded_reasoning: HashSet::new(),
+            collapsed_reasoning: HashSet::new(),
+            collapsed_tools: HashSet::new(),
             expanded_code: HashSet::new(),
             selected_turn: None,
             turn_picker_open: false,
@@ -388,6 +393,10 @@ impl Shell {
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
+        self.expanded_reasoning.clear();
+        self.collapsed_reasoning.clear();
+        self.collapsed_tools.clear();
+        self.expanded_code.clear();
         self.units = display_units(&self.app);
         let count = self.units.len();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
@@ -660,35 +669,50 @@ impl Shell {
         cx.notify();
     }
 
-    fn process_expanded(&self, turn: &Turn) -> bool {
-        if turn.running() {
-            return true;
-        }
-        if let Some(value) = self.process_overrides.get(&turn.id) {
-            return *value;
-        }
-        match self.mode {
-            DisplayMode::Detailed => true,
-            _ => turn.status == Some(qcode_core::event::TurnStatus::Failed),
+    fn reasoning_expanded(&self, block: usize) -> bool {
+        if self.collapsed_reasoning.contains(&block) {
+            false
+        } else if self.expanded_reasoning.contains(&block) {
+            true
+        } else {
+            self.mode == DisplayMode::Detailed
         }
     }
 
-    fn toggle_process(&mut self, turn_index: usize, cx: &mut Context<Self>) {
-        let Some(turn) = self.app.turns.get(turn_index) else {
-            return;
-        };
+    fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
-        let next = !self.process_expanded(turn);
-        self.process_overrides.insert(turn.id, next);
+        if self.reasoning_expanded(block) {
+            self.expanded_reasoning.remove(&block);
+            self.collapsed_reasoning.insert(block);
+        } else {
+            self.collapsed_reasoning.remove(&block);
+            self.expanded_reasoning.insert(block);
+        }
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
-    fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
+    fn tool_expanded(&self, call_id: &str) -> bool {
+        if self.collapsed_tools.contains(call_id) {
+            return false;
+        }
+        if self.mode == DisplayMode::Detailed {
+            return true;
+        }
+        self.app.blocks.iter().any(
+            |block| matches!(block, Block::Tool(tool) if tool.call_id == call_id && tool.expanded),
+        )
+    }
+
+    fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
         let anchor = self.anchor(cx);
-        if !self.expanded_reasoning.remove(&block) {
-            self.expanded_reasoning.insert(block);
+        if self.tool_expanded(call_id) {
+            self.collapsed_tools.insert(call_id.to_string());
+            self.app.set_tool_expanded(call_id, false);
+        } else {
+            self.collapsed_tools.remove(call_id);
+            self.app.set_tool_expanded(call_id, true);
         }
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
@@ -1387,17 +1411,81 @@ fn compact_user_row(text: &str) -> AnyElement {
         .into_any_element()
 }
 
+fn reasoning_preview(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    short_preview(line, 120)
+}
+
+fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    let expanded = shell.reasoning_expanded(usize::MAX);
+    let preview = reasoning_preview(&shell.app.reasoning_streaming);
+    let mut row = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .px_6()
+        .py_1()
+        .items_start();
+    row = row.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_start()
+            .w_full()
+            .id("reasoning-live-row")
+            .cursor_pointer()
+            .text_size(px(SECONDARY_SIZE))
+            .text_color(rgb(0x888888))
+            .on_click({
+                let entity = entity.clone();
+                move |_, _, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.toggle_reasoning(usize::MAX, cx);
+                    });
+                }
+            })
+            .child(conversation_icon(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            }))
+            .child(conversation_icon(IconName::Brain))
+            .child("思考")
+            .children((!expanded && !preview.is_empty()).then(|| {
+                div()
+                    .text_color(rgb(0x777777))
+                    .child(format!("· {preview}"))
+            })),
+    );
+    if expanded {
+        row = row.child(
+            div()
+                .w_full()
+                .pl_8()
+                .pr_6()
+                .pb_2()
+                .text_size(px(SECONDARY_SIZE))
+                .line_height(px(SECONDARY_LINE))
+                .child(shell.app.reasoning_streaming.clone()),
+        );
+    }
+    row.into_any_element()
+}
+
 fn reasoning_row(
     block: usize,
     entry: &qcode_ui_state::ReasoningEntry,
     shell: &Shell,
     entity: &Entity<Shell>,
 ) -> AnyElement {
-    let expanded = shell.expanded_reasoning.contains(&block);
-    let label = entry
-        .elapsed
-        .map(|elapsed| format!("Thought for {}", format_duration(elapsed)))
-        .unwrap_or_else(|| "Thought".to_string());
+    let expanded = shell.reasoning_expanded(block);
+    let preview = reasoning_preview(&entry.text);
     let mut row = div()
         .flex()
         .flex_col()
@@ -1429,13 +1517,19 @@ fn reasoning_row(
                 IconName::ChevronRight
             }))
             .child(conversation_icon(IconName::Brain))
-            .child(label),
+            .child("思考")
+            .children((!expanded && !preview.is_empty()).then(|| {
+                div()
+                    .text_color(rgb(0x777777))
+                    .child(format!("· {preview}"))
+            })),
     );
     if expanded {
         row = row.child(
             div()
                 .w_full()
-                .px_6()
+                .pl_8()
+                .pr_6()
                 .pb_2()
                 .text_size(px(SECONDARY_SIZE))
                 .line_height(px(SECONDARY_LINE))
@@ -1449,6 +1543,22 @@ fn reasoning_row(
     row.into_any_element()
 }
 
+fn tool_label(name: &str) -> String {
+    match name {
+        "run_shell" | "shell" => "运行命令",
+        "list_dir" => "列出目录",
+        "glob" => "查找文件",
+        "grep" | "search" => "搜索",
+        "read_file" | "read" => "读取文件",
+        "write_file" | "write" => "写入文件",
+        "edit_file" | "edit" | "apply_patch" => "修改文件",
+        "todo_write" | "todo" => "更新待办",
+        "subagent" | "task" => "子代理",
+        _ => name,
+    }
+    .to_string()
+}
+
 fn tool_icon_name(name: &str) -> IconName {
     match name {
         "run_shell" | "shell" => IconName::SquareTerminal,
@@ -1460,53 +1570,6 @@ fn tool_icon_name(name: &str) -> IconName {
         "subagent" | "task" => IconName::Bot,
         _ => IconName::Wrench,
     }
-}
-
-fn process_icon(turn: &Turn, shell: &Shell) -> IconName {
-    if turn
-        .process
-        .iter()
-        .any(|block| matches!(shell.app.blocks[*block], Block::Tool(_)))
-    {
-        IconName::SquareTerminal
-    } else {
-        IconName::Brain
-    }
-}
-
-fn process_summary(turn: &Turn, shell: &Shell) -> String {
-    let tools = turn
-        .process
-        .iter()
-        .filter(|block| matches!(shell.app.blocks[**block], Block::Tool(_)))
-        .count();
-    let notes = turn
-        .process
-        .iter()
-        .filter(|block| matches!(shell.app.blocks[**block], Block::Notice(_)))
-        .count();
-    let thinking = turn
-        .process
-        .iter()
-        .any(|block| matches!(shell.app.blocks[*block], Block::Reasoning(_)));
-    let mut parts = Vec::new();
-    if thinking {
-        let duration = turn
-            .duration()
-            .map(format_duration)
-            .unwrap_or_else(|| "…".to_string());
-        parts.push(format!("thought for {duration}"));
-    }
-    if tools > 0 {
-        parts.push(format!("{tools} tools"));
-    }
-    if notes > 0 {
-        parts.push(format!("{notes} notes"));
-    }
-    if parts.is_empty() {
-        parts.push("process".to_string());
-    }
-    parts.join(" · ")
 }
 
 fn short_preview(text: &str, limit: usize) -> String {
@@ -1599,119 +1662,25 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
 
     let has_process =
         !turn.process.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
-    let expanded = shell.process_expanded(turn);
     let show_process = shell.mode != DisplayMode::Compact
         || turn.running()
         || turn.status == Some(qcode_core::event::TurnStatus::Failed);
-    let mut process = div().flex().flex_col().gap_1().w_full().items_start();
+    let mut process = div().flex().flex_col().gap_0().w_full().items_start();
 
     if has_process && show_process {
-        if expanded {
-            if !turn.running() {
-                process = process.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_start()
-                        .w_full()
-                        .px_6()
-                        .py_1()
-                        .id(format!("process-collapse-row-{index}"))
-                        .cursor_pointer()
-                        .text_size(px(SECONDARY_SIZE))
-                        .text_color(rgb(0x888888))
-                        .on_click({
-                            let entity = entity.clone();
-                            move |_, _, cx| {
-                                entity.update(cx, |shell, cx| {
-                                    shell.toggle_process(index, cx);
-                                });
-                            }
-                        })
-                        .child(conversation_icon(IconName::ChevronDown))
-                        .child(conversation_icon(process_icon(turn, shell)))
-                        .child(process_summary(turn, shell)),
-                );
-            }
-            for block in &turn.process {
-                if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
-                    process = process.child(reasoning_row(*block, entry, shell, entity));
+        for block in &turn.process {
+            if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
+                if entry.text.is_empty()
+                    && turn.running()
+                    && !shell.app.reasoning_streaming.is_empty()
+                {
+                    process = process.child(live_reasoning_row(shell, entity));
                 } else {
-                    process = process.child(block_row(*block, shell, entity));
+                    process = process.child(reasoning_row(*block, entry, shell, entity));
                 }
+            } else {
+                process = process.child(block_row(*block, shell, entity));
             }
-            if turn.running() && !shell.app.reasoning_streaming.is_empty() {
-                let live_key = usize::MAX;
-                let live_expanded = shell.expanded_reasoning.contains(&live_key);
-                process = process.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .px_6()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_start()
-                                .w_full()
-                                .id("reasoning-live-row")
-                                .cursor_pointer()
-                                .text_size(px(SECONDARY_SIZE))
-                                .text_color(rgb(0x888888))
-                                .on_click({
-                                    let entity = entity.clone();
-                                    move |_, _, cx| {
-                                        entity.update(cx, |shell, cx| {
-                                            shell.toggle_reasoning(usize::MAX, cx);
-                                        });
-                                    }
-                                })
-                                .child(conversation_icon(if live_expanded {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                }))
-                                .child(conversation_icon(IconName::Brain))
-                                .child("Thinking…"),
-                        )
-                        .children(live_expanded.then(|| {
-                            div()
-                                .px_6()
-                                .text_size(px(SECONDARY_SIZE))
-                                .line_height(px(SECONDARY_LINE))
-                                .child(shell.app.reasoning_streaming.clone())
-                        })),
-                );
-            }
-        } else {
-            process = process.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_start()
-                    .w_full()
-                    .px_6()
-                    .py_1()
-                    .id(format!("process-toggle-row-{index}"))
-                    .cursor_pointer()
-                    .text_size(px(SECONDARY_SIZE))
-                    .text_color(rgb(0x888888))
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_, _, cx| {
-                            entity.update(cx, |shell, cx| {
-                                shell.toggle_process(index, cx);
-                            });
-                        }
-                    })
-                    .child(conversation_icon(IconName::ChevronRight))
-                    .child(conversation_icon(process_icon(turn, shell)))
-                    .child(process_summary(turn, shell)),
-            );
         }
         card = card.child(process);
     }
@@ -1723,15 +1692,15 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .px_6()
                 .py_2()
-                .text_size(px(BODY_SIZE))
-                .line_height(px(BODY_LINE))
+                .text_size(px(ANSWER_SIZE))
+                .line_height(px(ANSWER_LINE))
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
-                    .text_size(px(BODY_SIZE))
-                    .line_height(px(BODY_LINE)),
+                    .text_size(px(ANSWER_SIZE))
+                    .line_height(px(ANSWER_LINE)),
                 ),
         );
     }
@@ -1797,8 +1766,8 @@ fn markdown_with_folds(
             MarkdownSegment::Text(body) => {
                 column = column.child(
                     TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
-                        .text_size(px(BODY_SIZE))
-                        .line_height(px(BODY_LINE)),
+                        .text_size(px(ANSWER_SIZE))
+                        .line_height(px(ANSWER_LINE)),
                 );
             }
             MarkdownSegment::Code { language, body } => {
@@ -1901,41 +1870,63 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .into_any_element(),
         Block::Assistant(text) => markdown_with_folds(index, text, shell, entity),
         Block::Tool(tool) => {
-            let mut card = div()
+            let label = tool_label(&tool.name);
+            let summary = short_preview(&tool.summary, 150);
+            let expanded = shell.tool_expanded(&tool.call_id);
+            let status = (tool.status != Some(ToolStatus::Ok)).then(|| tool_status(tool.status));
+            let mut row = div().flex().flex_col().w_full().px_6().py_1().items_start();
+            let mut header = div()
                 .flex()
-                .flex_col()
-                .gap_1()
-                .self_start()
-                .items_start()
-                .max_w(px(760.0))
-                .mx_6()
-                .my_1()
-                .rounded(px(6.0))
-                .bg(rgba(0x7f7f7f0c))
-                .p_2()
+                .flex_row()
+                .items_center()
+                .justify_start()
+                .w_full()
+                .gap_2()
+                .id(format!("tool-row-{index}"))
+                .cursor_pointer()
                 .text_size(px(SECONDARY_SIZE))
-                .child(
+                .text_color(rgb(0x888888))
+                .on_click({
+                    let call_id = tool.call_id.clone();
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.toggle_tool(&call_id, cx);
+                        });
+                    }
+                })
+                .child(conversation_icon(if expanded {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                }))
+                .child(conversation_icon(tool_icon_name(&tool.name)))
+                .child(label)
+                .children((!summary.is_empty()).then(|| {
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_start()
-                        .gap_2()
-                        .text_size(px(CODE_SIZE))
+                        .text_color(rgb(0x777777))
+                        .child(format!("· {summary}"))
+                }));
+            if let Some(status) = status {
+                header = header.child(
+                    div()
+                        .text_size(px(CAPTION_SIZE))
                         .text_color(rgb(0x999999))
-                        .child(conversation_icon(if tool.expanded {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        }))
-                        .child(conversation_icon(tool_icon_name(&tool.name)))
-                        .child(tool.name.clone())
-                        .child(tool_status(tool.status)),
-                )
-                .child(div().child(tool.summary.clone()));
-            if tool.expanded {
+                        .child(status),
+                );
+            }
+            row = row.child(header);
+            if expanded {
+                let mut details = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .pl_8()
+                    .pr_6()
+                    .pb_2();
                 if !tool.output.is_empty() {
-                    card = card.child(
+                    details = details.child(
                         div()
                             .text_size(px(CODE_SIZE))
                             .line_height(px(CODE_LINE))
@@ -1946,19 +1937,16 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     );
                 }
                 if let Some(elapsed) = tool.elapsed {
-                    card = card.child(format!("took {}", format_duration(elapsed)));
+                    details = details.child(
+                        div()
+                            .text_size(px(CAPTION_SIZE))
+                            .text_color(rgb(0x888888))
+                            .child(format!("took {}", format_duration(elapsed))),
+                    );
                 }
+                row = row.child(details);
             }
-            let call_id = tool.call_id.clone();
-            let entity = entity.clone();
-            card.id(format!("tool-card-{index}"))
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |shell, cx| {
-                        shell.app.toggle_tool(&call_id);
-                        cx.notify();
-                    });
-                })
-                .into_any_element()
+            row.into_any_element()
         }
         Block::Subagent { text, .. } => div()
             .px_6()

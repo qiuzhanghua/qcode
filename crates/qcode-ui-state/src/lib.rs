@@ -239,6 +239,9 @@ pub struct App {
     pub loose_blocks: Vec<usize>,
     /// Live reasoning for the open turn, replaced by the authoritative message.
     pub reasoning_streaming: String,
+    /// Block holding the live reasoning row so it keeps its place in the
+    /// chronological process order (reasoning before the next tool call).
+    pub streaming_reasoning_block: Option<usize>,
     /// Text streamed for the message currently being generated. Cleared when
     /// the authoritative `assistant_message` event arrives.
     pub streaming: String,
@@ -278,6 +281,7 @@ impl App {
             current_turn: None,
             loose_blocks: Vec::new(),
             reasoning_streaming: String::new(),
+            streaming_reasoning_block: None,
             streaming: String::new(),
             composer: Composer::new(),
             scroll: 0,
@@ -311,6 +315,7 @@ impl App {
         self.current_turn = None;
         self.loose_blocks.clear();
         self.reasoning_streaming.clear();
+        self.streaming_reasoning_block = None;
         self.streaming.clear();
         self.scroll = 0;
         self.status.turn = 0;
@@ -411,6 +416,7 @@ impl App {
                 self.status.last = None;
                 self.streaming.clear();
                 self.reasoning_streaming.clear();
+                self.streaming_reasoning_block = None;
                 self.start_turn(event);
             }
             EventKind::UserMessage(message) => {
@@ -428,17 +434,31 @@ impl App {
                 self.reasoning_streaming.clear();
                 self.ensure_turn(event);
                 let turn = self.current_turn.expect("ensured turn");
+                let mut live_reasoning = self.streaming_reasoning_block.take();
                 let mut answer = String::new();
                 for block in &message.blocks {
                     match block {
                         ContentBlock::Reasoning { text, .. } => {
                             let elapsed =
                                 (event.ts - self.turns[turn].started_at).max(Duration::ZERO);
-                            self.push_process(Block::Reasoning(ReasoningEntry {
-                                text: text.clone(),
-                                started_at: self.turns[turn].started_at,
-                                elapsed: Some(elapsed),
-                            }));
+                            let replaced = live_reasoning.take().and_then(|index| {
+                                match self.blocks.get_mut(index) {
+                                    Some(Block::Reasoning(entry)) => {
+                                        entry.text = text.clone();
+                                        entry.started_at = self.turns[turn].started_at;
+                                        entry.elapsed = Some(elapsed);
+                                        Some(())
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            if replaced.is_none() {
+                                self.push_process(Block::Reasoning(ReasoningEntry {
+                                    text: text.clone(),
+                                    started_at: self.turns[turn].started_at,
+                                    elapsed: Some(elapsed),
+                                }));
+                            }
                         }
                         ContentBlock::Text { text } => {
                             if !answer.is_empty() {
@@ -513,6 +533,7 @@ impl App {
             EventKind::TurnEnded(ended) => {
                 self.streaming.clear();
                 self.reasoning_streaming.clear();
+                self.streaming_reasoning_block = None;
                 self.status.running = false;
                 self.status.last = Some(ended.status);
                 self.status.cost_usd = ended.cost_usd;
@@ -952,7 +973,25 @@ impl App {
                 self.context_tokens = *tokens;
                 self.context_window = Some(*window);
             }
-            Delta::Reasoning(text) => self.reasoning_streaming.push_str(text),
+            Delta::Reasoning(text) => {
+                self.reasoning_streaming.push_str(text);
+                let current = self.reasoning_streaming.clone();
+                let index = match self.streaming_reasoning_block {
+                    Some(index) => index,
+                    None => {
+                        let index = self.push_process(Block::Reasoning(ReasoningEntry {
+                            text: current.clone(),
+                            started_at: OffsetDateTime::now_utc(),
+                            elapsed: None,
+                        }));
+                        self.streaming_reasoning_block = Some(index);
+                        index
+                    }
+                };
+                if let Some(Block::Reasoning(entry)) = self.blocks.get_mut(index) {
+                    entry.text = current;
+                }
+            }
         }
     }
 
@@ -968,6 +1007,16 @@ impl App {
     }
 
     /// Toggle one tool card by call id (GUI click).
+    pub fn set_tool_expanded(&mut self, call_id: &str, expanded: bool) {
+        if let Some(Block::Tool(tool)) = self
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, Block::Tool(tool) if tool.call_id == call_id))
+        {
+            tool.expanded = expanded;
+        }
+    }
+
     pub fn toggle_tool(&mut self, call_id: &str) {
         if let Some(Block::Tool(tool)) = self
             .blocks
@@ -1670,6 +1719,52 @@ mod tests {
         assert_eq!(app.turns[1].input_block, Some(2));
         assert_eq!(app.turns[0].answer_block, Some(1));
         assert_eq!(app.turns[1].answer_block, Some(3));
+    }
+
+    #[test]
+    fn streamed_reasoning_keeps_its_place_before_later_tools() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        })));
+        app.apply_delta(&Delta::Reasoning("look first".to_string()));
+        app.apply(&Event::new(
+            2,
+            "s1",
+            1,
+            EventKind::ToolCall(ToolCall {
+                call_id: "c1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/lib.rs"}),
+            }),
+        ));
+        app.apply(&Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::AssistantMessage(AssistantMessage {
+                blocks: vec![
+                    ContentBlock::Reasoning {
+                        text: "look first".to_string(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "done".to_string(),
+                    },
+                ],
+                provider_raw: json!({}),
+                usage: Usage::default(),
+            }),
+        ));
+        assert_eq!(app.turns[0].process.len(), 2);
+        assert!(matches!(
+            &app.blocks[app.turns[0].process[0]],
+            Block::Reasoning(entry) if entry.text == "look first"
+        ));
+        assert!(matches!(
+            &app.blocks[app.turns[0].process[1]],
+            Block::Tool(tool) if tool.call_id == "c1"
+        ));
     }
 
     #[test]
