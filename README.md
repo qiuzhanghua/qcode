@@ -327,6 +327,13 @@ base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"   # 只存变量名，不存 key
 default_model = "deepseek-flash"
 
+# Anthropic Messages API（claude 是等价别名）。base_url 不带 /v1 时自动补
+# /v1/messages；若网关已经带 /v1，也会正确拼成 /v1/messages。
+# [providers.anthropic]
+# base_url = "https://api.anthropic.com"
+# api_key_env = "ANTHROPIC_API_KEY"
+# default_model = "claude-sonnet-4-5"
+
 # 上下文窗口（token），用于 78% 压缩阈值；按模型实际窗口调整。
 [context]
 window_tokens = 128000
@@ -456,7 +463,7 @@ action = "allow"
 
 优先级：CLI flags > 环境变量（`QCODE_PROVIDER` / `QCODE_MODEL` / `QCODE_BASE_URL`）>
 配置文件 > 内置默认。keyless 服务把 `api_key_env` 设为 `""`。
-`default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，其他 provider 缺省会报错并要求显式指定。
+`default_model` 可省略：DeepSeek 缺省使用 `deepseek-flash`，Anthropic 缺省使用 `claude-sonnet-4-5`，其他 provider 缺省会报错并要求显式指定。
 `RUST_LOG=info` 打开 stderr 诊断日志；stdout 永远是干净的 JSONL。
 
 常用 flag：`--yes`、`--cwd`、`--resume`、`--max-turns`、`--max-cost`、`--timeout`、`--skill`、`--data-dir`、`--config`、`--approval-policy`、`--include-raw`（`--json` 下保留 `provider_raw`）。
@@ -481,7 +488,7 @@ action = "allow"
 
 ```
 crates/qcode-core        domain、event、store、state、policy、tool、todo、engine
-crates/qcode-providers   provider 实现（mock + OpenAI-compatible）
+crates/qcode-providers   provider 实现（mock + OpenAI-compatible + Anthropic Messages）
 crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）

@@ -977,6 +977,13 @@ fn builtin(name: &str) -> Option<Builtin> {
             api_key_env: "",
             default_model: None,
         }),
+        // Anthropic Messages API. `claude` is accepted as a friendlier alias;
+        // both resolve to the same provider and key.
+        "anthropic" | "claude" => Some(Builtin {
+            base_url: "https://api.anthropic.com",
+            api_key_env: "ANTHROPIC_API_KEY",
+            default_model: Some("claude-sonnet-4-5"),
+        }),
         _ => None,
     }
 }
@@ -1278,6 +1285,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.model, "deepseek-flash");
+    }
+
+    #[test]
+    fn anthropic_defaults_and_claude_alias() {
+        let config: Config = toml::from_str(r#"default_provider = "anthropic""#).unwrap();
+        let resolved = resolve(
+            &config,
+            &Overrides::default(),
+            &env_from(&[("ANTHROPIC_API_KEY", "sk-ant-test")]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(resolved.model, "claude-sonnet-4-5");
+        assert_eq!(resolved.api_key.as_deref(), Some("sk-ant-test"));
+
+        let alias: Config = toml::from_str(r#"default_provider = "claude""#).unwrap();
+        let resolved = resolve(
+            &alias,
+            &Overrides::default(),
+            &env_from(&[("ANTHROPIC_API_KEY", "sk-ant-test")]),
+        )
+        .unwrap();
+        assert_eq!(resolved.name, "claude");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
     }
 
     #[test]

@@ -134,7 +134,9 @@ use qcode_core::provider::Provider;
 use qcode_core::provider::{StopReason, StreamEvent};
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
-use qcode_providers::{MockProvider, OpenAiCompatConfig, OpenAiCompatProvider};
+use qcode_providers::{
+    AnthropicConfig, AnthropicProvider, MockProvider, OpenAiCompatConfig, OpenAiCompatProvider,
+};
 use qcode_tools::builtin_registry_with;
 use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork};
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
@@ -441,6 +443,15 @@ pub fn build_provider(
                 },
             ],
         ])),
+        "anthropic" | "claude" => Box::new(AnthropicProvider::new(AnthropicConfig {
+            name: resolved.name.clone(),
+            base_url: resolved
+                .base_url
+                .clone()
+                .expect("non-mock provider always has a base URL"),
+            api_key: resolved.api_key.clone(),
+            proxy_url: proxy_url.map(str::to_string),
+        })?),
         _ => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
             name: resolved.name.clone(),
             base_url: resolved
