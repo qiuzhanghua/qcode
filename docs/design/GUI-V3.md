@@ -465,3 +465,13 @@ trait Backend {
 - Turn 结束（包括失败/取消）自动删除 temp。
 - 文件工具在无根 Task 中直接返回 `NoRoots`。
 - 该 temp 仅用于无根 shell；多根 sandbox 的 temp 约束仍由 ADR-0048 处理。
+
+### 多根 shell sandbox（2026-10-21）
+
+- macOS `sandbox-exec` 已支持按 Task roots 重建 profile：
+  - 所有 Root 可读
+  - 仅 RW Root + Turn temp 可写
+  - RO Root 不进入 `file-write*`
+  - `extra_writable` 真正进入 profile
+- `run_shell` 在 roots > 1 或无根 temp 场景使用按 Task 重建的 sandbox。
+- Linux `bwrap`/Landlock 和 Windows ACL 的多根重建仍待实现；当前会 fail closed。

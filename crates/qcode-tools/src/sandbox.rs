@@ -35,6 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 
+use qcode_core::task::{Root, RootAccess};
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -105,6 +106,18 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
         cwd: &Path,
     ) -> Result<Command, SandboxError>;
 
+    /// Rebuild this sandbox for a task's root set.
+    ///
+    /// The default backend does not support multiple roots; callers must fail
+    /// closed rather than falling back to an unconfined command.
+    fn with_roots(
+        &self,
+        _roots: &[Root],
+        _temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        Err(SandboxError::Unsupported("multi-root sandbox"))
+    }
+
     /// Probe that the sandbox can actually be applied. Default: no-op.
     fn check(&self) -> Result<(), SandboxError> {
         Ok(())
@@ -129,8 +142,7 @@ pub fn build(
         SandboxMode::SandboxExec => {
             #[cfg(target_os = "macos")]
             {
-                let _ = extra_writable;
-                let sandbox = SandboxExec::new(workspace, network)?;
+                let sandbox = SandboxExec::new_with_extra(workspace, network, extra_writable)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
@@ -191,6 +203,14 @@ pub fn build(
 pub struct NoSandbox;
 
 impl Sandbox for NoSandbox {
+    fn with_roots(
+        &self,
+        _roots: &[Root],
+        _temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        Ok(Arc::new(NoSandbox))
+    }
+
     fn name(&self) -> &'static str {
         "none"
     }
@@ -217,6 +237,7 @@ impl Sandbox for NoSandbox {
 pub struct SandboxExec {
     profile: String,
     network: SandboxNetwork,
+    extra_writable: Vec<PathBuf>,
 }
 
 #[cfg(target_os = "macos")]
@@ -224,9 +245,25 @@ impl SandboxExec {
     const EXEC: &'static str = "/usr/bin/sandbox-exec";
 
     pub fn new(workspace: &Path, network: SandboxNetwork) -> Result<Self, SandboxError> {
+        Self::new_with_extra(workspace, network, &[])
+    }
+
+    pub fn new_with_extra(
+        workspace: &Path,
+        network: SandboxNetwork,
+        extra_writable: &[PathBuf],
+    ) -> Result<Self, SandboxError> {
+        let roots = vec![Root {
+            id: "workspace".to_string(),
+            label: "workspace".to_string(),
+            path: workspace.to_path_buf(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        }];
         Ok(Self {
-            profile: profile_for(workspace, network)?,
+            profile: profile_for_roots(&roots, None, network, extra_writable)?,
             network,
+            extra_writable: extra_writable.to_vec(),
         })
     }
 
@@ -237,6 +274,18 @@ impl SandboxExec {
 
 #[cfg(target_os = "macos")]
 impl Sandbox for SandboxExec {
+    fn with_roots(
+        &self,
+        roots: &[Root],
+        temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        Ok(Arc::new(Self {
+            profile: profile_for_roots(roots, temp, self.network, &self.extra_writable)?,
+            network: self.network,
+            extra_writable: self.extra_writable.clone(),
+        }))
+    }
+
     fn name(&self) -> &'static str {
         "sandbox-exec"
     }
@@ -779,10 +828,15 @@ fn add_path_rule(ruleset_fd: RawFd, path: &Path, allowed_access: u64) -> Result<
 /// temporary directories and the Cargo/Rustup homes (needed for builds). Network
 /// is denied unless explicitly enabled.
 #[cfg(target_os = "macos")]
-fn profile_for(workspace: &Path, network: SandboxNetwork) -> Result<String, SandboxError> {
-    if workspace == Path::new("/") {
+fn profile_for_roots(
+    roots: &[Root],
+    temp: Option<&Path>,
+    network: SandboxNetwork,
+    extra_writable: &[PathBuf],
+) -> Result<String, SandboxError> {
+    if roots.iter().any(|root| root.path == Path::new("/")) {
         return Err(SandboxError::Setup(
-            "refusing to sandbox the filesystem root as the workspace".to_string(),
+            "refusing to sandbox the filesystem root as a root".to_string(),
         ));
     }
 
@@ -803,15 +857,23 @@ fn profile_for(workspace: &Path, network: SandboxNetwork) -> Result<String, Sand
         "/opt/homebrew".into(),
         "/usr/local".into(),
     ];
-    readable.push(workspace.to_path_buf());
-
     let mut writable: Vec<PathBuf> = vec![
-        workspace.to_path_buf(),
         "/private/tmp".into(),
         "/tmp".into(),
         "/private/var/folders".into(),
         "/var/folders".into(),
     ];
+    for root in roots {
+        readable.push(root.path.clone());
+        if root.access == RootAccess::ReadWrite {
+            writable.push(root.path.clone());
+        }
+    }
+    if let Some(temp) = temp {
+        readable.push(temp.to_path_buf());
+        writable.push(temp.to_path_buf());
+    }
+    writable.extend(extra_writable.iter().cloned());
     for key in ["CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "TMPDIR"] {
         if let Some(value) = std::env::var_os(key) {
             let path = PathBuf::from(value);
@@ -827,16 +889,12 @@ fn profile_for(workspace: &Path, network: SandboxNetwork) -> Result<String, Sand
     profile.push_str("(allow process-fork)\n");
     profile.push_str("(allow signal (target self))\n");
     profile.push_str("(allow sysctl-read)\n");
-
     profile.push_str("(allow file-read*\n");
-    // Path resolution itself needs the root directory; without this, dyld
-    // aborts the child before it can even start (found while preflighting).
     profile.push_str("    (literal \"/\")\n");
     for path in &readable {
         profile.push_str(&format!("    (subpath {})\n", sbpl_path(path)?));
     }
     profile.push_str(")\n");
-
     profile.push_str("(allow file-write*\n");
     for path in &writable {
         profile.push_str(&format!("    (subpath {})\n", sbpl_path(path)?));
@@ -845,20 +903,15 @@ fn profile_for(workspace: &Path, network: SandboxNetwork) -> Result<String, Sand
         profile.push_str(&format!("    (literal \"{device}\")\n"));
     }
     profile.push_str(")\n");
-
     match network {
         SandboxNetwork::Deny => {}
         SandboxNetwork::Allow => profile.push_str("(allow network*)\n"),
         SandboxNetwork::ProxyOnly { port } => {
-            // Seatbelt cannot name a literal IP in this filter; `localhost` is
-            // resolved to loopback by the sandbox. The egress proxy listens on
-            // 127.0.0.1, and everything else is denied by `(deny default)`.
             profile.push_str(&format!(
                 "(allow network-outbound (remote tcp \"localhost:{port}\"))\n"
             ));
         }
     }
-
     Ok(profile)
 }
 
@@ -894,6 +947,46 @@ mod tests {
         assert!(profile.contains("(subpath \"/tmp/qcode-sandbox-tests/workspace\")"));
         assert!(!profile.contains("(allow network*)"));
         assert!(!profile.contains("(allow default)"));
+    }
+
+    #[test]
+    fn multi_root_profile_scopes_writes_to_rw_roots() {
+        let rw = PathBuf::from("/tmp/qcode-sandbox-tests/code");
+        let ro = PathBuf::from("/tmp/qcode-sandbox-tests/docs");
+        let profile = profile_for_roots(
+            &[
+                Root {
+                    id: "code".into(),
+                    label: "code".into(),
+                    path: rw.clone(),
+                    access: RootAccess::ReadWrite,
+                    primary: true,
+                },
+                Root {
+                    id: "docs".into(),
+                    label: "docs".into(),
+                    path: ro.clone(),
+                    access: RootAccess::ReadOnly,
+                    primary: false,
+                },
+            ],
+            Some(Path::new("/tmp/qcode-sandbox-tests/tmp")),
+            SandboxNetwork::Deny,
+            &[],
+        )
+        .expect("profile");
+        let write = profile
+            .split("(allow file-write*")
+            .nth(1)
+            .expect("write block");
+        assert!(write.contains("(subpath \"/tmp/qcode-sandbox-tests/code\")"));
+        assert!(write.contains("(subpath \"/tmp/qcode-sandbox-tests/tmp\")"));
+        assert!(!write.contains("(subpath \"/tmp/qcode-sandbox-tests/docs\")"));
+        let read = profile
+            .split("(allow file-read*")
+            .nth(1)
+            .expect("read block");
+        assert!(read.contains("(subpath \"/tmp/qcode-sandbox-tests/docs\")"));
     }
 
     #[test]

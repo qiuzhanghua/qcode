@@ -206,6 +206,16 @@ impl Tool for RunShell {
                 .unwrap_or_else(|| ctx.workspace.clone()),
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
+        // The initial sandbox is built for the legacy workspace. A task with
+        // multiple roots needs a profile generated from the current snapshot.
+        let needs_roots = ctx.roots.len() > 1 || (ctx.roots.is_empty() && ctx.temp_dir.is_some());
+        let sandbox = if needs_roots {
+            self.sandbox
+                .with_roots(&ctx.roots, ctx.temp_dir.as_deref())
+                .map_err(|err| ToolError::Sandbox(err.to_string()))?
+        } else {
+            self.sandbox.clone()
+        };
 
         if ctx.cancel.is_cancelled() {
             return Ok(ToolOutput::cancelled("cancelled by user\n"));
@@ -215,7 +225,7 @@ impl Tool for RunShell {
         // The sandbox builds the real `Command`. On error we fail closed: the
         // command is never executed without the configured confinement.
         let mut command = tokio::process::Command::from(
-            self.sandbox
+            sandbox
                 .command(program.as_os_str(), &shell_args, &cwd)
                 .map_err(|err| ToolError::Sandbox(err.to_string()))?,
         );
