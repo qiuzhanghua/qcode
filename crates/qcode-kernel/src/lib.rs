@@ -4,6 +4,7 @@
 //! provider/tool/sandbox wiring lives here instead of in the `qc` binary.
 
 pub mod config;
+pub mod config_edit;
 
 /// Kept here so configuration stops reaching into the binary crate.
 pub const DEFAULT_REPO: &str = "qiuzhanghua/qcode";
