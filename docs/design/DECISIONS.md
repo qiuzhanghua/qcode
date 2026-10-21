@@ -1572,3 +1572,40 @@ CLI/ACP，又要做桌面窗口，两者需求冲突：服务器不需要 GPU �
 
 **验证**：`cargo build --release -p qcode` → 20.2 MB 且 `cargo tree -p qcode | grep gpui` 为空；
 `cargo build --release -p qcode --features gui` → 46.9 MB 且 `qc gui` 可用（已实测两种构建均通过）。
+## ADR-0039：密钥从「命令」取，而不是依赖各平台的环境变量持久化（2026-10-21）
+
+**背景**：Windows 的 `HKCU\Environment` 是用户级、所有新进程可见（包括 GUI），但明文；macOS
+没有对应物——`launchctl setenv` 不持久、shell rc 里的变量 Dock 启动的 GUI 读不到；Linux 上
+`~/.profile` 只管 shell，GUI 依赖 systemd user environment 或 display manager 的会话文件。
+结果是「同一个密钥，三个平台要三种存法，而且其中两种对 GUI 无效」。
+
+**决定**
+
+1. provider 配置增加可选字段 **`api_key_command`**：一个 argv 数组，执行后取 stdout（去尾部
+   空白）作为密钥。解析优先级：`api_key_env` → `api_key_command` → 报错（若两者都配，先 env，
+   doctor 会提示同时配置了）。
+2. 命令**不经过 shell**，直接按 argv spawn，5s 超时；失败时只报告「命令退出码非 0 / 超时」，
+   **不打印输出**（输出里可能就是密钥）。
+3. 文档给出三平台等价写法：
+   - macOS：`["security", "find-generic-password", "-w", "-s", "qcode", "-a", "deepseek"]`
+   - Linux：`["secret-tool", "lookup", "service", "qcode", "user", "deepseek"]`（或 `pass show ...`）
+   - Windows：Credential Manager / DPAPI 的封装脚本，或 `powershell -NoProfile -Command ...`
+4. 仍然保留 `api_key_env`：CI、容器、已有的 `HKCU`/`setenv` 用户继续用；本 ADR 是新增能力，
+   不是替换。
+5. `qc doctor` 增加一行：报告密钥来源（env 名称 / 命令名 / 未配置），**永不打印值**。
+
+**理由**
+
+- 一套机制覆盖三平台，且天然避开「GUI 读不到 shell 变量」这个坑；
+- 密钥存进系统密钥库（Keychain / libsecret / 凭据管理器），比明文注册表或 rc 文件安全；
+- 不引 shell 就没有引号与注入问题，超时与错误处理也简单。
+
+**后果 / 边界**
+
+- 命令是用户自己配置的，等同用户执行的程序，不做沙箱限制；
+- 每次进程启动会 spawn 一次命令（几毫秒到几十毫秒），不缓存到磁盘；
+- 若用户把密钥同时放在 env 和命令里，以 env 为准，doctor 提示重复配置；
+- Windows 上仍推荐把值放进凭据管理器，而不是继续用 `HKCU\Environment` 的明文。
+
+**验证**：单元测试覆盖优先级（env 优先、命令回退、两者都缺时的报错文案、命令超时）；
+`qc doctor` 能分别报告三种来源。
