@@ -1294,8 +1294,8 @@ where
                 let cwd = call.arguments.get("cwd").and_then(Value::as_str);
                 match cwd.filter(|cwd| !cwd.is_empty()) {
                     Some(cwd) if Path::new(cwd).is_absolute() => cwd.to_string(),
-                    Some(cwd) => tool_context.workspace.join(cwd).display().to_string(),
-                    None => tool_context.workspace.display().to_string(),
+                    Some(cwd) => tool_context.primary_root.join(cwd).display().to_string(),
+                    None => tool_context.primary_root.display().to_string(),
                 }
             }),
         };

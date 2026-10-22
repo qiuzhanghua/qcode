@@ -24,7 +24,9 @@ use crate::task::{Root, RootAccess};
 /// it would leave the cleanup path half-run.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
-    pub workspace: PathBuf,
+    /// The default root for relative paths. It is the legacy single root when
+    /// the caller has no task roots.
+    pub primary_root: PathBuf,
     /// Authorized task roots. `workspace` is only the legacy primary root: new
     /// code should set roots explicitly with [`Self::with_roots`].
     pub roots: Vec<Root>,
@@ -39,17 +41,17 @@ impl ToolContext {
     /// Legacy single-root context: the directory becomes a root labelled
     /// [`crate::task::LEGACY_ROOT_LABEL`]. Task-aware code uses
     /// [`Self::with_roots`] instead.
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let workspace = workspace.into();
+    pub fn new(primary_root: impl Into<PathBuf>) -> Self {
+        let primary_root = primary_root.into();
         let roots = vec![Root {
             id: crate::task::LEGACY_ROOT_LABEL.to_string(),
             label: crate::task::LEGACY_ROOT_LABEL.to_string(),
-            path: workspace.clone(),
+            path: primary_root.clone(),
             access: RootAccess::ReadWrite,
             primary: true,
         }];
         Self {
-            workspace,
+            primary_root,
             roots,
             temp_dir: None,
             cancel: CancellationToken::new(),

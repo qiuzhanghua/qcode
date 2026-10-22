@@ -203,7 +203,7 @@ impl Tool for RunShell {
                         .or_else(|| ctx.roots.first())
                         .map(|root| root.path.clone())
                 })
-                .unwrap_or_else(|| ctx.workspace.clone()),
+                .unwrap_or_else(|| ctx.primary_root.clone()),
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
         // The initial sandbox is built for the legacy workspace. A task with
