@@ -184,22 +184,38 @@ impl ConfigEdit {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
-        // Name the failing step: "cannot read" was reported for a create that
-        // was denied, which sent the search in the wrong direction.
-        // Report the directory, not the temp file: the failure is "this process
-        // may not create files here", and the temp name made it look like a read
-        // of a file that never existed.
-        let mut file = options.open(&temp).map_err(|source| ConfigError::Read {
-            path: parent.to_path_buf(),
-            source: std::io::Error::new(
-                source.kind(),
-                format!(
-                    "cannot create a temporary file ({source}); if Windows Defender \
-                         Controlled Folder Access is on, allow qc.exe or point QCODE_CONFIG \
-                         at a directory you own"
-                ),
-            ),
-        })?;
+        // Some Windows setups let a process rewrite `config.toml` but deny
+        // creating a new file beside it (third-party AV, a folder policy). The
+        // atomic path is preferred; a direct write with a `.bak` first is better
+        // than refusing to save.
+        let mut file = match options.open(&temp) {
+            Ok(file) => file,
+            Err(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                let backup = parent.join(format!("{file_name}.bak"));
+                if self.path.exists() {
+                    std::fs::copy(&self.path, &backup).map_err(|source| ConfigError::Read {
+                        path: backup,
+                        source,
+                    })?;
+                }
+                let text = self.document.to_string();
+                return std::fs::write(&self.path, text.as_bytes()).map_err(|source| {
+                    ConfigError::Read {
+                        path: self.path.clone(),
+                        source,
+                    }
+                });
+            }
+            Err(source) => {
+                return Err(ConfigError::Read {
+                    path: parent.to_path_buf(),
+                    source: std::io::Error::new(
+                        source.kind(),
+                        format!("cannot create a temporary file ({source})"),
+                    ),
+                });
+            }
+        };
 
         let text = self.document.to_string();
         file.write_all(text.as_bytes())
