@@ -472,6 +472,10 @@ struct Shell {
     active: Option<String>,
     cwd: String,
     config_path: PathBuf,
+    /// A one-line state the status bar always shows. Notices pushed into the
+    /// transcript vanish when no turn exists yet, which is exactly the state a
+    /// freshly started, unconfigured window is in.
+    notice: Option<String>,
     /// Last seen config mtime: a change means Settings was saved, and the
     /// backend has to be rebuilt so the new provider takes effect.
     config_mtime: Option<std::time::SystemTime>,
@@ -517,6 +521,7 @@ impl Shell {
         if let Err(error) = prefs.save(&data_dir) {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
+        let backend_is_configured = backend.is_configured();
         let mode = DisplayMode::parse(&prefs.display_mode);
         let units = display_units(&app);
         let last_blocks = units.len();
@@ -576,6 +581,8 @@ impl Shell {
             titles,
             active,
             cwd,
+            notice: (!backend_is_configured)
+                .then(|| "not configured yet: open Settings".to_string()),
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
             config_path,
@@ -1071,6 +1078,7 @@ impl Shell {
         // runtime from within a runtime"). The window stays responsive because
         // this is a spawned task, not a blocking call.
         self.app.push_notice("applying settings…");
+        self.notice = Some("applying settings…".to_string());
         cx.notify();
         cx.spawn(async move |this, cx| {
             let built = rebuild().await;
@@ -1091,10 +1099,13 @@ impl Shell {
                     self.tasks = tasks;
                 }
                 self.app.push_notice("settings applied");
+                self.notice = Some("settings applied".to_string());
             }
-            Err(error) => self
-                .app
-                .push_notice(format!("cannot apply settings: {error}")),
+            Err(error) => {
+                self.app
+                    .push_notice(format!("cannot apply settings: {error}"));
+                self.notice = Some(format!("cannot apply settings: {error}"));
+            }
         }
     }
 
@@ -1801,6 +1812,7 @@ impl Shell {
             )
             .child(
                 StatusBar::new()
+                    .left(self.notice.clone().unwrap_or_default())
                     .left(format!(
                         "{}:{}",
                         self.app.status.provider, self.app.status.model
