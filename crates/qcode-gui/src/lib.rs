@@ -101,21 +101,6 @@ pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
     keystroke.key == "enter" && (keystroke.modifiers.platform || keystroke.modifiers.secondary())
 }
 
-fn short_time(rfc3339: &str) -> String {
-    use time::format_description::well_known::Rfc3339;
-    time::OffsetDateTime::parse(rfc3339, &Rfc3339)
-        .map(|time| {
-            format!(
-                "{:02}-{:02} {:02}:{:02}",
-                time.month() as u8,
-                time.day(),
-                time.hour(),
-                time.minute()
-            )
-        })
-        .unwrap_or_else(|_| rfc3339.chars().take(16).collect())
-}
-
 fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -1854,7 +1839,7 @@ impl Shell {
                 .get(&row.task.id)
                 .cloned()
                 .unwrap_or_else(|| "新任务".to_string());
-            let title = full_title.chars().take(22).collect::<String>();
+            let title = full_title.chars().take(6).collect::<String>();
             // A task with a vanished directory is broken until it is relinked,
             // so say so in the row itself instead of hiding it behind the
             // expanded root editor.
@@ -1869,11 +1854,7 @@ impl Shell {
             } else {
                 String::new()
             };
-            let label = format!(
-                "{marker} {title} · {} · {}t{wonky}",
-                short_time(&row.summary.started_at),
-                row.summary.turns
-            );
+            let label = format!("{marker} {title}{wonky}");
             let group = format!("task-row-{}", row.task.id);
             let menu_open = self.task_menu.as_deref() == Some(id.as_str());
             let mut task_row = div()
@@ -1886,7 +1867,7 @@ impl Shell {
                 .w_full()
                 .id(format!("task-row-{}", row.task.id))
                 .child(
-                    div().flex_1().child(
+                    div().flex_1().min_w(px(0.0)).overflow_hidden().child(
                         Button::new(format!("task-{}", row.task.id))
                             .label(label)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1901,10 +1882,11 @@ impl Shell {
                 .flex_row()
                 .items_center()
                 .gap_1()
+                .flex_shrink_0()
                 .overflow_hidden()
                 .w(px(0.0))
-                .group_hover(group.clone(), |this| this.w(px(96.0)))
-                .when(menu_open, |this| this.w(px(96.0)))
+                .group_hover(group.clone(), |this| this.w(px(120.0)))
+                .when(menu_open, |this| this.w(px(120.0)))
                 .child(
                     Button::new(format!("task-menu-{}", row.task.id))
                         .compact()
