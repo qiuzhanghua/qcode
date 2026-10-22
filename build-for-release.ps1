@@ -176,7 +176,7 @@ if ($Release) {
 }
 
 # 桌面版：同一份代码 + gui 特性。单独命名，避免有人下了 47 MB 才发现只有 CLI。
-$DesktopName = "qcode-desktop-${Version}-windows-$(Get-ReleaseArch $Triple).exe"
+$DesktopName = "qcode-desktop-${Version}-windows-$(Get-ReleaseArch $Target).exe"
 cargo build --locked --release --target $Target -p $Pkg --features gui
 if ($LASTEXITCODE -ne 0) { Fail "cargo build --features gui 失败（$LASTEXITCODE）" }
 $DesktopBinary = "target\$Target\release\$Bin.exe"
