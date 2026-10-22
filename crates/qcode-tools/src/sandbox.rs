@@ -1242,6 +1242,57 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_root_rejects_writes_next_to_the_writable_one() {
+        let rw = tempfile::tempdir().expect("rw dir");
+        let ro = tempfile::tempdir().expect("ro dir");
+        let Some(seed) = bwrap_or_skip(rw.path()) else {
+            return;
+        };
+
+        let roots = vec![
+            Root {
+                id: "rw".to_string(),
+                label: "app".to_string(),
+                path: rw.path().to_path_buf(),
+                access: qcode_core::task::RootAccess::ReadWrite,
+                primary: true,
+            },
+            Root {
+                id: "ro".to_string(),
+                label: "docs".to_string(),
+                path: ro.path().to_path_buf(),
+                access: qcode_core::task::RootAccess::ReadOnly,
+                primary: false,
+            },
+        ];
+        let sandbox = seed.with_roots(&roots, None).expect("multi-root sandbox");
+
+        let write = |cwd: &Path, target: &Path| {
+            let mut command = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!("printf x > '{}'", target.display())),
+                    ],
+                    cwd,
+                )
+                .expect("command");
+            command.output().expect("run")
+        };
+
+        // The writable root accepts a file, on the host.
+        let inside = rw.path().join("inside.txt");
+        write(rw.path(), &inside);
+        assert!(inside.is_file(), "read-write root refused a write");
+
+        // The read-only root is mounted read-only, so the write cannot land.
+        let denied = ro.path().join("denied.txt");
+        let output = write(rw.path(), &denied);
+        assert!(!output.status.success(), "read-only root accepted a write");
+        assert!(!denied.exists(), "read-only root has a file in it");
+    }
+    #[test]
     fn allows_writes_inside_the_workspace() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         let Some(sandbox) = sandbox_or_skip(workspace.path()) else {
