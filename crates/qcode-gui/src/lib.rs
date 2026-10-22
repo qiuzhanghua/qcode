@@ -49,7 +49,7 @@ use crate::gui_prefs::GuiPreferences;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
-use qcode_core::task::{Root, RootAccess, Task, is_slug};
+use qcode_core::task::{Root, RootAccess, RootState, Task, is_slug};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block, DisplayMode, Turn};
 use std::collections::HashSet;
@@ -1087,6 +1087,25 @@ impl Shell {
         self.update_task_roots(&task_id, roots, cx);
     }
 
+    /// Point an existing root at a new directory, keeping its label, id,
+    /// access and primary flag. This is the only way out of `Missing`.
+    fn relink_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
+        let picked = match pick_workspace() {
+            Ok(Some(path)) => path,
+            Ok(None) => return,
+            Err(error) => {
+                self.app.push_notice(error);
+                cx.notify();
+                return;
+            }
+        };
+        let mut roots = self.task_roots_for_edit(task_id);
+        let Some(root) = roots.iter_mut().find(|root| root.label == label) else {
+            return;
+        };
+        root.path = picked;
+        self.update_task_roots(task_id, roots, cx);
+    }
     fn remove_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
         let mut roots = self.task_roots_for_edit(task_id);
         roots.retain(|root| root.label != label);
@@ -1161,7 +1180,11 @@ impl Shell {
                         .flex_row()
                         .items_center()
                         .gap_1()
-                        .child(format!("@{label} · {access} · {primary}")),
+                        .child(format!("@{label} · {access} · {primary}"))
+                        .child(div().text_color(rgb(0xd06060)).child(match root.state() {
+                            RootState::Ready => "",
+                            RootState::Missing => "· 目录已丢失",
+                        })),
                 )
                 .child(
                     div()
@@ -1174,6 +1197,18 @@ impl Shell {
                         .flex()
                         .flex_row()
                         .gap_1()
+                        .child(
+                            Button::new(format!("root-relink-{task_id}-{label}"))
+                                .label("Relink…")
+                                .tooltip("选择新目录，保留 label 与权限")
+                                .on_click({
+                                    let task_id = task_id.clone();
+                                    let label = label.clone();
+                                    cx.listener(move |this, _, _window, cx| {
+                                        this.relink_task_root(&task_id, &label, cx);
+                                    })
+                                }),
+                        )
                         .child(
                             Button::new(format!("root-access-{task_id}-{label}"))
                                 .label(access)
