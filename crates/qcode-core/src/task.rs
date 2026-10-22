@@ -62,6 +62,9 @@ impl Root {
 pub struct Task {
     /// Also the session id; Task:Session is 1:1.
     pub id: String,
+    /// Explicit user title. `None` falls back to the first user message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub roots: Vec<Root>,
 }
 
@@ -81,6 +84,10 @@ pub enum TaskError {
     MultiplePrimary,
     #[error("root path must not be empty")]
     EmptyRootPath,
+    #[error("task title must not be empty")]
+    EmptyTitle,
+    #[error("task title is too long ({0}); maximum is 80 characters")]
+    TitleTooLong(usize),
 }
 
 impl Task {
@@ -113,7 +120,11 @@ impl Task {
         if primary > 1 {
             return Err(TaskError::MultiplePrimary);
         }
-        Ok(Self { id, roots })
+        Ok(Self {
+            id,
+            title: None,
+            roots,
+        })
     }
 
     /// Migration only: a pre-Task session becomes a task whose single root is the
@@ -137,6 +148,25 @@ impl Task {
 
     pub fn session_id(&self) -> &str {
         &self.id
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Validate and set an explicit title.
+    pub fn rename(&mut self, title: impl Into<String>) -> Result<(), TaskError> {
+        let title = title.into();
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(TaskError::EmptyTitle);
+        }
+        let chars = title.chars().count();
+        if chars > 80 {
+            return Err(TaskError::TitleTooLong(chars));
+        }
+        self.title = Some(title.to_string());
+        Ok(())
     }
 
     pub fn primary_root(&self) -> Option<&Root> {

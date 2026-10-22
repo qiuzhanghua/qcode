@@ -12,7 +12,8 @@ use rusqlite::{Connection, params};
 use time::{Duration, OffsetDateTime};
 
 use crate::event::{
-    Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, ToolResult, ToolStatus,
+    Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, TaskRenamed, ToolResult,
+    ToolStatus,
 };
 use crate::task::{Root, Task, TaskError};
 
@@ -188,6 +189,21 @@ impl SessionStore {
         Ok(event)
     }
 
+    /// Rename a task. The title lives in the event log like every other
+    /// durable task fact.
+    pub fn rename_task(&self, id: &str, title: impl Into<String>) -> Result<Event, StoreError> {
+        let mut task = self.task(id)?;
+        task.rename(title)?;
+        let title = task.title.expect("rename validates and sets a title");
+        let _lock = self.lock(id)?;
+        let events = self.load(id)?;
+        let seq = events.last().map(|event| event.seq).unwrap_or(0) + 1;
+        let turn = events.last().map(|event| event.turn).unwrap_or(0);
+        let event = Event::new(seq, id, turn, EventKind::TaskRenamed(TaskRenamed { title }));
+        self.append(&event)?;
+        Ok(event)
+    }
+
     /// Rebuild the Task view from the session log, falling back to a legacy
     /// single-root task when no task event exists.
     pub fn task(&self, id: &str) -> Result<Task, StoreError> {
@@ -205,6 +221,7 @@ impl SessionStore {
         };
         let mut task = Task::from_legacy_session(id.to_string(), started.cwd.clone())?;
         for event in events {
+            let title = task.title.clone();
             match &event.kind {
                 EventKind::TaskConfigured(configured) => {
                     task = Task::new(id.to_string(), configured.roots.clone())?;
@@ -212,8 +229,13 @@ impl SessionStore {
                 EventKind::RootsChanged(changed) => {
                     task = Task::new(id.to_string(), changed.roots.clone())?;
                 }
+                EventKind::TaskRenamed(renamed) => {
+                    task.rename(renamed.title.clone())?;
+                    continue;
+                }
                 _ => {}
             }
+            task.title = title;
         }
         Ok(task)
     }
@@ -896,6 +918,29 @@ mod tests {
         let events = store.load(&created.id).expect("load");
         assert_eq!(events.len(), 2);
         assert!(matches!(events[1].kind, EventKind::TaskConfigured(_)));
+    }
+
+    #[test]
+    fn rename_task_survives_root_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        store
+            .rename_task(&created.id, "  My Task  ")
+            .expect("rename task");
+
+        let task = store.task(&created.id).expect("task");
+        assert_eq!(task.title(), Some("My Task"));
+
+        store
+            .replace_roots(
+                &created.id,
+                vec![root("code", "/src", RootAccess::ReadWrite, true)],
+            )
+            .expect("replace roots");
+        let task = store.task(&created.id).expect("task");
+        assert_eq!(task.title(), Some("My Task"));
+        assert_eq!(task.roots[0].label, "code");
     }
 
     #[test]

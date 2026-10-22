@@ -546,7 +546,9 @@ impl App {
                 self.push_process(Block::Notice("context compacted".to_string()));
             }
             // Task/root configuration is not rendered in the transcript yet.
-            EventKind::TaskConfigured(_) | EventKind::RootsChanged(_) => {}
+            EventKind::TaskConfigured(_)
+            | EventKind::TaskRenamed(_)
+            | EventKind::RootsChanged(_) => {}
         }
     }
 
@@ -643,6 +645,7 @@ impl App {
             | EventKind::ApprovalRequested(_)
             | EventKind::ApprovalDecided(_)
             | EventKind::TaskConfigured(_)
+            | EventKind::TaskRenamed(_)
             | EventKind::RootsChanged(_) => {}
         }
     }

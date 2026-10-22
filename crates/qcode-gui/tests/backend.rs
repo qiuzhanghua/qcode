@@ -107,6 +107,26 @@ async fn a_draft_becomes_a_logged_session_on_the_first_prompt() {
 }
 
 #[tokio::test]
+async fn tasks_can_be_renamed_and_deleted() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut backend = LocalBackend::new(engine(workspace.path(), store));
+    backend.prompt("hello".to_string(), Vec::new());
+    let _ = wait_for_turn(&mut backend);
+    let task_id = backend.tasks().expect("tasks")[0].task.id.clone();
+
+    backend
+        .rename_task(&task_id, "Renamed task".to_string())
+        .expect("rename");
+    let tasks = backend.tasks().expect("tasks");
+    assert_eq!(tasks[0].task.title(), Some("Renamed task"));
+
+    backend.delete_task(&task_id).expect("delete");
+    assert!(backend.tasks().expect("tasks").is_empty());
+}
+
+#[tokio::test]
 async fn roots_can_be_replaced_and_are_reflected_in_tasks() {
     let workspace = tempfile::tempdir().expect("workspace");
     let data = tempfile::tempdir().expect("data");

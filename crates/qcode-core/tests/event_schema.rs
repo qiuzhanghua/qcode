@@ -7,8 +7,9 @@
 
 use qcode_core::event::{
     ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
-    ErrorEvent, EventKind, RootsChanged, Scope, SessionStarted, TaskConfigured, ToolCall,
-    ToolMetadata, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage,
+    ErrorEvent, EventKind, RootsChanged, Scope, SessionStarted, TaskConfigured, TaskRenamed,
+    ToolCall, ToolMetadata, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage,
+    UserMessage,
 };
 use qcode_core::task::{Root, RootAccess};
 use serde_json::{Value, json};
@@ -69,6 +70,19 @@ fn task_configured_snapshot() {
                     "primary": true
                 }]
             }
+        }),
+    );
+}
+
+#[test]
+fn task_renamed_snapshot() {
+    assert_snapshot(
+        EventKind::TaskRenamed(TaskRenamed {
+            title: "重构 sandbox".into(),
+        }),
+        json!({
+            "type": "task_renamed",
+            "data": {"title": "重构 sandbox"}
         }),
     );
 }

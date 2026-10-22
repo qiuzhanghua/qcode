@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::task::Root;
 
 /// Bumped whenever the on-disk shape changes in a breaking way.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
+pub const EVENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -44,6 +44,7 @@ impl Event {
 pub enum EventKind {
     SessionStarted(SessionStarted),
     TaskConfigured(TaskConfigured),
+    TaskRenamed(TaskRenamed),
     RootsChanged(RootsChanged),
     TurnStarted(TurnStarted),
     UserMessage(UserMessage),
@@ -68,6 +69,11 @@ pub struct SessionStarted {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskConfigured {
     pub roots: Vec<Root>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskRenamed {
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -274,7 +280,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let value: Value = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(value["v"], 2);
+        assert_eq!(value["v"], EVENT_SCHEMA_VERSION);
         assert_eq!(value["seq"], 1);
         assert_eq!(value["session"], "s1");
         assert_eq!(value["type"], "user_message");

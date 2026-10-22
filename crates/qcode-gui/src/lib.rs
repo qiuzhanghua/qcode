@@ -148,6 +148,10 @@ pub trait Backend {
     }
     /// Replace a Task's roots; persists a `roots_changed` event.
     fn set_roots(&mut self, id: &str, roots: Vec<Root>) -> Result<(), String>;
+    /// Persist an explicit task title.
+    fn rename_task(&mut self, id: &str, title: String) -> Result<(), String>;
+    /// Delete a task and its local session log/side outputs.
+    fn delete_task(&mut self, id: &str) -> Result<(), String>;
     /// Start a draft. The first prompt creates the session log.
     fn new_session(&mut self);
     /// Load the transcript, then point the engine at the session.
@@ -234,6 +238,19 @@ impl Backend for UnconfiguredBackend {
 
     fn set_roots(&mut self, _id: &str, _roots: Vec<Root>) -> Result<(), String> {
         Err("not configured yet: open Settings first".to_string())
+    }
+
+    fn rename_task(&mut self, id: &str, title: String) -> Result<(), String> {
+        self.store
+            .rename_task(id, title)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete_task(&mut self, id: &str) -> Result<(), String> {
+        self.store
+            .delete_session(id)
+            .map_err(|error| error.to_string())
     }
 
     fn new_session(&mut self) {}
@@ -359,6 +376,19 @@ impl Backend for LocalBackend {
             .map_err(|error| error.to_string())
     }
 
+    fn rename_task(&mut self, id: &str, title: String) -> Result<(), String> {
+        self.store
+            .rename_task(id, title)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete_task(&mut self, id: &str) -> Result<(), String> {
+        self.store
+            .delete_session(id)
+            .map_err(|error| error.to_string())
+    }
+
     fn new_session(&mut self) {
         self.send(UiCommand::NewSession);
     }
@@ -406,6 +436,12 @@ enum ProcessKey {
     Tool(String),
 }
 
+struct RenameTaskState {
+    task_id: String,
+    input: Entity<InputState>,
+    _subscription: gpui_kit::Subscription,
+}
+
 struct Shell {
     app: App,
     /// A real text input, so IME and CJK go through the platform.
@@ -446,6 +482,14 @@ struct Shell {
     pending_roots: Option<(String, Vec<Root>)>,
     /// Directory awaiting the destructive confirmation dialog.
     pending_root_delete: Option<(String, String, String)>,
+    /// Task awaiting the destructive confirmation dialog.
+    pending_task_delete: Option<(String, String)>,
+    /// Task whose rename dialog is open.
+    rename_task: Option<RenameTaskState>,
+    /// Task row currently hovered, used to reveal the …/+ controls.
+    hovered_task: Option<String>,
+    /// Task whose … menu is open.
+    task_menu: Option<String>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -560,6 +604,10 @@ impl Shell {
             turn_in_flight: false,
             pending_roots: None,
             pending_root_delete: None,
+            pending_task_delete: None,
+            rename_task: None,
+            hovered_task: None,
+            task_menu: None,
             collapse_all: false,
             collapse_to_list: false,
             last_blocks,
@@ -650,6 +698,10 @@ impl Shell {
         self.approvals = ApprovalQueue::default();
         self.pending_roots = None;
         self.pending_root_delete = None;
+        self.pending_task_delete = None;
+        self.rename_task = None;
+        self.hovered_task = None;
+        self.task_menu = None;
         self.turn_in_flight = false;
         self.refresh_tasks();
         self.app.push_notice("new session");
@@ -685,6 +737,10 @@ impl Shell {
                 self.approvals = ApprovalQueue::default();
                 self.pending_roots = None;
                 self.pending_root_delete = None;
+                self.pending_task_delete = None;
+                self.rename_task = None;
+                self.hovered_task = None;
+                self.task_menu = None;
                 self.turn_in_flight = false;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
@@ -1234,7 +1290,8 @@ impl Shell {
     }
 
     fn update_task_roots(&mut self, task_id: &str, roots: Vec<Root>, cx: &mut Context<Self>) {
-        if self.turn_in_flight {
+        let active_task = self.active.as_deref() == Some(task_id);
+        if self.turn_in_flight && active_task {
             self.pending_roots = Some((task_id.to_string(), roots));
             self.app.push_notice("目录变更将在当前 Turn 结束后应用");
             cx.notify();
@@ -1243,14 +1300,11 @@ impl Shell {
         self.apply_roots_now(task_id, roots, cx);
     }
 
-    fn add_task_root(&mut self, cx: &mut Context<Self>) {
-        let Some(task_id) = self.active.clone() else {
-            return;
-        };
-        if self.active_task_row().is_none() {
+    fn add_task_root(&mut self, task_id: &str, cx: &mut Context<Self>) {
+        if !self.tasks.iter().any(|row| row.task.id == task_id) {
             return;
         }
-        let mut roots = self.task_roots_for_edit(&task_id);
+        let mut roots = self.task_roots_for_edit(task_id);
         let picked = pick_directory();
         let path = match picked {
             Ok(Some(path)) => path,
@@ -1301,7 +1355,101 @@ impl Shell {
             primary: roots.is_empty(),
         };
         roots.push(root);
-        self.update_task_roots(&task_id, roots, cx);
+        self.update_task_roots(task_id, roots, cx);
+    }
+
+    fn open_rename_task(&mut self, task_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .titles
+            .get(task_id)
+            .cloned()
+            .unwrap_or_else(|| "新任务".to_string());
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("任务标题"));
+        input.update(cx, |input, cx| input.set_value(current, window, cx));
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.save_rename_task(cx);
+            }
+        });
+        self.task_menu = None;
+        self.rename_task = Some(RenameTaskState {
+            task_id: task_id.to_string(),
+            input,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn save_rename_task(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.rename_task.take() else {
+            return;
+        };
+        let title = state.input.read(cx).value().trim().to_string();
+        if title.is_empty() {
+            self.app.push_notice("任务标题不能为空");
+            self.rename_task = Some(state);
+            cx.notify();
+            return;
+        }
+        match self.backend.rename_task(&state.task_id, title) {
+            Ok(()) => {
+                self.refresh_tasks();
+                self.app.push_notice("任务已重命名");
+            }
+            Err(error) => {
+                self.app.push_notice(format!("无法重命名任务: {error}"));
+                self.rename_task = Some(state);
+            }
+        }
+        cx.notify();
+    }
+
+    fn request_delete_task(&mut self, task_id: &str, title: String, cx: &mut Context<Self>) {
+        if self.active.as_deref() == Some(task_id) && self.turn_in_flight {
+            self.app
+                .push_notice("请先结束当前 Turn，再删除正在运行的任务");
+            cx.notify();
+            return;
+        }
+        self.task_menu = None;
+        self.pending_task_delete = Some((task_id.to_string(), title));
+        cx.notify();
+    }
+
+    fn delete_task_now(&mut self, task_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.backend.delete_task(task_id) {
+            self.app.push_notice(format!("无法删除任务: {error}"));
+            cx.notify();
+            return;
+        }
+        if self.prefs.last_session.as_deref() == Some(task_id) {
+            self.prefs.last_session = None;
+            if let Err(error) = self.prefs.save(&self.data_dir) {
+                self.app
+                    .push_notice(format!("cannot save gui.json: {error}"));
+            }
+        }
+        let was_active = self.active.as_deref() == Some(task_id);
+        self.refresh_tasks();
+        if was_active {
+            self.active = None;
+            self.app.reset_transcript();
+            self.reset_scroller(cx);
+            self.approvals = ApprovalQueue::default();
+            self.turn_in_flight = false;
+            self.pending_roots = None;
+            self.pending_root_delete = None;
+            if let Some(next) = self.tasks.first().map(|row| row.task.id.clone()) {
+                self.resume(next, window, cx);
+            } else {
+                self.app.push_notice("任务已删除");
+            }
+        } else {
+            self.app.push_notice("任务已删除");
+        }
+        cx.notify();
     }
 
     /// Point an existing root at a new directory, keeping its label, id,
@@ -1362,6 +1510,118 @@ impl Shell {
         self.update_task_roots(task_id, roots, cx);
     }
 
+    fn render_task_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((task_id, title)) = self.pending_task_delete.clone() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(440.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child(format!("删除任务 “{title}”？"))
+                    .child(
+                        div()
+                            .text_size(px(SECONDARY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child(
+                                "将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(Button::new("cancel-delete-task").label("取消").on_click(
+                                cx.listener(|this, _, _window, cx| {
+                                    this.pending_task_delete = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Button::new("confirm-delete-task")
+                                    .label("删除")
+                                    .danger()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.pending_task_delete = None;
+                                        this.delete_task_now(&task_id, window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_rename_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(state) = &self.rename_task else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let input = state.input.clone();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(420.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child("重命名任务")
+                    .child(Input::new(&input).w_full())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(Button::new("cancel-rename-task").label("取消").on_click(
+                                cx.listener(|this, _, _window, cx| {
+                                    this.rename_task = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Button::new("confirm-rename-task").label("保存").on_click(
+                                cx.listener(|this, _, _window, cx| {
+                                    this.save_rename_task(cx);
+                                }),
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some((task_id, label, path)) = self.pending_root_delete.clone() else {
             return div().into_any_element();
@@ -1417,6 +1677,61 @@ impl Shell {
                                     })),
                             ),
                     ),
+            )
+            .into_any_element()
+    }
+
+    fn render_task_menu(&self, task_id: &str, title: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let running = self.active.as_deref() == Some(task_id) && self.turn_in_flight;
+        div()
+            .absolute()
+            .top_full()
+            .right_0()
+            .mt_1()
+            .w(px(160.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(8.0))
+            .bg(theme.popover)
+            .border_1()
+            .border_color(theme.border)
+            .p_1()
+            .text_color(theme.popover_foreground)
+            .child(
+                Button::new(format!("task-rename-{task_id}"))
+                    .label("重命名")
+                    .disabled(running)
+                    .tooltip(if running {
+                        "结束当前 Turn 后可重命名"
+                    } else {
+                        "重命名任务"
+                    })
+                    .on_click(cx.listener({
+                        let task_id = task_id.to_string();
+                        move |this, _, window, cx| {
+                            this.open_rename_task(&task_id, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new(format!("task-delete-{task_id}"))
+                    .label("删除任务")
+                    .danger()
+                    .disabled(running)
+                    .tooltip(if running {
+                        "结束当前 Turn 后可删除"
+                    } else {
+                        "删除任务"
+                    })
+                    .on_click(cx.listener({
+                        let task_id = task_id.to_string();
+                        let title = title.to_string();
+                        move |this, _, _window, cx| {
+                            this.request_delete_task(&task_id, title.clone(), cx);
+                        }
+                    })),
             )
             .into_any_element()
     }
@@ -1532,14 +1847,7 @@ impl Shell {
                     .child("Turn 结束后应用"),
             );
         }
-        section
-            .child(
-                Button::new("add-task-root")
-                    .compact()
-                    .label("+ 目录")
-                    .on_click(cx.listener(|this, _, _window, cx| this.add_task_root(cx))),
-            )
-            .into_any_element()
+        section.into_any_element()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1548,14 +1856,12 @@ impl Shell {
             let id = row.task.id.clone();
             let active = self.active.as_deref() == Some(row.task.id.as_str());
             let marker = if active { "●" } else { "○" };
-            let title = self
+            let full_title = self
                 .titles
                 .get(&row.task.id)
-                .map(String::as_str)
-                .unwrap_or("新任务")
-                .chars()
-                .take(22)
-                .collect::<String>();
+                .cloned()
+                .unwrap_or_else(|| "新任务".to_string());
+            let title = full_title.chars().take(22).collect::<String>();
             // A task with a vanished directory is broken until it is relinked,
             // so say so in the row itself instead of hiding it behind the
             // expanded root editor.
@@ -1575,14 +1881,82 @@ impl Shell {
                 short_time(&row.summary.started_at),
                 row.summary.turns
             );
-            rows.push(
-                Button::new(format!("task-{}", row.task.id))
-                    .label(label)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.resume(id.clone(), window, cx)),
-                    )
-                    .into_any_element(),
+            let show_actions = self.hovered_task.as_deref() == Some(id.as_str())
+                || self.task_menu.as_deref() == Some(id.as_str())
+                || self
+                    .rename_task
+                    .as_ref()
+                    .is_some_and(|state| state.task_id == id);
+            let menu_open = self.task_menu.as_deref() == Some(id.as_str());
+            let id_for_hover = id.clone();
+            let mut task_row = div()
+                .relative()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .w_full()
+                .id(format!("task-row-{}", row.task.id));
+            task_row = task_row.on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                if *hovered {
+                    if this.task_menu.as_deref() != Some(id_for_hover.as_str()) {
+                        this.task_menu = None;
+                    }
+                    this.hovered_task = Some(id_for_hover.clone());
+                } else if this.hovered_task.as_deref() == Some(id_for_hover.as_str()) {
+                    this.hovered_task = None;
+                }
+                cx.notify();
+            }));
+            task_row = task_row.child(
+                div().flex_1().child(
+                    Button::new(format!("task-{}", row.task.id))
+                        .label(label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.task_menu = None;
+                            this.hovered_task = None;
+                            this.resume(id.clone(), window, cx)
+                        })),
+                ),
             );
+            if show_actions {
+                task_row = task_row
+                    .child(
+                        Button::new(format!("task-menu-{}", row.task.id))
+                            .compact()
+                            .label("…")
+                            .tooltip("任务操作")
+                            .on_click(cx.listener({
+                                let task_id = row.task.id.clone();
+                                move |this, _, _window, cx| {
+                                    this.task_menu =
+                                        if this.task_menu.as_deref() == Some(task_id.as_str()) {
+                                            None
+                                        } else {
+                                            Some(task_id.clone())
+                                        };
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("task-add-dir-{}", row.task.id))
+                            .compact()
+                            .label("+")
+                            .tooltip("添加目录")
+                            .on_click(cx.listener({
+                                let task_id = row.task.id.clone();
+                                move |this, _, _window, cx| {
+                                    this.task_menu = None;
+                                    this.add_task_root(&task_id, cx);
+                                }
+                            })),
+                    );
+            }
+            if menu_open {
+                task_row = task_row.child(self.render_task_menu(&row.task.id, &full_title, cx));
+            }
+            rows.push(task_row.into_any_element());
             if active {
                 rows.push(self.render_task_roots(cx));
             }
@@ -1927,9 +2301,12 @@ fn task_titles(
     tasks
         .iter()
         .filter_map(|row| {
-            backend
-                .title(&row.task.id)
-                .map(|title| (row.task.id.clone(), title))
+            let title = row
+                .task
+                .title
+                .clone()
+                .or_else(|| backend.title(&row.task.id));
+            title.map(|title| (row.task.id.clone(), title))
         })
         .collect()
 }
@@ -2654,7 +3031,21 @@ impl Render for Shell {
             .on_key_down({
                 let entity = cx.entity();
                 move |event, window, cx| {
-                    if is_send_shortcut(&event.keystroke) {
+                    if event.keystroke.key == "escape" {
+                        entity.update(cx, |shell, cx| {
+                            let open = shell.rename_task.is_some()
+                                || shell.pending_root_delete.is_some()
+                                || shell.pending_task_delete.is_some()
+                                || shell.task_menu.is_some();
+                            if open {
+                                shell.rename_task = None;
+                                shell.pending_root_delete = None;
+                                shell.pending_task_delete = None;
+                                shell.task_menu = None;
+                                cx.notify();
+                            }
+                        });
+                    } else if is_send_shortcut(&event.keystroke) {
                         entity.update(cx, |shell, cx| {
                             shell.send_prompt(window, cx);
                         });
@@ -2707,6 +3098,8 @@ impl Render for Shell {
             })
             .child(self.render_main(window, cx))
             .child(self.render_delete_dialog(cx))
+            .child(self.render_task_delete_dialog(cx))
+            .child(self.render_rename_dialog(cx))
     }
 }
 

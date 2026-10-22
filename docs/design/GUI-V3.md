@@ -511,3 +511,26 @@ trait Backend {
 - 目录列表相对 Task 行缩进，便于看出归属。
 - 移除主目录后，如果还有其他目录，第一个自动成为主目录。
 - 所有目录变更仍遵循 Turn 边界 pending。
+
+### Task 管理（2026-10-22）
+
+- Task 行 hover/focus 时右侧显示 `…` 和 `+`，顺序为 `…` 后 `+`。
+- `…` 下拉菜单：
+  - 重命名
+  - 删除任务
+- `+` 给该 Task 添加目录；不切换 active Task，不影响当前对话。
+  - inactive Task：立即写入 `roots_changed`
+  - active Task 且 Turn 运行中：pending，Turn 结束后应用
+- 原目录列表底部的 `+ 目录` 已删除；添加目录统一从 Task 行的 `+` 进入。
+- 重命名使用 DSH 风格输入对话框：
+  - Enter 保存，Esc/取消关闭
+  - 空标题不允许
+  - 显式标题持久化到事件日志；优先于首条 user message
+- 删除任务使用确认对话框：
+  - 删除本地 session 日志、输出目录和索引
+  - 不删除任何目录中的文件
+  - active Task 运行中禁止删除
+  - 删除 active Task 后自动切到下一个 Task；没有则空状态
+  - 清理指向该 Task 的 `last_session`
+- Task 行不再显示目录数量。
+- Event schema v3：新增 `task_renamed`，Task 增加可选显式 `title`。
