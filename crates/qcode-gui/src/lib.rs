@@ -545,6 +545,10 @@ impl Shell {
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
         prefs.record_workspace(Path::new(&cwd));
+        let configured_provider = backend
+            .provider()
+            .unwrap_or_else(|| app.status.provider.clone());
+        let configured_model = backend.model().unwrap_or_else(|| app.status.model.clone());
         let mut active = None;
         if let Some(id) = prefs.last_session.clone()
             && tasks.iter().any(|row| row.task.id == id)
@@ -559,6 +563,11 @@ impl Shell {
                 Err(error) => app.push_notice(format!("cannot restore last session: {error}")),
             }
         }
+        // A resumed transcript carries the model it was created with in its
+        // SessionStarted event. The active model for the next turn is still the
+        // one the current kernel resolved.
+        app.status.provider = configured_provider;
+        app.status.model = configured_model;
         if let Err(error) = prefs.save(&data_dir) {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
@@ -738,12 +747,25 @@ impl Shell {
             return;
         }
         self.resetting = true;
+        let configured_provider = self
+            .backend
+            .provider()
+            .unwrap_or_else(|| self.app.status.provider.clone());
+        let configured_model = self
+            .backend
+            .model()
+            .unwrap_or_else(|| self.app.status.model.clone());
         match self.backend.resume(&id) {
             Ok(events) => {
                 self.app.reset_transcript();
                 for event in &events {
                     self.app.apply(event);
                 }
+                // Keep the current kernel's model rather than the historical
+                // model recorded when this task was created.
+                self.app.status.provider = configured_provider;
+                self.app.status.model = configured_model.clone();
+                self.pending_model = Some(configured_model);
                 self.reset_scroller(cx);
                 self.active = Some(id.clone());
                 self.diff = None;

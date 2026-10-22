@@ -578,5 +578,7 @@ trait Backend {
 
 - Settings 保存触发 backend rebuild 后，Shell 从新 backend 读取 provider/model。
 - 立即更新 `app.status.provider/model`，并在下一帧写入 model 输入框。
+- 恢复任务时，历史 `SessionStarted.model` 只用于回放，不覆盖当前 kernel 的
+  provider/model；恢复后重新写入当前 model。
 - 避免旧 backend 的 `mock-1` 继续显示，也避免下一次发送把旧模型写回。
 - 切换 provider 时，`mock-1` 被视为 stale default，不再保留到 deepseek/minimax。
