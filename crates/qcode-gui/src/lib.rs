@@ -1260,8 +1260,22 @@ impl Shell {
                 .chars()
                 .take(22)
                 .collect::<String>();
+            // A task with a vanished directory is broken until it is relinked,
+            // so say so in the row itself instead of hiding it behind the
+            // expanded root editor.
+            let missing = row
+                .task
+                .roots
+                .iter()
+                .filter(|root| root.state() == RootState::Missing)
+                .count();
+            let wonky = if missing > 0 {
+                format!(" · {missing} 目录丢失")
+            } else {
+                String::new()
+            };
             let label = format!(
-                "{marker} {title} · {} · {}t · {} 目录",
+                "{marker} {title} · {} · {}t · {} 目录{wonky}",
                 short_time(&row.summary.started_at),
                 row.summary.turns,
                 row.task.roots.len()
