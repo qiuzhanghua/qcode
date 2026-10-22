@@ -2849,3 +2849,45 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存默认可写（显式例�
 3. 无根 Task 的 temp **不跨 Turn 保留**；每 Turn 创建，Turn 结束清理。
 4. 只读 primary Root **允许**作为 shell cwd；写入会失败，`qc doctor` 给出警告。
 5. Windows 的“只读 = 不可写，但仍可读”作为**正式产品语义**；UI 必须明确说明读不受限。
+## ADR-0049：Task 是唯一的权限来源——cwd、primary_root 与 roots 的分工（2026-10-22）
+
+**背景**：业务模型早已是「Task + 0..N Root」，没有 workspace 实体。但代码里 `workspace` 一词
+同时承担了三种含义：GUI 的侧栏过滤（业务泄漏）、`RunOptions`/`assemble`/`sandbox` 的参数
+（内部管道）、老 session 迁移出的 root label（兼容）。混淆的直接后果是 `run_shell` 的起始目录
+在两处互相矛盾，以及 `ToolContext` 带着一个「启动目录」字段，让人误以为它是权限来源。
+
+**决定**
+
+1. **命名三分**，不得再用 `workspace` 指代其中任何一个：
+   - `cwd`：进程/会话的启动目录。只用于记录（`SessionStarted.cwd`、状态栏）、加载配置与
+     skills、以及 `RunOptions` 的载体；**不是**授权边界。
+   - `primary_root()`：Task 里标记 `primary` 的 Root（没有则第一个），是「相对路径默认落在
+     哪个 Root」的唯一答案。
+   - `roots`：Task 的授权集合，唯一决定工具能读/写什么。
+2. **`ToolContext` 只由 roots 与 turn temp 构成**：`ToolContext::for_roots(task.roots)`，
+   逐个 `.with_temp_dir` / `.with_cancel` / `.with_network`。目录构造器降级为
+   `ToolContext::for_test(dir)`，仅服务单测与 legacy 单根路径。
+3. **`run_shell` 的起始目录**解析顺序固定为：调用里的显式 `cwd` → `primary_root()` →
+   任意 root → turn 私有 temp → **报错**。绝不回落到 `cwd`：那等于给命令一个未授权的目录。
+   审批提示里的 `cwd:` 用同一个函数计算，避免「提示与执行不一致」。
+4. **GUI 不按目录过滤 Task**。侧栏列出全部 Task；`cwd` 只作为元信息显示。
+5. **迁移**：老 session 的 `cwd` 变成唯一 Root，label 为 `LEGACY_ROOT_LABEL`（"workspace"）。
+   该常量是唯一的遗留入口，删除它即可清掉历史包袱。
+6. **无根 Task**（roots 为空）：只读系统目录 + turn 私有 temp；文件工具不可用，
+   `run_shell` 在 temp 中执行。
+
+**理由**
+
+- 权限判定只看 roots，代码里任何「顺便用启动目录兜底」的写法都是提权；
+- `cwd` 与 Root 拆开之后，`run_shell` 的 cwd 与审批提示可以共用一个函数，不会再各算一套；
+- 迁移标签收敛到一个常量，未来清理有明确入口。
+
+**后果 / 边界**
+
+- `RunOptions.cwd` 仍存在（会话元信息与配置加载需要），但不再参与权限；
+- `qc sessions list` 的 `cwd=` 是元信息，不代表归属；
+- Windows 的多根 sandbox 仍按 ADR-0048 的「只做写限制」推进（另案）。
+
+**验证**：`shell_cwd` 的两条断言（无根 → temp；有根 → primary root，即使有 temp）；
+`ToolContext` 不再有 `primary_root` 字段（编译即证明）；GUI 不再有 `workspace_sessions` /
+`workspace_tasks`；全量测试数量：core 67、tools 61、kernel 47、acp 9、gui 2、qc 26。
