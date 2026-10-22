@@ -151,13 +151,13 @@ impl SnapshotStore {
         &self,
         session: &str,
         turn: u32,
-        workspace: &Path,
+        primary_root: &Path,
         paths: &[PathBuf],
     ) -> io::Result<usize> {
         let dir = self.session_dir(session).join(turn.to_string());
         let mut recorded = 0;
         for path in paths {
-            let Some(relative) = relative_to(workspace, path) else {
+            let Some(relative) = relative_to(primary_root, path) else {
                 continue;
             };
             let stored = dir.join("files").join(&relative);
@@ -165,7 +165,7 @@ impl SnapshotStore {
             if stored.exists() || absent.iter().any(|known| known == &relative) {
                 continue;
             }
-            match std::fs::read(workspace.join(&relative)) {
+            match std::fs::read(primary_root.join(&relative)) {
                 Ok(bytes) => {
                     if let Some(parent) = stored.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -193,14 +193,14 @@ impl SnapshotStore {
         &self,
         session: &str,
         turn: u32,
-        workspace: &Path,
+        primary_root: &Path,
     ) -> io::Result<TreeReport> {
         let dir = self
             .session_dir(session)
             .join(turn.to_string())
             .join("files");
         let mut report = TreeReport::default();
-        let mut stack = vec![workspace.to_path_buf()];
+        let mut stack = vec![primary_root.to_path_buf()];
         while let Some(current) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&current) else {
                 continue;
@@ -215,7 +215,7 @@ impl SnapshotStore {
                     }
                     continue;
                 }
-                let Ok(relative) = path.strip_prefix(workspace) else {
+                let Ok(relative) = path.strip_prefix(primary_root) else {
                     continue;
                 };
                 let Ok(metadata) = entry.metadata() else {
@@ -355,7 +355,7 @@ impl SnapshotStore {
         &self,
         session: &str,
         from_turn: u32,
-        workspace: &Path,
+        primary_root: &Path,
     ) -> io::Result<RestoreReport> {
         let mut report = RestoreReport::default();
         let mut pre_images: BTreeMap<PathBuf, Option<PathBuf>> = BTreeMap::new();
@@ -382,7 +382,7 @@ impl SnapshotStore {
         }
 
         for (relative, source) in pre_images {
-            let target = workspace.join(&relative);
+            let target = primary_root.join(&relative);
             match source {
                 Some(stored_dir) => {
                     let from = stored_dir.join(&relative);
@@ -434,18 +434,15 @@ fn sanitize(session: &str) -> String {
 
 /// `path` relative to `workspace`, refusing `..` and absolute forms that do not
 /// start with the workspace.
-fn relative_to(workspace: &Path, path: &Path) -> Option<PathBuf> {
+fn relative_to(primary_root: &Path, path: &Path) -> Option<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        workspace.join(path)
+        primary_root.join(path)
     };
     let normalized = normalize(&absolute)?;
-    let workspace = normalize(workspace)?;
-    normalized
-        .strip_prefix(&workspace)
-        .ok()
-        .map(Path::to_path_buf)
+    let root = normalize(primary_root)?;
+    normalized.strip_prefix(&root).ok().map(Path::to_path_buf)
 }
 
 fn normalize(path: &Path) -> Option<PathBuf> {
@@ -549,34 +546,34 @@ mod tests {
             vec!["created.txt (absent)".to_string()]
         );
 
-        std::fs::write(workspace.join("created.txt"), "hello").expect("write");
+        std::fs::write(primary_root.join("created.txt"), "hello").expect("write");
         let report = store.restore("s1", 1, &workspace).expect("restore");
         assert_eq!(report.deleted, 1);
         assert_eq!(report.restored, 0);
-        assert!(!workspace.join("created.txt").exists());
+        assert!(!primary_root.join("created.txt").exists());
     }
 
     #[test]
     fn rollback_restores_the_earliest_pre_image_at_or_after_the_turn() {
         let (_dir, store, workspace) = fixture();
-        std::fs::write(workspace.join("a.txt"), "v1").expect("write");
+        std::fs::write(primary_root.join("a.txt"), "v1").expect("write");
 
         // Turn 1 changes it to v2, turn 2 to v3.
         store
             .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
             .expect("record t1");
-        std::fs::write(workspace.join("a.txt"), "v2").expect("write");
+        std::fs::write(primary_root.join("a.txt"), "v2").expect("write");
         store
             .record("s1", 2, &workspace, &[PathBuf::from("a.txt")])
             .expect("record t2");
-        std::fs::write(workspace.join("a.txt"), "v3").expect("write");
+        std::fs::write(primary_root.join("a.txt"), "v3").expect("write");
 
         // Rolling back to turn 2 restores the state before it: v2.
         let report = store.restore("s1", 2, &workspace).expect("restore");
         assert_eq!(report.turns, vec![2]);
         assert_eq!(report.restored, 1);
         assert_eq!(
-            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            std::fs::read_to_string(primary_root.join("a.txt")).unwrap(),
             "v2"
         );
 
@@ -584,7 +581,7 @@ mod tests {
         let report = store.restore("s1", 1, &workspace).expect("restore all");
         assert_eq!(report.turns, vec![1, 2]);
         assert_eq!(
-            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            std::fs::read_to_string(primary_root.join("a.txt")).unwrap(),
             "v1"
         );
     }
@@ -602,11 +599,11 @@ mod tests {
     #[test]
     fn the_first_write_in_a_turn_wins() {
         let (_dir, store, workspace) = fixture();
-        std::fs::write(workspace.join("a.txt"), "before").expect("write");
+        std::fs::write(primary_root.join("a.txt"), "before").expect("write");
         store
             .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
             .expect("first");
-        std::fs::write(workspace.join("a.txt"), "during").expect("write");
+        std::fs::write(primary_root.join("a.txt"), "during").expect("write");
         store
             .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
             .expect("second");
@@ -614,7 +611,7 @@ mod tests {
         let report = store.restore("s1", 1, &workspace).expect("restore");
         assert_eq!(report.restored, 1);
         assert_eq!(
-            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            std::fs::read_to_string(primary_root.join("a.txt")).unwrap(),
             "before"
         );
     }
@@ -629,11 +626,11 @@ mod tests {
     #[test]
     fn a_workspace_snapshot_covers_files_a_shell_command_edits() {
         let (_dir, store, workspace) = fixture();
-        std::fs::create_dir_all(workspace.join("src")).unwrap();
-        std::fs::write(workspace.join("src/a.rs"), "v1").unwrap();
-        std::fs::write(workspace.join("b.txt"), "keep").unwrap();
-        std::fs::create_dir_all(workspace.join("target")).unwrap();
-        std::fs::write(workspace.join("target/junk"), "build output").unwrap();
+        std::fs::create_dir_all(primary_root.join("src")).unwrap();
+        std::fs::write(primary_root.join("src/a.rs"), "v1").unwrap();
+        std::fs::write(primary_root.join("b.txt"), "keep").unwrap();
+        std::fs::create_dir_all(primary_root.join("target")).unwrap();
+        std::fs::write(primary_root.join("target/junk"), "build output").unwrap();
 
         let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
         // `target/` is on the skip list: two files, not three.
@@ -642,31 +639,31 @@ mod tests {
 
         // What a shell command might do: edit one file, delete another, create a
         // third.
-        std::fs::write(workspace.join("src/a.rs"), "v2").unwrap();
-        std::fs::remove_file(workspace.join("b.txt")).unwrap();
-        std::fs::write(workspace.join("new.txt"), "created by the shell").unwrap();
+        std::fs::write(primary_root.join("src/a.rs"), "v2").unwrap();
+        std::fs::remove_file(primary_root.join("b.txt")).unwrap();
+        std::fs::write(primary_root.join("new.txt"), "created by the shell").unwrap();
 
         let report = store.restore("s1", 1, &workspace).expect("restore");
         assert_eq!(report.restored, 2);
         assert_eq!(
-            std::fs::read_to_string(workspace.join("src/a.rs")).unwrap(),
+            std::fs::read_to_string(primary_root.join("src/a.rs")).unwrap(),
             "v1"
         );
         assert_eq!(
-            std::fs::read_to_string(workspace.join("b.txt")).unwrap(),
+            std::fs::read_to_string(primary_root.join("b.txt")).unwrap(),
             "keep"
         );
         // Created files are only removed when the tool that made them was one of
         // the writers that record `absent`; a tree snapshot cannot know.
-        assert!(workspace.join("new.txt").exists());
+        assert!(primary_root.join("new.txt").exists());
     }
 
     #[test]
     fn a_workspace_snapshot_skips_files_over_the_size_limit() {
         let (_dir, store, workspace) = fixture();
-        std::fs::write(workspace.join("small.txt"), "ok").unwrap();
+        std::fs::write(primary_root.join("small.txt"), "ok").unwrap();
         let big = vec![b'x'; (TREE_MAX_FILE + 1) as usize];
-        std::fs::write(workspace.join("big.bin"), &big).unwrap();
+        std::fs::write(primary_root.join("big.bin"), &big).unwrap();
 
         let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
         assert_eq!(report.files, 1, "{report:?}");
@@ -676,7 +673,7 @@ mod tests {
     #[test]
     fn gc_removes_a_session_and_sweeps_orphans() {
         let (_dir, store, workspace) = fixture();
-        std::fs::write(workspace.join("a.txt"), "pre").unwrap();
+        std::fs::write(primary_root.join("a.txt"), "pre").unwrap();
         store
             .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
             .expect("s1");

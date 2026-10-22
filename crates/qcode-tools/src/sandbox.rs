@@ -128,7 +128,7 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
 /// sandbox fails before any tool runs.
 pub fn build(
     mode: SandboxMode,
-    workspace: &Path,
+    primary_root: &Path,
     network: SandboxNetwork,
     extra_writable: &[PathBuf],
 ) -> Result<Arc<dyn Sandbox>, SandboxError> {
@@ -148,7 +148,7 @@ pub fn build(
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (workspace, network, extra_writable);
+                let _ = (primary_root, network, extra_writable);
                 Err(SandboxError::Unsupported("sandbox-exec"))
             }
         }
@@ -156,13 +156,13 @@ pub fn build(
             #[cfg(target_os = "linux")]
             {
                 let _ = extra_writable;
-                let sandbox = Bwrap::new(workspace, matches!(network, SandboxNetwork::Allow))?;
+                let sandbox = Bwrap::new(primary_root, matches!(network, SandboxNetwork::Allow))?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (workspace, network, extra_writable);
+                let _ = (primary_root, network, extra_writable);
                 Err(SandboxError::Unsupported("bwrap"))
             }
         }
@@ -177,7 +177,7 @@ pub fn build(
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (workspace, network, extra_writable);
+                let _ = (primary_root, network, extra_writable);
                 Err(SandboxError::Unsupported("landlock"))
             }
         }
@@ -185,13 +185,13 @@ pub fn build(
             #[cfg(windows)]
             {
                 let _ = network;
-                let sandbox = crate::windows_acl::WindowsAcl::new(workspace, extra_writable)?;
+                let sandbox = crate::windows_acl::WindowsAcl::new(primary_root, extra_writable)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(windows))]
             {
-                let _ = (workspace, network, extra_writable);
+                let _ = (primary_root, network, extra_writable);
                 Err(SandboxError::Unsupported("windows-acl"))
             }
         }

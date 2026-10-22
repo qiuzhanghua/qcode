@@ -483,7 +483,7 @@ pub struct Assembled {
     pub sandbox: String,
 }
 
-/// Assemble the kernel for one workspace.
+/// Assemble the kernel for the directory qc was started in.
 ///
 /// ADR-0036: this is the only place that wires configuration, policy, egress,
 /// tools, skills and the provider together, so the TUI, ACP and GUI cannot
@@ -491,12 +491,12 @@ pub struct Assembled {
 /// on how the frontend was started (TUI probes, ACP does not).
 pub async fn assemble(
     config_path: Option<std::path::PathBuf>,
-    workspace: &Path,
+    cwd: &Path,
     data_dir: Option<std::path::PathBuf>,
     approval_policy: Option<&Path>,
     overrides: config::Overrides,
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
-    let loaded = load_config(config_path, workspace)?;
+    let loaded = load_config(config_path, cwd)?;
     let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
     let policy = build_policy(&loaded, approval_policy)?;
     let data_dir = resolve_data_dir(data_dir);
@@ -508,7 +508,7 @@ pub async fn assemble(
     // policy and extra writable roots all come from `[sandbox]`/`[network]`.
     let sandbox: Arc<dyn Sandbox> = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
-        workspace,
+        cwd,
         sandbox_network,
         &loaded.sandbox.extra_writable,
     )?;
@@ -519,11 +519,11 @@ pub async fn assemble(
         .clone()
         .map(|egress| egress as qcode_core::network::SharedNetwork);
     let provider = build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?;
-    let skills = load_skills(&loaded.skills, workspace);
+    let skills = load_skills(&loaded.skills, cwd);
     let tools = build_tools(
         &loaded.mcp,
         &loaded.search,
-        workspace,
+        cwd,
         &data_dir,
         &skills,
         sandbox,

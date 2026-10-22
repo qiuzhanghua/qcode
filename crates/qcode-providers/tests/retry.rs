@@ -76,7 +76,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         session_id: session,
         model: "mock-1",
         input: "go".to_string(),
-        workspace: workspace.to_path_buf(),
+        cwd: workspace.to_path_buf(),
         max_turns: 4,
         cancel: CancellationToken::new(),
         pricing: None,

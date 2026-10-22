@@ -153,7 +153,7 @@ async fn run(
             session_id: &session,
             model: "mock-1",
             input: "go".to_string(),
-            workspace: dir.path().to_path_buf(),
+            cwd: dir.path().to_path_buf(),
             max_turns: 4,
             cancel,
             pricing: None,

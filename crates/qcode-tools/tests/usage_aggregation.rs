@@ -103,7 +103,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             session_id: &id,
             model: "mock-1",
             input: "go".to_string(),
-            workspace: dir.path().to_path_buf(),
+            cwd: dir.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
             pricing: Some(Pricing {

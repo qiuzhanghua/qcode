@@ -70,7 +70,7 @@ fn options<'a>(
         session_id,
         model: "cost-model",
         input: "hi".to_string(),
-        workspace: workspace.to_path_buf(),
+        cwd: workspace.to_path_buf(),
         max_turns: 4,
         cancel: CancellationToken::new(),
         pricing: Some(pricing()),

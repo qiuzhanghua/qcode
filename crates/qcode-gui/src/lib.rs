@@ -2611,7 +2611,7 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                         session_id: &task_session,
                                         model: &task_model,
                                         input: text,
-                                        workspace,
+                                        cwd: workspace,
                                         max_turns,
                                         cancel,
                                         pricing,

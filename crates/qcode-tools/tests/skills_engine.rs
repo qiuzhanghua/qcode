@@ -81,7 +81,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             session_id: &session,
             model: "mock",
             input: "use the demo skill".to_string(),
-            workspace: workspace.path().to_path_buf(),
+            cwd: workspace.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
             pricing: None,
