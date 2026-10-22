@@ -151,4 +151,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "qcode $GITHUB_REF_NAME" \
             --notes-file NOTES.md \
-            dist/qc-* dist/SHA256SUMS dist/*.tar.gz dist/*.zip $manifests
+            dist/qc-* dist/qcode-desktop-* dist/SHA256SUMS dist/*.tar.gz dist/*.zip $manifests
