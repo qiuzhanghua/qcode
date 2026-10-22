@@ -333,6 +333,12 @@ impl SetupView {
                 "ANTHROPIC_API_KEY",
                 "claude-sonnet-4-5",
             ),
+            "minimax" => (
+                "minimax",
+                "https://api.minimaxi.com/v1",
+                "MINIMAX_API_KEY",
+                "MiniMax-M3",
+            ),
             "ollama" => ("ollama", "http://localhost:11434/v1", "", "llama3.2"),
             _ => return,
         };
@@ -618,7 +624,10 @@ impl SetupView {
                             base_url: optional(row, "base_url", cx),
                             api_key_env: optional(row, "api_key_env", cx),
                             api_key_command: (!argv.is_empty()).then_some(argv),
-                            default_model: optional(row, "default_model", cx),
+                            default_model: stale_model_default(
+                                name.trim(),
+                                optional(row, "default_model", cx),
+                            ),
                             stream_usage: row.bools.get("stream_usage").copied().unwrap_or(true),
                             // Preserved from the file rather than edited here;
                             // the form only knows the columns it renders.
@@ -848,6 +857,18 @@ fn cell(row: &RowState, key: &'static str, cx: &Context<SetupView>) -> String {
         .unwrap_or_default()
 }
 
+/// Drop a model that belongs to a different provider.
+///
+/// The form starts each row from a preset and lets the name be edited; a renamed
+/// row keeps the old model ("deepseek-flash") and would otherwise save that
+/// under, say, minimax. Dropping it lets the provider's own default apply.
+fn stale_model_default(name: &str, model: Option<String>) -> Option<String> {
+    let model = model?;
+    let stale = qcode_kernel::config::builtin_models()
+        .into_iter()
+        .any(|(other, default)| other != name && default == model);
+    (!stale).then_some(model)
+}
 fn optional(row: &RowState, key: &'static str, cx: &Context<SetupView>) -> Option<String> {
     let value = cell(row, key, cx);
     (!value.trim().is_empty()).then(|| value.trim().to_string())

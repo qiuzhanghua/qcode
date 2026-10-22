@@ -985,6 +985,15 @@ pub struct Resolved {
     pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Default models of the builtin providers, for forms that need to tell a
+/// stale value (left over from another provider) apart from a real choice.
+pub fn builtin_models() -> Vec<(&'static str, &'static str)> {
+    ["openai", "deepseek", "ollama", "anthropic", "minimax"]
+        .into_iter()
+        .filter_map(|name| builtin(name).map(|b| (name, b.default_model.unwrap_or(""))))
+        .filter(|(_, model)| !model.is_empty())
+        .collect()
+}
 struct Builtin {
     base_url: &'static str,
     api_key_env: &'static str,
