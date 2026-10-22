@@ -94,19 +94,13 @@ impl Doctor {
             self.fail("config writable", "config path has no parent directory");
             return;
         };
-        let probe = dir.join(".qcode-write-probe");
-        match std::fs::File::create(&probe) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&probe);
-                self.ok("config writable", dir.display().to_string());
-            }
-            Err(error) => self.fail(
+        if config::dir_accepts_new_files(dir) {
+            self.ok("config writable", dir.display().to_string());
+        } else {
+            self.fail(
                 "config writable",
-                format!(
-                    "cannot create a file in {} ({error}); a policy blocks new files there",
-                    dir.display()
-                ),
-            ),
+                format!("{}: {}", dir.display(), config::CONFIG_DIR_HINT),
+            );
         }
     }
 

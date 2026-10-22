@@ -866,6 +866,23 @@ pub fn edit_path(explicit: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
     discover(explicit).map(|found| found.path)
 }
 
+/// Whether the directory accepts a new file. A policy can allow rewriting an
+/// existing config while denying new files beside it, which breaks the atomic
+/// save, so callers probe instead of guessing from permissions.
+pub fn dir_accepts_new_files(dir: &Path) -> bool {
+    let probe = dir.join(".qcode-write-probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The advice to show when the config directory refuses new files.
+pub const CONFIG_DIR_HINT: &str = "this directory refuses new files; either allow qc in your AV/EDR policy, set QCODE_CONFIG \
+     to a writable path, or create a `qcode.portable` file next to qc.exe to keep the config there";
 /// Resolve the config file once, keeping where it came from for diagnostics.
 pub fn discover(explicit: Option<PathBuf>) -> Result<Found, ConfigError> {
     if let Some(path) = explicit {

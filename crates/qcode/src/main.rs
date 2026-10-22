@@ -760,6 +760,15 @@ async fn cmd_gui(
         setup_path.display(),
         found.source.label()
     );
+    if let Some(dir) = setup_path.parent()
+        && !config::dir_accepts_new_files(dir)
+    {
+        eprintln!(
+            " WARN config directory {} denies new files: {}",
+            dir.display(),
+            config::CONFIG_DIR_HINT
+        );
+    }
     // A missing file is the clearest signal: `load` treats it as an empty
     // document, and `resolve` can still succeed when the shell provides the key
     // through env vars, which would silently skip the unconfigured path.
