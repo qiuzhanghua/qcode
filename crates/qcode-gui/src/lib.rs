@@ -1687,6 +1687,7 @@ impl Shell {
                     .on_click(cx.listener({
                         let task_id = task_id.to_string();
                         move |this, _, window, cx| {
+                            cx.stop_propagation();
                             this.open_rename_task(&task_id, window, cx);
                         }
                     })),
@@ -1705,6 +1706,7 @@ impl Shell {
                         let task_id = task_id.to_string();
                         let title = title.to_string();
                         move |this, _, _window, cx| {
+                            cx.stop_propagation();
                             this.request_delete_task(&task_id, title.clone(), cx);
                         }
                     })),
@@ -1865,16 +1867,20 @@ impl Shell {
                 .items_center()
                 .gap_1()
                 .w_full()
+                .cursor_pointer()
                 .id(format!("task-row-{}", row.task.id))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.task_menu = None;
+                    this.resume(id.clone(), window, cx)
+                }))
                 .child(
-                    div().flex_1().min_w(px(0.0)).overflow_hidden().child(
-                        Button::new(format!("task-{}", row.task.id))
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.task_menu = None;
-                                this.resume(id.clone(), window, cx)
-                            })),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .text_size(px(BODY_SIZE))
+                        .whitespace_nowrap()
+                        .child(label),
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
@@ -1902,6 +1908,7 @@ impl Shell {
                         .on_click(cx.listener({
                             let task_id = row.task.id.clone();
                             move |this, _, _window, cx| {
+                                cx.stop_propagation();
                                 this.task_menu =
                                     if this.task_menu.as_deref() == Some(task_id.as_str()) {
                                         None
@@ -1920,6 +1927,7 @@ impl Shell {
                         .on_click(cx.listener({
                             let task_id = row.task.id.clone();
                             move |this, _, _window, cx| {
+                                cx.stop_propagation();
                                 this.task_menu = None;
                                 this.add_task_root(&task_id, cx);
                             }
