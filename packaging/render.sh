@@ -40,7 +40,7 @@ sha256_of() {
 # 归档名与 build-for-release 的 artifact_name() 一致。
 archive_hash() {
     local name="$1" path="$DIST/$1"
-    [ -f "$path" ] || die "缺少 $path（先跑 build-for-release --archive -r）"
+    [ -f "$path" ] || die "缺少 ${path}（先跑 build-for-release --archive -r）"
     sha256_of "$path"
 }
 

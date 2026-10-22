@@ -397,7 +397,7 @@ not_ready_reason() {
             cc=$(musl_cross_cc "$target")
             key="CC_${target//-/_}"
             if [ -z "${!key:-}" ] && ! have_cross_cc "$target"; then
-                echo "跨架构需要 $cc（aws-lc-sys 编 C 用）或 zig，也可用 $key 指定"
+                echo "跨架构需要 ${cc}（aws-lc-sys 编 C 用）或 zig，也可用 $key 指定"
             fi
         fi
         ;;
@@ -411,7 +411,7 @@ not_ready_reason() {
             local gcc
             gcc=$(gnu_gcc "$target") || gcc="交叉 gcc"
             if ! have_cross_cc "$target"; then
-                echo "需要 $gcc（或 zig，会自动用 zig cc）"
+                echo "需要 ${gcc}（或 zig，会自动用 zig cc）"
             fi
         fi
         ;;
@@ -523,11 +523,11 @@ build_one() {
         local reported
         reported=$("$dest" --version | awk '{print $NF}')
         if [ "$reported" != "$VERSION" ]; then
-            die "产物报的版本是 $reported，文件名里却是 $VERSION（Cargo.toml 没 bump？）"
+            die "产物报的版本是 ${reported}，文件名里却是 ${VERSION}（Cargo.toml 没 bump？）"
         fi
         echo "  version: $reported"
     else
-        echo "  version: $VERSION（交叉产物，静态核对）"
+        echo "  version: ${VERSION}（交叉产物，静态核对）"
     fi
 
     echo "  dist: $dest ($(du -h "$dest" | cut -f1))"
@@ -633,7 +633,7 @@ for item in "${REQUESTED[@]}"; do
         done
         continue
     fi
-    target=$(resolve_target "$item") || die "不认识的平台 $item（--list 看可选）"
+    target=$(resolve_target "$item") || die "不认识的平台 ${item}（--list 看可选）"
     TARGETS+=("$target")
 done
 
@@ -670,7 +670,7 @@ for target in "${TARGETS[@]}"; do
         if [ ${#REQUESTED[@]} -eq 1 ] && [ "${REQUESTED[0]}" != all ]; then
             die "$target 不可构建：$reason"
         fi
-        echo "==> $target（跳过：$reason）"
+        echo "==> ${target}（跳过：${reason}）"
         skipped=$((skipped + 1))
         continue
     fi
@@ -679,4 +679,4 @@ for target in "${TARGETS[@]}"; do
 done
 
 echo
-echo "完成：$built 个产物 -> $OUT_DIR，跳过 $skipped 个"
+echo "完成：$built 个产物 -> ${OUT_DIR}，跳过 $skipped 个"
