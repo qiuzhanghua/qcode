@@ -194,15 +194,14 @@ impl ConfigEdit {
                 // The backup is also a new file, so it can be refused for the
                 // same reason; a save without a backup beats no save at all.
                 let backup = parent.join(format!("{file_name}.bak"));
-                if self.path.exists() {
-                    if let Err(error) = std::fs::copy(&self.path, &backup)
-                        && error.kind() != std::io::ErrorKind::PermissionDenied
-                    {
-                        return Err(ConfigError::Read {
-                            path: backup,
-                            source: error,
-                        });
-                    }
+                if self.path.exists()
+                    && let Err(error) = std::fs::copy(&self.path, &backup)
+                    && error.kind() != std::io::ErrorKind::PermissionDenied
+                {
+                    return Err(ConfigError::Read {
+                        path: backup,
+                        source: error,
+                    });
                 }
                 let text = self.document.to_string();
                 return std::fs::write(&self.path, text.as_bytes()).map_err(|source| {
