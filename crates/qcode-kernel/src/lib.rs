@@ -462,6 +462,7 @@ pub fn build_provider(
             api_key: resolved.api_key.clone(),
             stream_usage: resolved.stream_usage,
             proxy_url: proxy_url.map(str::to_string),
+            extra_body: resolved.extra_body.clone(),
         })?),
     })
 }

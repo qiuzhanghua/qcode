@@ -76,7 +76,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             session_id: &session,
             model: "mock",
             input: "go".to_string(),
-            workspace: workspace.path().to_path_buf(),
+            cwd: workspace.path().to_path_buf(),
             max_turns: 4,
             cancel: CancellationToken::new(),
             pricing: None,

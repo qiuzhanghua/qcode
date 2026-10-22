@@ -58,6 +58,7 @@ fn provider_with_proxy(base_url: String, proxy_url: Option<String>) -> OpenAiCom
         api_key: Some("test-key".to_string()),
         stream_usage: true,
         proxy_url,
+        extra_body: Default::default(),
     })
     .expect("provider")
 }

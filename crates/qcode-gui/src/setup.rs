@@ -620,6 +620,14 @@ impl SetupView {
                             api_key_command: (!argv.is_empty()).then_some(argv),
                             default_model: optional(row, "default_model", cx),
                             stream_usage: row.bools.get("stream_usage").copied().unwrap_or(true),
+                            // Preserved from the file rather than edited here;
+                            // the form only knows the columns it renders.
+                            extra_body: self
+                                .config
+                                .providers
+                                .get(name.trim())
+                                .map(|existing| existing.extra_body.clone())
+                                .unwrap_or_default(),
                         };
                         config.providers.insert(name.trim().to_string(), provider);
                     }

@@ -31,6 +31,10 @@ pub struct OpenAiCompatConfig {
     pub stream_usage: bool,
     /// Session egress proxy; `None` uses a direct connection (tests/offline).
     pub proxy_url: Option<String>,
+    /// Provider-specific body fields, merged last so they can override the
+    /// defaults. MiniMax uses this for `reasoning_split`, which moves the
+    /// thinking text into `reasoning_content` instead of inline `<think>` tags.
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl std::fmt::Debug for OpenAiCompatConfig {
@@ -103,7 +107,7 @@ impl Provider for OpenAiCompatProvider {
     ) -> Result<EventStream, ProviderError> {
         let mut include_usage = self.config.stream_usage;
         let response = loop {
-            let body = build_body(&request, include_usage)?;
+            let body = build_body(&request, include_usage, &self.config.extra_body)?;
             let mut builder = self.client.post(self.endpoint()).json(&body);
             if let Some(key) = &self.config.api_key {
                 builder = builder.bearer_auth(key);
@@ -224,7 +228,11 @@ struct ToolCallAccum {
     arguments: String,
 }
 
-fn build_body(request: &CompletionRequest, include_usage: bool) -> Result<Value, ProviderError> {
+fn build_body(
+    request: &CompletionRequest,
+    include_usage: bool,
+    extra_body: &serde_json::Map<String, Value>,
+) -> Result<Value, ProviderError> {
     let mut messages = vec![json!({
         "role": "system",
         "content": request.system,
@@ -250,6 +258,9 @@ fn build_body(request: &CompletionRequest, include_usage: bool) -> Result<Value,
     }
     if let Some(max) = request.max_output_tokens {
         body["max_tokens"] = json!(max);
+    }
+    for (key, value) in extra_body {
+        body[key] = value.clone();
     }
 
     Ok(body)
@@ -622,6 +633,7 @@ mod tests {
             api_key: Some("sk-secret-value".to_string()),
             stream_usage: true,
             proxy_url: None,
+            extra_body: Default::default(),
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-secret-value"));

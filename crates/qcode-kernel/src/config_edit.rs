@@ -582,6 +582,7 @@ mod tests {
                 api_key_command: Some(vec!["echo".to_string(), "secret".to_string()]),
                 default_model: Some("deepseek-flash".to_string()),
                 stream_usage: false,
+                extra_body: Default::default(),
             },
         );
         config.context.window_tokens = 64_000;

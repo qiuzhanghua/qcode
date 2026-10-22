@@ -378,6 +378,10 @@ pub struct PolicyFile {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
+    /// Extra JSON fields merged into the Chat Completions body, for provider
+    /// extensions such as MiniMax `reasoning_split`.
+    #[serde(default)]
+    pub extra_body: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub base_url: Option<String>,
     /// Name of the environment variable holding the key. Empty means keyless.
@@ -401,6 +405,7 @@ impl Default for ProviderConfig {
             api_key_command: None,
             default_model: None,
             stream_usage: true,
+            extra_body: Default::default(),
         }
     }
 }
@@ -976,12 +981,16 @@ pub struct Resolved {
     pub model: String,
     pub stream_usage: bool,
     pub is_mock: bool,
+    /// Provider-specific body fields, already merged with the builtin defaults.
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 struct Builtin {
     base_url: &'static str,
     api_key_env: &'static str,
     default_model: Option<&'static str>,
+    /// MiniMax ships its thinking inside `content` unless asked to split it out.
+    reasoning_split: bool,
 }
 
 fn builtin(name: &str) -> Option<Builtin> {
@@ -990,16 +999,19 @@ fn builtin(name: &str) -> Option<Builtin> {
             base_url: "https://api.openai.com/v1",
             api_key_env: "OPENAI_API_KEY",
             default_model: None,
+            reasoning_split: false,
         }),
         "deepseek" => Some(Builtin {
             base_url: "https://api.deepseek.com/v1",
             api_key_env: "DEEPSEEK_API_KEY",
             default_model: Some("deepseek-flash"),
+            reasoning_split: false,
         }),
         "ollama" => Some(Builtin {
             base_url: "http://localhost:11434/v1",
             api_key_env: "",
             default_model: None,
+            reasoning_split: false,
         }),
         // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
         // no new provider code, only the endpoint and key variable.
@@ -1011,6 +1023,7 @@ fn builtin(name: &str) -> Option<Builtin> {
             base_url: "https://api.minimaxi.com/v1",
             api_key_env: "MINIMAX_API_KEY",
             default_model: Some("MiniMax-M3"),
+            reasoning_split: true,
         }),
         // Anthropic Messages API. `claude` is accepted as a friendlier alias;
         // both resolve to the same provider and key.
@@ -1018,6 +1031,7 @@ fn builtin(name: &str) -> Option<Builtin> {
             base_url: "https://api.anthropic.com",
             api_key_env: "ANTHROPIC_API_KEY",
             default_model: Some("claude-sonnet-4-5"),
+            reasoning_split: false,
         }),
         _ => None,
     }
@@ -1085,11 +1099,23 @@ pub fn resolve(
             model,
             stream_usage: false,
             is_mock: true,
+            extra_body: serde_json::Map::new(),
         });
     }
 
     let entry = config.providers.get(&name).cloned().unwrap_or_default();
     let builtin = builtin(&name);
+    // Builtin defaults first, then whatever the config says: a user can always
+    // turn a field off.
+    let mut extra_body = serde_json::Map::new();
+    if let Some(builtin) = &builtin
+        && builtin.reasoning_split
+    {
+        extra_body.insert("reasoning_split".to_string(), serde_json::json!(true));
+    }
+    for (key, value) in &entry.extra_body {
+        extra_body.insert(key.clone(), value.clone());
+    }
 
     let base_url = overrides
         .base_url
@@ -1159,6 +1185,7 @@ pub fn resolve(
         model,
         stream_usage: overrides.stream_usage.unwrap_or(entry.stream_usage),
         is_mock: false,
+        extra_body,
     })
 }
 
