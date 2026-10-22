@@ -169,6 +169,83 @@ pub trait Backend {
     /// Change the model for subsequent turns.
     fn set_model(&mut self, model: String);
     fn try_recv(&mut self) -> Option<UiEvent>;
+    /// A backend without a kernel: the window opens, but sending a prompt has
+    /// to explain that Settings is still empty instead of failing silently.
+    fn is_configured(&self) -> bool {
+        true
+    }
+}
+
+/// The window runs without a kernel: no config yet, so there is no provider to
+/// assemble. Tasks stay readable because they live in the session store, which
+/// does not need one.
+pub struct UnconfiguredBackend {
+    cwd: PathBuf,
+    store: SessionStore,
+}
+
+impl UnconfiguredBackend {
+    pub fn new(cwd: PathBuf, store: SessionStore) -> Self {
+        Self { cwd, store }
+    }
+}
+
+impl Backend for UnconfiguredBackend {
+    fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    fn tasks(&self) -> Result<Vec<TaskRow>, String> {
+        let summaries = self.store.list().map_err(|error| error.to_string())?;
+        Ok(summaries
+            .into_iter()
+            .filter_map(|summary| {
+                let task = self
+                    .store
+                    .task(&summary.id)
+                    .or_else(|_| summary.legacy_task())
+                    .ok()?;
+                Some(TaskRow { task, summary })
+            })
+            .collect())
+    }
+
+    fn title(&self, id: &str) -> Option<String> {
+        let events = self.store.load(id).ok()?;
+        events.iter().find_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => {
+                let text = message.text.trim().replace('\n', " ");
+                (!text.is_empty()).then(|| text.chars().take(48).collect())
+            }
+            _ => None,
+        })
+    }
+
+    fn set_roots(&mut self, _id: &str, _roots: Vec<Root>) -> Result<(), String> {
+        Err("not configured yet: open Settings first".to_string())
+    }
+
+    fn new_session(&mut self) {}
+
+    fn resume(&mut self, id: &str) -> Result<Vec<Event>, String> {
+        self.store.load(id).map_err(|error| error.to_string())
+    }
+
+    fn prompt(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+
+    fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
+
+    fn cancel(&mut self) {}
+
+    fn set_model(&mut self, _model: String) {}
+
+    fn try_recv(&mut self) -> Option<UiEvent> {
+        None
+    }
+
+    fn is_configured(&self) -> bool {
+        false
+    }
 }
 
 /// The in-process backend: engine thread + bridge + session store.
@@ -565,6 +642,13 @@ impl Shell {
                 self.app.status.running,
                 value.chars().take(20).collect::<String>()
             );
+        }
+        if !self.backend.is_configured() {
+            self.app.push_notice(
+                "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
+            );
+            cx.notify();
+            return;
         }
         if self.app.status.running {
             self.app

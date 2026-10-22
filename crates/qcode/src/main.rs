@@ -708,17 +708,18 @@ async fn cmd_gui(
         Err(_) => true,
     };
     if needs_setup {
+        // No config yet: open the window anyway. Settings stays reachable from
+        // the sidebar, and the backend refuses prompts with an explanation
+        // instead of the old behaviour of trapping the user in the wizard.
         let setup_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
-        qcode_gui::run_setup(setup_path.clone(), setup_data_dir);
-        if config::load(&setup_path).is_err() {
-            return Err("config was not created; run `qc gui` again to configure".into());
-        }
-        // GPUI cannot restart its application loop in-process. Re-exec with the
-        // same argv so the just-written config is assembled cleanly.
-        let status = std::process::Command::new(std::env::current_exe()?)
-            .args(std::env::args_os().skip(1))
-            .status()?;
-        return Ok(ExitCode::from(status.code().unwrap_or(1) as u8));
+        let store = qcode_core::store::SessionStore::new(&setup_data_dir);
+        let backend = qcode_gui::UnconfiguredBackend::new(workspace.clone(), store);
+        let mut app = qcode_tui::App::new("unconfigured", "-");
+        app.push_notice(
+            "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
+        );
+        qcode_gui::run(app, Box::new(backend), setup_path, setup_data_dir);
+        return Ok(ExitCode::SUCCESS);
     }
     let gui_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
     let kernel = qcode_kernel::assemble(
