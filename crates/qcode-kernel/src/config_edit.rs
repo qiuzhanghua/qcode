@@ -184,10 +184,13 @@ impl ConfigEdit {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
+        // Name the failing step: "cannot read" was reported for a create that
+        // was denied, which sent the search in the wrong direction.
         let mut file = options.open(&temp).map_err(|source| ConfigError::Read {
             path: temp.clone(),
             source,
         })?;
+
         let text = self.document.to_string();
         file.write_all(text.as_bytes())
             .and_then(|()| file.sync_all())
@@ -515,7 +518,7 @@ mod tests {
         .expect("provider");
         edit.save().expect("save");
 
-        let loaded = config::load(&path).expect("valid config");
+        let loaded = crate::config::load(&path).expect("valid config");
         assert_eq!(loaded.default_provider.as_deref(), Some("deepseek"));
         assert!(!edit.existed());
         #[cfg(unix)]
@@ -649,7 +652,7 @@ mod tests {
         let mut edit = ConfigEdit::open(&path).expect("open");
         edit.apply_config(&config).expect("apply");
         edit.save().expect("save");
-        let loaded = config::load(&path).expect("valid");
+        let loaded = crate::config::load(&path).expect("valid");
 
         assert_eq!(loaded.default_provider.as_deref(), Some("deepseek"));
         assert_eq!(loaded.providers.len(), 1);
@@ -713,7 +716,7 @@ mod tests {
             .expect("remove");
         edit.remove(&["agent", "snapshot_shell"]);
         edit.save().expect("save again");
-        let loaded = config::load(&path).expect("valid");
+        let loaded = crate::config::load(&path).expect("valid");
         assert!(loaded.default_provider.is_none());
         assert!(loaded.agent.snapshot_shell);
         assert_eq!(loaded.network.allow.len(), 2);
