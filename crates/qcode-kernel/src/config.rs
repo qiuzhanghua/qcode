@@ -1001,6 +1001,17 @@ fn builtin(name: &str) -> Option<Builtin> {
             api_key_env: "",
             default_model: None,
         }),
+        // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
+        // no new provider code, only the endpoint and key variable.
+        // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
+        // no new provider code, only the endpoint and key variable. The default
+        // host is the mainland platform; international accounts override
+        // `base_url` to https://api.minimax.io/v1.
+        "minimax" => Some(Builtin {
+            base_url: "https://api.minimaxi.com/v1",
+            api_key_env: "MINIMAX_API_KEY",
+            default_model: Some("MiniMax-M3"),
+        }),
         // Anthropic Messages API. `claude` is accepted as a friendlier alias;
         // both resolve to the same provider and key.
         "anthropic" | "claude" => Some(Builtin {
@@ -1995,5 +2006,22 @@ api_key_command = ["cmd", "/C", "exit 3"]
             "{:?}",
             unknown_keys(&document)
         );
+    }
+    #[test]
+    fn minimax_defaults_to_the_m3_model() {
+        let config: Config = toml::from_str(r#"default_provider = "minimax""#).unwrap();
+        let resolved = resolve(
+            &config,
+            &Overrides::default(),
+            &env_from(&[("MINIMAX_API_KEY", "sk-test")]),
+        )
+        .expect("resolve");
+        assert_eq!(resolved.name, "minimax");
+        assert_eq!(resolved.model, "MiniMax-M3");
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://api.minimaxi.com/v1")
+        );
+        assert_eq!(resolved.api_key.as_deref(), Some("sk-test"));
     }
 }
