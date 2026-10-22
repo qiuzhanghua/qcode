@@ -429,6 +429,9 @@ struct Shell {
     input: Entity<TextareaState>,
     /// Model used for the next turn; editable without restarting the kernel.
     model_input: Entity<InputState>,
+    /// Filters the task list by title or short id.
+    task_filter: Entity<InputState>,
+    _task_filter_subscription: gpui_kit::Subscription,
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pending_send: bool,
     /// Drop transcript events from the old turn until the backend confirms the
@@ -544,6 +547,12 @@ impl Shell {
             }
         });
         let model = app.status.model.clone();
+        let task_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter tasks"));
+        // The Shell renders the filtered list, so it has to repaint when the
+        // filter text changes; the input only notifies itself.
+        let task_filter_subscription = cx.subscribe(&task_filter, |_, _, _: &InputEvent, cx| {
+            cx.notify();
+        });
         let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
         let input_focus = input.read(cx).focus_handle(cx);
@@ -555,6 +564,8 @@ impl Shell {
         Self {
             app,
             input,
+            task_filter,
+            _task_filter_subscription: task_filter_subscription,
             model_input,
             pending_send: false,
             resetting: false,
@@ -1502,8 +1513,19 @@ impl Shell {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let filter = self.task_filter.read(cx).value().trim().to_lowercase();
         let mut rows: Vec<AnyElement> = Vec::new();
-        for row in &self.tasks {
+        for row in self.tasks.iter().filter(|row| {
+            if filter.is_empty() {
+                return true;
+            }
+            let title = self
+                .titles
+                .get(&row.task.id)
+                .map(String::as_str)
+                .unwrap_or("");
+            title.to_lowercase().contains(&filter) || short_id(&row.task.id).contains(&filter)
+        }) {
             let id = row.task.id.clone();
             let active = self.active.as_deref() == Some(row.task.id.as_str());
             let marker = if active { "●" } else { "○" };
@@ -1562,6 +1584,7 @@ impl Shell {
                     .label("Settings")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
+            .child(Input::new(&self.task_filter).aria_label("Filter tasks"))
             .child(
                 div()
                     .flex()
