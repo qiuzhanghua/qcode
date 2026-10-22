@@ -717,7 +717,10 @@ async fn cmd_gui(
     _config_path: Option<PathBuf>,
     _approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    eprintln!("this build has no GUI support; download the desktop build (qcode-desktop)");
+    eprintln!(
+        "this build has no GUI support; rebuild with `cargo build -p qcode --features gui`, 
+        or download the desktop build (qcode-desktop)"
+    );
     Ok(ExitCode::from(2))
 }
 #[cfg(feature = "gui")]
