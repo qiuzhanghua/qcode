@@ -8,7 +8,7 @@
 #![cfg(windows)]
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use qcode_core::task::{Root, RootAccess};
 use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork, build};
@@ -20,7 +20,7 @@ fn acl_sandbox(root: &Path) -> Option<std::sync::Arc<dyn Sandbox>> {
 }
 
 fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
-    let command = sandbox
+    let mut command = sandbox
         .command(
             std::ffi::OsStr::new("cmd.exe"),
             &[
@@ -30,7 +30,7 @@ fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
             cwd,
         )
         .ok()?;
-    let output = Command::from(command).stdin(Stdio::null()).output().ok()?;
+    let output = command.stdin(Stdio::null()).output().ok()?;
     Some(output.status.success())
 }
 
