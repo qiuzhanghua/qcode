@@ -71,6 +71,19 @@ impl ToolContext {
         self
     }
 
+    /// Where `run_shell` starts when the call has no explicit `cwd`.
+    ///
+    /// The primary root wins, then any root, then the turn's private temp. A
+    /// rootless task therefore runs in its temp directory, never in whatever
+    /// directory qc happened to be started from.
+    pub fn shell_cwd(&self) -> Option<PathBuf> {
+        self.roots
+            .iter()
+            .find(|root| root.primary)
+            .or_else(|| self.roots.first())
+            .map(|root| root.path.clone())
+            .or_else(|| self.temp_dir.clone())
+    }
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
         self

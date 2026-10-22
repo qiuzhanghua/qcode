@@ -1291,11 +1291,14 @@ where
                         .map(|path| format!("path {path}"))
                 }),
             cwd: (call.name == "run_shell").then(|| {
+                let base = tool_context
+                    .shell_cwd()
+                    .unwrap_or_else(|| tool_context.primary_root.clone());
                 let cwd = call.arguments.get("cwd").and_then(Value::as_str);
                 match cwd.filter(|cwd| !cwd.is_empty()) {
                     Some(cwd) if Path::new(cwd).is_absolute() => cwd.to_string(),
-                    Some(cwd) => tool_context.primary_root.join(cwd).display().to_string(),
-                    None => tool_context.primary_root.display().to_string(),
+                    Some(cwd) => base.join(cwd).display().to_string(),
+                    None => base.display().to_string(),
                 }
             }),
         };

@@ -193,17 +193,11 @@ impl Tool for RunShell {
 
         let cwd = match args.cwd.as_deref() {
             Some(cwd) if !cwd.is_empty() => path::resolve_ctx(ctx, cwd, Access::Read)?.path,
-            _ => ctx
-                .temp_dir
-                .clone()
-                .or_else(|| {
-                    ctx.roots
-                        .iter()
-                        .find(|root| root.primary)
-                        .or_else(|| ctx.roots.first())
-                        .map(|root| root.path.clone())
-                })
-                .unwrap_or_else(|| ctx.primary_root.clone()),
+            _ => ctx.shell_cwd().ok_or_else(|| {
+                ToolError::Invalid(
+                    "no root and no turn temp: there is nowhere to run the command".to_string(),
+                )
+            })?,
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
         // The initial sandbox is built for the legacy workspace. A task with
@@ -439,6 +433,25 @@ fn signal_group(pid: u32, _signal: i32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rootless_task_runs_in_its_turn_temp() {
+        let root = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = qcode_core::tool::ToolContext::new(root.path())
+            .with_roots(Vec::new())
+            .with_temp_dir(temp.path().to_path_buf());
+        assert_eq!(ctx.shell_cwd().expect("temp"), temp.path());
+
+        let primary = qcode_core::task::Root {
+            id: "r1".to_string(),
+            label: "app".to_string(),
+            path: root.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        };
+        let ctx = ctx.with_roots(vec![primary]);
+        assert_eq!(ctx.shell_cwd().expect("root"), root.path());
+    }
     use super::*;
 
     #[test]
