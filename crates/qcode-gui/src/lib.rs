@@ -473,6 +473,9 @@ struct Shell {
     rename_task: Option<RenameTaskState>,
     /// Task whose … menu is open.
     task_menu: Option<String>,
+    /// Last task row the pointer entered; keeps the action overlay alive while
+    /// the pointer moves from the row onto the overlay.
+    hovered_task: Option<String>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -590,6 +593,7 @@ impl Shell {
             pending_task_delete: None,
             rename_task: None,
             task_menu: None,
+            hovered_task: None,
             collapse_all: false,
             collapse_to_list: false,
             last_blocks,
@@ -683,6 +687,7 @@ impl Shell {
         self.pending_task_delete = None;
         self.rename_task = None;
         self.task_menu = None;
+        self.hovered_task = None;
         self.turn_in_flight = false;
         self.refresh_tasks();
         self.app.push_notice("new session");
@@ -721,6 +726,7 @@ impl Shell {
                 self.pending_task_delete = None;
                 self.rename_task = None;
                 self.task_menu = None;
+                self.hovered_task = None;
                 self.turn_in_flight = false;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
@@ -1858,10 +1864,10 @@ impl Shell {
                 String::new()
             };
             let label = format!("{marker} {title}{wonky}");
-            let group = format!("task-row-{}", row.task.id);
             let menu_open = self.task_menu.as_deref() == Some(id.as_str());
+            let show_actions = self.hovered_task.as_deref() == Some(id.as_str()) || menu_open;
+            let hover_id = id.clone();
             let mut task_row = div()
-                .group(group.clone())
                 .relative()
                 .flex()
                 .flex_row()
@@ -1878,6 +1884,12 @@ impl Shell {
                 .when(!active, |this| this.hover(|style| style.bg(row_hover)))
                 .when(!rows.is_empty(), |this| this.mt_2())
                 .id(format!("task-row-{}", row.task.id))
+                .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                    if *hovered {
+                        this.hovered_task = Some(hover_id.clone());
+                        cx.notify();
+                    }
+                }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.task_menu = None;
                     this.resume(id.clone(), window, cx)
@@ -1903,8 +1915,7 @@ impl Shell {
                 .items_center()
                 .gap_1()
                 .invisible()
-                .group_hover(group.clone(), |this| this.visible())
-                .when(menu_open, |this| this.visible())
+                .when(show_actions, |this| this.visible())
                 .child(
                     Button::new(format!("task-menu-{}", row.task.id))
                         .compact()
