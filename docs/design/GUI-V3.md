@@ -545,6 +545,6 @@ trait Backend {
 ### Task 行动作浮层（2026-10-22）
 
 - Task 标题不再截断为 6 个字符，占满整行。
-- `… +` 使用 `deferred(anchored())` 浮在 Task 行右上角。
+- `… +` 使用行内 absolute 浮层贴在 Task 行右上角（菜单本身仍用 deferred/anchored）。
 - 非 hover 时 `visibility: hidden`，不占布局、不响应点击。
 - hover 时通过 `group_hover` 显示，不改变标题宽度，不会左右跳跃。

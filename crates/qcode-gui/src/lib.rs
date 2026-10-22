@@ -1879,6 +1879,9 @@ impl Shell {
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
                 .occlude()
+                .absolute()
+                .right_0()
+                .top_0()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1922,16 +1925,7 @@ impl Shell {
                             }
                         })),
                 );
-            task_row = task_row.child(
-                deferred(
-                    anchored()
-                        .anchor(Anchor::TopRight)
-                        .offset(point(px(0.0), px(0.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(controls),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY),
-            );
+            task_row = task_row.child(controls);
             if menu_open {
                 task_row = task_row.child(
                     deferred(
