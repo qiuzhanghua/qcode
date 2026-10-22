@@ -95,6 +95,14 @@ jobs:
             Remove-Item -Recurse -Force $stage
             Write-Host "normalised: $canonical"
           }
+          # Linux archives carry a _gnu suffix; manifests and qc update use
+          # the unsuffixed archive name.
+          Get-ChildItem dist -Filter 'qcode_*_linux_*_gnu.tar.gz' | ForEach-Object {
+            $canonical = $_.Name -replace '_gnu\.tar\.gz$', '.tar.gz'
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path (Resolve-Path dist).Path $canonical) -Force
+            Remove-Item -LiteralPath $_.FullName
+            Write-Host "normalised: $canonical"
+          }
 
       - name: checksums
         shell: pwsh
