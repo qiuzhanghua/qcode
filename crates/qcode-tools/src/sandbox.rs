@@ -142,7 +142,7 @@ pub fn build(
         SandboxMode::SandboxExec => {
             #[cfg(target_os = "macos")]
             {
-                let sandbox = SandboxExec::new_with_extra(workspace, network, extra_writable)?;
+                let sandbox = SandboxExec::new_with_extra(primary_root, network, extra_writable)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
