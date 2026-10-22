@@ -882,6 +882,33 @@ fn cmd_sessions(
                     session.started.model,
                     session.started.cwd
                 );
+                // Roots decide what a task can touch, and a missing one is the
+                // difference between "works" and "every file tool fails".
+                match store.task(&session.id) {
+                    Ok(task) => {
+                        for root in &task.roots {
+                            let access = match root.access {
+                                qcode_core::task::RootAccess::ReadOnly => "ro",
+                                qcode_core::task::RootAccess::ReadWrite => "rw",
+                            };
+                            let state = match root.state() {
+                                qcode_core::task::RootState::Ready => "",
+                                qcode_core::task::RootState::Missing => "  MISSING",
+                            };
+                            println!(
+                                "    @{} {} {}{}",
+                                root.label,
+                                access,
+                                root.path.display(),
+                                state
+                            );
+                        }
+                        if task.roots.is_empty() {
+                            println!("    (no roots)");
+                        }
+                    }
+                    Err(_) => println!("    (no task record)"),
+                }
             }
         }
         SessionsCommand::Show { id } => {
