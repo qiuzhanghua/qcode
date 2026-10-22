@@ -514,7 +514,7 @@ trait Backend {
 
 ### Task 管理（2026-10-22）
 
-- Task 行 hover 时右侧显示 `…` 和 `+`，顺序为 `…` 后 `+`。
+- Task 行只显示 marker 和最多 6 个字符的标题，不显示时间/turn 数；hover 时右侧显示 `…` 和 `+`，顺序为 `…` 后 `+`。
 - `…` 下拉菜单：
   - 重命名
   - 删除任务
@@ -534,3 +534,10 @@ trait Backend {
   - 清理指向该 Task 的 `last_session`
 - Task 行不再显示目录数量。
 - Event schema v3：新增 `task_renamed`，Task 增加可选显式 `title`。
+
+### Task 菜单浮层（2026-10-22）
+
+- Task 行标题限制为 6 个字符，不再显示时间、turn 数。
+- `…` 菜单使用 `deferred(anchored())` 渲染为窗口级浮层，不再作为行内子元素。
+- 菜单锚定在 Task 行右上方，向下展开，带窗口边缘回弹。
+- 浮层有 `POPUP_PRIORITY`，不会被后续 Task 行覆盖。

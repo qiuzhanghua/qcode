@@ -1665,8 +1665,6 @@ impl Shell {
         let theme = cx.theme();
         let running = self.active.as_deref() == Some(task_id) && self.turn_in_flight;
         div()
-            .ml_6()
-            .my_1()
             .w(px(160.0))
             .flex()
             .flex_col()
@@ -1919,10 +1917,19 @@ impl Shell {
                         })),
                 );
             task_row = task_row.child(controls);
-            rows.push(task_row.into_any_element());
             if menu_open {
-                rows.push(self.render_task_menu(&row.task.id, &full_title, cx));
+                task_row = task_row.child(
+                    deferred(
+                        anchored()
+                            .anchor(Anchor::TopRight)
+                            .offset(point(px(0.0), px(30.0)))
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(self.render_task_menu(&row.task.id, &full_title, cx)),
+                    )
+                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
+                );
             }
+            rows.push(task_row.into_any_element());
             if active {
                 rows.push(self.render_task_roots(cx));
             }
