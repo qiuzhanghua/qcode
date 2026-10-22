@@ -568,11 +568,14 @@ impl SetupView {
             return;
         }
         prefs.apply(cx);
-        match self
+        // The closure is not worth a boxed error type: both calls return the
+        // same config error, and this lint only cares about its size.
+        #[allow(clippy::result_large_err)]
+        let saved = self
             .edit
             .apply_config(&config)
-            .and_then(|()| self.edit.save())
-        {
+            .and_then(|()| self.edit.save());
+        match saved {
             Ok(()) => {
                 self.config = config;
                 self.prefs = prefs;
