@@ -286,7 +286,7 @@ impl Agent {
                 session_id: &session_id,
                 model: &deps.model,
                 input,
-                workspace: cwd,
+                cwd,
                 max_turns: deps.max_turns,
                 cancel,
                 pricing: deps.pricing,

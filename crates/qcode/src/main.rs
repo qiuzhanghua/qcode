@@ -535,7 +535,7 @@ async fn cmd_run(
             session_id: &session_id,
             model: &resolved.model,
             input: prompt,
-            workspace: workspace.clone(),
+            cwd: workspace.clone(),
             max_turns,
             cancel: cancel.clone(),
             pricing,

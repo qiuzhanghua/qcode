@@ -287,7 +287,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         session_id: &session_id,
                                         model: options.model,
                                         input: text,
-                                        workspace: options.workspace.clone(),
+                                        cwd: options.workspace.clone(),
                                         max_turns: options.max_turns,
                                         cancel: turn_cancel,
                                         pricing: options.pricing,

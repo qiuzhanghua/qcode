@@ -103,7 +103,7 @@ impl SubagentRunner for EngineSubagent {
             session_id: &session_id,
             model: &self.model,
             input: request.task,
-            workspace: self.workspace.clone(),
+            cwd: self.workspace.clone(),
             max_turns: request.max_turns,
             cancel,
             // Child cost is not folded into the parent turn; the child session

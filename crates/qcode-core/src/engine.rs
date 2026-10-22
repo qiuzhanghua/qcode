@@ -237,7 +237,9 @@ pub struct RunOptions<'a> {
     pub session_id: &'a str,
     pub model: &'a str,
     pub input: String,
-    pub workspace: PathBuf,
+    /// The directory the process was started in: it seeds the legacy single
+    /// root and is what snapshots and `run_shell` use as their base.
+    pub cwd: PathBuf,
     pub max_turns: u32,
     /// Cooperative cancellation. The CLI cancels it on Ctrl-C, a future TUI on
     /// Esc. Cancellation is not an error: the turn ends with `cancelled`.
@@ -406,7 +408,7 @@ where
         None
     };
     let mut compaction_disabled = false;
-    let mut tool_context = ToolContext::new(options.workspace.clone())
+    let mut tool_context = ToolContext::new(options.cwd.clone())
         .with_roots(task.roots.clone())
         .with_cancel(options.cancel.clone());
     if let Some(temp) = &turn_temp {
@@ -727,7 +729,7 @@ where
                 // A shell command can write anywhere, so guessing paths from the
                 // command line would lose files. When enabled, copy the tree.
                 if call.name == "run_shell" && snapshots.shell_enabled() {
-                    match snapshots.snapshot_tree(options.session_id, turns, &options.workspace) {
+                    match snapshots.snapshot_tree(options.session_id, turns, &options.cwd) {
                         Ok(report) if report.capped => tracing::warn!(
                             files = report.files,
                             bytes = report.bytes,
@@ -744,7 +746,7 @@ where
                     continue;
                 }
                 if let Err(error) =
-                    snapshots.record(options.session_id, turns, &options.workspace, &paths)
+                    snapshots.record(options.session_id, turns, &options.cwd, &paths)
                 {
                     tracing::warn!(
                         %error,
