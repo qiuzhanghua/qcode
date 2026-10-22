@@ -109,7 +109,7 @@ jobs:
           Get-Content dist/SHA256SUMS
 
       - name: manifests
-        run: ./packaging/render.sh
+        run: bash ./packaging/render.sh
 
       - name: release notes
         run: |
