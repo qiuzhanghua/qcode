@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
 
-use crate::config::{self, ConfigError};
+use crate::config::ConfigError;
 
 /// A config document loaded from disk, or an empty one when the file is new.
 #[derive(Debug)]
@@ -188,7 +188,8 @@ impl ConfigEdit {
             path: temp.clone(),
             source,
         })?;
-        file.write_all(self.document.to_string().as_bytes())
+        let text = self.document.to_string();
+        file.write_all(text.as_bytes())
             .and_then(|()| file.sync_all())
             .map_err(|source| ConfigError::Read {
                 path: temp.clone(),
@@ -196,9 +197,16 @@ impl ConfigEdit {
             })?;
         drop(file);
 
-        if let Err(error) = config::load(&temp) {
+        // Validate the text we just wrote instead of reading the temp file
+        // back: on Windows a shell that runs qc inside a confinement layer can
+        // create the file but not read it, which made every save fail with
+        // "cannot read config ...tmp-<pid>: access denied".
+        if let Err(error) = toml::from_str::<crate::config::Config>(&text) {
             let _ = std::fs::remove_file(&temp);
-            return Err(error);
+            return Err(ConfigError::Read {
+                path: temp,
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
+            });
         }
 
         if self.path.exists() {

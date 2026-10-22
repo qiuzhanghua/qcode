@@ -183,3 +183,16 @@
 [76284:127724:1022/103035.986:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:12
 [76284:127724:1022/103042.498:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
 [76284:127724:1022/103056.045:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103225.076:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103225.076:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime49521504e27
+[246836:459724:1022/103225.076:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[246836:459724:1022/103225.076:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:12
+[246836:459724:1022/103225.104:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v12.filemap.sogouime
+[246836:459724:1022/103225.104:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:12
+[246836:459724:1022/103225.104:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:12
+[246836:459724:1022/103230.941:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103306.111:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103328.792:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103328.832:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[246836:459724:1022/103344.814:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
