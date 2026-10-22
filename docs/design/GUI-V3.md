@@ -548,3 +548,13 @@ trait Backend {
 - `… +` 使用行内 absolute 浮层贴在 Task 行右上角（菜单本身仍用 deferred/anchored）。
 - 非 hover 时 `visibility: hidden`，不占布局、不响应点击。
 - hover 时通过 `group_hover` 显示，不改变标题宽度，不会左右跳跃。
+
+### Task 列表视觉（2026-10-22）
+
+- Task 行高 30px、左右 padding 8px、圆角 6px。
+- 非 active 行 hover 使用半透明 sidebar accent 背景。
+- active 行使用 sidebar accent 背景，标题 semibold。
+- 相邻 Task 块之间 8px 间距，不要连续文字感。
+- 目录行缩进 16px、行高 24px，归属当前 Task。
+- `… +` 去掉外层胶囊背景/边框/padding，只保留两个小图标按钮；
+  操作浮层高度固定 30px，与 Task 行齐平，右对齐，不参与布局。

@@ -1724,7 +1724,7 @@ impl Shell {
             .pending_roots
             .as_ref()
             .is_some_and(|(id, _)| id == &task_id);
-        let mut section = div().flex().flex_col().gap_1().pl_3().pt_1();
+        let mut section = div().flex().flex_col().gap_1().pl_4().pt_1();
         for root in roots {
             let label = root.label.clone();
             let path = root.path.display().to_string();
@@ -1740,6 +1740,7 @@ impl Shell {
                 .items_center()
                 .gap_1()
                 .w_full()
+                .h(px(24.0))
                 .child(
                     Button::new(format!("root-alias-{task_id}-{label}"))
                         .text()
@@ -1829,8 +1830,8 @@ impl Shell {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let overlay_bg = cx.theme().popover;
-        let overlay_border = cx.theme().border;
+        let row_hover = cx.theme().sidebar_accent.opacity(0.55);
+        let row_active = cx.theme().sidebar_accent;
         let mut rows: Vec<AnyElement> = Vec::new();
         for row in &self.tasks {
             let id = row.task.id.clone();
@@ -1867,7 +1868,15 @@ impl Shell {
                 .items_center()
                 .gap_1()
                 .w_full()
+                .h(px(30.0))
+                .px_2()
+                .rounded(px(6.0))
                 .cursor_pointer()
+                .when(active, |this| {
+                    this.bg(row_active).font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!active, |this| this.hover(|style| style.bg(row_hover)))
+                .when(!rows.is_empty(), |this| this.mt_2())
                 .id(format!("task-row-{}", row.task.id))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.task_menu = None;
@@ -1886,17 +1895,13 @@ impl Shell {
                 .id(format!("task-actions-{}", row.task.id))
                 .occlude()
                 .absolute()
-                .right_0()
+                .right_1()
                 .top_0()
+                .h(px(30.0))
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1()
-                .rounded(px(6.0))
-                .bg(overlay_bg)
-                .border_1()
-                .border_color(overlay_border)
-                .p_1()
                 .invisible()
                 .group_hover(group.clone(), |this| this.visible())
                 .when(menu_open, |this| this.visible())
