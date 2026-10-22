@@ -514,7 +514,7 @@ trait Backend {
 
 ### Task 管理（2026-10-22）
 
-- Task 行只显示 marker 和最多 6 个字符的标题，不显示时间/turn 数；hover 时右侧显示 `…` 和 `+`，顺序为 `…` 后 `+`。
+- Task 行只显示 marker 和最多 6 个字符的标题，不显示时间/turn 数；右侧固定预留 120px 操作区，内容左对齐、`… +` 右对齐。hover 时显示 `…` 和 `+`，顺序为 `…` 后 `+`。
 - `…` 下拉菜单：
   - 重命名
   - 删除任务
@@ -541,3 +541,10 @@ trait Backend {
 - `…` 菜单使用 `deferred(anchored())` 渲染为窗口级浮层，不再作为行内子元素。
 - 菜单锚定在 Task 行右上方，向下展开，带窗口边缘回弹。
 - 浮层有 `POPUP_PRIORITY`，不会被后续 Task 行覆盖。
+
+### Task 行固定操作区（2026-10-22）
+
+- 右侧始终预留 120px，不在 hover 时改变布局。
+- 标题左对齐，`… +` 右对齐。
+- 非 hover 时操作区 `visibility: hidden`，不参与点击。
+- hover 时通过 `group_hover` 切回 `visible`，不会左右跳跃。
