@@ -19,6 +19,10 @@ pub enum RootAccess {
     ReadWrite,
 }
 
+/// The label a migrated session gives its only root. Kept in one place so the
+/// legacy path is easy to find and easy to delete later.
+pub const LEGACY_ROOT_LABEL: &str = "workspace";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Root {
     /// Stable identity; never derive access or ownership from `path`.
@@ -112,15 +116,18 @@ impl Task {
         Ok(Self { id, roots })
     }
 
-    /// Migrate a legacy workspace session: its cwd becomes the only root.
+    /// Migration only: a pre-Task session becomes a task whose single root is the
+    /// directory it was started in.
+    ///
+    /// New tasks never get a label from this: they name their roots themselves.
     pub fn from_legacy_session(
         id: impl Into<String>,
         cwd: impl Into<PathBuf>,
     ) -> Result<Self, TaskError> {
         let id = id.into();
         let root = Root {
-            id: format!("{id}-workspace"),
-            label: "workspace".to_string(),
+            id: format!("{id}-{LEGACY_ROOT_LABEL}"),
+            label: LEGACY_ROOT_LABEL.to_string(),
             path: cwd.into(),
             access: RootAccess::ReadWrite,
             primary: true,

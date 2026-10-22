@@ -25,7 +25,8 @@ use crate::task::{Root, RootAccess};
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace: PathBuf,
-    /// Authorized task roots. `workspace` is the legacy primary root.
+    /// Authorized task roots. `workspace` is only the legacy primary root: new
+    /// code should set roots explicitly with [`Self::with_roots`].
     pub roots: Vec<Root>,
     /// Turn-private directory for a rootless task's shell.
     pub temp_dir: Option<PathBuf>,
@@ -35,11 +36,14 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// Legacy single-root context: the directory becomes a root labelled
+    /// [`crate::task::LEGACY_ROOT_LABEL`]. Task-aware code uses
+    /// [`Self::with_roots`] instead.
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         let roots = vec![Root {
-            id: "workspace".to_string(),
-            label: "workspace".to_string(),
+            id: crate::task::LEGACY_ROOT_LABEL.to_string(),
+            label: crate::task::LEGACY_ROOT_LABEL.to_string(),
             path: workspace.clone(),
             access: RootAccess::ReadWrite,
             primary: true,
