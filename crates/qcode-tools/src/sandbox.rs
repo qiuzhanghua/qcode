@@ -640,24 +640,40 @@ struct LandlockPathBeneathAttr {
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Landlock {
-    workspace: PathBuf,
+    /// Each root with its mode: `true` is read-write, `false` is read-only.
+    roots: Vec<(PathBuf, bool)>,
+    /// Where the preflight runs; the first root (or the turn temp).
+    cwd: PathBuf,
     ruleset_fd: RawFd,
 }
 
 #[cfg(target_os = "linux")]
 impl Landlock {
     pub fn new(workspace: &Path) -> Result<Self, SandboxError> {
-        if workspace == Path::new("/") {
-            return Err(SandboxError::Setup(
-                "refusing to sandbox the filesystem root as the workspace".to_string(),
-            ));
+        Self::for_roots(vec![(workspace.to_path_buf(), true)])
+    }
+
+    /// Build a ruleset for a set of roots and a directory to run the preflight
+    /// in. Read-only roots only get the read bits, which is all Landlock needs:
+    /// unlike the other backends there is no mount table to prepare.
+    fn for_roots(roots: Vec<(PathBuf, bool)>) -> Result<Self, SandboxError> {
+        if let Some((path, _)) = roots.iter().find(|(path, _)| path == Path::new("/")) {
+            return Err(SandboxError::Setup(format!(
+                "refusing to sandbox the filesystem root as a root: {}",
+                path.display()
+            )));
         }
+        let cwd = roots
+            .first()
+            .map(|(path, _)| path.clone())
+            .unwrap_or_else(|| PathBuf::from("/"));
 
         let abi = landlock_abi()?;
         let handled = landlock_handled(abi);
         let ruleset_fd = create_ruleset(handled)?;
         let sandbox = Self {
-            workspace: workspace.to_path_buf(),
+            roots,
+            cwd,
             ruleset_fd,
         };
         // `Drop` closes the fd on error.
@@ -694,7 +710,16 @@ impl Landlock {
             }
         }
 
-        let mut writable = vec![self.workspace.clone(), PathBuf::from("/tmp")];
+        // Task roots: read-only ones get the read bits, read-write ones the
+        // full set.
+        for (path, writable) in &self.roots {
+            if path.exists() {
+                let access = if *writable { allowed } else { read_only };
+                add_path_rule(self.ruleset_fd, path, access)?;
+            }
+        }
+
+        let mut writable = vec![PathBuf::from("/tmp")];
         if Path::new("/var/tmp").exists() {
             writable.push(PathBuf::from("/var/tmp"));
         }
@@ -750,6 +775,32 @@ impl Sandbox for Landlock {
         "landlock"
     }
 
+    /// Rebuild the ruleset for a task's roots plus its turn temp.
+    fn with_roots(
+        &self,
+        roots: &[Root],
+        temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        let mut mapped: Vec<(PathBuf, bool)> = roots
+            .iter()
+            .map(|root| {
+                (
+                    root.path.clone(),
+                    root.access == qcode_core::task::RootAccess::ReadWrite,
+                )
+            })
+            .collect();
+        if let Some(temp) = temp {
+            mapped.push((temp.to_path_buf(), true));
+        }
+        if mapped.is_empty() {
+            return Err(SandboxError::Unsupported(
+                "landlock needs at least one root or a turn temp",
+            ));
+        }
+        Ok(Arc::new(Self::for_roots(mapped)?))
+    }
+
     fn describe(&self) -> String {
         "Landlock filesystem confinement (network not restricted)".to_string()
     }
@@ -764,7 +815,7 @@ impl Sandbox for Landlock {
     }
 
     fn check(&self) -> Result<(), SandboxError> {
-        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.cwd);
         let output = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
