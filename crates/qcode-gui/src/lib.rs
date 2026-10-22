@@ -1827,6 +1827,8 @@ impl Shell {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let overlay_bg = cx.theme().popover;
+        let overlay_border = cx.theme().border;
         let mut rows: Vec<AnyElement> = Vec::new();
         for row in &self.tasks {
             let id = row.task.id.clone();
@@ -1837,7 +1839,7 @@ impl Shell {
                 .get(&row.task.id)
                 .cloned()
                 .unwrap_or_else(|| "新任务".to_string());
-            let title = full_title.chars().take(6).collect::<String>();
+            let title = full_title.clone();
             // A task with a vanished directory is broken until it is relinked,
             // so say so in the row itself instead of hiding it behind the
             // expanded root editor.
@@ -1876,13 +1878,16 @@ impl Shell {
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
+                .occlude()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1()
-                .flex_shrink_0()
-                .justify_end()
-                .w(px(120.0))
+                .rounded(px(6.0))
+                .bg(overlay_bg)
+                .border_1()
+                .border_color(overlay_border)
+                .p_1()
                 .invisible()
                 .group_hover(group.clone(), |this| this.visible())
                 .when(menu_open, |this| this.visible())
@@ -1917,7 +1922,16 @@ impl Shell {
                             }
                         })),
                 );
-            task_row = task_row.child(controls);
+            task_row = task_row.child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::TopRight)
+                        .offset(point(px(0.0), px(0.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(controls),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
             if menu_open {
                 task_row = task_row.child(
                     deferred(
