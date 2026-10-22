@@ -545,13 +545,14 @@ impl Shell {
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 6)
-                .placeholder("Ask qcode…")
+                .submit_on_enter(true)
+                .placeholder("Ask qcode…  Enter 发送 · Shift+Enter 换行")
         });
         let input_subscription = cx.subscribe(&input, |shell, _input, event: &InputEvent, cx| {
             if matches!(
                 event,
                 InputEvent::PressEnter {
-                    secondary: true,
+                    secondary: false,
                     shift: false
                 }
             ) {

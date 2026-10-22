@@ -181,7 +181,7 @@ pub fn save_document(path: &Path, edit: impl FnOnce(&mut toml_edit::DocumentMut)
 - 流式 Markdown、代码块、工具卡片（可折叠）、todo、错误、notice、skill。
 - 工具卡片：name、summary、status、耗时、输出（截断/展开）、`apply_patch` diff。
 - 自动滚底；用户上滚后暂停自动滚动，提供 “jump to latest”。
-- composer：多行、图片粘贴、`Cmd+Enter` 发送、`Shift+Enter` 换行；运行中显示 Stop。
+- composer：多行、图片粘贴、`Enter` 发送、`Shift+Enter` 换行，`Cmd/Ctrl+Enter` 也发送；运行中显示 Stop。
 - 发送时把图片作为 attachment；provider 不支持时显示明确错误。
 - P0 不支持在运行中排队第二条消息；输入框可编辑但发送禁用。
 
@@ -342,7 +342,7 @@ trait Backend {
 - ✅ `Cmd+N` / `Cmd+,` / `Cmd+.`（停止）/ `Cmd+O`（打开 workspace）/ `Cmd+W`（关窗）/ `Cmd+B`（侧栏）/ `Cmd+Shift+T`（主题）。
 - ✅ workspace 原生选择器 + 最近列表；切换通过 re-exec 实现。
 - ✅ 设置 10 分类（About 复用 Review 页）；restart 提示；最近 workspace / last session / 窗口几何落 `gui.json`。
-- ✅ composer 多行 Textarea、`Cmd+Enter`、运行中禁用 Send；模型输入按 turn 生效。
+- ✅ composer 多行 Textarea、`Enter` 发送、`Shift+Enter` 换行、`Cmd/Ctrl+Enter` 兼容发送；运行中禁用 Send；模型输入按 turn 生效。
 - ✅ 本地 unsigned `.app`：`make app` 生成 `dist/QCode.app`，ad-hoc 签名，不需要 Apple 账号；
   只用于本机 P0，Developer ID/notarization 仍未做。
 - ⚠️ 原生菜单/Dock 未做；View 切侧栏/主题快捷键已做。
@@ -564,3 +564,12 @@ trait Backend {
 - Task 行 hover 时记录 `hovered_task`，不依赖 group hover 的瞬时命中。
 - 鼠标从行内移到右侧绝对定位的 `… +` 上时，浮层保持可见可点。
 - 指针进入另一个 Task 行时，操作浮层切换到该 Task。
+
+### DSH 风格发送键（2026-10-22）
+
+- Composer 使用 `TextareaState::submit_on_enter(true)`：
+  - `Enter` 发送，不插入换行
+  - `Shift+Enter` 插入换行
+  - `Cmd/Ctrl+Enter` 继续作为兼容发送键
+- 发送只订阅 composer 的 `PressEnter`，不新增全局 Enter binding，避免重命名/模型输入误发。
+- placeholder 显示发送/换行提示。
