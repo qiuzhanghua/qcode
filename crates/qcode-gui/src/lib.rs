@@ -486,8 +486,6 @@ struct Shell {
     pending_task_delete: Option<(String, String)>,
     /// Task whose rename dialog is open.
     rename_task: Option<RenameTaskState>,
-    /// Task row currently hovered, used to reveal the …/+ controls.
-    hovered_task: Option<String>,
     /// Task whose … menu is open.
     task_menu: Option<String>,
     /// Hide every turn's process rows (Collapse all).
@@ -606,7 +604,6 @@ impl Shell {
             pending_root_delete: None,
             pending_task_delete: None,
             rename_task: None,
-            hovered_task: None,
             task_menu: None,
             collapse_all: false,
             collapse_to_list: false,
@@ -700,7 +697,6 @@ impl Shell {
         self.pending_root_delete = None;
         self.pending_task_delete = None;
         self.rename_task = None;
-        self.hovered_task = None;
         self.task_menu = None;
         self.turn_in_flight = false;
         self.refresh_tasks();
@@ -739,7 +735,6 @@ impl Shell {
                 self.pending_root_delete = None;
                 self.pending_task_delete = None;
                 self.rename_task = None;
-                self.hovered_task = None;
                 self.task_menu = None;
                 self.turn_in_flight = false;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
@@ -1881,78 +1876,69 @@ impl Shell {
                 short_time(&row.summary.started_at),
                 row.summary.turns
             );
-            let show_actions = self.hovered_task.as_deref() == Some(id.as_str())
-                || self.task_menu.as_deref() == Some(id.as_str())
-                || self
-                    .rename_task
-                    .as_ref()
-                    .is_some_and(|state| state.task_id == id);
+            let group = format!("task-row-{}", row.task.id);
             let menu_open = self.task_menu.as_deref() == Some(id.as_str());
-            let id_for_hover = id.clone();
             let mut task_row = div()
+                .group(group.clone())
                 .relative()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1()
                 .w_full()
-                .id(format!("task-row-{}", row.task.id));
-            task_row = task_row.on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
-                if *hovered {
-                    if this.task_menu.as_deref() != Some(id_for_hover.as_str()) {
-                        this.task_menu = None;
-                    }
-                    this.hovered_task = Some(id_for_hover.clone());
-                } else if this.hovered_task.as_deref() == Some(id_for_hover.as_str()) {
-                    this.hovered_task = None;
-                }
-                cx.notify();
-            }));
-            task_row = task_row.child(
-                div().flex_1().child(
-                    Button::new(format!("task-{}", row.task.id))
-                        .label(label)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.task_menu = None;
-                            this.hovered_task = None;
-                            this.resume(id.clone(), window, cx)
+                .id(format!("task-row-{}", row.task.id))
+                .child(
+                    div().flex_1().child(
+                        Button::new(format!("task-{}", row.task.id))
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.task_menu = None;
+                                this.resume(id.clone(), window, cx)
+                            })),
+                    ),
+                );
+            let controls = div()
+                .id(format!("task-actions-{}", row.task.id))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .overflow_hidden()
+                .w(px(0.0))
+                .group_hover(group.clone(), |this| this.w(px(64.0)))
+                .when(menu_open, |this| this.w(px(64.0)))
+                .child(
+                    Button::new(format!("task-menu-{}", row.task.id))
+                        .compact()
+                        .label("…")
+                        .tooltip("任务操作")
+                        .on_click(cx.listener({
+                            let task_id = row.task.id.clone();
+                            move |this, _, _window, cx| {
+                                this.task_menu =
+                                    if this.task_menu.as_deref() == Some(task_id.as_str()) {
+                                        None
+                                    } else {
+                                        Some(task_id.clone())
+                                    };
+                                cx.notify();
+                            }
                         })),
-                ),
-            );
-            if show_actions {
-                task_row = task_row
-                    .child(
-                        Button::new(format!("task-menu-{}", row.task.id))
-                            .compact()
-                            .label("…")
-                            .tooltip("任务操作")
-                            .on_click(cx.listener({
-                                let task_id = row.task.id.clone();
-                                move |this, _, _window, cx| {
-                                    this.task_menu =
-                                        if this.task_menu.as_deref() == Some(task_id.as_str()) {
-                                            None
-                                        } else {
-                                            Some(task_id.clone())
-                                        };
-                                    cx.notify();
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new(format!("task-add-dir-{}", row.task.id))
-                            .compact()
-                            .label("+")
-                            .tooltip("添加目录")
-                            .on_click(cx.listener({
-                                let task_id = row.task.id.clone();
-                                move |this, _, _window, cx| {
-                                    this.task_menu = None;
-                                    this.add_task_root(&task_id, cx);
-                                }
-                            })),
-                    );
-            }
+                )
+                .child(
+                    Button::new(format!("task-add-dir-{}", row.task.id))
+                        .compact()
+                        .label("+")
+                        .tooltip("添加目录")
+                        .on_click(cx.listener({
+                            let task_id = row.task.id.clone();
+                            move |this, _, _window, cx| {
+                                this.task_menu = None;
+                                this.add_task_root(&task_id, cx);
+                            }
+                        })),
+                );
+            task_row = task_row.child(controls);
             if menu_open {
                 task_row = task_row.child(self.render_task_menu(&row.task.id, &full_title, cx));
             }
