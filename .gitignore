@@ -79,3 +79,6 @@ debug.log
 # Environment snapshots taken while debugging; they captured API keys and a PAT.
 .devprobe/
 .inv/
+
+# Local config and data kept next to the checkout
+/.qcode/
