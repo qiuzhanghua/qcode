@@ -2751,7 +2751,9 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存默认可写（显式例�
 - `file-write*`：仅 RW Root + Turn 私有 temp + 显式 toolchain cache。
 - RO Root 绝不能出现在 `file-write*` 的 `subpath` 中。
 - 无根 Task：只读系统目录 + Turn 私有 temp；不包含用户 home。
-- `extra_writable` 必须真正进入 profile；当前 macOS 分支忽略它是 bug。
+- `extra_writable` 必须真正进入 profile。**已核实（2026-10-22）**：`profile_for_roots` 会把它并入 `(allow file-write*)`，
+  `SandboxExec::with_roots` 也把 temp 与它一起传下去；此前「忽略」的判断已过时，现在由 macOS 专属测试
+  `the_profile_writes_extra_roots` 守住。
 - `sandbox-exec` 是实验/已弃用接口，预检失败必须 fail closed，不能退回无 sandbox。
 
 ### Linux `bwrap`

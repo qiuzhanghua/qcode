@@ -254,8 +254,8 @@ impl SandboxExec {
         extra_writable: &[PathBuf],
     ) -> Result<Self, SandboxError> {
         let roots = vec![Root {
-            id: "workspace".to_string(),
-            label: "workspace".to_string(),
+            id: qcode_core::task::LEGACY_ROOT_LABEL.to_string(),
+            label: qcode_core::task::LEGACY_ROOT_LABEL.to_string(),
             path: workspace.to_path_buf(),
             access: qcode_core::task::RootAccess::ReadWrite,
             primary: true,
@@ -1425,5 +1425,37 @@ mod landlock_runtime {
             "sandbox allowed a write outside the workspace"
         );
         assert!(!outside.exists(), "sandbox created {}", outside.display());
+    }
+}
+#[cfg(all(test, target_os = "macos"))]
+mod macos_profile_tests {
+    use super::*;
+
+    #[test]
+    fn the_profile_writes_extra_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let roots = vec![Root {
+            id: "r1".to_string(),
+            label: "app".to_string(),
+            path: root.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        let profile = profile_for_roots(
+            &roots,
+            None,
+            SandboxNetwork::Deny,
+            &[extra.path().to_path_buf()],
+        )
+        .expect("profile");
+        let write_section = profile
+            .split("(allow file-write*")
+            .nth(1)
+            .expect("write section");
+        assert!(
+            write_section.contains(&extra.path().display().to_string()),
+            "extra writable root missing from the profile: {profile}"
+        );
     }
 }
