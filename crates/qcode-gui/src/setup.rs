@@ -532,7 +532,7 @@ impl SetupView {
         Ok(config)
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let config = match self.build_config(cx, true) {
             Ok(config) => config,
             Err(error) => {
@@ -583,10 +583,12 @@ impl SetupView {
                 self.error = None;
                 self.info =
                     Some("saved - the main window picks the change up immediately".to_string());
-                // The first-run wizard is followed by a process re-exec; the
-                // settings view stays open for further edits.
+                // The wizard hands over to the main window by quitting; a
+                // settings dialog has done its job and closes itself.
                 if self.wizard {
                     cx.quit();
+                } else {
+                    window.remove_window();
                 }
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -1207,9 +1209,9 @@ impl Render for SetupView {
             for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
                 body = body.child(self.render_field(field, cx));
             }
-            if !self.wizard && matches!(page, Page::Provider | Page::NetworkSandbox) {
+            if !self.wizard && matches!(page, Page::NetworkSandbox) {
                 body = body.child(
-                    "Restart required: provider, sandbox and network changes apply after restarting qcode.",
+                    "Sandbox and network settings apply immediately: the kernel is rebuilt on save.",
                 );
             }
         }
@@ -1254,7 +1256,7 @@ impl Render for SetupView {
         footer = footer.child(
             Button::new("setup-save")
                 .label(if self.wizard { "Save & Start" } else { "Save" })
-                .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
         );
 
         let mut steps = div().w(px(200.0)).h_full().flex().flex_col().gap_1().p_2();

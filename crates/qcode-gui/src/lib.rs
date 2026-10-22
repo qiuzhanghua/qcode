@@ -1025,7 +1025,21 @@ impl Shell {
     fn open_settings(&self, cx: &mut Context<Self>) {
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
-        let result = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+        // A settings dialog is a fixed-size side window, not the main window at
+        // the main window's size: open it near the middle of the screen so every
+        // field is visible without maximizing.
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                point(px(280.0), px(120.0)),
+                size(px(780.0), px(620.0)),
+            ))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Settings".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = gpui_kit::open_window(options, cx, move |window, cx| {
             cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx))
         });
         if let Err(error) = result {
