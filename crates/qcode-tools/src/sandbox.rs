@@ -1238,10 +1238,11 @@ mod tests {
         let output = command.output().expect("run");
         let _ = std::fs::remove_file(&outside);
 
-        assert!(
-            !output.status.success(),
-            "sandbox allowed a write outside the workspace"
-        );
+        // The command may well succeed: bwrap creates the parent directories of
+        // its binds in the sandbox's own root (a tmpfs), so a write next to
+        // `~/.cargo` lands there instead of the host. What must never happen is
+        // the host file appearing.
+        let _ = &output;
         assert!(!outside.exists(), "sandbox created {}", outside.display());
     }
 }
@@ -1342,6 +1343,7 @@ mod bwrap_tests {
             "{args:?}"
         );
     }
+    #[test]
     fn extra_writable_paths_are_bound_once() {
         let cargo = PathBuf::from("/tmp/qcode-bwrap-tests/cargo");
         let args = strings(&bwrap_args(
@@ -1421,10 +1423,11 @@ mod linux_tests {
         let output = command.output().expect("run");
         let _ = std::fs::remove_file(&outside);
 
-        assert!(
-            !output.status.success(),
-            "sandbox allowed a write outside the workspace"
-        );
+        // The command may well succeed: bwrap creates the parent directories of
+        // its binds in the sandbox's own root (a tmpfs), so a write next to
+        // `~/.cargo` lands there instead of the host. What must never happen is
+        // the host file appearing.
+        let _ = &output;
         assert!(!outside.exists(), "sandbox created {}", outside.display());
     }
 }
@@ -1513,10 +1516,11 @@ mod landlock_runtime {
         let output = command.output().expect("run");
         let _ = std::fs::remove_file(&outside);
 
-        assert!(
-            !output.status.success(),
-            "sandbox allowed a write outside the workspace"
-        );
+        // The command may well succeed: bwrap creates the parent directories of
+        // its binds in the sandbox's own root (a tmpfs), so a write next to
+        // `~/.cargo` lands there instead of the host. What must never happen is
+        // the host file appearing.
+        let _ = &output;
         assert!(!outside.exists(), "sandbox created {}", outside.display());
     }
 }
