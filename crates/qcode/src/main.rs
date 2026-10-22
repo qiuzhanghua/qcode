@@ -748,14 +748,20 @@ async fn cmd_gui(
         }
     });
     let setup_path = config::edit_path(config_path.clone())?;
-    let needs_setup = match config::load(&setup_path) {
-        Ok(loaded) => config::resolve(&loaded, &config::Overrides::default(), &|key| {
-            std::env::var(key).ok()
-        })
-        .is_err(),
-        Err(_) => true,
-    };
+    // A missing file is the clearest signal: `load` treats it as an empty
+    // document, and `resolve` can still succeed when the shell provides the key
+    // through env vars, which would silently skip the unconfigured path.
+    eprintln!("gui: config={}", setup_path.display());
+    let needs_setup = !setup_path.exists()
+        || match config::load(&setup_path) {
+            Ok(loaded) => config::resolve(&loaded, &config::Overrides::default(), &|key| {
+                std::env::var(key).ok()
+            })
+            .is_err(),
+            Err(_) => true,
+        };
     if needs_setup {
+        eprintln!("gui: no usable config, opening the window without a kernel");
         // No config yet: open the window anyway. Settings stays reachable from
         // the sidebar, and the backend refuses prompts with an explanation
         // instead of the old behaviour of trapping the user in the wizard.
