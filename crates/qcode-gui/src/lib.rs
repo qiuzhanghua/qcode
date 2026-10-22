@@ -1078,12 +1078,11 @@ impl Shell {
         // runtime from within a runtime"). The window stays responsive because
         // this is a spawned task, not a blocking call.
         self.app.push_notice("applying settings…");
-        self.notice = Some("applying settings…".to_string());
-        cx.notify();
+        self.set_notice("applying settings…".to_string(), false, cx);
         cx.spawn(async move |this, cx| {
             let built = rebuild().await;
             let _ = this.update(cx, |shell, cx| {
-                shell.apply_rebuild(built);
+                shell.apply_rebuild(built, cx);
                 cx.notify();
             });
         })
@@ -1091,7 +1090,28 @@ impl Shell {
         return;
     }
 
-    fn apply_rebuild(&mut self, built: Result<Box<dyn Backend>, String>) {
+    /// Show a notice in the status bar. Transient ones clear themselves, so the
+    /// bar does not keep a stale "settings applied" forever.
+    fn set_notice(&mut self, text: String, transient: bool, cx: &mut Context<Self>) {
+        self.notice = Some(text.clone());
+        cx.notify();
+        if !transient {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(6))
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                if shell.notice.as_deref() == Some(text.as_str()) {
+                    shell.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+    fn apply_rebuild(&mut self, built: Result<Box<dyn Backend>, String>, cx: &mut Context<Self>) {
         match built {
             Ok(backend) => {
                 self.backend = backend;
@@ -1099,12 +1119,17 @@ impl Shell {
                     self.tasks = tasks;
                 }
                 self.app.push_notice("settings applied");
-                self.notice = Some("settings applied".to_string());
+                // A successful rebuild keeps the previous backend until this
+                // point, so nothing is lost if assembling fails.
+                self.set_notice("settings applied".to_string(), true, cx);
             }
             Err(error) => {
-                self.app
-                    .push_notice(format!("cannot apply settings: {error}"));
-                self.notice = Some(format!("cannot apply settings: {error}"));
+                // The old backend is still in place: say so, or the window looks
+                // broken rather than "the new config did not work".
+                self.app.push_notice(format!(
+                    "cannot apply settings: {error} (still using the previous kernel)"
+                ));
+                self.set_notice(format!("cannot apply settings: {error}"), false, cx);
             }
         }
     }
