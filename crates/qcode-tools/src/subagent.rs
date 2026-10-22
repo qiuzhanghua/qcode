@@ -208,7 +208,7 @@ mod tests {
     }
 
     fn context() -> ToolContext {
-        ToolContext::new(".")
+        ToolContext::for_test(".")
     }
 
     #[tokio::test]

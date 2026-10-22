@@ -408,9 +408,8 @@ where
         None
     };
     let mut compaction_disabled = false;
-    let mut tool_context = ToolContext::new(options.cwd.clone())
-        .with_roots(task.roots.clone())
-        .with_cancel(options.cancel.clone());
+    let mut tool_context =
+        ToolContext::for_roots(task.roots.clone()).with_cancel(options.cancel.clone());
     if let Some(temp) = &turn_temp {
         tool_context = tool_context.with_temp_dir(temp.0.clone());
     }
@@ -1291,9 +1290,9 @@ where
                         .map(|path| format!("path {path}"))
                 }),
             cwd: (call.name == "run_shell").then(|| {
-                let base = tool_context
-                    .shell_cwd()
-                    .unwrap_or_else(|| tool_context.primary_root.clone());
+                let Some(base) = tool_context.shell_cwd() else {
+                    return String::from("(no root; nowhere to run)");
+                };
                 let cwd = call.arguments.get("cwd").and_then(Value::as_str);
                 match cwd.filter(|cwd| !cwd.is_empty()) {
                     Some(cwd) if Path::new(cwd).is_absolute() => cwd.to_string(),

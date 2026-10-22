@@ -222,7 +222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("hello.txt");
         std::fs::write(&file, "hi").unwrap();
-        let ctx = ToolContext::new(dir.path());
+        let ctx = ToolContext::for_test(dir.path());
         let read = resolve_ctx(&ctx, "@workspace/hello.txt", Access::Read).unwrap();
         assert_eq!(read.path, file.canonicalize().unwrap());
         assert_eq!(read.display, "@workspace/hello.txt");
@@ -239,7 +239,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), "x").unwrap();
-        let ctx = ToolContext::new(dir.path());
+        let ctx = ToolContext::for_test(dir.path());
         assert!(resolve_ctx(&ctx, "../secret", Access::Read).is_err());
         assert!(resolve_ctx(&ctx, "@nope/file", Access::Read).is_err());
         assert!(
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn no_roots_is_an_error() {
-        let ctx = ToolContext::new("/tmp").with_roots(Vec::new());
+        let ctx = ToolContext::for_test("/tmp").with_roots(Vec::new());
         assert!(matches!(
             resolve_ctx(&ctx, "x", Access::Read),
             Err(ToolError::NoRoots)

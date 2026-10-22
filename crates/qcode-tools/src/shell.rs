@@ -437,7 +437,7 @@ mod tests {
     fn a_rootless_task_runs_in_its_turn_temp() {
         let root = tempfile::tempdir().unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let ctx = qcode_core::tool::ToolContext::new(root.path())
+        let ctx = qcode_core::tool::ToolContext::for_test(root.path())
             .with_roots(Vec::new())
             .with_temp_dir(temp.path().to_path_buf());
         assert_eq!(ctx.shell_cwd().expect("temp"), temp.path());

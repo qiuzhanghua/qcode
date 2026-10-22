@@ -692,14 +692,14 @@ mod tests {
     fn approval_defaults_to_bulk_write() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            ApplyPatch.approval(&ToolContext::new(dir.path()), &json!({})),
+            ApplyPatch.approval(&ToolContext::for_test(dir.path()), &json!({})),
             ApprovalClass::BulkWrite
         );
     }
 
     async fn run(workspace: &Path, diff: &str) -> Result<ToolOutput, ToolError> {
         ApplyPatch
-            .execute(&ToolContext::new(workspace), json!({ "diff": diff }))
+            .execute(&ToolContext::for_test(workspace), json!({ "diff": diff }))
             .await
     }
 

@@ -1027,7 +1027,7 @@ mod tests {
 
         let tool = tool(set(tmp.path()));
         let output = tool
-            .execute(&ToolContext::new(tmp.path()), json!({"name": "docs"}))
+            .execute(&ToolContext::for_test(tmp.path()), json!({"name": "docs"}))
             .await
             .unwrap();
         assert_eq!(output.status, qcode_core::event::ToolStatus::Ok);
@@ -1052,7 +1052,7 @@ mod tests {
         let tool = tool(set(tmp.path()));
         let output = tool
             .execute(
-                &ToolContext::new(tmp.path()),
+                &ToolContext::for_test(tmp.path()),
                 json!({"name": "docs", "file": "references/REFERENCE.md"}),
             )
             .await
@@ -1073,7 +1073,7 @@ mod tests {
         std::fs::write(skill_dir.join("bin.dat"), [0u8, 1, 2]).unwrap();
 
         let tool = tool(set(tmp.path()));
-        let context = ToolContext::new(tmp.path());
+        let context = ToolContext::for_test(tmp.path());
 
         let escaped = tool
             .execute(&context, json!({"name": "docs", "file": "../secret.txt"}))
@@ -1105,7 +1105,7 @@ mod tests {
         );
         let tool = tool(set(tmp.path()));
         let error = tool
-            .execute(&ToolContext::new(tmp.path()), json!({"name": "nope"}))
+            .execute(&ToolContext::for_test(tmp.path()), json!({"name": "nope"}))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("unknown skill 'nope'"));

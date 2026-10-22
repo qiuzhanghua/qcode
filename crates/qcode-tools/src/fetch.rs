@@ -204,7 +204,7 @@ mod tests {
     fn approval_defaults_to_network() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            WebFetch.approval(&ToolContext::new(dir.path()), &json!({})),
+            WebFetch.approval(&ToolContext::for_test(dir.path()), &json!({})),
             ApprovalClass::Network
         );
     }
@@ -224,7 +224,7 @@ mod tests {
 
     async fn run(workspace: &std::path::Path, url: &str) -> Result<ToolOutput, ToolError> {
         WebFetch
-            .execute(&ToolContext::new(workspace), json!({"url": url}))
+            .execute(&ToolContext::for_test(workspace), json!({"url": url}))
             .await
     }
 

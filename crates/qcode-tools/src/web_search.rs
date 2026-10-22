@@ -504,7 +504,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tool = WebSearch::new(SearchSettings::default());
         assert_eq!(
-            tool.approval(&ToolContext::new(dir.path()), &json!({})),
+            tool.approval(&ToolContext::for_test(dir.path()), &json!({})),
             ApprovalClass::Network
         );
     }
@@ -560,7 +560,7 @@ mod tests {
         let mut tool = WebSearch::new(SearchSettings::default());
         tool.settings.api_key = None;
         let error = tool
-            .execute(&ToolContext::new(dir.path()), json!({"query": "rust"}))
+            .execute(&ToolContext::for_test(dir.path()), json!({"query": "rust"}))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("BRAVE_API_KEY"), "{error}");
@@ -591,7 +591,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let output = tool
             .execute(
-                &ToolContext::new(dir.path()),
+                &ToolContext::for_test(dir.path()),
                 json!({"query": "rust lang", "max_results": 3}),
             )
             .await
@@ -622,7 +622,7 @@ mod tests {
         let tool = WebSearch::new(settings(SearchBackend::Tavily, Some("tvly-1"), Some(url)));
         let dir = tempfile::tempdir().unwrap();
         let output = tool
-            .execute(&ToolContext::new(dir.path()), json!({"query": "rust"}))
+            .execute(&ToolContext::for_test(dir.path()), json!({"query": "rust"}))
             .await
             .unwrap();
         assert!(output.output.contains("https://t.example/"));
@@ -645,7 +645,7 @@ mod tests {
         let tool = WebSearch::new(settings(SearchBackend::Brave, Some("wrong"), Some(url)));
         let dir = tempfile::tempdir().unwrap();
         let output = tool
-            .execute(&ToolContext::new(dir.path()), json!({"query": "rust"}))
+            .execute(&ToolContext::for_test(dir.path()), json!({"query": "rust"}))
             .await
             .unwrap();
         assert_eq!(output.status, ToolStatus::Error);
@@ -675,7 +675,7 @@ mod tests {
         let tool = WebSearch::new(settings(SearchBackend::Searxng, None, Some(url.clone())));
         let output = tool
             .execute(
-                &ToolContext::new(dir.path()).with_network(network),
+                &ToolContext::for_test(dir.path()).with_network(network),
                 json!({"query": "rust"}),
             )
             .await

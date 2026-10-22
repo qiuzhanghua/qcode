@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     fn context() -> ToolContext {
-        ToolContext::new(".")
+        ToolContext::for_test(".")
     }
 
     #[tokio::test]

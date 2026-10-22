@@ -155,7 +155,8 @@ impl Tool for WriteFileTool {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let path = args["path"].as_str().unwrap_or("a.txt");
         let content = args["content"].as_str().unwrap_or_default();
-        std::fs::write(ctx.primary_root.join(path), content)
+        let root = ctx.shell_cwd().unwrap_or_default();
+        std::fs::write(root.join(path), content)
             .map_err(|error| ToolError::Invalid(error.to_string()))?;
         Ok(ToolOutput::ok(format!("wrote {path}")))
     }

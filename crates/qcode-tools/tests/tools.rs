@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 fn context(dir: &Path) -> ToolContext {
-    ToolContext::new(dir.to_path_buf())
+    ToolContext::for_test(dir.to_path_buf())
 }
 
 #[cfg(unix)]
@@ -24,7 +24,7 @@ async fn rootless_shell_uses_the_turn_temp() {
     let workspace = tempfile::tempdir().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let expected = temp.path().canonicalize().unwrap();
-    let ctx = ToolContext::new(workspace.path())
+    let ctx = ToolContext::for_test(workspace.path())
         .with_roots(Vec::new())
         .with_temp_dir(temp.path());
 
@@ -40,7 +40,7 @@ async fn file_tools_respect_alias_roots_and_readonly_access() {
     let code = tempfile::tempdir().unwrap();
     let docs = tempfile::tempdir().unwrap();
     std::fs::write(docs.path().join("guide.md"), "guide\n").unwrap();
-    let ctx = ToolContext::new(code.path()).with_roots(vec![
+    let ctx = ToolContext::for_test(code.path()).with_roots(vec![
         Root {
             id: "code".into(),
             label: "code".into(),

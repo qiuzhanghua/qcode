@@ -66,7 +66,7 @@ async fn lists_tools_with_server_prefix_and_schema() {
     assert_eq!(spec.parameters["type"], "object");
 
     // MCP tools are external code: the default is ask, never allow.
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
     assert_eq!(echo.approval(&context, &json!({})), ApprovalClass::External);
 }
 
@@ -74,7 +74,7 @@ async fn lists_tools_with_server_prefix_and_schema() {
 async fn calls_a_tool_and_renders_text() {
     let (dir, tools) = connect(config("stub")).await;
     let echo = find(&tools, "mcp__stub__echo").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let output = echo
         .execute(&context, json!({"message": "hello"}))
@@ -88,7 +88,7 @@ async fn calls_a_tool_and_renders_text() {
 async fn tool_error_flag_becomes_error_status() {
     let (dir, tools) = connect(config("stub")).await;
     let fail = find(&tools, "mcp__stub__fail").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let output = fail.execute(&context, json!({})).await.unwrap();
     assert_eq!(output.status, ToolStatus::Error);
@@ -99,7 +99,7 @@ async fn tool_error_flag_becomes_error_status() {
 async fn large_output_is_truncated() {
     let (dir, tools) = connect(config("stub")).await;
     let big = find(&tools, "mcp__stub__big").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let output = big.execute(&context, json!({})).await.unwrap();
     assert_eq!(output.status, ToolStatus::Ok);
@@ -112,7 +112,7 @@ async fn large_output_is_truncated() {
 async fn server_crash_becomes_a_tool_error() {
     let (dir, tools) = connect(config("stub")).await;
     let crash = find(&tools, "mcp__stub__crash").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let output = crash.execute(&context, json!({})).await.unwrap();
     assert_eq!(output.status, ToolStatus::Error);
@@ -125,7 +125,7 @@ async fn request_timeout_becomes_a_tool_error() {
     config.timeout_secs = 1;
     let (dir, tools) = connect(config).await;
     let hang = find(&tools, "mcp__stub__hang").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let started = Instant::now();
     let output = hang.execute(&context, json!({})).await.unwrap();
@@ -146,7 +146,7 @@ async fn cancellation_becomes_cancelled_without_responses() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         canceller.cancel();
     });
-    let context = ToolContext::new(dir.path()).with_cancel(cancel);
+    let context = ToolContext::for_test(dir.path()).with_cancel(cancel);
 
     let output = hang.execute(&context, json!({})).await.unwrap();
     assert_eq!(output.status, ToolStatus::Cancelled);
@@ -158,7 +158,7 @@ async fn malformed_result_is_an_error_not_a_hang() {
     config.timeout_secs = 2;
     let (dir, tools) = connect(config).await;
     let bad = find(&tools, "mcp__stub__badresult").clone();
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
 
     let started = Instant::now();
     let output = bad.execute(&context, json!({})).await.unwrap();
@@ -262,7 +262,7 @@ async fn env_reaches_the_server_and_unlocks_resources_and_prompts() {
         );
     }
 
-    let context = ToolContext::new(dir.path());
+    let context = ToolContext::for_test(dir.path());
     let read = find(&tools, "mcp__stub__read_resource").clone();
     let output = read
         .execute(&context, json!({"uri": "file:///notes.md"}))

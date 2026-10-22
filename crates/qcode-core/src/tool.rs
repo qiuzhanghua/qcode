@@ -24,9 +24,6 @@ use crate::task::{Root, RootAccess};
 /// it would leave the cleanup path half-run.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
-    /// The default root for relative paths. It is the legacy single root when
-    /// the caller has no task roots.
-    pub primary_root: PathBuf,
     /// Authorized task roots. `workspace` is only the legacy primary root: new
     /// code should set roots explicitly with [`Self::with_roots`].
     pub roots: Vec<Root>,
@@ -41,7 +38,11 @@ impl ToolContext {
     /// Legacy single-root context: the directory becomes a root labelled
     /// [`crate::task::LEGACY_ROOT_LABEL`]. Task-aware code uses
     /// [`Self::with_roots`] instead.
-    pub fn new(primary_root: impl Into<PathBuf>) -> Self {
+    /// A context with one root built from a directory.
+    ///
+    /// This is the legacy shape and what most tests want; production builds a
+    /// context from a task with [`Self::for_roots`].
+    pub fn for_test(primary_root: impl Into<PathBuf>) -> Self {
         let primary_root = primary_root.into();
         let roots = vec![Root {
             id: crate::task::LEGACY_ROOT_LABEL.to_string(),
@@ -51,7 +52,6 @@ impl ToolContext {
             primary: true,
         }];
         Self {
-            primary_root,
             roots,
             temp_dir: None,
             cancel: CancellationToken::new(),
@@ -83,6 +83,15 @@ impl ToolContext {
             .or_else(|| self.roots.first())
             .map(|root| root.path.clone())
             .or_else(|| self.temp_dir.clone())
+    }
+    /// Build a context from a task's authorized roots and nothing else.
+    pub fn for_roots(roots: Vec<Root>) -> Self {
+        Self {
+            roots,
+            temp_dir: None,
+            cancel: CancellationToken::new(),
+            network: None,
+        }
     }
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
