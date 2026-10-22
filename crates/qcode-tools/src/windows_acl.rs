@@ -38,6 +38,7 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
@@ -141,6 +142,41 @@ impl WindowsAcl {
         })
     }
 
+    /// Compute the writable set for a task's roots.
+    ///
+    /// Windows restricts writes only, so a read-only root simply stays out of
+    /// this set: reads are allowed everywhere anyway. A task with no writable
+    /// root falls back to its turn temp, which is the only place a rootless
+    /// task may write.
+    fn write_scope(
+        roots: &[qcode_core::task::Root],
+        temp: Option<&Path>,
+        fallback_temp: &Path,
+    ) -> Result<(PathBuf, Vec<PathBuf>, PathBuf), SandboxError> {
+        let mut writable = Vec::new();
+        for root in roots {
+            if root.access != qcode_core::task::RootAccess::ReadWrite {
+                continue;
+            }
+            let canonical = std::fs::canonicalize(&root.path).map_err(|err| {
+                SandboxError::Setup(format!(
+                    "canonicalize root @{} ({}): {err}",
+                    root.label,
+                    root.path.display()
+                ))
+            })?;
+            writable.push(canonical);
+        }
+        if writable.is_empty() {
+            writable.push(fallback_temp.to_path_buf());
+        }
+        let primary = writable.remove(0);
+        let temp = match temp {
+            Some(path) => std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+            None => fallback_temp.to_path_buf(),
+        };
+        Ok((primary, writable, temp))
+    }
     fn helper_command(&self, program: &OsStr, args: &[OsString], cwd: &Path) -> Command {
         let mut command = Command::new(&self.helper);
         command.arg(HELPER_COMMAND);
@@ -170,6 +206,21 @@ impl Sandbox for WindowsAcl {
         )
     }
 
+    /// Windows only restricts writes, so multi-root means "the writable roots
+    /// plus temp"; read-only roots need no work at all.
+    fn with_roots(
+        &self,
+        roots: &[qcode_core::task::Root],
+        temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        let (workspace, extra, temp) = Self::write_scope(roots, temp, &self.temp)?;
+        Ok(Arc::new(WindowsAcl {
+            workspace,
+            temp,
+            extra,
+            helper: self.helper.clone(),
+        }))
+    }
     fn command(
         &self,
         program: &OsStr,
@@ -1364,5 +1415,39 @@ mod tests {
     fn helper_rejects_unknown_arguments() {
         let err = execute_helper(&["--nope".to_string()]).unwrap_err();
         assert!(err.contains("unexpected argument"), "{err}");
+    }
+
+    #[test]
+    fn write_scope_keeps_only_writable_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let rw = tempfile::tempdir().unwrap();
+        let ro = tempfile::tempdir().unwrap();
+        let roots = vec![
+            qcode_core::task::Root {
+                id: "r1".to_string(),
+                label: "app".to_string(),
+                path: rw.path().to_path_buf(),
+                access: qcode_core::task::RootAccess::ReadWrite,
+                primary: true,
+            },
+            qcode_core::task::Root {
+                id: "r2".to_string(),
+                label: "docs".to_string(),
+                path: ro.path().to_path_buf(),
+                access: qcode_core::task::RootAccess::ReadOnly,
+                primary: false,
+            },
+        ];
+        let (primary, extra, _temp) =
+            WindowsAcl::write_scope(&roots, None, temp.path()).expect("scope");
+        assert_eq!(primary, std::fs::canonicalize(rw.path()).unwrap());
+        assert!(extra.is_empty(), "{extra:?}");
+
+        // A task with no writable root writes only to its temp.
+        let read_only = vec![roots[1].clone()];
+        let (primary, extra, _temp) =
+            WindowsAcl::write_scope(&read_only, None, temp.path()).expect("scope");
+        assert_eq!(primary, temp.path());
+        assert!(extra.is_empty());
     }
 }
