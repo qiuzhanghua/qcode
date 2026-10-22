@@ -2893,3 +2893,10 @@ System/toolchain   → 只读；Cargo/Rustup 等缓存默认可写（显式例�
 **验证**：`shell_cwd` 的两条断言（无根 → temp；有根 → primary root，即使有 temp）；
 `ToolContext` 不再有 `primary_root` 字段（编译即证明）；GUI 不再有 `workspace_sessions` /
 `workspace_tasks`；全量测试数量：core 67、tools 61、kernel 47、acp 9、gui 2、qc 26。
+**补充（2026-10-22，Windows 多根已实现并实测）**：`WindowsAcl::with_roots` 按「只限制写」的语义
+实现——`read-write` Root 进入可写集合，`read-only` Root 不进入（读本来不受限），没有可写 Root 时
+只用 turn temp。`crates/qcode/tests/sandbox_roots.rs` 在普通桌面 PowerShell 上实测通过：向
+RW Root 写文件成功、向 RO Root 写文件被 token 拒绝且未落盘。
+
+注意 helper 的约束：ACL 后端通过 `qc sandbox-run` 执行命令，`current_exe` 必须是 `qc`；
+`WindowsAcl::with_helper` 供测试指向真实二进制，测试因此放在 `qcode` 包内（`CARGO_BIN_EXE_qc`）。
