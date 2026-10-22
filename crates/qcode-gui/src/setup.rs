@@ -867,9 +867,10 @@ fn cell(row: &RowState, key: &'static str, cx: &Context<SetupView>) -> String {
 /// under, say, minimax. Dropping it lets the provider's own default apply.
 fn stale_model_default(name: &str, model: Option<String>) -> Option<String> {
     let model = model?;
-    let stale = qcode_kernel::config::builtin_models()
-        .into_iter()
-        .any(|(other, default)| other != name && default == model);
+    let stale = (name != "mock" && model == "mock-1")
+        || qcode_kernel::config::builtin_models()
+            .into_iter()
+            .any(|(other, default)| other != name && default == model);
     (!stale).then_some(model)
 }
 fn optional(row: &RowState, key: &'static str, cx: &Context<SetupView>) -> Option<String> {
@@ -1602,5 +1603,23 @@ impl SetupView {
                     })),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stale_model_default;
+
+    #[test]
+    fn switching_provider_drops_the_mock_default() {
+        assert_eq!(stale_model_default("deepseek", Some("mock-1".into())), None);
+        assert_eq!(
+            stale_model_default("mock", Some("mock-1".into())),
+            Some("mock-1".into())
+        );
+        assert_eq!(
+            stale_model_default("deepseek", Some("deepseek-flash".into())),
+            Some("deepseek-flash".into())
+        );
     }
 }

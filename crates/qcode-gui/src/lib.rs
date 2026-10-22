@@ -146,6 +146,14 @@ pub trait Backend {
     fn cancel(&mut self);
     /// Change the model for subsequent turns.
     fn set_model(&mut self, model: String);
+    /// Model/provider currently active in the backend, for syncing after a
+    /// settings rebuild.
+    fn model(&self) -> Option<String> {
+        None
+    }
+    fn provider(&self) -> Option<String> {
+        None
+    }
     fn try_recv(&mut self) -> Option<UiEvent>;
     /// Build a fresh backend from the current configuration. The shell calls
     /// this when the config file changes, so saving Settings takes effect
@@ -281,6 +289,8 @@ pub type RebuildFn = std::sync::Arc<dyn Fn() -> RebuildFuture + Send + Sync>;
 /// The in-process backend: engine thread + bridge + session store.
 pub struct LocalBackend {
     cwd: PathBuf,
+    model: String,
+    provider: String,
     store: SessionStore,
     commands: UnboundedSender<UiCommand>,
     events: UnboundedReceiver<UiEvent>,
@@ -290,12 +300,16 @@ pub struct LocalBackend {
 impl LocalBackend {
     pub fn new(engine: Engine) -> Self {
         let cwd = engine.workspace.clone();
+        let model = engine.model.clone();
+        let provider = engine.provider_name.clone();
         let store = engine.store.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
         spawn_engine(engine, port, commands);
         Self {
             cwd,
+            model,
+            provider,
             store,
             commands: ui.commands,
             events: ui.events,
@@ -401,7 +415,16 @@ impl Backend for LocalBackend {
     }
 
     fn set_model(&mut self, model: String) {
+        self.model = model.clone();
         self.send(UiCommand::SetModel { model });
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
+    fn provider(&self) -> Option<String> {
+        Some(self.provider.clone())
     }
 
     fn try_recv(&mut self) -> Option<UiEvent> {
@@ -436,6 +459,8 @@ struct Shell {
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pending_send: bool,
+    /// Model to write into the visible model input after a backend rebuild.
+    pending_model: Option<String>,
     /// Drop transcript events from the old turn until the backend confirms the
     /// session switch.
     resetting: bool,
@@ -574,6 +599,7 @@ impl Shell {
             input,
             model_input,
             pending_send: false,
+            pending_model: None,
             resetting: false,
             _input_subscription: input_subscription,
             diff: None,
@@ -1146,6 +1172,13 @@ impl Shell {
         match built {
             Ok(backend) => {
                 self.backend = backend;
+                if let Some(provider) = self.backend.provider() {
+                    self.app.status.provider = provider;
+                }
+                if let Some(model) = self.backend.model() {
+                    self.app.status.model = model.clone();
+                    self.pending_model = Some(model);
+                }
                 if let Ok(tasks) = self.backend.tasks() {
                     self.tasks = tasks;
                 }
@@ -2003,6 +2036,10 @@ impl Shell {
     }
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(model) = self.pending_model.take() {
+            self.model_input
+                .update(cx, |input, cx| input.set_value(model, window, cx));
+        }
         self.poll(cx);
         if self.pending_send {
             self.pending_send = false;

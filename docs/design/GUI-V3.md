@@ -573,3 +573,10 @@ trait Backend {
   - `Cmd/Ctrl+Enter` 继续作为兼容发送键
 - 发送只订阅 composer 的 `PressEnter`，不新增全局 Enter binding，避免重命名/模型输入误发。
 - placeholder 显示发送/换行提示。
+
+### Settings 重建后的模型同步（2026-10-22）
+
+- Settings 保存触发 backend rebuild 后，Shell 从新 backend 读取 provider/model。
+- 立即更新 `app.status.provider/model`，并在下一帧写入 model 输入框。
+- 避免旧 backend 的 `mock-1` 继续显示，也避免下一次发送把旧模型写回。
+- 切换 provider 时，`mock-1` 被视为 stale default，不再保留到 deepseek/minimax。
