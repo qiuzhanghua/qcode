@@ -182,6 +182,11 @@ pub trait Backend {
         Err("this backend cannot reload".to_string())
     }
 
+    /// The async path: the shell runs this on a background executor.
+    fn rebuild_hook(&self) -> Option<RebuildFn> {
+        None
+    }
+
     /// True when a kernel is assembled; a false backend explains why prompts do
     /// nothing instead of dropping them.
     fn is_configured(&self) -> bool {
@@ -276,6 +281,10 @@ impl Backend for UnconfiguredBackend {
             None => Err("this backend cannot reload".to_string()),
         }
     }
+
+    fn rebuild_hook(&self) -> Option<RebuildFn> {
+        self.rebuild.clone()
+    }
 }
 
 /// Rebuilds a backend from the current configuration.
@@ -327,6 +336,10 @@ impl Backend for LocalBackend {
             Some(rebuild) => rebuild(),
             None => Err("this backend cannot reload".to_string()),
         }
+    }
+
+    fn rebuild_hook(&self) -> Option<RebuildFn> {
+        self.rebuild.clone()
     }
 
     fn tasks(&self) -> Result<Vec<TaskRow>, String> {
@@ -1027,7 +1040,24 @@ impl Shell {
         if baseline {
             return;
         }
-        match self.backend.rebuild() {
+        let Some(rebuild) = self.backend.rebuild_hook() else {
+            self.app
+                .push_notice("settings saved, but this backend cannot reload");
+            cx.notify();
+            return;
+        };
+        // Paint the notice first: the backend owns an engine thread and a store,
+        // so it is not Send and the rebuild has to run on this thread. The user
+        // sees that something is happening instead of a frozen frame.
+        self.app.push_notice("applying settings…");
+        cx.notify();
+        let built = rebuild();
+        self.apply_rebuild(built);
+        cx.notify();
+    }
+
+    fn apply_rebuild(&mut self, built: Result<Box<dyn Backend>, String>) {
+        match built {
             Ok(backend) => {
                 self.backend = backend;
                 if let Ok(tasks) = self.backend.tasks() {
@@ -1039,8 +1069,8 @@ impl Shell {
                 .app
                 .push_notice(format!("cannot apply settings: {error}")),
         }
-        cx.notify();
     }
+
     fn render_floating_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.app.turns.is_empty() {
             return div().into_any_element();
