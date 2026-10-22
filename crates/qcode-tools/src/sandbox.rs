@@ -35,7 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 
-use qcode_core::task::{Root, RootAccess};
+use qcode_core::task::Root;
 use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -257,7 +257,7 @@ impl SandboxExec {
             id: "workspace".to_string(),
             label: "workspace".to_string(),
             path: workspace.to_path_buf(),
-            access: RootAccess::ReadWrite,
+            access: qcode_core::task::RootAccess::ReadWrite,
             primary: true,
         }];
         Ok(Self {
@@ -865,7 +865,7 @@ fn profile_for_roots(
     ];
     for root in roots {
         readable.push(root.path.clone());
-        if root.access == RootAccess::ReadWrite {
+        if root.access == qcode_core::task::RootAccess::ReadWrite {
             writable.push(root.path.clone());
         }
     }
@@ -959,14 +959,14 @@ mod tests {
                     id: "code".into(),
                     label: "code".into(),
                     path: rw.clone(),
-                    access: RootAccess::ReadWrite,
+                    access: qcode_core::task::RootAccess::ReadWrite,
                     primary: true,
                 },
                 Root {
                     id: "docs".into(),
                     label: "docs".into(),
                     path: ro.clone(),
-                    access: RootAccess::ReadOnly,
+                    access: qcode_core::task::RootAccess::ReadOnly,
                     primary: false,
                 },
             ],
