@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.1.0", path = "../qcode-core" }
+qcode-core = { version = "0.5.0", path = "../qcode-core" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -16,5 +16,5 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-qcode-providers = { version = "0.1.0", path = "../qcode-providers" }
+qcode-providers = { version = "0.5.0", path = "../qcode-providers" }
 tempfile.workspace = true

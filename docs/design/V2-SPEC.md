@@ -1,6 +1,6 @@
 # qcode v2 — 实现规格
 
-> 状态：v2.2 完成（2026-10-21）；v3 方向待定。v1 代码功能已完成；真实 macOS notarize
+> 状态：v2.2 完成（2026-10-21）；GUI v3 已随 v0.5.0 交付。v1 代码功能已完成；真实 macOS notarize
 > 仍缺证书，属于 v1 发布门禁，不阻塞 v2 规划。
 >
 > 依赖决策见 [DECISIONS.md](./DECISIONS.md)。v1 规格见 [SPEC.md](./SPEC.md)。

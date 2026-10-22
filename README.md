@@ -1,8 +1,8 @@
 # qcode
 
-终端 coding agent，Rust 实现，clean-room。**当前状态：v2.2 功能完成（macOS notarize 仍待证书）**；
-v2 分期与验收见 [docs/design/V2-SPEC.md](docs/design/V2-SPEC.md)（多轮工具调用、审批、
-workspace 路径封闭、事件日志与 replay）。
+Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
+**当前版本：v0.5.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
 
@@ -11,6 +11,9 @@ workspace 路径封闭、事件日志与 replay）。
 ```bash
 # 工具链入口（cot）
 c
+
+# 桌面 GUI：左侧“我的任务”，每个 Task 可挂多个目录
+./target/debug/qc gui
 
 # TUI（无子命令；真实 provider 由 config/env 选择）
 ./target/debug/qc
@@ -75,6 +78,15 @@ export DEEPSEEK_API_KEY=...
 # 不写 --model 时，DeepSeek 默认使用 deepseek-flash
 ./target/debug/qc run "看一下 src/lib.rs 并总结" --provider deepseek --yes
 ```
+
+GUI 的基本模型：
+
+- **Task : Session = 1:1**；Task 是用户看到的工作单元，session 是磁盘上的事件日志。
+- 一个 Task 可以挂多个目录（UI 叫“目录”，底层类型是 `Root`）；其中一个设为主目录。
+- Task 行 hover 显示 `…` / `+`：重命名、删除 Task、给该 Task 加目录；不切换当前 Task。
+- 文件工具按 Task 目录授权；shell 的 cwd 用主目录；无目录 Task 在私有 Turn temp 中运行。
+- Composer：`Enter` 发送，`Shift+Enter` 换行，`Cmd/Ctrl+Enter` 兼容发送。
+- Settings 保存后重建 backend，provider/model 立即同步。
 
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
 取消：Ctrl-C 一次取消当前 turn，再按一次立即退出。
@@ -212,8 +224,9 @@ cargo build -p qcode-eval
   每次决策写事件，含命中的 rule id。TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
 - **跑飞兜底**：同一个工具带**完全相同参数**连续 3 轮（例如模型反复重跑同一条命令）即终止
   turn，写 `error(no_progress)`；`[agent] max_turns` 与 `[agent] max_cost_usd` 是另外两道预算。
-- **安全边界**：所有路径限制在 workspace 内（`..` 与 symlink 逃逸被拒）；
-  shell 环境清洗、独立进程组、超时与 `kill_on_drop`。
+- **安全边界**：文件工具限制在 Task 授权的目录内（`..` 与 symlink 逃逸被拒）；
+  shell 环境清洗、独立进程组、超时与 `kill_on_drop`。macOS `sandbox-exec` 已按
+  Task 的 RO/RW 目录重建 profile；Linux/Windows 多目录重建仍待补齐。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
   `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 与 MCP stdio server 都
   由对应工具包裹：默认 deny，
@@ -277,9 +290,11 @@ cargo build -p qcode-eval
   驱动的编辑也能回滚。`qc sessions checkpoints <id>` 看记录，
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
-- **GUI（实验）**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037）：与 `qc run` / `qc acp` / `qc tui`
-  使用同一个 `qcode_kernel::assemble`，可跑真实回合、审批浮层、图片粘贴、diff 视图与中断；
-  release 约 24 MB。
+- **GUI**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048）：与 `qc run` / `qc acp` /
+  `qc tui` 使用同一个 `qcode_kernel::assemble`。左侧是“我的任务”，Task 可配置多个目录；
+  支持 Task 新建/重命名/删除、目录增删/Relink/RO-RW/主目录、Turn 边界 pending Roots、
+  审批浮层、图片粘贴、diff 视图、中断与 Settings 热重建。Composer 为 `Enter` 发送、
+  `Shift+Enter` 换行。release 同时提供精简 CLI 与 Windows 桌面包。
 - **图片输入**：`qc run --image shot.png "看看这个"`（可重复，PNG/JPEG/WebP/GIF，单张 ≤8 MB）
   把图片作为多模态消息发给 provider；provider 的 `Capabilities.images` 为 false 时直接报
   `this provider does not accept image input`，不会先发再让服务端 400。
@@ -322,9 +337,9 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v2.0 剩余：sandbox 三个后端仍是实验性（windows-acl 只限制写，且为 partial）。
-分发产物（发布工作流、SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
-v2.1 已落地 ACP v1（`qc acp`）；MCP `env` 与 resources/prompts 尚未开始。
+v0.5.0 状态：Task/目录模型、GUI Task 管理、Settings 热重建、macOS 多目录 sandbox 已落地；
+Linux `bwrap`/Landlock 与 Windows ACL 的多目录重建仍待补齐。分发产物（发布工作流、
+SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
 
 ## 配置
 
@@ -484,9 +499,11 @@ action = "allow"
 
 ## 文档
 
+- [更新日志](CHANGELOG.md) —— 版本变更
 - [设计决策](docs/design/DECISIONS.md) —— 唯一事实来源
 - [v1 实现规格](docs/design/SPEC.md) —— 架构、事件模型、工具契约
 - [v2 实现规格（草案）](docs/design/V2-SPEC.md) —— Windows、网络出口、ACP、GUI 分期
+- [GUI v3 实现日志](docs/design/GUI-V3.md) —— Task/目录、Task 管理、发送键与 Settings 同步
 - [评测方案](docs/design/EVAL.md) —— 离线 fixture 与 5 条任务
 - [性能基线](docs/design/PERF.md) —— 10 万事件会话的 load / list / replay
 - [M0 任务清单](docs/design/M0-TASKS.md) —— 基础设施与人工验收
@@ -500,13 +517,17 @@ action = "allow"
 ## 布局
 
 ```
-crates/qcode-core        domain、event、store、state、policy、tool、todo、engine
+crates/qcode-core        domain、event、store、task/roots、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible + Anthropic Messages）
 crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
 crates/qcode-mcp         MCP client（stdio，仅 tools）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
-crates/qcode-tui         ratatui 前端（M2：状态投影、渲染；TUI 入口在 qc）
+crates/qcode-kernel      kernel assembly、config、provider/tool/sandbox 组装
+crates/qcode-tui         ratatui 前端（状态投影、渲染；TUI 入口在 qc）
+crates/qcode-ui-state    共享 UI 状态/事件投影
+crates/qcode-ui-bridge   GUI engine 命令/事件桥
+crates/qcode-gui         GPUI 桌面 GUI（Task 侧栏、目录编辑、审批、diff）
 crates/qcode-acp         ACP v1 服务端（`qc acp`：stdio JSON-RPC，供编辑器接入）
 packaging/               安装清单模板（Homebrew / Scoop / winget）与 render.sh
 .github/workflows/       ci.yml（门禁）、release.yml（tag 发布）

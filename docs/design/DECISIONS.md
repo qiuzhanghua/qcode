@@ -1093,7 +1093,7 @@ cargo build -p qcode
 - macOS 归档未公证（缺 secrets），Scoop/winget 的包未签名：首次安装会有系统警告。
 - `dist/manifests` 是 gitignore 的产物；需要留档时随 release 附件保存。
 
-**验证**：`./build-for-release --release` 在本机产出 `dist/qc-0.1.0-windows-x86_64.exe`
+**验证**：`./build-for-release --release` 在本机产出 `dist/qc-0.5.0-windows-x86_64.exe`
 与 `dist/SHA256SUMS`（`sha256sum -c` 可过）；`./packaging/render.sh` 在六个归档齐全时
 输出 5 份清单、缺归档时报错；release workflow 的 publish job 对 tag/版本不一致会失败。
 
