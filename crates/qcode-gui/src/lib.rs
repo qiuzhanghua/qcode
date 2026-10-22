@@ -276,10 +276,7 @@ impl Backend for UnconfiguredBackend {
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
-        match &self.rebuild {
-            Some(rebuild) => rebuild(),
-            None => Err("this backend cannot reload".to_string()),
-        }
+        Err("rebuild is asynchronous; use rebuild_hook".to_string())
     }
 
     fn rebuild_hook(&self) -> Option<RebuildFn> {
@@ -288,7 +285,13 @@ impl Backend for UnconfiguredBackend {
 }
 
 /// Rebuilds a backend from the current configuration.
-pub type RebuildFn = std::sync::Arc<dyn Fn() -> Result<Box<dyn Backend>, String> + Send + Sync>;
+///
+/// The future is boxed because the result (`Box<dyn Backend>`) is not `Send`:
+/// it carries the engine and its store, so the rebuild has to be awaited on the
+/// UI thread's executor rather than a background one.
+pub type RebuildFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn Backend>, String>>>>;
+pub type RebuildFn = std::sync::Arc<dyn Fn() -> RebuildFuture + Send + Sync>;
 
 /// The in-process backend: engine thread + bridge + session store.
 pub struct LocalBackend {
@@ -332,10 +335,7 @@ impl Backend for LocalBackend {
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
-        match &self.rebuild {
-            Some(rebuild) => rebuild(),
-            None => Err("this backend cannot reload".to_string()),
-        }
+        Err("rebuild is asynchronous; use rebuild_hook".to_string())
     }
 
     fn rebuild_hook(&self) -> Option<RebuildFn> {
@@ -1066,14 +1066,21 @@ impl Shell {
             cx.notify();
             return;
         };
-        // Paint the notice first: the backend owns an engine thread and a store,
-        // so it is not Send and the rebuild has to run on this thread. The user
-        // sees that something is happening instead of a frozen frame.
+        // Await the rebuild on the UI thread's executor: assembling a kernel is
+        // async, and creating a nested runtime here panics ("cannot start a
+        // runtime from within a runtime"). The window stays responsive because
+        // this is a spawned task, not a blocking call.
         self.app.push_notice("applying settings…");
         cx.notify();
-        let built = rebuild();
-        self.apply_rebuild(built);
-        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let built = rebuild().await;
+            let _ = this.update(cx, |shell, cx| {
+                shell.apply_rebuild(built);
+                cx.notify();
+            });
+        })
+        .detach();
+        return;
     }
 
     fn apply_rebuild(&mut self, built: Result<Box<dyn Backend>, String>) {

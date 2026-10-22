@@ -665,40 +665,43 @@ fn gui_rebuild_hook(
     approval_policy: Option<PathBuf>,
 ) -> qcode_gui::RebuildFn {
     std::sync::Arc::new(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-        let kernel = runtime
-            .block_on(qcode_kernel::assemble(
-                Some(config_path.clone()),
+        let config_path = config_path.clone();
+        let workspace = workspace.clone();
+        let data_dir = data_dir.clone();
+        let approval_policy = approval_policy.clone();
+        Box::pin(async move {
+            // No nested runtime here: the caller awaits this on the UI executor.
+            let kernel = qcode_kernel::assemble(
+                Some(config_path),
                 &workspace,
-                Some(data_dir.clone()),
+                Some(data_dir),
                 approval_policy.as_deref(),
                 config::Overrides::default(),
-            ))
+            )
+            .await
             .map_err(|error| error.to_string())?;
-        let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
-            .with_shell(kernel.config.agent.snapshot_shell);
-        let engine = qcode_gui::Engine {
-            store: kernel.store,
-            provider: kernel.provider.into(),
-            provider_name: kernel.resolved.name.clone(),
-            tools: kernel.tools,
-            policy: kernel.policy,
-            workspace: workspace.clone(),
-            model: kernel.resolved.model.clone(),
-            pricing: config::pricing_for(&kernel.config, &kernel.resolved.model, None)
-                .ok()
-                .flatten(),
-            pricing_table: Default::default(),
-            max_turns: kernel.config.agent.max_turns,
-            max_cost_usd: kernel.config.agent.max_cost_usd,
-            context_window: Some(kernel.config.context.window_tokens),
-            network: kernel.network,
-            snapshots: Some(snapshots),
-        };
-        Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
+            let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
+                .with_shell(kernel.config.agent.snapshot_shell);
+            let engine = qcode_gui::Engine {
+                store: kernel.store,
+                provider: kernel.provider.into(),
+                provider_name: kernel.resolved.name.clone(),
+                tools: kernel.tools,
+                policy: kernel.policy,
+                workspace: workspace.clone(),
+                model: kernel.resolved.model.clone(),
+                pricing: config::pricing_for(&kernel.config, &kernel.resolved.model, None)
+                    .ok()
+                    .flatten(),
+                pricing_table: Default::default(),
+                max_turns: kernel.config.agent.max_turns,
+                max_cost_usd: kernel.config.agent.max_cost_usd,
+                context_window: Some(kernel.config.context.window_tokens),
+                network: kernel.network,
+                snapshots: Some(snapshots),
+            };
+            Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
+        })
     })
 }
 /// Open the desktop window (ADR-0037).
