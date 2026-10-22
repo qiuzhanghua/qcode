@@ -2900,3 +2900,16 @@ RW Root 写文件成功、向 RO Root 写文件被 token 拒绝且未落盘。
 
 注意 helper 的约束：ACL 后端通过 `qc sandbox-run` 执行命令，`current_exe` 必须是 `qc`；
 `WindowsAcl::with_helper` 供测试指向真实二进制，测试因此放在 `qcode` 包内（`CARGO_BIN_EXE_qc`）。
+**补充（2026-10-22，Linux 两个后端的多根也实现了）**：bwrap 把每个 Root 变成一次 bind
+（`read-write` → `--bind`，`read-only` → `--ro-bind`），turn temp 作为额外的可写 bind；
+`/tmp` 的 tmpfs 决策改为看「是否有任意 Root 在 `/tmp` 下」。Landlock 保留 `(path, writable)`
+列表，按模式给规则（只读只拿 `LL_EXECUTE|LL_READ_FILE|LL_READ_DIR`），并提供 `with_roots`
+按 Task 重建 ruleset。
+
+WSL 实测：`cargo test -p qcode-tools sandbox::` 10 条全过，含 `a_read_only_root_is_mounted_read_only`
+（bwrap 参数矩阵）、`linux_tests::{allows,denies}_writes_*`（真 bwrap 运行，断言的是「宿主文件未出现」
+而不是「命令必须失败」——因为 bwrap 会在自己的 tmpfs 里创建 bind 的父目录，写入可能"成功"但不落宿主）。
+Landlock 在 ABI 不足时会 skip，但规则构建路径已覆盖。
+
+据此，ADR-0048 的多根矩阵除 macOS 真机复核外全部完成：Windows ACL（实测）、Linux bwrap（实测）、
+Linux Landlock（规则构建通过）、macOS sandbox-exec（profile 测试就绪，待 Mac）。
