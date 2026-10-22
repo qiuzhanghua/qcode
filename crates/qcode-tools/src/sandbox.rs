@@ -171,7 +171,7 @@ pub fn build(
             {
                 let _ = extra_writable;
                 let _ = network;
-                let sandbox = Landlock::new(workspace)?;
+                let sandbox = Landlock::new(primary_root)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
@@ -1316,7 +1316,6 @@ mod bwrap_tests {
         assert!(!allowed.contains(&"--unshare-net".to_string()));
     }
 
-    #[test]
     #[test]
     fn a_read_only_root_is_mounted_read_only() {
         let w = workspace();
