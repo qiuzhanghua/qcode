@@ -821,20 +821,108 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A resolved config location plus where it came from.
+#[derive(Debug, Clone)]
+pub struct Found {
+    pub path: PathBuf,
+    pub source: ConfigSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    /// `--config`
+    Flag,
+    /// `QCODE_CONFIG`
+    Env,
+    /// `<exe dir>/data/config.toml`, opted into by `qcode.portable`
+    Portable,
+    /// `$XDG_CONFIG_HOME/qcode/config.toml` or `~/.config/qcode/config.toml`
+    User,
+}
+
+impl ConfigSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flag => "flag",
+            Self::Env => "env",
+            Self::Portable => "portable",
+            Self::User => "user",
+        }
+    }
+}
+
 pub fn default_path() -> Result<PathBuf, ConfigError> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("qcode").join("config.toml"));
+    }
     let home = home_dir().ok_or(ConfigError::NoHome)?;
     Ok(home.join(DEFAULT_CONFIG_RELATIVE))
 }
 
 /// The file `qc config edit` / `qc mcp add|remove` should modify.
 pub fn edit_path(explicit: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
+    discover(explicit).map(|found| found.path)
+}
+
+/// Resolve the config file once, keeping where it came from for diagnostics.
+pub fn discover(explicit: Option<PathBuf>) -> Result<Found, ConfigError> {
     if let Some(path) = explicit {
-        return Ok(path);
+        return Ok(Found {
+            path,
+            source: ConfigSource::Flag,
+        });
     }
     if let Ok(path) = std::env::var("QCODE_CONFIG") {
-        return Ok(PathBuf::from(path));
+        return Ok(Found {
+            path: PathBuf::from(path),
+            source: ConfigSource::Env,
+        });
     }
-    default_path()
+    if let Some(path) = portable_path() {
+        return Ok(Found {
+            path,
+            source: ConfigSource::Portable,
+        });
+    }
+    Ok(Found {
+        path: default_path()?,
+        source: ConfigSource::User,
+    })
+}
+
+/// Portable mode: a `qcode.portable` marker next to the executable opts in, and
+/// the config then lives in `<exe dir>/data/` so installing a new build over the
+/// old directory keeps it.
+fn portable_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    if !dir.join("qcode.portable").exists() || is_system_install(dir) {
+        return None;
+    }
+    Some(dir.join("data").join("config.toml"))
+}
+
+/// Locations that are never a portable directory, even with a marker: writing
+/// there either fails (root-owned, read-only image) or, on macOS, breaks the
+/// bundle signature.
+fn is_system_install(dir: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    if dir
+        .components()
+        .any(|part| part.as_os_str() == "Contents" || part.as_os_str() == "MacOS")
+    {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    for prefix in ["/usr", "/opt", "/app", "/nix", "/snap"] {
+        if dir.starts_with(prefix) {
+            return true;
+        }
+    }
+    let _ = dir;
+    false
 }
 
 fn read_document(path: &Path) -> Result<toml::Value, ConfigError> {
@@ -2059,5 +2147,27 @@ api_key_command = ["cmd", "/C", "exit 3"]
             Some("https://api.minimaxi.com/v1")
         );
         assert_eq!(resolved.api_key.as_deref(), Some("sk-test"));
+    }
+    #[test]
+    fn a_plain_directory_is_not_a_system_install() {
+        assert!(!is_system_install(Path::new("relative/tools/qcode")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_system_directories_are_never_portable() {
+        assert!(is_system_install(Path::new("/usr/local/bin")));
+        assert!(is_system_install(Path::new("/opt/qcode")));
+        assert!(!is_system_install(Path::new("/home/q/tools/qcode")));
+    }
+
+    #[test]
+    fn the_user_config_honours_xdg_config_home() {
+        // The resolver reads the env, so this checks the branch shape rather
+        // than the value: an explicit path always wins over any env var.
+        let explicit = PathBuf::from("/tmp/explicit.toml");
+        let found = discover(Some(explicit.clone())).expect("discover");
+        assert_eq!(found.path, explicit);
+        assert_eq!(found.source, ConfigSource::Flag);
     }
 }

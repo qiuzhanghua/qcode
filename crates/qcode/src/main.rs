@@ -753,7 +753,13 @@ async fn cmd_gui(
             path
         }
     });
-    let setup_path = config::edit_path(config_path.clone())?;
+    let found = config::discover(config_path.clone())?;
+    let setup_path = found.path.clone();
+    eprintln!(
+        "gui: config={} (source: {})",
+        setup_path.display(),
+        found.source.label()
+    );
     // A missing file is the clearest signal: `load` treats it as an empty
     // document, and `resolve` can still succeed when the shell provides the key
     // through env vars, which would silently skip the unconfigured path.
