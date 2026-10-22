@@ -15,9 +15,10 @@ pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
@@ -115,30 +116,12 @@ fn short_time(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.chars().take(16).collect())
 }
 
-fn short_path(path: &Path) -> String {
-    let text = path.display().to_string();
-    if text.chars().count() <= 30 {
-        text
-    } else {
-        format!(
-            "…{}",
-            text.chars()
-                .rev()
-                .take(29)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
-        )
-    }
-}
-
-/// Modification time of the config file, if it exists.
 fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .ok()
 }
+
 pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -430,8 +413,6 @@ struct Shell {
     /// Model used for the next turn; editable without restarting the kernel.
     model_input: Entity<InputState>,
     /// Filters the task list by title or short id.
-    task_filter: Entity<InputState>,
-    _task_filter_subscription: gpui_kit::Subscription,
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pending_send: bool,
     /// Drop transcript events from the old turn until the backend confirms the
@@ -463,6 +444,8 @@ struct Shell {
     turn_in_flight: bool,
     /// Root edits made during a turn, applied after the engine task returns.
     pending_roots: Option<(String, Vec<Root>)>,
+    /// Directory awaiting the destructive confirmation dialog.
+    pending_root_delete: Option<(String, String, String)>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -547,12 +530,6 @@ impl Shell {
             }
         });
         let model = app.status.model.clone();
-        let task_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter tasks"));
-        // The Shell renders the filtered list, so it has to repaint when the
-        // filter text changes; the input only notifies itself.
-        let task_filter_subscription = cx.subscribe(&task_filter, |_, _, _: &InputEvent, cx| {
-            cx.notify();
-        });
         let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
         model_input.update(cx, |input, cx| input.set_value(model, window, cx));
         let input_focus = input.read(cx).focus_handle(cx);
@@ -564,8 +541,6 @@ impl Shell {
         Self {
             app,
             input,
-            task_filter,
-            _task_filter_subscription: task_filter_subscription,
             model_input,
             pending_send: false,
             resetting: false,
@@ -584,6 +559,7 @@ impl Shell {
             turn_picker_open: false,
             turn_in_flight: false,
             pending_roots: None,
+            pending_root_delete: None,
             collapse_all: false,
             collapse_to_list: false,
             last_blocks,
@@ -673,6 +649,7 @@ impl Shell {
         self.diff = None;
         self.approvals = ApprovalQueue::default();
         self.pending_roots = None;
+        self.pending_root_delete = None;
         self.turn_in_flight = false;
         self.refresh_tasks();
         self.app.push_notice("new session");
@@ -707,6 +684,7 @@ impl Shell {
                 self.diff = None;
                 self.approvals = ApprovalQueue::default();
                 self.pending_roots = None;
+                self.pending_root_delete = None;
                 self.turn_in_flight = false;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
@@ -1098,7 +1076,6 @@ impl Shell {
             });
         })
         .detach();
-        return;
     }
 
     /// Show a notice in the status bar. Transient ones clear themselves, so the
@@ -1346,7 +1323,18 @@ impl Shell {
         root.path = picked;
         self.update_task_roots(task_id, roots, cx);
     }
-    fn remove_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
+    fn request_remove_task_root(
+        &mut self,
+        task_id: &str,
+        label: &str,
+        path: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_root_delete = Some((task_id.to_string(), label.to_string(), path));
+        cx.notify();
+    }
+
+    fn remove_task_root_now(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
         let mut roots = self.task_roots_for_edit(task_id);
         roots.retain(|root| root.label != label);
         if !roots.is_empty() && !roots.iter().any(|root| root.primary) {
@@ -1374,6 +1362,65 @@ impl Shell {
         self.update_task_roots(task_id, roots, cx);
     }
 
+    fn render_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((task_id, label, path)) = self.pending_root_delete.clone() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(420.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child(format!("移除目录 @{label}？"))
+                    .child(
+                        div()
+                            .text_size(px(SECONDARY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child(format!("不会删除 {path} 中的文件，只会从当前任务中移除。")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(Button::new("cancel-remove-root").label("取消").on_click(
+                                cx.listener(|this, _, _window, cx| {
+                                    this.pending_root_delete = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Button::new("confirm-remove-root")
+                                    .label("移除")
+                                    .danger()
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.pending_root_delete = None;
+                                        this.remove_task_root_now(&task_id, &label, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_task_roots(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.active_task_row() else {
             return div().into_any_element();
@@ -1384,107 +1431,89 @@ impl Shell {
             .pending_roots
             .as_ref()
             .is_some_and(|(id, _)| id == &task_id);
-        let mut section = div().flex().flex_col().gap_1().pt_2().child(
-            div()
-                .text_size(px(CAPTION_SIZE))
-                .text_color(rgb(0x888888))
-                .child(format!(
-                    "目录 · {}{}",
-                    roots.len(),
-                    if pending { " · pending" } else { "" }
-                )),
-        );
-        if roots.is_empty() {
-            section = section.child(
-                div()
-                    .text_size(px(CAPTION_SIZE))
-                    .text_color(rgb(0x888888))
-                    .child("无目录 · 纯对话"),
-            );
-        }
+        let mut section = div().flex().flex_col().gap_1().pl_3().pt_1();
         for root in roots {
             let label = root.label.clone();
-            let short = short_path(&root.path);
+            let path = root.path.display().to_string();
+            let missing = root.state() == RootState::Missing;
             let access = match root.access {
                 RootAccess::ReadOnly => "RO",
                 RootAccess::ReadWrite => "RW",
             };
             let primary = if root.primary { "★" } else { "☆" };
-            let line = div()
+            let mut line = div()
                 .flex()
-                .flex_col()
+                .flex_row()
+                .items_center()
                 .gap_1()
+                .w_full()
                 .child(
+                    Button::new(format!("root-alias-{task_id}-{label}"))
+                        .text()
+                        .compact()
+                        .label(format!("@{label}"))
+                        .tooltip(path.clone()),
+                );
+            if missing {
+                line = line.child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .child(format!("@{label} · {access} · {primary}"))
-                        .child(div().text_color(rgb(0xd06060)).child(match root.state() {
-                            RootState::Ready => "",
-                            RootState::Missing => "· 目录已丢失",
-                        })),
+                        .text_size(px(CAPTION_SIZE))
+                        .text_color(rgb(0xd06060))
+                        .child("丢失"),
+                );
+            }
+            let line = line
+                .child(
+                    Button::new(format!("root-access-{task_id}-{label}"))
+                        .compact()
+                        .label(access)
+                        .tooltip("切换只读 / 读写")
+                        .on_click({
+                            let task_id = task_id.clone();
+                            let label = label.clone();
+                            cx.listener(move |this, _, _window, cx| {
+                                this.toggle_task_root_access(&task_id, &label, cx);
+                            })
+                        }),
                 )
                 .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(rgb(0x777777))
-                        .child(short),
+                    Button::new(format!("root-primary-{task_id}-{label}"))
+                        .compact()
+                        .label(primary)
+                        .tooltip("设为主目录")
+                        .on_click({
+                            let task_id = task_id.clone();
+                            let label = label.clone();
+                            cx.listener(move |this, _, _window, cx| {
+                                this.set_task_primary_root(&task_id, &label, cx);
+                            })
+                        }),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_1()
-                        .child(
-                            Button::new(format!("root-relink-{task_id}-{label}"))
-                                .label("Relink…")
-                                .tooltip("选择新目录，保留 label 与权限")
-                                .on_click({
-                                    let task_id = task_id.clone();
-                                    let label = label.clone();
-                                    cx.listener(move |this, _, _window, cx| {
-                                        this.relink_task_root(&task_id, &label, cx);
-                                    })
-                                }),
-                        )
-                        .child(
-                            Button::new(format!("root-access-{task_id}-{label}"))
-                                .label(access)
-                                .tooltip("切换只读 / 读写")
-                                .on_click({
-                                    let task_id = task_id.clone();
-                                    let label = label.clone();
-                                    cx.listener(move |this, _, _window, cx| {
-                                        this.toggle_task_root_access(&task_id, &label, cx);
-                                    })
-                                }),
-                        )
-                        .child(
-                            Button::new(format!("root-primary-{task_id}-{label}"))
-                                .label(primary)
-                                .tooltip("设为主目录")
-                                .on_click({
-                                    let task_id = task_id.clone();
-                                    let label = label.clone();
-                                    cx.listener(move |this, _, _window, cx| {
-                                        this.set_task_primary_root(&task_id, &label, cx);
-                                    })
-                                }),
-                        )
-                        .child(
-                            Button::new(format!("root-remove-{task_id}-{label}"))
-                                .label("×")
-                                .tooltip("移除目录")
-                                .on_click({
-                                    let task_id = task_id.clone();
-                                    let label = label.clone();
-                                    cx.listener(move |this, _, _window, cx| {
-                                        this.remove_task_root(&task_id, &label, cx);
-                                    })
-                                }),
-                        ),
+                    Button::new(format!("root-relink-{task_id}-{label}"))
+                        .compact()
+                        .label("↗")
+                        .tooltip("重新关联目录")
+                        .on_click({
+                            let task_id = task_id.clone();
+                            let label = label.clone();
+                            cx.listener(move |this, _, _window, cx| {
+                                this.relink_task_root(&task_id, &label, cx);
+                            })
+                        }),
+                )
+                .child(
+                    Button::new(format!("root-remove-{task_id}-{label}"))
+                        .compact()
+                        .label("×")
+                        .tooltip("移除目录")
+                        .on_click({
+                            let task_id = task_id.clone();
+                            let label = label.clone();
+                            cx.listener(move |this, _, _window, cx| {
+                                this.request_remove_task_root(&task_id, &label, path.clone(), cx);
+                            })
+                        }),
                 );
             section = section.child(line);
         }
@@ -1506,6 +1535,7 @@ impl Shell {
         section
             .child(
                 Button::new("add-task-root")
+                    .compact()
                     .label("+ 目录")
                     .on_click(cx.listener(|this, _, _window, cx| this.add_task_root(cx))),
             )
@@ -1513,19 +1543,8 @@ impl Shell {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let filter = self.task_filter.read(cx).value().trim().to_lowercase();
         let mut rows: Vec<AnyElement> = Vec::new();
-        for row in self.tasks.iter().filter(|row| {
-            if filter.is_empty() {
-                return true;
-            }
-            let title = self
-                .titles
-                .get(&row.task.id)
-                .map(String::as_str)
-                .unwrap_or("");
-            title.to_lowercase().contains(&filter) || short_id(&row.task.id).contains(&filter)
-        }) {
+        for row in &self.tasks {
             let id = row.task.id.clone();
             let active = self.active.as_deref() == Some(row.task.id.as_str());
             let marker = if active { "●" } else { "○" };
@@ -1547,15 +1566,14 @@ impl Shell {
                 .filter(|root| root.state() == RootState::Missing)
                 .count();
             let wonky = if missing > 0 {
-                format!(" · {missing} 目录丢失")
+                " · 目录丢失".to_string()
             } else {
                 String::new()
             };
             let label = format!(
-                "{marker} {title} · {} · {}t · {} 目录{wonky}",
+                "{marker} {title} · {} · {}t{wonky}",
                 short_time(&row.summary.started_at),
-                row.summary.turns,
-                row.task.roots.len()
+                row.summary.turns
             );
             rows.push(
                 Button::new(format!("task-{}", row.task.id))
@@ -1584,7 +1602,6 @@ impl Shell {
                     .label("Settings")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
-            .child(Input::new(&self.task_filter).aria_label("Filter tasks"))
             .child(
                 div()
                     .flex()
@@ -2621,6 +2638,7 @@ impl Render for Shell {
         }
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_row()
             .key_context(if self.approvals.current().is_some() {
@@ -2688,6 +2706,7 @@ impl Render for Shell {
                 None
             })
             .child(self.render_main(window, cx))
+            .child(self.render_delete_dialog(cx))
     }
 }
 
