@@ -752,14 +752,24 @@ async fn cmd_gui(
     // document, and `resolve` can still succeed when the shell provides the key
     // through env vars, which would silently skip the unconfigured path.
     eprintln!("gui: config={}", setup_path.display());
-    let needs_setup = !setup_path.exists()
-        || match config::load(&setup_path) {
-            Ok(loaded) => config::resolve(&loaded, &config::Overrides::default(), &|key| {
-                std::env::var(key).ok()
-            })
-            .is_err(),
-            Err(_) => true,
-        };
+    let exists = setup_path.exists();
+    let resolved = config::load(&setup_path).ok().and_then(|loaded| {
+        config::resolve(&loaded, &config::Overrides::default(), &|key| {
+            std::env::var(key).ok()
+        })
+        .ok()
+    });
+    match &resolved {
+        Some(resolved) => eprintln!(
+            "gui: config exists={exists} provider={} model={} key={}",
+            resolved.name, resolved.model, resolved.api_key_source
+        ),
+        None => eprintln!("gui: config exists={exists}, but it does not resolve"),
+    }
+    // A missing file is the clearest signal. A file that resolves but has no
+    // provider entry still counts as configured when the shell provides the
+    // values (env keys), which is a supported setup.
+    let needs_setup = resolved.is_none();
     if needs_setup {
         eprintln!("gui: no usable config, opening the window without a kernel");
         // No config yet: open the window anyway. Settings stays reachable from
