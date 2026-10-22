@@ -1575,7 +1575,7 @@ impl SetupView {
         }
         if table.path == ["providers"] {
             let mut presets = div().flex().flex_row().gap_1();
-            for preset in ["deepseek", "openai", "anthropic", "ollama"] {
+            for preset in ["deepseek", "openai", "anthropic", "minimax", "ollama"] {
                 presets = presets.child(
                     Button::new(format!("preset-{preset}"))
                         .label(format!("Add {preset}"))
