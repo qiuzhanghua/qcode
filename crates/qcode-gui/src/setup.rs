@@ -594,7 +594,10 @@ impl SetupView {
                 if self.wizard {
                     cx.quit();
                 } else {
+                    // Removing the window invalidates it: nothing may touch it
+                    // afterwards, so leave before the trailing notify below.
                     window.remove_window();
+                    return;
                 }
             }
             Err(error) => self.error = Some(error.to_string()),
