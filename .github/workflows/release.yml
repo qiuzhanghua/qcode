@@ -86,10 +86,12 @@ jobs:
             $stage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
             Expand-Archive -LiteralPath $_.FullName -DestinationPath $stage -Force
             $inner = Get-ChildItem $stage -Directory | Select-Object -First 1
-            Rename-Item -LiteralPath $inner.FullName -NewName ($canonical -replace '\.zip$', '')
+            $innerName = $canonical -replace '\.zip$', ''
+            $renamed = Join-Path $inner.Parent.FullName $innerName
+            Rename-Item -LiteralPath $inner.FullName -NewName $innerName
             Remove-Item -LiteralPath $_.FullName
             $zip = Join-Path (Resolve-Path dist).Path $canonical
-            Compress-Archive -Path $inner.FullName -DestinationPath $zip
+            Compress-Archive -LiteralPath $renamed -DestinationPath $zip
             Remove-Item -Recurse -Force $stage
             Write-Host "normalised: $canonical"
           }
