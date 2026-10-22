@@ -36,10 +36,16 @@ fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
 
 #[test]
 fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
-    let rw = tempfile::tempdir().expect("rw dir");
-    let ro = tempfile::tempdir().expect("ro dir");
+    // %TEMP% is not writable in every environment (a confined shell denies it),
+    // so the two roots live under the target directory cargo provides.
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("sandbox-roots-{}", std::process::id()));
+    let rw = base.join("rw");
+    let ro = base.join("ro");
+    std::fs::create_dir_all(&rw).expect("rw dir");
+    std::fs::create_dir_all(&ro).expect("ro dir");
 
-    let Some(base) = acl_sandbox(rw.path()) else {
+    let Some(seed) = acl_sandbox(&rw) else {
         eprintln!("skip: the ACL sandbox is unavailable in this environment");
         return;
     };
@@ -48,37 +54,39 @@ fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
         Root {
             id: "rw".to_string(),
             label: "app".to_string(),
-            path: rw.path().to_path_buf(),
+            path: rw.clone(),
             access: RootAccess::ReadWrite,
             primary: true,
         },
         Root {
             id: "ro".to_string(),
             label: "docs".to_string(),
-            path: ro.path().to_path_buf(),
+            path: ro.clone(),
             access: RootAccess::ReadOnly,
             primary: false,
         },
     ];
-    let Some(sandbox) = base.with_roots(&roots, None).ok() else {
+    let Some(sandbox) = seed.with_roots(&roots, None).ok() else {
         eprintln!("skip: with_roots is not supported by this backend");
         return;
     };
 
     // Writing inside the read-write root must work.
-    let wrote_rw = run(sandbox.as_ref(), rw.path(), "echo ok> inside.txt");
+    let wrote_rw = run(sandbox.as_ref(), &rw, "echo ok> inside.txt");
     assert_eq!(
         wrote_rw,
         Some(true),
         "a write inside the read-write root was refused"
     );
-    assert!(rw.path().join("inside.txt").exists());
+    assert!(rw.join("inside.txt").exists());
 
     // Writing inside the read-only root must be refused by the token.
-    let wrote_ro = run(sandbox.as_ref(), ro.path(), "echo ok> denied.txt");
+    let wrote_ro = run(sandbox.as_ref(), &ro, "echo ok> denied.txt");
     assert_eq!(wrote_ro, Some(false), "the read-only root accepted a write");
     assert!(
-        !ro.path().join("denied.txt").exists(),
+        !ro.join("denied.txt").exists(),
         "the read-only root has a file in it"
     );
+
+    let _ = std::fs::remove_dir_all(&base);
 }
