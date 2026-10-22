@@ -581,7 +581,8 @@ impl SetupView {
                 self.prefs = prefs;
                 self.saved = true;
                 self.error = None;
-                self.info = Some("saved".to_string());
+                self.info =
+                    Some("saved - the main window picks the change up immediately".to_string());
                 // The first-run wizard is followed by a process re-exec; the
                 // settings view stays open for further edits.
                 if self.wizard {
@@ -1114,7 +1115,7 @@ impl Render for SetupView {
             body = body
                 .child(TextView::markdown(
                     "settings-about",
-                    "## About\n\nqcode desktop. Provider, sandbox and network changes take effect after restart; model changes apply to the next turn.",
+                    "## About\n\nqcode desktop. Saving applies to the open window immediately: it rebuilds the kernel in place.",
                 ))
                 .child(format!("qcode {}", env!("CARGO_PKG_VERSION")))
                 .child(format!("Config: {}", self.path.display()))

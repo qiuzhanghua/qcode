@@ -475,6 +475,10 @@ struct Shell {
     /// Last seen config mtime: a change means Settings was saved, and the
     /// backend has to be rebuilt so the new provider takes effect.
     config_mtime: Option<std::time::SystemTime>,
+    /// The first check only records the baseline. It cannot compare against
+    /// `config_mtime`, because a missing file is `None` and the first save then
+    /// looks like the baseline again, swallowing the one change that matters.
+    config_watch_armed: bool,
     data_dir: PathBuf,
     prefs: GuiPreferences,
 }
@@ -573,6 +577,7 @@ impl Shell {
             active,
             cwd,
             config_mtime: config_mtime_of(&config_path),
+            config_watch_armed: false,
             config_path,
             data_dir,
             prefs,
@@ -1032,14 +1037,15 @@ impl Shell {
     /// mtime keeps the open window in sync without re-exec or a second window.
     fn reload_on_config_change(&mut self, cx: &mut Context<Self>) {
         let mtime = config_mtime_of(&self.config_path);
+        if !self.config_watch_armed {
+            self.config_watch_armed = true;
+            self.config_mtime = mtime;
+            return;
+        }
         if mtime == self.config_mtime {
             return;
         }
-        let baseline = self.config_mtime.is_none();
         self.config_mtime = mtime;
-        if baseline {
-            return;
-        }
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.app
                 .push_notice("settings saved, but this backend cannot reload");
