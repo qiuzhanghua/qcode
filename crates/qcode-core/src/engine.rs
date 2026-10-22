@@ -107,14 +107,24 @@ pub fn roots_prompt(roots: &[crate::task::Root]) -> String {
          Shell commands use the real absolute paths below. Read-only roots reject writes.\n\n",
     );
     for root in roots {
+        let state = match root.state() {
+            crate::task::RootState::Ready => "",
+            // Telling the model is cheaper than letting it retry a path that
+            // cannot work until the user relinks the root.
+            crate::task::RootState::Missing => {
+                ", UNAVAILABLE - the directory is gone; ask the \
+                 user to relink it instead of retrying"
+            }
+        };
         prompt.push_str(&format!(
-            "- `@{}`: {} ({}, {})\n",
+            "- `@{}`: {} ({}, {}{})\n",
             root.label,
             root.path.display(),
             match root.access {
                 crate::task::RootAccess::ReadOnly => "read-only",
                 crate::task::RootAccess::ReadWrite => "read-write",
             },
+            state,
             if root.primary {
                 "primary"
             } else {
@@ -1450,6 +1460,7 @@ mod tests {
     #[test]
     fn roots_prompt_lists_aliases_and_access() {
         use crate::task::{Root, RootAccess};
+
         assert!(roots_prompt(&[]).contains("No roots are configured"));
         let prompt = roots_prompt(&[
             Root {
@@ -1503,5 +1514,26 @@ mod tests {
         assert!(prompt.contains("# Todo"));
         assert!(prompt.contains("[~] write tests"));
         assert!(prompt.ends_with("[~] write tests"));
+    }
+
+    #[test]
+    fn the_roots_prompt_marks_a_missing_root() {
+        use crate::task::{Root, RootAccess};
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        std::fs::create_dir_all(gone.as_path()).unwrap();
+        let roots = vec![Root {
+            id: "r1".to_string(),
+            label: "docs".to_string(),
+            path: gone.clone(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        }];
+        let before = roots_prompt(&roots);
+        assert!(!before.contains("UNAVAILABLE"), "{before}");
+        std::fs::remove_dir_all(&gone).unwrap();
+        let after = roots_prompt(&roots);
+        assert!(after.contains("UNAVAILABLE"), "{after}");
+        assert!(after.contains("relink"), "{after}");
     }
 }

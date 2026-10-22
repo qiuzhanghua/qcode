@@ -31,6 +31,29 @@ pub struct Root {
     pub primary: bool,
 }
 
+/// Whether a root's directory is usable right now.
+///
+/// This is derived from the filesystem instead of stored with the task: a
+/// directory can disappear between two turns, and persisting the state would
+/// create a second truth that goes stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootState {
+    Ready,
+    /// The directory is gone (moved, deleted, or on an unmounted drive). The
+    /// task needs a relink before file tools can use it again.
+    Missing,
+}
+
+impl Root {
+    /// Check the filesystem for this root's directory.
+    pub fn state(&self) -> RootState {
+        if self.path.is_dir() {
+            RootState::Ready
+        } else {
+            RootState::Missing
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     /// Also the session id; Task:Session is 1:1.
@@ -196,5 +219,20 @@ mod tests {
             Task::new("id", roots).unwrap_err(),
             TaskError::TooManyRoots(17)
         ));
+    }
+
+    #[test]
+    fn a_root_reports_missing_when_its_directory_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root {
+            id: "r1".to_string(),
+            label: "docs".to_string(),
+            path: dir.path().to_path_buf(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        };
+        assert_eq!(root.state(), RootState::Ready);
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert_eq!(root.state(), RootState::Missing);
     }
 }

@@ -140,8 +140,10 @@ fn resolve_in_root<'a>(
     access: Access,
 ) -> Result<Resolved<'a>, ToolError> {
     let canonical_root = root.path.canonicalize().map_err(|_| {
+        // A vanished directory is a task- level problem, not a bad path: say
+        // which root and what to do about it.
         ToolError::Invalid(format!(
-            "root '@{}' not found: {}",
+            "root '@{}' is unavailable ({} is gone); relink the root before using it",
             root.label,
             root.path.display()
         ))
