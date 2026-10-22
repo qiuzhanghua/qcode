@@ -137,18 +137,6 @@ pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// Sessions shown in the sidebar: only the current workspace, newest first.
-#[doc(hidden)]
-pub fn workspace_sessions(
-    mut sessions: Vec<SessionSummary>,
-    workspace: &Path,
-) -> Vec<SessionSummary> {
-    let workspace = workspace.display().to_string();
-    sessions.retain(|session| session.started.cwd == workspace);
-    sessions.sort_by(|left, right| right.started_at.cmp(&left.started_at));
-    sessions
-}
-
 /// A Task view for the sidebar. Task:Session is 1:1, but the row keeps the
 /// loaded log summary alongside the Task aggregate.
 #[derive(Debug, Clone)]
@@ -157,27 +145,13 @@ pub struct TaskRow {
     pub summary: SessionSummary,
 }
 
-/// Task rows shown in the sidebar: only the current workspace, newest first.
-#[doc(hidden)]
-pub fn workspace_tasks(mut tasks: Vec<TaskRow>, workspace: &Path) -> Vec<TaskRow> {
-    let workspace = workspace.display().to_string();
-    tasks.retain(|row| {
-        row.task
-            .primary_root()
-            .map(|root| root.path.display().to_string() == workspace)
-            .unwrap_or(false)
-            || row.summary.started.cwd == workspace
-    });
-    tasks.sort_by(|left, right| right.summary.started_at.cmp(&left.summary.started_at));
-    tasks
-}
-
 /// Everything the window needs from a kernel, local or remote.
 ///
 /// P0 has exactly one implementation. The methods are synchronous because the
 /// local backend only sends commands; the event channel carries the output.
 pub trait Backend {
-    fn workspace(&self) -> &Path;
+    /// Where new sessions record their cwd; not an ownership boundary.
+    fn cwd(&self) -> &Path;
     fn tasks(&self) -> Result<Vec<TaskRow>, String>;
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {
@@ -199,7 +173,7 @@ pub trait Backend {
 
 /// The in-process backend: engine thread + bridge + session store.
 pub struct LocalBackend {
-    workspace: PathBuf,
+    cwd: PathBuf,
     store: SessionStore,
     commands: UnboundedSender<UiCommand>,
     events: UnboundedReceiver<UiEvent>,
@@ -207,13 +181,13 @@ pub struct LocalBackend {
 
 impl LocalBackend {
     pub fn new(engine: Engine) -> Self {
-        let workspace = engine.workspace.clone();
+        let cwd = engine.workspace.clone();
         let store = engine.store.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
         spawn_engine(engine, port, commands);
         Self {
-            workspace,
+            cwd,
             store,
             commands: ui.commands,
             events: ui.events,
@@ -226,8 +200,8 @@ impl LocalBackend {
 }
 
 impl Backend for LocalBackend {
-    fn workspace(&self) -> &Path {
-        &self.workspace
+    fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     fn tasks(&self) -> Result<Vec<TaskRow>, String> {
@@ -358,7 +332,7 @@ struct Shell {
     tasks: Vec<TaskRow>,
     titles: std::collections::BTreeMap<String, String>,
     active: Option<String>,
-    workspace: String,
+    cwd: String,
     config_path: PathBuf,
     data_dir: PathBuf,
     prefs: GuiPreferences,
@@ -373,14 +347,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let workspace = backend.workspace().display().to_string();
+        let cwd = backend.cwd().display().to_string();
         let tasks = backend.tasks().unwrap_or_else(|error| {
             app.push_notice(format!("cannot list tasks: {error}"));
             Vec::new()
         });
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
-        prefs.record_workspace(Path::new(&workspace));
+        prefs.record_workspace(Path::new(&cwd));
         let mut active = None;
         if let Some(id) = prefs.last_session.clone()
             && tasks.iter().any(|row| row.task.id == id)
@@ -456,7 +430,7 @@ impl Shell {
             tasks,
             titles,
             active,
-            workspace,
+            cwd,
             config_path,
             data_dir,
             prefs,
@@ -1034,7 +1008,7 @@ impl Shell {
             return;
         }
         let mut roots = self.task_roots_for_edit(&task_id);
-        let picked = pick_workspace();
+        let picked = pick_directory();
         let path = match picked {
             Ok(Some(path)) => path,
             Ok(None) => return,
@@ -1090,7 +1064,7 @@ impl Shell {
     /// Point an existing root at a new directory, keeping its label, id,
     /// access and primary flag. This is the only way out of `Missing`.
     fn relink_task_root(&mut self, task_id: &str, label: &str, cx: &mut Context<Self>) {
-        let picked = match pick_workspace() {
+        let picked = match pick_directory() {
             Ok(Some(path)) => path,
             Ok(None) => return,
             Err(error) => {
@@ -1598,7 +1572,7 @@ impl Shell {
                         "{}:{}",
                         self.app.status.provider, self.app.status.model
                     ))
-                    .left(self.workspace.clone())
+                    .left(self.cwd.clone())
                     .right(context_label(&self.app))
                     .right(format!("${:.4}", self.app.status.cost_usd))
                     .right(format!("sandbox {}", self.app.sandbox))
@@ -1650,13 +1624,13 @@ fn task_titles(
         .collect()
 }
 
-fn pick_workspace() -> Result<Option<PathBuf>, String> {
+fn pick_directory() -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("osascript")
             .args([
                 "-e",
-                "POSIX path of (choose folder with prompt \"Open a workspace\")",
+                "POSIX path of (choose folder with prompt \"Open a folder\")",
             ])
             .output()
             .map_err(|error| format!("cannot open folder picker: {error}"))?;
@@ -1673,11 +1647,7 @@ fn pick_workspace() -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "linux")]
     {
         let output = std::process::Command::new("zenity")
-            .args([
-                "--file-selection",
-                "--directory",
-                "--title=Open a workspace",
-            ])
+            .args(["--file-selection", "--directory", "--title=Open a folder"])
             .output()
             .map_err(|error| format!("cannot open folder picker: {error}"))?;
         if !output.status.success() {
@@ -1688,7 +1658,10 @@ fn pick_workspace() -> Result<Option<PathBuf>, String> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        Err("native workspace picker is not implemented on this platform".to_string())
+        Err(
+            "the native folder picker is not implemented on this platform; type the path instead"
+                .to_string(),
+        )
     }
 }
 
