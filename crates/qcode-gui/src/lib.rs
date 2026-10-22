@@ -133,6 +133,12 @@ fn short_path(path: &Path) -> String {
     }
 }
 
+/// Modification time of the config file, if it exists.
+fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
 pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -169,8 +175,15 @@ pub trait Backend {
     /// Change the model for subsequent turns.
     fn set_model(&mut self, model: String);
     fn try_recv(&mut self) -> Option<UiEvent>;
-    /// A backend without a kernel: the window opens, but sending a prompt has
-    /// to explain that Settings is still empty instead of failing silently.
+    /// Build a fresh backend from the current configuration. The shell calls
+    /// this when the config file changes, so saving Settings takes effect
+    /// without restarting the process or flashing a new window.
+    fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        Err("this backend cannot reload".to_string())
+    }
+
+    /// True when a kernel is assembled; a false backend explains why prompts do
+    /// nothing instead of dropping them.
     fn is_configured(&self) -> bool {
         true
     }
@@ -182,11 +195,21 @@ pub trait Backend {
 pub struct UnconfiguredBackend {
     cwd: PathBuf,
     store: SessionStore,
+    rebuild: Option<RebuildFn>,
 }
 
 impl UnconfiguredBackend {
     pub fn new(cwd: PathBuf, store: SessionStore) -> Self {
-        Self { cwd, store }
+        Self {
+            cwd,
+            store,
+            rebuild: None,
+        }
+    }
+
+    pub fn with_rebuild(mut self, rebuild: RebuildFn) -> Self {
+        self.rebuild = Some(rebuild);
+        self
     }
 }
 
@@ -246,7 +269,17 @@ impl Backend for UnconfiguredBackend {
     fn is_configured(&self) -> bool {
         false
     }
+
+    fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        match &self.rebuild {
+            Some(rebuild) => rebuild(),
+            None => Err("this backend cannot reload".to_string()),
+        }
+    }
 }
+
+/// Rebuilds a backend from the current configuration.
+pub type RebuildFn = std::sync::Arc<dyn Fn() -> Result<Box<dyn Backend>, String> + Send + Sync>;
 
 /// The in-process backend: engine thread + bridge + session store.
 pub struct LocalBackend {
@@ -254,6 +287,7 @@ pub struct LocalBackend {
     store: SessionStore,
     commands: UnboundedSender<UiCommand>,
     events: UnboundedReceiver<UiEvent>,
+    rebuild: Option<RebuildFn>,
 }
 
 impl LocalBackend {
@@ -268,7 +302,14 @@ impl LocalBackend {
             store,
             commands: ui.commands,
             events: ui.events,
+            rebuild: None,
         }
+    }
+
+    /// Attach the rebuild hook so a config change can replace this backend.
+    pub fn with_rebuild(mut self, rebuild: RebuildFn) -> Self {
+        self.rebuild = Some(rebuild);
+        self
     }
 
     fn send(&self, command: UiCommand) {
@@ -279,6 +320,13 @@ impl LocalBackend {
 impl Backend for LocalBackend {
     fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        match &self.rebuild {
+            Some(rebuild) => rebuild(),
+            None => Err("this backend cannot reload".to_string()),
+        }
     }
 
     fn tasks(&self) -> Result<Vec<TaskRow>, String> {
@@ -411,6 +459,9 @@ struct Shell {
     active: Option<String>,
     cwd: String,
     config_path: PathBuf,
+    /// Last seen config mtime: a change means Settings was saved, and the
+    /// backend has to be rebuilt so the new provider takes effect.
+    config_mtime: Option<std::time::SystemTime>,
     data_dir: PathBuf,
     prefs: GuiPreferences,
 }
@@ -508,6 +559,7 @@ impl Shell {
             titles,
             active,
             cwd,
+            config_mtime: config_mtime_of(&config_path),
             config_path,
             data_dir,
             prefs,
@@ -963,6 +1015,32 @@ impl Shell {
         }
     }
 
+    /// Settings is a separate window that writes the config file; watching its
+    /// mtime keeps the open window in sync without re-exec or a second window.
+    fn reload_on_config_change(&mut self, cx: &mut Context<Self>) {
+        let mtime = config_mtime_of(&self.config_path);
+        if mtime == self.config_mtime {
+            return;
+        }
+        let baseline = self.config_mtime.is_none();
+        self.config_mtime = mtime;
+        if baseline {
+            return;
+        }
+        match self.backend.rebuild() {
+            Ok(backend) => {
+                self.backend = backend;
+                if let Ok(tasks) = self.backend.tasks() {
+                    self.tasks = tasks;
+                }
+                self.app.push_notice("settings applied");
+            }
+            Err(error) => self
+                .app
+                .push_notice(format!("cannot apply settings: {error}")),
+        }
+        cx.notify();
+    }
     fn render_floating_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.app.turns.is_empty() {
             return div().into_any_element();
@@ -2410,6 +2488,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reload_on_config_change(cx);
         let bounds = window.bounds();
         let geometry = crate::gui_prefs::WindowGeometry {
             x: bounds.origin.x.as_f32(),

@@ -653,6 +653,54 @@ async fn cmd_acp(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Build the closure that turns the current config into a fresh backend.
+///
+/// The shell calls it when the config file changes, so saving Settings swaps the
+/// engine in place instead of re-execing the process (no window flash).
+#[cfg(feature = "gui")]
+fn gui_rebuild_hook(
+    config_path: PathBuf,
+    workspace: PathBuf,
+    data_dir: PathBuf,
+    approval_policy: Option<PathBuf>,
+) -> qcode_gui::RebuildFn {
+    std::sync::Arc::new(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        let kernel = runtime
+            .block_on(qcode_kernel::assemble(
+                Some(config_path.clone()),
+                &workspace,
+                Some(data_dir.clone()),
+                approval_policy.as_deref(),
+                config::Overrides::default(),
+            ))
+            .map_err(|error| error.to_string())?;
+        let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
+            .with_shell(kernel.config.agent.snapshot_shell);
+        let engine = qcode_gui::Engine {
+            store: kernel.store,
+            provider: kernel.provider.into(),
+            provider_name: kernel.resolved.name.clone(),
+            tools: kernel.tools,
+            policy: kernel.policy,
+            workspace: workspace.clone(),
+            model: kernel.resolved.model.clone(),
+            pricing: config::pricing_for(&kernel.config, &kernel.resolved.model, None)
+                .ok()
+                .flatten(),
+            pricing_table: Default::default(),
+            max_turns: kernel.config.agent.max_turns,
+            max_cost_usd: kernel.config.agent.max_cost_usd,
+            context_window: Some(kernel.config.context.window_tokens),
+            network: kernel.network,
+            snapshots: Some(snapshots),
+        };
+        Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
+    })
+}
 /// Open the desktop window (ADR-0037).
 ///
 /// The window itself lives in the `qcode-gui` binary for now; this subcommand
@@ -713,7 +761,14 @@ async fn cmd_gui(
         // instead of the old behaviour of trapping the user in the wizard.
         let setup_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
         let store = qcode_core::store::SessionStore::new(&setup_data_dir);
-        let backend = qcode_gui::UnconfiguredBackend::new(workspace.clone(), store);
+        let rebuild = gui_rebuild_hook(
+            setup_path.clone(),
+            workspace.clone(),
+            setup_data_dir.clone(),
+            approval_policy.clone(),
+        );
+        let backend =
+            qcode_gui::UnconfiguredBackend::new(workspace.clone(), store).with_rebuild(rebuild);
         let mut app = qcode_tui::App::new("unconfigured", "-");
         app.push_notice(
             "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
@@ -771,7 +826,12 @@ async fn cmd_gui(
         network: kernel.network,
         snapshots: Some(snapshots),
     };
-    let backend = qcode_gui::LocalBackend::new(engine);
+    let backend = qcode_gui::LocalBackend::new(engine).with_rebuild(gui_rebuild_hook(
+        setup_path.clone(),
+        workspace.clone(),
+        gui_data_dir.clone(),
+        approval_policy.clone(),
+    ));
     qcode_gui::run(app, Box::new(backend), setup_path, gui_data_dir);
     Ok(ExitCode::SUCCESS)
 }

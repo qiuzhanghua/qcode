@@ -36,3 +36,19 @@
 打开Filemap失败: Local\sgime_skin.Dpi192.v10.filemap.sogouime49521504e27
 [410212:411776:1020/163747.735:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:9
 [410212:411776:1020/163747.735:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:10
+[419064:129612:1022/093056.654:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[419064:129612:1022/093056.654:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v4.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v4.filemap.sogouime49521504e27
+[419064:129612:1022/093056.654:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[419064:129612:1022/093056.654:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:4
+[419064:129612:1022/093056.688:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v4.filemap.sogouime
+[419064:129612:1022/093056.688:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:4
+[419064:129612:1022/093056.688:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:4
+[202072:155204:1022/093148.626:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[202072:155204:1022/093148.627:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v5.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v5.filemap.sogouime49521504e27
+[202072:155204:1022/093148.627:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[202072:155204:1022/093148.627:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:5
+[202072:155204:1022/093148.654:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v5.filemap.sogouime
+[202072:155204:1022/093148.654:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:5
+[202072:155204:1022/093148.654:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:5
