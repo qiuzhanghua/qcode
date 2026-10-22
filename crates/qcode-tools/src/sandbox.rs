@@ -500,13 +500,6 @@ impl Sandbox for Bwrap {
         "bwrap"
     }
 
-    fn describe(&self) -> String {
-        format!(
-            "bubblewrap (network {})",
-            if self.network { "allowed" } else { "denied" }
-        )
-    }
-
     /// A task's roots become binds: writable roots are shared, read-only roots
     /// are mounted read-only. The turn temp joins as a writable root.
     fn with_roots(
@@ -537,6 +530,14 @@ impl Sandbox for Bwrap {
             network: self.network,
         }))
     }
+
+    fn describe(&self) -> String {
+        format!(
+            "bubblewrap (network {})",
+            if self.network { "allowed" } else { "denied" }
+        )
+    }
+
     fn command(
         &self,
         program: &OsStr,
@@ -753,36 +754,6 @@ impl Sandbox for Landlock {
         "Landlock filesystem confinement (network not restricted)".to_string()
     }
 
-    /// A task's roots become binds: writable roots are shared, read-only roots
-    /// are mounted read-only. The turn temp joins as a writable root.
-    fn with_roots(
-        &self,
-        roots: &[Root],
-        temp: Option<&Path>,
-    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
-        let mut mapped: Vec<BwrapRoot> = roots
-            .iter()
-            .map(|root| BwrapRoot {
-                path: root.path.clone(),
-                writable: root.access == qcode_core::task::RootAccess::ReadWrite,
-            })
-            .collect();
-        if let Some(temp) = temp {
-            mapped.push(BwrapRoot {
-                path: temp.to_path_buf(),
-                writable: true,
-            });
-        }
-        if mapped.is_empty() {
-            return Err(SandboxError::Unsupported(
-                "bwrap needs at least one root or a turn temp",
-            ));
-        }
-        Ok(Arc::new(Self {
-            roots: mapped,
-            network: self.network,
-        }))
-    }
     fn command(
         &self,
         program: &OsStr,
@@ -793,12 +764,7 @@ impl Sandbox for Landlock {
     }
 
     fn check(&self) -> Result<(), SandboxError> {
-        let cwd = self
-            .roots
-            .first()
-            .map(|root| root.path.clone())
-            .unwrap_or_else(|| PathBuf::from("/"));
-        let mut command = self.build(OsStr::new("/bin/true"), &[], &cwd);
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
         let output = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
