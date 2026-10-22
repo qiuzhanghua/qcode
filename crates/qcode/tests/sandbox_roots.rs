@@ -1,9 +1,9 @@
 //! Real-machine check that a multi-root task can only write where it may.
 //!
 //! Windows restricts writes only, so a read-write root must accept a file and a
-//! read-only root must refuse one. The sandbox is the ACL backend, which needs
-//! to derive a restricted token: when that is unavailable in the current
-//! environment the test reports a skip instead of pretending to pass.
+//! read-only root must refuse one. The ACL sandbox runs commands through the
+//! hidden `qc sandbox-run` helper, so this test lives in the `qc` package and
+//! points the sandbox at the real binary instead of the test executable.
 
 #![cfg(windows)]
 
@@ -11,13 +11,8 @@ use std::path::Path;
 use std::process::Stdio;
 
 use qcode_core::task::{Root, RootAccess};
-use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork, build};
-
-fn acl_sandbox(root: &Path) -> Option<std::sync::Arc<dyn Sandbox>> {
-    let sandbox = build(SandboxMode::WindowsAcl, root, SandboxNetwork::Deny, &[]).ok()?;
-    sandbox.check().ok()?;
-    Some(sandbox)
-}
+use qcode_tools::sandbox::Sandbox;
+use qcode_tools::windows_acl::WindowsAcl;
 
 fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
     let mut command = sandbox
@@ -30,14 +25,13 @@ fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
             cwd,
         )
         .ok()?;
-    let output = command.stdin(Stdio::null()).output().ok()?;
-    Some(output.status.success())
+    Some(command.stdin(Stdio::null()).output().ok()?.status.success())
 }
 
 #[test]
 fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
-    // %TEMP% is not writable in every environment (a confined shell denies it),
-    // so the two roots live under the target directory cargo provides.
+    // %TEMP% is not writable in every environment, so the fixture lives under
+    // the target directory cargo provides.
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("sandbox-roots-{}", std::process::id()));
     let rw = base.join("rw");
@@ -45,10 +39,19 @@ fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
     std::fs::create_dir_all(&rw).expect("rw dir");
     std::fs::create_dir_all(&ro).expect("ro dir");
 
-    let Some(seed) = acl_sandbox(&rw) else {
-        eprintln!("skip: the ACL sandbox is unavailable in this environment");
-        return;
+    let seed = match WindowsAcl::new(&rw, &[])
+        .map(|sandbox| sandbox.with_helper(env!("CARGO_BIN_EXE_qc")))
+    {
+        Ok(sandbox) => sandbox,
+        Err(error) => {
+            eprintln!("skip: cannot build the ACL sandbox: {error}");
+            return;
+        }
     };
+    if let Err(error) = seed.check() {
+        eprintln!("skip: the ACL preflight failed: {error}");
+        return;
+    }
 
     let roots = vec![
         Root {
@@ -66,23 +69,26 @@ fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
             primary: false,
         },
     ];
-    let Some(sandbox) = seed.with_roots(&roots, None).ok() else {
-        eprintln!("skip: with_roots is not supported by this backend");
-        return;
+    let sandbox = match seed.with_roots(&roots, None) {
+        Ok(sandbox) => sandbox,
+        Err(error) => {
+            eprintln!("skip: with_roots failed: {error}");
+            return;
+        }
     };
 
-    // Writing inside the read-write root must work.
-    let wrote_rw = run(sandbox.as_ref(), &rw, "echo ok> inside.txt");
     assert_eq!(
-        wrote_rw,
+        run(sandbox.as_ref(), &rw, "echo ok> inside.txt"),
         Some(true),
         "a write inside the read-write root was refused"
     );
     assert!(rw.join("inside.txt").exists());
 
-    // Writing inside the read-only root must be refused by the token.
-    let wrote_ro = run(sandbox.as_ref(), &ro, "echo ok> denied.txt");
-    assert_eq!(wrote_ro, Some(false), "the read-only root accepted a write");
+    assert_eq!(
+        run(sandbox.as_ref(), &ro, "echo ok> denied.txt"),
+        Some(false),
+        "the read-only root accepted a write"
+    );
     assert!(
         !ro.join("denied.txt").exists(),
         "the read-only root has a file in it"

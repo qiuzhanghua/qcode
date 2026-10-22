@@ -177,6 +177,16 @@ impl WindowsAcl {
         };
         Ok((primary, writable, temp))
     }
+    /// Point the sandbox at a different helper binary.
+    ///
+    /// The helper is `qc` itself, because it owns the hidden `sandbox-run`
+    /// subcommand; a test binary cannot be the helper, so tests built from
+    /// another package pass the real executable here.
+    pub fn with_helper(mut self, helper: impl Into<PathBuf>) -> Self {
+        self.helper = helper.into();
+        self
+    }
+
     fn helper_command(&self, program: &OsStr, args: &[OsString], cwd: &Path) -> Command {
         let mut command = Command::new(&self.helper);
         command.arg(HELPER_COMMAND);
