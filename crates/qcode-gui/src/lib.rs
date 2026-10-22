@@ -1680,10 +1680,8 @@ impl Shell {
         let theme = cx.theme();
         let running = self.active.as_deref() == Some(task_id) && self.turn_in_flight;
         div()
-            .absolute()
-            .top_full()
-            .right_0()
-            .mt_1()
+            .ml_6()
+            .my_1()
             .w(px(160.0))
             .flex()
             .flex_col()
@@ -1905,8 +1903,8 @@ impl Shell {
                 .gap_1()
                 .overflow_hidden()
                 .w(px(0.0))
-                .group_hover(group.clone(), |this| this.w(px(64.0)))
-                .when(menu_open, |this| this.w(px(64.0)))
+                .group_hover(group.clone(), |this| this.w(px(96.0)))
+                .when(menu_open, |this| this.w(px(96.0)))
                 .child(
                     Button::new(format!("task-menu-{}", row.task.id))
                         .compact()
@@ -1939,10 +1937,10 @@ impl Shell {
                         })),
                 );
             task_row = task_row.child(controls);
-            if menu_open {
-                task_row = task_row.child(self.render_task_menu(&row.task.id, &full_title, cx));
-            }
             rows.push(task_row.into_any_element());
+            if menu_open {
+                rows.push(self.render_task_menu(&row.task.id, &full_title, cx));
+            }
             if active {
                 rows.push(self.render_task_roots(cx));
             }
