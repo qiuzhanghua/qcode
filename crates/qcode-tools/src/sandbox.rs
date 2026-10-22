@@ -350,7 +350,19 @@ impl Sandbox for SandboxExec {
 /// Kept free of `cfg(target_os)` so the argument list is unit-testable on any
 /// host; the Linux backend below is the only caller.
 #[cfg(target_os = "linux")]
-fn bwrap_args(workspace: &Path, cwd: &Path, network: bool, writable: &[PathBuf]) -> Vec<OsString> {
+#[derive(Debug, Clone)]
+struct BwrapRoot {
+    path: PathBuf,
+    writable: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn bwrap_args(
+    roots: &[BwrapRoot],
+    cwd: &Path,
+    network: bool,
+    writable: &[PathBuf],
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
     for flag in [
@@ -385,7 +397,8 @@ fn bwrap_args(workspace: &Path, cwd: &Path, network: bool, writable: &[PathBuf])
     args.push("/dev".into());
     // A workspace under /tmp cannot be bound after a tmpfs is mounted over the
     // source path, so only give /tmp a private tmpfs when it is safe.
-    if !workspace.starts_with("/tmp") {
+    let touches_tmp = roots.iter().any(|root| root.path.starts_with("/tmp"));
+    if !touches_tmp {
         args.push("--tmpfs".into());
         args.push("/tmp".into());
     }
@@ -394,11 +407,16 @@ fn bwrap_args(workspace: &Path, cwd: &Path, network: bool, writable: &[PathBuf])
     args.push("TMPDIR".into());
     args.push("/tmp".into());
 
-    args.push("--bind".into());
-    args.push(workspace.into());
-    args.push(workspace.into());
+    // Each root is bound exactly where it lives: read-write roots share the
+    // host directory, read-only roots are copied as immutably visible.
+    for root in roots {
+        let flag = if root.writable { "--bind" } else { "--ro-bind" };
+        args.push(flag.into());
+        args.push(root.path.clone().into());
+        args.push(root.path.clone().into());
+    }
     for path in writable {
-        if path.as_path() == workspace {
+        if roots.iter().any(|root| &root.path == path) {
             continue;
         }
         args.push("--bind".into());
@@ -442,7 +460,7 @@ fn writable_paths() -> Vec<PathBuf> {
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct Bwrap {
-    workspace: PathBuf,
+    roots: Vec<BwrapRoot>,
     network: bool,
 }
 
@@ -455,7 +473,10 @@ impl Bwrap {
             ));
         }
         Ok(Self {
-            workspace: workspace.to_path_buf(),
+            roots: vec![BwrapRoot {
+                path: workspace.to_path_buf(),
+                writable: true,
+            }],
             network,
         })
     }
@@ -463,7 +484,7 @@ impl Bwrap {
     fn build(&self, program: &OsStr, args: &[OsString], cwd: &Path) -> Command {
         let mut command = Command::new("bwrap");
         command.args(bwrap_args(
-            &self.workspace,
+            &self.roots,
             cwd,
             self.network,
             &writable_paths(),
@@ -486,6 +507,36 @@ impl Sandbox for Bwrap {
         )
     }
 
+    /// A task's roots become binds: writable roots are shared, read-only roots
+    /// are mounted read-only. The turn temp joins as a writable root.
+    fn with_roots(
+        &self,
+        roots: &[Root],
+        temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        let mut mapped: Vec<BwrapRoot> = roots
+            .iter()
+            .map(|root| BwrapRoot {
+                path: root.path.clone(),
+                writable: root.access == qcode_core::task::RootAccess::ReadWrite,
+            })
+            .collect();
+        if let Some(temp) = temp {
+            mapped.push(BwrapRoot {
+                path: temp.to_path_buf(),
+                writable: true,
+            });
+        }
+        if mapped.is_empty() {
+            return Err(SandboxError::Unsupported(
+                "bwrap needs at least one root or a turn temp",
+            ));
+        }
+        Ok(Arc::new(Self {
+            roots: mapped,
+            network: self.network,
+        }))
+    }
     fn command(
         &self,
         program: &OsStr,
@@ -496,7 +547,12 @@ impl Sandbox for Bwrap {
     }
 
     fn check(&self) -> Result<(), SandboxError> {
-        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
+        let cwd = self
+            .roots
+            .first()
+            .map(|root| root.path.clone())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &cwd);
         let output = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -697,6 +753,36 @@ impl Sandbox for Landlock {
         "Landlock filesystem confinement (network not restricted)".to_string()
     }
 
+    /// A task's roots become binds: writable roots are shared, read-only roots
+    /// are mounted read-only. The turn temp joins as a writable root.
+    fn with_roots(
+        &self,
+        roots: &[Root],
+        temp: Option<&Path>,
+    ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        let mut mapped: Vec<BwrapRoot> = roots
+            .iter()
+            .map(|root| BwrapRoot {
+                path: root.path.clone(),
+                writable: root.access == qcode_core::task::RootAccess::ReadWrite,
+            })
+            .collect();
+        if let Some(temp) = temp {
+            mapped.push(BwrapRoot {
+                path: temp.to_path_buf(),
+                writable: true,
+            });
+        }
+        if mapped.is_empty() {
+            return Err(SandboxError::Unsupported(
+                "bwrap needs at least one root or a turn temp",
+            ));
+        }
+        Ok(Arc::new(Self {
+            roots: mapped,
+            network: self.network,
+        }))
+    }
     fn command(
         &self,
         program: &OsStr,
@@ -707,7 +793,12 @@ impl Sandbox for Landlock {
     }
 
     fn check(&self) -> Result<(), SandboxError> {
-        let mut command = self.build(OsStr::new("/bin/true"), &[], &self.workspace);
+        let cwd = self
+            .roots
+            .first()
+            .map(|root| root.path.clone())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let mut command = self.build(OsStr::new("/bin/true"), &[], &cwd);
         let output = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -1207,9 +1298,16 @@ mod bwrap_tests {
         workspace().join("sub")
     }
 
+    fn rw_roots() -> Vec<BwrapRoot> {
+        vec![BwrapRoot {
+            path: workspace(),
+            writable: true,
+        }]
+    }
+
     #[test]
     fn binds_workspace_read_write_and_chdirs() {
-        let args = strings(&bwrap_args(&workspace(), &cwd(), false, &[]));
+        let args = strings(&bwrap_args(&rw_roots(), &cwd(), false, &[]));
         assert!(
             args.windows(3).any(|window| window
                 == [
@@ -1231,7 +1329,11 @@ mod bwrap_tests {
     #[test]
     fn workspace_under_tmp_skips_the_tmpfs_mount() {
         let workspace = PathBuf::from("/tmp/ws");
-        let args = strings(&bwrap_args(&workspace, &workspace, false, &[]));
+        let roots = vec![BwrapRoot {
+            path: workspace.clone(),
+            writable: true,
+        }];
+        let args = strings(&bwrap_args(&roots, &workspace, false, &[]));
         assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
         assert!(
             args.windows(2)
@@ -1241,18 +1343,44 @@ mod bwrap_tests {
 
     #[test]
     fn network_is_denied_unless_opted_in() {
-        let denied = strings(&bwrap_args(&workspace(), &cwd(), false, &[]));
+        let denied = strings(&bwrap_args(&rw_roots(), &cwd(), false, &[]));
         assert!(denied.contains(&"--unshare-net".to_string()));
 
-        let allowed = strings(&bwrap_args(&workspace(), &cwd(), true, &[]));
+        let allowed = strings(&bwrap_args(&rw_roots(), &cwd(), true, &[]));
         assert!(!allowed.contains(&"--unshare-net".to_string()));
     }
 
     #[test]
+    #[test]
+    fn a_read_only_root_is_mounted_read_only() {
+        let w = workspace();
+        let roots = vec![
+            BwrapRoot {
+                path: w.clone(),
+                writable: true,
+            },
+            BwrapRoot {
+                path: PathBuf::from("/home/qcode-bwrap-tests/docs"),
+                writable: false,
+            },
+        ];
+        let args = strings(&bwrap_args(&roots, &cwd(), false, &[]));
+        assert!(
+            args.windows(3)
+                .any(|window| window[0] == "--bind" && window[1] == w.to_string_lossy()),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(3)
+                .any(|window| window[0] == "--ro-bind"
+                    && window[1] == "/home/qcode-bwrap-tests/docs"),
+            "{args:?}"
+        );
+    }
     fn extra_writable_paths_are_bound_once() {
         let cargo = PathBuf::from("/tmp/qcode-bwrap-tests/cargo");
         let args = strings(&bwrap_args(
-            &workspace(),
+            &rw_roots(),
             &cwd(),
             false,
             std::slice::from_ref(&cargo),
