@@ -86,6 +86,30 @@ fn key_store_hint() -> Vec<String> {
     }
 }
 impl Doctor {
+    /// Prove the config directory accepts a new file: a policy can allow
+    /// rewriting config.toml while denying new files beside it, which is exactly
+    /// the failure the settings dialog hit.
+    fn write_probe(&mut self, path: &std::path::Path) {
+        let Some(dir) = path.parent() else {
+            self.fail("config writable", "config path has no parent directory");
+            return;
+        };
+        let probe = dir.join(".qcode-write-probe");
+        match std::fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                self.ok("config writable", dir.display().to_string());
+            }
+            Err(error) => self.fail(
+                "config writable",
+                format!(
+                    "cannot create a file in {} ({error}); a policy blocks new files there",
+                    dir.display()
+                ),
+            ),
+        }
+    }
+
     fn ok(&self, label: &str, detail: impl AsRef<str>) {
         println!("[ok]   {label}: {}", detail.as_ref());
     }
@@ -145,6 +169,7 @@ impl Doctor {
         match config::load_merged(&path, &workspace) {
             Ok(config) => {
                 self.ok("config", path.display().to_string());
+                self.write_probe(&path);
                 self.ok(
                     "config schema",
                     format!(
