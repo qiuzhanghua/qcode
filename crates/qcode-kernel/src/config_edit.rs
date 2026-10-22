@@ -186,9 +186,19 @@ impl ConfigEdit {
         }
         // Name the failing step: "cannot read" was reported for a create that
         // was denied, which sent the search in the wrong direction.
+        // Report the directory, not the temp file: the failure is "this process
+        // may not create files here", and the temp name made it look like a read
+        // of a file that never existed.
         let mut file = options.open(&temp).map_err(|source| ConfigError::Read {
-            path: temp.clone(),
-            source,
+            path: parent.to_path_buf(),
+            source: std::io::Error::new(
+                source.kind(),
+                format!(
+                    "cannot create a temporary file ({source}); if Windows Defender \
+                         Controlled Folder Access is on, allow qc.exe or point QCODE_CONFIG \
+                         at a directory you own"
+                ),
+            ),
         })?;
 
         let text = self.document.to_string();

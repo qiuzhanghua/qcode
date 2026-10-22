@@ -196,3 +196,42 @@
 [246836:459724:1022/103328.792:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
 [246836:459724:1022/103328.832:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
 [246836:459724:1022/103344.814:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[124952:247560:1022/103612.790:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[124952:247560:1022/103612.790:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v12.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v12.filemap.sogouime49521504e27
+[124952:247560:1022/103612.790:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[124952:247560:1022/103612.790:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:12
+[124952:247560:1022/103612.817:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v12.filemap.sogouime
+[124952:247560:1022/103612.817:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:12
+[124952:247560:1022/103612.817:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:12
+[124952:247560:1022/103616.352:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[124952:247560:1022/103633.196:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[124952:247560:1022/103633.196:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.Dpi192.v13.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.Dpi192.v13.filemap.sogouime49521504e27
+[124952:247560:1022/103633.196:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:12
+[124952:247560:1022/103633.196:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:13
+[124952:247560:1022/103829.196:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[143528:102524:1022/103956.376:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[143528:102524:1022/103956.377:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v13.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v13.filemap.sogouime49521504e27
+[143528:102524:1022/103956.377:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[143528:102524:1022/103956.377:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:13
+[143528:102524:1022/103956.403:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v13.filemap.sogouime
+[143528:102524:1022/103956.403:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:13
+[143528:102524:1022/103956.403:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:13
+[143528:102524:1022/103958.470:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[143528:102524:1022/104236.363:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[526812:162404:1022/104305.724:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[526812:162404:1022/104305.724:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.v13.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.v13.filemap.sogouime49521504e27
+[526812:162404:1022/104305.724:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:1
+[526812:162404:1022/104305.724:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:13
+[526812:162404:1022/104305.750:WARNING:t_skinfilemap.cpp(63)] SGRenderLog:CheckUpdate newMem.OpenMem Suc, szNewMem:Local\sgime_skin.Dpi192.v13.filemap.sogouime
+[526812:162404:1022/104305.751:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:13
+[526812:162404:1022/104305.751:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:13
+[526812:162404:1022/104308.147:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[526812:162404:1022/104320.568:WARNING:kernel_parameter_setter.cc(150)] [KernelParameterSetter] NotifyDoublePinyinSchemeChanged failed, scheme=Sogou status=1
+[526812:162404:1022/104320.568:WARNING:t_skinfilemap.cpp(56)] SGRenderLog:CheckUpdate newMem.OpenMem failed, szNewMem:Local\sgime_skin.Dpi192.v14.filemap.sogouime err:系统错误2: 系统找不到指定的文件。  
+打开Filemap失败: Local\sgime_skin.Dpi192.v14.filemap.sogouime49521504e27
+[526812:162404:1022/104320.568:WARNING:t_skinfilemap.cpp(65)] SGRenderLog:CheckUpdate finish: old version:13
+[526812:162404:1022/104320.568:WARNING:t_skinfilemap.cpp(67)] SGRenderLog:CheckUpdate finish: new version:14
