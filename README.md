@@ -108,6 +108,31 @@ Ctrl-U / Ctrl-D（或 PageUp / PageDown）滚动 transcript、Ctrl+End 回到底
 也不新增事件类型，事件日志里保留完整的 user_message。助手文本按 ≤60Hz 合并流式显示，
 完成后落盘为一条 `assistant_message`。非 TTY 环境会拒绝启动 TUI 并提示改用 `qc run`。
 
+## Linux 构建依赖
+
+`cargo build --workspace` 会连 `qcode-gui` 一起编译，GUI 的字体/输入栈要通过
+pkg-config 找系统库；只有运行时包（`libfontconfig1` 等）不够，还需要开发包
+（Windows / macOS 不需要）：
+
+```bash
+sudo apt install libfontconfig-dev libfreetype-dev \
+                 libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+```
+
+常见的缺包报错：
+
+| 报错 | 缺的东西 |
+| --- | --- |
+| `Package fontconfig was not found in the pkg-config search path` | `libfontconfig-dev` 的 `fontconfig.pc` |
+| `pkg-config` 找不到 `freetype2` | `libfreetype-dev` 的 `freetype2.pc`；没有就退回编译自带的 FreeType，按 **C++** 编，还要有 `c++` |
+| 链接期 `unable to find library -lxcb` / `-lxkbcommon` / `-lxkbcommon-x11` | 对应 `-dev` 包提供的不带版本号的 `lib*.so` |
+
+装好后可以核对 pkg-config 是否都能查到：
+
+```bash
+pkg-config --modversion fontconfig freetype2 xcb xkbcommon xkbcommon-x11
+```
+
 ## 发布构建（多平台）
 
 产物命名沿用 tdp 插件约定：`qcode_<version>_<os>_<arch>[_gnu|_musl|_msvc][.exe]`，
