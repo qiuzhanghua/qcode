@@ -133,6 +133,20 @@ sudo apt install libfontconfig-dev libfreetype-dev \
 pkg-config --modversion fontconfig freetype2 xcb xkbcommon xkbcommon-x11
 ```
 
+### 中文输入（X11 / XIM）
+
+Linux GUI 的输入法走 XIM（`gpui-pre-linux` → `zed-xim`）。中文 preedit 是 GB 2312 编码的
+COMPOUND_TEXT，而 crates.io 上的 `xim-ctext` 0.3.0 只认 UTF-8/ISO-2022-JP，会在主线程
+`panic!("Encoding Error")`。仓库里 vendor 了修好的解码器（`vendor/xim-ctext`，见 ADR-0051）：
+
+```bash
+# 确认补丁生效：输出里应是 vendor/xim-ctext 而不是 crates.io
+cargo tree -e normal -p qcode-gui -i xim-ctext
+```
+
+IBus 需要 `XMODIFIERS=@im=ibus`（`ibus-daemon --xim`），Wayland 会话下 GPUI 走的是
+wayland 后端，不经过 XIM。
+
 ## 发布构建（多平台）
 
 产物命名沿用 tdp 插件约定：`qcode_<version>_<os>_<arch>[_gnu|_musl|_msvc][.exe]`，

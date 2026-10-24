@@ -35,6 +35,15 @@ jobs:
           sudo apt-get install -y bubblewrap
           cargo test -p qcode-tools --lib sandbox::linux_tests -- --nocapture
           cargo test -p qcode-tools --lib sandbox::landlock_runtime -- --nocapture
+      # ADR-0051: the GUI's XIM client decodes preedit text with
+      # `xim_ctext::..expect("Encoding Error")`, which panics on the GB 2312
+      # COMPOUND_TEXT every Chinese IME sends. `vendor/xim-ctext` fixes it via
+      # [patch.crates-io]; a GPUI/zed-xim bump could silently drop the patch.
+      - name: xim-ctext patch is in effect
+        if: runner.os == 'Linux'
+        run: |
+          cargo tree -e normal -p qcode-gui -i xim-ctext | tee /tmp/xim-tree.txt
+          grep -q 'vendor/xim-ctext' /tmp/xim-tree.txt
 
   windows-build:
     name: windows (build + smoke)

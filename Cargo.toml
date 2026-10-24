@@ -15,7 +15,17 @@ members = [
   "crates/qcode-gui",
   "crates/qcode-image",
   "crates/qcode-kernel",
+  # Fork of xim-ctext 0.3.0; see [patch.crates-io] below and ADR-0051.
+  "vendor/xim-ctext",
 ]
+
+[patch.crates-io]
+# The GPUI X11 backend decodes XIM preedit/commit text with
+# `xim_ctext::compound_text_to_utf8(..).expect("Encoding Error")`. Upstream
+# only understands UTF-8 and ISO-2022-JP, so a Chinese XIM preedit (GB 2312)
+# panicked the GUI on the main thread. The fork decodes the charsets XIM
+# servers actually send and never fails. See ADR-0051.
+xim-ctext = { path = "vendor/xim-ctext" }
 
 [workspace.package]
 version = "0.5.0"

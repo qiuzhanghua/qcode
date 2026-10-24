@@ -1,0 +1,25 @@
+# qcode fork of `xim-ctext` 0.3.0 (MIT, https://github.com/Riey/xim-rs).
+#
+# Substituted for the crates.io copy through `[patch.crates-io]` in the
+# workspace manifest. Only `src/lib.rs` differs from upstream: decoding
+# COMPOUND_TEXT is now best effort for the charsets XIM servers actually send
+# (GB 2312, KS C 5601, ISO-8859-x, unterminated UTF-8 escapes) and never
+# returns an error, so `zed-xim`'s `expect("Encoding Error")` cannot abort the
+# GUI any more. See docs/design/DECISIONS.md (ADR-0051) and README.qcode.md.
+[package]
+name = "xim-ctext"
+version = "0.3.0"
+edition = "2018"
+rust-version = "1.64"
+description = "compound text en/decoder (qcode fork of 0.3.0)"
+readme = "README.qcode.md"
+license = "MIT"
+repository = "https://github.com/Riey/xim-rs"
+publish = false
+
+[dependencies]
+encoding_rs = "0.8.28"
+
+[features]
+default = ["std"]
+std = []

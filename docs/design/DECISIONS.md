@@ -2951,3 +2951,70 @@ Linux Landlock（规则构建通过）、macOS sandbox-exec（profile 测试就�
 
 **验证**：`config::discover` 的来源判定、`is_system_install` 的平台分支（Linux 用例单独 cfg）、
 启动与 doctor 的来源行；`qcode-kernel` 50 条测试通过。
+## ADR-0051：中文 IME 让 GUI 崩溃——fork `xim-ctext` 解 COMPOUND_TEXT（2026-10-24）
+
+**背景**：Linux 上用 `qc gui`（X11 + IBus XIM）敲中文，主线程直接 panic：
+
+```
+thread 'main' panicked at zed-xim-0.4.0-zed/src/client.rs:237:67:
+Encoding Error: UnsupportedEncoding
+```
+
+链路：`gpui-pre-linux` 用 `zed-xim` 做 XIM 客户端；`zed-xim` 对每条 preedit / commit
+都写 `xim_ctext::compound_text_to_utf8(&data).expect("Encoding Error")`；而 `xim-ctext`
+0.3.0 只认 UTF-8（`ESC % G`）和 ISO-2022-JP，其余字符集一律
+`Err(UnsupportedEncoding)`。于是**只要输入法送来非 UTF-8 的 COMPOUND_TEXT，进程就死**。
+
+这不是罕见输入。`LANG=zh_CN.UTF-8` 下 Xlib 的 UTF-8→COMPOUND_TEXT
+（IBus/fcitx 的 XIM 服务端正是这么发的）把中文写成 `ESC $ ( A` + 7 位 GB 2312：
+
+| 输入 | Xlib 输出（`Xutf8TextListToTextProperty`, `XCompoundTextStyle`） |
+| --- | --- |
+| `你好` | `1B 24 28 41 44 63 3A 43` |
+| `你好, 世界!` | `1B 24 28 41 44 63 3A 43 1B 28 42 2C 20 1B 24 28 41 4A 40 3D 67 1B 28 42 21` |
+| `你好😀` | `1B 24 28 41 44 63 3A 43 1B 25 47 F0 9F 98 80 1B 25 40` |
+| `café` | `63 61 66 E9`（无转义，裸 ISO-8859-1） |
+
+也就是说：**拼音候选一出现（preedit）就崩**，与是否提交无关。
+
+**决定**
+
+1. **vendor 一个 `xim-ctext`**（`vendor/xim-ctext`，MIT，上游 `Riey/xim-rs`），
+   用 `[patch.crates-io]` 替换 crates.io 的 0.3.0。改的是解码器，不是调用方：
+   上游那个 `.expect()` 在依赖里，我们改不到，也不该长期绑死 `gpui-pre-linux` 的补丁。
+2. **解码改成「尽可能解、绝不失败」**：`compound_text_to_utf8` 保留 `Result` 签名（与
+   `zed-xim` 的 API 一致），但永不返回 `Err`；不认识的字符集用有损解码（U+FFFD / windows-1252）
+   降级，宁可能显示乱码也不能弄死进程。已支持的字符集（按 designator）：
+   UTF-8（含只有开头没有 `ESC % @` 的情况）、GB 2312（按 GBK 解）、JIS X 0208（EUC-JP）、
+   KS C 5601（EUC-KR）、ISO-8859-1…6，以及 `ESC - X` / `ESC . X` 的 96 字符集形式。
+3. **不走「丢弃」路线**：把解不出来的 preedit 直接丢掉不会崩，但等于中文输入法只能打英文，
+   比崩溃更糟。
+4. **回归测试落在 fork 里**（它是 workspace member，`cargo test --workspace` 会跑）：
+   用例直接固化上表那几串 Xlib 真实输出；另有 `never_fails` 穷举 1–4 字节含 `0x1B`
+   的组合，保证任何 preedit 字节都不会 panic 或 `Err`。同时修掉上游两个隐患：
+   `ESC % G` 少 `ESC % @` 时 `left.len() - 3` 会 panic / 吃掉末尾三字节，孤立 `ESC` 同理。
+5. **CI 加一条守着 patch 的检查**（Linux job）：`cargo tree -p qcode-gui -i xim-ctext`
+   必须指向 `vendor/xim-ctext`。若哪天 GPUI 升到 `zed-xim` 需要 `xim-ctext` 的新版本，
+   patch 会静默失效、崩溃回归，这条检查会先把 PR 拦下来。
+
+**后果 / 边界**
+
+- fork 只覆盖解码；编码方向（`utf8_to_compound_text`）仍是上游的 UTF-8 转义，未改。
+- 字符集是按 designator 与本机 Xlib 实测结果接的，不是完整的 X11 COMPOUND_TEXT 表：
+  ISO 10646（`ESC % / I`）、JIS X 0212 等仍未实现，落到有损分支（能显示的部分保留）。
+- cluster 之外的 preedit 样式（下划线、选中区）`zed-xim` 本来就丢，未在此 ADR 处理。
+- Windows/macOS 不经过 `zed-xim`，patch 对它们无影响（`gpui-pre-linux` 是 Linux-only 依赖）。
+
+**验证**：`cargo build -p qcode --features gui` 通过（补丁生效后 `zed-xim` 重编）；
+`cargo test -p xim-ctext` 12 条全过（含上表 GB2312/日文/韩文/latin1/emoji 混合与穷举）；
+`cargo clippy -p xim-ctext -p qcode-gui -p qcode --features gui -- -D warnings` 干净。
+
+真机复现与回归（Ubuntu + GNOME X11 `:1`，`XMODIFIERS=@im=ibus`，`ibus engine libpinyin`，
+xdotool 同级用 XTest 真敲 `nihao` + 空格选词 + `shijie`）：
+
+- **未打补丁**（`[patch.crates-io]` 暂时 stash 掉）：敲完第一组拼音，进程当场 panic，
+  就是最初报的那行 `zed-xim-0.4.0-zed/src/client.rs:237:67: Encoding Error: UnsupportedEncoding`。
+  说明诊断的前半段（preedit 即崩、不是提交才崩）成立。
+- **打了补丁**：同一串按键，进程存活；截屏 diff 显示输入框文字区变化；再按 `Cmd+Enter`
+  发出去，会话日志里 `turn_started` 的 `input` 是 `"你好世界"`，`user_message` 同值。
+  即中文 preedit → 提交 → 进 prompt 全链路通，不是「不崩但乱码」。
