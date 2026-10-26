@@ -2409,7 +2409,33 @@ fn pick_directory() -> Result<Option<PathBuf>, String> {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((!path.is_empty()).then(|| PathBuf::from(path)))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: PowerShell's WinForms FolderBrowserDialog. `-STA` is
+        // required for the dialog's message pump, and `-WindowStyle Hidden`
+        // keeps the console window from flashing while the dialog shows.
+        // Cancelling leaves no output, which reads as Ok(None).
+        // `[Console]::OutputEncoding` must be forced to UTF-8: without it the
+        // pipe carries the OEM codepage (GBK on zh-CN), so non-ASCII paths
+        // arrive garbled in the UTF-8 decode below.
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Open a folder'
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.SelectedPath
+}
+"#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script])
+            .output()
+            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Err(
             "the native folder picker is not implemented on this platform; type the path instead"
@@ -3190,6 +3216,11 @@ pub struct Engine {
     pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
 }
 
+/// Default desktop window size for a first run, when no geometry has been
+/// saved yet. The actual bounds are recorded into `gui.json` on first render.
+const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
+const DEFAULT_WINDOW_HEIGHT: f32 = 640.0;
+
 /// Open the window and drive it until the user closes it.
 pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
     let prefs = GuiPreferences::load(&data_dir);
@@ -3199,17 +3230,24 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             gpui_kit::init(cx);
             cx.activate(true);
             prefs.apply(cx);
-            let window_options = prefs
-                .window_geometry
-                .as_ref()
-                .map(|geometry| WindowOptions {
+            let window_options = match prefs.window_geometry.as_ref() {
+                Some(geometry) => WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(geometry.x), px(geometry.y)),
                         size(px(geometry.width), px(geometry.height)),
                     ))),
                     ..Default::default()
-                })
-                .unwrap_or_default();
+                },
+                // First run: no saved geometry yet, so open at the desktop
+                // default size, centred, instead of the platform default.
+                None => WindowOptions {
+                    window_bounds: Some(WindowBounds::centered(
+                        size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)),
+                        cx,
+                    )),
+                    ..Default::default()
+                },
+            };
             cx.bind_keys([
                 KeyBinding::new("ctrl-v", PasteImage, None),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
