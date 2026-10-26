@@ -54,7 +54,8 @@ pub struct Config {
     /// Agent Skills discovered from the user and project config trees.
     #[serde(default)]
     pub skills: SkillsConfig,
-    /// OS sandbox for `run_shell`. Defaults to `none` (approval is the boundary).
+    /// OS sandbox for `run_shell`. Defaults to the platform's backend
+    /// ([`default_sandbox_mode`]); `none` keeps approval as the boundary.
     #[serde(default)]
     pub sandbox: SandboxConfig,
     /// Application-level egress policy (ADR-0023).
@@ -342,9 +343,36 @@ fn default_max_turns() -> u32 {
     64
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The sandbox backend a fresh config gets on this platform.
+///
+/// Each backend is self-contained for its OS: `windows-acl` (built into the
+/// binary), `sandbox-exec` (macOS, present by default) and `landlock`
+/// (Linux, unprivileged kernel confinement, no external binary). Startup
+/// still preflights and fails closed when the OS cannot apply it.
+fn default_sandbox_mode() -> SandboxMode {
+    #[cfg(target_os = "windows")]
+    {
+        SandboxMode::WindowsAcl
+    }
+    #[cfg(target_os = "macos")]
+    {
+        SandboxMode::SandboxExec
+    }
+    #[cfg(target_os = "linux")]
+    {
+        SandboxMode::Landlock
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        SandboxMode::None
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct SandboxConfig {
-    #[serde(default)]
+    /// OS sandbox for `run_shell`. Defaults to the platform backend; `none`
+    /// keeps approval as the boundary.
+    #[serde(default = "default_sandbox_mode")]
     pub mode: SandboxMode,
     /// Proxy mode: allow unrestricted network inside the OS sandbox. Ignored in
     /// strict mode, which always allows only the loopback proxy port.
@@ -356,6 +384,16 @@ pub struct SandboxConfig {
     /// workspace and its private temp directory.
     #[serde(default)]
     pub extra_writable: Vec<PathBuf>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_sandbox_mode(),
+            network: false,
+            extra_writable: Vec::new(),
+        }
+    }
 }
 
 /// Standalone approval policy file (`--approval-policy`).
@@ -1316,9 +1354,9 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_mode_parses_and_defaults_to_none() {
+    fn sandbox_mode_defaults_to_the_platform_backend() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.sandbox.mode, SandboxMode::None);
+        assert_eq!(config.sandbox.mode, default_sandbox_mode());
         assert!(!config.sandbox.network);
 
         let config: Config = toml::from_str(
