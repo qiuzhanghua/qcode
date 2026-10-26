@@ -200,9 +200,12 @@ impl Tool for RunShell {
             })?,
         };
         let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
-        // The initial sandbox is built for the legacy workspace. A task with
-        // multiple roots needs a profile generated from the current snapshot.
-        let needs_roots = ctx.roots.len() > 1 || (ctx.roots.is_empty() && ctx.temp_dir.is_some());
+        // The initial sandbox is built for the legacy launch workspace, but a
+        // task's roots may point somewhere else (a working directory selected
+        // in the GUI). Rebuild from the current root set whenever roots exist,
+        // so grants and write scope follow the task's actual working directory
+        // instead of the directory qc happened to start from.
+        let needs_roots = !ctx.roots.is_empty() || ctx.temp_dir.is_some();
         let sandbox = if needs_roots {
             self.sandbox
                 .with_roots(&ctx.roots, ctx.temp_dir.as_deref())
