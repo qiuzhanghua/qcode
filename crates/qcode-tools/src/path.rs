@@ -100,7 +100,7 @@ pub fn resolve_ctx<'a>(
 
     let raw = Path::new(requested);
     if raw.is_absolute() {
-        let normalized = normalize(raw);
+        let normalized = strip_verbatim(&normalize(raw));
         let root = ctx
             .roots
             .iter()
@@ -108,7 +108,7 @@ pub fn resolve_ctx<'a>(
                 root.path
                     .canonicalize()
                     .ok()
-                    .map(|canonical| (root, canonical))
+                    .map(|canonical| (root, strip_verbatim(&canonical)))
             })
             .filter(|(_, canonical)| normalized.starts_with(canonical))
             .max_by_key(|(_, canonical)| canonical.as_os_str().len())
@@ -134,12 +134,31 @@ fn split_alias(requested: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Windows `canonicalize` returns `\\?\`-prefixed (verbatim) paths; the
+/// model's absolute paths and the folder picker do not. Strip the prefix so
+/// prefix-agnostic `starts_with` comparisons still match. On other platforms
+/// this is the identity.
+fn strip_verbatim(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        let stripped = text
+            .strip_prefix(r"\\?\UNC\")
+            .map(|rest| format!(r"\\{rest}"))
+            .or_else(|| text.strip_prefix(r"\\?\").map(str::to_string));
+        if let Some(stripped) = stripped {
+            return PathBuf::from(stripped);
+        }
+    }
+    path.to_path_buf()
+}
+
 fn resolve_in_root<'a>(
     root: &'a Root,
     raw: &Path,
     access: Access,
 ) -> Result<Resolved<'a>, ToolError> {
-    let canonical_root = root.path.canonicalize().map_err(|_| {
+    let canonical_root = strip_verbatim(&root.path.canonicalize().map_err(|_| {
         // A vanished directory is a task- level problem, not a bad path: say
         // which root and what to do about it.
         ToolError::Invalid(format!(
@@ -147,7 +166,7 @@ fn resolve_in_root<'a>(
             root.label,
             root.path.display()
         ))
-    })?;
+    })?);
     let absolute = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
@@ -191,7 +210,7 @@ fn canonicalize_existing(path: &Path, requested: &Path) -> Result<PathBuf, ToolE
             ToolError::Invalid(format!("cannot resolve path: {}", requested.display()))
         })?;
     }
-    let mut resolved = existing.canonicalize()?;
+    let mut resolved = strip_verbatim(&existing.canonicalize()?);
     for name in suffix.iter().rev() {
         resolved.push(name);
     }
@@ -224,13 +243,13 @@ mod tests {
         std::fs::write(&file, "hi").unwrap();
         let ctx = ToolContext::for_test(dir.path());
         let read = resolve_ctx(&ctx, "@workspace/hello.txt", Access::Read).unwrap();
-        assert_eq!(read.path, file.canonicalize().unwrap());
+        assert_eq!(read.path, strip_verbatim(&file.canonicalize().unwrap()));
         assert_eq!(read.display, "@workspace/hello.txt");
 
         let write = resolve_ctx(&ctx, "new.txt", Access::Write).unwrap();
         assert_eq!(
             write.path,
-            dir.path().canonicalize().unwrap().join("new.txt")
+            strip_verbatim(&dir.path().canonicalize().unwrap()).join("new.txt")
         );
     }
 
