@@ -11,7 +11,6 @@ fn defaults_and_round_trip() {
         font_size: 16,
         code_font: "JetBrains Mono".to_string(),
         density: "compact".to_string(),
-        display_mode: "detailed".to_string(),
         recent_workspaces: vec!["/w/a".to_string(), "/w/b".to_string()],
         last_session: Some("s-1".to_string()),
         window_geometry: Some(qcode_gui::gui_prefs::WindowGeometry {

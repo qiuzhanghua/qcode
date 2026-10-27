@@ -112,32 +112,6 @@ pub struct ToolEntry {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DisplayMode {
-    Compact,
-    #[default]
-    Standard,
-    Detailed,
-}
-
-impl DisplayMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Compact => "compact",
-            Self::Standard => "standard",
-            Self::Detailed => "detailed",
-        }
-    }
-
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "compact" => Self::Compact,
-            "detailed" => Self::Detailed,
-            _ => Self::Standard,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub provider: String,

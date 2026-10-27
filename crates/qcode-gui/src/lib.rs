@@ -22,9 +22,11 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{Icon, Size};
+use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
 
 gpui_kit::actions!(
@@ -52,7 +54,7 @@ use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, RootAccess, RootState, Task, is_slug};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
-use qcode_ui_state::{App, Block, DisplayMode};
+use qcode_ui_state::{App, Block};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -115,6 +117,43 @@ fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
 
 pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
+}
+
+/// Models configured as `providers.<name>.default_model`, deduplicated.
+///
+/// `config.toml` names one model per provider, so the union of those entries
+/// is the picker's list. The caller adds the current model separately, so a
+/// model passed on the command line still appears.
+fn configured_models(config_path: &Path) -> Vec<String> {
+    let Ok(config) = qcode_kernel::config::load(config_path) else {
+        return Vec::new();
+    };
+    let mut models: Vec<String> = config
+        .providers
+        .values()
+        .filter_map(|provider| provider.default_model.clone())
+        .collect();
+    models.sort();
+    models.dedup();
+    models
+}
+
+/// One model option in the header picker.
+#[derive(Clone)]
+struct ModelItem {
+    name: String,
+}
+
+impl SearchableListItem for ModelItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.name.clone().into()
+    }
+
+    fn value(&self) -> &String {
+        &self.name
+    }
 }
 
 /// A Task view for the sidebar. Task:Session is 1:1, but the row keeps the
@@ -460,13 +499,12 @@ struct Shell {
     app: App,
     /// A real text input, so IME and CJK go through the platform.
     input: Entity<TextareaState>,
-    /// Model used for the next turn; editable without restarting the kernel.
-    model_input: Entity<InputState>,
+    /// Model picker dropdown; the option list comes from `config.toml`.
+    model_select: Entity<SelectState<SearchableVec<ModelItem>>>,
+    _model_select_subscription: gpui_kit::Subscription,
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pending_send: bool,
-    /// Model to write into the visible model input after a backend rebuild.
-    pending_model: Option<String>,
     /// Drop transcript events from the old turn until the backend confirms the
     /// session switch.
     resetting: bool,
@@ -488,14 +526,12 @@ struct Shell {
     scroller: Entity<MessageScrollerState>,
     /// Turn/loose-block rows currently rendered.
     units: Vec<DisplayUnit>,
-    mode: DisplayMode,
     /// The single process row currently expanded (accordion).
     expanded_process: Option<ProcessKey>,
     /// Long code blocks the reader expanded, keyed by block/segment.
     expanded_code: HashSet<String>,
     /// Turn selected by the rail/header.
     selected_turn: Option<usize>,
-    turn_picker_open: bool,
     /// True until the engine task has fully returned; Stop only clears the
     /// visual running flag, not this.
     turn_in_flight: bool,
@@ -590,7 +626,6 @@ impl Shell {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
         let backend_is_configured = backend.is_configured();
-        let mode = DisplayMode::parse(&prefs.display_mode);
         let units = display_units(&app);
         let last_blocks = units.len();
         let scroller = cx.new(|cx| MessageScrollerState::new(units.len(), cx));
@@ -618,9 +653,34 @@ impl Shell {
                 cx.notify();
             }
         });
+        // Model picker: configured models plus the kernel's current model.
         let model = app.status.model.clone();
-        let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("model"));
-        model_input.update(cx, |input, cx| input.set_value(model, window, cx));
+        let mut models: Vec<ModelItem> = configured_models(&config_path)
+            .into_iter()
+            .map(|name| ModelItem { name })
+            .collect();
+        if !models.iter().any(|item| item.name == model) {
+            models.push(ModelItem { name: model.clone() });
+        }
+        let selected = models
+            .iter()
+            .position(|item| item.name == model)
+            .map(IndexPath::new);
+        let model_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(models), selected, window, cx)
+        });
+        let model_select_subscription = cx.subscribe(
+            &model_select,
+            |shell, _select, event: &SelectEvent<SearchableVec<ModelItem>>, cx| {
+                if let SelectEvent::Confirm(Some(model)) = event
+                    && model != &shell.app.status.model
+                {
+                    shell.backend.set_model(model.clone());
+                    shell.app.status.model = model.clone();
+                    cx.notify();
+                }
+            },
+        );
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
         eprintln!(
@@ -630,9 +690,9 @@ impl Shell {
         Self {
             app,
             input,
-            model_input,
+            model_select,
+            _model_select_subscription: model_select_subscription,
             pending_send: false,
-            pending_model: None,
             resetting: false,
             _input_subscription: input_subscription,
             _scroller_subscription: scroller_subscription,
@@ -644,11 +704,9 @@ impl Shell {
             approvals: ApprovalQueue::default(),
             scroller,
             units,
-            mode,
             expanded_process: None,
             expanded_code: HashSet::new(),
             selected_turn: None,
-            turn_picker_open: false,
             turn_in_flight: false,
             pending_roots: None,
             pending_root_delete: None,
@@ -806,7 +864,6 @@ impl Shell {
                 // model recorded when this task was created.
                 self.app.status.provider = configured_provider;
                 self.app.status.model = configured_model.clone();
-                self.pending_model = Some(configured_model);
                 self.reset_scroller(cx);
                 self.active = Some(id.clone());
                 self.diff = None;
@@ -872,11 +929,6 @@ impl Shell {
                 .join("\n");
             prompt.push_str(&format!("\n\n[附件文件]\n{paths}"));
             self.file_refs.clear();
-        }
-        let model = self.model_input.read(cx).value().trim().to_string();
-        if !model.is_empty() && model != self.app.status.model {
-            self.backend.set_model(model.clone());
-            self.app.status.model = model;
         }
         self.backend
             .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
@@ -1092,7 +1144,6 @@ impl Shell {
             return;
         };
         self.selected_turn = Some(last);
-        self.turn_picker_open = false;
         if let Some(unit) = self.turn_unit_index(last) {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_item(unit, cx));
@@ -1100,17 +1151,6 @@ impl Shell {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_end(cx));
         }
-        cx.notify();
-    }
-
-    fn set_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
-        self.mode = mode;
-        self.prefs.display_mode = mode.as_str().to_string();
-        if let Err(error) = self.prefs.save(&self.data_dir) {
-            self.app
-                .push_notice(format!("cannot save gui.json: {error}"));
-        }
-        self.sync_scroller(cx);
         cx.notify();
     }
 
@@ -1182,7 +1222,6 @@ impl Shell {
             return;
         }
         self.selected_turn = Some(turn_index);
-        self.turn_picker_open = false;
         if let Some(unit) = self.turn_unit_index(turn_index) {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_item(unit, cx));
@@ -1340,8 +1379,7 @@ impl Shell {
                     self.app.status.provider = provider;
                 }
                 if let Some(model) = self.backend.model() {
-                    self.app.status.model = model.clone();
-                    self.pending_model = Some(model);
+                    self.app.status.model = model;
                 }
                 if let Ok(tasks) = self.backend.tasks() {
                     self.tasks = tasks;
@@ -2208,10 +2246,6 @@ impl Shell {
     }
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(model) = self.pending_model.take() {
-            self.model_input
-                .update(cx, |input, cx| input.set_value(model, window, cx));
-        }
         self.poll(cx);
         if self.app.status.running && !self.waiting_ticker {
             self.waiting_ticker = true;
@@ -2235,6 +2269,54 @@ impl Shell {
         .scrollbar(false)
         .jump_button(false);
 
+        // Header label: the session title when the task has one (first user
+        // message), else the session id — say what this conversation is
+        // about, not just a raw id.
+        let header_label = self
+            .active
+            .as_deref()
+            .and_then(|id| self.titles.get(id))
+            .cloned()
+            .unwrap_or_else(|| {
+                self.active
+                    .as_deref()
+                    .map(short_id)
+                    .unwrap_or("new task")
+                    .to_string()
+            });
+
+        // Keep the picker's selection in sync with the kernel's model
+        // (a resume or a settings rebuild may change it).
+        let current_model = self.app.status.model.clone();
+        let needs_sync = {
+            let selected = self.model_select.read(cx).selected_value().cloned();
+            selected.as_ref() != Some(&current_model)
+        };
+        if needs_sync {
+            self.model_select.update(cx, |state, cx| {
+                state.set_selected_value(&current_model, window, cx);
+            });
+        }
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_4()
+            .child(format!(
+                "{header_label} · {} turn(s)",
+                self.app.turns.len()
+            ))
+            .child(div().flex_grow(1.0))
+            .child(
+                div().w(px(220.0)).child(
+                    // Default `Length::Auto` sizes the dropdown to the trigger
+                    // width, so the popup matches the box above it.
+                    Select::new(&self.model_select).placeholder("model"),
+                ),
+            );
+
         div()
             .flex()
             .flex_col()
@@ -2242,92 +2324,7 @@ impl Shell {
             .min_w_0()
             .pl(px(20.0))
             .pr(px(26.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .p_2()
-                    .child(format!(
-                        "{} · {} turn(s)",
-                        self.active.as_deref().map(short_id).unwrap_or("new task"),
-                        self.app.turns.len()
-                    ))
-                    .child(
-                        Button::new("mode-compact")
-                            .label(if self.mode == DisplayMode::Compact {
-                                "● Compact"
-                            } else {
-                                "Compact"
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.set_mode(DisplayMode::Compact, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("mode-standard")
-                            .label(if self.mode == DisplayMode::Standard {
-                                "● Standard"
-                            } else {
-                                "Standard"
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.set_mode(DisplayMode::Standard, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("mode-detailed")
-                            .label(if self.mode == DisplayMode::Detailed {
-                                "● Detailed"
-                            } else {
-                                "Detailed"
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.set_mode(DisplayMode::Detailed, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("turn-prev")
-                            .label("↑")
-                            .on_click(cx.listener(|this, _, _window, cx| this.step_turn(-1, cx))),
-                    )
-                    .child(
-                        Button::new("turn-picker")
-                            .label(match self.active_turn_index() {
-                                Some(index) => {
-                                    format!("Turn {}/{}", index + 1, self.app.turns.len())
-                                }
-                                None => "Turn -".to_string(),
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.turn_picker_open = !this.turn_picker_open;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("turn-next")
-                            .label("↓")
-                            .on_click(cx.listener(|this, _, _window, cx| this.step_turn(1, cx))),
-                    )
-                    .child(div().flex_grow(1.0))
-                    .child(div().w(px(200.0)).child(
-                        Input::new(&self.model_input).aria_label("Model for the next turn"),
-                    )),
-            )
-            .children(self.turn_picker_open.then(|| {
-                let mut picker = div().flex().flex_row().gap_1().px_2().pb_1();
-                for (index, turn) in self.app.turns.iter().enumerate() {
-                    picker = picker.child(
-                        Button::new(format!("turn-pick-{index}"))
-                            .label(format!("T{}", turn.number))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.jump_to_turn(index, cx);
-                            })),
-                    );
-                }
-                picker
-            }))
+            .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
                 div()
@@ -2339,11 +2336,21 @@ impl Shell {
                     .child(rail)
                     .child(
                         div()
+                            .id("transcript-scroll")
                             .flex()
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
                             .pb(px(24.0))
+                            // GPUI keeps a text selection live until the mouse
+                            // button-up arrives, and a wheel scroll then
+                            // drags/extends it along the pointer — so a
+                            // phantom button state (or a lost mouse-up) makes
+                            // mere scrolling select text. Cancel the selection
+                            // on scroll, the way browsers do.
+                            .on_scroll_wheel(|_, window, cx| {
+                                gpui_kit::base::TextSelection::clear(window, cx);
+                            })
                             .child(list),
                     )
                     .child(self.render_floating_actions(cx))
@@ -2867,34 +2874,6 @@ fn turn_time(started: time::OffsetDateTime) -> String {
     format!("{:02}:{:02}", started.hour(), started.minute())
 }
 
-fn compact_user_row(text: &str) -> AnyElement {
-    let summary: String = text.chars().take(140).collect();
-    let suffix = if text.chars().count() > 140 {
-        "…"
-    } else {
-        ""
-    };
-    div()
-        .flex()
-        .flex_col()
-        .items_end()
-        .w_full()
-        .px_6()
-        .py_2()
-        .child(
-            div()
-                .max_w(px(560.0))
-                .rounded(px(12.0))
-                .bg(rgba(0x7f7f7f18))
-                .px_4()
-                .py_2()
-                .text_size(px(BODY_SIZE))
-                .line_height(px(BODY_LINE))
-                .child(format!("{summary}{suffix}")),
-        )
-        .into_any_element()
-}
-
 fn reasoning_preview(text: &str) -> String {
     let line = text
         .lines()
@@ -3163,23 +3142,12 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     );
 
     if let Some(block) = turn.input_block {
-        if shell.mode == DisplayMode::Compact && !turn.running() {
-            if let Block::User(text) = &shell.app.blocks[block] {
-                card = card.child(compact_user_row(text));
-            } else {
-                card = card.child(block_row(block, shell, entity));
-            }
-        } else {
-            card = card.child(block_row(block, shell, entity));
-        }
+        card = card.child(block_row(block, shell, entity));
     }
 
     let has_process =
         !turn.process.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
-    let show_process = !shell.collapse_all
-        && (shell.mode != DisplayMode::Compact
-            || turn.running()
-            || turn.status == Some(qcode_core::event::TurnStatus::Failed));
+    let show_process = !shell.collapse_all;
 
     if has_process && show_process {
         // One container for the whole execution process (thinking + tools).
@@ -3227,11 +3195,11 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             } else {
                 IconName::ChevronRight
             }));
-        // The divider only shows once there is an actual result — the
-        // finished answer block or a reply currently streaming in. While the
-        // process runs without any answer text yet, no divider is drawn.
-        let has_answer = turn.answer_block.is_some()
-            || (turn.running() && !shell.app.streaming.is_empty());
+        // The divider only shows once the turn has finished and its final
+        // answer block renders. A streaming preview must not split the
+        // process from its result early: the turn may still be executing
+        // tools while the first words arrive.
+        let has_answer = turn.answer_block.is_some();
         card = card
             .child(header)
             .children(process_open.then_some(process))
