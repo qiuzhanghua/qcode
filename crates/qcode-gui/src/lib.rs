@@ -104,9 +104,19 @@ fn context_label(app: &App) -> String {
 ///
 /// GPUI maps physical Command to `platform` on macOS and `secondary-enter`
 /// inside the input; accepting either keeps the handlers aligned.
+///
+/// `Modifiers::secondary` took a `&App` in gpui-pre 0.3.10 so it can consult
+/// `platform_info()`. A GPUI process only ever runs on the OS it was built
+/// for, so the compile-time check below answers the same question and keeps
+/// this helper pure for the unit tests.
 #[doc(hidden)]
 pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
-    keystroke.key == "enter" && (keystroke.modifiers.platform || keystroke.modifiers.secondary())
+    let secondary = if cfg!(target_os = "macos") {
+        keystroke.modifiers.platform
+    } else {
+        keystroke.modifiers.control
+    };
+    keystroke.key == "enter" && (keystroke.modifiers.platform || secondary)
 }
 
 fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
@@ -2348,7 +2358,7 @@ impl Shell {
                             // phantom button state (or a lost mouse-up) makes
                             // mere scrolling select text. Cancel the selection
                             // on scroll, the way browsers do.
-                            .on_scroll_wheel(|_, window, cx| {
+                            .on_scroll(|_, window, cx| {
                                 gpui_kit::base::TextSelection::clear(window, cx);
                             })
                             .child(list),
@@ -2525,7 +2535,7 @@ impl Shell {
                                                 "qcode-gui key: key={} platform={} secondary={} shift={}",
                                                 event.keystroke.key,
                                                 event.keystroke.modifiers.platform,
-                                                event.keystroke.modifiers.secondary(),
+                                                event.keystroke.modifiers.secondary(cx),
                                                 event.keystroke.modifiers.shift,
                                             );
                                         }
