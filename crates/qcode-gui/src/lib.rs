@@ -52,7 +52,7 @@ use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, RootAccess, RootState, Task, is_slug};
 use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
-use qcode_ui_state::{App, Block, DisplayMode, Turn};
+use qcode_ui_state::{App, Block, DisplayMode};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -60,15 +60,21 @@ use std::path::{Path, PathBuf};
 /// three display modes do not drift into per-row ad-hoc values.
 const BODY_SIZE: f32 = 14.0;
 const BODY_LINE: f32 = 22.0;
-const ANSWER_SIZE: f32 = 15.0;
-const ANSWER_LINE: f32 = 24.0;
+const ANSWER_SIZE: f32 = 13.0;
+const ANSWER_LINE: f32 = 26.0;
 const SECONDARY_SIZE: f32 = 13.0;
-const SECONDARY_LINE: f32 = 20.0;
+const SECONDARY_LINE: f32 = 22.0;
 const CAPTION_SIZE: f32 = 11.0;
 const CODE_SIZE: f32 = 12.0;
 const CODE_LINE: f32 = 18.0;
+/// Result content inside tool boxes: one step smaller than captions with
+/// extra line spacing for readability.
+const RESULT_SIZE: f32 = 10.0;
+const RESULT_LINE: f32 = 22.0;
 const TURN_MAX_WIDTH: f32 = 900.0;
 const TURN_RAIL_WIDTH: f32 = 20.0;
+/// Frames of the status-bar spinner shown while a turn is running.
+const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
@@ -465,12 +471,17 @@ struct Shell {
     /// session switch.
     resetting: bool,
     _input_subscription: gpui_kit::Subscription,
+    /// Keeps `selected_turn` in sync with the transcript scroll position.
+    _scroller_subscription: gpui_kit::Subscription,
     /// A real patch rendered read-only.
     diff: Option<Entity<DiffState>>,
     diff_expanded: bool,
     sidebar_visible: bool,
     /// Images pasted since the last submit.
     attachments: Vec<qcode_core::engine::Attachment>,
+    /// Files picked with the upload button; sent as their paths with the
+    /// next prompt.
+    file_refs: Vec<PathBuf>,
     /// Pending approvals, shown one at a time in arrival order.
     approvals: ApprovalQueue,
     /// Variable-height virtual transcript with tail following.
@@ -505,6 +516,13 @@ struct Shell {
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
     collapse_to_list: bool,
+    /// Status-bar waiting hint: spinner frame index and whether the ticker
+    /// loop is already running for the current turn.
+    waiting_frame: u8,
+    waiting_ticker: bool,
+    /// Whether the turn's execution-process container is folded. While a turn
+    /// runs it is forced open; on completion it auto-folds (user can reopen).
+    process_collapsed: bool,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -576,9 +594,15 @@ impl Shell {
         let units = display_units(&app);
         let last_blocks = units.len();
         let scroller = cx.new(|cx| MessageScrollerState::new(units.len(), cx));
+        // Keep the selected turn in sync with the visible transcript: when
+        // the user scrolls so a different turn reaches the viewport, its
+        // rail dot becomes the active one.
+        let scroller_subscription = cx.observe(&scroller, |shell, _scroller, cx| {
+            shell.sync_active_turn_from_scroll(cx);
+        });
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .auto_grow(1, 6)
+                .auto_grow(3, 6)
                 .submit_on_enter(true)
                 .placeholder("Ask qcode…  Enter 发送 · Shift+Enter 换行")
         });
@@ -611,10 +635,12 @@ impl Shell {
             pending_model: None,
             resetting: false,
             _input_subscription: input_subscription,
+            _scroller_subscription: scroller_subscription,
             diff: None,
             diff_expanded: false,
             sidebar_visible: true,
             attachments: Vec::new(),
+            file_refs: Vec::new(),
             approvals: ApprovalQueue::default(),
             scroller,
             units,
@@ -632,6 +658,9 @@ impl Shell {
             hovered_task: None,
             collapse_all: false,
             collapse_to_list: false,
+            waiting_frame: 0,
+            waiting_ticker: false,
+            process_collapsed: true,
             last_blocks,
             backend,
             tasks,
@@ -653,15 +682,16 @@ impl Shell {
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
+        self.process_collapsed = true;
         self.units = display_units(&self.app);
-        let count = self.units.len();
+        let count = self.units.len() + self.typing_extra();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
         self.last_blocks = count;
     }
 
     fn sync_scroller(&mut self, cx: &mut Context<Self>) {
         self.units = display_units(&self.app);
-        let count = self.units.len();
+        let count = self.units.len() + self.typing_extra();
         if count < self.last_blocks {
             self.scroller.update(cx, |state, cx| state.reset(count, cx));
         } else if count > self.last_blocks {
@@ -674,6 +704,16 @@ impl Shell {
             self.scroller.update(cx, |state, cx| state.remeasure(cx));
         }
         self.last_blocks = count;
+    }
+
+    /// One extra scroller row for the trailing typing indicator while a turn
+    /// is running.
+    fn typing_extra(&self) -> usize {
+        if self.app.status.running {
+            1
+        } else {
+            0
+        }
     }
 
     fn refresh_tasks(&mut self) {
@@ -711,6 +751,7 @@ impl Shell {
         self.resetting = true;
         self.app.reset_transcript();
         self.attachments.clear();
+        self.file_refs.clear();
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
             cx.notify();
@@ -777,6 +818,9 @@ impl Shell {
                 self.task_menu = None;
                 self.hovered_task = None;
                 self.turn_in_flight = false;
+                // A resumed session is already complete: fold its execution
+                // process like a just-finished turn (reopenable via header).
+                self.process_collapsed = true;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
             }
@@ -813,9 +857,21 @@ impl Shell {
             cx.notify();
             return;
         }
-        let prompt = self.input.read(cx).value().trim().to_string();
-        if prompt.is_empty() {
+        let mut prompt = self.input.read(cx).value().trim().to_string();
+        if prompt.is_empty() && self.file_refs.is_empty() {
             return;
+        }
+        // Uploaded files travel as their paths in the message text, so the
+        // model can read them with the file tools.
+        if !self.file_refs.is_empty() {
+            let paths = self
+                .file_refs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            prompt.push_str(&format!("\n\n[附件文件]\n{paths}"));
+            self.file_refs.clear();
         }
         let model = self.model_input.read(cx).value().trim().to_string();
         if !model.is_empty() && model != self.app.status.model {
@@ -831,6 +887,10 @@ impl Shell {
         });
         self.focus_composer(window, cx);
         self.sync_scroller(cx);
+        // Sending a question re-pins the view to the bottom so the reply is
+        // visible as it streams; a user scroll away during the turn pauses
+        // that following (GPUI's Tail mode resumes it at the bottom again).
+        self.scroller.update(cx, |state, cx| state.scroll_to_end(cx));
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -852,6 +912,27 @@ impl Shell {
             }
             Err(error) => self.app.push_notice(error),
         }
+        cx.notify();
+    }
+
+    /// Open the native file picker and add the chosen file to the pending
+    /// references. A cancelled dialog is a no-op.
+    fn upload_file(&mut self, cx: &mut Context<Self>) {
+        match pick_file() {
+            Ok(Some(path)) => {
+                if !self.file_refs.contains(&path) {
+                    self.file_refs.push(path);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.app.push_notice(error),
+        }
+        cx.notify();
+    }
+
+    /// Remove one pending file reference (the chip's red ×).
+    fn remove_file_ref(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.file_refs.retain(|known| known != path);
         cx.notify();
     }
 
@@ -880,6 +961,7 @@ impl Shell {
 
     fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
+        let reasoning_was_live = self.app.streaming_reasoning_block.is_some();
         while let Some(event) = self.backend.try_recv() {
             if self.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
                 continue;
@@ -902,9 +984,19 @@ impl Shell {
                     self.app.apply(&event);
                     if turn_started {
                         self.selected_turn = self.app.turns.len().checked_sub(1);
+                        // A fresh turn's execution process starts folded by
+                        // default; drop any stale reasoning expansion from the
+                        // previous turn.
+                        self.process_collapsed = true;
+                        if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
+                            self.expanded_process = None;
+                        }
                     }
                     changed = true;
                     if turn_ended {
+                        // The execution process auto-folds once the turn is
+                        // done; the header stays clickable to reopen it.
+                        self.process_collapsed = true;
                         self.refresh_tasks();
                     }
                 }
@@ -937,8 +1029,20 @@ impl Shell {
                 }
             }
         }
+        // The thinking stream committed into a completed block: auto-fold it
+        // (the block stays expandable through its header).
+        if reasoning_was_live
+            && self.app.streaming_reasoning_block.is_none()
+            && matches!(self.expanded_process, Some(ProcessKey::Reasoning(_)))
+        {
+            self.expanded_process = None;
+            cx.notify();
+        }
         if changed {
             self.sync_scroller(cx);
+            // GPUI's Tail follow mode handles tracking by itself: while the
+            // view is at the bottom it follows new content, and a user scroll
+            // away pauses following until the bottom is reached again.
         }
     }
 
@@ -952,6 +1056,33 @@ impl Shell {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_item(anchor, cx));
         }
+    }
+
+    /// Advance the status-bar spinner while a turn is running. The loop stops
+    /// by itself once the turn ends, so no timer stays alive in idle state.
+    fn tick_waiting(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let alive = this.update(cx, |shell, cx| {
+                    if !shell.app.status.running {
+                        shell.waiting_ticker = false;
+                        return None;
+                    }
+                    shell.waiting_frame =
+                        (shell.waiting_frame + 1) % WAITING_SPINNER.len() as u8;
+                    cx.notify();
+                    Some(())
+                });
+                match alive {
+                    Ok(Some(())) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
     }
 
     fn jump_to_last(&mut self, cx: &mut Context<Self>) {
@@ -969,28 +1100,6 @@ impl Shell {
             self.scroller
                 .update(cx, |state, cx| state.scroll_to_end(cx));
         }
-        cx.notify();
-    }
-
-    fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        let anchor = self.anchor(cx);
-        self.collapse_all = true;
-        self.collapse_to_list = true;
-        self.expanded_process = None;
-        self.expanded_code.clear();
-        self.sync_scroller(cx);
-        self.restore_anchor(anchor, cx);
-        cx.notify();
-    }
-
-    fn collapse_to_list(&mut self, cx: &mut Context<Self>) {
-        let anchor = self.anchor(cx);
-        self.collapse_all = false;
-        self.collapse_to_list = true;
-        self.expanded_process = None;
-        self.expanded_code.clear();
-        self.sync_scroller(cx);
-        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
@@ -1022,6 +1131,13 @@ impl Shell {
         self.collapse_to_list = false;
         self.sync_scroller(cx);
         self.restore_anchor(anchor, cx);
+        cx.notify();
+    }
+
+    /// Fold / unfold the turn's execution-process container. While the turn
+    /// runs the container is forced open, so this only matters afterwards.
+    fn toggle_process(&mut self, cx: &mut Context<Self>) {
+        self.process_collapsed = !self.process_collapsed;
         cx.notify();
     }
 
@@ -1093,6 +1209,32 @@ impl Shell {
         self.selected_turn
             .filter(|index| *index < self.app.turns.len())
             .or_else(|| self.app.turns.len().checked_sub(1))
+    }
+
+    /// Follow the transcript scroll: when the user scrolls so a different
+    /// turn reaches the viewport, that turn's rail dot becomes active.
+    fn sync_active_turn_from_scroll(&mut self, cx: &mut Context<Self>) {
+        let state = self.scroller.read(cx);
+        let target = if state.is_following_tail() {
+            // Pinned to the bottom: the latest turn is active.
+            self.app.turns.len().checked_sub(1)
+        } else {
+            let top = state.logical_scroll_top().item_ix;
+            self.units
+                .iter()
+                .skip(top)
+                .find_map(|unit| match unit {
+                    DisplayUnit::Turn(index) => Some(*index),
+                    DisplayUnit::Loose(_) => None,
+                })
+        };
+        if let Some(target) = target
+            && target < self.app.turns.len()
+            && self.selected_turn != Some(target)
+        {
+            self.selected_turn = Some(target);
+            cx.notify();
+        }
     }
 
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
@@ -1226,7 +1368,7 @@ impl Shell {
         }
         div()
             .absolute()
-            .bottom(px(16.0))
+            .top(px(20.0))
             .right(px(28.0))
             .flex()
             .flex_row()
@@ -1244,22 +1386,6 @@ impl Shell {
                     .tooltip("Jump to latest")
                     .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
             )
-            .child(
-                Button::new("floating-collapse-all")
-                    .icon(IconName::ChevronsDownUp)
-                    .accessibility_label("Collapse all")
-                    .tooltip("Collapse all")
-                    .on_click(cx.listener(|this, _, _window, cx| this.collapse_all(cx))),
-            )
-            .child(
-                Button::new("floating-collapse-to-list")
-                    .icon(IconName::ListCollapse)
-                    .accessibility_label("Collapse to list")
-                    .tooltip("Collapse to list")
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.collapse_to_list(cx);
-                    })),
-            )
             .into_any_element()
     }
 
@@ -1267,19 +1393,43 @@ impl Shell {
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
         }
+        let total = self.app.turns.len();
         let active = self.active_turn_index();
+        // At most 15 dots are shown; with more turns the window scrolls so the
+        // active dot stays centred (clamped at the list edges).
+        const MAX_DOTS: usize = 15;
+        let start = if total <= MAX_DOTS {
+            0
+        } else {
+            let center = active.unwrap_or(total - 1).min(total - 1);
+            (center.saturating_sub(MAX_DOTS / 2)).min(total - MAX_DOTS)
+        };
+        let end = (start + MAX_DOTS).min(total);
+        // One gray dot per turn, vertically centred on the dialog's left edge.
         let mut rail = div()
             .w(px(TURN_RAIL_WIDTH))
             .flex()
             .flex_col()
-            .gap_1()
-            .py_2();
-        for (index, turn) in self.app.turns.iter().enumerate() {
-            let marker = if active == Some(index) { "●" } else { "·" };
+            .items_center()
+            .justify_center()
+            .gap_2();
+        for index in start..end {
+            // Colour fades with distance from the active turn: the current one
+            // is darkest, one step away slightly lighter, farther ones lightest.
+            let dot = match active.map(|active| index.abs_diff(active)).unwrap_or(usize::MAX) {
+                0 => rgb(0x7a7a7a),
+                1 => rgb(0xbcbcbc),
+                _ => rgb(0xd8d8d8),
+            };
             rail = rail.child(
-                Button::new(format!("turn-rail-{index}"))
-                    .label(marker)
-                    .tooltip(turn_preview(turn, self))
+                div()
+                    .w(px(8.0))
+                    .h(px(8.0))
+                    .rounded(px(4.0))
+                    .bg(dot)
+                    .hover(|style| style.bg(rgb(0xa8a8a8)))
+                    .cursor_pointer()
+                    .id(format!("turn-rail-{index}"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.jump_to_turn(index, cx);
                     })),
@@ -2063,11 +2213,18 @@ impl Shell {
                 .update(cx, |input, cx| input.set_value(model, window, cx));
         }
         self.poll(cx);
+        if self.app.status.running && !self.waiting_ticker {
+            self.waiting_ticker = true;
+            self.tick_waiting(cx);
+        }
         if self.pending_send {
             self.pending_send = false;
             self.send_prompt(window, cx);
         }
         let entity = cx.entity();
+        let theme = cx.theme();
+        let popover = theme.popover;
+        let border = theme.border;
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
@@ -2075,7 +2232,7 @@ impl Shell {
                 unit_row(index, shell, &entity)
             }
         })
-        .scrollbar(true)
+        .scrollbar(false)
         .jump_button(false);
 
         div()
@@ -2083,6 +2240,8 @@ impl Shell {
             .flex_col()
             .flex_grow(1.0)
             .min_w_0()
+            .pl(px(20.0))
+            .pr(px(26.0))
             .child(
                 div()
                     .flex()
@@ -2177,16 +2336,16 @@ impl Shell {
                     .flex_row()
                     .flex_grow(1.0)
                     .min_h_0()
+                    .child(rail)
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
-                            .pb(px(56.0))
+                            .pb(px(24.0))
                             .child(list),
                     )
-                    .child(rail)
                     .child(self.render_floating_actions(cx))
             })
             .children(self.diff.as_ref().map(|state| {
@@ -2228,11 +2387,24 @@ impl Shell {
                     .child(Diff::new(state))
             }))
             .children(self.approvals.current().map(|view| {
+                // Approval card: a light popover-style box, one text size
+                // smaller than the assistant result, left-aligned with the
+                // composer's input box.
                 let mut card = div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .p_2()
+                    .w_full()
+                    .ml(px(12.0))
+                    .mr(px(14.0))
+                    .rounded(px(10.0))
+                    .bg(rgba(0x7f7f7f0d))
+                    .border_1()
+                    .border_color(rgba(0x7f7f7f30))
+                    .px_3()
+                    .py_2()
+                    .text_size(px(CODE_SIZE))
+                    .line_height(px(CODE_LINE))
                     .child(div().child(format!(
                         "approval needed ({}) · {} · {}",
                         self.approvals.len(),
@@ -2269,68 +2441,197 @@ impl Shell {
             .child(
                 div()
                     .flex()
-                    .flex_row()
-                    .gap_2()
-                    .items_center()
-                    .p_2()
-                    .child(Button::new("stop").label("Stop").on_click(cx.listener(
-                        |this, _, _window, cx| {
-                            this.stop();
-                            cx.notify();
-                        },
-                    )))
+                    .flex_col()
+                    .gap_1()
+                    .pl(px(20.0))
+                    .pr(px(26.0))
+                    .pb_2()
                     .child(
-                        Button::new("paste")
-                            .label(format!("Paste image ({})", self.attachments.len()))
-                            .on_click(cx.listener(|this, _, _window, cx| this.paste_clipboard(cx))),
-                    )
-                    .child({
-                        let entity = cx.entity();
                         div()
-                            .flex_grow(1.0)
-                            .on_key_down(move |event, window, cx| {
-                                if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-                                    eprintln!(
-                                        "qcode-gui key: key={} platform={} secondary={} shift={}",
-                                        event.keystroke.key,
-                                        event.keystroke.modifiers.platform,
-                                        event.keystroke.modifiers.secondary(),
-                                        event.keystroke.modifiers.shift,
-                                    );
-                                }
-                                if is_send_shortcut(&event.keystroke) {
-                                    entity.update(cx, |shell, cx| {
-                                        shell.send_prompt(window, cx);
-                                    });
-                                }
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .w_full()
+                            .rounded(px(10.0))
+                            .bg(popover)
+                            .border_1()
+                            .border_color(border)
+                            .px_3()
+                            .py_2()
+                            .child({
+                let entity = cx.entity();
+                let mut input_box = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1();
+                // Pending file references shown as removable chips above the
+                // input, aligned to its left edge; wraps once too wide.
+                if !self.file_refs.is_empty() {
+                    let mut chips = div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_1();
+                    for path in &self.file_refs {
+                        let name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("<file>")
+                            .to_string();
+                        let remove_path = path.clone();
+                        let remove_entity = entity.clone();
+                        chips = chips.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1()
+                                .rounded(px(4.0))
+                                .bg(rgba(0x7f7f7f14))
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    div()
+                                        .text_size(px(CAPTION_SIZE))
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .id(format!("file-remove-{}", remove_path.display()))
+                                        .cursor_pointer()
+                                        .text_color(rgb(0xe8463a))
+                                        .on_click(move |_, _, cx| {
+                                            remove_entity.update(cx, |shell, cx| {
+                                                shell.remove_file_ref(&remove_path, cx);
+                                            });
+                                        })
+                                        .child("×"),
+                                ),
+                        );
+                    }
+                    input_box = input_box.child(chips);
+                }
+                input_box
+                    .on_key_down(move |event, window, cx| {
+                                        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
+                                            eprintln!(
+                                                "qcode-gui key: key={} platform={} secondary={} shift={}",
+                                                event.keystroke.key,
+                                                event.keystroke.modifiers.platform,
+                                                event.keystroke.modifiers.secondary(),
+                                                event.keystroke.modifiers.shift,
+                                            );
+                                        }
+                                        if is_send_shortcut(&event.keystroke) {
+                                            entity.update(cx, |shell, cx| {
+                                                shell.send_prompt(window, cx);
+                                            });
+                                        }
+                                    })
+                                    .child(
+                                        Textarea::new(&self.input)
+                                            .bordered(false)
+                                            .text_size(px(15.0))
+                                            .aria_label("Message qcode"),
+                                    )
                             })
-                            .child(Textarea::new(&self.input).aria_label("Message qcode"))
-                    })
-                    .child(
-                        Button::new("send")
-                            .label("Send")
-                            .disabled(self.app.status.running)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        Button::new("upload")
+                                            .label("上传文件")
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.upload_file(cx)
+                                            })),
+                                    )
+                                    .child(
+                                        // Round action button: a blue up-arrow sends, a red dot
+                                        // interrupts the running turn (cancelling the backend
+                                        // conversation loop).
+                                        if self.app.status.running {
+                                            div()
+                                                .w(px(36.0))
+                                                .h(px(36.0))
+                                                .rounded(px(18.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .bg(rgba(0x0000000d))
+                                                .hover(|style| style.bg(rgba(0x0000001a)))
+                                                .id("interrupt")
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.stop();
+                                                    cx.notify();
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .w(px(12.0))
+                                                        .h(px(12.0))
+                                                        .rounded(px(6.0))
+                                                        .bg(rgb(0xe8463a)),
+                                                )
+                                        } else {
+                                            div()
+                                                .w(px(36.0))
+                                                .h(px(36.0))
+                                                .rounded(px(18.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .bg(rgb(0x3b82f6))
+                                                .hover(|style| style.bg(rgb(0x2563eb)))
+                                                .id("send")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.send_prompt(window, cx)
+                                                }))
+                                                .child(
+                                                    Icon::new(IconName::ArrowUp)
+                                                        .with_size(Size::Small)
+                                                        .text_color(rgb(0xffffff)),
+                                                )
+                                        },
+                                    ),
                             ),
                     ),
             )
             .child(
-                StatusBar::new()
-                    .left(self.notice.clone().unwrap_or_default())
-                    .left(format!(
-                        "{}:{}",
-                        self.app.status.provider, self.app.status.model
-                    ))
-                    .left(self.cwd.clone())
-                    .right(context_label(&self.app))
-                    .right(format!("${:.4}", self.app.status.cost_usd))
-                    .right(format!("sandbox {}", self.app.sandbox))
-                    .right(if self.app.status.running {
-                        "running"
-                    } else {
-                        "idle"
-                    }),
+                div()
+                    .pl(px(20.0))
+                    .pr(px(26.0))
+                    .pb_2()
+                    .child(
+                        div()
+                            .rounded(px(8.0))
+                            .bg(popover)
+                            .border_1()
+                            .border_color(border)
+                            .child(
+                                StatusBar::new()
+                                    .left(self.notice.clone().unwrap_or_default())
+                                    .left(format!(
+                                        "{}:{}",
+                                        self.app.status.provider, self.app.status.model
+                                    ))
+                                    .left(self.cwd.clone())
+                                    .right(context_label(&self.app))
+                                    .right(format!("${:.4}", self.app.status.cost_usd))
+                                    .right(format!("sandbox {}", self.app.sandbox))
+                                    .right(if self.app.status.running {
+                                        format!(
+                                            "{} 等待回复…",
+                                            WAITING_SPINNER[self.waiting_frame as usize]
+                                        )
+                                    } else {
+                                        "空闲".to_string()
+                                    }),
+                            ),
+                    ),
             )
     }
 }
@@ -2411,21 +2712,35 @@ fn pick_directory() -> Result<Option<PathBuf>, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // Windows: PowerShell's WinForms FolderBrowserDialog. `-STA` is
-        // required for the dialog's message pump, and `-WindowStyle Hidden`
-        // keeps the console window from flashing while the dialog shows.
-        // Cancelling leaves no output, which reads as Ok(None).
-        // `[Console]::OutputEncoding` must be forced to UTF-8: without it the
-        // pipe carries the OEM codepage (GBK on zh-CN), so non-ASCII paths
-        // arrive garbled in the UTF-8 decode below.
+        // Windows: the standard OpenFileDialog (the same dialog the file
+        // picker uses) configured to select a folder. The user navigates to
+        // the target directory and the chosen folder is derived from the
+        // dialog's file-name box. `-STA` is required for the dialog's message
+        // pump and `-WindowStyle Hidden` keeps the console window from
+        // flashing while the dialog shows. Cancelling leaves no output, which
+        // reads as Ok(None). `[Console]::OutputEncoding` must be forced to
+        // UTF-8: without it the pipe carries the OEM codepage (GBK on zh-CN),
+        // so non-ASCII paths arrive garbled in the UTF-8 decode below.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Open a folder'
-$dialog.ShowNewFolderButton = $true
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择工作目录'
+$dialog.Filter = 'Folders|*.folder'
+$dialog.FilterIndex = 1
+$dialog.InitialDirectory = [Environment]::GetFolderPath('UserProfile')
+$dialog.ValidateNames = $false
+$dialog.CheckFileExists = $false
+$dialog.CheckPathExists = $true
+$dialog.FileName = '选择文件夹'
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-    Write-Output $dialog.SelectedPath
+    $path = $dialog.FileName
+    if ([System.IO.Directory]::Exists($path)) {
+        Write-Output $path
+    } else {
+        $dir = [System.IO.Path]::GetDirectoryName($path)
+        if ($dir) { Write-Output $dir }
+    }
 }
 "#;
         let output = std::process::Command::new("powershell.exe")
@@ -2444,11 +2759,75 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     }
 }
 
+/// Open a native file picker and return the chosen file, or `None` on cancel.
+/// Mirrors [`pick_directory`] per platform: osascript / zenity / PowerShell.
+fn pick_file() -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("osascript")
+            .args(["-e", "POSIX path of (choose file with prompt \"Choose a file\")"])
+            .output()
+            .map_err(|error| format!("cannot open file picker: {error}"))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args(["--file-selection", "--title=Choose a file"])
+            .output()
+            .map_err(|error| format!("cannot open file picker: {error}"))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: PowerShell's WinForms OpenFileDialog. Same encoding and
+        // STA requirements as the folder picker above.
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Choose a file'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    Write-Output $dialog.FileName
+}
+"#;
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script])
+            .output()
+            .map_err(|error| format!("cannot open file picker: {error}"))?;
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Err(
+            "the native file picker is not implemented on this platform; type the path instead"
+                .to_string(),
+        )
+    }
+}
+
 fn unit_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     match shell.units.get(index).copied() {
         Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
         Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
-        None => div().into_any_element(),
+        None => {
+            // The trailing scroller row holds the blinking typing indicator
+            // while a turn streams; once it finishes the row is empty.
+            if shell.app.status.running {
+                typing_row(shell.waiting_frame as u32)
+            } else {
+                div().into_any_element()
+            }
+        }
     }
 }
 
@@ -2456,6 +2835,23 @@ fn conversation_icon(name: IconName) -> Icon {
     Icon::new(name)
         .with_size(Size::Small)
         .text_color(rgb(0x888888))
+}
+
+/// A blinking "typing…" row pinned under the transcript while a turn runs.
+/// `frame` advances on a timer so the indicator visibly flashes.
+fn typing_row(frame: u32) -> AnyElement {
+    // Two frames on, two frames off: a slower blink than the status spinner.
+    let opacity = if frame % 4 < 2 { 1.0 } else { 0.35 };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .px_6()
+        .py_1()
+        .text_size(px(SECONDARY_SIZE))
+        .text_color(rgb(0x888888))
+        .child(div().opacity(opacity).child("typing…"))
+        .into_any_element()
 }
 
 fn format_duration(duration: time::Duration) -> String {
@@ -2509,7 +2905,9 @@ fn reasoning_preview(text: &str) -> String {
 }
 
 fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    let expanded = shell.reasoning_expanded(usize::MAX);
+    // This row only renders while thinking is streaming: always show the
+    // live text instead of a preview.
+    let expanded = true;
     let preview = reasoning_preview(&shell.app.reasoning_streaming);
     let mut row = div()
         .flex()
@@ -2558,9 +2956,19 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 .pl_8()
                 .pr_6()
                 .pb_2()
-                .text_size(px(SECONDARY_SIZE))
-                .line_height(px(SECONDARY_LINE))
-                .child(shell.app.reasoning_streaming.clone()),
+                .child(
+                    div()
+                        .w_full()
+                        .rounded(px(6.0))
+                        .bg(rgba(0x7f7f7f08))
+                        .border_1()
+                        .border_color(rgba(0x7f7f7f20))
+                        .p_2()
+                        .text_size(px(SECONDARY_SIZE))
+                        .line_height(px(SECONDARY_LINE))
+                        .text_color(rgb(0x777777))
+                        .child(shell.app.reasoning_streaming.clone()),
+                ),
         );
     }
     row.into_any_element()
@@ -2572,7 +2980,13 @@ fn reasoning_row(
     shell: &Shell,
     entity: &Entity<Shell>,
 ) -> AnyElement {
-    let expanded = shell.reasoning_expanded(block);
+    // While this block is the live streaming thinking, force it expanded so
+    // the text visibly appends; once the thinking completes the block is
+    // auto-folded (the shell clears the reasoning expansion) but stays
+    // expandable through the header toggle.
+    let streaming = shell.app.status.running
+        && shell.app.streaming_reasoning_block == Some(block);
+    let expanded = streaming || shell.reasoning_expanded(block);
     let preview = reasoning_preview(&entry.text);
     let mut row = div()
         .flex()
@@ -2619,12 +3033,21 @@ fn reasoning_row(
                 .pl_8()
                 .pr_6()
                 .pb_2()
-                .text_size(px(SECONDARY_SIZE))
-                .line_height(px(SECONDARY_LINE))
                 .child(
-                    TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
-                        .text_size(px(SECONDARY_SIZE))
-                        .line_height(px(SECONDARY_LINE)),
+                    div()
+                        .w_full()
+                        .rounded(px(6.0))
+                        .bg(rgba(0x7f7f7f08))
+                        .border_1()
+                        .border_color(rgba(0x7f7f7f20))
+                        .p_2()
+                        .child(
+                            TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
+                                .code_block_actions(|_, _, _| div().into_any_element())
+                                .text_size(px(SECONDARY_SIZE))
+                                .line_height(px(SECONDARY_LINE))
+                                .text_color(rgb(0x777777)),
+                        ),
                 ),
         );
     }
@@ -2674,28 +3097,31 @@ fn short_preview(text: &str, limit: usize) -> String {
     value
 }
 
-fn turn_preview(turn: &Turn, shell: &Shell) -> String {
-    let input = turn
-        .input_block
-        .and_then(|index| match &shell.app.blocks[index] {
-            Block::User(text) | Block::Skill(text) => Some(text.as_str()),
-            _ => None,
+/// Heuristic: the output reads as a markdown list when every non-empty line
+/// starts with a bullet (`- `, `* `, `+ `) or a number (`1. `).
+fn looks_like_list(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    !lines.is_empty()
+        && lines.iter().all(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("+ ")
+            {
+                return true;
+            }
+            let bytes = trimmed.as_bytes();
+            let digits = bytes
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            digits > 0
+                && bytes.get(digits) == Some(&b'.')
+                && bytes.get(digits + 1).is_none_or(|byte| *byte == b' ')
         })
-        .map(|text| short_preview(text, 70))
-        .unwrap_or_default();
-    let answer = turn
-        .answer_block
-        .and_then(|index| match &shell.app.blocks[index] {
-            Block::Assistant(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .map(|text| short_preview(text, 140))
-        .unwrap_or_default();
-    if answer.is_empty() {
-        format!("You: {input}")
-    } else {
-        format!("You: {input}\nAssistant: {answer}")
-    }
 }
 
 fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
@@ -2754,9 +3180,15 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         && (shell.mode != DisplayMode::Compact
             || turn.running()
             || turn.status == Some(qcode_core::event::TurnStatus::Failed));
-    let mut process = div().flex().flex_col().gap_0().w_full().items_start();
 
     if has_process && show_process {
+        // One container for the whole execution process (thinking + tools).
+        // It starts folded by default; the header reopens it on click. While
+        // a turn is running the container is forced open so the stream keeps
+        // appending; once it finishes the process auto-folds and the answer
+        // renders below, outside the container.
+        let process_open = !shell.process_collapsed || turn.running();
+        let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &turn.process {
             if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
                 if entry.text.is_empty()
@@ -2771,7 +3203,46 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 process = process.child(block_row(*block, shell, entity));
             }
         }
-        card = card.child(process);
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_start()
+            .gap_2()
+            .px_6()
+            .py_1()
+            .id(format!("process-toggle-{index}"))
+            .cursor_pointer()
+            .text_size(px(SECONDARY_SIZE))
+            .text_color(rgb(0x888888))
+            .on_click({
+                let entity = entity.clone();
+                move |_, _, cx| {
+                    entity.update(cx, |shell, cx| shell.toggle_process(cx));
+                }
+            })
+            .child(format!("执行过程 · {} 项", turn.process.len()))
+            .child(conversation_icon(if process_open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            }));
+        // The divider only shows once there is an actual result — the
+        // finished answer block or a reply currently streaming in. While the
+        // process runs without any answer text yet, no divider is drawn.
+        let has_answer = turn.answer_block.is_some()
+            || (turn.running() && !shell.app.streaming.is_empty());
+        card = card
+            .child(header)
+            .children(process_open.then_some(process))
+            .children(has_answer.then(|| {
+                div()
+                    .mx_6()
+                    .my_1()
+                    .h(px(1.0))
+                    .bg(rgba(0x7f7f7f20))
+                    .into_any_element()
+            }));
     }
 
     if let Some(block) = turn.answer_block {
@@ -2788,6 +3259,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
+                    .code_block_actions(|_, _, _| div().into_any_element())
                     .text_size(px(ANSWER_SIZE))
                     .line_height(px(ANSWER_LINE)),
                 ),
@@ -2868,35 +3340,26 @@ fn markdown_with_folds(
                 } else {
                     body.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
-                let mut block = div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .my_1()
-                    .rounded(px(6.0))
-                    .bg(rgba(0x7f7f7f0c))
-                    .p_2();
-                let mut header = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(CAPTION_SIZE))
-                    .text_color(rgb(0x888888))
-                    .child(if language.is_empty() {
-                        format!("{line_count} lines")
-                    } else {
-                        format!("{language} · {line_count} lines")
-                    });
+                let fence = format!("```{language}\n{visible}\n```");
+                // One single code block — no extra wrapping box or header,
+                // indented one level from the surrounding answer text.
+                let mut block = div().flex().flex_col().gap_1().my_1().pl_4();
+                block = block.child(
+                    TextView::markdown(format!("assistant-code-{key}"), fence)
+                        .code_block_actions(|_, _, _| div().into_any_element())
+                        .text_size(px(CAPTION_SIZE))
+                        .line_height(px(CODE_LINE)),
+                );
                 if line_count > 20 {
                     let label = if expanded {
                         "Collapse".to_string()
                     } else {
                         format!("Show {} more lines", line_count - 12)
                     };
-                    header = header.child(
+                    block = block.child(
                         Button::new(format!("code-toggle-{key}"))
                             .label(label)
+                            .compact()
                             .on_click({
                                 let key = key.clone();
                                 let entity = entity.clone();
@@ -2908,12 +3371,6 @@ fn markdown_with_folds(
                             }),
                     );
                 }
-                let fence = format!("```{language}\n{visible}\n```");
-                block = block.child(header).child(
-                    TextView::markdown(format!("assistant-code-{key}"), fence)
-                        .text_size(px(CODE_SIZE))
-                        .line_height(px(CODE_LINE)),
-                );
                 column = column.child(block);
             }
         }
@@ -2926,10 +3383,13 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         return div()
             .px_4()
             .py_2()
-            .child(TextView::markdown(
-                format!("streaming-{index}"),
-                shell.app.streaming.clone(),
-            ))
+            .child(
+                TextView::markdown(
+                    format!("streaming-{index}"),
+                    shell.app.streaming.clone(),
+                )
+                .code_block_actions(|_, _, _| div().into_any_element()),
+            )
             .into_any_element();
     }
 
@@ -3014,16 +3474,69 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .pl_8()
                     .pr_6()
                     .pb_2();
-                if !tool.output.is_empty() {
-                    details = details.child(
-                        div()
-                            .text_size(px(CODE_SIZE))
-                            .line_height(px(CODE_LINE))
-                            .child(TextView::markdown(
-                                format!("tool-output-{index}"),
-                                format!("```\n{}\n```", tool.output),
-                            )),
-                    );
+                let command = tool
+                    .arguments
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                if command.is_some() || !tool.output.is_empty() {
+                    // The command and its result share one box, with a blank
+                    // line between them.
+                    let mut content = div()
+                        .w_full()
+                        .rounded(px(6.0))
+                        .bg(rgba(0x7f7f7f08))
+                        .border_1()
+                        .border_color(rgba(0x7f7f7f20))
+                        .p_2()
+                        .flex()
+                        .flex_col();
+                    if let Some(command) = &command {
+                        content = content.child(
+                            div()
+                                .text_size(px(RESULT_SIZE))
+                                .line_height(px(RESULT_LINE))
+                                .child(
+                                    TextView::markdown(
+                                        format!("tool-command-{index}"),
+                                        format!("$ `{command}`"),
+                                    )
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE)),
+                                ),
+                        );
+                    }
+                    if !tool.output.is_empty() {
+                        if command.is_some() {
+                            content = content.child(div().h(px(8.0)));
+                        }
+                        // Lists render as markdown lists; anything else stays
+                        // plain light text — one box, no nested code block.
+                        if looks_like_list(&tool.output) {
+                            content = content.child(
+                                div()
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE))
+                                    .child(
+                                        TextView::markdown(
+                                            format!("tool-output-{index}"),
+                                            tool.output.clone(),
+                                        )
+                                        .text_size(px(RESULT_SIZE))
+                                        .line_height(px(RESULT_LINE)),
+                                    ),
+                            );
+                        } else {
+                            content = content.child(
+                                div()
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE))
+                                    .text_color(rgb(0x888888))
+                                    .child(tool.output.clone()),
+                            );
+                        }
+                    }
+                    details = details.child(content);
                 }
                 if let Some(elapsed) = tool.elapsed {
                     details = details.child(
@@ -3052,6 +3565,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .text_color(rgb(0x999999))
             .child(
                 TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
+                    .code_block_actions(|_, _, _| div().into_any_element())
                     .text_size(px(SECONDARY_SIZE))
                     .line_height(px(SECONDARY_LINE)),
             )
@@ -3062,7 +3576,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .mx_6()
             .my_1()
             .rounded(px(6.0))
-            .bg(rgba(0x7f7f7f0c))
+            .bg(rgba(0x7f7f7f08))
             .p_2()
             .text_size(px(SECONDARY_SIZE))
             .child(format!("todos › {} item(s)", items.len()))
@@ -3219,7 +3733,7 @@ pub struct Engine {
 /// Default desktop window size for a first run, when no geometry has been
 /// saved yet. The actual bounds are recorded into `gui.json` on first render.
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
-const DEFAULT_WINDOW_HEIGHT: f32 = 640.0;
+const DEFAULT_WINDOW_HEIGHT: f32 = 620.0;
 
 /// Open the window and drive it until the user closes it.
 pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
