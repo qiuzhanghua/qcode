@@ -5240,6 +5240,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "clap",
+ "embed-resource",
  "futures-util",
  "qcode-acp",
  "qcode-core",
@@ -5319,6 +5320,10 @@ dependencies = [
  "base64 0.22.1",
  "gpui-kit",
  "ksni",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png 0.18.1",
  "qcode-core",
  "qcode-image",
  "qcode-kernel",
@@ -5327,12 +5332,14 @@ dependencies = [
  "qcode-tools",
  "qcode-ui-bridge",
  "qcode-ui-state",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
  "time",
  "tokio",
  "tokio-util",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

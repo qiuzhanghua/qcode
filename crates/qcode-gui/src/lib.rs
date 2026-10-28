@@ -3882,7 +3882,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                             match command {
                                 tray::TrayCommand::ShowWindow => {
                                     let _ = window_handle.update(cx, |_view, window, _cx| {
-                                        window.activate_window();
+                                        tray::show_window(window);
                                     });
                                 }
                                 tray::TrayCommand::NewTask => {

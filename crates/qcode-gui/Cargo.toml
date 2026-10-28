@@ -48,16 +48,13 @@ objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# StatusNotifierItem over DBus for the Linux tray icon.
-zbus = "5"
-# Decode the embedded PNG tray icons into the ARGB32 IconPixmap payload.
-png = "0.18"
-
 [dev-dependencies]
 async-trait.workspace = true
 qcode-providers = { version = "0.5.0", path = "../qcode-providers" }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# StatusNotifierItem + dbusmenu for the Linux tray (ADR-0052).
 ksni = "0.3.7"
+# Decode the embedded PNG tray icons into the ARGB32 IconPixmap payload.
+png = "0.18"

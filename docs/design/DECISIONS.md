@@ -3121,3 +3121,15 @@ P1 只落地 Linux，但两端的能力差异会影响接口设计，先把选�
   GNOME 与 KDE 各一次、X11 与 Wayland 各一次。
 - 回归：`cargo test --workspace`、`cargo clippy --workspace -- -D warnings`，以及现有
   GUI 冒烟路径（新建会话、发消息、停止 turn、审批）。
+
+**P2 实现更新（2026-10-28）**
+
+- macOS（`NSStatusItem`）与 Windows（`Shell_NotifyIcon`）后端按本 ADR 的菜单模型补齐，
+  三端共用 `TraySnapshot` / `TrayCommand`：状态行 / 显示主窗口 / 新建任务 /
+  停止当前任务（仅运行中可用）/ 分隔线 / 退出。命令仍经 `mpsc` 交给 GPUI。
+- 关窗语义保持“最小化而不是退出”；`ShowWindow` 增加了平台原生还原
+  （macOS `deminiaturize:`、Windows `SW_RESTORE`），因为 GPUI 的
+  `activate_window()` 不会还原最小化窗口。
+- 图标改为三端统一的 QC 标记（macOS 模板 PDF、Windows 托盘 ICO、Linux
+  `IconPixmap`，见 `crates/qcode/res/icons/`）。三态不再靠图标区分，改由菜单状态行
+  与 tooltip 表达；若之后要恢复“图标三态”，需要为标记再做运行中/待审批两个变体。

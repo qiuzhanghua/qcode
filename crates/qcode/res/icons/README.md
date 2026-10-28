@@ -47,20 +47,19 @@ committed, so normal builds never need `rsvg-convert`.
 
 ## Wiring
 
-- **macOS** — `crates/qcode-gui/src/tray.rs` embeds `macos/qcodeTemplate.pdf`
-  with `include_bytes!`, builds an `NSImage`, marks it `isTemplate` and assigns
-  it to the status-bar button at 18 pt. The Dock icon is copied into the bundle
-  by `scripts/build-macos-app.sh` (`CFBundleIconFile=qcode.icns`).
+- **macOS** — `crates/qcode-gui/src/tray/macos.rs` embeds
+  `macos/qcodeTemplate.pdf` with `include_bytes!`, builds an `NSImage`, marks it
+  `isTemplate` and assigns it to the status-bar button at 18 pt. The Dock icon
+  is copied into the bundle by `scripts/build-macos-app.sh`
+  (`CFBundleIconFile=qcode.icns`).
 - **Windows** — `crates/qcode/res/icon.rc` embeds the two ICOs as resources
-  101 (app) and 102 (tray); the tray loads 102 at `SM_CXSMICON`, the window
-  icon loads 101 at `SM_CXICON`/`SM_CXSMICON`.
-- **Linux** — the 16/22/32/48 PNGs are embedded and decoded at startup into
+  101 (app) and 102 (tray); `tray/windows.rs` loads 102 at `SM_CXSMICON` for
+  the notification area.
+- **Linux** — `tray/linux.rs` embeds the 22/32/48 PNGs and decodes them into
   the SNI `IconPixmap` property (ARGB32, network byte order). `IconName` is
   intentionally empty so hosts use the pixmaps instead of a missing theme icon.
-  The item registers as `org.kde.StatusNotifierItem-<pid>-1` and announces
-  itself to `org.kde.StatusNotifierWatcher`, which is what actually makes a
-  host show it. The right-click menu is a `com.canonical.dbusmenu` object at
-  `/MenuBar` (show/hide toggle + quit), exposed through the SNI `Menu` property.
+  ksni registers the item and its dbusmenu, and announces it to
+  `org.kde.StatusNotifierWatcher` (ADR-0052).
 
 ## Regenerating
 

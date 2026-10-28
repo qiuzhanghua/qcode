@@ -5,14 +5,77 @@
 //! within a runtime"）。所以托盘跑在自己的线程和 runtime 上，GPUI 只通过
 //! 两个 `std::sync::mpsc` 通道收发：命令回传，快照下发。
 
+use std::sync::OnceLock;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use ksni::menu::{MenuItem, StandardItem};
-use ksni::{ToolTip, Tray, TrayMethods};
+use ksni::{Icon, ToolTip, Tray, TrayMethods};
 
 use super::state::{TrayCommand, TraySnapshot};
+
+/// 面板常用的三个尺寸；内嵌进二进制，不依赖图标主题是否安装。
+const ICONS: &[&[u8]] = &[
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../qcode/res/icons/linux/hicolor/22x22/apps/qcode.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../qcode/res/icons/linux/hicolor/32x32/apps/qcode.png"
+    )),
+    include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../qcode/res/icons/linux/hicolor/48x48/apps/qcode.png"
+    )),
+];
+
+static PIXMAPS: OnceLock<Vec<Icon>> = OnceLock::new();
+
+/// 把内嵌 PNG 解成 SNI 要的 ARGB32（网络字节序）pixmap。
+fn pixmaps() -> Vec<Icon> {
+    PIXMAPS
+        .get_or_init(|| {
+            let mut pixmaps = Vec::new();
+            for bytes in ICONS {
+                let mut decoder = png::Decoder::new(std::io::Cursor::new(*bytes));
+                decoder.set_transformations(png::Transformations::normalize_to_color8());
+                let Ok(mut reader) = decoder.read_info() else {
+                    continue;
+                };
+                let Some(size) = reader.output_buffer_size() else {
+                    continue;
+                };
+                let mut buffer = vec![0u8; size];
+                let Ok(info) = reader.next_frame(&mut buffer) else {
+                    continue;
+                };
+                let data = &buffer[..info.buffer_size()];
+                let mut argb = Vec::with_capacity((info.width * info.height * 4) as usize);
+                match info.color_type {
+                    png::ColorType::Rgba => {
+                        for px in data.chunks_exact(4) {
+                            argb.extend_from_slice(&[px[3], px[0], px[1], px[2]]);
+                        }
+                    }
+                    png::ColorType::Rgb => {
+                        for px in data.chunks_exact(3) {
+                            argb.extend_from_slice(&[0xff, px[0], px[1], px[2]]);
+                        }
+                    }
+                    _ => continue,
+                }
+                pixmaps.push(Icon {
+                    width: info.width as i32,
+                    height: info.height as i32,
+                    data: argb,
+                });
+            }
+            pixmaps
+        })
+        .clone()
+}
 
 pub struct LinuxTray {
     state_tx: UnboundedSender<TraySnapshot>,
@@ -53,8 +116,14 @@ impl Tray for QcodeTray {
         "QCode".to_string()
     }
 
+    /// 空字符串：让 host 用 IconPixmap（我们自己的 QC 图标），而不是去
+    /// 图标主题里找一个没安装的名字。三态由菜单状态行和 tooltip 表达。
     fn icon_name(&self) -> String {
-        self.snapshot.icon_name().to_string()
+        String::new()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        pixmaps()
     }
 
     fn tool_tip(&self) -> ToolTip {
