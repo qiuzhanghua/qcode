@@ -49,6 +49,10 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Threading",
 ] }
 
+[build-dependencies]
+# Embeds res/icon.rc (the app icon) into the qc.exe on Windows.
+embed-resource = "3"
+
 [dev-dependencies]
 tempfile.workspace = true
 [features]

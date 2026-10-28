@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod forms;
 pub mod gui_prefs;
 pub mod setup;
+pub mod tray;
 pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
@@ -50,6 +51,7 @@ gpui_kit::actions!(
 );
 use crate::approvals::ApprovalQueue;
 use crate::gui_prefs::GuiPreferences;
+use crate::tray::{TrayEvent, TrayIcon};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
@@ -596,6 +598,12 @@ struct Shell {
     config_watch_armed: bool,
     data_dir: PathBuf,
     prefs: GuiPreferences,
+    /// System tray icon; when present, closing hides the window instead of
+    /// quitting, and tray events restore or exit the app.
+    tray: Option<TrayIcon>,
+    /// The main window handle, used by the tray poller to show the window
+    /// without depending on a render pass (a hidden window may stop rendering).
+    main_window: Option<AnyWindowHandle>,
 }
 
 impl Shell {
@@ -700,11 +708,13 @@ impl Shell {
         );
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
+        // Give the window the app icon (taskbar/titlebar on Windows).
+        crate::tray::set_window_icon(window);
         eprintln!(
             "qcode-gui: window ready pid={} (focus fix + concurrent engine)",
             std::process::id()
         );
-        Self {
+        let shell = Self {
             app,
             input,
             model_select,
@@ -749,7 +759,64 @@ impl Shell {
             config_path,
             data_dir,
             prefs,
+            tray: match TrayIcon::install() {
+                Ok(tray) => Some(tray),
+                Err(error) => {
+                    eprintln!("qcode-gui: no system tray: {error}");
+                    None
+                }
+            },
+            main_window: None,
+        };
+        shell.tick_tray(cx);
+        shell
+    }
+
+    /// Close the window: hide it behind the tray icon when the tray exists
+    /// (close-to-tray), otherwise really close and quit.
+    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tray.is_some() {
+            crate::tray::hide_window(window);
+        } else {
+            window.remove_window();
         }
+        cx.notify();
+    }
+
+    /// Poll the tray channel on a slow ticker and act on events right here,
+    /// without waiting for a render pass (a hidden window may not render).
+    fn tick_tray(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(400))
+                    .await;
+                let alive = this.update(cx, |shell, cx| {
+                    if let Some(tray) = &shell.tray {
+                        for event in tray.drain_events() {
+                            match event {
+                                TrayEvent::Show => {
+                                    if let Some(handle) = shell.main_window {
+                                        let _ = cx.update_window(handle, |_view, window, _app| {
+                                            crate::tray::show_window(window);
+                                            window.activate_window();
+                                        });
+                                    }
+                                    cx.notify();
+                                }
+                                TrayEvent::Quit => crate::tray::quit_app(),
+                            }
+                        }
+                    }
+                    Some(())
+                });
+                match alive {
+                    Ok(Some(())) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
@@ -3854,7 +3921,9 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
-            .on_action(|_: &CloseWindowShortcut, window, _cx| window.remove_window())
+            .on_action(cx.listener(|this, _: &CloseWindowShortcut, window, cx| {
+                this.close_window(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
                 this.sidebar_visible = !this.sidebar_visible;
                 cx.notify();
@@ -3981,11 +4050,29 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // or the root handler never sees Cmd+Enter.
                 KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
             ]);
-            gpui_kit::open_window(window_options, cx, |window, cx| {
-                window.activate_window();
-                cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
-            })
-            .expect("failed to open the window");
+            let (window_handle, shell_view) =
+                gpui_kit::open_window(window_options, cx, |window, cx| {
+                    window.activate_window();
+                    cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
+                })
+                .expect("failed to open the window");
+            // The tray poller needs the window handle to show the window
+            // without depending on a render pass.
+            let _ = shell_view.update(cx, |shell, _cx| {
+                shell.main_window = Some(window_handle);
+            });
+            // Close-to-tray: the titlebar close button hides the window behind
+            // the tray icon instead of quitting, as long as the tray exists.
+            let _ = window_handle.update(cx, |_view, window, app| {
+                window.on_window_should_close(app, |window, _cx| {
+                    if crate::tray::is_active() {
+                        crate::tray::hide_window(window);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            });
         });
 }
 
