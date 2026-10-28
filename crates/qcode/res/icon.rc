@@ -1,1 +1,2 @@
-101 ICON "logo.ico"
+101 ICON "icons/windows/qcode.ico"
+102 ICON "icons/windows/qcode-tray.ico"

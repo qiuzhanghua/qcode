@@ -91,6 +91,9 @@ echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+# Dock / Finder icon (the menu-bar template is embedded in the binary).
+cp "$ROOT/crates/qcode/res/icons/macos/qcode.icns" "$APP/Contents/Resources/qcode.icns"
+
 # The GUI binary still uses the `qc gui` subcommand. Finder launches the
 # executable with cwd `/`, so anchor the workspace at $HOME; the in-app
 # workspace picker can switch to a repository afterwards.
@@ -116,6 +119,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
+  <key>CFBundleIconFile</key><string>qcode.icns</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>

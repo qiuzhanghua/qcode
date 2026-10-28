@@ -51,6 +51,8 @@ objc2-foundation = "0.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 # StatusNotifierItem over DBus for the Linux tray icon.
 zbus = "5"
+# Decode the embedded PNG tray icons into the ARGB32 IconPixmap payload.
+png = "0.18"
 
 [dev-dependencies]
 async-trait.workspace = true

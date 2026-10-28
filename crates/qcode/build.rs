@@ -1,7 +1,7 @@
 fn main() {
-    // Embed the application icon (res/icon.rc -> res/logo.ico) into the
-    // Windows executable; it becomes the exe icon, the taskbar icon and the
-    // source for the tray icon.
+    // Embed the application and tray icons (res/icon.rc -> res/icons/windows)
+    // into the Windows executable: 101 is the colour app icon (exe, taskbar),
+    // 102 is the tray mark.
     #[cfg(target_os = "windows")]
     {
         let _ = embed_resource::compile("res/icon.rc", embed_resource::NONE);

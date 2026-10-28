@@ -837,6 +837,14 @@ impl Shell {
                                     }
                                     cx.notify();
                                 }
+                                TrayEvent::Toggle => {
+                                    if let Some(handle) = shell.main_window {
+                                        let _ = cx.update_window(handle, |_view, window, _app| {
+                                            crate::tray::toggle_window(window);
+                                        });
+                                    }
+                                    cx.notify();
+                                }
                                 TrayEvent::Quit => crate::tray::quit_app(),
                             }
                         }
