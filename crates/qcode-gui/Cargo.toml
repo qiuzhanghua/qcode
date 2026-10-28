@@ -23,7 +23,7 @@ qcode-mcp = { version = "0.5.0", path = "../qcode-mcp" }
 gpui-kit = "0.8.1"
 qcode-image = { version = "0.5.0", path = "../qcode-image" }
 base64.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "net"] }
 tokio-util.workspace = true
 time.workspace = true
 serde_json.workspace = true
@@ -35,4 +35,4 @@ qcode-providers = { version = "0.5.0", path = "../qcode-providers" }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ksni = { version = "0.3.7", features = ["blocking"] }
+ksni = "0.3.7"

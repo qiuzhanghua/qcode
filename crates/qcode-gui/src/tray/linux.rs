@@ -1,37 +1,37 @@
-//! Linux 托盘：ksni 的 blocking 实现，菜单回调通过 std mpsc 送回 GPUI。
+//! Linux 托盘：ksni 的 StatusNotifierItem + dbusmenu。
+//!
+//! 注意：GPUI 的主线程运行在 tokio runtime 上下文里，ksni 的 blocking API
+//! 内部会再 `block_on`，从主线程调用会 panic（"Cannot start a runtime from
+//! within a runtime"）。所以托盘跑在自己的线程和 runtime 上，GPUI 只通过
+//! 两个 `std::sync::mpsc` 通道收发：命令回传，快照下发。
 
 use std::sync::mpsc::Sender;
+use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
-use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem};
-use ksni::{ToolTip, Tray};
+use ksni::{ToolTip, Tray, TrayMethods};
 
 use super::state::{TrayCommand, TraySnapshot};
 
 pub struct LinuxTray {
-    handle: Handle<QcodeTray>,
+    state_tx: UnboundedSender<TraySnapshot>,
 }
 
 impl LinuxTray {
     pub fn update(&self, snapshot: TraySnapshot) {
-        let _ = self.handle.update(move |tray: &mut QcodeTray| {
-            tray.snapshot = snapshot;
-        });
-    }
-
-    pub fn shutdown(&self) {
-        drop(self.handle.shutdown());
+        let _ = self.state_tx.send(snapshot);
     }
 }
 
 struct QcodeTray {
     snapshot: TraySnapshot,
-    tx: Sender<TrayCommand>,
+    commands: Sender<TrayCommand>,
 }
 
 impl QcodeTray {
     fn send(&self, command: TrayCommand) {
-        let _ = self.tx.send(command);
+        let _ = self.commands.send(command);
     }
 
     fn item(&self, label: &str, enabled: bool, command: TrayCommand) -> MenuItem<Self> {
@@ -92,16 +92,63 @@ impl Tray for QcodeTray {
     }
 }
 
-pub fn start(tx: Sender<TrayCommand>) -> Option<LinuxTray> {
-    let tray = QcodeTray {
-        snapshot: TraySnapshot::default(),
-        tx,
-    };
-    match tray.spawn() {
-        Ok(handle) => Some(LinuxTray { handle }),
-        Err(error) => {
-            // 没有 StatusNotifierWatcher 时不能拖垮主程序，退回关窗即退。
+pub fn start(commands: Sender<TrayCommand>) -> Option<LinuxTray> {
+    let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<TraySnapshot>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+
+    std::thread::Builder::new()
+        .name("qcode-tray".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error.to_string()));
+                    return;
+                }
+            };
+
+            runtime.block_on(async move {
+                let tray = QcodeTray {
+                    snapshot: TraySnapshot::default(),
+                    commands,
+                };
+                let handle = match tray.spawn().await {
+                    Ok(handle) => {
+                        let _ = ready_tx.send(Ok(()));
+                        handle
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+
+                // 不能用阻塞接收：这个 runtime 同时驱动 DBus 服务，
+                // 堵住线程会让 StatusNotifierItem 不再响应。
+                while let Some(snapshot) = state_rx.recv().await {
+                    if handle
+                        .update(move |tray: &mut QcodeTray| tray.snapshot = snapshot)
+                        .await
+                        .is_none()
+                    {
+                        break;
+                    }
+                }
+            });
+        })
+        .ok()?;
+
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(())) => Some(LinuxTray { state_tx }),
+        Ok(Err(error)) => {
             eprintln!("qcode-gui: system tray unavailable: {error}");
+            None
+        }
+        Err(_) => {
+            eprintln!("qcode-gui: system tray did not start in time");
             None
         }
     }

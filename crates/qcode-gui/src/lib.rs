@@ -3886,13 +3886,18 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                                     });
                                 }
                                 tray::TrayCommand::NewTask => {
+                                    // 不能走 dispatch_action：窗口最小化时没有焦点，
+                                    // 动作派发不到根节点。
                                     let _ = window_handle.update(cx, |_view, window, cx| {
-                                        window.dispatch_action(Box::new(NewSessionShortcut), cx)
+                                        shell.update(cx, |shell, cx| shell.new_session(window, cx))
                                     });
                                 }
                                 tray::TrayCommand::StopCurrent => {
-                                    let _ = window_handle.update(cx, |_view, window, cx| {
-                                        window.dispatch_action(Box::new(StopTurnShortcut), cx)
+                                    let _ = window_handle.update(cx, |_view, _window, cx| {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.stop();
+                                            cx.notify();
+                                        })
                                     });
                                 }
                                 tray::TrayCommand::Quit => {
