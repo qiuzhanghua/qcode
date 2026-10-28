@@ -3067,6 +3067,29 @@ GPUI（`gpui-pre 0.3.9`）的能力边界决定了实现方式：
 7. **托盘注册失败必须降级**：没有 `org.kde.StatusNotifierWatcher` 时（headless、精简
    Wayland 合成器）只记日志，恢复"关窗即退"的原行为，不能因为托盘挂了让主程序不可用。
 
+**P2：Windows / macOS 的选型（实施前复核）**
+
+P1 只落地 Linux，但两端的能力差异会影响接口设计，先把选型记下来：
+
+- **Windows：`tray-icon` + `muda`**（`Shell_NotifyIconW`，`windows-sys` 后端，无 C 依赖）。
+  托盘必须在有消息泵的线程上创建：专用线程创建 `TrayIcon`，用 `GetMessageW` 循环收
+  回调；`muda` 的菜单事件从全局通道转成 `TrayCommand`。图标用 `.ico`（16/32/48 多尺寸，
+  按 DPI 选）。
+- **macOS：同样用 `tray-icon`**（`NSStatusItem`，objc2 后端）。**必须在主线程创建**，
+  时机在 `NSApplication` 初始化之后、GPUI 进入 run loop 之前；菜单走 `muda` 的 NSMenu
+  后端，回调在主线程触发，直接投递 `TrayCommand`。图标用 template image（纯黑 + 透明，
+  `icon_as_template(true)`），由系统适配明暗主题与选中态。
+- **不把 `tray-icon` 复用到 Linux**：它的 Linux 后端依赖 GTK + libayatana-appindicator，
+  要跑 GTK 主循环，和 GPUI 的事件循环冲突，还会给 deb/rpm/AppImage 增加运行时依赖
+  （见下面的备选）。
+- **接口不变**：两端都实现同一个 `TrayBackend`（`update(snapshot)` + 命令通道），
+  `TraySnapshot` / `TrayCommand` 与平台无关；GPUI 侧的关闭拦截与命令消费逻辑不变。
+  macOS 具备 app 级 `App::hide()`，P2 可以把它作为“真隐藏”的实现，P1 先与 Linux
+  保持一致的“最小化”。
+- **风险**：两个后端的菜单回调线程不同（Windows 消息泵线程 / macOS 主线程），回调里
+  只能发通道消息，不能直接碰 GPUI 状态；`muda` 的菜单事件是进程级全局通道，单窗口
+  够用，多窗口要按 window id 过滤。
+
 **备选方案（未采用）**
 
 - **`tray-icon` 一套跨平台代码**：Linux 要拖 GTK 主循环，和 GPUI 抢线程模型，且给
@@ -3084,8 +3107,8 @@ GPUI（`gpui-pre 0.3.9`）的能力边界决定了实现方式：
 - GNOME 需要 AppIndicator 扩展才有托盘区（Ubuntu 默认自带；纯净 GNOME 需用户安装），
   文档要写清楚；KDE 原生支持 SNI。
 - Wayland 下 `activate_window()` 可能被合成器拒绝聚焦（只高亮），这是平台限制，不做承诺。
-- 只覆盖 Linux；Windows（Shell_NotifyIcon）与 macOS（NSStatusItem）在 P2 通过
-  `TrayBackend` 扩展，主流程不改。
+- 只覆盖 Linux；Windows（`tray-icon`/`muda`，消息泵线程）与 macOS（`tray-icon`，主线程
+  `NSStatusItem`）在 P2 通过 `TrayBackend` 扩展，主流程不改，详见上面的 P2 选型小节。
 - 与 ADR-0049 的权限模型无关：托盘不引入新的文件/网络能力，也不改变审批语义。
 
 **验证**

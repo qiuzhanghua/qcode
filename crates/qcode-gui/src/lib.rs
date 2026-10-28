@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod forms;
 pub mod gui_prefs;
 pub mod setup;
+pub mod tray;
 pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
@@ -532,6 +533,10 @@ struct Shell {
     file_refs: Vec<PathBuf>,
     /// Pending approvals, shown one at a time in arrival order.
     approvals: ApprovalQueue,
+    /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
+    minimize_on_close: bool,
+    /// 托盘“退出”在任务运行中时的确认。
+    pending_quit: bool,
     /// Variable-height virtual transcript with tail following.
     scroller: Entity<MessageScrollerState>,
     /// Turn/loose-block rows currently rendered.
@@ -600,6 +605,7 @@ impl Shell {
         data_dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
+        minimize_on_close: bool,
     ) -> Self {
         let cwd = backend.cwd().display().to_string();
         let tasks = backend.tasks().unwrap_or_else(|error| {
@@ -713,6 +719,8 @@ impl Shell {
             attachments: Vec::new(),
             file_refs: Vec::new(),
             approvals: ApprovalQueue::default(),
+            minimize_on_close,
+            pending_quit: false,
             scroller,
             units,
             expanded_process: None,
@@ -744,6 +752,85 @@ impl Shell {
             data_dir,
             prefs,
         }
+    }
+
+    /// 托盘“退出”（以及将来的菜单退出）统一入口：运行中先确认（ADR-0052）。
+    fn request_quit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.app.status.running || self.approvals.current().is_some() {
+            self.pending_quit = true;
+            cx.notify();
+            return;
+        }
+        cx.quit();
+    }
+
+    fn cancel_quit(&mut self, cx: &mut Context<Self>) {
+        self.pending_quit = false;
+        cx.notify();
+    }
+
+    fn confirm_quit(&mut self, cx: &mut Context<Self>) {
+        self.pending_quit = false;
+        cx.quit();
+    }
+
+    /// 托盘图标/菜单要的最小状态。
+    fn tray_snapshot(&self) -> tray::TraySnapshot {
+        tray::TraySnapshot::new(
+            self.app.status.running,
+            usize::from(self.approvals.current().is_some()),
+        )
+    }
+
+    /// 退出确认：只在任务运行中或等待审批时出现。
+    fn render_quit_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.pending_quit {
+            return div().into_any_element();
+        }
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(440.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child("退出 QCode？")
+                    .child(
+                        div()
+                            .text_size(px(SECONDARY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child("当前任务仍在运行，退出会中断它。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-quit").label("取消").on_click(
+                                    cx.listener(|this, _, _window, cx| this.cancel_quit(cx)),
+                                ),
+                            )
+                            .child(Button::new("confirm-quit").label("退出").danger().on_click(
+                                cx.listener(|this, _, _window, cx| this.confirm_quit(cx)),
+                            )),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
@@ -3612,12 +3699,14 @@ impl Render for Shell {
                             let open = shell.rename_task.is_some()
                                 || shell.pending_root_delete.is_some()
                                 || shell.pending_task_delete.is_some()
-                                || shell.task_menu.is_some();
+                                || shell.task_menu.is_some()
+                                || shell.pending_quit;
                             if open {
                                 shell.rename_task = None;
                                 shell.pending_root_delete = None;
                                 shell.pending_task_delete = None;
                                 shell.task_menu = None;
+                                shell.pending_quit = false;
                                 cx.notify();
                             }
                         });
@@ -3646,7 +3735,14 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
-            .on_action(|_: &CloseWindowShortcut, window, _cx| window.remove_window())
+            .on_action(cx.listener(|this, _: &CloseWindowShortcut, window, cx| {
+                if this.minimize_on_close {
+                    window.minimize_window();
+                } else {
+                    window.remove_window();
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
                 this.sidebar_visible = !this.sidebar_visible;
                 cx.notify();
@@ -3676,6 +3772,7 @@ impl Render for Shell {
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
             .child(self.render_rename_dialog(cx))
+            .child(self.render_quit_dialog(cx))
     }
 }
 
@@ -3714,6 +3811,8 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             gpui_kit::init(cx);
             cx.activate(true);
             prefs.apply(cx);
+            let (tray, tray_rx) = tray::start();
+            let minimize_on_close = tray.is_some();
             let window_options = match prefs.window_geometry.as_ref() {
                 Some(geometry) => WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -3750,11 +3849,71 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // or the root handler never sees Cmd+Enter.
                 KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
             ]);
-            gpui_kit::open_window(window_options, cx, |window, cx| {
-                window.activate_window();
-                cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
-            })
-            .expect("failed to open the window");
+            let (window_handle, shell) =
+                gpui_kit::open_window(window_options, cx, move |window, cx| {
+                    window.activate_window();
+                    if minimize_on_close {
+                        // 关闭按钮 = 最小化到托盘（ADR-0052）；真正退出走托盘/菜单。
+                        window.on_window_should_close(cx, |window, _cx| {
+                            window.minimize_window();
+                            false
+                        });
+                    }
+                    cx.new(|cx| {
+                        Shell::new(
+                            app,
+                            backend,
+                            config_path,
+                            data_dir,
+                            window,
+                            cx,
+                            minimize_on_close,
+                        )
+                    })
+                })
+                .expect("failed to open the window");
+
+            if let Some(tray) = tray {
+                let tray_rx = tray_rx;
+                cx.spawn(async move |cx| {
+                    let mut last: Option<tray::TraySnapshot> = None;
+                    loop {
+                        while let Ok(command) = tray_rx.try_recv() {
+                            match command {
+                                tray::TrayCommand::ShowWindow => {
+                                    let _ = window_handle.update(cx, |_view, window, _cx| {
+                                        window.activate_window();
+                                    });
+                                }
+                                tray::TrayCommand::NewTask => {
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        window.dispatch_action(Box::new(NewSessionShortcut), cx)
+                                    });
+                                }
+                                tray::TrayCommand::StopCurrent => {
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        window.dispatch_action(Box::new(StopTurnShortcut), cx)
+                                    });
+                                }
+                                tray::TrayCommand::Quit => {
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        shell.update(cx, |shell, cx| shell.request_quit(window, cx))
+                                    });
+                                }
+                            }
+                        }
+                        let snapshot = cx.update(|cx| shell.read(cx).tray_snapshot());
+                        if last.as_ref() != Some(&snapshot) {
+                            tray.update(snapshot.clone());
+                            last = Some(snapshot);
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(200))
+                            .await;
+                    }
+                })
+                .detach();
+            }
         });
 }
 
