@@ -43,6 +43,8 @@ gpui_kit::actions!(
         CloseWindowShortcut,
         ToggleSidebarShortcut,
         ToggleThemeShortcut,
+        ZoomInShortcut,
+        ZoomOutShortcut,
         StopTurnShortcut,
         PrevTurnShortcut,
         NextTurnShortcut,
@@ -72,10 +74,27 @@ const SECONDARY_LINE: f32 = 22.0;
 const CAPTION_SIZE: f32 = 11.0;
 const CODE_SIZE: f32 = 12.0;
 const CODE_LINE: f32 = 18.0;
-/// Result content inside tool boxes: one step smaller than captions with
-/// extra line spacing for readability.
-const RESULT_SIZE: f32 = 10.0;
+/// Content inside tool boxes (command + output) and the thinking body:
+/// one step larger than captions with extra line spacing for readability.
+const RESULT_SIZE: f32 = 12.0;
 const RESULT_LINE: f32 = 22.0;
+/// The design baseline all *SIZE/*LINE tokens are written at: the default
+/// `GuiPreferences::font_size`. Every token scales from this baseline at
+/// render time (see `sp`), so Ctrl++ / Ctrl+- zoom the whole UI's text.
+const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
+
+/// The runtime font axis: the user's base font size in px, kept in sync with
+/// `GuiPreferences.font_size` (set in `Shell::new` and `Shell::zoom_font`).
+static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
+
+/// Resolve one typography token at the current font scale — the Rust
+/// analogue of deepseek-harness's single `--dsh-content-font-size` axis:
+/// one runtime value drives every conversation font and line height, so the
+/// tokens never drift per-row.
+fn sp(base: f32) -> gpui_kit::Pixels {
+    px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
+}
 const TURN_RAIL_WIDTH: f32 = 20.0;
 /// Width bounds of the resizable sidebar, in pixels. Dragging the divider
 /// between the sidebar and the conversation clamps to these.
@@ -622,6 +641,7 @@ impl Shell {
         });
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
+        FONT_SIZE_PX.store(prefs.font_size, std::sync::atomic::Ordering::Relaxed);
         prefs.record_workspace(Path::new(&cwd));
         let configured_provider = backend
             .provider()
@@ -1425,6 +1445,29 @@ impl Shell {
         cx.notify();
     }
 
+    /// Ctrl++ / Ctrl+- zoom the whole UI's text: shift the base font size by
+    /// one pixel within the FONT_SIZE_MIN..=FONT_SIZE_MAX bounds. Persisted
+    /// like the settings form's Font size field, then re-applied to the theme
+    /// (default text) and to every `sp`-scaled typography token.
+    fn zoom_font(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let next = self.prefs.font_size as i32 + delta;
+        let next = next.clamp(
+            crate::gui_prefs::FONT_SIZE_MIN as i32,
+            crate::gui_prefs::FONT_SIZE_MAX as i32,
+        ) as u32;
+        if next == self.prefs.font_size {
+            return;
+        }
+        self.prefs.font_size = next;
+        FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.app
+                .push_notice(format!("cannot save gui.json: {error}"));
+        }
+        self.prefs.apply(cx);
+        cx.notify();
+    }
+
     fn open_settings(&self, cx: &mut Context<Self>) {
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
@@ -1907,7 +1950,7 @@ impl Shell {
                     .child(format!("删除任务 “{title}”？"))
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(
                                 "将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。",
@@ -2019,7 +2062,7 @@ impl Shell {
                     .child(format!("移除目录 @{label}？"))
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(format!("不会删除 {path} 中的文件，只会从当前任务中移除。")),
                     )
@@ -2139,7 +2182,7 @@ impl Shell {
             if missing {
                 line = line.child(
                     div()
-                        .text_size(px(CAPTION_SIZE))
+                        .text_size(sp(CAPTION_SIZE))
                         .text_color(rgb(0xd06060))
                         .child("丢失"),
                 );
@@ -2202,14 +2245,14 @@ impl Shell {
         if pending {
             section = section.child(
                 div()
-                    .text_size(px(CAPTION_SIZE))
+                    .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("当前 Turn 结束后应用"),
             );
         } else if self.turn_in_flight {
             section = section.child(
                 div()
-                    .text_size(px(CAPTION_SIZE))
+                    .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("Turn 结束后应用"),
             );
@@ -2285,7 +2328,7 @@ impl Shell {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_size(px(BODY_SIZE))
+                        .text_size(sp(BODY_SIZE))
                         .whitespace_nowrap()
                         .child(label),
                 );
@@ -2454,13 +2497,13 @@ impl Shell {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(18.0))
+                            .text_size(sp(18.0))
                             .font_weight(FontWeight::BOLD)
                             .child(header_label.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(muted_foreground)
                             .child(format!("{} turn(s)", self.app.turns.len())),
                     ),
@@ -2533,8 +2576,8 @@ impl Shell {
                                             .border_color(rgba(0x7f7f7f30))
                                             .px_3()
                                             .py_2()
-                                            .text_size(px(CODE_SIZE))
-                                            .line_height(px(CODE_LINE))
+                                            .text_size(sp(CODE_SIZE))
+                                            .line_height(sp(CODE_LINE))
                                             .child(div().child(format!(
                                                 "approval needed ({}) · {} · {}",
                                                 self.approvals.len(),
@@ -2671,7 +2714,7 @@ impl Shell {
                                 .py_1()
                                 .child(
                                     div()
-                                        .text_size(px(CAPTION_SIZE))
+                                        .text_size(sp(CAPTION_SIZE))
                                         .child(name),
                                 )
                                 .child(
@@ -2710,7 +2753,7 @@ impl Shell {
                                     .child(
                                         Textarea::new(&self.input)
                                             .bordered(false)
-                                            .text_size(px(15.0))
+                                            .text_size(sp(15.0))
                                             .aria_label("Message qcode"),
                                     )
                             })
@@ -3059,7 +3102,7 @@ fn typing_row(frame: u32) -> AnyElement {
         .pr_4()
         .py_1()
         .mt(px(-4.0))
-        .text_size(px(SECONDARY_SIZE))
+        .text_size(sp(SECONDARY_SIZE))
         .text_color(rgb(0x888888))
         .child(div().opacity(opacity).child("typing…"))
         .into_any_element()
@@ -3109,7 +3152,7 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .id("reasoning-live-row")
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3142,8 +3185,8 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .border_1()
                     .border_color(rgba(0x7f7f7f20))
                     .p_2()
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE))
+                    .text_size(sp(RESULT_SIZE))
+                    .line_height(sp(RESULT_LINE))
                     .text_color(rgb(0x777777))
                     .child(shell.app.reasoning_streaming.clone()),
             ),
@@ -3182,7 +3225,7 @@ fn reasoning_row(
             .w_full()
             .id(format!("reasoning-row-{block}"))
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3215,14 +3258,14 @@ fn reasoning_row(
                     .p_2()
                     // The TextView body font comes from the inherited text
                     // style, so the wrapper must set it — otherwise thinking
-                    // text renders at the theme size instead of SECONDARY.
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE))
+                    // text renders at the theme size instead of RESULT.
+                    .text_size(sp(RESULT_SIZE))
+                    .line_height(sp(RESULT_LINE))
                     .child(
                         TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
                             .code_block_actions(|_, _, _| div().into_any_element())
-                            .text_size(px(SECONDARY_SIZE))
-                            .line_height(px(SECONDARY_LINE))
+                            .text_size(sp(RESULT_SIZE))
+                            .line_height(sp(RESULT_LINE))
                             .text_color(rgb(0x777777)),
                     ),
             ),
@@ -3329,7 +3372,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .gap_2()
             .px_6()
             .pt_4()
-            .text_size(px(CAPTION_SIZE))
+            .text_size(sp(CAPTION_SIZE))
             .text_color(rgb(0x888888))
             .child(format!("Turn {}", turn.number))
             .child(turn_time(turn.started_at))
@@ -3378,7 +3421,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .py_1()
             .id(format!("process-toggle-{index}"))
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3417,16 +3460,16 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .px_6()
                 .py_2()
-                .text_size(px(ANSWER_SIZE))
-                .line_height(px(ANSWER_LINE))
+                .text_size(sp(ANSWER_SIZE))
+                .line_height(sp(ANSWER_LINE))
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(px(ANSWER_SIZE))
-                    .line_height(px(ANSWER_LINE)),
+                    .text_size(sp(ANSWER_SIZE))
+                    .line_height(sp(ANSWER_LINE)),
                 ),
         );
     }
@@ -3527,8 +3570,8 @@ fn markdown_with_folds(
             MarkdownSegment::Text(body) => {
                 column = column.child(
                     TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
-                        .text_size(px(ANSWER_SIZE))
-                        .line_height(px(ANSWER_LINE)),
+                        .text_size(sp(ANSWER_SIZE))
+                        .line_height(sp(ANSWER_LINE)),
                 );
             }
             MarkdownSegment::Code { language, body } => {
@@ -3549,8 +3592,8 @@ fn markdown_with_folds(
                 let mut block = div().flex().flex_col().gap_0().my_1().pl_4();
                 let mut code = TextView::markdown(format!("assistant-code-{key}"), fence)
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(px(CAPTION_SIZE))
-                    .line_height(px(CODE_LINE));
+                    .text_size(sp(CAPTION_SIZE))
+                    .line_height(sp(CODE_LINE));
                 if folded {
                     code = code.style(
                         TextViewStyle::default()
@@ -3595,12 +3638,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .rounded(px(12.0))
                     .px_4()
                     .py_2()
-                    .text_size(px(BODY_SIZE))
-                    .line_height(px(BODY_LINE))
+                    .text_size(sp(BODY_SIZE))
+                    .line_height(sp(BODY_LINE))
                     .child(
                         TextView::markdown(format!("user-{index}"), text.clone())
-                            .text_size(px(BODY_SIZE))
-                            .line_height(px(BODY_LINE)),
+                            .text_size(sp(BODY_SIZE))
+                            .line_height(sp(BODY_LINE)),
                     ),
             )
             .into_any_element(),
@@ -3620,7 +3663,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .gap_2()
                 .id(format!("tool-row-{index}"))
                 .cursor_pointer()
-                .text_size(px(SECONDARY_SIZE))
+                .text_size(sp(SECONDARY_SIZE))
                 .text_color(rgb(0x888888))
                 .on_click({
                     let call_id = tool.call_id.clone();
@@ -3641,21 +3684,21 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 // text selection like the rest of the transcript.
                 .child(
                     TextView::markdown(format!("tool-label-{index}"), label)
-                        .text_size(px(SECONDARY_SIZE))
-                        .line_height(px(SECONDARY_LINE))
+                        .text_size(sp(SECONDARY_SIZE))
+                        .line_height(sp(SECONDARY_LINE))
                         .text_color(rgb(0x888888)),
                 )
                 .children((!summary.is_empty()).then(|| {
                     TextView::markdown(format!("tool-summary-{index}"), format!("· {summary}"))
-                        .text_size(px(SECONDARY_SIZE))
-                        .line_height(px(SECONDARY_LINE))
+                        .text_size(sp(SECONDARY_SIZE))
+                        .line_height(sp(SECONDARY_LINE))
                         .text_color(rgb(0x777777))
                 }));
             if let Some(status) = status {
                 header = header.child(
                     TextView::markdown(format!("tool-status-{index}"), status)
-                        .text_size(px(CAPTION_SIZE))
-                        .line_height(px(SECONDARY_LINE))
+                        .text_size(sp(CAPTION_SIZE))
+                        .line_height(sp(SECONDARY_LINE))
                         .text_color(rgb(0x999999)),
                 );
             }
@@ -3705,22 +3748,26 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                                 .flex_row()
                                 .items_baseline()
                                 .gap_1()
-                                .text_size(px(RESULT_SIZE))
-                                .line_height(px(RESULT_LINE))
+                                .text_size(sp(RESULT_SIZE))
+                                .line_height(sp(RESULT_LINE))
                                 .child(
                                     div()
-                                        .text_size(px(RESULT_SIZE))
-                                        .line_height(px(RESULT_LINE))
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE))
                                         .text_color(rgb(0xc8a86a))
                                         .child("$"),
                                 )
                                 .child(
+                                    // Markdown inline code (backticks) renders
+                                    // at 0.875x the TextView size, so bump the
+                                    // base size up so the command lands on the
+                                    // same size as the plain output below.
                                     TextView::markdown(
                                         format!("tool-command-{index}"),
                                         format!("`{command}`"),
                                     )
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE)),
+                                    .text_size(sp(RESULT_SIZE / 0.875))
+                                    .line_height(sp(RESULT_LINE)),
                                 ),
                         );
                     }
@@ -3733,15 +3780,15 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                         if looks_like_list(&output_visible) {
                             content = content.child(
                                 div()
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE))
+                                    .text_size(sp(RESULT_SIZE))
+                                    .line_height(sp(RESULT_LINE))
                                     .child(
                                         TextView::markdown(
                                             format!("tool-output-{index}"),
                                             output_visible,
                                         )
-                                        .text_size(px(RESULT_SIZE))
-                                        .line_height(px(RESULT_LINE)),
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE)),
                                     ),
                             );
                         } else {
@@ -3753,15 +3800,15 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                             let selectable = output_visible.replace('\n', "  \n");
                             content = content.child(
                                 div()
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE))
+                                    .text_size(sp(RESULT_SIZE))
+                                    .line_height(sp(RESULT_LINE))
                                     .child(
                                         TextView::markdown(
                                             format!("tool-output-plain-{index}"),
                                             selectable,
                                         )
-                                        .text_size(px(RESULT_SIZE))
-                                        .line_height(px(RESULT_LINE))
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE))
                                         .text_color(rgb(0x888888)),
                                     ),
                             );
@@ -3786,15 +3833,15 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 if let Some(elapsed) = tool.elapsed {
                     details = details.child(
                         div()
-                            .text_size(px(CAPTION_SIZE))
-                            .line_height(px(SECONDARY_LINE))
+                            .text_size(sp(CAPTION_SIZE))
+                            .line_height(sp(SECONDARY_LINE))
                             .child(
                                 TextView::markdown(
                                     format!("tool-elapsed-{index}"),
                                     format!("took {}", format_duration(elapsed)),
                                 )
-                                .text_size(px(CAPTION_SIZE))
-                                .line_height(px(SECONDARY_LINE))
+                                .text_size(sp(CAPTION_SIZE))
+                                .line_height(sp(SECONDARY_LINE))
                                 .text_color(rgb(0x888888)),
                             ),
                     );
@@ -3806,26 +3853,26 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::Subagent { text, .. } => div()
             .px_6()
             .py_1()
-            .text_size(px(CODE_SIZE))
-            .line_height(px(SECONDARY_LINE))
+            .text_size(sp(CODE_SIZE))
+            .line_height(sp(SECONDARY_LINE))
             .child(
                 TextView::markdown(format!("subagent-{index}"), format!("child › {text}"))
-                    .text_size(px(CODE_SIZE))
-                    .line_height(px(SECONDARY_LINE))
+                    .text_size(sp(CODE_SIZE))
+                    .line_height(sp(SECONDARY_LINE))
                     .text_color(rgb(0x888888)),
             )
             .into_any_element(),
         Block::Reasoning(entry) => div()
             .px_6()
             .py_1()
-            .text_size(px(SECONDARY_SIZE))
-            .line_height(px(SECONDARY_LINE))
+            .text_size(sp(RESULT_SIZE))
+            .line_height(sp(RESULT_LINE))
             .text_color(rgb(0x999999))
             .child(
                 TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE)),
+                    .text_size(sp(RESULT_SIZE))
+                    .line_height(sp(RESULT_LINE)),
             )
             .into_any_element(),
         // The todo_write tool already renders its full content inside the tool
@@ -3837,12 +3884,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::Skill(text) => div()
             .px_6()
             .py_2()
-            .text_size(px(SECONDARY_SIZE))
-            .line_height(px(SECONDARY_LINE))
+            .text_size(sp(SECONDARY_SIZE))
+            .line_height(sp(SECONDARY_LINE))
             .child(
                 TextView::markdown(format!("skill-{index}"), text.clone())
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE)),
+                    .text_size(sp(SECONDARY_SIZE))
+                    .line_height(sp(SECONDARY_LINE)),
             )
             .into_any_element(),
     }
@@ -3930,6 +3977,12 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
                 this.toggle_theme(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomInShortcut, _window, cx| {
+                this.zoom_font(1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomOutShortcut, _window, cx| {
+                this.zoom_font(-1, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
@@ -4042,6 +4095,13 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-w", CloseWindowShortcut, None),
                 KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
                 KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
+                // Ctrl++ / Ctrl+- zoom the whole UI's text. "=" and "+" both
+                // map to the same physical key (VK_OEM_PLUS); "+" is the
+                // shifted key the layout reports for Ctrl+Shift+=, so bind
+                // both so the shortcut works however the layout reads it.
+                KeyBinding::new("ctrl-=", ZoomInShortcut, None),
+                KeyBinding::new("ctrl-+", ZoomInShortcut, None),
+                KeyBinding::new("ctrl--", ZoomOutShortcut, None),
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),

@@ -17,6 +17,15 @@ pub struct WindowGeometry {
     pub height: f32,
 }
 
+/// Default base UI font size in px (see `GuiPreferences::default`).
+pub const DEFAULT_FONT_SIZE: u32 = 14;
+
+/// Smallest accepted base UI font size (px); Ctrl++ / Ctrl+- clamp here.
+pub const FONT_SIZE_MIN: u32 = 10;
+
+/// Largest accepted base UI font size (px); Ctrl++ / Ctrl+- clamp here.
+pub const FONT_SIZE_MAX: u32 = 32;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GuiPreferences {
@@ -35,7 +44,7 @@ impl Default for GuiPreferences {
     fn default() -> Self {
         Self {
             theme: "system".to_string(),
-            font_size: 14,
+            font_size: DEFAULT_FONT_SIZE,
             // JetBrains Mono is the font repo's preferred code face
             // (D:\workspace\fonts); SF Mono is not part of that set.
             code_font: "JetBrains Mono".to_string(),
@@ -108,7 +117,7 @@ impl GuiPreferences {
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".to_string();
         }
-        self.font_size = self.font_size.clamp(10, 32);
+        self.font_size = self.font_size.clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
         // SF Mono was the old default and is not in the project font set
         // (D:\workspace\fonts); migrate any saved value back to JetBrains Mono.
         if self.code_font.trim().is_empty() || self.code_font == "SF Mono" {
