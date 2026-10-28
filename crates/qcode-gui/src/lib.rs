@@ -2350,20 +2350,14 @@ impl Shell {
         .jump_button(false);
 
         // Header label: the session title when the task has one (first user
-        // message), else the session id — say what this conversation is
-        // about, not just a raw id.
+        // message), else a fresh-task placeholder — a brand-new task has no
+        // session id worth showing until its first message is sent.
         let header_label = self
             .active
             .as_deref()
             .and_then(|id| self.titles.get(id))
             .cloned()
-            .unwrap_or_else(|| {
-                self.active
-                    .as_deref()
-                    .map(short_id)
-                    .unwrap_or("new task")
-                    .to_string()
-            });
+            .unwrap_or_else(|| "新任务".to_string());
 
         // Keep the picker's selection in sync with the kernel's model
         // (a resume or a settings rebuild may change it).
@@ -2741,6 +2735,11 @@ impl Shell {
 fn display_units(app: &App) -> Vec<DisplayUnit> {
     let mut units = Vec::with_capacity(app.loose_blocks.len() + app.turns.len());
     for index in &app.loose_blocks {
+        // Notices are status-bar only now; a loose notice would otherwise
+        // render as a stray "note › …" row with no turn around it.
+        if matches!(app.blocks.get(*index), Some(Block::Notice(_))) {
+            continue;
+        }
         units.push((*index, DisplayUnit::Loose(*index)));
     }
     for (turn_index, turn) in app.turns.iter().enumerate() {
@@ -3557,12 +3556,23 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     if let Some(command) = &command {
                         content = content.child(
                             div()
+                                .flex()
+                                .flex_row()
+                                .items_baseline()
+                                .gap_1()
                                 .text_size(px(RESULT_SIZE))
                                 .line_height(px(RESULT_LINE))
                                 .child(
+                                    div()
+                                        .text_size(px(RESULT_SIZE))
+                                        .line_height(px(RESULT_LINE))
+                                        .text_color(rgb(0xc8a86a))
+                                        .child("$"),
+                                )
+                                .child(
                                     TextView::markdown(
                                         format!("tool-command-{index}"),
-                                        format!("$ `{command}`"),
+                                        format!("`{command}`"),
                                     )
                                     .text_size(px(RESULT_SIZE))
                                     .line_height(px(RESULT_LINE)),
@@ -3645,13 +3655,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .child(format!("todos › {} item(s)", items.len()))
             .children(items.iter().map(|item| div().child(item.content.clone())))
             .into_any_element(),
-        Block::Notice(text) => div()
-            .px_6()
-            .py_1()
-            .text_size(px(CODE_SIZE))
-            .text_color(rgb(0x999999))
-            .child(format!("note › {text}"))
-            .into_any_element(),
+        Block::Notice(_) => div().into_any_element(),
         Block::Skill(text) => div()
             .px_6()
             .py_2()
