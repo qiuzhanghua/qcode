@@ -25,7 +25,7 @@ use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerStat
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
 use gpui_kit::base::{h_resizable, resizable_panel};
@@ -3413,6 +3413,41 @@ fn markdown_segments(text: &str) -> Vec<MarkdownSegment> {
     segments
 }
 
+/// The fold/unfold control pinned under a long code block or tool output.
+/// Rounded only at the bottom (top corners squared) so it reads as one piece
+/// with the box above it, whose bottom corners are squared off in that case.
+fn fold_toggle(key: String, expanded: bool, entity: &Entity<Shell>) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .py_1()
+        .rounded_t(px(0.0))
+        .rounded_b(px(6.0))
+        .bg(rgba(0x7f7f7f08))
+        .border_1()
+        .border_color(rgba(0x7f7f7f20))
+        .cursor_pointer()
+        .id(format!("fold-toggle-{key}"))
+        .text_color(rgb(0x888888))
+        .hover(|style| style.bg(rgba(0x7f7f7f14)))
+        .on_click({
+            let key = key.clone();
+            let entity = entity.clone();
+            move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_code(key.clone(), cx));
+            }
+        })
+        .child(conversation_icon(if expanded {
+            IconName::ArrowUp
+        } else {
+            IconName::ArrowDown
+        }))
+        .into_any_element()
+}
+
 fn markdown_with_folds(
     index: usize,
     text: &str,
@@ -3433,41 +3468,31 @@ fn markdown_with_folds(
                 let line_count = body.lines().count();
                 let key = format!("{index}:{segment_index}");
                 let expanded = shell.expanded_code.contains(&key);
-                let visible = if expanded || line_count <= 20 {
+                let folded = line_count > 20;
+                let visible = if expanded || !folded {
                     body.clone()
                 } else {
                     body.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
                 let fence = format!("```{language}\n{visible}\n```");
                 // One single code block — no extra wrapping box or header,
-                // indented one level from the surrounding answer text.
-                let mut block = div().flex().flex_col().gap_1().my_1().pl_4();
-                block = block.child(
-                    TextView::markdown(format!("assistant-code-{key}"), fence)
-                        .code_block_actions(|_, _, _| div().into_any_element())
-                        .text_size(px(CAPTION_SIZE))
-                        .line_height(px(CODE_LINE)),
-                );
-                if line_count > 20 {
-                    let label = if expanded {
-                        "Collapse".to_string()
-                    } else {
-                        format!("Show {} more lines", line_count - 12)
-                    };
-                    block = block.child(
-                        Button::new(format!("code-toggle-{key}"))
-                            .label(label)
-                            .compact()
-                            .on_click({
-                                let key = key.clone();
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |shell, cx| {
-                                        shell.toggle_code(key.clone(), cx);
-                                    });
-                                }
-                            }),
+                // indented one level from the surrounding answer text. With a
+                // fold toggle the code block loses its bottom corners so the
+                // toggle below reads as one piece with it.
+                let mut block = div().flex().flex_col().gap_0().my_1().pl_4();
+                let mut code = TextView::markdown(format!("assistant-code-{key}"), fence)
+                    .code_block_actions(|_, _, _| div().into_any_element())
+                    .text_size(px(CAPTION_SIZE))
+                    .line_height(px(CODE_LINE));
+                if folded {
+                    code = code.style(
+                        TextViewStyle::default()
+                            .code_block(StyleRefinement::default().rounded_b(px(0.0))),
                     );
+                }
+                block = block.child(code);
+                if folded {
+                    block = block.child(fold_toggle(key, expanded, entity));
                 }
                 column = column.child(block);
             }
@@ -3582,12 +3607,24 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .get("command")
                     .and_then(|value| value.as_str())
                     .map(str::to_string);
+                let output_line_count = tool.output.lines().count();
+                let foldable = output_line_count > 20;
+                let output_key = format!("{index}:output");
+                let output_expanded = shell.expanded_code.contains(&output_key);
+                let output_visible = if output_expanded || !foldable {
+                    tool.output.clone()
+                } else {
+                    tool.output.lines().take(12).collect::<Vec<_>>().join("\n")
+                };
                 if command.is_some() || !tool.output.is_empty() {
                     // The command and its result share one box, with a blank
-                    // line between them.
+                    // line between them. When the output is folded the box
+                    // loses its bottom corners so the toggle below reads as
+                    // one piece with it.
                     let mut content = div()
                         .w_full()
-                        .rounded(px(6.0))
+                        .rounded_t(px(6.0))
+                        .rounded_b(if foldable { px(0.0) } else { px(6.0) })
                         .bg(rgba(0x7f7f7f08))
                         .border_1()
                         .border_color(rgba(0x7f7f7f20))
@@ -3626,7 +3663,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                         }
                         // Lists render as markdown lists; anything else stays
                         // plain light text — one box, no nested code block.
-                        if looks_like_list(&tool.output) {
+                        if looks_like_list(&output_visible) {
                             content = content.child(
                                 div()
                                     .text_size(px(RESULT_SIZE))
@@ -3634,7 +3671,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                                     .child(
                                         TextView::markdown(
                                             format!("tool-output-{index}"),
-                                            tool.output.clone(),
+                                            output_visible,
                                         )
                                         .text_size(px(RESULT_SIZE))
                                         .line_height(px(RESULT_LINE)),
@@ -3646,7 +3683,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                             // the text renders exactly like the original one
                             // box — no nested code-block frame, same size and
                             // colour — while staying selectable.
-                            let selectable = tool.output.replace('\n', "  \n");
+                            let selectable = output_visible.replace('\n', "  \n");
                             content = content.child(
                                 div()
                                     .text_size(px(RESULT_SIZE))
@@ -3663,7 +3700,21 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                             );
                         }
                     }
-                    details = details.child(content);
+                    // The fold toggle joins the box as one piece when the
+                    // output is long (squared corners, no gap).
+                    if foldable {
+                        details = details.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_0()
+                                .w_full()
+                                .child(content)
+                                .child(fold_toggle(output_key, output_expanded, entity)),
+                        );
+                    } else {
+                        details = details.child(content);
+                    }
                 }
                 if let Some(elapsed) = tool.elapsed {
                     details = details.child(
