@@ -1788,6 +1788,9 @@ impl Shell {
                         cx.notify();
                     }))
                     .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.rail_popup = None;
+                        this.rail_hover_item = None;
+                        this.rail_popup_close_at = None;
                         this.jump_to_turn(i, cx);
                     })),
             );
