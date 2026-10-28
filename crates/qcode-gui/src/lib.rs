@@ -26,10 +26,9 @@ use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerStat
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::text::{TextView, TextViewStyle};
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
-use gpui_kit::base::{h_resizable, resizable_panel};
 
 gpui_kit::actions!(
     qcode_gui,
@@ -43,8 +42,6 @@ gpui_kit::actions!(
         CloseWindowShortcut,
         ToggleSidebarShortcut,
         ToggleThemeShortcut,
-        ZoomInShortcut,
-        ZoomOutShortcut,
         StopTurnShortcut,
         PrevTurnShortcut,
         NextTurnShortcut,
@@ -53,7 +50,6 @@ gpui_kit::actions!(
 );
 use crate::approvals::ApprovalQueue;
 use crate::gui_prefs::GuiPreferences;
-use crate::tray::{TrayEvent, TrayIcon};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
 use qcode_core::store::{SessionStore, SessionSummary};
@@ -74,34 +70,12 @@ const SECONDARY_LINE: f32 = 22.0;
 const CAPTION_SIZE: f32 = 11.0;
 const CODE_SIZE: f32 = 12.0;
 const CODE_LINE: f32 = 18.0;
-/// Content inside tool boxes (command + output) and the thinking body:
-/// one step larger than captions with extra line spacing for readability.
-const RESULT_SIZE: f32 = 12.0;
+/// Result content inside tool boxes: one step smaller than captions with
+/// extra line spacing for readability.
+const RESULT_SIZE: f32 = 10.0;
 const RESULT_LINE: f32 = 22.0;
-/// The design baseline all *SIZE/*LINE tokens are written at: the default
-/// `GuiPreferences::font_size`. Every token scales from this baseline at
-/// render time (see `sp`), so Ctrl++ / Ctrl+- zoom the whole UI's text.
-const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
-
-/// The runtime font axis: the user's base font size in px, kept in sync with
-/// `GuiPreferences.font_size` (set in `Shell::new` and `Shell::zoom_font`).
-static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
-
-/// Resolve one typography token at the current font scale — the Rust
-/// analogue of deepseek-harness's single `--dsh-content-font-size` axis:
-/// one runtime value drives every conversation font and line height, so the
-/// tokens never drift per-row.
-fn sp(base: f32) -> gpui_kit::Pixels {
-    px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
-}
+const TURN_MAX_WIDTH: f32 = 900.0;
 const TURN_RAIL_WIDTH: f32 = 20.0;
-/// Width bounds of the resizable sidebar, in pixels. Dragging the divider
-/// between the sidebar and the conversation clamps to these.
-const SIDEBAR_MIN_WIDTH: f32 = 180.0;
-const SIDEBAR_MAX_WIDTH: f32 = 560.0;
-/// Minimum width of the main conversation panel, in pixels.
-const MAIN_MIN_WIDTH: f32 = 380.0;
 /// Frames of the status-bar spinner shown while a turn is running.
 const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -559,6 +533,10 @@ struct Shell {
     file_refs: Vec<PathBuf>,
     /// Pending approvals, shown one at a time in arrival order.
     approvals: ApprovalQueue,
+    /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
+    minimize_on_close: bool,
+    /// 托盘“退出”在任务运行中时的确认。
+    pending_quit: bool,
     /// Variable-height virtual transcript with tail following.
     scroller: Entity<MessageScrollerState>,
     /// Turn/loose-block rows currently rendered.
@@ -585,14 +563,6 @@ struct Shell {
     /// Last task row the pointer entered; keeps the action overlay alive while
     /// the pointer moves from the row onto the overlay.
     hovered_task: Option<String>,
-    /// Index of the turn whose rail dot has an active hover popover.
-    rail_popup: Option<usize>,
-    /// Index currently hovered inside the popover list; overrides the dot's
-    /// own highlight until the pointer leaves the popover content.
-    rail_hover_item: Option<usize>,
-    /// Scheduled instant to close the rail popup once both the dot and the
-    /// popup content have lost hover. `None` = no close pending.
-    rail_popup_close_at: Option<std::time::Instant>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -601,11 +571,9 @@ struct Shell {
     /// loop is already running for the current turn.
     waiting_frame: u8,
     waiting_ticker: bool,
-    /// Per-turn execution-process container expansion. While a turn runs it is
-    /// forced open regardless; on completion it auto-folds (user can reopen).
-    /// New turn indices are added here when explicitly toggled open; remove
-    /// from the set to fold.
-    process_open_turns: std::collections::HashSet<usize>,
+    /// Whether the turn's execution-process container is folded. While a turn
+    /// runs it is forced open; on completion it auto-folds (user can reopen).
+    process_collapsed: bool,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -627,12 +595,6 @@ struct Shell {
     config_watch_armed: bool,
     data_dir: PathBuf,
     prefs: GuiPreferences,
-    /// System tray icon; when present, closing hides the window instead of
-    /// quitting, and tray events restore or exit the app.
-    tray: Option<TrayIcon>,
-    /// The main window handle, used by the tray poller to show the window
-    /// without depending on a render pass (a hidden window may stop rendering).
-    main_window: Option<AnyWindowHandle>,
 }
 
 impl Shell {
@@ -643,6 +605,7 @@ impl Shell {
         data_dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
+        minimize_on_close: bool,
     ) -> Self {
         let cwd = backend.cwd().display().to_string();
         let tasks = backend.tasks().unwrap_or_else(|error| {
@@ -651,7 +614,6 @@ impl Shell {
         });
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
-        FONT_SIZE_PX.store(prefs.font_size, std::sync::atomic::Ordering::Relaxed);
         prefs.record_workspace(Path::new(&cwd));
         let configured_provider = backend
             .provider()
@@ -738,13 +700,11 @@ impl Shell {
         );
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
-        // Give the window the app icon (taskbar/titlebar on Windows).
-        crate::tray::set_window_icon(window);
         eprintln!(
             "qcode-gui: window ready pid={} (focus fix + concurrent engine)",
             std::process::id()
         );
-        let shell = Self {
+        Self {
             app,
             input,
             model_select,
@@ -759,6 +719,8 @@ impl Shell {
             attachments: Vec::new(),
             file_refs: Vec::new(),
             approvals: ApprovalQueue::default(),
+            minimize_on_close,
+            pending_quit: false,
             scroller,
             units,
             expanded_process: None,
@@ -771,14 +733,11 @@ impl Shell {
             rename_task: None,
             task_menu: None,
             hovered_task: None,
-            rail_popup: None,
-            rail_hover_item: None,
-            rail_popup_close_at: None,
             collapse_all: false,
             collapse_to_list: false,
             waiting_frame: 0,
             waiting_ticker: false,
-            process_open_turns: std::collections::HashSet::new(),
+            process_collapsed: true,
             last_blocks,
             backend,
             tasks,
@@ -792,72 +751,86 @@ impl Shell {
             config_path,
             data_dir,
             prefs,
-            tray: match TrayIcon::install() {
-                Ok(tray) => Some(tray),
-                Err(error) => {
-                    eprintln!("qcode-gui: no system tray: {error}");
-                    None
-                }
-            },
-            main_window: None,
-        };
-        shell.tick_tray(cx);
-        shell
+        }
     }
 
-    /// Close the window: hide it behind the tray icon when the tray exists
-    /// (close-to-tray), otherwise really close and quit.
-    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tray.is_some() {
-            crate::tray::hide_window(window);
-        } else {
-            window.remove_window();
+    /// 托盘“退出”（以及将来的菜单退出）统一入口：运行中先确认（ADR-0052）。
+    fn request_quit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.app.status.running || self.approvals.current().is_some() {
+            self.pending_quit = true;
+            cx.notify();
+            return;
         }
+        cx.quit();
+    }
+
+    fn cancel_quit(&mut self, cx: &mut Context<Self>) {
+        self.pending_quit = false;
         cx.notify();
     }
 
-    /// Poll the tray channel on a slow ticker and act on events right here,
-    /// without waiting for a render pass (a hidden window may not render).
-    fn tick_tray(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(400))
-                    .await;
-                let alive = this.update(cx, |shell, cx| {
-                    if let Some(tray) = &shell.tray {
-                        for event in tray.drain_events() {
-                            match event {
-                                TrayEvent::Show => {
-                                    if let Some(handle) = shell.main_window {
-                                        let _ = cx.update_window(handle, |_view, window, _app| {
-                                            crate::tray::show_window(window);
-                                            window.activate_window();
-                                        });
-                                    }
-                                    cx.notify();
-                                }
-                                TrayEvent::Toggle => {
-                                    if let Some(handle) = shell.main_window {
-                                        let _ = cx.update_window(handle, |_view, window, _app| {
-                                            crate::tray::toggle_window(window);
-                                        });
-                                    }
-                                    cx.notify();
-                                }
-                                TrayEvent::Quit => crate::tray::quit_app(),
-                            }
-                        }
-                    }
-                    Some(())
-                });
-                match alive {
-                    Ok(Some(())) => {}
-                    _ => break,
-                }
-            }
-        })
-        .detach();
+    fn confirm_quit(&mut self, cx: &mut Context<Self>) {
+        self.pending_quit = false;
+        cx.quit();
+    }
+
+    /// 托盘图标/菜单要的最小状态。
+    fn tray_snapshot(&self) -> tray::TraySnapshot {
+        tray::TraySnapshot::new(
+            self.app.status.running,
+            usize::from(self.approvals.current().is_some()),
+        )
+    }
+
+    /// 退出确认：只在任务运行中或等待审批时出现。
+    fn render_quit_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.pending_quit {
+            return div().into_any_element();
+        }
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(440.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child("退出 QCode？")
+                    .child(
+                        div()
+                            .text_size(px(SECONDARY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child("当前任务仍在运行，退出会中断它。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-quit").label("取消").on_click(
+                                    cx.listener(|this, _, _window, cx| this.cancel_quit(cx)),
+                                ),
+                            )
+                            .child(Button::new("confirm-quit").label("退出").danger().on_click(
+                                cx.listener(|this, _, _window, cx| this.confirm_quit(cx)),
+                            )),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn reset_scroller(&mut self, cx: &mut Context<Self>) {
@@ -865,7 +838,7 @@ impl Shell {
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
-        self.process_open_turns.clear();
+        self.process_collapsed = true;
         self.units = display_units(&self.app);
         let count = self.units.len() + self.typing_extra();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
@@ -996,10 +969,9 @@ impl Shell {
                 self.task_menu = None;
                 self.hovered_task = None;
                 self.turn_in_flight = false;
-                // A resumed session is already complete: fold every
-                // execution process like a just-finished turn (reopenable
-                // via header).
-                self.process_open_turns.clear();
+                // A resumed session is already complete: fold its execution
+                // process like a just-finished turn (reopenable via header).
+                self.process_collapsed = true;
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
             }
@@ -1162,16 +1134,16 @@ impl Shell {
                         // A fresh turn's execution process starts folded by
                         // default; drop any stale reasoning expansion from the
                         // previous turn.
-                        self.process_open_turns.clear();
+                        self.process_collapsed = true;
                         if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
                             self.expanded_process = None;
                         }
                     }
                     changed = true;
                     if turn_ended {
-                        // Every execution process auto-folds once its turn
-                        // is done; the header stays clickable to reopen.
-                        self.process_open_turns.clear();
+                        // The execution process auto-folds once the turn is
+                        // done; the header stays clickable to reopen it.
+                        self.process_collapsed = true;
                         self.refresh_tasks();
                     }
                 }
@@ -1221,77 +1193,15 @@ impl Shell {
         }
     }
 
-    /// The virtual-list row that renders `block`, if any. Loose notices are
-    /// their own row; a turn's input, process and answer blocks all render
-    /// inside that turn's single variable-height row.
-    fn block_unit_index(&self, block: usize) -> Option<usize> {
-        self.units
-            .iter()
-            .position(|unit| match unit {
-                DisplayUnit::Loose(b) => *b == block,
-                DisplayUnit::Turn(t) => {
-                    let turn = &self.app.turns[*t];
-                    turn.input_block == Some(block)
-                        || turn.answer_block == Some(block)
-                        || turn.process.contains(&block)
-                }
-            })
+    fn anchor(&self, cx: &Context<Self>) -> Option<usize> {
+        let state = self.scroller.read(cx);
+        (!state.is_following_tail()).then(|| state.logical_scroll_top().item_ix)
     }
 
-    /// Resolve a process row back to the block it renders, so its enclosing
-    /// turn row can be remeasured when the accordion changes its height.
-    fn process_block(&self, key: &ProcessKey) -> Option<usize> {
-        match key {
-            ProcessKey::Reasoning(block) => Some(*block),
-            ProcessKey::Tool(call_id) => self
-                .app
-                .blocks
-                .iter()
-                .position(|block| {
-                    matches!(block, Block::Tool(tool) if tool.call_id.as_str() == call_id.as_str())
-                }),
-        }
-    }
-
-    /// Remeasure the row containing `block`, keeping the current scroll offset
-    /// anchored to the top of the viewport rather than snapping to the top of
-    /// the (potentially very tall) enclosing turn row.
-    fn remeasure_block(&mut self, block: usize, cx: &mut Context<Self>) {
-        if let Some(unit) = self.block_unit_index(block) {
-            self.scroller.update(cx, |state, cx| {
-                state.remeasure_items(unit..unit + 1, cx);
-            });
-        }
-    }
-
-    /// Apply an accordion change: remeasure both the previously expanded row
-    /// and the newly expanded row so their height differences don't move the
-    /// scroll anchor.
-    fn set_expanded_process(&mut self, next: Option<ProcessKey>, cx: &mut Context<Self>) {
-        let old = if self.collapse_to_list {
-            None
-        } else {
-            self.expanded_process.clone()
-        };
-        let mut blocks = Vec::new();
-        if old != next {
-            if let Some(key) = &old
-                && let Some(block) = self.process_block(key)
-            {
-                blocks.push(block);
-            }
-            if let Some(key) = &next
-                && let Some(block) = self.process_block(key)
-            {
-                blocks.push(block);
-            }
-        }
-        self.expanded_process = next;
-        self.collapse_to_list = false;
-        blocks.sort_unstable();
-        blocks.dedup();
-        for block in blocks {
-            self.remeasure_block(block, cx);
+    fn restore_anchor(&self, anchor: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(anchor) = anchor {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_item(anchor, cx));
         }
     }
 
@@ -1321,13 +1231,20 @@ impl Shell {
         .detach();
     }
 
-    /// Scroll the transcript to its absolute bottom (after every turn and
-    /// above the composer). The function is named `jump_to_bottom` here but
-    /// kept simple — it never pins `selected_turn`, so the rail's highlight
-    /// stays on whichever turn the user was looking at.
-    fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
-        self.scroller
-            .update(cx, |state, cx| state.scroll_to_end(cx));
+    fn jump_to_last(&mut self, cx: &mut Context<Self>) {
+        let Some(last) = self.app.turns.len().checked_sub(1) else {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_end(cx));
+            return;
+        };
+        self.selected_turn = Some(last);
+        if let Some(unit) = self.turn_unit_index(last) {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_item(unit, cx));
+        } else {
+            self.scroller
+                .update(cx, |state, cx| state.scroll_to_end(cx));
+        }
         cx.notify();
     }
 
@@ -1338,22 +1255,23 @@ impl Shell {
     }
 
     fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
         let next = if self.reasoning_expanded(block) {
             None
         } else {
             Some(ProcessKey::Reasoning(block))
         };
-        self.set_expanded_process(next, cx);
+        self.expanded_process = next;
+        self.collapse_to_list = false;
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
-    /// Fold / unfold one turn's execution-process container, tracked per-turn
-    /// in `process_open_turns`. While the turn runs the container is forced
-    /// open, so this only matters afterwards.
-    fn toggle_process(&mut self, index: usize, cx: &mut Context<Self>) {
-        if !self.process_open_turns.insert(index) {
-            self.process_open_turns.remove(&index);
-        }
+    /// Fold / unfold the turn's execution-process container. While the turn
+    /// runs the container is forced open, so this only matters afterwards.
+    fn toggle_process(&mut self, cx: &mut Context<Self>) {
+        self.process_collapsed = !self.process_collapsed;
         cx.notify();
     }
 
@@ -1364,26 +1282,26 @@ impl Shell {
     }
 
     fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
+        let anchor = self.anchor(cx);
         let next = if self.tool_expanded(call_id) {
             None
         } else {
             Some(ProcessKey::Tool(call_id.to_string()))
         };
-        self.set_expanded_process(next, cx);
+        self.expanded_process = next;
+        self.collapse_to_list = false;
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
     fn toggle_code(&mut self, key: String, cx: &mut Context<Self>) {
-        let block = key
-            .split(':')
-            .next()
-            .and_then(|index| index.parse::<usize>().ok());
+        let anchor = self.anchor(cx);
         if !self.expanded_code.remove(&key) {
             self.expanded_code.insert(key);
         }
-        if let Some(block) = block {
-            self.remeasure_block(block, cx);
-        }
+        self.sync_scroller(cx);
+        self.restore_anchor(anchor, cx);
         cx.notify();
     }
 
@@ -1455,29 +1373,6 @@ impl Shell {
         } else {
             "dark".to_string()
         };
-        if let Err(error) = self.prefs.save(&self.data_dir) {
-            self.app
-                .push_notice(format!("cannot save gui.json: {error}"));
-        }
-        self.prefs.apply(cx);
-        cx.notify();
-    }
-
-    /// Ctrl++ / Ctrl+- zoom the whole UI's text: shift the base font size by
-    /// one pixel within the FONT_SIZE_MIN..=FONT_SIZE_MAX bounds. Persisted
-    /// like the settings form's Font size field, then re-applied to the theme
-    /// (default text) and to every `sp`-scaled typography token.
-    fn zoom_font(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let next = self.prefs.font_size as i32 + delta;
-        let next = next.clamp(
-            crate::gui_prefs::FONT_SIZE_MIN as i32,
-            crate::gui_prefs::FONT_SIZE_MAX as i32,
-        ) as u32;
-        if next == self.prefs.font_size {
-            return;
-        }
-        self.prefs.font_size = next;
-        FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = self.prefs.save(&self.data_dir) {
             self.app
                 .push_notice(format!("cannot save gui.json: {error}"));
@@ -1616,22 +1511,14 @@ impl Shell {
             .child(
                 Button::new("jump-latest")
                     .icon(IconName::ArrowDown)
-                    .accessibility_label("跳转到底部")
-                    .tooltip("跳转到底部")
-                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_bottom(cx))),
+                    .accessibility_label("Jump to latest")
+                    .tooltip("Jump to latest")
+                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
             )
             .into_any_element()
     }
 
-    fn render_turn_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        // Expire any pending rail-popup close timer whose time has come.
-        if let Some(at) = self.rail_popup_close_at {
-            if std::time::Instant::now() >= at {
-                self.rail_popup = None;
-                self.rail_hover_item = None;
-                self.rail_popup_close_at = None;
-            }
-        }
+    fn render_turn_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
         }
@@ -1647,23 +1534,7 @@ impl Shell {
             (center.saturating_sub(MAX_DOTS / 2)).min(total - MAX_DOTS)
         };
         let end = (start + MAX_DOTS).min(total);
-        // One-line title for every turn's input block — the popover lists the
-        // *entire* session, not just the visible dot window.
-        let inputs: Vec<String> = self
-            .app
-            .turns
-            .iter()
-            .map(|turn| {
-                turn.input_block
-                    .and_then(|idx| self.app.blocks.get(idx))
-                    .and_then(|block| match block {
-                        Block::User(text) => Some(text.trim()),
-                        _ => None,
-                    })
-                    .map(short_title)
-                    .unwrap_or_else(|| format!("Turn {}", turn.number))
-            })
-            .collect();
+        // One gray dot per turn, vertically centred on the dialog's left edge.
         let mut rail = div()
             .w(px(TURN_RAIL_WIDTH))
             .flex()
@@ -1674,7 +1545,7 @@ impl Shell {
         for index in start..end {
             // Colour fades with distance from the active turn: the current one
             // is darkest, one step away slightly lighter, farther ones lightest.
-            let dot_color = match active
+            let dot = match active
                 .map(|active| index.abs_diff(active))
                 .unwrap_or(usize::MAX)
             {
@@ -1682,128 +1553,21 @@ impl Shell {
                 1 => rgb(0xbcbcbc),
                 _ => rgb(0xd8d8d8),
             };
-            let inputs = inputs.clone();
-            let show_popover = self.rail_popup == Some(index);
-            let dot = div()
-                .w(px(8.0))
-                .h(px(8.0))
-                .rounded(px(4.0))
-                .bg(dot_color)
-                .hover(|style| style.bg(rgb(0xa8a8a8)))
-                .cursor_pointer()
-                .id(format!("turn-rail-trigger-{index}"))
-                .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                    if *hovered {
-                        this.rail_popup = Some(index);
-                        this.rail_hover_item = None;
-                        this.rail_popup_close_at = None;
-                    } else if this.rail_popup == Some(index) {
-                        // Short grace window only to let the pointer travel
-                        // from the dot into the popover. Once the pointer
-                        // leaves both, the popover must hide — the popover's
-                        // own outer div on_hover(false) handles that path,
-                        // and this timer catches the case where the user
-                        // jumps straight from dot → nowhere.
-                        this.rail_popup_close_at = Some(
-                            std::time::Instant::now() + std::time::Duration::from_millis(200),
-                        );
-                    }
-                    cx.notify();
-                }))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.jump_to_turn(index, cx);
-                }));
-            let popup = gpui_kit::base::Popup::new(
-                format!("rail-popup-{index}"),
-                dot.into_any_element(),
-            )
-            // LeftCenter: popover's left edge snaps to the dot's right center,
-            // so the card appears on the *right* side of the rail.
-            .anchor(gpui_kit::Anchor::LeftCenter)
-            .offset(px(6.0));
-            let popup = if show_popover {
-                popup.content(self.build_rail_popover(cx, inputs, index))
-            } else {
-                popup
-            };
-            rail = rail.child(popup);
-        }
-        rail.into_any_element()
-    }
-
-    /// Build the hover-popover body for the rail dots: a scrollable list of
-    /// every turn's question. Items start neutral — the list row hover is
-    /// what marks one "active", so the highlight *only* tracks the pointer
-    /// inside the popover, never the hovered dot itself.
-    fn build_rail_popover(
-        &mut self,
-        cx: &mut Context<Self>,
-        inputs: Vec<String>,
-        highlight: usize,
-    ) -> gpui_kit::AnyElement {
-        // ONLY the row the pointer is actually hovering inside the popover
-        // gets the active style. `None` here means "nothing selected yet".
-        let active = self.rail_hover_item;
-        let mut list = div()
-            .id(format!("rail-popover-list-{highlight}"))
-            .flex()
-            .flex_col()
-            .bg(rgb(0xfbfbfb))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(0xe3e3e3))
-            .max_w(px(260.0))
-            .max_h(px(360.0))
-            .overflow_y_hidden()
-            .py_1()
-            .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                if *hovered {
-                    // Pointer inside the popover — cancel any pending close
-                    // so the dot's 200ms grace window doesn't shut us down.
-                    this.rail_popup_close_at = None;
-                } else {
-                    // Pointer fully left the popover. Schedule a zero-delay
-                    // close (expires next render) so the card snaps hidden.
-                    this.rail_hover_item = None;
-                    this.rail_popup_close_at = Some(std::time::Instant::now());
-                }
-                cx.notify();
-            }));
-        for (i, title) in inputs.iter().enumerate() {
-            let title = title.clone();
-            let is_active = active == Some(i);
-            list = list.child(
-                Button::new(format!("popover-item-{i}"))
-                    // Ghost variant kills the default Button border — items
-                    // blend cleanly into the popover backdrop without any
-                    // chip frame around them.
-                    .with_variant(gpui_kit::component::button::ButtonVariant::Ghost)
-                    .label(title)
+            rail = rail.child(
+                div()
+                    .w(px(8.0))
+                    .h(px(8.0))
+                    .rounded(px(4.0))
+                    .bg(dot)
+                    .hover(|style| style.bg(rgb(0xa8a8a8)))
                     .cursor_pointer()
-                    .bg(rgb(0xfbfbfb))
-                    .px_3()
-                    .py_2()
-                    .text_size(sp(12.0))
-                    .text_color(rgb(0x222222))
-                    .when(is_active, |s| s.bg(rgb(0xe0e0e0)))
-                    .when(!is_active, |s| s.hover(|style| style.bg(rgb(0xe0e0e0))))
-                    .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                        if *hovered {
-                            this.rail_hover_item = Some(i);
-                        } else if this.rail_hover_item == Some(i) {
-                            this.rail_hover_item = None;
-                        }
-                        cx.notify();
-                    }))
+                    .id(format!("turn-rail-{index}"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.rail_popup = None;
-                        this.rail_hover_item = None;
-                        this.rail_popup_close_at = None;
-                        this.jump_to_turn(i, cx);
+                        this.jump_to_turn(index, cx);
                     })),
             );
         }
-        list.into_any_element()
+        rail.into_any_element()
     }
 
     fn active_task_row(&self) -> Option<&TaskRow> {
@@ -2099,7 +1863,7 @@ impl Shell {
                     .child(format!("删除任务 “{title}”？"))
                     .child(
                         div()
-                            .text_size(sp(SECONDARY_SIZE))
+                            .text_size(px(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(
                                 "将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。",
@@ -2211,7 +1975,7 @@ impl Shell {
                     .child(format!("移除目录 @{label}？"))
                     .child(
                         div()
-                            .text_size(sp(SECONDARY_SIZE))
+                            .text_size(px(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(format!("不会删除 {path} 中的文件，只会从当前任务中移除。")),
                     )
@@ -2331,7 +2095,7 @@ impl Shell {
             if missing {
                 line = line.child(
                     div()
-                        .text_size(sp(CAPTION_SIZE))
+                        .text_size(px(CAPTION_SIZE))
                         .text_color(rgb(0xd06060))
                         .child("丢失"),
                 );
@@ -2394,14 +2158,14 @@ impl Shell {
         if pending {
             section = section.child(
                 div()
-                    .text_size(sp(CAPTION_SIZE))
+                    .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("当前 Turn 结束后应用"),
             );
         } else if self.turn_in_flight {
             section = section.child(
                 div()
-                    .text_size(sp(CAPTION_SIZE))
+                    .text_size(px(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("Turn 结束后应用"),
             );
@@ -2461,12 +2225,8 @@ impl Shell {
                 .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                     if *hovered {
                         this.hovered_task = Some(hover_id.clone());
-                    } else if this.hovered_task.as_deref() == Some(hover_id.as_str()) {
-                        // The pointer left this row: hide its action buttons,
-                        // unless another row already took the hover state.
-                        this.hovered_task = None;
+                        cx.notify();
                     }
-                    cx.notify();
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.task_menu = None;
@@ -2477,12 +2237,13 @@ impl Shell {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_size(sp(BODY_SIZE))
+                        .text_size(px(BODY_SIZE))
                         .whitespace_nowrap()
                         .child(label),
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
+                .occlude()
                 .absolute()
                 .right_1()
                 .top_0()
@@ -2546,17 +2307,13 @@ impl Shell {
         }
 
         div()
-            .w_full()
+            .w(px(240.0))
             .h_full()
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
             .id("task-sidebar")
-            // Sidebar sits on the base `sidebar` token, one step lighter than
-            // the row hover (`sidebar_accent` at reduced opacity), so the list
-            // reads as a surface and the hovered row still stands out.
-            .bg(cx.theme().sidebar)
             .overflow_y_scroll()
             .child(
                 Button::new("open-settings")
@@ -2596,7 +2353,6 @@ impl Shell {
         let theme = cx.theme();
         let popover = theme.popover;
         let border = theme.border;
-        let muted_foreground = theme.muted_foreground;
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
@@ -2608,14 +2364,20 @@ impl Shell {
         .jump_button(false);
 
         // Header label: the session title when the task has one (first user
-        // message), else a fresh-task placeholder — a brand-new task has no
-        // session id worth showing until its first message is sent.
+        // message), else the session id — say what this conversation is
+        // about, not just a raw id.
         let header_label = self
             .active
             .as_deref()
             .and_then(|id| self.titles.get(id))
             .cloned()
-            .unwrap_or_else(|| "新任务".to_string());
+            .unwrap_or_else(|| {
+                self.active
+                    .as_deref()
+                    .map(short_id)
+                    .unwrap_or("new task")
+                    .to_string()
+            });
 
         // Keep the picker's selection in sync with the kernel's model
         // (a resume or a settings rebuild may change it).
@@ -2636,27 +2398,7 @@ impl Shell {
             .gap_2()
             .px_2()
             .py_4()
-            .child(
-                // Conversation header: the task title in a step above the body
-                // text and bold, with the turn count beside it as secondary.
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_baseline()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(sp(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(header_label.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(sp(SECONDARY_SIZE))
-                            .text_color(muted_foreground)
-                            .child(format!("{} turn(s)", self.app.turns.len())),
-                    ),
-            )
+            .child(format!("{header_label} · {} turn(s)", self.app.turns.len()))
             .child(div().flex_grow(1.0))
             .child(div().w(px(220.0)).child(
                 // Default `Length::Auto` sizes the dropdown to the trigger
@@ -2674,10 +2416,6 @@ impl Shell {
             .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
-                // With an approval card pinned below the transcript, drop the
-                // container's bottom padding so the card sits right on the
-                // composer with no gap.
-                let has_approval = self.approvals.current().is_some();
                 div()
                     .relative()
                     .flex()
@@ -2692,7 +2430,7 @@ impl Shell {
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
-                            .when(!has_approval, |this| this.pb(px(24.0)))
+                            .pb(px(24.0))
                             // GPUI keeps a text selection live until the mouse
                             // button-up arrives, and a wheel scroll then
                             // drags/extends it along the pointer — so a
@@ -2702,72 +2440,7 @@ impl Shell {
                             .on_scroll(|_, window, cx| {
                                 gpui_kit::base::TextSelection::clear(window, cx);
                             })
-                            .child(list)
-                            .children(self.approvals.current().map(|view| {
-                                // Approval card: a light popover-style box, one
-                                // text size smaller than the assistant result.
-                                // The outer 12px padding matches the scroller's
-                                // row inset, so the card is exactly as wide as
-                                // the response content — a little narrower than
-                                // the composer.
-                                div()
-                                    .w_full()
-                                    .px_3()
-                                    .child({
-                                        let mut card = div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .w_full()
-                                            .rounded(px(10.0))
-                                            .bg(rgba(0x7f7f7f0d))
-                                            .border_1()
-                                            .border_color(rgba(0x7f7f7f30))
-                                            .px_3()
-                                            .py_2()
-                                            .text_size(sp(CODE_SIZE))
-                                            .line_height(sp(CODE_LINE))
-                                            .child(div().child(format!(
-                                                "approval needed ({}) · {} · {}",
-                                                self.approvals.len(),
-                                                view.tool,
-                                                view.summary
-                                            )))
-                                            .child(div().child(format!("reason: {}", view.reason)));
-                                        if let Some(rule) = &view.rule_id {
-                                            card = card.child(format!("rule: {rule}"));
-                                        }
-                                        if let Some(argv) = &view.argv {
-                                            card = card.child(format!("argv: {argv}"));
-                                        }
-                                        if let Some(cwd) = &view.cwd {
-                                            card = card.child(format!("cwd: {cwd}"));
-                                        }
-                                        card = card.child(format!("sandbox: {}", self.app.sandbox));
-                                        card.child(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .gap_2()
-                                                .child(Button::new("allow").label("Allow").on_click(
-                                                    cx.listener(|this, _, _window, cx| {
-                                                        this.answer(true, false, cx)
-                                                    }),
-                                                ))
-                                                .child(Button::new("allow-session").label("Always").on_click(
-                                                    cx.listener(|this, _, _window, cx| {
-                                                        this.answer(true, true, cx)
-                                                    }),
-                                                ))
-                                                .child(Button::new("deny").label("Reject").on_click(
-                                                    cx.listener(|this, _, _window, cx| {
-                                                        this.answer(false, false, cx)
-                                                    }),
-                                                )),
-                                        )
-                                    })
-                                }
-                            )),
+                            .child(list),
                     )
                     .child(self.render_floating_actions(cx))
             })
@@ -2808,6 +2481,58 @@ impl Shell {
                             ),
                     )
                     .child(Diff::new(state))
+            }))
+            .children(self.approvals.current().map(|view| {
+                // Approval card: a light popover-style box, one text size
+                // smaller than the assistant result, left-aligned with the
+                // composer's input box.
+                let mut card = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .ml(px(12.0))
+                    .mr(px(14.0))
+                    .rounded(px(10.0))
+                    .bg(rgba(0x7f7f7f0d))
+                    .border_1()
+                    .border_color(rgba(0x7f7f7f30))
+                    .px_3()
+                    .py_2()
+                    .text_size(px(CODE_SIZE))
+                    .line_height(px(CODE_LINE))
+                    .child(div().child(format!(
+                        "approval needed ({}) · {} · {}",
+                        self.approvals.len(),
+                        view.tool,
+                        view.summary
+                    )))
+                    .child(div().child(format!("reason: {}", view.reason)));
+                if let Some(rule) = &view.rule_id {
+                    card = card.child(format!("rule: {rule}"));
+                }
+                if let Some(argv) = &view.argv {
+                    card = card.child(format!("argv: {argv}"));
+                }
+                if let Some(cwd) = &view.cwd {
+                    card = card.child(format!("cwd: {cwd}"));
+                }
+                card = card.child(format!("sandbox: {}", self.app.sandbox));
+                card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(Button::new("allow").label("Allow").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
+                        ))
+                        .child(Button::new("allow-session").label("Always").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
+                        ))
+                        .child(Button::new("deny").label("Reject").on_click(
+                            cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
+                        )),
+                )
             }))
             .child(
                 div()
@@ -2863,7 +2588,7 @@ impl Shell {
                                 .py_1()
                                 .child(
                                     div()
-                                        .text_size(sp(CAPTION_SIZE))
+                                        .text_size(px(CAPTION_SIZE))
                                         .child(name),
                                 )
                                 .child(
@@ -2902,7 +2627,7 @@ impl Shell {
                                     .child(
                                         Textarea::new(&self.input)
                                             .bordered(false)
-                                            .text_size(sp(15.0))
+                                            .text_size(px(15.0))
                                             .aria_label("Message qcode"),
                                     )
                             })
@@ -2914,7 +2639,7 @@ impl Shell {
                                     .justify_between()
                                     .child(
                                         Button::new("upload")
-                                            .label("选择文件")
+                                            .label("上传文件")
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.upload_file(cx)
                                             })),
@@ -3010,15 +2735,6 @@ impl Shell {
 fn display_units(app: &App) -> Vec<DisplayUnit> {
     let mut units = Vec::with_capacity(app.loose_blocks.len() + app.turns.len());
     for index in &app.loose_blocks {
-        // Notices and standalone todo blocks are status-bar/tool-row content
-        // only; a loose one would otherwise render as a stray row with no
-        // turn around it.
-        if matches!(
-            app.blocks.get(*index),
-            Some(Block::Notice(_)) | Some(Block::Todo(_))
-        ) {
-            continue;
-        }
         units.push((*index, DisplayUnit::Loose(*index)));
     }
     for (turn_index, turn) in app.turns.iter().enumerate() {
@@ -3103,13 +2819,6 @@ fn pick_directory() -> Result<Option<PathBuf>, String> {
         // so non-ASCII paths arrive garbled in the UTF-8 decode below.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
-# Pin the .NET UI culture to the machine's actual display language so the
-# dialog's built-in labels ("此电脑", "This PC", …) never flip between zh-CN
-# and en-US depending on which resource pack PowerShell happens to load.
-$ui = [Globalization.CultureInfo]::DefaultUICulture
-[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
-[Threading.Thread]::CurrentThread.CurrentCulture = $ui
-[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Title = '选择工作目录'
@@ -3189,15 +2898,9 @@ fn pick_file() -> Result<Option<PathBuf>, String> {
         // STA requirements as the folder picker above.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
-# Same culture pin as pick_directory above — keep WinForms built-in strings
-# ("此电脑", "This PC", …) consistent with the machine's display language.
-$ui = [Globalization.CultureInfo]::DefaultUICulture
-[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
-[Threading.Thread]::CurrentThread.CurrentCulture = $ui
-[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = '选择文件'
+$dialog.Title = 'Choose a file'
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Write-Output $dialog.FileName
 }
@@ -3256,15 +2959,9 @@ fn typing_row(frame: u32) -> AnyElement {
         .flex()
         .flex_row()
         .items_center()
-        // Indent right of the transcript's left edge: 12px row inset plus
-        // 24px aligns the indicator with the response text itself, not with
-        // the composer (which sits further left). The negative top margin
-        // tightens the gap to the content above.
-        .pl(px(24.0))
-        .pr_4()
+        .px_6()
         .py_1()
-        .mt(px(-4.0))
-        .text_size(sp(SECONDARY_SIZE))
+        .text_size(px(SECONDARY_SIZE))
         .text_color(rgb(0x888888))
         .child(div().opacity(opacity).child("typing…"))
         .into_any_element()
@@ -3279,6 +2976,10 @@ fn format_duration(duration: time::Duration) -> String {
     }
 }
 
+fn turn_time(started: time::OffsetDateTime) -> String {
+    format!("{:02}:{:02}", started.hour(), started.minute())
+}
+
 fn reasoning_preview(text: &str) -> String {
     let line = text
         .lines()
@@ -3286,17 +2987,6 @@ fn reasoning_preview(text: &str) -> String {
         .unwrap_or("")
         .trim();
     short_preview(line, 120)
-}
-
-/// One-line popover title from a user's raw input: take the first non-empty
-/// line, collapse whitespace to single spaces, then trim to ~50 chars.
-fn short_title(text: &str) -> String {
-    let first_line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or(text)
-        .trim();
-    short_preview(first_line, 50)
 }
 
 fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
@@ -3321,7 +3011,7 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .id("reasoning-live-row")
             .cursor_pointer()
-            .text_size(sp(SECONDARY_SIZE))
+            .text_size(px(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3354,8 +3044,8 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .border_1()
                     .border_color(rgba(0x7f7f7f20))
                     .p_2()
-                    .text_size(sp(RESULT_SIZE))
-                    .line_height(sp(RESULT_LINE))
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE))
                     .text_color(rgb(0x777777))
                     .child(shell.app.reasoning_streaming.clone()),
             ),
@@ -3394,7 +3084,7 @@ fn reasoning_row(
             .w_full()
             .id(format!("reasoning-row-{block}"))
             .cursor_pointer()
-            .text_size(sp(SECONDARY_SIZE))
+            .text_size(px(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3425,16 +3115,11 @@ fn reasoning_row(
                     .border_1()
                     .border_color(rgba(0x7f7f7f20))
                     .p_2()
-                    // The TextView body font comes from the inherited text
-                    // style, so the wrapper must set it — otherwise thinking
-                    // text renders at the theme size instead of RESULT.
-                    .text_size(sp(RESULT_SIZE))
-                    .line_height(sp(RESULT_LINE))
                     .child(
                         TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
                             .code_block_actions(|_, _, _| div().into_any_element())
-                            .text_size(sp(RESULT_SIZE))
-                            .line_height(sp(RESULT_LINE))
+                            .text_size(px(SECONDARY_SIZE))
+                            .line_height(px(SECONDARY_LINE))
                             .text_color(rgb(0x777777)),
                     ),
             ),
@@ -3512,15 +3197,41 @@ fn looks_like_list(text: &str) -> bool {
 
 fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let turn = &shell.app.turns[index];
-    // The transcript card is a little narrower than the composer on both
-    // sides (the scroller rows carry a 12px inset), and follows the
-    // composer's width while the side divider is dragged — no fixed maximum,
-    // so both grow together.
     let mut card = div()
         .flex()
         .flex_col()
         .gap_1()
-        .w_full();
+        .w_full()
+        .max_w(px(TURN_MAX_WIDTH))
+        .mx_auto();
+
+    let status = match turn.status {
+        Some(qcode_core::event::TurnStatus::Completed) => "done",
+        Some(qcode_core::event::TurnStatus::Failed) => "failed",
+        Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+        None if turn.running() => "running",
+        None => "done",
+    };
+    let duration = turn
+        .duration()
+        .map(format_duration)
+        .unwrap_or_else(|| "…".to_string());
+    card = card.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_6()
+            .pt_4()
+            .text_size(px(CAPTION_SIZE))
+            .text_color(rgb(0x888888))
+            .child(format!("Turn {}", turn.number))
+            .child(turn_time(turn.started_at))
+            .child(duration)
+            .child(status)
+            .child(format!("${:.4}", turn.cost_usd)),
+    );
 
     if let Some(block) = turn.input_block {
         card = card.child(block_row(block, shell, entity));
@@ -3536,7 +3247,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         // a turn is running the container is forced open so the stream keeps
         // appending; once it finishes the process auto-folds and the answer
         // renders below, outside the container.
-        let process_open = shell.process_open_turns.contains(&index) || turn.running();
+        let process_open = !shell.process_collapsed || turn.running();
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &turn.process {
             if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
@@ -3552,26 +3263,6 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 process = process.child(block_row(*block, shell, entity));
             }
         }
-        // Build the running-time label *at render time* so it ticks in sync
-        // with the existing 200ms waiting_ticker (which already calls
-        // cx.notify() while a turn is live). Once the turn ends the duration
-        // is sealed from Turn::ended_at and stays fixed.
-        let status_label = match turn.status {
-            Some(qcode_core::event::TurnStatus::Completed) => "done",
-            Some(qcode_core::event::TurnStatus::Failed) => "failed",
-            Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
-            None if turn.running() => "running",
-            None => "done",
-        };
-        let elapsed_label = if turn.running() {
-            let now = time::OffsetDateTime::now_utc();
-            let live = (now - turn.started_at).max(time::Duration::ZERO);
-            format!("耗时{}", format_duration(live))
-        } else {
-            turn.duration()
-                .map(|d| format!("耗时{}", format_duration(d)))
-                .unwrap_or_default()
-        };
         let header = div()
             .flex()
             .flex_row()
@@ -3582,17 +3273,15 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .py_1()
             .id(format!("process-toggle-{index}"))
             .cursor_pointer()
-            .text_size(sp(SECONDARY_SIZE))
+            .text_size(px(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
                 move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
+                    entity.update(cx, |shell, cx| shell.toggle_process(cx));
                 }
             })
             .child(format!("执行过程 · {} 项", turn.process.len()))
-            .child(status_label)
-            .child(elapsed_label)
             .child(conversation_icon(if process_open {
                 IconName::ChevronDown
             } else {
@@ -3623,16 +3312,16 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .px_6()
                 .py_2()
-                .text_size(sp(ANSWER_SIZE))
-                .line_height(sp(ANSWER_LINE))
+                .text_size(px(ANSWER_SIZE))
+                .line_height(px(ANSWER_LINE))
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(sp(ANSWER_SIZE))
-                    .line_height(sp(ANSWER_LINE)),
+                    .text_size(px(ANSWER_SIZE))
+                    .line_height(px(ANSWER_LINE)),
                 ),
         );
     }
@@ -3686,41 +3375,6 @@ fn markdown_segments(text: &str) -> Vec<MarkdownSegment> {
     segments
 }
 
-/// The fold/unfold control pinned under a long code block or tool output.
-/// Rounded only at the bottom (top corners squared) so it reads as one piece
-/// with the box above it, whose bottom corners are squared off in that case.
-fn fold_toggle(key: String, expanded: bool, entity: &Entity<Shell>) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .py_1()
-        .rounded_t(px(0.0))
-        .rounded_b(px(6.0))
-        .bg(rgba(0x7f7f7f08))
-        .border_1()
-        .border_color(rgba(0x7f7f7f20))
-        .cursor_pointer()
-        .id(format!("fold-toggle-{key}"))
-        .text_color(rgb(0x888888))
-        .hover(|style| style.bg(rgba(0x7f7f7f14)))
-        .on_click({
-            let key = key.clone();
-            let entity = entity.clone();
-            move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.toggle_code(key.clone(), cx));
-            }
-        })
-        .child(conversation_icon(if expanded {
-            IconName::ArrowUp
-        } else {
-            IconName::ArrowDown
-        }))
-        .into_any_element()
-}
-
 fn markdown_with_folds(
     index: usize,
     text: &str,
@@ -3733,39 +3387,49 @@ fn markdown_with_folds(
             MarkdownSegment::Text(body) => {
                 column = column.child(
                     TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
-                        .text_size(sp(ANSWER_SIZE))
-                        .line_height(sp(ANSWER_LINE)),
+                        .text_size(px(ANSWER_SIZE))
+                        .line_height(px(ANSWER_LINE)),
                 );
             }
             MarkdownSegment::Code { language, body } => {
                 let line_count = body.lines().count();
                 let key = format!("{index}:{segment_index}");
                 let expanded = shell.expanded_code.contains(&key);
-                let folded = line_count > 20;
-                let visible = if expanded || !folded {
+                let visible = if expanded || line_count <= 20 {
                     body.clone()
                 } else {
                     body.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
                 let fence = format!("```{language}\n{visible}\n```");
                 // One single code block — no extra wrapping box or header,
-                // indented one level from the surrounding answer text. With a
-                // fold toggle the code block loses its bottom corners so the
-                // toggle below reads as one piece with it.
-                let mut block = div().flex().flex_col().gap_0().my_1().pl_4();
-                let mut code = TextView::markdown(format!("assistant-code-{key}"), fence)
-                    .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(sp(CAPTION_SIZE))
-                    .line_height(sp(CODE_LINE));
-                if folded {
-                    code = code.style(
-                        TextViewStyle::default()
-                            .code_block(StyleRefinement::default().rounded_b(px(0.0))),
+                // indented one level from the surrounding answer text.
+                let mut block = div().flex().flex_col().gap_1().my_1().pl_4();
+                block = block.child(
+                    TextView::markdown(format!("assistant-code-{key}"), fence)
+                        .code_block_actions(|_, _, _| div().into_any_element())
+                        .text_size(px(CAPTION_SIZE))
+                        .line_height(px(CODE_LINE)),
+                );
+                if line_count > 20 {
+                    let label = if expanded {
+                        "Collapse".to_string()
+                    } else {
+                        format!("Show {} more lines", line_count - 12)
+                    };
+                    block = block.child(
+                        Button::new(format!("code-toggle-{key}"))
+                            .label(label)
+                            .compact()
+                            .on_click({
+                                let key = key.clone();
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.toggle_code(key.clone(), cx);
+                                    });
+                                }
+                            }),
                     );
-                }
-                block = block.child(code);
-                if folded {
-                    block = block.child(fold_toggle(key, expanded, entity));
                 }
                 column = column.child(block);
             }
@@ -3801,12 +3465,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .rounded(px(12.0))
                     .px_4()
                     .py_2()
-                    .text_size(sp(BODY_SIZE))
-                    .line_height(sp(BODY_LINE))
+                    .text_size(px(BODY_SIZE))
+                    .line_height(px(BODY_LINE))
                     .child(
                         TextView::markdown(format!("user-{index}"), text.clone())
-                            .text_size(sp(BODY_SIZE))
-                            .line_height(sp(BODY_LINE)),
+                            .text_size(px(BODY_SIZE))
+                            .line_height(px(BODY_LINE)),
                     ),
             )
             .into_any_element(),
@@ -3826,7 +3490,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .gap_2()
                 .id(format!("tool-row-{index}"))
                 .cursor_pointer()
-                .text_size(sp(SECONDARY_SIZE))
+                .text_size(px(SECONDARY_SIZE))
                 .text_color(rgb(0x888888))
                 .on_click({
                     let call_id = tool.call_id.clone();
@@ -3843,26 +3507,18 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     IconName::ChevronRight
                 }))
                 .child(conversation_icon(tool_icon_name(&tool.name)))
-                // Labels and summaries are TextViews so they participate in
-                // text selection like the rest of the transcript.
-                .child(
-                    TextView::markdown(format!("tool-label-{index}"), label)
-                        .text_size(sp(SECONDARY_SIZE))
-                        .line_height(sp(SECONDARY_LINE))
-                        .text_color(rgb(0x888888)),
-                )
+                .child(label)
                 .children((!summary.is_empty()).then(|| {
-                    TextView::markdown(format!("tool-summary-{index}"), format!("· {summary}"))
-                        .text_size(sp(SECONDARY_SIZE))
-                        .line_height(sp(SECONDARY_LINE))
+                    div()
                         .text_color(rgb(0x777777))
+                        .child(format!("· {summary}"))
                 }));
             if let Some(status) = status {
                 header = header.child(
-                    TextView::markdown(format!("tool-status-{index}"), status)
-                        .text_size(sp(CAPTION_SIZE))
-                        .line_height(sp(SECONDARY_LINE))
-                        .text_color(rgb(0x999999)),
+                    div()
+                        .text_size(px(CAPTION_SIZE))
+                        .text_color(rgb(0x999999))
+                        .child(status),
                 );
             }
             row = row.child(header);
@@ -3880,24 +3536,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .get("command")
                     .and_then(|value| value.as_str())
                     .map(str::to_string);
-                let output_line_count = tool.output.lines().count();
-                let foldable = output_line_count > 20;
-                let output_key = format!("{index}:output");
-                let output_expanded = shell.expanded_code.contains(&output_key);
-                let output_visible = if output_expanded || !foldable {
-                    tool.output.clone()
-                } else {
-                    tool.output.lines().take(12).collect::<Vec<_>>().join("\n")
-                };
                 if command.is_some() || !tool.output.is_empty() {
                     // The command and its result share one box, with a blank
-                    // line between them. When the output is folded the box
-                    // loses its bottom corners so the toggle below reads as
-                    // one piece with it.
+                    // line between them.
                     let mut content = div()
                         .w_full()
-                        .rounded_t(px(6.0))
-                        .rounded_b(if foldable { px(0.0) } else { px(6.0) })
+                        .rounded(px(6.0))
                         .bg(rgba(0x7f7f7f08))
                         .border_1()
                         .border_color(rgba(0x7f7f7f20))
@@ -3907,30 +3551,15 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     if let Some(command) = &command {
                         content = content.child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_baseline()
-                                .gap_1()
-                                .text_size(sp(RESULT_SIZE))
-                                .line_height(sp(RESULT_LINE))
+                                .text_size(px(RESULT_SIZE))
+                                .line_height(px(RESULT_LINE))
                                 .child(
-                                    div()
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0xc8a86a))
-                                        .child("$"),
-                                )
-                                .child(
-                                    // Markdown inline code (backticks) renders
-                                    // at 0.875x the TextView size, so bump the
-                                    // base size up so the command lands on the
-                                    // same size as the plain output below.
                                     TextView::markdown(
                                         format!("tool-command-{index}"),
-                                        format!("`{command}`"),
+                                        format!("$ `{command}`"),
                                     )
-                                    .text_size(sp(RESULT_SIZE / 0.875))
-                                    .line_height(sp(RESULT_LINE)),
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE)),
                                 ),
                         );
                     }
@@ -3940,73 +3569,38 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                         }
                         // Lists render as markdown lists; anything else stays
                         // plain light text — one box, no nested code block.
-                        if looks_like_list(&output_visible) {
+                        if looks_like_list(&tool.output) {
                             content = content.child(
                                 div()
-                                    .text_size(sp(RESULT_SIZE))
-                                    .line_height(sp(RESULT_LINE))
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE))
                                     .child(
                                         TextView::markdown(
                                             format!("tool-output-{index}"),
-                                            output_visible,
+                                            tool.output.clone(),
                                         )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE)),
+                                        .text_size(px(RESULT_SIZE))
+                                        .line_height(px(RESULT_LINE)),
                                     ),
                             );
                         } else {
-                            // Plain multi-line output: markdown hard breaks
-                            // (two trailing spaces) keep every line break, so
-                            // the text renders exactly like the original one
-                            // box — no nested code-block frame, same size and
-                            // colour — while staying selectable.
-                            let selectable = output_visible.replace('\n', "  \n");
                             content = content.child(
                                 div()
-                                    .text_size(sp(RESULT_SIZE))
-                                    .line_height(sp(RESULT_LINE))
-                                    .child(
-                                        TextView::markdown(
-                                            format!("tool-output-plain-{index}"),
-                                            selectable,
-                                        )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0x888888)),
-                                    ),
+                                    .text_size(px(RESULT_SIZE))
+                                    .line_height(px(RESULT_LINE))
+                                    .text_color(rgb(0x888888))
+                                    .child(tool.output.clone()),
                             );
                         }
                     }
-                    // The fold toggle joins the box as one piece when the
-                    // output is long (squared corners, no gap).
-                    if foldable {
-                        details = details.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_0()
-                                .w_full()
-                                .child(content)
-                                .child(fold_toggle(output_key, output_expanded, entity)),
-                        );
-                    } else {
-                        details = details.child(content);
-                    }
+                    details = details.child(content);
                 }
                 if let Some(elapsed) = tool.elapsed {
                     details = details.child(
                         div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .line_height(sp(SECONDARY_LINE))
-                            .child(
-                                TextView::markdown(
-                                    format!("tool-elapsed-{index}"),
-                                    format!("took {}", format_duration(elapsed)),
-                                )
-                                .text_size(sp(CAPTION_SIZE))
-                                .line_height(sp(SECONDARY_LINE))
-                                .text_color(rgb(0x888888)),
-                            ),
+                            .text_size(px(CAPTION_SIZE))
+                            .text_color(rgb(0x888888))
+                            .child(format!("took {}", format_duration(elapsed))),
                     );
                 }
                 row = row.child(details);
@@ -4016,43 +3610,51 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::Subagent { text, .. } => div()
             .px_6()
             .py_1()
-            .text_size(sp(CODE_SIZE))
-            .line_height(sp(SECONDARY_LINE))
-            .child(
-                TextView::markdown(format!("subagent-{index}"), format!("child › {text}"))
-                    .text_size(sp(CODE_SIZE))
-                    .line_height(sp(SECONDARY_LINE))
-                    .text_color(rgb(0x888888)),
-            )
+            .text_size(px(CODE_SIZE))
+            .text_color(rgb(0x888888))
+            .child(format!("child › {text}"))
             .into_any_element(),
         Block::Reasoning(entry) => div()
             .px_6()
             .py_1()
-            .text_size(sp(RESULT_SIZE))
-            .line_height(sp(RESULT_LINE))
+            .text_size(px(SECONDARY_SIZE))
+            .line_height(px(SECONDARY_LINE))
             .text_color(rgb(0x999999))
             .child(
                 TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(sp(RESULT_SIZE))
-                    .line_height(sp(RESULT_LINE)),
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE)),
             )
             .into_any_element(),
-        // The todo_write tool already renders its full content inside the tool
-        // row; the separate Todo block would show the same items again in a
-        // stray gray box, so it is hidden (loose ones are filtered in
-        // display_units too).
-        Block::Todo(_) => div().into_any_element(),
-        Block::Notice(_) => div().into_any_element(),
+        Block::Todo(items) => div()
+            .self_start()
+            .items_start()
+            .mx_6()
+            .my_1()
+            .rounded(px(6.0))
+            .bg(rgba(0x7f7f7f08))
+            .p_2()
+            .text_size(px(SECONDARY_SIZE))
+            .child(format!("todos › {} item(s)", items.len()))
+            .children(items.iter().map(|item| div().child(item.content.clone())))
+            .into_any_element(),
+        Block::Notice(text) => div()
+            .px_6()
+            .py_1()
+            .text_size(px(CODE_SIZE))
+            .text_color(rgb(0x999999))
+            .child(format!("note › {text}"))
+            .into_any_element(),
         Block::Skill(text) => div()
             .px_6()
             .py_2()
-            .text_size(sp(SECONDARY_SIZE))
-            .line_height(sp(SECONDARY_LINE))
+            .text_size(px(SECONDARY_SIZE))
+            .line_height(px(SECONDARY_LINE))
             .child(
                 TextView::markdown(format!("skill-{index}"), text.clone())
-                    .text_size(sp(SECONDARY_SIZE))
-                    .line_height(sp(SECONDARY_LINE)),
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE)),
             )
             .into_any_element(),
     }
@@ -4097,12 +3699,14 @@ impl Render for Shell {
                             let open = shell.rename_task.is_some()
                                 || shell.pending_root_delete.is_some()
                                 || shell.pending_task_delete.is_some()
-                                || shell.task_menu.is_some();
+                                || shell.task_menu.is_some()
+                                || shell.pending_quit;
                             if open {
                                 shell.rename_task = None;
                                 shell.pending_root_delete = None;
                                 shell.pending_task_delete = None;
                                 shell.task_menu = None;
+                                shell.pending_quit = false;
                                 cx.notify();
                             }
                         });
@@ -4132,7 +3736,12 @@ impl Render for Shell {
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
             .on_action(cx.listener(|this, _: &CloseWindowShortcut, window, cx| {
-                this.close_window(window, cx);
+                if this.minimize_on_close {
+                    window.minimize_window();
+                } else {
+                    window.remove_window();
+                }
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
                 this.sidebar_visible = !this.sidebar_visible;
@@ -4140,12 +3749,6 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
                 this.toggle_theme(cx);
-            }))
-            .on_action(cx.listener(|this, _: &ZoomInShortcut, _window, cx| {
-                this.zoom_font(1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ZoomOutShortcut, _window, cx| {
-                this.zoom_font(-1, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
@@ -4160,36 +3763,19 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NextTurnShortcut, _window, cx| {
                 this.step_turn(1, cx);
             }))
-            // Sidebar and conversation share the window through a resizable
-            // panel group, so the divider between them can be dragged and both
-            // sides clamp to their minimum widths.
-            .child({
-                let main = self.render_main(window, cx).into_any_element();
-                if self.sidebar_visible {
-                    h_resizable("root-layout")
-                        .child(
-                            resizable_panel()
-                                .size(px(240.0))
-                                .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
-                                .child(self.render_sidebar(cx).into_any_element()),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
-                                .child(main),
-                        )
-                        .into_any_element()
-                } else {
-                    h_resizable("root-layout")
-                        .child(resizable_panel().child(main))
-                        .into_any_element()
-                }
+            .children(if self.sidebar_visible {
+                Some(self.render_sidebar(cx).into_any_element())
+            } else {
+                None
             })
+            .child(self.render_main(window, cx))
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
             .child(self.render_rename_dialog(cx))
+            .child(self.render_quit_dialog(cx))
     }
 }
+
 /// The pieces a running window needs to execute turns.
 ///
 /// Everything here comes from `qcode_kernel::assemble`; the window never wires
@@ -4225,6 +3811,8 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             gpui_kit::init(cx);
             cx.activate(true);
             prefs.apply(cx);
+            let (tray, tray_rx) = tray::start();
+            let minimize_on_close = tray.is_some();
             let window_options = match prefs.window_geometry.as_ref() {
                 Some(geometry) => WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -4244,12 +3832,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 },
             };
             cx.bind_keys([
-                // Ctrl+V (and Cmd+V on macOS) must stay with the focused input's
-                // text paste; a global binding here would win over the input's
-                // Paste action and swallow every text paste. Image paste moves
-                // to Ctrl/Cmd+Shift+V.
-                KeyBinding::new("ctrl-shift-v", PasteImage, None),
-                KeyBinding::new("cmd-shift-v", PasteImage, None),
+                KeyBinding::new("ctrl-v", PasteImage, None),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
                 KeyBinding::new("a", ApproveSession, Some("Approval")),
                 KeyBinding::new("n", RejectApproval, Some("Approval")),
@@ -4258,13 +3841,6 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-w", CloseWindowShortcut, None),
                 KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
                 KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
-                // Ctrl++ / Ctrl+- zoom the whole UI's text. "=" and "+" both
-                // map to the same physical key (VK_OEM_PLUS); "+" is the
-                // shifted key the layout reports for Ctrl+Shift+=, so bind
-                // both so the shortcut works however the layout reads it.
-                KeyBinding::new("ctrl-=", ZoomInShortcut, None),
-                KeyBinding::new("ctrl-+", ZoomInShortcut, None),
-                KeyBinding::new("ctrl--", ZoomOutShortcut, None),
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
@@ -4273,29 +3849,76 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // or the root handler never sees Cmd+Enter.
                 KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
             ]);
-            let (window_handle, shell_view) =
-                gpui_kit::open_window(window_options, cx, |window, cx| {
+            let (window_handle, shell) =
+                gpui_kit::open_window(window_options, cx, move |window, cx| {
                     window.activate_window();
-                    cx.new(|cx| Shell::new(app, backend, config_path, data_dir, window, cx))
+                    if minimize_on_close {
+                        // 关闭按钮 = 最小化到托盘（ADR-0052）；真正退出走托盘/菜单。
+                        window.on_window_should_close(cx, |window, _cx| {
+                            window.minimize_window();
+                            false
+                        });
+                    }
+                    cx.new(|cx| {
+                        Shell::new(
+                            app,
+                            backend,
+                            config_path,
+                            data_dir,
+                            window,
+                            cx,
+                            minimize_on_close,
+                        )
+                    })
                 })
                 .expect("failed to open the window");
-            // The tray poller needs the window handle to show the window
-            // without depending on a render pass.
-            let _ = shell_view.update(cx, |shell, _cx| {
-                shell.main_window = Some(window_handle);
-            });
-            // Close-to-tray: the titlebar close button hides the window behind
-            // the tray icon instead of quitting, as long as the tray exists.
-            let _ = window_handle.update(cx, |_view, window, app| {
-                window.on_window_should_close(app, |window, _cx| {
-                    if crate::tray::is_active() {
-                        crate::tray::hide_window(window);
-                        false
-                    } else {
-                        true
+
+            if let Some(tray) = tray {
+                let tray_rx = tray_rx;
+                cx.spawn(async move |cx| {
+                    let mut last: Option<tray::TraySnapshot> = None;
+                    loop {
+                        while let Ok(command) = tray_rx.try_recv() {
+                            match command {
+                                tray::TrayCommand::ShowWindow => {
+                                    let _ = window_handle.update(cx, |_view, window, _cx| {
+                                        window.activate_window();
+                                    });
+                                }
+                                tray::TrayCommand::NewTask => {
+                                    // 不能走 dispatch_action：窗口最小化时没有焦点，
+                                    // 动作派发不到根节点。
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        shell.update(cx, |shell, cx| shell.new_session(window, cx))
+                                    });
+                                }
+                                tray::TrayCommand::StopCurrent => {
+                                    let _ = window_handle.update(cx, |_view, _window, cx| {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.stop();
+                                            cx.notify();
+                                        })
+                                    });
+                                }
+                                tray::TrayCommand::Quit => {
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        shell.update(cx, |shell, cx| shell.request_quit(window, cx))
+                                    });
+                                }
+                            }
+                        }
+                        let snapshot = cx.update(|cx| shell.read(cx).tray_snapshot());
+                        if last.as_ref() != Some(&snapshot) {
+                            tray.update(snapshot.clone());
+                            last = Some(snapshot);
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(200))
+                            .await;
                     }
-                });
-            });
+                })
+                .detach();
+            }
         });
 }
 
