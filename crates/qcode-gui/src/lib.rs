@@ -593,9 +593,11 @@ struct Shell {
     /// loop is already running for the current turn.
     waiting_frame: u8,
     waiting_ticker: bool,
-    /// Whether the turn's execution-process container is folded. While a turn
-    /// runs it is forced open; on completion it auto-folds (user can reopen).
-    process_collapsed: bool,
+    /// Per-turn execution-process container expansion. While a turn runs it is
+    /// forced open regardless; on completion it auto-folds (user can reopen).
+    /// New turn indices are added here when explicitly toggled open; remove
+    /// from the set to fold.
+    process_open_turns: std::collections::HashSet<usize>,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -765,7 +767,7 @@ impl Shell {
             collapse_to_list: false,
             waiting_frame: 0,
             waiting_ticker: false,
-            process_collapsed: true,
+            process_open_turns: std::collections::HashSet::new(),
             last_blocks,
             backend,
             tasks,
@@ -844,7 +846,7 @@ impl Shell {
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
-        self.process_collapsed = true;
+        self.process_open_turns.clear();
         self.units = display_units(&self.app);
         let count = self.units.len() + self.typing_extra();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
@@ -975,9 +977,10 @@ impl Shell {
                 self.task_menu = None;
                 self.hovered_task = None;
                 self.turn_in_flight = false;
-                // A resumed session is already complete: fold its execution
-                // process like a just-finished turn (reopenable via header).
-                self.process_collapsed = true;
+                // A resumed session is already complete: fold every
+                // execution process like a just-finished turn (reopenable
+                // via header).
+                self.process_open_turns.clear();
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
             }
@@ -1140,16 +1143,16 @@ impl Shell {
                         // A fresh turn's execution process starts folded by
                         // default; drop any stale reasoning expansion from the
                         // previous turn.
-                        self.process_collapsed = true;
+                        self.process_open_turns.clear();
                         if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
                             self.expanded_process = None;
                         }
                     }
                     changed = true;
                     if turn_ended {
-                        // The execution process auto-folds once the turn is
-                        // done; the header stays clickable to reopen it.
-                        self.process_collapsed = true;
+                        // Every execution process auto-folds once its turn
+                        // is done; the header stays clickable to reopen.
+                        self.process_open_turns.clear();
                         self.refresh_tasks();
                     }
                 }
@@ -1299,20 +1302,13 @@ impl Shell {
         .detach();
     }
 
-    fn jump_to_last(&mut self, cx: &mut Context<Self>) {
-        let Some(last) = self.app.turns.len().checked_sub(1) else {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_end(cx));
-            return;
-        };
-        self.selected_turn = Some(last);
-        if let Some(unit) = self.turn_unit_index(last) {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_item(unit, cx));
-        } else {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_end(cx));
-        }
+    /// Scroll the transcript to its absolute bottom (after every turn and
+    /// above the composer). The function is named `jump_to_bottom` here but
+    /// kept simple — it never pins `selected_turn`, so the rail's highlight
+    /// stays on whichever turn the user was looking at.
+    fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.scroller
+            .update(cx, |state, cx| state.scroll_to_end(cx));
         cx.notify();
     }
 
@@ -1332,10 +1328,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// Fold / unfold the turn's execution-process container. While the turn
-    /// runs the container is forced open, so this only matters afterwards.
-    fn toggle_process(&mut self, cx: &mut Context<Self>) {
-        self.process_collapsed = !self.process_collapsed;
+    /// Fold / unfold one turn's execution-process container, tracked per-turn
+    /// in `process_open_turns`. While the turn runs the container is forced
+    /// open, so this only matters afterwards.
+    fn toggle_process(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.process_open_turns.insert(index) {
+            self.process_open_turns.remove(&index);
+        }
         cx.notify();
     }
 
@@ -1598,9 +1597,9 @@ impl Shell {
             .child(
                 Button::new("jump-latest")
                     .icon(IconName::ArrowDown)
-                    .accessibility_label("Jump to latest")
-                    .tooltip("Jump to latest")
-                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
+                    .accessibility_label("跳转到底部")
+                    .tooltip("跳转到底部")
+                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_bottom(cx))),
             )
             .into_any_element()
     }
@@ -2765,7 +2764,7 @@ impl Shell {
                                     .justify_between()
                                     .child(
                                         Button::new("upload")
-                                            .label("上传文件")
+                                            .label("选择文件")
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.upload_file(cx)
                                             })),
@@ -2954,6 +2953,13 @@ fn pick_directory() -> Result<Option<PathBuf>, String> {
         // so non-ASCII paths arrive garbled in the UTF-8 decode below.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
+# Pin the .NET UI culture to the machine's actual display language so the
+# dialog's built-in labels ("此电脑", "This PC", …) never flip between zh-CN
+# and en-US depending on which resource pack PowerShell happens to load.
+$ui = [Globalization.CultureInfo]::DefaultUICulture
+[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
+[Threading.Thread]::CurrentThread.CurrentCulture = $ui
+[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Title = '选择工作目录'
@@ -3033,9 +3039,15 @@ fn pick_file() -> Result<Option<PathBuf>, String> {
         // STA requirements as the folder picker above.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
+# Same culture pin as pick_directory above — keep WinForms built-in strings
+# ("此电脑", "This PC", …) consistent with the machine's display language.
+$ui = [Globalization.CultureInfo]::DefaultUICulture
+[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
+[Threading.Thread]::CurrentThread.CurrentCulture = $ui
+[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = 'Choose a file'
+$dialog.Title = '选择文件'
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Write-Output $dialog.FileName
 }
@@ -3115,10 +3127,6 @@ fn format_duration(duration: time::Duration) -> String {
     } else {
         format!("{}m{}s", seconds / 60, seconds % 60)
     }
-}
-
-fn turn_time(started: time::OffsetDateTime) -> String {
-    format!("{:02}:{:02}", started.hour(), started.minute())
 }
 
 fn reasoning_preview(text: &str) -> String {
@@ -3353,34 +3361,6 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .gap_1()
         .w_full();
 
-    let status = match turn.status {
-        Some(qcode_core::event::TurnStatus::Completed) => "done",
-        Some(qcode_core::event::TurnStatus::Failed) => "failed",
-        Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
-        None if turn.running() => "running",
-        None => "done",
-    };
-    let duration = turn
-        .duration()
-        .map(format_duration)
-        .unwrap_or_else(|| "…".to_string());
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_6()
-            .pt_4()
-            .text_size(sp(CAPTION_SIZE))
-            .text_color(rgb(0x888888))
-            .child(format!("Turn {}", turn.number))
-            .child(turn_time(turn.started_at))
-            .child(duration)
-            .child(status)
-            .child(format!("${:.4}", turn.cost_usd)),
-    );
-
     if let Some(block) = turn.input_block {
         card = card.child(block_row(block, shell, entity));
     }
@@ -3395,7 +3375,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         // a turn is running the container is forced open so the stream keeps
         // appending; once it finishes the process auto-folds and the answer
         // renders below, outside the container.
-        let process_open = !shell.process_collapsed || turn.running();
+        let process_open = shell.process_open_turns.contains(&index) || turn.running();
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &turn.process {
             if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
@@ -3411,6 +3391,26 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 process = process.child(block_row(*block, shell, entity));
             }
         }
+        // Build the running-time label *at render time* so it ticks in sync
+        // with the existing 200ms waiting_ticker (which already calls
+        // cx.notify() while a turn is live). Once the turn ends the duration
+        // is sealed from Turn::ended_at and stays fixed.
+        let status_label = match turn.status {
+            Some(qcode_core::event::TurnStatus::Completed) => "done",
+            Some(qcode_core::event::TurnStatus::Failed) => "failed",
+            Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+            None if turn.running() => "running",
+            None => "done",
+        };
+        let elapsed_label = if turn.running() {
+            let now = time::OffsetDateTime::now_utc();
+            let live = (now - turn.started_at).max(time::Duration::ZERO);
+            format!("耗时{}", format_duration(live))
+        } else {
+            turn.duration()
+                .map(|d| format!("耗时{}", format_duration(d)))
+                .unwrap_or_default()
+        };
         let header = div()
             .flex()
             .flex_row()
@@ -3426,10 +3426,12 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .on_click({
                 let entity = entity.clone();
                 move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.toggle_process(cx));
+                    entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
                 }
             })
             .child(format!("执行过程 · {} 项", turn.process.len()))
+            .child(status_label)
+            .child(elapsed_label)
             .child(conversation_icon(if process_open {
                 IconName::ChevronDown
             } else {
