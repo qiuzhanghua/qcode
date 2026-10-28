@@ -57,6 +57,6 @@ fn malformed_and_out_of_range_values_fall_back_safely() {
     let prefs = GuiPreferences::load(dir.path());
     assert_eq!(prefs.theme, "system");
     assert_eq!(prefs.font_size, 32);
-    assert_eq!(prefs.code_font, "SF Mono");
+    assert_eq!(prefs.code_font, "JetBrains Mono");
     assert_eq!(prefs.density, "comfortable");
 }

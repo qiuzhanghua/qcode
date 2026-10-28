@@ -74,7 +74,6 @@ const CODE_LINE: f32 = 18.0;
 /// extra line spacing for readability.
 const RESULT_SIZE: f32 = 10.0;
 const RESULT_LINE: f32 = 22.0;
-const TURN_MAX_WIDTH: f32 = 900.0;
 const TURN_RAIL_WIDTH: f32 = 20.0;
 /// Width bounds of the resizable sidebar, in pixels. Dragging the divider
 /// between the sidebar and the conversation clamps to these.
@@ -2416,6 +2415,10 @@ impl Shell {
             .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
+                // With an approval card pinned below the transcript, drop the
+                // container's bottom padding so the card sits right on the
+                // composer with no gap.
+                let has_approval = self.approvals.current().is_some();
                 div()
                     .relative()
                     .flex()
@@ -2430,7 +2433,7 @@ impl Shell {
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
-                            .pb(px(24.0))
+                            .when(!has_approval, |this| this.pb(px(24.0)))
                             // GPUI keeps a text selection live until the mouse
                             // button-up arrives, and a wheel scroll then
                             // drags/extends it along the pointer — so a
@@ -2440,7 +2443,72 @@ impl Shell {
                             .on_scroll(|_, window, cx| {
                                 gpui_kit::base::TextSelection::clear(window, cx);
                             })
-                            .child(list),
+                            .child(list)
+                            .children(self.approvals.current().map(|view| {
+                                // Approval card: a light popover-style box, one
+                                // text size smaller than the assistant result.
+                                // The outer 12px padding matches the scroller's
+                                // row inset, so the card is exactly as wide as
+                                // the response content — a little narrower than
+                                // the composer.
+                                div()
+                                    .w_full()
+                                    .px_3()
+                                    .child({
+                                        let mut card = div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .w_full()
+                                            .rounded(px(10.0))
+                                            .bg(rgba(0x7f7f7f0d))
+                                            .border_1()
+                                            .border_color(rgba(0x7f7f7f30))
+                                            .px_3()
+                                            .py_2()
+                                            .text_size(px(CODE_SIZE))
+                                            .line_height(px(CODE_LINE))
+                                            .child(div().child(format!(
+                                                "approval needed ({}) · {} · {}",
+                                                self.approvals.len(),
+                                                view.tool,
+                                                view.summary
+                                            )))
+                                            .child(div().child(format!("reason: {}", view.reason)));
+                                        if let Some(rule) = &view.rule_id {
+                                            card = card.child(format!("rule: {rule}"));
+                                        }
+                                        if let Some(argv) = &view.argv {
+                                            card = card.child(format!("argv: {argv}"));
+                                        }
+                                        if let Some(cwd) = &view.cwd {
+                                            card = card.child(format!("cwd: {cwd}"));
+                                        }
+                                        card = card.child(format!("sandbox: {}", self.app.sandbox));
+                                        card.child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .child(Button::new("allow").label("Allow").on_click(
+                                                    cx.listener(|this, _, _window, cx| {
+                                                        this.answer(true, false, cx)
+                                                    }),
+                                                ))
+                                                .child(Button::new("allow-session").label("Always").on_click(
+                                                    cx.listener(|this, _, _window, cx| {
+                                                        this.answer(true, true, cx)
+                                                    }),
+                                                ))
+                                                .child(Button::new("deny").label("Reject").on_click(
+                                                    cx.listener(|this, _, _window, cx| {
+                                                        this.answer(false, false, cx)
+                                                    }),
+                                                )),
+                                        )
+                                    })
+                                }
+                            )),
                     )
                     .child(self.render_floating_actions(cx))
             })
@@ -2481,58 +2549,6 @@ impl Shell {
                             ),
                     )
                     .child(Diff::new(state))
-            }))
-            .children(self.approvals.current().map(|view| {
-                // Approval card: a light popover-style box, one text size
-                // smaller than the assistant result, left-aligned with the
-                // composer's input box.
-                let mut card = div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w_full()
-                    .ml(px(12.0))
-                    .mr(px(14.0))
-                    .rounded(px(10.0))
-                    .bg(rgba(0x7f7f7f0d))
-                    .border_1()
-                    .border_color(rgba(0x7f7f7f30))
-                    .px_3()
-                    .py_2()
-                    .text_size(px(CODE_SIZE))
-                    .line_height(px(CODE_LINE))
-                    .child(div().child(format!(
-                        "approval needed ({}) · {} · {}",
-                        self.approvals.len(),
-                        view.tool,
-                        view.summary
-                    )))
-                    .child(div().child(format!("reason: {}", view.reason)));
-                if let Some(rule) = &view.rule_id {
-                    card = card.child(format!("rule: {rule}"));
-                }
-                if let Some(argv) = &view.argv {
-                    card = card.child(format!("argv: {argv}"));
-                }
-                if let Some(cwd) = &view.cwd {
-                    card = card.child(format!("cwd: {cwd}"));
-                }
-                card = card.child(format!("sandbox: {}", self.app.sandbox));
-                card.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(Button::new("allow").label("Allow").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
-                        ))
-                        .child(Button::new("allow-session").label("Always").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
-                        ))
-                        .child(Button::new("deny").label("Reject").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
-                        )),
-                )
             }))
             .child(
                 div()
@@ -2735,9 +2751,13 @@ impl Shell {
 fn display_units(app: &App) -> Vec<DisplayUnit> {
     let mut units = Vec::with_capacity(app.loose_blocks.len() + app.turns.len());
     for index in &app.loose_blocks {
-        // Notices are status-bar only now; a loose notice would otherwise
-        // render as a stray "note › …" row with no turn around it.
-        if matches!(app.blocks.get(*index), Some(Block::Notice(_))) {
+        // Notices and standalone todo blocks are status-bar/tool-row content
+        // only; a loose one would otherwise render as a stray row with no
+        // turn around it.
+        if matches!(
+            app.blocks.get(*index),
+            Some(Block::Notice(_)) | Some(Block::Todo(_))
+        ) {
             continue;
         }
         units.push((*index, DisplayUnit::Loose(*index)));
@@ -2964,8 +2984,14 @@ fn typing_row(frame: u32) -> AnyElement {
         .flex()
         .flex_row()
         .items_center()
-        .px_6()
+        // Indent right of the transcript's left edge: 12px row inset plus
+        // 24px aligns the indicator with the response text itself, not with
+        // the composer (which sits further left). The negative top margin
+        // tightens the gap to the content above.
+        .pl(px(24.0))
+        .pr_4()
         .py_1()
+        .mt(px(-4.0))
         .text_size(px(SECONDARY_SIZE))
         .text_color(rgb(0x888888))
         .child(div().opacity(opacity).child("typing…"))
@@ -3120,6 +3146,11 @@ fn reasoning_row(
                     .border_1()
                     .border_color(rgba(0x7f7f7f20))
                     .p_2()
+                    // The TextView body font comes from the inherited text
+                    // style, so the wrapper must set it — otherwise thinking
+                    // text renders at the theme size instead of SECONDARY.
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE))
                     .child(
                         TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
                             .code_block_actions(|_, _, _| div().into_any_element())
@@ -3202,13 +3233,15 @@ fn looks_like_list(text: &str) -> bool {
 
 fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let turn = &shell.app.turns[index];
+    // The transcript card is a little narrower than the composer on both
+    // sides (the scroller rows carry a 12px inset), and follows the
+    // composer's width while the side divider is dragged — no fixed maximum,
+    // so both grow together.
     let mut card = div()
         .flex()
         .flex_col()
         .gap_1()
-        .w_full()
-        .max_w(px(TURN_MAX_WIDTH))
-        .mx_auto();
+        .w_full();
 
     let status = match turn.status {
         Some(qcode_core::event::TurnStatus::Completed) => "done",
@@ -3512,18 +3545,26 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     IconName::ChevronRight
                 }))
                 .child(conversation_icon(tool_icon_name(&tool.name)))
-                .child(label)
+                // Labels and summaries are TextViews so they participate in
+                // text selection like the rest of the transcript.
+                .child(
+                    TextView::markdown(format!("tool-label-{index}"), label)
+                        .text_size(px(SECONDARY_SIZE))
+                        .line_height(px(SECONDARY_LINE))
+                        .text_color(rgb(0x888888)),
+                )
                 .children((!summary.is_empty()).then(|| {
-                    div()
+                    TextView::markdown(format!("tool-summary-{index}"), format!("· {summary}"))
+                        .text_size(px(SECONDARY_SIZE))
+                        .line_height(px(SECONDARY_LINE))
                         .text_color(rgb(0x777777))
-                        .child(format!("· {summary}"))
                 }));
             if let Some(status) = status {
                 header = header.child(
-                    div()
+                    TextView::markdown(format!("tool-status-{index}"), status)
                         .text_size(px(CAPTION_SIZE))
-                        .text_color(rgb(0x999999))
-                        .child(status),
+                        .line_height(px(SECONDARY_LINE))
+                        .text_color(rgb(0x999999)),
                 );
             }
             row = row.child(header);
@@ -3600,12 +3641,25 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                                     ),
                             );
                         } else {
+                            // Plain multi-line output: markdown hard breaks
+                            // (two trailing spaces) keep every line break, so
+                            // the text renders exactly like the original one
+                            // box — no nested code-block frame, same size and
+                            // colour — while staying selectable.
+                            let selectable = tool.output.replace('\n', "  \n");
                             content = content.child(
                                 div()
                                     .text_size(px(RESULT_SIZE))
                                     .line_height(px(RESULT_LINE))
-                                    .text_color(rgb(0x888888))
-                                    .child(tool.output.clone()),
+                                    .child(
+                                        TextView::markdown(
+                                            format!("tool-output-plain-{index}"),
+                                            selectable,
+                                        )
+                                        .text_size(px(RESULT_SIZE))
+                                        .line_height(px(RESULT_LINE))
+                                        .text_color(rgb(0x888888)),
+                                    ),
                             );
                         }
                     }
@@ -3615,8 +3669,16 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     details = details.child(
                         div()
                             .text_size(px(CAPTION_SIZE))
-                            .text_color(rgb(0x888888))
-                            .child(format!("took {}", format_duration(elapsed))),
+                            .line_height(px(SECONDARY_LINE))
+                            .child(
+                                TextView::markdown(
+                                    format!("tool-elapsed-{index}"),
+                                    format!("took {}", format_duration(elapsed)),
+                                )
+                                .text_size(px(CAPTION_SIZE))
+                                .line_height(px(SECONDARY_LINE))
+                                .text_color(rgb(0x888888)),
+                            ),
                     );
                 }
                 row = row.child(details);
@@ -3627,8 +3689,13 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .px_6()
             .py_1()
             .text_size(px(CODE_SIZE))
-            .text_color(rgb(0x888888))
-            .child(format!("child › {text}"))
+            .line_height(px(SECONDARY_LINE))
+            .child(
+                TextView::markdown(format!("subagent-{index}"), format!("child › {text}"))
+                    .text_size(px(CODE_SIZE))
+                    .line_height(px(SECONDARY_LINE))
+                    .text_color(rgb(0x888888)),
+            )
             .into_any_element(),
         Block::Reasoning(entry) => div()
             .px_6()
@@ -3643,18 +3710,11 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .line_height(px(SECONDARY_LINE)),
             )
             .into_any_element(),
-        Block::Todo(items) => div()
-            .self_start()
-            .items_start()
-            .mx_6()
-            .my_1()
-            .rounded(px(6.0))
-            .bg(rgba(0x7f7f7f08))
-            .p_2()
-            .text_size(px(SECONDARY_SIZE))
-            .child(format!("todos › {} item(s)", items.len()))
-            .children(items.iter().map(|item| div().child(item.content.clone())))
-            .into_any_element(),
+        // The todo_write tool already renders its full content inside the tool
+        // row; the separate Todo block would show the same items again in a
+        // stray gray box, so it is hidden (loose ones are filtered in
+        // display_units too).
+        Block::Todo(_) => div().into_any_element(),
         Block::Notice(_) => div().into_any_element(),
         Block::Skill(text) => div()
             .px_6()
@@ -3848,7 +3908,12 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 },
             };
             cx.bind_keys([
-                KeyBinding::new("ctrl-v", PasteImage, None),
+                // Ctrl+V (and Cmd+V on macOS) must stay with the focused input's
+                // text paste; a global binding here would win over the input's
+                // Paste action and swallow every text paste. Image paste moves
+                // to Ctrl/Cmd+Shift+V.
+                KeyBinding::new("ctrl-shift-v", PasteImage, None),
+                KeyBinding::new("cmd-shift-v", PasteImage, None),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
                 KeyBinding::new("a", ApproveSession, Some("Approval")),
                 KeyBinding::new("n", RejectApproval, Some("Approval")),

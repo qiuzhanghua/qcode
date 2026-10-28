@@ -36,7 +36,9 @@ impl Default for GuiPreferences {
         Self {
             theme: "system".to_string(),
             font_size: 14,
-            code_font: "SF Mono".to_string(),
+            // JetBrains Mono is the font repo's preferred code face
+            // (D:\workspace\fonts); SF Mono is not part of that set.
+            code_font: "JetBrains Mono".to_string(),
             density: "comfortable".to_string(),
             recent_workspaces: Vec::new(),
             last_session: None,
@@ -107,8 +109,10 @@ impl GuiPreferences {
             self.theme = "system".to_string();
         }
         self.font_size = self.font_size.clamp(10, 32);
-        if self.code_font.trim().is_empty() {
-            self.code_font = "SF Mono".to_string();
+        // SF Mono was the old default and is not in the project font set
+        // (D:\workspace\fonts); migrate any saved value back to JetBrains Mono.
+        if self.code_font.trim().is_empty() || self.code_font == "SF Mono" {
+            self.code_font = "JetBrains Mono".to_string();
         }
         if !matches!(self.density.as_str(), "comfortable" | "compact") {
             self.density = "comfortable".to_string();
