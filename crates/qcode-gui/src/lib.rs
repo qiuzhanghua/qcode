@@ -28,6 +28,7 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
+use gpui_kit::base::{h_resizable, resizable_panel};
 
 gpui_kit::actions!(
     qcode_gui,
@@ -75,6 +76,12 @@ const RESULT_SIZE: f32 = 10.0;
 const RESULT_LINE: f32 = 22.0;
 const TURN_MAX_WIDTH: f32 = 900.0;
 const TURN_RAIL_WIDTH: f32 = 20.0;
+/// Width bounds of the resizable sidebar, in pixels. Dragging the divider
+/// between the sidebar and the conversation clamps to these.
+const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+const SIDEBAR_MAX_WIDTH: f32 = 560.0;
+/// Minimum width of the main conversation panel, in pixels.
+const MAIN_MIN_WIDTH: f32 = 380.0;
 /// Frames of the status-bar spinner shown while a turn is running.
 const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -2131,8 +2138,12 @@ impl Shell {
                 .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                     if *hovered {
                         this.hovered_task = Some(hover_id.clone());
-                        cx.notify();
+                    } else if this.hovered_task.as_deref() == Some(hover_id.as_str()) {
+                        // The pointer left this row: hide its action buttons,
+                        // unless another row already took the hover state.
+                        this.hovered_task = None;
                     }
+                    cx.notify();
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.task_menu = None;
@@ -2149,7 +2160,6 @@ impl Shell {
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
-                .occlude()
                 .absolute()
                 .right_1()
                 .top_0()
@@ -2213,13 +2223,17 @@ impl Shell {
         }
 
         div()
-            .w(px(240.0))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
             .id("task-sidebar")
+            // Sidebar sits on the base `sidebar` token, one step lighter than
+            // the row hover (`sidebar_accent` at reduced opacity), so the list
+            // reads as a surface and the hovered row still stands out.
+            .bg(cx.theme().sidebar)
             .overflow_y_scroll()
             .child(
                 Button::new("open-settings")
@@ -2259,6 +2273,7 @@ impl Shell {
         let theme = cx.theme();
         let popover = theme.popover;
         let border = theme.border;
+        let muted_foreground = theme.muted_foreground;
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
@@ -2304,10 +2319,27 @@ impl Shell {
             .gap_2()
             .px_2()
             .py_4()
-            .child(format!(
-                "{header_label} · {} turn(s)",
-                self.app.turns.len()
-            ))
+            .child(
+                // Conversation header: the task title in a step above the body
+                // text and bold, with the turn count beside it as secondary.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child(header_label.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(SECONDARY_SIZE))
+                            .text_color(muted_foreground)
+                            .child(format!("{} turn(s)", self.app.turns.len())),
+                    ),
+            )
             .child(div().flex_grow(1.0))
             .child(
                 div().w(px(220.0)).child(
@@ -3665,18 +3697,36 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NextTurnShortcut, _window, cx| {
                 this.step_turn(1, cx);
             }))
-            .children(if self.sidebar_visible {
-                Some(self.render_sidebar(cx).into_any_element())
-            } else {
-                None
+            // Sidebar and conversation share the window through a resizable
+            // panel group, so the divider between them can be dragged and both
+            // sides clamp to their minimum widths.
+            .child({
+                let main = self.render_main(window, cx).into_any_element();
+                if self.sidebar_visible {
+                    h_resizable("root-layout")
+                        .child(
+                            resizable_panel()
+                                .size(px(240.0))
+                                .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
+                                .child(self.render_sidebar(cx).into_any_element()),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
+                                .child(main),
+                        )
+                        .into_any_element()
+                } else {
+                    h_resizable("root-layout")
+                        .child(resizable_panel().child(main))
+                        .into_any_element()
+                }
             })
-            .child(self.render_main(window, cx))
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
             .child(self.render_rename_dialog(cx))
     }
 }
-
 /// The pieces a running window needs to execute turns.
 ///
 /// Everything here comes from `qcode_kernel::assemble`; the window never wires
