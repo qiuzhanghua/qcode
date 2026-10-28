@@ -111,9 +111,19 @@ fn context_label(app: &App) -> String {
 ///
 /// GPUI maps physical Command to `platform` on macOS and `secondary-enter`
 /// inside the input; accepting either keeps the handlers aligned.
+///
+/// `Modifiers::secondary` took a `&App` in gpui-pre 0.3.10 so it can consult
+/// `platform_info()`. A GPUI process only ever runs on the OS it was built
+/// for, so the compile-time check below answers the same question and keeps
+/// this helper pure for the unit tests.
 #[doc(hidden)]
 pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
-    keystroke.key == "enter" && (keystroke.modifiers.platform || keystroke.modifiers.secondary())
+    let secondary = if cfg!(target_os = "macos") {
+        keystroke.modifiers.platform
+    } else {
+        keystroke.modifiers.control
+    };
+    keystroke.key == "enter" && (keystroke.modifiers.platform || secondary)
 }
 
 fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
@@ -667,15 +677,16 @@ impl Shell {
             .map(|name| ModelItem { name })
             .collect();
         if !models.iter().any(|item| item.name == model) {
-            models.push(ModelItem { name: model.clone() });
+            models.push(ModelItem {
+                name: model.clone(),
+            });
         }
         let selected = models
             .iter()
             .position(|item| item.name == model)
             .map(IndexPath::new);
-        let model_select = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(models), selected, window, cx)
-        });
+        let model_select =
+            cx.new(|cx| SelectState::new(SearchableVec::new(models), selected, window, cx));
         let model_select_subscription = cx.subscribe(
             &model_select,
             |shell, _select, event: &SelectEvent<SearchableVec<ModelItem>>, cx| {
@@ -774,11 +785,7 @@ impl Shell {
     /// One extra scroller row for the trailing typing indicator while a turn
     /// is running.
     fn typing_extra(&self) -> usize {
-        if self.app.status.running {
-            1
-        } else {
-            0
-        }
+        if self.app.status.running { 1 } else { 0 }
     }
 
     fn refresh_tasks(&mut self) {
@@ -949,7 +956,8 @@ impl Shell {
         // Sending a question re-pins the view to the bottom so the reply is
         // visible as it streams; a user scroll away during the turn pauses
         // that following (GPUI's Tail mode resumes it at the bottom again).
-        self.scroller.update(cx, |state, cx| state.scroll_to_end(cx));
+        self.scroller
+            .update(cx, |state, cx| state.scroll_to_end(cx));
     }
 
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -1130,8 +1138,7 @@ impl Shell {
                         shell.waiting_ticker = false;
                         return None;
                     }
-                    shell.waiting_frame =
-                        (shell.waiting_frame + 1) % WAITING_SPINNER.len() as u8;
+                    shell.waiting_frame = (shell.waiting_frame + 1) % WAITING_SPINNER.len() as u8;
                     cx.notify();
                     Some(())
                 });
@@ -1266,13 +1273,10 @@ impl Shell {
             self.app.turns.len().checked_sub(1)
         } else {
             let top = state.logical_scroll_top().item_ix;
-            self.units
-                .iter()
-                .skip(top)
-                .find_map(|unit| match unit {
-                    DisplayUnit::Turn(index) => Some(*index),
-                    DisplayUnit::Loose(_) => None,
-                })
+            self.units.iter().skip(top).find_map(|unit| match unit {
+                DisplayUnit::Turn(index) => Some(*index),
+                DisplayUnit::Loose(_) => None,
+            })
         };
         if let Some(target) = target
             && target < self.app.turns.len()
@@ -1461,7 +1465,10 @@ impl Shell {
         for index in start..end {
             // Colour fades with distance from the active turn: the current one
             // is darkest, one step away slightly lighter, farther ones lightest.
-            let dot = match active.map(|active| index.abs_diff(active)).unwrap_or(usize::MAX) {
+            let dot = match active
+                .map(|active| index.abs_diff(active))
+                .unwrap_or(usize::MAX)
+            {
                 0 => rgb(0x7a7a7a),
                 1 => rgb(0xbcbcbc),
                 _ => rgb(0xd8d8d8),
@@ -2341,13 +2348,11 @@ impl Shell {
                     ),
             )
             .child(div().flex_grow(1.0))
-            .child(
-                div().w(px(220.0)).child(
-                    // Default `Length::Auto` sizes the dropdown to the trigger
-                    // width, so the popup matches the box above it.
-                    Select::new(&self.model_select).placeholder("model"),
-                ),
-            );
+            .child(div().w(px(220.0)).child(
+                // Default `Length::Auto` sizes the dropdown to the trigger
+                // width, so the popup matches the box above it.
+                Select::new(&self.model_select).placeholder("model"),
+            ));
 
         div()
             .flex()
@@ -2380,7 +2385,7 @@ impl Shell {
                             // phantom button state (or a lost mouse-up) makes
                             // mere scrolling select text. Cancel the selection
                             // on scroll, the way browsers do.
-                            .on_scroll_wheel(|_, window, cx| {
+                            .on_scroll(|_, window, cx| {
                                 gpui_kit::base::TextSelection::clear(window, cx);
                             })
                             .child(list),
@@ -2557,7 +2562,7 @@ impl Shell {
                                                 "qcode-gui key: key={} platform={} secondary={} shift={}",
                                                 event.keystroke.key,
                                                 event.keystroke.modifiers.platform,
-                                                event.keystroke.modifiers.secondary(),
+                                                event.keystroke.modifiers.secondary(cx),
                                                 event.keystroke.modifiers.shift,
                                             );
                                         }
@@ -2783,7 +2788,14 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 "#;
         let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script])
+            .args([
+                "-NoProfile",
+                "-STA",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
             .output()
             .map_err(|error| format!("cannot open folder picker: {error}"))?;
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -2804,7 +2816,10 @@ fn pick_file() -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("osascript")
-            .args(["-e", "POSIX path of (choose file with prompt \"Choose a file\")"])
+            .args([
+                "-e",
+                "POSIX path of (choose file with prompt \"Choose a file\")",
+            ])
             .output()
             .map_err(|error| format!("cannot open file picker: {error}"))?;
         if !output.status.success() {
@@ -2839,7 +2854,14 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 "#;
         let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script])
+            .args([
+                "-NoProfile",
+                "-STA",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
             .output()
             .map_err(|error| format!("cannot open file picker: {error}"))?;
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -2962,24 +2984,19 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     );
     if expanded {
         row = row.child(
-            div()
-                .w_full()
-                .pl_8()
-                .pr_6()
-                .pb_2()
-                .child(
-                    div()
-                        .w_full()
-                        .rounded(px(6.0))
-                        .bg(rgba(0x7f7f7f08))
-                        .border_1()
-                        .border_color(rgba(0x7f7f7f20))
-                        .p_2()
-                        .text_size(px(SECONDARY_SIZE))
-                        .line_height(px(SECONDARY_LINE))
-                        .text_color(rgb(0x777777))
-                        .child(shell.app.reasoning_streaming.clone()),
-                ),
+            div().w_full().pl_8().pr_6().pb_2().child(
+                div()
+                    .w_full()
+                    .rounded(px(6.0))
+                    .bg(rgba(0x7f7f7f08))
+                    .border_1()
+                    .border_color(rgba(0x7f7f7f20))
+                    .p_2()
+                    .text_size(px(SECONDARY_SIZE))
+                    .line_height(px(SECONDARY_LINE))
+                    .text_color(rgb(0x777777))
+                    .child(shell.app.reasoning_streaming.clone()),
+            ),
         );
     }
     row.into_any_element()
@@ -2995,8 +3012,7 @@ fn reasoning_row(
     // the text visibly appends; once the thinking completes the block is
     // auto-folded (the shell clears the reasoning expansion) but stays
     // expandable through the header toggle.
-    let streaming = shell.app.status.running
-        && shell.app.streaming_reasoning_block == Some(block);
+    let streaming = shell.app.status.running && shell.app.streaming_reasoning_block == Some(block);
     let expanded = streaming || shell.reasoning_expanded(block);
     let preview = reasoning_preview(&entry.text);
     let mut row = div()
@@ -3039,27 +3055,22 @@ fn reasoning_row(
     );
     if expanded {
         row = row.child(
-            div()
-                .w_full()
-                .pl_8()
-                .pr_6()
-                .pb_2()
-                .child(
-                    div()
-                        .w_full()
-                        .rounded(px(6.0))
-                        .bg(rgba(0x7f7f7f08))
-                        .border_1()
-                        .border_color(rgba(0x7f7f7f20))
-                        .p_2()
-                        .child(
-                            TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
-                                .code_block_actions(|_, _, _| div().into_any_element())
-                                .text_size(px(SECONDARY_SIZE))
-                                .line_height(px(SECONDARY_LINE))
-                                .text_color(rgb(0x777777)),
-                        ),
-                ),
+            div().w_full().pl_8().pr_6().pb_2().child(
+                div()
+                    .w_full()
+                    .rounded(px(6.0))
+                    .bg(rgba(0x7f7f7f08))
+                    .border_1()
+                    .border_color(rgba(0x7f7f7f20))
+                    .p_2()
+                    .child(
+                        TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
+                            .code_block_actions(|_, _, _| div().into_any_element())
+                            .text_size(px(SECONDARY_SIZE))
+                            .line_height(px(SECONDARY_LINE))
+                            .text_color(rgb(0x777777)),
+                    ),
+            ),
         );
     }
     row.into_any_element()
@@ -3118,10 +3129,7 @@ fn looks_like_list(text: &str) -> bool {
     !lines.is_empty()
         && lines.iter().all(|line| {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("- ")
-                || trimmed.starts_with("* ")
-                || trimmed.starts_with("+ ")
-            {
+            if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
                 return true;
             }
             let bytes = trimmed.as_bytes();
@@ -3384,11 +3392,8 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .px_4()
             .py_2()
             .child(
-                TextView::markdown(
-                    format!("streaming-{index}"),
-                    shell.app.streaming.clone(),
-                )
-                .code_block_actions(|_, _, _| div().into_any_element()),
+                TextView::markdown(format!("streaming-{index}"), shell.app.streaming.clone())
+                    .code_block_actions(|_, _, _| div().into_any_element()),
             )
             .into_any_element();
     }
