@@ -3018,3 +3018,83 @@ xdotool 同级用 XTest 真敲 `nihao` + 空格选词 + `shijie`）：
 - **打了补丁**：同一串按键，进程存活；截屏 diff 显示输入框文字区变化；再按 `Cmd+Enter`
   发出去，会话日志里 `turn_started` 的 `input` 是 `"你好世界"`，`user_message` 同值。
   即中文 preedit → 提交 → 进 prompt 全链路通，不是「不崩但乱码」。
+
+## ADR-0052：系统托盘——Linux 用 `ksni`，关闭最小化而不是退出（2026-10-28）
+
+**背景**
+
+GUI 目前是"单窗口、关窗即退"：`qcode-gui` 的 `run()` 用 `gpui_kit::open_window` 开唯一
+窗口，窗口一关 GPUI 在 Linux 上按 `QuitMode::Default` 直接退出。`cmd-.` 停任务、审批
+fail-closed 这些能力都在，但**一旦窗口没了，后台正在跑的任务就失去了可达的控制面**；
+用户误点关闭只能重开、重连会话。
+
+桌面上的同类工具普遍用托盘常驻解决这个问题（本机 v2rayN 的托盘菜单即为此形态，
+用 DBus 实读到：显示主窗口 / 显示或隐藏 / 复制代理命令 / 系统代理三选一 / 订阅更新 /
+退出）。qcode 需要的不是代理设置，而是**状态可见 + 任务可控 + 一个不误杀的退出入口**。
+
+GPUI（`gpui-pre 0.3.9`）的能力边界决定了实现方式：
+
+| 能力 | 现状 |
+| --- | --- |
+| 拦截关闭 | `Window::on_window_should_close(cx, f)`，返回 `false` 不关 |
+| 最小化 | `Window::minimize_window()` |
+| 窗口级隐藏/显示 | **没有**（只有 app 级 `App::hide()`，macOS 语义） |
+| 零窗口存活 | `QuitMode::Explicit` 可让应用在无窗口时继续跑 |
+| 系统通知 | `Platform::show_system_notification` |
+
+**决定**
+
+1. **P1 只做 Linux，用 `ksni`**（纯 Rust，StatusNotifierItem + dbusmenu，zbus 实现）。
+   `tray-icon` 的 Linux 后端依赖 GTK + libayatana-appindicator，并且需要 GTK 主循环，
+   与 GPUI 自持的事件循环冲突；`ksni` 只走 DBus，没有 C 依赖，X11 / Wayland 都能用。
+   非 Linux 平台留 `TrayBackend` trait 的空实现，不改动现状。
+2. **关闭按钮 = 最小化到托盘**：`on_window_should_close` 返回 `false` 并
+   `minimize_window()`；窗口不销毁，UI 状态（滚动、对话框、输入框草稿）全部保留。
+   **P1 不做"真隐藏"**（不占任务栏）：GPUI 没有窗口级 hide/show，做真隐藏要么销毁重建
+   （需把 `app`/`backend` 从 `Shell` 里抽出来共享，且窗口级 UI 状态会重置），要么给
+   gpui-kit 补 hide/show（Wayland 上也只能退化成最小化）。等 P2 有明确诉求再升级。
+3. **菜单只放与任务相关的东西**，照 v2rayN 的分组语义：
+   状态行（disabled）/ 显示主窗口 / 新建任务 / 停止当前任务（仅运行中可用）/
+   分隔线 / 退出。不做代理、订阅、开机自启这类与本产品无关的项。
+4. **状态来自 `qcode-ui-state`**：运行中 turn 数、pending approval 数、最近一次失败。
+   图标三态（空闲 / 运行中 / 待审批），tooltip 显示活动任务标题；状态变化节流 300ms
+   再 `Handle::update`，避免高频重绘。
+5. **线程与命令通路**：ksni 跑在自己的线程（tokio）；菜单点击发 `TrayCommand`
+   （`ShowWindow` / `NewTask` / `StopCurrent` / `Quit`）经 `mpsc` 交给 GPUI 的
+   foreground task，复用现有 action（`cmd-n`、`cmd-.`）。
+6. **退出只有一个真正的入口**：托盘"退出"（以及菜单里的退出 / `cmd-q`）才 `cx.quit()`；
+   有任务在跑时先确认。审批仍然 fail-closed，托盘只提示"等待审批（N）"，不代答。
+7. **托盘注册失败必须降级**：没有 `org.kde.StatusNotifierWatcher` 时（headless、精简
+   Wayland 合成器）只记日志，恢复"关窗即退"的原行为，不能因为托盘挂了让主程序不可用。
+
+**备选方案（未采用）**
+
+- **`tray-icon` 一套跨平台代码**：Linux 要拖 GTK 主循环，和 GPUI 抢线程模型，且给
+  deb/rpm/AppImage 增加 `libayatana-appindicator3-1` 运行时依赖；收益是省一套实现，
+  但风险与打包成本都更高。
+- **销毁窗口 + 托盘常驻**（`QuitMode::Explicit` + 重建）：语义最接近"托盘应用"，但要
+  重构 `Shell` 对 `app`/`backend` 的所有权，且重建后窗口级状态丢失，P1 不划算。
+- **不做托盘，只用系统通知**：通知能提示"任务完成/等待审批"，但无法承载"显示窗口 /
+  停止任务 / 退出"这些需要持久入口的操作。
+
+**后果 / 边界**
+
+- 最小化不是隐藏：窗口仍出现在任务栏/Dock。若用户明确要求"托盘常驻、任务栏不可见"，
+  需要 P2 的销毁重建或 gpui-kit 补丁。
+- GNOME 需要 AppIndicator 扩展才有托盘区（Ubuntu 默认自带；纯净 GNOME 需用户安装），
+  文档要写清楚；KDE 原生支持 SNI。
+- Wayland 下 `activate_window()` 可能被合成器拒绝聚焦（只高亮），这是平台限制，不做承诺。
+- 只覆盖 Linux；Windows（Shell_NotifyIcon）与 macOS（NSStatusItem）在 P2 通过
+  `TrayBackend` 扩展，主流程不改。
+- 与 ADR-0049 的权限模型无关：托盘不引入新的文件/网络能力，也不改变审批语义。
+
+**验证**
+
+- 单测：`TrayState → 图标/状态行/菜单 enabled` 的纯函数；`TrayCommand` 到 action 的映射
+  （fake backend），不依赖真实托盘。
+- 集成：用 `busctl` 对 dbusmenu 的 `Event` 方法点菜单项（本 ADR 调研 v2rayN 时验证过这条
+  路径可行），断言窗口最小化/恢复、停止任务、退出确认。
+- 手动：关窗最小化、托盘恢复、运行中退出确认、`StatusNotifierWatcher` 缺失时降级、
+  GNOME 与 KDE 各一次、X11 与 Wayland 各一次。
+- 回归：`cargo test --workspace`、`cargo clippy --workspace -- -D warnings`，以及现有
+  GUI 冒烟路径（新建会话、发消息、停止 turn、审批）。
