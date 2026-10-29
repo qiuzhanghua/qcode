@@ -47,6 +47,10 @@ allow = [
     "MPL-2.0",
     "0BSD",
     "CC0-1.0",
+    # Unlicense (Linux tray, via ksni 0.3.7): a public-domain dedication with no
+    # conditions at all — strictly more permissive than MIT, and the SPDX id is
+    # detected with full confidence.
+    "Unlicense",
 ]
 confidence-threshold = 0.9
 

@@ -25,7 +25,12 @@ impl Session {
         let config = dir.path().join("config.toml");
         std::fs::write(
             &config,
-            format!("version = 1\ndefault_provider = \"{provider}\"\n"),
+            // The sandbox is pinned off: this suite speaks the ACP protocol
+            // and must not depend on the host being able to apply a kernel
+            // sandbox (a nested container cannot).
+            format!(
+                "version = 1\ndefault_provider = \"{provider}\"\n\n[sandbox]\nmode = \"none\"\n"
+            ),
         )
         .expect("write config");
         let mut child = Command::new(env!("CARGO_BIN_EXE_qc"))

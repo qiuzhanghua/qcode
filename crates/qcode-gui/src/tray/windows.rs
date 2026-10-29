@@ -227,7 +227,7 @@ unsafe extern "system" fn tray_wnd_proc(
         refresh_tip();
         return 0;
     } else if msg == WM_COMMAND {
-        match (wparam as usize) & 0xffff {
+        match wparam & 0xffff {
             MENU_SHOW => send(TrayCommand::ShowWindow),
             MENU_NEW_TASK => send(TrayCommand::NewTask),
             MENU_STOP => send(TrayCommand::StopCurrent),
@@ -307,7 +307,7 @@ pub fn hide_window(window: &gpui_kit::Window) {
         return;
     };
     unsafe {
-        let hwnd = win32.hwnd.get() as isize as *mut core::ffi::c_void;
+        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
         ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -324,7 +324,7 @@ pub fn show_window(window: &gpui_kit::Window) {
         return;
     };
     unsafe {
-        let hwnd = win32.hwnd.get() as isize as *mut core::ffi::c_void;
+        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         } else if IsWindowVisible(hwnd) == 0 {

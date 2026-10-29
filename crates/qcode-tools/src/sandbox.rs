@@ -590,6 +590,25 @@ const LL_READ_FILE: u64 = 1 << 2;
 #[cfg(target_os = "linux")]
 const LL_READ_DIR: u64 = 1 << 3;
 
+/// Rights `landlock_add_rule` accepts for a node that is not a directory.
+///
+/// The kernel validates `allowed_access` against the file type instead of
+/// masking the unsuitable bits off, so a `path_beneath` rule that asks for a
+/// directory-only right (READ_DIR, the MAKE_* family, REMOVE_*, REFER) on a
+/// file, char/block device, FIFO or socket fails with EINVAL. Device nodes
+/// therefore need a mask of their own: handing them `landlock_handled(abi)`
+/// made every device rule fail, and because a failed preflight is fatal, the
+/// binary refused to start on Linux at all.
+///
+/// Kept as a filtered view of the handled mask so the bits an older ABI does
+/// not know (TRUNCATE, IOCTL_DEV) stay out of the request.
+#[cfg(any(target_os = "linux", test))]
+fn landlock_file_rights(handled: u64) -> u64 {
+    // EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV
+    const FILE_RIGHTS: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14) | (1 << 15);
+    handled & FILE_RIGHTS
+}
+
 /// Access bits this kernel's Landlock ABI can handle.
 ///
 /// ABI 1 handles bits 0..=12 (the filesystem rights); 2 adds REFER, 3 adds
@@ -696,6 +715,8 @@ impl Landlock {
         }
 
         // Devices need writes; grant them explicitly instead of making /dev rw.
+        // They are not directories, so only file rights are legal here.
+        let device_rights = landlock_file_rights(allowed);
         for path in [
             "/dev/null",
             "/dev/zero",
@@ -706,7 +727,7 @@ impl Landlock {
         ] {
             let path = Path::new(path);
             if path.exists() {
-                add_path_rule(self.ruleset_fd, path, allowed)?;
+                add_path_rule(self.ruleset_fd, path, device_rights)?;
             }
         }
 
@@ -1547,6 +1568,52 @@ mod landlock_tests {
         assert_eq!(landlock_handled(5), v1 | (1 << 13) | (1 << 14) | (1 << 15));
         assert_eq!(landlock_handled(9), landlock_handled(5));
     }
+
+    /// Rights the kernel refuses on a non-directory node: asking for one of
+    /// these on a device made every rule fail with EINVAL, and since a failed
+    /// preflight is fatal the binary would not start on Linux.
+    const DIR_ONLY_RIGHTS: u64 = (1 << 3)   // READ_DIR
+        | (1 << 4)                          // REMOVE_DIR
+        | (1 << 5)                          // REMOVE_FILE
+        | (1 << 6)                          // MAKE_CHAR
+        | (1 << 7)                          // MAKE_DIR
+        | (1 << 8)                          // MAKE_REG
+        | (1 << 9)                          // MAKE_SOCK
+        | (1 << 10)                         // MAKE_FIFO
+        | (1 << 11)                         // MAKE_BLOCK
+        | (1 << 12)                         // MAKE_SYM
+        | (1 << 13); // REFER
+
+    #[test]
+    fn file_rights_drop_every_directory_only_bit() {
+        for abi in 1..=5 {
+            let rights = landlock_file_rights(landlock_handled(abi));
+            assert_eq!(
+                rights & DIR_ONLY_RIGHTS,
+                0,
+                "ABI {abi} kept a directory-only right for a non-directory node"
+            );
+            // The bits a device actually needs must survive.
+            assert_eq!(rights & (1 << 1), 1 << 1, "ABI {abi}: WRITE_FILE missing");
+            assert_eq!(rights & (1 << 2), 1 << 2, "ABI {abi}: READ_FILE missing");
+        }
+    }
+
+    #[test]
+    fn file_rights_respect_what_the_abi_knows() {
+        // TRUNCATE and IOCTL_DEV only exist from ABI 3 / 5 on; requesting them
+        // on an older kernel would fail the same way.
+        assert_eq!(landlock_file_rights(landlock_handled(1)) & (1 << 14), 0);
+        assert_eq!(
+            landlock_file_rights(landlock_handled(3)) & (1 << 14),
+            1 << 14
+        );
+        assert_eq!(landlock_file_rights(landlock_handled(3)) & (1 << 15), 0);
+        assert_eq!(
+            landlock_file_rights(landlock_handled(5)) & (1 << 15),
+            1 << 15
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1554,17 +1621,23 @@ mod landlock_runtime {
     use super::*;
 
     fn landlock_or_skip(workspace: &Path) -> Option<Landlock> {
-        let sandbox = match Landlock::new(workspace) {
-            Ok(sandbox) => sandbox,
-            Err(err) => {
-                eprintln!("skipping: landlock unavailable here: {err}");
-                return None;
-            }
-        };
+        // A kernel with no Landlock at all is an environment we may skip on.
+        // Anything else is not: a ruleset that fails to build on a kernel that
+        // *does* support Landlock is a bug in this module. This distinction
+        // matters — the device-rule EINVAL was silently swallowed here, which
+        // kept "qc cannot start on Linux" green for days.
+        if let Err(err) = landlock_abi() {
+            eprintln!("skipping: landlock unavailable here: {err}");
+            return None;
+        }
+        let sandbox = Landlock::new(workspace).expect("build the landlock ruleset");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
-                eprintln!("skipping: landlock unavailable here: {err}");
+                // The preflight runs a real child under `restrict_self`, which
+                // a nested container or seccomp profile can refuse even though
+                // the ruleset itself was accepted.
+                eprintln!("skipping: landlock preflight failed here: {err}");
                 None
             }
         }

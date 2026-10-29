@@ -42,8 +42,15 @@ fn silent_server() -> (SocketAddr, Receiver<()>) {
 
 fn spawn_qc(addr: SocketAddr, dir: &Path, extra: &[&str]) -> Child {
     let config = dir.join("config.toml");
-    // Keyless local server: no API key is needed for this fake endpoint.
-    std::fs::write(&config, "[providers.openai]\napi_key_env = \"\"\n").expect("write config");
+    // Keyless local server: no API key is needed for this fake endpoint. The
+    // sandbox is pinned off so the test does not depend on the host being able
+    // to apply Landlock — a nested container cannot, and the default backend
+    // would abort `qc` before it ever dials this fake server.
+    std::fs::write(
+        &config,
+        "[sandbox]\nmode = \"none\"\n\n[providers.openai]\napi_key_env = \"\"\n",
+    )
+    .expect("write config");
 
     let mut args: Vec<String> = [
         "run",
