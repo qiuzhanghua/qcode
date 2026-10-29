@@ -105,6 +105,16 @@ const SIDEBAR_MIN_WIDTH: f32 = 180.0;
 const SIDEBAR_MAX_WIDTH: f32 = 560.0;
 /// Minimum width of the main conversation panel, in pixels.
 const MAIN_MIN_WIDTH: f32 = 380.0;
+/// 右侧内容区（对话展示框、提示框、输入框、状态栏）的两侧留白：
+/// 加大留白后，实质内容相应收窄。耗时行左内缩额外 +10 以对齐输入框文字。
+const MAIN_PAD_L: f32 = 44.0;
+const MAIN_PAD_R: f32 = 52.0;
+/// 对话展示框（用户问题 / 过程 / 结果）相对输入框的额外内缩：让对话内容
+/// 左右两侧都比下方问题框的边框更窄一圈。输入框在 MAIN_PAD 之外又各自包了
+/// 一层 44/52 的容器 padding，对话展示框只有 MAIN_PAD 与外层 MessageScroller
+/// 的 px_3/px_6，所以这里补一层内缩，使横线右端不再超出问题框右边框。
+const TRANSCRIPT_PAD_L: f32 = 16.0;
+const TRANSCRIPT_PAD_R: f32 = 32.0;
 /// Frames of the status-bar spinner shown while a turn is running.
 const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 /// Turns after which the composer suggests starting a fresh task; long
@@ -2742,8 +2752,8 @@ impl Shell {
             .flex_col()
             .flex_grow(1.0)
             .min_w_0()
-            .pl(px(20.0))
-            .pr(px(26.0))
+            .pl(px(MAIN_PAD_L))
+            .pr(px(MAIN_PAD_R))
             .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
@@ -2761,6 +2771,8 @@ impl Shell {
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
+                            .pl(px(TRANSCRIPT_PAD_L))
+                            .pr(px(TRANSCRIPT_PAD_R))
                             .pt(px(8.0))
                             .pb(px(32.0))
                             // GPUI keeps a text selection live until the mouse
@@ -2819,8 +2831,8 @@ impl Shell {
             .children(task_elapsed.map(|label| {
                 div()
                     .w_full()
-                    .pl(px(30.0))
-                    .pr(px(26.0))
+                    .pl(px(MAIN_PAD_L + 10.0))
+                    .pr(px(MAIN_PAD_R))
                     .pb_1()
                     .child(
                         div()
@@ -2834,8 +2846,8 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .pl(px(20.0))
-                    .pr(px(26.0))
+                    .pl(px(MAIN_PAD_L))
+                    .pr(px(MAIN_PAD_R))
                     .pb_2()
                     .children(
                         (self.app.turns.len() >= ROUND_HINT_THRESHOLD
@@ -3241,8 +3253,8 @@ impl Shell {
             )
             .child(
                 div()
-                    .pl(px(20.0))
-                    .pr(px(26.0))
+                    .pl(px(MAIN_PAD_L))
+                    .pr(px(MAIN_PAD_R))
                     .pb_2()
                     .child(
                         div()
