@@ -1277,15 +1277,75 @@ impl Shell {
         }
     }
 
-    fn anchor(&self, cx: &Context<Self>) -> Option<usize> {
-        let state = self.scroller.read(cx);
-        (!state.is_following_tail()).then(|| state.logical_scroll_top().item_ix)
+    /// The virtual-list row that renders `block`, if any. Loose notices are
+    /// their own row; a turn's input, process and answer blocks all render
+    /// inside that turn's single variable-height row.
+    fn block_unit_index(&self, block: usize) -> Option<usize> {
+        self.units.iter().position(|unit| match unit {
+            DisplayUnit::Loose(b) => *b == block,
+            DisplayUnit::Turn(t) => {
+                let turn = &self.app.turns[*t];
+                turn.input_block == Some(block)
+                    || turn.answer_block == Some(block)
+                    || turn.process.contains(&block)
+            }
+        })
     }
 
-    fn restore_anchor(&self, anchor: Option<usize>, cx: &mut Context<Self>) {
-        if let Some(anchor) = anchor {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_item(anchor, cx));
+    /// Resolve a process row back to the block it renders, so its enclosing
+    /// turn row can be remeasured when the accordion changes its height.
+    fn process_block(&self, key: &ProcessKey) -> Option<usize> {
+        match key {
+            ProcessKey::Reasoning(block) => Some(*block),
+            ProcessKey::Tool(call_id) => self
+                .app
+                .blocks
+                .iter()
+                .position(|block| {
+                    matches!(block, Block::Tool(tool) if tool.call_id.as_str() == call_id.as_str())
+                }),
+        }
+    }
+
+    /// Remeasure the row containing `block`, keeping the current scroll offset
+    /// anchored to the top of the viewport rather than snapping to the top of
+    /// the (potentially very tall) enclosing turn row.
+    fn remeasure_block(&mut self, block: usize, cx: &mut Context<Self>) {
+        if let Some(unit) = self.block_unit_index(block) {
+            self.scroller.update(cx, |state, cx| {
+                state.remeasure_items(unit..unit + 1, cx);
+            });
+        }
+    }
+
+    /// Apply an accordion change: remeasure both the previously expanded row
+    /// and the newly expanded row so their height differences don't move the
+    /// scroll anchor.
+    fn set_expanded_process(&mut self, next: Option<ProcessKey>, cx: &mut Context<Self>) {
+        let old = if self.collapse_to_list {
+            None
+        } else {
+            self.expanded_process.clone()
+        };
+        let mut blocks = Vec::new();
+        if old != next {
+            if let Some(key) = &old
+                && let Some(block) = self.process_block(key)
+            {
+                blocks.push(block);
+            }
+            if let Some(key) = &next
+                && let Some(block) = self.process_block(key)
+            {
+                blocks.push(block);
+            }
+        }
+        self.expanded_process = next;
+        self.collapse_to_list = false;
+        blocks.sort_unstable();
+        blocks.dedup();
+        for block in blocks {
+            self.remeasure_block(block, cx);
         }
     }
 
@@ -1332,16 +1392,12 @@ impl Shell {
     }
 
     fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
-        let anchor = self.anchor(cx);
         let next = if self.reasoning_expanded(block) {
             None
         } else {
             Some(ProcessKey::Reasoning(block))
         };
-        self.expanded_process = next;
-        self.collapse_to_list = false;
-        self.sync_scroller(cx);
-        self.restore_anchor(anchor, cx);
+        self.set_expanded_process(next, cx);
         cx.notify();
     }
 
@@ -1362,26 +1418,26 @@ impl Shell {
     }
 
     fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
-        let anchor = self.anchor(cx);
         let next = if self.tool_expanded(call_id) {
             None
         } else {
             Some(ProcessKey::Tool(call_id.to_string()))
         };
-        self.expanded_process = next;
-        self.collapse_to_list = false;
-        self.sync_scroller(cx);
-        self.restore_anchor(anchor, cx);
+        self.set_expanded_process(next, cx);
         cx.notify();
     }
 
     fn toggle_code(&mut self, key: String, cx: &mut Context<Self>) {
-        let anchor = self.anchor(cx);
+        let block = key
+            .split(':')
+            .next()
+            .and_then(|index| index.parse::<usize>().ok());
         if !self.expanded_code.remove(&key) {
             self.expanded_code.insert(key);
         }
-        self.sync_scroller(cx);
-        self.restore_anchor(anchor, cx);
+        if let Some(block) = block {
+            self.remeasure_block(block, cx);
+        }
         cx.notify();
     }
 
@@ -2846,12 +2902,16 @@ impl Shell {
                                             .child("请求报错 · 完整信息"),
                                     )
                                     .child(
-                                        Button::new("dismiss-error")
-                                            .label("Dismiss")
+                                        div()
+                                            .id("dismiss-error")
+                                            .cursor_pointer()
+                                            .text_color(rgb(0x000000))
+                                            .text_size(sp(SECONDARY_SIZE))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.error_banner = None;
                                                 cx.notify();
-                                            })),
+                                            }))
+                                            .child("×"),
                                     ),
                             )
                             .child(div().child(message)),
@@ -3618,8 +3678,8 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .copied()
         .filter(|block| !matches!(shell.app.blocks.get(*block), Some(Block::Notice(_))))
         .collect();
-    let has_process = !process_blocks.is_empty()
-        || (turn.running() && !shell.app.reasoning_streaming.is_empty());
+    let has_process =
+        !process_blocks.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
     let show_process = !shell.collapse_all;
 
     if has_process && show_process {
