@@ -167,7 +167,32 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<MacTray> {
     })
 }
 
-/// 从最小化恢复到前台。`activate_window()` 只激活不还原，所以先 deminiaturize。
+/// 隐藏主窗口：关闭按钮 = 最小化到托盘（ADR-0052）。`orderOut:` 把窗口
+/// 从屏幕移除（Dock 图标也跟着消失），恢复走 `show_window` 的
+/// `makeKeyAndOrderFront:`。
+pub fn hide_window(window: &gpui_kit::Window) {
+    let Ok(handle) =
+        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
+    else {
+        return;
+    };
+    let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let ns_view = appkit.ns_view.as_ptr() as *mut AnyObject;
+        if ns_view.is_null() {
+            return;
+        }
+        let ns_window: *mut AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let _: () = msg_send![ns_window, orderOut: std::ptr::null_mut::<AnyObject>()];
+    }
+}
+
+/// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先 deminiaturize。
 pub fn show_window(window: &gpui_kit::Window) {
     let Ok(handle) =
         <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)

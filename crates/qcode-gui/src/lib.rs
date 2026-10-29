@@ -27,9 +27,10 @@ use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerStat
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
+use gpui_kit::base::{h_resizable, resizable_panel};
 
 gpui_kit::actions!(
     qcode_gui,
@@ -43,6 +44,8 @@ gpui_kit::actions!(
         CloseWindowShortcut,
         ToggleSidebarShortcut,
         ToggleThemeShortcut,
+        ZoomInShortcut,
+        ZoomOutShortcut,
         StopTurnShortcut,
         PrevTurnShortcut,
         NextTurnShortcut,
@@ -71,12 +74,34 @@ const SECONDARY_LINE: f32 = 22.0;
 const CAPTION_SIZE: f32 = 11.0;
 const CODE_SIZE: f32 = 12.0;
 const CODE_LINE: f32 = 18.0;
-/// Result content inside tool boxes: one step smaller than captions with
-/// extra line spacing for readability.
-const RESULT_SIZE: f32 = 10.0;
+/// Content inside tool boxes (command + output) and the thinking body:
+/// one step larger than captions with extra line spacing for readability.
+const RESULT_SIZE: f32 = 12.0;
 const RESULT_LINE: f32 = 22.0;
-const TURN_MAX_WIDTH: f32 = 900.0;
+/// The design baseline all *SIZE/*LINE tokens are written at: the default
+/// `GuiPreferences::font_size`. Every token scales from this baseline at
+/// render time (see `sp`), so Ctrl++ / Ctrl+- zoom the whole UI's text.
+const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
+
+/// The runtime font axis: the user's base font size in px, kept in sync with
+/// `GuiPreferences.font_size` (set in `Shell::new` and `Shell::zoom_font`).
+static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
+
+/// Resolve one typography token at the current font scale — the Rust
+/// analogue of deepseek-harness's single `--dsh-content-font-size` axis:
+/// one runtime value drives every conversation font and line height, so the
+/// tokens never drift per-row.
+fn sp(base: f32) -> gpui_kit::Pixels {
+    px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
+}
 const TURN_RAIL_WIDTH: f32 = 20.0;
+/// Width bounds of the resizable sidebar, in pixels. Dragging the divider
+/// between the sidebar and the conversation clamps to these.
+const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+const SIDEBAR_MAX_WIDTH: f32 = 560.0;
+/// Minimum width of the main conversation panel, in pixels.
+const MAIN_MIN_WIDTH: f32 = 380.0;
 /// Frames of the status-bar spinner shown while a turn is running.
 const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -566,6 +591,14 @@ struct Shell {
     /// Last task row the pointer entered; keeps the action overlay alive while
     /// the pointer moves from the row onto the overlay.
     hovered_task: Option<String>,
+    /// Index of the turn whose rail dot has an active hover popover.
+    rail_popup: Option<usize>,
+    /// Index currently hovered inside the popover list; overrides the dot's
+    /// own highlight until the pointer leaves the popover content.
+    rail_hover_item: Option<usize>,
+    /// Scheduled instant to close the rail popup once both the dot and the
+    /// popup content have lost hover. `None` = no close pending.
+    rail_popup_close_at: Option<std::time::Instant>,
     /// Hide every turn's process rows (Collapse all).
     collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -574,9 +607,11 @@ struct Shell {
     /// loop is already running for the current turn.
     waiting_frame: u8,
     waiting_ticker: bool,
-    /// Whether the turn's execution-process container is folded. While a turn
-    /// runs it is forced open; on completion it auto-folds (user can reopen).
-    process_collapsed: bool,
+    /// Per-turn execution-process container expansion. While a turn runs it is
+    /// forced open regardless; on completion it auto-folds (user can reopen).
+    /// New turn indices are added here when explicitly toggled open; remove
+    /// from the set to fold.
+    process_open_turns: std::collections::HashSet<usize>,
     /// Row count last reported to the scroller.
     last_blocks: usize,
     backend: Box<dyn Backend>,
@@ -617,6 +652,7 @@ impl Shell {
         });
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
+        FONT_SIZE_PX.store(prefs.font_size, std::sync::atomic::Ordering::Relaxed);
         prefs.record_workspace(Path::new(&cwd));
         let configured_provider = backend
             .provider()
@@ -739,11 +775,14 @@ impl Shell {
             rename_task: None,
             task_menu: None,
             hovered_task: None,
+            rail_popup: None,
+            rail_hover_item: None,
+            rail_popup_close_at: None,
             collapse_all: false,
             collapse_to_list: false,
             waiting_frame: 0,
             waiting_ticker: false,
-            process_collapsed: true,
+            process_open_turns: std::collections::HashSet::new(),
             last_blocks,
             backend,
             tasks,
@@ -816,7 +855,7 @@ impl Shell {
                     .child("退出 QCode？")
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child("当前任务仍在运行，退出会中断它。"),
                     )
@@ -844,7 +883,7 @@ impl Shell {
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
-        self.process_collapsed = true;
+        self.process_open_turns.clear();
         self.units = display_units(&self.app);
         let count = self.units.len() + self.typing_extra();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
@@ -983,7 +1022,7 @@ impl Shell {
                 self.turn_in_flight = false;
                 // A resumed session is already complete: fold its execution
                 // process like a just-finished turn (reopenable via header).
-                self.process_collapsed = true;
+                self.process_open_turns.clear();
                 self.app.push_notice(format!("resumed {}", short_id(&id)));
                 self.refresh_tasks();
             }
@@ -1146,7 +1185,7 @@ impl Shell {
                         // A fresh turn's execution process starts folded by
                         // default; drop any stale reasoning expansion from the
                         // previous turn.
-                        self.process_collapsed = true;
+                        self.process_open_turns.clear();
                         if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
                             self.expanded_process = None;
                         }
@@ -1155,7 +1194,7 @@ impl Shell {
                     if turn_ended {
                         // The execution process auto-folds once the turn is
                         // done; the header stays clickable to reopen it.
-                        self.process_collapsed = true;
+                        self.process_open_turns.clear();
                         self.refresh_tasks();
                     }
                 }
@@ -1244,20 +1283,13 @@ impl Shell {
         .detach();
     }
 
-    fn jump_to_last(&mut self, cx: &mut Context<Self>) {
-        let Some(last) = self.app.turns.len().checked_sub(1) else {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_end(cx));
-            return;
-        };
-        self.selected_turn = Some(last);
-        if let Some(unit) = self.turn_unit_index(last) {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_item(unit, cx));
-        } else {
-            self.scroller
-                .update(cx, |state, cx| state.scroll_to_end(cx));
-        }
+    /// Jump the transcript scroller to its very bottom (the composer). The
+    /// function is named `jump_to_bottom` here but kept simple — it never
+    /// pins `selected_turn`, so the rail's highlight stays on whichever turn
+    /// the user was looking at.
+    fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.scroller
+            .update(cx, |state, cx| state.scroll_to_end(cx));
         cx.notify();
     }
 
@@ -1281,10 +1313,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// Fold / unfold the turn's execution-process container. While the turn
-    /// runs the container is forced open, so this only matters afterwards.
-    fn toggle_process(&mut self, cx: &mut Context<Self>) {
-        self.process_collapsed = !self.process_collapsed;
+    /// Fold / unfold one turn's execution-process container, tracked per-turn
+    /// in `process_open_turns`. While the turn runs the container is forced
+    /// open, so this only matters afterwards.
+    fn toggle_process(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.process_open_turns.insert(index) {
+            self.process_open_turns.remove(&index);
+        }
         cx.notify();
     }
 
@@ -1386,6 +1421,29 @@ impl Shell {
         } else {
             "dark".to_string()
         };
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.app
+                .push_notice(format!("cannot save gui.json: {error}"));
+        }
+        self.prefs.apply(cx);
+        cx.notify();
+    }
+
+    /// Ctrl++ / Ctrl+- zoom the whole UI's text: shift the base font size by
+    /// one pixel within the FONT_SIZE_MIN..=FONT_SIZE_MAX bounds. Persisted
+    /// like the settings form's Font size field, then re-applied to the theme
+    /// (default text) and to every `sp`-scaled typography token.
+    fn zoom_font(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let next = self.prefs.font_size as i32 + delta;
+        let next = next.clamp(
+            crate::gui_prefs::FONT_SIZE_MIN as i32,
+            crate::gui_prefs::FONT_SIZE_MAX as i32,
+        ) as u32;
+        if next == self.prefs.font_size {
+            return;
+        }
+        self.prefs.font_size = next;
+        FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = self.prefs.save(&self.data_dir) {
             self.app
                 .push_notice(format!("cannot save gui.json: {error}"));
@@ -1524,14 +1582,22 @@ impl Shell {
             .child(
                 Button::new("jump-latest")
                     .icon(IconName::ArrowDown)
-                    .accessibility_label("Jump to latest")
-                    .tooltip("Jump to latest")
-                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_last(cx))),
+                    .accessibility_label("跳转到底部")
+                    .tooltip("跳转到底部")
+                    .on_click(cx.listener(|this, _, _window, cx| this.jump_to_bottom(cx))),
             )
             .into_any_element()
     }
 
-    fn render_turn_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_turn_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // Expire any pending rail-popup close timer whose time has come.
+        if let Some(at) = self.rail_popup_close_at {
+            if std::time::Instant::now() >= at {
+                self.rail_popup = None;
+                self.rail_hover_item = None;
+                self.rail_popup_close_at = None;
+            }
+        }
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
         }
@@ -1547,7 +1613,23 @@ impl Shell {
             (center.saturating_sub(MAX_DOTS / 2)).min(total - MAX_DOTS)
         };
         let end = (start + MAX_DOTS).min(total);
-        // One gray dot per turn, vertically centred on the dialog's left edge.
+        // One-line title for every turn's input block — the popover lists the
+        // *entire* session, not just the visible dot window.
+        let inputs: Vec<String> = self
+            .app
+            .turns
+            .iter()
+            .map(|turn| {
+                turn.input_block
+                    .and_then(|idx| self.app.blocks.get(idx))
+                    .and_then(|block| match block {
+                        Block::User(text) => Some(text.trim()),
+                        _ => None,
+                    })
+                    .map(short_title)
+                    .unwrap_or_else(|| format!("Turn {}", turn.number))
+            })
+            .collect();
         let mut rail = div()
             .w(px(TURN_RAIL_WIDTH))
             .flex()
@@ -1558,7 +1640,7 @@ impl Shell {
         for index in start..end {
             // Colour fades with distance from the active turn: the current one
             // is darkest, one step away slightly lighter, farther ones lightest.
-            let dot = match active
+            let dot_color = match active
                 .map(|active| index.abs_diff(active))
                 .unwrap_or(usize::MAX)
             {
@@ -1566,21 +1648,128 @@ impl Shell {
                 1 => rgb(0xbcbcbc),
                 _ => rgb(0xd8d8d8),
             };
-            rail = rail.child(
-                div()
-                    .w(px(8.0))
-                    .h(px(8.0))
-                    .rounded(px(4.0))
-                    .bg(dot)
-                    .hover(|style| style.bg(rgb(0xa8a8a8)))
+            let inputs = inputs.clone();
+            let show_popover = self.rail_popup == Some(index);
+            let dot = div()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded(px(4.0))
+                .bg(dot_color)
+                .hover(|style| style.bg(rgb(0xa8a8a8)))
+                .cursor_pointer()
+                .id(format!("turn-rail-trigger-{index}"))
+                .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                    if *hovered {
+                        this.rail_popup = Some(index);
+                        this.rail_hover_item = None;
+                        this.rail_popup_close_at = None;
+                    } else if this.rail_popup == Some(index) {
+                        // Short grace window only to let the pointer travel
+                        // from the dot into the popover. Once the pointer
+                        // leaves both, the popover must hide — the popover's
+                        // own outer div on_hover(false) handles that path,
+                        // and this timer catches the case where the user
+                        // jumps straight from dot → nowhere.
+                        this.rail_popup_close_at = Some(
+                            std::time::Instant::now() + std::time::Duration::from_millis(200),
+                        );
+                    }
+                    cx.notify();
+                }))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.jump_to_turn(index, cx);
+                }));
+            let popup = gpui_kit::base::Popup::new(
+                format!("rail-popup-{index}"),
+                dot.into_any_element(),
+            )
+            // LeftCenter: popover's left edge snaps to the dot's right center,
+            // so the card appears on the *right* side of the rail.
+            .anchor(gpui_kit::Anchor::LeftCenter)
+            .offset(px(6.0));
+            let popup = if show_popover {
+                popup.content(self.build_rail_popover(cx, inputs, index))
+            } else {
+                popup
+            };
+            rail = rail.child(popup);
+        }
+        rail.into_any_element()
+    }
+
+    /// Build the hover-popover body for the rail dots: a scrollable list of
+    /// every turn's question. Items start neutral — the list row hover is
+    /// what marks one "active", so the highlight *only* tracks the pointer
+    /// inside the popover, never the hovered dot itself.
+    fn build_rail_popover(
+        &mut self,
+        cx: &mut Context<Self>,
+        inputs: Vec<String>,
+        highlight: usize,
+    ) -> gpui_kit::AnyElement {
+        // ONLY the row the pointer is actually hovering inside the popover
+        // gets the active style. `None` here means "nothing selected yet".
+        let active = self.rail_hover_item;
+        let mut list = div()
+            .id(format!("rail-popover-list-{highlight}"))
+            .flex()
+            .flex_col()
+            .bg(rgb(0xffffff))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(0xe3e3e3))
+            .max_w(px(260.0))
+            .max_h(px(360.0))
+            .overflow_y_hidden()
+            .py_1()
+            .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                if *hovered {
+                    // Pointer inside the popover — cancel any pending close
+                    // so the dot's 200ms grace window doesn't shut us down.
+                    this.rail_popup_close_at = None;
+                } else {
+                    // Pointer fully left the popover. Schedule a zero-delay
+                    // close (expires next render) so the card snaps hidden.
+                    this.rail_hover_item = None;
+                    this.rail_popup_close_at = Some(std::time::Instant::now());
+                }
+                cx.notify();
+            }));
+        for (i, title) in inputs.iter().enumerate() {
+            let title = title.clone();
+            let is_active = active == Some(i);
+            list = list.child(
+                Button::new(format!("popover-item-{i}"))
+                    // Ghost variant kills the default Button border — items
+                    // blend cleanly into the popover backdrop without any
+                    // chip frame around them.
+                    .with_variant(gpui_kit::component::button::ButtonVariant::Ghost)
+                    .label(title)
                     .cursor_pointer()
-                    .id(format!("turn-rail-{index}"))
+                    .bg(rgb(0xffffff))
+                    .px_3()
+                    .py_2()
+                    .text_size(sp(12.0))
+                    .text_color(rgb(0x222222))
+                    .when(is_active, |s| s.bg(rgb(0xd0d0d0)))
+                    .when(!is_active, |s| s.hover(|style| style.bg(rgb(0xd0d0d0))))
+                    .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                        if *hovered {
+                            this.rail_hover_item = Some(i);
+                        } else if this.rail_hover_item == Some(i) {
+                            this.rail_hover_item = None;
+                        }
+                        cx.notify();
+                    }))
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.jump_to_turn(index, cx);
+                        this.rail_popup = None;
+                        this.rail_hover_item = None;
+                        this.rail_popup_close_at = None;
+                        this.jump_to_turn(i, cx);
                     })),
             );
         }
-        rail.into_any_element()
+        list.into_any_element()
     }
 
     fn active_task_row(&self) -> Option<&TaskRow> {
@@ -1909,7 +2098,7 @@ impl Shell {
                     .child(format!("删除任务 “{title}”？"))
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(
                                 "将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。",
@@ -2021,7 +2210,7 @@ impl Shell {
                     .child(format!("移除目录 @{label}？"))
                     .child(
                         div()
-                            .text_size(px(SECONDARY_SIZE))
+                            .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
                             .child(format!("不会删除 {path} 中的文件，只会从当前任务中移除。")),
                     )
@@ -2140,7 +2329,7 @@ impl Shell {
             if missing {
                 line = line.child(
                     div()
-                        .text_size(px(CAPTION_SIZE))
+                        .text_size(sp(CAPTION_SIZE))
                         .text_color(rgb(0xd06060))
                         .child("丢失"),
                 );
@@ -2203,14 +2392,14 @@ impl Shell {
         if pending {
             section = section.child(
                 div()
-                    .text_size(px(CAPTION_SIZE))
+                    .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("当前 Turn 结束后应用"),
             );
         } else if self.turn_in_flight {
             section = section.child(
                 div()
-                    .text_size(px(CAPTION_SIZE))
+                    .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("Turn 结束后应用"),
             );
@@ -2282,7 +2471,7 @@ impl Shell {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_size(px(BODY_SIZE))
+                        .text_size(sp(BODY_SIZE))
                         .whitespace_nowrap()
                         .child(label),
                 );
@@ -2406,7 +2595,14 @@ impl Shell {
             }
         })
         .scrollbar(false)
-        .jump_button(false);
+        .jump_button(false)
+        // The scroller applies its own top/bottom padding to the virtual list.
+        // That padding is included in the list's internal scroll extent but
+        // not in `max_offset_for_scrollbar`, so the wheel clamp (`content_size
+        // - viewport`) stops a few pixels short of the real end and never
+        // re-engages tail follow. Keep the list itself unpadded and hold the
+        // breathing room on the surrounding container instead.
+        .with_list_style(StyleRefinement::default().py(px(0.0)));
 
         // Header label: the session title when the task has one (first user
         // message), else the session id — say what this conversation is
@@ -2475,7 +2671,8 @@ impl Shell {
                             .flex_col()
                             .flex_grow(1.0)
                             .min_h_0()
-                            .pb(px(24.0))
+                            .pt(px(8.0))
+                            .pb(px(32.0))
                             // GPUI keeps a text selection live until the mouse
                             // button-up arrives, and a wheel scroll then
                             // drags/extends it along the pointer — so a
@@ -2544,8 +2741,8 @@ impl Shell {
                     .border_color(rgba(0x7f7f7f30))
                     .px_3()
                     .py_2()
-                    .text_size(px(CODE_SIZE))
-                    .line_height(px(CODE_LINE))
+                    .text_size(sp(CODE_SIZE))
+                    .line_height(sp(CODE_LINE))
                     .child(div().child(format!(
                         "approval needed ({}) · {} · {}",
                         self.approvals.len(),
@@ -2633,7 +2830,7 @@ impl Shell {
                                 .py_1()
                                 .child(
                                     div()
-                                        .text_size(px(CAPTION_SIZE))
+                                        .text_size(sp(CAPTION_SIZE))
                                         .child(name),
                                 )
                                 .child(
@@ -2672,7 +2869,7 @@ impl Shell {
                                     .child(
                                         Textarea::new(&self.input)
                                             .bordered(false)
-                                            .text_size(px(15.0))
+                                            .text_size(sp(15.0))
                                             .aria_label("Message qcode"),
                                     )
                             })
@@ -2684,7 +2881,7 @@ impl Shell {
                                     .justify_between()
                                     .child(
                                         Button::new("upload")
-                                            .label("上传文件")
+                                            .label("选择文件")
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.upload_file(cx)
                                             })),
@@ -2780,6 +2977,15 @@ impl Shell {
 fn display_units(app: &App) -> Vec<DisplayUnit> {
     let mut units = Vec::with_capacity(app.loose_blocks.len() + app.turns.len());
     for index in &app.loose_blocks {
+        // Notices and standalone todo blocks are status-bar/tool-row content
+        // only; a loose one would otherwise render as a stray row with no
+        // turn around it.
+        if matches!(
+            app.blocks.get(*index),
+            Some(Block::Notice(_)) | Some(Block::Todo(_))
+        ) {
+            continue;
+        }
         units.push((*index, DisplayUnit::Loose(*index)));
     }
     for (turn_index, turn) in app.turns.iter().enumerate() {
@@ -2864,6 +3070,13 @@ fn pick_directory() -> Result<Option<PathBuf>, String> {
         // so non-ASCII paths arrive garbled in the UTF-8 decode below.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
+# Pin the .NET UI culture to the machine's actual display language so the
+# dialog's built-in labels ("此电脑", "This PC", …) never flip between zh-CN
+# and en-US depending on which resource pack PowerShell happens to load.
+$ui = [Globalization.CultureInfo]::DefaultUICulture
+[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
+[Threading.Thread]::CurrentThread.CurrentCulture = $ui
+[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Title = '选择工作目录'
@@ -2943,9 +3156,15 @@ fn pick_file() -> Result<Option<PathBuf>, String> {
         // STA requirements as the folder picker above.
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
+# Same culture pin as pick_directory above — keep WinForms built-in strings
+# ("此电脑", "This PC", …) consistent with the machine's display language.
+$ui = [Globalization.CultureInfo]::DefaultUICulture
+[Threading.Thread]::CurrentThread.CurrentUICulture = $ui
+[Threading.Thread]::CurrentThread.CurrentCulture = $ui
+[Windows.Forms.Application]::CurrentCulture = $ui
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = 'Choose a file'
+$dialog.Title = '选择文件'
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Write-Output $dialog.FileName
 }
@@ -3006,7 +3225,7 @@ fn typing_row(frame: u32) -> AnyElement {
         .items_center()
         .px_6()
         .py_1()
-        .text_size(px(SECONDARY_SIZE))
+        .text_size(sp(SECONDARY_SIZE))
         .text_color(rgb(0x888888))
         .child(div().opacity(opacity).child("typing…"))
         .into_any_element()
@@ -3019,10 +3238,6 @@ fn format_duration(duration: time::Duration) -> String {
     } else {
         format!("{}m{}s", seconds / 60, seconds % 60)
     }
-}
-
-fn turn_time(started: time::OffsetDateTime) -> String {
-    format!("{:02}:{:02}", started.hour(), started.minute())
 }
 
 fn reasoning_preview(text: &str) -> String {
@@ -3056,7 +3271,7 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .w_full()
             .id("reasoning-live-row")
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3089,8 +3304,8 @@ fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     .border_1()
                     .border_color(rgba(0x7f7f7f20))
                     .p_2()
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE))
+                    .text_size(sp(SECONDARY_SIZE))
+                    .line_height(sp(SECONDARY_LINE))
                     .text_color(rgb(0x777777))
                     .child(shell.app.reasoning_streaming.clone()),
             ),
@@ -3129,7 +3344,7 @@ fn reasoning_row(
             .w_full()
             .id(format!("reasoning-row-{block}"))
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
@@ -3163,8 +3378,8 @@ fn reasoning_row(
                     .child(
                         TextView::markdown(format!("reasoning-body-{block}"), entry.text.clone())
                             .code_block_actions(|_, _, _| div().into_any_element())
-                            .text_size(px(SECONDARY_SIZE))
-                            .line_height(px(SECONDARY_LINE))
+                            .text_size(sp(SECONDARY_SIZE))
+                            .line_height(sp(SECONDARY_LINE))
                             .text_color(rgb(0x777777)),
                     ),
             ),
@@ -3216,6 +3431,17 @@ fn short_preview(text: &str, limit: usize) -> String {
     value
 }
 
+/// First non-empty line of `text`, collapsed to one line and trimmed to ~50
+/// chars — the popover title for a turn.
+fn short_title(text: &str) -> String {
+    let first_line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(text)
+        .trim();
+    short_preview(first_line, 50)
+}
+
 /// Heuristic: the output reads as a markdown list when every non-empty line
 /// starts with a bullet (`- `, `* `, `+ `) or a number (`1. `).
 fn looks_like_list(text: &str) -> bool {
@@ -3246,37 +3472,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         .flex()
         .flex_col()
         .gap_1()
-        .w_full()
-        .max_w(px(TURN_MAX_WIDTH))
-        .mx_auto();
-
-    let status = match turn.status {
-        Some(qcode_core::event::TurnStatus::Completed) => "done",
-        Some(qcode_core::event::TurnStatus::Failed) => "failed",
-        Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
-        None if turn.running() => "running",
-        None => "done",
-    };
-    let duration = turn
-        .duration()
-        .map(format_duration)
-        .unwrap_or_else(|| "…".to_string());
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_6()
-            .pt_4()
-            .text_size(px(CAPTION_SIZE))
-            .text_color(rgb(0x888888))
-            .child(format!("Turn {}", turn.number))
-            .child(turn_time(turn.started_at))
-            .child(duration)
-            .child(status)
-            .child(format!("${:.4}", turn.cost_usd)),
-    );
+        .w_full();
 
     if let Some(block) = turn.input_block {
         card = card.child(block_row(block, shell, entity));
@@ -3292,7 +3488,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         // a turn is running the container is forced open so the stream keeps
         // appending; once it finishes the process auto-folds and the answer
         // renders below, outside the container.
-        let process_open = !shell.process_collapsed || turn.running();
+        let process_open = shell.process_open_turns.contains(&index) || turn.running();
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &turn.process {
             if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
@@ -3308,6 +3504,26 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                 process = process.child(block_row(*block, shell, entity));
             }
         }
+        // Build the running-time label *at render time* so it ticks in sync
+        // with the existing 200ms waiting_ticker (which already calls
+        // cx.notify() while a turn is live). Once the turn ends the duration
+        // is sealed from Turn::ended_at and stays fixed.
+        let status_label = match turn.status {
+            Some(qcode_core::event::TurnStatus::Completed) => "done",
+            Some(qcode_core::event::TurnStatus::Failed) => "failed",
+            Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+            None if turn.running() => "running",
+            None => "done",
+        };
+        let elapsed_label = if turn.running() {
+            let now = time::OffsetDateTime::now_utc();
+            let live = (now - turn.started_at).max(time::Duration::ZERO);
+            format!("耗时{}", format_duration(live))
+        } else {
+            turn.duration()
+                .map(|d| format!("耗时{}", format_duration(d)))
+                .unwrap_or_default()
+        };
         let header = div()
             .flex()
             .flex_row()
@@ -3318,15 +3534,17 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             .py_1()
             .id(format!("process-toggle-{index}"))
             .cursor_pointer()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x888888))
             .on_click({
                 let entity = entity.clone();
                 move |_, _, cx| {
-                    entity.update(cx, |shell, cx| shell.toggle_process(cx));
+                    entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
                 }
             })
             .child(format!("执行过程 · {} 项", turn.process.len()))
+            .child(status_label)
+            .child(elapsed_label)
             .child(conversation_icon(if process_open {
                 IconName::ChevronDown
             } else {
@@ -3357,16 +3575,16 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
             div()
                 .px_6()
                 .py_2()
-                .text_size(px(ANSWER_SIZE))
-                .line_height(px(ANSWER_LINE))
+                .text_size(sp(ANSWER_SIZE))
+                .line_height(sp(ANSWER_LINE))
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
                         shell.app.streaming.clone(),
                     )
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(px(ANSWER_SIZE))
-                    .line_height(px(ANSWER_LINE)),
+                    .text_size(sp(ANSWER_SIZE))
+                    .line_height(sp(ANSWER_LINE)),
                 ),
         );
     }
@@ -3420,6 +3638,39 @@ fn markdown_segments(text: &str) -> Vec<MarkdownSegment> {
     segments
 }
 
+/// with the box above it, whose bottom corners are squared off in that case.
+fn fold_toggle(key: String, expanded: bool, entity: &Entity<Shell>) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .py_1()
+        .rounded_t(px(0.0))
+        .rounded_b(px(6.0))
+        .bg(rgba(0x7f7f7f08))
+        .border_1()
+        .border_color(rgba(0x7f7f7f20))
+        .cursor_pointer()
+        .id(format!("fold-toggle-{key}"))
+        .text_color(rgb(0x888888))
+        .hover(|style| style.bg(rgba(0x7f7f7f14)))
+        .on_click({
+            let key = key.clone();
+            let entity = entity.clone();
+            move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.toggle_code(key.clone(), cx));
+            }
+        })
+        .child(conversation_icon(if expanded {
+            IconName::ArrowUp
+        } else {
+            IconName::ArrowDown
+        }))
+        .into_any_element()
+}
+
 fn markdown_with_folds(
     index: usize,
     text: &str,
@@ -3432,49 +3683,39 @@ fn markdown_with_folds(
             MarkdownSegment::Text(body) => {
                 column = column.child(
                     TextView::markdown(format!("assistant-{index}-{segment_index}"), body)
-                        .text_size(px(ANSWER_SIZE))
-                        .line_height(px(ANSWER_LINE)),
+                        .text_size(sp(ANSWER_SIZE))
+                        .line_height(sp(ANSWER_LINE)),
                 );
             }
             MarkdownSegment::Code { language, body } => {
                 let line_count = body.lines().count();
                 let key = format!("{index}:{segment_index}");
                 let expanded = shell.expanded_code.contains(&key);
-                let visible = if expanded || line_count <= 20 {
+                let folded = line_count > 20;
+                let visible = if expanded || !folded {
                     body.clone()
                 } else {
                     body.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
                 let fence = format!("```{language}\n{visible}\n```");
                 // One single code block — no extra wrapping box or header,
-                // indented one level from the surrounding answer text.
-                let mut block = div().flex().flex_col().gap_1().my_1().pl_4();
-                block = block.child(
-                    TextView::markdown(format!("assistant-code-{key}"), fence)
-                        .code_block_actions(|_, _, _| div().into_any_element())
-                        .text_size(px(CAPTION_SIZE))
-                        .line_height(px(CODE_LINE)),
-                );
-                if line_count > 20 {
-                    let label = if expanded {
-                        "Collapse".to_string()
-                    } else {
-                        format!("Show {} more lines", line_count - 12)
-                    };
-                    block = block.child(
-                        Button::new(format!("code-toggle-{key}"))
-                            .label(label)
-                            .compact()
-                            .on_click({
-                                let key = key.clone();
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |shell, cx| {
-                                        shell.toggle_code(key.clone(), cx);
-                                    });
-                                }
-                            }),
+                // indented one level from the surrounding answer text. With a
+                // fold toggle the code block loses its bottom corners so the
+                // toggle below reads as one piece with it.
+                let mut block = div().flex().flex_col().gap_0().my_1().pl_4();
+                let mut code = TextView::markdown(format!("assistant-code-{key}"), fence)
+                    .code_block_actions(|_, _, _| div().into_any_element())
+                    .text_size(sp(CAPTION_SIZE))
+                    .line_height(sp(CODE_LINE));
+                if folded {
+                    code = code.style(
+                        TextViewStyle::default()
+                            .code_block(StyleRefinement::default().rounded_b(px(0.0))),
                     );
+                }
+                block = block.child(code);
+                if folded {
+                    block = block.child(fold_toggle(key, expanded, entity));
                 }
                 column = column.child(block);
             }
@@ -3510,12 +3751,12 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .rounded(px(12.0))
                     .px_4()
                     .py_2()
-                    .text_size(px(BODY_SIZE))
-                    .line_height(px(BODY_LINE))
+                    .text_size(sp(BODY_SIZE))
+                    .line_height(sp(BODY_LINE))
                     .child(
                         TextView::markdown(format!("user-{index}"), text.clone())
-                            .text_size(px(BODY_SIZE))
-                            .line_height(px(BODY_LINE)),
+                            .text_size(sp(BODY_SIZE))
+                            .line_height(sp(BODY_LINE)),
                     ),
             )
             .into_any_element(),
@@ -3535,7 +3776,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                 .gap_2()
                 .id(format!("tool-row-{index}"))
                 .cursor_pointer()
-                .text_size(px(SECONDARY_SIZE))
+                .text_size(sp(SECONDARY_SIZE))
                 .text_color(rgb(0x888888))
                 .on_click({
                     let call_id = tool.call_id.clone();
@@ -3561,7 +3802,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             if let Some(status) = status {
                 header = header.child(
                     div()
-                        .text_size(px(CAPTION_SIZE))
+                        .text_size(sp(CAPTION_SIZE))
                         .text_color(rgb(0x999999))
                         .child(status),
                 );
@@ -3581,12 +3822,24 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .get("command")
                     .and_then(|value| value.as_str())
                     .map(str::to_string);
+                let output_line_count = tool.output.lines().count();
+                let foldable = output_line_count > 20;
+                let output_key = format!("{index}:output");
+                let output_expanded = shell.expanded_code.contains(&output_key);
+                let output_visible = if output_expanded || !foldable {
+                    tool.output.clone()
+                } else {
+                    tool.output.lines().take(12).collect::<Vec<_>>().join("\n")
+                };
                 if command.is_some() || !tool.output.is_empty() {
                     // The command and its result share one box, with a blank
-                    // line between them.
+                    // line between them. When the output is folded the box
+                    // loses its bottom corners so the toggle below reads as
+                    // one piece with it.
                     let mut content = div()
                         .w_full()
-                        .rounded(px(6.0))
+                        .rounded_t(px(6.0))
+                        .rounded_b(if foldable { px(0.0) } else { px(6.0) })
                         .bg(rgba(0x7f7f7f08))
                         .border_1()
                         .border_color(rgba(0x7f7f7f20))
@@ -3596,15 +3849,30 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     if let Some(command) = &command {
                         content = content.child(
                             div()
-                                .text_size(px(RESULT_SIZE))
-                                .line_height(px(RESULT_LINE))
+                                .flex()
+                                .flex_row()
+                                .items_baseline()
+                                .gap_1()
+                                .text_size(sp(RESULT_SIZE))
+                                .line_height(sp(RESULT_LINE))
                                 .child(
+                                    div()
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE))
+                                        .text_color(rgb(0xc8a86a))
+                                        .child("$"),
+                                )
+                                .child(
+                                    // Markdown inline code (backticks) renders
+                                    // at 0.875x the TextView size, so bump the
+                                    // base size up so the command lands on the
+                                    // same size as the plain output below.
                                     TextView::markdown(
                                         format!("tool-command-{index}"),
-                                        format!("$ `{command}`"),
+                                        format!("`{command}`"),
                                     )
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE)),
+                                    .text_size(sp(RESULT_SIZE / 0.875))
+                                    .line_height(sp(RESULT_LINE)),
                                 ),
                         );
                     }
@@ -3614,38 +3882,73 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                         }
                         // Lists render as markdown lists; anything else stays
                         // plain light text — one box, no nested code block.
-                        if looks_like_list(&tool.output) {
+                        if looks_like_list(&output_visible) {
                             content = content.child(
                                 div()
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE))
+                                    .text_size(sp(RESULT_SIZE))
+                                    .line_height(sp(RESULT_LINE))
                                     .child(
                                         TextView::markdown(
                                             format!("tool-output-{index}"),
-                                            tool.output.clone(),
+                                            output_visible,
                                         )
-                                        .text_size(px(RESULT_SIZE))
-                                        .line_height(px(RESULT_LINE)),
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE)),
                                     ),
                             );
                         } else {
+                            // Plain multi-line output: markdown hard breaks
+                            // (two trailing spaces) keep every line break, so
+                            // the text renders exactly like the original one
+                            // box — no nested code-block frame, same size and
+                            // colour — while staying selectable.
+                            let selectable = output_visible.replace('\n', "  \n");
                             content = content.child(
                                 div()
-                                    .text_size(px(RESULT_SIZE))
-                                    .line_height(px(RESULT_LINE))
-                                    .text_color(rgb(0x888888))
-                                    .child(tool.output.clone()),
+                                    .text_size(sp(RESULT_SIZE))
+                                    .line_height(sp(RESULT_LINE))
+                                    .child(
+                                        TextView::markdown(
+                                            format!("tool-output-plain-{index}"),
+                                            selectable,
+                                        )
+                                        .text_size(sp(RESULT_SIZE))
+                                        .line_height(sp(RESULT_LINE))
+                                        .text_color(rgb(0x888888)),
+                                    ),
                             );
                         }
                     }
-                    details = details.child(content);
+                    // The fold toggle joins the box as one piece when the
+                    // output is long (squared corners, no gap).
+                    if foldable {
+                        details = details.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_0()
+                                .w_full()
+                                .child(content)
+                                .child(fold_toggle(output_key, output_expanded, entity)),
+                        );
+                    } else {
+                        details = details.child(content);
+                    }
                 }
                 if let Some(elapsed) = tool.elapsed {
                     details = details.child(
                         div()
-                            .text_size(px(CAPTION_SIZE))
-                            .text_color(rgb(0x888888))
-                            .child(format!("took {}", format_duration(elapsed))),
+                            .text_size(sp(CAPTION_SIZE))
+                            .line_height(sp(SECONDARY_LINE))
+                            .child(
+                                TextView::markdown(
+                                    format!("tool-elapsed-{index}"),
+                                    format!("took {}", format_duration(elapsed)),
+                                )
+                                .text_size(sp(CAPTION_SIZE))
+                                .line_height(sp(SECONDARY_LINE))
+                                .text_color(rgb(0x888888)),
+                            ),
                     );
                 }
                 row = row.child(details);
@@ -3655,21 +3958,21 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
         Block::Subagent { text, .. } => div()
             .px_6()
             .py_1()
-            .text_size(px(CODE_SIZE))
+            .text_size(sp(CODE_SIZE))
             .text_color(rgb(0x888888))
             .child(format!("child › {text}"))
             .into_any_element(),
         Block::Reasoning(entry) => div()
             .px_6()
             .py_1()
-            .text_size(px(SECONDARY_SIZE))
-            .line_height(px(SECONDARY_LINE))
+            .text_size(sp(SECONDARY_SIZE))
+            .line_height(sp(SECONDARY_LINE))
             .text_color(rgb(0x999999))
             .child(
                 TextView::markdown(format!("reasoning-{index}"), entry.text.clone())
                     .code_block_actions(|_, _, _| div().into_any_element())
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE)),
+                    .text_size(sp(SECONDARY_SIZE))
+                    .line_height(sp(SECONDARY_LINE)),
             )
             .into_any_element(),
         Block::Todo(items) => div()
@@ -3680,26 +3983,26 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .rounded(px(6.0))
             .bg(rgba(0x7f7f7f08))
             .p_2()
-            .text_size(px(SECONDARY_SIZE))
+            .text_size(sp(SECONDARY_SIZE))
             .child(format!("todos › {} item(s)", items.len()))
             .children(items.iter().map(|item| div().child(item.content.clone())))
             .into_any_element(),
         Block::Notice(text) => div()
             .px_6()
             .py_1()
-            .text_size(px(CODE_SIZE))
+            .text_size(sp(CODE_SIZE))
             .text_color(rgb(0x999999))
             .child(format!("note › {text}"))
             .into_any_element(),
         Block::Skill(text) => div()
             .px_6()
             .py_2()
-            .text_size(px(SECONDARY_SIZE))
-            .line_height(px(SECONDARY_LINE))
+            .text_size(sp(SECONDARY_SIZE))
+            .line_height(sp(SECONDARY_LINE))
             .child(
                 TextView::markdown(format!("skill-{index}"), text.clone())
-                    .text_size(px(SECONDARY_SIZE))
-                    .line_height(px(SECONDARY_LINE)),
+                    .text_size(sp(SECONDARY_SIZE))
+                    .line_height(sp(SECONDARY_LINE)),
             )
             .into_any_element(),
     }
@@ -3782,7 +4085,9 @@ impl Render for Shell {
             )
             .on_action(cx.listener(|this, _: &CloseWindowShortcut, window, cx| {
                 if this.minimize_on_close {
-                    window.minimize_window();
+                    // 关闭 = 隐藏到托盘：窗口从任务栏消失，只留托盘图标
+                    // （ADR-0052）。最小化还会把图标留在任务栏。
+                    tray::hide_window(window);
                 } else {
                     window.remove_window();
                 }
@@ -3794,6 +4099,12 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
                 this.toggle_theme(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomInShortcut, _window, cx| {
+                this.zoom_font(1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomOutShortcut, _window, cx| {
+                this.zoom_font(-1, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.send_prompt(window, cx)),
@@ -3808,12 +4119,31 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NextTurnShortcut, _window, cx| {
                 this.step_turn(1, cx);
             }))
-            .children(if self.sidebar_visible {
-                Some(self.render_sidebar(cx).into_any_element())
-            } else {
-                None
+            // Sidebar and conversation share the window through a resizable
+            // panel group, so the divider between them can be dragged and both
+            // sides clamp to their minimum widths.
+            .child({
+                let main = self.render_main(window, cx).into_any_element();
+                if self.sidebar_visible {
+                    h_resizable("root-layout")
+                        .child(
+                            resizable_panel()
+                                .size(px(240.0))
+                                .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
+                                .child(self.render_sidebar(cx).into_any_element()),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
+                                .child(main),
+                        )
+                        .into_any_element()
+                } else {
+                    h_resizable("root-layout")
+                        .child(resizable_panel().child(main))
+                        .into_any_element()
+                }
             })
-            .child(self.render_main(window, cx))
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
             .child(self.render_rename_dialog(cx))
@@ -3877,7 +4207,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 },
             };
             cx.bind_keys([
-                KeyBinding::new("ctrl-v", PasteImage, None),
+                // Ctrl+V stays the composer's text paste; image paste is
+                // Ctrl+Shift+V so the two never collide.
+                KeyBinding::new("ctrl-shift-v", PasteImage, None),
+                KeyBinding::new("cmd-shift-v", PasteImage, None),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
                 KeyBinding::new("a", ApproveSession, Some("Approval")),
                 KeyBinding::new("n", RejectApproval, Some("Approval")),
@@ -3886,6 +4219,12 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-w", CloseWindowShortcut, None),
                 KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
                 KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
+                // GPUI's `key_down` uses the shifted key the layout reports
+                // for Ctrl+Shift+=, so bind both so the shortcut works however
+                // the layout reads it.
+                KeyBinding::new("ctrl-=", ZoomInShortcut, None),
+                KeyBinding::new("ctrl-+", ZoomInShortcut, None),
+                KeyBinding::new("ctrl--", ZoomOutShortcut, None),
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
@@ -3898,9 +4237,9 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 gpui_kit::open_window(window_options, cx, move |window, cx| {
                     window.activate_window();
                     if minimize_on_close {
-                        // 关闭按钮 = 最小化到托盘（ADR-0052）；真正退出走托盘/菜单。
+                        // 关闭按钮 = 隐藏到托盘（ADR-0052）；真正退出走托盘/菜单。
                         window.on_window_should_close(cx, |window, _cx| {
-                            window.minimize_window();
+                            tray::hide_window(window);
                             false
                         });
                     }

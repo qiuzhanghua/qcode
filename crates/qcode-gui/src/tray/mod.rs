@@ -70,3 +70,14 @@ pub fn show_window(window: &gpui_kit::Window) {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     window.activate_window();
 }
+
+/// 隐藏主窗口（关闭按钮 = 最小化到托盘）：窗口从任务栏/Dock 消失，只留托盘
+/// 图标。Windows 用 `SW_HIDE`，macOS 用 `orderOut:`，其余平台退回最小化。
+pub fn hide_window(window: &gpui_kit::Window) {
+    #[cfg(target_os = "macos")]
+    macos::hide_window(window);
+    #[cfg(target_os = "windows")]
+    windows::hide_window(window);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    window.minimize_window();
+}

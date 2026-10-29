@@ -17,10 +17,11 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     GetCursorPos, GetMessageW, GetSystemMetrics, HMENU, HWND_MESSAGE, IMAGE_ICON, IsIconic,
-    LoadImageW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SM_CXSMICON, SM_CYSMICON, SW_RESTORE, SetForegroundWindow, ShowWindow,
-    TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_COMMAND,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSEXW,
+    IsWindowVisible, LoadImageW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SM_CXSMICON, SM_CYSMICON, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SetForegroundWindow, ShowWindow, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL,
+    WM_RBUTTONUP, WNDCLASSEXW,
 };
 
 use super::state::{TrayCommand, TraySnapshot};
@@ -273,6 +274,12 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
         let quit = utf16("退出");
         AppendMenuW(menu, MF_STRING, MENU_QUIT, quit.as_ptr());
 
+        // 微软文档：给通知图标弹上下文菜单时，调用 TrackPopupMenu 前当前
+        // 窗口必须是前台窗口，否则点击菜单外部时菜单不会消失；菜单结束后
+        // 还要回一条 WM_NULL，让系统彻底结束菜单的鼠标捕获循环。
+        // 托盘消息窗口是 message-only window，SetForegroundWindow 对它可能
+        // 无效，但调用无害且对可见 owner 有效，两个 workaround 一起上。
+        SetForegroundWindow(hwnd);
         TrackPopupMenu(
             menu,
             TPM_LEFTALIGN | TPM_RIGHTBUTTON,
@@ -282,11 +289,31 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
             hwnd,
             std::ptr::null_mut(),
         );
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
     }
 }
 
-/// 从最小化恢复到前台。`activate_window()` 只激活不还原，所以先 SW_RESTORE。
+/// 隐藏主窗口：关闭按钮 = 最小化到托盘（ADR-0052）。用 `SW_HIDE` 而不是
+/// `SW_MINIMIZE`——最小化还会把图标留在任务栏，隐藏则整个从任务栏消失，
+/// 恢复只能通过托盘图标。
+pub fn hide_window(window: &gpui_kit::Window) {
+    let Ok(handle) =
+        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
+    else {
+        return;
+    };
+    let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let hwnd = win32.hwnd.get() as isize as *mut core::ffi::c_void;
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+/// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先
+/// SW_RESTORE（最小化）或 SW_SHOW（SW_HIDE 隐藏的窗口）。
 pub fn show_window(window: &gpui_kit::Window) {
     let Ok(handle) =
         <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
@@ -300,6 +327,8 @@ pub fn show_window(window: &gpui_kit::Window) {
         let hwnd = win32.hwnd.get() as isize as *mut core::ffi::c_void;
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
+        } else if IsWindowVisible(hwnd) == 0 {
+            ShowWindow(hwnd, SW_SHOW);
         }
         SetForegroundWindow(hwnd);
     }
