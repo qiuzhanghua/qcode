@@ -18,6 +18,13 @@ fn write_skill(workspace: &Path) {
 }
 
 fn run(workspace: &Path, home: &Path, skill: &str) -> std::process::Output {
+    // Pin the OS sandbox off: this suite is about skill discovery, and it must
+    // not depend on the host being able to apply a kernel sandbox. Without
+    // this the default Landlock backend aborts `qc` on any machine where the
+    // ruleset cannot be installed (a nested container, for one).
+    let config = home.join("config.toml");
+    std::fs::write(&config, "[sandbox]\nmode = \"none\"\n").unwrap();
+
     Command::new(env!("CARGO_BIN_EXE_qc"))
         .args([
             "run",
@@ -27,8 +34,10 @@ fn run(workspace: &Path, home: &Path, skill: &str) -> std::process::Output {
             "--skill",
             skill,
             "--json",
-            "--data-dir",
+            "--config",
         ])
+        .arg(&config)
+        .args(["--data-dir"])
         .arg(workspace.join("data"))
         .current_dir(workspace)
         .env("HOME", home)
