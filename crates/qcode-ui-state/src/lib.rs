@@ -377,6 +377,15 @@ impl App {
         }
     }
 
+    /// 历史事件重放结束后调用。
+    ///
+    /// 重放里的 `TurnStarted` 只说明“当时开始过”，不代表这个进程里现在
+    /// 还有 turn 在跑。恢复被中断的会话时日志没有对应的 `TurnEnded`，
+    /// 不复位就会一直显示“运行中”，还会挡住输入和切换会话。
+    pub fn finish_replay(&mut self) {
+        self.status.running = false;
+    }
+
     /// Project a persisted event into the transcript and status line.
     pub fn apply(&mut self, event: &Event) {
         match &event.kind {
@@ -1226,6 +1235,19 @@ mod tests {
             input: "go".to_string(),
         })));
         assert_eq!(press(&mut app, "esc"), Some(UiAction::Cancel));
+    }
+
+    #[test]
+    fn replay_of_an_unfinished_turn_ends_idle() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "go".to_string(),
+        })));
+        assert!(app.status.running, "live TurnStarted still runs");
+
+        // 恢复会话时日志可能停在 TurnStarted，重放结束必须回到空闲。
+        app.finish_replay();
+        assert!(!app.status.running);
     }
 
     #[test]

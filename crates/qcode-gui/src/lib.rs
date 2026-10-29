@@ -628,6 +628,8 @@ impl Shell {
                     for event in &events {
                         app.apply(event);
                     }
+                    // 重放只回放历史；恢复的会话里可能没有 TurnEnded。
+                    app.finish_replay();
                     active = Some(id);
                 }
                 Err(error) => app.push_notice(format!("cannot restore last session: {error}")),
@@ -954,6 +956,8 @@ impl Shell {
                 for event in &events {
                     self.app.apply(event);
                 }
+                // 切换任务同样是重放，running 不能被历史 TurnStarted 带起来。
+                self.app.finish_replay();
                 // Keep the current kernel's model rather than the historical
                 // model recorded when this task was created.
                 self.app.status.provider = configured_provider;
