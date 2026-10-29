@@ -17,6 +17,7 @@ pub use setup::{run_settings, run_setup};
 
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::assets::IconName;
+use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
@@ -30,7 +31,6 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, IndexPath, Size};
 use gpui_kit::{div, prelude::*, *};
-use gpui_kit::base::{h_resizable, resizable_panel};
 
 gpui_kit::actions!(
     qcode_gui,
@@ -1591,12 +1591,12 @@ impl Shell {
 
     fn render_turn_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         // Expire any pending rail-popup close timer whose time has come.
-        if let Some(at) = self.rail_popup_close_at {
-            if std::time::Instant::now() >= at {
-                self.rail_popup = None;
-                self.rail_hover_item = None;
-                self.rail_popup_close_at = None;
-            }
+        if let Some(at) = self.rail_popup_close_at
+            && std::time::Instant::now() >= at
+        {
+            self.rail_popup = None;
+            self.rail_hover_item = None;
+            self.rail_popup_close_at = None;
         }
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
@@ -1670,23 +1670,20 @@ impl Shell {
                         // own outer div on_hover(false) handles that path,
                         // and this timer catches the case where the user
                         // jumps straight from dot → nowhere.
-                        this.rail_popup_close_at = Some(
-                            std::time::Instant::now() + std::time::Duration::from_millis(200),
-                        );
+                        this.rail_popup_close_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
                     }
                     cx.notify();
                 }))
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.jump_to_turn(index, cx);
                 }));
-            let popup = gpui_kit::base::Popup::new(
-                format!("rail-popup-{index}"),
-                dot.into_any_element(),
-            )
-            // LeftCenter: popover's left edge snaps to the dot's right center,
-            // so the card appears on the *right* side of the rail.
-            .anchor(gpui_kit::Anchor::LeftCenter)
-            .offset(px(6.0));
+            let popup =
+                gpui_kit::base::Popup::new(format!("rail-popup-{index}"), dot.into_any_element())
+                    // LeftCenter: popover's left edge snaps to the dot's right center,
+                    // so the card appears on the *right* side of the rail.
+                    .anchor(gpui_kit::Anchor::LeftCenter)
+                    .offset(px(6.0));
             let popup = if show_popover {
                 popup.content(self.build_rail_popover(cx, inputs, index))
             } else {
@@ -3468,11 +3465,7 @@ fn looks_like_list(text: &str) -> bool {
 
 fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     let turn = &shell.app.turns[index];
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .w_full();
+    let mut card = div().flex().flex_col().gap_1().w_full();
 
     if let Some(block) = turn.input_block {
         card = card.child(block_row(block, shell, entity));
