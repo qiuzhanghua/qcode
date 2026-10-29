@@ -1656,7 +1656,7 @@ impl Shell {
         }
         div()
             .absolute()
-            .top(px(20.0))
+            .bottom(px(20.0))
             .right(px(28.0))
             .flex()
             .flex_row()
@@ -2690,20 +2690,14 @@ impl Shell {
         .with_list_style(StyleRefinement::default().py(px(0.0)));
 
         // Header label: the session title when the task has one (first user
-        // message), else the session id — say what this conversation is
-        // about, not just a raw id.
+        // message), else 「新任务」——一个还没有第一条消息的任务就是新任务，
+        // 不展示不可识别的原始 session id。
         let header_label = self
             .active
             .as_deref()
             .and_then(|id| self.titles.get(id))
             .cloned()
-            .unwrap_or_else(|| {
-                self.active
-                    .as_deref()
-                    .map(short_id)
-                    .unwrap_or("new task")
-                    .to_string()
-            });
+            .unwrap_or_else(|| "新任务".to_string());
 
         // Keep the picker's selection in sync with the kernel's model
         // (a resume or a settings rebuild may change it).
@@ -2731,6 +2725,17 @@ impl Shell {
                 // width, so the popup matches the box above it.
                 Select::new(&self.model_select).placeholder("model"),
             ));
+
+        // 本次任务执行时间：只在新 turn 运行中显示，数值与「执行过程」头部的
+        // 实时耗时一致（靠 200ms ticker 刷新）；turn 中断或结束、执行过程耗时
+        // 消失时，这行蓝字也一并隐藏。
+        let task_elapsed = self.app.turns.last().and_then(|turn| {
+            turn.running().then(|| {
+                let now = time::OffsetDateTime::now_utc();
+                let live = (now - turn.started_at).max(time::Duration::ZERO);
+                format!("本次任务耗时 {}", format_duration(live))
+            })
+        });
 
         div()
             .flex()
@@ -2809,112 +2814,19 @@ impl Shell {
                     )
                     .child(Diff::new(state))
             }))
-            .children(self.approvals.current().map(|view| {
-                // Approval card: a light popover-style box, one text size
-                // smaller than the assistant result, aligned with the composer's
-                // input box (same 20/26 inset, see the wrapper below).
-                let mut card = div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w_full()
-                    // 只圆上两角：下沿做成直角，贴住下面的输入框。
-                    .rounded_tl(px(10.0))
-                    .rounded_tr(px(10.0))
-                    .bg(rgba(0x7f7f7f0d))
-                    .border_1()
-                    .border_color(rgba(0x7f7f7f30))
-                    .px_3()
-                    .py_2()
-                    .text_size(sp(CODE_SIZE))
-                    .line_height(sp(CODE_LINE))
-                    .child(div().child(format!(
-                        "approval needed ({}) · {} · {}",
-                        self.approvals.len(),
-                        view.tool,
-                        view.summary
-                    )))
-                    .child(div().child(format!("reason: {}", view.reason)));
-                if let Some(rule) = &view.rule_id {
-                    card = card.child(format!("rule: {rule}"));
-                }
-                if let Some(argv) = &view.argv {
-                    card = card.child(format!("argv: {argv}"));
-                }
-                if let Some(cwd) = &view.cwd {
-                    card = card.child(format!("cwd: {cwd}"));
-                }
-                card = card.child(format!("sandbox: {}", self.app.sandbox));
-                // 外层复用输入框那一层的 20/26 内边距，再各内缩 PROMPT_INSET，
-                // 三个提示框宽度一致且略窄于输入框。
+            // 执行时间：一行无背景的蓝色字，放在所有提示框（权限、报错、
+            // 50 轮）上方、输入框之上；无提示框时则直接位于输入框上方。
+            .children(task_elapsed.map(|label| {
                 div()
                     .w_full()
-                    .pl(px(20.0 + PROMPT_INSET))
-                    .pr(px(26.0 + PROMPT_INSET))
-                    .child(card.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(Button::new("allow").label("Allow").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
-                            ))
-                            .child(Button::new("allow-session").label("Always").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
-                            ))
-                            .child(Button::new("deny").label("Reject").on_click(
-                                cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
-                            )),
-                    ))
-            }))
-            .children(self.error_banner.clone().map(|message| {
-                // 报错提示：和权限提示框同样的宽度、背景和边框（同样内缩
-                // PROMPT_INSET），比输入框略窄。
-                div()
-                    .w_full()
-                    .pl(px(20.0 + PROMPT_INSET))
-                    .pr(px(26.0 + PROMPT_INSET))
+                    .pl(px(30.0))
+                    .pr(px(26.0))
+                    .pb_1()
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .w_full()
-                            // 只圆上两角，下沿直角。
-                            .rounded_tl(px(10.0))
-                            .rounded_tr(px(10.0))
-                            .bg(rgba(0x7f7f7f0d))
-                            .border_1()
-                            .border_color(rgba(0x7f7f7f30))
-                            .px_3()
-                            .py_2()
-                            .text_size(sp(CODE_SIZE))
-                            .line_height(sp(CODE_LINE))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_color(rgb(0xb3261e))
-                                            .child("请求报错 · 完整信息"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("dismiss-error")
-                                            .cursor_pointer()
-                                            .text_color(rgb(0x000000))
-                                            .text_size(sp(SECONDARY_SIZE))
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.error_banner = None;
-                                                cx.notify();
-                                            }))
-                                            .child("×"),
-                                    ),
-                            )
-                            .child(div().child(message)),
+                            .text_size(sp(SECONDARY_SIZE))
+                            .text_color(rgb(0x3b82f6))
+                            .child(label),
                     )
             }))
             .child(
@@ -2980,13 +2892,204 @@ impl Shell {
                                     .child(hint)
                             }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .w_full()
-                            .rounded(px(10.0))
+                    .children(
+                        // 权限问询：有问询时以提示卡片占位展示（输入框隐藏），
+                        // 避免输入框自身的边框/圆角从提示框背后透出来。
+                        self.approvals.current().map(|view| {
+                            let kind: String = match view.tool.as_str() {
+                                "run_shell" | "shell" => "执行命令".to_string(),
+                                "read_file" | "write_file" | "edit_file" | "apply_patch"
+                                | "list_dir" | "glob" | "read" | "write" | "edit"
+                                | "search" => "读写文件".to_string(),
+                                _ => tool_label(&view.tool),
+                            };
+                            // 拦截原因映射成中文，其余情况直接展示原文。
+                            let reason_cn = match view.reason.as_str() {
+                                reason if reason.contains("process execution") => "进程执行策略",
+                                reason if reason.contains("write outside workspace") => {
+                                    "工作区外写入策略"
+                                }
+                                reason if reason.contains("multi-file write") => {
+                                    "多文件写入策略"
+                                }
+                                reason if reason.contains("external tool") => "外部工具策略",
+                                reason if reason.contains("network access") => "网络访问策略",
+                                reason if reason.contains("matched rule") => "权限规则",
+                                reason => reason,
+                            };
+                            let dir = if self.cwd.is_empty() {
+                                "当前目录".to_string()
+                            } else {
+                                self.cwd.clone()
+                            };
+                            // 第一部分：说明文案（黑字）；第二部分：具体的执行
+                            // 内容（灰字），字体都比此前略大。
+                            let explain = format!(
+                                "是否允许本次操作使用{kind}权限：执行{summary}时，被{reason_cn}拦截，无法在{dir}目录上执行写入，需要提升操作权限；此次操作不会改动任何文件的内容和所有者。",
+                                kind = kind,
+                                summary = view.summary,
+                                reason_cn = reason_cn,
+                                dir = dir,
+                            );
+                            div()
+                                .w_full()
+                                .rounded_t(px(10.0))
+                                .border_1()
+                                .border_color(border)
+                                .bg(rgb(0xffffff))
+                                .flex()
+                                .flex_col()
+                                // 整卡一圈边框、上两角圆角；title 是黄色色块，
+                                // 内容区无独立边框（自然没有上边框）、四角直角。
+                                .child(
+                                    div()
+                                        .rounded_tl(px(10.0))
+                                        .rounded_tr(px(10.0))
+                                        .bg(rgb(0xfacc15))
+                                        .px_3()
+                                        .py_1()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_size(sp(16.0))
+                                                .line_height(sp(26.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(0x000000))
+                                                .child("等待审批"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px_3()
+                                        .pb_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(sp(15.0))
+                                                .line_height(sp(24.0))
+                                                .text_color(rgb(0x000000))
+                                                .child(explain),
+                                        )
+                                        .child(
+                                            div()
+                                                .pl(px(20.0))
+                                                .text_size(sp(15.0))
+                                                .line_height(sp(24.0))
+                                                .text_color(rgb(0x666666))
+                                                .child(format!("> {}", view.summary)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new("allow").label("Allow")
+                                                        .on_click(cx.listener(
+                                                            |this, _, _window, cx| {
+                                                                this.answer(true, false, cx);
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new("allow-session")
+                                                        .label("Always")
+                                                        .on_click(cx.listener(
+                                                            |this, _, _window, cx| {
+                                                                this.answer(true, true, cx);
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new("deny").label("Reject")
+                                                        .on_click(cx.listener(
+                                                            |this, _, _window, cx| {
+                                                                this.answer(false, false, cx);
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                        }),
+                    )
+                    .children(
+                        // 报错提示：同款卡片，红色 title，单「关闭」按钮。
+                        self.error_banner.clone().map(|message| {
+                            div()
+                                .w_full()
+                                .rounded_t(px(10.0))
+                                .border_1()
+                                .border_color(border)
+                                .bg(rgb(0xffffff))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .rounded_tl(px(10.0))
+                                        .rounded_tr(px(10.0))
+                                        .bg(rgb(0xe8463a))
+                                        .px_3()
+                                        .py_1()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_size(sp(16.0))
+                                                .line_height(sp(26.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(0x000000))
+                                                .child("请求报错 · 完整信息"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px_3()
+                                        .pb_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(sp(15.0))
+                                                .line_height(sp(24.0))
+                                                .text_color(rgb(0x000000))
+                                                .child(message),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new("dismiss-error")
+                                                        .label("关闭")
+                                                        .on_click(cx.listener(
+                                                            |this, _, _window, cx| {
+                                                                this.error_banner = None;
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                        }),
+                    )
+                    .when(
+                        self.approvals.current().is_none() && self.error_banner.is_none(),
+                        |this| {
+                            this.child(
+                                div()
+                                    .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .w_full()
+                                    .rounded(px(10.0))
                             .bg(popover)
                             .border_1()
                             .border_color(border)
@@ -3131,7 +3234,9 @@ impl Shell {
                                                 )
                                         },
                                     ),
-                            ),
+                            )
+                    )
+                        }
                     ),
             )
             .child(
@@ -4174,18 +4279,11 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     .line_height(sp(SECONDARY_LINE)),
             )
             .into_any_element(),
-        Block::Todo(items) => div()
-            .self_start()
-            .items_start()
-            .mx_6()
-            .my_1()
-            .rounded(px(6.0))
-            .bg(rgba(0x7f7f7f08))
-            .p_2()
-            .text_size(sp(SECONDARY_SIZE))
-            .child(format!("todos › {} item(s)", items.len()))
-            .children(items.iter().map(|item| div().child(item.content.clone())))
-            .into_any_element(),
+        // The todo_write tool already renders its full content inside the tool
+        // row; the separate Todo block would show the same items again in a
+        // stray gray box, so it is hidden (loose ones are filtered in
+        // display_units too).
+        Block::Todo(_) => div().into_any_element(),
         Block::Notice(_) => div().into_any_element(),
         Block::Skill(text) => div()
             .px_6()
