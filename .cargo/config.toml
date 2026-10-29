@@ -1,0 +1,8 @@
+[target.x86_64-pc-windows-msvc]
+# The GPUI desktop GUI runs its event loop on the main thread. In debug
+# builds the (unoptimized) GPUI frames are big enough to overflow the
+# default 1 MB main-thread stack at startup (STATUS_STACK_OVERFLOW), while
+# the optimized release build fits. Reserve 32 MB here: it is virtual
+# address-space reservation only, committed on demand, so release binaries
+# are unaffected in practice.
+rustflags = ["-C", "link-arg=/STACK:0x2000000"]
