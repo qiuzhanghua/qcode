@@ -573,6 +573,7 @@ fn map_stream_error(kind: Option<&str>, message: &str) -> ProviderError {
         }
         Some("rate_limit_error") => ProviderError::RateLimit {
             retry_after_secs: None,
+            detail: message.to_string(),
         },
         Some("invalid_request_error") => ProviderError::InvalidRequest(message.to_string()),
         _ => ProviderError::Server(message.to_string()),
@@ -584,6 +585,7 @@ fn map_status(status: u16, body: &str, retry_after: Option<u64>) -> ProviderErro
         401 | 403 => ProviderError::Auth(body.to_string()),
         429 => ProviderError::RateLimit {
             retry_after_secs: retry_after,
+            detail: body.to_string(),
         },
         400 if body.contains("context")
             || body.contains("too many tokens")
@@ -813,7 +815,8 @@ mod tests {
         assert!(matches!(
             map_status(429, "", Some(3)),
             ProviderError::RateLimit {
-                retry_after_secs: Some(3)
+                retry_after_secs: Some(3),
+                ..
             }
         ));
         assert!(matches!(

@@ -95,10 +95,13 @@ pub enum StopReason {
 pub enum ProviderError {
     #[error("authentication failed: {0}")]
     Auth(String),
-    #[error("rate limited")]
+    #[error("rate limited: {detail}")]
     RateLimit {
         #[allow(dead_code)]
         retry_after_secs: Option<u64>,
+        /// 服务端返回的原始内容（如「5 小时额度已用尽」），保留给界面展示
+        /// 完整原因，光靠 "rate limited" 不说明问题。
+        detail: String,
     },
     #[error("context window exceeded")]
     ContextOverflow,

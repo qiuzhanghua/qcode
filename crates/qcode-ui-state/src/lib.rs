@@ -209,6 +209,10 @@ pub struct App {
     pub turns: Vec<Turn>,
     /// The open turn, if any.
     pub current_turn: Option<usize>,
+    /// Timestamp of the most recent applied event. A replayed log can end right
+    /// after `turn_started` (the process died mid-turn); sealing that turn at
+    /// this timestamp keeps it from rendering as forever running.
+    pub last_ts: Option<OffsetDateTime>,
     /// Blocks that are not part of a turn (pre-session notices, skill dumps).
     pub loose_blocks: Vec<usize>,
     /// Live reasoning for the open turn, replaced by the authoritative message.
@@ -253,6 +257,7 @@ impl App {
             blocks: Vec::new(),
             turns: Vec::new(),
             current_turn: None,
+            last_ts: None,
             loose_blocks: Vec::new(),
             reasoning_streaming: String::new(),
             streaming_reasoning_block: None,
@@ -287,6 +292,7 @@ impl App {
         self.blocks.clear();
         self.turns.clear();
         self.current_turn = None;
+        self.last_ts = None;
         self.loose_blocks.clear();
         self.reasoning_streaming.clear();
         self.streaming_reasoning_block = None;
@@ -384,10 +390,36 @@ impl App {
     /// 不复位就会一直显示“运行中”，还会挡住输入和切换会话。
     pub fn finish_replay(&mut self) {
         self.status.running = false;
+        // 日志可能停在 `turn_started`（进程在 turn 中途退出，没有 TurnEnded）。
+        // 用最后一个事件的时间戳把这个 turn 封口，否则它会一直显示“running”，
+        // 耗时持续累加，执行过程也永远打不开。
+        let ended = self.last_ts;
+        if let Some(index) = self.current_turn.take()
+            && let Some(turn) = self.turns.get_mut(index)
+        {
+            turn.ended_at = Some(ended.unwrap_or(turn.started_at).max(turn.started_at));
+            turn.status = Some(TurnStatus::Cancelled);
+        }
+    }
+
+    /// 引擎在发出 `TurnEnded` 之前就结束了（运行失败/被中断）时收口当前 turn。
+    ///
+    /// 没有这一步，`Turn::running()` 会一直是 true：卡片上的耗时不停增长，
+    /// 执行过程被强制展开而无法折叠。
+    pub fn abort_turn(&mut self, status: TurnStatus) {
+        let ended = OffsetDateTime::now_utc();
+        if let Some(index) = self.current_turn.take()
+            && let Some(turn) = self.turns.get_mut(index)
+        {
+            turn.ended_at = Some(ended.max(turn.started_at));
+            turn.status = Some(status);
+        }
+        self.status.running = false;
     }
 
     /// Project a persisted event into the transcript and status line.
     pub fn apply(&mut self, event: &Event) {
+        self.last_ts = Some(event.ts);
         match &event.kind {
             EventKind::SessionStarted(started) => {
                 self.status.provider = started.provider.clone();
@@ -1248,6 +1280,9 @@ mod tests {
         // 恢复会话时日志可能停在 TurnStarted，重放结束必须回到空闲。
         app.finish_replay();
         assert!(!app.status.running);
+        // 并且把那个没有 TurnEnded 的 turn 封口，避免卡片永远显示 running。
+        assert!(!app.turns[0].running());
+        assert_eq!(app.turns[0].status, Some(TurnStatus::Cancelled));
     }
 
     #[test]

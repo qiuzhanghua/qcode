@@ -96,6 +96,9 @@ fn sp(base: f32) -> gpui_kit::Pixels {
     px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
 }
 const TURN_RAIL_WIDTH: f32 = 20.0;
+/// 输入框上方提示框（权限询问 / 报错 / 轮次提示）比输入框左右各内缩的像素。
+/// 三个提示框都用它，保证宽度完全一致。
+const PROMPT_INSET: f32 = 20.0;
 /// Width bounds of the resizable sidebar, in pixels. Dragging the divider
 /// between the sidebar and the conversation clamps to these.
 const SIDEBAR_MIN_WIDTH: f32 = 180.0;
@@ -104,6 +107,9 @@ const SIDEBAR_MAX_WIDTH: f32 = 560.0;
 const MAIN_MIN_WIDTH: f32 = 380.0;
 /// Frames of the status-bar spinner shown while a turn is running.
 const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
+/// Turns after which the composer suggests starting a fresh task; long
+/// transcripts get unwieldy and a clean session usually answers better.
+const ROUND_HINT_THRESHOLD: usize = 50;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
@@ -559,6 +565,9 @@ struct Shell {
     file_refs: Vec<PathBuf>,
     /// Pending approvals, shown one at a time in arrival order.
     approvals: ApprovalQueue,
+    /// 最近一次失败的完整信息，显示在输入框上方的提示框里（点 Dismiss 或
+    /// 下次发送时清掉）。
+    error_banner: Option<String>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
     minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
@@ -624,6 +633,11 @@ struct Shell {
     /// transcript vanish when no turn exists yet, which is exactly the state a
     /// freshly started, unconfigured window is in.
     notice: Option<String>,
+    /// Session whose long-conversation hint the user closed. The hint is
+    /// shown once per conversation: dismissing it keeps it hidden for that
+    /// session (including after switching away and back) until a new task
+    /// starts.
+    round_hint_dismissed_for: Option<String>,
     /// Last seen config mtime: a change means Settings was saved, and the
     /// backend has to be rebuilt so the new provider takes effect.
     config_mtime: Option<std::time::SystemTime>,
@@ -760,6 +774,7 @@ impl Shell {
             attachments: Vec::new(),
             file_refs: Vec::new(),
             approvals: ApprovalQueue::default(),
+            error_banner: None,
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),
@@ -791,6 +806,7 @@ impl Shell {
             cwd,
             notice: (!backend_is_configured)
                 .then(|| "not configured yet: open Settings".to_string()),
+            round_hint_dismissed_for: None,
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
             config_path,
@@ -960,6 +976,7 @@ impl Shell {
         self.active = None;
         self.diff = None;
         self.approvals = ApprovalQueue::default();
+        self.error_banner = None;
         self.pending_roots = None;
         self.pending_root_delete = None;
         self.pending_task_delete = None;
@@ -1013,6 +1030,7 @@ impl Shell {
                 self.active = Some(id.clone());
                 self.diff = None;
                 self.approvals = ApprovalQueue::default();
+                self.error_banner = None;
                 self.pending_roots = None;
                 self.pending_root_delete = None;
                 self.pending_task_delete = None;
@@ -1077,6 +1095,7 @@ impl Shell {
         }
         self.backend
             .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
+        self.error_banner = None;
         self.turn_in_flight = true;
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
@@ -1180,21 +1199,29 @@ impl Shell {
                     let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
                     self.app.apply(&event);
+                    // 引擎写进日志的错误（压缩失败、超预算、无进展……）显示在
+                    // 输入框上方的提示框里，保留完整信息。
+                    if let EventKind::Error(error) = &event.kind {
+                        self.error_banner = Some(format!("{}: {}", error.kind, error.message));
+                    }
                     if turn_started {
-                        self.selected_turn = self.app.turns.len().checked_sub(1);
-                        // A fresh turn's execution process starts folded by
-                        // default; drop any stale reasoning expansion from the
-                        // previous turn.
-                        self.process_open_turns.clear();
+                        let index = self.app.turns.len().checked_sub(1);
+                        self.selected_turn = index;
+                        // 新 turn 的执行过程默认展开（一键可收起）；清掉上一个
+                        // turn 残留的展开状态。
+                        if let Some(index) = index {
+                            self.process_open_turns.insert(index);
+                        }
                         if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
                             self.expanded_process = None;
                         }
                     }
                     changed = true;
                     if turn_ended {
-                        // The execution process auto-folds once the turn is
-                        // done; the header stays clickable to reopen it.
-                        self.process_open_turns.clear();
+                        // 结束后自动折叠该 turn 的执行过程，标题行仍可点开。
+                        if let Some(index) = self.app.turns.len().checked_sub(1) {
+                            self.process_open_turns.remove(&index);
+                        }
                         self.refresh_tasks();
                     }
                 }
@@ -1214,10 +1241,15 @@ impl Shell {
                     self.refresh_tasks();
                 }
                 UiEvent::TurnFailed { message } => {
-                    self.app.status.running = false;
+                    // 引擎没发 TurnEnded 就退出了：收口当前 turn，否则卡片会
+                    // 一直显示 running、耗时不停增长。
+                    self.app.abort_turn(qcode_core::event::TurnStatus::Failed);
                     self.app.status.last = None;
                     self.approvals = ApprovalQueue::default();
-                    self.app.push_notice(format!("turn failed: {message}"));
+                    // 错误提示放状态栏（对话流里不再渲染 note 行）。
+                    self.set_notice(format!("turn failed: {message}"), false, cx);
+                    // 完整报错同时放在输入框上方的提示框里。
+                    self.error_banner = Some(message);
                     changed = true;
                 }
                 UiEvent::TurnFinished { session } => {
@@ -2726,16 +2758,16 @@ impl Shell {
             }))
             .children(self.approvals.current().map(|view| {
                 // Approval card: a light popover-style box, one text size
-                // smaller than the assistant result, left-aligned with the
-                // composer's input box.
+                // smaller than the assistant result, aligned with the composer's
+                // input box (same 20/26 inset, see the wrapper below).
                 let mut card = div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .w_full()
-                    .ml(px(12.0))
-                    .mr(px(14.0))
-                    .rounded(px(10.0))
+                    // 只圆上两角：下沿做成直角，贴住下面的输入框。
+                    .rounded_tl(px(10.0))
+                    .rounded_tr(px(10.0))
                     .bg(rgba(0x7f7f7f0d))
                     .border_1()
                     .border_color(rgba(0x7f7f7f30))
@@ -2760,21 +2792,73 @@ impl Shell {
                     card = card.child(format!("cwd: {cwd}"));
                 }
                 card = card.child(format!("sandbox: {}", self.app.sandbox));
-                card.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(Button::new("allow").label("Allow").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
-                        ))
-                        .child(Button::new("allow-session").label("Always").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
-                        ))
-                        .child(Button::new("deny").label("Reject").on_click(
-                            cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
-                        )),
-                )
+                // 外层复用输入框那一层的 20/26 内边距，再各内缩 PROMPT_INSET，
+                // 三个提示框宽度一致且略窄于输入框。
+                div()
+                    .w_full()
+                    .pl(px(20.0 + PROMPT_INSET))
+                    .pr(px(26.0 + PROMPT_INSET))
+                    .child(card.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(Button::new("allow").label("Allow").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(true, false, cx)),
+                            ))
+                            .child(Button::new("allow-session").label("Always").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(true, true, cx)),
+                            ))
+                            .child(Button::new("deny").label("Reject").on_click(
+                                cx.listener(|this, _, _window, cx| this.answer(false, false, cx)),
+                            )),
+                    ))
+            }))
+            .children(self.error_banner.clone().map(|message| {
+                // 报错提示：和权限提示框同样的宽度、背景和边框（同样内缩
+                // PROMPT_INSET），比输入框略窄。
+                div()
+                    .w_full()
+                    .pl(px(20.0 + PROMPT_INSET))
+                    .pr(px(26.0 + PROMPT_INSET))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .w_full()
+                            // 只圆上两角，下沿直角。
+                            .rounded_tl(px(10.0))
+                            .rounded_tr(px(10.0))
+                            .bg(rgba(0x7f7f7f0d))
+                            .border_1()
+                            .border_color(rgba(0x7f7f7f30))
+                            .px_3()
+                            .py_2()
+                            .text_size(sp(CODE_SIZE))
+                            .line_height(sp(CODE_LINE))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_color(rgb(0xb3261e))
+                                            .child("请求报错 · 完整信息"),
+                                    )
+                                    .child(
+                                        Button::new("dismiss-error")
+                                            .label("Dismiss")
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.error_banner = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(div().child(message)),
+                    )
             }))
             .child(
                 div()
@@ -2784,6 +2868,61 @@ impl Shell {
                     .pl(px(20.0))
                     .pr(px(26.0))
                     .pb_2()
+                    .children(
+                        (self.app.turns.len() >= ROUND_HINT_THRESHOLD
+                            && self.round_hint_dismissed_for != self.active)
+                            .then(|| {
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .w_full()
+                                    // 只圆上两角，下沿直角。
+                                    .rounded_tl(px(8.0))
+                                    .rounded_tr(px(8.0))
+                                    .bg(rgba(0x7f7f7f0d))
+                                    .px_2()
+                                    .py_1()
+                                    .child(
+                                        div()
+                                            .flex_grow(1.0)
+                                            .text_size(sp(SECONDARY_SIZE))
+                                            .child(
+                                                "当前任务已达到 50 轮。创建新任务可能会获得更好的结果。",
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("round-hint-new-task")
+                                            .compact()
+                                            .label("新建任务")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.new_session(window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("round-hint-close")
+                                            .cursor_pointer()
+                                            .text_color(rgb(0x000000))
+                                            .text_size(sp(SECONDARY_SIZE))
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.round_hint_dismissed_for =
+                                                    this.active.clone();
+                                                cx.notify();
+                                            }))
+                                            .child("×"),
+                                    )
+                            })
+                            // 和权限框 / 报错框同样的内缩量，三者宽度一致。
+                            .map(|hint| {
+                                div()
+                                    .w_full()
+                                    .pl(px(PROMPT_INSET))
+                                    .pr(px(PROMPT_INSET))
+                                    .child(hint)
+                            }),
+                    )
                     .child(
                         div()
                             .flex()
@@ -3478,19 +3617,26 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
         card = card.child(block_row(block, shell, entity));
     }
 
-    let has_process =
-        !turn.process.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
+    // `Block::Notice` 是状态栏内容，不再在对话流里渲染成一行 “note › …”。
+    // 执行过程的项数也只统计真正会渲染的块。
+    let process_blocks: Vec<usize> = turn
+        .process
+        .iter()
+        .copied()
+        .filter(|block| !matches!(shell.app.blocks.get(*block), Some(Block::Notice(_))))
+        .collect();
+    let has_process = !process_blocks.is_empty()
+        || (turn.running() && !shell.app.reasoning_streaming.is_empty());
     let show_process = !shell.collapse_all;
 
     if has_process && show_process {
         // One container for the whole execution process (thinking + tools).
-        // It starts folded by default; the header reopens it on click. While
-        // a turn is running the container is forced open so the stream keeps
-        // appending; once it finishes the process auto-folds and the answer
-        // renders below, outside the container.
-        let process_open = shell.process_open_turns.contains(&index) || turn.running();
+        // It opens with the turn and the header toggles it; once the turn
+        // finishes it auto-folds and the answer renders below, outside the
+        // container.
+        let process_open = shell.process_open_turns.contains(&index);
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
-        for block in &turn.process {
+        for block in &process_blocks {
             if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
                 if entry.text.is_empty()
                     && turn.running()
@@ -3542,7 +3688,7 @@ fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
                     entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
                 }
             })
-            .child(format!("执行过程 · {} 项", turn.process.len()))
+            .child(format!("执行过程 · {} 项", process_blocks.len()))
             .child(status_label)
             .child(elapsed_label)
             .child(conversation_icon(if process_open {
@@ -3987,13 +4133,7 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
             .child(format!("todos › {} item(s)", items.len()))
             .children(items.iter().map(|item| div().child(item.content.clone())))
             .into_any_element(),
-        Block::Notice(text) => div()
-            .px_6()
-            .py_1()
-            .text_size(sp(CODE_SIZE))
-            .text_color(rgb(0x999999))
-            .child(format!("note › {text}"))
-            .into_any_element(),
+        Block::Notice(_) => div().into_any_element(),
         Block::Skill(text) => div()
             .px_6()
             .py_2()

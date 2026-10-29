@@ -904,6 +904,7 @@ fn is_retryable(error: &ProviderError) -> bool {
 fn retry_delay(attempt: u32, error: &ProviderError) -> Duration {
     if let ProviderError::RateLimit {
         retry_after_secs: Some(seconds),
+        ..
     } = error
     {
         return Duration::from_secs(*seconds);

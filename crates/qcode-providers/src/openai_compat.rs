@@ -486,6 +486,7 @@ fn map_status(status: u16, body: &str, retry_after: Option<u64>) -> ProviderErro
         401 | 403 => ProviderError::Auth(body.to_string()),
         429 => ProviderError::RateLimit {
             retry_after_secs: retry_after,
+            detail: body.to_string(),
         },
         400 if body.contains("context_length")
             || body.contains("context window")
@@ -612,7 +613,8 @@ mod tests {
         assert!(matches!(
             map_status(429, "", Some(3)),
             ProviderError::RateLimit {
-                retry_after_secs: Some(3)
+                retry_after_secs: Some(3),
+                ..
             }
         ));
         assert!(matches!(

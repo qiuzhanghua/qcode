@@ -54,6 +54,7 @@ impl Provider for FlakyProvider {
         match self.mode {
             Flaky::RateLimitThenOk if attempt == 1 => Err(ProviderError::RateLimit {
                 retry_after_secs: Some(0),
+                detail: String::new(),
             }),
             Flaky::RateLimitThenOk => Ok(Box::pin(tokio_stream::iter(vec![
                 Ok(StreamEvent::Started),
