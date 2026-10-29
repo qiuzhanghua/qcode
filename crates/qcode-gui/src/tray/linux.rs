@@ -55,12 +55,12 @@ fn pixmaps() -> Vec<Icon> {
                 let mut argb = Vec::with_capacity((info.width * info.height * 4) as usize);
                 match info.color_type {
                     png::ColorType::Rgba => {
-                        for px in data.chunks_exact(4) {
+                        for px in data.as_chunks::<4>().0 {
                             argb.extend_from_slice(&[px[3], px[0], px[1], px[2]]);
                         }
                     }
                     png::ColorType::Rgb => {
-                        for px in data.chunks_exact(3) {
+                        for px in data.as_chunks::<3>().0 {
                             argb.extend_from_slice(&[0xff, px[0], px[1], px[2]]);
                         }
                     }

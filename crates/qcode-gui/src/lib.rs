@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod forms;
 pub mod gui_prefs;
 pub mod setup;
+pub mod task_ops;
 pub mod tray;
 pub use setup::{run_settings, run_setup};
 
@@ -537,6 +538,8 @@ struct Shell {
     minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
     pending_quit: bool,
+    /// 运行中改名的暂存：Turn 结束后再落盘（会话文件被 turn 持锁）。
+    pending_task_renames: std::collections::BTreeMap<String, String>,
     /// Variable-height virtual transcript with tail following.
     scroller: Entity<MessageScrollerState>,
     /// Turn/loose-block rows currently rendered.
@@ -723,6 +726,7 @@ impl Shell {
             approvals: ApprovalQueue::default(),
             minimize_on_close,
             pending_quit: false,
+            pending_task_renames: std::collections::BTreeMap::new(),
             scroller,
             units,
             expanded_process: None,
@@ -874,6 +878,10 @@ impl Shell {
         match self.backend.tasks() {
             Ok(tasks) => {
                 self.titles = task_titles(&tasks, self.backend.as_ref());
+                // 运行中改名的乐观显示：重新拉取任务时不能把新标题冲掉。
+                for (id, title) in &self.pending_task_renames {
+                    self.titles.insert(id.clone(), title.clone());
+                }
                 self.tasks = tasks;
             }
             Err(error) => self
@@ -1176,6 +1184,7 @@ impl Shell {
                 UiEvent::TurnFinished { session } => {
                     self.turn_in_flight = false;
                     self.apply_pending_roots(session.as_deref(), cx);
+                    self.apply_pending_task_renames(cx);
                     changed = true;
                 }
             }
@@ -1605,6 +1614,26 @@ impl Shell {
         }
     }
 
+    /// Turn 结束、会话锁释放后，把运行中暂存的重命名落盘。
+    fn apply_pending_task_renames(&mut self, cx: &mut Context<Self>) {
+        if self.pending_task_renames.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_task_renames);
+        let mut failed = Vec::new();
+        for (id, title) in pending {
+            if let Err(error) = self.backend.rename_task(&id, title) {
+                failed.push(format!("{id}: {error}"));
+            }
+        }
+        // 重新拉取：成功的新标题来自 store，失败的会回退到旧标题。
+        self.refresh_tasks();
+        for error in failed {
+            self.app.push_notice(format!("无法重命名任务: {error}"));
+        }
+        cx.notify();
+    }
+
     fn apply_pending_roots(&mut self, session: Option<&str>, cx: &mut Context<Self>) {
         let Some((task_id, roots)) = self.pending_roots.take() else {
             return;
@@ -1721,6 +1750,18 @@ impl Shell {
             cx.notify();
             return;
         }
+        if task_ops::should_queue_rename(
+            self.turn_in_flight,
+            self.active.as_deref(),
+            &state.task_id,
+        ) {
+            self.pending_task_renames
+                .insert(state.task_id.clone(), title.clone());
+            self.titles.insert(state.task_id.clone(), title);
+            self.app.push_notice("当前 Turn 结束后重命名");
+            cx.notify();
+            return;
+        }
         match self.backend.rename_task(&state.task_id, title) {
             Ok(()) => {
                 self.refresh_tasks();
@@ -1759,6 +1800,7 @@ impl Shell {
                     .push_notice(format!("cannot save gui.json: {error}"));
             }
         }
+        self.pending_task_renames.remove(task_id);
         let was_active = self.active.as_deref() == Some(task_id);
         self.refresh_tasks();
         if was_active {
@@ -2026,9 +2068,8 @@ impl Shell {
             .child(
                 Button::new(format!("task-rename-{task_id}"))
                     .label("重命名")
-                    .disabled(running)
                     .tooltip(if running {
-                        "结束当前 Turn 后可重命名"
+                        "运行中改名将在 Turn 结束后生效"
                     } else {
                         "重命名任务"
                     })
