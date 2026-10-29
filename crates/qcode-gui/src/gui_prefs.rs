@@ -20,10 +20,10 @@ pub struct WindowGeometry {
 /// Default base UI font size in px (see `GuiPreferences::default`).
 pub const DEFAULT_FONT_SIZE: u32 = 14;
 
-/// Smallest accepted base UI font size (px); Ctrl++ / Ctrl+- clamp here.
+/// Smallest accepted base UI font size (px); the zoom-out shortcut clamps here.
 pub const FONT_SIZE_MIN: u32 = 10;
 
-/// Largest accepted base UI font size (px); Ctrl++ / Ctrl+- clamp here.
+/// Largest accepted base UI font size (px); the zoom-in shortcut clamps here.
 pub const FONT_SIZE_MAX: u32 = 32;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -80,7 +80,7 @@ const RESULT_SIZE: f32 = 12.0;
 const RESULT_LINE: f32 = 22.0;
 /// The design baseline all *SIZE/*LINE tokens are written at: the default
 /// `GuiPreferences::font_size`. Every token scales from this baseline at
-/// render time (see `sp`), so Ctrl++ / Ctrl+- zoom the whole UI's text.
+/// render time (see `sp`), so the zoom shortcuts scale the whole UI's text.
 const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
 
 /// The runtime font axis: the user's base font size in px, kept in sync with
@@ -160,6 +160,49 @@ pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
         keystroke.modifiers.control
     };
     keystroke.key == "enter" && (keystroke.modifiers.platform || secondary)
+}
+
+/// The font-zoom keystrokes for one platform.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoomKeystrokes {
+    pub zoom_in: &'static str,
+    /// The shifted form of `zoom_in`; see [`zoom_keystrokes`].
+    pub zoom_in_shifted: &'static str,
+    pub zoom_out: &'static str,
+}
+
+/// Whether font zoom is Cmd-based (macOS) or Ctrl-based (everywhere else).
+///
+/// Split out from the keymap set up in [`run`] so the platform branch is
+/// testable: a malformed keystroke string only surfaces as a panic in
+/// `KeyBinding::new` when the window opens, which no test would catch.
+///
+/// `cmd` is GPUI's `Modifiers::platform`, i.e. Super/Win off macOS, so the
+/// keys are written per platform rather than as `secondary-`: `KeyBinding::new`
+/// parses through `Keystroke::parse`, which has no host OS and rejects
+/// `secondary-` outright.
+///
+/// Zoom in is bound twice on purpose. The macOS backend reports the shifted
+/// key the layout produces: Cmd+= arrives as `cmd-=`, while Cmd+Shift+= arrives
+/// as `cmd-+` with `shift` already cleared (a shifted non-letter yields
+/// `key_char`). `should_match` compares modifiers exactly, so one binding
+/// cannot cover both spellings.
+#[doc(hidden)]
+pub fn zoom_keystrokes(is_mac: bool) -> ZoomKeystrokes {
+    if is_mac {
+        ZoomKeystrokes {
+            zoom_in: "cmd-=",
+            zoom_in_shifted: "cmd-+",
+            zoom_out: "cmd--",
+        }
+    } else {
+        ZoomKeystrokes {
+            zoom_in: "ctrl-=",
+            zoom_in_shifted: "ctrl-+",
+            zoom_out: "ctrl--",
+        }
+    }
 }
 
 fn config_mtime_of(path: &Path) -> Option<std::time::SystemTime> {
@@ -1527,10 +1570,11 @@ impl Shell {
         cx.notify();
     }
 
-    /// Ctrl++ / Ctrl+- zoom the whole UI's text: shift the base font size by
-    /// one pixel within the FONT_SIZE_MIN..=FONT_SIZE_MAX bounds. Persisted
-    /// like the settings form's Font size field, then re-applied to the theme
-    /// (default text) and to every `sp`-scaled typography token.
+    /// Cmd+= / Cmd+- on macOS, Ctrl+= / Ctrl+- elsewhere, zoom the whole UI's
+    /// text: shift the base font size by one pixel within the
+    /// FONT_SIZE_MIN..=FONT_SIZE_MAX bounds. Persisted like the settings form's
+    /// Font size field, then re-applied to the theme (default text) and to
+    /// every `sp`-scaled typography token.
     fn zoom_font(&mut self, delta: i32, cx: &mut Context<Self>) {
         let next = self.prefs.font_size as i32 + delta;
         let next = next.clamp(
@@ -4509,6 +4553,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                     ..Default::default()
                 },
             };
+            let zoom = zoom_keystrokes(cx.platform_info().is_mac());
             cx.bind_keys([
                 // Ctrl+V stays the composer's text paste; image paste is
                 // Ctrl+Shift+V so the two never collide.
@@ -4522,12 +4567,12 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-w", CloseWindowShortcut, None),
                 KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
                 KeyBinding::new("cmd-shift-t", ToggleThemeShortcut, None),
-                // GPUI's `key_down` uses the shifted key the layout reports
-                // for Ctrl+Shift+=, so bind both so the shortcut works however
-                // the layout reads it.
-                KeyBinding::new("ctrl-=", ZoomInShortcut, None),
-                KeyBinding::new("ctrl-+", ZoomInShortcut, None),
-                KeyBinding::new("ctrl--", ZoomOutShortcut, None),
+                // Cmd+= / Cmd+- on macOS, Ctrl+= / Ctrl+- elsewhere. Zoom in
+                // is bound both unshifted and shifted so it works however the
+                // layout reports Cmd/Ctrl+Shift+=.
+                KeyBinding::new(zoom.zoom_in, ZoomInShortcut, None),
+                KeyBinding::new(zoom.zoom_in_shifted, ZoomInShortcut, None),
+                KeyBinding::new(zoom.zoom_out, ZoomOutShortcut, None),
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
