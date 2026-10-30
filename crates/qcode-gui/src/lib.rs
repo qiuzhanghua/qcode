@@ -655,9 +655,6 @@ struct Shell {
     hovered_task: Option<String>,
     /// Index of the turn whose rail dot has an active hover popover.
     rail_popup: Option<usize>,
-    /// Index currently hovered inside the popover list; overrides the dot's
-    /// own highlight until the pointer leaves the popover content.
-    rail_hover_item: Option<usize>,
     /// Scheduled instant to close the rail popup once both the dot and the
     /// popup content have lost hover. `None` = no close pending.
     rail_popup_close_at: Option<std::time::Instant>,
@@ -844,7 +841,6 @@ impl Shell {
             task_menu: None,
             hovered_task: None,
             rail_popup: None,
-            rail_hover_item: None,
             rail_popup_close_at: None,
             collapse_all: false,
             collapse_to_list: false,
@@ -1737,7 +1733,6 @@ impl Shell {
             && std::time::Instant::now() >= at
         {
             self.rail_popup = None;
-            self.rail_hover_item = None;
             self.rail_popup_close_at = None;
         }
         if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
@@ -1755,23 +1750,6 @@ impl Shell {
             (center.saturating_sub(MAX_DOTS / 2)).min(total - MAX_DOTS)
         };
         let end = (start + MAX_DOTS).min(total);
-        // One-line title for every turn's input block — the popover lists the
-        // *entire* session, not just the visible dot window.
-        let inputs: Vec<String> = self
-            .app
-            .turns
-            .iter()
-            .map(|turn| {
-                turn.input_block
-                    .and_then(|idx| self.app.blocks.get(idx))
-                    .and_then(|block| match block {
-                        Block::User(text) => Some(text.trim()),
-                        _ => None,
-                    })
-                    .map(short_title)
-                    .unwrap_or_else(|| format!("Turn {}", turn.number))
-            })
-            .collect();
         let mut rail = div()
             .w(px(TURN_RAIL_WIDTH))
             .flex()
@@ -1790,7 +1768,6 @@ impl Shell {
                 1 => rgb(0xbcbcbc),
                 _ => rgb(0xd8d8d8),
             };
-            let inputs = inputs.clone();
             let show_popover = self.rail_popup == Some(index);
             let dot = div()
                 .w(px(8.0))
@@ -1803,7 +1780,6 @@ impl Shell {
                 .on_hover(cx.listener(move |this, hovered, _window, cx| {
                     if *hovered {
                         this.rail_popup = Some(index);
-                        this.rail_hover_item = None;
                         this.rail_popup_close_at = None;
                     } else if this.rail_popup == Some(index) {
                         // Short grace window only to let the pointer travel
@@ -1822,12 +1798,13 @@ impl Shell {
                 }));
             let popup =
                 gpui_kit::base::Popup::new(format!("rail-popup-{index}"), dot.into_any_element())
-                    // LeftCenter: popover's left edge snaps to the dot's right center,
-                    // so the card appears on the *right* side of the rail.
-                    .anchor(gpui_kit::Anchor::LeftCenter)
+                    // RightCenter: the popover's right edge snaps to the dot's
+                    // left centre, so the card appears on the *left* side of
+                    // the rail (over the transcript).
+                    .anchor(gpui_kit::Anchor::RightCenter)
                     .offset(px(6.0));
             let popup = if show_popover {
-                popup.content(self.build_rail_popover(cx, inputs, index))
+                popup.content(self.build_rail_popover(cx, index))
             } else {
                 popup
             };
@@ -1836,31 +1813,58 @@ impl Shell {
         rail.into_any_element()
     }
 
-    /// Build the hover-popover body for the rail dots: a scrollable list of
-    /// every turn's question. Items start neutral — the list row hover is
-    /// what marks one "active", so the highlight *only* tracks the pointer
-    /// inside the popover, never the hovered dot itself.
+    /// Build the hover-popover body for a rail dot: the turn's question and
+    /// answer stacked in two labelled sections. Long answers are truncated
+    /// with an ellipsis. Clicking anywhere in the card jumps to that turn.
     fn build_rail_popover(
         &mut self,
         cx: &mut Context<Self>,
-        inputs: Vec<String>,
-        highlight: usize,
+        turn_index: usize,
     ) -> gpui_kit::AnyElement {
-        // ONLY the row the pointer is actually hovering inside the popover
-        // gets the active style. `None` here means "nothing selected yet".
-        let active = self.rail_hover_item;
-        let mut list = div()
-            .id(format!("rail-popover-list-{highlight}"))
+        const QUESTION_LIMIT: usize = 120;
+        const ANSWER_LIMIT: usize = 260;
+        let (question, answer) = match self.app.turns.get(turn_index) {
+            Some(turn) => {
+                let question = turn
+                    .input_block
+                    .and_then(|idx| self.app.blocks.get(idx))
+                    .and_then(|block| match block {
+                        Block::User(text) => Some(text.trim()),
+                        _ => None,
+                    })
+                    .map(|text| short_preview(text, QUESTION_LIMIT))
+                    .unwrap_or_else(|| format!("Turn {}", turn.number));
+                let answer = turn
+                    .answer_block
+                    .and_then(|idx| self.app.blocks.get(idx))
+                    .and_then(|block| match block {
+                        Block::Assistant(text) => Some(text.trim()),
+                        _ => None,
+                    })
+                    .map(|text| short_preview(text, ANSWER_LIMIT))
+                    .unwrap_or_else(|| {
+                        if turn.running() {
+                            "（回答中…）".to_string()
+                        } else {
+                            "（暂无回答）".to_string()
+                        }
+                    });
+                (question, answer)
+            }
+            None => (String::new(), String::new()),
+        };
+        let question_color = rgb(0x222222);
+        let answer_color = rgb(0x777777);
+        div()
+            .id(format!("rail-popover-{turn_index}"))
+            .w(px(300.0))
             .flex()
             .flex_col()
             .bg(rgb(0xffffff))
             .rounded(px(6.0))
             .border_1()
             .border_color(rgb(0xe3e3e3))
-            .max_w(px(260.0))
-            .max_h(px(360.0))
-            .overflow_y_hidden()
-            .py_1()
+            .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered, _window, cx| {
                 if *hovered {
                     // Pointer inside the popover — cancel any pending close
@@ -1869,46 +1873,36 @@ impl Shell {
                 } else {
                     // Pointer fully left the popover. Schedule a zero-delay
                     // close (expires next render) so the card snaps hidden.
-                    this.rail_hover_item = None;
                     this.rail_popup_close_at = Some(std::time::Instant::now());
                 }
                 cx.notify();
-            }));
-        for (i, title) in inputs.iter().enumerate() {
-            let title = title.clone();
-            let is_active = active == Some(i);
-            list = list.child(
-                Button::new(format!("popover-item-{i}"))
-                    // Ghost variant kills the default Button border — items
-                    // blend cleanly into the popover backdrop without any
-                    // chip frame around them.
-                    .with_variant(gpui_kit::component::button::ButtonVariant::Ghost)
-                    .label(title)
-                    .cursor_pointer()
-                    .bg(rgb(0xffffff))
-                    .px_3()
-                    .py_2()
+            }))
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.rail_popup = None;
+                this.rail_popup_close_at = None;
+                this.jump_to_turn(turn_index, cx);
+            }))
+            // 问题：字号大、颜色深；回答：字号小、颜色浅，靠这两点区分，
+            // 不再需要标题或分隔线。
+            .child(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .text_size(sp(BODY_SIZE))
+                    .text_color(question_color)
+                    .child(question),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .pt_1()
+                    .pb_2()
                     .text_size(sp(12.0))
-                    .text_color(rgb(0x222222))
-                    .when(is_active, |s| s.bg(rgb(0xd0d0d0)))
-                    .when(!is_active, |s| s.hover(|style| style.bg(rgb(0xd0d0d0))))
-                    .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                        if *hovered {
-                            this.rail_hover_item = Some(i);
-                        } else if this.rail_hover_item == Some(i) {
-                            this.rail_hover_item = None;
-                        }
-                        cx.notify();
-                    }))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.rail_popup = None;
-                        this.rail_hover_item = None;
-                        this.rail_popup_close_at = None;
-                        this.jump_to_turn(i, cx);
-                    })),
-            );
-        }
-        list.into_any_element()
+                    .text_color(answer_color)
+                    .child(answer),
+            )
+            .into_any_element()
     }
 
     fn active_task_row(&self) -> Option<&TaskRow> {
@@ -2680,13 +2674,17 @@ impl Shell {
         }
 
         div()
-            .w(px(240.0))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
             .id("task-sidebar")
+            // Sidebar sits on the base `sidebar` token, one step lighter than
+            // the row hover (`sidebar_accent` at reduced opacity), so the list
+            // reads as a surface and the hovered row still stands out.
+            .bg(cx.theme().sidebar)
             .overflow_y_scroll()
             .child(
                 Button::new("open-settings")
@@ -2807,7 +2805,6 @@ impl Shell {
                     .flex_row()
                     .flex_grow(1.0)
                     .min_h_0()
-                    .child(rail)
                     .child(
                         div()
                             .id("transcript-scroll")
@@ -2830,6 +2827,7 @@ impl Shell {
                             })
                             .child(list),
                     )
+                    .child(rail)
                     .child(self.render_floating_actions(cx))
             })
             .children(self.diff.as_ref().map(|state| {
@@ -3786,17 +3784,6 @@ fn short_preview(text: &str, limit: usize) -> String {
         value.push('…');
     }
     value
-}
-
-/// First non-empty line of `text`, collapsed to one line and trimmed to ~50
-/// chars — the popover title for a turn.
-fn short_title(text: &str) -> String {
-    let first_line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or(text)
-        .trim();
-    short_preview(first_line, 50)
 }
 
 /// Heuristic: the output reads as a markdown list when every non-empty line
