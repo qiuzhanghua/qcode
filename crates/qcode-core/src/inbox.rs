@@ -51,12 +51,7 @@ impl SessionQueue {
     }
 
     /// Submit a user message: start it when idle, queue it while running.
-    pub fn submit(
-        &self,
-        text: String,
-        attachments: Vec<Attachment>,
-        running: bool,
-    ) -> Submission {
+    pub fn submit(&self, text: String, attachments: Vec<Attachment>, running: bool) -> Submission {
         self.inbox.followup(text, attachments);
         if running {
             return Submission::Queued;
@@ -97,6 +92,18 @@ impl SessionQueue {
 
     pub fn move_queued(&self, id: &str, delta: i32) -> bool {
         self.inbox.move_queued(id, delta)
+    }
+
+    pub fn remove_queued(&self, id: &str) -> Option<QueuedMessage> {
+        self.inbox.remove_queued(id)
+    }
+
+    /// Steer a queued item into the running turn by id.
+    pub fn steer_queued(&self, id: &str, running: bool) -> Option<QueuedMessage> {
+        if !running {
+            return None;
+        }
+        self.inbox.steer_queued(id)
     }
 
     pub fn remove_at(&self, index: usize) -> Option<QueuedMessage> {
@@ -382,6 +389,46 @@ mod tests {
         let queued: Vec<String> = inbox.queued().into_iter().map(|m| m.text).collect();
         assert_eq!(queued, vec!["queued", "a"]);
         assert_eq!(inbox.unsteer("missing"), None);
+    }
+
+    #[test]
+    fn session_queue_starts_when_idle_and_queues_while_running() {
+        let queue = SessionQueue::new();
+        match queue.submit("first".into(), Vec::new(), false) {
+            Submission::Start(message) => assert_eq!(message.text, "first"),
+            Submission::Queued => panic!("an idle submit must start right away"),
+        }
+        assert!(queue.queued().is_empty());
+
+        assert_eq!(
+            queue.submit("second".into(), Vec::new(), true),
+            Submission::Queued
+        );
+        assert_eq!(queue.queued().len(), 1);
+        assert_eq!(queue.finish().map(|m| m.text), Some("second".to_string()));
+    }
+
+    #[test]
+    fn session_queue_steer_only_reaches_a_running_turn() {
+        let queue = SessionQueue::new();
+        assert!(queue.steer("idle".into(), Vec::new(), false).is_none());
+        assert!(queue.pending_step().is_empty());
+
+        assert!(queue.steer("run".into(), Vec::new(), true).is_some());
+        assert_eq!(queue.pending_step()[0].text, "run");
+    }
+
+    #[test]
+    fn session_queue_remove_and_steer_by_position() {
+        let queue = SessionQueue::new();
+        queue.submit("a".into(), Vec::new(), true);
+        queue.submit("b".into(), Vec::new(), true);
+
+        assert_eq!(queue.remove_at(0).map(|m| m.text), Some("a".to_string()));
+        assert_eq!(queue.queued()[0].text, "b");
+        assert!(queue.steer_at(0, false).is_none(), "idle cannot steer");
+        assert!(queue.steer_at(0, true).is_some());
+        assert!(queue.queued().is_empty());
     }
 
     #[test]

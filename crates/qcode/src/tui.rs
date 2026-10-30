@@ -22,6 +22,7 @@ use qcode_core::engine::{
     Delta, DeltaSink, EngineError, RunOptions, RunOutcome, TurnContext, run_turn,
 };
 use qcode_core::event::{Event, SessionStarted, TurnStatus};
+use qcode_core::inbox::{SessionQueue, Submission};
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
@@ -221,7 +222,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         ));
     } else {
         app.push_notice(format!(
-            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
         ));
     }
 
@@ -240,7 +241,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     // Follow-up queue shared with the engine: a message sent while a turn runs
     // waits here (or is steered into the running turn's next step).
-    let inbox = Arc::new(qcode_core::inbox::Inbox::new());
+    let queue = SessionQueue::new();
 
     // Start one turn on the engine task. Steering is claimed by the engine at
     // every step boundary; a follow-up is claimed after the turn ends.
@@ -256,7 +257,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
             let turn_cancel = cancel.clone();
             let sender = tx.clone();
             let delta_sender = tx.clone();
-            let task_inbox = inbox.clone();
+            let task_inbox = queue.inbox();
             engine = Box::pin(run_turn(
                 TurnContext {
                     store: options.store,
@@ -319,14 +320,21 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                         };
                         let Some(action) = action else { continue };
                         match action {
-                            UiAction::Submit(text) => {
-                                start_turn!(text, std::mem::take(&mut pending_images));
-                            }
+                            UiAction::Submit(text) => match queue.submit(
+                                text,
+                                std::mem::take(&mut pending_images),
+                                engine_running,
+                            ) {
+                                Submission::Start(message) => {
+                                    start_turn!(message.text, message.attachments)
+                                }
+                                Submission::Queued => {}
+                            },
                             UiAction::Queue(text) => {
                                 // Sent while a turn was running: it becomes its
                                 // own turn once the current one ends.
-                                inbox.followup(text, std::mem::take(&mut pending_images));
-                                app.status.queued = inbox.queued().len();
+                                queue.submit(text, std::mem::take(&mut pending_images), true);
+                                app.status.queued = queue.queued().len();
                                 app.push_notice(format!(
                                     "queued ({} pending): starts when this turn ends",
                                     app.status.queued
@@ -334,12 +342,20 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             }
                             UiAction::Steer(text) => {
                                 // Lands at the running turn's next step boundary.
-                                inbox.steer(text, std::mem::take(&mut pending_images));
-                                app.status.steering = inbox.pending_step().len();
-                                app.push_notice(format!(
-                                    "steering ({} waiting): lands at the next step",
-                                    app.status.steering
-                                ));
+                                match queue.steer(
+                                    text,
+                                    std::mem::take(&mut pending_images),
+                                    engine_running,
+                                ) {
+                                    Some(_) => {
+                                        app.status.steering = queue.pending_step().len();
+                                        app.push_notice(format!(
+                                            "steering ({} waiting): lands at the next step",
+                                            app.status.steering
+                                        ));
+                                    }
+                                    None => app.push_notice("no turn is running".to_string()),
+                                }
                             }
                             UiAction::Approve {
                                 call_id,
@@ -374,6 +390,51 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     ));
                                 }
                                 Err(error) => app.push_notice(format!("paste failed: {error}")),
+                            },
+                            UiAction::QueueList => {
+                                let items = queue.queued();
+                                if items.is_empty() {
+                                    app.push_notice("queue: empty".to_string());
+                                } else {
+                                    for (index, item) in items.iter().enumerate() {
+                                        app.push_notice(format!(
+                                            "{}. {}",
+                                            index + 1,
+                                            preview(&item.text)
+                                        ));
+                                    }
+                                }
+                            }
+                            UiAction::QueueSteer(position) => {
+                                match queue.steer_at(position - 1, engine_running) {
+                                    Some(message) => {
+                                        app.status.queued = queue.queued().len();
+                                        app.status.steering = queue.pending_step().len();
+                                        app.push_notice(format!(
+                                            "steering: {}",
+                                            preview(&message.text)
+                                        ));
+                                    }
+                                    None if !engine_running => {
+                                        app.push_notice("no turn is running".to_string())
+                                    }
+                                    None => app.push_notice(format!(
+                                        "no queued message {position} (see /queue)"
+                                    )),
+                                }
+                            }
+                            UiAction::QueueDrop(position) => match queue.remove_at(position - 1) {
+                                Some(message) => {
+                                    app.status.queued = queue.queued().len();
+                                    app.push_notice(format!(
+                                        "dropped: {} ({} pending)",
+                                        preview(&message.text),
+                                        app.status.queued
+                                    ));
+                                }
+                                None => app.push_notice(format!(
+                                    "no queued message {position} (see /queue)"
+                                )),
                             },
                             UiAction::Cancel => cancel.cancel(),
                             UiAction::Checkpoints => {
@@ -460,11 +521,11 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                 }
                 // A follow-up queued while the turn ran starts its own turn now;
                 // leftover steering was promoted to that queue by the engine.
-                if let Some(message) = inbox.claim_next_turn() {
+                if let Some(message) = queue.finish() {
                     start_turn!(message.text, message.attachments);
                 }
-                app.status.queued = inbox.queued().len();
-                app.status.steering = inbox.pending_step().len();
+                app.status.queued = queue.queued().len();
+                app.status.steering = queue.pending_step().len();
             }
         }
     };
@@ -472,6 +533,11 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     drop(input);
     terminal.restore();
     loop_result
+}
+
+/// One-line preview for queue notices.
+fn preview(text: &str) -> String {
+    text.replace('\n', " ").chars().take(60).collect()
 }
 
 struct TerminalGuard {

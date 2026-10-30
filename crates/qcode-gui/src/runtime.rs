@@ -6,11 +6,10 @@
 
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
-use qcode_core::inbox::{Inbox, QueuedMessage};
+use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -68,7 +67,7 @@ struct Published {
     steering: Vec<QueuedMessage>,
 }
 
-fn publish(port: &KernelPort, inbox: &Inbox, last: &mut Published) {
+fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
     let queue = inbox.queued();
     if queue != last.queue {
         port.send_queue_changed(queue.clone());
@@ -103,7 +102,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let mut pricing = engine.pricing;
             let (done_tx, mut done_rx) =
                 tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-            let inbox = Arc::new(Inbox::new());
+            let queue = SessionQueue::new();
             let mut ticker = tokio::time::interval(Duration::from_millis(250));
             let mut published = Published::default();
 
@@ -154,7 +153,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let task_approver = approver.clone();
                     let done = done_tx.clone();
                     let cancel = token.clone();
-                    let task_inbox = inbox.clone();
+                    let task_inbox = queue.inbox();
                     tokio::spawn(async move {
                         let options = RunOptions {
                             session_id: &task_session,
@@ -196,7 +195,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // The engine claims steering from another thread, so the
                     // pending rows are refreshed on a slow tick rather than
                     // tied to a UI event.
-                    _ = ticker.tick() => publish(&port, &inbox, &mut published),
+                    _ = ticker.tick() => publish(&port, &queue, &mut published),
                     command = commands.recv() => {
                         let Some(command) = command else {
                             break;
@@ -239,40 +238,37 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 pricing = engine.pricing_table.get(&model).copied();
                             }
                             UiCommand::Prompt { text, attachments } => {
-                                // All new messages enter the follow-up queue; an
-                                // idle engine claims the head immediately, a
-                                // running one drains it when the turn ends.
-                                inbox.followup(text, attachments);
-                                if active.is_none()
-                                    && let Some(message) = inbox.claim_next_turn()
-                                {
-                                    start_turn!(message.text, message.attachments);
+                                // Running: the message waits in the follow-up
+                                // queue; idle: it starts its own turn now.
+                                match queue.submit(text, attachments, active.is_some()) {
+                                    Submission::Start(message) => {
+                                        start_turn!(message.text, message.attachments)
+                                    }
+                                    Submission::Queued => {}
                                 }
-                                publish(&port, &inbox, &mut published);
+                                publish(&port, &queue, &mut published);
                             }
                             UiCommand::QueueOp { id, op } => {
                                 match op {
                                     // Steering only reaches the running turn;
                                     // an idle engine leaves the queue untouched.
                                     QueueOp::Steer => {
-                                        if active.is_some() {
-                                            inbox.steer_queued(&id);
-                                        }
+                                        queue.steer_queued(&id, active.is_some());
                                     }
                                     QueueOp::MoveUp => {
-                                        inbox.move_queued(&id, -1);
+                                        queue.move_queued(&id, -1);
                                     }
                                     QueueOp::MoveDown => {
-                                        inbox.move_queued(&id, 1);
+                                        queue.move_queued(&id, 1);
                                     }
                                     QueueOp::Remove => {
-                                        inbox.remove_queued(&id);
+                                        queue.remove_queued(&id);
                                     }
                                     QueueOp::Unsteer => {
-                                        inbox.unsteer(&id);
+                                        queue.unsteer(&id);
                                     }
                                 }
-                                publish(&port, &inbox, &mut published);
+                                publish(&port, &queue, &mut published);
                             }
                         }
                     }
@@ -298,10 +294,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         }
                         // Drain the follow-up queue: the next queued message
                         // starts its own turn now that the engine is idle.
-                        if let Some(message) = inbox.claim_next_turn() {
+                        if let Some(message) = queue.finish() {
                             start_turn!(message.text, message.attachments);
                         }
-                        publish(&port, &inbox, &mut published);
+                        publish(&port, &queue, &mut published);
                     }
                 }
             }

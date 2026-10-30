@@ -186,6 +186,12 @@ pub enum UiAction {
     Checkpoints,
     /// /rollback N: restore the workspace to the state before turn N.
     Rollback(u32),
+    /// /queue: list the pending follow-ups.
+    QueueList,
+    /// /steer N: push queued message N into the running turn.
+    QueueSteer(usize),
+    /// /drop N: remove queued message N.
+    QueueDrop(usize),
     /// Ctrl-V: attach the image on the clipboard to the next message.
     PasteImage,
 }
@@ -913,6 +919,22 @@ impl App {
 
         if command == "/checkpoint" {
             return Some(UiAction::Checkpoints);
+        }
+
+        if command == "/queue" {
+            return Some(UiAction::QueueList);
+        }
+
+        if command == "/steer" || command == "/drop" {
+            let position = argument.parse::<usize>().ok().filter(|n| *n > 0);
+            return match position {
+                Some(position) if command == "/steer" => Some(UiAction::QueueSteer(position)),
+                Some(position) => Some(UiAction::QueueDrop(position)),
+                None => {
+                    self.push_notice(format!("usage: {command} <n> (see /queue)"));
+                    None
+                }
+            };
         }
 
         if command == "/rollback" {
@@ -2328,6 +2350,28 @@ mod tests {
         );
         assert!(app.composer.text().is_empty());
         assert!(app.status.running);
+    }
+
+    #[test]
+    fn queue_commands_map_to_frontend_actions() {
+        let mut app = App::new("mock", "mock-1");
+
+        type_text(&mut app, "/queue");
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::QueueList));
+
+        type_text(&mut app, "/steer 2");
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::QueueSteer(2)));
+
+        type_text(&mut app, "/drop 1");
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::QueueDrop(1)));
+
+        type_text(&mut app, "/drop 0");
+        assert_eq!(press(&mut app, "enter"), None);
+        assert!(
+            app.blocks
+                .iter()
+                .any(|block| matches!(block, Block::Notice(text) if text.contains("usage")))
+        );
     }
 
     #[test]
