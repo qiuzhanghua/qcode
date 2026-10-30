@@ -1257,13 +1257,25 @@ impl Shell {
                     }
                     let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
+                    let turns_before = self.app.turns.len();
+                    // 排队追加的问题被拆成独立 turn 时不会有 TurnStarted 事件，但
+                    // turn 数会增加；TurnEnded 属于整个 run，先把此刻仍开着的
+                    // turn 记下来，结束时（含拆出的 B）一起折叠执行过程。
+                    let open_before: Vec<usize> = self
+                        .app
+                        .turns
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, turn)| turn.running())
+                        .map(|(index, _)| index)
+                        .collect();
                     self.app.apply(&event);
                     // 引擎写进日志的错误（压缩失败、超预算、无进展……）显示在
                     // 输入框上方的提示框里，保留完整信息。
                     if let EventKind::Error(error) = &event.kind {
                         self.error_banner = Some(format!("{}: {}", error.kind, error.message));
                     }
-                    if turn_started {
+                    if turn_started || self.app.turns.len() > turns_before {
                         let index = self.app.turns.len().checked_sub(1);
                         self.selected_turn = index;
                         // 新 turn 的执行过程默认展开（一键可收起）；清掉上一个
@@ -1277,8 +1289,10 @@ impl Shell {
                     }
                     changed = true;
                     if turn_ended {
-                        // 结束后自动折叠该 turn 的执行过程，标题行仍可点开。
-                        if let Some(index) = self.app.turns.len().checked_sub(1) {
+                        // 结束后自动折叠本 run 里所有 turn 的执行过程（含排队
+                        // 追加拆出的），标题行仍可点开；手动展开过的旧 turn
+                        // 不在这份清单里，保持原状。
+                        for index in open_before {
                             self.process_open_turns.remove(&index);
                         }
                         self.refresh_tasks();

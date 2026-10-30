@@ -309,14 +309,37 @@ impl App {
     }
 
     fn start_turn(&mut self, event: &Event) {
-        if let Some(index) = self.current_turn.take() {
-            // A malformed/truncated log may start a turn without ending the
-            // previous one. Close it at this timestamp instead of leaving it
-            // permanently "running".
-            if self.turns[index].ended_at.is_none() {
-                self.turns[index].ended_at = Some(event.ts);
+        // A malformed/truncated log may start a turn without ending the
+        // previous one, and an aborted run may leave several split turns open.
+        // Close every still-open turn at this timestamp instead of leaving it
+        // permanently "running".
+        for turn in &mut self.turns {
+            if turn.ended_at.is_none() {
+                turn.ended_at = Some(event.ts.max(turn.started_at));
             }
         }
+        let index = self.turns.len();
+        self.turns.push(Turn {
+            id: event.seq,
+            number: event.turn,
+            started_at: event.ts,
+            ended_at: None,
+            status: None,
+            input_block: None,
+            process: Vec::new(),
+            answer_block: None,
+            usage: Usage::default(),
+            cost_usd: 0.0,
+        });
+        self.current_turn = Some(index);
+    }
+
+    /// A queued follow-up message steered into the running turn: the backend
+    /// appends it inside the same turn number without a new `turn_started`, so
+    /// the UI splits it into its own question here. Unlike [`start_turn`] this
+    /// must not close the parent turn — it stays open until the run's
+    /// `turn_ended` closes every split turn together.
+    fn split_turn(&mut self, event: &Event) {
         let index = self.turns.len();
         self.turns.push(Turn {
             id: event.seq,
@@ -374,12 +397,17 @@ impl App {
     }
 
     fn close_turn(&mut self, event: &Event, status: TurnStatus, usage: Usage, cost_usd: f64) {
-        if let Some(index) = self.current_turn.take() {
-            let turn = &mut self.turns[index];
-            turn.ended_at = Some(event.ts);
-            turn.status = Some(status);
-            turn.usage = usage;
-            turn.cost_usd = cost_usd;
+        // 排队追加的消息被拆成独立 turn 后，一次 run 可能同时开着多个 turn
+        // （A 和插入其中的 B）；`turn_ended` 属于整个 run，把仍开着的全部收口。
+        self.current_turn = None;
+        let ts = event.ts;
+        for turn in &mut self.turns {
+            if turn.ended_at.is_none() {
+                turn.ended_at = Some(ts.max(turn.started_at));
+                turn.status = Some(status.clone());
+                turn.usage = usage.clone();
+                turn.cost_usd = cost_usd;
+            }
         }
     }
 
@@ -391,28 +419,31 @@ impl App {
     pub fn finish_replay(&mut self) {
         self.status.running = false;
         // 日志可能停在 `turn_started`（进程在 turn 中途退出，没有 TurnEnded）。
-        // 用最后一个事件的时间戳把这个 turn 封口，否则它会一直显示“running”，
-        // 耗时持续累加，执行过程也永远打不开。
+        // 用最后一个事件的时间戳把仍开着的 turn（含排队追加拆出的）全部封口，
+        // 否则它们会一直显示“running”，耗时持续累加，执行过程也永远打不开。
         let ended = self.last_ts;
-        if let Some(index) = self.current_turn.take()
-            && let Some(turn) = self.turns.get_mut(index)
-        {
-            turn.ended_at = Some(ended.unwrap_or(turn.started_at).max(turn.started_at));
-            turn.status = Some(TurnStatus::Cancelled);
+        self.current_turn = None;
+        for turn in &mut self.turns {
+            if turn.ended_at.is_none() {
+                turn.ended_at = Some(ended.unwrap_or(turn.started_at).max(turn.started_at));
+                turn.status = Some(TurnStatus::Cancelled);
+            }
         }
     }
 
-    /// 引擎在发出 `TurnEnded` 之前就结束了（运行失败/被中断）时收口当前 turn。
+    /// 引擎在发出 `TurnEnded` 之前就结束了（运行失败/被中断）时收口仍开着的
+    /// turn（含排队追加拆出的）。
     ///
     /// 没有这一步，`Turn::running()` 会一直是 true：卡片上的耗时不停增长，
     /// 执行过程被强制展开而无法折叠。
     pub fn abort_turn(&mut self, status: TurnStatus) {
         let ended = OffsetDateTime::now_utc();
-        if let Some(index) = self.current_turn.take()
-            && let Some(turn) = self.turns.get_mut(index)
-        {
-            turn.ended_at = Some(ended.max(turn.started_at));
-            turn.status = Some(status);
+        self.current_turn = None;
+        for turn in &mut self.turns {
+            if turn.ended_at.is_none() {
+                turn.ended_at = Some(ended.max(turn.started_at));
+                turn.status = Some(status.clone());
+            }
         }
         self.status.running = false;
     }
@@ -435,6 +466,17 @@ impl App {
                 self.start_turn(event);
             }
             EventKind::UserMessage(message) => {
+                // 排队追加的问题被推进正在运行的 turn 时，引擎不会发出新的
+                // `turn_started`（消息归属同一个 turn number），不拆的话 B 会被
+                // 塞进 A 的执行过程。当前 turn 已有输入（不是它的开场消息）说明
+                // 这是追加的问题，把它拆成独立 turn：A、B 各自有执行过程和圆点。
+                let is_steered_follow_up = self
+                    .current_turn
+                    .and_then(|index| self.turns.get(index))
+                    .is_some_and(|turn| turn.input_block.is_some());
+                if is_steered_follow_up {
+                    self.split_turn(event);
+                }
                 self.ensure_turn(event);
                 if let Some(name) = activated_skill(&message.text) {
                     self.push_input(Block::Skill(format!("activated skill {name}")));
@@ -1692,6 +1734,89 @@ mod tests {
         assert_eq!(turn.process.len(), 2);
         assert_eq!(turn.usage.output_tokens, Some(3));
         assert_eq!(turn.cost_usd, 0.01);
+    }
+
+    #[test]
+    fn steered_follow_up_message_becomes_its_own_turn() {
+        let mut app = App::new("mock", "mock-1");
+        // A 开场：TurnStarted + 输入 + 一个工具调用。
+        app.apply(&Event::new(
+            1,
+            "s1",
+            1,
+            EventKind::TurnStarted(TurnStarted {
+                input: "a".to_string(),
+            }),
+        ));
+        app.apply(&Event::new(
+            2,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                text: "A".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+        app.apply(&Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::ToolCall(ToolCall {
+                call_id: "c1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "x"}),
+            }),
+        ));
+        // 排队追加的 B 被推进运行中的 A：引擎不发出新的 TurnStarted，只在同
+        // 一个 turn number 下追加 UserMessage。UI 必须把它拆成独立 turn。
+        app.apply(&Event::new(
+            4,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                text: "B".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+        app.apply(&Event::new(
+            5,
+            "s1",
+            1,
+            EventKind::ToolCall(ToolCall {
+                call_id: "c2".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "y"}),
+            }),
+        ));
+        // run 结束：A 和拆出的 B 一起收口。
+        app.apply(&Event::new(
+            6,
+            "s1",
+            1,
+            EventKind::TurnEnded(qcode_core::event::TurnEnded {
+                status: TurnStatus::Completed,
+                usage: Usage::default(),
+                cost_usd: 0.0,
+            }),
+        ));
+
+        assert_eq!(app.turns.len(), 2, "A 与排队追加的 B 是两个独立 turn");
+        let a = &app.turns[0];
+        let b = &app.turns[1];
+        assert_eq!(
+            app.blocks[a.input_block.expect("A has input")],
+            Block::User("A".to_string())
+        );
+        assert_eq!(
+            app.blocks[b.input_block.expect("B has input")],
+            Block::User("B".to_string())
+        );
+        assert_eq!(a.process.len(), 1, "A 的工具属于 A");
+        assert_eq!(b.process.len(), 1, "B 的工具属于 B");
+        assert!(!a.running(), "A 随 TurnEnded 收口");
+        assert!(!b.running(), "B 随 TurnEnded 收口");
+        assert_eq!(a.status, Some(TurnStatus::Completed));
+        assert_eq!(b.status, Some(TurnStatus::Completed));
     }
 
     #[test]
