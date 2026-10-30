@@ -8,7 +8,7 @@
 //! once the engine appends it as a `user/message` event.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::engine::Attachment;
 
@@ -18,6 +18,105 @@ pub struct QueuedMessage {
     pub id: String,
     pub text: String,
     pub attachments: Vec<Attachment>,
+}
+
+/// What an idle frontend should do with a submitted message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Submission {
+    /// No turn is running: start this message as its own turn now.
+    Start(QueuedMessage),
+    /// A turn is running: the message waits in the follow-up queue.
+    Queued,
+}
+
+/// Intent-level view over an [`Inbox`] shared by the frontends.
+///
+/// The frontend keeps its own "a turn is running" flag (a cancel token, a
+/// future) and passes it in, so the queue rules live in one place: steering
+/// only reaches a running turn, and an idle submit starts the follow-up queue
+/// head.
+#[derive(Debug, Clone, Default)]
+pub struct SessionQueue {
+    inbox: Arc<Inbox>,
+}
+
+impl SessionQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The inbox the engine drains steering from.
+    pub fn inbox(&self) -> Arc<Inbox> {
+        self.inbox.clone()
+    }
+
+    /// Submit a user message: start it when idle, queue it while running.
+    pub fn submit(
+        &self,
+        text: String,
+        attachments: Vec<Attachment>,
+        running: bool,
+    ) -> Submission {
+        self.inbox.followup(text, attachments);
+        if running {
+            return Submission::Queued;
+        }
+        match self.inbox.claim_next_turn() {
+            Some(message) => Submission::Start(message),
+            None => Submission::Queued,
+        }
+    }
+
+    /// Steer the current draft into the running turn.
+    pub fn steer(
+        &self,
+        text: String,
+        attachments: Vec<Attachment>,
+        running: bool,
+    ) -> Option<QueuedMessage> {
+        running.then(|| self.inbox.steer(text, attachments))
+    }
+
+    /// A turn ended: the next follow-up (or promoted leftover steering) starts.
+    pub fn finish(&self) -> Option<QueuedMessage> {
+        self.inbox.claim_next_turn()
+    }
+
+    pub fn queued(&self) -> Vec<QueuedMessage> {
+        self.inbox.queued()
+    }
+
+    pub fn pending_step(&self) -> Vec<QueuedMessage> {
+        self.inbox.pending_step()
+    }
+
+    /// The queued message at a 0-based position, for `/drop N` and `/steer N`.
+    pub fn queued_at(&self, index: usize) -> Option<QueuedMessage> {
+        self.inbox.queued().into_iter().nth(index)
+    }
+
+    pub fn move_queued(&self, id: &str, delta: i32) -> bool {
+        self.inbox.move_queued(id, delta)
+    }
+
+    pub fn remove_at(&self, index: usize) -> Option<QueuedMessage> {
+        let id = self.queued_at(index)?.id;
+        self.inbox.remove_queued(&id)
+    }
+
+    /// Steer a queued item into the running turn by position.
+    pub fn steer_at(&self, index: usize, running: bool) -> Option<QueuedMessage> {
+        if !running {
+            return None;
+        }
+        let id = self.queued_at(index)?.id;
+        self.inbox.steer_queued(&id)
+    }
+
+    /// Take a pending steering row back out of the turn.
+    pub fn unsteer(&self, id: &str) -> Option<QueuedMessage> {
+        self.inbox.unsteer(id)
+    }
 }
 
 /// Thread-safe pending-message store shared by the engine loop and the UI.
