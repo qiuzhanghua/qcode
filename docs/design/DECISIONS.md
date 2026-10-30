@@ -3238,3 +3238,80 @@ turn 结束时（完成 / 取消 / 失败，统一在 `finish()` 收口），`ne
 - 发布收敛：runtime 用 `publish()` 在快照变化时才发 `QueueChanged` / `SteeringChanged`，并每
   250ms 对比一次快照——engine 在另一个线程 claim steering，注入后条目会自动从 dock 消失。
 - 撤回的条目回到 `next-turn` 队尾（与 leftover 提升一致，保持 FIFO 语义）。
+
+## ADR-0054：事件 schema v4——显式 turn segment 与 steering 消息标识（2026-10-30）
+
+**背景**
+
+ADR-0053 定了 Queue / Steer 的语义：一次 `run_turn` 可以把 steering 注入运行中的 turn，
+GUI 因此在同一次 run 里投影出多个 turn。但事件流里没有任何显式边界——引擎只追加
+`UserMessage`，所以投影层只能靠「当前 turn 已有输入时又收到用户消息」来拆分（73ea83c）。
+这带来两个后果：
+
+1. 回放 v3 日志依赖同一个启发式；任何新的「turn 中途插入用户消息」来源都会放大它的脆弱性；
+2. UI 无法把一条权威 `UserMessage` 与队列里的 pending steering 行关联，dock 只能靠
+   250ms 轮询发现 engine 已经 claim。
+
+**决定**
+
+### 1. `UserMessage` 增加两个可选字段
+
+```text
+UserMessage {
+  text: String,
+  attachments: Vec<String>,
+  queued_id: Option<String>,   // 对应 Inbox 里的消息 id
+  starts_segment: bool,        // 这条消息开启一个新的 transcript segment
+}
+```
+
+- 初始输入：`starts_segment = false`、`queued_id = None`；
+- 引擎注入 steering 时：`starts_segment = true`、`queued_id = Some(message.id)`。
+
+### 2. `EVENT_SCHEMA_VERSION` 3 → 4
+
+- 纯增量：两个字段都带 serde 默认值（`#[serde(default)]`），旧日志缺字段时按 `false` / `None`
+  读入；不迁移、不重写历史文件。
+- **新读旧**（v3）：字段缺省 → 投影回退到现有启发式。
+- **旧读新**（v4）：旧二进制忽略未知字段，启发式仍然能拆出同样的 turn（steer 消息依然是在
+  turn 中途到达的 `UserMessage`），因此不需要强制升级。
+
+### 3. 投影规则（ui-state）
+
+- `starts_segment == true` → 直接 `split_turn`，不再看启发式；
+- `event.v < 4` 且当前 turn 已有输入 → 沿用启发式（兼容 v3 日志）；
+- v4 且 `starts_segment == false` → **不拆分**（显式优先，即使当前 turn 已有输入）。
+
+`Turn.number` 继续取 `event.turn`（run 编号），split 出来的 segment 共享这个编号，只作为
+没有输入文本时的兜底标题；一次 run 的 `TurnEnded` 继续收口该 run 打开的所有 segment。
+
+### 4. UI 对账（依赖本 ADR）
+
+Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜像里移除对应 id；
+250ms ticker 保留为兜底（engine 在另一个线程 claim）。
+
+**备选方案（未采用）**
+
+- **新增 `EventKind::TurnSegmentStarted`**：所有消费者都要处理新变体，而边界信息本来就在
+  那条 user 消息上，多一个事件只会增加同步点。
+- **在 `Event` 信封上加 `segment: u32`**：每个事件都要变，改动面远大于收益。
+- **把 `Event.turn` 改成 segment 编号**：`turn` 是 run 计数器，store 的索引、TUI 的状态栏都
+  依赖它，不能改语义。
+- **继续只用启发式**：来源一多就会错拆/漏拆，而且 UI 永远拿不到 steering 与消息的对应关系。
+
+**后果**
+
+- `UserMessage` 的所有构造点都要补两个字段（编译期强制）；改动集中在 engine 与各测试夹具。
+- ui-state 需要同时保留显式与 v3 启发式两条路径，直到确认不再需要回放旧日志。
+- 旧二进制读 v4 日志仍能工作，但用不上显式标记——可接受。
+- 为 ADR-0042 §8 的「乐观回显」（request id）留好了 id 钩子，但本 ADR 不做回显。
+
+**验证**
+
+- engine：初始输入事件 `starts_segment=false` / `queued_id=None`；steering 注入事件
+  `starts_segment=true` 且 `queued_id` 与 Inbox 中的 id 一致。
+- ui-state：v4 显式 segment 正确拆分；v3 缺字段回退启发式；v4 且 `starts_segment=false`
+  不拆分；`TurnEnded` 收口一次 run 的多个 segment。
+- serde：v3 JSON（缺字段）反序列化成功；v4 事件序列化/反序列化往返；新字段不破坏旧 reader
+  的解析。
+- GUI：收到带 `queued_id` 的 `UserMessage` 后，对应 pending steering 行立即消失。
