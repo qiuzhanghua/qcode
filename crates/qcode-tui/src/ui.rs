@@ -161,6 +161,20 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
     ];
+    if app.status.queued > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} queued", app.status.queued),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if app.status.steering > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} steering", app.status.steering),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
     if !app.collapsed_children.is_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(

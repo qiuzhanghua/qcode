@@ -38,6 +38,7 @@ pub fn translate(key: KeyEvent) -> Option<KeyPress> {
         KeyCode::Char('t') if ctrl => action(AppAction::CycleContext),
         KeyCode::Char('b') if ctrl => action(AppAction::ToggleChildGroup),
         KeyCode::Char('v') if ctrl => action(AppAction::PasteImage),
+        KeyCode::Char('s') if ctrl => action(AppAction::Steer),
         KeyCode::Char('e') if ctrl => action(AppAction::ScrollToTail),
         KeyCode::Char(ch) if !ctrl => insert(ch),
         KeyCode::Enter
@@ -80,6 +81,14 @@ mod tests {
         assert_eq!(
             translate(key(KeyCode::Char('o'), KeyModifiers::CONTROL)),
             Some(KeyPress::Action(AppAction::ExpandLastTool))
+        );
+    }
+
+    #[test]
+    fn ctrl_s_steers_into_the_running_turn() {
+        assert_eq!(
+            translate(key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Some(KeyPress::Action(AppAction::Steer))
         );
     }
 

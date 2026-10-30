@@ -120,6 +120,10 @@ pub struct Status {
     pub cost_usd: f64,
     pub running: bool,
     pub last: Option<TurnStatus>,
+    /// Follow-up messages waiting for the running turn to end.
+    pub queued: usize,
+    /// Steering messages waiting for the next step boundary.
+    pub steering: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +150,8 @@ pub enum AppAction {
     Down,
     PageUp,
     PageDown,
+    /// Ctrl-S: steer the composer into the running turn.
+    Steer,
     /// Ctrl-End: jump back to the live tail.
     ScrollToTail,
     /// Ctrl-O: expand or collapse the last tool block.
@@ -164,6 +170,10 @@ pub enum AppAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
     Submit(String),
+    /// A follow-up sent while a turn was running: the frontend queues it.
+    Queue(String),
+    /// Steer input for the running turn's next step boundary.
+    Steer(String),
     Approve {
         call_id: String,
         allow: bool,
@@ -271,6 +281,8 @@ impl App {
                 cost_usd: 0.0,
                 running: false,
                 last: None,
+                queued: 0,
+                steering: 0,
             },
             sandbox: "none".to_string(),
             context_tokens: 0,
@@ -785,6 +797,7 @@ impl App {
                 None
             }
             AppAction::Submit => self.submit(),
+            AppAction::Steer => self.steer(),
             AppAction::Escape => self.status.running.then_some(UiAction::Cancel),
             AppAction::PageUp => {
                 self.scroll = self.scroll.saturating_add(SCROLL_STEP);
@@ -859,12 +872,30 @@ impl App {
             return None;
         }
         if self.status.running {
-            return None;
+            // A follow-up while the turn runs: queue it instead of dropping it.
+            self.clear_composer();
+            self.scroll = 0;
+            return Some(UiAction::Queue(text));
         }
         self.clear_composer();
         self.scroll = 0;
         self.status.running = true;
         Some(UiAction::Submit(text))
+    }
+
+    /// Ctrl-S while a turn runs: hand the draft to its next step boundary.
+    fn steer(&mut self) -> Option<UiAction> {
+        let text = self.composer.text();
+        if text.trim().is_empty() {
+            return None;
+        }
+        if !self.status.running {
+            self.push_notice("steer: no turn is running".to_string());
+            return None;
+        }
+        self.clear_composer();
+        self.scroll = 0;
+        Some(UiAction::Steer(text))
     }
 
     fn clear_composer(&mut self) {
@@ -1169,6 +1200,7 @@ mod tests {
             "ctrl-t" => app.handle_action(AppAction::CycleContext),
             "ctrl-b" => app.handle_action(AppAction::ToggleChildGroup),
             "ctrl-v" => app.handle_action(AppAction::PasteImage),
+            "ctrl-s" => app.handle_action(AppAction::Steer),
             other => {
                 let mut chars = other.chars();
                 match (chars.next(), chars.next()) {
@@ -2265,6 +2297,37 @@ mod tests {
         assert!(!app.status.running);
         assert_eq!(app.status.last, Some(TurnStatus::Completed));
         assert!((app.status.cost_usd - 0.000_015).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn follow_up_while_running_is_queued() {
+        let mut app = App::new("mock", "mock-1");
+        app.status.running = true;
+        type_text(&mut app, "next");
+        let action = press(&mut app, "enter");
+
+        assert_eq!(action, Some(UiAction::Queue("next".to_string())));
+        assert!(app.composer.text().is_empty(), "the draft is consumed");
+        assert!(app.status.running, "the running turn is unchanged");
+    }
+
+    #[test]
+    fn steer_requires_a_running_turn_and_takes_the_draft() {
+        let mut app = App::new("mock", "mock-1");
+        type_text(&mut app, "hurry");
+        assert_eq!(press(&mut app, "ctrl-s"), None, "idle: steer is refused");
+        assert!(
+            !app.composer.text().is_empty(),
+            "the draft stays when steer is refused"
+        );
+
+        app.status.running = true;
+        assert_eq!(
+            press(&mut app, "ctrl-s"),
+            Some(UiAction::Steer("hurry".to_string()))
+        );
+        assert!(app.composer.text().is_empty());
+        assert!(app.status.running);
     }
 
     #[test]

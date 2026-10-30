@@ -3315,3 +3315,10 @@ Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜�
 - serde：v3 JSON（缺字段）反序列化成功；v4 事件序列化/反序列化往返；新字段不破坏旧 reader
   的解析。
 - GUI：收到带 `queued_id` 的 `UserMessage` 后，对应 pending steering 行立即消失。
+
+**TUI 对齐（2026-10-30）**
+
+- `qc` 的 TUI 复用同一个 `core::Inbox`：运行中 Enter 排队（`UiAction::Queue`），Ctrl-S 推送
+  （`UiAction::Steer`）；状态栏显示 `queued` / `steering` 计数。
+- turn 结束后按 FIFO 自动开下一轮；leftover steering 由引擎在 `finish()` 提升到 next-turn，
+  TUI 与 GUI 行为一致。

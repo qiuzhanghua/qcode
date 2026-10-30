@@ -216,12 +216,12 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         app.status.provider = options.provider_name.to_string();
         app.status.model = options.model.to_string();
         app.push_notice(format!(
-            "resumed session {session_id} ({} events) · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出",
+            "resumed session {session_id} ({} events) · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出",
             events.len()
         ));
     } else {
         app.push_notice(format!(
-            "session {session_id} · Enter 发送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
         ));
     }
 
@@ -237,6 +237,60 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let mut ticker = tokio::time::interval(Duration::from_millis(16));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
+
+    // Follow-up queue shared with the engine: a message sent while a turn runs
+    // waits here (or is steered into the running turn's next step).
+    let inbox = Arc::new(qcode_core::inbox::Inbox::new());
+
+    // Start one turn on the engine task. Steering is claimed by the engine at
+    // every step boundary; a follow-up is claimed after the turn ends.
+    macro_rules! start_turn {
+        ($text:expr, $attachments:expr) => {{
+            // A fresh token per turn: cancelling one turn must not poison the
+            // next one.
+            cancel = CancellationToken::new();
+            pending_approval = None;
+            engine_running = true;
+            let input: String = $text;
+            let attachments = $attachments;
+            let turn_cancel = cancel.clone();
+            let sender = tx.clone();
+            let delta_sender = tx.clone();
+            let task_inbox = inbox.clone();
+            engine = Box::pin(run_turn(
+                TurnContext {
+                    store: options.store,
+                    provider: options.provider.as_ref(),
+                    tools: &tools,
+                    policy: options.policy,
+                    approver: approver.as_ref(),
+                    snapshots: Some(&snapshots),
+                },
+                RunOptions {
+                    session_id: &session_id,
+                    model: options.model,
+                    input,
+                    cwd: options.workspace.clone(),
+                    max_turns: options.max_turns,
+                    cancel: turn_cancel,
+                    pricing: options.pricing,
+                    max_cost_usd: options.max_cost_usd,
+                    on_delta: Some(DeltaSink::new(move |delta| {
+                        let _ = delta_sender.send(TuiMsg::Delta(delta));
+                    })),
+                    context_window: options.context_window,
+                    agents_md: options.agents_md.clone(),
+                    skills: options.skills_prompt.clone(),
+                    network: options.network.clone(),
+                    attachments,
+                    inbox: Some(task_inbox),
+                },
+                move |event| {
+                    let _ = sender.send(TuiMsg::Event(event.clone()));
+                },
+            ));
+        }};
+    }
 
     let loop_result: Result<(), Box<dyn std::error::Error>> = loop {
         tokio::select! {
@@ -266,44 +320,25 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                         let Some(action) = action else { continue };
                         match action {
                             UiAction::Submit(text) => {
-                                // A fresh token per turn: cancelling one turn
-                                // must not poison the next one.
-                                cancel = CancellationToken::new();
-                                pending_approval = None;
-                                engine_running = true;
-                                let turn_cancel = cancel.clone();
-                                let sender = tx.clone();
-                                let delta_sender = tx.clone();
-                                engine = Box::pin(run_turn(
-                                    TurnContext {
-                                        store: options.store,
-                                        provider: options.provider.as_ref(),
-                                        tools: &tools,
-                                        policy: options.policy,
-                                        approver: approver.as_ref(),
-                                        snapshots: Some(&snapshots),
-                                    },
-                                    RunOptions {
-                                        session_id: &session_id,
-                                        model: options.model,
-                                        input: text,
-                                        cwd: options.workspace.clone(),
-                                        max_turns: options.max_turns,
-                                        cancel: turn_cancel,
-                                        pricing: options.pricing,
-                                        max_cost_usd: options.max_cost_usd,
-                                        on_delta: Some(DeltaSink::new(move |delta| {
-                                            let _ = delta_sender.send(TuiMsg::Delta(delta));
-                                        })),
-                                        context_window: options.context_window,
-                                        agents_md: options.agents_md.clone(),
-                                        skills: options.skills_prompt.clone(),
-                                        network: options.network.clone(),
-                                        attachments: std::mem::take(&mut pending_images),
-                                    inbox: None,                                    },
-                                    move |event| {
-                                        let _ = sender.send(TuiMsg::Event(event.clone()));
-                                    },
+                                start_turn!(text, std::mem::take(&mut pending_images));
+                            }
+                            UiAction::Queue(text) => {
+                                // Sent while a turn was running: it becomes its
+                                // own turn once the current one ends.
+                                inbox.followup(text, std::mem::take(&mut pending_images));
+                                app.status.queued = inbox.queued().len();
+                                app.push_notice(format!(
+                                    "queued ({} pending): starts when this turn ends",
+                                    app.status.queued
+                                ));
+                            }
+                            UiAction::Steer(text) => {
+                                // Lands at the running turn's next step boundary.
+                                inbox.steer(text, std::mem::take(&mut pending_images));
+                                app.status.steering = inbox.pending_step().len();
+                                app.push_notice(format!(
+                                    "steering ({} waiting): lands at the next step",
+                                    app.status.steering
                                 ));
                             }
                             UiAction::Approve {
@@ -423,6 +458,13 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     app.status.last = Some(TurnStatus::Failed);
                     app.push_notice(format!("engine error: {err}"));
                 }
+                // A follow-up queued while the turn ran starts its own turn now;
+                // leftover steering was promoted to that queue by the engine.
+                if let Some(message) = inbox.claim_next_turn() {
+                    start_turn!(message.text, message.attachments);
+                }
+                app.status.queued = inbox.queued().len();
+                app.status.steering = inbox.pending_step().len();
             }
         }
     };
