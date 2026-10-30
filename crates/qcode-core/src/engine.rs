@@ -437,6 +437,7 @@ where
                 StopReason::EndTurn,
                 options.session_id,
                 turns,
+                options.inbox.as_deref(),
                 &mut on_event,
             );
         }
@@ -502,6 +503,7 @@ where
                                 StopReason::EndTurn,
                                 options.session_id,
                                 turns,
+                                options.inbox.as_deref(),
                                 &mut on_event,
                             );
                         }
@@ -662,6 +664,7 @@ where
                 StopReason::EndTurn,
                 options.session_id,
                 turns,
+                options.inbox.as_deref(),
                 &mut on_event,
             );
         }
@@ -721,6 +724,7 @@ where
                 collected.stop_reason,
                 options.session_id,
                 turns,
+                options.inbox.as_deref(),
                 &mut on_event,
             );
         }
@@ -814,6 +818,7 @@ where
                 StopReason::EndTurn,
                 options.session_id,
                 turns,
+                options.inbox.as_deref(),
                 &mut on_event,
             );
         }
@@ -840,11 +845,19 @@ fn finish<F>(
     stop_reason: StopReason,
     session_id: &str,
     turns: u32,
+    inbox: Option<&Inbox>,
     on_event: &mut F,
 ) -> Result<RunOutcome, EngineError>
 where
     F: FnMut(&Event),
 {
+    // Steering that arrived after the last step boundary never got claimed.
+    // Promote it to the follow-up queue so it becomes its own turn instead of
+    // riding along in the next run's first request.
+    if let Some(inbox) = inbox {
+        inbox.promote_pending_steering();
+    }
+
     writer.append(
         EventKind::TurnEnded(TurnEnded {
             status,

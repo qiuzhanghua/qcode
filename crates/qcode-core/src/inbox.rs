@@ -108,6 +108,21 @@ impl Inbox {
         Some(message)
     }
 
+    /// Steering that missed the run's last step boundary becomes a follow-up
+    /// turn: move it to the tail of `next_turn`, in submission order, so it
+    /// runs as its own turn instead of leaking into the next run's request.
+    /// Returns the number of messages moved (0 when nothing was left over).
+    pub fn promote_pending_steering(&self) -> usize {
+        let mut inner = self.inner();
+        if inner.next_step.is_empty() {
+            return 0;
+        }
+        let pending: Vec<QueuedMessage> = inner.next_step.drain(..).collect();
+        let count = pending.len();
+        inner.next_turn.extend(pending);
+        count
+    }
+
     /// Whether any boundary holds pending work.
     pub fn has_pending(&self) -> bool {
         let inner = self.inner();
@@ -205,6 +220,25 @@ mod tests {
         assert_eq!(inbox.queued()[0].text, "b");
         assert_eq!(inbox.claim_next_step(), vec![a]);
         assert_eq!(inbox.steer_queued("missing"), None);
+    }
+
+    #[test]
+    fn steering_that_missed_the_last_boundary_becomes_a_followup() {
+        let inbox = Inbox::new();
+        inbox.followup("queued first".into(), Vec::new());
+        inbox.steer("late a".into(), Vec::new());
+        inbox.steer("late b".into(), Vec::new());
+
+        assert_eq!(inbox.promote_pending_steering(), 2);
+        let texts: Vec<String> = inbox.queued().into_iter().map(|m| m.text).collect();
+        assert_eq!(
+            texts,
+            vec!["queued first", "late a", "late b"],
+            "promoted steers keep their own order and follow earlier follow-ups"
+        );
+        assert!(inbox.claim_next_step().is_empty(), "next-step is drained");
+
+        assert_eq!(inbox.promote_pending_steering(), 0, "idempotent when empty");
     }
 
     #[test]

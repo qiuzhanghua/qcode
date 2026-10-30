@@ -2,12 +2,15 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use qcode_core::approval::AutoApprove;
 use qcode_core::engine::{Delta, DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::{ContentBlock, EventKind, SessionStarted, TurnStatus};
 use qcode_core::inbox::Inbox;
 use qcode_core::policy::Policy;
-use qcode_core::provider::{Message, Role};
+use qcode_core::provider::{
+    Capabilities, CompletionRequest, EventStream, Message, Provider, ProviderError, Role,
+};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_providers::MockProvider;
@@ -239,6 +242,83 @@ fn user_texts(messages: &[Message]) -> Vec<String> {
                 })
         })
         .collect()
+}
+
+/// A provider that steers while the final request is in flight: the claim for
+/// this request already ran, so the message must be promoted to a follow-up
+/// turn instead of leaking into the next run.
+struct LateSteer {
+    inner: MockProvider,
+    inbox: Arc<Inbox>,
+}
+
+#[async_trait]
+impl Provider for LateSteer {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+        cancel: CancellationToken,
+    ) -> Result<EventStream, ProviderError> {
+        self.inbox.steer("too late".to_string(), Vec::new());
+        self.inner.stream(request, cancel).await
+    }
+}
+
+#[tokio::test]
+async fn steering_after_the_last_boundary_becomes_a_followup_turn() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::new(dir.path());
+    let (id, _) = store.create(&meta()).expect("create session");
+
+    let inbox = Arc::new(Inbox::new());
+    let provider = LateSteer {
+        inner: MockProvider::text("ok"),
+        inbox: inbox.clone(),
+    };
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
+
+    let mut options = options(&id, dir.path());
+    options.inbox = Some(inbox.clone());
+
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        options,
+        |_| {},
+    )
+    .await
+    .expect("run turn");
+
+    // The late steer must not have reached this turn's request...
+    let requests = provider.inner.requests();
+    let texts = user_texts(&requests[0].messages);
+    assert!(
+        !texts.iter().any(|text| text.contains("too late")),
+        "the steer arrived after the claim, so it cannot be in this request: {texts:?}"
+    );
+
+    // ...and must have been promoted to the follow-up queue at turn end.
+    assert!(
+        inbox.claim_next_step().is_empty(),
+        "nothing may be left in next-step"
+    );
+    let queued: Vec<String> = inbox.queued().into_iter().map(|m| m.text).collect();
+    assert_eq!(queued, vec!["too late"]);
 }
 
 #[tokio::test]
