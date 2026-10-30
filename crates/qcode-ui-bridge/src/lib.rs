@@ -46,6 +46,9 @@ pub enum UiEvent {
     TurnFinished { session: Option<String> },
     /// The pending follow-up queue changed; the UI redraws the queue dock.
     QueueChanged { items: Vec<QueuedMessage> },
+    /// Steering that has not been injected yet (waiting for the next step);
+    /// the dock shows it as pending and lets the user take it back.
+    SteeringChanged { items: Vec<QueuedMessage> },
 }
 
 /// The approval prompt, without the reply channel: answer it with
@@ -118,6 +121,9 @@ pub enum QueueOp {
     MoveDown,
     /// Drop it from the queue.
     Remove,
+    /// Take a steered item back out of the running turn's pending step queue
+    /// and return it to the follow-up queue.
+    Unsteer,
 }
 
 /// The UI's end of the bridge: drain events, send commands.
@@ -183,6 +189,11 @@ impl KernelPort {
     /// Publish the current pending follow-up queue for the queue dock.
     pub fn send_queue_changed(&self, items: Vec<QueuedMessage>) {
         let _ = self.events.send(UiEvent::QueueChanged { items });
+    }
+
+    /// Publish steering that is still waiting for the next step boundary.
+    pub fn send_steering_changed(&self, items: Vec<QueuedMessage>) {
+        let _ = self.events.send(UiEvent::SteeringChanged { items });
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,

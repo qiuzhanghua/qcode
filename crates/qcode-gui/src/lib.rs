@@ -645,6 +645,9 @@ struct Shell {
     /// Pending follow-up messages waiting for the running turn to end,
     /// mirrored from the kernel inbox (FIFO order).
     queue: Vec<QueuedMessage>,
+    /// Steered messages the running turn has not claimed yet ("waiting for
+    /// the next step"), mirrored from the inbox's next-step queue.
+    steering: Vec<QueuedMessage>,
     /// Root edits made during a turn, applied after the engine task returns.
     pending_roots: Option<(String, Vec<Root>)>,
     /// Directory awaiting the destructive confirmation dialog.
@@ -840,6 +843,7 @@ impl Shell {
             selected_turn: None,
             turn_in_flight: false,
             queue: Vec::new(),
+            steering: Vec::new(),
             pending_roots: None,
             pending_root_delete: None,
             pending_task_delete: None,
@@ -1275,6 +1279,10 @@ impl Shell {
                 }
                 UiEvent::QueueChanged { items } => {
                     self.queue = items;
+                    changed = true;
+                }
+                UiEvent::SteeringChanged { items } => {
+                    self.steering = items;
                     changed = true;
                 }
             }

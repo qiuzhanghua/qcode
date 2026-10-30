@@ -3207,7 +3207,7 @@ turn 结束时（完成 / 取消 / 失败，统一在 `finish()` 收口），`ne
 
 **后果 / 已知差距**
 
-- ADR-0042 §7 要求「未注入前显示 pending 状态、可取消」，**尚未实现**：点「推送」后条目
+- ADR-0042 §7 要求「未注入前显示 pending 状态、可取消」，**当时尚未实现**（见文末 P1 更新）：点「推送」后条目
   立刻从 dock 消失，直到被注入或提升才重新出现。补法是 P1 的可视化，不改变本 ADR 的队列
   语义。
 - ADR-0042 §1 的 Composer 四态（ComposerController）与 §6 的 `busy_delivery` / `send_mode`
@@ -3230,3 +3230,11 @@ turn 结束时（完成 / 取消 / 失败，统一在 `finish()` 收口），`ne
 - `qcode-gui`：队列 dock 的 steer / 上移 / 下移 / 删除路径（集成测试 + 手动）。
 - 手动：运行中 Queue → 当前轮结束后按 FIFO 执行；运行中 Steer → 下一 step 生效并拆成独立
   turn；在最后一轮请求期间 Steer → turn 结束后作为新的一轮出现；Stop 后队列保留。
+
+**P1 更新（2026-10-30，同日）**
+
+- 补齐「未注入前显示 pending、可取消」：bridge 新增 `UiEvent::SteeringChanged`（`next-step` 的
+  镜像）与 `QueueOp::Unsteer`；dock 把等待注入的条目显示为「等待下一步」并带「撤回」按钮。
+- 发布收敛：runtime 用 `publish()` 在快照变化时才发 `QueueChanged` / `SteeringChanged`，并每
+  250ms 对比一次快照——engine 在另一个线程 claim steering，注入后条目会自动从 dock 消失。
+- 撤回的条目回到 `next-turn` 队尾（与 leftover 提升一致，保持 FIFO 语义）。

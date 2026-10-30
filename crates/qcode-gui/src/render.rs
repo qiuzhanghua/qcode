@@ -905,7 +905,45 @@ impl Shell {
         let theme = cx.theme();
         let border = theme.border;
         let running = self.turn_in_flight;
-        let mut rows = Vec::with_capacity(self.queue.len());
+        let mut rows = Vec::with_capacity(self.steering.len() + self.queue.len());
+        // Steering already handed to the engine but not claimed yet: keep it
+        // visible as pending so the user can take it back.
+        for item in &self.steering {
+            let id = item.id.clone();
+            let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .bg(rgba(0x2f6bff14))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child(preview),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(rgb(0x5b7fbf))
+                            .child("等待下一步"),
+                    )
+                    .child(
+                        Button::new(format!("steer-undo-{id}"))
+                            .label("撤回")
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.backend.queue_op(id.clone(), QueueOp::Unsteer);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         for item in &self.queue {
             let id = item.id.clone();
             let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
@@ -2154,7 +2192,7 @@ impl Shell {
                     .gap_1();
                 // Pending follow-up queue shown above the input; each row can
                 // steer into the running turn, move, or drop.
-                if !self.queue.is_empty() {
+                if !self.queue.is_empty() || !self.steering.is_empty() {
                     input_box = input_box.child(self.render_queue_dock(cx));
                 }
                 // Pending file references shown as removable chips above the

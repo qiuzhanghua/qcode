@@ -65,6 +65,25 @@ impl Inbox {
         self.inner().next_step.drain(..).collect()
     }
 
+    /// The steering queue in order, for the frontend's "waiting for the next
+    /// step" rows.
+    pub fn pending_step(&self) -> Vec<QueuedMessage> {
+        self.inner().next_step.iter().cloned().collect()
+    }
+
+    /// Take one steering item back out of the pending step queue and return it
+    /// to the follow-up queue (at the tail), for a UI-side cancel.
+    pub fn unsteer(&self, id: &str) -> Option<QueuedMessage> {
+        let mut inner = self.inner();
+        let index = inner.next_step.iter().position(|item| item.id == id)?;
+        let message = inner
+            .next_step
+            .remove(index)
+            .expect("located steering item");
+        inner.next_turn.push_back(message.clone());
+        Some(message)
+    }
+
     /// The follow-up queue in order, for the frontend.
     pub fn queued(&self) -> Vec<QueuedMessage> {
         self.inner().next_turn.iter().cloned().collect()
@@ -239,6 +258,31 @@ mod tests {
         assert!(inbox.claim_next_step().is_empty(), "next-step is drained");
 
         assert_eq!(inbox.promote_pending_steering(), 0, "idempotent when empty");
+    }
+
+    #[test]
+    fn pending_step_lists_steering_until_claimed() {
+        let inbox = Inbox::new();
+        inbox.steer("a".into(), Vec::new());
+        inbox.steer("b".into(), Vec::new());
+
+        let pending: Vec<String> = inbox.pending_step().into_iter().map(|m| m.text).collect();
+        assert_eq!(pending, vec!["a", "b"]);
+        assert_eq!(inbox.claim_next_step().len(), 2);
+        assert!(inbox.pending_step().is_empty());
+    }
+
+    #[test]
+    fn unsteer_returns_an_item_to_the_followup_queue() {
+        let inbox = Inbox::new();
+        let a = inbox.steer("a".into(), Vec::new());
+        inbox.followup("queued".into(), Vec::new());
+
+        assert_eq!(inbox.unsteer(&a.id), Some(a.clone()));
+        assert!(inbox.pending_step().is_empty());
+        let queued: Vec<String> = inbox.queued().into_iter().map(|m| m.text).collect();
+        assert_eq!(queued, vec!["queued", "a"]);
+        assert_eq!(inbox.unsteer("missing"), None);
     }
 
     #[test]

@@ -6,11 +6,12 @@
 
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
-use qcode_core::inbox::Inbox;
+use qcode_core::inbox::{Inbox, QueuedMessage};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
@@ -59,6 +60,27 @@ pub(crate) fn create_empty_task(engine: &Engine, port: &KernelPort, model: &str)
     }
 }
 
+/// What the UI was last told about the queues, so the ticker only publishes
+/// real changes (the engine claims steering from its own thread).
+#[derive(Default, PartialEq, Eq)]
+struct Published {
+    queue: Vec<QueuedMessage>,
+    steering: Vec<QueuedMessage>,
+}
+
+fn publish(port: &KernelPort, inbox: &Inbox, last: &mut Published) {
+    let queue = inbox.queued();
+    if queue != last.queue {
+        port.send_queue_changed(queue.clone());
+        last.queue = queue;
+    }
+    let steering = inbox.pending_step();
+    if steering != last.steering {
+        port.send_steering_changed(steering.clone());
+        last.steering = steering;
+    }
+}
+
 /// Run the engine on its own thread: `run_turn` is async, the window is not.
 pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedReceiver<UiCommand>) {
     std::thread::spawn(move || {
@@ -82,6 +104,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let (done_tx, mut done_rx) =
                 tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
             let inbox = Arc::new(Inbox::new());
+            let mut ticker = tokio::time::interval(Duration::from_millis(250));
+            let mut published = Published::default();
 
             // Run one queued message as its own turn on the engine task. The
             // engine drains the `next-step` inbox before every model request,
@@ -169,6 +193,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
 
             loop {
                 tokio::select! {
+                    // The engine claims steering from another thread, so the
+                    // pending rows are refreshed on a slow tick rather than
+                    // tied to a UI event.
+                    _ = ticker.tick() => publish(&port, &inbox, &mut published),
                     command = commands.recv() => {
                         let Some(command) = command else {
                             break;
@@ -220,7 +248,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 {
                                     start_turn!(message.text, message.attachments);
                                 }
-                                port.send_queue_changed(inbox.queued());
+                                publish(&port, &inbox, &mut published);
                             }
                             UiCommand::QueueOp { id, op } => {
                                 match op {
@@ -240,8 +268,11 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     QueueOp::Remove => {
                                         inbox.remove_queued(&id);
                                     }
+                                    QueueOp::Unsteer => {
+                                        inbox.unsteer(&id);
+                                    }
                                 }
-                                port.send_queue_changed(inbox.queued());
+                                publish(&port, &inbox, &mut published);
                             }
                         }
                     }
@@ -270,7 +301,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         if let Some(message) = inbox.claim_next_turn() {
                             start_turn!(message.text, message.attachments);
                         }
-                        port.send_queue_changed(inbox.queued());
+                        publish(&port, &inbox, &mut published);
                     }
                 }
             }
