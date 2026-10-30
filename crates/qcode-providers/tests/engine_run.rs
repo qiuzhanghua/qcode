@@ -333,7 +333,7 @@ async fn steering_lands_in_the_running_turn_request() {
     let inbox = Arc::new(Inbox::new());
     // Steering pushed before the turn starts must be claimed by the first
     // model request, appended after the original input.
-    inbox.steer("steer me".to_string(), Vec::new());
+    let steered = inbox.steer("steer me".to_string(), Vec::new());
 
     let mut options = options(&id, dir.path());
     options.inbox = Some(inbox.clone());
@@ -362,11 +362,18 @@ async fn steering_lands_in_the_running_turn_request() {
         "the steering message must reach the model request: {texts:?}"
     );
 
-    // The steering message is durable in the transcript as a second user message.
+    // The steering message is durable in the transcript as a second user
+    // message, marked as a segment boundary and linked to the inbox item.
     let loaded = store.load(&id).expect("load session");
-    let user_count = loaded
+    let messages: Vec<_> = loaded
         .iter()
-        .filter(|event| matches!(event.kind, EventKind::UserMessage(_)))
-        .count();
-    assert_eq!(user_count, 2, "input + steering message");
+        .filter_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 2, "input + steering message");
+    assert!(!messages[0].starts_segment, "the input does not split");
+    assert_eq!(messages[1].queued_id.as_deref(), Some(steered.id.as_str()));
+    assert!(messages[1].starts_segment, "steering opens a segment");
 }

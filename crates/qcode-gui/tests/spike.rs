@@ -16,6 +16,8 @@ fn synthetic_events(count: usize) -> Vec<Event> {
             turn: (index / 4) as u32 + 1,
             kind: if index % 2 == 0 {
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: format!("question {index}"),
                     attachments: Vec::new(),
                 })

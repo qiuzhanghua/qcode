@@ -196,7 +196,7 @@ mod tests {
     fn move_queued_shifts_within_bounds_and_clamps() {
         let inbox = Inbox::new();
         let a = inbox.followup("a".into(), Vec::new());
-        let b = inbox.followup("b".into(), Vec::new());
+        inbox.followup("b".into(), Vec::new());
         let c = inbox.followup("c".into(), Vec::new());
 
         // Move the last item up.

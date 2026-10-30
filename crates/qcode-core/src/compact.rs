@@ -178,6 +178,8 @@ mod tests {
         event(
             seq,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: text.into(),
                 attachments: vec![],
             }),

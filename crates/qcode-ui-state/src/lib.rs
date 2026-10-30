@@ -466,15 +466,17 @@ impl App {
                 self.start_turn(event);
             }
             EventKind::UserMessage(message) => {
-                // 排队追加的问题被推进正在运行的 turn 时，引擎不会发出新的
-                // `turn_started`（消息归属同一个 turn number），不拆的话 B 会被
-                // 塞进 A 的执行过程。当前 turn 已有输入（不是它的开场消息）说明
-                // 这是追加的问题，把它拆成独立 turn：A、B 各自有执行过程和圆点。
-                let is_steered_follow_up = self
-                    .current_turn
-                    .and_then(|index| self.turns.get(index))
-                    .is_some_and(|turn| turn.input_block.is_some());
-                if is_steered_follow_up {
+                // v4 marks injected steering explicitly (`starts_segment`), so
+                // the projection no longer has to guess. v3 logs lack the flag;
+                // there, a user message that arrives while the current turn
+                // already has input is the steered follow-up, split into its own
+                // turn (A and B each keep their process and rail dot).
+                let v3_heuristic = event.v < 4
+                    && self
+                        .current_turn
+                        .and_then(|index| self.turns.get(index))
+                        .is_some_and(|turn| turn.input_block.is_some());
+                if message.starts_segment || v3_heuristic {
                     self.split_turn(event);
                 }
                 self.ensure_turn(event);
@@ -1264,6 +1266,8 @@ mod tests {
         assert!(app.status.running);
 
         app.apply(&event(EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
             text,
             attachments: Vec::new(),
         })));
@@ -1678,6 +1682,8 @@ mod tests {
             "s1",
             1,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: "go".to_string(),
                 attachments: Vec::new(),
             }),
@@ -1753,6 +1759,8 @@ mod tests {
             "s1",
             1,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: "A".to_string(),
                 attachments: Vec::new(),
             }),
@@ -1768,12 +1776,14 @@ mod tests {
             }),
         ));
         // 排队追加的 B 被推进运行中的 A：引擎不发出新的 TurnStarted，只在同
-        // 一个 turn number 下追加 UserMessage。UI 必须把它拆成独立 turn。
+        // 一个 turn number 下追加 UserMessage，并用 starts_segment 标记边界。
         app.apply(&Event::new(
             4,
             "s1",
             1,
             EventKind::UserMessage(UserMessage {
+                starts_segment: true,
+                queued_id: Some("q1".to_string()),
                 text: "B".to_string(),
                 attachments: Vec::new(),
             }),
@@ -1820,6 +1830,92 @@ mod tests {
     }
 
     #[test]
+    fn v4_plain_user_message_does_not_split_a_turn() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&Event::new(
+            1,
+            "s1",
+            1,
+            EventKind::TurnStarted(TurnStarted {
+                input: "a".to_string(),
+            }),
+        ));
+        app.apply(&Event::new(
+            2,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "A".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+        // v4 without the explicit marker: a second user message stays in the
+        // same turn instead of being guessed into a new one.
+        app.apply(&Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "B".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+
+        assert_eq!(app.turns.len(), 1);
+        assert_eq!(
+            app.blocks[app.turns[0].input_block.expect("input")],
+            Block::User("A".to_string())
+        );
+    }
+
+    #[test]
+    fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
+        let mut app = App::new("mock", "mock-1");
+        app.apply(&Event::new(
+            1,
+            "s1",
+            1,
+            EventKind::TurnStarted(TurnStarted {
+                input: "a".to_string(),
+            }),
+        ));
+        app.apply(&Event::new(
+            2,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "A".to_string(),
+                attachments: Vec::new(),
+            }),
+        ));
+        let mut older = Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "B".to_string(),
+                attachments: Vec::new(),
+            }),
+        );
+        older.v = 3;
+        app.apply(&older);
+
+        assert_eq!(app.turns.len(), 2, "v3 日志仍用启发式拆分");
+        assert_eq!(
+            app.blocks[app.turns[1].input_block.expect("B has input")],
+            Block::User("B".to_string())
+        );
+    }
+
+    #[test]
     fn turns_are_closed_and_indexed_independently() {
         let mut app = App::new("mock", "mock-1");
         for (turn, input, answer) in [(1u32, "first", "one"), (2u32, "second", "two")] {
@@ -1836,6 +1932,8 @@ mod tests {
                 "s1",
                 turn,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: input.to_string(),
                     attachments: Vec::new(),
                 }),
@@ -2175,6 +2273,8 @@ mod tests {
         app.composer.apply(InputEvent::InsertStr("hi".to_string()));
         press(&mut app, "enter");
         app.apply(&event(EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
             text: "hi".to_string(),
             attachments: Vec::new(),
         })));

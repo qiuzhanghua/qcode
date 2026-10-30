@@ -57,6 +57,8 @@ fn app_with_transcript() -> App {
         &mut app,
         3,
         EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
             text: "fix tests".to_string(),
             attachments: Vec::new(),
         }),
@@ -484,6 +486,8 @@ fn page_keys_scroll_the_transcript_window() {
             &mut app,
             index + 1,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: format!("line-{index:03}"),
                 attachments: Vec::new(),
             }),
@@ -532,6 +536,8 @@ fn scrolled_view_shows_the_offset_in_the_status_bar() {
             &mut app,
             index + 1,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: format!("line-{index:03}"),
                 attachments: Vec::new(),
             }),

@@ -754,6 +754,8 @@ mod tests {
                 &id,
                 1,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: "hi".to_string(),
                     attachments: Vec::new(),
                 }),
@@ -765,6 +767,8 @@ mod tests {
                 &id,
                 1,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: "again".to_string(),
                     attachments: Vec::new(),
                 }),

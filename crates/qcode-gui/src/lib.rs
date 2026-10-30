@@ -1216,6 +1216,14 @@ impl Shell {
                         .map(|(index, _)| index)
                         .collect();
                     self.app.apply(&event);
+                    // The engine injected a steered message: its Inbox item is
+                    // gone, so drop the pending row now instead of waiting for
+                    // the runtime's 250ms snapshot tick.
+                    if let EventKind::UserMessage(message) = &event.kind
+                        && let Some(id) = &message.queued_id
+                    {
+                        self.steering.retain(|item| &item.id != id);
+                    }
                     // 引擎写进日志的错误（压缩失败、超预算、无进展……）显示在
                     // 输入框上方的提示框里，保留完整信息。
                     if let EventKind::Error(error) = &event.kind {

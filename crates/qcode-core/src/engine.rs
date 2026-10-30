@@ -349,6 +349,8 @@ impl<'a> SessionWriter<'a> {
         )?;
         self.append(
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: input.to_string(),
                 attachments: Vec::new(),
             }),
@@ -577,6 +579,8 @@ where
             for message in inbox.claim_next_step() {
                 writer.append(
                     EventKind::UserMessage(UserMessage {
+                        starts_segment: true,
+                        queued_id: Some(message.id.clone()),
                         text: message.text.clone(),
                         attachments: Vec::new(),
                     }),

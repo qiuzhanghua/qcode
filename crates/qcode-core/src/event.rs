@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use crate::task::Root;
 
 /// Bumped whenever the on-disk shape changes in a breaking way.
-pub const EVENT_SCHEMA_VERSION: u32 = 3;
+pub const EVENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -91,6 +91,15 @@ pub struct UserMessage {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// The inbox item this message came from, when the engine injected a
+    /// steering message. Lets a frontend reconcile its "waiting for the next
+    /// step" row with the authoritative message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_id: Option<String>,
+    /// This message opens a new transcript segment (turn card): the engine set
+    /// it for injected steering, so projections do not have to guess.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starts_segment: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -273,6 +282,8 @@ mod tests {
             "s1",
             0,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: "hi".into(),
                 attachments: vec![],
             }),
@@ -289,5 +300,55 @@ mod tests {
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back.seq, event.seq);
         assert_eq!(back.kind, event.kind);
+    }
+
+    #[test]
+    fn steering_fields_are_optional_on_the_wire() {
+        // A v3 log entry has no steering fields: they must default.
+        let older: Event = serde_json::from_str(
+            r#"{"v":3,"seq":2,"ts":"2026-10-30T00:00:00Z","session":"s1","turn":1,
+                "type":"user_message","data":{"text":"hi"}}"#,
+        )
+        .unwrap();
+        let EventKind::UserMessage(message) = older.kind else {
+            panic!("expected a user message");
+        };
+        assert_eq!(message.queued_id, None);
+        assert!(!message.starts_segment);
+
+        // A v4 steered message carries both fields and round-trips.
+        let event = Event::new(
+            3,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: true,
+                queued_id: Some("q1".into()),
+                text: "steer".into(),
+                attachments: vec![],
+            }),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["data"]["queued_id"], "q1");
+        assert_eq!(value["data"]["starts_segment"], true);
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.kind, event.kind);
+
+        // Defaults stay off the wire, so v4 input messages look like v3 ones.
+        let input = Event::new(
+            4,
+            "s1",
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "hi".into(),
+                attachments: vec![],
+            }),
+        );
+        let value: Value = serde_json::from_str(&serde_json::to_string(&input).unwrap()).unwrap();
+        assert!(value["data"].get("queued_id").is_none());
+        assert!(value["data"].get("starts_segment").is_none());
     }
 }

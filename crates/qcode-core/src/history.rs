@@ -87,6 +87,8 @@ mod tests {
             event(
                 1,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: "old question".into(),
                     attachments: vec![],
                 }),
@@ -115,6 +117,8 @@ mod tests {
             event(
                 4,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: "new question".into(),
                     attachments: vec![],
                 }),
@@ -138,6 +142,8 @@ mod tests {
             event(
                 1,
                 EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
                     text: "hi".into(),
                     attachments: vec![],
                 }),

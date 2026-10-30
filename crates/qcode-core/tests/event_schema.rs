@@ -140,6 +140,8 @@ fn turn_started_snapshot() {
 fn user_message_snapshot_omits_empty_attachments() {
     assert_snapshot(
         EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
             text: "hi".into(),
             attachments: Vec::new(),
         }),
@@ -151,6 +153,8 @@ fn user_message_snapshot_omits_empty_attachments() {
 
     assert_snapshot(
         EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
             text: "see attached".into(),
             attachments: vec!["src/lib.rs".into()],
         }),

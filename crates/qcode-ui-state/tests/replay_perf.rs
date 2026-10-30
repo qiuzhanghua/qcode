@@ -52,6 +52,8 @@ fn session_events() -> Vec<Event> {
             session: id.to_string(),
             turn,
             kind: EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: format!("question {turn}"),
                 attachments: Vec::new(),
             }),

@@ -53,6 +53,8 @@ fn seed_three_turns(store: &SessionStore) -> String {
             &mut seq,
             turn,
             EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
                 text: format!("turn {turn}"),
                 attachments: Vec::new(),
             }),
