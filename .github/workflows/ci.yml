@@ -19,6 +19,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The GUI links against system libraries through pkg-config (README
+      # "Linux 构建依赖"). The runner image ships the runtime packages but not
+      # the `-dev` ones, so `yeslogic-fontconfig-sys` dies in its build script
+      # with "Package 'fontconfig' not found" before clippy ever runs. That is
+      # why this job failed with exit 101 and no clippy diagnostics at all.
+      - name: linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
       - run: cargo fmt --all --check
       - name: clippy
         shell: bash
@@ -79,6 +91,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
+      # Same pkg-config set as the `test` job: `cargo check --workspace` covers
+      # qcode-gui, whose fontconfig build script fails without the -dev package.
+      - name: linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
       - run: cargo check --workspace
 
   deny:
