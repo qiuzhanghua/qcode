@@ -119,7 +119,8 @@ impl SubagentRunner for EngineSubagent {
             network: self.network.clone(),
             // The child never receives images: its task is text.
             attachments: Vec::new(),
-        inbox: None,        };
+            inbox: None,
+        };
 
         let sink = self.on_event.clone();
         let outcome = run_turn(
