@@ -88,6 +88,12 @@ pub enum UiCommand {
         text: String,
         attachments: Vec<Attachment>,
     },
+    /// Steer `text` into the running turn's next step (busy_delivery = steer).
+    /// Ignored when no turn is running.
+    Steer {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// One operation on a queued (next-turn) message.
     QueueOp {
         id: String,

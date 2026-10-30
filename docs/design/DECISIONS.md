@@ -3325,3 +3325,14 @@ Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜�
 - 队列与 steering 的查看/调整：`/queue`（列出排队）、`/steer N`（推入运行中的 turn）、
   `/drop N`（删除）、`/steering`（列出等待注入的）、`/unsteer N`（撤回，回到队尾）。
   规则统一由 `core::SessionQueue` 提供，两端共用。
+
+**实现更新（2026-10-30）**
+
+- `send_mode` 落地为 `gui.json` 字段：`enter`（默认，保持既有手感：Enter 发送、Shift+Enter
+  换行、Cmd/Ctrl+Enter 也可发送）或 `cmd_enter`（Enter 换行、Cmd/Ctrl+Enter 发送）。本文
+  §6 原本把默认写成 `cmd_enter`；实现以 `enter` 为默认，避免改变已经习惯 Enter 发送的
+  用户，`cmd_enter` 作为可选项保留。
+- `busy_delivery` 落地为 `config.toml` 的 `[ui]`（GUI 与 TUI 共用）：`queue`（默认）或
+  `steer`；`steer` 时运行中的发送直接进入当前 turn 的下一步，不再进队列。
+- 两者都出现在 GUI Settings（Agent / Appearance 页），TUI 读取同一份配置。
+- Composer 四态（§1，Pending / Restoring）仍未实现，留待 P2。

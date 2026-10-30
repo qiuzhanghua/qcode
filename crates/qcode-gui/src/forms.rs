@@ -128,6 +128,13 @@ pub const FIELDS: &[FieldSpec] = &[
         help: "Optional; needs a pricing entry for the model",
     },
     FieldSpec {
+        path: &["ui", "busy_delivery"],
+        label: "Busy delivery",
+        page: Page::Agent,
+        kind: FieldKind::Select(&["queue", "steer"]),
+        help: "Sending while a turn runs queues a follow-up or steers into it",
+    },
+    FieldSpec {
         path: &["agent", "snapshot_shell"],
         label: "Snapshot before shell",
         page: Page::Agent,
@@ -465,6 +472,13 @@ pub const GUI_FIELDS: &[FieldSpec] = &[
         page: Page::UpdateAppearance,
         kind: FieldKind::Select(&["comfortable", "compact"]),
         help: "Spacing of transcript rows",
+    },
+    FieldSpec {
+        path: &["gui", "send_mode"],
+        label: "Send mode",
+        page: Page::UpdateAppearance,
+        kind: FieldKind::Select(&["enter", "cmd_enter"]),
+        help: "Enter sends, or Cmd/Ctrl+Enter sends and Enter inserts a newline",
     },
 ];
 

@@ -315,6 +315,10 @@ impl ConfigEdit {
         self.set_integer(&["agent", "max_turns"], i64::from(config.agent.max_turns))?;
         self.set_optional_float(&["agent", "max_cost_usd"], config.agent.max_cost_usd)?;
         self.set_bool(&["agent", "snapshot_shell"], config.agent.snapshot_shell)?;
+        self.set_str(
+            &["ui", "busy_delivery"],
+            busy_delivery_str(config.ui.busy_delivery),
+        )?;
 
         self.set_str(&["sandbox", "mode"], sandbox_mode(&config.sandbox.mode))?;
         self.set_bool(&["sandbox", "network"], config.sandbox.network)?;
@@ -508,6 +512,13 @@ fn scope_name(scope: qcode_core::event::Scope) -> &'static str {
 
 fn sandbox_mode(mode: &qcode_tools::sandbox::SandboxMode) -> &'static str {
     mode.label()
+}
+
+fn busy_delivery_str(delivery: crate::config::BusyDelivery) -> &'static str {
+    match delivery {
+        crate::config::BusyDelivery::Queue => "queue",
+        crate::config::BusyDelivery::Steer => "steer",
+    }
 }
 
 fn network_mode(mode: &crate::config::NetworkMode) -> &'static str {

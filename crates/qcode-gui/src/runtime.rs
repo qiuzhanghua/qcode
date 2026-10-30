@@ -248,6 +248,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 }
                                 publish(&port, &queue, &mut published);
                             }
+                            UiCommand::Steer { text, attachments } => {
+                                // Only a live turn can take steering; the dock
+                                // does not offer it while idle.
+                                queue.steer(text, attachments, active.is_some());
+                                publish(&port, &queue, &mut published);
+                            }
                             UiCommand::QueueOp { id, op } => {
                                 match op {
                                     // Steering only reaches the running turn;

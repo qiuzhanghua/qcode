@@ -558,6 +558,11 @@ impl SetupView {
             .get("gui.density")
             .cloned()
             .unwrap_or_else(|| prefs.density.clone());
+        prefs.send_mode = self
+            .selects
+            .get("gui.send_mode")
+            .cloned()
+            .unwrap_or_else(|| prefs.send_mode.clone());
         prefs.font_size = self
             .inputs
             .get("gui.font_size")
@@ -807,6 +812,12 @@ fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> Result<(), S
             };
         }
         ["agent", "snapshot_shell"] => config.agent.snapshot_shell = value == "true",
+        ["ui", "busy_delivery"] => {
+            config.ui.busy_delivery = match value {
+                "steer" => qcode_kernel::config::BusyDelivery::Steer,
+                _ => qcode_kernel::config::BusyDelivery::Queue,
+            };
+        }
         ["sandbox", "mode"] => config.sandbox.mode = parse_sandbox(value)?,
         ["sandbox", "network"] => config.sandbox.network = value == "true",
         ["sandbox", "extra_writable"] => {
@@ -1042,6 +1053,7 @@ fn gui_string(prefs: &GuiPreferences, path: &[&str], options: &[&str]) -> String
         ["gui", "font_size"] => prefs.font_size.to_string(),
         ["gui", "code_font"] => prefs.code_font.clone(),
         ["gui", "density"] => prefs.density.clone(),
+        ["gui", "send_mode"] => prefs.send_mode.clone(),
         _ => options.first().unwrap_or(&"").to_string(),
     }
 }

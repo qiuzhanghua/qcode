@@ -932,6 +932,7 @@ async fn cmd_tui(
         sandbox: kernel.sandbox.clone(),
         resume,
         network,
+        busy_delivery: loaded.ui.busy_delivery,
     })
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;

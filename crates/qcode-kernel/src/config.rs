@@ -26,6 +26,24 @@ pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 /// interpretations changed.
 pub const CONFIG_VERSION: u32 = 1;
 
+/// How a message typed while a turn is running is delivered (ADR-0042).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BusyDelivery {
+    /// Queue it as the follow-up turn (default).
+    #[default]
+    Queue,
+    /// Steer it into the running turn's next step boundary.
+    Steer,
+}
+
+/// UI delivery settings shared by the GUI and the TUI.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub busy_delivery: BusyDelivery,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Schema version of the file. Absent means [`CONFIG_VERSION`].
@@ -67,6 +85,9 @@ pub struct Config {
     /// Version checks and `qc update` (v2.0).
     #[serde(default)]
     pub update: UpdateConfig,
+    /// Delivery behaviour shared by the frontends.
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 fn default_version() -> u32 {
@@ -89,6 +110,7 @@ impl Default for Config {
             network: NetworkConfig::default(),
             search: SearchConfig::default(),
             update: UpdateConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -2203,6 +2225,24 @@ api_key_command = ["cmd", "/C", "exit 3"]
         );
         assert_eq!(resolved.api_key.as_deref(), Some("sk-test"));
     }
+    #[test]
+    fn ui_busy_delivery_defaults_to_queue_and_parses_steer() {
+        let config: Config = toml::from_str("").expect("empty config");
+        assert_eq!(config.ui.busy_delivery, BusyDelivery::Queue);
+
+        let config: Config = toml::from_str("[ui]\nbusy_delivery = \"steer\"\n").expect("parse");
+        assert_eq!(config.ui.busy_delivery, BusyDelivery::Steer);
+    }
+
+    #[test]
+    fn an_unknown_busy_delivery_is_rejected() {
+        let error = toml::from_str::<Config>("[ui]\nbusy_delivery = \"drop\"\n").unwrap_err();
+        assert!(
+            error.to_string().contains("busy_delivery"),
+            "the error should name the key: {error}"
+        );
+    }
+
     #[test]
     fn a_plain_directory_is_not_a_system_install() {
         assert!(!is_system_install(Path::new("relative/tools/qcode")));

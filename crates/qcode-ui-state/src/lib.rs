@@ -269,6 +269,9 @@ pub struct App {
     pub quit_armed: bool,
     /// Skills available to this session, for the `/skills` debug commands.
     pub skills: Vec<SkillView>,
+    /// `[ui] busy_delivery = "steer"`: sending while a turn runs steers the
+    /// draft into it instead of queueing a follow-up.
+    pub steer_on_send: bool,
 }
 
 impl App {
@@ -303,6 +306,7 @@ impl App {
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
+            steer_on_send: false,
         }
     }
 
@@ -882,10 +886,15 @@ impl App {
             return None;
         }
         if self.status.running {
-            // A follow-up while the turn runs: queue it instead of dropping it.
+            // A follow-up while the turn runs: queue it (default) or steer it
+            // into the next step (`[ui] busy_delivery = "steer"`).
             self.clear_composer();
             self.scroll = 0;
-            return Some(UiAction::Queue(text));
+            return Some(if self.steer_on_send {
+                UiAction::Steer(text)
+            } else {
+                UiAction::Queue(text)
+            });
         }
         self.clear_composer();
         self.scroll = 0;
@@ -2350,6 +2359,20 @@ mod tests {
         assert_eq!(action, Some(UiAction::Queue("next".to_string())));
         assert!(app.composer.text().is_empty(), "the draft is consumed");
         assert!(app.status.running, "the running turn is unchanged");
+    }
+
+    #[test]
+    fn steer_on_send_turns_a_running_submit_into_steering() {
+        let mut app = App::new("mock", "mock-1");
+        app.steer_on_send = true;
+        app.status.running = true;
+        type_text(&mut app, "hurry");
+
+        assert_eq!(
+            press(&mut app, "enter"),
+            Some(UiAction::Steer("hurry".to_string()))
+        );
+        assert!(app.composer.text().is_empty());
     }
 
     #[test]

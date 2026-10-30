@@ -43,6 +43,8 @@ pub trait Backend {
     /// Load the transcript, then point the engine at the session.
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String>;
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
+    /// Steer a message into the running turn's next step. A no-op when idle.
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
     /// One operation on a queued (next-turn) message: steer it into the
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
@@ -157,6 +159,7 @@ impl Backend for UnconfiguredBackend {
     }
 
     fn prompt(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
 
     fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
 
@@ -304,6 +307,10 @@ impl Backend for LocalBackend {
 
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
         self.send(UiCommand::Prompt { text, attachments });
+    }
+
+    fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
+        self.send(UiCommand::Steer { text, attachments });
     }
 
     fn queue_op(&mut self, id: String, op: QueueOp) {

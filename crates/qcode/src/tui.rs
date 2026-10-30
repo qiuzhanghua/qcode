@@ -67,6 +67,8 @@ pub struct TuiOptions<'a> {
     pub snapshot_shell: bool,
     /// Egress proxy shared with tools and child agents.
     pub network: Option<qcode_core::network::SharedNetwork>,
+    /// `[ui] busy_delivery`: queue a follow-up or steer it into the turn.
+    pub busy_delivery: qcode_kernel::config::BusyDelivery,
 }
 
 enum TuiMsg {
@@ -204,6 +206,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 
     let mut app = App::new(options.provider_name, options.model);
+    app.steer_on_send = options.busy_delivery == qcode_kernel::config::BusyDelivery::Steer;
     app.skills = options.skills.clone();
     app.sandbox = options.sandbox.clone();
     app.context_window = options.context_window;
@@ -224,6 +227,12 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         app.push_notice(format!(
             "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /steering 等待注入 · /unsteer <n> 撤回 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
         ));
+    }
+
+    if app.steer_on_send {
+        app.push_notice(
+            "[ui] busy_delivery = steer: Enter while a turn runs pushes into it".to_string(),
+        );
     }
 
     // Pasted images wait here until the next submit.

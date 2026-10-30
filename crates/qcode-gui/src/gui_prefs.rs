@@ -37,6 +37,9 @@ pub struct GuiPreferences {
     pub recent_workspaces: Vec<String>,
     /// Session to reopen on the next launch, when it still exists.
     pub last_session: Option<String>,
+    /// Composer keyboard: `enter` (Enter sends, the shipped default) or
+    /// `cmd_enter` (Cmd/Ctrl+Enter sends, Enter inserts a newline).
+    pub send_mode: String,
     pub window_geometry: Option<WindowGeometry>,
 }
 
@@ -51,6 +54,7 @@ impl Default for GuiPreferences {
             density: "comfortable".to_string(),
             recent_workspaces: Vec::new(),
             last_session: None,
+            send_mode: "enter".to_string(),
             window_geometry: None,
         }
     }
@@ -126,10 +130,34 @@ impl GuiPreferences {
         if !matches!(self.density.as_str(), "comfortable" | "compact") {
             self.density = "comfortable".to_string();
         }
+        if !matches!(self.send_mode.as_str(), "enter" | "cmd_enter") {
+            self.send_mode = "enter".to_string();
+        }
         let mut seen = std::collections::BTreeSet::new();
         self.recent_workspaces
             .retain(|path| !path.trim().is_empty() && seen.insert(path.clone()));
         self.recent_workspaces.truncate(10);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_mode_defaults_to_enter_and_normalizes_unknown_values() {
+        assert_eq!(GuiPreferences::default().send_mode, "enter");
+
+        // An old gui.json without the field falls back to the default.
+        let loaded: GuiPreferences = serde_json::from_str("{}").expect("empty preferences");
+        assert_eq!(loaded.send_mode, "enter");
+
+        let mut prefs = GuiPreferences::default();
+        prefs.send_mode = "cmd_enter".to_string();
+        assert_eq!(prefs.clone().normalized().send_mode, "cmd_enter");
+
+        prefs.send_mode = "tab".to_string();
+        assert_eq!(prefs.normalized().send_mode, "enter");
     }
 }

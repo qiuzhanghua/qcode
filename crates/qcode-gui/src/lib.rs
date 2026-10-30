@@ -316,6 +316,10 @@ struct Shell {
     /// True until the engine task has fully returned; Stop only clears the
     /// visual running flag, not this.
     turn_in_flight: bool,
+    /// Composer keyboard: `enter` (Enter sends) or `cmd_enter`.
+    send_mode: String,
+    /// What sending while a turn runs does: queue it, or steer it.
+    busy_delivery: qcode_kernel::config::BusyDelivery,
     /// Pending follow-up messages waiting for the running turn to end,
     /// mirrored from the kernel inbox (FIFO order).
     queue: Vec<QueuedMessage>,
@@ -398,6 +402,19 @@ impl Shell {
         });
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
+        let send_mode = prefs.send_mode.clone();
+        let busy_delivery = qcode_kernel::config::load(&config_path)
+            .map(|config| config.ui.busy_delivery)
+            .unwrap_or_default();
+        let send_hint = if send_mode == "enter" {
+            "Enter 发送 · Shift+Enter 换行"
+        } else {
+            if cfg!(target_os = "macos") {
+                "Cmd+Enter 发送 · Enter 换行"
+            } else {
+                "Ctrl+Enter 发送 · Enter 换行"
+            }
+        };
         FONT_SIZE_PX.store(prefs.font_size, std::sync::atomic::Ordering::Relaxed);
         prefs.record_workspace(Path::new(&cwd));
         let configured_provider = backend
@@ -441,8 +458,8 @@ impl Shell {
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(3, 6)
-                .submit_on_enter(true)
-                .placeholder("Ask qcode…  Enter 发送 · Shift+Enter 换行")
+                .submit_on_enter(send_mode == "enter")
+                .placeholder(format!("Ask qcode…  {send_hint}"))
         });
         let input_subscription = cx.subscribe(&input, |shell, _input, event: &InputEvent, cx| {
             if matches!(
@@ -494,6 +511,8 @@ impl Shell {
         Self {
             app,
             input,
+            send_mode,
+            busy_delivery,
             model_select,
             _model_select_subscription: model_select_subscription,
             pending_send: false,
@@ -772,8 +791,14 @@ impl Shell {
             prompt.push_str(&format!("\n\n[附件文件]\n{paths}"));
             self.file_refs.clear();
         }
-        self.backend
-            .prompt(prompt.clone(), std::mem::take(&mut self.attachments));
+        // busy_delivery = steer hands the message to the running turn's next
+        // step; the default queues it as the next turn.
+        let attachments = std::mem::take(&mut self.attachments);
+        if self.turn_in_flight && self.busy_delivery == qcode_kernel::config::BusyDelivery::Steer {
+            self.backend.steer(prompt.clone(), attachments);
+        } else {
+            self.backend.prompt(prompt.clone(), attachments);
+        }
         self.error_banner = None;
         self.turn_in_flight = true;
         self.input.update(cx, |input, cx| {
@@ -1288,6 +1313,10 @@ impl Shell {
             return;
         }
         self.config_mtime = mtime;
+        // [ui] busy_delivery is a shell field, not part of the kernel rebuild.
+        if let Ok(config) = qcode_kernel::config::load(&self.config_path) {
+            self.busy_delivery = config.ui.busy_delivery;
+        }
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.app
                 .push_notice("settings saved, but this backend cannot reload");
