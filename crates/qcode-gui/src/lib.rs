@@ -316,8 +316,6 @@ struct Shell {
     /// True until the engine task has fully returned; Stop only clears the
     /// visual running flag, not this.
     turn_in_flight: bool,
-    /// Composer keyboard: `enter` (Enter sends) or `cmd_enter`.
-    send_mode: String,
     /// What sending while a turn runs does: queue it, or steer it.
     busy_delivery: qcode_kernel::config::BusyDelivery,
     /// A decision was submitted and the engine has not confirmed it yet; the
@@ -514,7 +512,6 @@ impl Shell {
         Self {
             app,
             input,
-            send_mode,
             busy_delivery,
             restoring: None,
             model_select,
