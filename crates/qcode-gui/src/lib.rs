@@ -3793,7 +3793,7 @@ fn reasoning_preview(text: &str) -> String {
         .find(|line| !line.trim().is_empty())
         .unwrap_or("")
         .trim();
-    short_preview(line, 120)
+    short_preview(line, 60)
 }
 
 fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
@@ -3909,6 +3909,9 @@ fn reasoning_row(
             .children((!expanded && !preview.is_empty()).then(|| {
                 div()
                     .text_color(rgb(0x777777))
+                    // 折叠预览只占剩余宽度，超长时以省略号截断，不撑出对话框。
+                    .flex_1()
+                    .truncate()
                     .child(format!("· {preview}"))
             })),
     );
@@ -4473,22 +4476,6 @@ fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement 
                     } else {
                         details = details.child(content);
                     }
-                }
-                if let Some(elapsed) = tool.elapsed {
-                    details = details.child(
-                        div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .line_height(sp(SECONDARY_LINE))
-                            .child(
-                                TextView::markdown(
-                                    format!("tool-elapsed-{index}"),
-                                    format!("took {}", format_duration(elapsed)),
-                                )
-                                .text_size(sp(CAPTION_SIZE))
-                                .line_height(sp(SECONDARY_LINE))
-                                .text_color(rgb(0x888888)),
-                            ),
-                    );
                 }
                 row = row.child(details);
             }
