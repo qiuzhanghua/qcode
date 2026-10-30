@@ -115,6 +115,8 @@ fn context_style(app: &App) -> Style {
 fn status_label(app: &App) -> (&'static str, Color) {
     if app.approval.is_some() {
         ("awaiting approval", Color::Yellow)
+    } else if app.restoring {
+        ("restoring", Color::Yellow)
     } else if app.status.running {
         ("running", Color::Cyan)
     } else if app.quit_armed {

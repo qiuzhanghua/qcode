@@ -2168,8 +2168,24 @@ impl Shell {
                                 )
                         }),
                     )
+                    .children(self.restoring.as_ref().map(|_| {
+                        div()
+                            .w_full()
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(border)
+                            .bg(rgb(0xffffff))
+                            .px_3()
+                            .py_2()
+                            .text_size(sp(SECONDARY_SIZE))
+                            .line_height(sp(SECONDARY_LINE))
+                            .text_color(rgb(0x777777))
+                            .child("已提交，等待引擎确认…")
+                    }))
                     .when(
-                        self.approvals.current().is_none() && self.error_banner.is_none(),
+                        self.approvals.current().is_none()
+                            && self.error_banner.is_none()
+                            && self.restoring.is_none(),
                         |this| {
                             this.child(
                                 div()

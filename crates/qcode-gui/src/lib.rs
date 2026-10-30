@@ -320,6 +320,9 @@ struct Shell {
     send_mode: String,
     /// What sending while a turn runs does: queue it, or steer it.
     busy_delivery: qcode_kernel::config::BusyDelivery,
+    /// A decision was submitted and the engine has not confirmed it yet; the
+    /// composer stays hidden until `ApprovalClosed`.
+    restoring: Option<String>,
     /// Pending follow-up messages waiting for the running turn to end,
     /// mirrored from the kernel inbox (FIFO order).
     queue: Vec<QueuedMessage>,
@@ -513,6 +516,7 @@ impl Shell {
             input,
             send_mode,
             busy_delivery,
+            restoring: None,
             model_select,
             _model_select_subscription: model_select_subscription,
             pending_send: false,
@@ -765,6 +769,9 @@ impl Shell {
                 value.chars().take(20).collect::<String>()
             );
         }
+        if self.restoring.is_some() {
+            return;
+        }
         if !self.backend.is_configured() {
             self.app.push_notice(
                 "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
@@ -876,6 +883,9 @@ impl Shell {
         let Some(view) = self.approvals.take_current() else {
             return;
         };
+        // Restoring: keep the composer hidden until the engine confirms the
+        // decision with ApprovalClosed (ADR-0042 §1).
+        self.restoring = Some(view.call_id.clone());
         self.backend.answer(view.call_id, allow, session);
         cx.notify();
     }
@@ -956,7 +966,13 @@ impl Shell {
                     changed = true;
                 }
                 UiEvent::Approval(view) => self.approvals.push(view),
-                UiEvent::ApprovalClosed { call_id } => self.approvals.closed(&call_id),
+                UiEvent::ApprovalClosed { call_id } => {
+                    self.approvals.closed(&call_id);
+                    if self.restoring.as_deref() == Some(call_id.as_str()) {
+                        self.restoring = None;
+                        changed = true;
+                    }
+                }
                 UiEvent::SessionChanged { id } => {
                     self.active = id.clone();
                     self.prefs.last_session = id;
@@ -967,6 +983,7 @@ impl Shell {
                     self.refresh_tasks();
                 }
                 UiEvent::TurnFailed { message } => {
+                    self.restoring = None;
                     // 引擎没发 TurnEnded 就退出了：收口当前 turn，否则卡片会
                     // 一直显示 running、耗时不停增长。
                     self.app.abort_turn(qcode_core::event::TurnStatus::Failed);
@@ -980,6 +997,7 @@ impl Shell {
                 }
                 UiEvent::TurnFinished { session } => {
                     self.turn_in_flight = false;
+                    self.restoring = None;
                     self.apply_pending_roots(session.as_deref(), cx);
                     self.apply_pending_task_renames(cx);
                     changed = true;

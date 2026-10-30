@@ -137,6 +137,19 @@ pub struct ApprovalPrompt {
     pub cwd: Option<String>,
 }
 
+/// What the composer is doing right now (ADR-0042 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerState {
+    /// No turn running: typing and sending are free.
+    Idle,
+    /// A turn is running: sending queues a follow-up or steers.
+    Running,
+    /// A pending interaction owns the composer (approval, and later plan/question).
+    Pending,
+    /// The decision was submitted; the editor returns once the engine confirms.
+    Restoring,
+}
+
 /// Frontend-neutral actions that are not text editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
@@ -269,6 +282,9 @@ pub struct App {
     pub quit_armed: bool,
     /// Skills available to this session, for the `/skills` debug commands.
     pub skills: Vec<SkillView>,
+    /// An approval/probe answer was submitted and the engine has not confirmed
+    /// it yet; the composer stays locked until `approval_decided` arrives.
+    pub restoring: bool,
     /// `[ui] busy_delivery = "steer"`: sending while a turn runs steers the
     /// draft into it instead of queueing a follow-up.
     pub steer_on_send: bool,
@@ -306,6 +322,7 @@ impl App {
             approval: None,
             quit_armed: false,
             skills: Vec::new(),
+            restoring: false,
             steer_on_send: false,
         }
     }
@@ -332,6 +349,7 @@ impl App {
         self.child_groups.clear();
         self.collapsed_children.clear();
         self.approval = None;
+        self.restoring = false;
     }
 
     fn start_turn(&mut self, event: &Event) {
@@ -444,6 +462,7 @@ impl App {
     /// 不复位就会一直显示“运行中”，还会挡住输入和切换会话。
     pub fn finish_replay(&mut self) {
         self.status.running = false;
+        self.restoring = false;
         // 日志可能停在 `turn_started`（进程在 turn 中途退出，没有 TurnEnded）。
         // 用最后一个事件的时间戳把仍开着的 turn（含排队追加拆出的）全部封口，
         // 否则它们会一直显示“running”，耗时持续累加，执行过程也永远打不开。
@@ -463,6 +482,7 @@ impl App {
     /// 没有这一步，`Turn::running()` 会一直是 true：卡片上的耗时不停增长，
     /// 执行过程被强制展开而无法折叠。
     pub fn abort_turn(&mut self, status: TurnStatus) {
+        self.restoring = false;
         let ended = OffsetDateTime::now_utc();
         self.current_turn = None;
         for turn in &mut self.turns {
@@ -614,8 +634,10 @@ impl App {
             }
             EventKind::ApprovalDecided(_) => {
                 self.approval = None;
+                self.restoring = false;
             }
             EventKind::TurnEnded(ended) => {
+                self.restoring = false;
                 self.streaming.clear();
                 self.reasoning_streaming.clear();
                 self.streaming_reasoning_block = None;
@@ -781,6 +803,19 @@ impl App {
     }
 
     /// A non-text action from the frontend: submit, scroll, approve, quit…
+    /// The composer state, for renderers and frontends (ADR-0042 §1).
+    pub fn composer_state(&self) -> ComposerState {
+        if self.approval.is_some() {
+            ComposerState::Pending
+        } else if self.restoring {
+            ComposerState::Restoring
+        } else if self.status.running {
+            ComposerState::Running
+        } else {
+            ComposerState::Idle
+        }
+    }
+
     pub fn handle_action(&mut self, action: AppAction) -> Option<UiAction> {
         // Ctrl-C is special: the first press cancels a running turn, the second
         // quits, and any other key disarms it.
@@ -792,6 +827,12 @@ impl App {
             return self.status.running.then_some(UiAction::Cancel);
         }
         self.quit_armed = false;
+
+        if self.restoring && matches!(action, AppAction::Submit | AppAction::Steer) {
+            // The decision is in flight: lock the interaction's submissions
+            // until the engine confirms it (ADR-0042 §1, Restoring).
+            return None;
+        }
 
         // An approval prompt swallows everything except its own answers; the
         // event loop must not mutate the turn while a decision is pending.
@@ -863,6 +904,7 @@ impl App {
 
     fn answer(&mut self, allow: bool, session: bool) -> Option<UiAction> {
         let prompt = self.approval.take()?;
+        self.restoring = true;
         Some(UiAction::Approve {
             call_id: prompt.call_id,
             allow,
@@ -2359,6 +2401,55 @@ mod tests {
         assert_eq!(action, Some(UiAction::Queue("next".to_string())));
         assert!(app.composer.text().is_empty(), "the draft is consumed");
         assert!(app.status.running, "the running turn is unchanged");
+    }
+
+    #[test]
+    fn composer_state_tracks_pending_and_restoring() {
+        use qcode_core::event::{ApprovalDecided, Decision, Scope};
+
+        let mut app = App::new("mock", "mock-1");
+        assert_eq!(app.composer_state(), ComposerState::Idle);
+
+        app.apply(&event(EventKind::TurnStarted(TurnStarted {
+            input: "hi".to_string(),
+        })));
+        assert_eq!(app.composer_state(), ComposerState::Running);
+
+        app.approval = Some(ApprovalPrompt {
+            call_id: "c1".to_string(),
+            tool: "run_shell".to_string(),
+            summary: "ls".to_string(),
+            reason: "policy".to_string(),
+            rule: None,
+            argv: None,
+            cwd: None,
+        });
+        assert_eq!(app.composer_state(), ComposerState::Pending);
+
+        // Answering enters Restoring and locks the interaction's submissions
+        // until the engine confirms with approval_decided.
+        let answer = app.handle_action(AppAction::Approval(true, false));
+        assert!(matches!(answer, Some(UiAction::Approve { .. })));
+        assert_eq!(app.composer_state(), ComposerState::Restoring);
+
+        type_text(&mut app, "too early");
+        assert_eq!(press(&mut app, "enter"), None, "submit is locked");
+        assert_eq!(press(&mut app, "ctrl-s"), None, "steer is locked");
+
+        app.apply(&event(EventKind::ApprovalDecided(ApprovalDecided {
+            call_id: "c1".to_string(),
+            decision: Decision::Allow,
+            rule_id: None,
+            scope: Scope::Session,
+        })));
+        assert_eq!(app.composer_state(), ComposerState::Running);
+
+        app.apply(&event(EventKind::TurnEnded(qcode_core::event::TurnEnded {
+            status: TurnStatus::Completed,
+            usage: Usage::default(),
+            cost_usd: 0.0,
+        })));
+        assert_eq!(app.composer_state(), ComposerState::Idle);
     }
 
     #[test]

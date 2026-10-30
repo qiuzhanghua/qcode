@@ -3335,4 +3335,7 @@ Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜�
 - `busy_delivery` 落地为 `config.toml` 的 `[ui]`（GUI 与 TUI 共用）：`queue`（默认）或
   `steer`；`steer` 时运行中的发送直接进入当前 turn 的下一步，不再进队列。
 - 两者都出现在 GUI Settings（Agent / Appearance 页），TUI 读取同一份配置。
-- Composer 四态（§1，Pending / Restoring）仍未实现，留待 P2。
+- Composer 四态（§1）已实现：`qcode_ui_state::ComposerState`（Idle / Running / Pending /
+  Restoring）。Pending 由审批卡片占用输入面；Restoring 从提交答案到 `ApprovalClosed` 之间
+  锁定输入并显示「已提交，等待引擎确认…」，TUI 状态栏显示 `restoring`。PlanReview / Question
+  仍不在范围内（引擎尚无对应交互）。
