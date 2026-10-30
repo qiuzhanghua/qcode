@@ -192,6 +192,10 @@ pub enum UiAction {
     QueueSteer(usize),
     /// /drop N: remove queued message N.
     QueueDrop(usize),
+    /// /steering: list steering waiting for the next step boundary.
+    SteeringList,
+    /// /unsteer N: take steering item N back out of the running turn.
+    SteeringUndo(usize),
     /// Ctrl-V: attach the image on the clipboard to the next message.
     PasteImage,
 }
@@ -923,6 +927,21 @@ impl App {
 
         if command == "/queue" {
             return Some(UiAction::QueueList);
+        }
+
+        if command == "/steering" {
+            return Some(UiAction::SteeringList);
+        }
+
+        if command == "/unsteer" {
+            let position = argument.parse::<usize>().ok().filter(|n| *n > 0);
+            return match position {
+                Some(position) => Some(UiAction::SteeringUndo(position)),
+                None => {
+                    self.push_notice("usage: /unsteer <n> (see /steering)");
+                    None
+                }
+            };
         }
 
         if command == "/steer" || command == "/drop" {
@@ -2366,6 +2385,25 @@ mod tests {
         assert_eq!(press(&mut app, "enter"), Some(UiAction::QueueDrop(1)));
 
         type_text(&mut app, "/drop 0");
+        assert_eq!(press(&mut app, "enter"), None);
+        assert!(
+            app.blocks
+                .iter()
+                .any(|block| matches!(block, Block::Notice(text) if text.contains("usage")))
+        );
+    }
+
+    #[test]
+    fn steering_commands_map_to_frontend_actions() {
+        let mut app = App::new("mock", "mock-1");
+
+        type_text(&mut app, "/steering");
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::SteeringList));
+
+        type_text(&mut app, "/unsteer 1");
+        assert_eq!(press(&mut app, "enter"), Some(UiAction::SteeringUndo(1)));
+
+        type_text(&mut app, "/unsteer x");
         assert_eq!(press(&mut app, "enter"), None);
         assert!(
             app.blocks

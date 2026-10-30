@@ -222,7 +222,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         ));
     } else {
         app.push_notice(format!(
-            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /steering 等待注入 · /unsteer <n> 撤回 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
         ));
     }
 
@@ -420,6 +420,40 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     }
                                     None => app.push_notice(format!(
                                         "no queued message {position} (see /queue)"
+                                    )),
+                                }
+                            }
+                            UiAction::SteeringList => {
+                                let items = queue.pending_step();
+                                if items.is_empty() {
+                                    app.push_notice("steering: empty".to_string());
+                                } else {
+                                    for (index, item) in items.iter().enumerate() {
+                                        app.push_notice(format!(
+                                            "{}. {} (waiting for the next step)",
+                                            index + 1,
+                                            preview(&item.text)
+                                        ));
+                                    }
+                                }
+                            }
+                            UiAction::SteeringUndo(position) => {
+                                let id = position
+                                    .checked_sub(1)
+                                    .and_then(|index| queue.pending_step().into_iter().nth(index))
+                                    .map(|item| item.id);
+                                match id.and_then(|id| queue.unsteer(&id)) {
+                                    Some(message) => {
+                                        app.status.queued = queue.queued().len();
+                                        app.status.steering = queue.pending_step().len();
+                                        app.push_notice(format!(
+                                            "returned to the queue: {} ({} queued)",
+                                            preview(&message.text),
+                                            app.status.queued
+                                        ));
+                                    }
+                                    None => app.push_notice(format!(
+                                        "no steering item {position} (see /steering)"
                                     )),
                                 }
                             }

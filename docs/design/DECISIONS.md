@@ -3322,3 +3322,6 @@ Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜�
   （`UiAction::Steer`）；状态栏显示 `queued` / `steering` 计数。
 - turn 结束后按 FIFO 自动开下一轮；leftover steering 由引擎在 `finish()` 提升到 next-turn，
   TUI 与 GUI 行为一致。
+- 队列与 steering 的查看/调整：`/queue`（列出排队）、`/steer N`（推入运行中的 turn）、
+  `/drop N`（删除）、`/steering`（列出等待注入的）、`/unsteer N`（撤回，回到队尾）。
+  规则统一由 `core::SessionQueue` 提供，两端共用。
