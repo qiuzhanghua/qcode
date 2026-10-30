@@ -3133,3 +3133,100 @@ P1 只落地 Linux，但两端的能力差异会影响接口设计，先把选�
 - 图标改为三端统一的 QC 标记（macOS 模板 PDF、Windows 托盘 ICO、Linux
   `IconPixmap`，见 `crates/qcode/res/icons/`）。三态不再靠图标区分，改由菜单状态行
   与 tooltip 表达；若之后要恢复“图标三态”，需要为标记再做运行中/待审批两个变体。
+
+## ADR-0053：会话投递与 turn 边界——Queue / Steer 的 P1 落地（2026-10-30）
+
+**背景**
+
+ADR-0042 把运行中的投递定为「Queue 默认、Steer 放 P1」，并要求 Steer「在下一个 step 边界注入」
+「未注入前显示 pending、可取消」；ADR-0041 把 Turn 定为 GUI transcript 的顶层单位。本次按 0042
+的 P1 落地了 engine 侧的 inbox（`next-turn` / `next-step` 两个队列）和 GUI 的队列 dock
+（31ca808），随后暴露了两处 0041/0042 没有定义的行为：
+
+1. 被注入的排队消息应该出现在 transcript 的什么位置？engine 只追加 `UserMessage`，没有新的
+   `TurnStarted`，于是投影层只能靠「当前 turn 已有输入时又收到用户消息」来拆分（73ea83c）。
+2. turn 结束时，还有没来得及注入的 steering 怎么办？如果不处理，它会留在 `next-step`，被
+   **下一次 run 的第一个 step** 静默消费——出现在错误的轮次里，而 UI 的队列 dock 只渲染
+   `next-turn`，用户期间完全看不到它。
+
+**决定**
+
+### 1. 两个队列由 core 拥有
+
+`qcode_core::inbox::Inbox` 持有两个 FIFO：
+
+- `next-turn`：普通追加，每条消息自己开一个新 turn；
+- `next-step`：steering，注入当前正在跑的 turn。
+
+UI 不复制队列语义：bridge 只发 `QueueChanged`（镜像 `next-turn` 用于渲染）和接收
+`QueueOp`（Steer / MoveUp / MoveDown / Remove），由运行时对 Inbox 执行。
+
+### 2. Queue 语义（重申 ADR-0042 §7）
+
+- 运行中提交的消息进入 `next-turn`，不立即写 transcript；engine 接收后才产生权威的
+  `user/message`；
+- Stop / 取消后队列保留，可以由用户继续调整或清空；
+- 同一时间只有一个 in-flight turn，turn 结束后按 FIFO 取下一条。
+
+### 3. Steer 的注入点与 turn 投影
+
+- engine 在**每次模型请求之前**（step 边界）claim 整个 `next-step`，把消息持久化为
+  `user/message` 并追加到本次请求的 messages 末尾；工具执行中途不注入。
+- 因为注入发生在同一个 turn 编号内、且没有新的 `TurnStarted`，投影层在「当前 turn 已有
+  输入时收到用户消息」处**拆分出一个新的 Turn**（`id` = 事件 seq，`number` 复用父 turn）；
+  该 run 的 `TurnEnded` 收口这次 run 打开的所有 turn。
+
+### 4. leftover：steering 不跨 turn 边界
+
+turn 结束时（完成 / 取消 / 失败，统一在 `finish()` 收口），`next-step` 里剩下的消息按提交
+顺序**提升到 `next-turn` 队尾**，成为独立的一轮。这样：
+
+- 不会出现「为 A 加的指令出现在 B 的请求里」的错位；
+- 不会因为用户之后不再发消息而永久滞留；
+- 提升后的消息有 `TurnStarted`、有自己的问题气泡，和「普通追加」走同一条运行时路径。
+
+顺序选择队尾（而不是队首）：它本来就是在已有排队消息之后提交的，保持提交顺序；「更紧急」
+由用户在队列里手动上移表达。
+
+### 5. 结构约束（P0，无行为变化）
+
+- `qcode-gui/src/runtime.rs`：engine 线程、session/turn 编排、队列策略、`UiCommand` 分发。
+  **不依赖 GPUI**（只依赖 core / ui-bridge / tokio），因此可以在没有窗口的情况下测试，
+  将来 TUI/其它前端也可以复用同一层。
+- `qcode-gui/src/render.rs`：transcript / turn / block / markdown 以及 `Shell` 的渲染方法，
+  只读状态（除视图自身的通知外不产生副作用）。
+- `lib.rs` 只保留窗口状态与动作；`lib.rs` 从 5,078 行降到 2,502 行。
+
+**备选方案（未采用）**
+
+- **leftover 保持原样**（留在 `next-step`，被下一次 run 吸收）：实现最省，但消息错位、
+  UI 不可见、可能永久滞留。
+- **leftover 丢弃**：简单但会吞掉用户输入，不可接受。
+- **提升到队首**：会把 steering 插到用户已排队的消息之前，打乱提交顺序。
+- **立即在事件流里加显式 segment 标记**：见「后果」，需要一个独立的 event schema 决策。
+
+**后果 / 已知差距**
+
+- ADR-0042 §7 要求「未注入前显示 pending 状态、可取消」，**尚未实现**：点「推送」后条目
+  立刻从 dock 消失，直到被注入或提升才重新出现。补法是 P1 的可视化，不改变本 ADR 的队列
+  语义。
+- ADR-0042 §1 的 Composer 四态（ComposerController）与 §6 的 `busy_delivery` / `send_mode`
+  设置也还没有落地；当前 GUI 是 `turn_in_flight` + queue dock 的简化版。
+- 投影层的拆分仍是**启发式**：事件流里没有 run id / segment 标记，split turn 的 `number`
+  与父 turn 相同、`id` 用 seq。显式 segment（`queued_id` / `turn_segment`）属于 event
+  schema v4，需要单独 ADR；在那之前启发式是临时方案，不应被当作最终设计。
+- dock 只渲染 `next-turn`，`next-step` 不可见（同第一条）。
+- 取消时 leftover steering 同样会被提升并启动新的一轮：这是「不丢消息」的取舍，用户按
+  Stop 之后仍可能看到自己刚推送的消息开始执行。
+
+**验证**
+
+- `qcode-core`：inbox 单测（7 个）覆盖 followup / steer / 移动 / 删除 / steer_queued /
+  pending 判定 / leftover 提升的顺序与幂等。
+- `qcode-providers/tests/engine_run.rs`：steering 在请求前注入（`steering_lands_in_the_running_turn_request`）；
+  在最后一次请求中才到达的 steering 不进本次请求、而是进入下一轮队列
+  （`steering_after_the_last_boundary_becomes_a_followup_turn`）。
+- `qcode-ui-state`：steered follow-up 拆成独立 turn 的投影用例。
+- `qcode-gui`：队列 dock 的 steer / 上移 / 下移 / 删除路径（集成测试 + 手动）。
+- 手动：运行中 Queue → 当前轮结束后按 FIFO 执行；运行中 Steer → 下一 step 生效并拆成独立
+  turn；在最后一轮请求期间 Steer → turn 结束后作为新的一轮出现；Stop 后队列保留。
