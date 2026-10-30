@@ -300,7 +300,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         skills: options.skills_prompt.clone(),
                                         network: options.network.clone(),
                                         attachments: std::mem::take(&mut pending_images),
-                                    },
+                                    inbox: None,                                    },
                                     move |event| {
                                         let _ = sender.send(TuiMsg::Event(event.clone()));
                                     },

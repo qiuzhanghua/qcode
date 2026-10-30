@@ -20,6 +20,7 @@ use crate::event::{
     TurnStatus, Usage, UserMessage,
 };
 use crate::history;
+use crate::inbox::Inbox;
 use crate::policy::{Action, Policy};
 use crate::provider::{
     CompletionRequest, Message, Provider, ProviderError, Role, StopReason, StreamEvent,
@@ -264,6 +265,10 @@ pub struct RunOptions<'a> {
     pub network: Option<crate::network::SharedNetwork>,
     /// Images the user attached to this message (base64, no data-URI prefix).
     pub attachments: Vec<Attachment>,
+    /// Shared pending-message inbox. When present, steering input is claimed
+    /// before every model request and appended as user messages, so a push
+    /// lands in the running turn's next step instead of waiting for a new turn.
+    pub inbox: Option<Arc<Inbox>>,
 }
 
 /// One image attached to a user message.
@@ -558,6 +563,37 @@ where
                         )?;
                     }
                 }
+            }
+        }
+
+        // Steering input lands at the next step boundary: claim every pending
+        // message and append it as a user message before the next request, so
+        // the running turn answers it next instead of closing. The message is
+        // persisted so the transcript and a later replay see it; attached
+        // images ride only on this request's blocks (like the initial input).
+        if let Some(inbox) = &options.inbox {
+            for message in inbox.claim_next_step() {
+                writer.append(
+                    EventKind::UserMessage(UserMessage {
+                        text: message.text.clone(),
+                        attachments: Vec::new(),
+                    }),
+                    &mut on_event,
+                )?;
+                let mut blocks = vec![ContentBlock::Text {
+                    text: message.text,
+                }];
+                blocks.extend(message.attachments.into_iter().map(|attachment| {
+                    ContentBlock::Image {
+                        mime_type: attachment.mime_type,
+                        data_base64: attachment.data_base64,
+                    }
+                }));
+                messages.push(Message {
+                    role: Role::User,
+                    blocks,
+                    tool_call_id: None,
+                });
             }
         }
 

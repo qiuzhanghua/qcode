@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use qcode_core::approval::AutoApprove;
 use qcode_core::engine::{Delta, DeltaSink, RunOptions, TurnContext, run_turn};
-use qcode_core::event::{EventKind, SessionStarted, TurnStatus};
+use qcode_core::event::{ContentBlock, EventKind, SessionStarted, TurnStatus};
+use qcode_core::inbox::Inbox;
 use qcode_core::policy::Policy;
+use qcode_core::provider::{Message, Role};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_providers::MockProvider;
@@ -36,7 +38,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         skills: None,
         network: None,
         attachments: Vec::new(),
-    }
+    inbox: None,    }
 }
 
 #[tokio::test]
@@ -221,4 +223,70 @@ async fn context_usage_is_reported_to_the_frontend() {
         .expect("context delta");
     assert_eq!(window, 16_000);
     assert!(tokens > 0);
+}
+
+fn user_texts(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .filter_map(|message| {
+            message
+                .blocks
+                .iter()
+                .find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn steering_lands_in_the_running_turn_request() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = SessionStore::new(dir.path());
+    let (id, _) = store.create(&meta()).expect("create session");
+
+    let provider = MockProvider::text("ok");
+    let tools = ToolRegistry::default();
+    let policy = Policy::default();
+    let inbox = Arc::new(Inbox::new());
+    // Steering pushed before the turn starts must be claimed by the first
+    // model request, appended after the original input.
+    inbox.steer("steer me".to_string(), Vec::new());
+
+    let mut options = options(&id, dir.path());
+    options.inbox = Some(inbox.clone());
+
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        options,
+        |_| {},
+    )
+    .await
+    .expect("run turn");
+
+    let requests = provider.requests();
+    assert!(!requests.is_empty(), "the provider saw a request");
+    let texts = user_texts(&requests[0].messages);
+    assert!(texts.iter().any(|text| text.contains("hi")), "{texts:?}");
+    assert!(
+        texts.iter().any(|text| text.contains("steer me")),
+        "the steering message must reach the model request: {texts:?}"
+    );
+
+    // The steering message is durable in the transcript as a second user message.
+    let loaded = store.load(&id).expect("load session");
+    let user_count = loaded
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::UserMessage(_)))
+        .count();
+    assert_eq!(user_count, 2, "input + steering message");
 }

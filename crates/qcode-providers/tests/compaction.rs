@@ -134,7 +134,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await
@@ -213,7 +213,7 @@ async fn a_roomy_window_skips_compaction() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await

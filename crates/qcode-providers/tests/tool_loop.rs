@@ -133,7 +133,7 @@ async fn executes_tool_and_continues() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await
@@ -198,7 +198,7 @@ async fn denial_is_reported_to_the_model() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await
@@ -252,7 +252,7 @@ async fn asking_without_a_tty_denies() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await
@@ -309,7 +309,7 @@ async fn max_turns_stops_the_loop() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await
@@ -411,7 +411,7 @@ async fn cancellation_stops_a_running_tool() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     );
 
@@ -473,7 +473,7 @@ async fn cancellation_stops_a_hanging_stream() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     );
 

@@ -546,6 +546,7 @@ async fn cmd_run(
             skills: skills_prompt,
             network: network.clone(),
             attachments,
+            inbox: None,
         },
         |event| {
             if json {

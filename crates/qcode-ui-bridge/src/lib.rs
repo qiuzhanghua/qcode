@@ -20,6 +20,7 @@ use qcode_core::approval::{Answer, ApprovalRequest, Approver};
 use qcode_core::engine::Attachment;
 use qcode_core::engine::Delta;
 use qcode_core::event::Event;
+use qcode_core::inbox::QueuedMessage;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +44,8 @@ pub enum UiEvent {
     TurnFailed { message: String },
     /// The engine task has fully returned and the session lock is released.
     TurnFinished { session: Option<String> },
+    /// The pending follow-up queue changed; the UI redraws the queue dock.
+    QueueChanged { items: Vec<QueuedMessage> },
 }
 
 /// The approval prompt, without the reply channel: answer it with
@@ -75,10 +78,17 @@ impl From<&ApprovalRequest> for ApprovalView {
 /// Something the UI asks the kernel to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCommand {
-    /// A user message, with images pasted or picked in the frontend.
+    /// A user message, with images pasted or picked in the frontend. While a
+    /// turn is running the kernel queues it as a follow-up turn instead of
+    /// dropping it.
     Prompt {
         text: String,
         attachments: Vec<Attachment>,
+    },
+    /// One operation on a queued (next-turn) message.
+    QueueOp {
+        id: String,
+        op: QueueOp,
     },
     /// Stop the running turn.
     Cancel,
@@ -94,6 +104,20 @@ pub enum UiCommand {
     Resume { id: String },
     /// Change the model used by subsequent turns.
     SetModel { model: String },
+}
+
+/// One operation on a queued (next-turn) message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueOp {
+    /// Push it into the running turn (steer): it leaves the queue and joins
+    /// the next-step boundary of the active turn.
+    Steer,
+    /// Move it up one position in the queue.
+    MoveUp,
+    /// Move it down one position in the queue.
+    MoveDown,
+    /// Drop it from the queue.
+    Remove,
 }
 
 /// The UI's end of the bridge: drain events, send commands.
@@ -154,6 +178,11 @@ impl KernelPort {
 
     pub fn send_turn_finished(&self, session: Option<String>) {
         let _ = self.events.send(UiEvent::TurnFinished { session });
+    }
+
+    /// Publish the current pending follow-up queue for the queue dock.
+    pub fn send_queue_changed(&self, items: Vec<QueuedMessage>) {
+        let _ = self.events.send(UiEvent::QueueChanged { items });
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,

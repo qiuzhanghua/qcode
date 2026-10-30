@@ -92,7 +92,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             skills: Some(prompt),
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await

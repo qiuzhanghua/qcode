@@ -40,7 +40,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         skills: None,
         network: None,
         attachments: Vec::new(),
-    }
+    inbox: None,    }
 }
 
 fn todo_then_text() -> MockProvider {

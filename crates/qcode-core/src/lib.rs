@@ -10,6 +10,7 @@ pub mod cost;
 pub mod engine;
 pub mod event;
 pub mod history;
+pub mod inbox;
 pub mod network;
 pub mod policy;
 pub mod provider;
@@ -27,6 +28,7 @@ pub use engine::{
     TurnContext, run_turn,
 };
 pub use event::*;
+pub use inbox::{Inbox, QueuedMessage};
 pub use network::{Network, SharedNetwork};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use provider::*;

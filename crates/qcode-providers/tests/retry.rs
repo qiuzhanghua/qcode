@@ -88,7 +88,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         skills: None,
         network: None,
         attachments: Vec::new(),
-    }
+    inbox: None,    }
 }
 
 fn meta() -> SessionStarted {

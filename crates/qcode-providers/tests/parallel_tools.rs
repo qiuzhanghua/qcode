@@ -164,7 +164,7 @@ async fn run(
             skills: None,
             network: None,
             attachments: Vec::new(),
-        },
+        inbox: None,        },
         |_| {},
     )
     .await

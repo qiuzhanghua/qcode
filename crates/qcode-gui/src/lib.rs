@@ -56,12 +56,14 @@ use crate::approvals::ApprovalQueue;
 use crate::gui_prefs::GuiPreferences;
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{Event, EventKind, SessionStarted, ToolStatus};
+use qcode_core::inbox::{Inbox, QueuedMessage};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, RootAccess, RootState, Task, is_slug};
-use qcode_ui_bridge::{KernelPort, UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand, UiEvent, channels};
 use qcode_ui_state::{App, Block};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// ADR-0041 typography tokens. Keep conversation sizes in one place so the
 /// three display modes do not drift into per-row ad-hoc values.
@@ -283,6 +285,9 @@ pub trait Backend {
     /// Load the transcript, then point the engine at the session.
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String>;
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
+    /// One operation on a queued (next-turn) message: steer it into the
+    /// running turn, move it, or drop it.
+    fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
     fn cancel(&mut self);
     /// Change the model for subsequent turns.
@@ -543,6 +548,10 @@ impl Backend for LocalBackend {
         self.send(UiCommand::Prompt { text, attachments });
     }
 
+    fn queue_op(&mut self, id: String, op: QueueOp) {
+        self.send(UiCommand::QueueOp { id, op });
+    }
+
     fn answer(&mut self, call_id: String, allow: bool, session: bool) {
         self.send(UiCommand::Answer {
             call_id,
@@ -640,6 +649,9 @@ struct Shell {
     /// True until the engine task has fully returned; Stop only clears the
     /// visual running flag, not this.
     turn_in_flight: bool,
+    /// Pending follow-up messages waiting for the running turn to end,
+    /// mirrored from the kernel inbox (FIFO order).
+    queue: Vec<QueuedMessage>,
     /// Root edits made during a turn, applied after the engine task returns.
     pending_roots: Option<(String, Vec<Root>)>,
     /// Directory awaiting the destructive confirmation dialog.
@@ -834,6 +846,7 @@ impl Shell {
             expanded_code: HashSet::new(),
             selected_turn: None,
             turn_in_flight: false,
+            queue: Vec::new(),
             pending_roots: None,
             pending_root_delete: None,
             pending_task_delete: None,
@@ -1120,12 +1133,9 @@ impl Shell {
             cx.notify();
             return;
         }
-        if self.app.status.running {
-            self.app
-                .push_notice("stop the running turn before sending another message");
-            cx.notify();
-            return;
-        }
+        // While a turn is running the backend queues the message as a
+        // follow-up turn instead of dropping it; the queue dock above the
+        // composer shows what is pending and can steer an item into the turn.
         let mut prompt = self.input.read(cx).value().trim().to_string();
         if prompt.is_empty() && self.file_refs.is_empty() {
             return;
@@ -1305,6 +1315,10 @@ impl Shell {
                     self.turn_in_flight = false;
                     self.apply_pending_roots(session.as_deref(), cx);
                     self.apply_pending_task_renames(cx);
+                    changed = true;
+                }
+                UiEvent::QueueChanged { items } => {
+                    self.queue = items;
                     changed = true;
                 }
             }
@@ -1698,6 +1712,84 @@ impl Shell {
                 self.set_notice(format!("cannot apply settings: {error}"), false, cx);
             }
         }
+    }
+
+    /// The pending queue dock above the composer: each queued message shows
+    /// its preview plus steer / move / remove actions, mirroring dsh's queue
+    /// dock. Steer is only offered while a turn is running.
+    fn render_queue_dock(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let border = theme.border;
+        let running = self.turn_in_flight;
+        let mut rows = Vec::with_capacity(self.queue.len());
+        for item in &self.queue {
+            let id = item.id.clone();
+            let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
+                .bg(rgba(0x7f7f7f14))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(theme.muted_foreground)
+                        .child(preview),
+                );
+            if running {
+                let steer_id = id.clone();
+                row = row.child(
+                    Button::new(format!("queue-steer-{steer_id}"))
+                        .label("推送")
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.backend.queue_op(steer_id.clone(), QueueOp::Steer);
+                        })),
+                );
+            }
+            let up_id = id.clone();
+            row = row.child(
+                Button::new(format!("queue-up-{up_id}"))
+                    .label("↑")
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.backend.queue_op(up_id.clone(), QueueOp::MoveUp);
+                    })),
+            );
+            let down_id = id.clone();
+            row = row.child(
+                Button::new(format!("queue-down-{down_id}"))
+                    .label("↓")
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.backend.queue_op(down_id.clone(), QueueOp::MoveDown);
+                    })),
+            );
+            let remove_id = id.clone();
+            row = row.child(
+                Button::new(format!("queue-remove-{remove_id}"))
+                    .label("×")
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.backend.queue_op(remove_id.clone(), QueueOp::Remove);
+                    })),
+            );
+            rows.push(row.into_any_element());
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(border)
+            .bg(rgba(0x7f7f7f0a))
+            .px_2()
+            .py_1()
+            .children(rows)
+            .into_any_element()
     }
 
     fn render_floating_actions(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2712,6 +2804,11 @@ impl Shell {
 
     fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.poll(cx);
+        // 执行中且输入框有内容时，发送按钮应保持可用（发送进排队队列）；
+        // 只有执行中且输入框为空时，按钮才变成停止红点。
+        let composer_has_draft = !self.input.read(cx).value().trim().is_empty()
+            || !self.attachments.is_empty()
+            || !self.file_refs.is_empty();
         if self.app.status.running && !self.waiting_ticker {
             self.waiting_ticker = true;
             self.tick_waiting(cx);
@@ -3042,7 +3139,7 @@ impl Shell {
                                                 .flex_row()
                                                 .gap_2()
                                                 .child(
-                                                    Button::new("allow").label("Allow")
+                                                    Button::new("allow").label("允许")
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(true, false, cx);
@@ -3051,7 +3148,7 @@ impl Shell {
                                                 )
                                                 .child(
                                                     Button::new("allow-session")
-                                                        .label("Always")
+                                                        .label("总是允许")
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(true, true, cx);
@@ -3059,7 +3156,7 @@ impl Shell {
                                                         )),
                                                 )
                                                 .child(
-                                                    Button::new("deny").label("Reject")
+                                                    Button::new("deny").label("拒绝")
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(false, false, cx);
@@ -3155,6 +3252,11 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap_1();
+                // Pending follow-up queue shown above the input; each row can
+                // steer into the running turn, move, or drop.
+                if !self.queue.is_empty() {
+                    input_box = input_box.child(self.render_queue_dock(cx));
+                }
                 // Pending file references shown as removable chips above the
                 // input, aligned to its left edge; wraps once too wide.
                 if !self.file_refs.is_empty() {
@@ -3240,10 +3342,12 @@ impl Shell {
                                             })),
                                     )
                                     .child(
-                                        // Round action button: a blue up-arrow sends, a red dot
-                                        // interrupts the running turn (cancelling the backend
-                                        // conversation loop).
-                                        if self.app.status.running {
+                                        // Round action button: a blue up-arrow sends
+                                        // (queueing while a turn runs), a red dot
+                                        // interrupts the running turn — shown only
+                                        // when the turn is running and the draft is
+                                        // empty, so a draft always keeps Send.
+                                        if self.app.status.running && !composer_has_draft {
                                             div()
                                                 .w(px(36.0))
                                                 .h(px(36.0))
@@ -3582,7 +3686,7 @@ fn typing_row(frame: u32) -> AnyElement {
         .py_1()
         .text_size(sp(SECONDARY_SIZE))
         .text_color(rgb(0x888888))
-        .child(div().opacity(opacity).child("typing…"))
+        .child(div().opacity(opacity).child("执行中…"))
         .into_any_element()
 }
 
@@ -4686,6 +4790,92 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
             let mut model = engine.model.clone();
             let mut pricing = engine.pricing;
             let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+            let inbox = Arc::new(Inbox::new());
+
+            // Run one queued message as its own turn on the engine task. The
+            // engine drains the `next-step` inbox before every model request,
+            // so steering sent while this turn is live lands in it.
+            macro_rules! start_turn {
+                ($text:expr, $attachments:expr) => {{
+                    let session_id = match session.clone() {
+                        Some(id) => id,
+                        None => {
+                            let created = match engine.store.create_task(&SessionStarted {
+                                model: model.clone(),
+                                provider: engine.provider_name.clone(),
+                                cwd: engine.workspace.display().to_string(),
+                                version: env!("CARGO_PKG_VERSION").to_string(),
+                            }) {
+                                Ok(created) => created,
+                                Err(error) => {
+                                    eprintln!("qcode-gui: cannot create a task: {error}");
+                                    port.send_turn_failed(error.to_string());
+                                    continue;
+                                }
+                            };
+                            let id = created.id.clone();
+                            port.send_event(&created.started);
+                            port.send_event(&created.configured);
+                            port.send_session_changed(Some(id.clone()));
+                            session = Some(id.clone());
+                            id
+                        }
+                    };
+                    let sink = port.clone();
+                    let token = CancellationToken::new();
+                    active = Some(token.clone());
+                    let store = engine.store.clone();
+                    let provider = engine.provider.clone();
+                    let tools = engine.tools.clone();
+                    let policy = engine.policy.clone();
+                    let snapshots = engine.snapshots.clone();
+                    let network = engine.network.clone();
+                    let workspace = engine.workspace.clone();
+                    let max_turns = engine.max_turns;
+                    let max_cost_usd = engine.max_cost_usd;
+                    let context_window = engine.context_window;
+                    let task_model = model.clone();
+                    let task_session = session_id.clone();
+                    let task_approver = approver.clone();
+                    let done = done_tx.clone();
+                    let cancel = token.clone();
+                    let task_inbox = inbox.clone();
+                    tokio::spawn(async move {
+                        let options = RunOptions {
+                            session_id: &task_session,
+                            model: &task_model,
+                            input: $text,
+                            cwd: workspace,
+                            max_turns,
+                            cancel,
+                            pricing,
+                            max_cost_usd,
+                            on_delta: None,
+                            context_window,
+                            agents_md: None,
+                            skills: None,
+                            network,
+                            attachments: $attachments,
+                            inbox: Some(task_inbox),
+                        };
+                        let result = run_turn(
+                            TurnContext {
+                                store: &store,
+                                provider: provider.as_ref(),
+                                tools: &tools,
+                                policy: &policy,
+                                approver: task_approver.as_ref(),
+                                snapshots: snapshots.as_ref(),
+                            },
+                            options,
+                            move |event| sink.send_event(event),
+                        )
+                        .await;
+                        let _ = done
+                            .send(result.map(|_| ()).map_err(|error| error.to_string()));
+                    });
+                }};
+            }
 
             loop {
                 tokio::select! {
@@ -4731,91 +4921,37 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                 pricing = engine.pricing_table.get(&model).copied();
                             }
                             UiCommand::Prompt { text, attachments } => {
-                                if active.is_some() {
-                                    // The composer disables Send while running; a
-                                    // second prompt here is a stale UI event.
-                                    continue;
-                                }
-                                let session_id = match session.clone() {
-                                    Some(id) => id,
-                                    None => {
-                                        let created =
-                                            match engine.store.create_task(&SessionStarted {
-                                                model: model.clone(),
-                                                provider: engine.provider_name.clone(),
-                                                cwd: engine.workspace.display().to_string(),
-                                                version: env!("CARGO_PKG_VERSION").to_string(),
-                                            }) {
-                                                Ok(created) => created,
-                                                Err(error) => {
-                                                    eprintln!(
-                                                        "qcode-gui: cannot create a task: {error}"
-                                                    );
-                                                    port.send_turn_failed(error.to_string());
-                                                    continue;
-                                                }
-                                            };
-                                        let id = created.id.clone();
-                                        port.send_event(&created.started);
-                                        port.send_event(&created.configured);
-                                        port.send_session_changed(Some(id.clone()));
-                                        session = Some(id.clone());
-                                        id
+                                // All new messages enter the follow-up queue; an
+                                // idle engine claims the head immediately, a
+                                // running one drains it when the turn ends.
+                                inbox.followup(text, attachments);
+                                if active.is_none() {
+                                    if let Some(message) = inbox.claim_next_turn() {
+                                        start_turn!(message.text, message.attachments);
                                     }
-                                };
-
-                                let sink = port.clone();
-                                let token = CancellationToken::new();
-                                active = Some(token.clone());
-                                let store = engine.store.clone();
-                                let provider = engine.provider.clone();
-                                let tools = engine.tools.clone();
-                                let policy = engine.policy.clone();
-                                let snapshots = engine.snapshots.clone();
-                                let network = engine.network.clone();
-                                let workspace = engine.workspace.clone();
-                                let max_turns = engine.max_turns;
-                                let max_cost_usd = engine.max_cost_usd;
-                                let context_window = engine.context_window;
-                                let task_model = model.clone();
-                                let task_session = session_id.clone();
-                                let task_approver = approver.clone();
-                                let done = done_tx.clone();
-                                let cancel = token.clone();
-
-                                tokio::spawn(async move {
-                                    let options = RunOptions {
-                                        session_id: &task_session,
-                                        model: &task_model,
-                                        input: text,
-                                        cwd: workspace,
-                                        max_turns,
-                                        cancel,
-                                        pricing,
-                                        max_cost_usd,
-                                        on_delta: None,
-                                        context_window,
-                                        agents_md: None,
-                                        skills: None,
-                                        network,
-                                        attachments,
-                                    };
-                                    let result = run_turn(
-                                        TurnContext {
-                                            store: &store,
-                                            provider: provider.as_ref(),
-                                            tools: &tools,
-                                            policy: &policy,
-                                            approver: task_approver.as_ref(),
-                                            snapshots: snapshots.as_ref(),
-                                        },
-                                        options,
-                                        move |event| sink.send_event(event),
-                                    )
-                                    .await;
-                                    let _ = done
-                                        .send(result.map(|_| ()).map_err(|error| error.to_string()));
-                                });
+                                }
+                                port.send_queue_changed(inbox.queued());
+                            }
+                            UiCommand::QueueOp { id, op } => {
+                                match op {
+                                    // Steering only reaches the running turn;
+                                    // an idle engine leaves the queue untouched.
+                                    QueueOp::Steer => {
+                                        if active.is_some() {
+                                            inbox.steer_queued(&id);
+                                        }
+                                    }
+                                    QueueOp::MoveUp => {
+                                        inbox.move_queued(&id, -1);
+                                    }
+                                    QueueOp::MoveDown => {
+                                        inbox.move_queued(&id, 1);
+                                    }
+                                    QueueOp::Remove => {
+                                        inbox.remove_queued(&id);
+                                    }
+                                }
+                                port.send_queue_changed(inbox.queued());
                             }
                         }
                     }
@@ -4839,6 +4975,12 @@ fn spawn_engine(engine: Engine, port: KernelPort, mut commands: UnboundedReceive
                                 _ => {}
                             }
                         }
+                        // Drain the follow-up queue: the next queued message
+                        // starts its own turn now that the engine is idle.
+                        if let Some(message) = inbox.claim_next_turn() {
+                            start_turn!(message.text, message.attachments);
+                        }
+                        port.send_queue_changed(inbox.queued());
                     }
                 }
             }
