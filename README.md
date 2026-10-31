@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.5.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.6.1**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -376,7 +376,8 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.5.0 状态：Task/目录模型、GUI Task 管理、Settings 热重建、macOS 多目录 sandbox 已落地；
+v0.6.1 状态：Task/目录模型、GUI Task 管理、Settings 热重建、macOS 多目录 sandbox、
+三端系统托盘与 Queue/Steer、事件 schema v4 已落地；
 Linux `bwrap`/Landlock 与 Windows ACL 的多目录重建仍待补齐。分发产物（发布工作流、
 SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
 
