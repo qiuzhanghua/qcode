@@ -95,10 +95,7 @@ pub enum UiCommand {
         attachments: Vec<Attachment>,
     },
     /// One operation on a queued (next-turn) message.
-    QueueOp {
-        id: String,
-        op: QueueOp,
-    },
+    QueueOp { id: String, op: QueueOp },
     /// Stop the running turn.
     Cancel,
     /// Answer a pending approval. `session` remembers the tool for the session.

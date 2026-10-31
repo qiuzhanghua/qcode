@@ -199,11 +199,7 @@ impl Inbox {
     /// Out-of-range moves clamp to the queue bounds.
     pub fn move_queued(&self, id: &str, delta: i32) -> bool {
         let mut inner = self.inner();
-        let Some(index) = inner
-            .next_turn
-            .iter()
-            .position(|item| item.id == id)
-        else {
+        let Some(index) = inner.next_turn.iter().position(|item| item.id == id) else {
             return false;
         };
         let to = (index as i32 + delta).clamp(0, inner.next_turn.len() as i32 - 1) as usize;
@@ -218,10 +214,7 @@ impl Inbox {
     /// Remove one follow-up item. Returns the removed message.
     pub fn remove_queued(&self, id: &str) -> Option<QueuedMessage> {
         let mut inner = self.inner();
-        let index = inner
-            .next_turn
-            .iter()
-            .position(|item| item.id == id)?;
+        let index = inner.next_turn.iter().position(|item| item.id == id)?;
         inner.next_turn.remove(index)
     }
 
@@ -292,7 +285,10 @@ mod tests {
 
         let claimed = inbox.claim_next_step();
         assert_eq!(
-            claimed.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(),
+            claimed
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
             vec!["a", "b"]
         );
         assert!(inbox.claim_next_step().is_empty());

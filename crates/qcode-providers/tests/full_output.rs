@@ -109,7 +109,8 @@ async fn truncated_output_is_written_to_disk() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        inbox: None,        },
+            inbox: None,
+        },
         |_| {},
     )
     .await

@@ -1,3 +1,6 @@
+#[allow(unused_imports)]
+use super::*;
+
 #[cfg(target_os = "linux")]
 use std::os::fd::RawFd;
 

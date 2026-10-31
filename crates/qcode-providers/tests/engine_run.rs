@@ -41,7 +41,8 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         skills: None,
         network: None,
         attachments: Vec::new(),
-    inbox: None,    }
+        inbox: None,
+    }
 }
 
 #[tokio::test]
@@ -233,13 +234,10 @@ fn user_texts(messages: &[Message]) -> Vec<String> {
         .iter()
         .filter(|message| message.role == Role::User)
         .filter_map(|message| {
-            message
-                .blocks
-                .iter()
-                .find_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
+            message.blocks.iter().find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
         })
         .collect()
 }

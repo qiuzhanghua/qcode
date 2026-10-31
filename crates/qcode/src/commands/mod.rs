@@ -1,7 +1,5 @@
 use crate::cli::*;
 use crate::output::*;
-#[cfg(windows)]
-use crate::sandbox_probe;
 use crate::{agents, doctor, logging, subagent, tui, update};
 use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};

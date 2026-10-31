@@ -42,7 +42,7 @@ fn native_ui_is_zh() -> bool {
 #[cfg(target_os = "windows")]
 fn ps_host() -> &'static str {
     static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    *HOST.get_or_init(|| {
+    HOST.get_or_init(|| {
         let pwsh_ok = std::process::Command::new("pwsh.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", "exit 0"])
             .output()

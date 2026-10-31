@@ -87,7 +87,8 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             skills: None,
             network: None,
             attachments: Vec::new(),
-        inbox: None,        },
+            inbox: None,
+        },
         |_| {},
     )
     .await

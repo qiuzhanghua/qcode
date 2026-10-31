@@ -297,7 +297,8 @@ impl Agent {
                 skills: deps.skills.clone(),
                 network: deps.network.clone(),
                 attachments: Vec::new(),
-            inbox: None,            },
+                inbox: None,
+            },
             notify,
         )
         .await;

@@ -81,7 +81,8 @@ fn options<'a>(
         skills: None,
         network: None,
         attachments: Vec::new(),
-    inbox: None,    }
+        inbox: None,
+    }
 }
 
 #[tokio::test]
