@@ -70,9 +70,9 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
     "/../qcode/res/icons/src/qcode-mark-current.svg"
 ));
 
-/// DSH-style running row at the tail of the transcript: a spinning QC mark,
+/// DSH-style running row at the tail of the transcript: a flipping QC mark,
 /// then "工作中，用时 1分23秒 ···". The seconds are recomputed on every render,
-/// driven by the 1s waiting ticker; the mark spins on its own animation.
+/// driven by the 1s waiting ticker; the mark flips on its own animation.
 pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
     let elapsed = shell
         .app
@@ -90,8 +90,8 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
         .text_color(color)
         .with_animation(
             "qc-running",
-            Animation::new(std::time::Duration::from_millis(1200)).repeat(),
-            |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
+            Animation::new(std::time::Duration::from_millis(2400)).repeat(),
+            |icon, delta| icon.transform(Transformation::scale(size(flip_scale(delta), 1.0))),
         );
     div()
         .flex()
@@ -117,6 +117,27 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
                 .child(div().text_size(sp(12.0)).text_color(color).child(label)),
         )
         .into_any_element()
+}
+
+/// One 2.4s cycle: flip to the back face (0.8s), hold (0.4s), flip back to
+/// the front (0.8s), hold (0.4s). The mark is a flat plane; a yaw about its
+/// vertical axis projects as a horizontal scale of `cos`, which turns
+/// negative on the back half and mirrors the mark. gpui has no 3D transform,
+/// so this is an orthographic flip and both spin directions look the same.
+fn flip_scale(delta: f32) -> f32 {
+    const FLIP: f32 = 1.0 / 3.0;
+    const HOLD: f32 = 0.5;
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let angle = if delta < FLIP {
+        std::f32::consts::PI * smooth(delta / FLIP)
+    } else if delta < HOLD {
+        std::f32::consts::PI
+    } else if delta < HOLD + FLIP {
+        std::f32::consts::PI * (1.0 + smooth((delta - HOLD) / FLIP))
+    } else {
+        2.0 * std::f32::consts::PI
+    };
+    angle.cos()
 }
 
 /// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒` (DSH's format).
