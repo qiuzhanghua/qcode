@@ -11,7 +11,7 @@ name = "mcp-stub"
 path = "tests/support/mcp_stub.rs"
 
 [dependencies]
-qcode-core = { version = "0.5.0", path = "../qcode-core" }
+qcode-core = { version = "0.6.0", path = "../qcode-core" }
 async-trait.workspace = true
 rmcp.workspace = true
 serde.workspace = true
@@ -21,6 +21,6 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-qcode-providers = { version = "0.5.0", path = "../qcode-providers" }
+qcode-providers = { version = "0.6.0", path = "../qcode-providers" }
 tempfile.workspace = true
 tokio-util.workspace = true

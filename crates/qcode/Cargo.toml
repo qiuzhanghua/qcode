@@ -10,16 +10,16 @@ name = "qc"
 path = "src/main.rs"
 
 [dependencies]
-qcode-core = { version = "0.5.0", path = "../qcode-core" }
-qcode-providers = { version = "0.5.0", path = "../qcode-providers" }
-qcode-tools = { version = "0.5.0", path = "../qcode-tools" }
-qcode-mcp = { version = "0.5.0", path = "../qcode-mcp" }
-qcode-net = { version = "0.5.0", path = "../qcode-net" }
-qcode-tui = { version = "0.5.0", path = "../qcode-tui" }
-qcode-acp = { version = "0.5.0", path = "../qcode-acp" }
-qcode-image = { version = "0.5.0", path = "../qcode-image" }
-qcode-kernel = { version = "0.5.0", path = "../qcode-kernel" }
-qcode-gui = { version = "0.5.0", path = "../qcode-gui", optional = true }
+qcode-core = { version = "0.6.0", path = "../qcode-core" }
+qcode-providers = { version = "0.6.0", path = "../qcode-providers" }
+qcode-tools = { version = "0.6.0", path = "../qcode-tools" }
+qcode-mcp = { version = "0.6.0", path = "../qcode-mcp" }
+qcode-net = { version = "0.6.0", path = "../qcode-net" }
+qcode-tui = { version = "0.6.0", path = "../qcode-tui" }
+qcode-acp = { version = "0.6.0", path = "../qcode-acp" }
+qcode-image = { version = "0.6.0", path = "../qcode-image" }
+qcode-kernel = { version = "0.6.0", path = "../qcode-kernel" }
+qcode-gui = { version = "0.6.0", path = "../qcode-gui", optional = true }
 async-trait.workspace = true
 base64.workspace = true
 ratatui.workspace = true
