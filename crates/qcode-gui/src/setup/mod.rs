@@ -22,17 +22,17 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-pub use fields::*;
+pub(crate) use fields::*;
 
 /// One editable cell in a table row.
-struct RowState {
+pub(crate) struct RowState {
     id: u64,
     cells: BTreeMap<&'static str, Entity<InputState>>,
     bools: BTreeMap<&'static str, bool>,
     selects: BTreeMap<&'static str, String>,
 }
 
-struct TableState {
+pub(crate) struct TableState {
     rows: Vec<RowState>,
 }
 

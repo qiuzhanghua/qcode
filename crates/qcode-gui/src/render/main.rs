@@ -1,5 +1,4 @@
 use super::*;
-/// 退出确认：只在任务运行中或等待审批时出现。
 
 impl Shell {
     /// The pending queue dock above the composer: each queued message shows

@@ -1,9 +1,5 @@
 use super::*;
 
-/// How long a key command may run before it is killed.
-
-/// Doctor-friendly description of where a key came from.
-
 #[derive(Debug, Default)]
 pub struct Overrides {
     pub provider: Option<String>,

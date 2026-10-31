@@ -1,5 +1,5 @@
 #[cfg(all(test, target_os = "macos"))]
-mod tests {
+mod macos_sandbox_tests {
     use crate::sandbox::macos::*;
     use crate::sandbox::*;
 

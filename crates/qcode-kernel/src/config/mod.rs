@@ -555,6 +555,7 @@ pub enum ConfigError {
     McpMissing(String),
 }
 
+/// How long a key command may run before it is killed.
 const KEY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Read a secret from a command's stdout.
@@ -623,6 +624,7 @@ fn key_from_command(provider: &str, argv: &[String]) -> Result<String, ConfigErr
     Ok(key)
 }
 
+/// Doctor-friendly description of where a key came from.
 fn command_source(argv: &[String]) -> String {
     argv.first()
         .map(|program| format!("command {program}"))

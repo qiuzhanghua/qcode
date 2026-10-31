@@ -421,6 +421,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Keys each table may contain, per table path. Tables whose children are
+/// user-chosen names (`providers`, `pricing`, `mcp.servers` entries) are not
+/// listed, since any key is a name there.
+///
+/// Exposed for the GUI schema-coverage test: every known key must have a form
+/// control (or an explicit "auto" exception such as `version`).
+#[doc(hidden)]
 pub fn known_keys() -> &'static [(&'static str, &'static [&'static str])] {
     KNOWN_KEYS
 }

@@ -1,14 +1,6 @@
 use super::load::{read_document, write_document};
 use super::*;
 
-/// Keys each table may contain, per table path. Tables whose children are
-/// user-chosen names (`providers`, `pricing`, `mcp.servers` entries) are not
-/// listed, since any key is a name there.
-///
-/// Exposed for the GUI schema-coverage test: every known key must have a form
-/// control (or an explicit "auto" exception such as `version`).
-#[doc(hidden)]
-
 /// Append one `[[mcp.servers]]` entry to the config file.
 pub fn mcp_add(
     path: &Path,

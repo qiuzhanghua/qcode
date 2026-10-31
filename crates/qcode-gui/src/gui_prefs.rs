@@ -153,11 +153,16 @@ mod tests {
         let loaded: GuiPreferences = serde_json::from_str("{}").expect("empty preferences");
         assert_eq!(loaded.send_mode, "enter");
 
-        let mut prefs = GuiPreferences::default();
-        prefs.send_mode = "cmd_enter".to_string();
-        assert_eq!(prefs.clone().normalized().send_mode, "cmd_enter");
+        let prefs = GuiPreferences {
+            send_mode: "cmd_enter".to_string(),
+            ..GuiPreferences::default()
+        };
+        assert_eq!(prefs.normalized().send_mode, "cmd_enter");
 
-        prefs.send_mode = "tab".to_string();
+        let prefs = GuiPreferences {
+            send_mode: "tab".to_string(),
+            ..GuiPreferences::default()
+        };
         assert_eq!(prefs.normalized().send_mode, "enter");
     }
 }

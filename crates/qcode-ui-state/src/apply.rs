@@ -397,7 +397,7 @@ impl App {
         for turn in &mut self.turns {
             if turn.ended_at.is_none() {
                 turn.ended_at = Some(ts.max(turn.started_at));
-                turn.status = Some(status.clone());
+                turn.status = Some(status);
                 turn.usage = usage.clone();
                 turn.cost_usd = cost_usd;
             }
@@ -437,7 +437,7 @@ impl App {
         for turn in &mut self.turns {
             if turn.ended_at.is_none() {
                 turn.ended_at = Some(ended.max(turn.started_at));
-                turn.status = Some(status.clone());
+                turn.status = Some(status);
             }
         }
         self.status.running = false;
