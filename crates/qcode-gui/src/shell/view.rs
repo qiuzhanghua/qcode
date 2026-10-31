@@ -77,20 +77,20 @@ impl Shell {
         }
     }
 
-    /// Advance the status-bar spinner while a turn is running. The loop stops
-    /// by itself once the turn ends, so no timer stays alive in idle state.
+    /// Refresh the running row's elapsed seconds once per second while a turn
+    /// runs. The loop stops by itself once the turn ends, so no timer stays
+    /// alive in idle state; the QC mark spins on its own GPUI animation.
     pub(crate) fn tick_waiting(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(200))
+                    .timer(std::time::Duration::from_millis(1000))
                     .await;
                 let alive = this.update(cx, |shell, cx| {
                     if !shell.app.status.running {
                         shell.waiting_ticker = false;
                         return None;
                     }
-                    shell.waiting_frame = (shell.waiting_frame + 1) % WAITING_SPINNER.len() as u8;
                     cx.notify();
                     Some(())
                 });

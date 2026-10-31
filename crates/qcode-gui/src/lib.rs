@@ -118,8 +118,6 @@ const MAIN_PAD_R: f32 = 52.0;
 /// 的 px_3/px_6，所以这里补一层内缩，使横线右端不再超出问题框右边框。
 const TRANSCRIPT_PAD_L: f32 = 16.0;
 const TRANSCRIPT_PAD_R: f32 = 32.0;
-/// Frames of the status-bar spinner shown while a turn is running.
-const WAITING_SPINNER: [char; 4] = ['◐', '◓', '◑', '◒'];
 /// Turns after which the composer suggests starting a fresh task; long
 /// transcripts get unwieldy and a clean session usually answers better.
 const ROUND_HINT_THRESHOLD: usize = 50;

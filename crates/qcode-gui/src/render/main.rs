@@ -139,11 +139,13 @@ impl Shell {
         let theme = cx.theme();
         let popover = theme.popover;
         let border = theme.border;
+        let running_color = theme.muted_foreground;
+        let running_divider = border;
         let list = MessageScroller::new("transcript", self.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
                 let shell = entity.read(cx);
-                unit_row(index, shell, &entity)
+                unit_row(index, shell, &entity, running_color, running_divider)
             }
         })
         .scrollbar(false)
@@ -192,17 +194,6 @@ impl Shell {
                 // width, so the popup matches the box above it.
                 Select::new(&self.model_select).placeholder("model"),
             ));
-
-        // 本次任务执行时间：只在新 turn 运行中显示，数值与「执行过程」头部的
-        // 实时耗时一致（靠 200ms ticker 刷新）；turn 中断或结束、执行过程耗时
-        // 消失时，这行蓝字也一并隐藏。
-        let task_elapsed = self.app.turns.last().and_then(|turn| {
-            turn.running().then(|| {
-                let now = time::OffsetDateTime::now_utc();
-                let live = (now - turn.started_at).max(time::Duration::ZERO);
-                format!("本次任务耗时 {}", format_duration(live))
-            })
-        });
 
         div()
             .flex()
@@ -282,21 +273,6 @@ impl Shell {
                             ),
                     )
                     .child(Diff::new(state))
-            }))
-            // 执行时间：一行无背景的蓝色字，放在所有提示框（权限、报错、
-            // 50 轮）上方、输入框之上；无提示框时则直接位于输入框上方。
-            .children(task_elapsed.map(|label| {
-                div()
-                    .w_full()
-                    .pl(px(MAIN_PAD_L + 10.0))
-                    .pr(px(MAIN_PAD_R))
-                    .pb_1()
-                    .child(
-                        div()
-                            .text_size(sp(SECONDARY_SIZE))
-                            .text_color(rgb(0x3b82f6))
-                            .child(label),
-                    )
             }))
             .child(
                 div()
@@ -754,10 +730,7 @@ impl Shell {
                                     .right(format!("${:.4}", self.app.status.cost_usd))
                                     .right(format!("sandbox {}", self.app.sandbox))
                                     .right(if self.app.status.running {
-                                        format!(
-                                            "{} 等待回复…",
-                                            WAITING_SPINNER[self.waiting_frame as usize]
-                                        )
+                                        String::new()
                                     } else {
                                         "空闲".to_string()
                                     }),

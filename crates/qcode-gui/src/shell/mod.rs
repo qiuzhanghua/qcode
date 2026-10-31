@@ -84,7 +84,6 @@ pub(crate) struct Shell {
     pub(crate) collapse_to_list: bool,
     /// Status-bar waiting hint: spinner frame index and whether the ticker
     /// loop is already running for the current turn.
-    pub(crate) waiting_frame: u8,
     pub(crate) waiting_ticker: bool,
     /// Per-turn execution-process container expansion. While a turn runs it is
     /// forced open regardless; on completion it auto-folds (user can reopen).
@@ -285,7 +284,6 @@ impl Shell {
             rail_popup_close_at: None,
             collapse_all: false,
             collapse_to_list: false,
-            waiting_frame: 0,
             waiting_ticker: false,
             process_open_turns: std::collections::HashSet::new(),
             last_blocks,

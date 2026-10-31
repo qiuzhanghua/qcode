@@ -10,8 +10,7 @@ use crate::{
     ANSWER_LINE, ANSWER_SIZE, BODY_LINE, BODY_SIZE, Backend, CAPTION_SIZE, CODE_LINE, CODE_SIZE,
     DisplayUnit, MAIN_PAD_L, MAIN_PAD_R, PROMPT_INSET, RESULT_LINE, RESULT_SIZE,
     ROUND_HINT_THRESHOLD, SECONDARY_LINE, SECONDARY_SIZE, Shell, TRANSCRIPT_PAD_L,
-    TRANSCRIPT_PAD_R, TURN_RAIL_WIDTH, TaskRow, WAITING_SPINNER, context_label, is_send_shortcut,
-    sp, tool_status,
+    TRANSCRIPT_PAD_R, TURN_RAIL_WIDTH, TaskRow, context_label, is_send_shortcut, sp, tool_status,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::ActiveTheme as _;

@@ -38,7 +38,13 @@ pub(crate) fn display_units(app: &App) -> Vec<DisplayUnit> {
     });
     units.into_iter().map(|(_, unit)| unit).collect()
 }
-pub(crate) fn unit_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+pub(crate) fn unit_row(
+    index: usize,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    color: Hsla,
+    divider: Hsla,
+) -> AnyElement {
     match shell.units.get(index).copied() {
         Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
         Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
@@ -46,7 +52,7 @@ pub(crate) fn unit_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
             // The trailing scroller row holds the blinking typing indicator
             // while a turn streams; once it finishes the row is empty.
             if shell.app.status.running {
-                typing_row(shell.waiting_frame as u32)
+                running_row(shell, color, divider)
             } else {
                 div().into_any_element()
             }
@@ -58,21 +64,74 @@ pub(crate) fn conversation_icon(name: IconName) -> Icon {
         .with_size(Size::Small)
         .text_color(rgb(0x888888))
 }
-/// A blinking "typing…" row pinned under the transcript while a turn runs.
-/// `frame` advances on a timer so the indicator visibly flashes.
-pub(crate) fn typing_row(frame: u32) -> AnyElement {
-    // Two frames on, two frames off: a slower blink than the status spinner.
-    let opacity = if frame % 4 < 2 { 1.0 } else { 0.35 };
+/// The QC mark as `currentColor`, so the running row follows the theme.
+const QC_MARK: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../qcode/res/icons/src/qcode-mark-current.svg"
+));
+
+/// DSH-style running row at the tail of the transcript: a spinning QC mark,
+/// then "工作中，用时 1分23秒 ···". The seconds are recomputed on every render,
+/// driven by the 1s waiting ticker; the mark spins on its own animation.
+pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
+    let elapsed = shell
+        .app
+        .turns
+        .last()
+        .filter(|turn| turn.running())
+        .map(|turn| (time::OffsetDateTime::now_utc() - turn.started_at).max(time::Duration::ZERO));
+    let label = match elapsed {
+        Some(elapsed) => format!("工作中，用时 {} ···", format_duration_zh(elapsed)),
+        None => "工作中".to_string(),
+    };
+    let icon = Icon::default()
+        .data(QC_MARK)
+        .size(px(14.0))
+        .text_color(color)
+        .with_animation(
+            "qc-running",
+            Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+            |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
+        );
     div()
         .flex()
-        .flex_row()
-        .items_center()
-        .px_6()
-        .py_1()
-        .text_size(sp(SECONDARY_SIZE))
-        .text_color(rgb(0x888888))
-        .child(div().opacity(opacity).child("执行中…"))
+        .flex_col()
+        .w_full()
+        .child(
+            div()
+                .h(px(0.5))
+                .w_full()
+                .bg(divider)
+                .mt(px(8.0))
+                .mb(px(10.0)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_6()
+                .py_1()
+                .child(icon)
+                .child(div().text_size(sp(12.0)).text_color(color).child(label)),
+        )
         .into_any_element()
+}
+
+/// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒` (DSH's format).
+pub(crate) fn format_duration_zh(duration: time::Duration) -> String {
+    let total = duration.whole_seconds().max(0) as u64;
+    let hours = total / 3600;
+    let minutes = total / 60 % 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}小时{minutes}分{seconds}秒")
+    } else if total >= 60 {
+        format!("{minutes}分{seconds}秒")
+    } else {
+        format!("{seconds}秒")
+    }
 }
 pub(crate) fn format_duration(duration: time::Duration) -> String {
     let seconds = duration.whole_seconds().max(0) as u64;
