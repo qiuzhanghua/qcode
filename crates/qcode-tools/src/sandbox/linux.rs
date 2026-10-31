@@ -17,8 +17,8 @@ use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub(crate) struct BwrapRoot {
-    path: PathBuf,
-    writable: bool,
+    pub(crate) path: PathBuf,
+    pub(crate) writable: bool,
 }
 
 #[cfg(target_os = "linux")]
