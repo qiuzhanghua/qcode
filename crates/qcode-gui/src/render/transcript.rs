@@ -91,7 +91,20 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
         .with_animation(
             "qc-running",
             Animation::new(std::time::Duration::from_millis(2400)).repeat(),
-            |icon, delta| icon.transform(Transformation::scale(size(flip_scale(delta), 1.0))),
+            move |icon, delta| {
+                let angle = flip_angle(delta);
+                let scale = angle.cos();
+                // Non-physical depth cues: the back face is dimmed, and the
+                // mark sways towards the side turning towards the viewer (a
+                // yaw about the centre alone would not move it).
+                let alpha = if scale < 0.0 { 0.72 } else { 1.0 };
+                let dx = -angle.sin() * 1.5;
+                icon.text_color(color.opacity(alpha)).transform(
+                    Transformation::default()
+                        .with_scaling(size(scale, 1.0))
+                        .with_translation(point(px(dx), px(0.0))),
+                )
+            },
         );
     div()
         .flex()
@@ -119,25 +132,20 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
         .into_any_element()
 }
 
-/// One 2.4s cycle: flip to the back face (0.8s), hold (0.4s), flip back to
-/// the front (0.8s), hold (0.4s). The mark is a flat plane; a yaw about its
+/// One 2.4s cycle: two consecutive face flips (0 -> 2π in 1.6s), then a
+/// 0.8s hold facing the viewer. The mark is a flat plane; a yaw about its
 /// vertical axis projects as a horizontal scale of `cos`, which turns
 /// negative on the back half and mirrors the mark. gpui has no 3D transform,
-/// so this is an orthographic flip and both spin directions look the same.
-fn flip_scale(delta: f32) -> f32 {
-    const FLIP: f32 = 1.0 / 3.0;
-    const HOLD: f32 = 0.5;
+/// so this is an orthographic flip; the sway and dimming in the animator are
+/// non-physical cues that make the direction readable.
+fn flip_angle(delta: f32) -> f32 {
+    const FLIP: f32 = 2.0 / 3.0;
     let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
-    let angle = if delta < FLIP {
-        std::f32::consts::PI * smooth(delta / FLIP)
-    } else if delta < HOLD {
-        std::f32::consts::PI
-    } else if delta < HOLD + FLIP {
-        std::f32::consts::PI * (1.0 + smooth((delta - HOLD) / FLIP))
+    if delta < FLIP {
+        std::f32::consts::TAU * smooth(delta / FLIP)
     } else {
-        2.0 * std::f32::consts::PI
-    };
-    angle.cos()
+        std::f32::consts::TAU
+    }
 }
 
 /// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒` (DSH's format).
