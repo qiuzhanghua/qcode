@@ -96,9 +96,10 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
                 let scale = angle.cos();
                 // Non-physical depth cues: the back face is dimmed, and the
                 // mark sways towards the side turning towards the viewer (a
-                // yaw about the centre alone would not move it).
+                // yaw about the centre alone would not move it). Positive
+                // sin shifts right, so the right edge leads.
                 let alpha = if scale < 0.0 { 0.72 } else { 1.0 };
-                let dx = -angle.sin() * 1.5;
+                let dx = angle.sin() * 1.5;
                 icon.text_color(color.opacity(alpha)).transform(
                     Transformation::default()
                         .with_scaling(size(scale, 1.0))
@@ -137,7 +138,7 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
 /// vertical axis projects as a horizontal scale of `cos`, which turns
 /// negative on the back half and mirrors the mark. gpui has no 3D transform,
 /// so this is an orthographic flip; the sway and dimming in the animator are
-/// non-physical cues that make the direction readable.
+/// non-physical cues that make the direction readable (the right edge leads).
 fn flip_angle(delta: f32) -> f32 {
     const FLIP: f32 = 2.0 / 3.0;
     let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
