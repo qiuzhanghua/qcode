@@ -114,7 +114,7 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
         .child(
             div()
                 .h(px(0.5))
-                .w_full()
+                .mx_6()
                 .bg(divider)
                 .mt(px(8.0))
                 .mb(px(10.0)),
