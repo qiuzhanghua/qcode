@@ -68,10 +68,30 @@ impl SetupView {
                     "default_model",
                     provider.default_model.clone().unwrap_or_default(),
                 ),
+                (
+                    "extra_body",
+                    provider
+                        .extra_body
+                        .iter()
+                        .map(|(key, value)| {
+                            format!(
+                                "{key} = {}",
+                                serde_json::to_string(value).unwrap_or_default()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
                 ("__key", String::new()),
             ],
             [("stream_usage", provider.stream_usage)],
-            [],
+            [(
+                "protocol",
+                provider
+                    .protocol
+                    .map(|protocol| protocol.as_str().to_string())
+                    .unwrap_or_default(),
+            )],
             window,
             cx,
         );
@@ -174,7 +194,7 @@ impl SetupView {
     ) -> RowState {
         self.next_row_id += 1;
         let id = self.next_row_id;
-        RowState {
+        let row = RowState {
             id,
             cells: cells
                 .into_iter()
@@ -182,54 +202,40 @@ impl SetupView {
                 .collect(),
             bools: bools.into_iter().collect(),
             selects: selects.into_iter().collect(),
+        };
+        if !self.wizard {
+            subscribe_cell_inputs(&mut self._input_subscriptions, &row, cx);
         }
+        row
     }
 
     pub(crate) fn add_provider_preset(
         &mut self,
-        preset: &'static str,
+        route: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (name, base_url, key_env, model) = match preset {
-            "deepseek" => (
-                "deepseek",
-                "https://api.deepseek.com/v1",
-                "DEEPSEEK_API_KEY",
-                "deepseek-flash",
-            ),
-            "openai" => (
-                "openai",
-                "https://api.openai.com/v1",
-                "OPENAI_API_KEY",
-                "gpt-4.1",
-            ),
-            "anthropic" => (
-                "anthropic",
-                "https://api.anthropic.com",
-                "ANTHROPIC_API_KEY",
-                "claude-sonnet-4-5",
-            ),
-            "minimax" => (
-                "minimax",
-                "https://api.minimaxi.com/v1",
-                "MINIMAX_API_KEY",
-                "MiniMax-M3",
-            ),
-            "ollama" => ("ollama", "http://localhost:11434/v1", "", "llama3.2"),
-            _ => return,
+        // The catalog is the single fact source for preset values: route,
+        // endpoint, key env and default model all come from the entry, so new
+        // catalog routes get a button and a pre-filled row automatically.
+        let Some(entry) = qcode_kernel::config::catalog_entry(route) else {
+            return;
         };
         let row = self.row(
             [
-                ("name", name.to_string()),
-                ("base_url", base_url.to_string()),
-                ("api_key_env", key_env.to_string()),
+                ("name", entry.route.to_string()),
+                ("base_url", entry.base_url.to_string()),
+                ("api_key_env", entry.api_key_env.to_string()),
                 ("api_key_command", String::new()),
-                ("default_model", model.to_string()),
+                (
+                    "default_model",
+                    entry.default_model.unwrap_or("").to_string(),
+                ),
+                ("extra_body", String::new()),
                 ("__key", String::new()),
             ],
             [("stream_usage", true)],
-            [],
+            [("protocol", entry.protocol.as_str().to_string())],
             window,
             cx,
         );
@@ -241,11 +247,115 @@ impl SetupView {
         }
         if let Some(input) = self.inputs.get("default_provider") {
             input.update(cx, |input, cx| {
-                input.set_value(name, window, cx);
+                input.set_value(entry.route, window, cx);
                 cx.notify();
             });
         }
+        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
+    }
+
+    /// Probe the first provider row that has a `base_url` for its model list
+    /// (`GET {base}/models`, dsh discovery semantics). reqwest needs a tokio
+    /// reactor, which GPUI's executor is not, so the probe runs on its own
+    /// current-thread runtime on a worker thread and reports back through a
+    /// channel drained by a foreground poll loop. Results are candidate
+    /// metadata only — nothing is persisted.
+    pub(crate) fn probe_models(&mut self, cx: &mut Context<Self>) {
+        if self.probe_rx.is_some() {
+            return; // a probe is already in flight
+        }
+        let Some((name, base_url, api_key_env)) = self
+            .tables
+            .get("providers")
+            .and_then(|table| {
+                table.rows.iter().find_map(|row| {
+                    let base_url = cell(row, "base_url", cx);
+                    (!base_url.trim().is_empty()).then(|| {
+                        (
+                            cell(row, "name", cx).trim().to_string(),
+                            base_url.trim().to_string(),
+                            cell(row, "api_key_env", cx).trim().to_string(),
+                        )
+                    })
+                })
+            })
+        else {
+            self.probe_result = Some("先填写 base_url".to_string());
+            cx.notify();
+            return;
+        };
+        let api_key = if api_key_env.is_empty() {
+            None
+        } else {
+            std::env::var(&api_key_env)
+                .ok()
+                .filter(|key| !key.is_empty())
+        };
+        // The form has no headers column yet; reuse the config's for this route
+        // so a gateway that needs them can still be probed.
+        let headers = self
+            .config
+            .providers
+            .get(&name)
+            .map(|existing| existing.headers.clone())
+            .unwrap_or_default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            let result = match runtime {
+                Ok(runtime) => runtime.block_on(qcode_providers::discover_models(
+                    &base_url,
+                    api_key.as_deref(),
+                    &headers,
+                )),
+                Err(error) => Err(format!("cannot start probe runtime: {error}")),
+            };
+            let _ = tx.send(result);
+        });
+        self.probe_rx = Some(rx);
+        self.probe_result = Some("探测中…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |view, cx| {
+                    let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
+                    match received {
+                        Some(Ok(Ok(ids))) => {
+                            view.probe_rx = None;
+                            view.probe_result = Some(ids.join("\n"));
+                            cx.notify();
+                            true
+                        }
+                        Some(Ok(Err(error))) => {
+                            view.probe_rx = None;
+                            view.probe_result = Some(format!("探测失败: {error}"));
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            view.probe_rx = None;
+                            view.probe_result = Some("探测中断".to_string());
+                            cx.notify();
+                            true
+                        }
+                        None => true,
+                    }
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn add_row(
@@ -292,6 +402,12 @@ impl SetupView {
                 .insert("__key", input(window, cx, String::new(), "API key"));
         }
         state.rows.push(row);
+        if !self.wizard {
+            if let Some(row) = self.tables.get(&key).and_then(|table| table.rows.last()) {
+                subscribe_cell_inputs(&mut self._input_subscriptions, row, cx);
+            }
+            self.auto_save(cx, AutoSaveKind::Tables, false);
+        }
         cx.notify();
     }
 
@@ -299,6 +415,7 @@ impl SetupView {
         if let Some(table) = self.tables.get_mut(table_key) {
             table.rows.retain(|row| row.id != row_id);
         }
+        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }
 
@@ -351,5 +468,25 @@ impl SetupView {
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+}
+
+/// Subscribe one row's editable cells so typing in a table (settings mode)
+/// triggers a debounced whole-table auto save. The `__key` cell is the
+/// Keychain-only secret input: its edits must not touch config.toml.
+fn subscribe_cell_inputs(
+    subscriptions: &mut Vec<gpui_kit::Subscription>,
+    row: &RowState,
+    cx: &mut Context<SetupView>,
+) {
+    for (column_key, input) in &row.cells {
+        if *column_key == "__key" {
+            continue;
+        }
+        subscriptions.push(cx.subscribe(input, |_view, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                _view.auto_save(cx, AutoSaveKind::Tables, true);
+            }
+        }));
     }
 }

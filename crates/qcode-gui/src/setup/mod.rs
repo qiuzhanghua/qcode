@@ -1,7 +1,8 @@
 use crate::forms::{self, FieldKind, FieldSpec, Page, TableSpec};
 use crate::gui_prefs::GuiPreferences;
+use gpui_kit::base::Selectable;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
 use gpui_kit::{div, prelude::*, *};
@@ -36,6 +37,15 @@ pub(crate) struct TableState {
     rows: Vec<RowState>,
 }
 
+/// What a settings-mode auto save writes. Scalar keys go through the kernel's
+/// `set_scalar` (config.toml) or `GuiPreferences::save` (`gui.*` → gui.json);
+/// tables are rebuilt from the form state like `save()` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoSaveKind {
+    Scalar(&'static [&'static str]),
+    Tables,
+}
+
 pub struct SetupView {
     path: PathBuf,
     data_dir: PathBuf,
@@ -53,6 +63,20 @@ pub struct SetupView {
     info: Option<String>,
     repair: Option<String>,
     saved: bool,
+    /// Model-probe (`探测模型`) output: "探测中…" while in flight, then the
+    /// discovered model ids (one per line) or the error text.
+    probe_result: Option<String>,
+    /// Channel the probe thread reports through; drained while rendering.
+    probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// Settings-mode auto save: the last change not yet flushed, and the
+    /// generation of the trailing-debounce timer that flushes it (only the
+    /// newest generation fires, so rapid typing coalesces into one write).
+    pending_auto_save: Option<AutoSaveKind>,
+    auto_save_generation: u64,
+    /// Kept alive so text edits (which fire `InputEvent::Change` on the input
+    /// entities, not on this view) can trigger auto saves. Wizard mode never
+    /// subscribes.
+    _input_subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 /// Open the first-run/setup wizard. Returns when the user saves (which quits
@@ -114,6 +138,11 @@ impl SetupView {
             info: None,
             repair,
             saved: false,
+            probe_result: None,
+            probe_rx: None,
+            pending_auto_save: None,
+            auto_save_generation: 0,
+            _input_subscriptions: Vec::new(),
         };
         for field in forms::FIELDS {
             let key = field.path.join(".");
@@ -126,9 +155,23 @@ impl SetupView {
                         .insert(key, scalar_string(&config, field.path, options));
                 }
                 _ => {
-                    let value = scalar_string(&config, field.path, &[]);
-                    view.inputs
-                        .insert(key, input(window, cx, value, field.label));
+                    let input_entity = input(window, cx, scalar_string(&config, field.path, &[]), field.label);
+                    if !wizard {
+                        // Text edits fire on the input entity, not this view;
+                        // the subscription turns each change into a debounced
+                        // auto save of that one key.
+                        let path: &'static [&'static str] = field.path;
+                        let subscription = cx.subscribe(
+                            &input_entity,
+                            move |view, _input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    view.auto_save(cx, AutoSaveKind::Scalar(path), true);
+                                }
+                            },
+                        );
+                        view._input_subscriptions.push(subscription);
+                    }
+                    view.inputs.insert(key, input_entity);
                 }
             }
         }
@@ -140,10 +183,25 @@ impl SetupView {
                         .insert(key, gui_string(&prefs, field.path, options));
                 }
                 _ => {
-                    view.inputs.insert(
-                        key,
-                        input(window, cx, gui_string(&prefs, field.path, &[]), field.label),
+                    let input_entity = input(
+                        window,
+                        cx,
+                        gui_string(&prefs, field.path, &[]),
+                        field.label,
                     );
+                    if !wizard {
+                        let path: &'static [&'static str] = field.path;
+                        let subscription = cx.subscribe(
+                            &input_entity,
+                            move |view, _input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    view.auto_save(cx, AutoSaveKind::Scalar(path), true);
+                                }
+                            },
+                        );
+                        view._input_subscriptions.push(subscription);
+                    }
+                    view.inputs.insert(key, input_entity);
                 }
             }
         }

@@ -278,7 +278,7 @@ impl Shell {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(280.0), px(120.0)),
-                size(px(780.0), px(620.0)),
+                size(px(880.0), px(680.0)),
             ))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Settings".into()),

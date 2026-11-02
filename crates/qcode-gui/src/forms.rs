@@ -10,45 +10,46 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Welcome,
-    Provider,
-    ModelKey,
+    /// One model bar: default model + the provider routes table.
+    Models,
     Agent,
     NetworkSandbox,
     Search,
     Mcp,
     Skills,
     ApprovalPricing,
-    UpdateAppearance,
+    Appearance,
+    Update,
     Review,
 }
 
 impl Page {
     pub const ALL: [Page; 11] = [
         Page::Welcome,
-        Page::Provider,
-        Page::ModelKey,
+        Page::Models,
         Page::Agent,
         Page::NetworkSandbox,
         Page::Search,
         Page::Mcp,
         Page::Skills,
         Page::ApprovalPricing,
-        Page::UpdateAppearance,
+        Page::Appearance,
+        Page::Update,
         Page::Review,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
             Self::Welcome => "Welcome",
-            Self::Provider => "Provider",
-            Self::ModelKey => "Model & Key",
+            Self::Models => "Models",
             Self::Agent => "Agent & Context",
             Self::NetworkSandbox => "Network & Sandbox",
             Self::Search => "Search",
             Self::Mcp => "MCP",
             Self::Skills => "Skills",
             Self::ApprovalPricing => "Approval & Pricing",
-            Self::UpdateAppearance => "Update & Appearance",
+            Self::Appearance => "Appearance",
+            Self::Update => "Update",
             Self::Review => "Review",
         }
     }
@@ -102,9 +103,23 @@ pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
         path: &["default_provider"],
         label: "Default provider",
-        page: Page::ModelKey,
+        page: Page::Models,
         kind: FieldKind::OptionalText,
         help: "Provider used when --provider is not passed",
+    },
+    FieldSpec {
+        path: &["default-model", "provider"],
+        label: "Default model provider",
+        page: Page::Models,
+        kind: FieldKind::OptionalText,
+        help: "Provider used by default when a session has none",
+    },
+    FieldSpec {
+        path: &["default-model", "model"],
+        label: "Default model",
+        page: Page::Models,
+        kind: FieldKind::OptionalText,
+        help: "Model used by default when a session has none",
     },
     FieldSpec {
         path: &["context", "window_tokens"],
@@ -263,35 +278,35 @@ pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
         path: &["update", "enabled"],
         label: "Enable version checks",
-        page: Page::UpdateAppearance,
+        page: Page::Update,
         kind: FieldKind::Bool,
         help: "Never replaces the binary automatically",
     },
     FieldSpec {
         path: &["update", "check"],
         label: "Check on startup",
-        page: Page::UpdateAppearance,
+        page: Page::Update,
         kind: FieldKind::Bool,
         help: "Cached for check_days",
     },
     FieldSpec {
         path: &["update", "check_days"],
         label: "Check interval (days)",
-        page: Page::UpdateAppearance,
+        page: Page::Update,
         kind: FieldKind::Integer,
         help: "Minimum days between checks",
     },
     FieldSpec {
         path: &["update", "repo"],
         label: "Update repo",
-        page: Page::UpdateAppearance,
+        page: Page::Update,
         kind: FieldKind::Text,
         help: "GitHub owner/repo whose releases are the channel",
     },
     FieldSpec {
         path: &["update", "base_url"],
         label: "Update API base URL",
-        page: Page::UpdateAppearance,
+        page: Page::Update,
         kind: FieldKind::OptionalText,
         help: "Mirror or local test server",
     },
@@ -301,7 +316,7 @@ pub const TABLES: &[TableSpec] = &[
     TableSpec {
         path: &["providers"],
         title: "Providers",
-        page: Page::Provider,
+        page: Page::Models,
         columns: &[
             ColumnSpec {
                 key: "name",
@@ -312,6 +327,11 @@ pub const TABLES: &[TableSpec] = &[
                 key: "base_url",
                 label: "Base URL",
                 kind: FieldKind::Text,
+            },
+            ColumnSpec {
+                key: "protocol",
+                label: "Protocol",
+                kind: FieldKind::Select(&["openai", "anthropic"]),
             },
             ColumnSpec {
                 key: "api_key_env",
@@ -327,6 +347,11 @@ pub const TABLES: &[TableSpec] = &[
                 key: "default_model",
                 label: "Default model",
                 kind: FieldKind::OptionalText,
+            },
+            ColumnSpec {
+                key: "extra_body",
+                label: "Extra body",
+                kind: FieldKind::Lines,
             },
             ColumnSpec {
                 key: "stream_usage",
@@ -448,35 +473,35 @@ pub const GUI_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         path: &["gui", "theme"],
         label: "Theme",
-        page: Page::UpdateAppearance,
+        page: Page::Appearance,
         kind: FieldKind::Select(&["system", "light", "dark"]),
         help: "Follow the system appearance or force a theme",
     },
     FieldSpec {
         path: &["gui", "font_size"],
         label: "Font size",
-        page: Page::UpdateAppearance,
+        page: Page::Appearance,
         kind: FieldKind::Integer,
         help: "Base UI font size in pixels",
     },
     FieldSpec {
         path: &["gui", "code_font"],
         label: "Code font",
-        page: Page::UpdateAppearance,
+        page: Page::Appearance,
         kind: FieldKind::Text,
         help: "Monospace family used for code blocks",
     },
     FieldSpec {
         path: &["gui", "density"],
         label: "Density",
-        page: Page::UpdateAppearance,
+        page: Page::Appearance,
         kind: FieldKind::Select(&["comfortable", "compact"]),
         help: "Spacing of transcript rows",
     },
     FieldSpec {
         path: &["gui", "send_mode"],
         label: "Send mode",
-        page: Page::UpdateAppearance,
+        page: Page::Appearance,
         kind: FieldKind::Select(&["enter", "cmd_enter"]),
         help: "Enter sends, or Cmd/Ctrl+Enter sends and Enter inserts a newline",
     },

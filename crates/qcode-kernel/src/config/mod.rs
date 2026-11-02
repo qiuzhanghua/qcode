@@ -16,12 +16,14 @@ use qcode_mcp::{McpConfig, McpConfigError};
 use qcode_tools::sandbox::SandboxMode;
 use qcode_tools::web_search::{SearchBackend, SearchSettings};
 
+mod catalog;
 mod edit;
 mod load;
 mod resolve;
 #[cfg(test)]
 mod tests;
 
+pub use catalog::*;
 pub use edit::*;
 #[cfg(test)]
 pub(crate) use load::is_system_install;
@@ -56,6 +58,21 @@ pub struct UiConfig {
     pub busy_delivery: BusyDelivery,
 }
 
+/// Global default model section `[default-model]` (M1 two-tier selection).
+///
+/// The GUI persists the session-level model here when the user switches it
+/// ("切即默认"). Read-time precedence: `default_model.provider` only decides
+/// the provider when `default_provider` is absent, and `default_model.model`
+/// only applies to the provider it names (or to any provider when it names
+/// none).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DefaultModelConfig {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Schema version of the file. Absent means [`CONFIG_VERSION`].
@@ -64,6 +81,9 @@ pub struct Config {
     /// Provider used when neither `--provider` nor `QCODE_PROVIDER` is set.
     #[serde(default)]
     pub default_provider: Option<String>,
+    /// Default provider+model for sessions that have none (`[default-model]`).
+    #[serde(default, rename = "default-model")]
+    pub default_model: DefaultModelConfig,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
@@ -111,6 +131,7 @@ impl Default for Config {
         Self {
             version: CONFIG_VERSION,
             default_provider: None,
+            default_model: DefaultModelConfig::default(),
             providers: BTreeMap::new(),
             approval: ApprovalConfig::default(),
             pricing: BTreeMap::new(),
@@ -465,8 +486,17 @@ pub struct ProviderConfig {
     pub api_key_command: Option<Vec<String>>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Wire protocol override. Absent means the catalog route's protocol (or
+    /// OpenAI-compatible for a route the catalog does not ship).
+    #[serde(default)]
+    pub protocol: Option<Protocol>,
     #[serde(default = "default_true")]
     pub stream_usage: bool,
+    /// Deployment-level request headers (gateway auth, custom headers). Applied
+    /// before the mandatory headers, so reserved names like `authorization` and
+    /// `content-type` can never be overridden.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for ProviderConfig {
@@ -476,8 +506,10 @@ impl Default for ProviderConfig {
             api_key_env: None,
             api_key_command: None,
             default_model: None,
+            protocol: None,
             stream_usage: true,
             extra_body: Default::default(),
+            headers: Default::default(),
         }
     }
 }

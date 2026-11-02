@@ -179,14 +179,26 @@ impl SetupView {
                                 name.trim(),
                                 optional(row, "default_model", cx),
                             ),
+                            // Edited via the Protocol column; an empty/unknown
+                            // cell drops the override and keeps the catalog
+                            // default (resolve falls back to the catalog).
+                            protocol: match row.selects.get("protocol").map(String::as_str) {
+                                Some("openai") => Some(config::Protocol::OpenAi),
+                                Some("anthropic") => Some(config::Protocol::Anthropic),
+                                _ => None,
+                            },
                             stream_usage: row.bools.get("stream_usage").copied().unwrap_or(true),
+                            // One `key = value` per line; the value is JSON
+                            // when it parses, otherwise kept as a plain string
+                            // so an edit never fails the save. Empty → empty map.
+                            extra_body: extra_body_from_lines(&lines(row, "extra_body", cx)),
                             // Preserved from the file rather than edited here;
                             // the form only knows the columns it renders.
-                            extra_body: self
+                            headers: self
                                 .config
                                 .providers
                                 .get(name.trim())
-                                .map(|existing| existing.extra_body.clone())
+                                .map(|existing| existing.headers.clone())
                                 .unwrap_or_default(),
                         };
                         config.providers.insert(name.trim().to_string(), provider);
@@ -251,4 +263,160 @@ impl SetupView {
         }
         Ok(())
     }
+
+    /// Settings-mode auto save. `debounce` is set for text edits (one write
+    /// shortly after typing stops), false for discrete controls (switch/select,
+    /// row add/remove) that write immediately. Wizard mode never auto saves:
+    /// it keeps the explicit `save()` form-submit flow.
+    pub(crate) fn auto_save(
+        &mut self,
+        cx: &mut Context<Self>,
+        kind: AutoSaveKind,
+        debounce: bool,
+    ) {
+        if self.wizard {
+            return;
+        }
+        if debounce {
+            self.schedule_auto_save(cx, kind);
+        } else {
+            self.flush_auto_save(kind, cx);
+        }
+    }
+
+    /// Trailing debounce: remember the change and arm a ~250ms timer; only the
+    /// newest generation actually flushes, so a burst of keystrokes coalesces
+    /// into a single write.
+    fn schedule_auto_save(&mut self, cx: &mut Context<Self>, kind: AutoSaveKind) {
+        self.pending_auto_save = Some(kind);
+        self.auto_save_generation += 1;
+        let generation = self.auto_save_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.auto_save_generation == generation
+                    && let Some(kind) = view.pending_auto_save.take()
+                {
+                    view.flush_auto_save(kind, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn flush_auto_save(&mut self, kind: AutoSaveKind, cx: &mut Context<Self>) {
+        match kind {
+            AutoSaveKind::Scalar(path) if path.first() == Some(&"gui") => {
+                self.auto_save_gui(path, cx);
+            }
+            AutoSaveKind::Scalar(path) => self.auto_save_scalar(path, cx),
+            AutoSaveKind::Tables => match self.build_config(cx, false) {
+                Ok(config) => match write_config(&self.path, &config) {
+                    Ok(()) => {
+                        self.config = config;
+                        // The last flush won: a table write already persisted
+                        // any pending scalar edit, so drop it to avoid a
+                        // redundant rewrite.
+                        self.pending_auto_save = None;
+                    }
+                    Err(error) => eprintln!("qcode-gui: auto-save failed: {error}"),
+                },
+                Err(error) => eprintln!("qcode-gui: auto-save skipped (invalid form): {error}"),
+            },
+        }
+    }
+
+    /// Persist one scalar config key. `apply_scalar` is authoritative for what
+    /// a field writes, so the value is validated through it before the file is
+    /// touched; a half-typed numeric field never writes junk.
+    fn auto_save_scalar(&mut self, path: &'static [&'static str], cx: &Context<Self>) {
+        let Some(value) = self.field_value(path, cx) else {
+            return;
+        };
+        let mut config = self.config.clone();
+        if let Err(error) = apply_scalar(&mut config, path, &value) {
+            eprintln!("qcode-gui: auto-save skipped ({error})");
+            return;
+        }
+        let write_value = if value.trim().is_empty() && OPTIONAL_PATHS.contains(&path) {
+            None
+        } else {
+            Some(value.as_str())
+        };
+        match qcode_kernel::config_edit::set_scalar(&self.path, path, write_value) {
+            Ok(()) => self.config = config,
+            Err(error) => eprintln!("qcode-gui: auto-save failed: {error}"),
+        }
+    }
+
+    /// Persist one `gui.json` preference (Appearance section) and apply it to
+    /// the running windows immediately.
+    fn auto_save_gui(&mut self, path: &'static [&'static str], cx: &mut Context<Self>) {
+        let Some(value) = self.field_value(path, cx) else {
+            return;
+        };
+        let mut prefs = self.prefs.clone();
+        match path {
+            ["gui", "theme"] => prefs.theme = value,
+            ["gui", "density"] => prefs.density = value,
+            ["gui", "send_mode"] => prefs.send_mode = value,
+            ["gui", "font_size"] => {
+                let Some(size) = value.parse().ok() else {
+                    return; // transient invalid value; the next keystroke fixes it
+                };
+                prefs.font_size = size;
+            }
+            ["gui", "code_font"] => prefs.code_font = value,
+            _ => return,
+        }
+        if let Err(error) = prefs.save(&self.data_dir) {
+            eprintln!("qcode-gui: auto-save failed (gui.json): {error}");
+            return;
+        }
+        self.prefs = prefs;
+        self.prefs.apply(cx);
+    }
+
+    /// Read the form's current value for `path`, the same way `build_config`
+    /// would (bools → `self.bools`, selects → `self.selects`, else the input).
+    fn field_value(&self, path: &[&str], cx: &Context<Self>) -> Option<String> {
+        let key = path.join(".");
+        if let Some(value) = self.bools.get(&key) {
+            return Some(value.to_string());
+        }
+        if let Some(value) = self.selects.get(&key) {
+            return Some(value.clone());
+        }
+        self.inputs
+            .get(&key)
+            .map(|input| input.read(cx).value().to_string())
+    }
+}
+
+/// `apply_scalar` treats an empty value as "unset" for these paths (the key is
+/// removed from the file); every other field keeps an empty string or fails
+/// validation.
+const OPTIONAL_PATHS: &[&[&str]] = &[
+    &["default_provider"],
+    &["default-model", "provider"],
+    &["default-model", "model"],
+    &["agent", "max_cost_usd"],
+    &["search", "base_url"],
+    &["search", "api_key_command"],
+    &["update", "base_url"],
+];
+
+/// Re-open the file and write a complete `Config` through the comment-preserving
+/// `apply_config` + atomic save. A fresh open (instead of `self.edit`, which is
+/// stale after the first auto save) keeps subsequent writes from clobbering
+/// earlier ones.
+fn write_config(
+    path: &std::path::Path,
+    config: &Config,
+) -> Result<(), qcode_kernel::config::ConfigError> {
+    let mut edit = ConfigEdit::open(path)?;
+    edit.apply_config(config)?;
+    edit.save()
 }

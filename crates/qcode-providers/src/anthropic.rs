@@ -39,6 +39,10 @@ pub struct AnthropicConfig {
     pub api_key: Option<String>,
     /// Session egress proxy; `None` uses a direct connection (tests/offline).
     pub proxy_url: Option<String>,
+    /// Deployment-level request headers (gateway auth, custom headers).
+    /// Applied before the mandatory headers, so reserved names can never be
+    /// overridden.
+    pub headers: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for AnthropicConfig {
@@ -48,6 +52,8 @@ impl std::fmt::Debug for AnthropicConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("proxy_url", &self.proxy_url)
+            // Header *names* only: values may carry gateway secrets.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -111,15 +117,43 @@ impl Provider for AnthropicProvider {
         cancel: CancellationToken,
     ) -> Result<EventStream, ProviderError> {
         let body = build_body(&request)?;
-        let mut builder = self
-            .client
-            .post(self.endpoint())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("accept", "text/event-stream")
-            .json(&body);
-        if let Some(key) = &self.config.api_key {
-            builder = builder.header("x-api-key", key);
+        let mut builder = self.client.post(self.endpoint());
+        // Deployment-level headers first; the mandatory headers below are
+        // applied with replace semantics, so reserved names (authorization,
+        // accept, content-type, anthropic-version, x-api-key) can never be
+        // overridden by the config.
+        for (name, value) in &self.config.headers {
+            if let (Ok(name), Ok(value)) = (
+                reqwest::header::HeaderName::try_from(name.as_str()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                builder = builder.header(name, value);
+            }
         }
+        let mut mandatory = reqwest::header::HeaderMap::new();
+        mandatory.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        mandatory.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("text/event-stream"),
+        );
+        mandatory.insert(
+            reqwest::header::HeaderName::from_static("anthropic-version"),
+            reqwest::header::HeaderValue::from_static(ANTHROPIC_VERSION),
+        );
+        if let Some(key) = &self.config.api_key {
+            // A key that cannot become a header value (pathological config)
+            // sends no x-api-key rather than panicking.
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(key) {
+                mandatory.insert(
+                    reqwest::header::HeaderName::from_static("x-api-key"),
+                    value,
+                );
+            }
+        }
+        builder = builder.headers(mandatory).json(&body);
 
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
@@ -791,6 +825,7 @@ mod tests {
             base_url: "https://api.anthropic.com/v1/".to_string(),
             api_key: None,
             proxy_url: None,
+            headers: Default::default(),
         };
         let provider = AnthropicProvider::new(config).expect("provider");
         assert_eq!(provider.endpoint(), "https://api.anthropic.com/v1/messages");
@@ -803,6 +838,7 @@ mod tests {
             base_url: "https://example.com".to_string(),
             api_key: Some("sk-ant-secret".to_string()),
             proxy_url: None,
+            headers: Default::default(),
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-ant-secret"));

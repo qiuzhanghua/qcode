@@ -126,6 +126,49 @@ impl Render for SetupView {
                 body = body.child(format!("info: {info}"));
             }
         } else {
+            if !self.wizard {
+                body = body.child(TextView::markdown(
+                    "settings-section",
+                    format!("## {}\n\n{}", page.title(), section_intro(page)),
+                ));
+            }
+            if page == Page::Models {
+                // Read-only catalog directory: every route the resolver knows,
+                // its wire protocol, whether a profile is configured and its
+                // credential state (key stored / missing / keyless).
+                let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+                    .list_configurable_providers(&self.config);
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().child("Provider directory"))
+                        .children(directory.into_iter().map(|row| {
+                            let credential = match row.credential_state {
+                                qcode_kernel::provider_registry::CredentialState::Configured => {
+                                    "已存"
+                                }
+                                qcode_kernel::provider_registry::CredentialState::Missing => "缺失",
+                                qcode_kernel::provider_registry::CredentialState::Keyless => {
+                                    "无需 key"
+                                }
+                            };
+                            format!(
+                                "{} ({}) · {} · {} · 凭证: {}",
+                                row.route,
+                                row.display_name,
+                                row.protocol.as_str(),
+                                if row.configured {
+                                    "configured"
+                                } else {
+                                    "catalog default"
+                                },
+                                credential
+                            )
+                        })),
+                );
+            }
             for field in forms::fields_for(page) {
                 body = body.child(self.render_field(field, cx));
             }
@@ -137,34 +180,11 @@ impl Render for SetupView {
             }
             if !self.wizard && matches!(page, Page::NetworkSandbox) {
                 body = body.child(
-                    "Sandbox and network settings apply immediately: the kernel is rebuilt on save.",
+                    "Sandbox and network settings apply immediately: each change is saved as you make it.",
                 );
             }
         }
 
-        let mut nav = div().flex().flex_row().gap_1().p_2();
-        if !self.wizard {
-            for (index, item) in Page::ALL.iter().enumerate() {
-                if *item == Page::Welcome {
-                    continue;
-                }
-                let marker = if index == self.page { "●" } else { "○" };
-                let title = if *item == Page::Review {
-                    "About"
-                } else {
-                    item.title()
-                };
-                nav = nav.child(
-                    Button::new(format!("settings-page-{index}"))
-                        .label(format!("{marker} {title}"))
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.page = index;
-                            this.error = None;
-                            cx.notify();
-                        })),
-                );
-            }
-        }
         let mut footer = div().flex().flex_row().gap_2().p_2();
         if self.wizard {
             footer = footer
@@ -177,13 +197,17 @@ impl Render for SetupView {
                     Button::new("setup-next")
                         .label("Next")
                         .on_click(cx.listener(|this, _, _window, cx| this.next(cx))),
+                )
+                .child(
+                    Button::new("setup-save")
+                        .label("Save & Start")
+                        .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                 );
+        } else {
+            // Settings mode saves every change as it happens (per-section auto
+            // save, design SETTINGS-UI-V2 §4.5); no Save button.
+            footer = footer.child(div().flex().items_center().child("自动保存 · 修改即时写入"));
         }
-        footer = footer.child(
-            Button::new("setup-save")
-                .label(if self.wizard { "Save & Start" } else { "Save" })
-                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
-        );
 
         let mut steps = div().w(px(200.0)).h_full().flex().flex_col().gap_1().p_2();
         if self.wizard {
@@ -228,7 +252,38 @@ impl Render for SetupView {
                 .child(scroll)
                 .into_any_element()
         } else {
-            scroll.into_any_element()
+            // Settings mode: a left nav rail (each page once; Welcome is
+            // wizard-only, Review shows as About) next to the scrolling body.
+            let mut rail = div().w(px(180.0)).h_full().flex().flex_col().gap_1().p_2();
+            for (index, item) in Page::ALL.iter().enumerate() {
+                if *item == Page::Welcome {
+                    continue;
+                }
+                let marker = if index == self.page { "●" } else { "○" };
+                let title = if *item == Page::Review {
+                    "About"
+                } else {
+                    item.title()
+                };
+                rail = rail.child(
+                    Button::new(format!("settings-page-{index}"))
+                        .label(format!("{marker} {title}"))
+                        .selected(index == self.page)
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.page = index;
+                            this.error = None;
+                            cx.notify();
+                        })),
+                );
+            }
+            div()
+                .flex()
+                .flex_row()
+                .flex_grow(1.0)
+                .min_h_0()
+                .child(rail)
+                .child(scroll)
+                .into_any_element()
         };
 
         div()
@@ -252,7 +307,6 @@ impl Render for SetupView {
                         page.title()
                     }),
             )
-            .child(nav)
             .children(
                 self.error
                     .as_ref()
@@ -265,6 +319,23 @@ impl Render for SetupView {
             )
             .child(content)
             .child(footer)
+    }
+}
+
+/// One-line intro under the `## {title}` section header, shown for every
+/// settings section (settings mode only).
+fn section_intro(page: Page) -> &'static str {
+    match page {
+        Page::Models => "配置默认模型与各模型供应商",
+        Page::Agent => "上下文、回合预算与消息行为",
+        Page::NetworkSandbox => "沙箱与网络出口策略",
+        Page::Search => "联网搜索后端与密钥",
+        Page::Mcp => "stdio MCP 服务器",
+        Page::Skills => "Agent 技能",
+        Page::ApprovalPricing => "审批规则与 token 定价",
+        Page::Appearance => "主题、字号与界面偏好",
+        Page::Update => "版本检查与更新源",
+        Page::Welcome | Page::Review => "",
     }
 }
 
@@ -284,6 +355,7 @@ impl SetupView {
                     move |checked, _window, cx| {
                         entity.update(cx, |view, cx| {
                             view.bools.insert(key.clone(), *checked);
+                            view.auto_save(cx, AutoSaveKind::Scalar(field.path), false);
                             cx.notify();
                         });
                     }
@@ -304,6 +376,7 @@ impl SetupView {
                             .on_click(move |_, _, cx| {
                                 entity.update(cx, |view, cx| {
                                     view.selects.insert(key.clone(), value.clone());
+                                    view.auto_save(cx, AutoSaveKind::Scalar(field.path), false);
                                     cx.notify();
                                 });
                             }),
@@ -320,11 +393,22 @@ impl SetupView {
         };
         div()
             .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().child(field.label))
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgba(0x7f7f7f20))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().child(field.label))
+                    .child(div().child(field.help)),
+            )
             .child(control)
-            .child(div().child(field.help))
             .into_any_element()
     }
 
@@ -364,6 +448,7 @@ impl SetupView {
                                                     {
                                                         row.bools.insert(column_key, *checked);
                                                     }
+                                                    view.auto_save(cx, AutoSaveKind::Tables, false);
                                                     cx.notify();
                                                 });
                                             }
@@ -400,6 +485,7 @@ impl SetupView {
                                                         row.selects
                                                             .insert(column_key, value.clone());
                                                     }
+                                                    view.auto_save(cx, AutoSaveKind::Tables, false);
                                                     cx.notify();
                                                 });
                                             }),
@@ -480,16 +566,25 @@ impl SetupView {
         }
         if table.path == ["providers"] {
             let mut presets = div().flex().flex_row().gap_1();
-            for preset in ["deepseek", "openai", "anthropic", "minimax", "ollama"] {
+            for entry in qcode_kernel::config::catalog_entries() {
+                let route = entry.route;
                 presets = presets.child(
-                    Button::new(format!("preset-{preset}"))
-                        .label(format!("Add {preset}"))
+                    Button::new(format!("preset-{route}"))
+                        .label(format!("Add {}", entry.display_name))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_provider_preset(preset, window, cx);
+                            this.add_provider_preset(route, window, cx);
                         })),
                 );
             }
+            presets = presets.child(
+                Button::new("probe-models")
+                    .label("探测模型")
+                    .on_click(cx.listener(|this, _, _window, cx| this.probe_models(cx))),
+            );
             table_view = table_view.child(presets);
+            if let Some(result) = &self.probe_result {
+                table_view = table_view.child(div().child(format!("探测结果:\n{result}")));
+            }
         }
         table_view
             .child(

@@ -19,7 +19,7 @@ pub(crate) fn gui_rebuild_hook(
         Box::pin(async move {
             // No nested runtime here: the caller awaits this on the UI executor.
             let kernel = qcode_kernel::assemble(
-                Some(config_path),
+                Some(config_path.clone()),
                 &workspace,
                 Some(data_dir),
                 approval_policy.as_deref(),
@@ -36,6 +36,7 @@ pub(crate) fn gui_rebuild_hook(
                 tools: kernel.tools,
                 policy: kernel.policy,
                 workspace: workspace.clone(),
+                config_path: config_path.clone(),
                 model: kernel.resolved.model.clone(),
                 pricing: config::pricing_for(&kernel.config, &kernel.resolved.model, None)
                     .ok()
@@ -199,6 +200,7 @@ pub(crate) async fn cmd_gui(
         tools: kernel.tools,
         policy: kernel.policy,
         workspace: workspace.clone(),
+        config_path: setup_path.clone(),
         model: kernel.resolved.model.clone(),
         pricing: config::pricing_for(
             &kernel.config,

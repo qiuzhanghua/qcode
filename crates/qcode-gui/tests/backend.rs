@@ -35,6 +35,7 @@ fn engine_with_provider(
         tools: ToolRegistry::new(Vec::new()),
         policy: Policy::new(Vec::new()),
         workspace: workspace.to_path_buf(),
+        config_path: workspace.to_path_buf(),
         model: "mock-1".to_string(),
         max_turns: 2,
         pricing: None,

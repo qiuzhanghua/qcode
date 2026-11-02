@@ -59,6 +59,7 @@ fn provider_with_proxy(base_url: String, proxy_url: Option<String>) -> OpenAiCom
         stream_usage: true,
         proxy_url,
         extra_body: Default::default(),
+        headers: Default::default(),
     })
     .expect("provider")
 }

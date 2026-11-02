@@ -5,7 +5,7 @@
 //! tokio, so the queue/turn policy can be tested without opening a window.
 
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
-use qcode_core::event::SessionStarted;
+use qcode_core::event::{EventKind, SessionStarted};
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
@@ -25,6 +25,9 @@ pub struct Engine {
     pub tools: qcode_core::tool::ToolRegistry,
     pub policy: qcode_core::policy::Policy,
     pub workspace: PathBuf,
+    /// Config file the engine was assembled from; "切即默认" persists the
+    /// switched model into its `[default-model]` section.
+    pub config_path: PathBuf,
     pub model: String,
     pub pricing: Option<qcode_core::cost::Pricing>,
     pub pricing_table: std::collections::BTreeMap<String, qcode_core::cost::Pricing>,
@@ -78,6 +81,28 @@ fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
         port.send_steering_changed(steering.clone());
         last.steering = steering;
     }
+}
+
+/// Restore a resumed session's model (its `SessionStarted` metadata) and the
+/// pricing entry that goes with it. A session whose log cannot be read, or
+/// that has no `SessionStarted`, keeps the current model.
+fn restore_session_model(
+    engine: &Engine,
+    id: &str,
+    model: &mut String,
+    pricing: &mut Option<qcode_core::cost::Pricing>,
+) {
+    let Ok(events) = engine.store.load(id) else {
+        return;
+    };
+    let Some(started) = events.iter().find_map(|event| match &event.kind {
+        EventKind::SessionStarted(started) => Some(started),
+        _ => None,
+    }) else {
+        return;
+    };
+    *model = started.model.clone();
+    *pricing = engine.pricing_table.get(&started.model).copied();
 }
 
 /// Run the engine on its own thread: `run_turn` is async, the window is not.
@@ -229,6 +254,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     pending = Some(UiCommand::Resume { id });
                                 } else {
                                     session = Some(id.clone());
+                                    restore_session_model(&engine, &id, &mut model, &mut pricing);
                                     port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }
@@ -236,6 +262,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             UiCommand::SetModel { model: next } => {
                                 model = next;
                                 pricing = engine.pricing_table.get(&model).copied();
+                                // “切即默认”：切换模型同时写进 [default-model]，
+                                // 新会话默认用它；写失败只记日志，不阻断切换。
+                                if let Err(error) = qcode_kernel::config_edit::set_default_model(
+                                    &engine.config_path,
+                                    Some(engine.provider_name.as_str()),
+                                    Some(model.as_str()),
+                                ) {
+                                    eprintln!("qcode-gui: cannot persist default model: {error}");
+                                }
                             }
                             UiCommand::Prompt { text, attachments } => {
                                 // Running: the message waits in the follow-up
@@ -292,6 +327,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 }
                                 UiCommand::Resume { id } => {
                                     session = Some(id.clone());
+                                    restore_session_model(&engine, &id, &mut model, &mut pricing);
                                     port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }

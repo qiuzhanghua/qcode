@@ -26,6 +26,8 @@ pub(crate) fn secret_input(
 pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) -> String {
     match path {
         ["default_provider"] => config.default_provider.clone().unwrap_or_default(),
+        ["default-model", "provider"] => config.default_model.provider.clone().unwrap_or_default(),
+        ["default-model", "model"] => config.default_model.model.clone().unwrap_or_default(),
         ["context", "window_tokens"] => config.context.window_tokens.to_string(),
         ["agent", "max_turns"] => config.agent.max_turns.to_string(),
         ["agent", "max_cost_usd"] => config
@@ -89,6 +91,13 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
     match path {
         ["default_provider"] => {
             config.default_provider = (!value.trim().is_empty()).then(|| value.trim().to_string());
+        }
+        ["default-model", "provider"] => {
+            config.default_model.provider =
+                (!value.trim().is_empty()).then(|| value.trim().to_string());
+        }
+        ["default-model", "model"] => {
+            config.default_model.model = (!value.trim().is_empty()).then(|| value.trim().to_string());
         }
         ["context", "window_tokens"] => {
             config.context.window_tokens = parse(value, "context.window_tokens")?;
@@ -194,6 +203,25 @@ pub(crate) fn lines_from(value: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_string)
+        .collect()
+}
+
+/// Parse a providers-table `Extra body` cell: one `key = value` per line,
+/// split on the FIRST `=`. The value is JSON when it parses; otherwise it is
+/// kept as a plain string so an edit never fails the save. Empty → empty map.
+pub(crate) fn extra_body_from_lines(lines: &[String]) -> BTreeMap<String, serde_json::Value> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            line.split_once('=').map(|(key, value)| {
+                let key = key.trim();
+                let value = value.trim();
+                let parsed = serde_json::from_str(value)
+                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+                (key.to_string(), parsed)
+            })
+        })
+        .filter(|(key, _)| !key.is_empty())
         .collect()
 }
 

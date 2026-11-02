@@ -18,8 +18,13 @@ pub struct Resolved {
     pub model: String,
     pub stream_usage: bool,
     pub is_mock: bool,
+    /// Wire protocol driving the adapter family; the config's `protocol`
+    /// override wins, then the catalog route's, then OpenAI-compatible.
+    pub protocol: Protocol,
     /// Provider-specific body fields, already merged with the builtin defaults.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
+    /// Deployment-level request headers (gateway auth, custom headers).
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 /// Default models of the builtin providers, for forms that need to tell a
@@ -27,61 +32,9 @@ pub struct Resolved {
 pub fn builtin_models() -> Vec<(&'static str, &'static str)> {
     ["openai", "deepseek", "ollama", "anthropic", "minimax"]
         .into_iter()
-        .filter_map(|name| builtin(name).map(|b| (name, b.default_model.unwrap_or(""))))
+        .filter_map(|name| catalog_entry(name).map(|c| (name, c.default_model.unwrap_or(""))))
         .filter(|(_, model)| !model.is_empty())
         .collect()
-}
-
-struct Builtin {
-    base_url: &'static str,
-    api_key_env: &'static str,
-    default_model: Option<&'static str>,
-    /// MiniMax ships its thinking inside `content` unless asked to split it out.
-    reasoning_split: bool,
-}
-
-fn builtin(name: &str) -> Option<Builtin> {
-    match name {
-        "openai" => Some(Builtin {
-            base_url: "https://api.openai.com/v1",
-            api_key_env: "OPENAI_API_KEY",
-            default_model: None,
-            reasoning_split: false,
-        }),
-        "deepseek" => Some(Builtin {
-            base_url: "https://api.deepseek.com/v1",
-            api_key_env: "DEEPSEEK_API_KEY",
-            default_model: Some("deepseek-flash"),
-            reasoning_split: false,
-        }),
-        "ollama" => Some(Builtin {
-            base_url: "http://localhost:11434/v1",
-            api_key_env: "",
-            default_model: None,
-            reasoning_split: false,
-        }),
-        // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
-        // no new provider code, only the endpoint and key variable.
-        // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
-        // no new provider code, only the endpoint and key variable. The default
-        // host is the mainland platform; international accounts override
-        // `base_url` to https://api.minimax.io/v1.
-        "minimax" => Some(Builtin {
-            base_url: "https://api.minimaxi.com/v1",
-            api_key_env: "MINIMAX_API_KEY",
-            default_model: Some("MiniMax-M3"),
-            reasoning_split: true,
-        }),
-        // Anthropic Messages API. `claude` is accepted as a friendlier alias;
-        // both resolve to the same provider and key.
-        "anthropic" | "claude" => Some(Builtin {
-            base_url: "https://api.anthropic.com",
-            api_key_env: "ANTHROPIC_API_KEY",
-            default_model: Some("claude-sonnet-4-5"),
-            reasoning_split: false,
-        }),
-        _ => None,
-    }
 }
 
 /// Resolve the price table for a model and validate the budget pair.
@@ -125,6 +78,9 @@ pub fn resolve(
         .clone()
         .or_else(|| env("QCODE_PROVIDER"))
         .or_else(|| config.default_provider.clone())
+        // `[default-model].provider` only decides the provider when neither
+        // `--provider`/`QCODE_PROVIDER` nor `default_provider` is present.
+        .or_else(|| config.default_model.provider.clone())
         .unwrap_or_else(|| "mock".to_string());
 
     if name == "mock"
@@ -146,17 +102,19 @@ pub fn resolve(
             model,
             stream_usage: false,
             is_mock: true,
+            protocol: Protocol::Mock,
             extra_body: serde_json::Map::new(),
+            headers: std::collections::BTreeMap::new(),
         });
     }
 
     let entry = config.providers.get(&name).cloned().unwrap_or_default();
-    let builtin = builtin(&name);
+    let catalog = catalog_entry(&name);
     // Builtin defaults first, then whatever the config says: a user can always
     // turn a field off.
     let mut extra_body = serde_json::Map::new();
-    if let Some(builtin) = &builtin
-        && builtin.reasoning_split
+    if let Some(catalog) = &catalog
+        && catalog.reasoning_split
     {
         extra_body.insert("reasoning_split".to_string(), serde_json::json!(true));
     }
@@ -164,12 +122,17 @@ pub fn resolve(
         extra_body.insert(key.clone(), value.clone());
     }
 
+    let protocol = entry
+        .protocol
+        .or_else(|| catalog.map(|catalog| catalog.protocol))
+        .unwrap_or(Protocol::OpenAi);
+
     let base_url = overrides
         .base_url
         .clone()
         .or_else(|| env("QCODE_BASE_URL"))
         .or_else(|| entry.base_url.clone())
-        .or_else(|| builtin.as_ref().map(|builtin| builtin.base_url.to_string()))
+        .or_else(|| catalog.map(|catalog| catalog.base_url.to_string()))
         .ok_or_else(|| ConfigError::UnknownProvider(name.clone()))?;
 
     if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
@@ -182,11 +145,7 @@ pub fn resolve(
     let api_key_env = entry
         .api_key_env
         .clone()
-        .or_else(|| {
-            builtin
-                .as_ref()
-                .map(|builtin| builtin.api_key_env.to_string())
-        })
+        .or_else(|| catalog.map(|catalog| catalog.api_key_env.to_string()))
         .unwrap_or_default();
 
     let command = entry.api_key_command.as_deref();
@@ -214,11 +173,22 @@ pub fn resolve(
         .model
         .clone()
         .or_else(|| env("QCODE_MODEL"))
+        .or_else(|| {
+            // `[default-model].model` is scoped to the provider it names (or to
+            // whichever provider resolves when it names none), so a default
+            // meant for one provider never silently replaces another route's.
+            let applies = config
+                .default_model
+                .provider
+                .as_deref()
+                .map_or(true, |provider| provider == name.as_str());
+            applies
+                .then(|| config.default_model.model.clone())
+                .flatten()
+        })
         .or_else(|| entry.default_model.clone())
         .or_else(|| {
-            builtin
-                .as_ref()
-                .and_then(|builtin| builtin.default_model.map(str::to_string))
+            catalog.and_then(|catalog| catalog.default_model.map(str::to_string))
         })
         .ok_or_else(|| ConfigError::MissingModel {
             provider: name.clone(),
@@ -232,6 +202,8 @@ pub fn resolve(
         model,
         stream_usage: overrides.stream_usage.unwrap_or(entry.stream_usage),
         is_mock: false,
+        protocol,
         extra_body,
+        headers: entry.headers.clone(),
     })
 }

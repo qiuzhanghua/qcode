@@ -897,3 +897,164 @@ fn the_user_config_honours_xdg_config_home() {
     assert_eq!(found.path, explicit);
     assert_eq!(found.source, ConfigSource::Flag);
 }
+
+#[test]
+fn catalog_carries_the_builtin_routes() {
+    assert_eq!(
+        catalog_entry("deepseek").map(|c| c.protocol),
+        Some(Protocol::OpenAi)
+    );
+    assert_eq!(
+        catalog_entry("anthropic").map(|c| c.protocol),
+        Some(Protocol::Anthropic)
+    );
+    // `claude` is the friendly alias of the `anthropic` route.
+    assert_eq!(catalog_entry("claude").map(|c| c.route), Some("anthropic"));
+    assert_eq!(catalog_entry("nope"), None);
+    assert!(catalog_entries().any(|entry| entry.route == "minimax"));
+}
+
+#[test]
+fn protocol_comes_from_the_catalog_and_config_can_override_it() {
+    let config: Config = toml::from_str(r#"default_provider = "deepseek""#).unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.protocol, Protocol::OpenAi);
+
+    let config: Config = toml::from_str(r#"default_provider = "anthropic""#).unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("ANTHROPIC_API_KEY", "sk-ant-test")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.protocol, Protocol::Anthropic);
+
+    // An explicit `protocol` overrides the catalog default: an OpenAI-compatible
+    // route repointed at an Anthropic-compatible gateway.
+    let config: Config = toml::from_str(
+        r#"
+            default_provider = "gateway"
+            [providers.gateway]
+            base_url = "https://gateway.example/v1"
+            protocol = "anthropic"
+            api_key_env = "GATEWAY_KEY"
+            default_model = "gw-model"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("GATEWAY_KEY", "sk-gw")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.protocol, Protocol::Anthropic);
+    assert_eq!(resolved.model, "gw-model");
+}
+
+#[test]
+fn a_hand_declared_route_defaults_to_openai_compatible() {
+    let config: Config = toml::from_str(
+        r#"
+            default_provider = "ark"
+            [providers.ark]
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            api_key_env = "ARK_API_KEY"
+            default_model = "doubao-seed-1-6"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("ARK_API_KEY", "sk-ark")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.protocol, Protocol::OpenAi);
+    assert_eq!(resolved.model, "doubao-seed-1-6");
+    assert_eq!(resolved.name, "ark");
+}
+
+#[test]
+fn mock_routes_resolve_to_the_mock_protocol() {
+    let config = Config::default();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+    assert_eq!(resolved.protocol, Protocol::Mock);
+}
+
+#[test]
+fn default_model_section_provides_provider_and_model() {
+    let config: Config = toml::from_str(
+        r#"
+            [default-model]
+            provider = "ark"
+            model = "m1"
+
+            [providers.ark]
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            api_key_env = "ARK_API_KEY"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("ARK_API_KEY", "sk-ark")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "ark");
+    assert_eq!(resolved.model, "m1");
+}
+
+#[test]
+fn absent_default_model_keeps_the_default_provider_fallback() {
+    let config: Config = toml::from_str(
+        r#"
+            default_provider = "deepseek"
+
+            [providers.deepseek]
+            default_model = "config-model"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "deepseek");
+    assert_eq!(resolved.model, "config-model");
+}
+
+#[test]
+fn default_model_does_not_change_a_different_routes_model() {
+    // `[default-model]` names ark, but `default_provider` still selects
+    // openai; the ark default must not leak into the openai route.
+    let config: Config = toml::from_str(
+        r#"
+            default_provider = "openai"
+
+            [default-model]
+            provider = "ark"
+            model = "m1"
+
+            [providers.openai]
+            default_model = "gpt-4o"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("OPENAI_API_KEY", "sk-test")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "openai");
+    assert_eq!(resolved.model, "gpt-4o");
+}

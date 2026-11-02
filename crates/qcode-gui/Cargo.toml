@@ -14,6 +14,7 @@ test = false
 
 [dependencies]
 qcode-core = { version = "0.6.1", path = "../qcode-core" }
+qcode-providers = { version = "0.6.1", path = "../qcode-providers" }
 qcode-ui-state = { version = "0.6.1", path = "../qcode-ui-state" }
 qcode-ui-bridge = { version = "0.6.1", path = "../qcode-ui-bridge" }
 qcode-kernel = { version = "0.6.1", path = "../qcode-kernel" }
@@ -50,7 +51,6 @@ objc2-foundation = "0.3"
 
 [dev-dependencies]
 async-trait.workspace = true
-qcode-providers = { version = "0.6.1", path = "../qcode-providers" }
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

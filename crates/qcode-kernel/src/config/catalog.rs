@@ -1,0 +1,139 @@
+//! Declarative catalog of built-in provider routes (M0 of SETTINGS-MODELS-V2).
+//!
+//! Replaces the hard-coded `builtin()` match in `resolve.rs`: every built-in
+//! provider is one row in [`CATALOG`], carrying its wire protocol, endpoint,
+//! credential reference, default model and model list. A route's resolution
+//! falls back to its catalog row when the user config has no explicit value, so
+//! the settings page and the resolver share one fact source.
+
+use serde::Deserialize;
+
+/// Wire protocol a provider route speaks. The adapter family is chosen by this,
+/// not by the provider name (`build_provider`'s previous match).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Protocol {
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+    #[serde(rename = "mock")]
+    Mock,
+}
+
+impl Protocol {
+    /// The config-file spelling of this protocol.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Protocol::OpenAi => "openai",
+            Protocol::Anthropic => "anthropic",
+            Protocol::Mock => "mock",
+        }
+    }
+
+    /// Display label for configuration surfaces.
+    pub fn label(self) -> &'static str {
+        match self {
+            Protocol::OpenAi => "OpenAI 兼容",
+            Protocol::Anthropic => "Anthropic",
+            Protocol::Mock => "Mock",
+        }
+    }
+}
+
+/// One built-in provider route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogEntry {
+    /// Provider route key (`providers.<route>` in the config).
+    pub route: &'static str,
+    /// Name shown by configuration surfaces.
+    pub display_name: &'static str,
+    /// Wire protocol every model on this route speaks.
+    pub protocol: Protocol,
+    /// Default endpoint; a user `base_url` overrides it.
+    pub base_url: &'static str,
+    /// Default credential reference; empty means keyless (e.g. local Ollama).
+    pub api_key_env: &'static str,
+    /// Default model when the route carries none.
+    pub default_model: Option<&'static str>,
+    /// MiniMax ships its thinking inside `content` unless asked to split it out.
+    pub reasoning_split: bool,
+    /// Models this route advertises, for selection surfaces.
+    pub models: &'static [&'static str],
+}
+
+/// The built-in provider catalog, in presentation order.
+pub const CATALOG: &[CatalogEntry] = &[
+    CatalogEntry {
+        route: "openai",
+        display_name: "OpenAI",
+        protocol: Protocol::OpenAi,
+        base_url: "https://api.openai.com/v1",
+        api_key_env: "OPENAI_API_KEY",
+        default_model: None,
+        reasoning_split: false,
+        models: &[],
+    },
+    CatalogEntry {
+        route: "deepseek",
+        display_name: "DeepSeek",
+        protocol: Protocol::OpenAi,
+        base_url: "https://api.deepseek.com/v1",
+        api_key_env: "DEEPSEEK_API_KEY",
+        default_model: Some("deepseek-flash"),
+        reasoning_split: false,
+        models: &["deepseek-flash"],
+    },
+    CatalogEntry {
+        route: "ollama",
+        display_name: "Ollama",
+        protocol: Protocol::OpenAi,
+        base_url: "http://localhost:11434/v1",
+        api_key_env: "",
+        default_model: None,
+        reasoning_split: false,
+        models: &[],
+    },
+    // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
+    // no new provider code, only the endpoint and key variable. The default
+    // host is the mainland platform; international accounts override
+    // `base_url` to https://api.minimax.io/v1.
+    CatalogEntry {
+        route: "minimax",
+        display_name: "MiniMax",
+        protocol: Protocol::OpenAi,
+        base_url: "https://api.minimaxi.com/v1",
+        api_key_env: "MINIMAX_API_KEY",
+        default_model: Some("MiniMax-M3"),
+        reasoning_split: true,
+        models: &["MiniMax-M3"],
+    },
+    // Anthropic Messages API. `claude` is accepted as a friendlier alias;
+    // both resolve to the same provider and key.
+    CatalogEntry {
+        route: "anthropic",
+        display_name: "Anthropic",
+        protocol: Protocol::Anthropic,
+        base_url: "https://api.anthropic.com",
+        api_key_env: "ANTHROPIC_API_KEY",
+        default_model: Some("claude-sonnet-4-5"),
+        reasoning_split: false,
+        models: &["claude-sonnet-4-5"],
+    },
+];
+
+/// Every built-in catalog route.
+pub fn catalog_entries() -> impl Iterator<Item = &'static CatalogEntry> {
+    CATALOG.iter()
+}
+
+/// The catalog entry for one route, when the catalog ships it.
+///
+/// `claude` is the friendlier alias of the `anthropic` route; both look up the
+/// same entry so the resolver and the settings surface agree on one provider.
+pub fn catalog_entry(route: &str) -> Option<&'static CatalogEntry> {
+    let route = match route {
+        "claude" => "anthropic",
+        other => other,
+    };
+    CATALOG.iter().find(|entry| entry.route == route)
+}

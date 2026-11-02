@@ -307,6 +307,14 @@ impl ConfigEdit {
     pub fn apply_config(&mut self, config: &crate::config::Config) -> Result<(), ConfigError> {
         self.set_integer(&["version"], i64::from(config.version))?;
         self.set_optional_str(&["default_provider"], config.default_provider.clone())?;
+        self.set_optional_str(
+            &["default-model", "provider"],
+            config.default_model.provider.clone(),
+        )?;
+        self.set_optional_str(
+            &["default-model", "model"],
+            config.default_model.model.clone(),
+        )?;
 
         self.set_integer(
             &["context", "window_tokens"],
@@ -484,6 +492,74 @@ impl ConfigEdit {
     }
 }
 
+/// Persist the global default model (`[default-model]`) — the GUI calls this
+/// on "切即默认" (switching the session model also makes it the default).
+///
+/// A `None` value removes the key; a missing `[default-model]` table is
+/// created on demand. The save goes through [`ConfigEdit::save`], so the
+/// result is validated and written atomically.
+pub fn set_default_model(
+    path: &Path,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), ConfigError> {
+    let mut edit = ConfigEdit::open(path)?;
+    edit.set_optional_str(&["default-model", "provider"], provider)?;
+    edit.set_optional_str(&["default-model", "model"], model)?;
+    edit.save()
+}
+
+/// Write ONE scalar key into `path`, preserving comments and writing
+/// atomically (`.bak`, validation — exactly like [`ConfigEdit::save`]).
+///
+/// `None` removes the key (an "unset" optional). The value string is typed by
+/// inspection: `true`/`false` → bool, an integer literal → integer, a float
+/// literal → float, anything else → a string. The array keys
+/// (`sandbox.extra_writable`, `network.allow`, `skills.roots`,
+/// `search.api_key_command`) take one entry per line. This mirrors what
+/// [`ConfigEdit::apply_config`] writes for the same keys, so a settings auto
+/// save never changes the file's shape.
+pub fn set_scalar(
+    path: &Path,
+    keys: &[&str],
+    value: Option<&str>,
+) -> Result<(), ConfigError> {
+    let mut edit = ConfigEdit::open(path)?;
+    match value {
+        Some(value) => set_scalar_value(&mut edit, keys, value)?,
+        None => edit.remove(keys),
+    }
+    edit.save()
+}
+
+fn set_scalar_value(edit: &mut ConfigEdit, keys: &[&str], value: &str) -> Result<(), ConfigError> {
+    match keys {
+        ["sandbox", "extra_writable"] | ["network", "allow"] | ["skills", "roots"]
+        | ["search", "api_key_command"] => {
+            let values = value
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            edit.set_string_array(keys, values)
+        }
+        _ => match value.trim() {
+            "true" => edit.set_bool(keys, true),
+            "false" => edit.set_bool(keys, false),
+            _ => {
+                if let Ok(integer) = value.trim().parse::<i64>() {
+                    edit.set_integer(keys, integer)
+                } else if let Ok(float) = value.trim().parse::<f64>() {
+                    edit.set_float(keys, float)
+                } else {
+                    edit.set_str(keys, value.to_string())
+                }
+            }
+        },
+    }
+}
+
 fn set_optional(table: &mut Table, key: &str, value: Option<String>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
         table.insert(key, Item::Value(Value::from(value)));
@@ -634,8 +710,10 @@ mod tests {
                 api_key_env: Some("DEEPSEEK_API_KEY".to_string()),
                 api_key_command: Some(vec!["echo".to_string(), "secret".to_string()]),
                 default_model: Some("deepseek-flash".to_string()),
+                protocol: None,
                 stream_usage: false,
                 extra_body: Default::default(),
+                headers: Default::default(),
             },
         );
         config.context.window_tokens = 64_000;
@@ -731,6 +809,47 @@ mod tests {
     }
 
     #[test]
+    fn set_scalar_round_trips_and_removes() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# keep me\nversion = 1\n[agent]\nsnapshot_shell = true\n",
+        )
+        .expect("seed");
+
+        set_scalar(&path, &["default_provider"], Some("deepseek")).expect("string");
+        set_scalar(&path, &["agent", "max_turns"], Some("12")).expect("integer");
+        set_scalar(&path, &["agent", "max_cost_usd"], Some("0.5")).expect("float");
+        set_scalar(&path, &["agent", "snapshot_shell"], Some("false")).expect("bool");
+        set_scalar(
+            &path,
+            &["network", "allow"],
+            Some("api.example.com:443\n*.internal.test"),
+        )
+        .expect("array");
+
+        let loaded = crate::config::load(&path).expect("valid");
+        assert_eq!(loaded.default_provider.as_deref(), Some("deepseek"));
+        assert_eq!(loaded.agent.max_turns, 12);
+        assert_eq!(loaded.agent.max_cost_usd, Some(0.5));
+        assert!(!loaded.agent.snapshot_shell);
+        assert_eq!(
+            loaded.network.allow,
+            ["api.example.com:443".to_string(), "*.internal.test".to_string()]
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("# keep me"), "{text}");
+
+        set_scalar(&path, &["default_provider"], None).expect("remove");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert!(loaded.default_provider.is_none());
+        assert_eq!(loaded.agent.max_turns, 12, "other keys survive");
+        let backup = std::fs::read_to_string(dir.path().join("config.toml.bak")).expect("backup");
+        assert!(backup.contains("deepseek"), "{backup}");
+    }
+
+    #[test]
     fn arrays_and_removals_round_trip() {
         let dir = temp();
         let path = dir.path().join("config.toml");
@@ -763,5 +882,30 @@ mod tests {
         assert!(loaded.agent.snapshot_shell);
         assert_eq!(loaded.network.allow.len(), 2);
         assert_eq!(loaded.approval.rules.len(), 1);
+    }
+
+    #[test]
+    fn set_default_model_round_trips() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_provider = \"deepseek\"\n").expect("seed");
+
+        set_default_model(&path, Some("ark"), Some("m1")).expect("set");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert_eq!(loaded.default_model.provider.as_deref(), Some("ark"));
+        assert_eq!(loaded.default_model.model.as_deref(), Some("m1"));
+        assert_eq!(loaded.default_provider.as_deref(), Some("deepseek"));
+
+        set_default_model(&path, None, None).expect("clear");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert!(loaded.default_model.provider.is_none());
+        assert!(loaded.default_model.model.is_none());
+
+        // A fresh file (no `[default-model]`) is created on demand.
+        let fresh = dir.path().join("fresh.toml");
+        set_default_model(&fresh, Some("ollama"), Some("qwen")).expect("fresh");
+        let loaded = crate::config::load(&fresh).expect("valid");
+        assert_eq!(loaded.default_model.provider.as_deref(), Some("ollama"));
+        assert_eq!(loaded.default_model.model.as_deref(), Some("qwen"));
     }
 }

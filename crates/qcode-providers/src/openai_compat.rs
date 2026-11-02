@@ -35,6 +35,10 @@ pub struct OpenAiCompatConfig {
     /// defaults. MiniMax uses this for `reasoning_split`, which moves the
     /// thinking text into `reasoning_content` instead of inline `<think>` tags.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
+    /// Deployment-level request headers (gateway auth, custom headers).
+    /// Applied before the mandatory headers, so reserved names like
+    /// `authorization` and `content-type` can never be overridden.
+    pub headers: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for OpenAiCompatConfig {
@@ -45,6 +49,8 @@ impl std::fmt::Debug for OpenAiCompatConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("stream_usage", &self.stream_usage)
             .field("proxy_url", &self.proxy_url)
+            // Header *names* only: values may carry gateway secrets.
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -108,11 +114,37 @@ impl Provider for OpenAiCompatProvider {
         let mut include_usage = self.config.stream_usage;
         let response = loop {
             let body = build_body(&request, include_usage, &self.config.extra_body)?;
-            let mut builder = self.client.post(self.endpoint()).json(&body);
-            if let Some(key) = &self.config.api_key {
-                builder = builder.bearer_auth(key);
+            let mut builder = self.client.post(self.endpoint());
+            // Deployment-level headers first; the mandatory headers below are
+            // applied with replace semantics, so reserved names (authorization,
+            // accept, content-type) can never be overridden by the config.
+            for (name, value) in &self.config.headers {
+                if let (Ok(name), Ok(value)) = (
+                    reqwest::header::HeaderName::try_from(name.as_str()),
+                    reqwest::header::HeaderValue::from_str(value),
+                ) {
+                    builder = builder.header(name, value);
+                }
             }
-            builder = builder.header("accept", "text/event-stream");
+            let mut mandatory = reqwest::header::HeaderMap::new();
+            mandatory.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+            mandatory.insert(
+                reqwest::header::ACCEPT,
+                reqwest::header::HeaderValue::from_static("text/event-stream"),
+            );
+            if let Some(key) = &self.config.api_key {
+                // A key that cannot become a header value (pathological config)
+                // sends no Authorization rather than panicking.
+                if let Ok(value) =
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
+                {
+                    mandatory.insert(reqwest::header::AUTHORIZATION, value);
+                }
+            }
+            builder = builder.headers(mandatory).json(&body);
 
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
@@ -636,6 +668,7 @@ mod tests {
             stream_usage: true,
             proxy_url: None,
             extra_body: Default::default(),
+            headers: Default::default(),
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-secret-value"));
