@@ -113,10 +113,10 @@ const MAIN_MIN_WIDTH: f32 = 380.0;
 const MAIN_PAD_L: f32 = 44.0;
 const MAIN_PAD_R: f32 = 52.0;
 /// 对话展示框（用户问题 / 过程 / 结果）相对输入框的额外内缩：让对话内容
-/// 左右两侧都比下方问题框的边框更窄一圈。输入框在 MAIN_PAD 之外又各自包了
+/// 左右两侧都比下方问题框的边框收窄一圈。输入框在 MAIN_PAD 之外又各自包了
 /// 一层 44/52 的容器 padding，对话展示框只有 MAIN_PAD 与外层 MessageScroller
-/// 的 px_3/px_6，所以这里补一层内缩，使横线右端不再超出问题框右边框。
-const TRANSCRIPT_PAD_L: f32 = 16.0;
+/// 的 px_3/px_6，所以这里左右各补一层内缩，左侧略多，使左缘收窄更明显。
+const TRANSCRIPT_PAD_L: f32 = 32.0;
 const TRANSCRIPT_PAD_R: f32 = 32.0;
 /// Turns after which the composer suggests starting a fresh task; long
 /// transcripts get unwieldy and a clean session usually answers better.
