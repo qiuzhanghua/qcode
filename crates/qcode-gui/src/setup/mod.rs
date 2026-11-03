@@ -110,6 +110,10 @@ pub struct SetupView {
     /// Model drafts on the declaration card (adopted only on create).
     custom_models: Vec<ModelRowState>,
     custom_error: Option<String>,
+    /// Set when the settings window is closing: background tasks (the model
+    /// probe poll loop, auto-save debounce) short-circuit instead of touching
+    /// the removed window, which GPUI would report as "window not found".
+    pub(crate) closing: bool,
     /// Settings-mode auto save: the last change not yet flushed, and the
     /// generation of the trailing-debounce timer that flushes it (only the
     /// newest generation fires, so rapid typing coalesces into one write).
@@ -121,6 +125,97 @@ pub struct SetupView {
     _input_subscriptions: Vec<gpui_kit::Subscription>,
 }
 
+/// Close a settings/setup window without racing the platform's teardown.
+///
+/// On Windows the platform reports activation changes through a callback that
+/// runs on a later main-thread tick. Removing the window synchronously makes
+/// that callback target a window GPUI has already dropped, logging a spurious
+/// "window not found": deactivating a window (hiding/minimizing it, or
+/// destroying the active one) delivers WM_ACTIVATE, which spawns the
+/// `active_status_change` callback on the executor, and that callback runs
+/// after the window was removed.
+///
+/// So the close is split into posted/scheduled steps that keep the window
+/// registered until the deactivation callback has run:
+/// 1. The window is hidden right away (posted, never processed synchronously
+///    inside this App update — a synchronous `ShowWindow` would re-enter the
+///    window proc and dispatch input into the now-active main window while the
+///    App is still borrowed, "RefCell already borrowed").
+/// 2. On the next main-thread tick another window is activated via the raw
+///    HWND *outside* any App update. That deactivates the settings window and
+///    queues the `active_status_change` callback while it is still registered.
+/// 3. The removal is enqueued after that callback, so it runs before the
+///    window disappears.
+pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
+    #[cfg(target_os = "windows")]
+    hide_settings_window_async(window);
+    #[cfg(not(target_os = "windows"))]
+    crate::tray::hide_window(window);
+    // The settings window is taken out of the window table while this update
+    // runs, so any handle still listed belongs to another window.
+    let handle = window.window_handle();
+    #[cfg(target_os = "windows")]
+    let other = cx.windows().into_iter().find(|h| *h != handle);
+    let mut async_cx = cx.to_async();
+    let executor = cx.foreground_executor().clone();
+    let removal_executor = executor.clone();
+    executor
+        .spawn(async move {
+            #[cfg(target_os = "windows")]
+            if let Some(other) = other {
+                // Read the other window's raw HWND inside an App update (no
+                // window messages are sent by that read), then deactivate the
+                // settings window by activating it from outside any update.
+                let other_hwnd = other
+                    .update(&mut async_cx, |_, window, _| {
+                        <Window as raw_window_handle::HasWindowHandle>::window_handle(window)
+                            .ok()
+                            .and_then(|handle| match handle.as_raw() {
+                                raw_window_handle::RawWindowHandle::Win32(win32) => {
+                                    Some(win32.hwnd.get())
+                                }
+                                _ => None,
+                            })
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(other_hwnd) = other_hwnd {
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(
+                            other_hwnd as _,
+                        );
+                    }
+                }
+            }
+            // Enqueue the removal only after the step above, so the
+            // deactivation callback the platform queued runs first.
+            let mut removal_cx = async_cx.clone();
+            removal_executor.spawn(async move {
+                let _ = handle.update(&mut removal_cx, |_, window, _| window.remove_window());
+            }).detach();
+        })
+        .detach();
+}
+
+#[cfg(target_os = "windows")]
+fn hide_settings_window_async(window: &Window) {
+    let Ok(handle) =
+        <Window as raw_window_handle::HasWindowHandle>::window_handle(window)
+    else {
+        return;
+    };
+    let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+        windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+        );
+    }
+}
+
 /// Open the first-run/setup wizard. Returns when the user saves (which quits
 /// the GPUI app) or closes the window.
 pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
@@ -128,7 +223,17 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             window.activate_window();
-            cx.new(|cx| SetupView::new(path, data_dir, true, window, cx))
+            let view = cx.new(|cx| SetupView::new(path, data_dir, true, window, cx));
+            // Same close path as the settings window (see `close_settings_window`).
+            let view_for_close = view.clone();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = view_for_close.update(cx, |view, _cx| {
+                    view.closing = true;
+                });
+                close_settings_window(window, cx);
+                false
+            });
+            view
         })
         .expect("failed to open the setup window");
     });
@@ -140,7 +245,18 @@ pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             window.activate_window();
-            cx.new(|cx| SetupView::new(path, data_dir, false, window, cx))
+            let view = cx.new(|cx| SetupView::new(path, data_dir, false, window, cx));
+            // See `close_settings_window`: stop background tasks as the window
+            // closes and remove the window on a later tick.
+            let view_for_close = view.clone();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = view_for_close.update(cx, |view, _cx| {
+                    view.closing = true;
+                });
+                close_settings_window(window, cx);
+                false
+            });
+            view
         })
         .expect("failed to open the settings window");
     });
@@ -197,6 +313,7 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
+            closing: false,
             pending_auto_save: None,
             auto_save_generation: 0,
             _input_subscriptions: Vec::new(),

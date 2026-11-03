@@ -140,7 +140,14 @@ impl SetupView {
                 } else {
                     // Removing the window invalidates it: nothing may touch it
                     // afterwards, so leave before the trailing notify below.
-                    window.remove_window();
+                    // Mark closing first so background tasks (probe poll,
+                    // auto-save debounce) do not touch the removed window.
+                    self.closing = true;
+                    // Hide + deferred removal (see `close_settings_window`):
+                    // the window keeps responding to platform events until the
+                    // next main-thread tick, and the deactivation callback runs
+                    // while it is still registered.
+                    close_settings_window(window, cx);
                     return;
                 }
             }
@@ -292,6 +299,9 @@ impl SetupView {
                 .timer(std::time::Duration::from_millis(250))
                 .await;
             let _ = this.update(cx, |view, cx| {
+                if view.closing {
+                    return;
+                }
                 if view.auto_save_generation == generation
                     && let Some(kind) = view.pending_auto_save.take()
                 {

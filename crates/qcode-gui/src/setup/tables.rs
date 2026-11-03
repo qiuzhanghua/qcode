@@ -392,6 +392,12 @@ impl SetupView {
                     .timer(std::time::Duration::from_millis(100))
                     .await;
                 let done = this.update(cx, |view, cx| {
+                    if view.closing {
+                        // The window is being torn down: stop polling instead
+                        // of touching the removed window.
+                        view.probe_rx = None;
+                        return true;
+                    }
                     let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
                     match received {
                         Some(Ok(Ok(ids))) if ids.is_empty() => {

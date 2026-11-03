@@ -288,7 +288,22 @@ impl Shell {
             ..Default::default()
         };
         let result = gpui_kit::open_window(options, cx, move |window, cx| {
-            cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx))
+            let view =
+                cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));
+            // Mark the view closing as the window tears down, so its background
+            // tasks (probe poll, auto-save debounce) stop short-circuiting, and
+            // close through `close_settings_window`: hide first, then remove on
+            // a later tick, so the platform's deactivation callback never
+            // targets a removed window ("window not found").
+            let view_for_close = view.clone();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = view_for_close.update(cx, |view, _cx| {
+                    view.closing = true;
+                });
+                crate::setup::close_settings_window(window, cx);
+                false
+            });
+            view
         });
         if let Err(error) = result {
             eprintln!("qcode-gui: cannot open settings: {error}");
