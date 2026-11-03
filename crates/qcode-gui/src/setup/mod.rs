@@ -156,7 +156,9 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     #[cfg(target_os = "windows")]
     let other = cx.windows().into_iter().find(|h| *h != handle);
-    let mut async_cx = cx.to_async();
+    // The only `&mut` use is the Windows-only activation below; elsewhere the
+    // handle is just cloned, so keep the binding itself immutable.
+    let async_cx = cx.to_async();
     let executor = cx.foreground_executor().clone();
     let removal_executor = executor.clone();
     executor
@@ -166,6 +168,7 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
                 // Read the other window's raw HWND inside an App update (no
                 // window messages are sent by that read), then deactivate the
                 // settings window by activating it from outside any update.
+                let mut async_cx = async_cx.clone();
                 let other_hwnd = other
                     .update(&mut async_cx, |_, window, _| {
                         <Window as raw_window_handle::HasWindowHandle>::window_handle(window)
@@ -190,18 +193,18 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
             // Enqueue the removal only after the step above, so the
             // deactivation callback the platform queued runs first.
             let mut removal_cx = async_cx.clone();
-            removal_executor.spawn(async move {
-                let _ = handle.update(&mut removal_cx, |_, window, _| window.remove_window());
-            }).detach();
+            removal_executor
+                .spawn(async move {
+                    let _ = handle.update(&mut removal_cx, |_, window, _| window.remove_window());
+                })
+                .detach();
         })
         .detach();
 }
 
 #[cfg(target_os = "windows")]
 fn hide_settings_window_async(window: &Window) {
-    let Ok(handle) =
-        <Window as raw_window_handle::HasWindowHandle>::window_handle(window)
-    else {
+    let Ok(handle) = <Window as raw_window_handle::HasWindowHandle>::window_handle(window) else {
         return;
     };
     let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
@@ -227,7 +230,7 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
             // Same close path as the settings window (see `close_settings_window`).
             let view_for_close = view.clone();
             window.on_window_should_close(cx, move |window, cx| {
-                let _ = view_for_close.update(cx, |view, _cx| {
+                view_for_close.update(cx, |view, _cx| {
                     view.closing = true;
                 });
                 close_settings_window(window, cx);
@@ -250,7 +253,7 @@ pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
             // closes and remove the window on a later tick.
             let view_for_close = view.clone();
             window.on_window_should_close(cx, move |window, cx| {
-                let _ = view_for_close.update(cx, |view, _cx| {
+                view_for_close.update(cx, |view, _cx| {
                     view.closing = true;
                 });
                 close_settings_window(window, cx);

@@ -181,7 +181,7 @@ pub fn resolve(
                 .default_model
                 .provider
                 .as_deref()
-                .map_or(true, |provider| provider == name.as_str());
+                .is_none_or(|provider| provider == name.as_str());
             applies
                 .then(|| config.default_model.model.clone())
                 .flatten()

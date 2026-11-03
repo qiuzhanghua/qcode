@@ -300,7 +300,7 @@ impl Shell {
             // targets a removed window ("window not found").
             let view_for_close = view.clone();
             window.on_window_should_close(cx, move |window, cx| {
-                let _ = view_for_close.update(cx, |view, _cx| {
+                view_for_close.update(cx, |view, _cx| {
                     view.closing = true;
                 });
                 crate::setup::close_settings_window(window, cx);

@@ -55,7 +55,7 @@ impl SetupView {
                 div()
                     .text_size(sp(SECONDARY_SIZE))
                     .text_color(success_color)
-                    .child(format!("{notice}")),
+                    .child(notice.to_string()),
             );
         }
         for row in &directory {
@@ -202,7 +202,7 @@ impl SetupView {
                             div()
                                 .text_size(sp(SECONDARY_SIZE))
                                 .text_color(muted_foreground_color)
-                                .child(format!("{route}")),
+                                .child(route.to_string()),
                         ),
                 );
                 continue;
@@ -308,7 +308,7 @@ impl SetupView {
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(danger_color)
-                    .child(format!("{result}")),
+                    .child(result.to_string()),
             );
         }
         let route_close = route.to_string();
@@ -603,7 +603,7 @@ impl SetupView {
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(danger_color)
-                    .child(format!("{error}")),
+                    .child(error.to_string()),
             );
         }
         card = card.child(

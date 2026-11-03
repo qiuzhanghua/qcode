@@ -14,14 +14,19 @@ pub fn models_url(base_url: &str) -> String {
 
 /// Parse an OpenAI-compatible `/models` reply: `data[].id`, sorted.
 pub fn parse_model_ids(body: &str, url: &str) -> Result<Vec<String>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(|error| format!("model listing at {url} is not JSON: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|error| format!("model listing at {url} is not JSON: {error}"))?;
     let Some(data) = value.get("data").and_then(serde_json::Value::as_array) else {
         return Err(format!("model listing at {url} has no data array"));
     };
     let mut ids: Vec<String> = data
         .iter()
-        .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str).map(str::to_string))
+        .filter_map(|entry| {
+            entry
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
     ids.sort();
     Ok(ids)
@@ -111,7 +116,10 @@ mod tests {
             models_url("https://ark.cn-beijing.volces.com/api/v3/"),
             "https://ark.cn-beijing.volces.com/api/v3/models"
         );
-        assert_eq!(models_url("http://localhost:11434/v1"), "http://localhost:11434/v1/models");
+        assert_eq!(
+            models_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1/models"
+        );
     }
 
     #[test]
@@ -153,9 +161,8 @@ mod tests {
     #[tokio::test]
     async fn no_key_means_no_authorization_header() {
         let client = reqwest::Client::new();
-        let request =
-            build_request(&client, "https://example.com/v1", None, &BTreeMap::new())
-                .expect("request");
+        let request = build_request(&client, "https://example.com/v1", None, &BTreeMap::new())
+            .expect("request");
         assert!(request.headers().get("authorization").is_none());
         assert_eq!(
             request.headers().get("accept").expect("accept header"),

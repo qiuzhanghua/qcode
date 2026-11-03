@@ -147,10 +147,7 @@ impl Provider for AnthropicProvider {
             // A key that cannot become a header value (pathological config)
             // sends no x-api-key rather than panicking.
             if let Ok(value) = reqwest::header::HeaderValue::from_str(key) {
-                mandatory.insert(
-                    reqwest::header::HeaderName::from_static("x-api-key"),
-                    value,
-                );
+                mandatory.insert(reqwest::header::HeaderName::from_static("x-api-key"), value);
             }
         }
         builder = builder.headers(mandatory).json(&body);

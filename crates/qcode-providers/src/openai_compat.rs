@@ -138,8 +138,7 @@ impl Provider for OpenAiCompatProvider {
             if let Some(key) = &self.config.api_key {
                 // A key that cannot become a header value (pathological config)
                 // sends no Authorization rather than panicking.
-                if let Ok(value) =
-                    reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
                 {
                     mandatory.insert(reqwest::header::AUTHORIZATION, value);
                 }
