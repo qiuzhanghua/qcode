@@ -98,6 +98,33 @@ static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
 fn sp(base: f32) -> gpui_kit::Pixels {
     px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
 }
+
+/// Apply one zoom step to the whole UI's text from anywhere — the global
+/// `ZoomInShortcut`/`ZoomOutShortcut` fallback. The per-window handlers keep
+/// their own `GuiPreferences` in sync; this one runs when no window handler
+/// consumed the action (e.g. the settings window is focused but its handler
+/// did not fire), so Ctrl+= / Ctrl+- always work.
+pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
+    let current = FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as i32;
+    let next = (current + delta).clamp(
+        crate::gui_prefs::FONT_SIZE_MIN as i32,
+        crate::gui_prefs::FONT_SIZE_MAX as i32,
+    ) as u32;
+    if next == current as u32 {
+        return;
+    }
+    FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
+    let mut prefs = GuiPreferences::load(data_dir);
+    prefs.font_size = next;
+    if let Err(error) = prefs.save(data_dir) {
+        eprintln!("qcode-gui: cannot save gui.json: {error}");
+    }
+    prefs.apply(cx);
+    // Re-render every window (including the settings window) so the
+    // sp-scaled typography picks up the new font axis.
+    cx.refresh_windows();
+}
+
 const TURN_RAIL_WIDTH: f32 = 20.0;
 /// 输入框上方提示框（权限询问 / 报错 / 轮次提示）比输入框左右各内缩的像素。
 /// 三个提示框都用它，保证宽度完全一致。

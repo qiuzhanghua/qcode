@@ -251,12 +251,14 @@ impl Shell {
     /// Font size field, then re-applied to the theme (default text) and to
     /// every `sp`-scaled typography token.
     pub(crate) fn zoom_font(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let next = self.prefs.font_size as i32 + delta;
-        let next = next.clamp(
+        // `FONT_SIZE_PX` is the single source of truth; the global fallback
+        // listener may already have applied the step (making this a no-op).
+        let current = FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as i32;
+        let next = (current + delta).clamp(
             crate::gui_prefs::FONT_SIZE_MIN as i32,
             crate::gui_prefs::FONT_SIZE_MAX as i32,
         ) as u32;
-        if next == self.prefs.font_size {
+        if next == current as u32 {
             return;
         }
         self.prefs.font_size = next;
@@ -288,6 +290,7 @@ impl Shell {
             ..Default::default()
         };
         let result = gpui_kit::open_window(options, cx, move |window, cx| {
+            window.activate_window();
             let view =
                 cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));
             // Mark the view closing as the window tears down, so its background

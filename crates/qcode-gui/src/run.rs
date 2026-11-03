@@ -57,6 +57,18 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // or the root handler never sees Cmd+Enter.
                 KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
             ]);
+            // Global fallback for the zoom shortcuts: window-level handlers
+            // (Shell, settings SetupView) normally consume these; this runs
+            // when no window handler did (e.g. a settings window focused but
+            // its handler did not fire), so Ctrl+= / Ctrl+- always zoom.
+            let zoom_data_dir = data_dir.clone();
+            cx.on_action(move |_: &ZoomInShortcut, cx| {
+                crate::zoom_font_global(1, &zoom_data_dir, cx);
+            });
+            let zoom_data_dir = data_dir.clone();
+            cx.on_action(move |_: &ZoomOutShortcut, cx| {
+                crate::zoom_font_global(-1, &zoom_data_dir, cx);
+            });
             let (window_handle, shell) =
                 gpui_kit::open_window(window_options, cx, move |window, cx| {
                     window.activate_window();

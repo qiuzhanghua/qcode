@@ -387,4 +387,34 @@ impl SetupView {
         }
         view
     }
+
+    /// Cmd+= / Cmd+- on macOS, Ctrl+= / Ctrl+- elsewhere: the same zoom the main
+    /// window offers. `FONT_SIZE_PX` is the single source of truth; the global
+    /// fallback listener may already have applied the step (making this a
+    /// no-op). The settings window keeps its own handler so the Font size form
+    /// field stays in sync when the zoom is applied while it has focus.
+    pub(crate) fn zoom_font(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let current = crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as i32;
+        let next = (current + delta).clamp(
+            crate::gui_prefs::FONT_SIZE_MIN as i32,
+            crate::gui_prefs::FONT_SIZE_MAX as i32,
+        ) as u32;
+        if next == current as u32 {
+            return;
+        }
+        self.prefs.font_size = next;
+        crate::FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
+        if let Err(error) = self.prefs.save(&self.data_dir) {
+            eprintln!("qcode-gui: cannot save gui.json: {error}");
+        }
+        self.prefs.apply(cx);
+        // Keep the form's Font size field in sync so a later edit of another
+        // field doesn't leave it showing a stale value.
+        if let Some(input) = self.inputs.get("gui.font_size") {
+            input.update(cx, |state, cx| {
+                state.set_value(next.to_string(), window, cx);
+            });
+        }
+        cx.notify();
+    }
 }

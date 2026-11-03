@@ -1,6 +1,5 @@
 use super::*;
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tooltip::Tooltip;
@@ -310,7 +309,6 @@ impl Render for SetupView {
                     Button::new(format!("settings-page-{index}"))
                         .label(title)
                         .ghost()
-                        .large()
                         .h(px(36.0))
                         .selected(index == self.page)
                         .on_click(cx.listener(move |this, _, _window, cx| {
@@ -367,6 +365,15 @@ impl Render for SetupView {
             // and the provider delete confirmation.
             .child(self.render_probe_picker(window, cx))
             .child(self.render_delete_dialog(cx))
+            // Ctrl+= / Ctrl+- (Cmd+= / Cmd+- on macOS) zoom the whole UI's text
+            // while this window has focus; the key bindings are app-global, the
+            // handlers are per-window (see `SetupView::zoom_font`).
+            .on_action(cx.listener(|this, _: &crate::ZoomInShortcut, window, cx| {
+                this.zoom_font(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomOutShortcut, window, cx| {
+                this.zoom_font(-1, window, cx);
+            }))
     }
 }
 
