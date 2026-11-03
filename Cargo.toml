@@ -26,6 +26,12 @@ members = [
 # panicked the GUI on the main thread. The fork decodes the charsets XIM
 # servers actually send and never fails. See ADR-0051.
 xim-ctext = { path = "vendor/xim-ctext" }
+# The Windows VSync thread RedrawWindow-s every tracked HWND on each vsync; a
+# closing window's HWND can be destroyed a tick or two before its raw handle is
+# pruned, logging a spurious ERROR_INVALID_WINDOW_HANDLE to the console. The
+# fork skips destroyed windows with an IsWindow guard. See
+# vendor/gpui-pre-windows/README.qcode.md.
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.package]
 version = "0.6.1"
