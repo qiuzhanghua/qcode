@@ -440,7 +440,7 @@ impl SetupView {
             .flex_row()
             .items_center()
             .justify_between()
-            .gap_2()
+            .gap_3()
             .py_1()
             .border_b_1()
             .border_color(rgba(0x7f7f7f20))
@@ -453,11 +453,13 @@ impl SetupView {
                     .child(div().child(field.label))
                     // The help text floats over a popover on click, keeping the
                     // first version's tooltip visuals (a click trigger instead
-                    // of hover).
+                    // of hover). `appearance(false)` drops the popover's own
+                    // surface so the Tooltip content is the only floating layer.
                     .child(
                         Popover::new(format!("help-{key}"))
                             .anchor(Anchor::BottomLeft)
                             .offset(px(4.0))
+                            .appearance(false)
                             .trigger(HelpCircle(
                                 div()
                                     .id(format!("help-trigger-{key}"))
