@@ -6,12 +6,9 @@
 //! answers the configurable-provider directory the settings page renders.
 
 use qcode_core::event::Usage;
-use qcode_core::provider::{
-    Provider, StopReason, StreamEvent,
-};
+use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_providers::{
-    AnthropicConfig, AnthropicProvider, MockProvider, OpenAiCompatConfig,
-    OpenAiCompatProvider,
+    AnthropicConfig, AnthropicProvider, MockProvider, OpenAiCompatConfig, OpenAiCompatProvider,
 };
 
 use crate::config::{
@@ -210,7 +207,9 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("子 agent：仓库有 core/store/cli 三个 crate。".to_string()),
+                    StreamEvent::TextDelta(
+                        "子 agent：仓库有 core/store/cli 三个 crate。".to_string(),
+                    ),
                     StreamEvent::Usage(Usage {
                         input_tokens: Some(12),
                         output_tokens: Some(6),

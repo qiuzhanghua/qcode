@@ -97,6 +97,11 @@ impl SetupView {
         );
         row.cells
             .insert("__key", secret_input(window, cx, "API key (Keychain)"));
+        row.models = provider
+            .models
+            .iter()
+            .map(|model| self.model_row(window, cx, Some(model)))
+            .collect();
         row
     }
 
@@ -202,6 +207,7 @@ impl SetupView {
                 .collect(),
             bools: bools.into_iter().collect(),
             selects: selects.into_iter().collect(),
+            models: Vec::new(),
         };
         if !self.wizard {
             subscribe_cell_inputs(&mut self._input_subscriptions, &row, cx);
@@ -209,9 +215,57 @@ impl SetupView {
         row
     }
 
+    /// One model row of a provider's catalog, seeded from `model` when the
+    /// route already carries one (U2). Capacity fields are plain text; the
+    /// adapter-side K/M spelling is not mirrored here.
+    pub(crate) fn model_row(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        model: Option<&qcode_kernel::config::ModelEntry>,
+    ) -> ModelRowState {
+        self.next_row_id += 1;
+        let id = self.next_row_id;
+        let (id_value, name_value, context_value, max_value) = match model {
+            Some(model) => (
+                model.id.clone(),
+                model.name.clone().unwrap_or_default(),
+                model
+                    .context_window
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                model.max_tokens.map(|v| v.to_string()).unwrap_or_default(),
+            ),
+            None => (String::new(), String::new(), String::new(), String::new()),
+        };
+        let model_id = input(window, cx, id_value, "模型 ID");
+        let name = input(window, cx, name_value, "显示名称");
+        let context_window = input(window, cx, context_value, "上下文窗口");
+        let max_tokens = input(window, cx, max_value, "最大输出 token");
+        if !self.wizard {
+            for entity in [&model_id, &name, &context_window, &max_tokens] {
+                self._input_subscriptions.push(cx.subscribe(
+                    entity,
+                    |view, _input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            view.auto_save(cx, AutoSaveKind::Tables, true);
+                        }
+                    },
+                ));
+            }
+        }
+        ModelRowState {
+            id,
+            model_id,
+            name,
+            context_window,
+            max_tokens,
+        }
+    }
+
     pub(crate) fn add_provider_preset(
         &mut self,
-        route: &'static str,
+        route: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -242,6 +296,12 @@ impl SetupView {
         let mut row = row;
         row.cells
             .insert("__key", secret_input(window, cx, "API key (Keychain)"));
+        // The preset inherits the catalog's static model list; the first edit
+        // materializes the route's own override (U2).
+        row.models = qcode_kernel::config::catalog_models(entry.route)
+            .iter()
+            .map(|model| self.model_row(window, cx, Some(model)))
+            .collect();
         if let Some(state) = self.tables.get_mut("providers") {
             state.rows.push(row);
         }
@@ -255,13 +315,13 @@ impl SetupView {
         cx.notify();
     }
 
-    /// Probe the first provider row that has a `base_url` for its model list
-    /// (`GET {base}/models`, dsh discovery semantics). reqwest needs a tokio
-    /// reactor, which GPUI's executor is not, so the probe runs on its own
-    /// current-thread runtime on a worker thread and reports back through a
-    /// channel drained by a foreground poll loop. Results are candidate
-    /// metadata only — nothing is persisted.
-    pub(crate) fn probe_models(&mut self, cx: &mut Context<Self>) {
+    /// Probe one route's endpoint for its model list (`GET {base}/models`,
+    /// dsh discovery semantics). reqwest needs a tokio reactor, which GPUI's
+    /// executor is not, so the probe runs on its own current-thread runtime on
+    /// a worker thread and reports back through a channel drained by a
+    /// foreground poll loop. Results are candidate metadata only — nothing is
+    /// persisted until the user adopts them from the picker (U3).
+    pub(crate) fn probe_models(&mut self, route: &str, cx: &mut Context<Self>) {
         if self.probe_rx.is_some() {
             return; // a probe is already in flight
         }
@@ -269,22 +329,28 @@ impl SetupView {
             .tables
             .get("providers")
             .and_then(|table| {
-                table.rows.iter().find_map(|row| {
-                    let base_url = cell(row, "base_url", cx);
-                    (!base_url.trim().is_empty()).then(|| {
-                        (
-                            cell(row, "name", cx).trim().to_string(),
-                            base_url.trim().to_string(),
-                            cell(row, "api_key_env", cx).trim().to_string(),
-                        )
-                    })
-                })
+                table
+                    .rows
+                    .iter()
+                    .find(|row| cell(row, "name", cx).trim() == route)
+            })
+            .map(|row| {
+                (
+                    cell(row, "name", cx).trim().to_string(),
+                    cell(row, "base_url", cx).trim().to_string(),
+                    cell(row, "api_key_env", cx).trim().to_string(),
+                )
             })
         else {
-            self.probe_result = Some("先填写 base_url".to_string());
+            self.probe_result = Some("先添加该提供方，再获取可用模型".to_string());
             cx.notify();
             return;
         };
+        if base_url.is_empty() {
+            self.probe_result = Some("请先填写 API 地址".to_string());
+            cx.notify();
+            return;
+        }
         let api_key = if api_key_env.is_empty() {
             None
         } else {
@@ -317,7 +383,9 @@ impl SetupView {
         });
         self.probe_rx = Some(rx);
         self.probe_result = Some("探测中…".to_string());
+        self.probe_candidates = None;
         cx.notify();
+        let route = name.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -326,9 +394,17 @@ impl SetupView {
                 let done = this.update(cx, |view, cx| {
                     let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
                     match received {
+                        Some(Ok(Ok(ids))) if ids.is_empty() => {
+                            view.probe_rx = None;
+                            view.probe_result =
+                                Some("该提供方没有列出任何模型，请手动添加。".to_string());
+                            cx.notify();
+                            true
+                        }
                         Some(Ok(Ok(ids))) => {
                             view.probe_rx = None;
-                            view.probe_result = Some(ids.join("\n"));
+                            view.probe_result = None;
+                            view.open_probe_picker(&route, &ids, cx);
                             cx.notify();
                             true
                         }
@@ -356,6 +432,151 @@ impl SetupView {
             }
         })
         .detach();
+    }
+
+    /// Open the candidate picker over `ids`: everything not already in the
+    /// route's model rows starts picked (adopting a selection never silently
+    /// rewrites a capacity the user corrected).
+    fn open_probe_picker(&mut self, route: &str, ids: &[String], cx: &mut Context<Self>) {
+        let known = self
+            .tables
+            .get("providers")
+            .and_then(|table| {
+                table
+                    .rows
+                    .iter()
+                    .find(|row| cell(row, "name", cx).trim() == route)
+            })
+            .map(|row| {
+                row.models
+                    .iter()
+                    .map(|model| model.model_id.read(cx).value().to_string())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        self.probe_candidates = Some(ids.to_vec());
+        self.probe_picked = ids
+            .iter()
+            .filter(|id| !known.contains(*id))
+            .cloned()
+            .collect();
+        self.probe_query = String::new();
+    }
+
+    /// Adopt the picked probe candidates into the editing provider's model
+    /// list, then close the picker.
+    pub(crate) fn adopt_probe_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(route) = self.editing_provider.clone() else {
+            return;
+        };
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        let Some(row) = table.rows.iter_mut().find(|row| {
+            row.cells
+                .get("name")
+                .map(|input| input.read(cx).value().trim() == route)
+                .unwrap_or(false)
+        }) else {
+            return;
+        };
+        let existing = row
+            .models
+            .iter()
+            .map(|model| model.model_id.read(cx).value().to_string())
+            .collect::<HashSet<_>>();
+        let pending = self
+            .probe_picked
+            .iter()
+            .filter(|id| !existing.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.probe_candidates = None;
+        self.probe_picked.clear();
+        self.probe_query.clear();
+        if pending.is_empty() {
+            return;
+        }
+        let new_rows = pending
+            .iter()
+            .map(|id| {
+                let model = qcode_kernel::config::ModelEntry {
+                    id: id.clone(),
+                    ..Default::default()
+                };
+                self.model_row(window, cx, Some(&model))
+            })
+            .collect::<Vec<_>>();
+        if let Some(state) = self.tables.get_mut("providers")
+            && let Some(row) = state.rows.iter_mut().find(|row| {
+                row.cells
+                    .get("name")
+                    .map(|input| input.read(cx).value().trim() == route)
+                    .unwrap_or(false)
+            })
+        {
+            row.models.extend(new_rows);
+        }
+        self.auto_save(cx, AutoSaveKind::Tables, false);
+        cx.notify();
+    }
+
+    /// Append one blank model row to a provider row's catalog.
+    pub(crate) fn add_model(&mut self, row_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model_row(window, cx, None);
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id) else {
+            return;
+        };
+        row.models.push(model);
+        self.auto_save(cx, AutoSaveKind::Tables, false);
+        cx.notify();
+    }
+
+    /// Remove one model row of a provider row's catalog.
+    pub(crate) fn remove_model(&mut self, row_id: u64, model_id: u64, cx: &mut Context<Self>) {
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id) else {
+            return;
+        };
+        row.models.retain(|model| model.id != model_id);
+        self.auto_save(cx, AutoSaveKind::Tables, false);
+        cx.notify();
+    }
+
+    /// Drop a provider row's model override and return to the adapter's
+    /// built-in catalog.
+    pub(crate) fn reset_models(&mut self, row_id: u64, cx: &mut Context<Self>) {
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id) else {
+            return;
+        };
+        row.models.clear();
+        self.auto_save(cx, AutoSaveKind::Tables, false);
+        cx.notify();
+    }
+
+    /// Remove one provider route's row (delete confirmation already passed).
+    pub(crate) fn remove_provider_route(&mut self, route: &str, cx: &mut Context<Self>) {
+        let Some(table) = self.tables.get_mut("providers") else {
+            return;
+        };
+        table.rows.retain(|row| {
+            row.cells
+                .get("name")
+                .map(|input| input.read(cx).value().trim() != route)
+                .unwrap_or(true)
+        });
+        self.editing_provider = None;
+        self.delete_target = None;
+        self.auto_save(cx, AutoSaveKind::Tables, false);
+        cx.notify();
     }
 
     pub(crate) fn add_row(
@@ -395,6 +616,7 @@ impl SetupView {
                     _ => None,
                 })
                 .collect(),
+            models: Vec::new(),
         };
         let mut row = row;
         if table.path == ["providers"] {
@@ -483,10 +705,12 @@ fn subscribe_cell_inputs(
         if *column_key == "__key" {
             continue;
         }
-        subscriptions.push(cx.subscribe(input, |_view, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                _view.auto_save(cx, AutoSaveKind::Tables, true);
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(input, |_view, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    _view.auto_save(cx, AutoSaveKind::Tables, true);
+                }
+            }),
+        );
     }
 }

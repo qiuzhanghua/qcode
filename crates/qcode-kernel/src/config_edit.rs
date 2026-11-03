@@ -394,6 +394,22 @@ impl ConfigEdit {
                 "stream_usage",
                 Item::Value(Value::from(provider.stream_usage)),
             );
+            if !provider.models.is_empty() {
+                let mut models = ArrayOfTables::new();
+                for model in &provider.models {
+                    let mut row = Table::new();
+                    row.insert("id", Item::Value(Value::from(model.id.clone())));
+                    set_optional(&mut row, "name", model.name.clone());
+                    if let Some(context) = model.context_window {
+                        row.insert("context_window", Item::Value(Value::from(context as i64)));
+                    }
+                    if let Some(max) = model.max_tokens {
+                        row.insert("max_tokens", Item::Value(Value::from(max as i64)));
+                    }
+                    models.push(row);
+                }
+                table.insert("models", Item::ArrayOfTables(models));
+            }
             providers.insert(name, Item::Table(table));
         }
         self.replace_table(&["providers"], providers)?;
@@ -519,11 +535,7 @@ pub fn set_default_model(
 /// `search.api_key_command`) take one entry per line. This mirrors what
 /// [`ConfigEdit::apply_config`] writes for the same keys, so a settings auto
 /// save never changes the file's shape.
-pub fn set_scalar(
-    path: &Path,
-    keys: &[&str],
-    value: Option<&str>,
-) -> Result<(), ConfigError> {
+pub fn set_scalar(path: &Path, keys: &[&str], value: Option<&str>) -> Result<(), ConfigError> {
     let mut edit = ConfigEdit::open(path)?;
     match value {
         Some(value) => set_scalar_value(&mut edit, keys, value)?,
@@ -534,7 +546,9 @@ pub fn set_scalar(
 
 fn set_scalar_value(edit: &mut ConfigEdit, keys: &[&str], value: &str) -> Result<(), ConfigError> {
     match keys {
-        ["sandbox", "extra_writable"] | ["network", "allow"] | ["skills", "roots"]
+        ["sandbox", "extra_writable"]
+        | ["network", "allow"]
+        | ["skills", "roots"]
         | ["search", "api_key_command"] => {
             let values = value
                 .lines()
@@ -714,6 +728,12 @@ mod tests {
                 stream_usage: false,
                 extra_body: Default::default(),
                 headers: Default::default(),
+                models: vec![crate::config::ModelEntry {
+                    id: "deepseek-flash".to_string(),
+                    name: Some("DeepSeek Flash".to_string()),
+                    context_window: Some(131_072),
+                    max_tokens: Some(8_192),
+                }],
             },
         );
         config.context.window_tokens = 64_000;
@@ -779,6 +799,11 @@ mod tests {
         let provider = &loaded.providers["deepseek"];
         assert_eq!(provider.default_model.as_deref(), Some("deepseek-flash"));
         assert!(!provider.stream_usage);
+        assert_eq!(provider.models.len(), 1);
+        assert_eq!(provider.models[0].id, "deepseek-flash");
+        assert_eq!(provider.models[0].name.as_deref(), Some("DeepSeek Flash"));
+        assert_eq!(provider.models[0].context_window, Some(131_072));
+        assert_eq!(provider.models[0].max_tokens, Some(8_192));
         assert_eq!(loaded.context.window_tokens, 64_000);
         assert_eq!(loaded.agent.max_turns, 12);
         assert_eq!(loaded.agent.max_cost_usd, Some(0.5));
@@ -836,7 +861,10 @@ mod tests {
         assert!(!loaded.agent.snapshot_shell);
         assert_eq!(
             loaded.network.allow,
-            ["api.example.com:443".to_string(), "*.internal.test".to_string()]
+            [
+                "api.example.com:443".to_string(),
+                "*.internal.test".to_string()
+            ]
         );
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("# keep me"), "{text}");

@@ -2,6 +2,7 @@ use crate::forms::{self, FieldKind, FieldSpec, Page, TableSpec};
 use crate::gui_prefs::GuiPreferences;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
@@ -12,10 +13,11 @@ use qcode_kernel::config::{self, Config, NetworkMode, ProviderConfig, UnknownHos
 use qcode_kernel::config_edit::ConfigEdit;
 use qcode_tools::sandbox::SandboxMode;
 use qcode_tools::web_search::SearchBackend;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 mod fields;
+mod models;
 mod render;
 mod save;
 mod tables;
@@ -31,6 +33,19 @@ pub(crate) struct RowState {
     cells: BTreeMap<&'static str, Entity<InputState>>,
     bools: BTreeMap<&'static str, bool>,
     selects: BTreeMap<&'static str, String>,
+    /// The provider route's model catalog (U2), as editable draft rows. An
+    /// empty list means "serve the catalog's built-in models".
+    models: Vec<ModelRowState>,
+}
+
+/// One model row of a provider's catalog: id/name plus the two capacities,
+/// all held as text inputs so the form owns the keystrokes.
+pub(crate) struct ModelRowState {
+    pub(crate) id: u64,
+    pub(crate) model_id: Entity<InputState>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) context_window: Entity<InputState>,
+    pub(crate) max_tokens: Entity<InputState>,
 }
 
 pub(crate) struct TableState {
@@ -68,6 +83,33 @@ pub struct SetupView {
     probe_result: Option<String>,
     /// Channel the probe thread reports through; drained while rendering.
     probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// Models-section state (settings mode, dsh-style cards).
+    /// The route whose inline editor card is open; one card at a time.
+    editing_provider: Option<String>,
+    /// Route awaiting the delete-confirmation dialog.
+    delete_target: Option<String>,
+    /// "已保存 {provider}。" status line; cleared by the next edit gesture.
+    saved_notice: Option<String>,
+    /// Whether the custom-provider declaration card is open.
+    declaring: bool,
+    /// Probe candidate model ids (U3): open while Some, adopted on confirm.
+    probe_candidates: Option<Vec<String>>,
+    /// Probe candidates the user picked to adopt.
+    probe_picked: HashSet<String>,
+    /// Probe candidate search-box text.
+    probe_query: String,
+    /// The picker's search input (created while the picker is open).
+    probe_search: Option<Entity<InputState>>,
+    /// Custom-provider declaration card drafts (U4); all `Some` while open.
+    custom_route: Option<Entity<InputState>>,
+    custom_name: Option<Entity<InputState>>,
+    custom_base_url: Option<Entity<InputState>>,
+    custom_key_env: Option<Entity<InputState>>,
+    /// Wire protocol chosen on the declaration card.
+    custom_protocol: String,
+    /// Model drafts on the declaration card (adopted only on create).
+    custom_models: Vec<ModelRowState>,
+    custom_error: Option<String>,
     /// Settings-mode auto save: the last change not yet flushed, and the
     /// generation of the trailing-debounce timer that flushes it (only the
     /// newest generation fires, so rapid typing coalesces into one write).
@@ -140,6 +182,21 @@ impl SetupView {
             saved: false,
             probe_result: None,
             probe_rx: None,
+            editing_provider: None,
+            delete_target: None,
+            saved_notice: None,
+            declaring: false,
+            probe_candidates: None,
+            probe_picked: HashSet::new(),
+            probe_query: String::new(),
+            probe_search: None,
+            custom_route: None,
+            custom_name: None,
+            custom_base_url: None,
+            custom_key_env: None,
+            custom_protocol: "openai".to_string(),
+            custom_models: Vec::new(),
+            custom_error: None,
             pending_auto_save: None,
             auto_save_generation: 0,
             _input_subscriptions: Vec::new(),
@@ -155,7 +212,12 @@ impl SetupView {
                         .insert(key, scalar_string(&config, field.path, options));
                 }
                 _ => {
-                    let input_entity = input(window, cx, scalar_string(&config, field.path, &[]), field.label);
+                    let input_entity = input(
+                        window,
+                        cx,
+                        scalar_string(&config, field.path, &[]),
+                        field.label,
+                    );
                     if !wizard {
                         // Text edits fire on the input entity, not this view;
                         // the subscription turns each change into a debounced
@@ -183,12 +245,8 @@ impl SetupView {
                         .insert(key, gui_string(&prefs, field.path, options));
                 }
                 _ => {
-                    let input_entity = input(
-                        window,
-                        cx,
-                        gui_string(&prefs, field.path, &[]),
-                        field.label,
-                    );
+                    let input_entity =
+                        input(window, cx, gui_string(&prefs, field.path, &[]), field.label);
                     if !wizard {
                         let path: &'static [&'static str] = field.path;
                         let subscription = cx.subscribe(

@@ -1,7 +1,34 @@
 use super::*;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::tooltip::Tooltip;
+
+/// A small circular "?" glyph drawn by hand (a bordered circle with a "?"
+/// inside). The Button component enforces a minimum size too large for this
+/// affordance, so the trigger is a stateful div wrapped in a [`Selectable`]
+/// — the contract the [`Popover`] trigger requires.
+struct HelpCircle(Stateful<Div>);
+
+impl Selectable for HelpCircle {
+    fn selected(self, _selected: bool) -> Self {
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        false
+    }
+}
+
+impl IntoElement for HelpCircle {
+    type Element = <Stateful<Div> as IntoElement>::Element;
+
+    fn into_element(self) -> Self::Element {
+        self.0.into_element()
+    }
+}
 
 impl Render for SetupView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = Page::ALL[self.page];
         let mut body = div().flex().flex_col().gap_3().p_4();
         if page == Page::Welcome {
@@ -132,48 +159,59 @@ impl Render for SetupView {
                     format!("## {}\n\n{}", page.title(), section_intro(page)),
                 ));
             }
-            if page == Page::Models {
-                // Read-only catalog directory: every route the resolver knows,
-                // its wire protocol, whether a profile is configured and its
-                // credential state (key stored / missing / keyless).
-                let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
-                    .list_configurable_providers(&self.config);
-                body = body.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().child("Provider directory"))
-                        .children(directory.into_iter().map(|row| {
-                            let credential = match row.credential_state {
-                                qcode_kernel::provider_registry::CredentialState::Configured => {
-                                    "已存"
-                                }
-                                qcode_kernel::provider_registry::CredentialState::Missing => "缺失",
-                                qcode_kernel::provider_registry::CredentialState::Keyless => {
-                                    "无需 key"
-                                }
-                            };
-                            format!(
-                                "{} ({}) · {} · {} · 凭证: {}",
-                                row.route,
-                                row.display_name,
-                                row.protocol.as_str(),
-                                if row.configured {
-                                    "configured"
-                                } else {
-                                    "catalog default"
-                                },
-                                credential
-                            )
-                        })),
-                );
-            }
-            for field in forms::fields_for(page) {
-                body = body.child(self.render_field(field, cx));
-            }
-            for table in forms::tables_for(page) {
-                body = body.child(self.render_table(table, cx));
+            if page == Page::Models && !self.wizard {
+                // dsh-style Models section (settings mode): the default-model
+                // preference rows first, then the provider card list with one
+                // inline editor at a time.
+                for field in forms::fields_for(page) {
+                    body = body.child(self.render_field(field, cx));
+                }
+                body = body.child(self.render_models_providers(cx));
+            } else {
+                if page == Page::Models {
+                    // Read-only catalog directory (wizard mode keeps the
+                    // original table form): every route the resolver knows,
+                    // its wire protocol, whether a profile is configured and
+                    // its credential state (key stored / missing / keyless).
+                    let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+                        .list_configurable_providers(&self.config);
+                    body = body.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().child("Provider directory"))
+                            .children(directory.into_iter().map(|row| {
+                                let credential = match row.credential_state {
+                                    qcode_kernel::provider_registry::CredentialState::Configured => {
+                                        "已存"
+                                    }
+                                    qcode_kernel::provider_registry::CredentialState::Missing => "缺失",
+                                    qcode_kernel::provider_registry::CredentialState::Keyless => {
+                                        "无需 key"
+                                    }
+                                };
+                                format!(
+                                    "{} ({}) · {} · {} · 凭证: {}",
+                                    row.route,
+                                    row.display_name,
+                                    row.protocol.as_str(),
+                                    if row.configured {
+                                        "configured"
+                                    } else {
+                                        "catalog default"
+                                    },
+                                    credential
+                                )
+                            })),
+                    );
+                }
+                for field in forms::fields_for(page) {
+                    body = body.child(self.render_field(field, cx));
+                }
+                for table in forms::tables_for(page) {
+                    body = body.child(self.render_table(table, cx));
+                }
             }
             for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
                 body = body.child(self.render_field(field, cx));
@@ -319,6 +357,10 @@ impl Render for SetupView {
             )
             .child(content)
             .child(footer)
+            // Modal overlays (settings mode only): the probe candidate picker
+            // and the provider delete confirmation.
+            .child(self.render_probe_picker(window, cx))
+            .child(self.render_delete_dialog(cx))
     }
 }
 
@@ -391,6 +433,8 @@ impl SetupView {
                 Input::new(input).aria_label(field.label).into_any_element()
             }
         };
+        let theme = cx.theme();
+        let (muted_foreground, border_color) = (theme.muted_foreground, theme.border);
         div()
             .flex()
             .flex_row()
@@ -403,10 +447,38 @@ impl SetupView {
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_center()
                     .gap_1()
                     .child(div().child(field.label))
-                    .child(div().child(field.help)),
+                    // The help text floats over a popover on click, keeping the
+                    // first version's tooltip visuals (a click trigger instead
+                    // of hover).
+                    .child(
+                        Popover::new(format!("help-{key}"))
+                            .anchor(Anchor::BottomLeft)
+                            .offset(px(4.0))
+                            .trigger(HelpCircle(
+                                div()
+                                    .id(format!("help-trigger-{key}"))
+                                    .size(px(10.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(border_color)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .text_size(px(8.0))
+                                    .text_color(muted_foreground)
+                                    .child("?"),
+                            ))
+                            .content(move |_state, window, cx| {
+                                Tooltip::new(field.help)
+                                    .build(window, cx)
+                                    .into_any_element()
+                            }),
+                    ),
             )
             .child(control)
             .into_any_element()
@@ -576,15 +648,7 @@ impl SetupView {
                         })),
                 );
             }
-            presets = presets.child(
-                Button::new("probe-models")
-                    .label("探测模型")
-                    .on_click(cx.listener(|this, _, _window, cx| this.probe_models(cx))),
-            );
             table_view = table_view.child(presets);
-            if let Some(result) = &self.probe_result {
-                table_view = table_view.child(div().child(format!("探测结果:\n{result}")));
-            }
         }
         table_view
             .child(

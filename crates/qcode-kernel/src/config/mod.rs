@@ -497,6 +497,11 @@ pub struct ProviderConfig {
     /// `content-type` can never be overridden.
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// This route's own model catalog (U0). An empty list means "serve the
+    /// catalog's built-in models"; any entry replaces that catalog, so a row is
+    /// only ever added deliberately.
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
 }
 
 impl Default for ProviderConfig {
@@ -510,8 +515,24 @@ impl Default for ProviderConfig {
             stream_usage: true,
             extra_body: Default::default(),
             headers: Default::default(),
+            models: Vec::new(),
         }
     }
+}
+
+/// One model a provider route serves. Hand-declared routes carry their own
+/// list (hand-filled or adopted from an endpoint probe); catalog routes
+/// inherit their static catalog entries until the user overrides them.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ModelEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
 }
 
 fn default_true() -> bool {

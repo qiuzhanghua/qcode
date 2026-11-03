@@ -187,9 +187,7 @@ pub fn resolve(
                 .flatten()
         })
         .or_else(|| entry.default_model.clone())
-        .or_else(|| {
-            catalog.and_then(|catalog| catalog.default_model.map(str::to_string))
-        })
+        .or_else(|| catalog.and_then(|catalog| catalog.default_model.map(str::to_string)))
         .ok_or_else(|| ConfigError::MissingModel {
             provider: name.clone(),
         })?;

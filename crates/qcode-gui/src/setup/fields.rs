@@ -97,7 +97,8 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
                 (!value.trim().is_empty()).then(|| value.trim().to_string());
         }
         ["default-model", "model"] => {
-            config.default_model.model = (!value.trim().is_empty()).then(|| value.trim().to_string());
+            config.default_model.model =
+                (!value.trim().is_empty()).then(|| value.trim().to_string());
         }
         ["context", "window_tokens"] => {
             config.context.window_tokens = parse(value, "context.window_tokens")?;

@@ -111,14 +111,7 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
         .flex()
         .flex_col()
         .w_full()
-        .child(
-            div()
-                .h(px(0.5))
-                .mx_6()
-                .bg(divider)
-                .mt(px(8.0))
-                .mb(px(10.0)),
-        )
+        .child(div().h(px(0.5)).mx_6().bg(divider).mt(px(8.0)).mb(px(10.0)))
         .child(
             div()
                 .flex()

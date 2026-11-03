@@ -137,3 +137,21 @@ pub fn catalog_entry(route: &str) -> Option<&'static CatalogEntry> {
     };
     CATALOG.iter().find(|entry| entry.route == route)
 }
+
+/// The catalog's static model list for one route, as editable draft rows
+/// (U0). Catalog models carry only an id; name and capacities are filled in by
+/// the probe or left to the provider's defaults.
+pub fn catalog_models(route: &str) -> Vec<super::ModelEntry> {
+    catalog_entry(route)
+        .map(|entry| {
+            entry
+                .models
+                .iter()
+                .map(|id| super::ModelEntry {
+                    id: (*id).to_string(),
+                    ..super::ModelEntry::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

@@ -200,6 +200,7 @@ impl SetupView {
                                 .get(name.trim())
                                 .map(|existing| existing.headers.clone())
                                 .unwrap_or_default(),
+                            models: model_entries(row, cx),
                         };
                         config.providers.insert(name.trim().to_string(), provider);
                     }
@@ -268,12 +269,7 @@ impl SetupView {
     /// shortly after typing stops), false for discrete controls (switch/select,
     /// row add/remove) that write immediately. Wizard mode never auto saves:
     /// it keeps the explicit `save()` form-submit flow.
-    pub(crate) fn auto_save(
-        &mut self,
-        cx: &mut Context<Self>,
-        kind: AutoSaveKind,
-        debounce: bool,
-    ) {
+    pub(crate) fn auto_save(&mut self, cx: &mut Context<Self>, kind: AutoSaveKind, debounce: bool) {
         if self.wizard {
             return;
         }
@@ -407,6 +403,36 @@ const OPTIONAL_PATHS: &[&[&str]] = &[
     &["search", "api_key_command"],
     &["update", "base_url"],
 ];
+
+/// Read one provider row's model catalog from the form. Rows without an id
+/// are dropped (an empty id is not yet a model); capacities parse leniently —
+/// an unreadable count is omitted rather than failing the whole save.
+fn model_entries(row: &RowState, cx: &Context<SetupView>) -> Vec<qcode_kernel::config::ModelEntry> {
+    row.models
+        .iter()
+        .filter_map(|model| {
+            let id = model.model_id.read(cx).value().trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let name = model.name.read(cx).value().trim().to_string();
+            let context_window = model
+                .context_window
+                .read(cx)
+                .value()
+                .trim()
+                .parse::<u64>()
+                .ok();
+            let max_tokens = model.max_tokens.read(cx).value().trim().parse::<u64>().ok();
+            Some(qcode_kernel::config::ModelEntry {
+                id,
+                name: (!name.is_empty()).then_some(name),
+                context_window,
+                max_tokens,
+            })
+        })
+        .collect()
+}
 
 /// Re-open the file and write a complete `Config` through the comment-preserving
 /// `apply_config` + atomic save. A fresh open (instead of `self.edit`, which is
