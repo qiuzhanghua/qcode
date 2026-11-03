@@ -1,5 +1,7 @@
 use super::*;
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tooltip::Tooltip;
 
@@ -292,12 +294,13 @@ impl Render for SetupView {
         } else {
             // Settings mode: a left nav rail (each page once; Welcome is
             // wizard-only, Review shows as About) next to the scrolling body.
+            // Borderless ghost buttons: unselected on the window's own white
+            // fill, selected with the grey active tint — no leading dots.
             let mut rail = div().w(px(180.0)).h_full().flex().flex_col().gap_1().p_2();
             for (index, item) in Page::ALL.iter().enumerate() {
                 if *item == Page::Welcome {
                     continue;
                 }
-                let marker = if index == self.page { "●" } else { "○" };
                 let title = if *item == Page::Review {
                     "About"
                 } else {
@@ -305,7 +308,10 @@ impl Render for SetupView {
                 };
                 rail = rail.child(
                     Button::new(format!("settings-page-{index}"))
-                        .label(format!("{marker} {title}"))
+                        .label(title)
+                        .ghost()
+                        .large()
+                        .h(px(36.0))
                         .selected(index == self.page)
                         .on_click(cx.listener(move |this, _, _window, cx| {
                             this.page = index;
