@@ -1,4 +1,4 @@
-//! Endpoint model discovery (dsh `discovery.ts` semantics).
+//! Endpoint model discovery.
 //!
 //! Probing an OpenAI-compatible endpoint means `GET {baseURL}/models` with
 //! Bearer auth. The result is *candidate metadata only*: nothing here is

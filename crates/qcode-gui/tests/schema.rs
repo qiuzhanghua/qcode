@@ -12,6 +12,15 @@ fn every_known_config_key_has_a_control() {
             if *key == "version" || (section.is_empty() && sections.contains(key)) {
                 continue;
             }
+            // V2.1: `default_provider` and `[default-model]` no longer have
+            // form controls — the default is pinned per provider card
+            // ("设为默认") and via "切即默认"; the keys stay known for
+            // read-compatibility (no unknown-key warnings on old configs).
+            let auto_managed = (section.is_empty() && *key == "default_provider")
+                || (*section == "default-model" && matches!(*key, "provider" | "model"));
+            if auto_managed {
+                continue;
+            }
             let path: Vec<&str> = if section.is_empty() {
                 vec![key]
             } else {

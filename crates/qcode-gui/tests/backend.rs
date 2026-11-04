@@ -32,6 +32,7 @@ fn engine_with_provider(
         store,
         provider,
         provider_name: "mock".to_string(),
+        proxy_url: None,
         tools: ToolRegistry::new(Vec::new()),
         policy: Policy::new(Vec::new()),
         workspace: workspace.to_path_buf(),

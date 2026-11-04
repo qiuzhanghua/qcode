@@ -83,7 +83,7 @@ pub struct SetupView {
     probe_result: Option<String>,
     /// Channel the probe thread reports through; drained while rendering.
     probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
-    /// Models-section state (settings mode, dsh-style cards).
+    /// Models-section state (settings mode, provider card list).
     /// The route whose inline editor card is open; one card at a time.
     editing_provider: Option<String>,
     /// Route awaiting the delete-confirmation dialog.

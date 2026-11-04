@@ -101,27 +101,6 @@ const RULE_SCOPES: &[&str] = &["session", "project", "user"];
 
 pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
-        path: &["default_provider"],
-        label: "Default provider",
-        page: Page::Models,
-        kind: FieldKind::OptionalText,
-        help: "Provider used when --provider is not passed",
-    },
-    FieldSpec {
-        path: &["default-model", "provider"],
-        label: "Default model provider",
-        page: Page::Models,
-        kind: FieldKind::OptionalText,
-        help: "Provider used by default when a session has none",
-    },
-    FieldSpec {
-        path: &["default-model", "model"],
-        label: "Default model",
-        page: Page::Models,
-        kind: FieldKind::OptionalText,
-        help: "Model used by default when a session has none",
-    },
-    FieldSpec {
         path: &["context", "window_tokens"],
         label: "Context window (tokens)",
         page: Page::Agent,

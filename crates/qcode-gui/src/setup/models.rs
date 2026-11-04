@@ -1,4 +1,4 @@
-//! dsh-style Models section (settings mode, design SETTINGS-MODELS-UI):
+//! Models section card UI (settings mode, design SETTINGS-MODELS-UI):
 //! provider row cards with credential dots, one inline editor at a time, the
 //! model catalog editor, the probe candidate picker and the delete
 //! confirmation. Wizard mode keeps the original table form in `render.rs`.
@@ -50,6 +50,22 @@ impl SetupView {
             theme.border,
         );
         let mut cards = div().flex().flex_col().gap_2();
+        // V2.1: the three legacy default fields were removed; the effective
+        // default is summarized here and pinned per card via "设为默认".
+        let default_line = match (
+            self.config.default_model.provider.as_deref(),
+            self.config.default_model.model.as_deref(),
+        ) {
+            (Some(provider), Some(model)) => format!("当前默认：{provider} / {model}"),
+            (Some(provider), None) => format!("当前默认提供方：{provider}"),
+            _ => "未设置默认；将使用第一个可用的提供方。".to_string(),
+        };
+        cards = cards.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(muted_color)
+                .child(default_line),
+        );
         if let Some(notice) = &self.saved_notice {
             cards = cards.child(
                 div()
@@ -98,6 +114,34 @@ impl SetupView {
                 )
                 .child(div().flex_grow(1.0));
             if row.configured {
+                // V2.1: only usable rows (credential Configured or Keyless)
+                // offer "设为默认"; the effective default card shows a marker
+                // instead of the button.
+                let usable = !matches!(
+                    row.credential_state,
+                    qcode_kernel::provider_registry::CredentialState::Missing
+                );
+                let is_default =
+                    self.config.default_model.provider.as_deref() == Some(route.as_str());
+                if usable {
+                    if is_default {
+                        head = head.child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(success_color)
+                                .child("当前默认"),
+                        );
+                    } else {
+                        let route_for_default = route.clone();
+                        head = head.child(
+                            Button::new(format!("default-provider-{route}"))
+                                .label("设为默认")
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.make_default(&route_for_default, cx);
+                                })),
+                        );
+                    }
+                }
                 let route_for_edit = route.clone();
                 head = head.child(
                     Button::new(format!("edit-provider-{route}"))
@@ -862,6 +906,40 @@ impl SetupView {
                     ),
             )
             .into_any_element()
+    }
+
+    /// Pin `route` as the global default (V2.1): write `[default-model]` with
+    /// the row's `default_model` (falling back to its first model), and drop
+    /// the legacy `default_provider` so it can never shadow the new default.
+    fn make_default(&mut self, route: &str, cx: &mut Context<Self>) {
+        let model = self
+            .tables
+            .get("providers")
+            .and_then(|table| {
+                table
+                    .rows
+                    .iter()
+                    .find(|row| cell(row, "name", cx).trim() == route)
+            })
+            .and_then(|row| {
+                let default_model = cell(row, "default_model", cx).trim().to_string();
+                if default_model.is_empty() {
+                    row.models
+                        .first()
+                        .map(|model| model.model_id.read(cx).value().trim().to_string())
+                        .filter(|id| !id.is_empty())
+                } else {
+                    Some(default_model)
+                }
+            });
+        self.config.default_model.provider = Some(route.to_string());
+        self.config.default_model.model = model;
+        self.config.default_provider = None;
+        match super::save::write_config(&self.path, &self.config) {
+            Ok(()) => self.saved_notice = Some(format!("已设 {route} 为默认。")),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        cx.notify();
     }
 
     /// Open one provider's inline editor; one card at a time, so opening a

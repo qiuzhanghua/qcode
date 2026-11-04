@@ -305,18 +305,12 @@ impl SetupView {
         if let Some(state) = self.tables.get_mut("providers") {
             state.rows.push(row);
         }
-        if let Some(input) = self.inputs.get("default_provider") {
-            input.update(cx, |input, cx| {
-                input.set_value(entry.route, window, cx);
-                cx.notify();
-            });
-        }
         self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }
 
-    /// Probe one route's endpoint for its model list (`GET {base}/models`,
-    /// dsh discovery semantics). reqwest needs a tokio reactor, which GPUI's
+    /// Probe one route's endpoint for its model list (`GET {base}/models`).
+    /// reqwest needs a tokio reactor, which GPUI's
     /// executor is not, so the probe runs on its own current-thread runtime on
     /// a worker thread and reports back through a channel drained by a
     /// foreground poll loop. Results are candidate metadata only — nothing is

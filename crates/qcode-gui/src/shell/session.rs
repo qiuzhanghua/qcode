@@ -1,6 +1,24 @@
 use super::*;
 
 impl Shell {
+    /// 当前是否正停在一个“没有任何对话内容”的新任务/草稿上。
+    ///
+    /// 此时再点“新建任务”只会再堆积一个空的「新任务」行，应直接复用当前
+    /// 任务。区分两种情况：
+    /// - `active` 为 `None`：已经点过“新建任务”、引擎还没回
+    ///   `SessionChanged`（此时靠 `empty_draft` 标记判断，否则启动时
+    ///   没有 last_session 的场景也会被误判为“空任务”）。
+    /// - `active` 指向一个还没有任何 turn 的任务（刚创建，或恢复了空任务）。
+    fn on_empty_draft(&self) -> bool {
+        if !self.app.turns.is_empty() {
+            return false;
+        }
+        match self.active.as_deref() {
+            None => self.empty_draft,
+            Some(_) => true,
+        }
+    }
+
     pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
             eprintln!(
@@ -15,6 +33,14 @@ impl Shell {
             cx.notify();
             return;
         }
+        // 无内容的新任务只允许一个：正停在空任务/空草稿上时直接复用当前
+        // 任务，不再创建新的空任务。
+        if self.on_empty_draft() {
+            self.app.push_notice("当前任务还没有内容，直接提问即可");
+            cx.notify();
+            return;
+        }
+        self.empty_draft = true;
         self.backend.new_session();
         self.resetting = true;
         self.app.reset_transcript();
@@ -57,6 +83,7 @@ impl Shell {
             return;
         }
         self.resetting = true;
+        self.empty_draft = false;
         let configured_provider = self
             .backend
             .provider()

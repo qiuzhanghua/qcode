@@ -1,7 +1,7 @@
 //! Inbox: ordered pending-message queues shared between the engine turn loop
 //! and the frontend.
 //!
-//! This mirrors the two-boundary design of deepseek-harness's agent inbox:
+//! This mirrors the two-boundary agent-inbox design:
 //! `next-turn` holds ordinary follow-up turns (FIFO, one per new turn) and
 //! `next-step` holds steering input that the running turn claims at its next
 //! step boundary. The queue itself is transient; a message becomes durable

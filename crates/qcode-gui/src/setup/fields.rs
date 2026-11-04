@@ -25,9 +25,6 @@ pub(crate) fn secret_input(
 
 pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) -> String {
     match path {
-        ["default_provider"] => config.default_provider.clone().unwrap_or_default(),
-        ["default-model", "provider"] => config.default_model.provider.clone().unwrap_or_default(),
-        ["default-model", "model"] => config.default_model.model.clone().unwrap_or_default(),
         ["context", "window_tokens"] => config.context.window_tokens.to_string(),
         ["agent", "max_turns"] => config.agent.max_turns.to_string(),
         ["agent", "max_cost_usd"] => config
@@ -89,17 +86,6 @@ pub(crate) fn scalar_bool(config: &Config, path: &[&str]) -> bool {
 
 pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> Result<(), String> {
     match path {
-        ["default_provider"] => {
-            config.default_provider = (!value.trim().is_empty()).then(|| value.trim().to_string());
-        }
-        ["default-model", "provider"] => {
-            config.default_model.provider =
-                (!value.trim().is_empty()).then(|| value.trim().to_string());
-        }
-        ["default-model", "model"] => {
-            config.default_model.model =
-                (!value.trim().is_empty()).then(|| value.trim().to_string());
-        }
         ["context", "window_tokens"] => {
             config.context.window_tokens = parse(value, "context.window_tokens")?;
         }

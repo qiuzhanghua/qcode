@@ -137,7 +137,12 @@ impl SessionStore {
             0,
             EventKind::TaskConfigured(TaskConfigured { roots: task.roots }),
         );
-        self.append(&configured)?;
+        if let Err(error) = self.append(&configured) {
+            // 创建失败不能留下只写了 `session_started` 的半成品：否则下次
+            // 刷新列表时它会以“凭空出现的空任务”混进任务列表。
+            let _ = self.delete_session(&id);
+            return Err(error);
+        }
         Ok(CreatedTask {
             id,
             started,
@@ -162,7 +167,11 @@ impl SessionStore {
             0,
             EventKind::TaskConfigured(TaskConfigured { roots: task.roots }),
         );
-        self.append(&configured)?;
+        if let Err(error) = self.append(&configured) {
+            // 同上：失败时把半成品日志和索引行一起清掉，避免空任务幽灵。
+            let _ = self.delete_session(&id);
+            return Err(error);
+        }
         Ok(CreatedTask {
             id,
             started,
@@ -412,6 +421,10 @@ impl SessionStore {
     fn open_index(&self) -> Result<Connection, StoreError> {
         fs::create_dir_all(&self.root)?;
         let conn = Connection::open(self.index_path())?;
+        // 引擎线程在写、UI 线程在列任务（list_indexed）是并发访问同一个
+        // sqlite 文件；不加 busy handler 时锁一重叠就直接 SQLITE_BUSY，
+        // 索引更新失败被静默吞掉，出现 last_seq/turns 不一致的脏行。
+        conn.busy_timeout(std::time::Duration::from_millis(500))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -493,6 +506,7 @@ impl SessionStore {
             return Ok(None);
         }
         let conn = Connection::open(self.index_path())?;
+        conn.busy_timeout(std::time::Duration::from_millis(500))?;
         let mut stmt = conn.prepare(
             "SELECT id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd
              FROM sessions ORDER BY id DESC",

@@ -33,6 +33,10 @@ pub(crate) fn gui_rebuild_hook(
                 store: kernel.store,
                 provider: kernel.provider.into(),
                 provider_name: kernel.resolved.name.clone(),
+                proxy_url: kernel
+                    .egress
+                    .as_ref()
+                    .map(|egress| egress.proxy_url().to_string()),
                 tools: kernel.tools,
                 policy: kernel.policy,
                 workspace: workspace.clone(),
@@ -197,6 +201,10 @@ pub(crate) async fn cmd_gui(
         store: kernel.store,
         provider: kernel.provider.into(),
         provider_name: kernel.resolved.name.clone(),
+        proxy_url: kernel
+            .egress
+            .as_ref()
+            .map(|egress| egress.proxy_url().to_string()),
         tools: kernel.tools,
         policy: kernel.policy,
         workspace: workspace.clone(),

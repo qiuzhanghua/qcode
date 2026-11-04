@@ -1,7 +1,6 @@
 # qcode 设置界面布局重构设计（V2）
 
 > 状态：草稿，待评审
-> 参考：deepseek-harness (dsh) 设置界面布局
 > 范围：设置窗口整体布局（外壳 / 导航 / section 划分 / 交互与保存语义），与已有 [SETTINGS-MODELS-V2.md](./SETTINGS-MODELS-V2.md)（模型接入架构，已落地 M0–M4）配套
 
 ---
@@ -11,7 +10,7 @@
 qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单提交式保存"（`SetupView`，与首次运行向导共用）。
 用户反馈：模型 provider 配置应有**独立的 model 栏**集中管理（已落地为 `Page::Models`）。
 
-本设计把 dsh 的设置界面布局整体搬进 qcode：**左侧导航栏 + 右侧 section 内容区**，
+本设计采用**左侧导航栏 + 右侧 section 内容区**的布局，
 按功能域划分 section，统一视觉惯例与保存语义。核心目标：
 
 1. 从"横向平铺的 10 个页面"改为"左侧导航 + 分组 section"，降低跳转成本。
@@ -20,7 +19,7 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 
 ---
 
-## 2. dsh 设置布局调研（事实依据）
+## 2. 参考设置布局（事实依据）
 
 ### 2.1 窗口外壳
 
@@ -64,7 +63,7 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 
 ### 3.2 差距
 
-| 维度 | dsh | qcode 现状 |
+| 维度 | 参考布局 | qcode 现状 |
 |---|---|---|
 | 导航 | 左侧图标+标签栏，激活项高亮 | 顶部 ●/○ 横向圆点，无图标无分组 |
 | section 组织 | 按功能域分区（general/models/plugins/presets） | 10 页平铺，无分组 |
@@ -118,20 +117,20 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 | About | Review（设置模式） | 版本信息 |
 | Welcome | Welcome | 仅向导模式显示 |
 
-> 拆出 Appearance：`GUI_FIELDS` 与 `config.toml` 字段（Update）语义不同，dsh 的 general 也是独立分区。向导模式的 Review/Welcome 保留原语义。
+> 拆出 Appearance：`GUI_FIELDS` 与 `config.toml` 字段（Update）语义不同，外观也是独立分区。向导模式的 Review/Welcome 保留原语义。
 
 ### 4.3 各 section 布局细则
 
-- **分区头统一**：每个 section 顶部 = **h2 标题 + intro 段**（对照 dsh plugins/agent-presets）。
-- **Models**（对齐 dsh models section）：
+- **分区头统一**：每个 section 顶部 = **h2 标题 + intro 段**。
+- **Models**：
   - 顶部默认模型区（3 个字段，已落地）。
   - Provider 目录条（只读：路由/协议/凭证状态，已落地）。
-  - providers **表格**（行编辑）作为 dsh 卡片列表的等价物——列即"行内展开编辑器"；如后续要 dsh 式卡片，视觉层替换不影响数据层。
+  - providers **表格**（行编辑）作为卡片列表的等价物——列即"行内展开编辑器"；如后续要卡片式呈现，视觉层替换不影响数据层。
   - 底部：catalog 预设按钮 + 探测模型按钮（已落地）。
 - **Agent / Network / Search / Skills / Update**：沿用现有 schema 字段，改为"分区头 + 字段区"；字段仍由 `FIELDS` 驱动。
 - **MCP / Approval & Pricing**：表 + 分区头。
 - **Appearance**：`GUI_FIELDS` 迁到独立 section（`gui.json` 单独保存，不并入 `config.toml`）。
-- **行惯例**（对齐 dsh general）：标量字段呈现为"左 label+help、右控件"的行，行间分割线——当前 `render.rs` 是上下堆叠，改为左右行布局（视觉层，`FIELDS` 数据结构不动）。
+- **行惯例**：标量字段呈现为"左 label+help、右控件"的行，行间分割线——当前 `render.rs` 是上下堆叠，改为左右行布局（视觉层，`FIELDS` 数据结构不动）。
 
 ### 4.4 共享组件（新增，`setup/` 内）
 
@@ -140,7 +139,7 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 - 折叠组（`<details>` 或 GPUI 折叠）——用于 plugins 式长表单（当前无插件页，先不做）。
 - 复用现有 `FieldSpec`/`render_field`/`render_table` 数据层，仅改布局呈现。
 
-### 4.5 保存语义（对齐 dsh 分而治之）
+### 4.5 保存语义（分而治之）
 
 | 区 | 语义 | 实现 |
 |---|---|---|
@@ -155,9 +154,9 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 
 ### 4.6 技术适配（GPUI vs Web）
 
-- dsh 的 CSS 网格（agent-presets 卡片网格）在 GPUI 无 rem 布局，用 `flex` + 固定/百分比宽度实现；已有全局字号缩放机制（见项目 memory）。
+- 卡片网格在 GPUI 无 rem 布局，用 `flex` + 固定/百分比宽度实现；已有全局字号缩放机制（见项目 memory）。
 - Modal/Tooltip/Menu：GPUI 已有对应组件（项目多处弹窗），复用以实现删除确认、探测结果候选等。
-- 卡片列表（dsh 式）与表格（现状）二选一时，优先表格（数据层不变、已具备编辑能力），卡片化作为纯视觉升级。
+- 卡片列表与表格（现状）二选一时，优先表格（数据层不变、已具备编辑能力），卡片化作为纯视觉升级。
 
 ---
 
@@ -179,17 +178,17 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 
 ## 7. 明确不做 / 取舍
 
-- **不引入插件系统**：dsh 的 section 由插件注册，qcode 为编译期枚举 `Page`，不做动态注册。
+- **不引入插件系统**：qcode 为编译期枚举 `Page`，不做动态注册。
 - **不做卡片网格**：providers 保持表格（数据层已完备），卡片化仅作为后续纯视觉选项。
-- **不做设置窗口内搜索**（dsh 外壳也无搜索）。
+- **不做设置窗口内搜索**。
 - **不合并 gui.json 进 config.toml**：Appearance 独立保存，维持现状。
 - **向导模式保持表单提交**：Review 页确认语义不因设置窗口改造而变。
 
 ## 8. 关键决策摘要
 
-1. 左侧导航栏 + 右侧内容区（对齐 dsh），替代顶部 ●/○ 平铺。
+1. 左侧导航栏 + 右侧内容区，替代顶部 ●/○ 平铺。
 2. `Page` 枚举保留为 section 清单，导航渲染从顶部改左侧；Models 已独立为模型栏。
 3. 统一分区头（h2+intro）与"左文字右控件"行惯例。
 4. 保存语义分而治之：7 区即时自动保存（叶子 diff），Appearance 走 gui.json，向导保留表单提交。
-5. providers 保持表格 = dsh 卡片列表的等价数据层；卡片化为可选视觉升级。
+5. providers 保持表格 = 卡片列表的等价数据层；卡片化为可选视觉升级。
 6. Appearance 从 UpdateAppearance 拆出独立 section（GUI 偏好与 config.toml 分离）。

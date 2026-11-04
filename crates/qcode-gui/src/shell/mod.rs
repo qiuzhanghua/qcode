@@ -1,18 +1,20 @@
 use crate::*;
+// (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
 
 pub(crate) struct Shell {
     pub(crate) app: App,
     /// A real text input, so IME and CJK go through the platform.
     pub(crate) input: Entity<TextareaState>,
-    /// Model picker dropdown; the option list comes from `config.toml`.
-    pub(crate) model_select: Entity<SelectState<SearchableVec<ModelItem>>>,
-    pub(crate) _model_select_subscription: gpui_kit::Subscription,
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pub(crate) pending_send: bool,
     /// Drop transcript events from the old turn until the backend confirms the
     /// session switch.
     pub(crate) resetting: bool,
+    /// A "新建任务" click already asked for a fresh session and the engine has
+    /// not confirmed it yet (`active` is still `None`). While true, another
+    /// click must not stack another empty task.
+    pub(crate) empty_draft: bool,
     pub(crate) _input_subscription: gpui_kit::Subscription,
     /// Keeps `selected_turn` in sync with the transcript scroll position.
     pub(crate) _scroller_subscription: gpui_kit::Subscription,
@@ -210,35 +212,6 @@ impl Shell {
                 cx.notify();
             }
         });
-        // Model picker: configured models plus the kernel's current model.
-        let model = app.status.model.clone();
-        let mut models: Vec<ModelItem> = configured_models(&config_path)
-            .into_iter()
-            .map(|name| ModelItem { name })
-            .collect();
-        if !models.iter().any(|item| item.name == model) {
-            models.push(ModelItem {
-                name: model.clone(),
-            });
-        }
-        let selected = models
-            .iter()
-            .position(|item| item.name == model)
-            .map(IndexPath::new);
-        let model_select =
-            cx.new(|cx| SelectState::new(SearchableVec::new(models), selected, window, cx));
-        let model_select_subscription = cx.subscribe(
-            &model_select,
-            |shell, _select, event: &SelectEvent<SearchableVec<ModelItem>>, cx| {
-                if let SelectEvent::Confirm(Some(model)) = event
-                    && model != &shell.app.status.model
-                {
-                    shell.backend.set_model(model.clone());
-                    shell.app.status.model = model.clone();
-                    cx.notify();
-                }
-            },
-        );
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
         eprintln!(
@@ -250,10 +223,9 @@ impl Shell {
             input,
             busy_delivery,
             restoring: None,
-            model_select,
-            _model_select_subscription: model_select_subscription,
             pending_send: false,
             resetting: false,
+            empty_draft: false,
             _input_subscription: input_subscription,
             _scroller_subscription: scroller_subscription,
             diff: None,
@@ -455,6 +427,7 @@ impl Shell {
                     }
                 }
                 UiEvent::SessionChanged { id } => {
+                    self.empty_draft = false;
                     self.active = id.clone();
                     self.prefs.last_session = id;
                     if let Err(error) = self.prefs.save(&self.data_dir) {
@@ -464,6 +437,7 @@ impl Shell {
                     self.refresh_tasks();
                 }
                 UiEvent::TurnFailed { message } => {
+                    self.empty_draft = false;
                     self.restoring = None;
                     // 引擎没发 TurnEnded 就退出了：收口当前 turn，否则卡片会
                     // 一直显示 running、耗时不停增长。
@@ -601,6 +575,17 @@ impl Shell {
                 ));
                 self.set_notice(format!("cannot apply settings: {error}"), false, cx);
             }
+        }
+    }
+
+    /// Switch the provider+model for subsequent turns (two-level model menu,
+    /// V2.1). The backend rebuilds the provider when the route changes.
+    pub(crate) fn switch_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
+        if provider != self.app.status.provider || model != self.app.status.model {
+            self.backend.set_model(provider.clone(), model.clone());
+            self.app.status.provider = provider;
+            self.app.status.model = model;
+            cx.notify();
         }
     }
 }

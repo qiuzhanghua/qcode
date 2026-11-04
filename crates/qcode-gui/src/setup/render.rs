@@ -80,13 +80,12 @@ impl Render for SetupView {
                 Ok(config) => {
                     body = body
                         .child(format!(
-                            "provider: {} · model: {}",
-                            config.default_provider.as_deref().unwrap_or("(none)"),
+                            "default model: {} · {}",
+                            config.default_model.provider.as_deref().unwrap_or("(none)"),
                             config
-                                .default_provider
-                                .as_ref()
-                                .and_then(|name| config.providers.get(name))
-                                .and_then(|provider| provider.default_model.as_deref())
+                                .default_model
+                                .model
+                                .as_deref()
                                 .unwrap_or("(provider default)")
                         ))
                         .child(format!(
@@ -121,13 +120,12 @@ impl Render for SetupView {
                 Ok(config) => {
                     body = body
                         .child(format!(
-                            "default provider: {} · model: {}",
-                            config.default_provider.as_deref().unwrap_or("(none)"),
+                            "default model: {} · {}",
+                            config.default_model.provider.as_deref().unwrap_or("(none)"),
                             config
-                                .default_provider
-                                .as_ref()
-                                .and_then(|name| config.providers.get(name))
-                                .and_then(|provider| provider.default_model.as_deref())
+                                .default_model
+                                .model
+                                .as_deref()
                                 .unwrap_or("(provider default)")
                         ))
                         .child(format!(
@@ -161,12 +159,10 @@ impl Render for SetupView {
                 ));
             }
             if page == Page::Models && !self.wizard {
-                // dsh-style Models section (settings mode): the default-model
-                // preference rows first, then the provider card list with one
-                // inline editor at a time.
-                for field in forms::fields_for(page) {
-                    body = body.child(self.render_field(field, cx));
-                }
+                // Models section (settings mode): the default-model summary
+                // line then the provider card list with one inline editor at a
+                // time. The three legacy default text fields were removed in
+                // V2.1: the default is pinned per card via "设为默认".
                 body = body.child(self.render_models_providers(cx));
             } else {
                 if page == Page::Models {

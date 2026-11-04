@@ -1033,9 +1033,9 @@ fn absent_default_model_keeps_the_default_provider_fallback() {
 }
 
 #[test]
-fn default_model_does_not_change_a_different_routes_model() {
-    // `[default-model]` names ark, but `default_provider` still selects
-    // openai; the ark default must not leak into the openai route.
+fn default_model_wins_over_the_legacy_default_provider() {
+    // V2.1: `[default-model].provider` outranks the legacy `default_provider`,
+    // and the model named there is used, not the other route's default.
     let config: Config = toml::from_str(
         r#"
             default_provider = "openai"
@@ -1044,6 +1044,32 @@ fn default_model_does_not_change_a_different_routes_model() {
             provider = "ark"
             model = "m1"
 
+            [providers.ark]
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            api_key_env = "ARK_API_KEY"
+
+            [providers.openai]
+            default_model = "gpt-4o"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("ARK_API_KEY", "sk-ark")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "ark");
+    assert_eq!(resolved.model, "m1");
+}
+
+#[test]
+fn default_model_does_not_change_a_different_routes_model() {
+    // The `[default-model].model` is scoped to the provider it names: when the
+    // model section is absent, the resolved route falls back to its own
+    // `default_model`, not the default-model section's.
+    let config: Config = toml::from_str(
+        r#"
             [providers.openai]
             default_model = "gpt-4o"
             "#,
@@ -1057,4 +1083,82 @@ fn default_model_does_not_change_a_different_routes_model() {
     .unwrap();
     assert_eq!(resolved.name, "openai");
     assert_eq!(resolved.model, "gpt-4o");
+}
+
+#[test]
+fn no_default_falls_back_to_the_first_usable_provider() {
+    // No `[default-model]`, no `default_provider`: resolve picks the first
+    // usable provider (alphabetical order), skipping the one whose key is
+    // missing. Its model comes from `default_model`, then `models[0]`, then
+    // the catalog default.
+    let config: Config = toml::from_str(
+        r#"
+            [providers.ark]
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            api_key_env = "ARK_API_KEY"
+            models = [{ id = "doubao-1" }]
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key_env = "DEEPSEEK_API_KEY"
+            default_model = "deepseek-flash"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
+    )
+    .unwrap();
+    // deepseek sorts after ark, but ark's key is missing, so deepseek wins.
+    assert_eq!(resolved.name, "deepseek");
+    assert_eq!(resolved.model, "deepseek-flash");
+}
+
+#[test]
+fn first_usable_takes_the_first_models_entry_when_no_default_model() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.ark]
+            base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            api_key_env = "ARK_API_KEY"
+            models = [{ id = "doubao-1" }, { id = "doubao-2" }]
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("ARK_API_KEY", "sk-ark")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "ark");
+    assert_eq!(resolved.model, "doubao-1");
+}
+
+#[test]
+fn first_usable_skips_mock_and_unusable_routes_then_falls_back_to_mock() {
+    // A mock route never becomes the default; with no usable provider at all
+    // (no key anywhere), resolve falls back to mock as before.
+    let config: Config = toml::from_str(
+        r#"
+            [providers.mock]
+            default_model = "mock-1"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key_env = "DEEPSEEK_API_KEY"
+            default_model = "deepseek-flash"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "mock");
+    assert_eq!(resolved.model, "mock-1");
 }

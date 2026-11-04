@@ -68,6 +68,67 @@ pub fn pricing_for(
     }
 }
 
+/// The mock wire-protocol routes: never a real provider, and never picked as
+/// the "first usable" default.
+fn is_mock_name(name: &str) -> bool {
+    matches!(
+        name,
+        "mock" | "mock-tools" | "mock-approval" | "mock-todo" | "mock-subagent"
+    )
+}
+
+/// Pick the first usable provider from `config.providers` as the fallback
+/// default (V2.1: "第一个可用 provider 的第一个模型").
+///
+/// Candidates are iterated in `BTreeMap` order (alphabetical), mock routes
+/// excluded. A provider is usable when it carries a legal http(s) base URL, a
+/// resolvable credential (env key, key command, or keyless), and a derivable
+/// model (`default_model`, the catalog default, or `models[0]`). Returns
+/// `None` when no provider qualifies, letting the caller fall back to mock.
+fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    config
+        .providers
+        .keys()
+        .find(|name| {
+            if is_mock_name(name) {
+                return false;
+            }
+            let Some(entry) = config.providers.get(*name) else {
+                return false;
+            };
+            let catalog = catalog_entry(name);
+            // A legal endpoint must exist, from the config or the catalog.
+            let Some(base_url) = entry
+                .base_url
+                .clone()
+                .or_else(|| catalog.map(|catalog| catalog.base_url.to_string()))
+            else {
+                return false;
+            };
+            if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+                return false;
+            }
+            // A credential must resolve: an env key present, a key command, or
+            // keyless (empty env name).
+            let api_key_env = entry
+                .api_key_env
+                .clone()
+                .or_else(|| catalog.map(|catalog| catalog.api_key_env.to_string()))
+                .unwrap_or_default();
+            if !api_key_env.is_empty()
+                && !env(&api_key_env).is_some_and(|key| !key.is_empty())
+                && entry.api_key_command.is_none()
+            {
+                return false;
+            }
+            // A model must be derivable once resolved.
+            entry.default_model.is_some()
+                || catalog.is_some_and(|catalog| catalog.default_model.is_some())
+                || !entry.models.is_empty()
+        })
+        .cloned()
+}
+
 pub fn resolve(
     config: &Config,
     overrides: &Overrides,
@@ -77,18 +138,13 @@ pub fn resolve(
         .provider
         .clone()
         .or_else(|| env("QCODE_PROVIDER"))
-        .or_else(|| config.default_provider.clone())
-        // `[default-model].provider` only decides the provider when neither
-        // `--provider`/`QCODE_PROVIDER` nor `default_provider` is present.
+        // `[default-model].provider` is the authoritative default; the legacy
+        // `default_provider` only applies when no `[default-model]` is set.
         .or_else(|| config.default_model.provider.clone())
-        .unwrap_or_else(|| "mock".to_string());
+        .or_else(|| config.default_provider.clone())
+        .unwrap_or_else(|| first_usable_provider(config, env).unwrap_or_else(|| "mock".to_string()));
 
-    if name == "mock"
-        || name == "mock-tools"
-        || name == "mock-approval"
-        || name == "mock-todo"
-        || name == "mock-subagent"
-    {
+    if is_mock_name(&name) {
         let model = overrides
             .model
             .clone()
@@ -188,6 +244,7 @@ pub fn resolve(
         })
         .or_else(|| entry.default_model.clone())
         .or_else(|| catalog.and_then(|catalog| catalog.default_model.map(str::to_string)))
+        .or_else(|| entry.models.first().map(|model| model.id.clone()))
         .ok_or_else(|| ConfigError::MissingModel {
             provider: name.clone(),
         })?;

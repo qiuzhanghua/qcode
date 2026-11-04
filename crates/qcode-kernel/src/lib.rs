@@ -331,6 +331,28 @@ pub fn build_provider(
     provider_registry::ProviderRegistry::new(proxy_url.map(str::to_string)).build(resolved)
 }
 
+/// Build a provider for an explicit route + model, independent of the
+/// currently assembled kernel (V2.1 grouped model picker: switching to another
+/// provider's model rebuilds just the provider, keeping the session, tools and
+/// policy intact). `proxy_url` is the egress proxy of the running kernel; a
+/// same-process switch reuses it unchanged.
+pub fn build_provider_for(
+    config_path: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+    provider: &str,
+    model: &str,
+    proxy_url: Option<&str>,
+) -> Result<Box<dyn Provider>, Box<dyn std::error::Error>> {
+    let loaded = load_config(config_path.map(Path::to_path_buf), cwd)?;
+    let overrides = config::Overrides {
+        provider: Some(provider.to_string()),
+        model: Some(model.to_string()),
+        ..Default::default()
+    };
+    let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
+    build_provider(&resolved, proxy_url)
+}
+
 /// Everything a frontend needs, assembled once.
 pub struct Assembled {
     pub config: config::Config,

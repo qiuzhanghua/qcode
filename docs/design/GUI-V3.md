@@ -359,14 +359,14 @@ trait Backend {
 - ✅ `gui.json` 持久化 `display_mode`。
 - ✅ 代码块折叠/展开（>20 行折叠到 12 行）、Turn 轨道 tooltip 预览、折叠时近似阅读锚点；Turn picker 目前是 Header 内列表。
 
-### DSH 风格对齐（2026-10-21）
+### 风格对齐（2026-10-21）
 
 - 过程、思考、工具行加入 Lucide 图标：chevron、brain、terminal、文件/搜索/待办等。
 - 注册 `AllAssets` 图标资源。
-- 用户消息改为右侧气泡（DSH 布局）。
+- 用户消息改为右侧气泡。
 - 工具输出改为代码块字体并保留列对齐；`SignedDuration { … }` 改为 `took 5.5s`。
 
-### DSH 过程层次（2026-10-21）
+### 过程层次（2026-10-21）
 
 - 去掉 `thought for … · N tools` 的过程根节点；过程按事件顺序平铺：思考 → 运行命令 → 思考 → 运行命令。
 - 思考行显示首行预览；工具行使用中文标签与对应图标，成功不再显示 `ok`。
@@ -522,7 +522,7 @@ trait Backend {
   - inactive Task：立即写入 `roots_changed`
   - active Task 且 Turn 运行中：pending，Turn 结束后应用
 - 原目录列表底部的 `+ 目录` 已删除；添加目录统一从 Task 行的 `+` 进入。
-- 重命名使用 DSH 风格输入对话框：
+- 重命名使用输入对话框：
   - Enter 保存，Esc/取消关闭
   - 空标题不允许
   - 显式标题持久化到事件日志；优先于首条 user message
@@ -565,7 +565,7 @@ trait Backend {
 - 鼠标从行内移到右侧绝对定位的 `… +` 上时，浮层保持可见可点。
 - 指针进入另一个 Task 行时，操作浮层切换到该 Task。
 
-### DSH 风格发送键（2026-10-22）
+### 发送键（2026-10-22）
 
 - Composer 使用 `TextareaState::submit_on_enter(true)`：
   - `Enter` 发送，不插入换行

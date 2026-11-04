@@ -1,9 +1,71 @@
 use super::*;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 
 impl Shell {
+    /// Two-level model menu (V2.1): the first level lists providers, the
+    /// second level the models of the picked provider. Picking a model
+    /// switches provider+model for the following turns.
+    fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let provider = self.app.status.provider.clone();
+        let model = self.app.status.model.clone();
+        let config_path = self.config_path.clone();
+        let shell = cx.entity().downgrade();
+        let groups = crate::provider_models(&config_path);
+        Button::new("model-menu")
+            .label(format!("{provider} / {model}"))
+            .dropdown_menu(move |menu, window, cx| {
+                let current = (provider.clone(), model.clone());
+                let mut items = Vec::new();
+                for (provider_name, models) in &groups {
+                    let sub_provider = provider_name.clone();
+                    let sub = PopupMenu::build(window, &mut *cx, |sub, _, _| {
+                        models.iter().fold(sub, |sub, model| {
+                            let p = sub_provider.clone();
+                            let m = model.clone();
+                            let shell = shell.clone();
+                            sub.item(
+                                PopupMenuItem::new(m.clone())
+                                    .checked(current.0 == p && current.1 == m)
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                shell.switch_model(p.clone(), m.clone(), cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                        })
+                    });
+                    items.push(PopupMenuItem::submenu(provider_name.clone(), sub));
+                }
+                // The kernel's provider may not be in the config (resumed
+                // session or a model passed on the command line): keep it
+                // reachable as its own group.
+                if !groups.iter().any(|(p, _)| p == &current.0) {
+                    let p = current.0.clone();
+                    let m = current.1.clone();
+                    let shell = shell.clone();
+                    let sub = PopupMenu::build(window, &mut *cx, |sub, _, _| {
+                        sub.item(PopupMenuItem::new(m.clone()).checked(true).on_click(
+                            move |_, _, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, cx| {
+                                        shell.switch_model(p.clone(), m.clone(), cx);
+                                    });
+                                }
+                            },
+                        ))
+                    });
+                    items.push(PopupMenuItem::submenu(current.0.clone(), sub));
+                }
+                items.into_iter().fold(menu, |menu, item| menu.item(item))
+            })
+            .into_any_element()
+    }
+
     /// The pending queue dock above the composer: each queued message shows
-    /// its preview plus steer / move / remove actions, mirroring dsh's queue
-    /// dock. Steer is only offered while a turn is running.
+    /// its preview plus steer / move / remove actions.
+    /// Steer is only offered while a turn is running.
     pub(crate) fn render_queue_dock(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
@@ -168,18 +230,6 @@ impl Shell {
             .cloned()
             .unwrap_or_else(|| "新任务".to_string());
 
-        // Keep the picker's selection in sync with the kernel's model
-        // (a resume or a settings rebuild may change it).
-        let current_model = self.app.status.model.clone();
-        let needs_sync = {
-            let selected = self.model_select.read(cx).selected_value().cloned();
-            selected.as_ref() != Some(&current_model)
-        };
-        if needs_sync {
-            self.model_select.update(cx, |state, cx| {
-                state.set_selected_value(&current_model, window, cx);
-            });
-        }
         let header = div()
             .flex()
             .flex_row()
@@ -189,11 +239,7 @@ impl Shell {
             .py_4()
             .child(format!("{header_label} · {} turn(s)", self.app.turns.len()))
             .child(div().flex_grow(1.0))
-            .child(div().w(px(220.0)).child(
-                // Default `Length::Auto` sizes the dropdown to the trigger
-                // width, so the popup matches the box above it.
-                Select::new(&self.model_select).placeholder("model"),
-            ));
+            .child(div().w(px(220.0)).child(self.render_model_menu(cx)));
 
         div()
             .flex()

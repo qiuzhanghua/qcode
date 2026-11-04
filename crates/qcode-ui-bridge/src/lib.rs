@@ -108,8 +108,9 @@ pub enum UiCommand {
     NewSession,
     /// Switch the engine to an existing session.
     Resume { id: String },
-    /// Change the model used by subsequent turns.
-    SetModel { model: String },
+    /// Change the provider+model used by subsequent turns. The grouped header
+    /// picker (V2.1) submits both; switching provider rebuilds the provider.
+    SetModel { provider: String, model: String },
 }
 
 /// One operation on a queued (next-turn) message.

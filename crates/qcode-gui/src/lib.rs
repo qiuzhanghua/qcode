@@ -26,12 +26,9 @@ pub use setup::{run_settings, run_setup};
 pub(crate) use shell::Shell;
 
 use gpui_kit::base::{h_resizable, resizable_panel};
-use gpui_kit::component::IndexPath;
 use gpui_kit::component::diff::{DiffFile, DiffState};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::message_scroller::MessageScrollerState;
-use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
-use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::{prelude::*, *};
 
 gpui_kit::actions!(
@@ -91,8 +88,8 @@ const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
 static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
 
-/// Resolve one typography token at the current font scale — the Rust
-/// analogue of deepseek-harness's single `--dsh-content-font-size` axis:
+/// Resolve one typography token at the current font scale — a single
+/// runtime font-size axis:
 /// one runtime value drives every conversation font and line height, so the
 /// tokens never drift per-row.
 fn sp(base: f32) -> gpui_kit::Pixels {
@@ -241,41 +238,40 @@ pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// Models configured as `providers.<name>.default_model`, deduplicated.
-///
-/// `config.toml` names one model per provider, so the union of those entries
-/// is the picker's list. The caller adds the current model separately, so a
-/// model passed on the command line still appears.
-fn configured_models(config_path: &Path) -> Vec<String> {
+/// Models per provider for the grouped header picker (V2.1). Each configured
+/// provider lists its `models` override (falling back to the catalog's
+/// built-in models) plus its `default_model`; groups with no derivable models
+/// are dropped. The caller appends the kernel's current provider/model pair
+/// separately when absent.
+fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
     let Ok(config) = qcode_kernel::config::load(config_path) else {
         return Vec::new();
     };
-    let mut models: Vec<String> = config
-        .providers
-        .values()
-        .filter_map(|provider| provider.default_model.clone())
-        .collect();
-    models.sort();
-    models.dedup();
-    models
-}
-
-/// One model option in the header picker.
-#[derive(Clone)]
-struct ModelItem {
-    name: String,
-}
-
-impl SearchableListItem for ModelItem {
-    type Value = String;
-
-    fn title(&self) -> SharedString {
-        self.name.clone().into()
+    let mut out = Vec::new();
+    for (name, provider) in &config.providers {
+        let mut models: Vec<String> = provider
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        if let Some(default) = &provider.default_model
+            && !models.iter().any(|model| model == default)
+        {
+            models.push(default.clone());
+        }
+        if models.is_empty() {
+            models = qcode_kernel::config::catalog_models(name)
+                .into_iter()
+                .map(|model| model.id)
+                .collect();
+        }
+        models.sort();
+        models.dedup();
+        if !models.is_empty() {
+            out.push((name.clone(), models));
+        }
     }
-
-    fn value(&self) -> &String {
-        &self.name
-    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

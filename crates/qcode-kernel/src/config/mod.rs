@@ -61,10 +61,10 @@ pub struct UiConfig {
 /// Global default model section `[default-model]` (M1 two-tier selection).
 ///
 /// The GUI persists the session-level model here when the user switches it
-/// ("切即默认"). Read-time precedence: `default_model.provider` only decides
-/// the provider when `default_provider` is absent, and `default_model.model`
-/// only applies to the provider it names (or to any provider when it names
-/// none).
+/// ("切即默认") or pins it via the provider card's "设为默认" button.
+/// Read-time precedence: `default_model.provider` outranks the legacy
+/// `default_provider` (V2.1), and `default_model.model` only applies to the
+/// provider it names (or to any provider when it names none).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DefaultModelConfig {
     #[serde(default)]

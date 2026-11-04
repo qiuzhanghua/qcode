@@ -50,8 +50,8 @@ pub trait Backend {
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
     fn cancel(&mut self);
-    /// Change the model for subsequent turns.
-    fn set_model(&mut self, model: String);
+    /// Change the provider+model for subsequent turns (grouped picker, V2.1).
+    fn set_model(&mut self, provider: String, model: String);
     /// Model/provider currently active in the backend, for syncing after a
     /// settings rebuild.
     fn model(&self) -> Option<String> {
@@ -165,7 +165,7 @@ impl Backend for UnconfiguredBackend {
 
     fn cancel(&mut self) {}
 
-    fn set_model(&mut self, _model: String) {}
+    fn set_model(&mut self, _provider: String, _model: String) {}
 
     fn try_recv(&mut self) -> Option<UiEvent> {
         None
@@ -329,9 +329,10 @@ impl Backend for LocalBackend {
         self.send(UiCommand::Cancel);
     }
 
-    fn set_model(&mut self, model: String) {
+    fn set_model(&mut self, provider: String, model: String) {
+        self.provider = provider.clone();
         self.model = model.clone();
-        self.send(UiCommand::SetModel { model });
+        self.send(UiCommand::SetModel { provider, model });
     }
 
     fn model(&self) -> Option<String> {

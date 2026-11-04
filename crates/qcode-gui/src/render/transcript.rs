@@ -70,7 +70,7 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
     "/../qcode/res/icons/src/qcode-mark-current.svg"
 ));
 
-/// DSH-style running row at the tail of the transcript: a flipping QC mark,
+/// Running row at the tail of the transcript: a flipping QC mark,
 /// then "工作中，用时 1分23秒 ···". The seconds are recomputed on every render,
 /// driven by the 1s waiting ticker; the mark flips on its own animation.
 pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
@@ -142,7 +142,7 @@ fn flip_angle(delta: f32) -> f32 {
     }
 }
 
-/// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒` (DSH's format).
+/// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒`.
 pub(crate) fn format_duration_zh(duration: time::Duration) -> String {
     let total = duration.whole_seconds().max(0) as u64;
     let hours = total / 3600;

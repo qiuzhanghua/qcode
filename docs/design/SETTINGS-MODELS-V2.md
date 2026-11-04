@@ -1,8 +1,9 @@
 # qcode 设置页与模型接入架构重构设计（V2）
 
 > 状态：草稿，待评审
-> 参考：deepseek-harness (dsh) 的模型选择与后台路由架构
 > 范围：设置页 UI 重组 + Provider 路由/适配器注册表 + 模型选择两级化 + 凭证分离
+
+> **V2.1 修订（默认模型收敛）**：设置页 Models 顶部三个字段（`default_provider`、`[default-model].provider/.model`）移除，默认模型统一收敛为 `[default-model]` 二元组（provider + model 共同决定）。provider 卡片行新增「设为默认」按钮；未设默认时由 resolve 兜底「第一个可用 provider 的第一个模型」；`default_provider` 降级为只读兼容、永不写新值。详见 §4.4、§5、§8。
 
 ---
 
@@ -14,7 +15,7 @@
 1. **UI 层**：字段声明是声明式的（`FIELDS`/`TABLES`），但 apply 路径是硬编码 `match`，新增一个配置项要改多处（schema、渲染、apply、known_keys 约束）。
 2. **模型层**：Provider 身份只是 `providers` map 的 key，内置 provider 用 `builtin()` 硬编码 match，适配器用 `build_provider` 按名字 match 分发——没有"路由 + 注册表"的概念，协议（OpenAI 兼容 / Anthropic）与供应商身份耦合，新增一个供应商要动核心代码。
 
-本设计借鉴 dsh 的三块架构，在 qcode（单二进制 Rust 应用）里落地：
+本设计采用三块架构，在 qcode（单二进制 Rust 应用）里落地：
 
 - **设置命名空间分层**：每个功能域拥有自己的配置 section（schema + 默认值 + 用户层），写入按叶子 diff，未改动的键与注释原样保留。
 - **Provider 路由 + 适配器注册表**：一个 provider 路由键（route）决定协议、端点、模型目录；一个适配器可服务多个路由；设置页由"可配置 provider 目录"驱动。
@@ -65,9 +66,9 @@
 
 ---
 
-## 3. 参考架构：dsh 的关键设计（本设计的来源）
+## 3. 参考架构
 
-dsh（deepseek-harness，TS monorepo）三块设计：
+三块设计：
 
 **① 设置命名空间（settings section）**
 - 每个功能插件调用 `installSection(ctx, ns, schema, base, {setSource, onChange})` 注册自己的命名空间。
@@ -89,7 +90,7 @@ dsh（deepseek-harness，TS monorepo）三块设计：
 
 ---
 
-## 4. 目标架构（dsh 模式在 qcode 的落地）
+## 4. 目标架构
 
 ### 4.1 总体分层
 
@@ -137,7 +138,7 @@ dsh（deepseek-harness，TS monorepo）三块设计：
 
 读取顺序不变（`merge_project` 已有），新增的是"每个 section 声明自己的默认值与校验"，把散落的 `serde(default)` 集中为 section schema。
 
-**写入**：`ConfigEdit` 增强为**按 section 叶子 diff**——只 set 变更的键，其余键与注释原样保留（沿用 toml_edit + 原子写）。这与 dsh 的 `settings.yaml` 叶子 diff 一致，但 qcode 不换 YAML。
+**写入**：`ConfigEdit` 增强为**按 section 叶子 diff**——只 set 变更的键，其余键与注释原样保留（沿用 toml_edit + 原子写）。
 
 **运行时快照**：为每个 section 提供 `set_source` 式回调——模块持有"当前有效值"的读取闭包，配置变更后主窗口无需全量重建，各模块先自行更新快照，再按需触发增量重建（见 4.7）。
 
@@ -187,9 +188,9 @@ pub struct CatalogEntry {
   → 注册表按 protocol 构造适配器并缓存
 ```
 
-**协议与供应商解耦**（解决 P7）：`ProviderConfig` 新增可选 `protocol = "openai" | "anthropic" | "mock"` 字段（`serde(default)` 向后兼容）。无 `protocol` 时由目录条目决定；显式声明时覆盖——即"一条手工声明路由，指定协议 + 端点 + 模型清单"，对应 dsh 的"手工声明路由（平台型）"。**火山方舟 Ark 这类 OpenAI 兼容平台 = 加一条 `protocol="openai"` + base_url 的路由，不需要新代码**。
+**协议与供应商解耦**（解决 P7）：`ProviderConfig` 新增可选 `protocol = "openai" | "anthropic" | "mock"` 字段（`serde(default)` 向后兼容）。无 `protocol` 时由目录条目决定；显式声明时覆盖——即"一条手工声明路由，指定协议 + 端点 + 模型清单"。**火山方舟 Ark 这类 OpenAI 兼容平台 = 加一条 `protocol="openai"` + base_url 的路由，不需要新代码**。
 
-**手工声明路由的完整字段集**（补齐自定义模型 API 的全部能力，对应 dsh `PiAiProviderProfile`）：
+**手工声明路由的完整字段集**（补齐自定义模型 API 的全部能力）：
 
 ```toml
 # 示例：火山方舟 Ark 手工路由
@@ -202,7 +203,7 @@ headers = { "x-custom-header" = "value" }   # 可选：部署级自定义请求�
 extra = { "extra_body" = ... }    # 可选：透传给请求体的附加字段（升级自 extra_body，M4 可编辑）
 ```
 
-- `headers` 为**新增字段**（现状 `ProviderConfig` 无）：dsh 手工路由支持部署级请求头（网关鉴权、自定义头），qcode 补齐以覆盖无法仅靠 Bearer key 认证的网关。
+- `headers` 为**新增字段**（现状 `ProviderConfig` 无）：支持部署级请求头（网关鉴权、自定义头），覆盖无法仅靠 Bearer key 认证的网关。
 - `api_key_env` / `api_key_command` 保留现有语义（§4.5 凭证分离只做 UI 收敛）。
 
 **可配置 Provider 目录**（驱动设置页）：
@@ -229,16 +230,16 @@ pub struct ConfigurableProvider {
 
 依赖方向：`qcode-core(端口) ← qcode-providers(协议实现) ← qcode-kernel(目录+注册表+Engine)`，不新建 crate、不产生循环依赖。
 
-**模型清单来源**（目录静态 vs 端点探测，借鉴 dsh `discovery.ts`）：
+**模型清单来源**（目录静态 vs 端点探测）：
 
 | 路由类型 | 模型清单来源 | 是否联网 | 元数据 |
 |---|---|---|---|
 | 内置目录路由（openai/deepseek/ollama/minimax/anthropic） | `ProviderCatalog` 静态表（编译期内置） | 否 | 完整：能力 / 上下文窗口 / 输出上限 / 默认模型 |
 | 手工声明路由（火山方舟、网关、自托管） | 用户手填 `models` 或端点探测 | 是（可选） | 探测返回：`id` + 可选的 name / context_window / max_tokens |
 
-- **内置目录不联网**：模型清单在构建期生成、随二进制分发，权威且带完整元数据——对应 dsh 的 `models.generated.js`（打包分发、`catalogModels()` 查内存静态表）。
-- **端点探测仅对非目录路由开放**：对 `{baseURL}/models` 发 `GET`（Bearer 认证），只支持 `openai` 协议（OpenAI 兼容的 listing 形状；Anthropic 协议报告"不可探测"，回退手填）。对应 dsh 的 `LISTABLE_PROTOCOLS`。
-- **探测结果不落盘**：探测是"候选元数据"供用户采纳（勾选/确认后才写入 `providers.<route>.models`）；**配置文件才是决定路由提供哪些模型的唯一事实源**——对应 dsh 的"nothing here is stored, settings.yaml remains the only thing that decides what a route serves"。
+- **内置目录不联网**：模型清单在构建期生成、随二进制分发，权威且带完整元数据。
+- **端点探测仅对非目录路由开放**：对 `{baseURL}/models` 发 `GET`（Bearer 认证），只支持 `openai` 协议（OpenAI 兼容的 listing 形状；Anthropic 协议报告"不可探测"，回退手填）。
+- **探测结果不落盘**：探测是"候选元数据"供用户采纳（勾选/确认后才写入 `providers.<route>.models`）；**配置文件才是决定路由提供哪些模型的唯一事实源**。
 - 顶栏下拉的模型清单 = 配置的 `models` ∪ 目录模型（目录路由）∪ 用户采纳过的探测结果。
 
 ### 4.4 模型选择两级化（解决 P9）
@@ -248,19 +249,21 @@ pub struct ConfigurableProvider {
 ```rust
 pub struct ModelSelection { pub provider: String, pub model: String }
 // Engine.model 从 String 升级为 ModelSelection（保留 provider 维度）
-// UiCommand::SetModel { provider, model } —— 切换后写会话记录，同 dsh 的 selectModel
+// UiCommand::SetModel { provider, model } —— 切换后写会话记录
 ```
 
 - 切换动作 = 更新 `Engine.model`（内存快照，供本次 Turn 使用）**并写入会话记录**（qcode 已有 `SessionStore`，见 `qcode-core/src/store.rs`）——恢复该会话时自动还原，**关闭再打开无需用户重选**。
 - 现状顶栏下拉是"所有 provider 的 default_model 并集"→ 改为**按当前路由列出可用模型**（用户配置的 models 清单 ∪ 目录模型 ∪ 端点探测），并显示所属 provider。
 - 状态条展示 `App.status.model/provider`（已有结构，语义不变）。
 
-**顶栏模型选择交互**（借鉴 dsh `ui-model-selection` 的 ModelSelect）：
+**顶栏模型选择交互**：
 
 - 现状是扁平下拉（各 provider 的 default_model 并集），目标改为**供应商分组的模型菜单**：一个下拉/弹层，第一层是"按 provider 分组的模型列表"（分组头 = 供应商，组内 = 模型），第二层（可选）是模型的 effort 级别。
 - **选中即提交完整选择 `{provider, model}`**（不是"先选供应商、再选模型"的两步向导）——分组只是展示组织方式，提交的是一个三元组/二元组。
-- 切换生效在下一个 Turn 开始处（会话级选择更新 + 写会话记录）；正在运行的 Turn 保持已快照的选择（对应 dsh 的 prompt-assembly 边界快照）。
+- 切换生效在下一个 Turn 开始处（会话级选择更新 + 写会话记录）；正在运行的 Turn 保持已快照的选择。
 - 触发按钮显示"当前模型 + 所属供应商"；当选择与当前路由清单对不上时降级为"选择模型"提示。
+
+> **V2.1 已落地（两层模型菜单）**：顶栏模型下拉改为**两级 PopupMenu 子菜单**——第一层是 provider（`PopupMenuItem::submenu`），第二层是该 provider 的模型清单（配置 `models` ∪ `default_model` ∪ 目录模型）；触发按钮显示 `provider / model`。`SetModel` 升级为 `{provider, model}` 二元组（`ui-bridge`）：同 provider 切换只换模型，**跨 provider 切换由 `qcode_kernel::build_provider_for` 就地重建 provider**（保留会话、工具与策略；复用当前 egress proxy），并同步写 `[default-model]`（"切即默认"）。
 
 **默认级（落盘，`default-model` 命名空间）**：
 
@@ -272,16 +275,33 @@ model = "deepseek-flash"
 ```
 
 - 替代现状"`default_provider` + 各 provider 的 `default_model`"的职责。
-- **联动规则（沿用 dsh）**：会话内切模型时，同步把选择写入 `default-model` 命名空间（写失败仅告警不阻断）——即"切即默认"，新建会话用最新选择。若希望保留"显式设默认"的语义，可增加一个开关（见 §7 取舍）。
+- **联动规则**：会话内切模型时，同步把选择写入 `default-model` 命名空间（写失败仅告警不阻断）——即"切即默认"，新建会话用最新选择。若希望保留"显式设默认"的语义，可增加一个开关（见 §7 取舍）。
 - 迁移期：读取时若 `default-model` 缺失，回退到旧的 `default_provider` + `providers.*.default_model`；写入新值后落 `default-model`。`stale_model_default` 补丁（P4）随迁移完成删除。
+
+**V2.1 修订（默认模型收敛）**：
+
+- **设置页移除三个默认字段**：Models 页顶部 `default_provider`、`[default-model].provider/.model` 三个输入框移除（`forms.rs` FIELDS / `setup/fields.rs` / `OPTIONAL_PATHS` / Review 页文案一并清理）。
+- **「设为默认」按钮**：每个已配置的 provider 卡片行新增「设为默认」按钮（仅**可用**行显示：credential 状态为 Configured 或 Keyless；Missing 不显示）。点击写入 `[default-model] = {provider, model}`（model 取该行 `default_model`，缺省取 `models[0]`，再缺省留空交由模型链兜底），**并删除遗留 `default_provider` 键**。
+- **「第一个可用」兜底**：resolve 的 provider 选择链末端（mock 之前）新增兜底——遍历 `config.providers`（排除 `mock*`，按字母序）取第一个通过校验（合法 http(s) base_url + key 可用）的 provider；模型取其 `default_model` → `models[0]` → catalog 默认。全空/全不可用时维持 mock。
+- **选择链顺序修正（关键）**：`[default-model].provider` 提升到 `default_provider` **之前**（当前 resolve.rs 实现顺序相反，导致「设为默认」写入被遗留值压过）。修正后的 provider 链：
+
+  ```
+  --provider > QCODE_PROVIDER > [default-model].provider > default_provider(只读兼容) > 第一个可用 > mock
+  ```
+
+  修正后的 model 链：
+
+  ```
+  --model > QCODE_MODEL > [default-model].model(限本路由) > providers.<name>.default_model > catalog 默认 > models[0]
+  ```
 
 **请求链路**：`run_turn` 取 `Engine.model`（会话级，缺省回退 `default-model`）→ 携带 `{provider, model}` → 注册表路由 → 适配器 stream。
 
 **同路由切模型的机制**（供应商不变、只换模型）：
 
 - 执行路径**保持现状**：`ModelSelection {provider, model}` 同路由只改 `model`；`Provider::stream` 收到的是 `CompletionRequest.model` 字段（[qcode-core/provider.rs](crates/qcode-core/src/provider.rs)），协议实现把 model 原样透传给上游 API——协议、端点、凭证、provider 实例全部复用。
-- **新增模型级元数据**（借鉴 dsh 的 catalog models）：每个模型有自己的 `models 清单条目`——能力（reasoning / images）、上下文窗口、max output、价格。切换模型时按 model 重新解析这些元数据，而非 provider 级 `capabilities()`。
-- **切换时校验**：`model` 必须属于该路由的模型清单（目录 ∪ 用户配置 `models`）；未声明的模型拒绝切换或回退（对应 dsh `resolveCallConfig` 的选择时校验）。
+- **新增模型级元数据**：每个模型有自己的 `models 清单条目`——能力（reasoning / images）、上下文窗口、max output、价格。切换模型时按 model 重新解析这些元数据，而非 provider 级 `capabilities()`。
+- **切换时校验**：`model` 必须属于该路由的模型清单（目录 ∪ 用户配置 `models`）；未声明的模型拒绝切换或回退。
 - 顶栏下拉 = **当前路由的模型清单**（同一 provider 下列出多个 model，选择后只改 `model`）。
 
 ### 4.5 凭证分离（解决 P10）
@@ -295,7 +315,7 @@ model = "deepseek-flash"
 | 状态 | 已存（Keychain）/ 缺失 / 无需 key（ollama 本地、mock） |
 | 操作 | 输入并存入 Keychain / 清除 |
 
-- Keychain "Store key" 逻辑保留（现状可用），只做 UI 收敛 + 状态聚合（`describe_credentials()` 一次列出全部路由的凭证状态，对应 dsh 的 credentials describe）。
+- Keychain "Store key" 逻辑保留（现状可用），只做 UI 收敛 + 状态聚合（`describe_credentials()` 一次列出全部路由的凭证状态）。
 
 ### 4.6 设置页 UI 重组（解决 P1-P6 的 UI 面）
 
@@ -338,7 +358,7 @@ SettingsView(表单状态)
 | 项目 | 策略 |
 |---|---|
 | config.toml v2 → v3 | 新字段（`protocol`、`display_name`、`models`、`[default-model]`）全部 `serde(default)`，旧文件直接可读 |
-| 默认模型 | 读时回退链：`[default-model]` → `default_provider` + `providers.*.default_model`；写时落新命名空间 |
+| 默认模型 | 读时回退链：`[default-model]` → `default_provider` + `providers.*.default_model`；写时落新命名空间；**V2.1：`[default-model]` 优先于 `default_provider`，首个可用 provider 兜底** |
 | `builtin()` match → catalog 表 | 行为等价重构，逐条对照测试（openai/deepseek/ollama/minimax/anthropic/claude 端点与 key env 不变） |
 | `build_provider` match → 注册表 | 构造结果不变（Mock / Anthropic / OpenAiCompat），路由表驱动方式变化 |
 | GUI 偏好 | 继续独立 `gui.json`，不并入 config.toml |
@@ -357,18 +377,19 @@ SettingsView(表单状态)
 
 ## 7. 明确不做 / 取舍
 
-- **不引入插件系统**：dsh 的 `installSection` 是动态插件注册，qcode 是单二进制，落地为"编译期模块各自拥有 section schema"，不做热加载插件。
-- **不换配置格式**：沿用 TOML + toml_edit 注释保留，不做 YAML/JSON 迁移（dsh 的 yaml 叶子 diff 我们已有等价能力）。
-- **不做跨进程/远端设置**：qcode GUI 与 kernel 同进程，不需要 dsh 的 settings-controller RPC 层。
+- **不引入插件系统**：qcode 是单二进制，落地为"编译期模块各自拥有 section schema"，不做热加载插件。
+- **不换配置格式**：沿用 TOML + toml_edit 注释保留，不做 YAML/JSON 迁移。
+- **不做跨进程/远端设置**：qcode GUI 与 kernel 同进程。
 - **会话级模型选择随会话记录持久化**：qcode 已有 `SessionStore` 会话落盘，模型选择作为会话记录的一个字段/事件写入；持久化入口有两个——会话记录（会话级）+ `default-model` 命名空间（全局默认），不做第三处落盘。
 - **不做运行时热插拔 provider**：Provider 变更仍走配置写盘 + 模块级重建；单文件原子写保证不丢配置。
-- **"切即默认" vs "显式设默认"**：默认沿用 dsh 的"会话内切模型即联动默认"（简单、心智一致）；如需保留旧行为（只有点"设为默认"才改全局默认），在设置页加一个开关 `[ui] sync_default_model = false`（默认 true）。
+- **"切即默认" vs "显式设默认"**：默认采用"会话内切模型即联动默认"（简单、心智一致）；如需保留旧行为（只有点"设为默认"才改全局默认），在设置页加一个开关 `[ui] sync_default_model = false`（默认 true）。
 
 ## 8. 关键决策摘要
 
 1. 配置结构由"各模块 section schema"定义，表单从 schema 生成——UI 与配置结构解耦（替代 FIELDS 反向约束）。
 2. Provider 从"map key + 名字 match"升级为"路由 + 注册表 + 目录"——新增供应商 = 目录一行 +（必要时）一条手工路由。
 3. 协议从"按供应商名推断"改为"显式 protocol 字段"——平台型（火山方舟、任意 OpenAI 兼容网关）零代码接入。
-4. 模型选择两级化：会话级（写会话记录，恢复会话自动还原）+ 默认级命名空间落盘（叶子 diff）；会话内切模型联动更新默认（同 dsh）。
-5. 凭证视图独立于 Provider 表，配置只存引用。
-6. 设置页按"模型 / 运行时 / 外观 / 其他"分组，Provider 目录页为模型组核心。
+4. 模型选择两级化：会话级（写会话记录，恢复会话自动还原）+ 默认级命名空间落盘（叶子 diff）；会话内切模型联动更新默认。
+5. **（V2.1）默认模型收敛为 `[default-model]` 二元组**：设置页移除三个默认字段，provider 卡片「设为默认」按钮唯一写入口；`[default-model]` 优先于 `default_provider`；无默认时 resolve 兜底「第一个可用 provider 的第一个模型」。
+6. 凭证视图独立于 Provider 表，配置只存引用。
+7. 设置页按"模型 / 运行时 / 外观 / 其他"分组，Provider 目录页为模型组核心。

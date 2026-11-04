@@ -22,6 +22,9 @@ pub struct Engine {
     pub store: SessionStore,
     pub provider: std::sync::Arc<dyn qcode_core::provider::Provider>,
     pub provider_name: String,
+    /// Egress proxy URL of the assembled kernel; a cross-provider model
+    /// switch rebuilds the provider with the same proxy.
+    pub proxy_url: Option<String>,
     pub tools: qcode_core::tool::ToolRegistry,
     pub policy: qcode_core::policy::Policy,
     pub workspace: PathBuf,
@@ -39,10 +42,17 @@ pub struct Engine {
 }
 
 /// Create a fresh empty task (no roots) and tell the UI to switch to it.
-pub(crate) fn create_empty_task(engine: &Engine, port: &KernelPort, model: &str) -> Option<String> {
+/// `provider_name` is the engine's current provider (may change after a
+/// cross-provider model switch).
+pub(crate) fn create_empty_task(
+    engine: &Engine,
+    provider_name: &str,
+    port: &KernelPort,
+    model: &str,
+) -> Option<String> {
     let meta = SessionStarted {
         model: model.to_string(),
-        provider: engine.provider_name.clone(),
+        provider: provider_name.to_string(),
         cwd: engine.workspace.display().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -124,6 +134,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let mut active: Option<CancellationToken> = None;
             let mut pending: Option<UiCommand> = None;
             let mut model = engine.model.clone();
+            // Mutable provider + provider_name: a cross-provider model switch
+            // (grouped header picker, V2.1) rebuilds the provider in place.
+            let mut provider = engine.provider.clone();
+            let mut provider_name = engine.provider_name.clone();
             let mut pricing = engine.pricing;
             let (done_tx, mut done_rx) =
                 tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
@@ -141,7 +155,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         None => {
                             let created = match engine.store.create_task(&SessionStarted {
                                 model: model.clone(),
-                                provider: engine.provider_name.clone(),
+                                provider: provider_name.clone(),
                                 cwd: engine.workspace.display().to_string(),
                                 version: env!("CARGO_PKG_VERSION").to_string(),
                             }) {
@@ -164,7 +178,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let token = CancellationToken::new();
                     active = Some(token.clone());
                     let store = engine.store.clone();
-                    let provider = engine.provider.clone();
+                    let provider = provider.clone();
                     let tools = engine.tools.clone();
                     let policy = engine.policy.clone();
                     let snapshots = engine.snapshots.clone();
@@ -245,7 +259,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     token.cancel();
                                     pending = Some(UiCommand::NewSession);
                                 } else {
-                                    session = create_empty_task(&engine, &port, &model);
+                                    session = create_empty_task(&engine, &provider_name, &port, &model);
                                 }
                             }
                             UiCommand::Resume { id } => {
@@ -259,14 +273,43 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     port.send_session_changed(Some(id));
                                 }
                             }
-                            UiCommand::SetModel { model: next } => {
+                            UiCommand::SetModel {
+                                provider: next_provider,
+                                model: next,
+                            } => {
+                                // Cross-provider switch: rebuild the provider
+                                // for the target route, keeping the session,
+                                // tools and policy intact. Failure keeps the
+                                // previous provider and reports the reason.
+                                if next_provider != provider_name {
+                                    match qcode_kernel::build_provider_for(
+                                        Some(&engine.config_path),
+                                        &engine.workspace,
+                                        &next_provider,
+                                        &next,
+                                        engine.proxy_url.as_deref(),
+                                    ) {
+                                        Ok(new_provider) => {
+                                            provider = new_provider.into();
+                                            provider_name = next_provider;
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "qcode-gui: cannot switch provider: {error}"
+                                            );
+                                            port.send_turn_failed(format!(
+                                                "无法切换到 {next_provider}：{error}"
+                                            ));
+                                        }
+                                    }
+                                }
                                 model = next;
                                 pricing = engine.pricing_table.get(&model).copied();
                                 // “切即默认”：切换模型同时写进 [default-model]，
                                 // 新会话默认用它；写失败只记日志，不阻断切换。
                                 if let Err(error) = qcode_kernel::config_edit::set_default_model(
                                     &engine.config_path,
-                                    Some(engine.provider_name.as_str()),
+                                    Some(provider_name.as_str()),
                                     Some(model.as_str()),
                                 ) {
                                     eprintln!("qcode-gui: cannot persist default model: {error}");
@@ -323,7 +366,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         if let Some(pending) = pending.take() {
                             match pending {
                                 UiCommand::NewSession => {
-                                    session = create_empty_task(&engine, &port, &model);
+                                    session = create_empty_task(&engine, &provider_name, &port, &model);
                                 }
                                 UiCommand::Resume { id } => {
                                     session = Some(id.clone());

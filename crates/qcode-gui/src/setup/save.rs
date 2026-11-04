@@ -405,9 +405,6 @@ impl SetupView {
 /// removed from the file); every other field keeps an empty string or fails
 /// validation.
 const OPTIONAL_PATHS: &[&[&str]] = &[
-    &["default_provider"],
-    &["default-model", "provider"],
-    &["default-model", "model"],
     &["agent", "max_cost_usd"],
     &["search", "base_url"],
     &["search", "api_key_command"],
@@ -448,7 +445,7 @@ fn model_entries(row: &RowState, cx: &Context<SetupView>) -> Vec<qcode_kernel::c
 /// `apply_config` + atomic save. A fresh open (instead of `self.edit`, which is
 /// stale after the first auto save) keeps subsequent writes from clobbering
 /// earlier ones.
-fn write_config(
+pub(crate) fn write_config(
     path: &std::path::Path,
     config: &Config,
 ) -> Result<(), qcode_kernel::config::ConfigError> {

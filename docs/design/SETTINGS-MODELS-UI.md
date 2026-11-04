@@ -1,10 +1,6 @@
 # qcode 设置页「模型」section UI 设计（V1）
 
 > 状态：设计文档，待评审
-> 参考基准：deepseek-harness (dsh) `packages/client/ui-settings-models` ——
-> `ModelsSection.tsx` / `ProviderEditor.tsx` / `CustomProviderCard.tsx` /
-> `ModelListEditor.tsx` / `DeepSeekModelsEditor.tsx` / `EditorFooter.tsx` +
-> `ModelsSection.module.css` + `locales.ts`（中英文案）
 > 范围：设置窗口「模型」section 的**界面结构、组件、交互与视觉细则**
 > 配套：[SETTINGS-MODELS-V2.md](./SETTINGS-MODELS-V2.md)（模型接入架构 M0–M4，数据层已落地）、
 > [SETTINGS-UI-V2.md](./SETTINGS-UI-V2.md)（设置窗口整体布局：左导航 + 分区）
@@ -13,9 +9,9 @@
 
 ## 1. 背景与目标
 
-dsh 的 Models 设置 section 是「提供方行卡片 + 行内展开编辑器 + 模型目录编辑 + 端点探测候选选择器 + 自定义提供方声明 + 删除确认」的组合。qcode 现状（`Page::Models`）是**表格行编辑**：只读 Provider 目录文本列表 + 默认模型三字段 + providers 表（内嵌 `__key` 密文、预设按钮、探测按钮文本输出）。
+Models 设置 section 的目标形态是「提供方行卡片 + 行内展开编辑器 + 模型目录编辑 + 端点探测候选选择器 + 自定义提供方声明 + 删除确认」的组合。qcode 现状（`Page::Models`）是**表格行编辑**：只读 Provider 目录文本列表 + 默认模型三字段 + providers 表（内嵌 `__key` 密文、预设按钮、探测按钮文本输出）。
 
-本设计把 dsh 的 Models section UI 搬进 qcode 的 GPUI 设置窗口，目标：
+本设计在 qcode 的 GPUI 设置窗口落地上述 Models section UI，目标：
 
 1. Provider 行从表格行升级为**卡片行**：显示名 + 自定义标签 + 凭证状态圆点 + 编辑/删除。
 2. 行内展开**编辑器卡片**：API 密钥（只写）+ 折叠「自定义设置」（API 地址 / 模型目录 / 自定义路由的显示名与协议）。
@@ -27,7 +23,7 @@ dsh 的 Models 设置 section 是「提供方行卡片 + 行内展开编辑器 +
 
 ---
 
-## 2. dsh Models section UI 解剖（参考基准）
+## 2. Models section UI 解剖（参考基准）
 
 ### 2.1 页面骨架
 
@@ -107,7 +103,7 @@ h2 标题「模型」 + intro「填入各提供方的 API 密钥即可使用其�
 
 ### 3.2 差距
 
-| 维度 | dsh | qcode 现状 |
+| 维度 | 参考 | qcode 现状 |
 |---|---|---|
 | 提供方呈现 | 卡片行 + 凭证圆点 + 自定义标签 | 只读文本列表 + 表格行 |
 | 凭证状态 | 行上绿/红实心圆点 | 目录文本「凭证: 已存/缺失」 |
@@ -205,9 +201,9 @@ E) 删除确认 Modal：
    └─────────────────────────────────────────────────────┘
 ```
 
-### 4.2 组件拆解与 dsh → qcode 映射
+### 4.2 组件拆解与映射
 
-| dsh 组件/概念 | qcode 落地（GPUI） |
+| 参考组件/概念 | qcode 落地（GPUI） |
 |---|---|
 | `ModelsSection`（section 骨架） | `SetupView` Models 页渲染（`setup/render.rs`），h2+intro 已有 |
 | Provider 行卡片（`li.rowCard` + 圆点 + 编辑/删除） | 新增 `ProviderCard` 渲染函数/组件；行列表替代现有目录文本列表 + providers 表 |
@@ -228,20 +224,20 @@ E) 删除确认 Modal：
 3. **凭证圆点只表示已确认事实**：绿 = 该路由引用（`api_key_env` 或派生）确实有值/Keychain 已存；红 = 具名引用缺失；Keyless 不显示。探测环境变量时不清空（目录只读事实，见 `credential_state` 现有语义）。
 4. **模型目录继承语义**：无用户 `models` 时显示目录静态模型 + 「正在使用适配器默认模型」徽标；第一次编辑物化用户层覆盖 → 「已自定义模型目录」+「恢复默认模型」按钮（取消覆盖）。
 5. **探测用表单当前值**：含未保存的 API 地址与密钥；失败不阻塞手填；候选 Modal 搜索不清勾选、全选只作用于可见项；「添加所选」才写入。
-6. **保存语义（本设计的关键决策）**：Provider 卡片保持 dsh 的 **保存/取消** 卡片语义（密钥与模型清单是较大编辑单元，含校验与凭证写入，不适合逐字符即时写盘）；默认模型两行 **即时保存**（叶子 diff）。→ 对 SETTINGS-UI-V2 §4.5 的修订：Models section 不再整体"即时自动保存"，改为"默认模型行即时 + Provider 卡片显式保存"。
-7. **删除语义**：仅当该路由配置确实引用页面管理的密钥（`api_key_env` 指向本页派生引用或 Keychain 已存且可写）时，删除才连带移除密钥；否则保留（对应 dsh 的"证明不了拥有权就不清"）。
-8. **路由名不可在编辑卡改名**：Provider ID 是 settings 键与凭证引用词干，改名 = 删除 + 新建（dsh 同款约束）。
+6. **保存语义（本设计的关键决策）**：Provider 卡片采用 **保存/取消** 卡片语义（密钥与模型清单是较大编辑单元，含校验与凭证写入，不适合逐字符即时写盘）；默认模型两行 **即时保存**（叶子 diff）。→ 对 SETTINGS-UI-V2 §4.5 的修订：Models section 不再整体"即时自动保存"，改为"默认模型行即时 + Provider 卡片显式保存"。
+7. **删除语义**：仅当该路由配置确实引用页面管理的密钥（`api_key_env` 指向本页派生引用或 Keychain 已存且可写）时，删除才连带移除密钥；否则保留。
+8. **路由名不可在编辑卡改名**：Provider ID 是 settings 键与凭证引用词干，改名 = 删除 + 新建。
 
 ### 4.4 视觉细则（GPUI）
 
-- **颜色**：全部经 qcode 现有主题 token（对齐 dsh 的 alias token 原则，不写裸色值）。绿圆点 = success 色，红圆点 = error 色。
+- **颜色**：全部经 qcode 现有主题 token（alias token 原则，不写裸色值）。绿圆点 = success 色，红圆点 = error 色。
 - **圆角体系**：行卡片 16、编辑器卡 12、模型行 10、输入框 8、图标按钮 6、胶囊按钮 18（行内 14）。与现有设置窗口控件一致。
 - **描边**：0.5px；空态/添加区用**虚线**（"nothing here yet" 惯例）。
 - **字号**：标题 16、行名 14、行内标签/徽标/提示 12、输入框 14——全部走项目全局字号轴（Ctrl+=/- 缩放生效），禁止绝对 px 硬编码（项目 memory 约束）。
 - **弹窗**：删除确认与候选选择器复用设置窗口既有 Modal 风格（项目弹窗圆角惯例：上两角圆角、下两角直角——与三处提示框一致；若设置窗口已有独立 Modal 风格，随现有惯例）。
 - **焦点/无障碍**：焦点 2px 描边；图标按钮（chevron、trash）必须有 aria-label/标题；已保存消息 `role=status` 播报。
 
-### 4.5 文案（中文，对齐 dsh locales + qcode 现有用词）
+### 4.5 文案（中文，qcode 现有用词）
 
 | 场景 | 文案 |
 |---|---|
@@ -274,7 +270,7 @@ E) 删除确认 Modal：
 | 写路径 | `ConfigEdit` 叶子 diff（toml_edit 保留注释 + 原子写） | 复用；卡片保存 = 一次叶子写 + 一次凭证写 |
 | 探测 | `qcode_providers::discover_models(base_url, key, headers)` | 复用，仅 UI 升级为候选 Modal |
 
-写入顺序（对应 dsh apply）：先 settings 叶子写（携带 revision，冲突即报错），成功后再写凭证；凭证失败只重试凭证阶段，不重跑 settings 写。
+写入顺序：先 settings 叶子写（携带 revision，冲突即报错），成功后再写凭证；凭证失败只重试凭证阶段，不重跑 settings 写。
 
 ### 4.7 落地步骤（阶段拆分）
 
@@ -292,12 +288,12 @@ E) 删除确认 Modal：
 
 ## 5. 明确不做 / 取舍
 
-- **不引入插件扩展插槽**：dsh 的 provider-card/footer slot 是插件系统的产物，qcode 无插件系统，不实现。
-- **不做推理强度（effort）控件**：按模型能力放在 composer 模型选择里（与 dsh 同款决策），Provider 卡不设。
+- **不引入插件扩展插槽**：qcode 无插件系统，不实现 provider-card/footer 插槽。
+- **不做推理强度（effort）控件**：按模型能力放在 composer 模型选择里，Provider 卡不设。
 - **不做 headers/extra_body 表单编辑**（本版）：仍留 config.toml 手写（SETTINGS-MODELS-V2 M4 的可选项，本设计不含）。
 - **不改 Provider ID**：路由名 = settings 键 + 凭证引用词干，改名走删除+新建。
 - **不做按目录全量探测**：探测仅对已填 base_url 的路由开放，且只支持 OpenAI 兼容 listing（Anthropic 报告不可探测，回退手填）。
-- **默认模型不搬进 dsh 式 composer 选择器**（本版）：保留设置页默认模型行；composer 选择器升级属另一设计。
+- **默认模型不搬进 composer 选择器**（本版）：保留设置页默认模型行；composer 选择器升级属另一设计。
 - **模型目录仍为纯静态或手填 + 探测采纳**：探测结果不自动落盘，配置文件是唯一事实源。
 
 ## 6. 关键决策摘要
@@ -308,7 +304,7 @@ E) 删除确认 Modal：
 4. **保存语义修订 SETTINGS-UI-V2**：Models section 拆两层——默认模型行即时保存（叶子 diff），Provider 卡片显式保存/取消（大编辑单元 + 校验 + 凭证写入）。
 5. 新增**自定义提供方声明卡**与**删除确认 Modal**（删除按凭证归属区分保留/清除）。
 6. 模型目录编辑器需要**前置数据缺口**：`ProviderConfig.models` 字段（U0），随后才有继承/自定义徽标与恢复默认。
-7. 视觉全部走主题 token + 全局字号轴；弹窗复用设置窗口既有 Modal 风格；无障碍（aria-label / role=status）对齐 dsh。
+7. 视觉全部走主题 token + 全局字号轴；弹窗复用设置窗口既有 Modal 风格；无障碍（aria-label / role=status）符合规范。
 
 ---
 
@@ -329,4 +325,4 @@ E) 删除确认 Modal：
 ### 与设计的两处偏差（实施取舍）
 
 1. **保存语义**：沿用既有 auto-save（变更即写盘，SETTINGS-UI-V2 的即时保存），「保存/取消」按钮实际为收起编辑器 + 显示/清除已保存提示，未实现严格 Apply/Cancel 草稿缓冲——密钥与模型编辑仍是逐字段即时落盘。
-2. **模型容量输入**：上下文窗口/最大输出为内联文本框（直接输入数字），未实现 dsh 的 K/M 后缀与行内折叠；「自定义提供方」卡的模型可留空创建（创建后仍可在编辑器内添加/探测）。
+2. **模型容量输入**：上下文窗口/最大输出为内联文本框（直接输入数字），未实现 K/M 后缀与行内折叠；「自定义提供方」卡的模型可留空创建（创建后仍可在编辑器内添加/探测）。
