@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 — 2026-11-04
+
+- **依赖**：GUI 升级到 `gpui-kit 0.9.0`（`gpui-base 0.9.0`、`gpui-pre` 0.3.11 快照，zed
+  `f816e1f`）。GUI 源码零改动即可编译运行；`gpui-pre-windows` 的 vendor 补丁重新同步到
+  0.3.11 并重贴 `IsWindow` 守卫——上游仍会在关窗时对已销毁的句柄调用 `RedrawWindow`，
+  见 [longbridge/gpui-kit#3795](https://github.com/longbridge/gpui-kit/issues/3795)。
+- **内部**：`metal 0.33` 换成 `objc2-metal`，release 构建的 `block`
+  future-incompat 警告随之消失。
+
 ## 0.7.0 — 2026-11-04
 
 - **模型接入重构**（ADR-0055）：内置供应商收敛为一张目录表（协议 / 端点 / 默认模型 / 模型
@@ -18,9 +27,7 @@
 - **修复配置诊断**：`[ui]` 与 `[default-model]` 加入 `KNOWN_KEYS`，v0.6.1 里写这两节的用户
   不再看到 `unknown config keys are ignored` 警告。
 - **内部**：`ConfigError` 的 TOML 载荷装箱（Windows 上不再触发 `clippy::result_large_err`）；
-  `async-executor` 升级到 1.14.1（1.14.0 已被 yank，`cargo-deny` 失败）；GUI 依赖升级到
-  `gpui-kit 0.9.0`（`gpui-pre` 0.3.11 快照，`gpui-pre-windows` 的 vendor 补丁同步重贴）；
-  fmt / clippy 清零。
+  `async-executor` 升级到 1.14.1（1.14.0 已被 yank，`cargo-deny` 失败）；fmt / clippy 清零。
 
 ## 0.6.1 — 2026-10-31
 
