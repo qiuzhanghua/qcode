@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0 — 2026-11-04
+
+- **模型接入重构**（ADR-0055）：内置供应商收敛为一张目录表（协议 / 端点 / 默认模型 / 模型
+  清单），新增 `protocol = openai|anthropic` 显式声明，平台型供应商（火山方舟等）与任意
+  OpenAI 兼容网关零代码接入；Provider 目录页可按路由增删改、编辑模型清单并「探测」端点
+  模型；`[default-model]` 成为默认命名空间，会话内切模型「切即默认」，未设默认时回落到
+  第一个可用供应商，再回落到 mock。
+- **设置页重做**：Provider 目录改为卡片列表（协议徽标、端点、凭证状态、默认模型、设为
+  默认 / 停用），新增「添加 Provider」向导；凭证状态（已存 / 缺失 / 无需 key）单独可见；
+  输入框内嵌模型按钮与沙箱权限下拉（带展开箭头），Turns 超限时出现提示卡片。
+- **安全**：API 密钥不再经过命令行。macOS 改用 Security framework 直接写入钥匙串，
+  Windows 改用 `CredWriteW` 并把密钥从 stdin 送入 PowerShell（ADR-0056）；provider 名在
+  生成的 PowerShell 里按单引号字面量转义，堵住脚本注入。
+- **修复窗口关闭报错**：vendored 的 `gpui-pre-windows` 在 VSync 线程重绘前加了 `IsWindow`
+  守卫，消除「无效窗口句柄 / window not found」。
+- **修复配置诊断**：`[ui]` 与 `[default-model]` 加入 `KNOWN_KEYS`，v0.6.1 里写这两节的用户
+  不再看到 `unknown config keys are ignored` 警告。
+- **内部**：`ConfigError` 的 TOML 载荷装箱（Windows 上不再触发 `clippy::result_large_err`）；
+  `async-executor` 升级到 1.14.1（1.14.0 已被 yank，`cargo-deny` 失败）；fmt / clippy 清零。
+
 ## 0.6.1 — 2026-10-31
 
 - **工作中指示器**：QC 标记改为绕竖直轴的立体翻转（正交投影）——2.4s 周期连续翻两次面
