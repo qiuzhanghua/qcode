@@ -80,9 +80,11 @@ impl Shell {
         };
         let roots = self.task_roots_for_edit(&task_id);
         let all_rw = !roots.is_empty()
-            && roots.iter().all(|root| root.access == RootAccess::ReadWrite);
-        let all_ro = !roots.is_empty()
-            && roots.iter().all(|root| root.access == RootAccess::ReadOnly);
+            && roots
+                .iter()
+                .all(|root| root.access == RootAccess::ReadWrite);
+        let all_ro =
+            !roots.is_empty() && roots.iter().all(|root| root.access == RootAccess::ReadOnly);
         let label = match (all_rw, all_ro) {
             (_, true) => "仅可读取",
             (true, false) => "工作区可写",
