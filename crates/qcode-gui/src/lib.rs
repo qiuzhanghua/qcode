@@ -61,6 +61,7 @@ use qcode_ui_bridge::UiEvent;
 use qcode_ui_state::{App, Block};
 use render::*;
 use std::collections::HashSet;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 
 /// ADR-0041 typography tokens. Keep conversation sizes in one place so the
@@ -247,8 +248,48 @@ fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
     let Ok(config) = qcode_kernel::config::load(config_path) else {
         return Vec::new();
     };
+    // 只列「可访问」的 provider：凭证已配置（或无需密钥）的才算，缺失
+    // 密钥的 provider 无法访问、也不能被设为默认，与设置页「设为默认」
+    // 按钮的可用集合保持一致。
+    let rows = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+        .list_configurable_providers(&config);
+    let accessible: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|row| {
+            row.configured
+                && !matches!(
+                    row.credential_state,
+                    qcode_kernel::provider_registry::CredentialState::Missing
+                )
+        })
+        .map(|row| row.route.clone())
+        .collect();
+    let state = rows
+        .iter()
+        .map(|row| (row.route.as_str(), row.credential_state))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut out = Vec::new();
     for (name, provider) in &config.providers {
+        if !accessible.contains(name) {
+            continue;
+        }
+        // 无需密钥的 provider（如 ollama）不能只看 keyless 就算可用：端点
+        // 必须真的可达（TCP 短连接探测 + 10 秒缓存），否则从列表里排除。
+        if matches!(
+            state.get(name.as_str()),
+            Some(qcode_kernel::provider_registry::CredentialState::Keyless)
+        ) {
+            let base = provider
+                .base_url
+                .as_deref()
+                .or_else(|| qcode_kernel::config::catalog_entry(name).map(|entry| entry.base_url));
+            let Some(base) = base else {
+                continue;
+            };
+            if !keyless_endpoint_reachable(base) {
+                continue;
+            }
+        }
         let mut models: Vec<String> = provider
             .models
             .iter()
@@ -274,6 +315,69 @@ fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
     out
 }
 
+/// 从 base_url 解析出 (host, port)，用于无需密钥的 provider 的可达性探测。
+fn endpoint_of(base_url: &str) -> Option<(String, u16)> {
+    let rest = base_url
+        .strip_prefix("https://")
+        .map(|rest| (rest, 443u16))
+        .or_else(|| base_url.strip_prefix("http://").map(|rest| (rest, 80u16)))?;
+    let (authority, _) = rest.0.split_once('/').unwrap_or((rest.0, ""));
+    let (host, port) = if authority.starts_with('[') {
+        // IPv6 字面量，如 [::1]:11434
+        let close = authority.find(']')?;
+        let host = &authority[..=close];
+        let port = authority[close + 1..]
+            .strip_prefix(':')
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(rest.1);
+        (host, port)
+    } else if let Some(idx) = authority.rfind(':') {
+        (&authority[..idx], authority[idx + 1..].parse().ok()?)
+    } else {
+        (authority, rest.1)
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_string(), port))
+}
+
+/// TCP 短连接探测一个端点是否可达（无密钥 provider 用）。
+fn endpoint_reachable(base_url: &str) -> bool {
+    let Some((host, port)) = endpoint_of(base_url) else {
+        return false;
+    };
+    let timeout = std::time::Duration::from_millis(300);
+    (host.as_str(), port)
+        .to_socket_addrs()
+        .map(|addrs| {
+            addrs
+                .into_iter()
+                .any(|addr| std::net::TcpStream::connect_timeout(&addr, timeout).is_ok())
+        })
+        .unwrap_or(false)
+}
+
+/// 无需密钥 provider 端点可达性：带 10 秒短缓存，避免每次打开菜单都
+/// 重新探测同一个端点。
+fn keyless_endpoint_reachable(base_url: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, bool)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut cache = cache.lock().expect("reachability cache");
+    if let Some((at, ok)) = cache.get(base_url)
+        && now.duration_since(*at) < std::time::Duration::from_secs(10)
+    {
+        return *ok;
+    }
+    let ok = endpoint_reachable(base_url);
+    cache.insert(base_url.to_string(), (now, ok));
+    ok
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DisplayUnit {
     Loose(usize),
@@ -296,3 +400,31 @@ struct RenameTaskState {
 /// saved yet. The actual bounds are recorded into `gui.json` on first render.
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 620.0;
+
+#[cfg(test)]
+mod tests {
+    use super::endpoint_of;
+
+    #[test]
+    fn endpoint_of_parses_host_and_port() {
+        assert_eq!(
+            endpoint_of("http://localhost:11434/v1"),
+            Some(("localhost".to_string(), 11434))
+        );
+        assert_eq!(
+            endpoint_of("https://api.openai.com/v1"),
+            Some(("api.openai.com".to_string(), 443))
+        );
+        assert_eq!(
+            endpoint_of("http://127.0.0.1:8080"),
+            Some(("127.0.0.1".to_string(), 8080))
+        );
+        assert_eq!(
+            endpoint_of("http://[::1]:11434/v1"),
+            Some(("[::1]".to_string(), 11434))
+        );
+        assert_eq!(endpoint_of("localhost:11434"), None, "missing scheme");
+        assert_eq!(endpoint_of(""), None);
+        assert_eq!(endpoint_of("ftp://host:21"), None, "unsupported scheme");
+    }
+}

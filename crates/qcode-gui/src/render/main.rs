@@ -11,9 +11,11 @@ impl Shell {
         let config_path = self.config_path.clone();
         let shell = cx.entity().downgrade();
         let groups = crate::provider_models(&config_path);
+        // 模型菜单已移到输入框发送按钮左侧（窗口底部），弹层向上弹出：
+        // `Anchor::BottomLeft` 让菜单从触发器上方展开，避免超出窗口。
         Button::new("model-menu")
             .label(format!("{provider} / {model}"))
-            .dropdown_menu(move |menu, window, cx| {
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, window, cx| {
                 let current = (provider.clone(), model.clone());
                 let mut items = Vec::new();
                 for (provider_name, models) in &groups {
@@ -238,8 +240,7 @@ impl Shell {
             .px_2()
             .py_4()
             .child(format!("{header_label} · {} turn(s)", self.app.turns.len()))
-            .child(div().flex_grow(1.0))
-            .child(div().w(px(220.0)).child(self.render_model_menu(cx)));
+            .child(div().flex_grow(1.0));
 
         div()
             .flex()
@@ -698,16 +699,23 @@ impl Shell {
                                             })),
                                     )
                                     .child(
-                                        // Round action button: a blue up-arrow sends
-                                        // (queueing while a turn runs), a red dot
-                                        // interrupts the running turn — shown only
-                                        // when the turn is running and the draft is
-                                        // empty, so a draft always keeps Send.
-                                        if self.app.status.running && !composer_has_draft {
-                                            div()
-                                                .w(px(36.0))
-                                                .h(px(36.0))
-                                                .rounded(px(18.0))
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(self.render_model_menu(cx))
+                                            .child(
+                                                // Round action button: a blue up-arrow sends
+                                                // (queueing while a turn runs), a red dot
+                                                // interrupts the running turn — shown only
+                                                // when the turn is running and the draft is
+                                                // empty, so a draft always keeps Send.
+                                                if self.app.status.running && !composer_has_draft {
+                                                    div()
+                                                        .w(px(36.0))
+                                                        .h(px(36.0))
+                                                        .rounded(px(18.0))
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
@@ -749,6 +757,7 @@ impl Shell {
                                         },
                                     ),
                             )
+                    )
                     )
                         }
                     ),

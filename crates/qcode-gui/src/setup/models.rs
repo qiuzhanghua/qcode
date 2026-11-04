@@ -43,11 +43,8 @@ impl SetupView {
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
         let theme = cx.theme();
-        let (success_color, muted_color, border_color) = (
-            theme.success,
-            theme.muted_foreground,
-            theme.border,
-        );
+        let (success_color, muted_color, border_color) =
+            (theme.success, theme.muted_foreground, theme.border);
         let mut cards = div().flex().flex_col().gap_2();
         // V2.1: the three legacy default fields were removed; the effective
         // default is summarized here and pinned per card via "设为默认".
@@ -85,15 +82,13 @@ impl SetupView {
                     Some(div().size(px(8.0)).rounded_full().bg(success_color))
                 }
                 // 未配置凭据用空心圆圈（透明填充、中性色描边），不用红点。
-                qcode_kernel::provider_registry::CredentialState::Missing => {
-                    Some(
-                        div()
-                            .size(px(8.0))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(muted_color),
-                    )
-                }
+                qcode_kernel::provider_registry::CredentialState::Missing => Some(
+                    div()
+                        .size(px(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(muted_color),
+                ),
                 qcode_kernel::provider_registry::CredentialState::Keyless => None,
             };
             let mut head = div().flex().flex_row().items_center().gap_2();

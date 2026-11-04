@@ -93,12 +93,9 @@ impl SetupView {
                     .protocol
                     .map(|protocol| protocol.as_str().to_string())
                     .or_else(|| {
-                        config::catalog_entry(name)
-                            .map(|entry| entry.protocol.as_str().to_string())
+                        config::catalog_entry(name).map(|entry| entry.protocol.as_str().to_string())
                     })
-                    .unwrap_or_else(|| {
-                        config::Protocol::OpenAi.as_str().to_string()
-                    }),
+                    .unwrap_or_else(|| config::Protocol::OpenAi.as_str().to_string()),
             )],
             window,
             cx,
@@ -694,8 +691,7 @@ impl SetupView {
                     });
                 }
                 self.provider_error = None;
-                self.provider_notice =
-                    Some(format!("已保存 {name} 的 API 密钥到系统钥匙串"));
+                self.provider_notice = Some(format!("已保存 {name} 的 API 密钥到系统钥匙串"));
                 self.error = None;
             }
             Err(error) => {
