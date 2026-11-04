@@ -374,6 +374,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         &[
             "version",
             "default_provider",
+            "default-model",
+            "ui",
             "providers",
             "approval",
             "pricing",
@@ -420,6 +422,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         &["enabled", "check", "check_days", "repo", "base_url"],
     ),
     ("default-model", &["provider", "model"]),
+    ("ui", &["busy_delivery"]),
 ];
 
 /// Keys each table may contain, per table path. Tables whose children are

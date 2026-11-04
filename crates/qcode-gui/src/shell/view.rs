@@ -277,11 +277,12 @@ impl Shell {
         // A settings dialog is a fixed-size side window, not the main window at
         // the main window's size: open it near the middle of the screen so every
         // field is visible without maximizing. Height is 70% of the pre-2026-11
-        // 680px so the dialog fits without losing its bottom.
+        // 680px so the dialog fits without losing its bottom; the whole window
+        // is 10% larger (宽 × 高 = 880 × 476 → 968 × 524).
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(280.0), px(120.0)),
-                size(px(880.0), px(476.0)),
+                size(px(968.0), px(524.0)),
             ))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Settings".into()),

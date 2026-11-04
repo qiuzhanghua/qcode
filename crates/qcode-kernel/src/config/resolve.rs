@@ -142,7 +142,9 @@ pub fn resolve(
         // `default_provider` only applies when no `[default-model]` is set.
         .or_else(|| config.default_model.provider.clone())
         .or_else(|| config.default_provider.clone())
-        .unwrap_or_else(|| first_usable_provider(config, env).unwrap_or_else(|| "mock".to_string()));
+        .unwrap_or_else(|| {
+            first_usable_provider(config, env).unwrap_or_else(|| "mock".to_string())
+        });
 
     if is_mock_name(&name) {
         let model = overrides

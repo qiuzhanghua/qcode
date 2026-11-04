@@ -85,12 +85,20 @@ impl SetupView {
                 ("__key", String::new()),
             ],
             [("stream_usage", provider.stream_usage)],
+            // 协议默认值按 provider 区分：config 显式覆盖 > 目录内置协议 >
+            // OpenAI 兼容兜底。这样展开配置时协议列总有选中项，而不是空。
             [(
                 "protocol",
                 provider
                     .protocol
                     .map(|protocol| protocol.as_str().to_string())
-                    .unwrap_or_default(),
+                    .or_else(|| {
+                        config::catalog_entry(name)
+                            .map(|entry| entry.protocol.as_str().to_string())
+                    })
+                    .unwrap_or_else(|| {
+                        config::Protocol::OpenAi.as_str().to_string()
+                    }),
             )],
             window,
             cx,
@@ -663,8 +671,11 @@ impl SetupView {
             .get("__key")
             .map(|input| input.read(cx).value().trim().to_string())
             .unwrap_or_default();
+        // 空字符串（或纯空格）不存入凭据库：先 trim 再判断。错误显示在
+        // 编辑对话框内一行小红字，不占设置页顶部的全局错误位。
         if name.is_empty() || key.is_empty() {
-            self.error = Some("provider name and API key are required".to_string());
+            self.provider_notice = None;
+            self.provider_error = Some("API 密钥不能为空，无法存入凭据库".to_string());
             cx.notify();
             return;
         }
@@ -682,12 +693,15 @@ impl SetupView {
                         cx.notify();
                     });
                 }
-                self.info = Some(format!(
-                    "stored the key for {name} in the platform keychain"
-                ));
+                self.provider_error = None;
+                self.provider_notice =
+                    Some(format!("已保存 {name} 的 API 密钥到系统钥匙串"));
                 self.error = None;
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                self.provider_notice = None;
+                self.provider_error = Some(error);
+            }
         }
         cx.notify();
     }

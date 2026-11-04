@@ -43,9 +43,8 @@ impl SetupView {
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
         let theme = cx.theme();
-        let (success_color, danger_color, muted_color, border_color) = (
+        let (success_color, muted_color, border_color) = (
             theme.success,
-            theme.danger,
             theme.muted_foreground,
             theme.border,
         );
@@ -85,8 +84,15 @@ impl SetupView {
                 qcode_kernel::provider_registry::CredentialState::Configured => {
                     Some(div().size(px(8.0)).rounded_full().bg(success_color))
                 }
+                // 未配置凭据用空心圆圈（透明填充、中性色描边），不用红点。
                 qcode_kernel::provider_registry::CredentialState::Missing => {
-                    Some(div().size(px(8.0)).rounded_full().bg(danger_color))
+                    Some(
+                        div()
+                            .size(px(8.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(muted_color),
+                    )
                 }
                 qcode_kernel::provider_registry::CredentialState::Keyless => None,
             };
@@ -113,35 +119,35 @@ impl SetupView {
                         ),
                 )
                 .child(div().flex_grow(1.0));
-            if row.configured {
-                // V2.1: only usable rows (credential Configured or Keyless)
-                // offer "设为默认"; the effective default card shows a marker
-                // instead of the button.
-                let usable = !matches!(
-                    row.credential_state,
-                    qcode_kernel::provider_registry::CredentialState::Missing
+            if self.config.default_model.provider.as_deref() == Some(route.as_str()) {
+                head = head.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(success_color)
+                        .child("当前默认"),
                 );
-                let is_default =
-                    self.config.default_model.provider.as_deref() == Some(route.as_str());
-                if usable {
-                    if is_default {
-                        head = head.child(
-                            div()
-                                .text_size(sp(CAPTION_SIZE))
-                                .text_color(success_color)
-                                .child("当前默认"),
-                        );
-                    } else {
-                        let route_for_default = route.clone();
-                        head = head.child(
-                            Button::new(format!("default-provider-{route}"))
-                                .label("设为默认")
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.make_default(&route_for_default, cx);
-                                })),
-                        );
-                    }
-                }
+            }
+            // 已配置且可用（凭证齐全或无需密钥）的 provider，只要还不是默认，
+            // 就在卡片上给一个「设为默认」快捷按钮。
+            let usable = !matches!(
+                row.credential_state,
+                qcode_kernel::provider_registry::CredentialState::Missing
+            );
+            let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
+            if row.configured && usable && !is_default {
+                let route_for_default = route.clone();
+                head = head.child(
+                    Button::new(format!("default-provider-{route}"))
+                        .label("设为默认")
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.make_default(&route_for_default, cx);
+                        })),
+                );
+            }
+            // 编辑在弹出对话框里进行（删除等动作也移入对话框），卡片只放
+            // 编辑/添加按钮。未配置的提供方首次点击会先写入预设行再弹出
+            // 同一个编辑对话框。
+            if row.configured {
                 let route_for_edit = route.clone();
                 head = head.child(
                     Button::new(format!("edit-provider-{route}"))
@@ -150,47 +156,28 @@ impl SetupView {
                             this.open_editor(&route_for_edit, cx);
                         })),
                 );
-                let route_for_delete = route.clone();
-                head = head.child(
-                    Button::new(format!("delete-provider-{route}"))
-                        .label("删除")
-                        .danger()
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.saved_notice = None;
-                            this.delete_target = Some(route_for_delete.clone());
-                            cx.notify();
-                        })),
-                );
             } else {
                 let route_for_add = route.clone();
                 head = head.child(
                     Button::new(format!("add-provider-{route}"))
-                        .label("添加")
+                        .label("编辑")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.add_provider_preset(&route_for_add, window, cx);
                             this.open_editor(&route_for_add, cx);
                         })),
                 );
             }
-            let mut card = div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .border_1()
-                .border_color(border_color)
-                .rounded(px(10.0))
-                .p_3()
-                .child(head);
-            if self.editing_provider.as_deref() == Some(route.as_str())
-                && let Some(table) = self.tables.get("providers")
-                && let Some(row) = table
-                    .rows
-                    .iter()
-                    .find(|row| cell(row, "name", cx).trim() == route)
-            {
-                card = card.child(self.render_provider_editor(row, &route, cx));
-            }
-            cards = cards.child(card);
+            cards = cards.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .border_1()
+                    .border_color(border_color)
+                    .rounded(px(10.0))
+                    .p_3()
+                    .child(head),
+            );
         }
         if self.declaring {
             cards = cards.child(self.render_custom_card(cx));
@@ -208,179 +195,302 @@ impl SetupView {
         cards.into_any_element()
     }
 
-    /// The inline editor of one provider row: its cells as labeled fields,
-    /// the Keychain secret, the model catalog editor, and the action row.
-    fn render_provider_editor(
-        &self,
-        row: &RowState,
-        route: &str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The provider edit modal (settings mode): API key first, the fixed
+    /// config values and the model catalog collapsed behind an expand toggle.
+    /// One provider at a time; the card list only carries one "编辑/添加"
+    /// button. 默认/删除动作也在这里进行。
+    pub(crate) fn render_provider_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.wizard {
+            return div().into_any_element();
+        }
+        let Some(route) = &self.editing_provider else {
+            return div().into_any_element();
+        };
+        let Some(table) = self.tables.get("providers") else {
+            return div().into_any_element();
+        };
+        let Some(row) = table
+            .rows
+            .iter()
+            .find(|row| cell(row, "name", cx).trim() == route)
+        else {
+            return div().into_any_element();
+        };
         let theme = cx.theme();
-        let (danger_color, secondary_color, muted_foreground_color) =
-            (theme.danger, theme.secondary, theme.muted_foreground);
+        let (popover, popover_fg, border_color, danger_color) = (
+            theme.popover,
+            theme.popover_foreground,
+            theme.border,
+            theme.danger,
+        );
+        let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+            .list_configurable_providers(&self.config);
+        let entry = directory.iter().find(|row| row.route == *route);
+        let display = entry
+            .map(|row| {
+                if row.display_name == row.route {
+                    row.route.clone()
+                } else {
+                    format!("{} ({})", row.display_name, row.route)
+                }
+            })
+            .unwrap_or_else(|| route.clone());
+        let configured = entry.map(|row| row.configured).unwrap_or(false);
+        let usable = entry
+            .map(|row| {
+                !matches!(
+                    row.credential_state,
+                    qcode_kernel::provider_registry::CredentialState::Missing
+                )
+            })
+            .unwrap_or(false);
+        let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
         let key = "providers";
+        let row_id = row.id;
         let columns = forms::TABLES
             .iter()
             .find(|spec| spec.path.join(".") == key)
             .map(|spec| spec.columns)
             .unwrap_or(&[]);
-        let mut editor = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .bg(secondary_color)
-            .rounded(px(8.0))
-            .p_3();
-        for column in columns {
-            if column.key == "name" {
-                // Provider ID is the settings key and the credential-reference
-                // stem: it is not editable on the card (rename = delete + add).
-                editor = editor.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_size(sp(CAPTION_SIZE)).child(column.label))
-                        .child(
-                            div()
-                                .text_size(sp(SECONDARY_SIZE))
-                                .text_color(muted_foreground_color)
-                                .child(route.to_string()),
-                        ),
-                );
-                continue;
-            }
-            let control = match column.kind {
-                FieldKind::Bool => Switch::new(format!("table-{key}-{}-{}", row.id, column.key))
-                    .checked(*row.bools.get(column.key).unwrap_or(&false))
-                    .on_change({
-                        let table_key = key.to_string();
-                        let column_key = column.key;
-                        let row_id = row.id;
-                        let entity = cx.entity();
-                        move |checked, _window, cx| {
-                            entity.update(cx, |view, cx| {
-                                if let Some(table) = view.tables.get_mut(&table_key)
-                                    && let Some(row) =
-                                        table.rows.iter_mut().find(|row| row.id == row_id)
-                                {
-                                    row.bools.insert(column_key, *checked);
-                                }
-                                view.auto_save(cx, AutoSaveKind::Tables, false);
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .into_any_element(),
-                FieldKind::Select(options) => {
-                    let current = row.selects.get(column.key).cloned().unwrap_or_default();
-                    let entity = cx.entity();
-                    let mut select = div().flex().flex_row().gap_1();
-                    for option in options {
-                        let marker = if current == *option { "●" } else { "○" };
-                        let table_key = key.to_string();
-                        let column_key = column.key;
-                        let row_id = row.id;
-                        let value = option.to_string();
-                        let entity = entity.clone();
-                        select = select.child(
-                            Button::new(format!("table-{key}-{}-{column_key}-{option}", row.id))
-                                .label(format!("{marker} {option}"))
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |view, cx| {
-                                        if let Some(table) = view.tables.get_mut(&table_key)
-                                            && let Some(row) =
-                                                table.rows.iter_mut().find(|row| row.id == row_id)
-                                        {
-                                            row.selects.insert(column_key, value.clone());
-                                        }
-                                        view.auto_save(cx, AutoSaveKind::Tables, false);
-                                        cx.notify();
-                                    });
-                                }),
-                        );
-                    }
-                    select.into_any_element()
-                }
-                _ => {
-                    let Some(input) = row.cells.get(column.key) else {
-                        continue;
-                    };
-                    Input::new(input)
-                        .aria_label(column.label)
-                        .into_any_element()
-                }
-            };
-            editor = editor.child(
+
+        let mut body = div().flex().flex_col().gap_3();
+        // 第一条是 API 密钥：只有它需要在添加提供方时填写，其余默认都是
+        // 固定值，折叠在展开按钮后面。
+        if let Some(secret) = row.cells.get("__key") {
+            body = body.child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_size(sp(CAPTION_SIZE)).child(column.label))
-                    .child(control),
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .child("API 密钥（存入系统钥匙串，不写入 config.toml）"),
+                    )
+                    .child(Input::new(secret).aria_label("API 密钥"))
+                    .child(
+                        Button::new(format!("store-key-{key}-{row_id}"))
+                            .label("存入钥匙串")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.store_provider_key(row_id, window, cx);
+                            })),
+                    ),
             );
         }
-        if let Some(secret) = row.cells.get("__key") {
-            let row_id = row.id;
-            editor = editor
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(sp(CAPTION_SIZE))
-                                .child("API 密钥（存入系统钥匙串，不写入 config.toml）"),
-                        )
-                        .child(Input::new(secret).aria_label("API 密钥")),
-                )
-                .child(
-                    Button::new(format!("store-key-{key}-{row_id}"))
-                        .label("存入钥匙串")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.store_provider_key(row_id, window, cx);
-                        })),
-                );
+        let expanded = self.editor_expanded;
+        body = body.child(
+            Button::new("toggle-provider-config")
+                .label(if expanded {
+                    "收起配置 ▴"
+                } else {
+                    "展开更多配置 ▾"
+                })
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.editor_expanded = !this.editor_expanded;
+                    cx.notify();
+                })),
+        );
+        // 一行小字错误（如 API 密钥判空），显示在编辑框内而非设置页顶部。
+        if let Some(error) = &self.provider_error {
+            body = body.child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(danger_color)
+                    .child(error.to_string()),
+            );
         }
-        editor = editor.child(self.render_models_editor(row, route, cx));
-        if let Some(result) = &self.probe_result
-            && self.editing_provider.as_deref() == Some(route)
-        {
-            editor = editor.child(
+        // 蓝色小字成功提示（如密钥已存入钥匙串），同样只在编辑框内显示。
+        if let Some(notice) = &self.provider_notice {
+            body = body.child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(rgb(0x3b82f6))
+                    .child(notice.to_string()),
+            );
+        }
+        if expanded {
+            let mut fields = div().flex().flex_col().gap_2();
+            for column in columns {
+                if column.key == "name" {
+                    continue;
+                }
+                if let Some(field) = self.render_provider_field(row, column, cx) {
+                    fields = fields.child(field);
+                }
+            }
+            body = body.child(fields);
+            body = body.child(self.render_models_editor(row, route, cx));
+        }
+        if let Some(result) = &self.probe_result {
+            body = body.child(
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(danger_color)
                     .child(result.to_string()),
             );
         }
-        let route_close = route.to_string();
-        editor = editor.child(
+
+        let mut footer = div().flex().flex_row().items_center().gap_2();
+        if configured {
+            if usable && !is_default {
+                let route_for_default = route.clone();
+                footer = footer.child(
+                    Button::new(format!("dialog-default-{route}"))
+                        .label("设为默认")
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.make_default(&route_for_default, cx);
+                        })),
+                );
+            }
+            let route_for_delete = route.clone();
+            footer = footer.child(
+                Button::new(format!("dialog-delete-{route}"))
+                    .label("删除")
+                    .danger()
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.saved_notice = None;
+                        this.editing_provider = None;
+                        this.delete_target = Some(route_for_delete.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        let route_close = route.clone();
+        footer = footer
+            .child(div().flex_grow(1.0))
+            .child(
+                Button::new("cancel-provider-edit")
+                    .label("取消")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_editor(false);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("save-provider-edit")
+                    .label("保存")
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.close_editor(true);
+                        this.saved_notice = Some(format!("已保存 {route_close}。"));
+                        cx.notify();
+                    })),
+            );
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(480.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(popover)
+                    .border_1()
+                    .border_color(border_color)
+                    .p_4()
+                    .text_color(popover_fg)
+                    .child(div().child(format!("编辑 {display}")))
+                    .child(
+                        div()
+                            .id("provider-dialog-scroll")
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .max_h(px(440.0))
+                            .overflow_y_scroll()
+                            .child(body),
+                    )
+                    .child(footer),
+            )
+            .into_any_element()
+    }
+
+    /// One labeled provider column in the edit dialog's expanded section
+    /// (protocol / base URL / key env / …). The provider id column is handled
+    /// by the dialog itself.
+    fn render_provider_field(
+        &self,
+        row: &RowState,
+        column: &forms::ColumnSpec,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let key = "providers";
+        let control = match column.kind {
+            FieldKind::Bool => Switch::new(format!("table-{key}-{}-{}", row.id, column.key))
+                .checked(*row.bools.get(column.key).unwrap_or(&false))
+                .on_change({
+                    let table_key = key.to_string();
+                    let column_key = column.key;
+                    let row_id = row.id;
+                    let entity = cx.entity();
+                    move |checked, _window, cx| {
+                        entity.update(cx, |view, cx| {
+                            if let Some(table) = view.tables.get_mut(&table_key)
+                                && let Some(row) =
+                                    table.rows.iter_mut().find(|row| row.id == row_id)
+                            {
+                                row.bools.insert(column_key, *checked);
+                            }
+                            view.auto_save(cx, AutoSaveKind::Tables, false);
+                            cx.notify();
+                        });
+                    }
+                })
+                .into_any_element(),
+            FieldKind::Select(options) => {
+                let current = row.selects.get(column.key).cloned().unwrap_or_default();
+                let entity = cx.entity();
+                let mut select = div().flex().flex_row().gap_1();
+                for option in options {
+                    let marker = if current == *option { "●" } else { "○" };
+                    let table_key = key.to_string();
+                    let column_key = column.key;
+                    let row_id = row.id;
+                    let value = option.to_string();
+                    let entity = entity.clone();
+                    select = select.child(
+                        Button::new(format!("table-{key}-{}-{column_key}-{option}", row.id))
+                            .label(format!("{marker} {option}"))
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |view, cx| {
+                                    if let Some(table) = view.tables.get_mut(&table_key)
+                                        && let Some(row) =
+                                            table.rows.iter_mut().find(|row| row.id == row_id)
+                                    {
+                                        row.selects.insert(column_key, value.clone());
+                                    }
+                                    view.auto_save(cx, AutoSaveKind::Tables, false);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                select.into_any_element()
+            }
+            _ => {
+                let input = row.cells.get(column.key)?;
+                Input::new(input)
+                    .aria_label(column.label)
+                    .into_any_element()
+            }
+        };
+        Some(
             div()
                 .flex()
-                .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("cancel-provider-edit")
-                        .label("取消")
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.close_editor(false);
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("save-provider-edit")
-                        .label("保存")
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.close_editor(true);
-                            this.saved_notice = Some(format!("已保存 {route_close}。"));
-                            cx.notify();
-                        })),
-                ),
-        );
-        editor.into_any_element()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(sp(CAPTION_SIZE)).child(column.label))
+                .child(control)
+                .into_any_element(),
+        )
     }
 
     /// The model catalog editor of one provider: the header (title, inherited
@@ -942,17 +1052,21 @@ impl SetupView {
         cx.notify();
     }
 
-    /// Open one provider's inline editor; one card at a time, so opening a
-    /// card closes the custom declaration card and clears the saved notice.
+    /// Open one provider's edit dialog; one provider at a time, so opening a
+    /// dialog closes the custom declaration card and clears the saved notice.
     fn open_editor(&mut self, route: &str, cx: &mut Context<Self>) {
         self.editing_provider = Some(route.to_string());
+        // 每次打开都从折叠态开始：对话框第一条只有 API 密钥。
+        self.editor_expanded = false;
+        self.provider_error = None;
+        self.provider_notice = None;
         self.declaring = false;
         self.saved_notice = None;
         cx.notify();
     }
 
-    /// Collapse the inline editor. `changed` reports whether the row was
-    /// committed (the editor auto-saves as you type; the flag only decides the
+    /// Close the provider edit dialog. `changed` reports whether the row was
+    /// committed (the dialog auto-saves as you type; the flag only decides the
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
         self.editing_provider = None;

@@ -1153,12 +1153,7 @@ fn first_usable_skips_mock_and_unusable_routes_then_falls_back_to_mock() {
             "#,
     )
     .unwrap();
-    let resolved = resolve(
-        &config,
-        &Overrides::default(),
-        &env_from(&[]),
-    )
-    .unwrap();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
     assert_eq!(resolved.name, "mock");
     assert_eq!(resolved.model, "mock-1");
 }

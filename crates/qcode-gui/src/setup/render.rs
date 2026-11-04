@@ -339,11 +339,8 @@ impl Render for SetupView {
                     } else {
                         "Settings".to_string()
                     })
-                    .child(if !self.wizard && page == Page::Review {
-                        "About"
-                    } else {
-                        page.title()
-                    }),
+                    // 设置窗口标题固定为 Settings，不再跟随左侧导航动态切换。
+                    .child(if self.wizard { page.title() } else { "" }),
             )
             .children(
                 self.error
@@ -357,8 +354,9 @@ impl Render for SetupView {
             )
             .child(content)
             .child(footer)
-            // Modal overlays (settings mode only): the probe candidate picker
-            // and the provider delete confirmation.
+            // Modal overlays (settings mode only): the provider edit dialog,
+            // the probe candidate picker and the provider delete confirmation.
+            .child(self.render_provider_dialog(cx))
             .child(self.render_probe_picker(window, cx))
             .child(self.render_delete_dialog(cx))
             // Ctrl+= / Ctrl+- (Cmd+= / Cmd+- on macOS) zoom the whole UI's text

@@ -84,8 +84,18 @@ pub struct SetupView {
     /// Channel the probe thread reports through; drained while rendering.
     probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
     /// Models-section state (settings mode, provider card list).
-    /// The route whose inline editor card is open; one card at a time.
+    /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
+    /// The edit dialog's "更多配置" section is collapsed by default: the API
+    /// key is the only field shown first, the fixed config values and the
+    /// model catalog appear after expanding.
+    editor_expanded: bool,
+    /// 编辑对话框内的一行小字错误（如 API 密钥判空）：显示在对话框内部，
+    /// 不占设置页顶部标题下方的全局错误位。
+    provider_error: Option<String>,
+    /// 编辑对话框内的一行蓝色小字成功提示（如密钥已存入钥匙串），同样
+    /// 只显示在对话框内部。
+    provider_notice: Option<String>,
     /// Route awaiting the delete-confirmation dialog.
     delete_target: Option<String>,
     /// "已保存 {provider}。" status line; cleared by the next edit gesture.
@@ -302,6 +312,9 @@ impl SetupView {
             probe_result: None,
             probe_rx: None,
             editing_provider: None,
+            editor_expanded: false,
+            provider_error: None,
+            provider_notice: None,
             delete_target: None,
             saved_notice: None,
             declaring: false,
