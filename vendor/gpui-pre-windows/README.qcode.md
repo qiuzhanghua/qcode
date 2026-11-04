@@ -1,8 +1,9 @@
 # gpui-pre-windows (qcode fork)
 
-Upstream: [`gpui-pre-windows` 0.3.10](https://crates.io/crates/gpui-pre-windows/0.3.10)
-(Zed's `gpui_windows` backend, snapshot of `zed@08cbb88`), Apache-2.0. Sources
+Upstream: [`gpui-pre-windows` 0.3.11](https://crates.io/crates/gpui-pre-windows/0.3.11)
+(Zed's `gpui_windows` backend, snapshot of `zed@f816e1f`), Apache-2.0. Sources
 are the crate as published on crates.io; only `src/platform.rs` is modified.
+This version pairs with `gpui-kit 0.9.0` (`gpui-base 0.9.0`, `gpui-pre =0.3.11`).
 
 ## Why it is vendored
 
@@ -27,7 +28,7 @@ instead of failing:
 
 ```rust
 // src/platform.rs, begin_vsync_thread
-if !IsWindow(hwnd.as_raw()).as_bool() {
+if !IsWindow(Some(hwnd.as_raw())).as_bool() {
     continue;
 }
 ```
@@ -35,6 +36,22 @@ if !IsWindow(hwnd.as_raw()).as_bool() {
 ## Updating
 
 When gpui-kit / the GPUI pre-release crates are upgraded, re-sync this fork:
-copy the new `gpui-pre-windows` sources from the cargo registry over
-`vendor/gpui-pre-windows` (keep the `IsWindow` guard), bump the
-`[patch.crates-io]` entry accordingly, and re-run the GUI build.
+
+1. Replace the tree with the new `gpui-pre-windows` sources from the cargo
+   registry (or `https://static.crates.io/crates/gpui-pre-windows/…crate`),
+   keeping `README.qcode.md`.
+2. Re-apply the `IsWindow` guard above and update the version/zed-rev facts in
+   this file.
+3. Refresh the lockfile: `cargo update -p gpui-pre-windows`.
+
+Step 3 is easy to forget and fails silently: the vendored package version has
+to match the `=0.3.11` requirement of `gpui-pre`, otherwise cargo prints only
+
+```
+warning: patch `gpui-pre-windows v0.3.10 (…/vendor/gpui-pre-windows)` was not used in the crate graph
+```
+
+and builds the registry copy instead — green build, no guard. Verify with
+`cargo tree -p qcode-gui -i gpui-pre-windows` (the entry must carry the
+`(/…/vendor/gpui-pre-windows)` suffix) and check that the `Cargo.lock` entry
+has no `source`/`checksum` line.

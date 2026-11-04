@@ -1475,6 +1475,17 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
 `danger-full-access` 后成功（拉取 GPUI/GPUI Kit 依赖树，`Cargo.lock` 已更新）。随后
 `cargo build -p qcode-gui --offline` 与既有测试在 `--offline` 下均通过，离线构建能力保持。
 刷新命令：`cargo fetch`（一次性、需网络）。
+**补充（2026-11-04，依赖刷新执行记录）**：`gpui-kit` 0.8.1 → 0.9.0（`gpui-base 0.9.0`、
+`gpui-pre =0.3.11`，zed 快照 `08cbb88` → `f816e1f`）。GUI 源码零改动即可编译运行：
+`gpui-kit` 本身 `src` 未变（只换依赖钉版），`gpui-base`/`gpui-component` 的 public 名字
+无删除（分别新增 27 / 16 个），`gpui-pre` 只删了 3 个内部重排辅助。
+`vendor/gpui-pre-windows` 同步到 0.3.11 并重贴 `IsWindow` 守卫（上游仍无此修复，
+`close_one_window` 依旧由 `WM_GPUI_CLOSE_ONE_WINDOW` 驱动延迟剪枝）。升级后必须
+`cargo update -p gpui-pre-windows`：vendor manifest 版本与 `gpui-pre` 的 `=0.3.11` 要求不一致时，
+cargo 只打一行 `patch … was not used in the crate graph` 警告并静默使用 registry 版本，守卫随之消失。
+行为变化集中在 `input/editor`（按行分隔符排版、可配置的 `CursorBlink`）、`MessageScroller`
+（padding 计入滚动范围，滚动条能到底）、`PopupMenu`（子菜单在窗口右缘向左翻转）。
+`metal 0.33` 已从依赖图移除（改用 `objc2-metal`），`block` 的 future-incompat 警告随之消失。
 ### ADR-0037 spike 结论（2026-10-22）：GPUI Kit 通过
 
 **实测结果**

@@ -18,7 +18,9 @@
 - **修复配置诊断**：`[ui]` 与 `[default-model]` 加入 `KNOWN_KEYS`，v0.6.1 里写这两节的用户
   不再看到 `unknown config keys are ignored` 警告。
 - **内部**：`ConfigError` 的 TOML 载荷装箱（Windows 上不再触发 `clippy::result_large_err`）；
-  `async-executor` 升级到 1.14.1（1.14.0 已被 yank，`cargo-deny` 失败）；fmt / clippy 清零。
+  `async-executor` 升级到 1.14.1（1.14.0 已被 yank，`cargo-deny` 失败）；GUI 依赖升级到
+  `gpui-kit 0.9.0`（`gpui-pre` 0.3.11 快照，`gpui-pre-windows` 的 vendor 补丁同步重贴）；
+  fmt / clippy 清零。
 
 ## 0.6.1 — 2026-10-31
 
