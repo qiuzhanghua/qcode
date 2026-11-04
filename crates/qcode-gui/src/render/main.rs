@@ -15,6 +15,7 @@ impl Shell {
         // `Anchor::BottomLeft` 让菜单从触发器上方展开，避免超出窗口。
         Button::new("model-menu")
             .label(format!("{provider} / {model}"))
+            .dropdown_caret(true)
             .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, window, cx| {
                 let current = (provider.clone(), model.clone());
                 let mut items = Vec::new();
@@ -94,6 +95,7 @@ impl Shell {
         Button::new("sandbox-menu")
             .label(label)
             .icon(IconName::Shield)
+            .dropdown_caret(true)
             .tooltip("沙箱目录权限（对当前任务全部目录生效）")
             .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
                 menu.item({
