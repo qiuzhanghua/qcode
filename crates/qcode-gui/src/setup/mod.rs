@@ -16,6 +16,7 @@ use qcode_tools::web_search::SearchBackend;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+mod credentials;
 mod fields;
 mod models;
 mod render;
