@@ -104,11 +104,13 @@ pub(crate) struct Shell {
     /// transcript vanish when no turn exists yet, which is exactly the state a
     /// freshly started, unconfigured window is in.
     pub(crate) notice: Option<String>,
-    /// Session whose long-conversation hint the user closed. The hint is
-    /// shown once per conversation: dismissing it keeps it hidden for that
-    /// session (including after switching away and back) until a new task
-    /// starts.
-    pub(crate) round_hint_dismissed_for: Option<String>,
+    /// 长对话提示（Turns 超限）已被用户「忽略」的任务 id 集合：每个任务
+    /// 各自记住自己的忽略状态，切换任务再切回也不会再次提示。新建任务的
+    /// id 不在集合里（新任务轮数也达不到阈值，无需显式重置）。
+    pub(crate) round_hint_dismissed_tasks: std::collections::HashSet<String>,
+    /// 长对话提示的轮数阈值：来自配置 `[agent] max_turns`，配置读不到时
+    /// 回退到写死的默认值。
+    pub(crate) round_hint_threshold: usize,
     /// Last seen config mtime: a change means Settings was saved, and the
     /// backend has to be rebuilt so the new provider takes effect.
     pub(crate) config_mtime: Option<std::time::SystemTime>,
@@ -142,9 +144,14 @@ impl Shell {
         let titles = task_titles(&tasks, backend.as_ref());
         let mut prefs = GuiPreferences::load(&data_dir);
         let send_mode = prefs.send_mode.clone();
-        let busy_delivery = qcode_kernel::config::load(&config_path)
+        let loaded_config = qcode_kernel::config::load(&config_path).ok();
+        let busy_delivery = loaded_config
+            .as_ref()
             .map(|config| config.ui.busy_delivery)
             .unwrap_or_default();
+        let round_hint_threshold = loaded_config
+            .map(|config| config.agent.max_turns as usize)
+            .unwrap_or(ROUND_HINT_THRESHOLD);
         let send_hint = if send_mode == "enter" {
             "Enter 发送 · Shift+Enter 换行"
         } else {
@@ -266,7 +273,8 @@ impl Shell {
             cwd,
             notice: (!backend_is_configured)
                 .then(|| "not configured yet: open Settings".to_string()),
-            round_hint_dismissed_for: None,
+            round_hint_dismissed_tasks: std::collections::HashSet::new(),
+            round_hint_threshold,
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
             config_path,
@@ -522,6 +530,8 @@ impl Shell {
         // [ui] busy_delivery is a shell field, not part of the kernel rebuild.
         if let Ok(config) = qcode_kernel::config::load(&self.config_path) {
             self.busy_delivery = config.ui.busy_delivery;
+            // 长对话提示阈值跟随 [agent] max_turns 配置变化。
+            self.round_hint_threshold = config.agent.max_turns as usize;
         }
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.app

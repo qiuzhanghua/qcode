@@ -191,6 +191,12 @@ impl Shell {
         let composer_has_draft = !self.input.read(cx).value().trim().is_empty()
             || !self.attachments.is_empty()
             || !self.file_refs.is_empty();
+        // Turns 超限提示：达到配置 max_turns 轮数且当前任务没被「忽略」时显示。
+        let round_hint_visible = self.app.turns.len() >= self.round_hint_threshold
+            && !self
+                .active
+                .as_ref()
+                .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id));
         if self.app.status.running && !self.waiting_ticker {
             self.waiting_ticker = true;
             self.tick_waiting(cx);
@@ -330,49 +336,104 @@ impl Shell {
                     .pr(px(MAIN_PAD_R))
                     .pb_2()
                     .children(
-                        (self.app.turns.len() >= ROUND_HINT_THRESHOLD
-                            && self.round_hint_dismissed_for != self.active)
-                            .then(|| {
+                        round_hint_visible.then(|| {
+                                // 和权限问询同款卡片：黄色 title「Turns 超限」，
+                                // 内容区为当前提示文案，两个按钮：新建任务 / 忽略。
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_2()
                                     .w_full()
-                                    // 只圆上两角，下沿直角。
-                                    .rounded_tl(px(8.0))
-                                    .rounded_tr(px(8.0))
-                                    .bg(rgba(0x7f7f7f0d))
-                                    .px_2()
-                                    .py_1()
+                                    .rounded_t(px(10.0))
+                                    .border_1()
+                                    .border_color(border)
+                                    .bg(rgb(0xffffff))
+                                    .flex()
+                                    .flex_col()
                                     .child(
                                         div()
-                                            .flex_grow(1.0)
-                                            .text_size(sp(SECONDARY_SIZE))
+                                            .rounded_tl(px(10.0))
+                                            .rounded_tr(px(10.0))
+                                            .bg(rgb(0xfacc15))
+                                            .px_3()
+                                            .py_1()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
                                             .child(
-                                                "当前任务已达到 50 轮。创建新任务可能会获得更好的结果。",
+                                                div()
+                                                    .text_size(sp(16.0))
+                                                    .line_height(sp(26.0))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(rgb(0x000000))
+                                                    .child("Turns 超限"),
                                             ),
                                     )
                                     .child(
-                                        Button::new("round-hint-new-task")
-                                            .compact()
-                                            .label("新建任务")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.new_session(window, cx);
-                                            })),
-                                    )
-                                    .child(
                                         div()
-                                            .id("round-hint-close")
-                                            .cursor_pointer()
-                                            .text_color(rgb(0x000000))
-                                            .text_size(sp(SECONDARY_SIZE))
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.round_hint_dismissed_for =
-                                                    this.active.clone();
-                                                cx.notify();
-                                            }))
-                                            .child("×"),
+                                            .px_3()
+                                            .py_2()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            // 内容区约三行文本高度。
+                                            .child(
+                                                div()
+                                                    .text_size(sp(15.0))
+                                                    .line_height(sp(24.0))
+                                                    .text_color(rgb(0x000000))
+                                                    .child(format!(
+                                                        "当前任务已达到 {} 轮。",
+                                                        self.round_hint_threshold
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(sp(15.0))
+                                                    .line_height(sp(24.0))
+                                                    .text_color(rgb(0x000000))
+                                                    .child("创建新任务可能会获得更好的结果。"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(sp(15.0))
+                                                    .line_height(sp(24.0))
+                                                    .text_color(rgb(0x666666))
+                                                    .child(
+                                                        "超过 Max turns 上限后继续对话，可能影响回复质量与上下文管理。",
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .pt_1()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new("round-hint-new-task")
+                                                            .label("新建任务")
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.new_session(window, cx);
+                                                                },
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        Button::new("round-hint-ignore")
+                                                            .label("忽略")
+                                                            .on_click(cx.listener(
+                                                                |this, _, _window, cx| {
+                                                                    // 每个任务各自记住
+                                                                    // 忽略状态，切走再切回
+                                                                    // 也不会再次提示。
+                                                                    if let Some(id) =
+                                                                        this.active.clone()
+                                                                    {
+                                                                        this.round_hint_dismissed_tasks
+                                                                            .insert(id);
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    ),
+                                            ),
                                     )
                             })
                             // 和权限框 / 报错框同样的内缩量，三者宽度一致。
@@ -586,9 +647,12 @@ impl Shell {
                             .child("已提交，等待引擎确认…")
                     }))
                     .when(
+                        // Turns 超限提示也占输入框位置（与权限/报错框一致），
+                        // 显示时输入框隐藏，卡片落在输入框处。
                         self.approvals.current().is_none()
                             && self.error_banner.is_none()
-                            && self.restoring.is_none(),
+                            && self.restoring.is_none()
+                            && !round_hint_visible,
                         |this| {
                             this.child(
                                 div()

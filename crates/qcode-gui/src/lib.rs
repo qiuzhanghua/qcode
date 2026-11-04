@@ -143,8 +143,8 @@ const MAIN_PAD_R: f32 = 52.0;
 /// 的 px_3/px_6，所以这里左右各补一层内缩，左侧略多，使左缘收窄更明显。
 const TRANSCRIPT_PAD_L: f32 = 32.0;
 const TRANSCRIPT_PAD_R: f32 = 32.0;
-/// Turns after which the composer suggests starting a fresh task; long
-/// transcripts get unwieldy and a clean session usually answers better.
+/// 长对话提示轮数的兜底默认值：配置 `[agent] max_turns` 读不到时使用。
+/// 运行时阈值取配置值，见 `Shell::round_hint_threshold`。
 const ROUND_HINT_THRESHOLD: usize = 50;
 
 fn tool_status(status: Option<ToolStatus>) -> &'static str {
