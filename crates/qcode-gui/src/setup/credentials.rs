@@ -75,7 +75,11 @@ pub(crate) fn windows_credential_write_script(target: &str, user: &str) -> Strin
 
 /// One-line PowerShell command that drops the generic credential written by
 /// [`windows_credential_write_script`].
+///
+/// Nothing calls it yet: the round-trip test uses it as the cleanup step, and
+/// it stays here so a future "forget key" action has a matching delete path.
 #[cfg(any(target_os = "windows", test))]
+#[allow(dead_code)]
 pub(crate) fn windows_credential_delete_script(target: &str) -> String {
     format!(
         "{WINDOWS_CREDENTIAL_SHIM} [QCred]::Del({}) | Out-Null",
