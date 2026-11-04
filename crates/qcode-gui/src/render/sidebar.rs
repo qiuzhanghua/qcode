@@ -88,10 +88,6 @@ impl Shell {
             let label = root.label.clone();
             let path = root.path.display().to_string();
             let missing = root.state() == RootState::Missing;
-            let access = match root.access {
-                RootAccess::ReadOnly => "RO",
-                RootAccess::ReadWrite => "RW",
-            };
             let primary = if root.primary { "★" } else { "☆" };
             let mut line = div()
                 .flex()
@@ -116,19 +112,6 @@ impl Shell {
                 );
             }
             let line = line
-                .child(
-                    Button::new(format!("root-access-{task_id}-{label}"))
-                        .compact()
-                        .label(access)
-                        .tooltip("切换只读 / 读写")
-                        .on_click({
-                            let task_id = task_id.clone();
-                            let label = label.clone();
-                            cx.listener(move |this, _, _window, cx| {
-                                this.toggle_task_root_access(&task_id, &label, cx);
-                            })
-                        }),
-                )
                 .child(
                     Button::new(format!("root-primary-{task_id}-{label}"))
                         .compact()

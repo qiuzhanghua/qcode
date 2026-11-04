@@ -326,18 +326,19 @@ impl Shell {
         self.update_task_roots(task_id, roots, cx);
     }
 
-    pub(crate) fn toggle_task_root_access(
+    /// Apply a uniform sandbox access (RW / RO) to every root of the task.
+    pub(crate) fn set_task_all_roots_access(
         &mut self,
         task_id: &str,
-        label: &str,
+        access: RootAccess,
         cx: &mut Context<Self>,
     ) {
         let mut roots = self.task_roots_for_edit(task_id);
-        if let Some(root) = roots.iter_mut().find(|root| root.label == label) {
-            root.access = match root.access {
-                RootAccess::ReadOnly => RootAccess::ReadWrite,
-                RootAccess::ReadWrite => RootAccess::ReadOnly,
-            };
+        if roots.is_empty() || roots.iter().all(|root| root.access == access) {
+            return;
+        }
+        for root in &mut roots {
+            root.access = access;
         }
         self.update_task_roots(task_id, roots, cx);
     }

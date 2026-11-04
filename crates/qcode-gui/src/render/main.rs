@@ -65,6 +65,75 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Sandbox directory access for the active task: RW（工作区可写）vs
+    /// RO（仅可读取）。切换对该任务的全部目录统一生效，原侧边栏每条目录
+    /// 上的 RO/RW 按钮已移除。按钮位于输入框「选择文件」右侧（窗口底部），
+    /// 弹层向上弹出：`Anchor::BottomLeft` 让菜单从触发器上方展开。
+    fn render_sandbox_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(task_id) = self.active.clone() else {
+            return Button::new("sandbox-menu")
+                .label("工作区可写")
+                .icon(IconName::Shield)
+                .disabled(true)
+                .into_any_element();
+        };
+        let roots = self.task_roots_for_edit(&task_id);
+        let all_rw = !roots.is_empty()
+            && roots.iter().all(|root| root.access == RootAccess::ReadWrite);
+        let all_ro = !roots.is_empty()
+            && roots.iter().all(|root| root.access == RootAccess::ReadOnly);
+        let label = match (all_rw, all_ro) {
+            (_, true) => "仅可读取",
+            (true, false) => "工作区可写",
+            // 混合或空目录：不宣称单一状态，统一切换后即恢复单一状态。
+            _ => "混合",
+        };
+        let current_rw = all_rw;
+        let current_ro = all_ro;
+        let shell = cx.entity().downgrade();
+        Button::new("sandbox-menu")
+            .label(label)
+            .icon(IconName::Shield)
+            .tooltip("沙箱目录权限（对当前任务全部目录生效）")
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
+                menu.item({
+                    let shell = shell.clone();
+                    let task_id = task_id.clone();
+                    PopupMenuItem::new("工作区可写")
+                        .checked(current_rw)
+                        .on_click(move |_, _, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    shell.set_task_all_roots_access(
+                                        &task_id,
+                                        RootAccess::ReadWrite,
+                                        cx,
+                                    );
+                                });
+                            }
+                        })
+                })
+                .item({
+                    let shell = shell.clone();
+                    let task_id = task_id.clone();
+                    PopupMenuItem::new("仅可读取")
+                        .checked(current_ro)
+                        .on_click(move |_, _, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    shell.set_task_all_roots_access(
+                                        &task_id,
+                                        RootAccess::ReadOnly,
+                                        cx,
+                                    );
+                                });
+                            }
+                        })
+                })
+            })
+            .into_any_element()
+    }
+
     /// The pending queue dock above the composer: each queued message shows
     /// its preview plus steer / move / remove actions.
     /// Steer is only offered while a turn is running.
@@ -756,11 +825,20 @@ impl Shell {
                                     .items_center()
                                     .justify_between()
                                     .child(
-                                        Button::new("upload")
-                                            .label("选择文件")
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.upload_file(cx)
-                                            })),
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("upload")
+                                                    .label("选择文件")
+                                                    .icon(IconName::Plus)
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        this.upload_file(cx)
+                                                    })),
+                                            )
+                                            .child(self.render_sandbox_menu(cx)),
                                     )
                                     .child(
                                         div()
