@@ -36,6 +36,31 @@ fn credential_text(state: qcode_kernel::provider_registry::CredentialState) -> &
     }
 }
 
+/// 一个 provider 是否真正可用：凭证齐全或无需密钥，且无需密钥的
+/// provider（如 ollama）端点必须可达，否则视为不可用——不可用的
+/// provider 不给「设为默认」入口。
+fn provider_usable(
+    config: &Config,
+    row: &qcode_kernel::provider_registry::ConfigurableProvider,
+) -> bool {
+    use qcode_kernel::provider_registry::CredentialState;
+    if matches!(row.credential_state, CredentialState::Missing) {
+        return false;
+    }
+    if matches!(row.credential_state, CredentialState::Keyless) {
+        let base = config
+            .providers
+            .get(&row.route)
+            .and_then(|profile| profile.base_url.as_deref())
+            .or_else(|| qcode_kernel::config::catalog_entry(&row.route).map(|entry| entry.base_url));
+        let Some(base) = base else {
+            return false;
+        };
+        return crate::keyless_endpoint_reachable(base);
+    }
+    true
+}
+
 impl SetupView {
     /// The provider card list: saved notice, one card per directory row, the
     /// inline editor for the open route, and the add actions.
@@ -122,12 +147,9 @@ impl SetupView {
                         .child("当前默认"),
                 );
             }
-            // 已配置且可用（凭证齐全或无需密钥）的 provider，只要还不是默认，
-            // 就在卡片上给一个「设为默认」快捷按钮。
-            let usable = !matches!(
-                row.credential_state,
-                qcode_kernel::provider_registry::CredentialState::Missing
-            );
+            // 已配置且可用（凭证齐全或无需密钥且端点可达）的 provider，只要
+            // 还不是默认，就在卡片上给一个「设为默认」快捷按钮。
+            let usable = provider_usable(&self.config, row);
             let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
             if row.configured && usable && !is_default {
                 let route_for_default = route.clone();
@@ -174,19 +196,15 @@ impl SetupView {
                     .child(head),
             );
         }
-        if self.declaring {
-            cards = cards.child(self.render_custom_card(cx));
-        } else {
-            cards = cards.child(
-                div().flex().flex_row().gap_2().child(
-                    Button::new("open-custom-provider")
-                        .label("＋ 添加自定义提供方")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_custom_card(window, cx);
-                        })),
-                ),
-            );
-        }
+        cards = cards.child(
+            div().flex().flex_row().gap_2().child(
+                Button::new("open-custom-provider")
+                    .label("＋ 添加自定义提供方")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_custom_card(window, cx);
+                    })),
+            ),
+        );
         cards.into_any_element()
     }
 
@@ -232,12 +250,7 @@ impl SetupView {
             .unwrap_or_else(|| route.clone());
         let configured = entry.map(|row| row.configured).unwrap_or(false);
         let usable = entry
-            .map(|row| {
-                !matches!(
-                    row.credential_state,
-                    qcode_kernel::provider_registry::CredentialState::Missing
-                )
-            })
+            .map(|row| provider_usable(&self.config, row))
             .unwrap_or(false);
         let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
         let key = "providers";
@@ -644,21 +657,21 @@ impl SetupView {
         editor.into_any_element()
     }
 
-    /// The custom-provider declaration card (U4): a create, not an edit, so it
-    /// asks for the fields nothing can default — route id, endpoint, protocol
-    /// — plus display name, key env and the model list.
-    fn render_custom_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The custom-provider declaration dialog (U4): a create, not an edit, so
+    /// it asks for the fields nothing can default — route id, endpoint,
+    /// protocol — plus display name, key env and the model list. Rendered as a
+    /// modal overlay, same as the provider edit dialog.
+    pub(crate) fn render_custom_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.wizard || !self.declaring {
+            return div().into_any_element();
+        }
         let theme = cx.theme();
-        let (border_color, danger_color) = (theme.border, theme.danger);
-        let mut card = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .border_1()
-            .border_color(border_color)
-            .rounded(px(10.0))
-            .p_3()
-            .child(div().child("自定义提供方"));
+        let (popover, popover_fg, border_color, danger_color) = (
+            theme.popover,
+            theme.popover_foreground,
+            theme.border,
+            theme.danger,
+        );
         let field = |label: &'static str, input: &Entity<InputState>| {
             div()
                 .flex()
@@ -667,17 +680,18 @@ impl SetupView {
                 .child(div().text_size(sp(CAPTION_SIZE)).child(label))
                 .child(Input::new(input).aria_label(label))
         };
+        let mut body = div().flex().flex_col().gap_3();
         if let Some(route) = &self.custom_route {
-            card = card.child(field("Provider ID", route));
+            body = body.child(field("Provider ID", route));
         }
         if let Some(name) = &self.custom_name {
-            card = card.child(field("显示名称", name));
+            body = body.child(field("显示名称", name));
         }
         if let Some(base_url) = &self.custom_base_url {
-            card = card.child(field("API 地址", base_url));
+            body = body.child(field("API 地址", base_url));
         }
         if let Some(key_env) = &self.custom_key_env {
-            card = card.child(field("Key env", key_env));
+            body = body.child(field("Key env", key_env));
         }
         // Protocol choice, like the editor's select buttons.
         let entity = cx.entity();
@@ -698,7 +712,7 @@ impl SetupView {
                     }),
             );
         }
-        card = card.child(
+        body = body.child(
             div()
                 .flex()
                 .flex_col()
@@ -760,7 +774,7 @@ impl SetupView {
                     cx.notify();
                 })),
         );
-        card = card.child(
+        body = body.child(
             div()
                 .flex()
                 .flex_col()
@@ -769,36 +783,69 @@ impl SetupView {
                 .child(models),
         );
         if let Some(error) = &self.custom_error {
-            card = card.child(
+            body = body.child(
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(danger_color)
                     .child(error.to_string()),
             );
         }
-        card = card.child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("cancel-custom-provider")
-                        .label("取消")
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.close_custom_card();
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("create-custom-provider")
-                        .label("创建提供方")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.create_custom_provider(window, cx);
-                        })),
-                ),
-        );
-        card.into_any_element()
+        let footer = div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .gap_2()
+            .child(
+                Button::new("cancel-custom-provider")
+                    .label("取消")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_custom_card();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("create-custom-provider")
+                    .label("创建提供方")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.create_custom_provider(window, cx);
+                    })),
+            );
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(480.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(popover)
+                    .border_1()
+                    .border_color(border_color)
+                    .p_4()
+                    .text_color(popover_fg)
+                    .child(div().child("添加自定义提供方"))
+                    .child(
+                        div()
+                            .id("custom-provider-dialog-scroll")
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .max_h(px(440.0))
+                            .overflow_y_scroll()
+                            .child(body),
+                    )
+                    .child(footer),
+            )
+            .into_any_element()
     }
 
     /// The probe candidate picker modal (U3): search, select-all/deselect-all

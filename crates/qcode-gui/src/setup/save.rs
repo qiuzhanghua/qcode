@@ -178,14 +178,32 @@ impl SetupView {
                             continue;
                         }
                         let argv = lines(row, "api_key_command", cx);
+                        let default_model = stale_model_default(
+                            name.trim(),
+                            optional(row, "default_model", cx),
+                        );
+                        let models = model_entries(row, cx);
+                        // 无需密钥的 provider（如 ollama）从自身端点获取模型
+                        // 列表，静态模型为空是正常状态，不做「至少一个模型」
+                        // 校验，否则每次保存都会被它挡住。
+                        let keyless = optional(row, "api_key_env", cx).is_none() && argv.is_empty();
+                        // 需要密钥的提供方必须能推导出至少一个模型（模型列表 /
+                        // 默认模型 / 内置目录），否则在模型菜单里没有可选模型、
+                        // 无法使用，拒绝保存。
+                        if !keyless
+                            && models.is_empty()
+                            && default_model.is_none()
+                            && qcode_kernel::config::catalog_models(name.trim()).is_empty()
+                        {
+                            return Err(format!(
+                                "提供方 {name} 没有模型：请添加至少一个模型或填写默认模型。"
+                            ));
+                        }
                         let provider = ProviderConfig {
                             base_url: optional(row, "base_url", cx),
                             api_key_env: optional(row, "api_key_env", cx),
                             api_key_command: (!argv.is_empty()).then_some(argv),
-                            default_model: stale_model_default(
-                                name.trim(),
-                                optional(row, "default_model", cx),
-                            ),
+                            default_model,
                             // Edited via the Protocol column; an empty/unknown
                             // cell drops the override and keeps the catalog
                             // default (resolve falls back to the catalog).
@@ -207,7 +225,7 @@ impl SetupView {
                                 .get(name.trim())
                                 .map(|existing| existing.headers.clone())
                                 .unwrap_or_default(),
-                            models: model_entries(row, cx),
+                            models,
                         };
                         config.providers.insert(name.trim().to_string(), provider);
                     }
@@ -329,7 +347,13 @@ impl SetupView {
                     }
                     Err(error) => eprintln!("qcode-gui: auto-save failed: {error}"),
                 },
-                Err(error) => eprintln!("qcode-gui: auto-save skipped (invalid form): {error}"),
+                // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
+                // 设置页顶部，避免“编辑不生效又看不到错误”。
+                Err(error) => {
+                    self.error = Some(error.clone());
+                    cx.notify();
+                    eprintln!("qcode-gui: auto-save skipped (invalid form): {error}");
+                }
             },
         }
     }

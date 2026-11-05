@@ -137,7 +137,7 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child(format!("移除目录 @{label}？"))
+                    .child(format!("移除目录 {label}？"))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))

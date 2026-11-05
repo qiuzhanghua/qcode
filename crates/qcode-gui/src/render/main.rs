@@ -945,8 +945,8 @@ impl Shell {
                                 StatusBar::new()
                                     .left(self.notice.clone().unwrap_or_default())
                                     .left(format!(
-                                        "{total_tokens} tokens  -  {} turn(s)",
-                                        self.app.status.turn
+                                        "{} turn(s) - {} token(s)",
+                                        self.app.status.turn, total_tokens
                                     ))
                                     .right(context_label(&self.app))
                                     .right(format!("sandbox {}", self.app.sandbox))

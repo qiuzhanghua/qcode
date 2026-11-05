@@ -25,7 +25,11 @@ impl Shell {
     ) -> AnyElement {
         let theme = cx.theme();
         let running = self.active.as_deref() == Some(task_id) && self.turn_in_flight;
+        // 点击菜单外的任意位置（含其它任务行、空白区）关闭菜单；菜单内
+        // 的按钮命中菜单 bounds，不会触发。
+        let task_id_for_close = task_id.to_string();
         div()
+            .id(format!("task-menu-popover-{task_id}"))
             .w(px(160.0))
             .flex()
             .flex_col()
@@ -36,6 +40,17 @@ impl Shell {
             .border_color(theme.border)
             .p_1()
             .text_color(theme.popover_foreground)
+            .on_mouse_down_out(cx.listener(move |this, _, _window, cx| {
+                // 点击「…」触发按钮时（所在行的 hover 仍指向本任务）不在此
+                // 关闭，交给按钮的 on_click toggle；点击其它任意位置（其它
+                // 任务行、空白区、主区域）则关闭菜单。
+                if this.task_menu.as_deref() == Some(task_id_for_close.as_str())
+                    && this.hovered_task.as_deref() != Some(task_id_for_close.as_str())
+                {
+                    this.task_menu = None;
+                    cx.notify();
+                }
+            }))
             .child(
                 Button::new(format!("task-rename-{task_id}"))
                     .label("重命名")
@@ -100,7 +115,7 @@ impl Shell {
                     Button::new(format!("root-alias-{task_id}-{label}"))
                         .text()
                         .compact()
-                        .label(format!("@{label}"))
+                        .label(label.clone())
                         .tooltip(path.clone()),
                 );
             if missing {
@@ -222,8 +237,12 @@ impl Shell {
                 .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
                     if *hovered {
                         this.hovered_task = Some(hover_id.clone());
-                        cx.notify();
+                    } else if this.hovered_task.as_deref() == Some(hover_id.as_str()) {
+                        // 移出本行时清除，避免操作按钮残留在行尾；移到别的
+                        // 行时由新行的进入事件接管，不在此处误清。
+                        this.hovered_task = None;
                     }
+                    cx.notify();
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.task_menu = None;
@@ -240,7 +259,6 @@ impl Shell {
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
-                .occlude()
                 .absolute()
                 .right_1()
                 .top_0()
@@ -252,29 +270,59 @@ impl Shell {
                 .invisible()
                 .when(show_actions, |this| this.visible())
                 .child(
-                    Button::new(format!("task-menu-{}", row.task.id))
-                        .compact()
-                        .label("…")
-                        .tooltip("任务操作")
-                        .on_click(cx.listener({
-                            let task_id = row.task.id.clone();
-                            move |this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.task_menu =
-                                    if this.task_menu.as_deref() == Some(task_id.as_str()) {
-                                        None
-                                    } else {
-                                        Some(task_id.clone())
-                                    };
-                                cx.notify();
-                            }
-                        })),
+                    // 「任务操作」按钮；弹出菜单挂在 controls 容器上，锚定到
+                    // 其左下角（TopLeft + 行高 30px），即按钮正下方。
+                    div()
+                        .relative()
+                        .child(
+                            Button::new(format!("task-menu-{}", row.task.id))
+                                .compact()
+                                .label("…")
+                                .tooltip("任务操作")
+                                // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
+                                // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
+                                // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
+                                .custom(
+                                    ButtonCustomVariant::new(cx)
+                                        .color(rgb(0xffffff).into())
+                                        .hover(rgb(0xffffff).into())
+                                        .active(rgb(0xffffff).into())
+                                        .foreground(rgb(0x1a1a1a).into()),
+                                )
+                                .bg(rgb(0xffffff))
+                                .text_color(rgb(0x1a1a1a))
+                                .on_click(cx.listener({
+                                    let task_id = row.task.id.clone();
+                                    move |this, _, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.task_menu =
+                                            if this.task_menu.as_deref()
+                                                == Some(task_id.as_str())
+                                            {
+                                                None
+                                            } else {
+                                                Some(task_id.clone())
+                                            };
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
                 )
                 .child(
                     Button::new(format!("task-add-dir-{}", row.task.id))
                         .compact()
                         .label("+")
                         .tooltip("添加目录")
+                        // 与「任务操作」按钮一致：三态背景纯白、文字深色、hover 不变色。
+                        .custom(
+                            ButtonCustomVariant::new(cx)
+                                .color(rgb(0xffffff).into())
+                                .hover(rgb(0xffffff).into())
+                                .active(rgb(0xffffff).into())
+                                .foreground(rgb(0x1a1a1a).into()),
+                        )
+                        .bg(rgb(0xffffff))
+                        .text_color(rgb(0x1a1a1a))
                         .on_click(cx.listener({
                             let task_id = row.task.id.clone();
                             move |this, _, _window, cx| {
@@ -286,6 +334,8 @@ impl Shell {
                 );
             task_row = task_row.child(controls);
             if menu_open {
+                // 弹框挂回整行（锚点最稳），右对齐行右缘、顶部贴行底，
+                // 任务操作按钮也在行右侧，视觉上即按钮正下方。
                 task_row = task_row.child(
                     deferred(
                         anchored()
