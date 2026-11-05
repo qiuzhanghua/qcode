@@ -7,11 +7,11 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     })?;
     let document: toml::Table = text.parse().map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })?;
     let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })?;
     check_version(path, config.version)?;
     warn_unknown_keys(path, &document);
@@ -108,11 +108,11 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
     })?;
     let document: toml::Table = text.parse().map_err(|source| ConfigError::Parse {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     let project: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     check_version(&path, project.version)?;
     warn_unknown_keys(&path, &document);
@@ -187,7 +187,7 @@ pub fn load_policy(path: &Path) -> Result<Vec<Rule>, ConfigError> {
     })?;
     let file: PolicyFile = toml::from_str(&text).map_err(|source| ConfigError::ParsePolicy {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })?;
     Ok(file.rules)
 }
@@ -333,7 +333,7 @@ pub(crate) fn read_document(path: &Path) -> Result<toml::Value, ConfigError> {
         .map(toml::Value::Table)
         .map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })
 }
 
@@ -362,7 +362,7 @@ pub(crate) fn validate_document(document: &toml::Value) -> Result<(), ConfigErro
         .map_err(|err| ConfigError::InvalidDocument(err.to_string()))?;
     let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: PathBuf::from("<edit>"),
-        source,
+        source: Box::new(source),
     })?;
     config.mcp.validate()?;
     Ok(())

@@ -546,10 +546,13 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+    // Boxed so that `ConfigError` stays well under the 128-byte threshold that
+    // `clippy::result_large_err` enforces on `Result` returns (a bare
+    // `toml::de::Error` is 88 bytes on its own).
     #[error("cannot parse config {path}: {source}")]
     Parse {
         path: PathBuf,
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("cannot read approval policy {path}: {source}")]
     ReadPolicy {
@@ -559,7 +562,7 @@ pub enum ConfigError {
     #[error("cannot parse approval policy {path}: {source}")]
     ParsePolicy {
         path: PathBuf,
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("unknown provider '{0}'; add a [providers.{0}] section or pass --base-url and --model")]
     UnknownProvider(String),

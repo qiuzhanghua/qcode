@@ -29,12 +29,14 @@ fn extra_body_cell_parses_json_and_falls_back_to_strings() {
 }
 
 /// Windows credential store round trip: `keychain_store` writes a generic
-/// credential via cmdkey and returns a one-line PowerShell read command; that
-/// command must print the stored secret back. Uses a per-process target so
-/// parallel test runs cannot collide, and cleans up afterwards.
+/// credential through `CredWriteW` (the secret arrives on stdin) and returns a
+/// one-line PowerShell read command; that command must print the stored secret
+/// back. Uses a per-process target so parallel test runs cannot collide, and
+/// cleans up afterwards.
 #[test]
 #[cfg(target_os = "windows")]
-fn windows_keychain_store_round_trips_via_cmdkey_and_powershell() {
+fn windows_keychain_store_round_trips_via_credwrite_and_powershell() {
+    use super::credentials::windows_credential_delete_script;
     use super::keychain_store;
     let provider = format!("test-{}", std::process::id());
     let secret = "sk-roundtrip-123";
@@ -48,6 +50,10 @@ fn windows_keychain_store_round_trips_via_cmdkey_and_powershell() {
         !argv[3].contains('\n'),
         "the read script must be a single line"
     );
+    assert!(
+        !argv.iter().any(|arg| arg.contains(secret)),
+        "the secret must never reach argv"
+    );
     let output = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(std::process::Stdio::null())
@@ -58,7 +64,88 @@ fn windows_keychain_store_round_trips_via_cmdkey_and_powershell() {
     assert!(output.status.success(), "read command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(secret), "stdout: {stdout:?}");
-    let _ = std::process::Command::new("cmdkey")
-        .args(["/delete:", &format!("qcode/{provider}")])
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &windows_credential_delete_script(&format!("qcode/{provider}")),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// The generated PowerShell must stay on one line and must not let a provider
+/// name close the string it is embedded in.
+#[test]
+#[cfg(any(target_os = "windows", test))]
+fn windows_credential_scripts_quote_provider_names() {
+    use super::credentials::{
+        ps_single_quoted, windows_credential_delete_script, windows_credential_read_script,
+        windows_credential_write_script,
+    };
+    assert_eq!(ps_single_quoted("deepseek"), "'deepseek'");
+    assert_eq!(ps_single_quoted("o'brien"), "'o''brien'");
+    let write = windows_credential_write_script("qcode/o'brien", "o'brien");
+    assert!(!write.contains('\n'), "the write script must be one line");
+    assert!(write.contains("'qcode/o''brien'"), "{write}");
+    assert!(
+        write.contains("[Console]::In.ReadToEnd()"),
+        "the secret must come from stdin: {write}"
+    );
+    let read = windows_credential_read_script("qcode/deepseek");
+    assert!(!read.contains('\n'), "the read script must be one line");
+    assert!(read.ends_with("[QCred]::Get('qcode/deepseek')"), "{read}");
+    let delete = windows_credential_delete_script("qcode/deepseek");
+    assert!(!delete.contains('\n'), "the delete script must be one line");
+    assert!(
+        delete.contains("[QCred]::Del('qcode/deepseek')"),
+        "{delete}"
+    );
+}
+
+/// macOS round trip: the key reaches the keychain without passing through
+/// `argv`, and the command stored in `api_key_command` reads it back.
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_keychain_store_keeps_the_secret_out_of_argv() {
+    use super::credentials::macos;
+    use super::keychain_store;
+
+    if !macos::available() {
+        eprintln!("skipping: this session has no default keychain");
+        return;
+    }
+    let provider = format!("test-{}", std::process::id());
+    let secret = "sk-roundtrip-123";
+    let argv = match keychain_store(&provider, secret) {
+        Ok(argv) => argv,
+        Err(error) if is_keychain_unavailable(&error) => {
+            eprintln!("skipping: keychain unavailable ({error})");
+            return;
+        }
+        Err(error) => panic!("store failed: {error}"),
+    };
+    assert!(
+        !argv.iter().any(|arg| arg.contains(secret)),
+        "the secret must never reach argv: {argv:?}"
+    );
+    // Saving the same provider twice goes through the duplicate-item branch.
+    keychain_store(&provider, secret).expect("rewrite the existing item");
+    let output = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .expect("run the read command");
+    assert!(output.status.success(), "read command failed");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), secret);
+    macos::delete("qcode", &provider).expect("delete the probe item");
+}
+
+#[cfg(target_os = "macos")]
+fn is_keychain_unavailable(error: &str) -> bool {
+    error.contains("errSecInteractionNotAllowed") || error.contains("errSecNoSuchKeychain")
 }

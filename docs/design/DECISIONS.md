@@ -1475,6 +1475,17 @@ ACP 的内核」是否在运行，在就直接用、不在就自己起；探测�
 `danger-full-access` 后成功（拉取 GPUI/GPUI Kit 依赖树，`Cargo.lock` 已更新）。随后
 `cargo build -p qcode-gui --offline` 与既有测试在 `--offline` 下均通过，离线构建能力保持。
 刷新命令：`cargo fetch`（一次性、需网络）。
+**补充（2026-11-04，依赖刷新执行记录）**：`gpui-kit` 0.8.1 → 0.9.0（`gpui-base 0.9.0`、
+`gpui-pre =0.3.11`，zed 快照 `08cbb88` → `f816e1f`）。GUI 源码零改动即可编译运行：
+`gpui-kit` 本身 `src` 未变（只换依赖钉版），`gpui-base`/`gpui-component` 的 public 名字
+无删除（分别新增 27 / 16 个），`gpui-pre` 只删了 3 个内部重排辅助。
+`vendor/gpui-pre-windows` 同步到 0.3.11 并重贴 `IsWindow` 守卫（上游仍无此修复，
+`close_one_window` 依旧由 `WM_GPUI_CLOSE_ONE_WINDOW` 驱动延迟剪枝）。升级后必须
+`cargo update -p gpui-pre-windows`：vendor manifest 版本与 `gpui-pre` 的 `=0.3.11` 要求不一致时，
+cargo 只打一行 `patch … was not used in the crate graph` 警告并静默使用 registry 版本，守卫随之消失。
+行为变化集中在 `input/editor`（按行分隔符排版、可配置的 `CursorBlink`）、`MessageScroller`
+（padding 计入滚动范围，滚动条能到底）、`PopupMenu`（子菜单在窗口右缘向左翻转）。
+`metal 0.33` 已从依赖图移除（改用 `objc2-metal`），`block` 的 future-incompat 警告随之消失。
 ### ADR-0037 spike 结论（2026-10-22）：GPUI Kit 通过
 
 **实测结果**
@@ -3339,3 +3350,163 @@ Shell 收到 `UserMessage` 且 `queued_id` 非空时，立即从 `steering` 镜�
   Restoring）。Pending 由审批卡片占用输入面；Restoring 从提交答案到 `ApprovalClosed` 之间
   锁定输入并显示「已提交，等待引擎确认…」，TUI 状态栏显示 `restoring`。PlanReview / Question
   仍不在范围内（引擎尚无对应交互）。
+
+## ADR-0055：模型接入——路由 + 目录 + 注册表，模型选择两级化（2026-11-04）
+
+**背景**
+
+`docs/design/SETTINGS-MODELS-V2.md`（配套两份 UI 稿）盘点了设置页与模型接入的十类痛点，与
+架构直接相关的有四类：
+
+1. **表单反过来约束配置**：`forms.rs` 的 FIELDS 手写每个字段，加一个配置项要在 forms /
+   setup / config_edit 三处同步，11 个页面已经不可维护。
+2. **provider 是「map key + 名字 match」**：`resolve.rs` 的 `builtin()` 与 `build_provider()`
+   按供应商名硬编码端点与协议，接一个 OpenAI 兼容网关（火山方舟、自建中转）必须改代码。
+3. **模型选择是单级**：顶栏下拉 = 所有 provider 的 `default_model` 并集，选中后只知道模型名
+   不知道路由；切换不落盘，重开会话要重选。
+4. **凭证与 provider 表耦合**：密钥内嵌在 provider 行里存进钥匙串，但「存了没有、缺不缺」
+   没有统一视图（存储规则见 ADR-0056）。
+
+**决定**
+
+### 1. 目录：内置路由是一张表
+
+`crates/qcode-kernel/src/config/catalog.rs` 新增 `CATALOG`：每个内置供应商是一行
+`CatalogEntry`（协议、base_url、`api_key_env`、默认模型、模型清单、可选的
+`reasoning_split`）。用户配置缺字段时 `resolve` 回落到目录行；设置页与解析器读同一份事实
+（`catalog_entries()` / `catalog_entry(route)`），不再各存一份内置值。
+
+### 2. 协议显式化：按 `Protocol` 选适配器
+
+新增 `Protocol::{OpenAi, Anthropic, Mock}`（配置写 `protocol = "openai"` 等）。解析顺序：
+`providers.<route>.protocol` → 目录行 → OpenAI 兼容。`provider_registry.rs` 的
+`build_provider_for` 按协议构造适配器，取代按名字 match 的 `build_provider`。平台型供应商
+因此零代码接入：目录加一行，或用户在设置页填 base_url + protocol + 模型清单。
+
+### 3. 注册表服务设置页
+
+`provider_registry.rs` 同时提供 `ConfigurableProvider`（route、display_name、protocol、
+configured、凭证状态）与 `list_configurable_providers(config)`；Provider 目录卡片直接渲染它，
+`CredentialState::{Configured, Missing, Keyless}` 让「缺 key」「无需 key」可见。
+
+### 4. 模型选择两级化
+
+- **会话级**：`ModelSelection { provider, model }` 取代裸模型名。`UiCommand::SetModel
+  { provider, model }` 切换后写会话记录，恢复会话自动还原；跨 provider 切换由
+  `build_provider_for` 就地重建（保留会话、工具、策略与 egress proxy）。
+- **默认级**：新命名空间 `[default-model] { provider, model }`（`DefaultModelConfig`）。
+  会话内切模型同步写入（「切即默认」，写失败只告警）；设置页 provider 卡片的「设为默认」
+  是唯一显式入口，写入时清掉遗留的 `default_provider`。
+- **选择链**（`config/resolve.rs`）：
+
+  ```text
+  provider: --provider > QCODE_PROVIDER > [default-model].provider
+            > default_provider（仅兼容旧配置）> 第一个可用 > mock
+  model:    --model > QCODE_MODEL > [default-model].model（仅当它指向本路由或未指向任何路由）
+            > providers.<route>.default_model > 目录默认 > models[0] > MissingModel
+  ```
+
+  「第一个可用」= 遍历 `config.providers`（按字母序、排除 `mock*`），取第一个端点合法
+  （http/https）、凭据可用、且能推导出模型的 route。
+
+**备选方案（未采用）**
+
+- **继续用 FIELDS 手写表单**：加一个配置项仍要改三处，正是最初的痛点。
+- **保留按名字推断协议、每新增供应商写分支**：表达不了「同一协议多个网关」，也解释不了
+  火山方舟这类平台型供应商。
+- **直接跳到「schema 生成表单」**（设计文档 §4.6 的终态）：一次性重写 11 页风险过大；先让
+  目录与注册表就位，表单仍手写，等页面收敛到 5 组再换。
+- **只保留 `default_provider` + `providers.*.default_model`**：表达不了「模型属于哪个路由」，
+  跨 provider 的同名模型会串。
+
+**后果**
+
+- 设置页新增 `crates/qcode-gui/src/setup/models.rs`（1,180 行）承载卡片与模型清单编辑，已超
+  团队 1,000 行阈值，后续按「卡片 / 清单 / 探测」拆。
+- `KNOWN_KEYS`（`config/load.rs`）必须跟着新命名空间走：v0.6.1 漏了 `ui` 与 `default-model`，
+  写这两节的用户会看到 `unknown config keys are ignored` 警告（`84e12d7` 修，随 0.7.0 发布）。
+- `default_provider` 与 `[default-model]` 会并存一段时间：读时前者只作兜底，写时清掉，
+  迁移期结束后可删。
+- 端点模型探测（`qcode-providers/src/discovery.rs`）要处理超时与 404：探测失败只影响候选
+  清单，不影响已保存的模型。
+
+**验证**
+
+- `cargo test -p qcode-kernel config` 覆盖选择链顺序、`[default-model]` 的「限本路由」、
+  第一个可用兜底、`UnknownProvider` / `MissingModel`。
+- 设置页：Provider 目录显示凭证状态；「设为默认」写 `[default-model]` 并清 `default_provider`；
+  顶栏跨 provider 切换时会话不中断。
+- 手工：把 `[default-model]` 指到未配置的 route，启动回落到第一个可用，再回落到 mock。
+
+## ADR-0056：凭证存储——密钥不进命令行（2026-11-04）
+
+**背景**
+
+设置页保存密钥的实现最初把秘密交给外部命令：
+
+- macOS：`security add-generic-password -U -s qcode -a <provider> -w <key>`
+- Windows：`cmdkey /generic:qcode/<provider> /user:<provider> /pass:<key>`
+
+`argv` 对同用户的任何进程可见（`ps -o args`、WMI `Win32_Process.CommandLine`），密钥在进程
+存活期间等同明文；`cmdkey` 还会把凭据写进注册表。另外 `windows_credential_read_script`
+用字符串拼接把 provider 名塞进 PowerShell 单引号串，名字里带 `'` 就能逃逸成任意 PowerShell。
+
+**决定**
+
+### 1. 配置文件只存引用
+
+`providers.<route>.api_key_env`（环境变量名）或 `api_key_command`（读回命令的 argv，一行一个
+参数），明文永远不落盘。
+
+### 2. 存储后端：秘密只走 stdin 或进程内 API
+
+| 平台 | 写入 | 读回（`api_key_command`） |
+|---|---|---|
+| macOS | Security framework：`SecKeychainAddGenericPassword`，重复项走 `SecKeychainItemModifyAttributesAndData`（即 CLI 的 `-U`） | `security find-generic-password -w -s qcode -a <route>` |
+| Linux | `secret-tool store`，密钥写 stdin | `secret-tool lookup service qcode user <route>` |
+| Windows | `CredWriteW`（`CRED_TYPE_GENERIC`、`CRED_PERSIST_LOCAL_MACHINE`），PowerShell 从 stdin 读密钥 | `powershell -NoProfile -Command <CredReadW 单行脚本>` |
+
+macOS 选 FFI 而不是「让 `security` 从 stdin 读」：`security add-generic-password -w` 的值只能
+作参数；省略值会两次交互式读密码（`readpassphrase`），有控制终端时走 `/dev/tty`——由
+`cargo run` 之类启动的应用会卡住，由 Finder 启动又走 stdin，行为随启动方式变化。
+
+### 3. 生成的脚本必须单行且转义
+
+`api_key_command` 按行拆成 argv，所以生成的 PowerShell 不能含换行；provider/route 名一律经
+`ps_single_quoted()`（`'` → `''`）插入。生成器放在不依赖平台的模块
+（`setup/credentials.rs`）里，任何主机都能跑转义与「单行」单测。
+
+### 4. 状态可见、失败不静默
+
+`CredentialState::{Configured, Missing, Keyless}` 反映「已存 / 缺 / 无需」；写入失败把
+`OSStatus` 或 `CredWrite` 结果回显在行内，不吞掉。
+
+**备选方案（未采用）**
+
+- **`security -w <key>` / `cmdkey /pass:<key>`**：argv 泄漏，正是本 ADR 要消除的。
+- **把密钥写进 config 或注册表明文**：违反 ADR-0050「配置只存可审阅的引用」，`qc doctor`
+  也一直把明文列为问题。
+- **由应用自己读环境变量**：同用户进程仍可从 `KERN_PROCARGS2` / WMI 读到进程环境；只在用户
+  显式配置 `api_key_env` 时保留这条路（CI 与容器）。
+- **让 `security` 从 stdin 读密码**：见上，依赖调用方有没有控制终端。
+
+**后果**
+
+- 依赖系统凭据库可用：headless、锁屏或受限会话写不进去时要回落到 `api_key_env`；错误文案
+  带上 `errSecInteractionNotAllowed` 之类的原始状态码，便于判断。
+- macOS 首次读回仍可能触发钥匙串授权对话框（写入方是 `qc`，读回方是 `/usr/bin/security`）；
+  测试覆盖了「写入方与读回方是不同进程」这条路径。
+- Windows 读回每次都启动 PowerShell 并 `Add-Type` 编译 C#（约 1 秒级），且没有缓存——属性能
+  问题，另案处理。
+- `qc doctor` 的 Windows 提示从 `cmdkey` 改为「在设置页保存」，并点明 `cmdkey /pass:` 的泄漏
+  风险。
+
+**验证**
+
+- macOS：`setup::tests::macos_keychain_store_keeps_the_secret_out_of_argv` —— 写入（含重复
+  写入走修改分支）→ 用存下的命令读回 → 断言 argv 里没有秘密 → 删除探测项；钥匙串不可用的
+  会话跳过而不是失败。
+- Windows：`setup::tests::windows_keychain_store_round_trips_via_credwrite_and_powershell` ——
+  `CredWrite` 写入后由 `CredRead` 脚本读回，结束时 `CredDelete` 清理。
+- 跨平台：`windows_credential_scripts_quote_provider_names` 校验单行、`''` 转义、密钥只来自
+  stdin。

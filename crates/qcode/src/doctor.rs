@@ -76,8 +76,10 @@ fn key_store_hint() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         vec![
-            "store it: cmdkey /generic:qcode/<provider> /user:<provider> /pass:<key> (the registry value is plaintext)".to_string(),
-            "then: api_key_command = [\"powershell\", \"-NoProfile\", \"-Command\", \"...\"]".to_string(),
+            "store it: Settings > provider > key (CredWriteW, secret piped over stdin)".to_string(),
+            "then: api_key_command = [\"powershell\", \"-NoProfile\", \"-Command\", \"...\"]"
+                .to_string(),
+            "avoid: cmdkey /pass:<key>, which puts the key in the command line".to_string(),
         ]
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

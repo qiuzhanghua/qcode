@@ -5,7 +5,7 @@
 //! tokio, so the queue/turn policy can be tested without opening a window.
 
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
-use qcode_core::event::{EventKind, SessionStarted};
+use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
@@ -93,27 +93,9 @@ fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
     }
 }
 
-/// Restore a resumed session's model (its `SessionStarted` metadata) and the
-/// pricing entry that goes with it. A session whose log cannot be read, or
-/// that has no `SessionStarted`, keeps the current model.
-fn restore_session_model(
-    engine: &Engine,
-    id: &str,
-    model: &mut String,
-    pricing: &mut Option<qcode_core::cost::Pricing>,
-) {
-    let Ok(events) = engine.store.load(id) else {
-        return;
-    };
-    let Some(started) = events.iter().find_map(|event| match &event.kind {
-        EventKind::SessionStarted(started) => Some(started),
-        _ => None,
-    }) else {
-        return;
-    };
-    *model = started.model.clone();
-    *pricing = engine.pricing_table.get(&started.model).copied();
-}
+// 恢复会话不改 model/provider：SessionStarted 里只是历史快照，拿它发请求
+// 会把旧会话的模型名（如 mock-1）发给当前 provider。界面和引擎都以当前
+// 配置/用户选择的模型为准。
 
 /// Run the engine on its own thread: `run_turn` is async, the window is not.
 pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedReceiver<UiCommand>) {
@@ -268,7 +250,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     pending = Some(UiCommand::Resume { id });
                                 } else {
                                     session = Some(id.clone());
-                                    restore_session_model(&engine, &id, &mut model, &mut pricing);
                                     port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }
@@ -370,7 +351,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 }
                                 UiCommand::Resume { id } => {
                                     session = Some(id.clone());
-                                    restore_session_model(&engine, &id, &mut model, &mut pricing);
                                     port.clear_session_allow();
                                     port.send_session_changed(Some(id));
                                 }

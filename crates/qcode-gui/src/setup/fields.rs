@@ -299,22 +299,14 @@ pub(crate) fn parse_scope(value: Option<&str>) -> Scope {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, String> {
-    let status = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            "qcode",
-            "-a",
-            provider,
-            "-w",
-            key,
-        ])
-        .status()
-        .map_err(|error| format!("security: {error}"))?;
-    if !status.success() {
-        return Err("security add-generic-password failed".to_string());
-    }
+    // Written through the Security framework rather than `security
+    // add-generic-password -w <key>`, which would put the secret in `argv`.
+    credentials::macos::store("qcode", provider, key).map_err(|status| {
+        format!(
+            "keychain write failed ({})",
+            credentials::macos::describe(status)
+        )
+    })?;
     Ok(vec![
         "security".to_string(),
         "find-generic-password".to_string(),
@@ -358,55 +350,38 @@ pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, S
 
 #[cfg(target_os = "windows")]
 pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, String> {
-    // cmdkey /generic stores a *generic* credential (CRED_TYPE_GENERIC),
-    // whose value lives in the credential blob, so CredRead can hand it back.
-    // The plain `/add:` form creates a Domain Password whose secret is not
-    // exposed through the blob and therefore cannot be read back this way.
+    use std::io::Write as _;
+
+    // A generic credential (CRED_TYPE_GENERIC) keeps its secret in the blob,
+    // so CredRead can hand it back; cmdkey's Domain Password form does not.
+    // The secret goes in over stdin because `/pass:<key>` would be visible to
+    // every process of this user through WMI's command line.
     let target = format!("qcode/{provider}");
-    let status = std::process::Command::new("cmdkey")
-        .arg(format!("/generic:{target}"))
-        .arg(format!("/user:{provider}"))
-        .arg(format!("/pass:{key}"))
-        .status()
-        .map_err(|error| format!("cmdkey: {error}"))?;
-    if !status.success() {
-        return Err("cmdkey /generic failed".to_string());
+    let mut child = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &credentials::windows_credential_write_script(&target, provider),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("powershell: {error}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "powershell stdin unavailable".to_string())?
+        .write_all(key.as_bytes())
+        .map_err(|error| error.to_string())?;
+    if !child.wait().map_err(|error| error.to_string())?.success() {
+        return Err("CredWrite failed".to_string());
     }
     Ok(vec![
         "powershell".to_string(),
         "-NoProfile".to_string(),
         "-Command".to_string(),
-        windows_credential_read_script(&target),
+        credentials::windows_credential_read_script(&target),
     ])
-}
-
-/// One-line PowerShell command that prints a generic credential's blob to
-/// stdout (the API key). It is stored verbatim in `api_key_command` — one argv
-/// per line — so it must contain no newline; the kernel runs
-/// `powershell -NoProfile -Command <script>` and reads the output as the key.
-/// The C# `Add-Type` P/Invokes `CredReadW` (CRED_TYPE_GENERIC = 1) on the
-/// target written by [`keychain_store`].
-#[cfg(target_os = "windows")]
-fn windows_credential_read_script(target: &str) -> String {
-    let mut script = String::from(
-        "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;\
-         public class QCred{[DllImport(\"Advapi32.dll\",EntryPoint=\"CredReadW\",CharSet=CharSet.Unicode)]\
-         public static extern bool CredRead(string t,int ty,int fl,out IntPtr p);\
-         [StructLayout(LayoutKind.Sequential)]public struct C{public int Flags;public int Type;\
-         public IntPtr TargetName;public IntPtr Comment;public long LastWritten;\
-         public int CredentialBlobSize;public IntPtr CredentialBlob;public int Persist;\
-         public int AttributeCount;public IntPtr Attributes;public IntPtr TargetAlias;\
-         public IntPtr UserName;}public static string Get(string t){IntPtr p;\
-         if(!CredRead(t,1,0,out p))return null;var c=(C)Marshal.PtrToStructure(p,typeof(C));\
-         if(c.CredentialBlobSize==0)return \"\";var b=new byte[c.CredentialBlobSize];\
-         Marshal.Copy(c.CredentialBlob,b,0,c.CredentialBlobSize);CredFree(p);\
-         return System.Text.Encoding.Unicode.GetString(b);}\
-         [DllImport(\"Advapi32.dll\")]static extern void CredFree(IntPtr p);}';\
-         [QCred]::Get('",
-    );
-    script.push_str(target);
-    script.push_str("')");
-    script
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

@@ -8,9 +8,9 @@
 use crate::*;
 use crate::{
     ANSWER_LINE, ANSWER_SIZE, BODY_LINE, BODY_SIZE, Backend, CAPTION_SIZE, CODE_LINE, CODE_SIZE,
-    DisplayUnit, MAIN_PAD_L, MAIN_PAD_R, PROMPT_INSET, RESULT_LINE, RESULT_SIZE,
-    SECONDARY_LINE, SECONDARY_SIZE, Shell, TRANSCRIPT_PAD_L,
-    TRANSCRIPT_PAD_R, TURN_RAIL_WIDTH, TaskRow, context_label, is_send_shortcut, sp, tool_status,
+    DisplayUnit, MAIN_PAD_L, MAIN_PAD_R, PROMPT_INSET, RESULT_LINE, RESULT_SIZE, SECONDARY_LINE,
+    SECONDARY_SIZE, Shell, TRANSCRIPT_PAD_L, TRANSCRIPT_PAD_R, TURN_RAIL_WIDTH, TaskRow,
+    context_label, is_send_shortcut, sp, tool_status,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::ActiveTheme as _;
@@ -20,7 +20,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::diff::Diff;
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::message_scroller::MessageScroller;
-use gpui_kit::component::select::Select;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, Size};

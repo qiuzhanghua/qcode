@@ -42,6 +42,10 @@ impl Shell {
         }
         self.empty_draft = true;
         self.backend.new_session();
+        // 引擎在另一个线程里建任务，SessionChanged 是异步回来的；空闲时
+        // GUI 没有周期性轮询，只在用户交互时 render/poll。这里在等结果
+        // 期间短暂醒几次，确保新任务能及时出现在侧栏里。
+        self.wake_for_session(cx);
         self.resetting = true;
         self.app.reset_transcript();
         self.attachments.clear();
@@ -73,6 +77,32 @@ impl Shell {
         }
         self.focus_composer(window, cx);
         cx.notify();
+    }
+
+    /// 新建任务后等异步结果期间，主动醒几次让 `poll` 有机会收事件。
+    ///
+    /// 正常一两帧就够（100ms 一次，最多 5 秒）；`empty_draft` 被
+    /// SessionChanged/TurnFailed 改掉就停，不常驻。
+    fn wake_for_session(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            for _ in 0..50 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let keep_waiting = this.update(cx, |shell, cx| {
+                    if !shell.empty_draft {
+                        return false;
+                    }
+                    cx.notify();
+                    true
+                });
+                match keep_waiting {
+                    Ok(true) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn resume(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
