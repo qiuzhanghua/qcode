@@ -335,7 +335,7 @@ impl Shell {
                 <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
                 && let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
             {
-                settings_hwnd_in_open.set(Some(win32.hwnd.get() as isize));
+                settings_hwnd_in_open.set(Some(win32.hwnd.get()));
             }
             let view =
                 cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));

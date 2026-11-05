@@ -141,9 +141,11 @@ fn tray_thread(ready: Sender<Result<(), String>>) {
         // 资源 2 是托盘图标（品牌蓝 QC）；1 是彩色应用图标。资源 ID 必须为
         // 1/2：GPUI Windows 后端按 ID 1 加载窗口图标，托盘按 ID 2 加载。
         // 用系统的小图标尺寸取图，125%/150% 缩放时不会被拉伸。
+        // `without_provenance` 而非 `2 as *const u16`：资源 ID 编码在指针值
+        // 本身，并不指向任何内存，这样写能让 clippy 的 dangling 告警闭嘴。
         let hicon = LoadImageW(
             instance,
-            2 as *const u16,
+            std::ptr::without_provenance::<u16>(2),
             IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON),
             GetSystemMetrics(SM_CYSMICON),
