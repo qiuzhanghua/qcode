@@ -693,6 +693,10 @@ impl SetupView {
                 self.provider_error = None;
                 self.provider_notice = Some(format!("已保存 {name} 的 API 密钥到系统钥匙串"));
                 self.error = None;
+                // `Input::set_value` 不触发 `InputEvent::Change`，上面的单元格
+                // 更新不会经订阅触发 auto-save，这里手动落盘，否则 api_key_command
+                // 不会写入 config，凭据状态仍是 Missing。
+                self.auto_save(cx, AutoSaveKind::Tables, true);
             }
             Err(error) => {
                 self.provider_notice = None;

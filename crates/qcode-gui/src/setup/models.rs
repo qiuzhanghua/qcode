@@ -364,7 +364,28 @@ impl SetupView {
             .child(
                 Button::new("save-provider-edit")
                     .label("保存")
-                    .on_click(cx.listener(move |this, _, _window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // API 密钥输入框的内容只进钥匙串（`__key` 不写
+                        // config）：点「保存」时若还有未存入的密钥，先写入
+                        // 凭据库并落盘 api_key_command，否则用户只点「保存」
+                        // 会以为已生效而实际什么都没存。
+                        let pending = this.editing_provider.as_ref().and_then(|route| {
+                            let table = this.tables.get("providers")?;
+                            table.rows.iter().find_map(|row| {
+                                (cell(row, "name", cx).trim() == route.as_str()).then(|| {
+                                    let key = row
+                                        .cells
+                                        .get("__key")
+                                        .map(|k| k.read(cx).value().trim().to_string());
+                                    (row.id, key)
+                                })
+                            })
+                        });
+                        if let Some((row_id, Some(key))) = pending
+                            && !key.is_empty()
+                        {
+                            this.store_provider_key(row_id, window, cx);
+                        }
                         this.close_editor(true);
                         this.saved_notice = Some(format!("已保存 {route_close}。"));
                         cx.notify();
