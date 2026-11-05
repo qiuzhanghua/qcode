@@ -64,6 +64,25 @@ pub(crate) fn conversation_icon(name: IconName) -> Icon {
         .with_size(Size::Small)
         .text_color(rgb(0x888888))
 }
+/// Lead of a foldable row: chevron, kind icon and label in one 8px group.
+///
+/// The row that hosts it uses a 4px gap, so the "· detail" after the label
+/// reads as a single space while the icons stay clearly apart from the text —
+/// the rhythm the reference design uses for 思考 and 运行命令 rows.
+fn header_lead(expanded: bool, icon: IconName, label: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(conversation_icon(if expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        }))
+        .child(conversation_icon(icon))
+        .child(label.into())
+}
 /// The QC mark as `currentColor`, so the running row follows the theme.
 const QC_MARK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -192,6 +211,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
             .items_center()
             .justify_start()
             .w_full()
+            .gap_1()
             .id("reasoning-live-row")
             .cursor_pointer()
             .text_size(sp(SECONDARY_SIZE))
@@ -204,13 +224,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
                     });
                 }
             })
-            .child(conversation_icon(if expanded {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            }))
-            .child(conversation_icon(IconName::Brain))
-            .child("思考")
+            .child(header_lead(expanded, IconName::Brain, "思考"))
             .children((!expanded && !preview.is_empty()).then(|| {
                 div()
                     .text_color(rgb(0x777777))
@@ -264,6 +278,7 @@ pub(crate) fn reasoning_row(
             .items_center()
             .justify_start()
             .w_full()
+            .gap_1()
             .id(format!("reasoning-row-{block}"))
             .cursor_pointer()
             .text_size(sp(SECONDARY_SIZE))
@@ -274,13 +289,7 @@ pub(crate) fn reasoning_row(
                     entity.update(cx, |shell, cx| shell.toggle_reasoning(block, cx));
                 }
             })
-            .child(conversation_icon(if expanded {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            }))
-            .child(conversation_icon(IconName::Brain))
-            .child("思考")
+            .child(header_lead(expanded, IconName::Brain, "思考"))
             .children((!expanded && !preview.is_empty()).then(|| {
                 div()
                     .text_color(rgb(0x777777))
@@ -676,7 +685,7 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 .items_center()
                 .justify_start()
                 .w_full()
-                .gap_2()
+                .gap_1()
                 .id(format!("tool-row-{index}"))
                 .cursor_pointer()
                 .text_size(sp(SECONDARY_SIZE))
@@ -690,13 +699,7 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                         });
                     }
                 })
-                .child(conversation_icon(if expanded {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                }))
-                .child(conversation_icon(tool_icon_name(&tool.name)))
-                .child(label)
+                .child(header_lead(expanded, tool_icon_name(&tool.name), label))
                 .children((!summary.is_empty()).then(|| {
                     div()
                         .text_color(rgb(0x777777))
