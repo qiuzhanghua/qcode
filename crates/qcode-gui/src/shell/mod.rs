@@ -443,6 +443,7 @@ impl Shell {
                             .push_notice(format!("cannot save gui.json: {error}"));
                     }
                     self.refresh_tasks();
+                    changed = true;
                 }
                 UiEvent::TurnFailed { message } => {
                     self.empty_draft = false;
@@ -486,6 +487,10 @@ impl Shell {
         }
         if changed {
             self.sync_scroller(cx);
+            // `poll` 是在 render 里跑的：处理完事件不排下一帧的话，本次
+            // render 之后才到的 SessionChanged 就要等下一次交互才会被画出来
+            // （新建任务后侧栏一直是空的）。
+            cx.notify();
             // GPUI's Tail follow mode handles tracking by itself: while the
             // view is at the bottom it follows new content, and a user scroll
             // away pauses following until the bottom is reached again.
