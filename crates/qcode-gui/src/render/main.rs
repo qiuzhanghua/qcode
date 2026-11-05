@@ -70,26 +70,21 @@ impl Shell {
     /// RO（仅可读取）。切换对该任务的全部目录统一生效，原侧边栏每条目录
     /// 上的 RO/RW 按钮已移除。按钮位于输入框「选择文件」右侧（窗口底部），
     /// 弹层向上弹出：`Anchor::BottomLeft` 让菜单从触发器上方展开。
+    /// 任务没有目录时按钮隐藏，不渲染空状态。
     fn render_sandbox_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        // 无活动任务或任务没有目录时隐藏按钮。
         let Some(task_id) = self.active.clone() else {
-            return Button::new("sandbox-menu")
-                .label("工作区可写")
-                .icon(IconName::Shield)
-                .disabled(true)
-                .into_any_element();
+            return div().into_any_element();
         };
         let roots = self.task_roots_for_edit(&task_id);
-        let all_rw = !roots.is_empty()
-            && roots.iter().all(|root| root.access == RootAccess::ReadWrite);
-        let all_ro = !roots.is_empty()
-            && roots.iter().all(|root| root.access == RootAccess::ReadOnly);
-        let label = match (all_rw, all_ro) {
-            (_, true) => "仅可读取",
-            (true, false) => "工作区可写",
-            // 混合或空目录：不宣称单一状态，统一切换后即恢复单一状态。
-            _ => "混合",
-        };
-        let current_rw = all_rw;
+        if roots.is_empty() {
+            return div().into_any_element();
+        }
+        // 按钮对任务下全部目录统一生效，因此不出现「混合」状态：
+        // 仅当所有目录都为只读时显示「仅可读取」，否则显示「工作区可写」。
+        let all_ro = roots.iter().all(|root| root.access == RootAccess::ReadOnly);
+        let label = if all_ro { "仅可读取" } else { "工作区可写" };
+        let current_rw = roots.iter().all(|root| root.access == RootAccess::ReadWrite);
         let current_ro = all_ro;
         let shell = cx.entity().downgrade();
         Button::new("sandbox-menu")
