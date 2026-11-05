@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::{CAPTION_SIZE, SECONDARY_SIZE, sp};
-use gpui_kit::component::input::Textarea;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::input::Textarea;
 
 /// `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`: a route id usable as a settings key.
 fn route_valid(route: &str) -> bool {
@@ -53,7 +53,9 @@ fn provider_usable(
             .providers
             .get(&row.route)
             .and_then(|profile| profile.base_url.as_deref())
-            .or_else(|| qcode_kernel::config::catalog_entry(&row.route).map(|entry| entry.base_url));
+            .or_else(|| {
+                qcode_kernel::config::catalog_entry(&row.route).map(|entry| entry.base_url)
+            });
         let Some(base) = base else {
             return false;
         };

@@ -272,41 +272,37 @@ impl Shell {
                 .child(
                     // 「任务操作」按钮；弹出菜单挂在 controls 容器上，锚定到
                     // 其左下角（TopLeft + 行高 30px），即按钮正下方。
-                    div()
-                        .relative()
-                        .child(
-                            Button::new(format!("task-menu-{}", row.task.id))
-                                .compact()
-                                .label("…")
-                                .tooltip("任务操作")
-                                // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
-                                // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
-                                // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
-                                .custom(
-                                    ButtonCustomVariant::new(cx)
-                                        .color(rgb(0xffffff).into())
-                                        .hover(rgb(0xffffff).into())
-                                        .active(rgb(0xffffff).into())
-                                        .foreground(rgb(0x1a1a1a).into()),
-                                )
-                                .bg(rgb(0xffffff))
-                                .text_color(rgb(0x1a1a1a))
-                                .on_click(cx.listener({
-                                    let task_id = row.task.id.clone();
-                                    move |this, _, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.task_menu =
-                                            if this.task_menu.as_deref()
-                                                == Some(task_id.as_str())
-                                            {
-                                                None
-                                            } else {
-                                                Some(task_id.clone())
-                                            };
-                                        cx.notify();
-                                    }
-                                })),
-                        ),
+                    div().relative().child(
+                        Button::new(format!("task-menu-{}", row.task.id))
+                            .compact()
+                            .label("…")
+                            .tooltip("任务操作")
+                            // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
+                            // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
+                            // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(rgb(0xffffff).into())
+                                    .hover(rgb(0xffffff).into())
+                                    .active(rgb(0xffffff).into())
+                                    .foreground(rgb(0x1a1a1a).into()),
+                            )
+                            .bg(rgb(0xffffff))
+                            .text_color(rgb(0x1a1a1a))
+                            .on_click(cx.listener({
+                                let task_id = row.task.id.clone();
+                                move |this, _, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.task_menu =
+                                        if this.task_menu.as_deref() == Some(task_id.as_str()) {
+                                            None
+                                        } else {
+                                            Some(task_id.clone())
+                                        };
+                                    cx.notify();
+                                }
+                            })),
+                    ),
                 )
                 .child(
                     Button::new(format!("task-add-dir-{}", row.task.id))

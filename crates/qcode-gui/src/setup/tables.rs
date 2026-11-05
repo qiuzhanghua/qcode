@@ -625,10 +625,7 @@ impl SetupView {
                     textarea(window, cx, String::new(), column.label),
                 );
             } else {
-                cell_map.insert(
-                    column.key,
-                    input(window, cx, String::new(), column.label),
-                );
+                cell_map.insert(column.key, input(window, cx, String::new(), column.label));
             }
         }
         let row = RowState {

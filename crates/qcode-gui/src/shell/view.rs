@@ -331,9 +331,9 @@ impl Shell {
         let result = gpui_kit::open_window(options, cx, move |window, cx| {
             window.activate_window();
             #[cfg(target_os = "windows")]
-            if let Ok(handle) = <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(
-                window,
-            ) && let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
+            if let Ok(handle) =
+                <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
+                && let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
             {
                 settings_hwnd_in_open.set(Some(win32.hwnd.get() as isize));
             }

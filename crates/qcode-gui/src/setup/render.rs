@@ -1,7 +1,7 @@
 use super::*;
-use gpui_kit::component::input::Textarea;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tooltip::Tooltip;
 
@@ -346,9 +346,11 @@ impl Render for SetupView {
                     .gap_2()
                     .p_2()
                     .child(if self.wizard {
-                        div()
-                            .text_size(crate::sp(18.0))
-                            .child(format!("Setup {}/{}", self.page + 1, Page::ALL.len()))
+                        div().text_size(crate::sp(18.0)).child(format!(
+                            "Setup {}/{}",
+                            self.page + 1,
+                            Page::ALL.len()
+                        ))
                     } else {
                         // 设置窗口标题固定为「设置」，不再跟随左侧导航动态切换。
                         // 比向导头部小一档，并向右让出一点间距。

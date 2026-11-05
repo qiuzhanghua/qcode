@@ -176,10 +176,8 @@ impl SetupView {
                             continue;
                         }
                         let argv = lines(row, "api_key_command", cx);
-                        let default_model = stale_model_default(
-                            name.trim(),
-                            optional(row, "default_model", cx),
-                        );
+                        let default_model =
+                            stale_model_default(name.trim(), optional(row, "default_model", cx));
                         let models = model_entries(row, cx);
                         // 无需密钥的 provider（如 ollama）从自身端点获取模型
                         // 列表，静态模型为空是正常状态，不做「至少一个模型」
