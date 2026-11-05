@@ -1086,6 +1086,14 @@ impl SetupView {
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
         self.editing_provider = None;
+        // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
+        // 上一次的探测结果/报错；探测线程的轮询也会因对话框关闭而丢弃
+        // 结果（见 `probe_models`）。
+        self.probe_rx = None;
+        self.probe_result = None;
+        self.probe_candidates = None;
+        self.provider_error = None;
+        self.provider_notice = None;
         if !changed {
             self.saved_notice = None;
         }

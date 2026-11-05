@@ -397,6 +397,14 @@ impl SetupView {
                         view.probe_rx = None;
                         return true;
                     }
+                    // 编辑框已关闭或切换到了别的 provider：丢弃探测结果，
+                    // 不再写入 probe_result / 打开候选对话框。
+                    if view.editing_provider.as_deref() != Some(route.as_str()) {
+                        view.probe_rx = None;
+                        view.probe_result = None;
+                        view.probe_candidates = None;
+                        return true;
+                    }
                     let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
                     match received {
                         Some(Ok(Ok(ids))) if ids.is_empty() => {

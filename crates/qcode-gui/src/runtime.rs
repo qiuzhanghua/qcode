@@ -4,7 +4,7 @@
 //! Deliberately free of GPUI: it only needs qcode-core, qcode-ui-bridge and
 //! tokio, so the queue/turn policy can be tested without opening a window.
 
-use qcode_core::engine::{RunOptions, TurnContext, run_turn};
+use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::store::SessionStore;
@@ -176,6 +176,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let cancel = token.clone();
                     let task_inbox = queue.inbox();
                     tokio::spawn(async move {
+                        // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
+                        // 驱动打字机效果与 ctx% 进度。
+                        let delta_port = sink.clone();
                         let options = RunOptions {
                             session_id: &task_session,
                             model: &task_model,
@@ -185,7 +188,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             cancel,
                             pricing,
                             max_cost_usd,
-                            on_delta: None,
+                            on_delta: Some(DeltaSink::new(move |delta| {
+                                delta_port.send_delta(delta)
+                            })),
                             context_window,
                             agents_md: None,
                             skills: None,
