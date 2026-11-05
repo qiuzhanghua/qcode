@@ -92,7 +92,16 @@ pub struct TableSpec {
     pub columns: &'static [ColumnSpec],
 }
 
-const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec", "bwrap", "landlock", "windows-acl"];
+// Sandbox mode 按平台展示：每种系统只列出可用的沙箱方案，跨平台迁移配置时
+// 其它平台的值仍可解析，但设置页下拉不再出现不可用的选项。
+#[cfg(target_os = "windows")]
+const SANDBOX_MODES: &[&str] = &["none", "windows-acl"];
+#[cfg(target_os = "linux")]
+const SANDBOX_MODES: &[&str] = &["none", "landlock", "bwrap"];
+#[cfg(target_os = "macos")]
+const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec"];
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+const SANDBOX_MODES: &[&str] = &["none"];
 const NETWORK_MODES: &[&str] = &["off", "proxy", "strict"];
 const UNKNOWN_HOSTS: &[&str] = &["ask", "deny", "allow"];
 const SEARCH_BACKENDS: &[&str] = &["brave", "tavily", "searxng"];
