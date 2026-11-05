@@ -1,4 +1,34 @@
-use super::{extra_body_from_lines, stale_model_default};
+use super::{extra_body_from_lines, is_lines_cell, stale_model_default};
+use crate::forms::{self, FieldKind};
+
+/// Every `FieldKind::Lines` table column must be edited with a multi-line
+/// textarea; `is_lines_cell` is the classification used when seeding rows. A
+/// single-line Input silently strips `\n`/`\r` (gpui-base `normalize_input`),
+/// which would glue a newline-joined list into one item on the next save.
+#[test]
+fn lines_columns_match_field_kind_lines() {
+    for table in forms::TABLES {
+        for column in table.columns {
+            assert_eq!(
+                is_lines_cell(column.key),
+                matches!(column.kind, FieldKind::Lines),
+                "column {} of {} must match its editor kind",
+                column.key,
+                table.path.join(".")
+            );
+        }
+    }
+    // Every key the classifier accepts must be a real Lines column.
+    let lines_keys = forms::TABLES
+        .iter()
+        .flat_map(|table| table.columns)
+        .filter(|column| matches!(column.kind, FieldKind::Lines))
+        .map(|column| column.key)
+        .collect::<Vec<_>>();
+    for key in ["api_key_command", "extra_body", "args", "env"] {
+        assert!(lines_keys.contains(&key), "{key} must be a Lines column");
+    }
+}
 
 #[test]
 fn switching_provider_drops_the_mock_default() {

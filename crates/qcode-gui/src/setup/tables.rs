@@ -204,12 +204,21 @@ impl SetupView {
     ) -> RowState {
         self.next_row_id += 1;
         let id = self.next_row_id;
+        // Lines columns (newline-joined lists) need multi-line editors; a
+        // single-line Input would strip the newlines and glue the items.
+        let mut cell_map = BTreeMap::new();
+        let mut textarea_map = BTreeMap::new();
+        for (key, value) in cells {
+            if is_lines_cell(key) {
+                textarea_map.insert(key, textarea(window, cx, value, key));
+            } else {
+                cell_map.insert(key, input(window, cx, value, key));
+            }
+        }
         let row = RowState {
             id,
-            cells: cells
-                .into_iter()
-                .map(|(key, value)| (key, input(window, cx, value, key)))
-                .collect(),
+            cells: cell_map,
+            textareas: textarea_map,
             bools: bools.into_iter().collect(),
             selects: selects.into_iter().collect(),
             models: Vec::new(),
@@ -603,14 +612,29 @@ impl SetupView {
             return;
         };
         self.next_row_id += 1;
+        let mut cell_map = BTreeMap::new();
+        let mut textarea_map = BTreeMap::new();
+        for column in table
+            .columns
+            .iter()
+            .filter(|column| !matches!(column.kind, FieldKind::Bool | FieldKind::Select(_)))
+        {
+            if is_lines_cell(column.key) {
+                textarea_map.insert(
+                    column.key,
+                    textarea(window, cx, String::new(), column.label),
+                );
+            } else {
+                cell_map.insert(
+                    column.key,
+                    input(window, cx, String::new(), column.label),
+                );
+            }
+        }
         let row = RowState {
             id: self.next_row_id,
-            cells: table
-                .columns
-                .iter()
-                .filter(|column| !matches!(column.kind, FieldKind::Bool | FieldKind::Select(_)))
-                .map(|column| (column.key, input(window, cx, String::new(), column.label)))
-                .collect(),
+            cells: cell_map,
+            textareas: textarea_map,
             bools: table
                 .columns
                 .iter()
@@ -686,7 +710,9 @@ impl SetupView {
         }
         match keychain_store(&name, &key) {
             Ok(argv) => {
-                if let Some(command) = row.cells.get("api_key_command") {
+                // `api_key_command` is a multi-line cell (one argv per line);
+                // writing through the textarea keeps the newlines intact.
+                if let Some(command) = row.textareas.get("api_key_command") {
                     command.update(cx, |input, cx| {
                         input.set_value(argv.join("\n"), window, cx);
                         cx.notify();
@@ -729,6 +755,15 @@ fn subscribe_cell_inputs(
         }
         subscriptions.push(
             cx.subscribe(input, |_view, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    _view.auto_save(cx, AutoSaveKind::Tables, true);
+                }
+            }),
+        );
+    }
+    for (_column_key, textarea) in &row.textareas {
+        subscriptions.push(
+            cx.subscribe(textarea, |_view, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     _view.auto_save(cx, AutoSaveKind::Tables, true);
                 }

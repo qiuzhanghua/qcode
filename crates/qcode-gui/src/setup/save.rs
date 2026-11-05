@@ -59,11 +59,9 @@ impl SetupView {
             let value = match field.kind {
                 FieldKind::Bool => self.bools.get(&key).copied().unwrap_or(false).to_string(),
                 FieldKind::Select(_) => self.selects.get(&key).cloned().unwrap_or_default(),
-                _ => self
-                    .inputs
-                    .get(&key)
-                    .map(|input| input.read(cx).value().to_string())
-                    .unwrap_or_default(),
+                // `FieldKind::Lines` lives in a textarea; `scalar_value` reads
+                // either the single-line input or the multi-line textarea.
+                _ => scalar_value(self, &key, cx),
             };
             apply_scalar(&mut config, field.path, &value)?;
         }

@@ -11,6 +11,28 @@ pub(crate) fn input(
     input
 }
 
+/// A multi-line text input for newline-joined lists (one item per line).
+///
+/// A single-line [`InputState`] would silently strip `\n`/`\r` on insert
+/// (gpui-base `normalize_input`) and glue the items together, corrupting the
+/// value on the next save.
+pub(crate) fn textarea(
+    window: &mut Window,
+    cx: &mut Context<SetupView>,
+    value: String,
+    placeholder: &str,
+) -> Entity<TextareaState> {
+    let input = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder.to_string()));
+    input.update(cx, |input, cx| input.set_value(value, window, cx));
+    input
+}
+
+/// Whether a table column holds a newline-joined list (one item per line) and
+/// therefore needs a multi-line editor instead of a single-line [`InputState`].
+pub(crate) fn is_lines_cell(key: &str) -> bool {
+    matches!(key, "api_key_command" | "extra_body" | "args" | "env")
+}
+
 pub(crate) fn secret_input(
     window: &mut Window,
     cx: &mut Context<SetupView>,
@@ -151,10 +173,25 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
 }
 
 pub(crate) fn cell(row: &RowState, key: &'static str, cx: &Context<SetupView>) -> String {
-    row.cells
-        .get(key)
-        .map(|input| input.read(cx).value().to_string())
-        .unwrap_or_default()
+    if let Some(input) = row.cells.get(key) {
+        return input.read(cx).value().to_string();
+    }
+    if let Some(textarea) = row.textareas.get(key) {
+        return textarea.read(cx).value().to_string();
+    }
+    String::new()
+}
+
+/// Current text of a scalar field, whether it lives in a single-line input or
+/// in a multi-line textarea (`FieldKind::Lines`).
+pub(crate) fn scalar_value(view: &SetupView, key: &str, cx: &Context<SetupView>) -> String {
+    if let Some(input) = view.inputs.get(key) {
+        return input.read(cx).value().to_string();
+    }
+    if let Some(textarea) = view.textareas.get(key) {
+        return textarea.read(cx).value().to_string();
+    }
+    String::new()
 }
 
 /// Drop a model that belongs to a different provider.

@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::popover::Popover;
@@ -242,8 +243,16 @@ impl Render for SetupView {
                 );
         } else {
             // Settings mode saves every change as it happens (per-section auto
-            // save, design SETTINGS-UI-V2 §4.5); no Save button.
-            footer = footer.child(div().flex().items_center().child("自动保存 · 修改即时写入"));
+            // save, design SETTINGS-UI-V2 §4.5); no Save button. 说明文字用小号
+            // 灰色，弱化它是状态提示而不是可操作项。
+            footer = footer.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .text_size(crate::sp(crate::CAPTION_SIZE))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("自动保存 · 修改即时写入"),
+            );
         }
 
         let mut steps = div().w(px(200.0)).h_full().flex().flex_col().gap_1().p_2();
@@ -342,8 +351,8 @@ impl Render for SetupView {
                             .child(format!("Setup {}/{}", self.page + 1, Page::ALL.len()))
                     } else {
                         // 设置窗口标题固定为「设置」，不再跟随左侧导航动态切换。
-                        // 字号放大一档并向右让出一点间距。
-                        div().text_size(crate::sp(18.0)).pl_3().child("设置")
+                        // 比向导头部小一档，并向右让出一点间距。
+                        div().text_size(crate::sp(16.0)).pl_3().child("设置")
                     })
                     .child(if self.wizard { page.title() } else { "" }),
             )
@@ -439,6 +448,15 @@ impl SetupView {
                     );
                 }
                 row.into_any_element()
+            }
+            FieldKind::Lines => {
+                let Some(textarea) = self.textareas.get(&key) else {
+                    return div().into_any_element();
+                };
+                Textarea::new(textarea)
+                    .h(px(72.0))
+                    .aria_label(field.label)
+                    .into_any_element()
             }
             _ => {
                 let Some(input) = self.inputs.get(&key) else {
@@ -580,6 +598,15 @@ impl SetupView {
                                         );
                                     }
                                     select.into_any_element()
+                                }
+                                FieldKind::Lines => {
+                                    let Some(textarea) = row.textareas.get(column.key) else {
+                                        continue;
+                                    };
+                                    Textarea::new(textarea)
+                                        .h(px(72.0))
+                                        .aria_label(column.label)
+                                        .into_any_element()
                                 }
                                 _ => {
                                     let Some(input) = row.cells.get(column.key) else {

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::{CAPTION_SIZE, SECONDARY_SIZE, sp};
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 
@@ -503,6 +504,13 @@ impl SetupView {
                     );
                 }
                 select.into_any_element()
+            }
+            FieldKind::Lines => {
+                let textarea = row.textareas.get(column.key)?;
+                Textarea::new(textarea)
+                    .h(px(72.0))
+                    .aria_label(column.label)
+                    .into_any_element()
             }
             _ => {
                 let input = row.cells.get(column.key)?;

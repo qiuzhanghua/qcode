@@ -3,7 +3,7 @@ use crate::gui_prefs::GuiPreferences;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
 use gpui_kit::{div, prelude::*, *};
@@ -31,7 +31,15 @@ pub(crate) use fields::*;
 /// One editable cell in a table row.
 pub(crate) struct RowState {
     id: u64,
+    /// Single-line cells. A value must never be a newline-joined list here:
+    /// gpui-base's single-line inputs strip `\n`/`\r` on insert, which would
+    /// glue the items together. Multi-line cells live in [`Self::textareas`].
     cells: BTreeMap<&'static str, Entity<InputState>>,
+    /// Multi-line cells (`FieldKind::Lines`): newline-joined argv/path/host
+    /// lists, one item per line. They must be edited with a multi-line input;
+    /// a single-line Input would silently drop the newlines and corrupt the
+    /// value on the next save.
+    textareas: BTreeMap<&'static str, Entity<TextareaState>>,
     bools: BTreeMap<&'static str, bool>,
     selects: BTreeMap<&'static str, String>,
     /// The provider route's model catalog (U2), as editable draft rows. An
@@ -71,6 +79,10 @@ pub struct SetupView {
     edit: ConfigEdit,
     page: usize,
     inputs: BTreeMap<String, Entity<InputState>>,
+    /// Multi-line scalar fields (`FieldKind::Lines`), e.g. `network.allow` or
+    /// `search.api_key_command`: one item per line. Kept separate from
+    /// [`Self::inputs`] because a single-line Input strips newlines.
+    textareas: BTreeMap<String, Entity<TextareaState>>,
     bools: BTreeMap<String, bool>,
     selects: BTreeMap<String, String>,
     tables: BTreeMap<String, TableState>,
@@ -302,6 +314,7 @@ impl SetupView {
             edit,
             page: if wizard { 0 } else { 1 },
             inputs: BTreeMap::new(),
+            textareas: BTreeMap::new(),
             bools: BTreeMap::new(),
             selects: BTreeMap::new(),
             tables: BTreeMap::new(),
@@ -344,6 +357,29 @@ impl SetupView {
                 FieldKind::Select(options) => {
                     view.selects
                         .insert(key, scalar_string(&config, field.path, options));
+                }
+                FieldKind::Lines => {
+                    // 多行字段（每行一项）用多行输入框承载：单行 Input 会把
+                    // 换行剥掉，导致保存时项被粘成一项（见 is_lines_cell）。
+                    let textarea_entity = textarea(
+                        window,
+                        cx,
+                        scalar_string(&config, field.path, &[]),
+                        field.label,
+                    );
+                    if !wizard {
+                        let path: &'static [&'static str] = field.path;
+                        let subscription = cx.subscribe(
+                            &textarea_entity,
+                            move |view, _input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    view.auto_save(cx, AutoSaveKind::Scalar(path), true);
+                                }
+                            },
+                        );
+                        view._input_subscriptions.push(subscription);
+                    }
+                    view.textareas.insert(key, textarea_entity);
                 }
                 _ => {
                     let input_entity = input(
