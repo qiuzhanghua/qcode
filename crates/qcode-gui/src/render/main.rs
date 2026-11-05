@@ -26,16 +26,21 @@ impl Shell {
                         let p = provider_name.clone();
                         let m = model.clone();
                         let shell = shell.clone();
+                        let label = m.clone();
                         items.push(
-                            PopupMenuItem::new(m.clone())
-                                .checked(current.0 == p && current.1 == m)
-                                .on_click(move |_, _, cx| {
-                                    if let Some(shell) = shell.upgrade() {
-                                        shell.update(cx, |shell, cx| {
-                                            shell.switch_model(p.clone(), m.clone(), cx);
-                                        });
-                                    }
-                                }),
+                            // 模型名比 provider 组标题的小字（text_sm 14px）
+                            // 大 1px，拉开层级又不过大。
+                            PopupMenuItem::element(move |_, _| {
+                                div().text_size(sp(14.0)).child(label.clone())
+                            })
+                            .checked(current.0 == p && current.1 == m)
+                            .on_click(move |_, _, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, cx| {
+                                        shell.switch_model(p.clone(), m.clone(), cx);
+                                    });
+                                }
+                            }),
                         );
                     }
                 }
@@ -47,16 +52,20 @@ impl Shell {
                     let p = current.0.clone();
                     let m = current.1.clone();
                     let shell = shell.clone();
+                    let label = m.clone();
                     items.push(
-                        PopupMenuItem::new(m.clone()).checked(true).on_click(
-                            move |_, _, cx| {
-                                if let Some(shell) = shell.upgrade() {
-                                    shell.update(cx, |shell, cx| {
-                                        shell.switch_model(p.clone(), m.clone(), cx);
-                                    });
-                                }
-                            },
-                        ),
+                        // 与配置内模型项一致：模型名放大一档（15px）。
+                        PopupMenuItem::element(move |_, _| {
+                            div().text_size(sp(15.0)).child(label.clone())
+                        })
+                        .checked(true)
+                        .on_click(move |_, _, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    shell.switch_model(p.clone(), m.clone(), cx);
+                                });
+                            }
+                        }),
                     );
                 }
                 items.into_iter().fold(menu, |menu, item| menu.item(item))
@@ -261,6 +270,22 @@ impl Shell {
         let composer_has_draft = !self.input.read(cx).value().trim().is_empty()
             || !self.attachments.is_empty()
             || !self.file_refs.is_empty();
+        // 任务累计 token 用量：汇总所有 turn 的输入/输出/缓存 token。
+        let total_tokens: u64 = self
+            .app
+            .turns
+            .iter()
+            .flat_map(|turn| {
+                [
+                    turn.usage.input_tokens,
+                    turn.usage.output_tokens,
+                    turn.usage.cache_read_tokens,
+                    turn.usage.cache_write_tokens,
+                ]
+                .into_iter()
+                .flatten()
+            })
+            .sum();
         // Turns 超限提示：达到配置 max_turns 轮数且当前任务没被「忽略」时显示。
         let round_hint_visible = self.app.turns.len() >= self.round_hint_threshold
             && !self
@@ -315,7 +340,7 @@ impl Shell {
             .gap_2()
             .px_2()
             .py_4()
-            .child(format!("{header_label} · {} turn(s)", self.app.turns.len()))
+            .child(header_label.clone())
             .child(div().flex_grow(1.0));
 
         div()
@@ -920,12 +945,10 @@ impl Shell {
                                 StatusBar::new()
                                     .left(self.notice.clone().unwrap_or_default())
                                     .left(format!(
-                                        "{}:{}",
-                                        self.app.status.provider, self.app.status.model
+                                        "{total_tokens} tokens  -  {} turn(s)",
+                                        self.app.status.turn
                                     ))
-                                    .left(self.cwd.clone())
                                     .right(context_label(&self.app))
-                                    .right(format!("${:.4}", self.app.status.cost_usd))
                                     .right(format!("sandbox {}", self.app.sandbox))
                                     .right(if self.app.status.running {
                                         String::new()
