@@ -335,11 +335,14 @@ impl Render for SetupView {
                     .gap_2()
                     .p_2()
                     .child(if self.wizard {
-                        format!("Setup {}/{}", self.page + 1, Page::ALL.len())
+                        div()
+                            .text_size(crate::sp(18.0))
+                            .child(format!("Setup {}/{}", self.page + 1, Page::ALL.len()))
                     } else {
-                        "Settings".to_string()
+                        // 设置窗口标题固定为「设置」，不再跟随左侧导航动态切换。
+                        // 字号放大一档并向右让出一点间距。
+                        div().text_size(crate::sp(18.0)).pl_3().child("设置")
                     })
-                    // 设置窗口标题固定为 Settings，不再跟随左侧导航动态切换。
                     .child(if self.wizard { page.title() } else { "" }),
             )
             .children(

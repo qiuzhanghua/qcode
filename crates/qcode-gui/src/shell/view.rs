@@ -285,7 +285,7 @@ impl Shell {
                 size(px(968.0), px(524.0)),
             ))),
             titlebar: Some(TitlebarOptions {
-                title: Some("Settings".into()),
+                title: Some("设置".into()),
                 ..Default::default()
             }),
             ..Default::default()
