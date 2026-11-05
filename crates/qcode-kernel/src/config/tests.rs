@@ -145,7 +145,7 @@ fn env_model_used_when_cli_is_silent() {
 }
 
 #[test]
-fn deepseek_defaults_to_flash() {
+fn deepseek_defaults_to_v4_flash() {
     let config: Config = toml::from_str(r#"default_provider = "deepseek""#).unwrap();
     let resolved = resolve(
         &config,
@@ -153,7 +153,7 @@ fn deepseek_defaults_to_flash() {
         &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
     )
     .unwrap();
-    assert_eq!(resolved.model, "deepseek-flash");
+    assert_eq!(resolved.model, "deepseek-v4-flash");
 }
 
 #[test]
@@ -1111,7 +1111,9 @@ fn no_default_falls_back_to_the_first_usable_provider() {
         &env_from(&[("DEEPSEEK_API_KEY", "sk-test")]),
     )
     .unwrap();
-    // deepseek sorts after ark, but ark's key is missing, so deepseek wins.
+    // deepseek sorts after ark, but ark's key is missing, so deepseek wins. Its
+    // explicit `default_model` is honoured as written, even though the catalog
+    // has since renamed the entry to `deepseek-v4-flash`.
     assert_eq!(resolved.name, "deepseek");
     assert_eq!(resolved.model, "deepseek-flash");
 }

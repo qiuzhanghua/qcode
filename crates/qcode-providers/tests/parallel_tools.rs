@@ -175,6 +175,17 @@ async fn run(
     (outcome, events)
 }
 
+/// Wall-clock assertions only mean something relative to how fast this machine
+/// schedules a timer right now: CI runners share two cores between several test
+/// binaries, and a 150ms sleep can take four times that. Letting the same test
+/// measure one sleep of the same length and comparing against that keeps the
+/// "these ran concurrently" claim without pinning the test to a quiet laptop.
+async fn sleep_baseline(ms: u64) -> Duration {
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+    started.elapsed()
+}
+
 fn result_ids(events: &[Event]) -> Vec<String> {
     events
         .iter()
@@ -206,9 +217,11 @@ async fn adjacent_reads_overlap_and_results_keep_call_order() {
     assert!(!outcome.cancelled);
     assert_eq!(outcome.text, "done");
     assert_eq!(probe.max(), 3, "all three reads should be in flight");
+    let one_sleep = sleep_baseline(150).await;
     assert!(
-        elapsed < Duration::from_millis(400),
-        "reads took {elapsed:?}; 3x150ms serial would be >=450ms"
+        elapsed < one_sleep * 2,
+        "reads took {elapsed:?}; one 150ms sleep alone measured {one_sleep:?} here, \
+         and three of them in series would be 3x that"
     );
     assert_eq!(result_ids(&events), ["call-a", "call-b", "call-c"]);
 }
@@ -264,9 +277,11 @@ async fn read_parallelism_is_capped_at_four() {
 
     assert!(!outcome.cancelled);
     assert_eq!(probe.max(), 4, "buffer_unordered(4) is the cap");
+    let one_sleep = sleep_baseline(100).await;
     assert!(
-        elapsed < Duration::from_millis(600),
-        "8x100ms serial would be >=800ms, got {elapsed:?}"
+        elapsed < one_sleep * 5,
+        "8 reads took {elapsed:?}; one 100ms sleep alone measured {one_sleep:?} here, \
+         and serial execution would be 8x that"
     );
     assert_eq!(result_ids(&events).len(), 8);
 }
@@ -297,9 +312,15 @@ async fn cancellation_stops_reads_and_ends_the_turn() {
     let (outcome, events) = run(&dir, tools, script, cancel).await;
 
     assert!(outcome.cancelled);
+    // Six 500ms reads would take 3s in series, and two batches of four-then-two
+    // take a full second; stopping after the first batch proves the cancel
+    // reached the reads without pinning us to a quiet machine.
+    let one_sleep = sleep_baseline(500).await;
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "cancellation should not wait for the 500ms reads"
+        elapsed < one_sleep * 2,
+        "cancellation waited {elapsed:?}; one 500ms read alone measures {one_sleep:?} here \
+         and six of them in series would be 6x that"
     );
 
     let results: Vec<&qcode_core::event::ToolResult> = events
