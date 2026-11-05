@@ -123,7 +123,8 @@ pub(crate) struct Shell {
     pub(crate) settings_window: Option<gpui_kit::AnyWindowHandle>,
     /// 设置窗口的原生 HWND（仅 Windows 设置）：置顶直接用原生 API，不经过
     /// GPUI 窗口 update，避开跨窗口 update 期间同步 WM_* 输入派发的双重借用。
-    /// 其它平台保持 `None`。
+    /// 其它平台保持 `None`，也就没人读它。
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) settings_hwnd: Option<isize>,
     pub(crate) data_dir: PathBuf,
     pub(crate) prefs: GuiPreferences,

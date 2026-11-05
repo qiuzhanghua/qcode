@@ -274,7 +274,7 @@ impl Shell {
     pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
         // 已有设置窗口且仍存活：不新开窗口，直接调到最上层。
         if let Some(handle) = self.settings_window
-            && cx.windows().iter().any(|window| *window == handle)
+            && cx.windows().contains(&handle)
         {
             // Windows：用原生 HWND 置顶，完全不经过 GPUI 窗口 update。但
             // `SetForegroundWindow`/`ShowWindow` 仍会同步给设置窗口送出

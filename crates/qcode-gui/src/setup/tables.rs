@@ -758,7 +758,7 @@ fn subscribe_cell_inputs(
             }),
         );
     }
-    for (_column_key, textarea) in &row.textareas {
+    for textarea in row.textareas.values() {
         subscriptions.push(
             cx.subscribe(textarea, |_view, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
