@@ -31,7 +31,9 @@ impl IntoElement for HelpCircle {
 impl Render for SetupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = Page::ALL[self.page];
-        let mut body = div().flex().flex_col().gap_3().p_4();
+        // w_full：正文宽度固定为滚动区宽度，长文本（如 MCP 说明）才能自动换行，
+        // 否则按内容自然宽度排布会把设置框撑大。
+        let mut body = div().flex().flex_col().gap_3().p_4().w_full();
         if page == Page::Welcome {
             body = body
                 .child(TextView::markdown(
@@ -646,8 +648,15 @@ impl SetupView {
             .child(div().child(table.title))
             .children(rows);
         if table.path == ["mcp", "servers"] {
+            // 说明文字限制在表格宽度内并允许换行，避免单行长文本撑大设置框。
             table_view = table_view.child(
-                "MCP env values are stored in config.toml. Prefer a minimal-scope token; Keychain-backed MCP secrets are not implemented yet.",
+                div()
+                    .w_full()
+                    .text_size(crate::sp(crate::CAPTION_SIZE))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "MCP env values are stored in config.toml. Prefer a minimal-scope token; Keychain-backed MCP secrets are not implemented yet.",
+                    ),
             );
         }
         if table.path == ["providers"] {

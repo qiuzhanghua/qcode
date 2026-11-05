@@ -154,7 +154,8 @@ impl Shell {
                 self.pending_task_delete = None;
                 self.rename_task = None;
                 self.task_menu = None;
-                self.hovered_task = None;
+                // 不清 hovered_task：行内按钮的显示由 on_hover 事件自行维护，
+                // 点击任务后鼠标仍停留在该行上，按钮应保持可见。
                 self.turn_in_flight = false;
                 // A resumed session is already complete: fold its execution
                 // process like a just-finished turn (reopenable via header).
