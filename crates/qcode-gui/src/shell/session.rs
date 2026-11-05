@@ -27,6 +27,16 @@ impl Shell {
                 self.app.status.running
             );
         }
+        if self.backend.provider().is_none() {
+            // 没有内核时 UnconfiguredBackend::new_session 是空实现：不拦一下的话
+            // 点“+”什么都不会发生，看起来像按钮坏了。
+            self.set_notice(
+                "还没有配置 provider，先在 Settings 里配置再新建任务".to_string(),
+                true,
+                cx,
+            );
+            return;
+        }
         if self.app.status.running {
             self.app
                 .push_notice("stop the running turn before switching sessions");
