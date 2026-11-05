@@ -1,10 +1,10 @@
 use super::*;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 
 impl Shell {
-    /// Two-level model menu (V2.1): the first level lists providers, the
-    /// second level the models of the picked provider. Picking a model
-    /// switches provider+model for the following turns.
+    /// Single-level model menu: each provider is a grey, small-font group
+    /// heading followed by its models as normal clickable items. Picking a
+    /// model switches provider+model for the following turns.
     fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let provider = self.app.status.provider.clone();
         let model = self.app.status.model.clone();
@@ -16,40 +16,39 @@ impl Shell {
         Button::new("model-menu")
             .label(format!("{provider} / {model}"))
             .dropdown_caret(true)
-            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, window, cx| {
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
                 let current = (provider.clone(), model.clone());
                 let mut items = Vec::new();
                 for (provider_name, models) in &groups {
-                    let sub_provider = provider_name.clone();
-                    let sub = PopupMenu::build(window, &mut *cx, |sub, _, _| {
-                        models.iter().fold(sub, |sub, model| {
-                            let p = sub_provider.clone();
-                            let m = model.clone();
-                            let shell = shell.clone();
-                            sub.item(
-                                PopupMenuItem::new(m.clone())
-                                    .checked(current.0 == p && current.1 == m)
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(shell) = shell.upgrade() {
-                                            shell.update(cx, |shell, cx| {
-                                                shell.switch_model(p.clone(), m.clone(), cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                        })
-                    });
-                    items.push(PopupMenuItem::submenu(provider_name.clone(), sub));
+                    // Provider 组标题：灰色小字、不可交互。
+                    items.push(PopupMenuItem::label(provider_name.clone()));
+                    for model in models {
+                        let p = provider_name.clone();
+                        let m = model.clone();
+                        let shell = shell.clone();
+                        items.push(
+                            PopupMenuItem::new(m.clone())
+                                .checked(current.0 == p && current.1 == m)
+                                .on_click(move |_, _, cx| {
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.switch_model(p.clone(), m.clone(), cx);
+                                        });
+                                    }
+                                }),
+                        );
+                    }
                 }
                 // The kernel's provider may not be in the config (resumed
                 // session or a model passed on the command line): keep it
                 // reachable as its own group.
                 if !groups.iter().any(|(p, _)| p == &current.0) {
+                    items.push(PopupMenuItem::label(current.0.clone()));
                     let p = current.0.clone();
                     let m = current.1.clone();
                     let shell = shell.clone();
-                    let sub = PopupMenu::build(window, &mut *cx, |sub, _, _| {
-                        sub.item(PopupMenuItem::new(m.clone()).checked(true).on_click(
+                    items.push(
+                        PopupMenuItem::new(m.clone()).checked(true).on_click(
                             move |_, _, cx| {
                                 if let Some(shell) = shell.upgrade() {
                                     shell.update(cx, |shell, cx| {
@@ -57,9 +56,8 @@ impl Shell {
                                     });
                                 }
                             },
-                        ))
-                    });
-                    items.push(PopupMenuItem::submenu(current.0.clone(), sub));
+                        ),
+                    );
                 }
                 items.into_iter().fold(menu, |menu, item| menu.item(item))
             })

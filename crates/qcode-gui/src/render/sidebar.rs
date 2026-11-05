@@ -318,7 +318,8 @@ impl Shell {
             .overflow_y_scroll()
             .child(
                 Button::new("open-settings")
-                    .label("Settings")
+                    .label("设置")
+                    .icon(IconName::Settings)
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
             .child(
