@@ -71,6 +71,22 @@ pub fn show_window(window: &gpui_kit::Window) {
     window.activate_window();
 }
 
+/// 激活设置窗口：Windows 上不做 `activate_window` 的合成输入注入，避免跨窗口
+/// update 时触发同窗口的输入派发导致 App 双重借用；其它平台行为同 [`show_window`]。
+pub fn show_settings_window(window: &gpui_kit::Window) {
+    #[cfg(target_os = "windows")]
+    windows::show_window_no_activate(window);
+    #[cfg(not(target_os = "windows"))]
+    show_window(window);
+}
+
+/// Windows：用原生 HWND 直接还原/置顶设置窗口，完全不经过 GPUI 窗口 `update`，
+/// 从根上避开跨窗口 update 期间同步 WM_* 输入派发的双重借用。
+#[cfg(target_os = "windows")]
+pub fn show_settings_hwnd(hwnd: isize) {
+    windows::show_settings_hwnd(hwnd);
+}
+
 /// 隐藏主窗口（关闭按钮 = 最小化到托盘）：窗口从任务栏/Dock 消失，只留托盘
 /// 图标。Windows 用 `SW_HIDE`，macOS 用 `orderOut:`，其余平台退回最小化。
 pub fn hide_window(window: &gpui_kit::Window) {

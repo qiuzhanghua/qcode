@@ -368,8 +368,10 @@ impl Shell {
             .overflow_y_scroll()
             .child(
                 Button::new("open-settings")
-                    .label("设置")
                     .icon(IconName::Settings)
+                    // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
+                    .accessibility_label("设置")
+                    .child(div().text_size(sp(14.0)).child("设置"))
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
             .child(

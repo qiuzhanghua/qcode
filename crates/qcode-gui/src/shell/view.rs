@@ -271,7 +271,39 @@ impl Shell {
         cx.notify();
     }
 
-    pub(crate) fn open_settings(&self, cx: &mut Context<Self>) {
+    pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        // 已有设置窗口且仍存活：不新开窗口，直接调到最上层。
+        if let Some(handle) = self.settings_window
+            && cx.windows().iter().any(|window| *window == handle)
+        {
+            // Windows：用原生 HWND 置顶，完全不经过 GPUI 窗口 update。但
+            // `SetForegroundWindow`/`ShowWindow` 仍会同步给设置窗口送出
+            // WM_ACTIVATE 等消息，GPUI 的 WndProc 会把它们派发成输入事件，
+            // 在本次点击派发（App 已被可变借用）内再次借用 App →
+            // RefCell already borrowed。因此同样推迟到本次派发结束后执行，
+            // 与下方跨窗口 update 的异步化同理。
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(hwnd) = self.settings_hwnd {
+                    cx.spawn(async move |_this, _cx| {
+                        crate::tray::show_settings_hwnd(hwnd);
+                    })
+                    .detach();
+                }
+                return;
+            }
+            // 其它平台：异步跨窗口激活。
+            #[cfg(not(target_os = "windows"))]
+            {
+                cx.spawn(async move |_this, cx| {
+                    let _ = handle.update(cx, |_view, window, _cx| {
+                        crate::tray::show_settings_window(window);
+                    });
+                })
+                .detach();
+                return;
+            }
+        }
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
         // A settings dialog is a fixed-size side window, not the main window at
@@ -290,8 +322,21 @@ impl Shell {
             }),
             ..Default::default()
         };
+        // 记录原生 HWND，供下次点「设置」时原生置顶。
+        #[cfg(target_os = "windows")]
+        let settings_hwnd: std::rc::Rc<std::cell::Cell<Option<isize>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        #[cfg(target_os = "windows")]
+        let settings_hwnd_in_open = settings_hwnd.clone();
         let result = gpui_kit::open_window(options, cx, move |window, cx| {
             window.activate_window();
+            #[cfg(target_os = "windows")]
+            if let Ok(handle) = <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(
+                window,
+            ) && let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
+            {
+                settings_hwnd_in_open.set(Some(win32.hwnd.get() as isize));
+            }
             let view =
                 cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));
             // Mark the view closing as the window tears down, so its background
@@ -309,8 +354,15 @@ impl Shell {
             });
             view
         });
-        if let Err(error) = result {
-            eprintln!("qcode-gui: cannot open settings: {error}");
+        match result {
+            Ok((handle, _view)) => {
+                self.settings_window = Some(handle);
+                #[cfg(target_os = "windows")]
+                {
+                    self.settings_hwnd = settings_hwnd.get();
+                }
+            }
+            Err(error) => eprintln!("qcode-gui: cannot open settings: {error}"),
         }
     }
 }

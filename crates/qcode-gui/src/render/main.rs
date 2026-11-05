@@ -949,12 +949,7 @@ impl Shell {
                                         self.app.status.turn, total_tokens
                                     ))
                                     .right(context_label(&self.app))
-                                    .right(format!("sandbox {}", self.app.sandbox))
-                                    .right(if self.app.status.running {
-                                        String::new()
-                                    } else {
-                                        "空闲".to_string()
-                                    }),
+                                    .right(format!("sandbox {}", self.app.sandbox)),
                             ),
                     ),
             )

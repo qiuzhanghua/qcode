@@ -118,6 +118,13 @@ pub(crate) struct Shell {
     /// `config_mtime`, because a missing file is `None` and the first save then
     /// looks like the baseline again, swallowing the one change that matters.
     pub(crate) config_watch_armed: bool,
+    /// 已打开的设置窗口句柄：重复点「设置」只复用这一个窗口（被遮挡/最小化
+    /// 时调到最上层），不再叠加新窗口。
+    pub(crate) settings_window: Option<gpui_kit::AnyWindowHandle>,
+    /// 设置窗口的原生 HWND（仅 Windows 设置）：置顶直接用原生 API，不经过
+    /// GPUI 窗口 update，避开跨窗口 update 期间同步 WM_* 输入派发的双重借用。
+    /// 其它平台保持 `None`。
+    pub(crate) settings_hwnd: Option<isize>,
     pub(crate) data_dir: PathBuf,
     pub(crate) prefs: GuiPreferences,
 }
@@ -277,6 +284,8 @@ impl Shell {
             round_hint_threshold,
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
+            settings_window: None,
+            settings_hwnd: None,
             config_path,
             data_dir,
             prefs,

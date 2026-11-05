@@ -138,11 +138,12 @@ fn tray_thread(ready: Sender<Result<(), String>>) {
         }
         let _ = TRAY_HWND.set(hwnd as isize);
 
-        // 资源 102 是托盘图标（品牌蓝 QC）；101 是彩色应用图标。
+        // 资源 2 是托盘图标（品牌蓝 QC）；1 是彩色应用图标。资源 ID 必须为
+        // 1/2：GPUI Windows 后端按 ID 1 加载窗口图标，托盘按 ID 2 加载。
         // 用系统的小图标尺寸取图，125%/150% 缩放时不会被拉伸。
         let hicon = LoadImageW(
             instance,
-            102 as *const u16,
+            2 as *const u16,
             IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON),
             GetSystemMetrics(SM_CYSMICON),
@@ -314,7 +315,7 @@ pub fn hide_window(window: &gpui_kit::Window) {
 
 /// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先
 /// SW_RESTORE（最小化）或 SW_SHOW（SW_HIDE 隐藏的窗口）。
-pub fn show_window(window: &gpui_kit::Window) {
+fn restore_and_foreground(window: &gpui_kit::Window) {
     let Ok(handle) =
         <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
     else {
@@ -332,5 +333,37 @@ pub fn show_window(window: &gpui_kit::Window) {
         }
         SetForegroundWindow(hwnd);
     }
+}
+
+pub fn show_window(window: &gpui_kit::Window) {
+    restore_and_foreground(window);
     window.activate_window();
+}
+
+/// 同 `show_window` 的还原/置顶，但不调用 `activate_window`。
+///
+/// `activate_window` 会 `SendInput` 注入一次合成 ALT 键，把窗口推到前台后，
+/// 这条合成输入会派发到刚成为前台的窗口：在跨窗口 `update`（比如从主窗口的
+/// 后台任务激活设置窗口）里，这会触发对同一窗口的输入派发 → App 双重借用
+/// （RefCell already borrowed）。我们自己的进程已经是前台，`SetForegroundWindow`
+/// 直接生效，不需要这条合成输入。
+pub fn show_window_no_activate(window: &gpui_kit::Window) {
+    restore_and_foreground(window);
+}
+
+/// 直接用原生 HWND 还原/置顶设置窗口，完全不经过 GPUI 的窗口 `update`。
+///
+/// 跨窗口 `update` 会持有 App 的可变借用；还原/置顶触发 Windows 同步消息
+/// （如 WM_NCMOUSEMOVE / WM_MOUSEMOVE），这些会被派发成输入事件再次借用
+/// App → RefCell 双重借用。直接操作 HWND 没有任何 App 借用，天然安全。
+pub fn show_settings_hwnd(hwnd: isize) {
+    let hwnd = hwnd as *mut core::ffi::c_void;
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        } else if IsWindowVisible(hwnd) == 0 {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+        SetForegroundWindow(hwnd);
+    }
 }

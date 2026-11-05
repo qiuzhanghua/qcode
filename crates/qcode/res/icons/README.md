@@ -53,8 +53,9 @@ committed, so normal builds never need `rsvg-convert`.
   is copied into the bundle by `scripts/build-macos-app.sh`
   (`CFBundleIconFile=qcode.icns`).
 - **Windows** — `crates/qcode/res/icon.rc` embeds the two ICOs as resources
-  101 (app) and 102 (tray); `tray/windows.rs` loads 102 at `SM_CXSMICON` for
-  the notification area.
+  1 (app) and 2 (tray); `tray/windows.rs` loads 2 at `SM_CXSMICON` for
+  the notification area. Resource 1 is what the GPUI window backend loads as
+  the title-bar/taskbar icon.
 - **Linux** — `tray/linux.rs` embeds the 22/32/48 PNGs and decodes them into
   the SNI `IconPixmap` property (ARGB32, network byte order). `IconName` is
   intentionally empty so hosts use the pixmaps instead of a missing theme icon.
