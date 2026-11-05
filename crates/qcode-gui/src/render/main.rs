@@ -83,8 +83,14 @@ impl Shell {
         // 按钮对任务下全部目录统一生效，因此不出现「混合」状态：
         // 仅当所有目录都为只读时显示「仅可读取」，否则显示「工作区可写」。
         let all_ro = roots.iter().all(|root| root.access == RootAccess::ReadOnly);
-        let label = if all_ro { "仅可读取" } else { "工作区可写" };
-        let current_rw = roots.iter().all(|root| root.access == RootAccess::ReadWrite);
+        let label = if all_ro {
+            "仅可读取"
+        } else {
+            "工作区可写"
+        };
+        let current_rw = roots
+            .iter()
+            .all(|root| root.access == RootAccess::ReadWrite);
         let current_ro = all_ro;
         let shell = cx.entity().downgrade();
         Button::new("sandbox-menu")
