@@ -56,6 +56,23 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // The focused Textarea owns the "Input" context, so bind there too
                 // or the root handler never sees Cmd+Enter.
                 KeyBinding::new("cmd-enter", SendMessage, Some("Input")),
+                // Provider/Model 菜单的键盘选择（弹层内容挂 "ModelMenu"
+                // key_context）：↑↓ 移动高亮、Enter 选中。
+                KeyBinding::new(
+                    "up",
+                    gpui_kit::base::actions::SelectUp,
+                    Some("ModelMenu"),
+                ),
+                KeyBinding::new(
+                    "down",
+                    gpui_kit::base::actions::SelectDown,
+                    Some("ModelMenu"),
+                ),
+                KeyBinding::new(
+                    "enter",
+                    gpui_kit::base::actions::Confirm { secondary: false },
+                    Some("ModelMenu"),
+                ),
             ]);
             // Global fallback for the zoom shortcuts: window-level handlers
             // (Shell, settings SetupView) normally consume these; this runs

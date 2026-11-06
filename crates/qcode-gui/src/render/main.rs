@@ -1,46 +1,191 @@
 use super::*;
+use gpui_kit::base::actions::{Confirm, SelectDown, SelectUp};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::popover::{Popover, PopoverState};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::v_flex;
+
+/// 按搜索词过滤模型分组：仅匹配模型名（大小写不敏感子串匹配），过滤后
+/// 为空的 Provider 组整组剔除；搜索词为空时返回全量分组。
+fn filter_model_groups(
+    groups: &[(String, Vec<String>)],
+    query: &str,
+) -> Vec<(String, Vec<String>)> {
+    let q = query.trim().to_lowercase();
+    groups
+        .iter()
+        .map(|(provider, models)| {
+            (
+                provider.clone(),
+                models
+                    .iter()
+                    .filter(|model| model.to_lowercase().contains(&q))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|(_, models)| q.is_empty() || !models.is_empty())
+        .collect()
+}
+
+/// 键盘可导航的扁平模型行（provider, model）：按分组顺序展开；若内核当前
+/// provider 不在配置里（恢复的会话 / 命令行传入），追加兜底组模型作为
+/// 最后一行，保证键盘能选中它。
+fn flat_model_rows(
+    groups: &[(String, Vec<String>)],
+    query: &str,
+    current: &(String, String),
+) -> Vec<(String, String)> {
+    let filtered = filter_model_groups(groups, query);
+    let mut flat: Vec<(String, String)> = filtered
+        .iter()
+        .flat_map(|(provider, models)| models.iter().map(move |m| (provider.clone(), m.clone())))
+        .collect();
+    if !groups.iter().any(|(p, _)| p == &current.0) {
+        flat.push((current.0.clone(), current.1.clone()));
+    }
+    flat
+}
 
 impl Shell {
-    /// Single-level model menu: each provider is a grey, small-font group
-    /// heading followed by its models as normal clickable items. Picking a
-    /// model switches provider+model for the following turns.
+    /// Provider/Model 选择弹层：顶部搜索框实时过滤模型（仅匹配模型名，
+    /// 大小写不敏感），列表最多显示 10 行、超出出现纵向滚动条，保留
+    /// ↑↓ 移动高亮 / Enter 选中 / Esc 关闭的键盘操作。
+    /// 弹层从输入框发送按钮左侧（窗口底部）向上展开：`Anchor::BottomLeft`
+    /// 让弹层从触发器上方展开，避免超出窗口。
     fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let provider = self.app.status.provider.clone();
         let model = self.app.status.model.clone();
         let config_path = self.config_path.clone();
         let shell = cx.entity().downgrade();
+        let search_input = self.model_search_input.clone();
+        let search_focus = search_input.read(cx).focus_handle(cx);
+        // 渲染快照：搜索输入 → Change → 整棵树重渲染，闭包重建拿到新值。
+        let query = self.model_search_query.clone();
+        let index = self.model_search_index;
         let groups = crate::provider_models(&config_path);
-        // 模型菜单已移到输入框发送按钮左侧（窗口底部），弹层向上弹出：
-        // `Anchor::BottomLeft` 让菜单从触发器上方展开，避免超出窗口。
-        Button::new("model-menu")
-            .label(format!("{provider} / {model}"))
-            .dropdown_caret(true)
-            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
-                let current = (provider.clone(), model.clone());
-                let mut items = Vec::new();
-                for (provider_name, models) in &groups {
-                    // Provider 组标题：灰色小字、不可交互。
-                    items.push(PopupMenuItem::label(provider_name.clone()));
+        let current = (provider.clone(), model.clone());
+
+        // 弹层 id 与 trigger Button 的 "model-menu" 区分开，避免 GPUI
+        // element state（keyed state / 按钮状态）串用。
+        Popover::new("model-menu-popover")
+            .anchor(Anchor::BottomLeft)
+            .appearance(true)
+            .overlay_closable(true)
+            .trigger(
+                Button::new("model-menu")
+                    .label(format!("{provider} / {model}"))
+                    .dropdown_caret(true),
+            )
+            .track_focus(&search_focus)
+            .on_open_change({
+                let shell = cx.entity().downgrade();
+                let search_input = self.model_search_input.clone();
+                move |open, window, cx| {
+                    // 重新打开菜单：清空搜索词与键盘高亮。
+                    if *open {
+                        search_input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                        if let Some(shell) = shell.upgrade() {
+                            shell.update(cx, |shell, cx| {
+                                shell.model_search_query.clear();
+                                shell.model_search_index = 0;
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+            })
+            .content(move |_state, _window, cx| {
+                let filtered = filter_model_groups(&groups, &query);
+                let flat_len = filtered.iter().map(|(_, models)| models.len()).sum::<usize>();
+                // 键盘高亮只落在配置内的模型行上；兜底组的行高亮单独按
+                // `index == flat_len` 判断（见下方兜底组渲染）。
+                let selected = (index < flat_len).then_some(index);
+                let state_entity = cx.entity().downgrade();
+
+                // 组标题行（灰色小字、不可点击）+ 模型行（可点击、高亮）。
+                let mut rows = Vec::new();
+                let mut flat_ix = 0usize;
+                for (provider_name, models) in &filtered {
+                    rows.push(
+                        div()
+                            .h(px(26.))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .items_center()
+                            .px_2()
+                            .child(provider_name.clone())
+                            .into_any_element(),
+                    );
                     for model in models {
+                        let ix = flat_ix;
+                        flat_ix += 1;
                         let p = provider_name.clone();
                         let m = model.clone();
-                        let shell = shell.clone();
-                        let label = m.clone();
-                        items.push(
-                            // 模型名比 provider 组标题的小字（text_sm 14px）
-                            // 大 1px，拉开层级又不过大。
-                            PopupMenuItem::element(move |_, _| {
-                                div().text_size(sp(14.0)).child(label.clone())
-                            })
-                            .checked(current.0 == p && current.1 == m)
-                            .on_click(move |_, _, cx| {
-                                if let Some(shell) = shell.upgrade() {
-                                    shell.update(cx, |shell, cx| {
-                                        shell.switch_model(p.clone(), m.clone(), cx);
-                                    });
-                                }
-                            }),
+                        let checked = current.0 == p && current.1 == m;
+                        let highlighted = selected == Some(ix);
+                        rows.push(
+                            div()
+                                .id(ix)
+                                .h(px(26.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .px_2()
+                                .rounded(cx.theme().radius)
+                                .gap_2()
+                                .when(highlighted, |this| {
+                                    this.bg(cx.theme().tokens.accent)
+                                        .text_color(cx.theme().accent_foreground)
+                                })
+                                .on_hover({
+                                    let shell = shell.clone();
+                                    move |hovered, _window, cx| {
+                                        // 鼠标悬停与键盘高亮共用同一个下标。
+                                        if *hovered {
+                                            if let Some(shell) = shell.upgrade() {
+                                                shell.update(cx, |shell, cx| {
+                                                    shell.model_search_index = ix;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }
+                                    }
+                                })
+                                .on_click({
+                                    let p = p.clone();
+                                    let m = m.clone();
+                                    let shell = shell.clone();
+                                    let state_entity = state_entity.clone();
+                                    move |_event, window, cx| {
+                                        if let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                shell.switch_model(p.clone(), m.clone(), cx);
+                                            });
+                                        }
+                                        if let Some(state) = state_entity.upgrade() {
+                                            state.update(cx, |state, cx| {
+                                                state.dismiss(window, cx);
+                                            });
+                                        }
+                                    }
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(sp(13.0))
+                                        .child(model.clone()),
+                                )
+                                .when(checked, |this| {
+                                    this.child(
+                                        Icon::new(IconName::Check)
+                                            .xsmall()
+                                            .text_color(cx.theme().accent_foreground),
+                                    )
+                                })
+                                .into_any_element(),
                         );
                     }
                 }
@@ -48,27 +193,157 @@ impl Shell {
                 // session or a model passed on the command line): keep it
                 // reachable as its own group.
                 if !groups.iter().any(|(p, _)| p == &current.0) {
-                    items.push(PopupMenuItem::label(current.0.clone()));
+                    rows.push(
+                        div()
+                            .h(px(26.))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .items_center()
+                            .px_2()
+                            .child(current.0.clone())
+                            .into_any_element(),
+                    );
                     let p = current.0.clone();
                     let m = current.1.clone();
-                    let shell = shell.clone();
-                    let label = m.clone();
-                    items.push(
-                        // 与配置内模型项一致：模型名放大一档（15px）。
-                        PopupMenuItem::element(move |_, _| {
-                            div().text_size(sp(15.0)).child(label.clone())
-                        })
-                        .checked(true)
-                        .on_click(move |_, _, cx| {
-                            if let Some(shell) = shell.upgrade() {
-                                shell.update(cx, |shell, cx| {
-                                    shell.switch_model(p.clone(), m.clone(), cx);
-                                });
-                            }
-                        }),
+                    rows.push(
+                        div()
+                            .id(flat_len)
+                            .h(px(26.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .px_2()
+                            .rounded(cx.theme().radius)
+                            .gap_2()
+                            .when(index == flat_len, |this| {
+                                this.bg(cx.theme().tokens.accent)
+                                    .text_color(cx.theme().accent_foreground)
+                            })
+                            .on_click({
+                                let p = p.clone();
+                                let m = m.clone();
+                                let shell = shell.clone();
+                                let state_entity = state_entity.clone();
+                                move |_event, window, cx| {
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.switch_model(p.clone(), m.clone(), cx);
+                                        });
+                                    }
+                                    if let Some(state) = state_entity.upgrade() {
+                                        state.update(cx, |state, cx| {
+                                            state.dismiss(window, cx);
+                                        });
+                                    }
+                                }
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(sp(15.0))
+                                    .child(m.clone()),
+                            )
+                            .child(
+                                Icon::new(IconName::Check)
+                                    .xsmall()
+                                    .text_color(cx.theme().accent_foreground),
+                            )
+                            .into_any_element(),
                     );
                 }
-                items.into_iter().fold(menu, |menu, item| menu.item(item))
+
+                let search_input = search_input.clone();
+                v_flex()
+                    .id("model-menu-content")
+                    .key_context("ModelMenu")
+                    // 键盘：↑↓ 移动高亮（跳过 Provider 标题行，标题行不在
+                    // 扁平模型列表里）；Enter 选中当前高亮；Esc 由底层
+                    // Popover 的 CONTENT_CONTEXT Cancel 处理并关闭。
+                    .on_action(cx.listener({
+                        let shell = shell.clone();
+                        let current = current.clone();
+                        move |_state: &mut PopoverState,
+                             _event: &SelectUp,
+                             _window: &mut Window,
+                             cx: &mut Context<PopoverState>| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    let groups = crate::provider_models(&shell.config_path);
+                                    let n = flat_model_rows(&groups, &shell.model_search_query, &current)
+                                        .len();
+                                    if n > 0 {
+                                        shell.model_search_index = if shell.model_search_index == 0 {
+                                            n - 1
+                                        } else {
+                                            shell.model_search_index - 1
+                                        };
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }
+                    }))
+                    .on_action(cx.listener({
+                        let shell = shell.clone();
+                        let current = current.clone();
+                        move |_state: &mut PopoverState,
+                             _event: &SelectDown,
+                             _window: &mut Window,
+                             cx: &mut Context<PopoverState>| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    let groups = crate::provider_models(&shell.config_path);
+                                    let n = flat_model_rows(&groups, &shell.model_search_query, &current)
+                                        .len();
+                                    if n > 0 {
+                                        shell.model_search_index =
+                                            (shell.model_search_index + 1) % n;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }
+                    }))
+                    .on_action(cx.listener({
+                        let shell = shell.clone();
+                        let current = current.clone();
+                        move |state: &mut PopoverState,
+                             _event: &Confirm,
+                             window: &mut Window,
+                             cx: &mut Context<PopoverState>| {
+                            cx.stop_propagation();
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    let groups = crate::provider_models(&shell.config_path);
+                                    let flat = flat_model_rows(
+                                        &groups,
+                                        &shell.model_search_query,
+                                        &current,
+                                    );
+                                    if let Some((p, m)) = flat.get(shell.model_search_index) {
+                                        shell.switch_model(p.clone(), m.clone(), cx);
+                                    }
+                                });
+                                state.dismiss(window, cx);
+                            }
+                        }
+                    }))
+                    .child(
+                        Input::new(&search_input)
+                            .w(px(240.))
+                            .h(px(28.))
+                            .focus_bordered(true),
+                    )
+                    .child(
+                        // 列表区域：最多 10 行（26px × 10），超出后纵向滚动。
+                        v_flex()
+                            .w_full()
+                            .mt_1()
+                            .gap_y_0p5()
+                            .max_h(px(260.))
+                            .overflow_y_scrollbar()
+                            .children(rows),
+                    )
             })
             .into_any_element()
     }

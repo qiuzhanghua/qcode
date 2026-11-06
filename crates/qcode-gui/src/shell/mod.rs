@@ -5,6 +5,14 @@ pub(crate) struct Shell {
     pub(crate) app: App,
     /// A real text input, so IME and CJK go through the platform.
     pub(crate) input: Entity<TextareaState>,
+    /// 输入框 Provider/Model 菜单顶部的模型搜索框。
+    pub(crate) model_search_input: Entity<InputState>,
+    /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
+    /// 用它过滤模型列表；重新打开菜单时清空。
+    pub(crate) model_search_query: String,
+    /// 键盘高亮在「过滤后扁平模型列表」中的下标（Provider 标题行不计入）。
+    pub(crate) model_search_index: usize,
+    pub(crate) _model_search_subscription: gpui_kit::Subscription,
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pub(crate) pending_send: bool,
@@ -227,6 +235,24 @@ impl Shell {
                 cx.notify();
             }
         });
+        // Provider/Model 菜单的搜索框：Change 事件写入搜索词并重置高亮。
+        let model_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索模型…".to_string())
+        });
+        let model_search_subscription = cx.subscribe(
+            &model_search_input,
+            |shell, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    shell.model_search_query = shell
+                        .model_search_input
+                        .read(cx)
+                        .text()
+                        .to_string();
+                    shell.model_search_index = 0;
+                    cx.notify();
+                }
+            },
+        );
         let input_focus = input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
         eprintln!(
@@ -236,6 +262,10 @@ impl Shell {
         Self {
             app,
             input,
+            model_search_input,
+            model_search_query: String::new(),
+            model_search_index: 0,
+            _model_search_subscription: model_search_subscription,
             busy_delivery,
             restoring: None,
             pending_send: false,
