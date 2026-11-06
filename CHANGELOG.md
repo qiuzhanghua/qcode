@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.3 — 未发布
+## 0.7.3 — 2026-11-06
 
 - **Provider 目录对齐 pi-ai**：内置目录按 deepseek-harness 的 pi-ai 模型清单更新
   ——openai 默认 `gpt-5.4`（补齐 gpt-5.4 / 5.3 / 5.2 / 5.1 / 5 / 4.1 / 4o 与 o 系列共
@@ -10,9 +10,12 @@
   `claude-opus-4-5`~`claude-opus-5`、`claude-haiku-4-5`、`claude-fable-5`。用户在
   配置里显式写下的旧模型名仍原样生效。
 - **Provider 设置**：模型选择菜单改为单层列表（供应商作灰色小字组标题，模型直接列在
-  其下）；保存时校验至少配置一个模型（无需密钥的供应商豁免），失败阻止落盘并在设置
-  页提示；保存 API 密钥时先把未存入的密钥写进钥匙串，再触发 `api_key_command` 与
-  `config` 落盘，凭证绿点立即生效；`api_key_command`、`extra_body`、`args`、`env`、
+  其下）；菜单顶部加搜索框，按模型名实时过滤（大小写不敏感，匹配不到模型的供应商整组
+  隐藏），列表最多显示 10 行、超出出现纵向滚动条，↑↓ 移动高亮 / Enter 选中 / Esc 关闭
+  ——长清单（openai 已有 20 个模型）不必再一路滚动；保存时校验至少配置一个模型（无需
+  密钥的供应商豁免），失败阻止落盘并在设置页提示；保存 API 密钥时先把未存入的密钥写进
+  钥匙串，再触发 `api_key_command` 与 `config` 落盘，凭证绿点立即生效；
+  `api_key_command`、`extra_body`、`args`、`env`、
   `network.allow`、`skills.roots`、`search.api_key_command`、`sandbox.extra_writable`
   等按行填写的值改用多行输入框——单行框会剥掉换行、把 argv 粘成一项，保存后 key
   command 直接 `os error 3`。自定义供应商改为模态弹框编辑。
@@ -23,9 +26,17 @@
 - **输入框状态栏**：改显 `N turn(s) - M token(s)`，标题去掉 turn 计数，右侧去掉费用；
   接入 `Delta::Context` 转发后 `ctx%` 不再恒为 0；模型名字号调为 15px。
 - **侧边栏与任务行**：未配置 provider 时点「+」不再静默失败，改为在状态栏提示先去
-  Settings；设置按钮改为齿轮图标 +「设置」；任务操作与添加目录按钮固定纯白背景、
+  Settings；删掉最后一个 provider 后主界面立即回到 `unconfigured` / `-`，不用等重启
+  或再点一次；设置按钮改为齿轮图标 +「设置」；任务操作与添加目录按钮固定纯白背景、
   悬浮不再变色；点击任务行后操作按钮保持可见；任务菜单支持点击外部自动关闭；目录
   列表与移除确认去掉 `@` 前缀；状态栏移除「空闲」标识。
+- **运行中排队与插话**：turn 跑着的时候仍可继续发消息，分两种语义——排队等当前 turn
+  结束再作为新 turn 依次执行（FIFO，可上下移动、删除），或插话在当前 turn 的下一个
+  step 边界被认领、作为 user 消息追加进这次请求，模型下一步就回答它；插话没赶上最后
+  一个 step 边界时自动降级为下一轮排队，不会丢。已推送（被引擎认领前）和排队中的消息
+  在对话流末尾乐观回显：推送过的按已发送的用户消息同款气泡上屏，排队的保持低调的
+  「排队中」样式，引擎认领后由真实事件渲染的 turn 卡替换；队列 dock 只管理尚未推送的
+  消息，推送即从 dock 移除。
 - **沙箱**：Sandbox mode 只列出当前平台可用的方案（Windows `none` / `windows-acl`，
   Linux `none` / `landlock` / `bwrap`，macOS `none` / `sandbox-exec`），跨平台迁移来
   的配置值仍可解析；任务没有根目录时权限按钮隐藏，状态只保留「工作区可写」/「仅可
@@ -36,10 +47,12 @@
   `without_provenance` 表达。
 - **测试**：`deepseek_defaults_to_flash` 与 `parallel_tools` 里对机器负载敏感的断言
   改为与同测试内实测的基准耗时比较（并发重叠本身仍被校验），CI 负载下不再误报。
-- **内部**：fmt / clippy 清零，含 clippy 1.99 新报的 `values()` / `contains()` 两处
-  告警与两处 Windows 专属告警。
+- **内部**：fmt / clippy 清零，含 clippy 1.99 新报的 `values()` / `contains()` /
+  `nonminimal_bool` 告警、`collapsible_if` 与两处 Windows 专属告警。
 - **文档**：新增 `docs/design/GUI-FONT-CROSS-OS.md`，记录 `.SystemUIFont` 在 Linux
-  启动时的 WARN 成因与各平台默认字体；Linux 已实测，macOS / Windows 待补。
+  启动时的 WARN 成因与各平台默认字体；Linux 已实测，macOS / Windows 待补。README
+  新增「提交前自检」，说明 `make check` 与 `ci.yml` 同源、`--all-targets` 会把测试
+  代码纳入 lint，以及只推一个远端（`gh` / `gitee`）不会触发 CI。
 
 ## 0.7.2 — 2026-11-05
 

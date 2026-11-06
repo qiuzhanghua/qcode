@@ -5278,7 +5278,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qcode"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5311,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-acp"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5327,7 +5327,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-core"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -5348,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-eval"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -5357,7 +5357,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-gui"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5387,14 +5387,14 @@ dependencies = [
 
 [[package]]
 name = "qcode-image"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "qcode-kernel"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "qcode-core",
  "qcode-mcp",
@@ -5413,7 +5413,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-mcp"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5430,7 +5430,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-net"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "base64 0.22.1",
  "qcode-core",
@@ -5447,7 +5447,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-providers"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -5465,7 +5465,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tools"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "globset",
@@ -5488,7 +5488,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tui"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "insta",
  "qcode-core",
@@ -5501,7 +5501,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-bridge"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5512,7 +5512,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-state"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "qcode-core",
  "serde_json",
