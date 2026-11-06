@@ -99,7 +99,10 @@ impl Shell {
             })
             .content(move |_state, _window, cx| {
                 let filtered = filter_model_groups(&groups, &query);
-                let flat_len = filtered.iter().map(|(_, models)| models.len()).sum::<usize>();
+                let flat_len = filtered
+                    .iter()
+                    .map(|(_, models)| models.len())
+                    .sum::<usize>();
                 // 键盘高亮只落在配置内的模型行上；兜底组的行高亮单独按
                 // `index == flat_len` 判断（见下方兜底组渲染）。
                 let selected = (index < flat_len).then_some(index);
@@ -144,13 +147,11 @@ impl Shell {
                                     let shell = shell.clone();
                                     move |hovered, _window, cx| {
                                         // 鼠标悬停与键盘高亮共用同一个下标。
-                                        if *hovered {
-                                            if let Some(shell) = shell.upgrade() {
-                                                shell.update(cx, |shell, cx| {
-                                                    shell.model_search_index = ix;
-                                                    cx.notify();
-                                                });
-                                            }
+                                        if *hovered && let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                shell.model_search_index = ix;
+                                                cx.notify();
+                                            });
                                         }
                                     }
                                 })
@@ -172,12 +173,7 @@ impl Shell {
                                         }
                                     }
                                 })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_size(sp(13.0))
-                                        .child(model.clone()),
-                                )
+                                .child(div().flex_1().text_size(sp(13.0)).child(model.clone()))
                                 .when(checked, |this| {
                                     this.child(
                                         Icon::new(IconName::Check)
@@ -237,12 +233,7 @@ impl Shell {
                                     }
                                 }
                             })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(sp(15.0))
-                                    .child(m.clone()),
-                            )
+                            .child(div().flex_1().text_size(sp(15.0)).child(m.clone()))
                             .child(
                                 Icon::new(IconName::Check)
                                     .xsmall()
@@ -263,16 +254,21 @@ impl Shell {
                         let shell = shell.clone();
                         let current = current.clone();
                         move |_state: &mut PopoverState,
-                             _event: &SelectUp,
-                             _window: &mut Window,
-                             cx: &mut Context<PopoverState>| {
+                              _event: &SelectUp,
+                              _window: &mut Window,
+                              cx: &mut Context<PopoverState>| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {
                                     let groups = crate::provider_models(&shell.config_path);
-                                    let n = flat_model_rows(&groups, &shell.model_search_query, &current)
-                                        .len();
+                                    let n = flat_model_rows(
+                                        &groups,
+                                        &shell.model_search_query,
+                                        &current,
+                                    )
+                                    .len();
                                     if n > 0 {
-                                        shell.model_search_index = if shell.model_search_index == 0 {
+                                        shell.model_search_index = if shell.model_search_index == 0
+                                        {
                                             n - 1
                                         } else {
                                             shell.model_search_index - 1
@@ -287,14 +283,18 @@ impl Shell {
                         let shell = shell.clone();
                         let current = current.clone();
                         move |_state: &mut PopoverState,
-                             _event: &SelectDown,
-                             _window: &mut Window,
-                             cx: &mut Context<PopoverState>| {
+                              _event: &SelectDown,
+                              _window: &mut Window,
+                              cx: &mut Context<PopoverState>| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {
                                     let groups = crate::provider_models(&shell.config_path);
-                                    let n = flat_model_rows(&groups, &shell.model_search_query, &current)
-                                        .len();
+                                    let n = flat_model_rows(
+                                        &groups,
+                                        &shell.model_search_query,
+                                        &current,
+                                    )
+                                    .len();
                                     if n > 0 {
                                         shell.model_search_index =
                                             (shell.model_search_index + 1) % n;
@@ -308,9 +308,9 @@ impl Shell {
                         let shell = shell.clone();
                         let current = current.clone();
                         move |state: &mut PopoverState,
-                             _event: &Confirm,
-                             window: &mut Window,
-                             cx: &mut Context<PopoverState>| {
+                              _event: &Confirm,
+                              window: &mut Window,
+                              cx: &mut Context<PopoverState>| {
                             cx.stop_propagation();
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {

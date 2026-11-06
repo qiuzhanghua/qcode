@@ -236,18 +236,13 @@ impl Shell {
             }
         });
         // Provider/Model 菜单的搜索框：Change 事件写入搜索词并重置高亮。
-        let model_search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("搜索模型…".to_string())
-        });
+        let model_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…".to_string()));
         let model_search_subscription = cx.subscribe(
             &model_search_input,
             |shell, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
-                    shell.model_search_query = shell
-                        .model_search_input
-                        .read(cx)
-                        .text()
-                        .to_string();
+                    shell.model_search_query = shell.model_search_input.read(cx).text().to_string();
                     shell.model_search_index = 0;
                     cx.notify();
                 }
