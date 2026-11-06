@@ -147,6 +147,33 @@ cargo tree -e normal -p qcode-gui -i xim-ctext
 IBus 需要 `XMODIFIERS=@im=ibus`（`ibus-daemon --xim`），Wayland 会话下 GPUI 走的是
 wayland 后端，不经过 XIM。
 
+## 提交前自检
+
+**提交前跑 `make check`**（等价于 fmt / `clippy -D warnings` / test / cargo-deny）。
+它和 `.github/workflows/ci.yml` 是同一组命令，本地过不了的提交在 CI 上也过不了，
+区别只是 CI 要等十几分钟才发现。
+
+最容易漏的两步：
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`--all-targets` 会把**测试代码**也纳入 lint，只跑 `cargo check` 或 `cargo test`
+都发现不了。历史教训：新写的测试里一个 `let b = ...` 没用上就足以让 CI 红，
+因为 `-D warnings` 把 `unused_variables` 也当错误。
+
+另外，**只推一个远端等于没跑 CI**。`gh` 与 `gitee` 是两个独立仓库，GitHub 上
+不存在那个 commit 就不会触发 workflow。`31ca808` 那段「运行中排队与插话」
+（`inbox.rs`，12 个单测）只推了 gitee，带着 fmt 与 clippy 错误存活了 7 天。
+推完两端用 `git ls-remote` 确认指向同一个 commit：
+
+```bash
+git ls-remote gh refs/heads/main | cut -c1-7
+git ls-remote gitee refs/heads/main | cut -c1-7
+```
+
 ## 发布构建（多平台）
 
 产物命名沿用 tdp 插件约定：`qcode_<version>_<os>_<arch>[_gnu|_musl|_msvc][.exe]`，
