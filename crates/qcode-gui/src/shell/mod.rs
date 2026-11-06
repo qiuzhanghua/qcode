@@ -12,6 +12,10 @@ pub(crate) struct Shell {
     pub(crate) model_search_query: String,
     /// 键盘高亮在「过滤后扁平模型列表」中的下标（Provider 标题行不计入）。
     pub(crate) model_search_index: usize,
+    /// Provider/Model 下拉列表的分组缓存：只在弹层打开时重新计算，避免每帧
+    /// 在主线程同步读配置、并对无密钥 provider 做端点探测（DNS/TCP 无超时
+    /// 保护，会卡住整窗）。
+    pub(crate) model_groups: Vec<(String, Vec<String>)>,
     pub(crate) _model_search_subscription: gpui_kit::Subscription,
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
@@ -126,6 +130,12 @@ pub(crate) struct Shell {
     /// `config_mtime`, because a missing file is `None` and the first save then
     /// looks like the baseline again, swallowing the one change that matters.
     pub(crate) config_watch_armed: bool,
+    /// 运行中收到设置变更：不立即重建（换引擎会掐断正在跑的 turn），标记为
+    /// 待应用，等当前任务结束、进入空闲后再换。
+    pub(crate) pending_rebuild: bool,
+    /// 已组装完成（或组装失败）、但还没到空闲时机的新引擎：运行中或重建期间
+    /// 又开了新任务时先存这里，空闲时 `apply_rebuild` 换入。
+    pub(crate) pending_backend: Option<Result<Box<dyn Backend>, String>>,
     /// 已打开的设置窗口句柄：重复点「设置」只复用这一个窗口（被遮挡/最小化
     /// 时调到最上层），不再叠加新窗口。
     pub(crate) settings_window: Option<gpui_kit::AnyWindowHandle>,
@@ -260,6 +270,9 @@ impl Shell {
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,
+            // 启动时算一次作为初始缓存（等价于旧代码第一次渲染时的行为）；
+            // 之后每次打开菜单在 `on_open_change` 里重算。
+            model_groups: crate::provider_models(&config_path),
             _model_search_subscription: model_search_subscription,
             busy_delivery,
             restoring: None,
@@ -310,6 +323,8 @@ impl Shell {
             round_hint_threshold,
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
+            pending_rebuild: false,
+            pending_backend: None,
             settings_window: None,
             settings_hwnd: None,
             config_path,
@@ -548,6 +563,17 @@ impl Shell {
             self.expanded_process = None;
             cx.notify();
         }
+        // 任务结束、进入空闲的这一刻应用暂存的设置变更（换引擎绝不发生在
+        // 运行中）。TurnEnded/TurnFailed/Cancel 任何一条路把 running 置回
+        // false，下一帧 poll 到这里就会触发；`turn_in_flight` / 排队镜像
+        // 都清空才算旧引擎真正收口（引擎收尾时还可能自动开跑排队的下一条）。
+        if !self.app.status.running
+            && !self.turn_in_flight
+            && self.queue.is_empty()
+            && (self.pending_rebuild || self.pending_backend.is_some())
+        {
+            self.apply_pending_rebuild(cx);
+        }
         if changed {
             self.sync_scroller(cx);
             // `poll` 是在 render 里跑的：处理完事件不排下一帧的话，本次
@@ -607,6 +633,21 @@ impl Shell {
             cx.notify();
             return;
         };
+        // 正在跑的任务不能被换引擎打断：设置可以马上生效（下拉列表等 UI 直接
+        // 读新配置），但引擎只在当前 turn 结束后才换，新配置下次任务开始用。
+        if self.app.status.running {
+            self.pending_rebuild = true;
+            self.app.push_notice("设置已保存，将在当前任务结束后生效");
+            self.set_notice("设置已保存，将在当前任务结束后生效".to_string(), false, cx);
+            cx.notify();
+            return;
+        }
+        self.start_rebuild(rebuild, cx);
+    }
+
+    /// 异步重建引擎并换入。换入只允许在空闲时发生：组装完成后若又有任务
+    /// 在跑（重建期间的输入），先存进 `pending_backend` 等下一个空闲时机。
+    pub(crate) fn start_rebuild(&mut self, rebuild: RebuildFn, cx: &mut Context<Self>) {
         // Await the rebuild on the UI thread's executor: assembling a kernel is
         // async, and creating a nested runtime here panics ("cannot start a
         // runtime from within a runtime"). The window stays responsive because
@@ -616,11 +657,44 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let built = rebuild().await;
             let _ = this.update(cx, |shell, cx| {
-                shell.apply_rebuild(built, cx);
-                cx.notify();
+                // 重建落地时若已有任务在跑、或旧引擎还没完全收口（收尾阶段
+                // 可能自动开跑排队的下一条），先存起来等下一个空闲时机。
+                if shell.app.status.running
+                    || shell.turn_in_flight
+                    || !shell.queue.is_empty()
+                {
+                    shell.pending_backend = Some(built);
+                    shell.pending_rebuild = true;
+                } else {
+                    shell.apply_rebuild(built, cx);
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// 任务结束后应用暂存的设置变更（引擎换入或启动补跑的重建）。只在空闲
+    /// 时调用，运行中直接返回。
+    pub(crate) fn apply_pending_rebuild(&mut self, cx: &mut Context<Self>) {
+        if self.app.status.running || self.turn_in_flight || !self.queue.is_empty() {
+            return;
+        }
+        if let Some(built) = self.pending_backend.take() {
+            self.pending_rebuild = false;
+            self.apply_rebuild(built, cx);
+            cx.notify();
+            return;
+        }
+        if !self.pending_rebuild {
+            return;
+        }
+        // 重建还没组装（被推迟时只是打了标记）：现在空闲，补跑一次。
+        self.pending_rebuild = false;
+        let Some(rebuild) = self.backend.rebuild_hook() else {
+            return;
+        };
+        self.start_rebuild(rebuild, cx);
     }
 
     pub(crate) fn apply_rebuild(
@@ -699,5 +773,11 @@ impl Shell {
             self.app.status.model = model;
             cx.notify();
         }
+    }
+
+    /// 重新计算模型菜单的分组缓存。只在弹层打开时调用（`on_open_change`），
+    /// 让配置同步、端点探测这类同步工作离开每帧渲染路径。
+    pub(crate) fn refresh_model_groups(&mut self) {
+        self.model_groups = crate::provider_models(&self.config_path);
     }
 }
