@@ -164,6 +164,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 都发现不了。历史教训：新写的测试里一个 `let b = ...` 没用上就足以让 CI 红，
 因为 `-D warnings` 把 `unused_variables` 也当错误。
 
+还有一类**本机完全看不见**的：平台 cfg 门控掉的分支。`make check` 只编译 host
+target，`#[cfg(target_os = "linux")]` 和
+`#[cfg(not(any(target_os = "macos", target_os = "windows")))]` 在 macOS 上根本
+不参与编译，悬空参数、拼错的符号都只能等 CI 报错。交叉 lint 也救不了——本机拿
+`--target aarch64-unknown-linux-musl` 跑 clippy 会死在 cc-rs 找不到
+`aarch64-linux-musl-gcc`，除非另装交叉工具链。所以改过 cfg 门控，就把这次新增/
+改动的门控行过一遍：
+
+```bash
+git diff <base>..HEAD -- '*.rs' | grep -E '^[+-].*cfg\(' | grep -v '^[+-][+-]'
+```
+
+历史教训：`1a20d6b` 的 `show_window_later` 只有 macOS/Windows 分支用 `cx`（取
+foreground executor 把原生激活推迟到本次 update 之后），Linux 分支只剩
+`window.activate_window()`，参数于是悬空，ubuntu job 红而 macOS 本地全绿。分支里
+确实用不上的参数写 `let _ = cx;` 说明是有意为之：改名 `_cx` 会丢掉与另一分支照签名
+对照的可读性，`#[allow(unused)]` 则会把将来真忘了用的参数一起放过。
+
 另外，**只推一个远端等于没跑 CI**。`gh` 与 `gitee` 是两个独立仓库，GitHub 上
 不存在那个 commit 就不会触发 workflow。`31ca808` 那段「运行中排队与插话」
 （`inbox.rs`，12 个单测）只推了 gitee，带着 fmt 与 clippy 错误存活了 7 天。
