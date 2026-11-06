@@ -426,39 +426,9 @@ impl Shell {
         let theme = cx.theme();
         let border = theme.border;
         let running = self.turn_in_flight;
-        let mut rows = Vec::with_capacity(self.steering.len() + self.queue.len());
-        // Steering already handed to the engine but not claimed yet: keep it
-        // visible as pending so the user can take it back.
-        for item in &self.steering {
-            let id = item.id.clone();
-            let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .bg(rgba(0x2f6bff14))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(sp(CAPTION_SIZE))
-                            .text_color(theme.muted_foreground)
-                            .child(preview),
-                    )
-                    .child(
-                        Button::new(format!("steer-undo-{id}"))
-                            .label("撤回")
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.backend.queue_op(id.clone(), QueueOp::Unsteer);
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
+        // 已推送的消息不再出现在 dock：推送即提交，问题已按已发送样式
+        // 上屏在对话流里，无需撤回。dock 只管理还没推送的排队消息。
+        let mut rows = Vec::with_capacity(self.queue.len());
         for item in &self.queue {
             let id = item.id.clone();
             let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
@@ -1038,8 +1008,10 @@ impl Shell {
                     .flex_col()
                     .gap_1();
                 // Pending follow-up queue shown above the input; each row can
-                // steer into the running turn, move, or drop.
-                if !self.queue.is_empty() || !self.steering.is_empty() {
+                // steer into the running turn, move, or drop. 已推送的消息
+                // 不在这里展示（推送即提交），所以只按 queue 判断显隐，
+                // 否则推送后只剩 steering 时会渲染一个空灰框。
+                if !self.queue.is_empty() {
                     input_box = input_box.child(self.render_queue_dock(cx));
                 }
                 // Pending file references shown as removable chips above the

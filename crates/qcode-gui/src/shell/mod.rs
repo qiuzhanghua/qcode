@@ -651,16 +651,17 @@ impl Shell {
                 // while the default still names one of them — degrade to the
                 // unconfigured backend instead of leaving a stale provider
                 // label under the input box until the next restart.
-                let usable = qcode_kernel::config::load(&self.config_path)
-                    .ok()
-                    .and_then(|loaded| {
-                        qcode_kernel::config::resolve(
-                            &loaded,
-                            &qcode_kernel::config::Overrides::default(),
-                            &|key| std::env::var(key).ok(),
-                        )
+                let usable =
+                    qcode_kernel::config::load(&self.config_path)
                         .ok()
-                    });
+                        .and_then(|loaded| {
+                            qcode_kernel::config::resolve(
+                                &loaded,
+                                &qcode_kernel::config::Overrides::default(),
+                                &|key| std::env::var(key).ok(),
+                            )
+                            .ok()
+                        });
                 if usable.is_none() {
                     let store = qcode_core::store::SessionStore::new(&self.data_dir);
                     let rebuild = self.backend.rebuild_hook();

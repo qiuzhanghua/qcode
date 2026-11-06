@@ -116,7 +116,7 @@ fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) 
                 .or_else(|| catalog.map(|catalog| catalog.api_key_env.to_string()))
                 .unwrap_or_default();
             if !api_key_env.is_empty()
-                && !env(&api_key_env).is_some_and(|key| !key.is_empty())
+                && env(&api_key_env).is_none_or(|key| key.is_empty())
                 && entry.api_key_command.is_none()
             {
                 return false;
