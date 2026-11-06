@@ -351,20 +351,48 @@ impl Shell {
         )
     }
 
+    /// 排队中 / 已推送但未被引擎认领的消息，投影成对话流末尾的 pending
+    /// 单元。因为 transcript 是状态投影，这些单元随 queue/steering 状态
+    /// 自动增删：引擎认领时发出带 `queued_id` 的 UserMessage 事件，poll 里
+    /// 会把对应消息从 `steering` 删掉、`apply` 把真实消息加进 turn，pending
+    /// 单元随之消失——不需要 dsh 那套 rpcId 去重合并。
+    pub(crate) fn pending_units(&self) -> Vec<DisplayUnit> {
+        let mut units = Vec::with_capacity(self.steering.len() + self.queue.len());
+        // 已推送的排在前面：它属于当前运行 turn 的下一个 segment，将来
+        // 会紧跟运行 turn 开新卡；排队的是未来的 turn，排在更后面。
+        for item in &self.steering {
+            units.push(DisplayUnit::Pending {
+                text: item.text.clone(),
+                steered: true,
+            });
+        }
+        for item in &self.queue {
+            units.push(DisplayUnit::Pending {
+                text: item.text.clone(),
+                steered: false,
+            });
+        }
+        units
+    }
+
     pub(crate) fn reset_scroller(&mut self, cx: &mut Context<Self>) {
         self.expanded_process = None;
         self.expanded_code.clear();
         self.collapse_all = false;
         self.collapse_to_list = false;
         self.process_open_turns.clear();
-        self.units = display_units(&self.app);
+        let mut units = display_units(&self.app);
+        units.extend(self.pending_units());
+        self.units = units;
         let count = self.units.len() + self.typing_extra();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
         self.last_blocks = count;
     }
 
     pub(crate) fn sync_scroller(&mut self, cx: &mut Context<Self>) {
-        self.units = display_units(&self.app);
+        let mut units = display_units(&self.app);
+        units.extend(self.pending_units());
+        self.units = units;
         let count = self.units.len() + self.typing_extra();
         if count < self.last_blocks {
             self.scroller.update(cx, |state, cx| state.reset(count, cx));

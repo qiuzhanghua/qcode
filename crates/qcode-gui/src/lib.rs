@@ -378,10 +378,17 @@ fn keyless_endpoint_reachable(base_url: &str) -> bool {
     ok
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum DisplayUnit {
     Loose(usize),
     Turn(usize),
+    /// 排队中或已推送、但引擎还没认领的消息：乐观回显在对话流末尾的
+    /// pending 气泡（dsh 式）。内容来自 queue/steering 状态快照，引擎
+    /// 认领后随状态更新自动消失，由真实的事件渲染替换。
+    Pending {
+        text: String,
+        steered: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

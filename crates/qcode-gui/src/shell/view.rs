@@ -13,6 +13,7 @@ impl Shell {
                     || turn.answer_block == Some(block)
                     || turn.process.contains(&block)
             }
+            DisplayUnit::Pending { .. } => false,
         })
     }
 
@@ -220,6 +221,7 @@ impl Shell {
             self.units.iter().skip(top).find_map(|unit| match unit {
                 DisplayUnit::Turn(index) => Some(*index),
                 DisplayUnit::Loose(_) => None,
+                DisplayUnit::Pending { .. } => None,
             })
         };
         if let Some(target) = target

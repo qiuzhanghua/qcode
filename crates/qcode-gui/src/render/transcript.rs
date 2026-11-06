@@ -33,6 +33,9 @@ pub(crate) fn display_units(app: &App) -> Vec<DisplayUnit> {
             match unit {
                 DisplayUnit::Loose(_) => 0u8,
                 DisplayUnit::Turn(_) => 1u8,
+                // Pending 单元由 `Shell::pending_units` 在排序后追加，不会
+                // 进入这个分支；占位保持 match 穷尽。
+                DisplayUnit::Pending { .. } => 2u8,
             },
         )
     });
@@ -45,9 +48,10 @@ pub(crate) fn unit_row(
     color: Hsla,
     divider: Hsla,
 ) -> AnyElement {
-    match shell.units.get(index).copied() {
+    match shell.units.get(index).cloned() {
         Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
         Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
+        Some(DisplayUnit::Pending { text, steered, .. }) => pending_row(text, steered),
         None => {
             // The trailing scroller row holds the blinking typing indicator
             // while a turn streams; once it finishes the row is empty.
@@ -58,6 +62,72 @@ pub(crate) fn unit_row(
             }
         }
     }
+}
+
+/// Pending 气泡：排队中或已推送、但引擎还没认领的消息。已推送的按已发送
+/// 的用户消息同款样式渲染（dsh 式回显），让用户感觉问题已经发出去了；
+/// 排队的保持低调的「排队中」样式。引擎认领后该单元随 queue/steering 状态
+/// 消失，由真实事件渲染的 turn 卡替换。
+fn pending_row(text: String, steered: bool) -> AnyElement {
+    if steered {
+        // 与真实用户消息（Block::User）同款气泡：右对齐、正文色，不再
+        // 显示「等待下一步」——推送后这条消息已经属于运行中的对话。
+        return div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .w_full()
+            .px_6()
+            .py_2()
+            .child(
+                div()
+                    .max_w(px(560.0))
+                    .bg(rgba(0x7f7f7f18))
+                    .rounded(px(12.0))
+                    .px_4()
+                    .py_2()
+                    .text_size(sp(BODY_SIZE))
+                    .line_height(sp(BODY_LINE))
+                    .child(text),
+            )
+            .into_any_element();
+    }
+    let preview: String = text.replace('\n', " ").chars().take(120).collect();
+    let status = "排队中";
+    // 与 queue dock 的配色保持一致：队列灰色。
+    let (status_color, bg) = (rgb(0x888888), rgba(0x7f7f7f10));
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .px_6()
+        .py_1()
+        .child(
+            div()
+                .w_full()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(rgba(0x7f7f7f20))
+                .bg(bg)
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(BODY_SIZE))
+                        .text_color(rgb(0x999999))
+                        .child(preview),
+                )
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(status_color)
+                        .child(status),
+                ),
+        )
+        .into_any_element()
 }
 pub(crate) fn conversation_icon(name: IconName) -> Icon {
     Icon::new(name)

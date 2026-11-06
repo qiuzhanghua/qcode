@@ -450,12 +450,6 @@ impl Shell {
                             .child(preview),
                     )
                     .child(
-                        div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .text_color(rgb(0x5b7fbf))
-                            .child("等待下一步"),
-                    )
-                    .child(
                         Button::new(format!("steer-undo-{id}"))
                             .label("撤回")
                             .on_click(cx.listener(move |this, _, _, _| {
