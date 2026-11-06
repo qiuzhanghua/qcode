@@ -623,7 +623,40 @@ impl Shell {
                 self.set_notice("settings applied".to_string(), true, cx);
             }
             Err(error) => {
-                // The old backend is still in place: say so, or the window looks
+                // Mirror the startup path (`qcode::commands::gui`): when the
+                // config no longer resolves — e.g. every provider was deleted
+                // while the default still names one of them — degrade to the
+                // unconfigured backend instead of leaving a stale provider
+                // label under the input box until the next restart.
+                let usable = qcode_kernel::config::load(&self.config_path)
+                    .ok()
+                    .and_then(|loaded| {
+                        qcode_kernel::config::resolve(
+                            &loaded,
+                            &qcode_kernel::config::Overrides::default(),
+                            &|key| std::env::var(key).ok(),
+                        )
+                        .ok()
+                    });
+                if usable.is_none() {
+                    let store = qcode_core::store::SessionStore::new(&self.data_dir);
+                    let rebuild = self.backend.rebuild_hook();
+                    let mut unconfigured =
+                        UnconfiguredBackend::new(PathBuf::from(&self.cwd), store);
+                    if let Some(rebuild) = rebuild {
+                        unconfigured = unconfigured.with_rebuild(rebuild);
+                    }
+                    self.backend = Box::new(unconfigured);
+                    self.app.status.provider = "unconfigured".to_string();
+                    self.app.status.model = "-".to_string();
+                    self.app.push_notice(
+                        "settings saved, but the config has no usable provider; open Settings to add one",
+                    );
+                    self.set_notice("no usable provider".to_string(), false, cx);
+                    return;
+                }
+                // The config still resolves (e.g. egress or policy failed); the
+                // old backend is still in place: say so, or the window looks
                 // broken rather than "the new config did not work".
                 self.app.push_notice(format!(
                     "cannot apply settings: {error} (still using the previous kernel)"
