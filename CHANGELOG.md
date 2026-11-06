@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.4 — 2026-11-06
+
+- **工作区快照不再复制工具链缓存**：`run_shell` 前的树快照（ADR-0034 补充）原先把
+  `.cargo-home` 当源码复制——文件沙箱只允许写工作区，`CARGO_HOME` 就落在源码旁边，
+  本仓库的 `.cargo-home` 有 1.8 GB / 64,364 文件，占工作区文件的 99.6%。64 MB 额度
+  几乎全花在 registry 源码上，真正的代码反而进不了快照，回滚实质失效。`TREE_SKIP`
+  补上 `.cargo-home` / `.rustup-home` / `.toolchains`（与 `crates/qcode-eval` 的跳过
+  名单对齐），并补 `.qc-data`。实测日志里 `files=2381 bytes=67050542` 那一轮，
+  68 MB 中有 67 MB 是它。
+- **快照容量改为按 turn 累计封顶**：原先只累加本次调用新写入的字节，`stored.exists()`
+  命中的文件不计入，于是同一 turn 里每条 `run_shell` 都还能再拿满 64 MB——上限号称
+  每轮 64 MB，实际一轮可滚到 GB 级。现在先数该 turn `files/` 已有字节
+  （`stored_totals`）再扣额度，已超额直接返回 `capped`，不再遍历。
+  实测某会话 44 轮累计 18,951 MB，其中 18,899 MB（99.7%）是 `.cargo-home` 副本。
+- **截断可复现**：工作区遍历改为字典序（含跨目录，子目录逆序入栈），撞上限时保留的
+  是稳定前缀，同一棵树每次截断得到同一批文件，不再取决于文件系统的枚举顺序。
+- **告警不再刷屏且区分成因**：容量告警每轮最多一次；`TreeReport` 新增
+  `added_files` / `added_bytes`，区分「本次真的截断」（`> 0`，打 `WARN`）与「该 turn
+  之前就满、本次什么都没加」（`== 0`，降到 `DEBUG`）。升级前被灌满的 turn 不会再
+  每轮重复报同一句，也不会误报成新截断。
+- **关窗/托盘恢复时不再二次借用 `App`**：关闭窗口或从托盘恢复时控制台报
+  `ERROR reading power state for frame request ... RefCell already borrowed`。原因是
+  `on_window_should_close` 的 `cx.update` 持有 `&mut App`，回调内同步 `orderOut:`
+  让 AppKit 立刻成为另一窗口的 key window 并同步派发 `windowDidBecomeKey:`，gpui
+  预 macOS 在该回调里同步请求一帧，帧请求又要 `App::update`——撞上外层借用。Windows
+  侧同源（`SW_HIDE` 会让窗口同步收到 `WM_ACTIVATE`）。现在各平台后端拆成
+  `capture()`（只读句柄）与 `hide_native()` / `show_native()`，新增
+  `tray::hide_window_later` / `show_window_later` 把原生调用推迟到本次 update 结束
+  后的 foreground executor；关窗回调、`CloseWindowShortcut`、设置窗关闭、「显示主
+  窗口」四处改用延迟版。Windows 隐藏改用 `ShowWindowAsync`。
+- **测试**：新增 4 条 core 测试——树快照跳过工具链缓存、按 turn 计费（第二轮不重新
+  发放额度、新 turn 重新计）、截断前缀稳定、已满的 turn 第二次调用 `added_*` 为 0。
+  抽 `TreeLimits` 让测试缩小上限，不必往磁盘写 64 MB。
+- **文档**：README 与 ADR-0034 补充更新跳过名单、按 turn 计费与截断稳定性；记录
+  工具链缓存必须跳过的原因，以及修复前留下的超额 turn 不迁移、需手动清的事实。
+
 ## 0.7.3 — 2026-11-06
 
 - **Provider 目录对齐 pi-ai**：内置目录按 deepseek-harness 的 pi-ai 模型清单更新
