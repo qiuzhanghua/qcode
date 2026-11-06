@@ -179,6 +179,13 @@ pub fn show_window_later(window: &gpui_kit::Window, cx: &gpui_kit::App) {
             })
             .detach();
     }
+    // Linux 的 `PlatformWindow::activate` 只是往窗口系统投一条激活请求
+    // （x11 `send_event` + `xcb_flush`，wayland 提交 activation token），既不
+    // 等待服务端、也没有同步回调进 GPUI，所以不需要像 macOS/Windows 那样把
+    // 原生调用推迟到 executor——`cx` 在这个分支按设计不参与。
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    window.activate_window();
+    {
+        let _ = cx;
+        window.activate_window();
+    }
 }
