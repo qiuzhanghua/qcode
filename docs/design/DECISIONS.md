@@ -1272,6 +1272,8 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
    同一 turn 内已存过的路径不再复制，但**已占用的字节计入该 turn 的额度**，所以一个 turn 里
    第 2、3 条 shell 不会各自再拿到一份 64 MB。这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，
    而不是只有三个内置写工具。
+   `TreeReport::added_bytes` 区分两种 `capped`：本调用真的截断了（>0，打 warn）vs 该 turn
+   在之前就已满、本次什么都没加（==0，降到 debug）。后者也覆盖修复前留下的超额 turn。
 2. `qc sessions gc --older-than N --yes` 删除会话时顺带删掉该会话的 snapshots，并按现存会话
    列表清理孤儿树（`SnapshotStore::sweep`）；报告每个会话的快照体积与总释放量。
 3. 树快照**不记录 absent**：shell 新建的文件在回滚时不会被删除（只有写工具记录的 absent
@@ -1285,6 +1287,8 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
   （本仓库的 `.cargo-home` 有 1.6 GB / 6.4 万文件），不跳会让上限全花在 registry 源码上，
   真正的代码反而进不了快照。
 - 遍历按字典序进行：截断时保留的是稳定的前缀，同一棵树每次截断得到同一批文件。
+- 修复前留下的超额 turn 不会被迁移：它们仍然计入各自那一轮（因此那一轮不再写入），旧缓存
+  需手动删或随 `qc sessions gc` 清掉。新 turn 从自己的额度开始。
 - gc 只清理「会话已删除」与「没有对应会话」的快照，不按天数清理仍在用的会话。
 
 **验证**：新增 4 条 core 测试——树快照能还原 shell 式编辑（改一个、删一个、新建一个）、

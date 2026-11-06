@@ -139,6 +139,10 @@ pub struct TreeReport {
     pub files: usize,
     /// Bytes stored for this turn, on the same accounting.
     pub bytes: u64,
+    /// Files this call wrote. Zero means the turn was already full, which is
+    /// not the same event as hitting the cap and stopping part-way.
+    pub added_files: usize,
+    pub added_bytes: u64,
     pub skipped_large: usize,
     /// The total cap was hit; the snapshot is partial.
     pub capped: bool,
@@ -243,6 +247,10 @@ impl SnapshotStore {
             ..TreeReport::default()
         };
         if report.bytes >= self.limits.total {
+            // Already full — whether from an earlier command in this turn or,
+            // for turns recorded before the toolchain caches were skipped, from
+            // a size that is over the cap by accident. `added_bytes == 0` tells
+            // the caller this is not a fresh truncation.
             report.capped = true;
             return Ok(report);
         }
@@ -296,6 +304,8 @@ impl SnapshotStore {
                 std::fs::write(&stored, &bytes)?;
                 report.files += 1;
                 report.bytes += bytes.len() as u64;
+                report.added_files += 1;
+                report.added_bytes += bytes.len() as u64;
             }
             if report.capped {
                 break;
@@ -790,6 +800,30 @@ mod tests {
         // A new turn starts from an empty tree and gets its own cap.
         let next = store.snapshot_tree("s1", 2, &workspace).expect("tree");
         assert_eq!((next.files, next.bytes), (2, 8), "{next:?}");
+    }
+
+    #[test]
+    fn a_turn_that_was_already_full_adds_nothing_and_says_so() {
+        let (_dir, mut store, workspace) = fixture();
+        store.limits = TreeLimits {
+            file: 1024,
+            total: 10,
+        };
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(workspace.join(name), "1234").unwrap();
+        }
+
+        let first = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert!(first.capped);
+        assert_eq!(first.added_files, 2, "{first:?}");
+
+        // Same turn, second shell command: still capped, but it wrote nothing,
+        // so the caller can stay quiet instead of warning again.
+        let again = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert!(again.capped);
+        assert_eq!(again.added_files, 0, "{again:?}");
+        assert_eq!(again.added_bytes, 0, "{again:?}");
+        assert_eq!((again.files, again.bytes), (2, 8), "{again:?}");
     }
 
     #[test]

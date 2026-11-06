@@ -468,14 +468,28 @@ where
                 // command line would lose files. When enabled, copy the tree.
                 if call.name == "run_shell" && snapshots.shell_enabled() {
                     match snapshots.snapshot_tree(options.session_id, turns, &options.cwd) {
+                        // The cap is per turn, so report it once per turn. A turn
+                        // that was already full adds nothing: saying "hit its cap"
+                        // there reads like a new truncation and repeats forever on
+                        // turns recorded before toolchain caches were skipped.
                         Ok(report) if report.capped => {
                             if !capped_reported {
                                 capped_reported = true;
-                                tracing::warn!(
-                                    files = report.files,
-                                    bytes = report.bytes,
-                                    "workspace snapshot hit its size cap; rollback may be partial"
-                                );
+                                if report.added_bytes > 0 {
+                                    tracing::warn!(
+                                        files = report.files,
+                                        bytes = report.bytes,
+                                        "workspace snapshot hit its size cap; rollback may be \
+                                         partial"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        files = report.files,
+                                        bytes = report.bytes,
+                                        "workspace snapshot for this turn is already at its size \
+                                         cap; nothing added"
+                                    );
+                                }
                             }
                         }
                         Ok(_) => {}
