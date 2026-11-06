@@ -118,7 +118,8 @@ impl Render for Shell {
                 if this.minimize_on_close {
                     // 关闭 = 隐藏到托盘：窗口从任务栏消失，只留托盘图标
                     // （ADR-0052）。最小化还会把图标留在任务栏。
-                    tray::hide_window(window);
+                    // 动作回调持有 `&mut App`，用延迟版本避开重入借用。
+                    tray::hide_window_later(window, cx);
                 } else {
                     window.remove_window();
                 }

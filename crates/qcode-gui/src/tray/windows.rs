@@ -19,9 +19,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetMessageW, GetSystemMetrics, HMENU, HWND_MESSAGE, IMAGE_ICON, IsIconic,
     IsWindowVisible, LoadImageW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
     PostQuitMessage, RegisterClassExW, SM_CXSMICON, SM_CYSMICON, SW_HIDE, SW_RESTORE, SW_SHOW,
-    SetForegroundWindow, ShowWindow, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSEXW,
+    SetForegroundWindow, ShowWindow, ShowWindowAsync, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
 use super::state::{TrayCommand, TraySnapshot};
@@ -300,34 +300,36 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
 /// 隐藏主窗口：关闭按钮 = 最小化到托盘（ADR-0052）。用 `SW_HIDE` 而不是
 /// `SW_MINIMIZE`——最小化还会把图标留在任务栏，隐藏则整个从任务栏消失，
 /// 恢复只能通过托盘图标。
-pub fn hide_window(window: &gpui_kit::Window) {
-    let Ok(handle) =
-        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
-    else {
-        return;
-    };
+///
+/// 读 HWND 没有任何原生副作用，可在 `&mut App` 内调用。
+pub fn capture(window: &gpui_kit::Window) -> Option<isize> {
+    let handle =
+        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window).ok()?;
     let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
-        return;
+        return None;
     };
+    Some(win32.hwnd.get())
+}
+
+/// `SW_HIDE`。用 `ShowWindowAsync`：隐藏会让窗口线程同步收到 `WM_ACTIVATE`
+/// 等消息，异步版本不与调用方同步等待，进一步避免重入。
+pub fn hide_native(hwnd: isize) {
     unsafe {
-        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
-        ShowWindow(hwnd, SW_HIDE);
+        ShowWindowAsync(hwnd as *mut core::ffi::c_void, SW_HIDE);
+    }
+}
+
+pub fn hide_window(window: &gpui_kit::Window) {
+    if let Some(hwnd) = capture(window) {
+        hide_native(hwnd);
     }
 }
 
 /// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先
 /// SW_RESTORE（最小化）或 SW_SHOW（SW_HIDE 隐藏的窗口）。
-fn restore_and_foreground(window: &gpui_kit::Window) {
-    let Ok(handle) =
-        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
-    else {
-        return;
-    };
-    let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
-        return;
-    };
+fn restore_and_foreground_hwnd(hwnd: isize) {
     unsafe {
-        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+        let hwnd = hwnd as *mut core::ffi::c_void;
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         } else if IsWindowVisible(hwnd) == 0 {
@@ -337,9 +339,22 @@ fn restore_and_foreground(window: &gpui_kit::Window) {
     }
 }
 
+fn restore_and_foreground(window: &gpui_kit::Window) {
+    if let Some(hwnd) = capture(window) {
+        restore_and_foreground_hwnd(hwnd);
+    }
+}
+
 pub fn show_window(window: &gpui_kit::Window) {
     restore_and_foreground(window);
     window.activate_window();
+}
+
+/// 同 [`show_window`]，但把原生还原/置顶推迟到 App 借用结束之后。见
+/// [`super::hide_window_later`]：`activate_window` 在 gpui 内部已经是异步的，
+/// 同步的只有这里的原生调用。
+pub fn show_native(hwnd: isize) {
+    restore_and_foreground_hwnd(hwnd);
 }
 
 /// 同 `show_window` 的还原/置顶，但不调用 `activate_window`。

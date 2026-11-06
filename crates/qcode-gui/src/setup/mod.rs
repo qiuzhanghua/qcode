@@ -170,10 +170,11 @@ pub struct SetupView {
 /// 3. The removal is enqueued after that callback, so it runs before the
 ///    window disappears.
 pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
-    #[cfg(target_os = "windows")]
-    hide_settings_window_async(window);
-    #[cfg(not(target_os = "windows"))]
-    crate::tray::hide_window(window);
+    // 这里始终处于 `on_window_should_close` 的 `cx.update` 内（持有
+    // `&mut App`），所以隐藏必须推迟：macOS 的 `orderOut:` 会同步派发
+    // `windowDidBecomeKey:` 并请求一帧，二次借用 App 会报
+    // "RefCell already borrowed"。
+    crate::tray::hide_window_later(window, cx);
     // The settings window is taken out of the window table while this update
     // runs, so any handle still listed belongs to another window.
     let handle = window.window_handle();
@@ -223,23 +224,6 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
                 .detach();
         })
         .detach();
-}
-
-#[cfg(target_os = "windows")]
-fn hide_settings_window_async(window: &Window) {
-    let Ok(handle) = <Window as raw_window_handle::HasWindowHandle>::window_handle(window) else {
-        return;
-    };
-    let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
-        return;
-    };
-    unsafe {
-        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
-        windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
-            hwnd,
-            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
-        );
-    }
 }
 
 /// Open the first-run/setup wizard. Returns when the user saves (which quits

@@ -87,8 +87,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                     window.activate_window();
                     if minimize_on_close {
                         // 关闭按钮 = 隐藏到托盘（ADR-0052）；真正退出走托盘/菜单。
-                        window.on_window_should_close(cx, |window, _cx| {
-                            tray::hide_window(window);
+                        // 这里持有 `&mut App`，必须用延迟版本，否则 AppKit 在
+                        // `orderOut:` 里同步派发的帧请求会二次借用 App。
+                        window.on_window_should_close(cx, |window, cx| {
+                            tray::hide_window_later(window, cx);
                             false
                         });
                     }
@@ -114,8 +116,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                         while let Ok(command) = tray_rx.try_recv() {
                             match command {
                                 tray::TrayCommand::ShowWindow => {
-                                    let _ = window_handle.update(cx, |_view, window, _cx| {
-                                        tray::show_window(window);
+                                    let _ = window_handle.update(cx, |_view, window, cx| {
+                                        // 这里持有 `&mut App`，原生还原/置顶必须
+                                        // 推迟，否则激活事件同步请求帧会二次借用。
+                                        tray::show_window_later(window, cx);
                                     });
                                 }
                                 tray::TrayCommand::NewTask => {
