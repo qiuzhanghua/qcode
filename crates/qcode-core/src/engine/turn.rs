@@ -460,16 +460,24 @@ where
         // before they touch it. A snapshot failure must not fail the turn: the
         // write still has to happen.
         if let Some(snapshots) = ctx.snapshots {
+            // The cap is charged per turn, so one turn's several shell commands
+            // report it once instead of once per call.
+            let mut capped_reported = false;
             for call in &calls {
                 // A shell command can write anywhere, so guessing paths from the
                 // command line would lose files. When enabled, copy the tree.
                 if call.name == "run_shell" && snapshots.shell_enabled() {
                     match snapshots.snapshot_tree(options.session_id, turns, &options.cwd) {
-                        Ok(report) if report.capped => tracing::warn!(
-                            files = report.files,
-                            bytes = report.bytes,
-                            "workspace snapshot hit its size cap; rollback may be partial"
-                        ),
+                        Ok(report) if report.capped => {
+                            if !capped_reported {
+                                capped_reported = true;
+                                tracing::warn!(
+                                    files = report.files,
+                                    bytes = report.bytes,
+                                    "workspace snapshot hit its size cap; rollback may be partial"
+                                );
+                            }
+                        }
                         Ok(_) => {}
                         Err(error) => {
                             tracing::warn!(%error, "cannot snapshot the workspace before run_shell")

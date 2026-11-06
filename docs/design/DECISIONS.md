@@ -1266,10 +1266,12 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 **决定**
 
 1. `[agent] snapshot_shell`（默认 `true`）：执行 `run_shell` 之前对整个工作区做一次**受限**
-   快照——跳过 `.git` / `target` / `node_modules` / `dist` / `.tmp` / `.qcode-data` /
-   `.venv` / `__pycache__`，单文件超过 4 MB 跳过，总量超过 64 MB 置 `capped` 并停止（打 warn）。
-   同一 turn 内已存过的路径不再复制，所以一个 turn 里第 2、3 条 shell 只付出遍历成本。
-   这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，而不是只有三个内置写工具。
+   快照——跳过 `.git` / `target` / `node_modules` / `dist` / `.tmp` / `.qcode-data` / `.qc-data` /
+   `.venv` / `__pycache__` / `.cargo-home` / `.rustup-home` / `.toolchains`，单文件超过 4 MB
+   跳过，一个 turn 的累计总量超过 64 MB 置 `capped` 并停止（每轮只打一次 warn）。
+   同一 turn 内已存过的路径不再复制，但**已占用的字节计入该 turn 的额度**，所以一个 turn 里
+   第 2、3 条 shell 不会各自再拿到一份 64 MB。这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，
+   而不是只有三个内置写工具。
 2. `qc sessions gc --older-than N --yes` 删除会话时顺带删掉该会话的 snapshots，并按现存会话
    列表清理孤儿树（`SnapshotStore::sweep`）；报告每个会话的快照体积与总释放量。
 3. 树快照**不记录 absent**：shell 新建的文件在回滚时不会被删除（只有写工具记录的 absent
@@ -1278,7 +1280,11 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 **后果 / 边界更新**
 
 - 大仓库上每条 shell 命令都要走一遍工作区（有上限）；`snapshot_shell = false` 可关。
-- 快照随 turn 累积；被跳过的目录（`target` 等）里的改动不会被回滚。
+- 快照随 turn 累积，每个 turn 最多 64 MB；被跳过的目录（`target`、`.cargo-home` 等）里的改动
+  不会被回滚。工具链缓存必须跳过：文件沙箱只允许写工作区，`CARGO_HOME` 就落在源码旁边
+  （本仓库的 `.cargo-home` 有 1.6 GB / 6.4 万文件），不跳会让上限全花在 registry 源码上，
+  真正的代码反而进不了快照。
+- 遍历按字典序进行：截断时保留的是稳定的前缀，同一棵树每次截断得到同一批文件。
 - gc 只清理「会话已删除」与「没有对应会话」的快照，不按天数清理仍在用的会话。
 
 **验证**：新增 4 条 core 测试——树快照能还原 shell 式编辑（改一个、删一个、新建一个）、

@@ -352,8 +352,9 @@ cargo build -p qcode-eval
 - **checkpoint / rollback**：`write_file` / `edit_file` / `apply_patch` 动手之前，把目标文件
   当前内容记进 `<data-dir>/snapshots/<session>/<turn>/`（不存在的文件记为 absent）；
   `[agent] snapshot_shell`（默认 true）还会在每条 `run_shell` 前对整个工作区做一次受限快照
-  （跳过 `.git`/`target`/`node_modules` 等，单文件 4 MB、总量 64 MB 封顶），因此 shell 与 MCP
-  驱动的编辑也能回滚。`qc sessions checkpoints <id>` 看记录，
+  （跳过 `.git`/`target`/`node_modules`/`.cargo-home` 等构建与 VCS 树，单文件 4 MB、每个 turn
+  累计 64 MB 封顶），因此 shell 与 MCP 驱动的编辑也能回滚。
+  `qc sessions checkpoints <id>` 看记录，
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
 - **GUI**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048）：与 `qc run` / `qc acp` /
@@ -438,7 +439,7 @@ window_tokens = 128000
 [agent]
 max_turns = 64
 # max_cost_usd = 0.50    # 需要 [pricing]；`--max-cost` 覆盖它，比轮数更贴近真实代价
-snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB 总量封顶）；大仓库可关
+snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB/轮封顶）；大仓库可关
 
 # Web 搜索（v2.0）。enabled 默认 true；未配置 key 时不注册 web_search 工具，
 # 由 qc doctor 提示。backend: brave | tavily | searxng。
