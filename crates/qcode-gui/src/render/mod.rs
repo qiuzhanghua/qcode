@@ -32,7 +32,7 @@ use qcode_ui_state::{App, Block};
 
 mod dialogs;
 mod main;
-mod rail;
+pub(crate) mod rail;
 mod sidebar;
 mod transcript;
 

@@ -92,56 +92,71 @@ impl Shell {
     }
 
     /// Build the hover-popover body for a rail dot: the turn's question and
-    /// answer stacked in two labelled sections. Long answers are truncated
-    /// with an ellipsis. Clicking anywhere in the card jumps to that turn.
+    /// answer as two message cards, each shaped like the transcript itself —
+    /// a bold first line and the remaining lines in muted grey. Clicking
+    /// anywhere in the card jumps to that turn.
+    ///
+    /// The card is allowed half of the *transcript* viewport (not the window:
+    /// the composer must keep its space), and the text is fitted to that
+    /// budget rather than clipped mid-line.
     pub(crate) fn build_rail_popover(
         &mut self,
         cx: &mut Context<Self>,
         turn_index: usize,
     ) -> gpui_kit::AnyElement {
-        const QUESTION_LIMIT: usize = 120;
-        const ANSWER_LIMIT: usize = 260;
-        let (question, answer) = match self.app.turns.get(turn_index) {
-            Some(turn) => {
-                let question = turn
-                    .input_block
-                    .and_then(|idx| self.app.blocks.get(idx))
-                    .and_then(|block| match block {
-                        Block::User(text) => Some(text.trim()),
-                        _ => None,
-                    })
-                    .map(|text| short_preview(text, QUESTION_LIMIT))
-                    .unwrap_or_else(|| format!("Turn {}", turn.number));
-                let answer = turn
-                    .answer_block
-                    .and_then(|idx| self.app.blocks.get(idx))
-                    .and_then(|block| match block {
-                        Block::Assistant(text) => Some(text.trim()),
-                        _ => None,
-                    })
-                    .map(|text| short_preview(text, ANSWER_LIMIT))
-                    .unwrap_or_else(|| {
-                        if turn.running() {
-                            "（回答中…）".to_string()
-                        } else {
-                            "（暂无回答）".to_string()
-                        }
-                    });
-                (question, answer)
-            }
+        let budget = (self.transcript_height.get() * 0.5).clamp(220.0, 620.0);
+        // 14px padding top and bottom, two 22px titles, a 13px divider, gaps.
+        const CHROME: f32 = 96.0;
+        const LINE: f32 = 20.0;
+        let body_total = (((budget - CHROME) / LINE).floor() as usize).max(2);
+        let question_lines = (body_total * 3 / 5).max(1);
+        let answer_lines = body_total.saturating_sub(question_lines).max(1);
+
+        let (question_title, question_body) = match self.app.turns.get(turn_index) {
+            Some(turn) => turn
+                .input_block
+                .and_then(|idx| self.app.blocks.get(idx))
+                .and_then(|block| match block {
+                    Block::User(text) => Some(head_and_body(text)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| (format!("第 {} 轮", turn.number), String::new())),
             None => (String::new(), String::new()),
         };
-        let question_color = rgb(0x222222);
-        let answer_color = rgb(0x777777);
+        let (answer_title, answer_body) = match self.app.turns.get(turn_index) {
+            Some(turn) => turn
+                .answer_block
+                .and_then(|idx| self.app.blocks.get(idx))
+                .and_then(|block| match block {
+                    Block::Assistant(text) => Some(head_and_body(text)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    if turn.running() {
+                        ("（回答中…）".to_string(), String::new())
+                    } else {
+                        ("（暂无回答）".to_string(), String::new())
+                    }
+                }),
+            None => (String::new(), String::new()),
+        };
+
         div()
             .id(format!("rail-popover-{turn_index}"))
-            .w(px(300.0))
+            .w(px(520.0))
+            .max_h(px(budget))
             .flex()
             .flex_col()
+            .gap_2()
+            .p(px(14.0))
+            .overflow_hidden()
             .bg(rgb(0xffffff))
-            .rounded(px(6.0))
+            .rounded(px(12.0))
             .border_1()
-            .border_color(rgb(0xe3e3e3))
+            .border_color(rgb(0xe6e6e6))
+            // The card floats over the transcript; without elevation it reads
+            // as part of the conversation.
+            .shadow_lg()
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered, _window, cx| {
                 if *hovered {
@@ -160,26 +175,21 @@ impl Shell {
                 this.rail_popup_close_at = None;
                 this.jump_to_turn(turn_index, cx);
             }))
-            // 问题：字号大、颜色深；回答：字号小、颜色浅，靠这两点区分，
-            // 不再需要标题或分隔线。
-            .child(
-                div()
-                    .px_2()
-                    .pt_2()
-                    .pb_1()
-                    .text_size(sp(BODY_SIZE))
-                    .text_color(question_color)
-                    .child(question),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .pt_1()
-                    .pb_2()
-                    .text_size(sp(12.0))
-                    .text_color(answer_color)
-                    .child(answer),
-            )
+            .child(message_section(
+                &question_title,
+                &question_body,
+                question_lines,
+                rgb(0x111111),
+                rgb(0x6b6b6b),
+            ))
+            .child(div().h(px(1.0)).flex_none().bg(rgb(0xe8e8e8)))
+            .child(message_section(
+                &answer_title,
+                &answer_body,
+                answer_lines,
+                rgb(0x333333),
+                rgb(0x808080),
+            ))
             .into_any_element()
     }
 
@@ -209,4 +219,88 @@ impl Shell {
             )
             .into_any_element()
     }
+}
+
+/// Splits a message into a title line and the rest. Only the title loses its
+/// markdown noise (`#`, `>`, bullets, leading spaces) — the body stays
+/// verbatim, markdown included, because this is a preview and not rendered
+/// output.
+pub(crate) fn head_and_body(text: &str) -> (String, String) {
+    let trimmed = text.trim();
+    let mut lines = trimmed.lines();
+    let title = lines
+        .next()
+        .map(|line| {
+            line.trim_start_matches(['#', '>', '-', '*', ' '])
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let body = lines.collect::<Vec<_>>().join("\n");
+    (title, body.trim().to_string())
+}
+
+/// Fits `text` into `budget` visual lines, appending an ellipsis when it does
+/// not fit. A visual line is a rough wrap estimate: 44 characters covers a
+/// wide CJK line on a 520px card, and over-estimating only costs a few unused
+/// pixels.
+pub(crate) fn fit_lines(text: &str, budget: usize) -> String {
+    const PER_LINE: usize = 44;
+    if text.is_empty() || budget == 0 {
+        return String::new();
+    }
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0;
+    for line in text.lines() {
+        let span = line.chars().count().max(1).div_ceil(PER_LINE);
+        if used + span <= budget {
+            used += span;
+            kept.push(line.to_string());
+            continue;
+        }
+        let room = budget.saturating_sub(used);
+        if room > 0 {
+            let mut clipped: String = line.chars().take(room * PER_LINE - 1).collect();
+            clipped.push('…');
+            kept.push(clipped.trim_end().to_string());
+        } else if let Some(last) = kept.last_mut() {
+            last.push('…');
+        }
+        return kept.join("\n");
+    }
+    kept.join("\n")
+}
+
+/// One message card section: bold first line, muted body.
+fn message_section(
+    title: &str,
+    body: &str,
+    body_lines: usize,
+    title_color: impl Into<Hsla>,
+    body_color: impl Into<Hsla>,
+) -> Div {
+    let (title_color, body_color) = (title_color.into(), body_color.into());
+    let body = fit_lines(body, body_lines);
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div()
+                .text_size(sp(15.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(title_color)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(title.to_string()),
+        )
+        .children((!body.is_empty()).then(|| {
+            div()
+                .text_size(sp(13.0))
+                .line_height(sp(20.0))
+                .text_color(body_color)
+                .child(body)
+        }))
 }

@@ -434,4 +434,52 @@ mod tests {
         assert_eq!(endpoint_of(""), None);
         assert_eq!(endpoint_of("ftp://host:21"), None, "unsupported scheme");
     }
+
+    mod rail_popover {
+        use crate::render::rail::{fit_lines, head_and_body};
+
+        #[test]
+        fn the_first_line_becomes_the_title_and_the_rest_the_body() {
+            let message = "继续\n第 3 步完成并推送。\n\n两个远端都在 `0eb286c`。\n";
+            let (title, body) = head_and_body(message);
+            assert_eq!(title, "继续");
+            assert_eq!(body, "第 3 步完成并推送。\n\n两个远端都在 `0eb286c`。");
+        }
+
+        #[test]
+        fn only_the_title_loses_its_markdown_markers() {
+            let (title, body) = head_and_body("## 结果\n| 文件 | 之前 | 现在 |");
+            assert_eq!(title, "结果");
+            assert_eq!(body, "| 文件 | 之前 | 现在 |");
+        }
+
+        #[test]
+        fn a_single_line_message_has_no_body() {
+            let (title, body) = head_and_body("  就这样  ");
+            assert_eq!(title, "就这样");
+            assert!(body.is_empty());
+        }
+
+        #[test]
+        fn fitting_keeps_short_text_verbatim() {
+            assert_eq!(fit_lines("一\n二\n三", 10), "一\n二\n三");
+        }
+
+        #[test]
+        fn fitting_cuts_at_the_budget_and_marks_the_cut() {
+            let text = "第 1 行\n第 2 行\n第 3 行\n第 4 行\n第 5 行\n第 6 行";
+            let fitted = fit_lines(text, 3);
+            assert_eq!(fitted.lines().count(), 3);
+            assert!(fitted.starts_with("第 1 行"));
+            assert!(fitted.ends_with('…'), "{fitted}");
+        }
+
+        #[test]
+        fn a_wide_line_counts_as_more_than_one_row() {
+            let long = "字".repeat(100);
+            let fitted = fit_lines(&long, 1);
+            assert!(fitted.ends_with('…'), "{fitted}");
+            assert!(fitted.chars().count() <= 44);
+        }
+    }
 }

@@ -592,12 +592,21 @@ impl Shell {
             .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
+                let measured = self.transcript_height.clone();
                 div()
                     .relative()
                     .flex()
                     .flex_row()
                     .flex_grow(1.0)
                     .min_h_0()
+                    // The rail popover sizes itself against the transcript, not
+                    // the window: "half the main area" must exclude the composer
+                    // and the status bar. First child is the scroll column.
+                    .on_children_prepainted(move |bounds, _window, _cx| {
+                        if let Some(scroll) = bounds.first() {
+                            measured.set(scroll.size.height.as_f32());
+                        }
+                    })
                     .child(
                         div()
                             .id("transcript-scroll")

@@ -96,6 +96,10 @@ pub(crate) struct Shell {
     /// Scheduled instant to close the rail popup once both the dot and the
     /// popup content have lost hover. `None` = no close pending.
     pub(crate) rail_popup_close_at: Option<std::time::Instant>,
+    /// Height of the transcript viewport, measured during prepaint. The rail
+    /// popover budgets itself against half of it, so the card never reaches
+    /// into the composer.
+    pub(crate) transcript_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Hide every turn's process rows (Collapse all).
     pub(crate) collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -304,6 +308,7 @@ impl Shell {
             hovered_task: None,
             rail_popup: None,
             rail_popup_close_at: None,
+            transcript_height: std::rc::Rc::new(std::cell::Cell::new(600.0)),
             collapse_all: false,
             collapse_to_list: false,
             waiting_ticker: false,
