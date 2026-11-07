@@ -659,6 +659,117 @@ pub(crate) fn fold_toggle(key: String, expanded: bool, entity: &Entity<Shell>) -
         }))
         .into_any_element()
 }
+/// The command of a shell call as its own card: a light background, a status
+/// dot on the first line, a `$` gutter on every line, and a copy button in the
+/// top-right corner.
+fn command_card(
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    tool: &qcode_ui_state::ToolEntry,
+    command: &str,
+    index: usize,
+) -> AnyElement {
+    let dot = match tool.status {
+        Some(ToolStatus::Ok) => rgb(0x4c9a68),
+        Some(ToolStatus::Error) => rgb(0xc26464),
+        Some(ToolStatus::Cancelled) | Some(ToolStatus::Interrupted) => rgb(0xb08a4a),
+        // Still running: the row keeps the neutral colour until it finishes.
+        None => rgb(0xa8a8a8),
+    };
+    let mut lines = div().flex().flex_col().w_full().pr(px(52.0));
+    for (line_index, line) in command.lines().enumerate() {
+        // Only the first line carries the status dot; the rest keep the
+        // gutter so the `$` column stays straight.
+        let gutter = if line_index == 0 {
+            div()
+                .flex_none()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded_full()
+                .bg(dot)
+                .into_any_element()
+        } else {
+            div().flex_none().w(px(8.0)).into_any_element()
+        };
+        lines = lines.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .font_family(shell.mono_font.clone())
+                .text_size(sp(RESULT_SIZE))
+                .line_height(sp(RESULT_LINE))
+                .child(gutter)
+                .child(div().flex_none().text_color(rgb(0x9a9a9a)).child("$"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(rgb(0x333333))
+                        .child(line.to_string()),
+                ),
+        );
+    }
+    div()
+        .relative()
+        .w_full()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(rgb(0xececec))
+        .bg(rgb(0xf7f7f7))
+        .p(px(12.0))
+        .child(lines)
+        .child(
+            div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(8.0))
+                .child(copy_command_button(
+                    entity,
+                    &tool.call_id,
+                    command,
+                    index,
+                    shell,
+                )),
+        )
+        .into_any_element()
+}
+
+/// 「复制」 for a shell command. Copies the raw command (not the rendered
+/// lines, so the `$` gutters stay out of the clipboard) and flips to「已复制」
+/// for a moment afterwards.
+fn copy_command_button(
+    entity: &Entity<Shell>,
+    call_id: &str,
+    command: &str,
+    index: usize,
+    shell: &Shell,
+) -> AnyElement {
+    let copied = shell.copied_recently(call_id);
+    let call_id = call_id.to_string();
+    let command = command.to_string();
+    div()
+        .id(SharedString::from(format!("copy-command-{index}")))
+        .cursor_pointer()
+        .rounded(px(5.0))
+        .px_2()
+        .py_1()
+        .text_size(sp(CAPTION_SIZE))
+        .text_color(if copied { rgb(0x4c9a68) } else { rgb(0x8a8a8a) })
+        .hover(|style| style.bg(rgba(0x7f7f7f14)).text_color(rgb(0x333333)))
+        .child(if copied { "已复制" } else { "复制" })
+        .on_click({
+            let entity = entity.clone();
+            move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+                entity.update(cx, |shell, cx| shell.mark_copied(call_id.clone(), cx));
+            }
+        })
+        .into_any_element()
+}
+
 pub(crate) fn markdown_with_folds(
     index: usize,
     text: &str,
@@ -840,96 +951,65 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 } else {
                     tool.output.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
-                if command.is_some() || !tool.output.is_empty() {
-                    // The command and its result share one box, with a blank
-                    // line between them. When the output is folded the box
-                    // loses its bottom corners so the toggle below reads as
-                    // one piece with it.
+                // The command gets its own card so the block reads like a
+                // shell transcript: light background, a status dot on the
+                // first line, a `$` gutter on every line, and a copy button.
+                if let Some(command) = &command {
+                    details = details.child(command_card(shell, entity, tool, command, index));
+                }
+                if !tool.output.is_empty() {
+                    // Long output keeps square bottom corners so the fold
+                    // toggle below reads as one piece with it.
                     let mut content = div()
                         .w_full()
-                        .rounded_t(px(6.0))
-                        .rounded_b(if foldable { px(0.0) } else { px(6.0) })
+                        .rounded(px(6.0))
                         .bg(rgba(0x7f7f7f08))
                         .border_1()
                         .border_color(rgba(0x7f7f7f20))
                         .p_2()
                         .flex()
                         .flex_col();
-                    if let Some(command) = &command {
+                    if foldable {
+                        content = content.rounded_b(px(0.0));
+                    }
+                    // Lists render as markdown lists; anything else stays
+                    // plain light text — one box, no nested code block.
+                    if looks_like_list(&output_visible) {
                         content = content.child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_baseline()
-                                .gap_1()
                                 .text_size(sp(RESULT_SIZE))
                                 .line_height(sp(RESULT_LINE))
                                 .child(
-                                    div()
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0xc8a86a))
-                                        .child("$"),
-                                )
-                                .child(
-                                    // Markdown inline code (backticks) renders
-                                    // at 0.875x the TextView size, so bump the
-                                    // base size up so the command lands on the
-                                    // same size as the plain output below.
                                     TextView::markdown(
-                                        format!("tool-command-{index}"),
-                                        format!("`{command}`"),
+                                        format!("tool-output-{index}"),
+                                        output_visible,
                                     )
-                                    .text_size(sp(RESULT_SIZE / 0.875))
+                                    .text_size(sp(RESULT_SIZE))
                                     .line_height(sp(RESULT_LINE)),
                                 ),
                         );
-                    }
-                    if !tool.output.is_empty() {
-                        if command.is_some() {
-                            content = content.child(div().h(px(8.0)));
-                        }
-                        // Lists render as markdown lists; anything else stays
-                        // plain light text — one box, no nested code block.
-                        if looks_like_list(&output_visible) {
-                            content = content.child(
-                                div()
+                    } else {
+                        // Plain multi-line output: markdown hard breaks (two
+                        // trailing spaces) keep every line break, so the text
+                        // renders exactly like the original one box — no
+                        // nested code-block frame, same size and colour —
+                        // while staying selectable.
+                        let selectable = output_visible.replace('\n', "  \n");
+                        content = content.child(
+                            div()
+                                .text_size(sp(RESULT_SIZE))
+                                .line_height(sp(RESULT_LINE))
+                                .child(
+                                    TextView::markdown(
+                                        format!("tool-output-plain-{index}"),
+                                        selectable,
+                                    )
                                     .text_size(sp(RESULT_SIZE))
                                     .line_height(sp(RESULT_LINE))
-                                    .child(
-                                        TextView::markdown(
-                                            format!("tool-output-{index}"),
-                                            output_visible,
-                                        )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE)),
-                                    ),
-                            );
-                        } else {
-                            // Plain multi-line output: markdown hard breaks
-                            // (two trailing spaces) keep every line break, so
-                            // the text renders exactly like the original one
-                            // box — no nested code-block frame, same size and
-                            // colour — while staying selectable.
-                            let selectable = output_visible.replace('\n', "  \n");
-                            content = content.child(
-                                div()
-                                    .text_size(sp(RESULT_SIZE))
-                                    .line_height(sp(RESULT_LINE))
-                                    .child(
-                                        TextView::markdown(
-                                            format!("tool-output-plain-{index}"),
-                                            selectable,
-                                        )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0x888888)),
-                                    ),
-                            );
-                        }
+                                    .text_color(rgb(0x888888)),
+                                ),
+                        );
                     }
-                    // The fold toggle joins the box as one piece when the
-                    // output is long (squared corners, no gap).
                     if foldable {
                         details = details.child(
                             div()

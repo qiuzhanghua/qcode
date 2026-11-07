@@ -91,6 +91,12 @@ pub(crate) struct Shell {
     /// Last task row the pointer entered; keeps the action overlay alive while
     /// the pointer moves from the row onto the overlay.
     pub(crate) hovered_task: Option<String>,
+    /// 等宽字体族，从主题里取一次放在这里：渲染层拿不到 `cx`，命令卡片
+    /// 要按 shell 脚本的样子排版。
+    pub(crate) mono_font: SharedString,
+    /// 最近一次被复制的工具调用 id 与时间。命令卡片上的「复制」按钮点完之后
+    /// 短暂显示「已复制」，一秒的 ticker 会把它刷回原样。
+    pub(crate) copied_command: Option<(String, std::time::Instant)>,
     /// Index of the turn whose rail dot has an active hover popover.
     pub(crate) rail_popup: Option<usize>,
     /// Scheduled instant to close the rail popup once both the dot and the
@@ -164,6 +170,10 @@ impl Shell {
         cx: &mut Context<Self>,
         minimize_on_close: bool,
     ) -> Self {
+        let mono_font = {
+            use gpui_kit::component::ActiveTheme as _;
+            cx.theme().mono_font_family.clone()
+        };
         let cwd = backend.cwd().display().to_string();
         let tasks = backend.tasks().unwrap_or_else(|error| {
             app.push_notice(format!("cannot list tasks: {error}"));
@@ -306,6 +316,8 @@ impl Shell {
             rename_task: None,
             task_menu: None,
             hovered_task: None,
+            mono_font,
+            copied_command: None,
             rail_popup: None,
             rail_popup_close_at: None,
             transcript_height: std::rc::Rc::new(std::cell::Cell::new(600.0)),

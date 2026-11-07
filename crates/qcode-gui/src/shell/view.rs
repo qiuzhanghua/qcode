@@ -356,6 +356,20 @@ impl Shell {
         cx.notify();
     }
 
+    /// 记下刚被复制的命令，让按钮短暂显示「已复制」。过期由
+    /// `copied_recently` 按时间判断，不需要额外的定时器。
+    pub(crate) fn mark_copied(&mut self, call_id: String, cx: &mut Context<Self>) {
+        self.copied_command = Some((call_id, std::time::Instant::now()));
+        cx.notify();
+    }
+
+    /// 这条调用的命令刚被复制过吗（1.5 秒内）。
+    pub(crate) fn copied_recently(&self, call_id: &str) -> bool {
+        self.copied_command.as_ref().is_some_and(|(id, at)| {
+            id == call_id && at.elapsed() < std::time::Duration::from_millis(1500)
+        })
+    }
+
     pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
         // 已有设置窗口且仍存活：不新开窗口，直接调到最上层。
         if let Some(handle) = self.settings_window
