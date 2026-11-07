@@ -18,8 +18,8 @@ impl Shell {
         }
         let total = self.app.turns.len();
         let active = self.active_turn_index();
-        // At most 15 dots are shown; with more turns the window scrolls so the
-        // active dot stays centred (clamped at the list edges).
+        // At most 15 ticks are shown; with more turns the window scrolls so
+        // the active tick stays centred (clamped at the list edges).
         const MAX_DOTS: usize = 15;
         let start = if total <= MAX_DOTS {
             0
@@ -34,25 +34,29 @@ impl Shell {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_2();
+            .gap_1();
         for index in start..end {
-            // Colour fades with distance from the active turn: the current one
-            // is darkest, one step away slightly lighter, farther ones lightest.
-            let dot_color = match active
+            // Each turn is a short horizontal bar — the shape reads as a ruler
+            // tick rather than a bullet. The current turn's tick is darker and
+            // a little wider; everything else stays the same faint grey, so the
+            // marker carries the position without a colour ladder.
+            let (bar_width, bar_height, bar_color) = match active
                 .map(|active| index.abs_diff(active))
                 .unwrap_or(usize::MAX)
             {
-                0 => rgb(0x7a7a7a),
-                1 => rgb(0xbcbcbc),
-                _ => rgb(0xd8d8d8),
+                0 => (14.0, 3.0, rgb(0x2b2b2b)),
+                1 => (12.0, 2.0, rgb(0xc6c6c6)),
+                _ => (12.0, 2.0, rgb(0xdedede)),
             };
             let show_popover = self.rail_popup == Some(index);
+            // The tick itself is only 2px tall, so the pointer gets a taller
+            // transparent box around it — the hit target must not be a hairline.
             let dot = div()
-                .w(px(8.0))
+                .w(px(16.0))
                 .h(px(8.0))
-                .rounded(px(4.0))
-                .bg(dot_color)
-                .hover(|style| style.bg(rgb(0xa8a8a8)))
+                .flex()
+                .items_center()
+                .justify_center()
                 .cursor_pointer()
                 .id(format!("turn-rail-trigger-{index}"))
                 .on_hover(cx.listener(move |this, hovered, _window, cx| {
@@ -73,7 +77,15 @@ impl Shell {
                 }))
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.jump_to_turn(index, cx);
-                }));
+                }))
+                .child(
+                    div()
+                        .w(px(bar_width))
+                        .h(px(bar_height))
+                        .rounded(px(bar_height / 2.0))
+                        .bg(bar_color)
+                        .hover(|style| style.bg(rgb(0x9a9a9a))),
+                );
             let popup =
                 gpui_kit::base::Popup::new(format!("rail-popup-{index}"), dot.into_any_element())
                     // RightCenter: the popover's right edge snaps to the dot's
