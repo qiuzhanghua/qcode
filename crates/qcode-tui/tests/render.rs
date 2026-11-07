@@ -2,8 +2,9 @@
 //! screen actually contains. No terminal or tty is involved.
 
 use qcode_core::event::{
-    ApprovalRequested, AssistantMessage, ContentBlock, Event, EventKind, SessionStarted, ToolCall,
-    ToolResult, ToolStatus, TurnStarted, TurnStatus, Usage, UserMessage,
+    ApprovalRequested, AssistantMessage, ContentBlock, DiffFileStat, DiffKind, Event, EventKind,
+    SessionStarted, ToolCall, ToolDiff, ToolResult, ToolStatus, TurnStarted, TurnStatus, Usage,
+    UserMessage,
 };
 use qcode_tui::{App, ApprovalPrompt, ContextDisplay, render};
 use ratatui::crossterm::event::KeyEvent;
@@ -91,6 +92,7 @@ fn app_with_transcript() -> App {
             status: ToolStatus::Ok,
             output: "test result: ok. 86 passed".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     );
     app
@@ -193,6 +195,7 @@ fn child_agent_progress_is_rendered_nested() {
             status: ToolStatus::Ok,
             output: "contents".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     ));
 
@@ -293,6 +296,7 @@ fn apply_patch_output_uses_red_and_green() {
             status: ToolStatus::Ok,
             output: "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     );
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
@@ -317,6 +321,45 @@ fn apply_patch_output_uses_red_and_green() {
     }
     assert!(green, "added diff line is not green");
     assert!(red, "removed diff line is not red");
+}
+
+#[test]
+fn a_recorded_diff_shows_its_counts() {
+    let mut app = App::new("mock", "mock-1");
+    apply(
+        &mut app,
+        1,
+        EventKind::ToolCall(ToolCall {
+            call_id: "c1".to_string(),
+            name: "edit_file".to_string(),
+            arguments: json!({"path": "notes.md"}),
+        }),
+    );
+    apply(
+        &mut app,
+        2,
+        EventKind::ToolResult(ToolResult {
+            call_id: "c1".to_string(),
+            status: ToolStatus::Ok,
+            output: "replaced 1 occurrence(s)".to_string(),
+            metadata: Default::default(),
+            diff: Some(ToolDiff {
+                patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".to_string(),
+                files: vec![DiffFileStat {
+                    path: "notes.md".to_string(),
+                    kind: DiffKind::Modified,
+                    additions: 1,
+                    deletions: 2,
+                    bytes: 8,
+                }],
+                truncated: false,
+            }),
+        }),
+    );
+
+    let screen = draw(&app, 100, 20);
+    assert!(screen.contains("+1"), "additions missing:\n{screen}");
+    assert!(screen.contains("-2"), "deletions missing:\n{screen}");
 }
 
 #[test]
@@ -368,6 +411,7 @@ fn todo_block_shows_progress_and_items() {
             status: ToolStatus::Ok,
             output: "Todo list (1/3 done):".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     );
 

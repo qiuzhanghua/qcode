@@ -146,10 +146,93 @@ impl Shell {
             && self.expanded_process == Some(ProcessKey::Tool(call_id.to_string()))
     }
 
+    /// The parsed diff for a call, if it changed any text we could show.
+    pub(crate) fn inline_diff(&self, call_id: &str) -> Option<Entity<DiffState>> {
+        self.inline_diffs.get(call_id).cloned()
+    }
+
+    /// A patch we tried to parse and could not: the row keeps its counts but
+    /// must not offer a viewer that would open nothing.
+    pub(crate) fn diff_broken(&self, call_id: &str) -> bool {
+        self.broken_diffs.contains(call_id)
+    }
+
+    /// Parses a call's patch the first time something asks to see it, so a
+    /// long session pays for the diffs it actually opens. Covers replayed
+    /// sessions too: their events never pass through the live hook.
+    fn ensure_inline_diff(&mut self, call_id: &str, cx: &mut Context<Self>) {
+        if self.inline_diffs.contains_key(call_id) {
+            return;
+        }
+        let Some(diff) = self.app.tool(call_id).and_then(|tool| tool.diff.clone()) else {
+            return;
+        };
+        if diff.patch.is_empty() {
+            return;
+        }
+        let Ok(files) = DiffFile::parse(&diff.patch) else {
+            // Remember the failure so the row stops offering to open it.
+            self.broken_diffs.insert(call_id.to_string());
+            return;
+        };
+        let state = cx.new(|cx| DiffState::new(files, cx));
+        self.inline_diffs.insert(call_id.to_string(), state);
+    }
+
+    /// Parses every diff in a freshly loaded session. Replay never runs the
+    /// live path, and skipping a patch that will not parse keeps the row from
+    /// offering a "查看" button with nothing behind it.
+    pub(crate) fn rebuild_inline_diffs(&mut self, cx: &mut Context<Self>) {
+        self.inline_diffs.clear();
+        self.broken_diffs.clear();
+        let patches: Vec<(String, String)> = self
+            .app
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Tool(tool) => tool
+                    .diff
+                    .as_ref()
+                    .filter(|diff| !diff.patch.is_empty())
+                    .map(|diff| (tool.call_id.clone(), diff.patch.clone())),
+                _ => None,
+            })
+            .collect();
+        for (call_id, patch) in patches {
+            match DiffFile::parse(&patch) {
+                Ok(files) => {
+                    let state = cx.new(|cx| DiffState::new(files, cx));
+                    self.inline_diffs.insert(call_id, state);
+                }
+                Err(_) => {
+                    self.broken_diffs.insert(call_id);
+                }
+            }
+        }
+    }
+
+    /// Opens the call's diff in the full-height panel.
+    pub(crate) fn open_diff_view(&mut self, call_id: &str, cx: &mut Context<Self>) {
+        self.ensure_inline_diff(call_id, cx);
+        let Some(state) = self.inline_diffs.get(call_id).cloned() else {
+            return;
+        };
+        self.diff_view = Some(state);
+        self.diff_view_call = Some(call_id.to_string());
+        cx.notify();
+    }
+
+    pub(crate) fn close_diff_view(&mut self, cx: &mut Context<Self>) {
+        self.diff_view = None;
+        self.diff_view_call = None;
+        cx.notify();
+    }
+
     pub(crate) fn toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) {
         let next = if self.tool_expanded(call_id) {
             None
         } else {
+            self.ensure_inline_diff(call_id, cx);
             Some(ProcessKey::Tool(call_id.to_string()))
         };
         self.set_expanded_process(next, cx);

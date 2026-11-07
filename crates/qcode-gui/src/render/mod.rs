@@ -25,7 +25,7 @@ use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, Size};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use qcode_core::event::ToolStatus;
+use qcode_core::event::{ToolDiff, ToolStatus};
 use qcode_core::task::{RootAccess, RootState};
 use qcode_ui_bridge::QueueOp;
 use qcode_ui_state::{App, Block};

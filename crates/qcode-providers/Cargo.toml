@@ -19,4 +19,5 @@ reqwest.workspace = true
 
 [dev-dependencies]
 qcode-net = { version = "0.7.4", path = "../qcode-net" }
+qcode-tools = { version = "0.7.4", path = "../qcode-tools" }
 tempfile.workspace = true

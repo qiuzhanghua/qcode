@@ -153,6 +153,9 @@ fn header_lead(expanded: bool, icon: IconName, label: impl Into<SharedString>) -
         .child(conversation_icon(icon))
         .child(label.into())
 }
+/// One diff row, so an inline card can be sized without a layout pass.
+const DIFF_ROW_HEIGHT: f32 = 20.0;
+
 /// The QC mark as `currentColor`, so the running row follows the theme.
 const QC_MARK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -515,6 +518,8 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                 .map(|d| format!("耗时{}", format_duration(d)))
                 .unwrap_or_default()
         };
+        let process_title = process_label(shell, &process_blocks)
+            .unwrap_or_else(|| format!("执行过程 · {} 项", process_blocks.len()));
         let header = div()
             .flex()
             .flex_row()
@@ -533,7 +538,7 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                     entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
                 }
             })
-            .child(format!("执行过程 · {} 项", process_blocks.len()))
+            .child(process_title)
             .child(status_label)
             .child(elapsed_label)
             .child(conversation_icon(if process_open {
@@ -771,10 +776,16 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 })
                 .child(header_lead(expanded, tool_icon_name(&tool.name), label))
                 .children((!summary.is_empty()).then(|| {
+                    // Truncate the detail, never the counts: a long command or
+                    // path must not push the +N −D off the row.
                     div()
+                        .max_w(px(420.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_color(rgb(0x777777))
                         .child(format!("· {summary}"))
-                }));
+                }))
+                .children(tool.diff.as_ref().map(diff_chips));
             if let Some(status) = status {
                 header = header.child(
                     div()
@@ -793,6 +804,28 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                     .pl_8()
                     .pr_6()
                     .pb_2();
+                // The change itself, above the command/output box.
+                if let Some(state) = shell.inline_diff(&tool.call_id) {
+                    // The viewer fills its parent, so the card needs a height:
+                    // one row per patch line, capped so a huge rewrite does not
+                    // push the rest of the turn off screen.
+                    let rows = tool
+                        .diff
+                        .as_ref()
+                        .map(|diff| diff.patch.lines().count())
+                        .unwrap_or(0);
+                    let height = (rows as f32 * DIFF_ROW_HEIGHT).clamp(96.0, 320.0);
+                    details = details.child(
+                        div()
+                            .w_full()
+                            .h(px(height))
+                            .rounded(px(6.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(rgba(0x7f7f7f20))
+                            .child(Diff::new(&state)),
+                    );
+                }
                 let command = tool
                     .arguments
                     .get("command")
@@ -911,6 +944,29 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                         details = details.child(content);
                     }
                 }
+                if tool
+                    .diff
+                    .as_ref()
+                    .is_some_and(|diff| !diff.patch.is_empty())
+                    && !shell.diff_broken(&tool.call_id)
+                {
+                    let call_id = tool.call_id.clone();
+                    details = details.child(
+                        div().flex().flex_row().pt_1().child(
+                            Button::new(SharedString::from(format!("view-diff-{index}")))
+                                .label("查看")
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        let call_id = call_id.clone();
+                                        entity.update(cx, |shell, cx| {
+                                            shell.open_diff_view(&call_id, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                    );
+                }
                 row = row.child(details);
             }
             row.into_any_element()
@@ -953,4 +1009,74 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
             )
             .into_any_element(),
     }
+}
+
+/// The `1KB +1 -1` chips after a tool row's summary.
+fn diff_chips(diff: &ToolDiff) -> Div {
+    let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
+    let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();
+    let bytes: u64 = diff.files.iter().map(|file| file.bytes).sum();
+    let mut row = div().flex().flex_row().items_center().gap_1();
+    if bytes > 0 && additions > 0 && deletions == 0 {
+        row = row.child(div().text_color(rgb(0x999999)).child(human_bytes(bytes)));
+    }
+    if additions > 0 {
+        row = row.child(
+            div()
+                .text_color(rgb(0x4c9a68))
+                .child(format!("+{additions}")),
+        );
+    }
+    if deletions > 0 {
+        row = row.child(
+            div()
+                .text_color(rgb(0xc26464))
+                .child(format!("-{deletions}")),
+        );
+    }
+    row
+}
+
+/// Byte counts as the diff header writes them: `842B`, `1.2KB`, `3.4MB`.
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let value = bytes as f64;
+    if value < KB {
+        format!("{bytes}B")
+    } else if value < KB * KB {
+        format!("{:.0}KB", value / KB)
+    } else {
+        format!("{:.1}MB", value / (KB * KB))
+    }
+}
+
+/// What a turn did, the way the reference UI summarises it: "修改了文件，执行了
+/// 命令，已读取文件". `None` when nothing falls into one of those buckets, so
+/// the caller can fall back to counting items.
+fn process_label(shell: &Shell, blocks: &[usize]) -> Option<String> {
+    let mut writes = false;
+    let mut shells = false;
+    let mut reads = false;
+    for block in blocks {
+        let Some(Block::Tool(tool)) = shell.app.blocks.get(*block) else {
+            continue;
+        };
+        match tool.name.as_str() {
+            "apply_patch" | "edit_file" | "write_file" => writes = true,
+            "run_shell" => shells = true,
+            "read_file" | "list_dir" | "grep" | "glob" => reads = true,
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if writes {
+        parts.push("修改了文件");
+    }
+    if shells {
+        parts.push("执行了命令");
+    }
+    if reads {
+        parts.push("已读取文件");
+    }
+    (!parts.is_empty()).then(|| parts.join("，"))
 }

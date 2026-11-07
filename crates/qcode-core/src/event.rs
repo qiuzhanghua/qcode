@@ -12,7 +12,11 @@ use time::OffsetDateTime;
 use crate::task::Root;
 
 /// Bumped whenever the on-disk shape changes in a breaking way.
-pub const EVENT_SCHEMA_VERSION: u32 = 4;
+///
+/// v4 added `UserMessage::starts_segment`/`queued_id`; v5 added
+/// `ToolResult::diff`, which is additive — a v5 reader still reads v4 logs, and
+/// the missing diff only costs the inline diff view.
+pub const EVENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -216,6 +220,43 @@ pub struct ToolResult {
     pub output: String,
     #[serde(default)]
     pub metadata: ToolMetadata,
+    /// What this call actually changed on disk. `None` for a read-only tool, a
+    /// failed call, or a log written before schema v5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiff>,
+}
+
+/// The change one write-ish tool call made, as a unified diff plus per-file
+/// counts. Stored on the result rather than in [`ToolMetadata`] because it is
+/// the outcome of the call, not bookkeeping about its text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolDiff {
+    /// Unified diff with `--- a/<path>` / `+++ b/<path>` headers, so the GUI can
+    /// hand it straight to a diff viewer. Empty when [`Self::truncated`].
+    pub patch: String,
+    pub files: Vec<DiffFileStat>,
+    /// The patch outgrew the size cap and was dropped; the counts in `files`
+    /// are still exact.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffFileStat {
+    pub path: String,
+    pub kind: DiffKind,
+    pub additions: u32,
+    pub deletions: u32,
+    /// Size of the resulting file, for the "1KB" chip next to the row.
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    Created,
+    Modified,
+    Deleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

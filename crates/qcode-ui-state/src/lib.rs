@@ -5,13 +5,14 @@
 //! and lets the renderer be exercised with `TestBackend`.
 
 pub mod composer;
+mod tool_diff;
 
 use std::collections::HashSet;
 
 pub use composer::{Composer, InputEvent};
 
 use qcode_core::engine::Delta;
-use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus, Usage};
+use qcode_core::event::{ContentBlock, Event, EventKind, ToolDiff, ToolStatus, TurnStatus, Usage};
 use qcode_core::todo::{self, TodoItem};
 use time::{Duration, OffsetDateTime};
 
@@ -23,7 +24,7 @@ const SCROLL_STEP: usize = 10;
 pub enum Block {
     User(String),
     Assistant(String),
-    Tool(ToolEntry),
+    Tool(Box<ToolEntry>),
     /// Progress from a child agent: text, notices and a nested tool row.
     /// `group` is the child session id, shared with its parent `subagent` row.
     Subagent {
@@ -110,6 +111,9 @@ pub struct ToolEntry {
     /// Child session id for a nested tool row, or the linked child session for
     /// the parent `subagent` row.
     pub group: Option<String>,
+    /// What this call changed on disk. Rebuilt from the arguments for logs
+    /// written before schema v5.
+    pub diff: Option<ToolDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,6 +275,25 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string(),
+        // The patch itself is the argument; showing it inline would bury the
+        // row, so name what it touches instead.
+        "apply_patch" => {
+            let patch = arguments
+                .get("diff")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let paths: Vec<&str> = patch
+                .lines()
+                .filter_map(|line| line.strip_prefix("+++ "))
+                .map(|path| path.split('\t').next().unwrap_or(path))
+                .map(|path| path.strip_prefix("b/").unwrap_or(path))
+                .collect();
+            match paths.as_slice() {
+                [] => String::new(),
+                [only] => only.to_string(),
+                many => format!("{} 个文件", many.len()),
+            }
+        }
         _ => arguments.to_string(),
     };
     if raw.chars().count() > 100 {

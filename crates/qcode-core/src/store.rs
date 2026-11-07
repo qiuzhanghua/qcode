@@ -345,6 +345,7 @@ impl SessionStore {
                     output: "interrupted: the previous run stopped before this tool finished"
                         .to_string(),
                     metadata: Default::default(),
+                    diff: None,
                 }),
             ));
         }

@@ -141,6 +141,7 @@ impl Tool for GlobTool {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| joined.clone()),
+            diff: None,
         })
     }
 }
@@ -291,6 +292,7 @@ impl Tool for GrepTool {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            diff: None,
         })
     }
 }

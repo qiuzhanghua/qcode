@@ -114,6 +114,7 @@ impl Tool for ReadFile {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            diff: None,
         })
     }
 }
@@ -169,12 +170,21 @@ impl Tool for WriteFile {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: WriteArgs = parse(args)?;
         let resolved = path::resolve_ctx(ctx, &args.path, Access::Write)?;
+        // Read the old text before the write so the transcript can show what
+        // changed; a missing or unreadable file simply means "no before".
+        let before = crate::diff::read_source(&resolved.path);
         atomic_write(&resolved.path, &args.content)?;
+        let diff = crate::diff::file(
+            &path::diff_path(&resolved),
+            before.as_deref(),
+            Some(&args.content),
+        );
         Ok(ToolOutput::ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
             resolved.display
-        )))
+        ))
+        .with_diff(diff))
     }
 }
 
@@ -268,10 +278,12 @@ impl Tool for EditFile {
         };
         atomic_write(path, &updated)?;
 
+        let diff = crate::diff::file(&path::diff_path(&resolved), Some(&original), Some(&updated));
         Ok(ToolOutput::ok(format!(
             "replaced {matches} occurrence(s) in {}",
             resolved.display
-        )))
+        ))
+        .with_diff(diff))
     }
 }
 
@@ -342,6 +354,7 @@ impl Tool for ListDir {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            diff: None,
         })
     }
 }

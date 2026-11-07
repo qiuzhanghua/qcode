@@ -247,6 +247,7 @@ mod tests {
                 status,
                 output: "done".to_string(),
                 metadata: Default::default(),
+                diff: None,
             }),
         )
     }

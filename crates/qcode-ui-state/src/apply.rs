@@ -88,7 +88,7 @@ impl App {
             }
             EventKind::ToolCall(call) => {
                 self.ensure_turn(event);
-                self.push_process(Block::Tool(ToolEntry {
+                self.push_process(Block::Tool(Box::new(ToolEntry {
                     call_id: call.call_id.clone(),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -100,13 +100,20 @@ impl App {
                     elapsed: None,
                     child: false,
                     group: None,
-                }));
+                    diff: None,
+                })));
             }
             EventKind::ToolResult(result) => {
                 let todo_update = self.tool_mut(&result.call_id).and_then(|tool| {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    // v5 records the diff with the result; older logs only have
+                    // the arguments, so rebuild what we can from those.
+                    tool.diff = result.diff.clone().or_else(|| {
+                        (event.v < 5)
+                            .then(|| crate::tool_diff::fallback(&tool.name, &tool.arguments))?
+                    });
                     if result.status != ToolStatus::Ok {
                         tool.expanded = true;
                     }
@@ -212,7 +219,7 @@ impl App {
                 }
             }
             EventKind::ToolCall(call) => {
-                self.push_process(Block::Tool(ToolEntry {
+                self.push_process(Block::Tool(Box::new(ToolEntry {
                     call_id: child_call_id(&group, &call.call_id),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -224,7 +231,8 @@ impl App {
                     elapsed: None,
                     child: true,
                     group: Some(group),
-                }));
+                    diff: None,
+                })));
             }
             EventKind::ToolResult(result) => {
                 let call_id = child_call_id(&group, &result.call_id);
@@ -232,6 +240,10 @@ impl App {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    tool.diff = result.diff.clone().or_else(|| {
+                        (event.v < 5)
+                            .then(|| crate::tool_diff::fallback(&tool.name, &tool.arguments))?
+                    });
                 }
             }
             EventKind::Error(error) => {
@@ -443,9 +455,17 @@ impl App {
         self.status.running = false;
     }
 
+    /// The row for `call_id`, if the call is still in the transcript.
+    pub fn tool(&self, call_id: &str) -> Option<&ToolEntry> {
+        self.blocks.iter().rev().find_map(|block| match block {
+            Block::Tool(tool) if tool.call_id == call_id => Some(tool.as_ref()),
+            _ => None,
+        })
+    }
+
     pub(crate) fn tool_mut(&mut self, call_id: &str) -> Option<&mut ToolEntry> {
         self.blocks.iter_mut().rev().find_map(|block| match block {
-            Block::Tool(tool) if tool.call_id == call_id => Some(tool),
+            Block::Tool(tool) if tool.call_id == call_id => Some(tool.as_mut()),
             _ => None,
         })
     }

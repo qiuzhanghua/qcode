@@ -65,7 +65,10 @@ impl Shell {
             cx.notify();
         });
         self.active = None;
-        self.diff = None;
+        self.inline_diffs.clear();
+        self.broken_diffs.clear();
+        self.diff_view = None;
+        self.diff_view_call = None;
         self.approvals = ApprovalQueue::default();
         self.error_banner = None;
         self.pending_roots = None;
@@ -146,7 +149,9 @@ impl Shell {
                 self.app.status.model = configured_model.clone();
                 self.reset_scroller(cx);
                 self.active = Some(id.clone());
-                self.diff = None;
+                self.rebuild_inline_diffs(cx);
+                self.diff_view = None;
+                self.diff_view_call = None;
                 self.approvals = ApprovalQueue::default();
                 self.error_banner = None;
                 self.pending_roots = None;

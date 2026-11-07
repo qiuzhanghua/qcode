@@ -167,6 +167,7 @@ mod tests {
                     status: ToolStatus::Ok,
                     output: "contents".into(),
                     metadata: Default::default(),
+                    diff: None,
                 }),
             ),
         ];

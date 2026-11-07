@@ -9,6 +9,7 @@ use qcode_core::tool::{Tool, ToolContext};
 use qcode_net::{Egress, EgressOptions};
 use qcode_tools::fetch::WebFetch;
 use qcode_tools::fs::{EditFile, ListDir, ReadFile, WriteFile};
+use qcode_tools::patch::ApplyPatch;
 use qcode_tools::shell::RunShell;
 use serde_json::json;
 #[cfg(unix)]
@@ -116,6 +117,75 @@ async fn write_read_edit_roundtrip() {
         .unwrap();
     assert!(read.output.contains("fn run()"));
     assert!(!read.output.contains("fn main()"));
+}
+
+#[tokio::test]
+async fn the_write_tools_record_what_they_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+
+    // A new file is all additions against /dev/null.
+    let created = WriteFile
+        .execute(&ctx, json!({"path": "notes.md", "content": "one\ntwo\n"}))
+        .await
+        .unwrap();
+    let diff = created.diff.expect("write_file records a diff");
+    assert_eq!(diff.files.len(), 1);
+    assert_eq!(diff.files[0].path, "notes.md");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Created);
+    assert_eq!(diff.files[0].additions, 2);
+    assert!(diff.patch.starts_with("--- /dev/null\n+++ b/notes.md\n"));
+
+    // An edit has a real before/after and therefore a real hunk header.
+    let edited = EditFile
+        .execute(
+            &ctx,
+            json!({"path": "notes.md", "old_string": "two", "new_string": "2"}),
+        )
+        .await
+        .unwrap();
+    let diff = edited.diff.expect("edit_file records a diff");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Modified);
+    assert_eq!((diff.files[0].additions, diff.files[0].deletions), (1, 1));
+    assert!(diff.patch.contains("@@ -1,2 +1,2 @@"), "{}", diff.patch);
+    assert!(diff.patch.contains("-two\n"));
+    assert!(diff.patch.contains("+2\n"));
+
+    // A read-only call has nothing to show.
+    let read = ReadFile
+        .execute(&ctx, json!({"path": "notes.md"}))
+        .await
+        .unwrap();
+    assert!(read.diff.is_none());
+}
+
+#[tokio::test]
+async fn apply_patch_reports_one_diff_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+    std::fs::write(dir.path().join("one.rs"), "fn main() {}\n").unwrap();
+
+    let patch = "--- a/one.rs\n+++ b/one.rs\n@@ -1 +1 @@\n-fn main() {}\n+fn run() {}\n--- /dev/null\n+++ b/two.rs\n@@ -0,0 +1 @@\n+second\n";
+    let output = ApplyPatch
+        .execute(&ctx, json!({ "diff": patch }))
+        .await
+        .unwrap();
+
+    let diff = output.diff.expect("apply_patch records a diff");
+    assert_eq!(diff.files.len(), 2);
+    assert_eq!(diff.files[0].path, "one.rs");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Modified);
+    assert_eq!(diff.files[1].path, "two.rs");
+    assert_eq!(diff.files[1].kind, qcode_core::event::DiffKind::Created);
+    assert!(diff.patch.contains("--- a/one.rs"));
+    // The new file is an addition: nothing on the left-hand side.
+    assert!(diff.patch.contains("--- /dev/null"));
+    assert!(diff.patch.contains("+++ b/two.rs"));
+    // The file itself really changed.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("one.rs")).unwrap(),
+        "fn run() {}\n"
+    );
 }
 
 #[tokio::test]

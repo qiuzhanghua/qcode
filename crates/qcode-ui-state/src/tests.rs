@@ -396,6 +396,7 @@ fn tool_result_updates_the_matching_row() {
         status: ToolStatus::Ok,
         output: "ok".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     match app.blocks.last() {
@@ -428,6 +429,7 @@ fn todo_write_result_becomes_a_todo_block() {
         status: ToolStatus::Ok,
         output: "Todo list (1/3 done):".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     match app.blocks.last() {
@@ -453,6 +455,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         status: ToolStatus::Ok,
         output: "Todo list (0/1 done):".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c2".to_string(),
@@ -464,6 +467,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         status: ToolStatus::Error,
         output: "item 1 has empty `content`".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     assert_eq!(
@@ -490,6 +494,7 @@ fn empty_todo_write_clears_the_list_with_a_notice() {
         status: ToolStatus::Ok,
         output: "todo list cleared".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     assert!(matches!(
@@ -955,6 +960,7 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             status: ToolStatus::Ok,
             output: "contents".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     ));
     app.apply_child(&child(
@@ -1263,6 +1269,74 @@ fn steering_commands_map_to_frontend_actions() {
             .iter()
             .any(|block| matches!(block, Block::Notice(text) if text.contains("usage")))
     );
+}
+
+#[test]
+fn diff_command_lists_changes_and_prints_a_patch() {
+    use qcode_core::event::{DiffFileStat, DiffKind, ToolDiff, ToolResult, ToolStatus};
+
+    let mut app = App::new("mock", "mock-1");
+    app.apply(&event(EventKind::ToolCall(qcode_core::event::ToolCall {
+        call_id: "c1".to_string(),
+        name: "edit_file".to_string(),
+        arguments: serde_json::json!({"path": "notes.md"}),
+    })));
+    app.apply(&event(EventKind::ToolResult(ToolResult {
+        call_id: "c1".to_string(),
+        status: ToolStatus::Ok,
+        output: "replaced 1 occurrence(s) in @workspace/notes.md".to_string(),
+        metadata: Default::default(),
+        diff: Some(ToolDiff {
+            patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".to_string(),
+            files: vec![DiffFileStat {
+                path: "notes.md".to_string(),
+                kind: DiffKind::Modified,
+                additions: 1,
+                deletions: 1,
+                bytes: 2,
+            }],
+            truncated: false,
+        }),
+    })));
+
+    app.run_command("/diff");
+    let listing = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a listing");
+    assert!(listing.contains("file changes (1)"), "{listing}");
+    assert!(listing.contains("edit_file"), "{listing}");
+    assert!(listing.contains("+1 -1"), "{listing}");
+
+    app.run_command("/diff 1");
+    let patch = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a patch");
+    assert!(patch.contains("+1\n"), "{patch}");
+    assert!(patch.contains("--- a/notes.md"), "{patch}");
+
+    app.run_command("/diff 2");
+    let out_of_range = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("an error");
+    assert!(out_of_range.contains("usage"), "{out_of_range}");
 }
 
 #[test]

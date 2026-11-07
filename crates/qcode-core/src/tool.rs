@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::event::{ToolMetadata, ToolStatus, Usage};
+use crate::event::{ToolDiff, ToolMetadata, ToolStatus, Usage};
 use crate::network::Network;
 use crate::provider::ToolSpec;
 use crate::task::{Root, RootAccess};
@@ -135,6 +135,9 @@ pub struct ToolOutput {
     /// Untruncated output when `metadata.truncated` is set; the engine writes it
     /// to `sessions/<id>/outputs/<call_id>.txt` and records the path.
     pub full_output: Option<String>,
+    /// What the call changed on disk, for the inline diff view. Only the
+    /// writing tools fill this in; everything else leaves it `None`.
+    pub diff: Option<ToolDiff>,
 }
 
 impl ToolOutput {
@@ -150,6 +153,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            diff: None,
         }
     }
 
@@ -165,6 +169,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            diff: None,
         }
     }
 
@@ -178,6 +183,12 @@ impl ToolOutput {
 
     pub fn with_metadata(mut self, metadata: ToolMetadata) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Attach the change this call made, so the transcript can show it.
+    pub fn with_diff(mut self, diff: Option<ToolDiff>) -> Self {
+        self.diff = diff;
         self
     }
 
@@ -195,6 +206,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            diff: None,
         }
     }
 }

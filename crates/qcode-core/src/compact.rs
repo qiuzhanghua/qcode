@@ -309,6 +309,7 @@ mod tests {
                     status: ToolStatus::Ok,
                     output: huge.clone(),
                     metadata: ToolMetadata::default(),
+                    diff: None,
                 }),
             ),
             event(

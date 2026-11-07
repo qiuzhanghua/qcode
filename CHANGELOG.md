@@ -1,5 +1,23 @@
 # Changelog
 
+## 未发布
+
+- **工具改动落盘，对话流里能看见 diff**（ADR-0057）：事件 schema 升到 v5，
+  `ToolResult` 新增 `diff`（`patch` + 每文件 `kind/additions/deletions/bytes`），
+  `edit_file` / `write_file` / `apply_patch` 在实际落盘后按真实结果算出统一 diff；
+  失败、取消、被拒的调用不产出。
+- **GUI**：工具行头显示 `+N −D`（新建文件另附大小），展开后在命令/输出盒子之上渲染红绿
+  diff（高度按行数取 96–320px），底部「查看」面板是同一份 patch 的全量视图；`DiffState`
+  按需解析，回放会话在加载时重建。
+- **TUI**：工具行同样带 `+N −D`，新增 `/diff` 列出本会话所有带改动的调用、`/diff <n>`
+  打印单条 patch。
+- **老日志**：v ≤ 4 没有 `diff` 字段，从调用参数回推——`apply_patch` 用它自己的 patch
+  （统计准确），`write_file` 合成全绿，`edit_file` 只保留计数（行号留空，不编造）。
+- **turn 头摘要**：从「执行过程 · N 项」改为按工具归类的中文摘要（修改了文件、执行了命令、
+  已读取文件），无可归类工具时退回原文案。
+- 修掉 `apply_patch` 抽屉从未显示的旧 bug（读的是 `arguments["patch"]`，实际参数名是
+  `diff`），并删掉那套 Expand/Collapse 双按钮抽屉。
+
 ## 0.7.4 — 2026-11-06
 
 - **工作区快照不再复制工具链缓存**：`run_shell` 前的树快照（ADR-0034 补充）原先把

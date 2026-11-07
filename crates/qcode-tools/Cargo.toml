@@ -16,6 +16,7 @@ tokio-util.workspace = true
 globset.workspace = true
 ignore.workspace = true
 regex.workspace = true
+similar.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 

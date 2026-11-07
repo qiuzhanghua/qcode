@@ -1,4 +1,5 @@
 use crate::*;
+use std::collections::HashMap;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
 
 pub(crate) struct Shell {
@@ -26,9 +27,16 @@ pub(crate) struct Shell {
     pub(crate) _input_subscription: gpui_kit::Subscription,
     /// Keeps `selected_turn` in sync with the transcript scroll position.
     pub(crate) _scroller_subscription: gpui_kit::Subscription,
-    /// A real patch rendered read-only.
-    pub(crate) diff: Option<Entity<DiffState>>,
-    pub(crate) diff_expanded: bool,
+    /// Diffs parsed from the calls in view, keyed by call id. Built the first
+    /// time a row is expanded or "查看" is pressed, so a long session only
+    /// pays for the patches it shows; replayed sessions work the same way.
+    pub(crate) inline_diffs: HashMap<String, Entity<DiffState>>,
+    /// Calls whose patch would not parse; a viewer there would open nothing.
+    pub(crate) broken_diffs: HashSet<String>,
+    /// The diff opened in the full-height panel ("查看"), and the call it came
+    /// from so the row can show it as selected.
+    pub(crate) diff_view: Option<Entity<DiffState>>,
+    pub(crate) diff_view_call: Option<String>,
     pub(crate) sidebar_visible: bool,
     /// Images pasted since the last submit.
     pub(crate) attachments: Vec<qcode_core::engine::Attachment>,
@@ -268,8 +276,10 @@ impl Shell {
             empty_draft: false,
             _input_subscription: input_subscription,
             _scroller_subscription: scroller_subscription,
-            diff: None,
-            diff_expanded: false,
+            inline_diffs: HashMap::new(),
+            broken_diffs: HashSet::new(),
+            diff_view: None,
+            diff_view_call: None,
             sidebar_visible: true,
             attachments: Vec::new(),
             file_refs: Vec::new(),
@@ -426,14 +436,6 @@ impl Shell {
             }
             match event {
                 UiEvent::Event(event) | UiEvent::Child(event) => {
-                    if let EventKind::ToolCall(call) = &event.kind
-                        && call.name == "apply_patch"
-                        && let Some(patch) =
-                            call.arguments.get("patch").and_then(|value| value.as_str())
-                        && let Ok(files) = DiffFile::parse(patch)
-                    {
-                        self.diff = Some(cx.new(|cx| DiffState::new(files, cx)));
-                    }
                     let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
                     let turns_before = self.app.turns.len();

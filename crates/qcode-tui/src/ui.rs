@@ -351,6 +351,22 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(u
         Span::raw(" "),
         Span::styled(format!("[{status}{elapsed}]"), Style::default().fg(color)),
     ];
+    if let Some(diff) = &tool.diff {
+        let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
+        let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();
+        if additions > 0 {
+            spans.push(Span::styled(
+                format!(" +{additions}"),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if deletions > 0 {
+            spans.push(Span::styled(
+                format!(" -{deletions}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
     if let Some((count, folded)) = nested
         && count > 0
     {

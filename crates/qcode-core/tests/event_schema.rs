@@ -277,6 +277,7 @@ fn tool_result_snapshot_keeps_default_metadata() {
                 exit_code: Some(130),
                 ..ToolMetadata::default()
             },
+            diff: None,
         }),
         json!({
             "type": "tool_result",
@@ -288,6 +289,54 @@ fn tool_result_snapshot_keeps_default_metadata() {
                     "truncated": false,
                     "bytes": 17,
                     "exit_code": 130
+                }
+            }
+        }),
+    );
+}
+
+#[test]
+fn tool_result_snapshot_carries_the_diff() {
+    assert_snapshot(
+        EventKind::ToolResult(ToolResult {
+            call_id: "call-2".into(),
+            status: ToolStatus::Ok,
+            output: "replaced 1 occurrence(s) in @workspace/notes.md".into(),
+            metadata: ToolMetadata::default(),
+            diff: Some(qcode_core::event::ToolDiff {
+                patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".into(),
+                files: vec![qcode_core::event::DiffFileStat {
+                    path: "notes.md".into(),
+                    kind: qcode_core::event::DiffKind::Modified,
+                    additions: 1,
+                    deletions: 1,
+                    bytes: 2,
+                }],
+                truncated: false,
+            }),
+        }),
+        json!({
+            "type": "tool_result",
+            "data": {
+                "call_id": "call-2",
+                "status": "ok",
+                "output": "replaced 1 occurrence(s) in @workspace/notes.md",
+                "metadata": {
+                    "truncated": false,
+                    "bytes": 0
+                },
+                "diff": {
+                    "patch": "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n",
+                    "files": [
+                        {
+                            "path": "notes.md",
+                            "kind": "modified",
+                            "additions": 1,
+                            "deletions": 1,
+                            "bytes": 2
+                        }
+                    ],
+                    "truncated": false
                 }
             }
         }),

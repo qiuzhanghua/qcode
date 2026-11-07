@@ -3520,3 +3520,91 @@ macOS 选 FFI 而不是「让 `security` 从 stdin 读」：`security add-generi
   `CredWrite` 写入后由 `CredRead` 脚本读回，结束时 `CredDelete` 清理。
 - 跨平台：`windows_credential_scripts_quote_provider_names` 校验单行、`''` 转义、密钥只来自
   stdin。
+
+## ADR-0057：工具改动落盘——schema v5 的 `ToolDiff` 与两处视图（2026-11-07）
+
+**背景**
+
+对话流里的工具行一直只显示「调用了什么、输出了什么」。DSH 的界面把写文件也当作一等的
+transcript 事实：行头有 `+N −D` 与文件大小，展开就是红绿 diff，底部还有「查看」的全量
+视图。我们此前只有一个从未生效的抽屉（`shell/mod.rs` 读的是 `arguments["patch"]`，而
+`apply_patch` 的参数名是 `diff`），且只覆盖 `apply_patch`。
+
+要让 GUI 与 TUI 都能显示真实改动，事实必须落在日志里：transcript 完全由 JSONL 重建，
+运行时内存里的工具输出到不了回放路径。
+
+**决定**
+
+### 1. `ToolResult` 增加 `diff`，`EVENT_SCHEMA_VERSION` 4 → 5
+
+```text
+ToolResult {
+  call_id, status, output, metadata,
+  diff: Option<ToolDiff>,          // 纯增量，缺省即「非写操作 / 无从得知」
+}
+
+ToolDiff {
+  patch: String,                   // 统一 diff，带 --- / +++ 头
+  files: Vec<DiffFileStat>,        // path, kind(Created|Modified|Deleted), additions, deletions, bytes
+  truncated: bool,                 // 超过 64 KiB，patch 已丢，只信计数
+}
+```
+
+放在 `ToolResult` 而不是 `ToolMetadata`：metadata 描述「输出是怎么被裁剪的」
+（`truncated`/`bytes`/`exit_code`/`full_output_path`），diff 是这次调用的一等结果。
+`bytes` 取**新内容**的字节数，供行头的「1KB」使用，不去 `stat` 文件。
+
+### 2. 产出在这里：工具自己算
+
+- `edit_file`：内存里已有 before/after，直接对两段文本做 `similar::TextDiff`。
+- `write_file`：写之前读一次旧内容（存在、< 256 KiB、UTF-8 才算），没有就是 `Created`。
+- `apply_patch`：`PlannedOp` 补 `before`，落盘后**按实际结果**重算，而不是回声模型给的
+  patch——echo 会漏掉 partial apply 与规范化后的空白。
+- 失败、取消、被拒的调用不产出 diff。3 行上下文、`a/`+`b/` 前缀、缺失侧写 `/dev/null`，
+  与 `DiffFile::parse` 的期望一致。
+
+### 3. 消费侧容错两条路
+
+- 新日志（v5）直接用 `ToolResult.diff`；
+- 老日志（v <= 4）用 `qcode-ui-state::tool_diff::fallback` 从调用参数重建：`apply_patch`
+  用它自己的 patch 原文（含统计），`write_file` 合成全绿，`edit_file` 只有两段片段 →
+  保留计数、放弃 patch 文本（行号留空，不编造）。
+
+### 4. 渲染：懒解析 + 明确失败
+
+- GUI：行头 `+N −D`（仅新建时附大小）；展开区在命令/输出盒子**之上**插 `Diff`；卡片高度
+  按 patch 行数取 `96..320px`（`Diff` 的 body 是 `flex_1`，父容器不给高度会塌成一条线）；
+- `DiffState` 在「展开」或「查看」时才 `DiffFile::parse`，长会话只为看过的 patch 付费；
+  会话加载时 `rebuild_inline_diffs` 一次性重建（回放不走实时钩子）；
+- 解析失败的 patch 记入 `broken_diffs`，行保留计数但**不显示**「查看」，避免点了没反应；
+- 底部抽屉改成「查看」全量视图（480px，只剩「关闭」），修掉 `patch`/`diff` 的死代码；
+- turn 头从「执行过程 · N 项」换成按工具归类的摘要（修改了文件 / 执行了命令 / 已读取文件），
+  无可归类工具时退回原文案；
+- TUI：行头同样 `+N −D`，新增 `/diff`（列出带改动的调用）与 `/diff <n>`（打印 patch）。
+
+**备选方案（未采用）**
+
+- **解析流里的 `run_shell` 输出来造 diff**：只能靠 `git diff` 之类的启发式，跨平台不可靠，
+  且看不到 `apply_patch` 这类直接写盘的工具。
+- **UI 侧根据参数猜**：`edit_file` 的 `old_string`/`new_string` 只是片段，行号与上下文都
+  无从得知——这正是 v4 日志回退路径的已知损失。
+- **每条工具结果都存全量前后文件**：日志体积不可控，且可执行权限之外还多了隐私面。
+
+**后果**
+
+- 日志变大：每次写操作多几百字节到 64 KiB。超限时丢 patch、保留计数。
+- 纯增量字段：旧日志照常读，旧二进制忽略未知字段；`v <= 4` 的投影启发式（`starts_segment`）
+  不受影响。
+- Windows 上 `write_file` 多一次读旧文件（< 256 KiB），可接受。
+
+**验证**
+
+- `crates/qcode-tools/src/diff.rs` 单测：修改/新建/删除/多文件/超限/空改动。
+- `crates/qcode-tools/tests/tools.rs`：三种写工具的 diff 与 `apply_patch` 的 per-file 统计。
+- `crates/qcode-core/tests/event_schema.rs`：`ToolResult` + `diff` 的完整 JSON 快照。
+- `crates/qcode-providers/tests/tool_diff.rs`：用脚本化 provider 让模型真的调 `write_file`，
+  从 `SessionStore::load` 断言 diff 进了日志、文件真的写了。
+- `crates/qcode-ui-state`：v4 回退的三条路径、`/diff` 的列表/单条/越界。
+- `crates/qcode-tui/tests/render.rs`：行头计数。
+- GUI 实跑（v5 与 v4 各一条 fixture 会话）：行头 `+1 -1 · kb/README.md`、展开的红绿卡片、
+  「查看」全量面板。

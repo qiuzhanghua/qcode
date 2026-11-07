@@ -623,39 +623,31 @@ impl Shell {
                     .child(rail)
                     .child(self.render_floating_actions(cx))
             })
-            .children(self.diff.as_ref().map(|state| {
-                let height = if self.diff_expanded {
-                    px(480.0)
-                } else {
-                    px(220.0)
-                };
+            .children(self.diff_view.as_ref().map(|state| {
                 div()
                     .flex()
                     .flex_col()
-                    .h(height)
+                    .h(px(480.0))
+                    .border_t_1()
                     .child(
                         div()
                             .flex()
                             .flex_row()
-                            .gap_1()
+                            .items_center()
+                            .justify_between()
+                            .px_6()
+                            .py_1()
                             .child(
-                                Button::new("toggle-diff")
-                                    .label(if self.diff_expanded {
-                                        "Collapse diff"
-                                    } else {
-                                        "Expand diff"
-                                    })
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.diff_expanded = !this.diff_expanded;
-                                        cx.notify();
-                                    })),
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .opacity(0.6)
+                                    .child("改动"),
                             )
                             .child(
                                 Button::new("close-diff")
-                                    .label("Close")
+                                    .label("关闭")
                                     .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.diff = None;
-                                        cx.notify();
+                                        this.close_diff_view(cx);
                                     })),
                             ),
                     )
