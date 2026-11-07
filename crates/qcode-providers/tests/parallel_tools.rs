@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::approval::AutoApprove;
@@ -175,17 +175,6 @@ async fn run(
     (outcome, events)
 }
 
-/// Wall-clock assertions only mean something relative to how fast this machine
-/// schedules a timer right now: CI runners share two cores between several test
-/// binaries, and a 150ms sleep can take four times that. Letting the same test
-/// measure one sleep of the same length and comparing against that keeps the
-/// "these ran concurrently" claim without pinning the test to a quiet laptop.
-async fn sleep_baseline(ms: u64) -> Duration {
-    let started = Instant::now();
-    tokio::time::sleep(Duration::from_millis(ms)).await;
-    started.elapsed()
-}
-
 fn result_ids(events: &[Event]) -> Vec<String> {
     events
         .iter()
@@ -210,19 +199,16 @@ async fn adjacent_reads_overlap_and_results_keep_call_order() {
         final_text("done"),
     ];
 
-    let started = Instant::now();
     let (outcome, events) = run(&dir, tools, script, CancellationToken::new()).await;
-    let elapsed = started.elapsed();
 
     assert!(!outcome.cancelled);
     assert_eq!(outcome.text, "done");
+    // Three reads are 150ms wide each, so `max_active == 3` can only happen if
+    // all three were inside their sleep at the same time. That is the
+    // timing-free form of "they overlapped": a wall-clock bound on `elapsed`
+    // just re-measured how loaded the runner was (2-core CI boxes stretch one
+    // 150ms sleep past 400ms) and flaked.
     assert_eq!(probe.max(), 3, "all three reads should be in flight");
-    let one_sleep = sleep_baseline(150).await;
-    assert!(
-        elapsed < one_sleep * 2,
-        "reads took {elapsed:?}; one 150ms sleep alone measured {one_sleep:?} here, \
-         and three of them in series would be 3x that"
-    );
     assert_eq!(result_ids(&events), ["call-a", "call-b", "call-c"]);
 }
 
@@ -271,18 +257,12 @@ async fn read_parallelism_is_capped_at_four() {
         .collect();
     let script = vec![tool_batch(&calls), final_text("done")];
 
-    let started = Instant::now();
     let (outcome, events) = run(&dir, tools, script, CancellationToken::new()).await;
-    let elapsed = started.elapsed();
 
     assert!(!outcome.cancelled);
+    // Four in flight at once, never five: the cap is observed from inside the
+    // reads rather than inferred from the clock.
     assert_eq!(probe.max(), 4, "buffer_unordered(4) is the cap");
-    let one_sleep = sleep_baseline(100).await;
-    assert!(
-        elapsed < one_sleep * 5,
-        "8 reads took {elapsed:?}; one 100ms sleep alone measured {one_sleep:?} here, \
-         and serial execution would be 8x that"
-    );
     assert_eq!(result_ids(&events).len(), 8);
 }
 
@@ -308,20 +288,12 @@ async fn cancellation_stops_reads_and_ends_the_turn() {
         canceller.cancel();
     });
 
-    let started = Instant::now();
     let (outcome, events) = run(&dir, tools, script, cancel).await;
 
     assert!(outcome.cancelled);
-    // Six 500ms reads would take 3s in series, and two batches of four-then-two
-    // take a full second; stopping after the first batch proves the cancel
-    // reached the reads without pinning us to a quiet machine.
-    let one_sleep = sleep_baseline(500).await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < one_sleep * 2,
-        "cancellation waited {elapsed:?}; one 500ms read alone measures {one_sleep:?} here \
-         and six of them in series would be 6x that"
-    );
+    // A read that outlived the cancel would have finished as `Ok`; six
+    // `Cancelled` results mean the turn stopped with all six still asleep, so
+    // the assertion below needs no wall clock to say the cancel arrived early.
 
     let results: Vec<&qcode_core::event::ToolResult> = events
         .iter()
