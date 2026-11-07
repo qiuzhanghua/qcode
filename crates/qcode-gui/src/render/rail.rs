@@ -18,45 +18,53 @@ impl Shell {
         }
         let total = self.app.turns.len();
         let active = self.active_turn_index();
-        // At most 15 ticks are shown; with more turns the window scrolls so
-        // the active tick stays centred (clamped at the list edges).
-        const MAX_DOTS: usize = 15;
-        let start = if total <= MAX_DOTS {
-            0
-        } else {
-            let center = active.unwrap_or(total - 1).min(total - 1);
-            (center.saturating_sub(MAX_DOTS / 2)).min(total - MAX_DOTS)
-        };
-        let end = (start + MAX_DOTS).min(total);
+        // The rail is a ruler: every turn gets a tick, right-aligned, at a
+        // pitch that adapts to the transcript height. When a long session would
+        // squeeze the pitch under `MIN_PITCH`, ticks are sampled instead of
+        // shrunk — the active one is always drawn.
+        const MAX_PITCH: f32 = 14.0;
+        const MIN_PITCH: f32 = 6.0;
+        let available = (self.transcript_height.get() - 32.0).max(200.0);
+        let mut stride = 1usize;
+        let mut pitch = (available / total as f32).min(MAX_PITCH);
+        while pitch < MIN_PITCH {
+            stride += 1;
+            let shown = total.div_ceil(stride);
+            pitch = available / shown.max(1) as f32;
+        }
         let mut rail = div()
             .w(px(TURN_RAIL_WIDTH))
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_1();
-        for index in start..end {
-            // Each turn is a short horizontal bar — the shape reads as a ruler
-            // tick rather than a bullet. The current turn's tick is darker and
-            // a little wider; everything else stays the same faint grey, so the
-            // marker carries the position without a colour ladder.
-            let (bar_width, bar_height, bar_color) = match active
-                .map(|active| index.abs_diff(active))
-                .unwrap_or(usize::MAX)
-            {
-                0 => (14.0, 3.0, rgb(0x2b2b2b)),
-                1 => (12.0, 2.0, rgb(0xc6c6c6)),
-                _ => (12.0, 2.0, rgb(0xdedede)),
+            .items_end()
+            .justify_center();
+        let mut indices: Vec<usize> = (0..total).step_by(stride).collect();
+        if let Some(active) = active
+            && !indices.contains(&active)
+        {
+            indices.push(active);
+            indices.sort_unstable();
+        }
+        for index in indices {
+            // Right-aligned ticks on a shared edge, like a ruler: every turn is
+            // a faint 11×3 hairline, the current one is near-black and grows
+            // leftwards to 28×3.5, so the marker reads as a longer dash rather
+            // than a different colour.
+            let current = active == Some(index);
+            let (bar_width, bar_height, bar_color) = if current {
+                (28.0, 3.5, rgb(0x141414))
+            } else {
+                (11.0, 3.0, rgb(0xe2e2e2))
             };
             let show_popover = self.rail_popup == Some(index);
-            // The tick itself is only 2px tall, so the pointer gets a taller
-            // transparent box around it — the hit target must not be a hairline.
+            // The tick is a hairline, so the pointer gets the whole row (pitch
+            // tall, rail wide) as its hit target.
             let dot = div()
-                .w(px(16.0))
-                .h(px(8.0))
+                .w(px(TURN_RAIL_WIDTH))
+                .h(px(pitch))
                 .flex()
                 .items_center()
-                .justify_center()
+                .justify_end()
                 .cursor_pointer()
                 .id(format!("turn-rail-trigger-{index}"))
                 .on_hover(cx.listener(move |this, hovered, _window, cx| {
@@ -182,11 +190,17 @@ impl Shell {
                 }
                 cx.notify();
             }))
-            .on_click(cx.listener(move |this, _, _window, cx| {
-                this.rail_popup = None;
-                this.rail_popup_close_at = None;
-                this.jump_to_turn(turn_index, cx);
-            }))
+            // A click has to be caught on the way *down*: the popup dismisses
+            // itself when the press lands, so an `on_click` on the card would
+            // never fire — the element is gone before the button comes up.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _window, cx| {
+                    this.rail_popup = None;
+                    this.rail_popup_close_at = None;
+                    this.jump_to_turn(turn_index, cx);
+                }),
+            )
             .child(message_section(
                 &question_title,
                 &question_body,

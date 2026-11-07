@@ -123,7 +123,7 @@ pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
     cx.refresh_windows();
 }
 
-const TURN_RAIL_WIDTH: f32 = 20.0;
+const TURN_RAIL_WIDTH: f32 = 34.0;
 /// 输入框上方提示框（权限询问 / 报错 / 轮次提示）比输入框左右各内缩的像素。
 /// 三个提示框都用它，保证宽度完全一致。
 const PROMPT_INSET: f32 = 20.0;
