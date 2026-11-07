@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布
+## 0.7.5 — 2026-11-07
 
 - **工具改动落盘，对话流里能看见 diff**（ADR-0057）：事件 schema 升到 v5，
   `ToolResult` 新增 `diff`（`patch` + 每文件 `kind/additions/deletions/bytes`），
@@ -21,6 +21,9 @@
   标记后作加粗标题，其余保留换行原样展示（不渲染 markdown），问题/回答之间加一条细分隔线；
   高度上限取主区域的一半（`transcript_height × 0.5`，220–620px），按 20px 行高换算行预算，
   超出以省略号收尾。点击整卡仍跳到对应 turn。
+- **CI 诊断**：`scripts/ci-clippy.sh` 的 GitHub 注解里转义反引号，并往 job summary 写一份
+  兜底摘要，红跑不再只剩一个退出码。
+- **Linux**：`show_window_later` 的 `cx` 参数在非 Windows 分支从未使用，补上引用避免告警。
 
 ## 0.7.4 — 2026-11-06
 

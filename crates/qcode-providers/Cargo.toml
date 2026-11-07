@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.7.4", path = "../qcode-core" }
+qcode-core = { version = "0.7.5", path = "../qcode-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,6 +18,6 @@ async-trait.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
-qcode-net = { version = "0.7.4", path = "../qcode-net" }
-qcode-tools = { version = "0.7.4", path = "../qcode-tools" }
+qcode-net = { version = "0.7.5", path = "../qcode-net" }
+qcode-tools = { version = "0.7.5", path = "../qcode-tools" }
 tempfile.workspace = true

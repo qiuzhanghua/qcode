@@ -6,13 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.7.4", path = "../qcode-core" }
-qcode-mcp = { version = "0.7.4", path = "../qcode-mcp" }
-qcode-tools = { version = "0.7.4", path = "../qcode-tools" }
-qcode-net = { version = "0.7.4", path = "../qcode-net" }
+qcode-core = { version = "0.7.5", path = "../qcode-core" }
+qcode-mcp = { version = "0.7.5", path = "../qcode-mcp" }
+qcode-tools = { version = "0.7.5", path = "../qcode-tools" }
+qcode-net = { version = "0.7.5", path = "../qcode-net" }
 reqwest.workspace = true
 serde_json.workspace = true
-qcode-providers = { version = "0.7.4", path = "../qcode-providers" }
+qcode-providers = { version = "0.7.5", path = "../qcode-providers" }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
