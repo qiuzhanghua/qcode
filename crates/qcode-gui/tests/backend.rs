@@ -45,6 +45,9 @@ fn engine_with_provider(
         context_window: Some(128_000),
         network: None,
         snapshots: None,
+        schedules: Vec::new(),
+        schedule_errors: Vec::new(),
+        schedule_tick: None,
     }
 }
 
@@ -713,4 +716,104 @@ async fn stopping_one_task_leaves_the_other_running() {
     }
     assert_eq!(b_status, Some(TurnStatus::Cancelled), "B was stopped");
     assert_eq!(a_status, Some(TurnStatus::Completed), "A was not touched");
+}
+
+/// A schedule whose next window is a couple of seconds away, as the store would
+/// have recorded it after a previous run (ADR-0059 §1: run state lives in the
+/// store, not in the config file).
+fn upcoming(store: &SessionStore, name: &str, in_secs: u64) {
+    let at = qcode_core::schedule::now_local() + time::Duration::seconds(in_secs as i64);
+    store
+        .save_schedule_state(
+            name,
+            &qcode_core::schedule::ScheduleState {
+                next_fire_at: Some(at),
+                ..qcode_core::schedule::ScheduleState::default()
+            },
+        )
+        .expect("schedule state");
+}
+
+fn schedule(name: &str, task: Option<&str>, prompt: &str) -> qcode_core::schedule::Schedule {
+    qcode_core::schedule::Schedule {
+        name: name.to_string(),
+        cron: qcode_core::schedule::CronSpec::parse("* * * * *").expect("every minute"),
+        task: task.map(str::to_string),
+        prompt: prompt.to_string(),
+        overlap: qcode_core::schedule::Overlap::Queue,
+        approval_timeout: None,
+        enabled: true,
+    }
+}
+
+#[tokio::test]
+async fn a_scheduled_window_fires_a_turn_on_the_task_it_names() {
+    // ADR-0059 §2: a due entry submits its prompt through the same queue a typed
+    // message uses, so the turn, its events and its badge are not special cases.
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let meta = qcode_core::event::SessionStarted {
+        model: "mock-1".to_string(),
+        provider: "mock".to_string(),
+        cwd: workspace.path().display().to_string(),
+        version: "0.0.0".to_string(),
+    };
+    let created = store.create_task(&meta).expect("task");
+
+    // A window one second away, as a previous run would have recorded it.
+    upcoming(&store, "nightly", 1);
+    let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
+    engine.schedules = vec![schedule("nightly", Some(&created.id), "review")];
+    engine.schedule_tick = Some(Duration::from_millis(100));
+    let mut backend = LocalBackend::new(engine);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut started = None;
+    while Instant::now() < deadline && started.is_none() {
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
+            && matches!(event.kind, EventKind::TurnStarted(_))
+        {
+            started = Some(event.session.clone());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        started.as_deref(),
+        Some(created.id.as_str()),
+        "the turn must run on the task the entry names"
+    );
+}
+
+#[tokio::test]
+async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
+    // ADR-0059 §2: report it, do not silently skip. The row in the store is what
+    // the sidebar shows.
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path().to_path_buf());
+    let store_for_check = store.clone();
+    upcoming(&store, "orphan", 1);
+    let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
+    engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
+    engine.schedule_tick = Some(Duration::from_millis(100));
+    let mut backend = LocalBackend::new(engine);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut status = None;
+    while Instant::now() < deadline && status.is_none() {
+        status = store_for_check
+            .schedule_states()
+            .ok()
+            .and_then(|states| states.get("orphan").cloned())
+            .and_then(|state| state.last_status);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(status, Some(qcode_core::schedule::ScheduleStatus::Orphaned));
+    // Nothing ran: the scheduler never invented a session.
+    assert!(
+        store_for_check.list().expect("sessions").is_empty(),
+        "an orphaned entry must not create a turn"
+    );
+    let _ = backend.try_recv();
 }

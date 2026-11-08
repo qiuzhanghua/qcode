@@ -2,6 +2,17 @@ use super::*;
 
 impl Shell {
     pub(crate) fn refresh_tasks(&mut self) {
+        // 定时任务的提示随任务一起刷新：错过的窗口、失效的条目、失败的触发都
+        // 记在这里，跟着它指向的那一行显示（ADR-0059 §3）。
+        self.schedule_hints = self
+            .backend
+            .schedules()
+            .iter()
+            .filter_map(|schedule| {
+                let task = schedule.task.clone()?;
+                Some((task, schedule.hint()?))
+            })
+            .collect();
         match self.backend.tasks() {
             Ok(tasks) => {
                 self.titles = task_titles(&tasks, self.backend.as_ref());

@@ -7,6 +7,7 @@
 use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
+use qcode_core::schedule::{Schedule, ScheduleState, ScheduleStatus, Tick};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, SessionTarget, TaggedPort, UiCommand};
 use std::collections::HashMap;
@@ -44,6 +45,16 @@ pub struct Engine {
     pub context_window: Option<u64>,
     pub network: Option<qcode_core::network::SharedNetwork>,
     pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
+    /// Scheduled turns from `[schedules]` (ADR-0059). Empty = no scheduler.
+    /// Their run state lives in the store, not here.
+    pub schedules: Vec<qcode_core::schedule::Schedule>,
+    /// `[schedules]` entries that did not resolve, with the reason. Shown as a
+    /// broken row so a typo is visible instead of looking like "not configured".
+    pub schedule_errors: Vec<(String, String)>,
+    /// How often the scheduler's clock beats. `None` = 30 s, which is finer
+    /// than a cron expression can express. A test (or a hand check) sets a
+    /// short beat instead of waiting half a minute.
+    pub schedule_tick: Option<Duration>,
 }
 
 /// Create a fresh empty task (no roots) and tell the UI to switch to it.
@@ -54,6 +65,21 @@ pub(crate) fn create_empty_task(
     provider_name: &str,
     port: &KernelPort,
     model: &str,
+) -> Option<String> {
+    create_task(engine, provider_name, port, model, true)
+}
+
+/// Create a task without taking the view with it.
+///
+/// A scheduled fire that creates its own task must land in the sidebar, not on
+/// the screen: the user may be reading something else (ADR-0059 §6). It is the
+/// same call with the `SessionChanged` left out.
+pub(crate) fn create_task(
+    engine: &Engine,
+    provider_name: &str,
+    port: &KernelPort,
+    model: &str,
+    announce: bool,
 ) -> Option<String> {
     let meta = SessionStarted {
         model: model.to_string(),
@@ -70,7 +96,9 @@ pub(crate) fn create_empty_task(
             let port = port.tagged(target);
             port.send_event(&created.started);
             port.send_event(&created.configured);
-            port.send_session_changed(Some(created.id.clone()));
+            if announce {
+                port.send_session_changed(Some(created.id.clone()));
+            }
             Some(created.id)
         }
         Err(error) => {
@@ -100,6 +128,22 @@ fn publish(port: &TaggedPort, inbox: &SessionQueue, last: &mut Published) {
     if steering != last.steering {
         port.send_steering_changed(steering.clone());
         last.steering = steering;
+    }
+}
+
+/// Remember a schedule's decision, in memory and in the store.
+///
+/// A store failure is logged, not fatal: the window keeps running with the
+/// in-memory state and simply loses the record across a restart.
+fn save_schedule_state(
+    engine: &Engine,
+    name: &str,
+    state: &ScheduleState,
+    cache: &mut std::collections::BTreeMap<String, ScheduleState>,
+) {
+    cache.insert(name.to_string(), state.clone());
+    if let Err(error) = engine.store.save_schedule_state(name, state) {
+        eprintln!("qcode-gui: cannot save schedule state for {name}: {error}");
     }
 }
 
@@ -171,7 +215,41 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let (done_tx, mut done_rx) =
                 tokio::sync::mpsc::unbounded_channel::<(SessionTarget, Result<(), String>)>();
             let mut ticker = tokio::time::interval(Duration::from_millis(250));
+            // One clock for the whole window, not one per session (ADR-0059):
+            // a minute is the resolution of a cron expression, and 30s leaves
+            // room for the tick to drift without skipping a window.
+            let beat = engine
+                .schedule_tick
+                .unwrap_or(Duration::from_secs(30))
+                .max(Duration::from_millis(50));
+            let mut clock = tokio::time::interval(beat);
+            // Three beats without one is "the process was away", not "the tick
+            // came round": see below.
+            let gap_limit = beat.saturating_mul(3);
+            // Wall-clock windows are compared against the *monotonic* beat to
+            // tell "the tick came round" from "the process was asleep"
+            // (ADR-0059 §2). Without this a suspended laptop would look like a
+            // scheduler that missed nothing, and a clock corrected backwards
+            // would look like one that owes a turn.
+            let mut last_beat: Option<std::time::Instant> = None;
             let mut published: HashMap<SessionTarget, Published> = HashMap::new();
+
+            // An approval prompt from a scheduled turn expires (ADR-0059 §4):
+            // nobody is watching, so it must not hold the session lock all
+            // night. Set right before `start_turn!` and taken by it.
+            let mut approval_deadline: Option<Duration> = None;
+
+            // The scheduler's run state, mirrored in the store between runs.
+            let schedules: Vec<Schedule> = engine.schedules.clone();
+            let mut schedule_states: std::collections::BTreeMap<String, ScheduleState> =
+                engine.store.schedule_states().unwrap_or_default();
+            let declared: Vec<String> = schedules
+                .iter()
+                .map(|schedule| schedule.name.clone())
+                .collect();
+            if let Err(error) = engine.store.prune_schedules(&declared) {
+                eprintln!("qcode-gui: cannot prune schedule state: {error}");
+            }
 
             // Publish a session's queue rows, remembering what the UI was told so
             // an unchanged queue costs nothing.
@@ -253,7 +331,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let context_window = engine.context_window;
                     let task_model = model.clone();
                     let task_session = session_id;
-                    let task_approver = sink.approver();
+                    let task_approver = match approval_deadline.take() {
+                        Some(deadline) => sink.approver_with_deadline(deadline),
+                        None => sink.approver(),
+                    };
                     let task_target = target;
                     let done = done_tx.clone();
                     let guard = TurnGuard {
@@ -328,6 +409,129 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         }
                         for target in targets {
                             publish_to!(target);
+                        }
+                    }
+                    // The scheduler's beat (ADR-0059 §1–§3). Firing is just a
+                    // prompt into a session's queue, so a scheduled turn runs
+                    // through exactly the same path as a typed one.
+                    _ = clock.tick() => {
+                        let beat = std::time::Instant::now();
+                        // A gap means the process was away: count the windows
+                        // that passed and schedule the next one, without
+                        // replaying them (a night's sleep must not release
+                        // eleven turns at once).
+                        let away = match last_beat {
+                            None => true,
+                            Some(last) => {
+                                beat.duration_since(last) > gap_limit
+                            }
+                        };
+                        last_beat = Some(beat);
+                        let now = qcode_core::schedule::now_local();
+                        for schedule in &schedules {
+                            let previous = schedule_states
+                                .get(&schedule.name)
+                                .cloned()
+                                .unwrap_or_default();
+                            if away {
+                                let recovery =
+                                    qcode_core::schedule::recover(schedule, &previous, now);
+                                let mut next = previous.clone();
+                                next.next_fire_at = recovery.next_fire_at;
+                                next.missed_windows = recovery.missed;
+                                if recovery.missed > 0 {
+                                    next.last_status =
+                                        Some(ScheduleStatus::Missed(recovery.missed));
+                                }
+                                save_schedule_state(
+                                    engine,
+                                    &schedule.name,
+                                    &next,
+                                    &mut schedule_states,
+                                );
+                                continue;
+                            }
+                            // `new = true` creates its task at fire time, so
+                            // there is nothing to be orphaned and nothing to
+                            // look up.
+                            let target = match &schedule.task {
+                                Some(id) => SessionTarget::Session(id.clone()),
+                                None => SessionTarget::Draft,
+                            };
+                            let exists = target
+                                .id()
+                                .is_none_or(|id| engine.store.task(id).is_ok());
+                            let busy = live.contains_key(&target);
+                            let decision =
+                                qcode_core::schedule::tick(schedule, &previous, now, busy, exists);
+                            let status = match decision {
+                                Tick::NotYet => None,
+                                Tick::SkipBusy => Some(ScheduleStatus::Skipped),
+                                Tick::Orphaned => Some(ScheduleStatus::Orphaned),
+                                Tick::Fire => {
+                                    // A fresh task per fire: logs a session but
+                                    // does not steal the view.
+                                    let target = match target.id() {
+                                        Some(_) => target.clone(),
+                                        None => match create_task(
+                                            engine,
+                                            &provider_name,
+                                            &port,
+                                            &model,
+                                            false,
+                                        ) {
+                                            Some(id) => SessionTarget::Session(id),
+                                            None => {
+                                                let next = qcode_core::schedule::advance(
+                                                    schedule,
+                                                    now,
+                                                    ScheduleStatus::Failed(
+                                                        "cannot create a task".to_string(),
+                                                    ),
+                                                );
+                                                save_schedule_state(
+                                                    engine,
+                                                    &schedule.name,
+                                                    &next,
+                                                    &mut schedule_states,
+                                                );
+                                                continue;
+                                            }
+                                        },
+                                    };
+                                    let busy = live.contains_key(&target);
+                                    let queue = host
+                                        .queue(&target)
+                                        .unwrap_or_else(|| host.open(&target).1);
+                                    approval_deadline = schedule.approval_timeout;
+                                    match queue.submit(
+                                        schedule.prompt.clone(),
+                                        Vec::new(),
+                                        busy,
+                                    ) {
+                                        Submission::Start(message) => {
+                                            start_turn!(
+                                                target.clone(),
+                                                message.text,
+                                                message.attachments
+                                            );
+                                            Some(ScheduleStatus::Fired)
+                                        }
+                                        // `overlap = "queue"` on a busy session:
+                                        // the message waits for the current turn.
+                                        Submission::Queued => Some(ScheduleStatus::Fired),
+                                    }
+                                }
+                            };
+                            if let Some(status) = status {
+                                let next = qcode_core::schedule::advance(schedule, now, status);
+                                save_schedule_state(
+                                    engine,
+                                    &schedule.name,
+                                    &next,
+                                    &mut schedule_states,
+                                );
+                            }
                         }
                     }
                     command = commands.recv() => {

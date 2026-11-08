@@ -20,6 +20,39 @@ pub struct TaskRow {
     pub summary: SessionSummary,
 }
 
+/// One `[schedules.<name>]` entry as the sidebar needs it (ADR-0059 §1, §5).
+///
+/// The declaration plus its stored run state: the window shows "missed", not the
+/// cron, and it never writes either half back to the config file.
+#[derive(Debug, Clone)]
+pub struct ScheduleRow {
+    pub name: String,
+    /// The task it runs on; `None` when every fire creates its own.
+    pub task: Option<String>,
+    pub next_fire_at: Option<qcode_core::schedule::PrimitiveDateTime>,
+    pub status: Option<qcode_core::schedule::ScheduleStatus>,
+    pub missed_windows: u32,
+    /// The entry could not be resolved at all (bad cron, no target, …).
+    pub broken: Option<String>,
+}
+
+impl ScheduleRow {
+    /// What the task row says about this schedule, or `None` when there is
+    /// nothing worth a reader's attention.
+    pub fn hint(&self) -> Option<String> {
+        use qcode_core::schedule::ScheduleStatus;
+        if let Some(reason) = &self.broken {
+            return Some(format!("定时配置有误: {reason}"));
+        }
+        match &self.status {
+            Some(ScheduleStatus::Orphaned) => Some("定时已失效（任务已删除）".to_string()),
+            Some(ScheduleStatus::Missed(windows)) => Some(format!("定时错过 {windows} 次")),
+            Some(ScheduleStatus::Failed(reason)) => Some(format!("定时失败: {reason}")),
+            _ => None,
+        }
+    }
+}
+
 /// Everything the window needs from a kernel, local or remote.
 ///
 /// P0 has exactly one implementation. The methods are synchronous because the
@@ -28,6 +61,11 @@ pub trait Backend {
     /// Where new sessions record their cwd; not an ownership boundary.
     fn cwd(&self) -> &Path;
     fn tasks(&self) -> Result<Vec<TaskRow>, String>;
+    /// Declared schedules and their stored run state; empty when the feature is
+    /// unused, so the sidebar needs no special case.
+    fn schedules(&self) -> Vec<ScheduleRow> {
+        Vec::new()
+    }
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {
         None
@@ -223,6 +261,13 @@ pub struct LocalBackend {
     model: String,
     provider: String,
     store: SessionStore,
+    /// `[schedules]` as the config declared it (ADR-0059 §1). The run state is
+    /// read from the store on demand, so the sidebar sees the truth after a
+    /// restart without the window holding a copy.
+    schedules: Vec<qcode_core::schedule::Schedule>,
+    /// Entries that could not be resolved, so a typo is visible rather than
+    /// looking like "no schedules configured".
+    schedule_errors: Vec<(String, String)>,
     commands: UnboundedSender<UiCommand>,
     events: UnboundedReceiver<SessionEvent>,
     rebuild: Option<RebuildFn>,
@@ -234,6 +279,8 @@ impl LocalBackend {
         let model = engine.model.clone();
         let provider = engine.provider_name.clone();
         let store = engine.store.clone();
+        let schedules = engine.schedules.clone();
+        let schedule_errors = engine.schedule_errors.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
         runtime::spawn(engine, port, commands);
@@ -242,6 +289,8 @@ impl LocalBackend {
             model,
             provider,
             store,
+            schedules,
+            schedule_errors,
             commands: ui.commands,
             events: ui.events,
             rebuild: None,
@@ -262,6 +311,36 @@ impl LocalBackend {
 impl Backend for LocalBackend {
     fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    fn schedules(&self) -> Vec<ScheduleRow> {
+        let states = self.store.schedule_states().unwrap_or_default();
+        let mut rows: Vec<ScheduleRow> = self
+            .schedules
+            .iter()
+            .map(|schedule| {
+                let state = states.get(&schedule.name);
+                ScheduleRow {
+                    name: schedule.name.clone(),
+                    task: schedule.task.clone(),
+                    next_fire_at: state.and_then(|state| state.next_fire_at),
+                    status: state.and_then(|state| state.last_status.clone()),
+                    missed_windows: state.map(|state| state.missed_windows).unwrap_or(0),
+                    broken: None,
+                }
+            })
+            .collect();
+        for (name, reason) in &self.schedule_errors {
+            rows.push(ScheduleRow {
+                name: name.clone(),
+                task: None,
+                next_fire_at: None,
+                status: None,
+                missed_windows: 0,
+                broken: Some(reason.clone()),
+            });
+        }
+        rows
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {

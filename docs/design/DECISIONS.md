@@ -4009,7 +4009,7 @@ pub enum SessionTarget { Session(String), Draft }
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。未实现。依赖 ADR-0058。
+**状态**：Accepted（2026-11-08）。**已实现**（2026-11-09），依赖 ADR-0058。
 
 **背景**
 
@@ -4096,6 +4096,58 @@ enabled = true
 - 无人看的会话会积累日志；保留策略不在本 ADR。
 - `schedules` 表是新 schema 版本（store 迁移，自动补表）。
 - 时区取本地时区；DST 跳变按「跳过该次、记 missed」处理，与 §3 同一路径。
+
+**实现注记（2026-11-09）**
+
+1. **判定是纯逻辑，住在 `qcode-core/src/schedule.rs`**：`CronSpec`（解析 + `matches` +
+   `next_after`）、`tick(schedule, state, now, busy, task_exists)`、`recover`（错过计数）、
+   `advance`（记录本次决定并排下个窗口）。所有函数把「现在」当参数，测试用假时间，
+   `qc daemon` 将来可以复用同一套判定。`crontab(5)` 的细节都跟了：日与星期**都**受限时
+   取「或」、`*` 不算受限、名字（`jan`/`mon`）、`7` 折成周日、`*/15` 与 `5/15` 两种步长。
+2. **时区**：`now_local()` = UTC 现在 + `localtime_r` 给出的偏移，**每次现算**（不是启动时
+   缓存），所以长开窗口遇到 DST 跳变时下个窗口跟着挪。没用 `time` 的 `now_local()`：那个
+   特性文档里写着「多线程下不健全」，而 GUI 线程早就不止一个；`qcode-core` 本来就为会话
+   锁链了 `libc`。
+3. **窗口 vs 清醒**：判定需要区分「tick 到了」和「进程睡过去了」。wall clock 只用来算
+   「下一个窗口何时」，另用单调时钟（`Instant`）记上一拍：间隔超过三拍就算「不在场」，
+   走 `recover`（计数不补跑）。这样系统时间被改前改后都不会凭空多跑或少跑。
+4. **运行状态落 store 的 `schedules` 表**（`name` / `last_fired_at` / `next_fire_at` /
+   `last_status` / `missed_windows`，建表随 `index.sqlite` 的 `CREATE TABLE IF NOT
+   EXISTS` 自动补）。配置文件的 mtime 因此**一次都不变**——ADR 里担心的重建风暴从根上
+   没有了。表里留着的孤儿行由 `prune_schedules(declared)` 清掉。
+5. **配置层**：`Config.schedules: BTreeMap<String, ScheduleConfig>`
+   （`[schedules.<name>]`：`cron` / `task` / `new` / `prompt` / `overlap` /
+   `approval_timeout` / `enabled`），`resolve_schedules` 逐条转成 `Schedule`，坏条目
+   **逐条**报错而不是让整份配置加载失败：一个 cron 打错不该让窗口起不来。旧二进制读到
+   `[schedules]` 只会忽略（顶层键已登记进 `KNOWN_KEYS`，不会打 unknown-key 警告）。
+   Settings 里**没有** cron 编辑器：`[schedules.<name>]` 是「用户自己起名的表套表」，
+   表单造不出键；`tests/schema.rs` 里显式跳过并写明理由。
+6. **触发就是一次排队**：到期的条目把 `prompt` 交给该会话的 `SessionQueue`，与用户打字
+   走同一条路（`Submission::Start` → `start_turn!`，忙则排队）。所以被触发的 turn 没有
+   任何特殊路径：徽标、未读、事件路由、日志全都复用 P3–P5 的东西。`overlap = "skip"` 忙时
+   直接记 `Skipped`；任务被删记 `Orphaned` 并保留在那里等用户处理，不静默跳过。
+7. **`new = true` 由 `create_task(..., announce = false)` 建**：定时任务新建的会话必须落进
+   侧栏，**不能抢走用户正在看的视图**——所以它不发 `SessionChanged`。
+8. **无人值守的审批有 deadline**：`TaggedPort::approver_with_deadline(d)`（`BridgeApprover`
+   多一个 `deadline` 字段，`None` 永远等）。超时 → 撤回 prompt + `Answer::Deny`，turn 继续
+   走既有的「denied」工具结果路径，会话锁按时释放。只有定时 turn 挂 deadline：人触发的
+   后台任务仍然无限等（人可能只是离开了键盘）。`time` 特性加了 `test-util` 才能用
+   `#[tokio::test(start_paused = true)]` 把 30 分钟压缩成瞬间。
+9. **侧栏提示**：`Backend::schedules()` 返回「声明 + store 里的运行状态」，
+   `Shell::schedule_hints` 按任务 id 收好（错过 N 次 / 已失效 / 失败 / 配置有误），任务行
+   在审批提示之后显示它。提示优先于「目录丢失」以外的其它后缀，避免一行里堆三句。
+10. **本轮没做的**（都在 ADR 原文里就划出去或留到后续）：系统通知（不引入新依赖）、
+    `qc daemon`（v2，GUI 关窗 = 托盘常驻仍然负责计时）、`catchup = false` 以外的补跑
+   策略、Settings 里的 cron 编辑、`last_status` 的历史记录（只留最后一次）与
+    `schedule_skipped` / `schedule_orphaned` 的独立事件（现在都写进 `last_status`，
+    因为 `Event` schema 里没有这两类，ADR 也明确说「不需要改事件 schema」）。
+11. **验证**：`crates/qcode-core/src/schedule/tests.rs` 18 条（字段语义、日/星期的或、
+    非法表达式、`next_after` 跨月跨年与永不成立、窗口触发、忙时排队或跳过、禁用与孤儿、
+    错过计数、状态编解码）；`config/schedule/tests.rs` 7 条（默认值、`new` 与 `task` 互斥、
+    超时单位与 `0`、坏条目逐条上报、老配置兼容）；`store` 的 5 条（往返、覆盖非重复、
+    带负载的状态、prune、手改坏时间）；`tests/backend.rs` 端到端 2 条（到期真的在它指向的
+    任务上开了一个 turn；指向已删任务的条目只记录不跑）。`qcode-ui-bridge` 2 条钉住
+    「定时审批超时 deny / 人工审批无限等」。
 
 **验证**
 

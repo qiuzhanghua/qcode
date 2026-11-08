@@ -2,6 +2,19 @@
 
 ## 未发布
 
+- **定时任务 P6**（ADR-0059）：`[schedules.<name>]` 声明没有人在旁边时的 turn。
+  - `qcode-core::schedule`：五段 cron 解析/匹配/下一个窗口（含名字、步长、`7`=周日、
+    日与星期的「或」）、`tick` / `recover` / `advance` 三个判定函数。纯逻辑，时间为参数。
+  - 运行状态（`last_fired_at` / `next_fire_at` / `last_status` / `missed_windows`）落
+    store 的 `schedules` 表，**不写回配置文件**——否则每次触发都会触发配置重建。
+  - 错过不补跑：进程不在时走过的窗口只计数（侧栏显示「定时错过 N 次」），下个窗口从
+    现在算；「tick 到了」与「睡过去了」用单调时钟区分，改系统时间不会多跑或少跑。
+  - 触发走同一套 `SessionQueue`：忙则排队（`overlap = "queue"`）或跳过（`skip`），任务被
+    删记 `Orphaned` 而不是静默跳过；`new = true` 新建的会话不抢当前视图。
+  - 定时 turn 的审批有 `approval_timeout`（如 `30m`）：超时 deny、turn 正常结束、会话锁
+    按时释放；人触发的 turn 仍然无限等。
+  - `Backend::schedules()` + 侧栏任务行提示；`[schedules.<name>]` 不进 Settings 表单。
+
 - **多任务并行 P0–P1**（ADR-0058）：为「多个任务同时跑」铺路，本次先把三处会互相拖住的
   东西修掉，再立起宿主骨架。
   - 文件工具的四处同步 IO（`read_file` / `write_file` / `edit_file` / `list_dir`）移出

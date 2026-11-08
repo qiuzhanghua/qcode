@@ -21,6 +21,9 @@ pub(crate) struct Shell {
     pub(crate) quitting: bool,
     /// 配置文件变了，但还有会话在跑：等全部回到 Idle 再统一重建（§7）。
     pub(crate) pending_rebuild: bool,
+    /// 每个任务行上要补的一句定时任务提示（错过窗口、失效、失败；ADR-0059 §3、§5）。
+    /// 按任务 id 存，因为提示要显示在那一行上；一次性失败的空表表示没有定时任务。
+    pub(crate) schedule_hints: std::collections::BTreeMap<String, String>,
     /// 输入框 Provider/Model 菜单顶部的模型搜索框。
     pub(crate) model_search_input: Entity<InputState>,
     /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
@@ -208,6 +211,7 @@ impl Shell {
             unread: std::collections::HashSet::new(),
             quitting: false,
             pending_rebuild: false,
+            schedule_hints: std::collections::BTreeMap::new(),
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,

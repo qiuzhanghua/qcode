@@ -18,7 +18,10 @@ use std::fmt;
 use std::time::Duration;
 
 use time::Duration as TimeSpan;
-use time::{Date, Month, PrimitiveDateTime, Time, Weekday};
+use time::{Date, Month, Time, Weekday};
+
+/// Wall clock without a time zone: what a cron expression matches against.
+pub use time::PrimitiveDateTime;
 
 /// Five fields, like `crontab(5)`: minute, hour, day of month, month,
 /// day of week.
@@ -456,6 +459,45 @@ pub fn advance(
         last_status: Some(status),
         missed_windows: 0,
     }
+}
+
+/// The wall clock the user writes `0 3 * * *` against: local time.
+///
+/// Read per call rather than cached once, so a DST change during a long-lived
+/// window moves the next window with it. `time`'s own `now_local` is behind a
+/// feature that is documented as unsound once threads exist, and the GUI has
+/// plenty of them, so the offset comes from `localtime_r` instead (`qcode-core`
+/// already links `libc` for the session lock). Non-unix builds use UTC and say
+/// so in the docs.
+pub fn now_local() -> PrimitiveDateTime {
+    let local = time::OffsetDateTime::now_utc().to_offset(local_offset());
+    PrimitiveDateTime::new(local.date(), local.time())
+}
+
+/// Offset of local time from UTC right now.
+#[cfg(unix)]
+pub fn local_offset() -> time::UtcOffset {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seconds = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since) => since.as_secs() as libc::time_t,
+        Err(_) => 0,
+    };
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `localtime_r` writes into `local` and reads the process time zone;
+    // `local` is owned by this frame.
+    let converted = unsafe { libc::localtime_r(&seconds, &mut local) };
+    if converted.is_null() {
+        return time::UtcOffset::UTC;
+    }
+    // `tm_gmtoff` is seconds east of UTC (BSD/GNU; present on macOS and Linux).
+    let east = local.tm_gmtoff;
+    time::UtcOffset::from_whole_seconds(east.clamp(-86_400, 86_400) as i32)
+        .unwrap_or(time::UtcOffset::UTC)
+}
+
+#[cfg(not(unix))]
+pub fn local_offset() -> time::UtcOffset {
+    time::UtcOffset::UTC
 }
 
 /// A wall clock at minute resolution, for the tests and the host alike.

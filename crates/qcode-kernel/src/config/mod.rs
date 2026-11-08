@@ -20,6 +20,7 @@ mod catalog;
 mod edit;
 mod load;
 mod resolve;
+mod schedule;
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +30,7 @@ pub use edit::*;
 pub(crate) use load::is_system_install;
 pub use load::*;
 pub use resolve::*;
+pub use schedule::*;
 
 pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 
@@ -120,6 +122,10 @@ pub struct Config {
     /// Delivery behaviour shared by the frontends.
     #[serde(default)]
     pub ui: UiConfig,
+    /// Scheduled turns (ADR-0059): `[schedules.<name>]`. Optional, so an old
+    /// binary reading this file simply ignores the table.
+    #[serde(default)]
+    pub schedules: BTreeMap<String, ScheduleConfig>,
 }
 
 fn default_version() -> u32 {
@@ -144,6 +150,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             update: UpdateConfig::default(),
             ui: UiConfig::default(),
+            schedules: BTreeMap::new(),
         }
     }
 }

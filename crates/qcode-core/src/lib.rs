@@ -35,7 +35,7 @@ pub use network::{Network, SharedNetwork};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;
-pub use schedule::{CronSpec, Overlap, Schedule, ScheduleState, ScheduleStatus, Tick};
+pub use schedule::{CronSpec, Overlap, Schedule, ScheduleState, ScheduleStatus, Tick, now_local};
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};
 pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};

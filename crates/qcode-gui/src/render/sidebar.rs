@@ -240,6 +240,8 @@ impl Shell {
                 " · 目录丢失".to_string()
             } else if !active && state == TaskState::WaitingApproval {
                 " · 待审批".to_string()
+            } else if let Some(hint) = self.schedule_hints.get(&id) {
+                format!(" · {hint}")
             } else {
                 String::new()
             };

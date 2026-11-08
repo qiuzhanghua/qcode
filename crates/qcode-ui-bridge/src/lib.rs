@@ -452,6 +452,19 @@ impl TaggedPort {
             pending: self.port.pending.clone(),
             session_allowed: self.port.session_allowed.clone(),
             target: self.target.clone(),
+            deadline: None,
+        }
+    }
+
+    /// An approver that gives up after `deadline` (ADR-0059 §4).
+    ///
+    /// Only a turn nobody is watching — a scheduled one — gets one: its prompt
+    /// must not sit on the session lock until morning. A human-triggered turn,
+    /// including a background one, waits for as long as it takes.
+    pub fn approver_with_deadline(&self, deadline: std::time::Duration) -> BridgeApprover {
+        BridgeApprover {
+            deadline: (!deadline.is_zero()).then_some(deadline),
+            ..self.approver()
         }
     }
 }
@@ -463,6 +476,8 @@ pub struct BridgeApprover {
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
     session_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     target: SessionTarget,
+    /// `None` = wait for an answer forever (a human is around).
+    deadline: Option<std::time::Duration>,
 }
 
 struct PendingApproval {
@@ -478,6 +493,18 @@ impl std::fmt::Debug for BridgeApprover {
 }
 
 impl BridgeApprover {
+    /// Drop a prompt that was answered by nobody, so the registry does not keep
+    /// a call id that can never be resolved.
+    fn withdraw(&self, call_id: &str) {
+        self.pending
+            .lock()
+            .expect("approval registry")
+            .remove(call_id);
+        self.emit(UiEvent::ApprovalClosed {
+            call_id: call_id.to_string(),
+        });
+    }
+
     fn emit(&self, event: UiEvent) {
         let _ = self
             .events
@@ -512,12 +539,24 @@ impl Approver for BridgeApprover {
             // No UI left to answer: fail closed.
             return Answer::Deny;
         }
+        let give_up = async {
+            match self.deadline {
+                Some(deadline) => tokio::time::sleep(deadline).await,
+                // No deadline: never completes.
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             answer = rx => answer.unwrap_or(Answer::Deny),
             // A cancelled turn must not hang waiting for a click.
             _ = cancel.cancelled() => {
-                self.pending.lock().expect("approval registry").remove(&request.call_id);
-                self.emit(UiEvent::ApprovalClosed { call_id: request.call_id.clone() });
+                self.withdraw(&request.call_id);
+                Answer::Deny
+            }
+            // An unattended turn's prompt expires; the turn continues with a
+            // denied tool result instead of holding the session lock all night.
+            _ = give_up => {
+                self.withdraw(&request.call_id);
                 Answer::Deny
             }
         }
@@ -788,5 +827,55 @@ mod tests {
             ui.events.recv().await.map(|event| event.event),
             Some(UiEvent::Delta(_))
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unattended_approval_expires_and_denies() {
+        // ADR-0059 §4: a scheduled turn has nobody to answer, so its prompt must
+        // not hold the session lock until morning.
+        let (mut ui, port) = channels();
+        let port = port.tagged("s1");
+        let approver = port.approver_with_deadline(std::time::Duration::from_secs(30 * 60));
+
+        let request = request_with("call-1", "run_shell");
+        let answer =
+            tokio::spawn(async move { approver.approve(&request, CancellationToken::new()).await });
+
+        // The prompt is on screen while it waits.
+        let seen = next_for(&mut ui, "s1").await;
+        assert!(matches!(seen.event, UiEvent::Approval(_)));
+
+        tokio::time::sleep(std::time::Duration::from_secs(29 * 60)).await;
+        assert!(
+            !answer.is_finished(),
+            "29 minutes is inside a 30 minute deadline"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(2 * 60)).await;
+        assert_eq!(answer.await.expect("joined"), Answer::Deny);
+
+        // And the prompt is withdrawn, so the row does not hang around.
+        let closed = next_for(&mut ui, "s1").await;
+        assert!(matches!(closed.event, UiEvent::ApprovalClosed { .. }));
+        assert!(
+            !port.port.answer("call-1", Answer::Allow),
+            "registry was cleaned"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_attended_approval_waits_as_long_as_it_takes() {
+        // A human-triggered turn, even in the background, has no deadline: the
+        // user may be away from the keyboard and come back.
+        let (mut ui, port) = channels();
+        let approver = port.tagged("s1").approver();
+        let request = request_with("call-2", "run_shell");
+        let answer =
+            tokio::spawn(async move { approver.approve(&request, CancellationToken::new()).await });
+        let _ = next_for(&mut ui, "s1").await;
+        tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        assert!(!answer.is_finished(), "an unattended-by-humans turn waits");
+
+        assert!(port.answer("call-2", Answer::Allow));
+        assert_eq!(answer.await.expect("joined"), Answer::Allow);
     }
 }

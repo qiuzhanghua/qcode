@@ -27,6 +27,9 @@ fn engine(dir: &std::path::Path) -> Engine {
         context_window: Some(128_000),
         network: None,
         snapshots: None,
+        schedules: Vec::new(),
+        schedule_errors: Vec::new(),
+        schedule_tick: None,
     }
 }
 
