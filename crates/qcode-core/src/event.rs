@@ -19,7 +19,11 @@ use crate::task::Root;
 /// budget a pause instead of a failure (`TurnEnded::pause`,
 /// `TurnStatus::Paused`, `budget_hint`, `UserMessage::continuation`); all of it
 /// is additive too, so a v5 log replays unchanged.
-pub const EVENT_SCHEMA_VERSION: u32 = 6;
+///
+/// v7 turns `UserMessage::attachments` into references into the attachment
+/// store (ADR-0061). No migration: the field was never written non-empty, so
+/// older logs simply omit it.
+pub const EVENT_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -99,8 +103,10 @@ pub struct TurnStarted {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserMessage {
     pub text: String,
+    /// Attachments by reference; the bytes live in the attachment store
+    /// (ADR-0061). Empty for a text-only message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<String>,
+    pub attachments: Vec<qcode_attachments::AttachmentRef>,
     /// The inbox item this message came from, when the engine injected a
     /// steering message. Lets a frontend reconcile its "waiting for the next
     /// step" row with the authoritative message.

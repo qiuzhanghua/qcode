@@ -153,18 +153,34 @@ fn user_message_snapshot_omits_empty_attachments() {
         }),
     );
 
+    // v7: attachments are references into the store, never paths or bytes.
+    let id = qcode_attachments::AttachmentId::from_bytes([0x2a; 32]);
     assert_snapshot(
         EventKind::UserMessage(UserMessage {
             starts_segment: false,
             queued_id: None,
             text: "see attached".into(),
-            attachments: vec!["src/lib.rs".into()],
+            attachments: vec![qcode_attachments::AttachmentRef::File(
+                qcode_attachments::FileRef {
+                    id,
+                    name: "src/lib.rs".into(),
+                    bytes: 42,
+                },
+            )],
 
             continuation: None,
         }),
         json!({
             "type": "user_message",
-            "data": {"text": "see attached", "attachments": ["src/lib.rs"]}
+            "data": {
+                "text": "see attached",
+                "attachments": [{
+                    "kind": "file",
+                    "id": "2a".repeat(32),
+                    "name": "src/lib.rs",
+                    "bytes": 42
+                }]
+            }
         }),
     );
 }

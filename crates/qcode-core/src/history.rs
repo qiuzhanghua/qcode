@@ -4,10 +4,25 @@
 //! (or a fork) reconstructs the conversation instead of relying on in-memory
 //! provider state.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use qcode_attachments::{AttachmentRef, ImageRef};
+
 use crate::event::{ContentBlock, Event, EventKind};
 use crate::provider::{Message, Role};
 
 pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
+    messages_from_events_with(events, |_| None)
+}
+
+/// Like [`messages_from_events`], but expands stored image references back into
+/// bytes. `load` returns `None` when the object is gone; the reference stays in
+/// the log either way, so the image reappears on a later pass once the store can
+/// serve it.
+pub fn messages_from_events_with<F>(events: &[Event], mut load: F) -> Vec<Message>
+where
+    F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+{
     // A compaction event replaces the seq range it names. Older compactions
     // nested inside a newer range are dropped with the rest of that range, so
     // only the newest summary survives.
@@ -37,13 +52,27 @@ pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
                 }],
                 tool_call_id: None,
             }),
-            EventKind::UserMessage(message) => messages.push(Message {
-                role: Role::User,
-                blocks: vec![ContentBlock::Text {
+            EventKind::UserMessage(message) => {
+                let mut blocks = vec![ContentBlock::Text {
                     text: message.text.clone(),
-                }],
-                tool_call_id: None,
-            }),
+                }];
+                for attachment in &message.attachments {
+                    let AttachmentRef::Image(image) = attachment else {
+                        continue;
+                    };
+                    if let Some(bytes) = load(image) {
+                        blocks.push(ContentBlock::Image {
+                            mime_type: image.mime.as_str().to_string(),
+                            data_base64: BASE64.encode(bytes),
+                        });
+                    }
+                }
+                messages.push(Message {
+                    role: Role::User,
+                    blocks,
+                    tool_call_id: None,
+                });
+            }
             EventKind::AssistantMessage(message) => messages.push(Message {
                 role: Role::Assistant,
                 blocks: message.blocks.clone(),
@@ -77,6 +106,84 @@ mod tests {
 
     fn event(seq: u64, kind: EventKind) -> Event {
         Event::new(seq, "s", 1, kind)
+    }
+
+    /// A PNG header is enough for the store: it never decodes pixels.
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        bytes.extend_from_slice(&64u32.to_be_bytes());
+        bytes.extend_from_slice(&32u32.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn stored_images_come_back_in_the_user_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = qcode_attachments::AttachmentStore::open(dir.path()).expect("store");
+        let png = png_bytes();
+        let image = store
+            .put_image(qcode_attachments::NewImage {
+                bytes: &png,
+                mime: qcode_attachments::ImageMime::Png,
+                name: Some("shot.png"),
+            })
+            .expect("put image");
+
+        let events = vec![event(
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "look at this".into(),
+                attachments: vec![AttachmentRef::Image(image)],
+                continuation: None,
+            }),
+        )];
+
+        let messages = messages_from_events_with(&events, |image| store.read_image(image).ok());
+        let blocks = &messages[0].blocks;
+        assert_eq!(blocks.len(), 2, "text plus the image");
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text {
+                text: "look at this".into()
+            }
+        );
+        match &blocks[1] {
+            ContentBlock::Image {
+                mime_type,
+                data_base64,
+            } => {
+                assert_eq!(mime_type, "image/png");
+                assert_eq!(BASE64.decode(data_base64).unwrap(), png);
+            }
+            other => panic!("expected an image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_object_drops_the_image_instead_of_failing() {
+        let events = vec![event(
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "gone".into(),
+                attachments: vec![AttachmentRef::Image(qcode_attachments::ImageRef {
+                    id: qcode_attachments::AttachmentId::from_bytes([7; 32]),
+                    mime: qcode_attachments::ImageMime::Png,
+                    bytes: 10,
+                    width: 1,
+                    height: 1,
+                    origin: None,
+                    name: None,
+                })],
+                continuation: None,
+            }),
+        )];
+
+        let messages = messages_from_events_with(&events, |_| None);
+        assert_eq!(messages[0].blocks.len(), 1);
     }
 
     #[test]

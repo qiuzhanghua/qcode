@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+mod attachments;
 mod stream;
 mod tools;
 mod turn;
@@ -160,6 +161,12 @@ pub enum EngineError {
     MissingPricing,
     #[error("this provider does not accept image input")]
     ImagesUnsupported,
+    #[error("{mime} attachments are not supported")]
+    UnsupportedAttachment { mime: String },
+    #[error("attachment payload is not valid base64")]
+    AttachmentDecode,
+    #[error(transparent)]
+    Attachments(#[from] qcode_attachments::StoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

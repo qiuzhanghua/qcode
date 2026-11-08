@@ -112,22 +112,17 @@ where
         continuation
     });
 
+    // Bytes go to the store first, so the log entry below can name them and a
+    // resumed turn can read them back (ADR-0061 §3).
+    let attachment_store = qcode_attachments::AttachmentStore::open(ctx.store.root())?;
+    let attachments = super::attachments::store_inline(&attachment_store, &options.attachments)?;
+
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
-    writer.begin_turn(&options.input, continuation, &mut on_event)?;
+    writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
     events = ctx.store.load(options.session_id)?;
-    let mut messages = history::messages_from_events(&events);
-    // Images ride on the last user message. The event log keeps the text only,
-    // so a resumed turn replays without them (ADR-0035).
-    if !options.attachments.is_empty()
-        && let Some(message) = messages.iter_mut().rev().find(|m| m.role == Role::User)
-    {
-        for attachment in &options.attachments {
-            message.blocks.push(ContentBlock::Image {
-                mime_type: attachment.mime_type.clone(),
-                data_base64: attachment.data_base64.clone(),
-            });
-        }
-    }
+    let mut messages = history::messages_from_events_with(&events, |image| {
+        attachment_store.read_image(image).ok()
+    });
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);
