@@ -451,3 +451,77 @@ async fn shell_receives_the_proxy_environment() {
     assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
     assert!(output.output.contains(&proxy_url), "{}", output.output);
 }
+
+/// `run_shell` rebuilds the confinement for the task's roots (ADR-0048 §2): the
+/// read-write root accepts a file, the read-only root next to it refuses one.
+///
+/// The fixture lives under `$TMPDIR`, which the macOS profile keeps writable for
+/// every task, so the read-only half only holds if the deny rule really wins
+/// over its parent's allowance. Skips when `sandbox-exec` cannot be nested.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn shell_follows_the_root_matrix() {
+    use qcode_tools::sandbox::{Sandbox, SandboxExec, SandboxNetwork};
+
+    let base = tempfile::tempdir().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let rw = base.join("code");
+    let ro = base.join("docs");
+    for dir in [&rw, &ro] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+
+    let seed = SandboxExec::new(&rw, SandboxNetwork::Deny).unwrap();
+    if let Err(error) = seed.check() {
+        let detail = error.to_string();
+        assert!(
+            detail.contains("Operation not permitted") || detail.contains("EPERM"),
+            "sandbox-exec preflight failed: {detail}"
+        );
+        eprintln!("skipping: nested sandbox-exec is not permitted here: {detail}");
+        return;
+    }
+
+    let ctx = ToolContext::for_test(base.clone()).with_roots(vec![
+        Root {
+            id: "code".into(),
+            label: "code".into(),
+            path: rw.clone(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        },
+        Root {
+            id: "docs".into(),
+            label: "docs".into(),
+            path: ro.clone(),
+            access: RootAccess::ReadOnly,
+            primary: false,
+        },
+    ]);
+    let shell = RunShell::new(Arc::new(seed));
+
+    let inside = shell
+        .execute(
+            &ctx,
+            json!({"command": format!("printf hi > '{}'", rw.join("ok.txt").display())}),
+        )
+        .await
+        .expect("shell");
+    assert_eq!(inside.metadata.exit_code, Some(0), "{}", inside.output);
+    assert!(rw.join("ok.txt").is_file());
+
+    let outside = shell
+        .execute(
+            &ctx,
+            json!({"command": format!("printf hi > '{}'", ro.join("denied.txt").display())}),
+        )
+        .await
+        .expect("shell");
+    assert_ne!(
+        outside.metadata.exit_code,
+        Some(0),
+        "read-only root accepted a write: {}",
+        outside.output
+    );
+    assert!(!ro.join("denied.txt").exists());
+}

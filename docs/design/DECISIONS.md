@@ -2721,7 +2721,8 @@ v1（单 Root 兼容 + 无根 Task + 最多 16 Root，macOS/Linux 完整，Windo
 
 ## ADR-0048（草案）：多根 Sandbox 与路径能力（2026-10-21）
 
-**状态**：Accepted（2026-10-21）。未实现。依赖 ADR-0047 的 Task/Root 模型。
+**状态**：Accepted（2026-10-21）。**已实现**（2026-11-08；Windows/Linux/macOS 三个平台
+真机实测，见文末补充）。依赖 ADR-0047 的 Task/Root 模型。
 
 **背景**：Task 可以有 0..N 个 Root，Root 有 `read-only` / `read-write`，并且无根 Task 仍允许
 在私有临时目录运行 shell。qcode 现有 sandbox 是“单 workspace”假设：
@@ -2935,6 +2936,26 @@ Landlock 在 ABI 不足时会 skip，但规则构建路径已覆盖。
 
 据此，ADR-0048 的多根矩阵除 macOS 真机复核外全部完成：Windows ACL（实测）、Linux bwrap（实测）、
 Linux Landlock（规则构建通过）、macOS sandbox-exec（profile 测试就绪，待 Mac）。
+
+**补充（2026-11-08，macOS 真机复核完成，并修掉 `$TMPDIR` 下的 RO 漏洞）**：
+macOS arm64 上真机跑通 `cargo test -p qcode-tools --lib sandbox::`（18 条）与
+`crates/qcode-tools/tests/tools.rs::shell_follows_the_root_matrix`，`sandbox-exec` 预检通过、
+没有一条走 skip 分支。复核发现两处需要在 profile 里修的东西：
+
+1. **只读根只是「不在白名单里」并不等于只读。** profile 对所有任务都放开了
+   `/tmp`、`/private/tmp`、`/private/var/folders`、`$TMPDIR` 与 Cargo/Rustup 缓存，
+   所以一个落在这些父目录下的 RO Root 仍然可写。Seatbelt 是「最后一条匹配的规则生效」，
+   于是在 `(allow file-write*)` 之后为每个 RO Root 追加
+   `(deny file-write* (subpath "..."))`，实测该规则确实覆盖父目录的放行
+   （`a_read_only_root_refuses_writes_inside_a_writable_temp_tree` 用 `$TMPDIR` 里的
+   RO 根断言「宿主文件没出现」；把 deny 行去掉这条测试立刻失败）。
+2. **SBPL 比的是真实路径**：`$TMPDIR` 是 `/var/folders/...`，而 filter 要写
+   `/private/var/folders/...` 才匹配。profile 里所有 root / temp / `extra_writable` /
+   环境变量目录统一过 `canonicalize`（`profile_path`），不会因为一个 symlink 前缀而
+   整段失效——此前 `/tmp` 与 `/private/tmp` 都手写进列表，属于同一个坑的补丁式绕过。
+
+据此 ADR-0048 的 §2 平台矩阵除 Landlock 只到规则构建外全部有真机实测：Windows ACL、
+Linux bwrap、macOS sandbox-exec（本机）。
 ## ADR-0050：配置文件的位置、便携模式与写入策略（2026-10-22）
 
 **背景**：设置界面保存失败，报错指向 `~/.config/qcode/.config.toml.tmp-<pid>` 的
@@ -3612,7 +3633,7 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。**P0–P5 已实现**（2026-11-08），P6 未实现。
+**状态**：Accepted（2026-11-08）。**P0–P6 已实现**（2026-11-08；P6 见 ADR-0059）。
 依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
 实现注记见本文末。
 
@@ -4004,8 +4025,10 @@ pub enum SessionTarget { Session(String), Draft }
     记模型要动 `Task` 与设置持久化，超出这次的范围；现在的行为至少是「所见即所用」：
     头部选择器显示的就是下一个 turn 会用的模型。写在这里是因为并行之后它第一次有了
     歧义（以前同时只有一个会话，没有「别人的 turn 用谁的模型」这个问题）。
-43. **P6 仍未做**：定时触发（ADR-0059）。它的前置——「谁在哪个会话跑」的全局视图——现在
-    由 `SessionHost` + `live` 提供了。
+43. **P6 已落地**（定时触发，ADR-0059）：前置——「谁在哪个会话跑」的全局视图——由
+    `SessionHost` + `live` 提供，触发走同一个 `SessionQueue`；`queue` / `skip` 的撞车
+    策略、错过计数与审批 deadline 都在 ADR-0059 的实现注记里。本 ADR 的并行骨架因此
+    不再有未完成阶段。
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

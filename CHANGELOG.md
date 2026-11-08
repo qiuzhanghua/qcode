@@ -2,6 +2,18 @@
 
 ## 未发布
 
+- **macOS sandbox：只读根在 `$TMPDIR`/`/tmp` 下真的只读了**（ADR-0048 §2，真机复核）：
+  profile 对所有任务都放开 `/tmp`、`$TMPDIR` 与 Cargo/Rustup 缓存，所以落在这些父目录下的
+  `read-only` Root 之前只是「没进白名单」，仍然可写。
+  - 现在在 `(allow file-write*)` 之后为每个只读根追加 `(deny file-write* (subpath ...))`；
+    Seatbelt 的「最后一条匹配生效」让这条 deny 压过父目录的放行。
+  - profile 里所有 root / turn temp / `extra_writable` / 工具链目录统一 `canonicalize`：
+    SBPL 比的是真实路径，`$TMPDIR`（`/var/folders/...`）不会匹配写错前缀的 filter。
+  - 真机新增三条实测：`a_read_only_root_refuses_writes_inside_a_writable_temp_tree`、
+    `a_no_root_task_sees_only_its_temp`（无根任务的 temp 可写、`$HOME` 不可读不可写）、
+    `shell_follows_the_root_matrix`（`run_shell` 按任务根集重建 sandbox）。macOS arm64 上
+    `sandbox-exec` 预检通过，没有一条走 skip。
+
 - **定时任务 P6**（ADR-0059）：`[schedules.<name>]` 声明没有人在旁边时的 turn。
   - `qcode-core::schedule`：五段 cron 解析/匹配/下一个窗口（含名字、步长、`7`=周日、
     日与星期的「或」）、`tick` / `recover` / `advance` 三个判定函数。纯逻辑，时间为参数。
