@@ -87,6 +87,21 @@ impl GuiPreferences {
         std::fs::rename(&temp, &path)
     }
 
+    /// Read-modify-write one preference, keeping every field this writer does
+    /// not own at its on-disk value.
+    ///
+    /// Several windows persist into the same `gui.json`: the main window owns
+    /// `last_session` and the window geometry, the settings window owns the
+    /// appearance fields. Saving a whole in-memory copy from one of them
+    /// resurrects whatever the others had changed in the meantime — most
+    /// visibly `last_session`, which then reopens an older task (or none) on
+    /// the next launch.
+    pub fn update(data_dir: &Path, apply: impl FnOnce(&mut Self)) -> std::io::Result<()> {
+        let mut prefs = Self::load(data_dir);
+        apply(&mut prefs);
+        prefs.save(data_dir)
+    }
+
     /// Record `workspace` at the front of the recent list.
     pub fn record_workspace(&mut self, workspace: &Path) {
         let path = workspace.display().to_string();

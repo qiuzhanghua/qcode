@@ -62,7 +62,7 @@ pub(crate) struct TableState {
 }
 
 /// What a settings-mode auto save writes. Scalar keys go through the kernel's
-/// `set_scalar` (config.toml) or `GuiPreferences::save` (`gui.*` → gui.json);
+/// `set_scalar` (config.toml) or `GuiPreferences::update` (`gui.*` → gui.json);
 /// tables are rebuilt from the form state like `save()` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoSaveKind {
@@ -441,7 +441,7 @@ impl SetupView {
         }
         self.prefs.font_size = next;
         crate::FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
-        if let Err(error) = self.prefs.save(&self.data_dir) {
+        if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
             eprintln!("qcode-gui: cannot save gui.json: {error}");
         }
         self.prefs.apply(cx);

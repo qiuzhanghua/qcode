@@ -50,8 +50,12 @@ impl Render for Shell {
             height: bounds.size.height.as_f32(),
         };
         if self.prefs.window_geometry.as_ref() != Some(&geometry) {
-            self.prefs.window_geometry = Some(geometry);
-            if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.prefs.window_geometry = Some(geometry.clone());
+            // 几何是无主字段的“高频写入”，必须只写自己这一项：整份覆盖会把
+            // 设置窗口/引擎刚写进 gui.json 的 `last_session` 冲回旧值。
+            if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
+                prefs.window_geometry = Some(geometry);
+            }) {
                 eprintln!("qcode-gui: cannot save window geometry: {error}");
             }
         }

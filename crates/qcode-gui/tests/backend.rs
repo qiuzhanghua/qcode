@@ -108,6 +108,53 @@ async fn a_draft_becomes_a_logged_session_on_the_first_prompt() {
     assert_eq!(backend.tasks().expect("tasks").len(), 2);
 }
 
+/// Switching tasks must not detach the engine from the session the window
+/// shows: after a `resume`, the next prompt has to land in that same log
+/// instead of silently creating a new task.
+#[tokio::test]
+async fn a_resumed_task_keeps_receiving_prompts() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut backend = LocalBackend::new(engine_with(
+        workspace.path(),
+        store,
+        MockProvider::text("hello"),
+    ));
+
+    backend.prompt("first".to_string(), Vec::new());
+    let _ = wait_for_turn(&mut backend);
+    let first = backend.tasks().expect("tasks")[0].task.id.clone();
+
+    // A second task becomes the active session...
+    backend.new_session();
+    backend.prompt("second".to_string(), Vec::new());
+    let _ = wait_for_turn(&mut backend);
+    let tasks = backend.tasks().expect("tasks");
+    assert_eq!(tasks.len(), 2);
+    let second = tasks
+        .iter()
+        .map(|row| row.task.id.clone())
+        .find(|id| id != &first)
+        .expect("second task");
+
+    // ...then switching back reattaches the engine to the first one.
+    let replayed = backend.resume(&first).expect("resume first task");
+    assert!(!replayed.is_empty());
+    backend.prompt("third".to_string(), Vec::new());
+    let _ = wait_for_turn(&mut backend);
+
+    let store = SessionStore::new(data.path());
+    let landed_in = |id: &str, text: &str| {
+        store.load(id).expect("load").iter().any(
+            |event| matches!(&event.kind, EventKind::UserMessage(message) if message.text == text),
+        )
+    };
+    assert!(landed_in(&first, "third"), "prompt left the resumed task");
+    assert!(!landed_in(&second, "third"));
+    assert_eq!(backend.tasks().expect("tasks").len(), 2);
+}
+
 #[tokio::test]
 async fn tasks_can_be_renamed_and_deleted() {
     let workspace = tempfile::tempdir().expect("workspace");

@@ -110,7 +110,17 @@ impl SetupView {
             .get("gui.code_font")
             .map(|input| input.read(cx).value().to_string())
             .unwrap_or_else(|| prefs.code_font.clone());
-        if let Err(error) = prefs.save(&self.data_dir) {
+        // Write the appearance fields onto the file as it is now, not onto the
+        // copy this window loaded: `last_session` and the window geometry
+        // belong to the main window and must survive a settings save.
+        let appearance = prefs.clone();
+        if let Err(error) = GuiPreferences::update(&self.data_dir, |saved| {
+            saved.theme = appearance.theme.clone();
+            saved.density = appearance.density.clone();
+            saved.send_mode = appearance.send_mode.clone();
+            saved.font_size = appearance.font_size;
+            saved.code_font = appearance.code_font.clone();
+        }) {
             self.error = Some(format!("cannot save gui.json: {error}"));
             cx.notify();
             return;
@@ -383,21 +393,37 @@ impl SetupView {
         let Some(value) = self.field_value(path, cx) else {
             return;
         };
+        // Same rule as `save`: touch only the field this control owns, so a
+        // stale in-memory copy cannot revert `last_session`.
         let mut prefs = self.prefs.clone();
-        match path {
-            ["gui", "theme"] => prefs.theme = value,
-            ["gui", "density"] => prefs.density = value,
-            ["gui", "send_mode"] => prefs.send_mode = value,
-            ["gui", "font_size"] => {
-                let Some(size) = value.parse().ok() else {
-                    return; // transient invalid value; the next keystroke fixes it
-                };
-                prefs.font_size = size;
+        let saved = GuiPreferences::update(&self.data_dir, |saved| match path {
+            ["gui", "theme"] => {
+                saved.theme = value.clone();
+                prefs.theme = value;
             }
-            ["gui", "code_font"] => prefs.code_font = value,
-            _ => return,
-        }
-        if let Err(error) = prefs.save(&self.data_dir) {
+            ["gui", "density"] => {
+                saved.density = value.clone();
+                prefs.density = value;
+            }
+            ["gui", "send_mode"] => {
+                saved.send_mode = value.clone();
+                prefs.send_mode = value;
+            }
+            ["gui", "font_size"] => {
+                // A transient invalid value is ignored; the next keystroke
+                // fixes it.
+                if let Ok(size) = value.parse() {
+                    saved.font_size = size;
+                    prefs.font_size = size;
+                }
+            }
+            ["gui", "code_font"] => {
+                saved.code_font = value.clone();
+                prefs.code_font = value;
+            }
+            _ => {}
+        });
+        if let Err(error) = saved {
             eprintln!("qcode-gui: auto-save failed (gui.json): {error}");
             return;
         }

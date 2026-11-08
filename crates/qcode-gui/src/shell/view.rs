@@ -322,7 +322,9 @@ impl Shell {
         } else {
             "dark".to_string()
         };
-        if let Err(error) = self.prefs.save(&self.data_dir) {
+        // 只写主题：整份覆盖会把 `last_session`/窗口几何冲回旧值。
+        let theme = self.prefs.theme.clone();
+        if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.theme = theme) {
             self.app
                 .push_notice(format!("cannot save gui.json: {error}"));
         }
@@ -348,7 +350,7 @@ impl Shell {
         }
         self.prefs.font_size = next;
         FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
-        if let Err(error) = self.prefs.save(&self.data_dir) {
+        if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
             self.app
                 .push_notice(format!("cannot save gui.json: {error}"));
         }

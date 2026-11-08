@@ -13,6 +13,7 @@ pub mod forms;
 pub mod gui_prefs;
 pub mod platform;
 mod render;
+pub mod restore;
 mod run;
 pub mod runtime;
 pub mod setup;
@@ -114,7 +115,9 @@ pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
     FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
     let mut prefs = GuiPreferences::load(data_dir);
     prefs.font_size = next;
-    if let Err(error) = prefs.save(data_dir) {
+    // Only the size: this path can run while the main window is persisting
+    // geometry / last_session into the same file.
+    if let Err(error) = GuiPreferences::update(data_dir, |saved| saved.font_size = next) {
         eprintln!("qcode-gui: cannot save gui.json: {error}");
     }
     prefs.apply(cx);

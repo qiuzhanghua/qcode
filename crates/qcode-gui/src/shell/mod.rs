@@ -206,8 +206,10 @@ impl Shell {
             .unwrap_or_else(|| app.status.provider.clone());
         let configured_model = backend.model().unwrap_or_else(|| app.status.model.clone());
         let mut active = None;
-        if let Some(id) = prefs.last_session.clone()
-            && tasks.iter().any(|row| row.task.id == id)
+        // 重启后回到上次结束前所在的任务。`last_session` 缺失（旧版 gui.json、
+        // 被其它窗口覆盖）或指向已删除的任务时，退回最近创建的任务，而不是留
+        // 在空的草稿上——那样用户发的第一条消息又会落地成一个新任务。
+        if let Some(id) = crate::restore::session_to_restore(prefs.last_session.as_deref(), &tasks)
         {
             match backend.resume(&id) {
                 Ok(events) => {
@@ -216,7 +218,11 @@ impl Shell {
                     }
                     // 重放只回放历史；恢复的会话里可能没有 TurnEnded。
                     app.finish_replay();
-                    active = Some(id);
+                    active = Some(id.clone());
+                    if prefs.last_session.as_deref() != Some(id.as_str()) {
+                        // 自愈：把退回选中的任务写回去，下次启动不必再猜。
+                        prefs.last_session = Some(id);
+                    }
                 }
                 Err(error) => app.push_notice(format!("cannot restore last session: {error}")),
             }
@@ -226,7 +232,14 @@ impl Shell {
         // one the current kernel resolved.
         app.status.provider = configured_provider;
         app.status.model = configured_model;
-        if let Err(error) = prefs.save(&data_dir) {
+        // 启动这一次写的也是“自己这两项”，别把设置窗口刚存的外观冲回旧值。
+        let restored = prefs.last_session.clone();
+        if let Err(error) = GuiPreferences::update(&data_dir, |saved| {
+            saved.record_workspace(Path::new(&cwd));
+            if let Some(id) = restored.clone() {
+                saved.last_session = Some(id);
+            }
+        }) {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
         let backend_is_configured = backend.is_configured();
@@ -519,8 +532,12 @@ impl Shell {
                 UiEvent::SessionChanged { id } => {
                     self.empty_draft = false;
                     self.active = id.clone();
-                    self.prefs.last_session = id;
-                    if let Err(error) = self.prefs.save(&self.data_dir) {
+                    self.prefs.last_session = id.clone();
+                    // 只写 `last_session`：几何/外观这些字段归别的写入者，整份
+                    // 覆盖会把它们刚存下的值冲掉。
+                    if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
+                        prefs.last_session = id;
+                    }) {
                         self.app
                             .push_notice(format!("cannot save gui.json: {error}"));
                     }
@@ -626,6 +643,14 @@ impl Shell {
             cx.notify();
             return;
         };
+        // 换 backend 等于换一条引擎任务：在跑的这个 turn 不会跟着过去。先按
+        // Stop 的语义停掉它（用户看得到），否则界面会永远停在 running 上——
+        // 旧引擎的事件再也不会有人接。
+        if self.app.status.running || self.turn_in_flight {
+            self.backend.cancel();
+            self.app
+                .push_notice("settings saved: interrupting the running turn");
+        }
         // Await the rebuild on the UI thread's executor: assembling a kernel is
         // async, and creating a nested runtime here panics ("cannot start a
         // runtime from within a runtime"). The window stays responsive because
@@ -650,6 +675,24 @@ impl Shell {
         match built {
             Ok(backend) => {
                 self.backend = backend;
+                // 旧引擎的取消若没来得及走完，`running` 会被永久留在界面上；
+                // 新 backend 已经接手，直接在投影上收口。
+                if self.app.status.running || self.turn_in_flight {
+                    self.app.abort_turn(qcode_core::event::TurnStatus::Failed);
+                    self.app.status.last = None;
+                    self.approvals = ApprovalQueue::default();
+                    self.turn_in_flight = false;
+                    self.restoring = None;
+                }
+                // 新 backend 是一条全新的引擎任务，`session` 从 `None` 开始：
+                // 不在这里把当前任务挂回去，下一条消息就会在“保存设置”之后
+                // 悄悄开出一个新任务（旧任务仍在侧栏里，看起来像丢了上下文）。
+                if let Some(id) = self.active.clone()
+                    && let Err(error) = self.backend.resume(&id)
+                {
+                    self.app
+                        .push_notice(format!("cannot re-attach session: {error}"));
+                }
                 if let Some(provider) = self.backend.provider() {
                     self.app.status.provider = provider;
                 }

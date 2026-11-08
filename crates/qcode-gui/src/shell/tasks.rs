@@ -254,7 +254,9 @@ impl Shell {
         }
         if self.prefs.last_session.as_deref() == Some(task_id) {
             self.prefs.last_session = None;
-            if let Err(error) = self.prefs.save(&self.data_dir) {
+            if let Err(error) =
+                GuiPreferences::update(&self.data_dir, |prefs| prefs.last_session = None)
+            {
                 self.app
                     .push_notice(format!("cannot save gui.json: {error}"));
             }
