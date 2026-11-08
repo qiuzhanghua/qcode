@@ -84,8 +84,9 @@ pub(crate) struct TaskUi {
     /// The composer: a real text input, so IME and CJK go through the platform.
     /// Per task, so a switch keeps the draft the user was typing.
     pub(crate) input: Entity<TextareaState>,
-    /// Images pasted since the last submit.
-    pub(crate) attachments: Vec<qcode_core::engine::Attachment>,
+    /// Images pasted, picked or dropped since the last submit. Each one is
+    /// already in the attachment store, so the composer can draw it.
+    pub(crate) attachments: Vec<crate::attachments::PendingAttachment>,
     /// Files picked with the upload button, sent as paths with the next prompt.
     pub(crate) file_refs: Vec<PathBuf>,
 

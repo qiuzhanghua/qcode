@@ -498,6 +498,77 @@ impl Shell {
             .children(rows)
             .into_any_element()
     }
+    /// Thumbnails for the images waiting in the composer. Each one is already
+    /// in the attachment store, so `img()` only needs the path.
+    pub(crate) fn render_attachment_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let border = cx.theme().border;
+        let mut strip = div().flex().flex_row().flex_wrap().items_start().gap_2();
+        for (index, pending) in self.ui.attachments.iter().enumerate() {
+            let remove_entity = entity.clone();
+            let label = if pending.label.chars().count() > 10 {
+                let head: String = pending.label.chars().take(9).collect();
+                format!("{head}…")
+            } else {
+                pending.label.clone()
+            };
+            strip = strip.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(64.0))
+                            .h(px(64.0))
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(border)
+                            .child(
+                                img(pending.preview.clone())
+                                    .object_fit(ObjectFit::Cover)
+                                    .w_full()
+                                    .h_full(),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(2.0))
+                                    .right(px(2.0))
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .rounded(px(8.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .bg(rgba(0x000000a6))
+                                    .text_size(sp(11.0))
+                                    .text_color(rgb(0xffffff))
+                                    .id(format!("attachment-remove-{index}"))
+                                    .hover(|style| style.bg(rgba(0x000000cc)))
+                                    .on_click(move |_, _, cx| {
+                                        remove_entity.update(cx, |shell, cx| {
+                                            shell.remove_attachment(index, cx);
+                                        });
+                                    })
+                                    .child("×"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(10.0))
+                            .text_color(rgb(0x888888))
+                            .child(label),
+                    ),
+            );
+        }
+        strip
+    }
+
     pub(crate) fn render_main(
         &mut self,
         window: &mut Window,
@@ -548,6 +619,7 @@ impl Shell {
             self.send_prompt(window, cx);
         }
         let entity = cx.entity();
+        let drop_entity = cx.entity();
         let theme = cx.theme();
         let popover = theme.popover;
         let border = theme.border;
@@ -1012,6 +1084,17 @@ impl Shell {
                             .border_color(border)
                             .px_3()
                             .py_2()
+                            // Files dropped anywhere on the composer take the
+                            // same route as the picker: images become
+                            // thumbnails, everything else a path reference.
+                            .on_drop::<ExternalPaths>({
+                                let entity = drop_entity.clone();
+                                move |paths: &ExternalPaths, _window, cx| {
+                                    let paths =
+                                        paths.0.iter().cloned().collect::<Vec<_>>();
+                                    entity.update(cx, |shell, cx| shell.add_paths(paths, cx));
+                                }
+                            })
                             .child({
                 let entity = cx.entity();
                 let mut input_box = div()
@@ -1024,6 +1107,11 @@ impl Shell {
                 // 否则推送后只剩 steering 时会渲染一个空灰框。
                 if !self.ui.queue.is_empty() {
                     input_box = input_box.child(self.render_queue_dock(cx));
+                }
+                // Images pasted / picked / dropped since the last send, as
+                // thumbnails read straight from the store.
+                if !self.ui.attachments.is_empty() {
+                    input_box = input_box.child(self.render_attachment_strip(cx));
                 }
                 // Pending file references shown as removable chips above the
                 // input, aligned to its left edge; wraps once too wide.

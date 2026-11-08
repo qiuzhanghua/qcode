@@ -237,7 +237,10 @@ impl Shell {
         }
         // busy_delivery = steer hands the message to the running turn's next
         // step; the default queues it as the next turn.
-        let attachments = std::mem::take(&mut self.ui.attachments);
+        let attachments = std::mem::take(&mut self.ui.attachments)
+            .into_iter()
+            .map(|pending| pending.attachment)
+            .collect::<Vec<_>>();
         if self.ui.turn_in_flight && self.busy_delivery == qcode_kernel::config::BusyDelivery::Steer
         {
             self.backend.steer(prompt.clone(), attachments);
@@ -263,20 +266,13 @@ impl Shell {
 
     pub(crate) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         match qcode_image::clipboard::read_image() {
+            // Stored on the spot, so the composer can show the thumbnail and a
+            // failed paste fails here instead of at send time (ADR-0061 §4).
             Ok(image) => {
-                use base64::Engine as _;
-                let kb = image.png.len() / 1024;
-                self.ui.attachments.push(qcode_core::engine::Attachment {
-                    mime_type: "image/png".to_string(),
-                    data_base64: base64::engine::general_purpose::STANDARD.encode(&image.png),
-                });
-                self.ui.app.push_notice(format!(
-                    "attached {}x{} ({} KB), {} pending",
-                    image.width,
-                    image.height,
-                    kb,
-                    self.ui.attachments.len()
-                ));
+                match crate::attachments::attach_image(&self.data_dir, &image.png, "pasted image") {
+                    Ok(pending) => self.ui.attachments.push(pending),
+                    Err(error) => self.ui.app.push_notice(error),
+                }
             }
             Err(error) => self.ui.app.push_notice(error),
         }
@@ -287,13 +283,42 @@ impl Shell {
     /// references. A cancelled dialog is a no-op.
     pub(crate) fn upload_file(&mut self, cx: &mut Context<Self>) {
         match pick_file() {
-            Ok(Some(path)) => {
+            Ok(Some(path)) => self.add_path(path, cx),
+            Ok(None) => {}
+            Err(error) => self.ui.app.push_notice(error),
+        }
+        cx.notify();
+    }
+
+    /// Images become composer thumbnails; everything else stays a path
+    /// reference in the message text, which is what the model can read today.
+    pub(crate) fn add_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match crate::attachments::attach_image_path(&self.data_dir, &path) {
+            Ok(Some(pending)) => self.ui.attachments.push(pending),
+            Ok(None) => {
                 if !self.ui.file_refs.contains(&path) {
                     self.ui.file_refs.push(path);
                 }
             }
-            Ok(None) => {}
             Err(error) => self.ui.app.push_notice(error),
+        }
+        cx.notify();
+    }
+
+    /// Files dropped onto the window take the same route as the picker.
+    pub(crate) fn add_paths<I>(&mut self, paths: I, cx: &mut Context<Self>)
+    where
+        I: IntoIterator<Item = PathBuf>,
+    {
+        for path in paths {
+            self.add_path(path, cx);
+        }
+    }
+
+    /// Drop one pending image before sending.
+    pub(crate) fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.ui.attachments.len() {
+            self.ui.attachments.remove(index);
         }
         cx.notify();
     }

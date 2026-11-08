@@ -8,6 +8,7 @@
 #![recursion_limit = "512"]
 
 pub mod approvals;
+mod attachments;
 pub mod backend;
 pub mod dormant;
 pub mod forms;
