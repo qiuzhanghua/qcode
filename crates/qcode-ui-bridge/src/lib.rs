@@ -185,7 +185,11 @@ pub enum UiCommand {
     /// A user message, with images pasted or picked in the frontend. While a
     /// turn is running the kernel queues it as a follow-up turn instead of
     /// dropping it.
+    /// `session` names the task the message belongs to (`None` = whatever the
+    /// window is on, i.e. a draft). With more than one live turn a prompt must
+    /// not be able to land on the task the window happens to show.
     Prompt {
+        session: Option<String>,
         text: String,
         attachments: Vec<Attachment>,
     },
@@ -197,9 +201,10 @@ pub enum UiCommand {
     },
     /// One operation on a queued (next-turn) message.
     QueueOp { id: String, op: QueueOp },
-    /// Stop one session's turn; `None` means the draft the engine is on
-    /// (ADR-0058 §6). A session that is not running is a no-op, which the UI
-    /// can race with — a turn may have just finished.
+    /// Stop one session's turn; `None` means whatever the window is on, which
+    /// is a draft before its first turn (ADR-0058 §6). A session that is not
+    /// running is a no-op, which the UI can race with — a turn may have just
+    /// finished.
     Cancel { session: Option<String> },
     /// Stop every live session. Used when the window is closing, before it
     /// waits for each `TurnFinished`.

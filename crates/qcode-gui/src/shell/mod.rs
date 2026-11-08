@@ -19,6 +19,8 @@ pub(crate) struct Shell {
     pub(crate) unread: std::collections::HashSet<String>,
     /// 托盘/窗口已经请求退出，正在等各自的 `TurnFinished`（§6）。
     pub(crate) quitting: bool,
+    /// 配置文件变了，但还有会话在跑：等全部回到 Idle 再统一重建（§7）。
+    pub(crate) pending_rebuild: bool,
     /// 输入框 Provider/Model 菜单顶部的模型搜索框。
     pub(crate) model_search_input: Entity<InputState>,
     /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
@@ -205,6 +207,7 @@ impl Shell {
             ticker_running: false,
             unread: std::collections::HashSet::new(),
             quitting: false,
+            pending_rebuild: false,
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,
@@ -393,11 +396,12 @@ impl Shell {
 
     /// The engine moved to `id`: the window follows it.
     ///
-    /// This is the one event that is about the window rather than about a
-    /// session's contents — the runtime is still single-slot, so "the engine is
-    /// now on X" *is* "show X". Materializing a view for a session the user has
-    /// never opened needs a `Window`, so that part stays in `resume`; here the
-    /// only thing that can arrive is the session we just asked for.
+    /// This is the one event that stands for the window rather than for a
+    /// session's contents: it only ever answers a `Resume`/`NewSession` the
+    /// window itself sent, so "the engine is now on X" means "show X". A turn
+    /// that starts in the *background* does not send it — that would steal the
+    /// view (ADR-0058 §7). Materializing a view for a session the user has never
+    /// opened needs a `Window`, so that part stays in `resume`.
     fn session_changed(&mut self, id: Option<String>) {
         self.active = id.clone();
         self.prefs.last_session = id.clone();
@@ -489,7 +493,7 @@ impl Shell {
                 // are keyed by task id, so a background session's finish is
                 // still handled correctly when it is not the one on screen.
                 self.apply_pending_roots(session.as_deref(), cx);
-                self.apply_pending_task_renames(cx);
+                self.apply_pending_task_renames(session.as_deref(), cx);
             }
         }
         if let Some(message) = failed {
@@ -514,6 +518,13 @@ impl Shell {
             // A repaint request is also what re-arms the tail follow: GPUI's
             // Tail mode keeps the view pinned unless the user scrolled away.
             cx.notify();
+        }
+        // A settings change waits for every session to be idle (§7): a rebuild
+        // swaps the engine out from under whichever turn is live, so the last
+        // turn back is the moment to do it.
+        if self.pending_rebuild && !self.any_turn_running() {
+            self.pending_rebuild = false;
+            self.apply_config_change(cx);
         }
         // Quitting waits for the turns we just cancelled (§6): a turn that has
         // returned has released its session lock, so nothing is left half
@@ -615,6 +626,27 @@ impl Shell {
         if let Ok(config) = qcode_kernel::config::load(&self.config_path) {
             self.busy_delivery = config.ui.busy_delivery;
         }
+        if self.backend.rebuild_hook().is_none() {
+            self.ui
+                .app
+                .push_notice("settings saved, but this backend cannot reload");
+            cx.notify();
+            return;
+        }
+        // 换 backend 等于换一条引擎任务：在跑的 turn 不会跟着过去。等所有会话
+        // 都回到 Idle 再重建（§7）——以前是直接打断当前 turn，并行之后那样会
+        // 把别的任务的输出一起掐掉。标志位在 `poll` 里兑现。
+        if self.any_turn_running() {
+            self.pending_rebuild = true;
+            self.set_notice("设置已保存：等所有任务空闲后应用".to_string(), false, cx);
+            cx.notify();
+            return;
+        }
+        self.apply_config_change(cx);
+    }
+
+    /// 重建引擎并重新挂上屏上的会话。调用前必须没有 turn 在跑（§7）。
+    pub(crate) fn apply_config_change(&mut self, cx: &mut Context<Self>) {
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.ui
                 .app
@@ -622,15 +654,6 @@ impl Shell {
             cx.notify();
             return;
         };
-        // 换 backend 等于换一条引擎任务：在跑的这个 turn 不会跟着过去。先按
-        // Stop 的语义停掉它（用户看得到），否则界面会永远停在 running 上——
-        // 旧引擎的事件再也不会有人接。
-        if self.ui.app.status.running || self.ui.turn_in_flight {
-            self.backend.cancel(self.active.as_deref());
-            self.ui
-                .app
-                .push_notice("settings saved: interrupting the running turn");
-        }
         // Await the rebuild on the UI thread's executor: assembling a kernel is
         // async, and creating a nested runtime here panics ("cannot start a
         // runtime from within a runtime"). The window stays responsive because

@@ -163,8 +163,11 @@ impl Shell {
             return;
         }
         self.dismiss_pause();
-        self.backend
-            .prompt(qcode_core::engine::WRAP_UP_PROMPT.to_string(), Vec::new());
+        self.backend.prompt(
+            self.active.as_deref(),
+            qcode_core::engine::WRAP_UP_PROMPT.to_string(),
+            Vec::new(),
+        );
         self.ui.error_banner = None;
         self.ui.turn_in_flight = true;
         cx.notify();

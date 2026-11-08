@@ -50,6 +50,16 @@
     后台任务也能停；错误的会话 id 不会停掉在跑的 turn（有用例钉住）。
   - 退出聚合成一条路：确认后 `cancel_all`，只清视觉上的运行态，等各自
     `TurnFinished` 再 `quit`，另加 5 秒兜底（日志是权威源，强杀不需要恢复逻辑）。
+- **多任务并行 P5**（ADR-0058 §7）：任务真的能同时在跑。
+  - runtime 从单槽改成按会话：`live: HashMap<SessionTarget, CancellationToken>`，
+    `current` 只表示「窗口在看谁」。切任务不再 cancel 当前 turn，也不再要求先停——
+    切走的后台任务继续跑，事件照旧路由到它停放的视图。
+  - `done` 通道与 `TurnGuard` 带上会话，收尾（`end_turn`、follow-up 队列、待应用改名/
+    目录）都按**完成的那个会话**做，不再误清屏上任务的状态。
+  - `UiCommand::Prompt { session }`（`Backend::prompt(session, …)`）：提问也带会话，
+    一次过期的界面切换不会把消息投到别的任务上。
+  - 「后端可回收」= `close_if_idle` 回收空闲会话的槽；切回来靠 `resume()` 从日志重放。
+  - 配置变更改成「等所有会话空闲再重建」（`pending_rebuild`），不再打断在跑的 turn。
 
 ## 0.7.7 — 2026-11-08
 

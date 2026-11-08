@@ -42,7 +42,15 @@ pub trait Backend {
     fn new_session(&mut self);
     /// Load the transcript, then point the engine at the session.
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String>;
-    fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
+    /// Send a message to `session` (`None` = wherever the window is, i.e. a
+    /// draft). The session is named explicitly because more than one turn can
+    /// be live: a stale "current" must not post to the wrong task.
+    fn prompt(
+        &mut self,
+        session: Option<&str>,
+        text: String,
+        attachments: Vec<qcode_core::engine::Attachment>,
+    );
     /// Continue the paused turn in a fresh budget window (ADR-0060). A no-op
     /// when nothing is paused.
     fn continue_turn(&mut self, _raise: Option<RaiseLimit>) {}
@@ -166,7 +174,13 @@ impl Backend for UnconfiguredBackend {
         self.store.load(id).map_err(|error| error.to_string())
     }
 
-    fn prompt(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn prompt(
+        &mut self,
+        _session: Option<&str>,
+        _text: String,
+        _attachments: Vec<qcode_core::engine::Attachment>,
+    ) {
+    }
     fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
 
     fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
@@ -315,8 +329,17 @@ impl Backend for LocalBackend {
         Ok(events)
     }
 
-    fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
-        self.send(UiCommand::Prompt { text, attachments });
+    fn prompt(
+        &mut self,
+        session: Option<&str>,
+        text: String,
+        attachments: Vec<qcode_core::engine::Attachment>,
+    ) {
+        self.send(UiCommand::Prompt {
+            session: session.map(str::to_string),
+            text,
+            attachments,
+        });
     }
 
     fn continue_turn(&mut self, raise: Option<RaiseLimit>) {

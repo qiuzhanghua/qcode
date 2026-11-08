@@ -90,22 +90,27 @@ impl Shell {
     }
 
     /// Turn 结束、会话锁释放后，把运行中暂存的重命名落盘。
-    pub(crate) fn apply_pending_task_renames(&mut self, cx: &mut Context<Self>) {
-        if self.pending_task_renames.is_empty() {
+    /// Land the rename queued for **this** session's turn (§7).
+    ///
+    /// Another session may still hold its own lock, so it keeps its queued
+    /// title until its own `TurnFinished` — applying it here would only fail
+    /// with `Locked` and lose the edit.
+    pub(crate) fn apply_pending_task_renames(
+        &mut self,
+        session: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task_id) = session else {
             return;
-        }
-        let pending = std::mem::take(&mut self.pending_task_renames);
-        let mut failed = Vec::new();
-        for (id, title) in pending {
-            if let Err(error) = self.backend.rename_task(&id, title) {
-                failed.push(format!("{id}: {error}"));
-            }
-        }
+        };
+        let Some(title) = self.pending_task_renames.remove(task_id) else {
+            return;
+        };
         // 重新拉取：成功的新标题来自 store，失败的会回退到旧标题。
-        self.refresh_tasks();
-        for error in failed {
+        if let Err(error) = self.backend.rename_task(task_id, title) {
             self.ui.app.push_notice(format!("无法重命名任务: {error}"));
         }
+        self.refresh_tasks();
         cx.notify();
     }
 

@@ -37,13 +37,8 @@ impl Shell {
             );
             return;
         }
-        if self.ui.app.status.running {
-            self.ui
-                .app
-                .push_notice("stop the running turn before switching sessions");
-            cx.notify();
-            return;
-        }
+        // 后台任务在跑不再挡路：切走只是换视图，它的 turn 继续在自己的槽位上
+        // 跑（ADR-0058 §7/P5）。Stop 只停屏上这个任务（§6）。
         // 无内容的新任务只允许一个：正停在空任务/空草稿上时直接复用当前
         // 任务，不再创建新的空任务。
         if self.on_empty_draft() {
@@ -79,13 +74,8 @@ impl Shell {
     }
 
     pub(crate) fn resume(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ui.app.status.running {
-            self.ui
-                .app
-                .push_notice("stop the running turn before switching sessions");
-            cx.notify();
-            return;
-        }
+        // 切到另一个任务不要求先停：正在跑的那个是**它自己的** turn，切走之后
+        // 继续跑，事件按会话路由到它停放的视图里（ADR-0058 §7/P5）。
         let configured_provider = self
             .backend
             .provider()
@@ -238,7 +228,8 @@ impl Shell {
         {
             self.backend.steer(prompt.clone(), attachments);
         } else {
-            self.backend.prompt(prompt.clone(), attachments);
+            self.backend
+                .prompt(self.active.as_deref(), prompt.clone(), attachments);
         }
         self.ui.error_banner = None;
         self.ui.turn_in_flight = true;

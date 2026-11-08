@@ -3612,7 +3612,7 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。**P0–P4 已实现**（2026-11-08），P5–P6 未实现。
+**状态**：Accepted（2026-11-08）。**P0–P5 已实现**（2026-11-08），P6 未实现。
 依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
 实现注记见本文末。
 
@@ -3899,8 +3899,9 @@ pub enum SessionTarget { Session(String), Draft }
       流式增量，只在 turn 边界/审批这类「一行状态变了」的事件上请求一帧；
     - 目标是没有视图的会话 → 进 `Dormant`：只有状态（running）、审批队列、队列快照、
       失败提示，`Delta` 直接丢（切进去时从日志重放，ADR-0057）。
-19. **`SessionChanged` 不分发**，它是窗口级事件：runtime 仍是单槽，「引擎现在挂在谁
-    身上」就是「显示谁」。给它做分发需要「给一个没打开过的会话造视图」，而那要
+19. **`SessionChanged` 不分发**，它是窗口级事件：P3 时 runtime 仍是单槽，「引擎现在挂在
+    谁身上」就是「显示谁」（P5 把语义收窄成「只回应窗口自己的 `Resume`/`NewSession`」，
+    见注记 40）。给它做分发需要「给一个没打开过的会话造视图」，而那要
     `Window`（composer 是实体），`poll` 手上没有。真正的多槽切换（P5）之后它才需要
     按目标区分；那时也才有窗口上下文可用（切换本来就是用户操作，走 `resume`）。
 20. **审批的「永不丢」现在真的成立了**：后台会话的 `Approval` 进 `Dormant.approvals`
@@ -3915,12 +3916,10 @@ pub enum SessionTarget { Session(String), Draft }
     按 tag 找到 `parked`，不会再去清屏上那份视图的 `turn_in_flight`。这是 P1/P2
     遗留的一个真 bug（单会话时看不出来，因为只有一个会话能跑）。
 23. **`task_running(id)` 是三档合一**（屏上 / parked / dormant），侧栏行标记与 ⋯ 菜单
-    共用它：后台在跑的任务行显示 `▶`。审批徽标仍留给 P4（`task_approvals` 一起做，
-    现在只有 `dormant.approvals` 被 `resume` 消费）。
-24. **切走时仍被 `running` 闸拦着**（`new_session` / `resume`）。原因不是 UI 了：runtime
-    收到 `Resume` 会先 `token.cancel()` 把当前 turn 停掉，然后再切
-    （`runtime.rs` 的 `UiCommand::Resume` 分支）。P3 之后视图侧已经能承接「两个会话
-    各有一份状态」，但引擎侧还是单槽，所以闸门要等 P5 的按会话 turn 一起摘。
+    共用它：后台在跑的任务行显示 `▶`。审批徽标留给 P4（注记 26，`task_state` 的
+    `waiting_approval` 一起做）；P3 时只有 `dormant.approvals` 被 `resume` 消费。
+24. ~~切走时仍被 `running` 闸拦着~~（`new_session` / `resume`）：runtime 收到 `Resume`
+    会先 `token.cancel()` 再切，引擎侧仍是单槽。**P5 已摘掉**（注记 37）。
 25. **P3 的自动化只覆盖 `Dormant`**（`tests/dormant.rs`，8 条）：路由与 ticker 需要
     GPUI 的 `Window`/`Context`，仍是手工验证（§验证 里那几条）。
 
@@ -3957,16 +3956,56 @@ pub enum SessionTarget { Session(String), Draft }
     provider 一时不理会取消令牌时，退出不能变成卡住——日志是权威源（ADR-0057），强杀
     不需要恢复逻辑，这正是 §6 允许这么办的理由。
 32. **`TurnFinished` 的 shell 级收尾按会话触发**：`apply_pending_roots(session)` /
-    `apply_pending_task_renames` 在 drain 里对每个 `TurnFinished` 执行，与「是不是屏上
-    那个会话」无关。
-33. **P4 仍没做的**：§7 的「配置变更 → 标 `pending_rebuild`，等所有会话回到 Idle 再统一
-    `apply_rebuild`」还是老样子（立刻 cancel 当前 turn + 重建 + resume active）。
-    它要的是「等空闲」，而引擎现在只有一个 turn，"所有会话空闲"与"当前 turn 结束"
-    等价；等 P5 有了并行的 turn 再按会话等，否则先写出一个假的等待条件。后端可回收
-    （§5 后半）与定时触发（P6）同理。
-34. **P4 的自动化**：`tests/task_ops.rs`（状态优先级、`edit_must_wait`、未读判据）5 条，
+    `apply_pending_task_renames(session)` 在 drain 里对每个 `TurnFinished` 执行，与「是不是
+    屏上那个会话」无关。改名也只落**完成的那一个**：另一个会话还握着它自己的文件锁，
+    替它落盘只会拿到 `Locked` 并把这次编辑丢掉。
+33. **P4 的自动化**：`tests/task_ops.rs`（状态优先级、`edit_must_wait`、未读判据）5 条，
     `tests/backend.rs` 加了 `cancel_all_stops_the_running_turn` 并在原用例里加了
     「错 id 不停」。徽标渲染、`quitting` 的等待与 5 秒兜底需要 GPUI，仍是手工验证。
+
+**实现注记（2026-11-08，P5）**
+
+34. **runtime 从单槽改成按会话并行**（§7）。循环里的 `active: Option<CancellationToken>`
+    / `session: Option<String>` / `pending: Option<UiCommand>` 换成
+    `live: HashMap<SessionTarget, CancellationToken>`：每个在跑的 turn 一个条目，`current`
+    只剩下「窗口在看谁」这一个意思。`start_turn!` 第一个参数是目标会话——草稿在第一个
+    turn 变成会话，其余目标本来就带 id，所以后台任务的提问不会落到窗口正在看的那个任务上。
+35. **`done` 通道带会话**：`(SessionTarget, Result<(), String>)`。`TurnGuard`（P0 的 panic
+    兜底）也带上目标，否则 panic 后 `live` 里会留下一个永远不消失的条目。收尾一律
+    `live.remove(&target)` + `host.end_turn(&target)` + 只 drain **那个会话**的 follow-up
+    队列：以前这些都用 `current`，多个 turn 时会清错任务的状态。
+36. **`UiCommand::Prompt { session }`**：提问也带会话（`Backend::prompt(session, …)`）。
+    这是「并行」的必要条件——只按 `current` 路由的话，一次过期的界面切换就会把消息投到
+    别人身上。`Cancel { session }` 的 `None` 现在明确表示「窗口正在看的那个」（草稿），
+    runtime 用 `current` 兜底。
+37. **切任务不再要求先停**（摘掉 P3 遗留的 `running` 闸）：`new_session` / `resume` 里那两处
+    `if status.running { … 请先停止 … }` 删掉。`Resume` / `NewSession` 在 runtime 里也不再
+    `token.cancel()` + `pending` 重发，只是重新指一下 `current`；离开的会话若空闲则
+    `close_if_idle` 回收它的槽（见 39），在跑的话原样留着。切回来时如果它还在跑，
+    `resume` 不清它的 "Always" 列表——同一个 turn 里问第二遍是噪音。
+38. **「后端可回收」在这里的落法**：引擎是共享的（§1），所以会话没有自己的后端可 drop；
+    它持有的是一个槽（cancel token + 队列）。`close_if_idle` 就是全部——空闲且队列空的槽
+    直接忘掉，切回来时 `resume()` 从日志重放（ADR-0057），视图里的一切都重建得出来。
+    这也让 `Dormant` 的自动收摊（注记 21）与槽的回收是同一件事的两种表现。
+39. **配置变更等所有会话空闲**（§7，补上 P4 那段遗留）：新字段
+    `Shell::pending_rebuild`。`reload_on_config_change` 发现还有 turn 在跑就只置位 + 提示，
+    `poll` 在 `any_turn_running()` 变假时调 `apply_config_change` 真正重建并重新挂上屏上的
+    会话。以前是直接 `cancel` 当前 turn 再重建——并行之后那样会连带掐掉别的任务的输出。
+40. **`SessionChanged` 仍是窗口级**，但语义收窄了：它只在 `Resume` / `NewSession` 之后
+    由 runtime 发出（后台 turn 启动不发），所以「引擎现在挂在谁身上」正好等于「显示谁」，
+    不需要分发。广播 `SessionChanged` 反而是 bug——会把用户正在看的视图抢走。
+41. **P5 的自动化**：`tests/backend.rs` 新增
+    `two_sessions_run_at_the_same_time`（B 的 `TurnStarted` 必须早于 A 的 `TurnEnded`，
+    且 A 是 `Completed` 不是 `Cancelled`——切走不等于停）与
+    `stopping_one_task_leaves_the_other_running`（停 B 时 A 仍 `Completed`）。
+    多槽视图切换、`pending_rebuild` 的等待仍要 GPUI，是手工验证。
+42. **模型仍是窗口级的**：`UiCommand::SetModel` 换的是这条引擎任务的 `model` / `provider`，
+    之后**任何**会话新起的 turn 都用它（包括后台任务排队后自动接着跑的那个）。按会话
+    记模型要动 `Task` 与设置持久化，超出这次的范围；现在的行为至少是「所见即所用」：
+    头部选择器显示的就是下一个 turn 会用的模型。写在这里是因为并行之后它第一次有了
+    歧义（以前同时只有一个会话，没有「别人的 turn 用谁的模型」这个问题）。
+43. **P6 仍未做**：定时触发（ADR-0059）。它的前置——「谁在哪个会话跑」的全局视图——现在
+    由 `SessionHost` + `live` 提供了。
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

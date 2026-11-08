@@ -1,10 +1,10 @@
 //! `SessionHost`: the one place that knows which sessions are live (ADR-0058).
 //!
-//! Today the window runs one turn at a time, so this is the skeleton the ADR
-//! asks for in P1: the map, the per-session cancel token and the per-session
-//! queue exist and are the authority for "what is this session doing", but only
-//! one slot is ever populated. P2–P4 (shell `TaskUi` slots, `poll` routing,
-//! lifecycle) build on this instead of inventing a second registry.
+//! Several slots can be live at once: each running turn owns its session's
+//! token and inbox, so switching the window's view never stops a background
+//! turn (ADR-0058 §7). The shell's `TaskUi` slots, `poll` routing and lifecycle
+//! badges all read their "is it running" answers from here instead of inventing
+//! a second registry.
 //!
 //! Deliberately free of GPUI: a plain `Mutex<HashMap<..>>`, so the routing rules
 //! are testable without opening a window (`tests/host.rs`).
@@ -151,9 +151,13 @@ impl SessionHost {
         }
     }
 
-    /// Forget a session once its turn is done and nothing is queued. Its
-    /// backend can then be dropped (P5: an idle non-active session may lose its
-    /// backend and replay from the log when focused again).
+    /// Forget a session once its turn is done and nothing is queued.
+    ///
+    /// This is the whole of "recycle an idle back end" in this design: the
+    /// engine is shared, so a session has no back end of its own to drop — what
+    /// it holds is a slot, and a replayed log (ADR-0057) rebuilds everything the
+    /// view showed. Nothing is lost by forgetting it; the entry comes back the
+    /// next time the session runs or is focused.
     pub fn close_if_idle(&self, session: &SessionTarget) -> bool {
         let mut slots = self.lock();
         let Some(slot) = slots.get(session) else {
