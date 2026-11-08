@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布
+## 0.7.7 — 2026-11-08
 
 - **预算暂停：超限是交接，不是报错**（ADR-0060）：`max_turns` / `max_cost` 用尽时 turn 落
   新增的 `paused` 四态（schema v5 → 6，v5 日志 serde 缺省可回放），不再写 `error(...)` 当
