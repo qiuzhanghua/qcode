@@ -41,7 +41,28 @@ impl App {
                     // typed: a continuation row reads as a strip, not a question.
                     self.push_input(Block::Notice("继续上一次暂停的任务".to_string()));
                 } else {
-                    self.push_input(Block::User(message.text.clone()));
+                    self.push_input(Block::User {
+                        text: message.text.clone(),
+                        images: message
+                            .attachments
+                            .iter()
+                            .filter_map(|attachment| match attachment {
+                                qcode_attachments::AttachmentRef::Image(image) => {
+                                    Some(crate::ImageBlock {
+                                        id: image.id.to_hex(),
+                                        mime: image.mime.as_str().to_string(),
+                                        width: image.width,
+                                        height: image.height,
+                                        label: image
+                                            .name
+                                            .clone()
+                                            .unwrap_or_else(|| "pasted image".to_string()),
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    });
                 }
             }
             EventKind::AssistantMessage(message) => {

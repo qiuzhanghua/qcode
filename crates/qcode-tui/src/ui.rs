@@ -253,7 +253,7 @@ fn block_hidden(app: &App, block: &Block) -> bool {
 
 fn block_rows(block: &Block) -> usize {
     match block {
-        Block::User(text)
+        Block::User { text, .. }
         | Block::Assistant(text)
         | Block::Notice(text)
         | Block::Skill(text)
@@ -294,8 +294,20 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in selected {
         match block {
-            Block::User(text) => {
-                push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan))
+            Block::User { text, images } => {
+                push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan));
+                for image in images {
+                    let label = format!(
+                        "〔图片 {} — {}×{}，终端只显示占位文字〕",
+                        image.label, image.width, image.height
+                    );
+                    push_text(
+                        &mut lines,
+                        "  ",
+                        &label,
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
             }
             Block::Assistant(text) => {
                 push_text(&mut lines, "  ", text, Style::default());

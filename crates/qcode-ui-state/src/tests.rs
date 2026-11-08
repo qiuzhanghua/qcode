@@ -139,6 +139,46 @@ fn slash_skill_name_activates_it_as_a_user_message() {
 }
 
 #[test]
+fn an_image_attachment_rides_on_the_question_row() {
+    use qcode_attachments::{AttachmentId, AttachmentRef, ImageMime, ImageRef};
+
+    let mut app = App::new("mock", "mock-1");
+    app.status.running = true;
+    app.apply(&event(EventKind::TurnStarted(
+        qcode_core::event::TurnStarted {
+            input: "what is this?".to_string(),
+        },
+    )));
+    let image = ImageRef {
+        id: AttachmentId::from_bytes([7; 32]),
+        mime: ImageMime::Png,
+        bytes: 1234,
+        width: 640,
+        height: 480,
+        origin: None,
+        name: Some("shot.png".to_string()),
+    };
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        starts_segment: true,
+        queued_id: None,
+        text: "what is this?".to_string(),
+        attachments: vec![AttachmentRef::Image(image)],
+        continuation: None,
+    })));
+
+    let Some(Block::User { images, .. }) = app.blocks.last() else {
+        panic!("expected the question row: {:?}", app.blocks);
+    };
+    let [row] = images.as_slice() else {
+        panic!("expected one picture on the question: {images:?}");
+    };
+    assert_eq!(row.id, "07".repeat(32));
+    assert_eq!(row.mime, "image/png");
+    assert_eq!((row.width, row.height), (640, 480));
+    assert_eq!(row.label, "shot.png");
+}
+
+#[test]
 fn slash_skill_activation_is_rejected_while_running() {
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
@@ -691,11 +731,17 @@ fn steered_follow_up_message_becomes_its_own_turn() {
     let b = &app.turns[1];
     assert_eq!(
         app.blocks[a.input_block.expect("A has input")],
-        Block::User("A".to_string())
+        Block::User {
+            text: "A".to_string(),
+            images: Vec::new()
+        }
     );
     assert_eq!(
         app.blocks[b.input_block.expect("B has input")],
-        Block::User("B".to_string())
+        Block::User {
+            text: "B".to_string(),
+            images: Vec::new()
+        }
     );
     assert_eq!(a.process.len(), 1, "A 的工具属于 A");
     assert_eq!(b.process.len(), 1, "B 的工具属于 B");
@@ -748,7 +794,10 @@ fn v4_plain_user_message_does_not_split_a_turn() {
     assert_eq!(app.turns.len(), 1);
     assert_eq!(
         app.blocks[app.turns[0].input_block.expect("input")],
-        Block::User("A".to_string())
+        Block::User {
+            text: "A".to_string(),
+            images: Vec::new()
+        }
     );
 }
 
@@ -795,7 +844,10 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
     assert_eq!(app.turns.len(), 2, "v3 日志仍用启发式拆分");
     assert_eq!(
         app.blocks[app.turns[1].input_block.expect("B has input")],
-        Block::User("B".to_string())
+        Block::User {
+            text: "B".to_string(),
+            images: Vec::new()
+        }
     );
 }
 
@@ -1382,7 +1434,13 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
 
         continuation: None,
     })));
-    assert_eq!(app.blocks, vec![Block::User("hi".to_string())]);
+    assert_eq!(
+        app.blocks,
+        vec![Block::User {
+            text: "hi".to_string(),
+            images: Vec::new()
+        }]
+    );
 }
 
 #[test]

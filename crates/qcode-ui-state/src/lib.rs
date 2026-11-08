@@ -26,7 +26,12 @@ const SCROLL_STEP: usize = 10;
 /// One visible item in the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    User(String),
+    /// The user's question, with the pictures that came with it.
+    User {
+        text: String,
+        /// Empty for a text-only message.
+        images: Vec<ImageBlock>,
+    },
     Assistant(String),
     Tool(Box<ToolEntry>),
     /// Progress from a child agent: text, notices and a nested tool row.
@@ -43,6 +48,17 @@ pub enum Block {
     Skill(String),
     /// Model reasoning. Kept separate from the final answer.
     Reasoning(ReasoningEntry),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageBlock {
+    /// Attachment id: 64 lowercase hex characters.
+    pub id: String,
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+    /// File name, or "pasted image" for the clipboard.
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

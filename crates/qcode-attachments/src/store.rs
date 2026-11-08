@@ -188,6 +188,18 @@ impl AttachmentStore {
         self.object_path("objects", image.id)
     }
 
+    /// Where the uploaded copy of `id` lives, derived from the data directory
+    /// alone. Rendering uses this: it must not open (and tidy) the store.
+    pub fn object_path_in(data_dir: impl AsRef<Path>, id: AttachmentId) -> PathBuf {
+        data_dir
+            .as_ref()
+            .join("attachments")
+            .join("v1")
+            .join("objects")
+            .join(id.shard())
+            .join(id.to_hex())
+    }
+
     /// Where the untouched original lives. Not checked for existence.
     pub fn origin_path(&self, origin: &OriginRef) -> PathBuf {
         self.object_path("originals", origin.id)

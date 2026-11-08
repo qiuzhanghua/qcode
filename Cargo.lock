@@ -5535,6 +5535,7 @@ dependencies = [
 name = "qcode-ui-state"
 version = "0.7.8"
 dependencies = [
+ "qcode-attachments",
  "qcode-core",
  "serde_json",
  "time",

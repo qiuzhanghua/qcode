@@ -137,7 +137,7 @@ impl Shell {
                 .input_block
                 .and_then(|idx| self.ui.app.blocks.get(idx))
                 .and_then(|block| match block {
-                    Block::User(text) => Some(head_and_body(text)),
+                    Block::User { text, .. } => Some(head_and_body(text)),
                     _ => None,
                 })
                 .unwrap_or_else(|| (format!("第 {} 轮", turn.number), String::new())),

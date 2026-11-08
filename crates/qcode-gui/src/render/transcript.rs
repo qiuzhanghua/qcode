@@ -845,14 +845,9 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
     }
 
     match &shell.ui.app.blocks[index] {
-        Block::User(text) => div()
-            .flex()
-            .flex_col()
-            .items_end()
-            .w_full()
-            .px_6()
-            .py_2()
-            .child(
+        Block::User { text, images } => {
+            let mut column = div().flex().flex_col().items_end().gap_2();
+            column = column.child(
                 div()
                     .max_w(px(560.0))
                     .bg(rgba(0x7f7f7f18))
@@ -866,8 +861,21 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                             .text_size(sp(BODY_SIZE))
                             .line_height(sp(BODY_LINE)),
                     ),
-            )
-            .into_any_element(),
+            );
+            // Pictures sit under the question, inside the same bubble column, so
+            // folding the execution process can never hide them.
+            for image in images {
+                column = column.child(image_tile(image, shell, index));
+            }
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .px_6()
+                .py_2()
+                .child(column)
+                .into_any_element()
+        }
         Block::Assistant(text) => markdown_with_folds(index, text, shell, entity),
         Block::Tool(tool) => {
             let label = tool_label(&tool.name);
@@ -1300,4 +1308,35 @@ fn pause_card(
             .child(body.child(buttons))
             .into_any_element(),
     )
+}
+
+/// One attached picture: the bytes are in the attachment store, the ref only
+/// names them.
+fn image_tile(image: &qcode_ui_state::ImageBlock, shell: &Shell, index: usize) -> AnyElement {
+    let Some(id) = qcode_attachments::AttachmentId::from_hex(&image.id) else {
+        return div().into_any_element();
+    };
+    let path = qcode_attachments::AttachmentStore::object_path_in(&shell.data_dir, id);
+    // A wiped data directory or a GC pass can remove the object; say so rather
+    // than drawing an empty box.
+    if !path.exists() {
+        return div()
+            .text_size(sp(SECONDARY_SIZE))
+            .text_color(rgb(0x999999))
+            .child("[图片已不可用]")
+            .into_any_element();
+    }
+    // Fit inside a 360×260 box, never scaling up past the original.
+    let (width, height) = (image.width.max(1) as f32, image.height.max(1) as f32);
+    let scale = (360.0 / width).min(260.0 / height).min(1.0);
+    div()
+        .id(("image", index))
+        .w(px((width * scale).max(1.0)))
+        .h(px((height * scale).max(1.0)))
+        .rounded(px(12.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgba(0x7f7f7f33))
+        .child(img(path).object_fit(ObjectFit::Cover).w_full().h_full())
+        .into_any_element()
 }
