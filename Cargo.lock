@@ -5463,7 +5463,9 @@ name = "qcode-providers"
 version = "0.7.8"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
+ "qcode-attachments",
  "qcode-core",
  "qcode-net",
  "qcode-tools",
