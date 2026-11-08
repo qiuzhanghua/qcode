@@ -97,9 +97,6 @@ where
     if options.max_cost_usd.is_some() && options.pricing.is_none() {
         return Err(EngineError::MissingPricing);
     }
-    if !options.attachments.is_empty() && !ctx.provider.capabilities().images {
-        return Err(EngineError::ImagesUnsupported);
-    }
 
     // The window number and the paused turn it continues are the engine's to
     // decide, from the log: a frontend that sends a stale or forged value must
@@ -123,6 +120,11 @@ where
     let mut messages = history::messages_from_events_with(&events, |image| {
         attachment_store.read_image(image).ok()
     });
+    // A model without image input still gets a usable turn: the picture becomes
+    // a line of text naming what was attached (ADR-0061 §8).
+    if !ctx.provider.capabilities().images {
+        super::attachments::omit_images(&mut messages);
+    }
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.
     let mut todos = todo::current(&events);

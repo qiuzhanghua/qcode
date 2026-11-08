@@ -224,6 +224,83 @@ async fn a_mislabelled_attachment_is_refused_before_anything_is_written() {
     );
 }
 
+#[tokio::test]
+async fn a_text_only_model_gets_a_placeholder_instead_of_an_image() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).expect("session");
+    let bytes = png();
+
+    // A model that only takes text: the turn still runs, and what reaches the
+    // provider is a line of text saying an image was attached (ADR-0061 §8).
+    let provider = MockProvider::text("plain text answer");
+    let tools = ToolRegistry::new(Vec::new());
+    let policy = Policy::default();
+
+    let outcome = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &qcode_core::approval::AutoApprove,
+            snapshots: None,
+        },
+        options(
+            &id,
+            dir.path(),
+            vec![Attachment {
+                mime_type: "image/png".to_string(),
+                data_base64: BASE64.encode(&bytes),
+            }],
+        ),
+        |_| {},
+    )
+    .await
+    .expect("a text-only model still completes the turn");
+    assert_eq!(outcome.text, "plain text answer");
+
+    // The log still carries the reference, so the image is not lost: a vision
+    // model can replay it later.
+    let events = store.load(&id).expect("load");
+    let image = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => message.attachments.first().cloned(),
+            _ => None,
+        })
+        .expect("the reference is logged even when the model cannot see it");
+    let AttachmentRef::Image(image) = image else {
+        panic!("expected an image ref");
+    };
+    let attachments = AttachmentStore::open(store.root()).expect("store");
+    assert_eq!(attachments.read_image(&image).expect("read back"), bytes);
+
+    // The provider saw text where the picture would have been.
+    let request = provider.requests().first().cloned().expect("a request");
+    let user = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .expect("a user message");
+    assert_eq!(user.blocks.len(), 2);
+    let ContentBlock::Text { text } = &user.blocks[1] else {
+        panic!("expected a text placeholder instead of the image");
+    };
+    assert!(
+        text.contains("image omitted") && text.contains("image/png"),
+        "the placeholder should say what was dropped: {text}"
+    );
+    assert!(
+        !request.messages.iter().any(|message| message
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. }))),
+        "no image block may reach a text-only model"
+    );
+}
+
 /// Number of stored image objects under `<data>/attachments/v1/objects`.
 fn objects(root: &std::path::Path) -> usize {
     let objects = root.join("attachments").join("v1").join("objects");

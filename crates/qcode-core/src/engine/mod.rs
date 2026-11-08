@@ -159,8 +159,6 @@ pub enum EngineError {
     NoProgress { tool: String, rounds: u32 },
     #[error("--max-cost requires pricing for the model")]
     MissingPricing,
-    #[error("this provider does not accept image input")]
-    ImagesUnsupported,
     #[error("{mime} attachments are not supported")]
     UnsupportedAttachment { mime: String },
     #[error("attachment payload is not valid base64")]

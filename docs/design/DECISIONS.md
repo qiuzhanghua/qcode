@@ -4381,8 +4381,10 @@ GUI 落地后这三条边界开始漏：
    （分块读 → 写 `tmp/` → fsync），不把整个文件读进内存；中途失败就删掉临时文件。
 
 8. **能力门控改为降级。** 模型 `capabilities().images == false` 时不丢弃图片，换成一行
-   占位文本（`[image omitted: provider accepts text only; sha256:…]`）。ADR-0035 §3 的
-   "直接报错"改成"降级为文本"——报错让用户没法继续，占位只损失一张图。
+   占位文本：`[image omitted: this model accepts text only; <mime>, <bytes> bytes. The image
+   stays in the session log, so a model that accepts images can replay it.]`。日志里仍是引用，
+   换成支持视觉的模型重放就能看到原图。ADR-0035 §3 的"直接报错"改成"降级为文本"——报错
+   让用户没法继续，占位只损失一张图。
 
 9. **压缩照旧不看图片字节。** `compact.rs` 里图片按 `base64.len()/4` 估算，摘要输入里替换为
    占位文本。不引入逐条投影式的"图片卸载"：qcode 的压缩是整段替换为摘要，没有逐条省略
