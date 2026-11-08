@@ -126,6 +126,13 @@ where
     // a line of text naming what was attached (ADR-0061 §8).
     if !ctx.provider.capabilities().images {
         super::attachments::omit_images(&mut messages);
+    } else {
+        // Even a vision model has a request budget: past a few pictures, the
+        // oldest ones become placeholders and the newest still gets through.
+        super::attachments::offload_images(
+            &mut messages,
+            super::attachments::ImageBudget::default(),
+        );
     }
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.

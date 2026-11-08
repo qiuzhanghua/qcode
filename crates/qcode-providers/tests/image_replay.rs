@@ -328,3 +328,71 @@ fn objects(root: &std::path::Path) -> usize {
     }
     count
 }
+
+#[tokio::test]
+async fn past_the_request_budget_the_oldest_pictures_become_placeholders() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).expect("session");
+    let bytes = png();
+    let caps = Capabilities {
+        images: true,
+        ..Capabilities::default()
+    };
+    let provider = MockProvider::text("looked").with_capabilities(caps);
+    let tools = ToolRegistry::new(Vec::new());
+    let policy = Policy::default();
+
+    // One more picture than a single request may carry.
+    let attachments = (0..21)
+        .map(|_| Attachment {
+            mime_type: "image/png".to_string(),
+            data_base64: BASE64.encode(&bytes),
+        })
+        .collect();
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &qcode_core::approval::AutoApprove,
+            snapshots: None,
+        },
+        options(&id, dir.path(), attachments),
+        |_| {},
+    )
+    .await
+    .expect("turn");
+
+    let request = provider.requests().first().cloned().expect("a request");
+    let user = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .expect("a user message");
+    let images = user
+        .blocks
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Image { .. }))
+        .count();
+    let placeholders = user
+        .blocks
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Text { text } if text.contains("image omitted to fit")))
+        .count();
+    assert_eq!(images, 20, "the newest twenty pictures still go through");
+    assert_eq!(placeholders, 1, "the oldest one is a placeholder");
+
+    // Nothing was dropped from the log: a request with room shows it again.
+    let events = store.load(&id).expect("load");
+    let kept = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => Some(message.attachments.len()),
+            _ => None,
+        })
+        .expect("an attachment list");
+    assert_eq!(kept, 21);
+}
