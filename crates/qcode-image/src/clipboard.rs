@@ -83,6 +83,10 @@ pub fn read_image() -> Result<Image, String> {
 
 /// Width and height from a PNG header. Enough to size the thumbnail; the bytes
 /// themselves are handed to the provider untouched.
+///
+/// Only the macOS pasteboard hands over encoded PNG, so on other platforms this
+/// has no caller and must not be compiled in.
+#[cfg(target_os = "macos")]
 fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if bytes.len() < 24 || bytes[0..8] != SIGNATURE {
