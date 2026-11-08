@@ -15,6 +15,7 @@ members = [
   "crates/qcode-gui",
   "crates/qcode-image",
   "crates/qcode-kernel",
+  "crates/qcode-attachments",
   # Fork of xim-ctext 0.3.0; see [patch.crates-io] below and ADR-0051.
   "vendor/xim-ctext",
 ]
