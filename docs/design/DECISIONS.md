@@ -4389,6 +4389,10 @@ GUI 落地后这三条边界开始漏：
    单文件上限 **64 MB**：超过则当场拒绝并提示"先拆分或压缩"，不产生临时文件。复制走流式
    （分块读 → 写 `tmp/` → fsync），不把整个文件读进内存；中途失败就删掉临时文件。
 
+   实现注记：GUI 在选文件/拖文件的那一刻就落盘（输入框上方显示名字、大小、×），发送时
+   只传引用；`qc run --file <PATH>` 走同一条路。事件日志里存 `AttachmentRef::File`，
+   回放时用 `file_handle_text` 重建同一段句柄文案——所以 resume 之后模型仍拿得到路径。
+
 8. **能力门控改为降级。** 模型 `capabilities().images == false` 时不丢弃图片，换成一行
    占位文本：`[image omitted: this model accepts text only; <mime>, <bytes> bytes. The image
    stays in the session log, so a model that accepts images can replay it.]`。日志里仍是引用，
