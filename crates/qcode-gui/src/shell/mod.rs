@@ -453,7 +453,10 @@ impl Shell {
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         let reasoning_was_live = self.app.streaming_reasoning_block.is_some();
-        while let Some(event) = self.backend.try_recv() {
+        while let Some(tagged) = self.backend.try_recv() {
+            // P1 carries the session tag but the transcript is still one
+            // session's; P3 routes by tag instead of ignoring it.
+            let event = tagged.event;
             if self.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
                 continue;
             }

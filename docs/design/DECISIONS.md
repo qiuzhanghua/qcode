@@ -3612,8 +3612,9 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。未实现。依赖 ADR-0053（Queue/Steer 语义）与
-ADR-0057（日志是 transcript 的唯一权威）。
+**状态**：Accepted（2026-11-08）。**P0、P1 已实现**（2026-11-08），P2–P6 未实现。
+依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
+实现注记见本文末。
 
 **背景**
 
@@ -3806,6 +3807,38 @@ pub enum SessionTarget { Session(String), Draft }
 - 重建：保存设置后 active 会话被 `resume`，下一条消息落在同一会话（今天会新开）。
 - 手工：三个任务同时跑并来回切；后台任务审批到达时侧栏有徽标，切回能答；Stop 只停当前
   那个。
+
+**实现注记（2026-11-08，P0–P1）**
+
+1. **P0 全部落地，三处都在，可独立回滚**。
+   - `qcode-tools/src/fs.rs` 的 `read_file` / `write_file` / `edit_file` / `list_dir`
+     改走新增的 `blocking()`（`spawn_blocking` + panic 转 `ToolError::Io`）。顺带把
+     `write_file` 的「读旧文本」也搬出去——它同样是一次同步读。
+   - `qcode-gui/src/runtime.rs` 的 `TurnGuard`：`tokio::spawn` 里 panic 会走 Drop 而不是
+     `done.send`，守卫把它变成一条 `TurnFailed`，`active` 因此一定被清掉。回归用例是
+     `tests/backend.rs::a_panicking_turn_reports_turn_failed_and_keeps_the_loop_alive`
+     （临时把守卫关掉，该用例会红 3 秒后失败，确认它测的是这件事）。
+   - `apply_rebuild` 保留 active 会话这条在 `fe6a5d6` 已修，本次只核对未改。
+2. **`SessionHost` 住在 `qcode-gui/src/host.rs`，不在 core**。P1 的消费者只有 GUI；
+   等 ACP / TUI 真正接入（P3 之后）再决定是否上移，避免先抽一个只有一个实现的抽象。
+   它不依赖 GPUI，用例在 `tests/host.rs`（12 条），`qcode-gui` 的 `test = false` 是
+   ADR-0037 的约束。
+3. **§2 的标签没有落成 `UiEvent` 的变体字段**，而是 `SessionEvent { target, event }`
+   包一层，由 `KernelPort::tagged(target)` 产生只认识一个会话的 `TaggedPort`。
+   `Delta` / `ApprovalView` 一行未改——这正是 §2 的意图，顺带保证「新增变体不会漏标」：
+   根本没有不加标签的发法，`KernelPort` 上不再有 `send_event` 这类裸方法。
+4. **`SessionTarget` 同时是 host 的键**（而不是 `String` + 哨兵值）：草稿态是个真正的
+   枚举分支，不需要 `""` 这种假 id。
+5. **§3 的审批隔离已落地**：allowlist 是 `HashMap<session, HashSet<tool>>`，「Always」
+   只settle 同一会话里同工具的并行 prompt（`another_session_keeps_its_own_prompts_after_always`）。
+   `clear_allow` 按会话清，不再是全局清空。
+6. **一个 `Engine` 实例仍按窗口持有，但 turn 通过 `Deps` 的 `Arc` 共享**（§1 的
+   「`Engine` → `Arc` 共享」）：`SessionHost::deps()` 给出唯一一份，turn 只 clone `Arc`。
+   P2 起每会话槽位直接读它。
+7. **还没做的部分**：`poll` 仍在 `render` 里（§5）、`TaskUi` 槽位与 `capture`/`install`
+   （§4）、按会话排队改名/删除（§7）、`BridgeApprover` 的超时（§3 第二半）、
+   后端回收与 `resume` 重放（§5）、定时触发（P6）。因此本次**没有**让两个 turn 真正
+   并行：`active` 仍是单槽，`Cancel` 已按会话路由但只有一个会话可停。
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

@@ -8,7 +8,7 @@ use crate::runtime;
 use qcode_core::event::{Event, EventKind};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
-use qcode_ui_bridge::{QueueOp, RaiseLimit, UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{QueueOp, RaiseLimit, SessionEvent, UiCommand, channels};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -63,7 +63,7 @@ pub trait Backend {
     fn provider(&self) -> Option<String> {
         None
     }
-    fn try_recv(&mut self) -> Option<UiEvent>;
+    fn try_recv(&mut self) -> Option<SessionEvent>;
     /// Build a fresh backend from the current configuration. The shell calls
     /// this when the config file changes, so saving Settings takes effect
     /// without restarting the process or flashing a new window.
@@ -170,7 +170,7 @@ impl Backend for UnconfiguredBackend {
 
     fn set_model(&mut self, _provider: String, _model: String) {}
 
-    fn try_recv(&mut self) -> Option<UiEvent> {
+    fn try_recv(&mut self) -> Option<SessionEvent> {
         None
     }
 
@@ -203,7 +203,7 @@ pub struct LocalBackend {
     provider: String,
     store: SessionStore,
     commands: UnboundedSender<UiCommand>,
-    events: UnboundedReceiver<UiEvent>,
+    events: UnboundedReceiver<SessionEvent>,
     rebuild: Option<RebuildFn>,
 }
 
@@ -350,7 +350,7 @@ impl Backend for LocalBackend {
         Some(self.provider.clone())
     }
 
-    fn try_recv(&mut self) -> Option<UiEvent> {
+    fn try_recv(&mut self) -> Option<SessionEvent> {
         self.events.try_recv().ok()
     }
 }

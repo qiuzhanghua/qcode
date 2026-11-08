@@ -51,6 +51,77 @@ pub enum UiEvent {
     SteeringChanged { items: Vec<QueuedMessage> },
 }
 
+/// Which session an event belongs to (ADR-0058 §2).
+///
+/// The tag rides *outside* [`UiEvent`] rather than inside `Delta` /
+/// `ApprovalView`: one wrapper covers every variant, including the ones added
+/// later, and no constructor has to learn a new field.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SessionTarget {
+    Session(String),
+    /// A draft that has not written a log yet: `UiEvent::SessionChanged { id:
+    /// None }` … the first prompt creates the real session.
+    Draft,
+}
+
+impl SessionTarget {
+    /// The session id, or `None` for a draft.
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Session(id) => Some(id),
+            Self::Draft => None,
+        }
+    }
+}
+
+impl From<String> for SessionTarget {
+    fn from(id: String) -> Self {
+        Self::Session(id)
+    }
+}
+
+impl From<&str> for SessionTarget {
+    fn from(id: &str) -> Self {
+        Self::Session(id.to_string())
+    }
+}
+
+impl From<Option<String>> for SessionTarget {
+    fn from(id: Option<String>) -> Self {
+        match id {
+            Some(id) => Self::Session(id),
+            None => Self::Draft,
+        }
+    }
+}
+
+/// A [`UiEvent`] plus the session it belongs to.
+///
+/// Ordering is a contract: events of one session arrive strictly in order (the
+/// order `App::apply` sees them *is* the transcript order); across sessions
+/// nothing is promised (ADR-0058 §2).
+#[derive(Debug)]
+pub struct SessionEvent {
+    pub target: SessionTarget,
+    pub event: UiEvent,
+}
+
+impl SessionEvent {
+    pub fn new(target: SessionTarget, event: UiEvent) -> Self {
+        Self { target, event }
+    }
+
+    /// The session id, or `None` for a draft.
+    pub fn session(&self) -> Option<&str> {
+        self.target.id()
+    }
+
+    /// The event without its tag, for consumers that are still single-session.
+    pub fn into_event(self) -> UiEvent {
+        self.event
+    }
+}
+
 /// The approval prompt, without the reply channel: answer it with
 /// [`UiCommand::Answer`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,17 +236,31 @@ pub enum QueueOp {
 
 /// The UI's end of the bridge: drain events, send commands.
 pub struct UiPort {
-    pub events: mpsc::UnboundedReceiver<UiEvent>,
+    pub events: mpsc::UnboundedReceiver<SessionEvent>,
     pub commands: mpsc::UnboundedSender<UiCommand>,
 }
 
 /// The kernel's end: forward events into the channel, answer approvals.
+///
+/// Every emitted event carries a [`SessionTarget`]; get one from
+/// [`KernelPort::tagged`]. There is no untagged send path on purpose — an
+/// event that cannot say which session produced it is a bug once more than one
+/// turn can be live (ADR-0058 §2).
 #[derive(Clone)]
 pub struct KernelPort {
-    events: mpsc::UnboundedSender<UiEvent>,
+    events: mpsc::UnboundedSender<SessionEvent>,
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
-    session_allowed: Arc<Mutex<HashSet<String>>>,
+    /// Session-scoped "Always": session id → tools allowed without asking.
+    /// Per session, not global: A's "Always" must not answer B's prompt.
+    session_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     commands: Arc<Mutex<Option<mpsc::UnboundedReceiver<UiCommand>>>>,
+}
+
+/// A [`KernelPort`] bound to one session: every event it sends is tagged.
+#[derive(Clone)]
+pub struct TaggedPort {
+    port: KernelPort,
+    target: SessionTarget,
 }
 
 /// Create both ends. The kernel side is cheap to clone: it is meant to be
@@ -186,7 +271,7 @@ pub fn channels() -> (UiPort, KernelPort) {
     let port = KernelPort {
         events: events_tx,
         pending: Arc::new(Mutex::new(HashMap::new())),
-        session_allowed: Arc::new(Mutex::new(HashSet::new())),
+        session_allowed: Arc::new(Mutex::new(HashMap::new())),
         commands: Arc::new(Mutex::new(Some(commands_rx))),
     };
     let ui = UiPort {
@@ -197,40 +282,16 @@ pub fn channels() -> (UiPort, KernelPort) {
 }
 
 impl KernelPort {
-    /// A persisted or child event, ignored once the UI is gone.
-    pub fn send_event(&self, event: &Event) {
-        let _ = self.events.send(UiEvent::Event(event.clone()));
+    /// Bind this port to a session. Cheap: clone the port plus the tag.
+    pub fn tagged(&self, target: impl Into<SessionTarget>) -> TaggedPort {
+        TaggedPort {
+            port: self.clone(),
+            target: target.into(),
+        }
     }
 
-    pub fn send_child(&self, event: &Event) {
-        let _ = self.events.send(UiEvent::Child(event.clone()));
-    }
-
-    pub fn send_delta(&self, delta: Delta) {
-        let _ = self.events.send(UiEvent::Delta(delta));
-    }
-
-    /// Tell the UI which session the engine will use next.
-    pub fn send_session_changed(&self, id: Option<String>) {
-        let _ = self.events.send(UiEvent::SessionChanged { id });
-    }
-
-    pub fn send_turn_failed(&self, message: String) {
-        let _ = self.events.send(UiEvent::TurnFailed { message });
-    }
-
-    pub fn send_turn_finished(&self, session: Option<String>) {
-        let _ = self.events.send(UiEvent::TurnFinished { session });
-    }
-
-    /// Publish the current pending follow-up queue for the queue dock.
-    pub fn send_queue_changed(&self, items: Vec<QueuedMessage>) {
-        let _ = self.events.send(UiEvent::QueueChanged { items });
-    }
-
-    /// Publish steering that is still waiting for the next step boundary.
-    pub fn send_steering_changed(&self, items: Vec<QueuedMessage>) {
-        let _ = self.events.send(UiEvent::SteeringChanged { items });
+    fn emit(&self, target: &SessionTarget, event: UiEvent) {
+        let _ = self.events.send(SessionEvent::new(target.clone(), event));
     }
 
     /// Resolve a pending approval. Returns `false` when the prompt is unknown,
@@ -244,21 +305,27 @@ impl KernelPort {
         let Some(pending) = pending else {
             return false;
         };
+        let target = pending.target.clone();
 
         if answer == Answer::AllowSession {
             let tool = pending.tool.clone();
-            self.session_allowed
-                .lock()
-                .expect("session approval registry")
-                .insert(tool.clone());
-            // Parallel calls of the same tool were already queued before the
-            // user chose "Always"; settle them too instead of asking again.
+            if let Some(id) = target.id() {
+                self.session_allowed
+                    .lock()
+                    .expect("session approval registry")
+                    .entry(id.to_string())
+                    .or_default()
+                    .insert(tool.clone());
+            }
+            // Parallel calls of the same tool in the *same session* were
+            // already queued before the user chose "Always"; settle them too
+            // instead of asking again. Another session keeps its own prompt.
             let mut others = Vec::new();
             {
                 let mut registry = self.pending.lock().expect("approval registry");
                 let ids: Vec<String> = registry
                     .iter()
-                    .filter(|(_, other)| other.tool == tool)
+                    .filter(|(_, other)| other.tool == tool && other.target == target)
                     .map(|(id, _)| id.clone())
                     .collect();
                 for id in ids {
@@ -268,23 +335,32 @@ impl KernelPort {
                 }
             }
             for (id, other) in others {
-                let _ = self.events.send(UiEvent::ApprovalClosed { call_id: id });
+                self.emit(&other.target, UiEvent::ApprovalClosed { call_id: id });
                 let _ = other.sender.send(Answer::AllowSession);
             }
         }
 
-        let _ = self.events.send(UiEvent::ApprovalClosed {
-            call_id: call_id.to_string(),
-        });
+        self.emit(
+            &target,
+            UiEvent::ApprovalClosed {
+                call_id: call_id.to_string(),
+            },
+        );
         pending.sender.send(answer).is_ok()
     }
 
-    /// Forget the current session's "Always" decisions.
-    pub fn clear_session_allow(&self) {
-        self.session_allowed
+    /// Forget one session's "Always" decisions. Sessions that are not named
+    /// keep theirs — that is the point of the per-session list.
+    pub fn clear_allow(&self, target: &SessionTarget) {
+        let mut registry = self
+            .session_allowed
             .lock()
-            .expect("session approval registry")
-            .clear();
+            .expect("session approval registry");
+        // A draft has no id yet, so nothing is remembered for it; a draft
+        // *becomes* a session, and that switch clears by id.
+        if let Some(id) = target.id() {
+            registry.remove(id);
+        }
     }
 
     /// Answer from a [`UiCommand`]; non-answer commands are ignored here.
@@ -310,13 +386,62 @@ impl KernelPort {
     pub fn take_commands(&self) -> Option<mpsc::UnboundedReceiver<UiCommand>> {
         self.commands.lock().expect("command slot").take()
     }
+}
 
-    /// The approver the engine should be given.
+impl TaggedPort {
+    /// The session this port speaks for.
+    pub fn target(&self) -> &SessionTarget {
+        &self.target
+    }
+
+    /// A persisted or child event, ignored once the UI is gone.
+    pub fn send_event(&self, event: &Event) {
+        self.port.emit(&self.target, UiEvent::Event(event.clone()));
+    }
+
+    pub fn send_child(&self, event: &Event) {
+        self.port.emit(&self.target, UiEvent::Child(event.clone()));
+    }
+
+    pub fn send_delta(&self, delta: Delta) {
+        self.port.emit(&self.target, UiEvent::Delta(delta));
+    }
+
+    /// Tell the UI which session the engine will use next.
+    pub fn send_session_changed(&self, id: Option<String>) {
+        self.port.emit(&self.target, UiEvent::SessionChanged { id });
+    }
+
+    pub fn send_turn_failed(&self, message: String) {
+        self.port
+            .emit(&self.target, UiEvent::TurnFailed { message });
+    }
+
+    pub fn send_turn_finished(&self, session: Option<String>) {
+        self.port
+            .emit(&self.target, UiEvent::TurnFinished { session });
+    }
+
+    /// Publish the current pending follow-up queue for the queue dock.
+    pub fn send_queue_changed(&self, items: Vec<QueuedMessage>) {
+        self.port
+            .emit(&self.target, UiEvent::QueueChanged { items });
+    }
+
+    /// Publish steering that is still waiting for the next step boundary.
+    pub fn send_steering_changed(&self, items: Vec<QueuedMessage>) {
+        self.port
+            .emit(&self.target, UiEvent::SteeringChanged { items });
+    }
+
+    /// The approver the engine should be given: prompts are tagged with this
+    /// session and answered against its own allowlist.
     pub fn approver(&self) -> BridgeApprover {
         BridgeApprover {
-            events: self.events.clone(),
-            pending: self.pending.clone(),
-            session_allowed: self.session_allowed.clone(),
+            events: self.port.events.clone(),
+            pending: self.port.pending.clone(),
+            session_allowed: self.port.session_allowed.clone(),
+            target: self.target.clone(),
         }
     }
 }
@@ -324,13 +449,15 @@ impl KernelPort {
 /// An [`Approver`] that asks the UI and waits for [`KernelPort::answer`].
 #[derive(Clone)]
 pub struct BridgeApprover {
-    events: mpsc::UnboundedSender<UiEvent>,
+    events: mpsc::UnboundedSender<SessionEvent>,
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
-    session_allowed: Arc<Mutex<HashSet<String>>>,
+    session_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    target: SessionTarget,
 }
 
 struct PendingApproval {
     tool: String,
+    target: SessionTarget,
     sender: oneshot::Sender<Answer>,
 }
 
@@ -340,15 +467,25 @@ impl std::fmt::Debug for BridgeApprover {
     }
 }
 
+impl BridgeApprover {
+    fn emit(&self, event: UiEvent) {
+        let _ = self
+            .events
+            .send(SessionEvent::new(self.target.clone(), event));
+    }
+}
+
 #[async_trait]
 impl Approver for BridgeApprover {
     async fn approve(&self, request: &ApprovalRequest, cancel: CancellationToken) -> Answer {
-        if self
-            .session_allowed
-            .lock()
-            .expect("session approval registry")
-            .contains(&request.tool)
-        {
+        let already_allowed = self.target.id().is_some_and(|id| {
+            self.session_allowed
+                .lock()
+                .expect("session approval registry")
+                .get(id)
+                .is_some_and(|tools| tools.contains(&request.tool))
+        });
+        if already_allowed {
             return Answer::AllowSession;
         }
         let (tx, rx) = oneshot::channel();
@@ -356,14 +493,12 @@ impl Approver for BridgeApprover {
             request.call_id.clone(),
             PendingApproval {
                 tool: request.tool.clone(),
+                target: self.target.clone(),
                 sender: tx,
             },
         );
-        if self
-            .events
-            .send(UiEvent::Approval(ApprovalView::from(request)))
-            .is_err()
-        {
+        self.emit(UiEvent::Approval(ApprovalView::from(request)));
+        if self.events.is_closed() {
             // No UI left to answer: fail closed.
             return Answer::Deny;
         }
@@ -372,7 +507,7 @@ impl Approver for BridgeApprover {
             // A cancelled turn must not hang waiting for a click.
             _ = cancel.cancelled() => {
                 self.pending.lock().expect("approval registry").remove(&request.call_id);
-                let _ = self.events.send(UiEvent::ApprovalClosed { call_id: request.call_id.clone() });
+                self.emit(UiEvent::ApprovalClosed { call_id: request.call_id.clone() });
                 Answer::Deny
             }
         }
@@ -400,17 +535,28 @@ mod tests {
         }
     }
 
+    /// The next event, refusing anything that is not tagged with `session`.
+    async fn next_for(ui: &mut UiPort, session: &str) -> SessionEvent {
+        let event = ui.events.recv().await.expect("event");
+        assert_eq!(
+            event.session(),
+            Some(session),
+            "event tagged with the wrong session: {event:?}"
+        );
+        event
+    }
+
     #[tokio::test]
     async fn the_ui_sees_the_prompt_and_its_answer_unblocks_the_turn() {
         let (mut ui, kernel) = channels();
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let task =
             tokio::spawn(
                 async move { approver.approve(&request(), CancellationToken::new()).await },
             );
 
-        let event = ui.events.recv().await.expect("prompt");
-        let UiEvent::Approval(view) = event else {
+        let event = next_for(&mut ui, "s1").await;
+        let UiEvent::Approval(view) = event.event else {
             panic!("expected an approval, got {event:?}");
         };
         assert_eq!(view.tool, "run_shell");
@@ -419,7 +565,7 @@ mod tests {
         kernel.answer("c1", Answer::AllowSession);
         assert_eq!(task.await.expect("join"), Answer::AllowSession);
         // The prompt is closed for the UI too.
-        match ui.events.recv().await.expect("closed") {
+        match next_for(&mut ui, "s1").await.event {
             UiEvent::ApprovalClosed { call_id } => assert_eq!(call_id, "c1"),
             other => panic!("expected ApprovalClosed, got {other:?}"),
         }
@@ -428,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_the_turn_denies_instead_of_hanging() {
         let (_ui, kernel) = channels();
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let cancel = CancellationToken::new();
         cancel.cancel();
         let answer = approver.approve(&request(), cancel).await;
@@ -438,7 +584,7 @@ mod tests {
     #[tokio::test]
     async fn allow_session_skips_later_prompts_for_the_same_tool() {
         let (mut ui, kernel) = channels();
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let first = tokio::spawn({
             let approver = approver.clone();
             async move {
@@ -447,12 +593,12 @@ mod tests {
                     .await
             }
         });
-        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt") else {
+        let UiEvent::Approval(_) = next_for(&mut ui, "s1").await.event else {
             panic!("expected approval");
         };
         kernel.answer("c1", Answer::AllowSession);
         assert_eq!(first.await.expect("join"), Answer::AllowSession);
-        let UiEvent::ApprovalClosed { .. } = ui.events.recv().await.expect("closed") else {
+        let UiEvent::ApprovalClosed { .. } = next_for(&mut ui, "s1").await.event else {
             panic!("expected close");
         };
 
@@ -467,9 +613,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_session_keeps_its_own_prompts_after_always() {
+        let (mut ui, kernel) = channels();
+        let a = kernel.tagged("a").approver();
+        let b = kernel.tagged("b").approver();
+
+        let first = tokio::spawn({
+            let a = a.clone();
+            async move {
+                a.approve(&request_with("c1", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let UiEvent::Approval(_) = next_for(&mut ui, "a").await.event else {
+            panic!("expected approval for a");
+        };
+        kernel.answer("c1", Answer::AllowSession);
+        assert_eq!(first.await.expect("join"), Answer::AllowSession);
+        let _ = next_for(&mut ui, "a").await;
+
+        // B never saw that click: its prompt still reaches the UI.
+        let second = tokio::spawn({
+            let b = b.clone();
+            async move {
+                b.approve(&request_with("c2", "run_shell"), CancellationToken::new())
+                    .await
+            }
+        });
+        let UiEvent::Approval(_) = next_for(&mut ui, "b").await.event else {
+            panic!("b must still be asked");
+        };
+        kernel.answer("c2", Answer::Deny);
+        assert_eq!(second.await.expect("join"), Answer::Deny);
+    }
+
+    #[tokio::test]
+    async fn a_draft_is_tagged_as_a_draft_rather_than_a_session() {
+        let (mut ui, kernel) = channels();
+        let port = kernel.tagged(SessionTarget::Draft);
+        port.send_session_changed(None);
+
+        let event = ui.events.recv().await.expect("event");
+        assert_eq!(event.session(), None);
+        assert_eq!(event.target, SessionTarget::Draft);
+        assert!(matches!(event.event, UiEvent::SessionChanged { id: None }));
+    }
+
+    #[tokio::test]
     async fn clearing_the_session_allowlist_prompts_again() {
         let (mut ui, kernel) = channels();
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let first = tokio::spawn({
             let approver = approver.clone();
             async move {
@@ -478,14 +671,14 @@ mod tests {
                     .await
             }
         });
-        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt") else {
+        let UiEvent::Approval(_) = next_for(&mut ui, "s1").await.event else {
             panic!("expected approval");
         };
         kernel.answer("c1", Answer::AllowSession);
         let _ = first.await.expect("join");
-        let _ = ui.events.recv().await.expect("closed");
+        let _ = next_for(&mut ui, "s1").await;
 
-        kernel.clear_session_allow();
+        kernel.clear_allow(&SessionTarget::Session("s1".to_string()));
         let second = tokio::spawn({
             let approver = approver.clone();
             async move {
@@ -494,7 +687,7 @@ mod tests {
                     .await
             }
         });
-        let UiEvent::Approval(_) = ui.events.recv().await.expect("prompt again") else {
+        let UiEvent::Approval(_) = next_for(&mut ui, "s1").await.event else {
             panic!("expected approval");
         };
         kernel.answer("c2", Answer::Deny);
@@ -504,7 +697,7 @@ mod tests {
     #[tokio::test]
     async fn always_settles_parallel_prompts_for_the_same_tool() {
         let (mut ui, kernel) = channels();
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let first = tokio::spawn({
             let approver = approver.clone();
             async move {
@@ -521,8 +714,8 @@ mod tests {
                     .await
             }
         });
-        let _ = ui.events.recv().await.expect("first prompt");
-        let _ = ui.events.recv().await.expect("second prompt");
+        let _ = next_for(&mut ui, "s1").await;
+        let _ = next_for(&mut ui, "s1").await;
 
         kernel.answer("c1", Answer::AllowSession);
         assert_eq!(first.await.expect("join"), Answer::AllowSession);
@@ -533,7 +726,7 @@ mod tests {
     async fn commands_route_answers_and_ignore_the_rest() {
         let (mut ui, kernel) = channels();
         let mut commands = kernel.take_commands().expect("commands");
-        let approver = kernel.approver();
+        let approver = kernel.tagged("s1").approver();
         let task =
             tokio::spawn(
                 async move { approver.approve(&request(), CancellationToken::new()).await },
@@ -558,6 +751,7 @@ mod tests {
     #[tokio::test]
     async fn events_and_deltas_arrive_in_order() {
         let (mut ui, kernel) = channels();
+        let port = kernel.tagged("s");
         let event = Event {
             v: 1,
             seq: 1,
@@ -568,12 +762,21 @@ mod tests {
                 input: "hi".to_string(),
             }),
         };
-        kernel.send_event(&event);
-        kernel.send_delta(Delta::Text("he".to_string()));
-        kernel.send_delta(Delta::Text("llo".to_string()));
+        port.send_event(&event);
+        port.send_delta(Delta::Text("he".to_string()));
+        port.send_delta(Delta::Text("llo".to_string()));
 
-        assert!(matches!(ui.events.recv().await, Some(UiEvent::Event(_))));
-        assert!(matches!(ui.events.recv().await, Some(UiEvent::Delta(_))));
-        assert!(matches!(ui.events.recv().await, Some(UiEvent::Delta(_))));
+        assert!(matches!(
+            ui.events.recv().await.map(|event| event.event),
+            Some(UiEvent::Event(_))
+        ));
+        assert!(matches!(
+            ui.events.recv().await.map(|event| event.event),
+            Some(UiEvent::Delta(_))
+        ));
+        assert!(matches!(
+            ui.events.recv().await.map(|event| event.event),
+            Some(UiEvent::Delta(_))
+        ));
     }
 }

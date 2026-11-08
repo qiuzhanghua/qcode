@@ -8,16 +8,20 @@ use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::store::SessionStore;
-use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
+use qcode_ui_bridge::{KernelPort, QueueOp, SessionTarget, TaggedPort, UiCommand};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::host::SessionHost;
+
 /// The pieces a running window needs to execute turns.
 ///
 /// Everything here comes from `qcode_kernel::assemble`; the window never wires
-/// its own provider or tools.
+/// its own provider or tools. Held once behind [`crate::host::Deps`] so every
+/// session shares it instead of cloning a provider per session (ADR-0058 §1).
 pub struct Engine {
     pub store: SessionStore,
     pub provider: std::sync::Arc<dyn qcode_core::provider::Provider>,
@@ -58,15 +62,20 @@ pub(crate) fn create_empty_task(
     };
     match engine.store.create_task_with_roots(&meta, Vec::new()) {
         Ok(created) => {
+            let target = SessionTarget::Session(created.id.clone());
+            // A new task is a new session: its own "Always" list, not the one
+            // the previous session accumulated.
+            port.clear_allow(&target);
+            let port = port.tagged(target);
             port.send_event(&created.started);
             port.send_event(&created.configured);
-            port.clear_session_allow();
             port.send_session_changed(Some(created.id.clone()));
             Some(created.id)
         }
         Err(error) => {
             eprintln!("qcode-gui: cannot create task: {error}");
-            port.send_turn_failed(error.to_string());
+            port.tagged(SessionTarget::Draft)
+                .send_turn_failed(error.to_string());
             None
         }
     }
@@ -80,7 +89,7 @@ struct Published {
     steering: Vec<QueuedMessage>,
 }
 
-fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
+fn publish(port: &TaggedPort, inbox: &SessionQueue, last: &mut Published) {
     let queue = inbox.queued();
     if queue != last.queue {
         port.send_queue_changed(queue.clone());
@@ -90,6 +99,29 @@ fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
     if steering != last.steering {
         port.send_steering_changed(steering.clone());
         last.steering = steering;
+    }
+}
+
+/// Reports a panicking turn to the app loop.
+///
+/// `run_turn` runs inside `tokio::spawn`, so a panic — a bug in a tool, in a
+/// provider decoder, or an `unwrap` on model output — unwinds the spawned task
+/// and the `done` message is never sent. Without this the loop keeps `active`
+/// set forever: the UI stays on "running", Stop targets a task that is gone,
+/// and new sessions keep being refused. Dropping the guard on unwind turns
+/// that into the same `TurnFailed` a returned `Err` produces (ADR-0058 §9 P0).
+struct TurnGuard {
+    done: tokio::sync::mpsc::UnboundedSender<Result<(), String>>,
+    armed: bool,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.done.send(Err(
+                "the turn task panicked; the engine is idle again, see the logs".to_string(),
+            ));
+        }
     }
 }
 
@@ -111,8 +143,16 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             }
         };
         runtime.block_on(async move {
-            let approver = std::sync::Arc::new(port.approver());
+            // One host per window: the authority for "which sessions are live".
+            // P1 wires a single slot through it (see `host.rs`).
+            let host = Arc::new(SessionHost::new(engine));
+            let deps = host.deps().clone();
+            let engine = &deps.engine;
+
             let mut session: Option<String> = None;
+            // The session the UI is currently looking at. Every event sent
+            // from this loop is tagged with it (ADR-0058 §2).
+            let mut current = SessionTarget::Draft;
             let mut active: Option<CancellationToken> = None;
             let mut pending: Option<UiCommand> = None;
             let mut model = engine.model.clone();
@@ -123,7 +163,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let mut pricing = engine.pricing;
             let (done_tx, mut done_rx) =
                 tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-            let queue = SessionQueue::new();
             let mut ticker = tokio::time::interval(Duration::from_millis(250));
             let mut published = Published::default();
 
@@ -147,20 +186,32 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 Ok(created) => created,
                                 Err(error) => {
                                     eprintln!("qcode-gui: cannot create a task: {error}");
-                                    port.send_turn_failed(error.to_string());
+                                    port.tagged(current.clone())
+                                        .send_turn_failed(error.to_string());
                                     continue;
                                 }
                             };
                             let id = created.id.clone();
-                            port.send_event(&created.started);
-                            port.send_event(&created.configured);
-                            port.send_session_changed(Some(id.clone()));
+                            let new_target = SessionTarget::Session(id.clone());
+                            // The draft becomes a session: drop whatever the
+                            // draft slot held so nothing leaks by target.
+                            host.close_if_idle(&current);
+                            current = new_target;
+                            port.tagged(current.clone()).send_event(&created.started);
+                            port.tagged(current.clone()).send_event(&created.configured);
+                            port.tagged(current.clone())
+                                .send_session_changed(Some(id.clone()));
                             session = Some(id.clone());
                             id
                         }
                     };
-                    let sink = port.clone();
-                    let token = CancellationToken::new();
+                    // Every turn of a session runs on that session's slot:
+                    // its cancel token and its follow-up inbox.
+                    let target = SessionTarget::Session(session_id.clone());
+                    current = target.clone();
+                    let (token, task_queue) = host.open(&target);
+                    host.begin_turn(&target);
+                    let sink = port.tagged(target.clone());
                     active = Some(token.clone());
                     let store = engine.store.clone();
                     let provider = provider.clone();
@@ -174,11 +225,18 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let context_window = engine.context_window;
                     let task_model = model.clone();
                     let task_session = session_id.clone();
-                    let task_approver = approver.clone();
+                    let task_approver = sink.approver();
                     let done = done_tx.clone();
+                    let guard = TurnGuard {
+                        done: done.clone(),
+                        armed: true,
+                    };
                     let cancel = token.clone();
-                    let task_inbox = queue.inbox();
+                    let task_inbox = task_queue.inbox();
                     tokio::spawn(async move {
+                        // A panic anywhere below unwinds this task without
+                        // reaching `done.send`; `guard` covers that path.
+                        let mut guard = guard;
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
@@ -208,13 +266,14 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 provider: provider.as_ref(),
                                 tools: &tools,
                                 policy: &policy,
-                                approver: task_approver.as_ref(),
+                                approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
                             },
                             options,
                             move |event| sink.send_event(event),
                         )
                         .await;
+                        guard.armed = false;
                         let _ = done.send(result.map(|_| ()).map_err(|error| error.to_string()));
                     });
                 }};
@@ -225,7 +284,11 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // The engine claims steering from another thread, so the
                     // pending rows are refreshed on a slow tick rather than
                     // tied to a UI event.
-                    _ = ticker.tick() => publish(&port, &queue, &mut published),
+                    _ = ticker.tick() => {
+                        if let Some(queue) = host.queue(&current) {
+                            publish(&port.tagged(current.clone()), &queue, &mut published);
+                        }
+                    }
                     command = commands.recv() => {
                         let Some(command) = command else {
                             break;
@@ -241,6 +304,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 session: remember,
                             }),
                             UiCommand::Cancel => {
+                                // Per-session stop: only the session the user is
+                                // looking at is affected (ADR-0058 §6).
+                                host.cancel(&current);
                                 if let Some(token) = &active {
                                     token.cancel();
                                 }
@@ -250,7 +316,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     token.cancel();
                                     pending = Some(UiCommand::NewSession);
                                 } else {
-                                    session = create_empty_task(&engine, &provider_name, &port, &model);
+                                    host.close_if_idle(&current);
+                                    session = create_empty_task(engine, &provider_name, &port, &model);
+                                    current = session
+                                        .clone()
+                                        .map(SessionTarget::Session)
+                                        .unwrap_or(SessionTarget::Draft);
                                 }
                             }
                             UiCommand::Resume { id } => {
@@ -258,9 +329,14 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     token.cancel();
                                     pending = Some(UiCommand::Resume { id });
                                 } else {
+                                    let target = SessionTarget::Session(id.clone());
+                                    host.close_if_idle(&current);
+                                    current = target.clone();
                                     session = Some(id.clone());
-                                    port.clear_session_allow();
-                                    port.send_session_changed(Some(id));
+                                    // A resumed session starts with a clean
+                                    // "Always" list, like a fresh window.
+                                    port.clear_allow(&target);
+                                    port.tagged(target).send_session_changed(Some(id));
                                 }
                             }
                             UiCommand::SetModel {
@@ -287,7 +363,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             eprintln!(
                                                 "qcode-gui: cannot switch provider: {error}"
                                             );
-                                            port.send_turn_failed(format!(
+                                            port.tagged(current.clone()).send_turn_failed(format!(
                                                 "无法切换到 {next_provider}：{error}"
                                             ));
                                         }
@@ -308,13 +384,17 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             UiCommand::Prompt { text, attachments } => {
                                 // Running: the message waits in the follow-up
                                 // queue; idle: it starts its own turn now.
-                                match queue.submit(text, attachments, active.is_some()) {
+                                let running = active.is_some();
+                                let queue = host
+                                    .queue(&current)
+                                    .unwrap_or_else(|| host.open(&current).1);
+                                match queue.submit(text, attachments, running) {
                                     Submission::Start(message) => {
                                         start_turn!(message.text, message.attachments)
                                     }
                                     Submission::Queued => {}
                                 }
-                                publish(&port, &queue, &mut published);
+                                publish(&port.tagged(current.clone()), &queue, &mut published);
                             }
                             UiCommand::Continue { raise } => {
                                 // Only an idle engine continues: a live turn
@@ -345,10 +425,16 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             UiCommand::Steer { text, attachments } => {
                                 // Only a live turn can take steering; the dock
                                 // does not offer it while idle.
+                                let queue = host
+                                    .queue(&current)
+                                    .unwrap_or_else(|| host.open(&current).1);
                                 queue.steer(text, attachments, active.is_some());
-                                publish(&port, &queue, &mut published);
+                                publish(&port.tagged(current.clone()), &queue, &mut published);
                             }
                             UiCommand::QueueOp { id, op } => {
+                                let queue = host
+                                    .queue(&current)
+                                    .unwrap_or_else(|| host.open(&current).1);
                                 match op {
                                     // Steering only reaches the running turn;
                                     // an idle engine leaves the queue untouched.
@@ -368,7 +454,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         queue.unsteer(&id);
                                     }
                                 }
-                                publish(&port, &queue, &mut published);
+                                publish(&port.tagged(current.clone()), &queue, &mut published);
                             }
                         }
                     }
@@ -376,28 +462,41 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         active = None;
                         if let Err(error) = result {
                             eprintln!("qcode-gui: turn failed: {error}");
-                            port.send_turn_failed(error);
+                            port.tagged(current.clone()).send_turn_failed(error);
                         }
-                        port.send_turn_finished(session.clone());
+                        host.end_turn(&current);
+                        port.tagged(current.clone()).send_turn_finished(session.clone());
                         if let Some(pending) = pending.take() {
                             match pending {
                                 UiCommand::NewSession => {
-                                    session = create_empty_task(&engine, &provider_name, &port, &model);
+                                    host.close_if_idle(&current);
+                                    session = create_empty_task(engine, &provider_name, &port, &model);
+                                    current = session
+                                        .clone()
+                                        .map(SessionTarget::Session)
+                                        .unwrap_or(SessionTarget::Draft);
                                 }
                                 UiCommand::Resume { id } => {
+                                    let target = SessionTarget::Session(id.clone());
+                                    host.close_if_idle(&current);
+                                    current = target.clone();
                                     session = Some(id.clone());
-                                    port.clear_session_allow();
-                                    port.send_session_changed(Some(id));
+                                    port.clear_allow(&target);
+                                    port.tagged(target).send_session_changed(Some(id));
                                 }
                                 _ => {}
                             }
                         }
                         // Drain the follow-up queue: the next queued message
                         // starts its own turn now that the engine is idle.
-                        if let Some(message) = queue.finish() {
+                        if let Some(queue) = host.queue(&current)
+                            && let Some(message) = queue.finish()
+                        {
                             start_turn!(message.text, message.attachments);
                         }
-                        publish(&port, &queue, &mut published);
+                        if let Some(queue) = host.queue(&current) {
+                            publish(&port.tagged(current.clone()), &queue, &mut published);
+                        }
                     }
                 }
             }

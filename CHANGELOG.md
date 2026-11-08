@@ -1,5 +1,21 @@
 # Changelog
 
+## 未发布
+
+- **多任务并行 P0–P1**（ADR-0058）：为「多个任务同时跑」铺路，本次先把三处会互相拖住的
+  东西修掉，再立起宿主骨架。
+  - 文件工具的四处同步 IO（`read_file` / `write_file` / `edit_file` / `list_dir`）移出
+    runtime 线程（`spawn_blocking`）。GUI 的引擎跑在 `new_current_thread` 上，一个任务读
+    大文件时，另一个任务的流式输出与取消都会停摆。
+  - turn 任务 panic 不再把界面永久留在「运行中」：守卫在 unwind 时补发一条 `TurnFailed`，
+    Stop 与新会话都能继续用（`tests/backend.rs` 新增回归用例，关掉守卫该用例即红）。
+  - 新增 `SessionHost`（`qcode-gui/src/host.rs`）：按会话记录 cancel token、follow-up
+    队列与阶段（空闲 / 运行中 / 待审批），是「谁在跑」的唯一权威；用例 12 条。
+  - 事件一律带会话标签：`SessionEvent { target, event }`，由 `KernelPort::tagged()`
+    产生单会话端口，`Delta` / `ApprovalView` 不必加字段。
+  - 审批的「Always」改为按会话隔离（`HashMap<session, HashSet<tool>>`）：A 任务的
+    「Always」不再替 B 任务放行。
+
 ## 0.7.7 — 2026-11-08
 
 - **预算暂停：超限是交接，不是报错**（ADR-0060）：`max_turns` / `max_cost` 用尽时 turn 落

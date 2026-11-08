@@ -53,7 +53,7 @@ fn wait_for_turn(backend: &mut LocalBackend) -> Vec<qcode_core::event::Event> {
     let mut events = Vec::new();
     while Instant::now() < deadline {
         while let Some(event) = backend.try_recv() {
-            if let UiEvent::Event(event) = event {
+            if let UiEvent::Event(event) = event.event {
                 let ended = matches!(event.kind, EventKind::TurnEnded(_));
                 events.push(event);
                 if ended {
@@ -243,7 +243,7 @@ async fn cancel_is_processed_while_a_slow_turn_is_running() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if let Some(UiEvent::Event(event)) = backend.try_recv()
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
             && matches!(event.kind, EventKind::TurnStarted(_))
         {
             break;
@@ -254,7 +254,7 @@ async fn cancel_is_processed_while_a_slow_turn_is_running() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if let Some(UiEvent::Event(event)) = backend.try_recv()
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
             && let EventKind::TurnEnded(ended) = event.kind
         {
             assert_eq!(ended.status, TurnStatus::Cancelled);
@@ -348,7 +348,7 @@ async fn an_approval_answer_is_processed_while_the_turn_waits() {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut call_id = None;
     while Instant::now() < deadline && call_id.is_none() {
-        if let Some(UiEvent::Approval(view)) = backend.try_recv() {
+        if let Some(UiEvent::Approval(view)) = backend.try_recv().map(|tagged| tagged.event) {
             call_id = Some(view.call_id);
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -358,7 +358,7 @@ async fn an_approval_answer_is_processed_while_the_turn_waits() {
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if let Some(UiEvent::Event(event)) = backend.try_recv()
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
             && let EventKind::TurnEnded(ended) = event.kind
         {
             assert_eq!(ended.status, TurnStatus::Completed);
@@ -382,7 +382,8 @@ async fn a_fatal_provider_error_resets_the_turn_and_keeps_the_loop_alive() {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut failed = false;
     while Instant::now() < deadline && !failed {
-        if let Some(UiEvent::TurnFailed { message }) = backend.try_recv() {
+        if let Some(UiEvent::TurnFailed { message }) = backend.try_recv().map(|tagged| tagged.event)
+        {
             assert!(message.contains("boom"), "{message}");
             failed = true;
         }
@@ -393,10 +394,92 @@ async fn a_fatal_provider_error_resets_the_turn_and_keeps_the_loop_alive() {
     backend.new_session();
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if let Some(UiEvent::SessionChanged { id: Some(_) }) = backend.try_recv() {
+        if let Some(UiEvent::SessionChanged { id: Some(_) }) =
+            backend.try_recv().map(|tagged| tagged.event)
+        {
             return;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("NewSession was not processed after a failed turn");
+}
+
+/// Panics while the turn is live: the engine task unwinds instead of returning
+/// an error, which used to leave the UI on "running" forever (ADR-0058 §9 P0).
+struct PanicTool;
+
+#[async_trait::async_trait]
+impl Tool for PanicTool {
+    fn name(&self) -> &str {
+        "panic_tool"
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "panic_tool".to_string(),
+            description: "always panics".to_string(),
+            parameters: json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &serde_json::Value) -> ApprovalClass {
+        ApprovalClass::Read
+    }
+
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        panic!("tool exploded");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_turn_reports_turn_failed_and_keeps_the_loop_alive() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let provider = MockProvider::scripted(vec![vec![
+        StreamEvent::Started,
+        StreamEvent::ToolCallDone {
+            call_id: "c1".to_string(),
+            name: "panic_tool".to_string(),
+            arguments: json!({}),
+        },
+        StreamEvent::Ended {
+            stop_reason: StopReason::ToolUse,
+        },
+    ]]);
+    let mut engine = engine_with(workspace.path(), store, provider);
+    engine.tools = ToolRegistry::new(vec![Arc::new(PanicTool)]);
+    let mut backend = LocalBackend::new(engine);
+
+    backend.prompt("run the broken tool".to_string(), Vec::new());
+
+    // The panic must surface as a failed turn, not as silence.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failed = false;
+    while Instant::now() < deadline && !failed {
+        if let Some(UiEvent::TurnFailed { message }) = backend.try_recv().map(|tagged| tagged.event)
+        {
+            assert!(message.contains("panicked"), "{message}");
+            failed = true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(failed, "a panicking turn did not emit TurnFailed");
+
+    // And the engine must be idle again: a new session is accepted.
+    backend.new_session();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::SessionChanged { id: Some(_) }) =
+            backend.try_recv().map(|tagged| tagged.event)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the loop stayed stuck after a panicking turn");
 }

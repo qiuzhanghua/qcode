@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod backend;
 pub mod forms;
 pub mod gui_prefs;
+pub mod host;
 pub mod platform;
 mod render;
 pub mod restore;
