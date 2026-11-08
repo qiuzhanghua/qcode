@@ -55,11 +55,10 @@ impl Shell {
         // 空视图自带空转录、空输入框、0 行滚动区，不需要逐字段清理。
         self.park_and_clear(window, cx);
         self.ui.empty_draft = true;
+        // 引擎在另一个线程里建任务，`SessionChanged` 异步回来。以前这里要
+        // 主动醒几次等它（poll 只在 render 里跑）；现在常驻 ticker 会在
+        // 150ms 内把它排空并自己通知（ADR-0058 §5）。
         self.backend.new_session();
-        // 引擎在另一个线程里建任务，SessionChanged 是异步回来的；空闲时
-        // GUI 没有周期性轮询，只在用户交互时 render/poll。这里在等结果
-        // 期间短暂醒几次，确保新任务能及时出现在侧栏里。
-        self.wake_for_session(cx);
         self.ui.resetting = true;
         self.pending_roots = None;
         self.pending_root_delete = None;
@@ -78,38 +77,6 @@ impl Shell {
         }
         self.focus_composer(window, cx);
         cx.notify();
-    }
-
-    /// 新建任务后等异步结果期间，主动醒几次让 `poll` 有机会收事件。
-    ///
-    /// 正常一两帧就够（100ms 一次，最多 5 秒）；`empty_draft` 被
-    /// SessionChanged/TurnFailed 改掉就停，不常驻。
-    fn wake_for_session(&self, cx: &mut Context<Self>) {
-        // 用户切走后 `empty_draft` 属于另一份视图：这个循环只负责它等待的
-        // 那一份（ADR-0058 §4）。
-        let ui_id = self.ui.id;
-        cx.spawn(async move |this, cx| {
-            for _ in 0..50 {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
-                    .await;
-                let keep_waiting = this.update(cx, |shell, cx| {
-                    if shell.ui.id != ui_id {
-                        return false;
-                    }
-                    if !shell.ui.empty_draft {
-                        return false;
-                    }
-                    cx.notify();
-                    true
-                });
-                match keep_waiting {
-                    Ok(true) => {}
-                    _ => break,
-                }
-            }
-        })
-        .detach();
     }
 
     pub(crate) fn resume(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -176,6 +143,31 @@ impl Shell {
         self.ui.resetting = true;
         self.ui.empty_draft = false;
         self.active = Some(id.clone());
+        // 后台期间攒下的东西（§3）：审批必须活着——它是引擎的阻塞点，没人答
+        // 就一直挂着；队列快照与失败提示也一样，切进来就是对的，不必等下一
+        // 个 ticker 帧。
+        if let Some(dormant) = self.dormant.remove(&id) {
+            let Dormant {
+                running,
+                mut approvals,
+                queue,
+                steering,
+                error_banner,
+            } = dormant;
+            for view in approvals.drain() {
+                self.ui.approvals.push(view);
+            }
+            self.ui.queue = queue;
+            self.ui.steering = steering;
+            if error_banner.is_some() {
+                self.ui.error_banner = error_banner;
+            }
+            if running {
+                // 重放把 running 收成 false，但引擎那边这个会话确实还在跑。
+                self.ui.turn_in_flight = true;
+                self.ui.app.status.running = true;
+            }
+        }
         // The engine's `SessionChanged` also lands here, but the parked path
         // installs the view without waiting for it; write the preference now so
         // a switch that never reaches `poll` is still remembered.

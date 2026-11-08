@@ -24,7 +24,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
-        let running = self.active.as_deref() == Some(task_id) && self.ui.turn_in_flight;
+        let running = self.task_running(task_id);
         // 点击菜单外的任意位置（含其它任务行、空白区）关闭菜单；菜单内
         // 的按钮命中菜单 bounds，不会触发。
         let task_id_for_close = task_id.to_string();
@@ -192,7 +192,15 @@ impl Shell {
         for row in &self.tasks {
             let id = row.task.id.clone();
             let active = self.active.as_deref() == Some(row.task.id.as_str());
-            let marker = if active { "●" } else { "○" };
+            // A background task that is still running gets its own glyph: the
+            // row is the only place the window can show it (§7).
+            let marker = if active {
+                "●"
+            } else if self.task_running(&row.task.id) {
+                "▶"
+            } else {
+                "○"
+            };
             let full_title = self
                 .titles
                 .get(&row.task.id)

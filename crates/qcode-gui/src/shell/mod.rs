@@ -1,3 +1,4 @@
+use crate::dormant::Dormant;
 use crate::*;
 use std::collections::HashMap;
 use task_ui::TaskUi;
@@ -9,6 +10,11 @@ pub(crate) struct Shell {
     pub(crate) ui: TaskUi,
     /// 切走时留下的任务视图，按会话 id 存。切回来时原样装回去，不重放日志。
     pub(crate) parked: std::collections::BTreeMap<String, TaskUi>,
+    /// 没有视图的会话（用户还没打开过）：只留状态与不许可丢的审批
+    /// （ADR-0058 §3、§5）。
+    pub(crate) dormant: std::collections::BTreeMap<String, Dormant>,
+    /// 常驻 drain 已经起来了（`start_poll_ticker` 幂等）。
+    pub(crate) ticker_running: bool,
     /// 输入框 Provider/Model 菜单顶部的模型搜索框。
     pub(crate) model_search_input: Entity<InputState>,
     /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
@@ -85,6 +91,7 @@ pub(crate) struct Shell {
     pub(crate) prefs: GuiPreferences,
 }
 
+mod routing;
 mod session;
 mod task_ui;
 mod tasks;
@@ -189,6 +196,8 @@ impl Shell {
         Self {
             ui,
             parked: std::collections::BTreeMap::new(),
+            dormant: std::collections::BTreeMap::new(),
+            ticker_running: false,
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,
@@ -326,136 +335,112 @@ impl Shell {
         window.focus(&handle, cx);
     }
 
+    /// Does this tag describe the view on screen?
+    ///
+    /// A draft (`None`) is visible only while the window is on a draft; a named
+    /// session only while it is the one installed.
+    fn is_visible(&self, target: &SessionTarget) -> bool {
+        match target.id() {
+            Some(id) => self.active.as_deref() == Some(id),
+            None => self.active.is_none(),
+        }
+    }
+
+    /// The engine moved to `id`: the window follows it.
+    ///
+    /// This is the one event that is about the window rather than about a
+    /// session's contents — the runtime is still single-slot, so "the engine is
+    /// now on X" *is* "show X". Materializing a view for a session the user has
+    /// never opened needs a `Window`, so that part stays in `resume`; here the
+    /// only thing that can arrive is the session we just asked for.
+    fn session_changed(&mut self, id: Option<String>) {
+        self.active = id.clone();
+        self.prefs.last_session = id.clone();
+        // 只写 `last_session`：几何/外观这些字段归别的写入者，整份覆盖会把
+        // 它们刚存下的值冲掉。
+        if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.last_session = id)
+        {
+            self.ui
+                .app
+                .push_notice(format!("cannot save gui.json: {error}"));
+        }
+        self.refresh_tasks();
+    }
+
+    /// One drain of everything the engine has produced, for **every** session
+    /// (ADR-0058 §5).
+    ///
+    /// Called by the resident ticker, never by `render`: a minimized or hidden
+    /// window still finishes turns, collects approvals and settles its badges.
+    /// Idempotent — it takes what is in the channel and returns — so it is safe
+    /// to call from anywhere.
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
-        let mut changed = false;
         let reasoning_was_live = self.ui.app.streaming_reasoning_block.is_some();
-        while let Some(tagged) = self.backend.try_recv() {
-            // P1 carries the session tag but the transcript is still one
-            // session's; P3 routes by tag instead of ignoring it.
-            let event = tagged.event;
-            if self.ui.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
+        // The visible view's rows changed: it needs a scroller resync.
+        let mut resync = false;
+        // Something a row shows changed, anywhere: one repaint covers them all.
+        let mut repaint = false;
+        // A turn boundary landed: the task list may differ.
+        let mut refresh = false;
+        let mut failed: Option<String> = None;
+
+        while let Some(SessionEvent { target, event }) = self.backend.try_recv() {
+            let finished = match &event {
+                UiEvent::TurnFinished { session } => Some(session.clone()),
+                _ => None,
+            };
+            let live = self.is_visible(&target);
+            let applied = if live {
+                routing::apply_to_ui(&mut self.ui, event)
+            } else if let Some(id) = target.id() {
+                // A session the window is not showing: its own parked view if
+                // the user has been there (§4), otherwise nothing but status —
+                // building a view needs a `Window` this drain does not have.
+                match self.parked.get_mut(id) {
+                    Some(ui) => routing::apply_to_ui(ui, event),
+                    None => {
+                        let dormant = self.dormant.entry(id.to_string()).or_default();
+                        let applied = crate::dormant::apply_to_dormant(dormant, event);
+                        // Once a background session has nothing left to keep it
+                        // is just an id; holding the entry would leak one per
+                        // session the user never opens.
+                        if dormant.is_settled() {
+                            self.dormant.remove(id);
+                        }
+                        applied
+                    }
+                }
+            } else {
+                // A draft with no id while a real session is on screen. A draft
+                // never runs a turn, so there is nothing to route.
                 continue;
+            };
+            if live {
+                resync |= applied.changed;
             }
-            if self.ui.resetting {
-                self.ui.resetting = false;
+            repaint |= applied.repaint;
+            refresh |= applied.turn_ended;
+            if let Some(message) = applied.session_changed {
+                self.session_changed(message);
             }
-            match event {
-                UiEvent::Event(event) | UiEvent::Child(event) => {
-                    // Highest log sequence this view has been shown. A parked
-                    // view older than its log must be replayed, not restored.
-                    self.ui.seen_seq = self.ui.seen_seq.max(event.seq);
-                    let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
-                    let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
-                    let turns_before = self.ui.app.turns.len();
-                    // 排队追加的问题被拆成独立 turn 时不会有 TurnStarted 事件，但
-                    // turn 数会增加；TurnEnded 属于整个 run，先把此刻仍开着的
-                    // turn 记下来，结束时（含拆出的 B）一起折叠执行过程。
-                    let open_before: Vec<usize> = self
-                        .ui
-                        .app
-                        .turns
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, turn)| turn.running())
-                        .map(|(index, _)| index)
-                        .collect();
-                    self.ui.app.apply(&event);
-                    // The engine injected a steered message: its Inbox item is
-                    // gone, so drop the pending row now instead of waiting for
-                    // the runtime's 250ms snapshot tick.
-                    if let EventKind::UserMessage(message) = &event.kind
-                        && let Some(id) = &message.queued_id
-                    {
-                        self.ui.steering.retain(|item| &item.id != id);
-                    }
-                    // 引擎写进日志的错误（压缩失败、超预算、无进展……）显示在
-                    // 输入框上方的提示框里，保留完整信息。
-                    if let EventKind::Error(error) = &event.kind {
-                        self.ui.error_banner = Some(format!("{}: {}", error.kind, error.message));
-                    }
-                    if turn_started || self.ui.app.turns.len() > turns_before {
-                        let index = self.ui.app.turns.len().checked_sub(1);
-                        self.ui.selected_turn = index;
-                        // 新 turn 的执行过程默认展开（一键可收起）；清掉上一个
-                        // turn 残留的展开状态。
-                        if let Some(index) = index {
-                            self.ui.process_open_turns.insert(index);
-                        }
-                        if matches!(self.ui.expanded_process, Some(ProcessKey::Reasoning(_))) {
-                            self.ui.expanded_process = None;
-                        }
-                    }
-                    changed = true;
-                    if turn_ended {
-                        // 结束后自动折叠本 run 里所有 turn 的执行过程（含排队
-                        // 追加拆出的），标题行仍可点开；手动展开过的旧 turn
-                        // 不在这份清单里，保持原状。
-                        for index in open_before {
-                            self.ui.process_open_turns.remove(&index);
-                        }
-                        self.refresh_tasks();
-                    }
-                }
-                UiEvent::Delta(delta) => {
-                    self.ui.app.apply_delta(&delta);
-                    changed = true;
-                }
-                UiEvent::Approval(view) => self.ui.approvals.push(view),
-                UiEvent::ApprovalClosed { call_id } => {
-                    self.ui.approvals.closed(&call_id);
-                    if self.ui.restoring.as_deref() == Some(call_id.as_str()) {
-                        self.ui.restoring = None;
-                        changed = true;
-                    }
-                }
-                UiEvent::SessionChanged { id } => {
-                    self.ui.empty_draft = false;
-                    self.active = id.clone();
-                    self.prefs.last_session = id.clone();
-                    // 只写 `last_session`：几何/外观这些字段归别的写入者，整份
-                    // 覆盖会把它们刚存下的值冲掉。
-                    if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
-                        prefs.last_session = id;
-                    }) {
-                        self.ui
-                            .app
-                            .push_notice(format!("cannot save gui.json: {error}"));
-                    }
-                    self.refresh_tasks();
-                    changed = true;
-                }
-                UiEvent::TurnFailed { message } => {
-                    self.ui.empty_draft = false;
-                    self.ui.restoring = None;
-                    // 引擎没发 TurnEnded 就退出了：收口当前 turn，否则卡片会
-                    // 一直显示 running、耗时不停增长。
-                    self.ui
-                        .app
-                        .abort_turn(qcode_core::event::TurnStatus::Failed);
-                    self.ui.app.status.last = None;
-                    self.ui.approvals = ApprovalQueue::default();
-                    // 错误提示放状态栏（对话流里不再渲染 note 行）。
-                    self.set_notice(format!("turn failed: {message}"), false, cx);
-                    // 完整报错同时放在输入框上方的提示框里。
-                    self.ui.error_banner = Some(message);
-                    changed = true;
-                }
-                UiEvent::TurnFinished { session } => {
-                    self.ui.turn_in_flight = false;
-                    self.ui.restoring = None;
-                    self.apply_pending_roots(session.as_deref(), cx);
-                    self.apply_pending_task_renames(cx);
-                    changed = true;
-                }
-                UiEvent::QueueChanged { items } => {
-                    self.ui.queue = items;
-                    changed = true;
-                }
-                UiEvent::SteeringChanged { items } => {
-                    self.ui.steering = items;
-                    changed = true;
-                }
+            if let Some(message) = applied.turn_failed
+                && live
+            {
+                // The visible view gets the banner (set above); the status bar
+                // is the only place a window that is *not* on this task can say
+                // it, so a background failure waits for its own switch-in.
+                failed = Some(message);
             }
+            if let Some(session) = finished {
+                // Shell-level bookkeeping for the turn that just returned. Both
+                // are keyed by task id, so a background session's finish is
+                // still handled correctly when it is not the one on screen.
+                self.apply_pending_roots(session.as_deref(), cx);
+                self.apply_pending_task_renames(cx);
+            }
+        }
+        if let Some(message) = failed {
+            self.set_notice(format!("turn failed: {message}"), false, cx);
         }
         // The thinking stream committed into a completed block: auto-fold it
         // (the block stays expandable through its header).
@@ -464,18 +449,64 @@ impl Shell {
             && matches!(self.ui.expanded_process, Some(ProcessKey::Reasoning(_)))
         {
             self.ui.expanded_process = None;
-            cx.notify();
+            repaint = true;
         }
-        if changed {
+        if refresh {
+            self.refresh_tasks();
+        }
+        if resync {
             self.sync_scroller(cx);
-            // `poll` 是在 render 里跑的：处理完事件不排下一帧的话，本次
-            // render 之后才到的 SessionChanged 就要等下一次交互才会被画出来
-            // （新建任务后侧栏一直是空的）。
-            cx.notify();
-            // GPUI's Tail follow mode handles tracking by itself: while the
-            // view is at the bottom it follows new content, and a user scroll
-            // away pauses following until the bottom is reached again.
         }
+        if repaint {
+            // A repaint request is also what re-arms the tail follow: GPUI's
+            // Tail mode keeps the view pinned unless the user scrolled away.
+            cx.notify();
+        }
+    }
+
+    /// Start the resident drain (ADR-0058 §5). Idempotent.
+    ///
+    /// `poll` used to run at the top of `render`, which meant a window that was
+    /// minimized, hidden in the tray or simply not repainting never handled a
+    /// finished turn or an arriving approval — and with more than one session
+    /// that stops being "late" and becomes "hung". One loop, one interval.
+    pub(crate) fn start_poll_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.ticker_running {
+            return;
+        }
+        self.ticker_running = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let interval = match this.update(cx, |shell, cx| {
+                    shell.poll(cx);
+                    shell.poll_interval()
+                }) {
+                    Ok(interval) => interval,
+                    // The window is gone; nothing left to drain.
+                    Err(_) => break,
+                };
+                cx.background_executor().timer(interval).await;
+            }
+        })
+        .detach();
+    }
+
+    /// 33ms while a turn runs (streaming should look immediate), slower when
+    /// everything is idle: the runtime republishes queue snapshots at 250ms and
+    /// nothing else is periodic, so waking the UI thread 30×/s would be waste.
+    fn poll_interval(&self) -> std::time::Duration {
+        if self.any_turn_running() {
+            std::time::Duration::from_millis(33)
+        } else {
+            std::time::Duration::from_millis(150)
+        }
+    }
+
+    /// Whether any session — shown, parked or dormant — has a turn in flight.
+    fn any_turn_running(&self) -> bool {
+        self.ui.turn_in_flight
+            || self.parked.values().any(|ui| ui.turn_in_flight)
+            || self.dormant.values().any(|dormant| dormant.running)
     }
 
     /// Show a notice in the status bar. Transient ones clear themselves, so the

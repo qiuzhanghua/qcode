@@ -3612,7 +3612,7 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。**P0–P2 已实现**（2026-11-08），P3–P6 未实现。
+**状态**：Accepted（2026-11-08）。**P0–P3 已实现**（2026-11-08），P4–P6 未实现。
 依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
 实现注记见本文末。
 
@@ -3882,6 +3882,48 @@ pub enum SessionTarget { Session(String), Draft }
     `TaskUi` 多加一个字段就编不过，不存在「新增字段忘了交换、切任务后串味」这种静默
     失败。运行时的往返一致性（草稿、滚动位置、展开集、审批队列、notice）仍需按
     「验证」一节手工确认。
+
+**实现注记（2026-11-08，P3）**
+
+17. **`poll` 搬进常驻 ticker**（§5）。入口是 `Shell::start_poll_ticker`，在 `run.rs`
+    里 `open_window` 拿到实体之后启动一次（幂等，`ticker_running` 兜住重复调用），
+    间隔自适应：有 turn 在跑 33ms，全空闲 150ms（runtime 的队列快照本来就是 250ms
+    一拍，闲时空转 30 次/秒纯属浪费）。`render_main` 里那行 `self.poll(cx)` 删掉。
+    - 顺带删掉 `wake_for_session`：它存在的唯一理由是「poll 只在 render 里跑，新建
+      任务后要主动醒几次」。ticker 一帧内就把 `SessionChanged` 排空并自己 `notify`，
+      这个 100ms×50 的循环没有意义了。
+18. **路由表**（`shell/routing.rs` 的 `apply_to_ui` + `dormant.rs` 的
+    `apply_to_dormant`）：按 `SessionEvent.target` 分三档——
+    - 目标就是屏上那份视图 → 照旧应用，行变了就 `sync_scroller`，并 `notify`；
+    - 目标是 `parked` 里的会话（用户去过）→ 应用到它自己的 `TaskUi`，**不 notify**
+      流式增量，只在 turn 边界/审批这类「一行状态变了」的事件上请求一帧；
+    - 目标是没有视图的会话 → 进 `Dormant`：只有状态（running）、审批队列、队列快照、
+      失败提示，`Delta` 直接丢（切进去时从日志重放，ADR-0057）。
+19. **`SessionChanged` 不分发**，它是窗口级事件：runtime 仍是单槽，「引擎现在挂在谁
+    身上」就是「显示谁」。给它做分发需要「给一个没打开过的会话造视图」，而那要
+    `Window`（composer 是实体），`poll` 手上没有。真正的多槽切换（P5）之后它才需要
+    按目标区分；那时也才有窗口上下文可用（切换本来就是用户操作，走 `resume`）。
+20. **审批的「永不丢」现在真的成立了**：后台会话的 `Approval` 进 `Dormant.approvals`
+    （或 `parked` 视图自己的队列），`resume` 时 drain 进新视图，再配合已有的
+    `call_id` 路由（`BridgeApprover` 按 call_id 答，不绑线程），所以后台憋着的 prompt
+    切进去就能答，答完引擎那边继续走。`tests/dormant.rs` 的
+    `an_approval_arriving_in_the_background_is_kept` 钉住这条。
+21. **`Dormant` 会自己收摊**：`is_settled()`（不 running、无审批、无队列、无错误）成立
+    就 `remove`。否则一个窗口看十个会话在后台跑过，就留十个空条目。
+    错误提示例外——它要留到用户看见为止。
+22. **切走时 turn 的收尾事件落在它自己的视图里**：`TurnFinished` / `TurnEnded`
+    按 tag 找到 `parked`，不会再去清屏上那份视图的 `turn_in_flight`。这是 P1/P2
+    遗留的一个真 bug（单会话时看不出来，因为只有一个会话能跑）。
+23. **`task_running(id)` 是三档合一**（屏上 / parked / dormant），侧栏行标记与 ⋯ 菜单
+    共用它：后台在跑的任务行显示 `▶`。审批徽标仍留给 P4（`task_approvals` 一起做，
+    现在只有 `dormant.approvals` 被 `resume` 消费）。
+24. **切走时仍被 `running` 闸拦着**（`new_session` / `resume`）。原因不是 UI 了：runtime
+    收到 `Resume` 会先 `token.cancel()` 把当前 turn 停掉，然后再切
+    （`runtime.rs` 的 `UiCommand::Resume` 分支）。P3 之后视图侧已经能承接「两个会话
+    各有一份状态」，但引擎侧还是单槽，所以闸门要等 P5 的按会话 turn 一起摘。
+25. **P3 的自动化只覆盖 `Dormant`**（`tests/dormant.rs`，8 条）：路由与 ticker 需要
+    GPUI 的 `Window`/`Context`，仍是手工验证（§验证 里那几条）。
+
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

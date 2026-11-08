@@ -18,6 +18,20 @@ impl Shell {
         }
     }
 
+    /// Whether this task has a turn in flight — whether or not it is the task
+    /// on screen (ADR-0058 §7's badge; the approval half is P4).
+    pub(crate) fn task_running(&self, task_id: &str) -> bool {
+        if self.active.as_deref() == Some(task_id) {
+            return self.ui.app.status.running || self.ui.turn_in_flight;
+        }
+        if let Some(ui) = self.parked.get(task_id) {
+            return ui.app.status.running || ui.turn_in_flight;
+        }
+        self.dormant
+            .get(task_id)
+            .is_some_and(|dormant| dormant.running)
+    }
+
     pub(crate) fn active_task_row(&self) -> Option<&TaskRow> {
         let id = self.active.as_deref()?;
         self.tasks.iter().find(|row| row.task.id == id)

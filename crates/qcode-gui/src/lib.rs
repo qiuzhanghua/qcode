@@ -9,6 +9,7 @@
 
 pub mod approvals;
 pub mod backend;
+pub mod dormant;
 pub mod forms;
 pub mod gui_prefs;
 pub mod host;
@@ -59,7 +60,7 @@ use platform::*;
 use qcode_core::event::{EventKind, ToolStatus};
 use qcode_core::inbox::QueuedMessage;
 use qcode_core::task::{Root, RootAccess, is_slug};
-use qcode_ui_bridge::UiEvent;
+use qcode_ui_bridge::{SessionEvent, SessionTarget, UiEvent};
 use qcode_ui_state::{App, Block};
 use render::*;
 use std::collections::HashSet;

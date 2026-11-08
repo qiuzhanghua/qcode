@@ -503,7 +503,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.poll(cx);
+        // 引擎事件由常驻 ticker 排空（`Shell::start_poll_ticker`），不在
+        // render 里：窗口最小化时也要处理 TurnFinished 与审批（ADR-0058 §5）。
         // 执行中且输入框有内容时，发送按钮应保持可用（发送进排队队列）；
         // 只有执行中且输入框为空时，按钮才变成停止红点。
         let composer_has_draft = !self.ui.input.read(cx).value().trim().is_empty()

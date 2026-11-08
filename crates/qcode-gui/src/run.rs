@@ -108,6 +108,11 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 })
                 .expect("failed to open the window");
 
+            // ADR-0058 §5: the engine's events are drained by a resident loop,
+            // not by `render`. Started here because the entity exists now, and
+            // because a minimized window never reaches a render.
+            shell.update(cx, |shell, cx| shell.start_poll_ticker(cx));
+
             if let Some(tray) = tray {
                 let tray_rx = tray_rx;
                 cx.spawn(async move |cx| {
