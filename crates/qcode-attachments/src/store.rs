@@ -25,8 +25,10 @@ use crate::types::{FileRef, ImageMime, ImageRef, OriginRef};
 
 /// Nothing larger than this is copied into the store (ADR-0061 §7).
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-/// Images are decoded and normalized before they get here, so this is a backstop.
-pub const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest image accepted for decoding, before normalization. The stored copy
+/// is capped much lower (`NormalizationPolicy::max_bytes`); this bound only
+/// limits how much memory one paste can claim.
+pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 /// Longest file name in bytes; longer names are truncated on a char boundary.
 pub const MAX_NAME_BYTES: usize = 255;
 
@@ -49,8 +51,8 @@ pub enum StoreError {
         declared: ImageMime,
         found: Option<ImageMime>,
     },
-    #[error("could not read the dimensions of a {mime:?} image")]
-    Undecodable { mime: ImageMime },
+    #[error("could not read the {mime:?} image: {reason}")]
+    Undecodable { mime: ImageMime, reason: String },
 }
 
 /// An image handed to [`AttachmentStore::put_image`].
@@ -157,8 +159,13 @@ impl AttachmentStore {
             });
         }
 
-        let (width, height) = crate::dimensions::dimensions(image.mime, image.bytes)
-            .ok_or(StoreError::Undecodable { mime: image.mime })?;
+        let (width, height) =
+            crate::dimensions::dimensions(image.mime, image.bytes).ok_or_else(|| {
+                StoreError::Undecodable {
+                    mime: image.mime,
+                    reason: "could not read the image dimensions".to_string(),
+                }
+            })?;
 
         let id = AttachmentId::from_bytes(Sha256::digest(image.bytes).into());
         let target = self.object_path("objects", id);
@@ -210,6 +217,91 @@ impl AttachmentStore {
         let path = self.file_dir(file.id).join(sanitize_file_name(&file.name));
         ensure_present(&path)?;
         Ok(path)
+    }
+
+    /// Store an image, normalizing it first (ADR-0061 §5).
+    ///
+    /// A picture that already fits the policy is stored as given; otherwise the
+    /// encoded copy goes to `objects/` and the untouched bytes to `originals/`,
+    /// so a later "show the original" needs no re-decode.
+    pub fn put_image_normalized(
+        &self,
+        image: NewImage<'_>,
+        policy: &crate::normalize::NormalizationPolicy,
+    ) -> Result<ImageRef, StoreError> {
+        let size = image.bytes.len() as u64;
+        if size > MAX_IMAGE_BYTES {
+            return Err(StoreError::TooLarge {
+                limit: MAX_IMAGE_BYTES,
+            });
+        }
+        let found = ImageMime::sniff(image.bytes);
+        if found != Some(image.mime) {
+            return Err(StoreError::MimeMismatch {
+                declared: image.mime,
+                found,
+            });
+        }
+
+        let normalized =
+            crate::normalize::normalize(image.bytes, image.mime, policy).map_err(|error| {
+                StoreError::Undecodable {
+                    mime: image.mime,
+                    reason: error.to_string(),
+                }
+            })?;
+
+        let id = AttachmentId::from_bytes(Sha256::digest(&normalized.bytes).into());
+        let target = self.object_path("objects", id);
+        if !target.exists() {
+            let mut tmp = TempFile::create(&self.root)?;
+            tmp.write_all(&normalized.bytes)?;
+            let parent = target.parent().expect("object path has a shard directory");
+            fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+            tmp.commit_to(&target)?;
+            set_read_only(&target)?;
+            fsync_dir(parent)?;
+        }
+
+        let origin = if normalized.unchanged {
+            None
+        } else {
+            let (width, height) = crate::dimensions::dimensions(image.mime, image.bytes).ok_or(
+                StoreError::Undecodable {
+                    mime: image.mime,
+                    reason: "could not read the original dimensions".to_string(),
+                },
+            )?;
+            let origin_id = AttachmentId::from_bytes(Sha256::digest(image.bytes).into());
+            let origin_target = self.object_path("originals", origin_id);
+            if !origin_target.exists() {
+                let mut tmp = TempFile::create(&self.root)?;
+                tmp.write_all(image.bytes)?;
+                let parent = origin_target
+                    .parent()
+                    .expect("origin path has a shard directory");
+                fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+                tmp.commit_to(&origin_target)?;
+                set_read_only(&origin_target)?;
+                fsync_dir(parent)?;
+            }
+            Some(OriginRef {
+                id: origin_id,
+                bytes: size,
+                width,
+                height,
+            })
+        };
+
+        Ok(ImageRef {
+            id,
+            mime: normalized.mime,
+            bytes: normalized.bytes.len() as u64,
+            width: normalized.width,
+            height: normalized.height,
+            origin,
+            name: image.name.map(str::to_string),
+        })
     }
 
     pub fn read_image(&self, image: &ImageRef) -> Result<Vec<u8>, StoreError> {

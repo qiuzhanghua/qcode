@@ -5,7 +5,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use qcode_attachments::{AttachmentRef, AttachmentStore, ImageMime, NewImage};
+use qcode_attachments::{AttachmentRef, AttachmentStore, ImageMime, NewImage, NormalizationPolicy};
 
 use crate::event::ContentBlock;
 use crate::provider::Message;
@@ -27,11 +27,16 @@ pub fn store_inline(
         let bytes = BASE64
             .decode(attachment.data_base64.as_bytes())
             .map_err(|_| EngineError::AttachmentDecode)?;
-        let image = store.put_image(NewImage {
-            bytes: &bytes,
-            mime,
-            name: None,
-        })?;
+        // Normalize once, here: what the log points at is what the model sees
+        // (ADR-0061 §5). Policy stays at its default for now.
+        let image = store.put_image_normalized(
+            NewImage {
+                bytes: &bytes,
+                mime,
+                name: None,
+            },
+            &NormalizationPolicy::default(),
+        )?;
         refs.push(AttachmentRef::Image(image));
     }
     Ok(refs)

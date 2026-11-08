@@ -7,11 +7,13 @@
 
 pub mod dimensions;
 pub mod id;
+pub mod normalize;
 pub mod store;
 pub mod types;
 
 pub use dimensions::dimensions;
 pub use id::AttachmentId;
+pub use normalize::{NormalizationPolicy, NormalizeError, NormalizedImage, normalize};
 pub use store::{
     AttachmentStore, MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_NAME_BYTES, NewImage, StoreError,
     sanitize_file_name,

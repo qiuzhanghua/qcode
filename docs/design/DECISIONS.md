@@ -4345,12 +4345,21 @@ GUI 落地后这三条边界开始漏：
    发送瞬间不卡，重试也幂等（同一个 sha 第二次写入直接命中）。
 
 5. **归一化在写入时做一次，四种格式统一。** 引入 `image`（MIT/Apache-2.0 双许可，
-   `default-features = false` + `png`/`jpeg`/`webp`/`gif` 四个 feature）负责**解码和读尺寸**；
-   编码侧仍用 `qcode-image` 已有的 PNG 编码器（零依赖、已有测试）。参数：长边 2048、单图
-   2 MB、EXIF 摆正、永不丢 alpha，质量阶梯 85 → 70 → 55 直到达标。
+   `default-features = false` + `png`/`jpeg`/`webp`/`gif` 四个 feature）负责解码、EXIF
+   摆正、缩放和编码。参数：长边 2048、存下来的单图 2 MB、永不丢 alpha。编码规则：
+   有透明像素 → PNG（`CompressionType::Best`）；不透明 → JPEG，质量阶梯 85 → 70 → 55；
+   一轮都压不进 2 MB 就把长边乘 0.75 再来一轮，最多八轮。
 
-   原图保留在 `originals/`（见决定 2），`origin` 只在真的发生缩放或重编码时写；"查看原图"
-   直接读原图，不重新解码归一化副本。
+   已经达标（长边 ≤ 2048、字节 ≤ 2 MB、EXIF 无旋转）的图**原样放行**，不做无意义的
+   重编码——小截图与 2×1 的测试图都走这条路，所以 `unchanged` 为真时 `origin` 为 `None`。
+
+   解码前的输入上限是 **32 MB**（`MAX_IMAGE_BYTES`）：它只负责"一次粘贴最多占多少内存"，
+   真正的落盘上限是上面那个 2 MB。原图保留在 `originals/`（见决定 2），`origin` 只在真的
+   发生缩放或重编码时写；"查看原图"直接读原图，不重新解码归一化副本。
+
+   实现注记：`qcode-image` 原来那个"stored deflate" PNG 编码器不进附件链路——它是给
+   剪贴板兜底的（4 字节/像素），拿来存归一化图会把 2 MB 预算烧光；归一化统一用 `image`
+   的 PNG/JPEG 编码器。
 
 6. **回放是重建，不是缓存。** `ContentBlock::Image` 的形状**不变**（仍是
    `Image { mime_type: String, data_base64: String }`），引用在重建这一步展开：
