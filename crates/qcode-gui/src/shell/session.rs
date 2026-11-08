@@ -73,6 +73,41 @@ impl Shell {
         cx.notify();
     }
 
+    /// Move what a session accumulated while it had no view onto the visible
+    /// view: approvals (they block the engine), the last queue snapshots, a
+    /// failure banner, and "a turn is in flight".
+    ///
+    /// Two callers: `resume`, when the user switches in, and `poll`'s
+    /// `SessionChanged` arm, when the window follows the engine to a session it
+    /// was not showing (a draft whose first message created one). The entry is
+    /// consumed either way — once the view is live, the session's events stream
+    /// into it directly and a kept entry would go stale ("running" forever).
+    pub(crate) fn adopt_dormant(&mut self, id: &str) {
+        let Some(dormant) = self.dormant.remove(id) else {
+            return;
+        };
+        let Dormant {
+            running,
+            mut approvals,
+            queue,
+            steering,
+            error_banner,
+        } = dormant;
+        for view in approvals.drain() {
+            self.ui.approvals.push(view);
+        }
+        self.ui.queue = queue;
+        self.ui.steering = steering;
+        if error_banner.is_some() {
+            self.ui.error_banner = error_banner;
+        }
+        if running {
+            // 重放把 running 收成 false，但引擎那边这个会话确实还在跑。
+            self.ui.turn_in_flight = true;
+            self.ui.app.status.running = true;
+        }
+    }
+
     pub(crate) fn resume(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         // 切到另一个任务不要求先停：正在跑的那个是**它自己的** turn，切走之后
         // 继续跑，事件按会话路由到它停放的视图里（ADR-0058 §7/P5）。
@@ -137,28 +172,7 @@ impl Shell {
         // 后台期间攒下的东西（§3）：审批必须活着——它是引擎的阻塞点，没人答
         // 就一直挂着；队列快照与失败提示也一样，切进来就是对的，不必等下一
         // 个 ticker 帧。
-        if let Some(dormant) = self.dormant.remove(&id) {
-            let Dormant {
-                running,
-                mut approvals,
-                queue,
-                steering,
-                error_banner,
-            } = dormant;
-            for view in approvals.drain() {
-                self.ui.approvals.push(view);
-            }
-            self.ui.queue = queue;
-            self.ui.steering = steering;
-            if error_banner.is_some() {
-                self.ui.error_banner = error_banner;
-            }
-            if running {
-                // 重放把 running 收成 false，但引擎那边这个会话确实还在跑。
-                self.ui.turn_in_flight = true;
-                self.ui.app.status.running = true;
-            }
-        }
+        self.adopt_dormant(&id);
         // The engine's `SessionChanged` also lands here, but the parked path
         // installs the view without waiting for it; write the preference now so
         // a switch that never reaches `poll` is still remembered.
