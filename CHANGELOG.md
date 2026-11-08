@@ -1,6 +1,23 @@
 # Changelog
 
-## 未发布
+## 0.7.8 — 2026-11-08
+
+- **新任务的首条消息发出后，窗口跟着切到它**（ADR-0058 §7，真机复核）：在草稿里发第一
+  条消息时，引擎新建的会话名还不在屏上，`poll` 按 target 分流会把它算成后台会话、丢进
+  `dormant`，而 `dormant::apply_to_dormant` 对 `SessionChanged` 是空分支——引擎在跑、
+  转录区有内容落盘，界面却一直停在「新任务」、侧栏也不出现这一行。
+  - 分流决策抽成 `task_ops::destination`：`SessionChanged` 一律按窗口级处理——它说的是
+    窗口该看谁，不是某个会话的内容；只有窗口自己发的 `NewSession`/`Resume` 会产生它，
+    跟着走不会抢走后台上正在跑的 turn 的视图。窗口接手时顺手 `adopt_dormant`，把后台
+    攒下的审批、队列快照和 `running` 并进可见视图，也免得留一条僵尸条目。
+  - 回归用例在 `tests/task_ops.rs`（去掉 `Window` 分支即红）；`resume` 里那段内联的
+    接手逻辑同时抽成 `adopt_dormant` 复用。
+
+- **`gui` feature 恢复可编译**：P6 定时任务合入时漏改 `crates/qcode/src/commands/gui.rs`
+  的 `Engine` 初始化——`schedule_tick` 写了两遍、`schedules` 的路径重复成
+  `qcode_kernel::config::qcode_kernel::config::resolve_schedules`、这一处还缺
+  `schedule_errors`/`schedule_tick`。`cargo build -p qcode --features gui` 在 df72e2c 上
+  直接失败，现按同文件 `:54-59` 的写法补齐。
 
 - **macOS sandbox：只读根在 `$TMPDIR`/`/tmp` 下真的只读了**（ADR-0048 §2，真机复核）：
   profile 对所有任务都放开 `/tmp`、`$TMPDIR` 与 Cargo/Rustup 缓存，所以落在这些父目录下的
