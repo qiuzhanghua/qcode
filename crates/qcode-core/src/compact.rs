@@ -182,6 +182,8 @@ mod tests {
                 queued_id: None,
                 text: text.into(),
                 attachments: vec![],
+
+                continuation: None,
             }),
         )
     }

@@ -140,6 +140,53 @@ impl Shell {
         cx.notify();
     }
 
+    /// The pause card's "继续": same task, fresh budget window. The window is
+    /// the engine's to number, so the UI never claims one from its own count
+    /// (ADR-0060 §2.11).
+    pub(crate) fn continue_paused_turn(&mut self, cx: &mut Context<Self>) {
+        if self.turn_in_flight {
+            return;
+        }
+        self.dismiss_pause();
+        self.backend.continue_turn(None);
+        self.error_banner = None;
+        self.turn_in_flight = true;
+        cx.notify();
+    }
+
+    /// The pause card's "收尾": ask the model to stop where it is and write the
+    /// wrap-up, using one more window. Cheaper and more predictable than
+    /// silently raising the limit and letting it run on.
+    pub(crate) fn wrap_up_paused_turn(&mut self, cx: &mut Context<Self>) {
+        if self.turn_in_flight {
+            return;
+        }
+        self.dismiss_pause();
+        self.backend
+            .prompt(qcode_core::engine::WRAP_UP_PROMPT.to_string(), Vec::new());
+        self.error_banner = None;
+        self.turn_in_flight = true;
+        cx.notify();
+    }
+
+    /// Hide the pause card without acting on it (the user typed a new
+    /// instruction instead). The turn stays paused in the log.
+    pub(crate) fn dismiss_pause(&mut self) {
+        if let Some(turn) = self.app.paused_turn() {
+            self.dismissed_pause = Some(turn.id);
+        }
+    }
+
+    /// Whether this turn's pause card should render: a paused, ended turn the
+    /// user has not dismissed.
+    pub(crate) fn pause_card_visible(&self, index: usize) -> bool {
+        let turn = &self.app.turns[index];
+        turn.pause.is_some()
+            && turn.ended_at.is_some()
+            && !turn.running()
+            && self.dismissed_pause != Some(turn.id)
+    }
+
     pub(crate) fn tool_expanded(&self, call_id: &str) -> bool {
         !self.collapse_all
             && !self.collapse_to_list

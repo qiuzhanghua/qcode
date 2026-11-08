@@ -91,6 +91,8 @@ mod tests {
                     queued_id: None,
                     text: "old question".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
             event(
@@ -121,6 +123,8 @@ mod tests {
                     queued_id: None,
                     text: "new question".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
         ];
@@ -146,6 +150,8 @@ mod tests {
                     queued_id: None,
                     text: "hi".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
             event(

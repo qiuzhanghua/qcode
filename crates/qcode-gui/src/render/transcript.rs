@@ -506,6 +506,8 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
             Some(qcode_core::event::TurnStatus::Completed) => "done",
             Some(qcode_core::event::TurnStatus::Failed) => "failed",
             Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+            // Amber, not "failed": a budget pause is a hand-off (ADR-0060).
+            Some(qcode_core::event::TurnStatus::Paused) => "paused",
             None if turn.running() => "running",
             None => "done",
         };
@@ -562,6 +564,12 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                     .bg(rgba(0x7f7f7f20))
                     .into_any_element()
             }));
+    }
+
+    if shell.pause_card_visible(index)
+        && let Some(pause) = pause_card(&shell.app, index, shell, entity)
+    {
+        card = card.child(pause);
     }
 
     if let Some(block) = turn.answer_block {
@@ -1159,4 +1167,135 @@ fn process_label(shell: &Shell, blocks: &[usize]) -> Option<String> {
         parts.push("已读取文件");
     }
     (!parts.is_empty()).then(|| parts.join("，"))
+}
+
+/// The pause card: why the turn stopped, what it got done, and the three ways
+/// out. Amber rather than red — nothing failed (ADR-0060 §2.7).
+fn pause_card(
+    app: &qcode_ui_state::App,
+    index: usize,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+) -> Option<AnyElement> {
+    let card = qcode_ui_state::PauseCard::of(app, index)?;
+    let amber = rgb(0xd9a441);
+    let muted = rgba(0x7f7f7fcc);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_6()
+        .py_2()
+        .w_full()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(sp(BODY_SIZE))
+                        .text_color(amber)
+                        .child(format!("⏸ 已暂停 · {}", card.headline)),
+                )
+                .children(card.window_note.map(|note| {
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted)
+                        .child(note)
+                })),
+        );
+    if let Some(files) = card.files {
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(muted)
+                .child(files),
+        );
+    }
+    if let Some(summary) = card.summary {
+        body = body.child(
+            TextView::markdown(format!("pause-summary-{index}"), summary)
+                .text_size(sp(BODY_SIZE))
+                .line_height(sp(BODY_LINE)),
+        );
+    }
+    for failure in card.failures {
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(rgb(0xd05050))
+                .child(format!("✗ {failure}")),
+        );
+    }
+    if !card.commands.is_empty() {
+        let runs: Vec<&str> = card
+            .commands
+            .iter()
+            .map(|line| line.command.as_str())
+            .collect();
+        let mut line = format!("已运行：{}", runs.join(" · "));
+        if card.more_commands > 0 {
+            line.push_str(&format!(" 等 {} 条", runs.len() + card.more_commands));
+        }
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(muted)
+                .child(line),
+        );
+    }
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .pt_1()
+        .child(
+            Button::new(("pause-continue", index))
+                .label("继续")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.continue_paused_turn(cx));
+                    }
+                }),
+        )
+        .child(Button::new(("pause-wrap", index)).label("收尾").on_click({
+            let entity = entity.clone();
+            move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.wrap_up_paused_turn(cx));
+            }
+        }))
+        .child(
+            Button::new(("pause-dismiss", index))
+                .label("先这样")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.dismiss_pause();
+                            cx.notify();
+                        });
+                    }
+                }),
+        )
+        .children((shell.app.status.window > 1).then(|| {
+            div()
+                .text_size(sp(CAPTION_SIZE))
+                .text_color(muted)
+                .child(format!("第 {} 个预算窗口", shell.app.status.window))
+        }));
+    Some(
+        div()
+            .mx_6()
+            .my_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgba(0x7f7f7f30))
+            .bg(rgba(0xd9a44112))
+            .child(body.child(buttons))
+            .into_any_element(),
+    )
 }

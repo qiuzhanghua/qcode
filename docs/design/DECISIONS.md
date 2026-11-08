@@ -1116,7 +1116,8 @@ cargo build -p qcode
    `max_cost_usd` 仍需 `[pricing."<model>"]`，否则启动即报错（原有语义不变）。
 5. 停止顺序：模型不再调工具（正常）→ 取消 → 超预算 → 无进展 → 超轮数。先报更具体的原因，
    用户才知道该改什么。
-6. **不做**（本轮）：命中上限自动续一个预算窗口。它会把「原地打转」伪装成「任务很长」，
+6. **不做**（本轮）：命中上限自动续一个预算窗口。（ADR-0060 后结论不变：仍然不自动续，
+   只是「继续」变成一键、默认焦点，且预算命中不再是 `failed`。）它会把「原地打转」伪装成「任务很长」，
    等无进展检测跑一段时间、有了真实数据再评估；时间预算目前只有 `--timeout`（TUI 无）。
 
 **后果**
@@ -3904,3 +3905,102 @@ enabled = true
 - 审批：定时 turn 的审批超时 → deny + turn 正常结束，会话锁释放。
 - 回归：调度器写状态后**配置 mtime 不变**（防重建风暴）。
 - `task` 被删除 → 条目禁用 + `schedule_orphaned`。
+
+## ADR-0060：预算暂停——超限是「交接」，不是「报错」（2026-11-09）
+
+**背景**：`max_turns` 命中时，GUI 弹的是红色「请求报错 · 完整信息」，正文是
+`exceeded max turns (64): …`，只有一个「关闭」按钮。三处预算止停（轮数、成本、
+无进展）走同一条失败通道：写 `error(...)`、`turn_ended(failed)`、返回 `Err`。可是
+**预算用完不是错误**——任务可能完全正常，只是钱或步数到了，重试同样的输入必然原地
+不动。用户真正想知道的是「做到哪了、还差什么」，而这些数据全在手里：usage / cost、
+本轮的 `tool_call` 序列、v5 起每个 `tool_result` 的 `diff`、最后一段助手文本。
+附带一个真 bug：GUI 的「Turns 超限」提示用 `app.turns.len()`（用户消息条数）当轮数，
+而 `max_turns` 是单条消息内的模型调用数——长任务不提示，短任务乱提示。
+
+**决定**
+
+1. **四态**：`TurnStatus` 增加 `Paused`。预算命中落 `Paused`，**无进展与真错误仍落
+   `Failed`**（前者是方法错了，继续只会重复；后者重试可能成功）。落盘 schema 5 → 6；
+   v5 日志无新字段，serde 缺省即可回放，不回填。
+2. **成本提前刹车**：`max_cost_usd` 从「已花超才停」改为 `used >= limit * 0.95` 即停，
+   剩下 5% 留给收尾调用。`max_turns` 仍在「恰好用完、下一轮将超」时停。
+3. **临近时先说**：新增 `EventKind::BudgetHint`，首次跨过 75%（或剩 ≤ 8 轮）发一次，
+   带**引擎自己的** `turns / max_turns / cost_usd / max_cost_usd / window`。GUI 的提示卡
+   与 TUI 状态行都只读它，`app.turns.len() >= threshold` 的口径 bug 随之删除——
+   提示不会在短任务上误报，长任务也不会漏报。
+4. **停时交接**：可推导的不落盘，不可推导的落盘。
+   - `qcode_core::progress::report(events, turn) -> ProgressReport`：纯函数，零成本、
+     可复现，GUI / TUI / ACP / `qc run` 共用（工具调用数、按路径去重并累加计数的
+     `DiffFileStat`、命令列表、失败工具行、截断到 600 字的最后文本）。
+   - `PauseInfo.summary`：停之前给模型**一次无工具的收尾调用**，让它写「已完成 /
+     未完成 / 下一步」。这次调用**不计入 `max_turns`**（否则「为了总结又把预算花光」），
+     成本**照实记账**；估算放不下或调用失败就跳过，`summary = None`，退化为只剩
+     `ProgressReport`。UI 按小标题轻解析，解析失败整段显示——不赌模型出 JSON。
+5. **事件形状**（schema v6）：`TurnEnded{status, usage, cost_usd, pause}`；
+   `PauseInfo{reason, limit: Turns(u32) | Usd(f64), used: {turns, cost_usd}, window, summary}`。
+   `window` 必须进日志：配置会被改、价表会换，事后无法从事件流反推「这是第几个预算窗口」。
+6. **「继续」不是伪造用户消息**：继续 = 新 turn（预算天然重置），但 transcript 不能
+   出现用户没说过的话。`UserMessage` 加 `continuation: Option<Continuation{turn, window, raise}>`，
+   UI 渲染成「继续上一次暂停的任务」的灰底提示条，不再是用户气泡。
+7. **`window` 由引擎数**：`run_turn` 在 `begin_turn` 之前读日志，用
+   `budget_window(&events) + 1` 与最后一个事件的 turn 号**覆盖**前端传来的值。前端算错、
+   传旧值、甚至伪造一个大值，都拿不到新预算窗口。
+8. **三键卡片，琥珀色，不写「报错」**：`继续`（primary）/ `收尾`（再跑一次，只让它写
+   交接）/ `先这样`（把卡收起，暂停态留在日志里）。卡片内容是 `ProgressReport`
+   （改了哪些文件 `+N −D`、跑过的命令、失败的工具行）+ `summary` + 一行预算口径
+   （`已用 64/64 轮` 或 `已达成本预算 $5.00 的 95%`）。GUI 在对话流里渲染（随 turn 滚动，
+   而不是挤在输入框上方抢焦点），TUI 渲染在 transcript 末尾，`/continue` 与 `/wrap`
+   是同一动作的键盘入口。
+9. **无人值守链路默认停，不等**：
+   - `qc run`：退出码 **75**（`EX_TEMPFAIL`，区别于通用失败 1、取消 130、超时 124），
+     打印摘要 + 预算口径 + 继续方式；`--json` 在流末多打一条
+     `{"type":"pause","data":{session_id, reason, limit, used, window, summary}}`。
+   - `--continue`（`--resume <id>` 必需，prompt 可省）接着上次的任务跑；
+     `--raise-turns N` / `--raise-cost USD` 只抬这个窗口的上限，`--raise-persist`
+     才写回 `config.toml`。
+   - ACP：`stop_reason = max_turn_requests` **保留**（协议语义正是「requests 用尽」），
+     但**不再先发 error chunk**——交接摘要走 `agent_message_chunk`，客户端读到的是
+     可继续的正常收尾。
+   - 子 agent：不抛错。`SubagentOutcome.text` 追加
+     `[child paused: used 20/20 turns — the task above is incomplete; …]`，
+     父 agent 自己决定再派一次还是收工，避免把半成品当成品。
+10. **不自动续**：维持 ADR-0031 §6 的立场（自动续会把「原地打转」伪装成「任务很长」），
+    但把「继续」做成一键、默认焦点，体验差距被抹平而原则还在。
+11. **回放卡片只读**：重放不产生副作用；历史 `Paused` 只显示内容，不发任何注入或网络
+    调用。
+
+**备选方案（未采用）**
+
+- 继续伪造一条用户消息：transcript 会说谎，且导出/分享的日志里会出现「你没说过的话」。
+- 前端数 `window`：三条链路（`qc run` / 子 agent / ACP）各数一遍必然分叉，且能被伪造。
+- 把 `ProgressReport` 也落盘：它能从事件流精确重算，落盘只会在 schema 演进时变成第二份
+  真相。
+- `no_progress` 也可继续：它是「方法错了」，继续等于允许原地烧钱。
+- 单独一条 `pause` 事件而不是塞进 `turn_ended`：turn 的结局只该有一个权威记录，两处写
+  一定会有一处先写后崩。
+
+**后果**
+
+- `EngineError::MaxTurns` / `MaxCost` 不再是 `Err`：调用方必须读 `outcome.pause`，
+  否则会把暂停当成功（子 agent 的拼接文本、`qc run` 的退出码、ACP 的 `stop_reason`
+  都在这一处收敛）。
+- 收尾调用花的是真实 token：一次 `Paused` 比过去「直接报错」贵一点，但换来可继续的
+  交接；估算放不下时会跳过。
+- 状态行与提示卡的轮数口径统一到 `budget_hint`，`round_hint_threshold` 字段与
+  `ROUND_HINT_THRESHOLD` 常量删除。
+- 预算窗口（`window > 1`）会出现在三处：暂停卡片、状态行、`qc run --json` 的 pause 行。
+- 老日志回放不产生卡片动作，pause 缺失时一切按 v5 行为（`Failed` 无 `pause`）。
+
+**验证**
+
+- `qcode-providers/tests/cost.rs`：超成本在工具执行前暂停（`PauseReason::MaxCost`、
+  `PauseLimit::Usd`、无 error 事件、无 tool call、`TurnStatus::Paused`）；95% 刹车
+  （$14.30 / $15）；成本累计跨轮仍暂停。
+- `qcode-providers/tests/tool_loop.rs`：第二次运行带 `Continuation` → 事件里
+  `window = 2`，且最后一次请求的消息以交接指令结尾（不是污染 system）。
+- `qcode-ui-state`：`/continue` 无暂停时只给提示、不启动 turn；有暂停时产生
+  `UiAction::Continue` / `WrapUp`；运行中拒绝；`PauseCard` 折叠同一路径的多次改动
+  （`修改了 1 个文件（+15 −3）`）、取首行失败输出、字符安全截断。
+- `qcode-tui/tests/render.rs`：暂停卡片渲染出 `64/64`、`第 2 个预算窗口`、
+  `修改了 1 个文件`、`summary`、失败行与 `/continue` 提示，状态标签 `paused`。
+- `qcode-core`：`progress::report` 的单测（聚合、截断）。

@@ -41,6 +41,8 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         network: None,
         attachments: Vec::new(),
         inbox: None,
+
+        continuation: None,
     }
 }
 

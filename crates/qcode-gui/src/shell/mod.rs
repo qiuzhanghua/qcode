@@ -108,6 +108,9 @@ pub(crate) struct Shell {
     pub(crate) transcript_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Hide every turn's process rows (Collapse all).
     pub(crate) collapse_all: bool,
+    /// Id of the paused turn whose card the user dismissed without acting on
+    /// it. One slot is enough: only the newest turn can be paused.
+    pub(crate) dismissed_pause: Option<u64>,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
     pub(crate) collapse_to_list: bool,
     /// Status-bar waiting hint: spinner frame index and whether the ticker
@@ -130,13 +133,9 @@ pub(crate) struct Shell {
     /// transcript vanish when no turn exists yet, which is exactly the state a
     /// freshly started, unconfigured window is in.
     pub(crate) notice: Option<String>,
-    /// 长对话提示（Turns 超限）已被用户「忽略」的任务 id 集合：每个任务
-    /// 各自记住自己的忽略状态，切换任务再切回也不会再次提示。新建任务的
-    /// id 不在集合里（新任务轮数也达不到阈值，无需显式重置）。
+    /// 预算提示已被用户「忽略」的任务 id 集合：每个任务各自记住自己的
+    /// 忽略状态，切换任务再切回也不会再次提示。
     pub(crate) round_hint_dismissed_tasks: std::collections::HashSet<String>,
-    /// 长对话提示的轮数阈值：来自配置 `[agent] max_turns`，配置读不到时
-    /// 回退到写死的默认值。
-    pub(crate) round_hint_threshold: usize,
     /// Last seen config mtime: a change means Settings was saved, and the
     /// backend has to be rebuilt so the new provider takes effect.
     pub(crate) config_mtime: Option<std::time::SystemTime>,
@@ -187,9 +186,6 @@ impl Shell {
             .as_ref()
             .map(|config| config.ui.busy_delivery)
             .unwrap_or_default();
-        let round_hint_threshold = loaded_config
-            .map(|config| config.agent.max_turns as usize)
-            .unwrap_or(ROUND_HINT_THRESHOLD);
         let send_hint = if send_mode == "enter" {
             "Enter 发送 · Shift+Enter 换行"
         } else {
@@ -335,6 +331,7 @@ impl Shell {
             rail_popup_close_at: None,
             transcript_height: std::rc::Rc::new(std::cell::Cell::new(600.0)),
             collapse_all: false,
+            dismissed_pause: None,
             collapse_to_list: false,
             waiting_ticker: false,
             process_open_turns: std::collections::HashSet::new(),
@@ -347,7 +344,6 @@ impl Shell {
             notice: (!backend_is_configured)
                 .then(|| "not configured yet: open Settings".to_string()),
             round_hint_dismissed_tasks: std::collections::HashSet::new(),
-            round_hint_threshold,
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
             settings_window: None,
@@ -634,8 +630,6 @@ impl Shell {
         // [ui] busy_delivery is a shell field, not part of the kernel rebuild.
         if let Ok(config) = qcode_kernel::config::load(&self.config_path) {
             self.busy_delivery = config.ui.busy_delivery;
-            // 长对话提示阈值跟随 [agent] max_turns 配置变化。
-            self.round_hint_threshold = config.agent.max_turns as usize;
         }
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.app

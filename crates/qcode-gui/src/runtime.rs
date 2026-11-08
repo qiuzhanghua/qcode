@@ -132,6 +132,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             // so steering sent while this turn is live lands in it.
             macro_rules! start_turn {
                 ($text:expr, $attachments:expr) => {{
+                    start_turn!($text, $attachments, None, engine.max_turns, engine.max_cost_usd)
+                }};
+                ($text:expr, $attachments:expr, $continuation:expr, $max_turns:expr, $max_cost:expr) => {{
                     let session_id = match session.clone() {
                         Some(id) => id,
                         None => {
@@ -166,8 +169,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let snapshots = engine.snapshots.clone();
                     let network = engine.network.clone();
                     let workspace = engine.workspace.clone();
-                    let max_turns = engine.max_turns;
-                    let max_cost_usd = engine.max_cost_usd;
+                    let max_turns = $max_turns;
+                    let max_cost_usd = $max_cost;
                     let context_window = engine.context_window;
                     let task_model = model.clone();
                     let task_session = session_id.clone();
@@ -197,6 +200,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             network,
                             attachments: $attachments,
                             inbox: Some(task_inbox),
+                            continuation: $continuation,
                         };
                         let result = run_turn(
                             TurnContext {
@@ -311,6 +315,32 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     Submission::Queued => {}
                                 }
                                 publish(&port, &queue, &mut published);
+                            }
+                            UiCommand::Continue { raise } => {
+                                // Only an idle engine continues: a live turn
+                                // already has a window, and a queue submit
+                                // while paused is itself a continue.
+                                if active.is_none() {
+                                    let raise = raise.unwrap_or_default();
+                                    let renewal = Some(qcode_core::event::Continuation {
+                                        // The engine fills these in from the log.
+                                        turn: 0,
+                                        window: 1,
+                                        raise: (raise.turns.is_some() || raise.usd.is_some())
+                                            .then(|| raise.into()),
+                                    });
+                                    // The new limits apply to this window only;
+                                    // the next turn falls back to the config.
+                                    let turns = raise.turns.unwrap_or(engine.max_turns);
+                                    let cost = raise.usd.or(engine.max_cost_usd);
+                                    start_turn!(
+                                        qcode_core::engine::CONTINUE_PROMPT.to_string(),
+                                        Vec::new(),
+                                        renewal,
+                                        turns,
+                                        cost
+                                    );
+                                }
                             }
                             UiCommand::Steer { text, attachments } => {
                                 // Only a live turn can take steering; the dock

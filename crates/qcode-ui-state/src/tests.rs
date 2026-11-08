@@ -129,6 +129,8 @@ fn slash_skill_name_activates_it_as_a_user_message() {
         queued_id: None,
         text,
         attachments: Vec::new(),
+
+        continuation: None,
     })));
     assert!(matches!(
         app.blocks.last(),
@@ -550,6 +552,8 @@ fn turns_track_input_process_answer_and_usage() {
             queued_id: None,
             text: "go".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -592,6 +596,8 @@ fn turns_track_input_process_answer_and_usage() {
                 ..Usage::default()
             },
             cost_usd: 0.01,
+
+            pause: None,
         }),
     ));
 
@@ -627,6 +633,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -650,6 +658,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             queued_id: Some("q1".to_string()),
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -671,6 +681,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             status: TurnStatus::Completed,
             usage: Usage::default(),
             cost_usd: 0.0,
+
+            pause: None,
         }),
     ));
 
@@ -713,6 +725,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     // v4 without the explicit marker: a second user message stays in the
@@ -726,6 +740,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             queued_id: None,
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
 
@@ -756,6 +772,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     let mut older = Event::new(
@@ -767,6 +785,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             queued_id: None,
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     );
     older.v = 3;
@@ -800,6 +820,8 @@ fn turns_are_closed_and_indexed_independently() {
                 queued_id: None,
                 text: input.to_string(),
                 attachments: Vec::new(),
+
+                continuation: None,
             }),
         ));
         app.apply(&Event::new(
@@ -822,6 +844,8 @@ fn turns_are_closed_and_indexed_independently() {
                 status: TurnStatus::Completed,
                 usage: Usage::default(),
                 cost_usd: 0.0,
+
+                pause: None,
             }),
         ));
     }
@@ -969,6 +993,8 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             status: TurnStatus::Completed,
             usage: Usage::default(),
             cost_usd: 0.0,
+
+            pause: None,
         }),
     ));
 
@@ -1130,6 +1156,8 @@ fn turn_ended_updates_status_and_cost() {
         status: TurnStatus::Completed,
         usage: Usage::default(),
         cost_usd: 0.000_015,
+
+        pause: None,
     })));
     assert!(!app.status.running);
     assert_eq!(app.status.last, Some(TurnStatus::Completed));
@@ -1193,6 +1221,8 @@ fn composer_state_tracks_pending_and_restoring() {
         status: TurnStatus::Completed,
         usage: Usage::default(),
         cost_usd: 0.0,
+
+        pause: None,
     })));
     assert_eq!(app.composer_state(), ComposerState::Idle);
 }
@@ -1349,6 +1379,8 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
         queued_id: None,
         text: "hi".to_string(),
         attachments: Vec::new(),
+
+        continuation: None,
     })));
     assert_eq!(app.blocks, vec![Block::User("hi".to_string())]);
 }
@@ -1402,4 +1434,73 @@ fn reset_transcript_keeps_configuration_and_clears_state() {
     assert_eq!(app.status.model, "deepseek-flash");
     assert_eq!(app.context_tokens, 0);
     assert!(app.child_groups.is_empty());
+}
+
+/// A session whose first turn ended paused on its turn budget.
+fn paused_session() -> App {
+    let mut app = App::new("mock", "mock-1");
+    app.apply(&event(EventKind::TurnStarted(TurnStarted {
+        input: "refactor it".to_string(),
+    })));
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        text: "refactor it".to_string(),
+        attachments: Vec::new(),
+        queued_id: None,
+        starts_segment: false,
+        continuation: None,
+    })));
+    app.apply(&event(EventKind::TurnEnded(qcode_core::event::TurnEnded {
+        status: qcode_core::event::TurnStatus::Paused,
+        usage: Usage::default(),
+        cost_usd: 0.4,
+        pause: Some(qcode_core::event::PauseInfo {
+            reason: qcode_core::event::PauseReason::MaxTurns,
+            limit: qcode_core::event::PauseLimit::Turns(64),
+            used: qcode_core::event::PauseUsage {
+                turns: 64,
+                cost_usd: 0.4,
+            },
+            window: 1,
+            summary: Some("done: half\nleft: the rest".to_string()),
+        }),
+    })));
+    app
+}
+
+#[test]
+fn continue_requires_a_paused_turn() {
+    let mut app = App::new("mock", "mock-1");
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), None);
+    // Nothing paused: the command explains itself instead of starting a turn.
+    assert!(!app.status.running);
+    assert!(matches!(
+        app.blocks.last(),
+        Some(Block::Notice(text)) if text.contains("nothing is paused")
+    ));
+}
+
+#[test]
+fn continue_and_wrap_actions_on_a_paused_turn() {
+    let mut app = paused_session();
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), Some(UiAction::Continue));
+    assert!(app.status.running);
+
+    let mut app = paused_session();
+    type_text(&mut app, "/wrap");
+    assert_eq!(press(&mut app, "enter"), Some(UiAction::WrapUp));
+    assert!(app.status.running);
+}
+
+#[test]
+fn continue_is_refused_while_a_turn_runs() {
+    let mut app = paused_session();
+    app.status.running = true;
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), None);
+    assert!(matches!(
+        app.blocks.last(),
+        Some(Block::Notice(text)) if text.contains("already running")
+    ));
 }

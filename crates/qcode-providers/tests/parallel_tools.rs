@@ -165,6 +165,8 @@ async fn run(
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

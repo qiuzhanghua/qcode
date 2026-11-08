@@ -57,6 +57,8 @@ fn session_events(id: &str) -> Vec<Event> {
                 queued_id: None,
                 text: format!("question {turn}"),
                 attachments: Vec::new(),
+
+                continuation: None,
             }),
         });
         seq += 1;
@@ -85,6 +87,8 @@ fn session_events(id: &str) -> Vec<Event> {
                 status: TurnStatus::Completed,
                 usage: Usage::default(),
                 cost_usd: 0.0,
+
+                pause: None,
             }),
         });
     }

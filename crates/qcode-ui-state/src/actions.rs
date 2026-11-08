@@ -106,6 +106,29 @@ impl App {
             };
         }
 
+        if command == "/continue" || command == "/wrap" {
+            if self.status.running {
+                self.push_notice("a turn is already running; Esc cancels it first");
+                return None;
+            }
+            let Some(turn) = self.paused_turn() else {
+                self.push_notice(
+                    "nothing is paused; /continue needs a turn that ran out of budget",
+                );
+                return None;
+            };
+            if command == "/wrap" {
+                self.status.running = true;
+                return Some(UiAction::WrapUp);
+            }
+            // The transcript keeps the paused card; the continuation turn is
+            // rendered from its own `continuation` marker, not from a user
+            // bubble the user never typed.
+            let _ = turn;
+            self.status.running = true;
+            return Some(UiAction::Continue);
+        }
+
         if command == "/rollback" {
             let turn = argument.parse::<u32>().map_err(|_| ()).ok();
             return match turn {

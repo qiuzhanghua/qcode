@@ -773,6 +773,8 @@ mod tests {
                     queued_id: None,
                     text: "hi".to_string(),
                     attachments: Vec::new(),
+
+                    continuation: None,
                 }),
             ))
             .expect("user message");
@@ -786,6 +788,8 @@ mod tests {
                     queued_id: None,
                     text: "again".to_string(),
                     attachments: Vec::new(),
+
+                    continuation: None,
                 }),
             ))
             .expect("user message");
@@ -1014,6 +1018,8 @@ mod tests {
                     status: TurnStatus::Completed,
                     usage: Usage::default(),
                     cost_usd: 0.25,
+
+                    pause: None,
                 }),
             ))
             .expect("turn ended");

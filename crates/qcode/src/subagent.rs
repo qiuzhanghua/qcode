@@ -120,6 +120,9 @@ impl SubagentRunner for EngineSubagent {
             // The child never receives images: its task is text.
             attachments: Vec::new(),
             inbox: None,
+            // A child never continues a pause itself: spending more of the
+            // parent's budget is the parent's (or the user's) call.
+            continuation: None,
         };
 
         let sink = self.on_event.clone();
@@ -142,8 +145,26 @@ impl SubagentRunner for EngineSubagent {
         .await
         .map_err(|err| err.to_string())?;
 
+        // A child that ran out of budget is not finished. Say so in the text the
+        // parent reads, or the parent will treat a half-done task as done
+        // (ADR-0060 §2.10).
+        let text = match &outcome.pause {
+            Some(pause) => format!(
+                "{}\n\n[child paused: {} — the task above is incomplete; \
+                 either continue it yourself or report this to the user]",
+                outcome.text,
+                match pause.limit {
+                    qcode_core::event::PauseLimit::Turns(limit) =>
+                        format!("used {}/{} turns", pause.used.turns, limit),
+                    qcode_core::event::PauseLimit::Usd(limit) =>
+                        format!("cost ${:.2} of ${limit:.2}", pause.used.cost_usd),
+                }
+            ),
+            None => outcome.text,
+        };
+
         Ok(SubagentOutcome {
-            text: outcome.text,
+            text,
             session_id,
             turns: outcome.turns,
             cancelled: outcome.cancelled,

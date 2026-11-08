@@ -16,8 +16,12 @@
 | `session/cancel` | client → agent（通知） | 取消正在跑的那一轮 |
 
 `stopReason` 取值：`end_turn`（正常）、`cancelled`（被取消）、`max_turn_requests`
-（命中 `[agent] max_turns`）；其它失败也以 `end_turn` 结束，但会先发一条
-`agent_message_chunk` 文本说明错误——**失败不会是静默的**。
+（预算用尽）；其它失败也以 `end_turn` 结束，但会先发一条 `agent_message_chunk`
+文本说明错误——**失败不会是静默的**。
+
+预算用尽（`max_turns` / `max_cost`）是 **暂停** 而不是错误（ADR-0060）：不发 error
+chunk，交接摘要（已完成 / 未完成 / 下一步）作为普通 `agent_message_chunk` 发完，然后回
+`max_turn_requests`。客户端应当把它读成「这一轮停在这里，可以继续」，而不是失败。
 
 事件映射：`assistant_message` 的文本 → `agent_message_chunk`，思维 → `agent_thought_chunk`，
 `tool_call` → `tool_call`（kind 按工具名映射），`tool_result` → `tool_call_update`

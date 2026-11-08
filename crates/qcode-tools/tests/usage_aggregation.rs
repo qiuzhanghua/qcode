@@ -119,6 +119,8 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

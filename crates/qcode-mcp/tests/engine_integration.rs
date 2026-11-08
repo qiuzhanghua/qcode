@@ -88,6 +88,8 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

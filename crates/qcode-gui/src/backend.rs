@@ -8,7 +8,7 @@ use crate::runtime;
 use qcode_core::event::{Event, EventKind};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
-use qcode_ui_bridge::{QueueOp, UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{QueueOp, RaiseLimit, UiCommand, UiEvent, channels};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -43,6 +43,9 @@ pub trait Backend {
     /// Load the transcript, then point the engine at the session.
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String>;
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
+    /// Continue the paused turn in a fresh budget window (ADR-0060). A no-op
+    /// when nothing is paused.
+    fn continue_turn(&mut self, _raise: Option<RaiseLimit>) {}
     /// Steer a message into the running turn's next step. A no-op when idle.
     fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
     /// One operation on a queued (next-turn) message: steer it into the
@@ -307,6 +310,10 @@ impl Backend for LocalBackend {
 
     fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
         self.send(UiCommand::Prompt { text, attachments });
+    }
+
+    fn continue_turn(&mut self, raise: Option<RaiseLimit>) {
+        self.send(UiCommand::Continue { raise });
     }
 
     fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {

@@ -5,6 +5,7 @@
 //! and lets the renderer be exercised with `TestBackend`.
 
 pub mod composer;
+pub mod pause;
 mod tool_diff;
 
 use std::collections::HashSet;
@@ -12,7 +13,10 @@ use std::collections::HashSet;
 pub use composer::{Composer, InputEvent};
 
 use qcode_core::engine::Delta;
-use qcode_core::event::{ContentBlock, Event, EventKind, ToolDiff, ToolStatus, TurnStatus, Usage};
+use qcode_core::event::{
+    BudgetHint, ContentBlock, Continuation, Event, EventKind, PauseInfo, ToolDiff, ToolStatus,
+    TurnStatus, Usage,
+};
 use qcode_core::todo::{self, TodoItem};
 use time::{Duration, OffsetDateTime};
 
@@ -65,6 +69,14 @@ pub struct Turn {
     pub answer_block: Option<usize>,
     pub usage: Usage,
     pub cost_usd: f64,
+    /// Set when this turn stopped on a budget: what ran out and the hand-off.
+    pub pause: Option<PauseInfo>,
+    /// Set when the turn crossed 75% of a budget, so the status line can show
+    /// `已用 51/64 轮` without guessing (ADR-0060 §2.3).
+    pub budget: Option<BudgetHint>,
+    /// Set when the user continued a paused turn: this turn is a continuation,
+    /// not something the user typed.
+    pub continuation: Option<Continuation>,
 }
 
 impl Turn {
@@ -128,6 +140,9 @@ pub struct Status {
     pub queued: usize,
     /// Steering messages waiting for the next step boundary.
     pub steering: usize,
+    /// Budget window of the running turn: 1 for the first run of a task, 2
+    /// after one continue (ADR-0060 §2.11).
+    pub window: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +230,12 @@ pub enum UiAction {
     SteeringUndo(usize),
     /// Ctrl-V: attach the image on the clipboard to the next message.
     PasteImage,
+    /// /continue: pick a paused turn back up in a fresh budget window. The
+    /// engine numbers the window from the log (ADR-0060 §2.11).
+    Continue,
+    /// /wrap: one more turn whose only job is the hand-off summary, so a paused
+    /// task leaves a usable note even when the summary call ran out of budget.
+    WrapUp,
 }
 
 /// How the status bar renders context usage.
@@ -311,3 +332,4 @@ mod apply;
 mod tests;
 
 pub use app::App;
+pub use pause::{PauseCard, PauseCommand};

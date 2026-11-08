@@ -81,6 +81,8 @@ async fn a_write_tool_records_its_diff_in_the_session_log() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

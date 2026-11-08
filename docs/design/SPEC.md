@@ -114,7 +114,9 @@
 6. 有 tool_calls：按 provider 顺序规划（策略求值 → 必要审批，append `tool_call` / 审批事件）；
    相邻只读调用最多 4 路并发执行，写、shell 与 MCP 调用在原位置单独串行；
    全部完成后按调用顺序 append `tool_result`。
-7. 回到 2；每轮检查 `--max-turns` 与 `--max-cost`，超限则终止并标记失败原因。
+7. 回到 2；每轮检查 `--max-turns` 与 `--max-cost`。跨过 75% 时先写一次 `budget_hint`
+   （不阻断）。预算用尽时 **暂停** 而不是失败：`turn_ended{status: paused, pause}`
+   （见 ADR-0060）。`no_progress` 与真错误仍是 `failed`。
 
 ## 7. 工具契约
 

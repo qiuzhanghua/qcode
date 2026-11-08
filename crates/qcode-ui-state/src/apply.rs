@@ -32,9 +32,14 @@ impl App {
                 if message.starts_segment || v3_heuristic {
                     self.split_turn(event);
                 }
-                self.ensure_turn(event);
+                let turn = self.ensure_turn(event);
+                self.turns[turn].continuation = message.continuation.clone();
                 if let Some(name) = activated_skill(&message.text) {
                     self.push_input(Block::Skill(format!("activated skill {name}")));
+                } else if message.continuation.is_some() {
+                    // "继续" is the engine's instruction, not something the user
+                    // typed: a continuation row reads as a strip, not a question.
+                    self.push_input(Block::Notice("继续上一次暂停的任务".to_string()));
                 } else {
                     self.push_input(Block::User(message.text.clone()));
                 }
@@ -158,7 +163,25 @@ impl App {
                 self.status.running = false;
                 self.status.last = Some(ended.status);
                 self.status.cost_usd = ended.cost_usd;
-                self.close_turn(event, ended.status, ended.usage.clone(), ended.cost_usd);
+                if let Some(pause) = &ended.pause {
+                    // The engine counts windows; the UI only shows them.
+                    self.status.window = pause.window;
+                }
+                self.close_turn(
+                    event,
+                    ended.status,
+                    ended.usage.clone(),
+                    ended.cost_usd,
+                    ended.pause.clone(),
+                );
+            }
+            EventKind::BudgetHint(hint) => {
+                // A warning, not a transcript row: it belongs to the turn that
+                // is running out of budget (ADR-0060 §2.3).
+                self.budget_hint = Some(hint.clone());
+                if let Some(turn) = self.current_turn {
+                    self.turns[turn].budget = Some(hint.clone());
+                }
             }
             EventKind::Error(error) => {
                 self.push_process(Block::Notice(format!("{}: {}", error.kind, error.message)));
@@ -268,6 +291,7 @@ impl App {
             // never owns the parent status line.
             EventKind::UserMessage(_)
             | EventKind::TurnStarted(_)
+            | EventKind::BudgetHint(_)
             | EventKind::ApprovalRequested(_)
             | EventKind::ApprovalDecided(_)
             | EventKind::TaskConfigured(_)
@@ -329,6 +353,9 @@ impl App {
             answer_block: None,
             usage: Usage::default(),
             cost_usd: 0.0,
+            pause: None,
+            budget: None,
+            continuation: None,
         });
         self.current_turn = Some(index);
     }
@@ -351,6 +378,9 @@ impl App {
             answer_block: None,
             usage: Usage::default(),
             cost_usd: 0.0,
+            pause: None,
+            budget: None,
+            continuation: None,
         });
         self.current_turn = Some(index);
     }
@@ -401,6 +431,7 @@ impl App {
         status: TurnStatus,
         usage: Usage,
         cost_usd: f64,
+        pause: Option<PauseInfo>,
     ) {
         // 排队追加的消息被拆成独立 turn 后，一次 run 可能同时开着多个 turn
         // （A 和插入其中的 B）；`turn_ended` 属于整个 run，把仍开着的全部收口。
@@ -412,6 +443,7 @@ impl App {
                 turn.status = Some(status);
                 turn.usage = usage.clone();
                 turn.cost_usd = cost_usd;
+                turn.pause = pause.clone();
             }
         }
     }

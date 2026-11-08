@@ -78,8 +78,38 @@ impl From<&ApprovalRequest> for ApprovalView {
     }
 }
 
+/// A budget the user raised for the continuation window. Mirrors
+/// `qcode_core::event::RaiseLimit`, minus the equality bound `UiCommand` needs.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RaiseLimit {
+    pub turns: Option<u32>,
+    pub usd: Option<f64>,
+    /// Also write the new limit to `config.toml`, so the next session keeps it.
+    pub persist: bool,
+}
+
+impl From<RaiseLimit> for qcode_core::event::RaiseLimit {
+    fn from(raise: RaiseLimit) -> Self {
+        Self {
+            turns: raise.turns,
+            usd: raise.usd,
+            persist: raise.persist,
+        }
+    }
+}
+
+impl From<qcode_core::event::RaiseLimit> for RaiseLimit {
+    fn from(raise: qcode_core::event::RaiseLimit) -> Self {
+        Self {
+            turns: raise.turns,
+            usd: raise.usd,
+            persist: raise.persist,
+        }
+    }
+}
+
 /// Something the UI asks the kernel to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UiCommand {
     /// A user message, with images pasted or picked in the frontend. While a
     /// turn is running the kernel queues it as a follow-up turn instead of
@@ -111,6 +141,9 @@ pub enum UiCommand {
     /// Change the provider+model used by subsequent turns. The grouped header
     /// picker (V2.1) submits both; switching provider rebuilds the provider.
     SetModel { provider: String, model: String },
+    /// Continue the paused turn with the same task and a fresh budget window
+    /// (ADR-0060). Ignored while a turn is running.
+    Continue { raise: Option<RaiseLimit> },
 }
 
 /// One operation on a queued (next-turn) message.

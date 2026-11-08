@@ -206,6 +206,20 @@ pub(crate) struct RunArgs {
     /// (same path as Ctrl-C, including process-group cleanup) and qc exits 124.
     #[arg(long, value_name = "SECS")]
     pub(crate) timeout: Option<u64>,
+    /// Continue a paused turn (`--resume <id>`) without retyping the task. With
+    /// `--raise-turns`/`--raise-cost`, the new limits apply to this window only.
+    #[arg(long = "continue")]
+    pub(crate) continue_: bool,
+    /// Turns for this continuation window (implies --continue).
+    #[arg(long, value_name = "N")]
+    pub(crate) raise_turns: Option<u32>,
+    /// Cost ceiling for this continuation window (implies --continue).
+    #[arg(long, value_name = "USD")]
+    pub(crate) raise_cost: Option<f64>,
+    /// Also write the raised limit to config.toml, so the next session keeps it.
+    /// Needs --raise-turns or --raise-cost.
+    #[arg(long)]
+    pub(crate) raise_persist: bool,
 }
 
 #[derive(Debug, Args)]

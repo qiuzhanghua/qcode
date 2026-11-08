@@ -525,12 +525,18 @@ impl Shell {
                 .flatten()
             })
             .sum();
-        // Turns 超限提示：达到配置 max_turns 轮数且当前任务没被「忽略」时显示。
-        let round_hint_visible = self.app.turns.len() >= self.round_hint_threshold
-            && !self
-                .active
-                .as_ref()
-                .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id));
+        // 预算提示由引擎在跨过 75% 时写出的 `budget_hint` 驱动，不再自己数
+        // turn 卡（那是用户消息条数，与 `max_turns` 的「单条消息内的模型调用
+        // 数」不是同一件事，ADR-0060 §1.3）。暂停后由对话流里的暂停卡片接管，
+        // 两处不重复提示。
+        let round_hint = self.app.budget_hint.clone().filter(|_| {
+            self.app.paused_turn().is_none()
+                && !self
+                    .active
+                    .as_ref()
+                    .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id))
+        });
+        let round_hint_visible = round_hint.is_some();
         if self.app.status.running && !self.waiting_ticker {
             self.waiting_ticker = true;
             self.tick_waiting(cx);
@@ -672,8 +678,8 @@ impl Shell {
                     .pb_2()
                     .children(
                         round_hint_visible.then(|| {
-                                // 和权限问询同款卡片：黄色 title「Turns 超限」，
-                                // 内容区为当前提示文案，两个按钮：新建任务 / 忽略。
+                                // 和权限问询同款卡片：黄色 title「预算接近上限」，
+                                // 内容区为当前用量，两个按钮：新建任务 / 忽略。
                                 div()
                                     .w_full()
                                     .rounded_t(px(10.0))
@@ -698,7 +704,7 @@ impl Shell {
                                                     .line_height(sp(26.0))
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .text_color(rgb(0x000000))
-                                                    .child("Turns 超限"),
+                                                    .child("预算接近上限"),
                                             ),
                                     )
                                     .child(
@@ -714,9 +720,8 @@ impl Shell {
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x000000))
-                                                    .child(format!(
-                                                        "当前任务已达到 {} 轮。",
-                                                        self.round_hint_threshold
+                                                    .child(budget_hint_line(
+                                                        round_hint.as_ref(),
                                                     )),
                                             )
                                             .child(
@@ -724,7 +729,10 @@ impl Shell {
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x000000))
-                                                    .child("创建新任务可能会获得更好的结果。"),
+                                                    .child(
+                                                        "继续跑会消耗更多预算；需要更多空间可以调大 \
+                                                         [agent] max_turns / max_cost_usd，或者在新任务里重开。",
+                                                    ),
                                             )
                                             .child(
                                                 div()
@@ -732,7 +740,7 @@ impl Shell {
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x666666))
                                                     .child(
-                                                        "超过 Max turns 上限后继续对话，可能影响回复质量与上下文管理。",
+                                                        "预算用完时这一轮会「暂停」而不是报错：可以直接继续、收尾，或者先这样。",
                                                     ),
                                             )
                                             .child(
@@ -982,8 +990,8 @@ impl Shell {
                             .child("已提交，等待引擎确认…")
                     }))
                     .when(
-                        // Turns 超限提示也占输入框位置（与权限/报错框一致），
-                        // 显示时输入框隐藏，卡片落在输入框处。
+                        // 预算提示也占输入框位置（与权限/报错框一致），显示时
+                        // 输入框隐藏，卡片落在输入框处。
                         self.approvals.current().is_none()
                             && self.error_banner.is_none()
                             && self.restoring.is_none()
@@ -1196,4 +1204,20 @@ impl Shell {
                     ),
             )
     }
+}
+
+/// `已用 48/64 轮 · $0.83 / $5.00 · 第 2 个预算窗口` — the engine's own count, so
+/// the card can never disagree with the limit that will pause the turn.
+fn budget_hint_line(hint: Option<&qcode_core::event::BudgetHint>) -> String {
+    let Some(hint) = hint else {
+        return String::new();
+    };
+    let mut line = format!("已用 {}/{} 轮", hint.turns, hint.max_turns);
+    if let Some(max_cost) = hint.max_cost_usd {
+        line.push_str(&format!(" · ${:.2} / ${max_cost:.2}", hint.cost_usd));
+    }
+    if hint.window > 1 {
+        line.push_str(&format!(" · 第 {} 个预算窗口", hint.window));
+    }
+    line
 }

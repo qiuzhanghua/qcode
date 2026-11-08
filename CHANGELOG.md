@@ -2,6 +2,23 @@
 
 ## 未发布
 
+- **预算暂停：超限是交接，不是报错**（ADR-0060）：`max_turns` / `max_cost` 用尽时 turn 落
+  新增的 `paused` 四态（schema v5 → 6，v5 日志 serde 缺省可回放），不再写 `error(...)` 当
+  失败。`--max-cost` 从「已花超才停」改为到 95% 即停，剩下的留给一次**无工具的收尾调用**
+  写交接摘要（不计入 `max_turns`，成本照实记账，放不下或失败就降级为无摘要）。停时同时
+  给出可推导的 `ProgressReport`（改了哪些文件 `+N −D`、跑过的命令、失败的工具行、最后一段
+  助手文本），纯函数放 `qcode-core`，GUI / TUI / ACP / `qc run` 共用。
+- **提示阈值改用引擎口径**：新增 `budget_hint` 事件（首次跨过 75% 或剩 ≤ 8 轮发一次），
+  GUI 提示卡与 TUI 状态行都只读它，删掉用 `app.turns.len()`（用户消息条数）当轮数的错误
+  口径——长任务不再漏报，短任务不再误报。
+- **继续 / 收尾**：`Continuation{turn, window, raise}` 标记在 `UserMessage` 上，transcript
+  渲染成灰底提示条而不是用户气泡；`window` 由引擎读日志计数后覆盖前端传值。GUI 三键卡片
+  （继续 / 收尾 / 先这样），TUI `/continue` 与 `/wrap`。
+- **无人值守链路默认停，不等**：`qc run` 退出码 **75**（`EX_TEMPFAIL`），`--json` 流末多
+  一条 `pause`；`--resume <id> --continue` 接着跑，`--raise-turns` / `--raise-cost`
+  （`--raise-persist` 写回配置）只抬这一个窗口；ACP 保留 `stop_reason =
+  max_turn_requests` 但不再发 error chunk；子 agent 不抛错，把暂停拼进 `SubagentOutcome`。
+- **`no_progress` 保持 `failed`**：它是「方法错了」，继续只会重复同样的调用，不给继续按钮。
 - **重启回到上次的任务**：`gui.json` 有多个写入方（主窗口的窗口几何、设置窗口的外观、
   缩放、`last_session`），各自整份覆盖，高频的几何写入会把刚存下的会话 id 冲回旧值。
   新增 `GuiPreferences::update`（读-改-写）后，每个写入点只动自己那几项。

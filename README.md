@@ -399,7 +399,15 @@ cargo build -p qcode-eval
   部分驱逐出摘要输入，再把更早历史用同一模型摘要成 `compaction` 事件；replay / resume
   应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
-  `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
+  `--max-cost` 在模型响应后、工具执行前检查，**到 95% 即暂停**（不再花超才停），
+  余下的留一次无工具收尾调用写交接摘要。
+- **预算暂停（ADR-0060）**：`max_turns` / `max_cost` 用尽时 turn 落 `paused` 而不是
+  `failed`——工作完好，用户决定继续。跨过 75% 时先发一次 `budget_hint`（GUI 提示卡、
+  TUI 状态行都读它，不再数对话条数）。暂停时给出一份交接：`PauseInfo.summary`（模型的
+  「已完成 / 未完成 / 下一步」，不计入轮数）+ 从事件流推导的改动与命令清单。
+  `qc run` 退出码 **75**；`qc run --resume <id> --continue` 接着跑，
+  `--raise-turns` / `--raise-cost`（`--raise-persist` 写回配置）只抬这一个窗口。
+  TUI 用 `/continue`、`/wrap`；GUI 是三键卡片（继续 / 收尾 / 先这样）。
 - **子 agent**：`subagent` 工具把独立任务交给新会话运行（同 provider / policy / approver、
   同 workspace、独立 JSONL；工具集去掉 `subagent`，深度固定为 1）。默认 20 轮、上限 40，
   返回最终文本与子 session id；子会话的 usage/cost 汇总进父 `turn_ended` 与 TUI 成本。

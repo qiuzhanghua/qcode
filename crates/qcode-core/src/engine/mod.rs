@@ -2,9 +2,10 @@ use crate::approval::{ApprovalRequest, Approver};
 use crate::compact;
 use crate::cost::Pricing;
 use crate::event::{
-    ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
-    ErrorEvent, Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted,
-    TurnStatus, Usage, UserMessage,
+    ApprovalDecided, ApprovalRequested, AssistantMessage, BudgetHint, Compaction, ContentBlock,
+    Continuation, Decision, ErrorEvent, Event, EventKind, PauseInfo, PauseLimit, PauseReason,
+    PauseUsage, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage,
+    UserMessage,
 };
 use crate::history;
 use crate::inbox::Inbox;
@@ -29,7 +30,7 @@ mod writer;
 
 pub(crate) use stream::*;
 pub(crate) use tools::*;
-pub use turn::run_turn;
+pub use turn::{CONTINUE_PROMPT, WRAP_UP_PROMPT, run_turn};
 
 #[cfg(test)]
 pub(crate) use turn::{ProgressGuard, call_signature};
@@ -151,17 +152,10 @@ pub enum EngineError {
     #[error("stream ended without an end event")]
     IncompleteStream,
     #[error(
-        "exceeded max turns ({0}): raise [agent] max_turns or pass --max-turns, \
-         or send another message to keep going"
-    )]
-    MaxTurns(u32),
-    #[error(
         "no progress: `{tool}` was called with identical arguments {rounds} rounds in a row; \
          stopping instead of burning the turn budget"
     )]
     NoProgress { tool: String, rounds: u32 },
-    #[error("estimated cost ${spent:.6} exceeded --max-cost ${limit:.6}")]
-    MaxCost { spent: f64, limit: f64 },
     #[error("--max-cost requires pricing for the model")]
     MissingPricing,
     #[error("this provider does not accept image input")]
@@ -217,6 +211,10 @@ pub struct RunOptions<'a> {
     /// before every model request and appended as user messages, so a push
     /// lands in the running turn's next step instead of waiting for a new turn.
     pub inbox: Option<Arc<Inbox>>,
+    /// Set when the user continued a paused turn: recorded on the injected user
+    /// message so the transcript can label it, and used to number the budget
+    /// window. The engine fills in `window`/`turn` from the log.
+    pub continuation: Option<Continuation>,
 }
 
 /// One image attached to a user message.
@@ -237,6 +235,15 @@ pub struct RunOutcome {
     pub usage: Usage,
     /// Estimated USD for the whole turn, zero when no pricing is configured.
     pub cost_usd: f64,
+    /// Set when a budget ran out. The turn is intact; the caller decides
+    /// whether to continue, raise a limit, or stop (ADR-0060).
+    pub pause: Option<PauseInfo>,
+}
+
+impl RunOutcome {
+    pub fn is_paused(&self) -> bool {
+        self.pause.is_some()
+    }
 }
 
 #[cfg(test)]
