@@ -3608,3 +3608,299 @@ ToolDiff {
 - `crates/qcode-tui/tests/render.rs`：行头计数。
 - GUI 实跑（v5 与 v4 各一条 fixture 会话）：行头 `+1 -1 · kb/README.md`、展开的红绿卡片、
   「查看」全量面板。
+
+## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
+
+**状态**：Accepted（2026-11-08）。未实现。依赖 ADR-0053（Queue/Steer 语义）与
+ADR-0057（日志是 transcript 的唯一权威）。
+
+**背景**
+
+GUI 现在同一时刻只能有一个任务在跑：切任务 = 取消当前 turn。
+
+- **UI 闸**：`shell/session.rs:40-45`（新建）与 `:121-127`（恢复）遇到
+  `app.status.running` 直接拒绝，提示「先停止」。
+- **引擎闸**：`runtime.rs:115-128` 只有一个 `session` / `active` / `queue` /
+  `published`；`:244-261` 收到 `NewSession` / `Resume` 时先 `token.cancel()` 再把
+  命令塞进 `pending`，turn 结束才执行。
+- **状态闸**：`shell/mod.rs:14-130` 的转录状态是单份的（一个 `App`、一个
+  `ApprovalQueue`、一个 `queue`/`steering`、一个 `turn_in_flight`、一个 scroller、
+  一套展开集），且 `poll` 只在 `render_main`（`render/main.rs:506`）里跑。
+
+但「多个会话同时跑」在本仓库已经不是新能力：
+
+- subagent 用同一份 store / provider / tools 在另一个 session 上跑 `run_turn`
+  （`qcode/src/subagent.rs:28-47`）；
+- 会话写锁是**按会话**的 flock（`qcode-core/src/store.rs:42-44`、`:279-305`），
+  sqlite 索引有 busy_timeout（`store.rs:421-428`）；
+- ACP 已经是多会话形状：`Agent { sessions: HashMap<String, SessionState{cancel,
+  running}> }`（`qcode-acp/src/server.rs:107-124`），`prompt` 按 session 取
+  `cwd` + `cancel`（`:241-268`），通知出口是 `client.notify(session_id, update)`
+  （`:266-272`）。
+
+缺的不是执行能力，是**宿主**。同时有三处事实缺归属：
+
+1. `Delta`（`qcode-core/src/engine/mod.rs:41-50`）与 `ApprovalView`
+   （`qcode-ui-bridge/src/lib.rs:56-65`）都没有 session 字段——只有
+   `UiEvent::TurnFinished { session }` 带了；
+2. allowlist 是全局 `HashSet<tool>`（`qcode-ui-bridge/src/lib.rs:143-144` 的
+   `session_allowed`），并行后 A 任务的「Always」会替 B 任务放行；
+3. `BridgeApprover` 没有超时：审批事件被丢弃 = 该 turn 永久挂起，会话锁不释放。
+
+顺带修一个现存 bug：`apply_rebuild`（`shell/mod.rs:645-709`）换掉 backend 之后没有
+对 active 会话 `resume`，保存设置后下一条消息会新开 session。
+
+**决定**
+
+### 1. 一个 `SessionHost` 是唯一的多会话权威
+
+```rust
+pub struct SessionHost {
+    deps: Arc<Deps>,                    // store / provider / tools / policy / snapshots
+    slots: Mutex<HashMap<String, Slot>>,
+}
+struct Slot {
+    cancel: CancellationToken,
+    queue: SessionQueue,                // 每会话投递（ADR-0053）
+    phase: Phase,                       // Idle | Running | WaitingApproval
+}
+```
+
+GUI / ACP / TUI / headless / 调度器都只是它的消费者。`Backend` trait 保留，但退化为
+「UI 与 host 之间的适配层」，不再持有单会话状态。宿主只负责三件事：把命令路由到会话、
+把事件打上会话标签、把空闲会话的后端收起来。
+
+### 2. 事件一律带会话标签
+
+```rust
+pub struct SessionEvent { pub target: SessionTarget, pub event: UiEvent }
+pub enum SessionTarget { Session(String), Draft }
+```
+
+`Delta` / `ApprovalView` **不加字段**：由外层携带，避免给每个变体都改签名，也不会在
+新增变体时漏标。`SessionTarget::Draft` 指「还没写日志的草稿会话」——
+`UiEvent::SessionChanged { id: None }` 之后的第一条消息才落盘。
+
+顺序是契约：**同一会话内严格保序**（`App::apply` 的调用顺序就是 transcript 的顺序），
+跨会话不保证。实现上每会话一路 mpsc，UI 侧轮转 drain——一条多生产者 channel 会让一个
+话痨会话饿死其它会话，也让「后台会话只投递边界」的策略没地方落（ADR-0059 §5）。
+
+### 3. 审批按会话隔离，且永不丢
+
+- allowlist 从 `HashSet<String>` 改为 `HashMap<session, HashSet<tool>>`；
+- 审批进**该会话槽位**的 `ApprovalQueue`，UI 只画当前任务的，侧栏给「待审批」徽标；
+- 后台槽位必须一直消费事件，否则 turn 挂起（`BridgeApprover` 无超时）；
+- 回答走 `UiCommand::Answer { session, call_id, allow, grant }`。
+
+第 2、3 条把「`poll` 从 render 移出」从优化升级为硬前提（§5）。
+
+### 4. UI 侧：每任务一个 `TaskUi` 槽位
+
+槽位内容按 `shell/mod.rs` 现状归类：`app`（transcript / status / streaming 块）、
+`units`、`scroller`、`selected_turn`、`approvals`、`queue`、`steering`、
+`turn_in_flight`、`restoring`、`resetting`、`empty_draft`、`error_banner`、`notice`、
+输入框文本 + `attachments` + `file_refs`、`expanded_process`、`expanded_code`、
+`process_open_turns`、`collapse_all`、`collapse_to_list`、`inline_diffs` +
+`broken_diffs` + `diff_view`、`last_blocks`。
+
+交换用 `capture(&mut self) -> TaskUi` / `install(&mut self, ui: TaskUi) -> TaskUi`
+（返回被换下的那份，放回 `parked: BTreeMap<String, TaskUi>`）。字段仍是 `Shell` 的
+顶层字段，只是「内容是当前任务的那一份」——`render/*.rs` 读的永远是 `self.app`、
+`self.scroller`，**一行不改**。
+
+反面的约束必须写死：**所有延迟回调都要按会话 id 校验**（`if self.active.as_deref()
+!= Some(id) { return }`）或改走 host 命令，否则会在切换后写错槽位。今天
+`wake_for_session`（`shell/session.rs:99-119`）与 `set_notice` 的 6 秒 timer
+（`shell/mod.rs:584-601`）就是这种形状，需要逐个核对。
+
+### 5. `poll` 移出 render，改成常驻 ticker
+
+从 `render_main`（`render/main.rs:506`）挪到 `cx.spawn` + `background_executor()
+.timer(33ms)`，或由 host 在事件到达时唤醒 `AsyncApp::update`。理由：窗口最小化 / 隐藏时
+不 render，后台 turn 结束、审批到达、`TurnFinished` 无人处理。今天的注释
+（`shell/mod.rs:571-575`：「`poll` 是在 render 里跑的……要等下一次交互」）就是这个洞的
+自白；并行之后它会从「延迟」变成「挂起」。改完之后 `poll` 是幂等的 drain，可以从任何
+地方调。
+
+### 6. Stop 与退出
+
+- `UiCommand::Cancel { session }` 只停指定会话；输入框的 Stop 传当前任务 id；
+- 侧栏每个任务的 ⋯ 菜单加「停止」，后台任务也能停；
+- 托盘 / 窗口退出 = 向所有会话 `cancel`，等各自 `TurnFinished` 再退；有 turn 在跑时
+  仍走 ADR-0052 的确认；
+- 强杀不需要恢复逻辑：日志是权威源（ADR-0057），下次 `resume` 重放。
+
+### 7. 生命周期与重建
+
+| 任务行状态 | 来源 |
+|---|---|
+| 运行中 | 槽位 `turn_in_flight` |
+| 待审批 | 槽位 `approvals` 非空 |
+| 未读 | 非活动会话在离开后产生了 turn 边界或最终消息 |
+| 空闲 | 以上皆无 |
+
+- 改名 / 删除 / 改 roots 必须按会话排队（现在只看全局 `running`：`shell/tasks.rs:95`、
+  `:233`、`task_ops.rs:8`）；
+- 配置变更（`reload_on_config_change`，`shell/mod.rs:606-643`）→ 标 `pending_rebuild`，
+  等所有会话回到 `Idle` 后统一 `apply_rebuild`，并对每个活跃会话 `resume`，修掉背景里
+  那个 bug；
+- 空闲的非活动会话可以丢后端（drop runtime + bridge），重新聚焦时用 `resume()` 重放；
+  正在跑的不丢。
+
+### 8. 阻塞 IO 出 runtime 线程
+
+`read_file` / `list_dir` / `write_file` 在 `async fn` 里直接 `std::fs`
+（`qcode-tools/src/fs.rs:85`、`:331`、`:30-38`），而 GUI runtime 是
+`new_current_thread`（`qcode-gui/src/runtime.rs:103-108`）。单会话只是偶尔卡一帧；
+多会话会互相卡住（一个任务读大文件时，另一个任务的流式输出与取消全部停摆）。决定：这些
+调用改 `spawn_blocking`。不选「host 换 `new_multi_thread`」——那只是把问题摊到更多线程
+上，ACP / TUI / headless 仍各自为政。
+
+### 9. 落地顺序
+
+| 阶段 | 内容 | 依赖 |
+|---|---|---|
+| P0 | 阻塞 IO 改 `spawn_blocking`；`apply_rebuild` 保留 active 会话；turn panic 兜底发 `TurnFailed` | 独立可合 |
+| P1 | `Engine` → `Arc` 共享；`SessionHost` 骨架（map + 按会话 `cancel`/`queue`）；`SessionEvent` 标签 | P0 |
+| P2 | Shell 拆 `TaskUi` + `capture`/`install` + `parked` | P1 |
+| P3 | `poll` 按会话路由并移出 render；dormant 槽只更新状态不 notify | P2 |
+| P4 | 生命周期：徽标、按会话排队的改名/删除/改目录、`Cancel{session}`、退出聚合 | P3 |
+| P5 | 后端可回收 + `focus` 时 `resume` 重放 | P4 |
+| P6 | 定时触发（ADR-0059） | P5 |
+
+**备选方案（未采用）**
+
+- **每任务一个 backend（`LocalBackend::fork()`）**：`Engine` 全字段可 Clone，fork =
+  clone 再 `runtime::spawn` 一个新线程 + 新桥，`runtime.rs` 与 bridge 完全不动，隔离由
+  结构保证，改动最小。不选的理由是定时任务（ADR-0059）需要「谁在哪个会话跑」的全局
+  视图：N 个独立后端里没有这个视图，只能在旁边再长一个注册表把它们串起来——那是宿主的
+  弱化版，还要付 N 个线程 + N 个 250ms ticker 的空转。另外第一步就该确立事件标签，否则
+  shell 的路由层要写两遍。
+- **只切视图、不并行**：删 `running` 闸、后台槽位吃事件、切回重放。改动最小，但引擎仍是
+  单会话，新任务里没法对话——不满足需求本身。
+- **单 runtime 多会话但不抽宿主**：在 `runtime.rs` 里加 `HashMap<session, (token,
+  queue)>`、删掉 `pending` 的取消-重发。能跑，但 GUI 成为唯一的多会话实现，ACP 那份
+  `sessions` map 与它各写各的，调度器落地时还要写第三份。
+- **给 `Delta` / `ApprovalView` 各加 `session` 字段**：每个构造点都要改，且新增变体容易
+  漏；外层包一层只改一处。
+
+**后果**
+
+- 内存：每个活动任务保留一份 `App`（transcript units 是主要成本）。先不设上限，用 8 个
+  任务实测；超预期再对非活动槽位做「只留最近 N 个 turn，切回从日志重建」。
+- 事件顺序成为新契约（见验证）；
+- 取消语义改为按会话：`UiCommand::Cancel` 与 `Backend::cancel` 签名变，所有调用点跟着改；
+- 审批的「永不丢」只承诺投递，不承诺有人答：后台任务的审批会一直挂着，直到切回去。定时
+  任务的超时规则见 ADR-0059 §4；
+- `shell/mod.rs` 的顶层字段仍是「当前任务的那一份」，是明确的技术债，收敛留待后续。
+
+**验证**
+
+- `SessionHost` 单测：两个会话并发 `run_turn`，事件标签正确、互不串话；同会话第二次提交
+  排队，不撞 `StoreError::Locked`（`store.rs:34`、`:850`）。
+- 审批：A 会话「Always」不影响 B；后台会话的审批不丢，回答后 turn 继续。
+- Shell：`capture` / `install` 往返后同一任务的 render 结果与切换前逐字段一致（草稿、
+  滚动位置、展开集、审批队列、notice）。
+- `poll` 移出 render：不调 render 直接注入 `TurnFinished`，侧栏状态仍更新。
+- 重建：保存设置后 active 会话被 `resume`，下一条消息落在同一会话（今天会新开）。
+- 手工：三个任务同时跑并来回切；后台任务审批到达时侧栏有徽标，切回能答；Stop 只停当前
+  那个。
+
+## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
+
+**状态**：Accepted（2026-11-08）。未实现。依赖 ADR-0058。
+
+**背景**
+
+定时任务对宿主的要求比并行更硬，这也是 ADR-0058 选宿主而不选「每任务一个后端」的主要
+原因：
+
+1. 需要「谁在哪个会话跑」的全局视图，才能决定**排队还是跳过**；
+2. 一个时钟，不是 N 个——每会话后端各带 ticker 的拓扑会把时钟摊开，还会在后台任务上
+   空转；
+3. 无人值守要统一出口：日志 + 未读 + 审计；
+4. 无人应答的审批必须自己收场，否则占着会话锁到早上。
+
+**决定**
+
+### 1. 声明在配置，运行状态在 store
+
+```toml
+[schedules.nightly-review]
+cron = "0 3 * * *"          # 五段，本地时区
+task = "01J..."             # 复用一个已有任务
+# new = true                # 或每次触发新建任务
+prompt = "..."
+overlap = "queue"           # queue | skip
+approval_timeout = "30m"    # 0 = 等到有人答
+enabled = true
+```
+
+`Config` 的字段都没有 `deny_unknown_fields`（`qcode-kernel/src/config/mod.rs:77-121`），
+旧二进制读到 `[schedules]` 会忽略，符合 ADR-0050 的「配置只存可审阅的引用」。
+
+**运行状态（`last_fired_at` / `next_fire_at` / `last_status`）落 store 的
+`schedules` 表，绝不写回配置文件。** 硬理由：`reload_on_config_change`
+（`shell/mod.rs:606-616`）按 mtime 变化触发重建，调度器每触发一次就改配置 = 每触发一次
+就换 backend + 一次 `resume`，还会与用户在 Settings 里的编辑互相覆盖。
+
+### 2. 触发与撞车
+
+- 到期 → 向该会话 `submit`（走 `SessionQueue`，ADR-0053）。会话忙时按 `overlap`：
+  `queue`（默认）排到当前 turn 之后，`skip` 丢弃并记 `schedule_skipped`。
+  **不允许出现 flock 撞车报错**这种路径。
+- `task` 指向的会话已被删除 → 禁用该条目并记 `schedule_orphaned`，不静默跳过。
+- 时钟注入 `Clock` trait（测试用假时钟推进）。判断到期用单调时间，落库用墙钟，两者分开：
+  系统时间被改或机器休眠时，墙钟只影响「下次何时」的显示，不影响本次是否已触发。
+
+### 3. 错过不补跑
+
+进程不在时窗口已过期 → 记一条 `schedule_missed`（带错过窗口数），**不补跑**，侧栏对应
+任务行显示提示。`catchup = false` 是默认，字段留着但不实现。
+
+### 4. 无人值守的审批有 deadline
+
+由调度器触发的 turn，其审批带 `approval_deadline`：超时 → `deny`，turn 继续（日志里就是
+一条 `status: Error` 的 `ToolResult`，`output` 写 `denied: approval timeout`，
+`qcode-core/src/engine/tools.rs:295` 已有这条路径，**不需要改事件 schema**）。
+人工触发的后台任务仍然无限等——人就在机器旁边。
+
+### 5. 后台会话的投递策略
+
+非活动会话只投递：turn 边界（`TurnStarted` / `TurnEnded` / `TurnFinished`）、最终的
+`assistant_message`、失败的 `tool_result`、`Error` 与审批。**`Delta` 与中间过程全部
+丢弃**（`Delta` 本来就不落盘）。跑一晚不等于把整晚的 token 流堆在内存里；切回去
+`resume()` 从日志重建完整过程。
+
+### 6. 宿主住在哪
+
+本轮住在 GUI 进程里：托盘常驻（ADR-0052，关闭窗口 = 最小化），所以「窗口关了」不等于
+「调度停了」；**退出进程则全部停止**，这是明确边界。系统通知不在本轮（不引入新依赖），
+只做侧栏徽标与未读。`qc daemon`（无窗口宿主，复用 `SessionHost`）留 v2——到那时 GUI
+降级为观察者，`[schedules]` 与状态表一行不改。
+
+**备选方案（未采用）**
+
+- **运行状态写进配置文件**：mtime 监听会把它变成重建风暴，还要与 Settings 的写入竞争。
+- **每任务一个后端各自计时**：时钟散在 N 处，撞车只能靠 flock 报错，排队 / 跳过策略无处
+  安放。
+- **错过补跑**：休眠一夜后一次性放出一堆 turn，烧钱且互相争会话锁。
+- **交给系统 cron 调 `qc -p`**：每次触发一个进程，无法复用会话的排队与审批队列；无终端
+  时审批直接失败。
+
+**后果**
+
+- 无人值守链路仍靠 `[agent] max_turns` 兜底：审批被 deny 后模型可能反复尝试，turn 预算
+  是最后一道闸。
+- 无人看的会话会积累日志；保留策略不在本 ADR。
+- `schedules` 表是新 schema 版本（store 迁移，自动补表）。
+- 时区取本地时区；DST 跳变按「跳过该次、记 missed」处理，与 §3 同一路径。
+
+**验证**
+
+- 假时钟：到期触发一次；同一窗口不重复触发；`next_fire_at` 落库后重启仍准确。
+- 撞车：会话忙 + `queue` → 排在当前 turn 之后；`skip` → 记事件且不排队。
+- 错过：时钟跳过 3 个窗口 → 一条 `schedule_missed`，零 turn 启动。
+- 审批：定时 turn 的审批超时 → deny + turn 正常结束，会话锁释放。
+- 回归：调度器写状态后**配置 mtime 不变**（防重建风暴）。
+- `task` 被删除 → 条目禁用 + `schedule_orphaned`。
