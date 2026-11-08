@@ -1297,6 +1297,9 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 
 ## ADR-0035：图片输入只走一条路——`--image` + 多模态消息（2026-10-22）
 
+> 状态：部分被 ADR-0061 取代——图片改为落盘（内容寻址存储）、事件日志存引用、写入时
+> 归一化、能力门控从报错改为占位降级。§1 的 `--image` 输入面与 §4 的压缩口径不变。
+
 **背景**：DeepSeek 当前模型支持 vision，`Capabilities.images` 早已预留，但用户消息一直是纯文本。
 
 **决定**
@@ -4279,3 +4282,154 @@ enabled = true
 - `qcode-tui/tests/render.rs`：暂停卡片渲染出 `64/64`、`第 2 个预算窗口`、
   `修改了 1 个文件`、`summary`、失败行与 `/continue` 提示，状态标签 `paused`。
 - `qcode-core`：`progress::report` 的单测（聚合、截断）。
+
+## ADR-0061：附件——引用进日志，字节进内容寻址存储（2026-11-08）
+
+**背景**
+
+ADR-0035 把图片输入收成一条路，并顺手划了三条边界：图片只在内存、事件日志只存文本、
+resume 重放没有图片。本 ADR 取代这三条边界与 ADR-0035 §5；§1 的 `--image` 输入面保留。
+当时只有 `qc run --image` 和 Windows 的 `Ctrl-V`，这些边界是合理的——
+没有前端能显示缩略图，落盘只是浪费。
+
+GUI 落地后这三条边界开始漏：
+
+- composer 粘贴一张图，界面上只有一行 `attached 1568x1024 (228 KB), 1 pending`。发送后
+  转录区也没有图——**用户看不到自己刚发的那张图**。
+- 关窗再开，同一段对话里的图彻底消失，重建出来的消息里也没有。
+- 文件走另一条路：`[附件文件]\n<paths>` 直接拼进 prompt 文本（`shell/session.rs`）。路径
+  没有校验（存在、可读、不是目录），模型拿到的是一个未经确认的字符串；沙箱里那个路径
+  可能根本读不到，模型却仍会"总结"它。
+- provider 层把原图 base64 原样发出去：3.4 MB 的 Retina 截图变成 ~4.5 MB base64，只受
+  8 MB 上限保护。
+
+两条新事实让落盘变得可行：GPUI 有 `gpui_pre::img()`（`ImageSource` → 元素），能真的渲染
+缩略图；`qcode-image` 已有一个无外部依赖的 PNG 编码器（编码侧够用，解码侧还缺，见决定 5）。
+
+**决定**
+
+1. **一个引用类型，两种形态。**
+
+   ```rust
+   pub enum AttachmentRef { Image(ImageRef), File(FileRef) }
+   pub struct ImageRef { id: [u8; 32], mime: ImageMime, bytes: u64,
+                         width: u32, height: u32,
+                         origin: Option<OriginRef>, name: Option<String> }
+   pub struct OriginRef { id: [u8; 32], bytes: u64, width: u32, height: u32 }
+   pub struct FileRef   { id: [u8; 32], name: String, bytes: u64 }
+   ```
+
+   `id` 是内容 sha256（存 32 字节，序列化成十六进制）。`ImageRef` 自带尺寸和字节数，所以
+   列表渲染、token 估算、上限校验都不读盘。`origin` 指向**未归一化的原图**，只在真的发生
+   缩放或重编码时出现；原图与归一化图字节相同时两者同 sha，存储层自然只有一份。
+
+2. **日志只存引用，字节进内容寻址存储。** 目录 `$data/attachments/v1/`：
+
+   ```
+   objects/<sha 前2位>/<sha256>       归一化图片（发给模型的那份）
+   originals/<sha 前2位>/<sha256>     原图（未缩放、未重编码）
+   files/<sha 前2位>/<sha256>/<name>  逐字节文件（同内容只存一份）
+   tmp/                               写入中的临时文件
+   ```
+
+   落盘：写 `tmp/` → fsync → rename 就位（同一文件系统内原子）→ 目标已存在则丢弃新文件
+   （去重）→ 目标设只读。分片目录的理由是 `readdir`：一个目录塞十万个对象会拖慢列表。
+
+3. **schema v6 → v7，但不需要迁移。** `UserMessage.attachments` 从 `Vec<String>` 改成
+   `Vec<AttachmentRef>`。该字段从引入起就没写过非空值（`history.rs`、`store.rs`、
+   `compact.rs` 三处都写 `vec![]`），所以老日志里它要么缺失要么空数组，`#[serde(default)]`
+   就够了；空数组仍然不写。
+
+4. **先落盘，再发送。** 附加动作（粘贴 / 选择 / 拖拽）当场归一化、落盘、拿 ref，composer
+   里显示缩略图或文件卡片；发送时只带 ref。失败＝卡片变红、可重试、不产生半张图。好处是
+   发送瞬间不卡，重试也幂等（同一个 sha 第二次写入直接命中）。
+
+5. **归一化在写入时做一次，四种格式统一。** 引入 `image`（MIT/Apache-2.0 双许可，
+   `default-features = false` + `png`/`jpeg`/`webp`/`gif` 四个 feature）负责**解码和读尺寸**；
+   编码侧仍用 `qcode-image` 已有的 PNG 编码器（零依赖、已有测试）。参数：长边 2048、单图
+   2 MB、EXIF 摆正、永不丢 alpha，质量阶梯 85 → 70 → 55 直到达标。
+
+   原图保留在 `originals/`（见决定 2），`origin` 只在真的发生缩放或重编码时写；"查看原图"
+   直接读原图，不重新解码归一化副本。
+
+6. **回放是重建，不是缓存。** `ContentBlock::Image` 的形状**不变**（仍是
+   `Image { mime_type: String, data_base64: String }`），引用在重建这一步展开：
+
+   ```rust
+   pub fn messages_from_events_with<F>(events: &[Event], load: F) -> Vec<Message>
+   where
+       F: FnMut(&ImageRef) -> Option<Vec<u8>>;
+   ```
+
+   `history` 遍历 `UserMessage.attachments` 里的 `AttachmentRef::Image`，用 `load` 取字节、
+   编码成 base64 放进 `ContentBlock::Image`；`load` 拿不到对象就丢掉这张图（引用仍留在
+   日志里，下次能补）。turn loop 传 `|image| store.read_image(image).ok()`，provider 只
+   看得到一种 wire 形状。
+
+   原本打算让 `ContentBlock` 长出 `ImageSource { Inline | Stored }`，实现时否掉了：那样
+   provider 层要么认识 store、要么再被投影一次，测试也得拖一个 store 进来。把读盘收在
+   「日志 → messages」这一处等价且少一层；等出现第二个要区分来源的消费者（比如「查看原图」
+   走 GUI 而不是回放）再引入。
+
+7. **文件也进存储，但模型看到的是句柄。** 文件逐字节落盘（不归一化、不解析），prompt 里
+   给一段固定文案，说清楚：文件名、字节数、sha256 前 8 位、只读路径、"要改先复制"、
+   "委派子代理时把路径写进 prompt"。路径解析不出来（沙箱 / 远端执行）时换一句明说
+   "读不到，别声称读过"。这条替换当前的 `[附件文件]\n<paths>`：从"用户给的字符串"变成
+   "我们写的、校验过的副本"。
+
+   单文件上限 **64 MB**：超过则当场拒绝并提示"先拆分或压缩"，不产生临时文件。复制走流式
+   （分块读 → 写 `tmp/` → fsync），不把整个文件读进内存；中途失败就删掉临时文件。
+
+8. **能力门控改为降级。** 模型 `capabilities().images == false` 时不丢弃图片，换成一行
+   占位文本（`[image omitted: provider accepts text only; sha256:…]`）。ADR-0035 §3 的
+   "直接报错"改成"降级为文本"——报错让用户没法继续，占位只损失一张图。
+
+9. **压缩照旧不看图片字节。** `compact.rs` 里图片按 `base64.len()/4` 估算，摘要输入里替换为
+   占位文本。不引入逐条投影式的"图片卸载"：qcode 的压缩是整段替换为摘要，没有逐条省略
+   的需求。
+
+**边界（明确不做）**
+
+1. **不做 PDF / docx / 表格解析。** 文件只给路径，抽文本交给 agent 跑工具。一旦附件层开始
+   理解格式，就要背 PDF 解析、扫描件 OCR、加密文档、字体子集——这些坑的收益远小于"把路径
+   交给一个会写代码的模型"。
+2. **只处理 8 位 sRGB 的静态首帧。** 16 位深度、CMYK、HEIC/AVIF 一律拒绝并给出明确错误；
+   动图（GIF/WebP 动画）只取首帧，其余帧丢弃；不做色彩管理（不转 ICC），不做无损 WebP 编码。
+3. **不做 GC。** 删除会话不回收对象，对象只增不减。后续 `qc doctor --gc` 扫"日志里没有
+   引用"的对象，而不是在删除路径上做引用计数——那条路要处理崩溃中途、并发会话、跨会话
+   共享三种情况，收益不成比例。
+4. **不做跨会话共享语义。** 同一 sha 在不同会话指向同一份字节（去重是存储层的事），但
+   引用永远属于某一条会话日志。
+5. **TUI 不渲染图片。** 只显示 `[图片 1568x1024, 228 KB]`；渲染留给 GUI。
+6. **ACP 的 `promptCapabilities.image` 暂时保持 false。** 日志能重放之后技术上没障碍，但
+   这是一条新的输入面，等 GUI 路径稳定后再开。
+
+**验证**
+
+- `qcode-attachments`（新 crate，纯逻辑 + 临时目录）：写入→读回字节一致；同内容二次写入
+  不产生第二个对象；`<2>` 分片路径可预测；文件名清洗（`../`、Windows 全路径、控制字符、
+  超长 UTF-8）；只读位真的只读；对象被删后读取报"缺失"而不是 panic；文件上限 64 MB 通过、
+  64 MB + 1 字节被拒，且 `tmp/` 里不残留半个文件。
+- `qcode-attachments` 的归一化：PNG/JPEG/WebP/GIF 各解一张，尺寸与 mime 以**解码结果**为准
+  （声明成 PNG 实际是 JPEG 的输入要被识破）；EXIF 方向 6 的 JPEG 摆正后宽高互换；带 alpha
+  的 PNG 缩放后 alpha 仍在；超 2 MB 时质量阶梯真的降到下一档；`origin` 与 `id` 可分别读回，
+  字节相同时只落一份。
+- `qcode-core`：带 ref 的 `UserMessage` 序列化快照（v7）；`messages_from_events_with` 用
+  store 作 loader 时从带图日志重建出 `ContentBlock::Image`，loader 返回 `None` 时只是丢图、
+  不报错；不带 `attachments` 的老日志仍解析成功；压缩后摘要输入里没有 base64。
+- `qcode-providers`：回放重建出的 user 消息，与首次发送时直接把字节塞进去的结果**逐字节
+  相同**——这是"回放等于首次发送"的硬保证。
+- `qcode-gui`：粘贴→缩略图出现；选择文件→卡片显示名字与大小；发送后转录区用户消息带图；
+  重启后同一会话仍显示。
+- 手工：`--data-dir` 临时目录跑完整流程，再删掉对象文件，确认 GUI 显示"图片已不可用"而
+  不是崩溃。
+
+**待定**
+
+1. 归一化参数：2048 长边 / 2 MB / 三档质量是否合适。视觉模型那边单图 token 有上限，1568
+   通常已够，可能还要往下调。
+2. `qc doctor --gc` 的触发方式与保留策略：`originals/` 是否一起回收；"仍被引用但很久没打开"
+   的对象要不要按时间清扫。
+3. ACP 何时开图片输入。
+4. 解码依赖选型：`image` 一把梭（一个 crate 覆盖四种格式，代价是间接依赖较多），还是
+   `zune-jpeg` + `image-webp` + `png` 组合（体积更小，维护面更大）。
