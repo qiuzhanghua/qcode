@@ -3612,7 +3612,7 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。**P0–P3 已实现**（2026-11-08），P4–P6 未实现。
+**状态**：Accepted（2026-11-08）。**P0–P4 已实现**（2026-11-08），P5–P6 未实现。
 依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
 实现注记见本文末。
 
@@ -3924,6 +3924,49 @@ pub enum SessionTarget { Session(String), Draft }
 25. **P3 的自动化只覆盖 `Dormant`**（`tests/dormant.rs`，8 条）：路由与 ticker 需要
     GPUI 的 `Window`/`Context`，仍是手工验证（§验证 里那几条）。
 
+
+**实现注记（2026-11-08，P4）**
+
+26. **徽标（§7 的表）落成 `task_ops::task_state(running, waiting_approval, unread)`**，
+    优先级就是表里的顺序：运行中 > 待审批 > 未读 > 空闲。三份事实按会话各自找家
+    （`Shell::task_facts`）：屏上视图读自己，停放的读 `parked`，没打开过的读
+    `Dormant`。侧栏行标记：屏上 `●`、后台在跑 `▶`、待审批 `⚠`、未读 `◉`、空闲 `○`；
+    待审批另在标题后加「· 待审批」（一个 `⚠` 说不清在等什么）。
+27. **未读是窗口级的集合**（`Shell::unread`），判据是 `task_ops::marks_unread`：
+    会话**不在屏上**时收到 `TurnEnded` / `AssistantMessage` / `TurnFailed` 就打标；
+    `resume` 时清。流式 `Delta` 不算（重放会由权威消息取代），`TurnStarted` 也不算
+    （还在做，不是「有话说」）。删任务时连同 `parked`/`dormant`/未读一起清。
+28. **改名/删除/改 roots 真的按会话排队了**（§7）。`should_queue_rename(turn_in_flight,
+    active, task_id)` 换成 `task_ops::edit_must_wait(task_state(id))`：只有**这个任务**
+    在跑才排队，别的任务在跑不再误伤（以前只要窗口里有一个 turn 在跑，改任何任务都要
+    等）。`pending_roots` 从 `Option<(id, roots)>` 变成 `BTreeMap<id, roots>`，
+    `TurnFinished` 只应用**完成的那个会话**的待处理目录，另一份原样留着。
+29. **`Cancel` 带会话**：`UiCommand::Cancel { session: Option<String> }`（`None` = 草稿）
+    + `UiCommand::CancelAll`；`Backend::cancel(session)` / `cancel_all()`。
+    runtime 侧 `host.cancel(&target)` 总是执行（后台会话的 token 也停掉），
+    turn 的 token 只在 `target == current` 时 cancel——引擎还是单槽，这是「诚实的一半」：
+    接口按会话，实现按「当前那个会话」收敛。`tests/backend.rs` 的
+    `cancel_is_processed_while_a_slow_turn_is_running` 现在先证明**错误的会话 id 不会
+    停掉**在跑的 turn，再证明正确 id 会。
+30. **侧栏 ⋯ 菜单加「停止」**，后台任务也能停：`Shell::stop_task(id)`。停止时的视觉
+    收口（`mark_stopped`）也按会话找家——屏上、停放、dormant 三处各自清 running。
+31. **退出聚合**（§6）：`request_quit` 用 `any_turn_running()`（三处合看）判断要不要弹
+    ADR-0052 的确认；`confirm_quit` 发 `CancelAll`，只清**视觉**上的 `status.running`
+    （`turn_in_flight` 不能动，它才是「引擎那个 turn 还没返回」，也就是要等的东西），
+    置 `quitting`，由 `poll` 在 `any_turn_running()` 变假时 `cx.quit()`。另加 5 秒兜底：
+    provider 一时不理会取消令牌时，退出不能变成卡住——日志是权威源（ADR-0057），强杀
+    不需要恢复逻辑，这正是 §6 允许这么办的理由。
+32. **`TurnFinished` 的 shell 级收尾按会话触发**：`apply_pending_roots(session)` /
+    `apply_pending_task_renames` 在 drain 里对每个 `TurnFinished` 执行，与「是不是屏上
+    那个会话」无关。
+33. **P4 仍没做的**：§7 的「配置变更 → 标 `pending_rebuild`，等所有会话回到 Idle 再统一
+    `apply_rebuild`」还是老样子（立刻 cancel 当前 turn + 重建 + resume active）。
+    它要的是「等空闲」，而引擎现在只有一个 turn，"所有会话空闲"与"当前 turn 结束"
+    等价；等 P5 有了并行的 turn 再按会话等，否则先写出一个假的等待条件。后端可回收
+    （§5 后半）与定时触发（P6）同理。
+34. **P4 的自动化**：`tests/task_ops.rs`（状态优先级、`edit_must_wait`、未读判据）5 条，
+    `tests/backend.rs` 加了 `cancel_all_stops_the_running_turn` 并在原用例里加了
+    「错 id 不停」。徽标渲染、`quitting` 的等待与 5 秒兜底需要 GPUI，仍是手工验证。
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

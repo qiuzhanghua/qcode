@@ -66,6 +66,7 @@ use render::*;
 use std::collections::HashSet;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
+use task_ops::TaskState;
 
 /// ADR-0041 typography tokens. Keep conversation sizes in one place so the
 /// three display modes do not drift into per-row ad-hoc values.

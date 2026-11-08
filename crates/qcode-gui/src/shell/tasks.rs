@@ -18,18 +18,41 @@ impl Shell {
         }
     }
 
-    /// Whether this task has a turn in flight — whether or not it is the task
-    /// on screen (ADR-0058 §7's badge; the approval half is P4).
-    pub(crate) fn task_running(&self, task_id: &str) -> bool {
+    /// The three facts `task_ops::task_state` collapses, read from whichever
+    /// home this task's state has: the visible view, its parked view, or the
+    /// status-only record of a session the user never opened (§7).
+    fn task_facts(&self, task_id: &str) -> (bool, bool, bool) {
+        let unread = self.unread.contains(task_id);
         if self.active.as_deref() == Some(task_id) {
-            return self.ui.app.status.running || self.ui.turn_in_flight;
+            return (
+                self.ui.app.status.running || self.ui.turn_in_flight,
+                self.ui.approvals.current().is_some() || self.ui.restoring.is_some(),
+                unread,
+            );
         }
         if let Some(ui) = self.parked.get(task_id) {
-            return ui.app.status.running || ui.turn_in_flight;
+            return (
+                ui.app.status.running || ui.turn_in_flight,
+                ui.approvals.current().is_some() || ui.restoring.is_some(),
+                unread,
+            );
         }
-        self.dormant
-            .get(task_id)
-            .is_some_and(|dormant| dormant.running)
+        match self.dormant.get(task_id) {
+            Some(dormant) => (dormant.running, !dormant.approvals.is_empty(), unread),
+            None => (false, false, unread),
+        }
+    }
+
+    /// The sidebar badge for this task (ADR-0058 §7).
+    pub(crate) fn task_state(&self, task_id: &str) -> task_ops::TaskState {
+        let (running, waiting_approval, unread) = self.task_facts(task_id);
+        task_ops::task_state(running, waiting_approval, unread)
+    }
+
+    /// Whether this task has a turn in flight — whether or not it is the task
+    /// on screen.
+    pub(crate) fn task_running(&self, task_id: &str) -> bool {
+        task_ops::edit_must_wait(self.task_state(task_id))
     }
 
     pub(crate) fn active_task_row(&self) -> Option<&TaskRow> {
@@ -38,9 +61,7 @@ impl Shell {
     }
 
     pub(crate) fn task_roots_for_edit(&self, task_id: &str) -> Vec<Root> {
-        if let Some((pending_id, roots)) = &self.pending_roots
-            && pending_id == task_id
-        {
+        if let Some(roots) = self.pending_roots.get(task_id) {
             return roots.clone();
         }
         self.tasks
@@ -88,14 +109,15 @@ impl Shell {
         cx.notify();
     }
 
+    /// Apply the root edit that was queued for **this** session's turn, without
+    /// touching another session's queued edit (§7).
     pub(crate) fn apply_pending_roots(&mut self, session: Option<&str>, cx: &mut Context<Self>) {
-        let Some((task_id, roots)) = self.pending_roots.take() else {
+        let Some(task_id) = session.map(str::to_string) else {
             return;
         };
-        if session.is_some_and(|id| id != task_id) {
-            self.pending_roots = Some((task_id, roots));
+        let Some(roots) = self.pending_roots.remove(&task_id) else {
             return;
-        }
+        };
         self.ui.app.push_notice("正在应用待处理的目录变更");
         self.apply_roots_now(&task_id, roots, cx);
     }
@@ -106,10 +128,12 @@ impl Shell {
         roots: Vec<Root>,
         cx: &mut Context<Self>,
     ) {
-        let active_task = self.active.as_deref() == Some(task_id);
-        if self.ui.turn_in_flight && active_task {
-            self.pending_roots = Some((task_id.to_string(), roots));
-            self.ui.app.push_notice("目录变更将在当前 Turn 结束后应用");
+        // Only *this* task's turn holds this task's session lock (§7).
+        if self.task_running(task_id) {
+            self.pending_roots.insert(task_id.to_string(), roots);
+            self.ui
+                .app
+                .push_notice("目录变更将在该任务的 Turn 结束后应用");
             cx.notify();
             return;
         }
@@ -215,15 +239,12 @@ impl Shell {
             cx.notify();
             return;
         }
-        if task_ops::should_queue_rename(
-            self.ui.turn_in_flight,
-            self.active.as_deref(),
-            &state.task_id,
-        ) {
+        // Per session (§7): another task's running turn is not this task's lock.
+        if self.task_running(&state.task_id) {
             self.pending_task_renames
                 .insert(state.task_id.clone(), title.clone());
             self.titles.insert(state.task_id.clone(), title);
-            self.ui.app.push_notice("当前 Turn 结束后重命名");
+            self.ui.app.push_notice("该任务的 Turn 结束后重命名");
             cx.notify();
             return;
         }
@@ -246,10 +267,10 @@ impl Shell {
         title: String,
         cx: &mut Context<Self>,
     ) {
-        if self.active.as_deref() == Some(task_id) && self.ui.turn_in_flight {
+        if self.task_running(task_id) {
             self.ui
                 .app
-                .push_notice("请先结束当前 Turn，再删除正在运行的任务");
+                .push_notice("请先停止该任务，再删除正在运行的任务");
             cx.notify();
             return;
         }
@@ -280,15 +301,17 @@ impl Shell {
             }
         }
         self.pending_task_renames.remove(task_id);
-        // 被删任务的停放视图已经没有回去的地方了；不清理的话它（连同转录和
-        // 输入框实体）会一直留在内存里。
+        self.pending_roots.remove(task_id);
+        self.unread.remove(task_id);
+        // 被删任务的停放视图（以及没打开过时留下的状态）已经没有回去的地方
+        // 了；不清理的话它（连同转录和输入框实体）会一直留在内存里。
         self.parked.remove(task_id);
+        self.dormant.remove(task_id);
         let was_active = self.active.as_deref() == Some(task_id);
         self.refresh_tasks();
         if was_active {
             // 换到下一个任务：`park_and_clear` 不会把已删除的那份停放回去。
             self.park_and_clear(window, cx);
-            self.pending_roots = None;
             self.pending_root_delete = None;
             if let Some(next) = self.tasks.first().map(|row| row.task.id.clone()) {
                 self.resume(next, window, cx);

@@ -60,7 +60,6 @@ impl Shell {
         // 150ms 内把它排空并自己通知（ADR-0058 §5）。
         self.backend.new_session();
         self.ui.resetting = true;
-        self.pending_roots = None;
         self.pending_root_delete = None;
         self.pending_task_delete = None;
         self.rename_task = None;
@@ -143,6 +142,8 @@ impl Shell {
         self.ui.resetting = true;
         self.ui.empty_draft = false;
         self.active = Some(id.clone());
+        // 看见了就不再是未读（§7）。
+        self.unread.remove(&id);
         // 后台期间攒下的东西（§3）：审批必须活着——它是引擎的阻塞点，没人答
         // 就一直挂着；队列快照与失败提示也一样，切进来就是对的，不必等下一
         // 个 ticker 帧。
@@ -179,7 +180,6 @@ impl Shell {
                 .app
                 .push_notice(format!("cannot save gui.json: {error}"));
         }
-        self.pending_roots = None;
         self.pending_root_delete = None;
         self.pending_task_delete = None;
         self.rename_task = None;
@@ -306,12 +306,43 @@ impl Shell {
                 self.ui.app.status.running
             );
         }
-        // Make Stop visibly immediate even if the provider ignores the
-        // cancellation token for a moment; TurnEnded/TurnFailed will confirm.
-        self.ui.app.status.running = false;
-        self.ui.app.status.last = None;
-        self.ui.approvals = ApprovalQueue::default();
-        self.backend.cancel();
+        // Stop targets the task on screen (ADR-0058 §6); a background task is
+        // stopped from its own ⋯ menu (`stop_task`).
+        let session = self.active.clone();
+        self.mark_stopped(session.as_deref());
+        self.backend.cancel(session.as_deref());
+    }
+
+    /// Stop a task the window may not be showing; the ⋯ menu's 「停止」.
+    pub(crate) fn stop_task(&mut self, task_id: &str, cx: &mut Context<Self>) {
+        self.mark_stopped(Some(task_id));
+        self.backend.cancel(Some(task_id));
+        self.set_notice(format!("正在停止 {}", short_id(task_id)), true, cx);
+    }
+
+    /// Make Stop visibly immediate in whichever view owns the turn, even if the
+    /// provider ignores the cancellation token for a moment; `TurnEnded` /
+    /// `TurnFailed` will confirm.
+    fn mark_stopped(&mut self, session: Option<&str>) {
+        let clear = |ui: &mut TaskUi| {
+            ui.app.status.running = false;
+            ui.app.status.last = None;
+            ui.approvals = ApprovalQueue::default();
+            ui.restoring = None;
+        };
+        if session.is_none() || session == self.active.as_deref() {
+            clear(&mut self.ui);
+            return;
+        }
+        let Some(id) = session else {
+            return;
+        };
+        if let Some(ui) = self.parked.get_mut(id) {
+            clear(ui);
+        } else if let Some(dormant) = self.dormant.get_mut(id) {
+            dormant.running = false;
+            dormant.approvals = ApprovalQueue::default();
+        }
     }
 
     pub(crate) fn answer(&mut self, allow: bool, session: bool, cx: &mut Context<Self>) {

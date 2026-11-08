@@ -52,7 +52,12 @@ pub trait Backend {
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
-    fn cancel(&mut self);
+    /// Stop `session`'s turn (`None` = the draft the engine is on). A session
+    /// that is not running is a no-op (ADR-0058 §6).
+    fn cancel(&mut self, session: Option<&str>);
+    /// Stop every live session; the window calls this before quitting and then
+    /// waits for each `TurnFinished`.
+    fn cancel_all(&mut self);
     /// Change the provider+model for subsequent turns (grouped picker, V2.1).
     fn set_model(&mut self, provider: String, model: String);
     /// Model/provider currently active in the backend, for syncing after a
@@ -166,7 +171,9 @@ impl Backend for UnconfiguredBackend {
 
     fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
 
-    fn cancel(&mut self) {}
+    fn cancel(&mut self, _session: Option<&str>) {}
+
+    fn cancel_all(&mut self) {}
 
     fn set_model(&mut self, _provider: String, _model: String) {}
 
@@ -332,8 +339,14 @@ impl Backend for LocalBackend {
         });
     }
 
-    fn cancel(&mut self) {
-        self.send(UiCommand::Cancel);
+    fn cancel(&mut self, session: Option<&str>) {
+        self.send(UiCommand::Cancel {
+            session: session.map(str::to_string),
+        });
+    }
+
+    fn cancel_all(&mut self) {
+        self.send(UiCommand::CancelAll);
     }
 
     fn set_model(&mut self, provider: String, model: String) {

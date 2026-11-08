@@ -303,10 +303,23 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 allow,
                                 session: remember,
                             }),
-                            UiCommand::Cancel => {
-                                // Per-session stop: only the session the user is
-                                // looking at is affected (ADR-0058 §6).
-                                host.cancel(&current);
+                            UiCommand::Cancel { session } => {
+                                // Per-session stop (ADR-0058 §6): the session's
+                                // own token is tripped even if the engine is not
+                                // on it, and the running turn's token only when
+                                // it belongs to that session.
+                                let target = session
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or(SessionTarget::Draft);
+                                host.cancel(&target);
+                                if target == current
+                                    && let Some(token) = &active
+                                {
+                                    token.cancel();
+                                }
+                            }
+                            UiCommand::CancelAll => {
+                                host.cancel_all();
                                 if let Some(token) = &active {
                                     token.cancel();
                                 }

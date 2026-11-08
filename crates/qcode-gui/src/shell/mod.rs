@@ -15,6 +15,10 @@ pub(crate) struct Shell {
     pub(crate) dormant: std::collections::BTreeMap<String, Dormant>,
     /// 常驻 drain 已经起来了（`start_poll_ticker` 幂等）。
     pub(crate) ticker_running: bool,
+    /// 用户切走之后又有消息落地的会话（ADR-0058 §7 的「未读」）。切回去就清。
+    pub(crate) unread: std::collections::HashSet<String>,
+    /// 托盘/窗口已经请求退出，正在等各自的 `TurnFinished`（§6）。
+    pub(crate) quitting: bool,
     /// 输入框 Provider/Model 菜单顶部的模型搜索框。
     pub(crate) model_search_input: Entity<InputState>,
     /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
@@ -35,8 +39,9 @@ pub(crate) struct Shell {
     pub(crate) pending_task_renames: std::collections::BTreeMap<String, String>,
     /// What sending while a turn runs does: queue it, or steer it.
     pub(crate) busy_delivery: qcode_kernel::config::BusyDelivery,
-    /// Root edits made during a turn, applied after the engine task returns.
-    pub(crate) pending_roots: Option<(String, Vec<Root>)>,
+    /// Root edits made while a task was running, keyed by task id and applied
+    /// when *that* task's turn returns (§7: per session, not one global slot).
+    pub(crate) pending_roots: std::collections::BTreeMap<String, Vec<Root>>,
     /// Directory awaiting the destructive confirmation dialog.
     pub(crate) pending_root_delete: Option<(String, String, String)>,
     /// Task awaiting the destructive confirmation dialog.
@@ -198,6 +203,8 @@ impl Shell {
             parked: std::collections::BTreeMap::new(),
             dormant: std::collections::BTreeMap::new(),
             ticker_running: false,
+            unread: std::collections::HashSet::new(),
+            quitting: false,
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,
@@ -208,7 +215,7 @@ impl Shell {
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),
-            pending_roots: None,
+            pending_roots: std::collections::BTreeMap::new(),
             pending_root_delete: None,
             pending_task_delete: None,
             rename_task: None,
@@ -237,7 +244,11 @@ impl Shell {
 
     /// 托盘“退出”（以及将来的菜单退出）统一入口：运行中先确认（ADR-0052）。
     pub(crate) fn request_quit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.ui.app.status.running || self.ui.approvals.current().is_some() {
+        // 有 turn 在跑（任何一个会话）或有审批挂着，就先问一遍（ADR-0052）。
+        if self.any_turn_running()
+            || self.ui.app.status.running
+            || self.ui.approvals.current().is_some()
+        {
             self.pending_quit = true;
             cx.notify();
             return;
@@ -250,9 +261,43 @@ impl Shell {
         cx.notify();
     }
 
+    /// 确认退出：先向所有会话发 cancel，等各自的 `TurnFinished`（§6）。
+    ///
+    /// 等的是「锁已释放」，不是「模型答应了停」：强行退出也没有恢复逻辑，
+    /// 日志本身是权威源（ADR-0057），下次 `resume` 重放即可。但一个已经收到
+    /// 取消的 turn 通常几毫秒内就回来了，等一下能让最后一个 turn 正常落盘。
     pub(crate) fn confirm_quit(&mut self, cx: &mut Context<Self>) {
         self.pending_quit = false;
-        cx.quit();
+        if !self.any_turn_running() {
+            cx.quit();
+            return;
+        }
+        self.backend.cancel_all();
+        // 只收口**视觉**上的运行态（`status.running` 是投影，Stop 也是这么
+        // 做的）。`turn_in_flight` 不能动：它才是「引擎那个 turn 还没返回」，
+        // 也就是我们要等的东西。
+        self.ui.app.status.running = false;
+        for ui in self.parked.values_mut() {
+            ui.app.status.running = false;
+        }
+        self.quitting = true;
+        self.set_notice("正在停止正在运行的任务…".to_string(), false, cx);
+        cx.notify();
+        // 等 `TurnFinished` 不设上限会把「退出」变成「卡住」：provider 可能一时
+        // 不理会取消令牌。5 秒后照样退出——日志是权威源（ADR-0057），强杀不需要
+        // 恢复逻辑，这正是 §6 说这件事可以这么办的理由。
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5))
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                if shell.quitting {
+                    shell.quitting = false;
+                    cx.quit();
+                }
+            });
+        })
+        .detach();
     }
 
     /// 托盘图标/菜单要的最小状态。
@@ -390,6 +435,10 @@ impl Shell {
                 _ => None,
             };
             let live = self.is_visible(&target);
+            // A session the window is not showing that reaches a turn boundary
+            // or a final message is "unread" until the user switches to it
+            // (§7). Read before the event is consumed.
+            let unread = !live && task_ops::marks_unread(&event);
             let applied = if live {
                 routing::apply_to_ui(&mut self.ui, event)
             } else if let Some(id) = target.id() {
@@ -415,6 +464,10 @@ impl Shell {
                 // never runs a turn, so there is nothing to route.
                 continue;
             };
+            if unread && let Some(id) = target.id() {
+                self.unread.insert(id.to_string());
+                repaint |= true;
+            }
             if live {
                 resync |= applied.changed;
             }
@@ -461,6 +514,14 @@ impl Shell {
             // A repaint request is also what re-arms the tail follow: GPUI's
             // Tail mode keeps the view pinned unless the user scrolled away.
             cx.notify();
+        }
+        // Quitting waits for the turns we just cancelled (§6): a turn that has
+        // returned has released its session lock, so nothing is left half
+        // written. The log is the authority anyway (ADR-0057), which is why a
+        // hard kill needs no recovery.
+        if self.quitting && !self.any_turn_running() {
+            self.quitting = false;
+            cx.quit();
         }
     }
 
@@ -565,7 +626,7 @@ impl Shell {
         // Stop 的语义停掉它（用户看得到），否则界面会永远停在 running 上——
         // 旧引擎的事件再也不会有人接。
         if self.ui.app.status.running || self.ui.turn_in_flight {
-            self.backend.cancel();
+            self.backend.cancel(self.active.as_deref());
             self.ui
                 .app
                 .push_notice("settings saved: interrupting the running turn");

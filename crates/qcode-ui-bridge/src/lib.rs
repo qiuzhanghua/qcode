@@ -197,8 +197,13 @@ pub enum UiCommand {
     },
     /// One operation on a queued (next-turn) message.
     QueueOp { id: String, op: QueueOp },
-    /// Stop the running turn.
-    Cancel,
+    /// Stop one session's turn; `None` means the draft the engine is on
+    /// (ADR-0058 §6). A session that is not running is a no-op, which the UI
+    /// can race with — a turn may have just finished.
+    Cancel { session: Option<String> },
+    /// Stop every live session. Used when the window is closing, before it
+    /// waits for each `TurnFinished`.
+    CancelAll,
     /// Answer a pending approval. `session` remembers the tool for the session.
     Answer {
         call_id: String,

@@ -66,6 +66,23 @@ fn wait_for_turn(backend: &mut LocalBackend) -> Vec<qcode_core::event::Event> {
     panic!("turn did not finish; got {} events", events.len());
 }
 
+/// Whether the turn ends within `within`. Drains the channel, so it is only for
+/// asserting that *nothing* ended (the events it swallowed are gone).
+fn turn_ends_within(backend: &mut LocalBackend, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        while let Some(event) = backend.try_recv() {
+            if let UiEvent::Event(event) = event.event
+                && matches!(event.kind, EventKind::TurnEnded(_))
+            {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
 #[tokio::test]
 async fn a_draft_becomes_a_logged_session_on_the_first_prompt() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -215,7 +232,10 @@ async fn cancel_is_a_noop_when_no_turn_is_running() {
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path());
     let mut backend = LocalBackend::new(engine(workspace.path(), store));
-    backend.cancel();
+    // No session is running: cancel is a no-op, even for one that has been
+    // stopped before (ADR-0058 §6 lets the UI race a finished turn).
+    backend.cancel(None);
+    backend.cancel(Some("no-such-session"));
     // The engine thread must still accept a prompt after the cancel.
     backend.prompt("after cancel".to_string(), Vec::new());
     let events = wait_for_turn(&mut backend);
@@ -241,16 +261,30 @@ async fn cancel_is_processed_while_a_slow_turn_is_running() {
     ));
     backend.prompt("slow".to_string(), Vec::new());
 
+    // Stop exactly the session that is running: the id comes from the event,
+    // because a stale id must not stop somebody else's turn (ADR-0058 §6).
+    let mut running = None;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
             && matches!(event.kind, EventKind::TurnStarted(_))
         {
+            running = Some(event.session.clone());
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    backend.cancel();
+    let running = running.expect("the turn started");
+
+    // A wrong id is a no-op: the turn keeps running.
+    backend.cancel(Some("some-other-session"));
+    assert!(
+        !turn_ends_within(&mut backend, Duration::from_millis(150)),
+        "cancelling a session that is not running must not stop the turn"
+    );
+
+    // The right id stops it.
+    backend.cancel(Some(&running));
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -482,4 +516,39 @@ async fn a_panicking_turn_reports_turn_failed_and_keeps_the_loop_alive() {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("the loop stayed stuck after a panicking turn");
+}
+
+#[tokio::test]
+async fn cancel_all_stops_the_running_turn() {
+    // The window's quit path (ADR-0058 §6): every live session is cancelled,
+    // then the window waits for `TurnFinished` before quitting.
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let mut script = vec![StreamEvent::Started];
+    for _ in 0..5_000 {
+        script.push(StreamEvent::TextDelta("x".to_string()));
+    }
+    script.push(StreamEvent::Ended {
+        stop_reason: StopReason::EndTurn,
+    });
+    let mut backend = LocalBackend::new(engine_with(
+        workspace.path(),
+        store,
+        MockProvider::scripted(vec![script]),
+    ));
+    backend.prompt("slow".to_string(), Vec::new());
+    backend.cancel_all();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
+            && let EventKind::TurnEnded(ended) = event.kind
+        {
+            assert_eq!(ended.status, TurnStatus::Cancelled);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("cancel_all did not stop the running turn");
 }
