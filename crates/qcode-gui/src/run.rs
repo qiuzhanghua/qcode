@@ -35,6 +35,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // Ctrl+Shift+V so the two never collide.
                 KeyBinding::new("ctrl-shift-v", PasteImage, None),
                 KeyBinding::new("cmd-shift-v", PasteImage, None),
+                // Same reason as Cmd+Enter below: the focused Textarea owns
+                // "Input", so the root binding never fires while typing.
+                KeyBinding::new("ctrl-shift-v", PasteImage, Some("Input")),
+                KeyBinding::new("cmd-shift-v", PasteImage, Some("Input")),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
                 KeyBinding::new("a", ApproveSession, Some("Approval")),
                 KeyBinding::new("n", RejectApproval, Some("Approval")),
