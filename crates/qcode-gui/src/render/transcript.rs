@@ -845,7 +845,11 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
     }
 
     match &shell.ui.app.blocks[index] {
-        Block::User { text, images } => {
+        Block::User {
+            text,
+            images,
+            files,
+        } => {
             let mut column = div().flex().flex_col().items_end().gap_2();
             column = column.child(
                 div()
@@ -866,6 +870,29 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
             // folding the execution process can never hide them.
             for image in images {
                 column = column.child(image_tile(image, shell, index));
+            }
+            // Files get a chip line: the bytes live in the store, so the name
+            // and size are all the transcript needs.
+            for (slot, file) in files.iter().enumerate() {
+                column = column.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .rounded(px(6.0))
+                        .bg(rgba(0x7f7f7f14))
+                        .px_2()
+                        .py_1()
+                        .child(div().text_size(sp(CAPTION_SIZE)).child(file.name.clone()))
+                        .child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(rgb(0x999999))
+                                .child(human_bytes(file.bytes)),
+                        )
+                        .id(("user-file", index * 32 + slot)),
+                );
             }
             div()
                 .flex()

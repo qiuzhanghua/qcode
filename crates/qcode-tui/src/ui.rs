@@ -294,8 +294,21 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in selected {
         match block {
-            Block::User { text, images } => {
+            Block::User {
+                text,
+                images,
+                files,
+            } => {
                 push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan));
+                for file in files {
+                    let label = format!("〔文件 {} — {} 字节〕", file.name, file.bytes);
+                    push_text(
+                        &mut lines,
+                        "  ",
+                        &label,
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
                 for image in images {
                     let label = format!(
                         "〔图片 {} — {}×{}，终端只显示占位文字〕",

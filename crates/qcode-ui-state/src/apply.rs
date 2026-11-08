@@ -62,6 +62,20 @@ impl App {
                                 _ => None,
                             })
                             .collect(),
+                        files: message
+                            .attachments
+                            .iter()
+                            .filter_map(|attachment| match attachment {
+                                qcode_attachments::AttachmentRef::File(file) => {
+                                    Some(crate::FileBlock {
+                                        id: file.id.to_hex(),
+                                        name: file.name.clone(),
+                                        bytes: file.bytes,
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect(),
                     });
                 }
             }

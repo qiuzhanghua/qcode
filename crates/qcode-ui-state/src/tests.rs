@@ -179,6 +179,41 @@ fn an_image_attachment_rides_on_the_question_row() {
 }
 
 #[test]
+fn a_file_attachment_rides_on_the_question_row() {
+    use qcode_attachments::{AttachmentId, AttachmentRef, FileRef};
+
+    let mut app = App::new("mock", "mock-1");
+    app.status.running = true;
+    app.apply(&event(EventKind::TurnStarted(
+        qcode_core::event::TurnStarted {
+            input: "read this".to_string(),
+        },
+    )));
+    let file = FileRef {
+        id: AttachmentId::from_bytes([9; 32]),
+        name: "notes.txt".to_string(),
+        bytes: 2048,
+    };
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        starts_segment: true,
+        queued_id: None,
+        text: "read this".to_string(),
+        attachments: vec![AttachmentRef::File(file)],
+        continuation: None,
+    })));
+
+    let Some(Block::User { files, .. }) = app.blocks.last() else {
+        panic!("expected the question row: {:?}", app.blocks);
+    };
+    let [row] = files.as_slice() else {
+        panic!("expected one file on the question: {files:?}");
+    };
+    assert_eq!(row.id, "09".repeat(32));
+    assert_eq!(row.name, "notes.txt");
+    assert_eq!(row.bytes, 2048);
+}
+
+#[test]
 fn slash_skill_activation_is_rejected_while_running() {
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
@@ -733,14 +768,16 @@ fn steered_follow_up_message_becomes_its_own_turn() {
         app.blocks[a.input_block.expect("A has input")],
         Block::User {
             text: "A".to_string(),
-            images: Vec::new()
+            images: Vec::new(),
+            files: Vec::new(),
         }
     );
     assert_eq!(
         app.blocks[b.input_block.expect("B has input")],
         Block::User {
             text: "B".to_string(),
-            images: Vec::new()
+            images: Vec::new(),
+            files: Vec::new(),
         }
     );
     assert_eq!(a.process.len(), 1, "A 的工具属于 A");
@@ -796,7 +833,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
         app.blocks[app.turns[0].input_block.expect("input")],
         Block::User {
             text: "A".to_string(),
-            images: Vec::new()
+            images: Vec::new(),
+            files: Vec::new(),
         }
     );
 }
@@ -846,7 +884,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
         app.blocks[app.turns[1].input_block.expect("B has input")],
         Block::User {
             text: "B".to_string(),
-            images: Vec::new()
+            images: Vec::new(),
+            files: Vec::new(),
         }
     );
 }
@@ -1438,7 +1477,8 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
         app.blocks,
         vec![Block::User {
             text: "hi".to_string(),
-            images: Vec::new()
+            images: Vec::new(),
+            files: Vec::new(),
         }]
     );
 }

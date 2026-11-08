@@ -26,11 +26,13 @@ const SCROLL_STEP: usize = 10;
 /// One visible item in the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    /// The user's question, with the pictures that came with it.
+    /// The user's question, with the pictures and files that came with it.
     User {
         text: String,
         /// Empty for a text-only message.
         images: Vec<ImageBlock>,
+        /// Attached files, shown by name and size (ADR-0061 §7).
+        files: Vec<FileBlock>,
     },
     Assistant(String),
     Tool(Box<ToolEntry>),
@@ -59,6 +61,16 @@ pub struct ImageBlock {
     pub height: u32,
     /// File name, or "pasted image" for the clipboard.
     pub label: String,
+}
+
+/// One file attached to the user's message: enough to name it in the
+/// transcript. The bytes live in the attachment store, addressed by `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileBlock {
+    /// Attachment id: 64 lowercase hex characters.
+    pub id: String,
+    pub name: String,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
