@@ -80,6 +80,19 @@ const CODE_LINE: f32 = 18.0;
 /// Content inside tool boxes (command + output) and the thinking body:
 /// one step larger than captions with extra line spacing for readability.
 const RESULT_SIZE: f32 = 12.0;
+
+/// Composer placeholder tail: how to send. Each task gets its own composer
+/// (ADR-0058 §4), so the hint is derived from the preference rather than
+/// captured once at startup.
+fn send_hint(send_mode: &str) -> &'static str {
+    if send_mode == "enter" {
+        "Enter 发送 · Shift+Enter 换行"
+    } else if cfg!(target_os = "macos") {
+        "Cmd+Enter 发送 · Enter 换行"
+    } else {
+        "Ctrl+Enter 发送 · Enter 换行"
+    }
+}
 const RESULT_LINE: f32 = 22.0;
 /// The design baseline all *SIZE/*LINE tokens are written at: the default
 /// `GuiPreferences::font_size`. Every token scales from this baseline at

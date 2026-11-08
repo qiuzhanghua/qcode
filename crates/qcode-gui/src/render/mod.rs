@@ -64,7 +64,7 @@ impl Render for Shell {
             .relative()
             .flex()
             .flex_row()
-            .key_context(if self.approvals.current().is_some() {
+            .key_context(if self.ui.approvals.current().is_some() {
                 "Approval"
             } else {
                 "Chat"

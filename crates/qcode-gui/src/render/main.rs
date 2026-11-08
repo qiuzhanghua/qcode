@@ -54,8 +54,8 @@ impl Shell {
     /// 弹层从输入框发送按钮左侧（窗口底部）向上展开：`Anchor::BottomLeft`
     /// 让弹层从触发器上方展开，避免超出窗口。
     fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let provider = self.app.status.provider.clone();
-        let model = self.app.status.model.clone();
+        let provider = self.ui.app.status.provider.clone();
+        let model = self.ui.app.status.model.clone();
         let config_path = self.config_path.clone();
         let shell = cx.entity().downgrade();
         let search_input = self.model_search_input.clone();
@@ -425,11 +425,11 @@ impl Shell {
     pub(crate) fn render_queue_dock(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
-        let running = self.turn_in_flight;
+        let running = self.ui.turn_in_flight;
         // 已推送的消息不再出现在 dock：推送即提交，问题已按已发送样式
         // 上屏在对话流里，无需撤回。dock 只管理还没推送的排队消息。
-        let mut rows = Vec::with_capacity(self.queue.len());
-        for item in &self.queue {
+        let mut rows = Vec::with_capacity(self.ui.queue.len());
+        for item in &self.ui.queue {
             let id = item.id.clone();
             let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
             let mut row = div()
@@ -506,11 +506,12 @@ impl Shell {
         self.poll(cx);
         // 执行中且输入框有内容时，发送按钮应保持可用（发送进排队队列）；
         // 只有执行中且输入框为空时，按钮才变成停止红点。
-        let composer_has_draft = !self.input.read(cx).value().trim().is_empty()
-            || !self.attachments.is_empty()
-            || !self.file_refs.is_empty();
+        let composer_has_draft = !self.ui.input.read(cx).value().trim().is_empty()
+            || !self.ui.attachments.is_empty()
+            || !self.ui.file_refs.is_empty();
         // 任务累计 token 用量：汇总所有 turn 的输入/输出/缓存 token。
         let total_tokens: u64 = self
+            .ui
             .app
             .turns
             .iter()
@@ -529,16 +530,16 @@ impl Shell {
         // turn 卡（那是用户消息条数，与 `max_turns` 的「单条消息内的模型调用
         // 数」不是同一件事，ADR-0060 §1.3）。暂停后由对话流里的暂停卡片接管，
         // 两处不重复提示。
-        let round_hint = self.app.budget_hint.clone().filter(|_| {
-            self.app.paused_turn().is_none()
+        let round_hint = self.ui.app.budget_hint.clone().filter(|_| {
+            self.ui.app.paused_turn().is_none()
                 && !self
                     .active
                     .as_ref()
                     .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id))
         });
         let round_hint_visible = round_hint.is_some();
-        if self.app.status.running && !self.waiting_ticker {
-            self.waiting_ticker = true;
+        if self.ui.app.status.running && !self.ui.waiting_ticker {
+            self.ui.waiting_ticker = true;
             self.tick_waiting(cx);
         }
         if self.pending_send {
@@ -551,7 +552,7 @@ impl Shell {
         let border = theme.border;
         let running_color = theme.muted_foreground;
         let running_divider = border;
-        let list = MessageScroller::new("transcript", self.scroller.clone(), {
+        let list = MessageScroller::new("transcript", self.ui.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
                 let shell = entity.read(cx);
@@ -638,7 +639,7 @@ impl Shell {
                     .child(rail)
                     .child(self.render_floating_actions(cx))
             })
-            .children(self.diff_view.as_ref().map(|state| {
+            .children(self.ui.diff_view.as_ref().map(|state| {
                 div()
                     .flex()
                     .flex_col()
@@ -791,7 +792,7 @@ impl Shell {
                     .children(
                         // 权限问询：有问询时以提示卡片占位展示（输入框隐藏），
                         // 避免输入框自身的边框/圆角从提示框背后透出来。
-                        self.approvals.current().map(|view| {
+                        self.ui.approvals.current().map(|view| {
                             let kind: String = match view.tool.as_str() {
                                 "run_shell" | "shell" => "执行命令".to_string(),
                                 "read_file" | "write_file" | "edit_file" | "apply_patch"
@@ -914,7 +915,7 @@ impl Shell {
                     )
                     .children(
                         // 报错提示：同款卡片，红色 title，单「关闭」按钮。
-                        self.error_banner.clone().map(|message| {
+                        self.ui.error_banner.clone().map(|message| {
                             div()
                                 .w_full()
                                 .rounded_t(px(10.0))
@@ -966,7 +967,7 @@ impl Shell {
                                                         .label("关闭")
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
-                                                                this.error_banner = None;
+                                                                this.ui.error_banner = None;
                                                                 cx.notify();
                                                             },
                                                         )),
@@ -975,7 +976,7 @@ impl Shell {
                                 )
                         }),
                     )
-                    .children(self.restoring.as_ref().map(|_| {
+                    .children(self.ui.restoring.as_ref().map(|_| {
                         div()
                             .w_full()
                             .rounded(px(10.0))
@@ -992,9 +993,9 @@ impl Shell {
                     .when(
                         // 预算提示也占输入框位置（与权限/报错框一致），显示时
                         // 输入框隐藏，卡片落在输入框处。
-                        self.approvals.current().is_none()
-                            && self.error_banner.is_none()
-                            && self.restoring.is_none()
+                        self.ui.approvals.current().is_none()
+                            && self.ui.error_banner.is_none()
+                            && self.ui.restoring.is_none()
                             && !round_hint_visible,
                         |this| {
                             this.child(
@@ -1020,18 +1021,18 @@ impl Shell {
                 // steer into the running turn, move, or drop. 已推送的消息
                 // 不在这里展示（推送即提交），所以只按 queue 判断显隐，
                 // 否则推送后只剩 steering 时会渲染一个空灰框。
-                if !self.queue.is_empty() {
+                if !self.ui.queue.is_empty() {
                     input_box = input_box.child(self.render_queue_dock(cx));
                 }
                 // Pending file references shown as removable chips above the
                 // input, aligned to its left edge; wraps once too wide.
-                if !self.file_refs.is_empty() {
+                if !self.ui.file_refs.is_empty() {
                     let mut chips = div()
                         .flex()
                         .flex_row()
                         .flex_wrap()
                         .gap_1();
-                    for path in &self.file_refs {
+                    for path in &self.ui.file_refs {
                         let name = path
                             .file_name()
                             .and_then(|name| name.to_str())
@@ -1088,7 +1089,7 @@ impl Shell {
                                         }
                                     })
                                     .child(
-                                        Textarea::new(&self.input)
+                                        Textarea::new(&self.ui.input)
                                             .bordered(false)
                                             .text_size(sp(15.0))
                                             .aria_label("Message qcode"),
@@ -1129,7 +1130,7 @@ impl Shell {
                                                 // interrupts the running turn — shown only
                                                 // when the turn is running and the draft is
                                                 // empty, so a draft always keeps Send.
-                                                if self.app.status.running && !composer_has_draft {
+                                                if self.ui.app.status.running && !composer_has_draft {
                                                     div()
                                                         .w(px(36.0))
                                                         .h(px(36.0))
@@ -1193,13 +1194,13 @@ impl Shell {
                             .border_color(border)
                             .child(
                                 StatusBar::new()
-                                    .left(self.notice.clone().unwrap_or_default())
+                                    .left(self.ui.notice.clone().unwrap_or_default())
                                     .left(format!(
                                         "{} turn(s) - {} token(s)",
-                                        self.app.status.turn, total_tokens
+                                        self.ui.app.status.turn, total_tokens
                                     ))
-                                    .right(context_label(&self.app))
-                                    .right(format!("sandbox {}", self.app.sandbox)),
+                                    .right(context_label(&self.ui.app))
+                                    .right(format!("sandbox {}", self.ui.app.sandbox)),
                             ),
                     ),
             )

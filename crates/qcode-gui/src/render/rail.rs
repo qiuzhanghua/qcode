@@ -13,10 +13,10 @@ impl Shell {
             self.rail_popup = None;
             self.rail_popup_close_at = None;
         }
-        if self.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
+        if self.ui.app.turns.len() < 2 || window.bounds().size.width.as_f32() < 900.0 {
             return div().into_any_element();
         }
-        let total = self.app.turns.len();
+        let total = self.ui.app.turns.len();
         let active = self.active_turn_index();
         // The rail is a ruler: every turn gets a tick, right-aligned, at a
         // pitch that adapts to the transcript height. When a long session would
@@ -132,10 +132,10 @@ impl Shell {
         let question_lines = (body_total * 3 / 5).max(1);
         let answer_lines = body_total.saturating_sub(question_lines).max(1);
 
-        let (question_title, question_body) = match self.app.turns.get(turn_index) {
+        let (question_title, question_body) = match self.ui.app.turns.get(turn_index) {
             Some(turn) => turn
                 .input_block
-                .and_then(|idx| self.app.blocks.get(idx))
+                .and_then(|idx| self.ui.app.blocks.get(idx))
                 .and_then(|block| match block {
                     Block::User(text) => Some(head_and_body(text)),
                     _ => None,
@@ -143,10 +143,10 @@ impl Shell {
                 .unwrap_or_else(|| (format!("第 {} 轮", turn.number), String::new())),
             None => (String::new(), String::new()),
         };
-        let (answer_title, answer_body) = match self.app.turns.get(turn_index) {
+        let (answer_title, answer_body) = match self.ui.app.turns.get(turn_index) {
             Some(turn) => turn
                 .answer_block
-                .and_then(|idx| self.app.blocks.get(idx))
+                .and_then(|idx| self.ui.app.blocks.get(idx))
                 .and_then(|block| match block {
                     Block::Assistant(text) => Some(head_and_body(text)),
                     _ => None,
@@ -220,7 +220,7 @@ impl Shell {
     }
 
     pub(crate) fn render_floating_actions(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.app.turns.is_empty() {
+        if self.ui.app.turns.is_empty() {
             return div().into_any_element();
         }
         div()

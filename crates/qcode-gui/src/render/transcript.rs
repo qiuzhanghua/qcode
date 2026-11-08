@@ -48,14 +48,14 @@ pub(crate) fn unit_row(
     color: Hsla,
     divider: Hsla,
 ) -> AnyElement {
-    match shell.units.get(index).cloned() {
+    match shell.ui.units.get(index).cloned() {
         Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
         Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
         Some(DisplayUnit::Pending { text, steered, .. }) => pending_row(text, steered),
         None => {
             // The trailing scroller row holds the blinking typing indicator
             // while a turn streams; once it finishes the row is empty.
-            if shell.app.status.running {
+            if shell.ui.app.status.running {
                 running_row(shell, color, divider)
             } else {
                 div().into_any_element()
@@ -167,6 +167,7 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// driven by the 1s waiting ticker; the mark flips on its own animation.
 pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
     let elapsed = shell
+        .ui
         .app
         .turns
         .last()
@@ -268,7 +269,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
     // This row only renders while thinking is streaming: always show the
     // live text instead of a preview.
     let expanded = true;
-    let preview = reasoning_preview(&shell.app.reasoning_streaming);
+    let preview = reasoning_preview(&shell.ui.app.reasoning_streaming);
     let mut row = div()
         .flex()
         .flex_col()
@@ -317,7 +318,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
                     .text_size(sp(SECONDARY_SIZE))
                     .line_height(sp(SECONDARY_LINE))
                     .text_color(rgb(0x777777))
-                    .child(shell.app.reasoning_streaming.clone()),
+                    .child(shell.ui.app.reasoning_streaming.clone()),
             ),
         );
     }
@@ -333,7 +334,8 @@ pub(crate) fn reasoning_row(
     // the text visibly appends; once the thinking completes the block is
     // auto-folded (the shell clears the reasoning expansion) but stays
     // expandable through the header toggle.
-    let streaming = shell.app.status.running && shell.app.streaming_reasoning_block == Some(block);
+    let streaming =
+        shell.ui.app.status.running && shell.ui.app.streaming_reasoning_block == Some(block);
     let expanded = streaming || shell.reasoning_expanded(block);
     let preview = reasoning_preview(&entry.text);
     let mut row = div()
@@ -458,7 +460,7 @@ pub(crate) fn looks_like_list(text: &str) -> bool {
         })
 }
 pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    let turn = &shell.app.turns[index];
+    let turn = &shell.ui.app.turns[index];
     let mut card = div().flex().flex_col().gap_1().w_full();
 
     if let Some(block) = turn.input_block {
@@ -471,24 +473,24 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
         .process
         .iter()
         .copied()
-        .filter(|block| !matches!(shell.app.blocks.get(*block), Some(Block::Notice(_))))
+        .filter(|block| !matches!(shell.ui.app.blocks.get(*block), Some(Block::Notice(_))))
         .collect();
-    let has_process =
-        !process_blocks.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
-    let show_process = !shell.collapse_all;
+    let has_process = !process_blocks.is_empty()
+        || (turn.running() && !shell.ui.app.reasoning_streaming.is_empty());
+    let show_process = !shell.ui.collapse_all;
 
     if has_process && show_process {
         // One container for the whole execution process (thinking + tools).
         // It opens with the turn and the header toggles it; once the turn
         // finishes it auto-folds and the answer renders below, outside the
         // container.
-        let process_open = shell.process_open_turns.contains(&index);
+        let process_open = shell.ui.process_open_turns.contains(&index);
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &process_blocks {
-            if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
+            if let Block::Reasoning(entry) = &shell.ui.app.blocks[*block] {
                 if entry.text.is_empty()
                     && turn.running()
-                    && !shell.app.reasoning_streaming.is_empty()
+                    && !shell.ui.app.reasoning_streaming.is_empty()
                 {
                     process = process.child(live_reasoning_row(shell, entity));
                 } else {
@@ -567,14 +569,14 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
     }
 
     if shell.pause_card_visible(index)
-        && let Some(pause) = pause_card(&shell.app, index, shell, entity)
+        && let Some(pause) = pause_card(&shell.ui.app, index, shell, entity)
     {
         card = card.child(pause);
     }
 
     if let Some(block) = turn.answer_block {
         card = card.child(block_row(block, shell, entity));
-    } else if turn.running() && !shell.app.streaming.is_empty() {
+    } else if turn.running() && !shell.ui.app.streaming.is_empty() {
         card = card.child(
             div()
                 .px_6()
@@ -584,7 +586,7 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
-                        shell.app.streaming.clone(),
+                        shell.ui.app.streaming.clone(),
                     )
                     .code_block_actions(|_, _, _| div().into_any_element())
                     .text_size(sp(ANSWER_SIZE))
@@ -797,7 +799,7 @@ pub(crate) fn markdown_with_folds(
             MarkdownSegment::Code { language, body } => {
                 let line_count = body.lines().count();
                 let key = format!("{index}:{segment_index}");
-                let expanded = shell.expanded_code.contains(&key);
+                let expanded = shell.ui.expanded_code.contains(&key);
                 let folded = line_count > 20;
                 let visible = if expanded || !folded {
                     body.clone()
@@ -831,18 +833,18 @@ pub(crate) fn markdown_with_folds(
     column.into_any_element()
 }
 pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    if index >= shell.app.blocks.len() {
+    if index >= shell.ui.app.blocks.len() {
         return div()
             .px_4()
             .py_2()
             .child(
-                TextView::markdown(format!("streaming-{index}"), shell.app.streaming.clone())
+                TextView::markdown(format!("streaming-{index}"), shell.ui.app.streaming.clone())
                     .code_block_actions(|_, _, _| div().into_any_element()),
             )
             .into_any_element();
     }
 
-    match &shell.app.blocks[index] {
+    match &shell.ui.app.blocks[index] {
         Block::User(text) => div()
             .flex()
             .flex_col()
@@ -953,7 +955,7 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 let output_line_count = tool.output.lines().count();
                 let foldable = output_line_count > 20;
                 let output_key = format!("{index}:output");
-                let output_expanded = shell.expanded_code.contains(&output_key);
+                let output_expanded = shell.ui.expanded_code.contains(&output_key);
                 let output_visible = if output_expanded || !foldable {
                     tool.output.clone()
                 } else {
@@ -1146,7 +1148,7 @@ fn process_label(shell: &Shell, blocks: &[usize]) -> Option<String> {
     let mut shells = false;
     let mut reads = false;
     for block in blocks {
-        let Some(Block::Tool(tool)) = shell.app.blocks.get(*block) else {
+        let Some(Block::Tool(tool)) = shell.ui.app.blocks.get(*block) else {
             continue;
         };
         match tool.name.as_str() {
@@ -1281,11 +1283,11 @@ fn pause_card(
                     }
                 }),
         )
-        .children((shell.app.status.window > 1).then(|| {
+        .children((shell.ui.app.status.window > 1).then(|| {
             div()
                 .text_size(sp(CAPTION_SIZE))
                 .text_color(muted)
-                .child(format!("第 {} 个预算窗口", shell.app.status.window))
+                .child(format!("第 {} 个预算窗口", shell.ui.app.status.window))
         }));
     Some(
         div()

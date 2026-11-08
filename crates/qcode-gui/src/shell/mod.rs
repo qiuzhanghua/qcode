@@ -1,11 +1,14 @@
 use crate::*;
 use std::collections::HashMap;
+use task_ui::TaskUi;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
 
 pub(crate) struct Shell {
-    pub(crate) app: App,
-    /// A real text input, so IME and CJK go through the platform.
-    pub(crate) input: Entity<TextareaState>,
+    /// 当前任务的那一份视图。任务专属的状态全在这里（ADR-0058 §4）；窗口级
+    /// 的东西（任务列表、侧栏、设置窗口、托盘）留在 `Shell` 上。
+    pub(crate) ui: TaskUi,
+    /// 切走时留下的任务视图，按会话 id 存。切回来时原样装回去，不重放日志。
+    pub(crate) parked: std::collections::BTreeMap<String, TaskUi>,
     /// 输入框 Provider/Model 菜单顶部的模型搜索框。
     pub(crate) model_search_input: Entity<InputState>,
     /// 当前搜索词：由 `model_search_input` 的 Change 事件写入，render 时
@@ -17,67 +20,15 @@ pub(crate) struct Shell {
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pub(crate) pending_send: bool,
-    /// Drop transcript events from the old turn until the backend confirms the
-    /// session switch.
-    pub(crate) resetting: bool,
-    /// A "新建任务" click already asked for a fresh session and the engine has
-    /// not confirmed it yet (`active` is still `None`). While true, another
-    /// click must not stack another empty task.
-    pub(crate) empty_draft: bool,
-    pub(crate) _input_subscription: gpui_kit::Subscription,
-    /// Keeps `selected_turn` in sync with the transcript scroll position.
-    pub(crate) _scroller_subscription: gpui_kit::Subscription,
-    /// Diffs parsed from the calls in view, keyed by call id. Built the first
-    /// time a row is expanded or "查看" is pressed, so a long session only
-    /// pays for the patches it shows; replayed sessions work the same way.
-    pub(crate) inline_diffs: HashMap<String, Entity<DiffState>>,
-    /// Calls whose patch would not parse; a viewer there would open nothing.
-    pub(crate) broken_diffs: HashSet<String>,
-    /// The diff opened in the full-height panel ("查看"), and the call it came
-    /// from so the row can show it as selected.
-    pub(crate) diff_view: Option<Entity<DiffState>>,
-    pub(crate) diff_view_call: Option<String>,
     pub(crate) sidebar_visible: bool,
-    /// Images pasted since the last submit.
-    pub(crate) attachments: Vec<qcode_core::engine::Attachment>,
-    /// Files picked with the upload button; sent as their paths with the
-    /// next prompt.
-    pub(crate) file_refs: Vec<PathBuf>,
-    /// Pending approvals, shown one at a time in arrival order.
-    pub(crate) approvals: ApprovalQueue,
-    /// 最近一次失败的完整信息，显示在输入框上方的提示框里（点 Dismiss 或
-    /// 下次发送时清掉）。
-    pub(crate) error_banner: Option<String>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
     pub(crate) minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
     pub(crate) pending_quit: bool,
     /// 运行中改名的暂存：Turn 结束后再落盘（会话文件被 turn 持锁）。
     pub(crate) pending_task_renames: std::collections::BTreeMap<String, String>,
-    /// Variable-height virtual transcript with tail following.
-    pub(crate) scroller: Entity<MessageScrollerState>,
-    /// Turn/loose-block rows currently rendered.
-    pub(crate) units: Vec<DisplayUnit>,
-    /// The single process row currently expanded (accordion).
-    pub(crate) expanded_process: Option<ProcessKey>,
-    /// Long code blocks the reader expanded, keyed by block/segment.
-    pub(crate) expanded_code: HashSet<String>,
-    /// Turn selected by the rail/header.
-    pub(crate) selected_turn: Option<usize>,
-    /// True until the engine task has fully returned; Stop only clears the
-    /// visual running flag, not this.
-    pub(crate) turn_in_flight: bool,
     /// What sending while a turn runs does: queue it, or steer it.
     pub(crate) busy_delivery: qcode_kernel::config::BusyDelivery,
-    /// A decision was submitted and the engine has not confirmed it yet; the
-    /// composer stays hidden until `ApprovalClosed`.
-    pub(crate) restoring: Option<String>,
-    /// Pending follow-up messages waiting for the running turn to end,
-    /// mirrored from the kernel inbox (FIFO order).
-    pub(crate) queue: Vec<QueuedMessage>,
-    /// Steered messages the running turn has not claimed yet ("waiting for
-    /// the next step"), mirrored from the inbox's next-step queue.
-    pub(crate) steering: Vec<QueuedMessage>,
     /// Root edits made during a turn, applied after the engine task returns.
     pub(crate) pending_roots: Option<(String, Vec<Root>)>,
     /// Directory awaiting the destructive confirmation dialog.
@@ -106,33 +57,12 @@ pub(crate) struct Shell {
     /// popover budgets itself against half of it, so the card never reaches
     /// into the composer.
     pub(crate) transcript_height: std::rc::Rc<std::cell::Cell<f32>>,
-    /// Hide every turn's process rows (Collapse all).
-    pub(crate) collapse_all: bool,
-    /// Id of the paused turn whose card the user dismissed without acting on
-    /// it. One slot is enough: only the newest turn can be paused.
-    pub(crate) dismissed_pause: Option<u64>,
-    /// Force every reasoning/tool row to its one-line form (Collapse to list).
-    pub(crate) collapse_to_list: bool,
-    /// Status-bar waiting hint: spinner frame index and whether the ticker
-    /// loop is already running for the current turn.
-    pub(crate) waiting_ticker: bool,
-    /// Per-turn execution-process container expansion. While a turn runs it is
-    /// forced open regardless; on completion it auto-folds (user can reopen).
-    /// New turn indices are added here when explicitly toggled open; remove
-    /// from the set to fold.
-    pub(crate) process_open_turns: std::collections::HashSet<usize>,
-    /// Row count last reported to the scroller.
-    pub(crate) last_blocks: usize,
     pub(crate) backend: Box<dyn Backend>,
     pub(crate) tasks: Vec<TaskRow>,
     pub(crate) titles: std::collections::BTreeMap<String, String>,
     pub(crate) active: Option<String>,
     pub(crate) cwd: String,
     pub(crate) config_path: PathBuf,
-    /// A one-line state the status bar always shows. Notices pushed into the
-    /// transcript vanish when no turn exists yet, which is exactly the state a
-    /// freshly started, unconfigured window is in.
-    pub(crate) notice: Option<String>,
     /// 预算提示已被用户「忽略」的任务 id 集合：每个任务各自记住自己的
     /// 忽略状态，切换任务再切回也不会再次提示。
     pub(crate) round_hint_dismissed_tasks: std::collections::HashSet<String>,
@@ -156,6 +86,7 @@ pub(crate) struct Shell {
 }
 
 mod session;
+mod task_ui;
 mod tasks;
 mod view;
 
@@ -186,15 +117,7 @@ impl Shell {
             .as_ref()
             .map(|config| config.ui.busy_delivery)
             .unwrap_or_default();
-        let send_hint = if send_mode == "enter" {
-            "Enter 发送 · Shift+Enter 换行"
-        } else {
-            if cfg!(target_os = "macos") {
-                "Cmd+Enter 发送 · Enter 换行"
-            } else {
-                "Ctrl+Enter 发送 · Enter 换行"
-            }
-        };
+        let send_hint = crate::send_hint(&send_mode);
         FONT_SIZE_PX.store(prefs.font_size, std::sync::atomic::Ordering::Relaxed);
         prefs.record_workspace(Path::new(&cwd));
         let configured_provider = backend
@@ -239,33 +162,11 @@ impl Shell {
             app.push_notice(format!("cannot save gui.json: {error}"));
         }
         let backend_is_configured = backend.is_configured();
-        let units = display_units(&app);
-        let last_blocks = units.len();
-        let scroller = cx.new(|cx| MessageScrollerState::new(units.len(), cx));
-        // Keep the selected turn in sync with the visible transcript: when
-        // the user scrolls so a different turn reaches the viewport, its
-        // rail dot becomes the active one.
-        let scroller_subscription = cx.observe(&scroller, |shell, _scroller, cx| {
-            shell.sync_active_turn_from_scroll(cx);
-        });
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(3, 6)
-                .submit_on_enter(send_mode == "enter")
-                .placeholder(format!("Ask qcode…  {send_hint}"))
-        });
-        let input_subscription = cx.subscribe(&input, |shell, _input, event: &InputEvent, cx| {
-            if matches!(
-                event,
-                InputEvent::PressEnter {
-                    secondary: false,
-                    shift: false
-                }
-            ) {
-                shell.pending_send = true;
-                cx.notify();
-            }
-        });
+        // The window starts on one task's view; every other task it has visited
+        // lives in `parked` (ADR-0058 §4).
+        let mut ui = TaskUi::fresh(app, window, cx, &send_mode, send_hint);
+        ui.notice =
+            (!backend_is_configured).then(|| "not configured yet: open Settings".to_string());
         // Provider/Model 菜单的搜索框：Change 事件写入搜索词并重置高亮。
         let model_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…".to_string()));
@@ -279,46 +180,25 @@ impl Shell {
                 }
             },
         );
-        let input_focus = input.read(cx).focus_handle(cx);
+        let input_focus = ui.input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
         eprintln!(
             "qcode-gui: window ready pid={} (focus fix + concurrent engine)",
             std::process::id()
         );
         Self {
-            app,
-            input,
+            ui,
+            parked: std::collections::BTreeMap::new(),
             model_search_input,
             model_search_query: String::new(),
             model_search_index: 0,
             _model_search_subscription: model_search_subscription,
             busy_delivery,
-            restoring: None,
             pending_send: false,
-            resetting: false,
-            empty_draft: false,
-            _input_subscription: input_subscription,
-            _scroller_subscription: scroller_subscription,
-            inline_diffs: HashMap::new(),
-            broken_diffs: HashSet::new(),
-            diff_view: None,
-            diff_view_call: None,
             sidebar_visible: true,
-            attachments: Vec::new(),
-            file_refs: Vec::new(),
-            approvals: ApprovalQueue::default(),
-            error_banner: None,
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),
-            scroller,
-            units,
-            expanded_process: None,
-            expanded_code: HashSet::new(),
-            selected_turn: None,
-            turn_in_flight: false,
-            queue: Vec::new(),
-            steering: Vec::new(),
             pending_roots: None,
             pending_root_delete: None,
             pending_task_delete: None,
@@ -330,19 +210,11 @@ impl Shell {
             rail_popup: None,
             rail_popup_close_at: None,
             transcript_height: std::rc::Rc::new(std::cell::Cell::new(600.0)),
-            collapse_all: false,
-            dismissed_pause: None,
-            collapse_to_list: false,
-            waiting_ticker: false,
-            process_open_turns: std::collections::HashSet::new(),
-            last_blocks,
             backend,
             tasks,
             titles,
             active,
             cwd,
-            notice: (!backend_is_configured)
-                .then(|| "not configured yet: open Settings".to_string()),
             round_hint_dismissed_tasks: std::collections::HashSet::new(),
             config_mtime: config_mtime_of(&config_path),
             config_watch_armed: false,
@@ -356,7 +228,7 @@ impl Shell {
 
     /// 托盘“退出”（以及将来的菜单退出）统一入口：运行中先确认（ADR-0052）。
     pub(crate) fn request_quit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.app.status.running || self.approvals.current().is_some() {
+        if self.ui.app.status.running || self.ui.approvals.current().is_some() {
             self.pending_quit = true;
             cx.notify();
             return;
@@ -377,8 +249,8 @@ impl Shell {
     /// 托盘图标/菜单要的最小状态。
     pub(crate) fn tray_snapshot(&self) -> tray::TraySnapshot {
         tray::TraySnapshot::new(
-            self.app.status.running,
-            usize::from(self.approvals.current().is_some()),
+            self.ui.app.status.running,
+            usize::from(self.ui.approvals.current().is_some()),
         )
     }
 
@@ -388,16 +260,16 @@ impl Shell {
     /// 会把对应消息从 `steering` 删掉、`apply` 把真实消息加进 turn，pending
     /// 单元随之消失——不需要 dsh 那套 rpcId 去重合并。
     pub(crate) fn pending_units(&self) -> Vec<DisplayUnit> {
-        let mut units = Vec::with_capacity(self.steering.len() + self.queue.len());
+        let mut units = Vec::with_capacity(self.ui.steering.len() + self.ui.queue.len());
         // 已推送的排在前面：它属于当前运行 turn 的下一个 segment，将来
         // 会紧跟运行 turn 开新卡；排队的是未来的 turn，排在更后面。
-        for item in &self.steering {
+        for item in &self.ui.steering {
             units.push(DisplayUnit::Pending {
                 text: item.text.clone(),
                 steered: true,
             });
         }
-        for item in &self.queue {
+        for item in &self.ui.queue {
             units.push(DisplayUnit::Pending {
                 text: item.text.clone(),
                 steered: false,
@@ -407,71 +279,79 @@ impl Shell {
     }
 
     pub(crate) fn reset_scroller(&mut self, cx: &mut Context<Self>) {
-        self.expanded_process = None;
-        self.expanded_code.clear();
-        self.collapse_all = false;
-        self.collapse_to_list = false;
-        self.process_open_turns.clear();
-        let mut units = display_units(&self.app);
+        self.ui.expanded_process = None;
+        self.ui.expanded_code.clear();
+        self.ui.collapse_all = false;
+        self.ui.collapse_to_list = false;
+        self.ui.process_open_turns.clear();
+        let mut units = display_units(&self.ui.app);
         units.extend(self.pending_units());
-        self.units = units;
-        let count = self.units.len() + self.typing_extra();
-        self.scroller.update(cx, |state, cx| state.reset(count, cx));
-        self.last_blocks = count;
+        self.ui.units = units;
+        let count = self.ui.units.len() + self.typing_extra();
+        self.ui
+            .scroller
+            .update(cx, |state, cx| state.reset(count, cx));
+        self.ui.last_blocks = count;
     }
 
     pub(crate) fn sync_scroller(&mut self, cx: &mut Context<Self>) {
-        let mut units = display_units(&self.app);
+        let mut units = display_units(&self.ui.app);
         units.extend(self.pending_units());
-        self.units = units;
-        let count = self.units.len() + self.typing_extra();
-        if count < self.last_blocks {
-            self.scroller.update(cx, |state, cx| state.reset(count, cx));
-        } else if count > self.last_blocks {
-            self.scroller.update(cx, |state, cx| {
-                state.append(count - self.last_blocks, cx);
+        self.ui.units = units;
+        let count = self.ui.units.len() + self.typing_extra();
+        if count < self.ui.last_blocks {
+            self.ui
+                .scroller
+                .update(cx, |state, cx| state.reset(count, cx));
+        } else if count > self.ui.last_blocks {
+            self.ui.scroller.update(cx, |state, cx| {
+                state.append(count - self.ui.last_blocks, cx);
             });
         } else {
             // A tool result or the authoritative assistant message changes the
             // height of an existing row.
-            self.scroller.update(cx, |state, cx| state.remeasure(cx));
+            self.ui.scroller.update(cx, |state, cx| state.remeasure(cx));
         }
-        self.last_blocks = count;
+        self.ui.last_blocks = count;
     }
 
     /// One extra scroller row for the trailing typing indicator while a turn
     /// is running.
     pub(crate) fn typing_extra(&self) -> usize {
-        if self.app.status.running { 1 } else { 0 }
+        if self.ui.app.status.running { 1 } else { 0 }
     }
 
     pub(crate) fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.input.read(cx).focus_handle(cx);
+        let handle = self.ui.input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
 
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
-        let reasoning_was_live = self.app.streaming_reasoning_block.is_some();
+        let reasoning_was_live = self.ui.app.streaming_reasoning_block.is_some();
         while let Some(tagged) = self.backend.try_recv() {
             // P1 carries the session tag but the transcript is still one
             // session's; P3 routes by tag instead of ignoring it.
             let event = tagged.event;
-            if self.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
+            if self.ui.resetting && !matches!(&event, UiEvent::SessionChanged { .. }) {
                 continue;
             }
-            if self.resetting {
-                self.resetting = false;
+            if self.ui.resetting {
+                self.ui.resetting = false;
             }
             match event {
                 UiEvent::Event(event) | UiEvent::Child(event) => {
+                    // Highest log sequence this view has been shown. A parked
+                    // view older than its log must be replayed, not restored.
+                    self.ui.seen_seq = self.ui.seen_seq.max(event.seq);
                     let turn_started = matches!(event.kind, EventKind::TurnStarted(_));
                     let turn_ended = matches!(event.kind, EventKind::TurnEnded(_));
-                    let turns_before = self.app.turns.len();
+                    let turns_before = self.ui.app.turns.len();
                     // 排队追加的问题被拆成独立 turn 时不会有 TurnStarted 事件，但
                     // turn 数会增加；TurnEnded 属于整个 run，先把此刻仍开着的
                     // turn 记下来，结束时（含拆出的 B）一起折叠执行过程。
                     let open_before: Vec<usize> = self
+                        .ui
                         .app
                         .turns
                         .iter()
@@ -479,30 +359,30 @@ impl Shell {
                         .filter(|(_, turn)| turn.running())
                         .map(|(index, _)| index)
                         .collect();
-                    self.app.apply(&event);
+                    self.ui.app.apply(&event);
                     // The engine injected a steered message: its Inbox item is
                     // gone, so drop the pending row now instead of waiting for
                     // the runtime's 250ms snapshot tick.
                     if let EventKind::UserMessage(message) = &event.kind
                         && let Some(id) = &message.queued_id
                     {
-                        self.steering.retain(|item| &item.id != id);
+                        self.ui.steering.retain(|item| &item.id != id);
                     }
                     // 引擎写进日志的错误（压缩失败、超预算、无进展……）显示在
                     // 输入框上方的提示框里，保留完整信息。
                     if let EventKind::Error(error) = &event.kind {
-                        self.error_banner = Some(format!("{}: {}", error.kind, error.message));
+                        self.ui.error_banner = Some(format!("{}: {}", error.kind, error.message));
                     }
-                    if turn_started || self.app.turns.len() > turns_before {
-                        let index = self.app.turns.len().checked_sub(1);
-                        self.selected_turn = index;
+                    if turn_started || self.ui.app.turns.len() > turns_before {
+                        let index = self.ui.app.turns.len().checked_sub(1);
+                        self.ui.selected_turn = index;
                         // 新 turn 的执行过程默认展开（一键可收起）；清掉上一个
                         // turn 残留的展开状态。
                         if let Some(index) = index {
-                            self.process_open_turns.insert(index);
+                            self.ui.process_open_turns.insert(index);
                         }
-                        if matches!(self.expanded_process, Some(ProcessKey::Reasoning(_))) {
-                            self.expanded_process = None;
+                        if matches!(self.ui.expanded_process, Some(ProcessKey::Reasoning(_))) {
+                            self.ui.expanded_process = None;
                         }
                     }
                     changed = true;
@@ -511,25 +391,25 @@ impl Shell {
                         // 追加拆出的），标题行仍可点开；手动展开过的旧 turn
                         // 不在这份清单里，保持原状。
                         for index in open_before {
-                            self.process_open_turns.remove(&index);
+                            self.ui.process_open_turns.remove(&index);
                         }
                         self.refresh_tasks();
                     }
                 }
                 UiEvent::Delta(delta) => {
-                    self.app.apply_delta(&delta);
+                    self.ui.app.apply_delta(&delta);
                     changed = true;
                 }
-                UiEvent::Approval(view) => self.approvals.push(view),
+                UiEvent::Approval(view) => self.ui.approvals.push(view),
                 UiEvent::ApprovalClosed { call_id } => {
-                    self.approvals.closed(&call_id);
-                    if self.restoring.as_deref() == Some(call_id.as_str()) {
-                        self.restoring = None;
+                    self.ui.approvals.closed(&call_id);
+                    if self.ui.restoring.as_deref() == Some(call_id.as_str()) {
+                        self.ui.restoring = None;
                         changed = true;
                     }
                 }
                 UiEvent::SessionChanged { id } => {
-                    self.empty_draft = false;
+                    self.ui.empty_draft = false;
                     self.active = id.clone();
                     self.prefs.last_session = id.clone();
                     // 只写 `last_session`：几何/外观这些字段归别的写入者，整份
@@ -537,39 +417,42 @@ impl Shell {
                     if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
                         prefs.last_session = id;
                     }) {
-                        self.app
+                        self.ui
+                            .app
                             .push_notice(format!("cannot save gui.json: {error}"));
                     }
                     self.refresh_tasks();
                     changed = true;
                 }
                 UiEvent::TurnFailed { message } => {
-                    self.empty_draft = false;
-                    self.restoring = None;
+                    self.ui.empty_draft = false;
+                    self.ui.restoring = None;
                     // 引擎没发 TurnEnded 就退出了：收口当前 turn，否则卡片会
                     // 一直显示 running、耗时不停增长。
-                    self.app.abort_turn(qcode_core::event::TurnStatus::Failed);
-                    self.app.status.last = None;
-                    self.approvals = ApprovalQueue::default();
+                    self.ui
+                        .app
+                        .abort_turn(qcode_core::event::TurnStatus::Failed);
+                    self.ui.app.status.last = None;
+                    self.ui.approvals = ApprovalQueue::default();
                     // 错误提示放状态栏（对话流里不再渲染 note 行）。
                     self.set_notice(format!("turn failed: {message}"), false, cx);
                     // 完整报错同时放在输入框上方的提示框里。
-                    self.error_banner = Some(message);
+                    self.ui.error_banner = Some(message);
                     changed = true;
                 }
                 UiEvent::TurnFinished { session } => {
-                    self.turn_in_flight = false;
-                    self.restoring = None;
+                    self.ui.turn_in_flight = false;
+                    self.ui.restoring = None;
                     self.apply_pending_roots(session.as_deref(), cx);
                     self.apply_pending_task_renames(cx);
                     changed = true;
                 }
                 UiEvent::QueueChanged { items } => {
-                    self.queue = items;
+                    self.ui.queue = items;
                     changed = true;
                 }
                 UiEvent::SteeringChanged { items } => {
-                    self.steering = items;
+                    self.ui.steering = items;
                     changed = true;
                 }
             }
@@ -577,10 +460,10 @@ impl Shell {
         // The thinking stream committed into a completed block: auto-fold it
         // (the block stays expandable through its header).
         if reasoning_was_live
-            && self.app.streaming_reasoning_block.is_none()
-            && matches!(self.expanded_process, Some(ProcessKey::Reasoning(_)))
+            && self.ui.app.streaming_reasoning_block.is_none()
+            && matches!(self.ui.expanded_process, Some(ProcessKey::Reasoning(_)))
         {
-            self.expanded_process = None;
+            self.ui.expanded_process = None;
             cx.notify();
         }
         if changed {
@@ -598,18 +481,24 @@ impl Shell {
     /// Show a notice in the status bar. Transient ones clear themselves, so the
     /// bar does not keep a stale "settings applied" forever.
     pub(crate) fn set_notice(&mut self, text: String, transient: bool, cx: &mut Context<Self>) {
-        self.notice = Some(text.clone());
+        self.ui.notice = Some(text.clone());
         cx.notify();
         if !transient {
             return;
         }
+        // The timer outlives a task switch: it must not clear the *next* task's
+        // notice, so it carries the view identity it was armed in (ADR-0058 §4).
+        let ui_id = self.ui.id;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_secs(6))
                 .await;
             let _ = this.update(cx, |shell, cx| {
-                if shell.notice.as_deref() == Some(text.as_str()) {
-                    shell.notice = None;
+                if shell.ui.id != ui_id {
+                    return;
+                }
+                if shell.ui.notice.as_deref() == Some(text.as_str()) {
+                    shell.ui.notice = None;
                     cx.notify();
                 }
             });
@@ -635,7 +524,8 @@ impl Shell {
             self.busy_delivery = config.ui.busy_delivery;
         }
         let Some(rebuild) = self.backend.rebuild_hook() else {
-            self.app
+            self.ui
+                .app
                 .push_notice("settings saved, but this backend cannot reload");
             cx.notify();
             return;
@@ -643,16 +533,17 @@ impl Shell {
         // 换 backend 等于换一条引擎任务：在跑的这个 turn 不会跟着过去。先按
         // Stop 的语义停掉它（用户看得到），否则界面会永远停在 running 上——
         // 旧引擎的事件再也不会有人接。
-        if self.app.status.running || self.turn_in_flight {
+        if self.ui.app.status.running || self.ui.turn_in_flight {
             self.backend.cancel();
-            self.app
+            self.ui
+                .app
                 .push_notice("settings saved: interrupting the running turn");
         }
         // Await the rebuild on the UI thread's executor: assembling a kernel is
         // async, and creating a nested runtime here panics ("cannot start a
         // runtime from within a runtime"). The window stays responsive because
         // this is a spawned task, not a blocking call.
-        self.app.push_notice("applying settings…");
+        self.ui.app.push_notice("applying settings…");
         self.set_notice("applying settings…".to_string(), false, cx);
         cx.spawn(async move |this, cx| {
             let built = rebuild().await;
@@ -674,12 +565,14 @@ impl Shell {
                 self.backend = backend;
                 // 旧引擎的取消若没来得及走完，`running` 会被永久留在界面上；
                 // 新 backend 已经接手，直接在投影上收口。
-                if self.app.status.running || self.turn_in_flight {
-                    self.app.abort_turn(qcode_core::event::TurnStatus::Failed);
-                    self.app.status.last = None;
-                    self.approvals = ApprovalQueue::default();
-                    self.turn_in_flight = false;
-                    self.restoring = None;
+                if self.ui.app.status.running || self.ui.turn_in_flight {
+                    self.ui
+                        .app
+                        .abort_turn(qcode_core::event::TurnStatus::Failed);
+                    self.ui.app.status.last = None;
+                    self.ui.approvals = ApprovalQueue::default();
+                    self.ui.turn_in_flight = false;
+                    self.ui.restoring = None;
                 }
                 // 新 backend 是一条全新的引擎任务，`session` 从 `None` 开始：
                 // 不在这里把当前任务挂回去，下一条消息就会在“保存设置”之后
@@ -687,19 +580,20 @@ impl Shell {
                 if let Some(id) = self.active.clone()
                     && let Err(error) = self.backend.resume(&id)
                 {
-                    self.app
+                    self.ui
+                        .app
                         .push_notice(format!("cannot re-attach session: {error}"));
                 }
                 if let Some(provider) = self.backend.provider() {
-                    self.app.status.provider = provider;
+                    self.ui.app.status.provider = provider;
                 }
                 if let Some(model) = self.backend.model() {
-                    self.app.status.model = model;
+                    self.ui.app.status.model = model;
                 }
                 if let Ok(tasks) = self.backend.tasks() {
                     self.tasks = tasks;
                 }
-                self.app.push_notice("settings applied");
+                self.ui.app.push_notice("settings applied");
                 // A successful rebuild keeps the previous backend until this
                 // point, so nothing is lost if assembling fails.
                 self.set_notice("settings applied".to_string(), true, cx);
@@ -730,9 +624,9 @@ impl Shell {
                         unconfigured = unconfigured.with_rebuild(rebuild);
                     }
                     self.backend = Box::new(unconfigured);
-                    self.app.status.provider = "unconfigured".to_string();
-                    self.app.status.model = "-".to_string();
-                    self.app.push_notice(
+                    self.ui.app.status.provider = "unconfigured".to_string();
+                    self.ui.app.status.model = "-".to_string();
+                    self.ui.app.push_notice(
                         "settings saved, but the config has no usable provider; open Settings to add one",
                     );
                     self.set_notice("no usable provider".to_string(), false, cx);
@@ -741,7 +635,7 @@ impl Shell {
                 // The config still resolves (e.g. egress or policy failed); the
                 // old backend is still in place: say so, or the window looks
                 // broken rather than "the new config did not work".
-                self.app.push_notice(format!(
+                self.ui.app.push_notice(format!(
                     "cannot apply settings: {error} (still using the previous kernel)"
                 ));
                 self.set_notice(format!("cannot apply settings: {error}"), false, cx);
@@ -752,10 +646,10 @@ impl Shell {
     /// Switch the provider+model for subsequent turns (two-level model menu,
     /// V2.1). The backend rebuilds the provider when the route changes.
     pub(crate) fn switch_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
-        if provider != self.app.status.provider || model != self.app.status.model {
+        if provider != self.ui.app.status.provider || model != self.ui.app.status.model {
             self.backend.set_model(provider.clone(), model.clone());
-            self.app.status.provider = provider;
-            self.app.status.model = model;
+            self.ui.app.status.provider = provider;
+            self.ui.app.status.model = model;
             cx.notify();
         }
     }

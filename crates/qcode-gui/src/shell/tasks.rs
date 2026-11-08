@@ -12,6 +12,7 @@ impl Shell {
                 self.tasks = tasks;
             }
             Err(error) => self
+                .ui
                 .app
                 .push_notice(format!("cannot refresh tasks: {error}")),
         }
@@ -47,7 +48,7 @@ impl Shell {
                 cx.notify();
             }
             Err(error) => {
-                self.app.push_notice(format!("无法更新目录: {error}"));
+                self.ui.app.push_notice(format!("无法更新目录: {error}"));
                 cx.notify();
             }
         }
@@ -68,7 +69,7 @@ impl Shell {
         // 重新拉取：成功的新标题来自 store，失败的会回退到旧标题。
         self.refresh_tasks();
         for error in failed {
-            self.app.push_notice(format!("无法重命名任务: {error}"));
+            self.ui.app.push_notice(format!("无法重命名任务: {error}"));
         }
         cx.notify();
     }
@@ -81,7 +82,7 @@ impl Shell {
             self.pending_roots = Some((task_id, roots));
             return;
         }
-        self.app.push_notice("正在应用待处理的目录变更");
+        self.ui.app.push_notice("正在应用待处理的目录变更");
         self.apply_roots_now(&task_id, roots, cx);
     }
 
@@ -92,9 +93,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let active_task = self.active.as_deref() == Some(task_id);
-        if self.turn_in_flight && active_task {
+        if self.ui.turn_in_flight && active_task {
             self.pending_roots = Some((task_id.to_string(), roots));
-            self.app.push_notice("目录变更将在当前 Turn 结束后应用");
+            self.ui.app.push_notice("目录变更将在当前 Turn 结束后应用");
             cx.notify();
             return;
         }
@@ -111,13 +112,14 @@ impl Shell {
             Ok(Some(path)) => path,
             Ok(None) => return,
             Err(error) => {
-                self.app.push_notice(error);
+                self.ui.app.push_notice(error);
                 cx.notify();
                 return;
             }
         };
         if roots.iter().any(|root| root.path == path) {
-            self.app
+            self.ui
+                .app
                 .push_notice(format!("目录已存在: {}", path.display()));
             cx.notify();
             return;
@@ -194,30 +196,30 @@ impl Shell {
         };
         let title = state.input.read(cx).value().trim().to_string();
         if title.is_empty() {
-            self.app.push_notice("任务标题不能为空");
+            self.ui.app.push_notice("任务标题不能为空");
             self.rename_task = Some(state);
             cx.notify();
             return;
         }
         if task_ops::should_queue_rename(
-            self.turn_in_flight,
+            self.ui.turn_in_flight,
             self.active.as_deref(),
             &state.task_id,
         ) {
             self.pending_task_renames
                 .insert(state.task_id.clone(), title.clone());
             self.titles.insert(state.task_id.clone(), title);
-            self.app.push_notice("当前 Turn 结束后重命名");
+            self.ui.app.push_notice("当前 Turn 结束后重命名");
             cx.notify();
             return;
         }
         match self.backend.rename_task(&state.task_id, title) {
             Ok(()) => {
                 self.refresh_tasks();
-                self.app.push_notice("任务已重命名");
+                self.ui.app.push_notice("任务已重命名");
             }
             Err(error) => {
-                self.app.push_notice(format!("无法重命名任务: {error}"));
+                self.ui.app.push_notice(format!("无法重命名任务: {error}"));
                 self.rename_task = Some(state);
             }
         }
@@ -230,8 +232,9 @@ impl Shell {
         title: String,
         cx: &mut Context<Self>,
     ) {
-        if self.active.as_deref() == Some(task_id) && self.turn_in_flight {
-            self.app
+        if self.active.as_deref() == Some(task_id) && self.ui.turn_in_flight {
+            self.ui
+                .app
                 .push_notice("请先结束当前 Turn，再删除正在运行的任务");
             cx.notify();
             return;
@@ -248,7 +251,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Err(error) = self.backend.delete_task(task_id) {
-            self.app.push_notice(format!("无法删除任务: {error}"));
+            self.ui.app.push_notice(format!("无法删除任务: {error}"));
             cx.notify();
             return;
         }
@@ -257,28 +260,29 @@ impl Shell {
             if let Err(error) =
                 GuiPreferences::update(&self.data_dir, |prefs| prefs.last_session = None)
             {
-                self.app
+                self.ui
+                    .app
                     .push_notice(format!("cannot save gui.json: {error}"));
             }
         }
         self.pending_task_renames.remove(task_id);
+        // 被删任务的停放视图已经没有回去的地方了；不清理的话它（连同转录和
+        // 输入框实体）会一直留在内存里。
+        self.parked.remove(task_id);
         let was_active = self.active.as_deref() == Some(task_id);
         self.refresh_tasks();
         if was_active {
-            self.active = None;
-            self.app.reset_transcript();
-            self.reset_scroller(cx);
-            self.approvals = ApprovalQueue::default();
-            self.turn_in_flight = false;
+            // 换到下一个任务：`park_and_clear` 不会把已删除的那份停放回去。
+            self.park_and_clear(window, cx);
             self.pending_roots = None;
             self.pending_root_delete = None;
             if let Some(next) = self.tasks.first().map(|row| row.task.id.clone()) {
                 self.resume(next, window, cx);
             } else {
-                self.app.push_notice("任务已删除");
+                self.ui.app.push_notice("任务已删除");
             }
         } else {
-            self.app.push_notice("任务已删除");
+            self.ui.app.push_notice("任务已删除");
         }
         cx.notify();
     }
@@ -290,7 +294,7 @@ impl Shell {
             Ok(Some(path)) => path,
             Ok(None) => return,
             Err(error) => {
-                self.app.push_notice(error);
+                self.ui.app.push_notice(error);
                 cx.notify();
                 return;
             }

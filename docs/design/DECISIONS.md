@@ -3612,7 +3612,7 @@ ToolDiff {
 
 ## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
 
-**状态**：Accepted（2026-11-08）。**P0、P1 已实现**（2026-11-08），P2–P6 未实现。
+**状态**：Accepted（2026-11-08）。**P0–P2 已实现**（2026-11-08），P3–P6 未实现。
 依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
 实现注记见本文末。
 
@@ -3835,10 +3835,53 @@ pub enum SessionTarget { Session(String), Draft }
 6. **一个 `Engine` 实例仍按窗口持有，但 turn 通过 `Deps` 的 `Arc` 共享**（§1 的
    「`Engine` → `Arc` 共享」）：`SessionHost::deps()` 给出唯一一份，turn 只 clone `Arc`。
    P2 起每会话槽位直接读它。
-7. **还没做的部分**：`poll` 仍在 `render` 里（§5）、`TaskUi` 槽位与 `capture`/`install`
-   （§4）、按会话排队改名/删除（§7）、`BridgeApprover` 的超时（§3 第二半）、
-   后端回收与 `resume` 重放（§5）、定时触发（P6）。因此本次**没有**让两个 turn 真正
-   并行：`active` 仍是单槽，`Cancel` 已按会话路由但只有一个会话可停。
+7. **P1 时还没做的部分**：`poll` 仍在 `render` 里（§5）、按会话排队改名/删除（§7）、
+   `BridgeApprover` 的超时（§3 第二半）、后端回收与 `resume` 重放（§5）、定时触发（P6）。
+   因此 P1 结束时**没有**让两个 turn 真正并行：`active` 仍是单槽，`Cancel` 已按会话
+   路由但只有一个会话可停。
+
+**实现注记（2026-11-08，P2）**
+
+8. **§4 的落法与原文有一处偏离，是故意的：字段没有留在 `Shell` 的顶层**，而是
+   `Shell { ui: TaskUi, parked: BTreeMap<String, TaskUi>, … }`，`render/*.rs` 里的
+   `self.app` / `self.scroller` 改成了 `self.ui.app` / `self.ui.scroller`（314 处，
+   纯机械、编译期可查）。理由：§3「后台槽位必须一直消费事件」+ §5「`poll` 按会话
+   路由」要求*给一个不在屏上的会话*应用事件。若按原文用「顶层字段 + `capture`/
+   `install` 逐字段搬运」，一次后台事件就要把 30 个字段（含两个 `Entity`）搬进搬出，
+   而 `Entity` 的占位符得用 `cx.new` 现造——每来一条流式 `Delta` 都要造两个实体，
+   P3 会直接卡在这一点上。改成子结构后 `install` 是纯 `mem::replace`，O(1)、不碰
+   实体，后台更新就是 `self.parked.get_mut(&id)`。
+   原文「render 一行不改」的*目的*（渲染层不引入路由错误）仍然守住了：渲染读的永远
+   是「当前任务那一份」，没有任何 render 代码需要知道会话。
+9. **`capture` 留占位视图**：`capture` = `install(fresh_task_ui(..))`，占位视图的
+   `App` 继承 provider/model，状态栏不会闪空。`park_and_clear` 顺手 `active.take()`：
+   草稿没有 id、没有可回去的地方，直接丢掉（原来也是丢的）。
+10. **每个视图有一个 `id`**（单调计数器），三处延迟回调按它校验：两个 observer
+    （滚动同步、回车发送）、`set_notice` 的 6 秒 timer、`wake_for_session` 的轮询
+    循环。这是 §4「所有延迟回调都要按会话 id 校验」的落地形式；用视图 id 而不是会话
+    id，因为草稿没有会话 id 也必须可区分。
+11. **切回去不再重放，除非日志动了**。`TaskUi.seen_seq` 记着这份视图见过的最新
+    `Event.seq`；`resume` 先用 `backend.resume` 拿到日志（顺带完成引擎侧挂接），
+    只有 `seen_seq >= 最后一条 seq` 才把停放视图装回去，否则丢掉它照旧重放。这条闸门
+    是必需的：另一个窗口或 `qcode` CLI 可能趁本窗口停着不动给同一会话写了新 turn，
+    那时停放视图是旧的。重放那条慢但永远对；恢复那条才是「滚动位置、展开集、草稿
+    都还在」的来源。
+12. **恢复时不再往转录里塞 "resumed xxxx"**：停放视图的转录会累积，每切一次多一行。
+    恢复走状态栏的 6 秒 notice，只有真重放时才推转录行（与原行为一致）。
+13. **删除任务会清 `parked`**，否则被删会话的转录与两个实体一直留在内存里。
+14. **没有 cap**：`parked` 随访问过的会话数增长，每个是一份转录。ADR §后果 已接受，
+    本次不设上限（留待实测后再定）。
+15. **仍留在 `Shell` 上、按 §4 清单不进 `TaskUi` 的字段**（各有理由）：
+    `pending_roots` 与 `pending_task_renames`（turn 边界统一落盘，P4 才按会话拆）、
+    `copied_command` / `rail_popup` / `rail_popup_close_at`（几秒内自愈的悬停与复制
+    提示）、`transcript_height`（每帧重新测量的 `Rc<Cell>`）、`busy_delivery`（配置）、
+    `pending_send`（输入事件与下一帧 render 之间就消费掉）。
+16. **P2 没有自动化用例**：`TaskUi` 里有 `Entity`，构造它要 `Window` + `Context`，
+    而 `qcode-gui` 的 `test = false`（ADR-0037：test harness 会把 rustc 栈拓爆）。
+    能给的保证是编译期的：`install` 里那个 `TaskUi { … }` 字面量**没有 `..`**，
+    `TaskUi` 多加一个字段就编不过，不存在「新增字段忘了交换、切任务后串味」这种静默
+    失败。运行时的往返一致性（草稿、滚动位置、展开集、审批队列、notice）仍需按
+    「验证」一节手工确认。
 
 ## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
 

@@ -5,10 +5,10 @@ impl Shell {
     /// their own row; a turn's input, process and answer blocks all render
     /// inside that turn's single variable-height row.
     pub(crate) fn block_unit_index(&self, block: usize) -> Option<usize> {
-        self.units.iter().position(|unit| match unit {
+        self.ui.units.iter().position(|unit| match unit {
             DisplayUnit::Loose(b) => *b == block,
             DisplayUnit::Turn(t) => {
-                let turn = &self.app.turns[*t];
+                let turn = &self.ui.app.turns[*t];
                 turn.input_block == Some(block)
                     || turn.answer_block == Some(block)
                     || turn.process.contains(&block)
@@ -22,7 +22,7 @@ impl Shell {
     pub(crate) fn process_block(&self, key: &ProcessKey) -> Option<usize> {
         match key {
             ProcessKey::Reasoning(block) => Some(*block),
-            ProcessKey::Tool(call_id) => self
+            ProcessKey::Tool(call_id) => self.ui
                 .app
                 .blocks
                 .iter()
@@ -37,7 +37,7 @@ impl Shell {
     /// the (potentially very tall) enclosing turn row.
     pub(crate) fn remeasure_block(&mut self, block: usize, cx: &mut Context<Self>) {
         if let Some(unit) = self.block_unit_index(block) {
-            self.scroller.update(cx, |state, cx| {
+            self.ui.scroller.update(cx, |state, cx| {
                 state.remeasure_items(unit..unit + 1, cx);
             });
         }
@@ -51,10 +51,10 @@ impl Shell {
         next: Option<ProcessKey>,
         cx: &mut Context<Self>,
     ) {
-        let old = if self.collapse_to_list {
+        let old = if self.ui.collapse_to_list {
             None
         } else {
-            self.expanded_process.clone()
+            self.ui.expanded_process.clone()
         };
         let mut blocks = Vec::new();
         if old != next {
@@ -69,8 +69,8 @@ impl Shell {
                 blocks.push(block);
             }
         }
-        self.expanded_process = next;
-        self.collapse_to_list = false;
+        self.ui.expanded_process = next;
+        self.ui.collapse_to_list = false;
         blocks.sort_unstable();
         blocks.dedup();
         for block in blocks {
@@ -88,8 +88,8 @@ impl Shell {
                     .timer(std::time::Duration::from_millis(1000))
                     .await;
                 let alive = this.update(cx, |shell, cx| {
-                    if !shell.app.status.running {
-                        shell.waiting_ticker = false;
+                    if !shell.ui.app.status.running {
+                        shell.ui.waiting_ticker = false;
                         return None;
                     }
                     cx.notify();
@@ -109,15 +109,16 @@ impl Shell {
     /// pins `selected_turn`, so the rail's highlight stays on whichever turn
     /// the user was looking at.
     pub(crate) fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
-        self.scroller
+        self.ui
+            .scroller
             .update(cx, |state, cx| state.scroll_to_end(cx));
         cx.notify();
     }
 
     pub(crate) fn reasoning_expanded(&self, block: usize) -> bool {
-        !self.collapse_all
-            && !self.collapse_to_list
-            && self.expanded_process == Some(ProcessKey::Reasoning(block))
+        !self.ui.collapse_all
+            && !self.ui.collapse_to_list
+            && self.ui.expanded_process == Some(ProcessKey::Reasoning(block))
     }
 
     pub(crate) fn toggle_reasoning(&mut self, block: usize, cx: &mut Context<Self>) {
@@ -134,8 +135,8 @@ impl Shell {
     /// in `process_open_turns`. While the turn runs the container is forced
     /// open, so this only matters afterwards.
     pub(crate) fn toggle_process(&mut self, index: usize, cx: &mut Context<Self>) {
-        if !self.process_open_turns.insert(index) {
-            self.process_open_turns.remove(&index);
+        if !self.ui.process_open_turns.insert(index) {
+            self.ui.process_open_turns.remove(&index);
         }
         cx.notify();
     }
@@ -144,13 +145,13 @@ impl Shell {
     /// the engine's to number, so the UI never claims one from its own count
     /// (ADR-0060 §2.11).
     pub(crate) fn continue_paused_turn(&mut self, cx: &mut Context<Self>) {
-        if self.turn_in_flight {
+        if self.ui.turn_in_flight {
             return;
         }
         self.dismiss_pause();
         self.backend.continue_turn(None);
-        self.error_banner = None;
-        self.turn_in_flight = true;
+        self.ui.error_banner = None;
+        self.ui.turn_in_flight = true;
         cx.notify();
     }
 
@@ -158,60 +159,60 @@ impl Shell {
     /// wrap-up, using one more window. Cheaper and more predictable than
     /// silently raising the limit and letting it run on.
     pub(crate) fn wrap_up_paused_turn(&mut self, cx: &mut Context<Self>) {
-        if self.turn_in_flight {
+        if self.ui.turn_in_flight {
             return;
         }
         self.dismiss_pause();
         self.backend
             .prompt(qcode_core::engine::WRAP_UP_PROMPT.to_string(), Vec::new());
-        self.error_banner = None;
-        self.turn_in_flight = true;
+        self.ui.error_banner = None;
+        self.ui.turn_in_flight = true;
         cx.notify();
     }
 
     /// Hide the pause card without acting on it (the user typed a new
     /// instruction instead). The turn stays paused in the log.
     pub(crate) fn dismiss_pause(&mut self) {
-        if let Some(turn) = self.app.paused_turn() {
-            self.dismissed_pause = Some(turn.id);
+        if let Some(turn) = self.ui.app.paused_turn() {
+            self.ui.dismissed_pause = Some(turn.id);
         }
     }
 
     /// Whether this turn's pause card should render: a paused, ended turn the
     /// user has not dismissed.
     pub(crate) fn pause_card_visible(&self, index: usize) -> bool {
-        let turn = &self.app.turns[index];
+        let turn = &self.ui.app.turns[index];
         turn.pause.is_some()
             && turn.ended_at.is_some()
             && !turn.running()
-            && self.dismissed_pause != Some(turn.id)
+            && self.ui.dismissed_pause != Some(turn.id)
     }
 
     pub(crate) fn tool_expanded(&self, call_id: &str) -> bool {
-        !self.collapse_all
-            && !self.collapse_to_list
-            && self.expanded_process == Some(ProcessKey::Tool(call_id.to_string()))
+        !self.ui.collapse_all
+            && !self.ui.collapse_to_list
+            && self.ui.expanded_process == Some(ProcessKey::Tool(call_id.to_string()))
     }
 
     /// The parsed diff for a call, if it changed any text we could show.
     pub(crate) fn inline_diff(&self, call_id: &str) -> Option<Entity<DiffState>> {
-        self.inline_diffs.get(call_id).cloned()
+        self.ui.inline_diffs.get(call_id).cloned()
     }
 
     /// A patch we tried to parse and could not: the row keeps its counts but
     /// must not offer a viewer that would open nothing.
     pub(crate) fn diff_broken(&self, call_id: &str) -> bool {
-        self.broken_diffs.contains(call_id)
+        self.ui.broken_diffs.contains(call_id)
     }
 
     /// Parses a call's patch the first time something asks to see it, so a
     /// long session pays for the diffs it actually opens. Covers replayed
     /// sessions too: their events never pass through the live hook.
     fn ensure_inline_diff(&mut self, call_id: &str, cx: &mut Context<Self>) {
-        if self.inline_diffs.contains_key(call_id) {
+        if self.ui.inline_diffs.contains_key(call_id) {
             return;
         }
-        let Some(diff) = self.app.tool(call_id).and_then(|tool| tool.diff.clone()) else {
+        let Some(diff) = self.ui.app.tool(call_id).and_then(|tool| tool.diff.clone()) else {
             return;
         };
         if diff.patch.is_empty() {
@@ -219,20 +220,21 @@ impl Shell {
         }
         let Ok(files) = DiffFile::parse(&diff.patch) else {
             // Remember the failure so the row stops offering to open it.
-            self.broken_diffs.insert(call_id.to_string());
+            self.ui.broken_diffs.insert(call_id.to_string());
             return;
         };
         let state = cx.new(|cx| DiffState::new(files, cx));
-        self.inline_diffs.insert(call_id.to_string(), state);
+        self.ui.inline_diffs.insert(call_id.to_string(), state);
     }
 
     /// Parses every diff in a freshly loaded session. Replay never runs the
     /// live path, and skipping a patch that will not parse keeps the row from
     /// offering a "查看" button with nothing behind it.
     pub(crate) fn rebuild_inline_diffs(&mut self, cx: &mut Context<Self>) {
-        self.inline_diffs.clear();
-        self.broken_diffs.clear();
+        self.ui.inline_diffs.clear();
+        self.ui.broken_diffs.clear();
         let patches: Vec<(String, String)> = self
+            .ui
             .app
             .blocks
             .iter()
@@ -249,10 +251,10 @@ impl Shell {
             match DiffFile::parse(&patch) {
                 Ok(files) => {
                     let state = cx.new(|cx| DiffState::new(files, cx));
-                    self.inline_diffs.insert(call_id, state);
+                    self.ui.inline_diffs.insert(call_id, state);
                 }
                 Err(_) => {
-                    self.broken_diffs.insert(call_id);
+                    self.ui.broken_diffs.insert(call_id);
                 }
             }
         }
@@ -261,17 +263,17 @@ impl Shell {
     /// Opens the call's diff in the full-height panel.
     pub(crate) fn open_diff_view(&mut self, call_id: &str, cx: &mut Context<Self>) {
         self.ensure_inline_diff(call_id, cx);
-        let Some(state) = self.inline_diffs.get(call_id).cloned() else {
+        let Some(state) = self.ui.inline_diffs.get(call_id).cloned() else {
             return;
         };
-        self.diff_view = Some(state);
-        self.diff_view_call = Some(call_id.to_string());
+        self.ui.diff_view = Some(state);
+        self.ui.diff_view_call = Some(call_id.to_string());
         cx.notify();
     }
 
     pub(crate) fn close_diff_view(&mut self, cx: &mut Context<Self>) {
-        self.diff_view = None;
-        self.diff_view_call = None;
+        self.ui.diff_view = None;
+        self.ui.diff_view_call = None;
         cx.notify();
     }
 
@@ -291,8 +293,8 @@ impl Shell {
             .split(':')
             .next()
             .and_then(|index| index.parse::<usize>().ok());
-        if !self.expanded_code.remove(&key) {
-            self.expanded_code.insert(key);
+        if !self.ui.expanded_code.remove(&key) {
+            self.ui.expanded_code.insert(key);
         }
         if let Some(block) = block {
             self.remeasure_block(block, cx);
@@ -301,64 +303,68 @@ impl Shell {
     }
 
     pub(crate) fn turn_unit_index(&self, turn_index: usize) -> Option<usize> {
-        self.units
+        self.ui
+            .units
             .iter()
             .position(|unit| matches!(unit, DisplayUnit::Turn(index) if *index == turn_index))
     }
 
     pub(crate) fn jump_to_turn(&mut self, turn_index: usize, cx: &mut Context<Self>) {
-        if turn_index >= self.app.turns.len() {
+        if turn_index >= self.ui.app.turns.len() {
             return;
         }
-        self.selected_turn = Some(turn_index);
+        self.ui.selected_turn = Some(turn_index);
         if let Some(unit) = self.turn_unit_index(turn_index) {
-            self.scroller
+            self.ui
+                .scroller
                 .update(cx, |state, cx| state.scroll_to_item(unit, cx));
         }
         cx.notify();
     }
 
     pub(crate) fn step_turn(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.app.turns.is_empty() {
+        if self.ui.app.turns.is_empty() {
             return;
         }
         let current = self
+            .ui
             .selected_turn
-            .unwrap_or_else(|| self.app.turns.len().saturating_sub(1));
+            .unwrap_or_else(|| self.ui.app.turns.len().saturating_sub(1));
         let next = if delta < 0 {
             current.saturating_sub(1)
         } else {
-            (current + 1).min(self.app.turns.len() - 1)
+            (current + 1).min(self.ui.app.turns.len() - 1)
         };
         self.jump_to_turn(next, cx);
     }
 
     pub(crate) fn active_turn_index(&self) -> Option<usize> {
-        self.selected_turn
-            .filter(|index| *index < self.app.turns.len())
-            .or_else(|| self.app.turns.len().checked_sub(1))
+        self.ui
+            .selected_turn
+            .filter(|index| *index < self.ui.app.turns.len())
+            .or_else(|| self.ui.app.turns.len().checked_sub(1))
     }
 
     /// Follow the transcript scroll: when the user scrolls so a different
     /// turn reaches the viewport, that turn's rail dot becomes active.
     pub(crate) fn sync_active_turn_from_scroll(&mut self, cx: &mut Context<Self>) {
-        let state = self.scroller.read(cx);
+        let state = self.ui.scroller.read(cx);
         let target = if state.is_following_tail() {
             // Pinned to the bottom: the latest turn is active.
-            self.app.turns.len().checked_sub(1)
+            self.ui.app.turns.len().checked_sub(1)
         } else {
             let top = state.logical_scroll_top().item_ix;
-            self.units.iter().skip(top).find_map(|unit| match unit {
+            self.ui.units.iter().skip(top).find_map(|unit| match unit {
                 DisplayUnit::Turn(index) => Some(*index),
                 DisplayUnit::Loose(_) => None,
                 DisplayUnit::Pending { .. } => None,
             })
         };
         if let Some(target) = target
-            && target < self.app.turns.len()
-            && self.selected_turn != Some(target)
+            && target < self.ui.app.turns.len()
+            && self.ui.selected_turn != Some(target)
         {
-            self.selected_turn = Some(target);
+            self.ui.selected_turn = Some(target);
             cx.notify();
         }
     }
@@ -372,7 +378,8 @@ impl Shell {
         // 只写主题：整份覆盖会把 `last_session`/窗口几何冲回旧值。
         let theme = self.prefs.theme.clone();
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.theme = theme) {
-            self.app
+            self.ui
+                .app
                 .push_notice(format!("cannot save gui.json: {error}"));
         }
         self.prefs.apply(cx);
@@ -398,7 +405,8 @@ impl Shell {
         self.prefs.font_size = next;
         FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
-            self.app
+            self.ui
+                .app
                 .push_notice(format!("cannot save gui.json: {error}"));
         }
         self.prefs.apply(cx);
