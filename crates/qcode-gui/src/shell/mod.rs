@@ -443,36 +443,69 @@ impl Shell {
                 _ => None,
             };
             let live = self.is_visible(&target);
+            let target_id = target.id().map(str::to_owned);
+            let parked = target_id
+                .as_deref()
+                .is_some_and(|id| self.parked.contains_key(id));
             // A session the window is not showing that reaches a turn boundary
             // or a final message is "unread" until the user switches to it
             // (§7). Read before the event is consumed.
             let unread = !live && task_ops::marks_unread(&event);
-            let applied = if live {
-                routing::apply_to_ui(&mut self.ui, event)
-            } else if let Some(id) = target.id() {
-                // A session the window is not showing: its own parked view if
-                // the user has been there (§4), otherwise nothing but status —
-                // building a view needs a `Window` this drain does not have.
-                match self.parked.get_mut(id) {
-                    Some(ui) => routing::apply_to_ui(ui, event),
-                    None => {
-                        let dormant = self.dormant.entry(id.to_string()).or_default();
-                        let applied = crate::dormant::apply_to_dormant(dormant, event);
-                        // Once a background session has nothing left to keep it
-                        // is just an id; holding the entry would leak one per
-                        // session the user never opens.
-                        if dormant.is_settled() {
-                            self.dormant.remove(id);
+            let applied = match task_ops::destination(&event, live, parked, target_id.is_some()) {
+                // `SessionChanged` contains window information, not a
+                // session's contents (ADR-0058 §7), so it is applied before
+                // the visible/parked/dormant split. The session it names is
+                // usually *not* on screen yet: a draft that sent its first
+                // message is still there when the engine creates the
+                // session, so routing it by target would file it under
+                // "background" and the new task would never appear. Only a
+                // `NewSession`/`Resume` the window itself sent emits it, so
+                // following it can never steal the view from a background
+                // turn. Taking over the dormant entry it may have left
+                // behind also keeps a stale `running` flag from lingering.
+                task_ops::Destination::Window => {
+                    if let UiEvent::SessionChanged { id } = event {
+                        if let Some(shown) = id.as_deref() {
+                            self.unread.remove(shown);
+                            self.adopt_dormant(shown);
                         }
-                        applied
+                        self.ui.resetting = false;
+                        self.ui.empty_draft = false;
+                        self.session_changed(id);
                     }
+                    repaint = true;
+                    continue;
                 }
-            } else {
-                // A draft with no id while a real session is on screen. A draft
-                // never runs a turn, so there is nothing to route.
-                continue;
+                task_ops::Destination::OnScreen => routing::apply_to_ui(&mut self.ui, event),
+                // A session the user has visited: its own parked view (§4).
+                task_ops::Destination::Parked => {
+                    let Some(ui) = target_id.as_deref().and_then(|id| self.parked.get_mut(id))
+                    else {
+                        continue;
+                    };
+                    routing::apply_to_ui(ui, event)
+                }
+                // Nothing but status: building a view needs a `Window` this
+                // drain does not have.
+                task_ops::Destination::Background => {
+                    let Some(id) = target_id.as_deref() else {
+                        continue;
+                    };
+                    let dormant = self.dormant.entry(id.to_string()).or_default();
+                    let applied = crate::dormant::apply_to_dormant(dormant, event);
+                    // Once a background session has nothing left to keep it
+                    // is just an id; holding the entry would leak one per
+                    // session the user never opens.
+                    if dormant.is_settled() {
+                        self.dormant.remove(id);
+                    }
+                    applied
+                }
+                // A draft with no id while a real session is on screen. A
+                // draft never runs a turn, so there is nothing to route.
+                task_ops::Destination::Draft => continue,
             };
-            if unread && let Some(id) = target.id() {
+            if unread && let Some(id) = target_id.as_deref() {
                 self.unread.insert(id.to_string());
                 repaint |= true;
             }

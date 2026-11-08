@@ -46,6 +46,50 @@ pub fn edit_must_wait(state: TaskState) -> bool {
     matches!(state, TaskState::Running | TaskState::WaitingApproval)
 }
 
+/// 一条事件该落到哪儿（ADR-0058 §4、§7）。
+///
+/// 分流在碰任何视图之前决定：`Shell::poll` 一次 drain 里既有窗口自己要看的事，
+/// 也有屏幕外会话的事，落在错误的桶里轻则丢一次重绘，重则整个任务看不见。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    /// 窗口级：它说的是窗口该看谁，不是某个会话的内容。
+    Window,
+    /// 屏幕上的那个会话。
+    OnScreen,
+    /// 用户去过的后台会话：落进它的 parked 视图。
+    Parked,
+    /// 用户没开过的后台会话：只留状态，等切过去再建视图。
+    Background,
+    /// 真实会话在屏幕上时那个无 id 的草稿：没有会话可落。
+    Draft,
+}
+
+/// 在碰任何视图之前给事件分类。
+///
+/// `SessionChanged` **永远**是窗口级的，哪怕它点的那个会话还不在屏幕上——
+/// 草稿发出第一条消息时，引擎在另一个线程建好会话就把事件发回来了，此时窗口
+/// 还停在草稿上（`on_screen == false`）。按 target 分流会把它算成后台会话，
+/// 新任务于是永远不出现；而只有窗口自己发的 `NewSession`/`Resume` 才会产生
+/// 这条事件，跟着走不会抢走后台上正在跑的 turn 的视图。
+pub fn destination(
+    event: &UiEvent,
+    on_screen: bool,
+    parked: bool,
+    has_session: bool,
+) -> Destination {
+    if matches!(event, UiEvent::SessionChanged { .. }) {
+        Destination::Window
+    } else if on_screen {
+        Destination::OnScreen
+    } else if parked {
+        Destination::Parked
+    } else if has_session {
+        Destination::Background
+    } else {
+        Destination::Draft
+    }
+}
+
 /// 会话**不在屏上**时，哪些事件让它变成「未读」。
 ///
 /// §7 的措辞是「产生了 turn 边界或最终消息」：`TurnEnded` 是边界，
