@@ -88,7 +88,7 @@ pub(crate) struct TaskUi {
     /// already in the attachment store, so the composer can draw it.
     pub(crate) attachments: Vec<crate::attachments::PendingAttachment>,
     /// Files picked with the upload button, sent as paths with the next prompt.
-    pub(crate) file_refs: Vec<PathBuf>,
+    pub(crate) files: Vec<crate::attachments::PendingFile>,
 
     /// Variable-height virtual transcript with tail following. Per task, so a
     /// switch keeps the scroll position.
@@ -175,7 +175,7 @@ impl TaskUi {
             notice: None,
             input,
             attachments: Vec::new(),
-            file_refs: Vec::new(),
+            files: Vec::new(),
             scroller,
             _input_subscription: input_subscription,
             _scroller_subscription: scroller_subscription,
@@ -230,7 +230,7 @@ impl Shell {
             notice: std::mem::replace(&mut self.ui.notice, ui.notice),
             input: std::mem::replace(&mut self.ui.input, ui.input),
             attachments: std::mem::replace(&mut self.ui.attachments, ui.attachments),
-            file_refs: std::mem::replace(&mut self.ui.file_refs, ui.file_refs),
+            files: std::mem::replace(&mut self.ui.files, ui.files),
             scroller: std::mem::replace(&mut self.ui.scroller, ui.scroller),
             _input_subscription: std::mem::replace(
                 &mut self.ui._input_subscription,

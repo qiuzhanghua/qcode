@@ -87,13 +87,13 @@ pub trait Backend {
         &mut self,
         session: Option<&str>,
         text: String,
-        attachments: Vec<qcode_core::engine::Attachment>,
+        attachments: Vec<qcode_core::engine::AttachmentSource>,
     );
     /// Continue the paused turn in a fresh budget window (ADR-0060). A no-op
     /// when nothing is paused.
     fn continue_turn(&mut self, _raise: Option<RaiseLimit>) {}
     /// Steer a message into the running turn's next step. A no-op when idle.
-    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::AttachmentSource>) {}
     /// One operation on a queued (next-turn) message: steer it into the
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
@@ -216,10 +216,10 @@ impl Backend for UnconfiguredBackend {
         &mut self,
         _session: Option<&str>,
         _text: String,
-        _attachments: Vec<qcode_core::engine::Attachment>,
+        _attachments: Vec<qcode_core::engine::AttachmentSource>,
     ) {
     }
-    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::AttachmentSource>) {}
 
     fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
 
@@ -412,7 +412,7 @@ impl Backend for LocalBackend {
         &mut self,
         session: Option<&str>,
         text: String,
-        attachments: Vec<qcode_core::engine::Attachment>,
+        attachments: Vec<qcode_core::engine::AttachmentSource>,
     ) {
         self.send(UiCommand::Prompt {
             session: session.map(str::to_string),
@@ -425,7 +425,7 @@ impl Backend for LocalBackend {
         self.send(UiCommand::Continue { raise });
     }
 
-    fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
+    fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::AttachmentSource>) {
         self.send(UiCommand::Steer { text, attachments });
     }
 

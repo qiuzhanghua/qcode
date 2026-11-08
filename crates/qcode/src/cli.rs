@@ -202,6 +202,11 @@ pub(crate) struct RunArgs {
     /// provider that accepts images.
     #[arg(long = "image", value_name = "PATH")]
     pub(crate) image: Vec<PathBuf>,
+
+    /// Attach a file of any type. The bytes go into the attachment store and
+    /// the model reads a handle, not the contents. Repeatable.
+    #[arg(long = "file", value_name = "PATH")]
+    pub(crate) file: Vec<PathBuf>,
     /// Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled
     /// (same path as Ctrl-C, including process-group cleanup) and qc exits 124.
     #[arg(long, value_name = "SECS")]

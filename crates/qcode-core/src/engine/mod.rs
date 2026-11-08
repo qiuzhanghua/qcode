@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
-mod attachments;
+pub mod attachments;
 mod stream;
 mod tools;
 mod turn;
@@ -210,8 +210,8 @@ pub struct RunOptions<'a> {
     pub skills: Option<String>,
     /// Egress proxy shared with tools that make network calls.
     pub network: Option<crate::network::SharedNetwork>,
-    /// Images the user attached to this message (base64, no data-URI prefix).
-    pub attachments: Vec<Attachment>,
+    /// Pictures and files attached to this message (ADR-0061).
+    pub attachments: Vec<AttachmentSource>,
     /// Shared pending-message inbox. When present, steering input is claimed
     /// before every model request and appended as user messages, so a push
     /// lands in the running turn's next step instead of waiting for a new turn.
@@ -222,11 +222,21 @@ pub struct RunOptions<'a> {
     pub continuation: Option<Continuation>,
 }
 
-/// One image attached to a user message.
+/// One image attached to a user message, still in memory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Attachment {
     pub mime_type: String,
     pub data_base64: String,
+}
+
+/// One attached payload, in whichever form the caller has it.
+///
+/// The CLI hands over bytes (`--image`); the GUI stores the picture the moment
+/// it is pasted and hands over the reference, so nothing is copied twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachmentSource {
+    Inline(Attachment),
+    Stored(qcode_attachments::AttachmentRef),
 }
 
 #[derive(Debug, Clone)]

@@ -10,6 +10,7 @@ name = "qc"
 path = "src/main.rs"
 
 [dependencies]
+qcode-attachments = { version = "0.7.8", path = "../qcode-attachments" }
 qcode-core = { version = "0.7.8", path = "../qcode-core" }
 qcode-providers = { version = "0.7.8", path = "../qcode-providers" }
 qcode-tools = { version = "0.7.8", path = "../qcode-tools" }

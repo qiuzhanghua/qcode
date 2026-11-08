@@ -580,7 +580,7 @@ impl Shell {
         // 只有执行中且输入框为空时，按钮才变成停止红点。
         let composer_has_draft = !self.ui.input.read(cx).value().trim().is_empty()
             || !self.ui.attachments.is_empty()
-            || !self.ui.file_refs.is_empty();
+            || !self.ui.files.is_empty();
         // 任务累计 token 用量：汇总所有 turn 的输入/输出/缓存 token。
         let total_tokens: u64 = self
             .ui
@@ -1115,19 +1115,15 @@ impl Shell {
                 }
                 // Pending file references shown as removable chips above the
                 // input, aligned to its left edge; wraps once too wide.
-                if !self.ui.file_refs.is_empty() {
+                if !self.ui.files.is_empty() {
                     let mut chips = div()
                         .flex()
                         .flex_row()
                         .flex_wrap()
                         .gap_1();
-                    for path in &self.ui.file_refs {
-                        let name = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("<file>")
-                            .to_string();
-                        let remove_path = path.clone();
+                    for (index, pending) in self.ui.files.iter().enumerate() {
+                        let name = pending.file.name.clone();
+                        let size = pending.file.bytes;
                         let remove_entity = entity.clone();
                         chips = chips.child(
                             div()
@@ -1139,19 +1135,21 @@ impl Shell {
                                 .bg(rgba(0x7f7f7f14))
                                 .px_2()
                                 .py_1()
+                                .child(div().text_size(sp(CAPTION_SIZE)).child(name))
                                 .child(
                                     div()
                                         .text_size(sp(CAPTION_SIZE))
-                                        .child(name),
+                                        .text_color(rgb(0x999999))
+                                        .child(crate::render::transcript::human_bytes(size)),
                                 )
                                 .child(
                                     div()
-                                        .id(format!("file-remove-{}", remove_path.display()))
+                                        .id(("file-remove", index))
                                         .cursor_pointer()
                                         .text_color(rgb(0xe8463a))
                                         .on_click(move |_, _, cx| {
                                             remove_entity.update(cx, |shell, cx| {
-                                                shell.remove_file_ref(&remove_path, cx);
+                                                shell.remove_file(index, cx);
                                             });
                                         })
                                         .child("×"),

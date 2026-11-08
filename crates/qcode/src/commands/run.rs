@@ -21,6 +21,7 @@ pub(crate) async fn cmd_run(
         no_stream_usage,
         max_turns,
         image,
+        file,
         yes,
         cwd,
         resume,
@@ -95,7 +96,27 @@ pub(crate) async fn cmd_run(
     let resolved = &kernel.resolved;
     let pricing = config::pricing_for(loaded, &resolved.model, max_cost)?;
 
-    let attachments = read_images(&image)?;
+    let mut attachments = read_images(&image)?
+        .into_iter()
+        .map(qcode_core::engine::AttachmentSource::Inline)
+        .collect::<Vec<_>>();
+    if !file.is_empty() {
+        // Files are stored, never inlined: the model gets a read-only path
+        // (ADR-0061 §7).
+        let attachments_store = qcode_attachments::AttachmentStore::open(kernel.store.root())?;
+        for path in &file {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+            let reader = std::fs::File::open(path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            let stored = attachments_store.put_file(name, reader)?;
+            attachments.push(qcode_core::engine::AttachmentSource::Stored(
+                qcode_attachments::AttachmentRef::File(stored),
+            ));
+        }
+    }
 
     let redactor = logging::Redactor::new(resolved.api_key.clone());
     tracing::info!(

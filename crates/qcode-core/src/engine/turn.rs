@@ -112,14 +112,16 @@ where
     // Bytes go to the store first, so the log entry below can name them and a
     // resumed turn can read them back (ADR-0061 §3).
     let attachment_store = qcode_attachments::AttachmentStore::open(ctx.store.root())?;
-    let attachments = super::attachments::store_inline(&attachment_store, &options.attachments)?;
+    let attachments = super::attachments::store_sources(&attachment_store, &options.attachments)?;
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
     writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
     events = ctx.store.load(options.session_id)?;
-    let mut messages = history::messages_from_events_with(&events, |image| {
-        attachment_store.read_image(image).ok()
-    });
+    let mut messages = history::messages_from_events_with(
+        &events,
+        |image| attachment_store.read_image(image).ok(),
+        |file| super::attachments::file_handle_text(&attachment_store, file),
+    );
     // A model without image input still gets a usable turn: the picture becomes
     // a line of text naming what was attached (ADR-0061 §8).
     if !ctx.provider.capabilities().images {
@@ -330,24 +332,30 @@ where
         // images ride only on this request's blocks (like the initial input).
         if let Some(inbox) = &options.inbox {
             for message in inbox.claim_next_step() {
+                // The refs go into the log too, so a resumed turn still sees
+                // the picture the user sent mid-turn.
+                let refs =
+                    super::attachments::store_sources(&attachment_store, &message.attachments)?;
                 writer.append(
                     EventKind::UserMessage(UserMessage {
                         starts_segment: true,
                         queued_id: Some(message.id.clone()),
                         text: message.text.clone(),
-                        attachments: Vec::new(),
+                        attachments: refs.clone(),
                         // Steering is the user talking, not a continuation.
                         continuation: None,
                     }),
                     &mut on_event,
                 )?;
-                let mut blocks = vec![ContentBlock::Text { text: message.text }];
-                blocks.extend(message.attachments.into_iter().map(|attachment| {
-                    ContentBlock::Image {
-                        mime_type: attachment.mime_type,
-                        data_base64: attachment.data_base64,
-                    }
-                }));
+                let mut blocks = history::blocks_for_message(
+                    &message.text,
+                    &refs,
+                    |image| attachment_store.read_image(image).ok(),
+                    |file| super::attachments::file_handle_text(&attachment_store, file),
+                );
+                if !ctx.provider.capabilities().images {
+                    super::attachments::omit_images_in(&mut blocks);
+                }
                 messages.push(Message {
                     role: Role::User,
                     blocks,

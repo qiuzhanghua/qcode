@@ -7,15 +7,16 @@
 
 use std::path::{Path, PathBuf};
 
-use qcode_attachments::{AttachmentStore, ImageMime, NewImage};
-use qcode_core::engine::Attachment;
+use qcode_attachments::{
+    AttachmentRef, AttachmentStore, FileRef, ImageMime, NewImage, NormalizationPolicy,
+};
+use qcode_core::engine::AttachmentSource;
 
 /// An image waiting in the composer, already stored.
 #[derive(Debug)]
 pub(crate) struct PendingAttachment {
-    /// What the turn sends. The engine stores these bytes again and hits the
-    /// same object (same bytes, same sha), so sending costs one hash.
-    pub(crate) attachment: Attachment,
+    /// What the turn sends: a reference, because the bytes are already stored.
+    pub(crate) attachment: AttachmentSource,
     /// The stored object, rendered as the thumbnail.
     pub(crate) preview: PathBuf,
     /// File name, or `pasted image` for the clipboard.
@@ -39,20 +40,21 @@ pub(crate) fn attach_image(
         ));
     };
     let store = AttachmentStore::open(data_dir).map_err(|error| error.to_string())?;
+    // Normalize here, not at send time: the thumbnail then shows exactly the
+    // bytes the model will get, and sending is just a reference.
     let image = store
-        .put_image(NewImage {
-            bytes,
-            mime,
-            name: Some(&label),
-        })
+        .put_image_normalized(
+            NewImage {
+                bytes,
+                mime,
+                name: Some(&label),
+            },
+            &NormalizationPolicy::default(),
+        )
         .map_err(|error| error.to_string())?;
-    use base64::Engine as _;
     Ok(PendingAttachment {
-        attachment: Attachment {
-            mime_type: image.mime.as_str().to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        },
         preview: store.image_path(&image),
+        attachment: AttachmentSource::Stored(AttachmentRef::Image(image)),
         label,
     })
 }
@@ -99,7 +101,10 @@ mod tests {
     fn attaching_stores_the_object_and_hands_back_its_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pending = attach_image(dir.path(), &png(), "shot.png").expect("attach");
-        assert_eq!(pending.attachment.mime_type, "image/png");
+        let AttachmentSource::Stored(AttachmentRef::Image(image)) = &pending.attachment else {
+            panic!("expected a stored image reference");
+        };
+        assert_eq!(image.mime.as_str(), "image/png");
         assert_eq!(pending.label, "shot.png");
         assert!(pending.preview.exists(), "the thumbnail path must exist");
         assert!(pending.preview.starts_with(dir.path().join("attachments")));
@@ -107,6 +112,21 @@ mod tests {
         // Storing the same bytes again reuses the object.
         let again = attach_image(dir.path(), &png(), "copy.png").expect("attach again");
         assert_eq!(again.preview, pending.preview);
+    }
+
+    #[test]
+    fn a_picked_file_is_copied_into_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, b"hello world\n").expect("write");
+
+        let pending = attach_file(dir.path(), &source).expect("attach");
+        assert_eq!(pending.file.name, "notes.txt");
+        assert_eq!(pending.file.bytes, 12);
+
+        let store = AttachmentStore::open(dir.path()).expect("store");
+        let stored = store.file_path(&pending.file).expect("path");
+        assert_eq!(std::fs::read(stored).expect("read"), b"hello world\n");
     }
 
     #[test]
@@ -139,4 +159,27 @@ mod tests {
                 .is_none()
         );
     }
+}
+
+/// A file waiting in the composer: the store keeps the bytes, the composer
+/// keeps the name and size (ADR-0061 §7).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingFile {
+    pub(crate) file: FileRef,
+}
+
+/// Copy `path` into the store, streaming it so a large file never sits in
+/// memory whole. The error text is user-facing.
+pub(crate) fn attach_file(data_dir: &Path, path: &Path) -> Result<PendingFile, String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{}: 不是有效的文件名", path.display()))?
+        .to_string();
+    let store = AttachmentStore::open(data_dir).map_err(|error| error.to_string())?;
+    let reader = std::fs::File::open(path).map_err(|error| format!("{name}: {error}"))?;
+    let file = store
+        .put_file(&name, reader)
+        .map_err(|error| format!("{name}: {error}"))?;
+    Ok(PendingFile { file })
 }

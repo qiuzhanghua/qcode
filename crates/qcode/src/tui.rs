@@ -236,7 +236,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     }
 
     // Pasted images wait here until the next submit.
-    let mut pending_images: Vec<qcode_core::engine::Attachment> = Vec::new();
+    let mut pending_images: Vec<qcode_core::engine::AttachmentSource> = Vec::new();
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
     let mut engine_running = false;
@@ -387,11 +387,15 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 Ok(image) => {
                                     use base64::Engine as _;
                                     let size_kb = image.png.len() / 1024;
-                                    pending_images.push(qcode_core::engine::Attachment {
-                                        mime_type: "image/png".to_string(),
-                                        data_base64: base64::engine::general_purpose::STANDARD
-                                            .encode(&image.png),
-                                    });
+                                    pending_images.push(
+                                        qcode_core::engine::AttachmentSource::Inline(
+                                            qcode_core::engine::Attachment {
+                                                mime_type: "image/png".to_string(),
+                                                data_base64: base64::engine::general_purpose::STANDARD
+                                                    .encode(&image.png),
+                                            },
+                                        ),
+                                    );
                                     app.push_notice(format!(
                                         "image attached: {}x{} ({} KB) — sent with the next message ({} pending)",
                                         image.width,

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use qcode_core::approval::{Answer, ApprovalRequest, Approver};
-use qcode_core::engine::Attachment;
+use qcode_core::engine::AttachmentSource;
 use qcode_core::engine::Delta;
 use qcode_core::event::Event;
 use qcode_core::inbox::QueuedMessage;
@@ -191,13 +191,13 @@ pub enum UiCommand {
     Prompt {
         session: Option<String>,
         text: String,
-        attachments: Vec<Attachment>,
+        attachments: Vec<AttachmentSource>,
     },
     /// Steer `text` into the running turn's next step (busy_delivery = steer).
     /// Ignored when no turn is running.
     Steer {
         text: String,
-        attachments: Vec<Attachment>,
+        attachments: Vec<AttachmentSource>,
     },
     /// One operation on a queued (next-turn) message.
     QueueOp { id: String, op: QueueOp },

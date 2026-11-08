@@ -6,22 +6,63 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use qcode_attachments::{AttachmentRef, ImageRef};
+use qcode_attachments::{AttachmentRef, FileRef, ImageRef};
 
 use crate::event::{ContentBlock, Event, EventKind};
 use crate::provider::{Message, Role};
 
 pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
-    messages_from_events_with(events, |_| None)
+    messages_from_events_with(events, |_| None, |_| String::new())
 }
 
-/// Like [`messages_from_events`], but expands stored image references back into
-/// bytes. `load` returns `None` when the object is gone; the reference stays in
-/// the log either way, so the image reappears on a later pass once the store can
-/// serve it.
-pub fn messages_from_events_with<F>(events: &[Event], mut load: F) -> Vec<Message>
+/// The blocks one user message turns into: the text, then a block per
+/// attachment. `load` returns `None` when the object is gone (the reference
+/// stays in the log, so a later pass can serve it); `describe_file` returns the
+/// handle text for a stored file, or an empty string to skip it.
+pub fn blocks_for_message<F, G>(
+    text: &str,
+    attachments: &[AttachmentRef],
+    mut load: F,
+    mut describe_file: G,
+) -> Vec<ContentBlock>
 where
     F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+    G: FnMut(&FileRef) -> String,
+{
+    let mut blocks = vec![ContentBlock::Text {
+        text: text.to_string(),
+    }];
+    for attachment in attachments {
+        match attachment {
+            AttachmentRef::Image(image) => {
+                if let Some(bytes) = load(image) {
+                    blocks.push(ContentBlock::Image {
+                        mime_type: image.mime.as_str().to_string(),
+                        data_base64: BASE64.encode(bytes),
+                    });
+                }
+            }
+            AttachmentRef::File(file) => {
+                let text = describe_file(file);
+                if !text.is_empty() {
+                    blocks.push(ContentBlock::Text { text });
+                }
+            }
+        }
+    }
+    blocks
+}
+
+/// Like [`messages_from_events`], but expands stored references: images come
+/// back as bytes, files as the handle text the model reads (ADR-0061 §7).
+pub fn messages_from_events_with<F, G>(
+    events: &[Event],
+    mut load: F,
+    mut describe_file: G,
+) -> Vec<Message>
+where
+    F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+    G: FnMut(&FileRef) -> String,
 {
     // A compaction event replaces the seq range it names. Older compactions
     // nested inside a newer range are dropped with the rest of that range, so
@@ -53,20 +94,12 @@ where
                 tool_call_id: None,
             }),
             EventKind::UserMessage(message) => {
-                let mut blocks = vec![ContentBlock::Text {
-                    text: message.text.clone(),
-                }];
-                for attachment in &message.attachments {
-                    let AttachmentRef::Image(image) = attachment else {
-                        continue;
-                    };
-                    if let Some(bytes) = load(image) {
-                        blocks.push(ContentBlock::Image {
-                            mime_type: image.mime.as_str().to_string(),
-                            data_base64: BASE64.encode(bytes),
-                        });
-                    }
-                }
+                let blocks = blocks_for_message(
+                    &message.text,
+                    &message.attachments,
+                    &mut load,
+                    &mut describe_file,
+                );
                 messages.push(Message {
                     role: Role::User,
                     blocks,
@@ -140,7 +173,11 @@ mod tests {
             }),
         )];
 
-        let messages = messages_from_events_with(&events, |image| store.read_image(image).ok());
+        let messages = messages_from_events_with(
+            &events,
+            |image| store.read_image(image).ok(),
+            |_| String::new(),
+        );
         let blocks = &messages[0].blocks;
         assert_eq!(blocks.len(), 2, "text plus the image");
         assert_eq!(
@@ -182,7 +219,7 @@ mod tests {
             }),
         )];
 
-        let messages = messages_from_events_with(&events, |_| None);
+        let messages = messages_from_events_with(&events, |_| None, |_| String::new());
         assert_eq!(messages[0].blocks.len(), 1);
     }
 

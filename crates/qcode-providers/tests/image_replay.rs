@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 /// A 2×1 PNG: enough for the store to read a real width/height back.
 fn png() -> Vec<u8> {
-    const BODY: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP8z8Dwn4GBgQEADgAB/1sM3sAAAAAASUVORK5CYII=";
+    const BODY: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR42mP4z8AAQv8BD/kD/Zh51wAAAAAASUVORK5CYII=";
     BASE64.decode(BODY.trim()).expect("fixture")
 }
 
@@ -46,7 +46,10 @@ fn options<'a>(id: &'a str, cwd: &std::path::Path, attachments: Vec<Attachment>)
         agents_md: None,
         skills: None,
         network: None,
-        attachments,
+        attachments: attachments
+            .into_iter()
+            .map(qcode_core::engine::AttachmentSource::Inline)
+            .collect(),
         inbox: None,
         continuation: None,
     }
@@ -134,7 +137,11 @@ async fn an_image_is_stored_once_and_replayed_verbatim() {
     assert_eq!(BASE64.decode(data_base64).expect("base64"), bytes);
 
     // Replaying the log yields the same blocks, byte for byte.
-    let replayed = messages_from_events_with(&events, |image| attachments.read_image(image).ok());
+    let replayed = messages_from_events_with(
+        &events,
+        |image| attachments.read_image(image).ok(),
+        |_| String::new(),
+    );
     let replayed_user = replayed
         .iter()
         .rev()

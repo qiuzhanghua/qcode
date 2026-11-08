@@ -5,20 +5,32 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use qcode_attachments::{AttachmentRef, AttachmentStore, ImageMime, NewImage, NormalizationPolicy};
+use qcode_attachments::{
+    AttachmentRef, AttachmentStore, FileRef, ImageMime, NewImage, NormalizationPolicy,
+};
 
 use crate::event::ContentBlock;
 use crate::provider::Message;
 
-use super::{Attachment, EngineError};
+use super::{AttachmentSource, EngineError};
 
-/// Store every inline image and hand back the references to log.
-pub fn store_inline(
+/// Store every inline payload and hand back the references to log.
+///
+/// Payloads the caller already stored pass through untouched: the GUI saves a
+/// picture the moment it is pasted, so the turn never copies it twice.
+pub fn store_sources(
     store: &AttachmentStore,
-    inline: &[Attachment],
+    sources: &[AttachmentSource],
 ) -> Result<Vec<AttachmentRef>, EngineError> {
-    let mut refs = Vec::with_capacity(inline.len());
-    for attachment in inline {
+    let mut refs = Vec::with_capacity(sources.len());
+    for source in sources {
+        let attachment = match source {
+            AttachmentSource::Stored(reference) => {
+                refs.push(reference.clone());
+                continue;
+            }
+            AttachmentSource::Inline(attachment) => attachment,
+        };
         let mime = ImageMime::from_mime_str(&attachment.mime_type).ok_or_else(|| {
             EngineError::UnsupportedAttachment {
                 mime: attachment.mime_type.clone(),
@@ -42,13 +54,43 @@ pub fn store_inline(
     Ok(refs)
 }
 
+/// The line a model reads in place of a stored file (ADR-0061 §7): enough to
+/// find the bytes, and explicit about what happens when it cannot.
+pub fn file_handle_text(store: &AttachmentStore, file: &FileRef) -> String {
+    let sha = &file.id.to_hex()[..8];
+    match store.file_path(file) {
+        Ok(path) => format!(
+            "[File {:?} ({} bytes, sha256:{sha}): read-only copy saved at {:?}. Read that path \
+             with your file tools when its contents are needed; copy it to a writable location \
+             before modifying it. When delegating file work, include this saved path in the \
+             delegation prompt.]",
+            file.name,
+            file.bytes,
+            path.display().to_string()
+        ),
+        Err(_) => format!(
+            "[File {:?} ({} bytes, sha256:{sha}) was attached, but its saved copy is not readable \
+             from this process. Report that limitation if its contents are needed; do not claim \
+             to have read it.]",
+            file.name, file.bytes
+        ),
+    }
+}
+
 /// Replace image blocks with a text placeholder when the model cannot see
 /// images. The turn still runs: the model learns an image was attached, and a
 /// later replay on a vision model can read the same ref out of the log
 /// (ADR-0061 §8).
 pub fn omit_images(messages: &mut [Message]) {
     for message in messages.iter_mut() {
-        for block in message.blocks.iter_mut() {
+        omit_images_in(&mut message.blocks);
+    }
+}
+
+/// The same swap for one message's blocks.
+pub fn omit_images_in(blocks: &mut [ContentBlock]) {
+    {
+        for block in blocks.iter_mut() {
             let ContentBlock::Image {
                 mime_type,
                 data_base64,

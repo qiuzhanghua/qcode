@@ -5286,6 +5286,7 @@ dependencies = [
  "embed-resource",
  "futures-util",
  "qcode-acp",
+ "qcode-attachments",
  "qcode-core",
  "qcode-gui",
  "qcode-image",

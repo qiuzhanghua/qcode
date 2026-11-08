@@ -218,29 +218,27 @@ impl Shell {
         // While a turn is running the backend queues the message as a
         // follow-up turn instead of dropping it; the queue dock above the
         // composer shows what is pending and can steer an item into the turn.
-        let mut prompt = self.ui.input.read(cx).value().trim().to_string();
-        if prompt.is_empty() && self.ui.file_refs.is_empty() {
+        let prompt = self.ui.input.read(cx).value().trim().to_string();
+        if prompt.is_empty() && self.ui.attachments.is_empty() && self.ui.files.is_empty() {
             return;
-        }
-        // Uploaded files travel as their paths in the message text, so the
-        // model can read them with the file tools.
-        if !self.ui.file_refs.is_empty() {
-            let paths = self
-                .ui
-                .file_refs
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            prompt.push_str(&format!("\n\n[附件文件]\n{paths}"));
-            self.ui.file_refs.clear();
         }
         // busy_delivery = steer hands the message to the running turn's next
         // step; the default queues it as the next turn.
-        let attachments = std::mem::take(&mut self.ui.attachments)
+        // Pictures were stored when they were attached; files were too. The
+        // turn only carries references (ADR-0061 §4).
+        let mut attachments = std::mem::take(&mut self.ui.attachments)
             .into_iter()
             .map(|pending| pending.attachment)
             .collect::<Vec<_>>();
+        attachments.extend(
+            std::mem::take(&mut self.ui.files)
+                .into_iter()
+                .map(|pending| {
+                    qcode_core::engine::AttachmentSource::Stored(
+                        qcode_attachments::AttachmentRef::File(pending.file),
+                    )
+                }),
+        );
         if self.ui.turn_in_flight && self.busy_delivery == qcode_kernel::config::BusyDelivery::Steer
         {
             self.backend.steer(prompt.clone(), attachments);
@@ -295,11 +293,10 @@ impl Shell {
     pub(crate) fn add_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         match crate::attachments::attach_image_path(&self.data_dir, &path) {
             Ok(Some(pending)) => self.ui.attachments.push(pending),
-            Ok(None) => {
-                if !self.ui.file_refs.contains(&path) {
-                    self.ui.file_refs.push(path);
-                }
-            }
+            Ok(None) => match crate::attachments::attach_file(&self.data_dir, &path) {
+                Ok(pending) => self.ui.files.push(pending),
+                Err(error) => self.ui.app.push_notice(error),
+            },
             Err(error) => self.ui.app.push_notice(error),
         }
         cx.notify();
@@ -324,8 +321,10 @@ impl Shell {
     }
 
     /// Remove one pending file reference (the chip's red ×).
-    pub(crate) fn remove_file_ref(&mut self, path: &Path, cx: &mut Context<Self>) {
-        self.ui.file_refs.retain(|known| known != path);
+    pub(crate) fn remove_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.ui.files.len() {
+            self.ui.files.remove(index);
+        }
         cx.notify();
     }
 
