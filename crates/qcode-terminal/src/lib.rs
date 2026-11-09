@@ -10,9 +10,11 @@
 
 pub mod screen;
 pub mod session;
+pub mod shell;
 
 pub use screen::{CellView, Events, Screen, View};
 pub use session::{Session, SessionConfig};
+pub use shell::{Choice, Probe, ProcessRow, ProcessSource, Source};
 
 // Re-exported so a caller can name `TermMode`, `Color`, `Flags` and friends
 // without depending on `alacritty_terminal` directly at a second version.

@@ -4689,8 +4689,25 @@ GUI 落地后这三条边界开始漏：
    `/usr/bin/zsh`。
 
    平台实现：Linux 读 `/proc/<pid>/comm`、`/proc/<pid>/exe`、`status` 的 `PPid`；
-   macOS 用 `libc::proc_pidpath` 取路径、`sysctl(KERN_PROC_PID)` 取 ppid（`libc`
-   已是 workspace 依赖）；Windows 没有等价的 shell 链，维持探测：
+   Windows 没有等价的 shell 链，维持探测：
+
+   macOS 改为**一次 `ps -A -o pid=,ppid=,comm=` 取表** + `libc::proc_pidpath` 取精确
+   路径。原计划用 `sysctl(KERN_PROC_PID)`，但 `libc` 在 Apple 平台上**没有导出
+   `kinfo_proc`**；自己声明那个约 640 字节的结构体、在编译和运行都做不到的环境里赌
+   字段偏移，读错就是静默的垃圾值。`ps` 的输出格式稳定，解析逻辑是纯函数，所以在
+   Linux 的 CI 里也能拿真实输出去测它；一次调用的代价，在一次终端创建面前可以忽略。
+
+   已知边界：非交互 shell 执行单条 `-c` 命令时可能 `exec` 掉它，从而**不出现**在父链
+   里（实测 `bash -c qc` 的链条直接从 `qc` 开始）。交互 shell 一定等子进程，所以真实
+   场景（用户在自己 shell 里敲 `qc gui`）不受影响；脚本场景下链条答不出来，退回
+   `$SHELL`，两者本来也无从区分。
+
+   已端到端实测：`$SHELL=/usr/bin/zsh`，从 bash 启动时探测结果为 `/usr/bin/bash`。
+
+   **Windows 那条分支在这里编译不到**（开发机上没有 rustup、没有 Windows 目标），只做
+   了代码审查。它的逻辑是独立的十几行（按 `pwsh` → `powershell` → `cmd` 依次在 `PATH`
+   上找，找不到落 `COMSPEC`），与 Unix 路径不共享代码，所以一旦有问题也是浅层的编译
+   错误而非行为错误。合并前需要在能编译 Windows 目标的环境里过一次 `cargo check`。
 
    | 平台 | 顺序 |
    |---|---|
@@ -4780,6 +4797,12 @@ GUI 落地后这三条边界开始漏：
 4. **shell 探测**（注入假进程链，不依赖真进程树）：父链是 `bash` → 取 bash；
    父链是 `sh → zsh`（包装壳）→ 取 zsh 不是 sh；父链无 shell → 落 `$SHELL`；
    `$SHELL` 指向不存在的路径 → 落 `/bin/sh`；配置的 shell 不在 PATH → 落回探测。
+
+   已实现 23 个用例。除上面几条，还覆盖了：父链成环、链条超长、父进程读不到、
+   `(deleted)` 后缀、`/etc/passwd` 按 uid 匹配、服务账号（`nologin`）不算 shell、
+   `ps` 表解析（含带空格的 `comm`、畸形行）。另有两条打真实系统的：探测结果必须是
+   可执行的绝对路径；`ps` 解析结果与 `/proc` 对同一进程的 ppid 必须一致——后者让
+   macOS 那条唯一实现路径也在 Linux CI 里被真实数据跑过。
 5. **按键编码**表驱动：`Ctrl+C`、方向键（两种光标键模式）、`F1`–`F12`、`Alt+x`、
    bracketed paste、`Shift+Tab`。
 6. **生命周期**：关 tab 后进程组全部消失（无孤儿）；有前台进程时关闭会弹确认；
@@ -4793,5 +4816,9 @@ GUI 落地后这三条边界开始漏：
 2. **`max_terminals` 与 scrollback 的默认值**：8 / 10000 是估的，要看真实内存实测。
 3. **Windows ConPTY 的 EOF 时序**：需要在真机上验；不通过则要加「子进程退出 → 释放
    master」的显式步骤（terminal-ts 用两个线程解决）。
-4. **是否需要「终端里也能触发 agent」**（比如把一段命令输出发给任务）：本 ADR 明确
+4. **探测到的 shell 要不要当 login shell 起**：`alacritty` 在 Linux 上裸起（不加
+   `-l`），在 macOS 上则用 `/usr/bin/login` 包一层以注册 tty 会话。一旦我们显式传
+   shell，这两个默认行为都不再适用，等于要在两个平台上各做一个决定（`-l` 会不会让
+   `.zprofile` 重复执行、`login` 包装是否还要保留）。
+5. **是否需要「终端里也能触发 agent」**（比如把一段命令输出发给任务）：本 ADR 明确
    不做，但侧边栏已经是单入口，将来加「在终端里选中 → 发给当前任务」的成本不高。
