@@ -79,8 +79,11 @@ pub(crate) struct Shell {
     pub(crate) terminal_selecting: bool,
     /// A multi-line paste waiting for the user to say yes (ADR-0062 §5).
     pub(crate) pending_terminal_paste: Option<(String, usize)>,
-    /// Family the terminal draws with, picked once (see `pick_terminal_font`).
+    /// Family the terminal draws Latin with, picked once (see `pick_terminal_fonts`).
     pub(crate) terminal_font: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::SharedString>>>,
+    /// Family the terminal draws CJK with: the same face the composer uses, so Chinese
+    /// looks the same in both places (see `pick_terminal_fonts`).
+    pub(crate) terminal_cjk_font: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::SharedString>>>,
     /// Text an input method is still composing (underlined, not yet sent).
     pub(crate) terminal_preedit: Option<String>,
     /// Where the cursor was on the last painted frame, for IME placement.
@@ -276,6 +279,7 @@ impl Shell {
             terminal_selecting: false,
             pending_terminal_paste: None,
             terminal_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            terminal_cjk_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
             terminal_preedit: None,
             terminal_cursor: std::rc::Rc::new(std::cell::Cell::new(None)),
             pending_send: false,

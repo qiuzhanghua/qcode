@@ -69,6 +69,8 @@ impl Shell {
                 self.ui.resetting
             );
         }
+        // 同上：新建任务之后要看到它，而不是留在终端上。
+        self.enter_task_view(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -191,6 +193,9 @@ impl Shell {
         // 不清 hovered_task：行内按钮的显示由 on_hover 事件自行维护，
         // 点击任务后鼠标仍停留在该行上，按钮应保持可见。
         self.refresh_tasks();
+        // 侧栏点任务就是「要看这个任务」，视图必须跟着走；否则任务在终端后面加载
+        // 完毕，用户却还看着 shell，只能去按「回到任务」。
+        self.enter_task_view(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }

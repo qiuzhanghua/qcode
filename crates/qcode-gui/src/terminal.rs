@@ -203,10 +203,24 @@ impl crate::shell::Shell {
     /// Back to the task, leaving the terminals running (ADR-0062: they are not tabs
     /// of the transcript, and closing the view is not closing the shells).
     pub(crate) fn show_tasks(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_task_view(cx);
+        cx.notify();
+    }
+
+    /// Bring the task view to the front.
+    ///
+    /// Every path that puts a task on screen has to call this, not just the 回到任务
+    /// button: the sidebar rows and 新建任务 both did their work (resumed the session,
+    /// created a draft) but left `view` on `Terminal`, so the click looked ignored —
+    /// the task loaded behind a running shell and the only way to see it was a button
+    /// that should not have been needed.
+    ///
+    /// The terminal is not closed or paused by leaving: it keeps running in the
+    /// background, which is the same promise 关闭即最小化到托盘 makes (ADR-0052).
+    pub(crate) fn enter_task_view(&mut self, cx: &mut Context<Self>) {
         // Leaving the view drops the selection: the cells it referenced are gone.
         self.clear_selection(cx);
         self.view = crate::shell::MainView::Task;
-        cx.notify();
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

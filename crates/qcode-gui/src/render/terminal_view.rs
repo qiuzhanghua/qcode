@@ -40,8 +40,15 @@ const ANSI: [u32; 16] = [
 ];
 
 struct Metrics {
+    /// Latin/ASCII face: the app's code font.
     font: gpui_kit::Font,
     font_size: Pixels,
+    /// The face CJK goes through: the one the composer's text uses.
+    cjk_font: gpui_kit::Font,
+    /// Size at which one CJK em is exactly two cells. Scaling the face is what lets a
+    /// proportional CJK font sit on a cell grid at all: a hanzi is one em, and two cells
+    /// of a 0.6 em Latin face are 1.2 em, so the CJK face is drawn 1.2x larger.
+    cjk_font_size: Pixels,
     advance: Pixels,
     line_height: Pixels,
 }
@@ -251,37 +258,46 @@ impl Shell {
             .terminal_selection
             .map(|(anchor, focus)| ((anchor.row, anchor.column), (focus.row, focus.column)))
             .map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
-        // A monospace font without CJK leaves every Chinese character to a
-        // fallback whose advance is not two cells, so the line drifts off the grid.
-        // Pick a fixed-width CJK family when the system has one.
+        // Two faces, because the code font has no hanzi and a CJK mono face has a
+        // Latin design nobody chose. See `pick_terminal_fonts`.
         let font_cell = self.terminal_font.clone();
+        let cjk_font_cell = self.terminal_cjk_font.clone();
         let configured_font = self.terminal_config().font;
         let preferred_font = self.mono_font.clone();
         let font_size = px(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32);
 
         let body = canvas(
-            move |bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App| {
+            move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
                 let text_system = window.text_system().clone();
-                let cached = font_cell.borrow().clone();
-                let family = match cached {
-                    Some(picked) => picked,
+                let (latin_family, cjk_family) = match font_cell.borrow().clone() {
+                    Some(latin) => {
+                        let cjk = cjk_font_cell.borrow().clone();
+                        match cjk {
+                            Some(cjk) => (latin, cjk),
+                            // Cached Latin without CJK: a config change between the two
+                            // borrows. Re-pick rather than guess.
+                            None => (latin.clone(), latin),
+                        }
+                    }
                     None => {
-                        let picked = pick_terminal_font(
-                            window.text_system(),
-                            &preferred_font,
-                            &configured_font,
-                        );
-                        *font_cell.borrow_mut() = Some(picked.clone());
+                        use gpui_kit::component::ActiveTheme as _;
+                        let ui_family = cx.theme().font_family.clone();
+                        let picked =
+                            pick_terminal_fonts(&configured_font, &preferred_font, &ui_family);
+                        *font_cell.borrow_mut() = Some(picked.0.clone());
+                        *cjk_font_cell.borrow_mut() = Some(picked.1.clone());
                         picked
                     }
                 };
-                let font = gpui_kit::Font {
+                let face = |family: gpui_kit::SharedString| gpui_kit::Font {
                     family,
                     features: Default::default(),
                     fallbacks: None,
                     weight: FontWeight::NORMAL,
                     style: FontStyle::Normal,
                 };
+                let font = face(latin_family);
+                let cjk_font = face(cjk_family);
                 // Glyph advance is what the grid is built from. `shape_line` with
                 // no runs reports zero width, so ask the metrics directly.
                 let font_id = text_system.resolve_font(&font);
@@ -290,9 +306,30 @@ impl Shell {
                     .map(|size| size.width)
                     .unwrap_or(font_size * 0.6)
                     .max(font_size * 0.4);
+                // The CJK face is scaled so one em spans exactly two cells. Measured
+                // rather than assumed: hanzi are one em in essentially every CJK font,
+                // but the *ratio* to the cell depends on the Latin face, and a face
+                // whose hanzi are narrower (a condensed cut) has to grow more.
+                let cjk_font_id = text_system.resolve_font(&cjk_font);
+                let cjk_em = text_system
+                    .advance(cjk_font_id, font_size, '中')
+                    .map(|size| size.width)
+                    .ok()
+                    .filter(|em| *em > px(0.0));
+                let cjk_font_size = match cjk_em {
+                    Some(em) => (font_size * (advance * 2.0 / em))
+                        .max(font_size * 0.5)
+                        .min(font_size * 2.0),
+                    // No measurement: draw CJK at the Latin size. Two cells may be a
+                    // little wide for a hanzi, but the columns still come from the grid,
+                    // so nothing drifts.
+                    None => font_size,
+                };
                 let metrics = Metrics {
                     font,
                     font_size,
+                    cjk_font,
+                    cjk_font_size,
                     advance,
                     line_height: (font_size * 1.4).round(),
                 };
@@ -393,39 +430,37 @@ struct PaintStyle {
     preedit: Option<String>,
 }
 
-/// Fixed-width families that cover CJK, best first.
+/// The families the terminal should draw with.
 ///
-/// Sarasa's Term/Mono/Fixed cuts are metrically 1:2 (two cells per CJK glyph),
-/// which is exactly what the grid needs; the others are close enough and far
-/// better than a proportional fallback.
-const CJK_MONO_FONTS: &[&str] = &[
-    "Sarasa Term SC",
-    "Sarasa Mono SC",
-    "Sarasa Fixed SC",
-    "Sarasa Term J",
-    "Sarasa Term Slab SC",
-    "Noto Sans Mono CJK SC",
-];
-
-/// The family the terminal should draw with.
+/// Two families, because one cannot do both jobs well:
 ///
-/// A configured family wins. Otherwise prefer a fixed-width CJK family when the
-/// system has one, and fall back to the app's monospace font.
-fn pick_terminal_font(
-    text_system: &gpui_kit::TextSystem,
-    preferred: &gpui_kit::SharedString,
+/// - **Latin** uses the app's code font (`theme.mono_font_family`, the same one every
+///   other code surface uses, configurable as `[gui] code_font`). A terminal is a code
+///   surface; borrowing a CJK face's Latin design just because that face happens to be
+///   monospaced is what made the terminal look unlike the rest of the window.
+/// - **CJK** uses the UI font (`theme.font_family`) — the face the composer's text goes
+///   through. Hanzi are what the user reads in both places, so they should come from the
+///   same family rather than from a terminal-only CJK mono face.
+///
+/// This is possible because runs are painted at their column offset with a size chosen
+/// per run (see `paint_frame`): the CJK face does not have to be a 1:2 *monospace* font,
+/// only to be scaled so one em is exactly two cells. Without that, mixing families
+/// would drift off the grid — each hanzi is 1 em, while two cells of a 0.6 em Latin face
+/// are 1.2 em.
+///
+/// An explicit `[terminal] font` overrides both: a user who named a family wants that
+/// family everywhere, including for the Latin it was chosen for.
+fn pick_terminal_fonts(
     configured: &str,
-) -> gpui_kit::SharedString {
-    if !configured.trim().is_empty() {
-        return configured.trim().to_string().into();
+    mono_family: &gpui_kit::SharedString,
+    ui_family: &gpui_kit::SharedString,
+) -> (gpui_kit::SharedString, gpui_kit::SharedString) {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let family: gpui_kit::SharedString = configured.to_string().into();
+        return (family.clone(), family);
     }
-    let installed = text_system.all_font_names();
-    for candidate in CJK_MONO_FONTS {
-        if installed.iter().any(|name| name == candidate) {
-            return (*candidate).to_string().into();
-        }
-    }
-    preferred.clone()
+    (mono_family.clone(), ui_family.clone())
 }
 
 /// One visible frame, copied out of the terminal.
@@ -436,12 +471,19 @@ struct TerminalFrame {
 }
 
 struct Run {
+    /// First grid column this run covers. Runs are painted at their column rather
+    /// than laid out one after another, because a run of hanzi and a run of ASCII are
+    /// drawn with different faces and sizes — their widths cannot be trusted to add up.
+    column: usize,
     text: String,
     fg: Hsla,
     bg: Option<Hsla>,
     /// Grid cells this run covers. A wide (CJK) glyph occupies two cells but only
     /// one `char`, so the text cannot be laid out by counting characters.
     cells: usize,
+    /// Whether the glyphs in this run are wide (CJK/fullwidth), which decides the face
+    /// and the size used to paint it.
+    wide: bool,
 }
 
 impl TerminalFrame {
@@ -476,16 +518,21 @@ impl TerminalFrame {
             } else {
                 cell.c.clone()
             };
+            let wide = cell.flags.contains(Flags::WIDE_CHAR);
             match runs.last_mut() {
-                Some(run) if run.fg == fg && run.bg == bg => {
+                // A run never mixes wide and narrow cells: the two are painted with
+                // different faces at different sizes, so they cannot share a run.
+                Some(run) if run.fg == fg && run.bg == bg && run.wide == wide => {
                     run.text.push_str(&text);
                     run.cells += 1;
                 }
                 _ => runs.push(Run {
+                    column,
                     text,
                     fg,
                     bg,
                     cells: 1,
+                    wide,
                 }),
             }
         }
@@ -527,10 +574,12 @@ fn paint_frame(
         .rows
         .len()
         .min((bounds.size.height / metrics.line_height).floor() as usize);
+    // Cells, not runs: `Vec::len` counted the coloured segments and handed the
+    // selection a width far narrower than the row.
     let columns = frame
         .rows
         .iter()
-        .map(Vec::len)
+        .map(|runs| runs.iter().map(|run| run.cells).sum::<usize>())
         .max()
         .unwrap_or(0)
         .min((bounds.size.width / metrics.advance).floor() as usize);
@@ -566,50 +615,65 @@ fn paint_frame(
         // A hair of top inset: the shaped line is taller than its glyphs and the
         // first row would otherwise clip its ascenders against the tab bar.
         let y = bounds.origin.y + metrics.line_height * row as f32 + px(2.0);
-        let mut column = 0usize;
-        let mut text = String::new();
-        let mut runs: Vec<TextRun> = Vec::new();
 
+        // One shaped line per run, painted at the run's own column.
+        //
+        // The alternative — one line per row with a `TextRun` per colour — needs every
+        // glyph on the row to come from one face at one size. That is what forced the
+        // whole terminal onto a CJK monospace face before: a code font's ASCII is 0.6 em
+        // while a hanzi is 1 em, so two cells and one hanzi disagreed by 0.2 em and the
+        // line drifted. Positioning by column removes the disagreement, and each face is
+        // then free to be the best one for its script. Cost: no shaping across runs, so a
+        // ligature spanning two colours is not formed (they do not occur in practice).
         for run in &frame.rows[row] {
-            let width = run.cells;
-            if column >= columns {
+            if run.column >= columns {
                 break;
             }
+            let x = bounds.origin.x + metrics.advance * run.column as f32;
+            let width = run.cells.min(columns - run.column);
             if let Some(bg) = run.bg {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(bounds.origin.x + metrics.advance * column as f32, y),
+                        point(x, y),
                         gpui_kit::size(metrics.advance * width as f32, metrics.line_height),
                     ),
                     bg,
                 ));
             }
-            text.push_str(&run.text);
-            runs.push(TextRun {
+            // Spaces need no glyphs: the background above is the whole of them, and
+            // shaping runs of blanks per row is pure cost.
+            if run.text.trim().is_empty() {
+                continue;
+            }
+
+            let (font, font_size) = if run.wide {
+                (metrics.cjk_font.clone(), metrics.cjk_font_size)
+            } else {
+                (metrics.font.clone(), metrics.font_size)
+            };
+            let text_run = TextRun {
                 len: run.text.len(),
-                font: metrics.font.clone(),
+                font,
                 color: run.fg,
                 background_color: None,
                 underline: None,
                 strikethrough: None,
-            });
-            column += width;
+            };
+            let shaped = text_system.shape_line(
+                SharedString::from(run.text.clone()),
+                font_size,
+                &[text_run],
+                None,
+            );
+            let _ = shaped.paint(
+                point(x, y),
+                metrics.line_height,
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
-
-        if text.trim().is_empty() {
-            continue;
-        }
-
-        let shaped =
-            text_system.shape_line(SharedString::from(text), metrics.font_size, &runs, None);
-        let _ = shaped.paint(
-            point(bounds.origin.x, y),
-            metrics.line_height,
-            gpui_kit::TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
     }
 
     if let Some(preedit) = &paint_preedit
@@ -620,27 +684,44 @@ fn paint_frame(
             bounds.origin.x + metrics.advance * column as f32,
             bounds.origin.y + metrics.line_height * line as f32,
         );
-        let width = metrics.advance * preedit.chars().count() as f32;
+        // A composing syllable is Chinese: count it in cells (two per hanzi), not in
+        // chars, or the highlight is half as wide as the text it covers.
+        let cells: usize = preedit
+            .chars()
+            .map(|c| if c.is_ascii() { 1 } else { 2 })
+            .sum();
+        let width = metrics.advance * cells as f32;
         // The grid has no cell for half a syllable: cover whatever is under the
         // composition and draw the pre-edit text on top of it (ADR-0062 §5).
         window.paint_quad(fill(
             Bounds::new(origin, gpui_kit::size(width, metrics.line_height)),
             paint.background,
         ));
+        // Same face rule as the grid: the pre-edit is usually hanzi, so draw it with
+        // the CJK face at the size that fills cells — otherwise the composition looks
+        // unlike what committing it will look like.
+        let cjk = !preedit.is_ascii();
         let run = TextRun {
             len: preedit.len(),
-            font: metrics.font.clone(),
+            font: if cjk {
+                metrics.cjk_font.clone()
+            } else {
+                metrics.font.clone()
+            },
             color: paint.foreground,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let line_text = window.text_system().shape_line(
-            preedit.clone().into(),
-            metrics.font_size,
-            &[run],
-            None,
-        );
+        let preedit_size = if cjk {
+            metrics.cjk_font_size
+        } else {
+            metrics.font_size
+        };
+        let line_text =
+            window
+                .text_system()
+                .shape_line(preedit.clone().into(), preedit_size, &[run], None);
         let _ = line_text.paint(
             origin,
             metrics.line_height,
@@ -896,5 +977,80 @@ mod tests {
     #[test]
     fn plain_ascii_is_unchanged() {
         assert_eq!(capture_line("echo hi\r\n"), "echo hi");
+    }
+
+    #[test]
+    fn a_cjk_run_and_a_latin_run_are_never_mixed() {
+        // The two are painted with different faces at different sizes, positioned by
+        // column, so a run that mixed them could not be drawn correctly at all: one face
+        // or the other would be wrong for half the glyphs.
+        let mut screen = qcode_terminal::Screen::new(20, 3, 100);
+        screen.advance("a汉b字c\r\n".as_bytes());
+        let frame = TerminalFrame::capture(
+            &screen.view(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_FOREGROUND)),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_BACKGROUND)),
+        );
+        let runs = &frame.rows[0];
+        for run in runs {
+            let has_wide = !run.text.is_ascii();
+            assert_eq!(
+                has_wide, run.wide,
+                "run {:?} has wide={} but contains wide glyphs={}",
+                run.text, run.wide, has_wide
+            );
+        }
+        // And the text still reads in order, with the columns adding up.
+        let text: String = runs.iter().map(|run| run.text.clone()).collect();
+        assert_eq!(text.trim_end(), "a汉b字c");
+    }
+
+    #[test]
+    fn every_run_sits_at_the_column_its_glyphs_occupy() {
+        // This is what replaced "let the shaper decide where the next run goes": each
+        // run paints at `advance * column`, so the columns have to be right or the line
+        // drifts even though nothing is measured at paint time.
+        let mut screen = qcode_terminal::Screen::new(20, 3, 100);
+        screen.advance("a汉b\r\n".as_bytes());
+        let frame = TerminalFrame::capture(
+            &screen.view(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_FOREGROUND)),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_BACKGROUND)),
+        );
+        let columns: Vec<usize> = frame.rows[0].iter().map(|run| run.column).collect();
+        // "a" at column 0, "汉" at column 1, "b" at column 3 — the hanzi consumed two
+        // cells, so the next glyph starts two columns on, not one.
+        assert_eq!(columns, vec![0, 1, 3]);
+        // The wide run folded in its spacer cell, so it covers exactly two cells.
+        let wide = frame.rows[0]
+            .iter()
+            .find(|run| run.wide)
+            .expect("a wide run");
+        assert_eq!(wide.cells, 2);
+        assert_eq!(wide.text, "汉");
+    }
+
+    #[test]
+    fn the_code_font_is_preferred_over_a_cjk_monospace_face() {
+        // The regression this replaces: the terminal used to take the first installed
+        // CJK monospace family for *everything*, so its ASCII came from a face nobody
+        // chose and looked unlike the rest of the window. Latin now follows the code
+        // font, and CJK follows the composer's face.
+        let mono: gpui_kit::SharedString = "JetBrains Mono".into();
+        let ui: gpui_kit::SharedString = ".SystemUIFont".into();
+        let (latin, cjk) = super::pick_terminal_fonts("", &mono, &ui);
+        assert_eq!(latin, mono);
+        assert_eq!(cjk, ui);
+    }
+
+    #[test]
+    fn a_configured_family_wins_for_both_scripts() {
+        // `[terminal] font` names one family; someone who typed a name wants it used,
+        // not quietly split in two.
+        let mono: gpui_kit::SharedString = "JetBrains Mono".into();
+        let ui: gpui_kit::SharedString = ".SystemUIFont".into();
+        let (latin, cjk) = super::pick_terminal_fonts("  Sarasa Term SC ", &mono, &ui);
+        assert_eq!(latin, "Sarasa Term SC");
+        assert_eq!(cjk, "Sarasa Term SC");
     }
 }

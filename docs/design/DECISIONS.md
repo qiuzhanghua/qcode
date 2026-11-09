@@ -4562,13 +4562,30 @@ GUI 落地后这三条边界开始漏：
      ——实测过：`汉字A` 渲染成 `汉 字 A`，一半是 spacer 格被当成空格，一半是回退字体
      的 advance 不等于两格。
 
-   - **实现注记（字体选择，2026-11-09）**：先按 `text_system.all_font_names()` 判断
-     装了没有，再依次试 `Sarasa Term SC` / `Sarasa Mono SC` / `Sarasa Fixed SC` /
-     `Sarasa Term J` / `Sarasa Term Slab SC` / `Noto Sans Mono CJK SC`，都没有才退回
-     `theme.mono_font_family`；`[terminal] font` 非空时直接用它。结果缓存在
-     `Shell::terminal_font`，只在第一次 prepaint 算一次——`all_font_names()` 会克隆
-     整个字体表，不能每帧调。选择放在 prepaint 而不是构造期，是因为那里才拿得到
-     `Window::text_system()`。
+   - **实现注记（字体选择，2026-11-09 修订）**：现在的规则是**两个族**——Latin 用
+     `theme.mono_font_family`（app 的代码字体，`[gui] code_font` 可配），CJK 用
+     `theme.font_family`，也就是**Composer 里那段文字用的同一个族**。`[terminal] font`
+     非空时两半都用它。
+
+     原来不是这样，而 1:2 度量逼出来的：整行只用**一个**字体 shaping，于是每个字形
+     都必须来自同一族同一字号。代码字体的 ASCII 是 0.6 em，汉字是 1 em，两格 1.2 em
+     与一个汉字 1 em 差 0.2 em，一行汉字就会累积漂移。当时的解法是**整行**改用一个
+     1:2 的 CJK 等宽字体（Sarasa 系列），代价是终端里的西文变成没人挑过的字形，和窗口
+     其它地方（Composer、代码块）明显不同。
+
+     改成**按段定位**后这个约束消失了：每段按 `advance × column` 落在自己的列上，宽度
+     不再靠 shaping 累加，于是两段可以用不同的族、不同的字号。CJK 那一段的字号按测量
+     得到——`advance('中')` 在 Latin 字号下的宽度为 `e`，则 CJK 字号 = `font_size ×
+     2 × advance / e`，让一个汉字正好占两格。缺字或测量失败时退回 Latin 字号（列位置
+     仍来自网格，所以不会漂移）。
+
+     取舍：**失去跨段 shaping**，即跨越两段颜色的连字不再成形。实践里不存在（连字都在
+     同一色段内），换来的是「同一行可以两种字体」。这与 terminal-ts 走 run 级字体的
+     判断一致，只是它还要 Nerd Font 优先级那套，我们暂时不需要。
+
+     另：`CJK_MONO_FONTS` 自动探测已删除——它存在的理由（1:2 度量）已经不需要了，而
+     「装了 Sarasa 就整屏换成它」正是让用户觉得字体不如 Composer 的原因。想用 Sarasa
+     的人可以显式写 `[terminal] font`。
    - `~/space/opentj/terminal-ts`（同一作者的另一份实现，Tauri + xterm.js）在这件事上
      走得更细，留作后续参照：它在 `src/lib/fonts.ts` 里用 DOM 测量 + 一个故意缺失的
      sentinel 家族来探测「这个字体到底装没装」（阈值 0.1px），因为 WebKit 上首族若未
