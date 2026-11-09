@@ -331,8 +331,14 @@ impl Shell {
         .size_full()
         .into_any_element();
 
+        // A terminal with no margin puts the first and last row/column against
+        // the edge of the view, where they read as cut off. The padding also
+        // gives the cursor block somewhere to sit on the last line.
         div()
             .size_full()
+            .bg(background)
+            .px(px(TERMINAL_PADDING_X))
+            .py(px(TERMINAL_PADDING_Y))
             .child(body)
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
@@ -373,6 +379,10 @@ impl Shell {
             .into_any_element()
     }
 }
+
+/// Breathing room between the grid and the edge of the view.
+pub(crate) const TERMINAL_PADDING_X: f32 = 12.0;
+pub(crate) const TERMINAL_PADDING_Y: f32 = 8.0;
 
 /// Colours and selection for one painted frame.
 struct PaintStyle {
@@ -438,46 +448,46 @@ impl TerminalFrame {
     fn capture(view: &View<'_>, default_fg: Hsla, default_bg: Hsla) -> Self {
         let columns = view.columns();
         let rows = view.screen_lines();
-        let mut lines = Vec::with_capacity(rows);
-        for row in 0..rows {
-            let mut runs: Vec<Run> = Vec::new();
-            for column in 0..columns {
-                let Some(cell) = view.cell(row, column) else {
-                    break;
-                };
-                // A wide glyph owns two cells: the second one is a spacer whose
-                // text is empty. Drawing it as a space is what put a gap after
-                // every Chinese character.
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                    || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    if let Some(run) = runs.last_mut() {
-                        run.cells += 1;
-                    }
-                    continue;
-                }
-                let fg = resolve(cell.fg, default_fg);
-                let bg = resolve(cell.bg, default_bg);
-                let bg = (bg != default_bg).then_some(bg);
-                let text = if cell.c.is_empty() {
-                    " ".to_string()
-                } else {
-                    cell.c.clone()
-                };
-                match runs.last_mut() {
-                    Some(run) if run.fg == fg && run.bg == bg => {
-                        run.text.push_str(&text);
-                        run.cells += 1;
-                    }
-                    _ => runs.push(Run {
-                        text,
-                        fg,
-                        bg,
-                        cells: 1,
-                    }),
-                }
+        // One pass over the grid. `View::cell` scans the whole grid per lookup,
+        // so asking it for 114×33 cells turned every frame into ~10⁷ comparisons
+        // — visible as a lagging echo.
+        let mut lines: Vec<Vec<Run>> = (0..rows).map(|_| Vec::new()).collect();
+        for (row, column, cell) in view.cells() {
+            if row >= rows || column >= columns {
+                continue;
             }
-            lines.push(runs);
+            let runs = &mut lines[row];
+            // A wide glyph owns two cells: the second one is a spacer whose text
+            // is empty. Drawing it as a space is what put a gap after every
+            // Chinese character.
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                if let Some(run) = runs.last_mut() {
+                    run.cells += 1;
+                }
+                continue;
+            }
+            let fg = resolve(cell.fg, default_fg);
+            let bg = resolve(cell.bg, default_bg);
+            let bg = (bg != default_bg).then_some(bg);
+            let text = if cell.c.is_empty() {
+                " ".to_string()
+            } else {
+                cell.c.clone()
+            };
+            match runs.last_mut() {
+                Some(run) if run.fg == fg && run.bg == bg => {
+                    run.text.push_str(&text);
+                    run.cells += 1;
+                }
+                _ => runs.push(Run {
+                    text,
+                    fg,
+                    bg,
+                    cells: 1,
+                }),
+            }
         }
         // The cursor is a grid position; scrolling pushes the visible rows down, so
         // a cursor parked in history has to be hidden rather than drawn on top of a
@@ -856,6 +866,24 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    #[ignore]
+    fn capture_cost() {
+        let mut screen = qcode_terminal::Screen::new(120, 40, 1000);
+        for i in 0..2000 {
+            screen.advance(format!("line {i} with some text\r\n").as_bytes());
+        }
+        let fg = gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_FOREGROUND));
+        let bg = gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_BACKGROUND));
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            let _ = TerminalFrame::capture(&screen.view(), fg, bg);
+        }
+        // A frame must cost much less than the 16ms tick; run with `--ignored`
+        // when touching the capture path.
+        eprintln!("capture 100 frames: {:?}", start.elapsed());
     }
 
     #[test]

@@ -479,6 +479,11 @@ impl<'a> View<'a> {
     }
 
     /// The grid cell at `(line, column)`, if it is on screen.
+    /// One cell, by scanning the grid.
+    ///
+    /// Scanning makes this O(cells) — fine for a single lookup (a selection, a
+    /// test), wrong for a whole frame. Drawing code goes through [`View::cells`],
+    /// which walks the grid once.
     pub fn cell(&self, line: usize, column: usize) -> Option<CellView> {
         if line >= self.screen_lines() || column >= self.columns() {
             return None;
