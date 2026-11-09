@@ -145,6 +145,13 @@ pub const FIELDS: &[FieldSpec] = &[
         help: "Empty follows the cwd of the active terminal, then home",
     },
     FieldSpec {
+        path: &["terminal", "font"],
+        label: "Font",
+        page: Page::Appearance,
+        kind: FieldKind::Text,
+        help: "Empty picks a fixed-width font that covers CJK, when the system has one",
+    },
+    FieldSpec {
         path: &["terminal", "max_scrollback"],
         label: "Scrollback lines",
         page: Page::Appearance,

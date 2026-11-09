@@ -143,6 +143,12 @@ pub struct TerminalConfig {
     /// terminal the user was last in, then home.
     #[serde(default)]
     pub start_cwd: String,
+    /// Font family for the terminal. Empty means "pick one that covers CJK":
+    /// a fixed-width CJK family when the system has one, otherwise the app's
+    /// monospace font. A monospace font without CJK leaves every Chinese
+    /// character to a fallback whose width is not two cells.
+    #[serde(default)]
+    pub font: String,
     /// Scrollback lines kept per terminal.
     #[serde(default = "default_terminal_scrollback")]
     pub max_scrollback: usize,
@@ -164,6 +170,7 @@ impl Default for TerminalConfig {
         Self {
             shell: String::new(),
             start_cwd: String::new(),
+            font: String::new(),
             max_scrollback: default_terminal_scrollback(),
             max_terminals: default_terminal_max(),
         }

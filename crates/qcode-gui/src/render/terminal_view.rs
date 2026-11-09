@@ -251,14 +251,32 @@ impl Shell {
             .terminal_selection
             .map(|(anchor, focus)| ((anchor.row, anchor.column), (focus.row, focus.column)))
             .map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
-        let font_family = self.mono_font.clone();
+        // A monospace font without CJK leaves every Chinese character to a
+        // fallback whose advance is not two cells, so the line drifts off the grid.
+        // Pick a fixed-width CJK family when the system has one.
+        let font_cell = self.terminal_font.clone();
+        let configured_font = self.terminal_config().font;
+        let preferred_font = self.mono_font.clone();
         let font_size = px(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32);
 
         let body = canvas(
             move |bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App| {
                 let text_system = window.text_system().clone();
+                let cached = font_cell.borrow().clone();
+                let family = match cached {
+                    Some(picked) => picked,
+                    None => {
+                        let picked = pick_terminal_font(
+                            window.text_system(),
+                            &preferred_font,
+                            &configured_font,
+                        );
+                        *font_cell.borrow_mut() = Some(picked.clone());
+                        picked
+                    }
+                };
                 let font = gpui_kit::Font {
-                    family: font_family.clone(),
+                    family,
                     features: Default::default(),
                     fallbacks: None,
                     weight: FontWeight::NORMAL,
@@ -363,6 +381,41 @@ struct PaintStyle {
     selection: Option<((usize, usize), (usize, usize))>,
     /// Text an input method is composing: drawn over the cursor, not in the grid.
     preedit: Option<String>,
+}
+
+/// Fixed-width families that cover CJK, best first.
+///
+/// Sarasa's Term/Mono/Fixed cuts are metrically 1:2 (two cells per CJK glyph),
+/// which is exactly what the grid needs; the others are close enough and far
+/// better than a proportional fallback.
+const CJK_MONO_FONTS: &[&str] = &[
+    "Sarasa Term SC",
+    "Sarasa Mono SC",
+    "Sarasa Fixed SC",
+    "Sarasa Term J",
+    "Sarasa Term Slab SC",
+    "Noto Sans Mono CJK SC",
+];
+
+/// The family the terminal should draw with.
+///
+/// A configured family wins. Otherwise prefer a fixed-width CJK family when the
+/// system has one, and fall back to the app's monospace font.
+fn pick_terminal_font(
+    text_system: &gpui_kit::TextSystem,
+    preferred: &gpui_kit::SharedString,
+    configured: &str,
+) -> gpui_kit::SharedString {
+    if !configured.trim().is_empty() {
+        return configured.trim().to_string().into();
+    }
+    let installed = text_system.all_font_names();
+    for candidate in CJK_MONO_FONTS {
+        if installed.iter().any(|name| name == candidate) {
+            return (*candidate).to_string().into();
+        }
+    }
+    preferred.clone()
 }
 
 /// One visible frame, copied out of the terminal.

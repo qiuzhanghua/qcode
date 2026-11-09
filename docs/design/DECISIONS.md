@@ -4556,7 +4556,11 @@ GUI 落地后这三条边界开始漏：
    - 每帧先画脏行背景 quad，再把「同样的 fg/bg/属性」的连续单元格拼成一个 run
      排版一次。**绝不逐字符 layout**。
    - 用 `Term` 的 `damage` + `TermDamageIterator` 只重绘脏行；没有输出时整帧跳过。
-   - 字体用 `theme.mono_font_family`，跟随现有字号缩放（`Ctrl+=` / `Ctrl+-`）。
+   - 字体默认取「等宽且 CJK 覆盖」的家族（Sarasa Term/Mono/Fixed 之类，1:2 度量，
+     一个汉字正好两格）；系统没有就退回 `theme.mono_font_family`，`[terminal] font`
+     可显式覆盖。JetBrains Mono 没有汉字，靠比例字体兜底会让整行偏离网格刻度
+     ——实测过：`汉字A` 渲染成 `汉 字 A`，一半是 spacer 格被当成空格，一半是回退字体
+     的 advance 不等于两格。
 
 5. **输入编码：mode 感知，且有成文的快捷键归属**
 

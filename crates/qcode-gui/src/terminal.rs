@@ -183,7 +183,7 @@ fn spawn(
 
 impl crate::shell::Shell {
     /// `[terminal]` as the user configured it, or the defaults.
-    fn terminal_config(&self) -> TerminalConfig {
+    pub(crate) fn terminal_config(&self) -> TerminalConfig {
         qcode_kernel::config::load(&self.config_path)
             .map(|config| config.terminal)
             .unwrap_or_default()

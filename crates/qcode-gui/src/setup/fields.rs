@@ -87,6 +87,9 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         ["update", "check_days"] => config.update.check_days.to_string(),
         ["update", "repo"] => config.update.repo.clone(),
         ["update", "base_url"] => config.update.base_url.clone().unwrap_or_default(),
+        ["terminal", "shell"] => config.terminal.shell.clone(),
+        ["terminal", "start_cwd"] => config.terminal.start_cwd.clone(),
+        ["terminal", "font"] => config.terminal.font.clone(),
         _ => options.first().unwrap_or(&"").to_string(),
     }
 }
@@ -122,6 +125,7 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
         ["agent", "snapshot_shell"] => config.agent.snapshot_shell = value == "true",
         ["terminal", "shell"] => config.terminal.shell = value.to_string(),
         ["terminal", "start_cwd"] => config.terminal.start_cwd = value.to_string(),
+        ["terminal", "font"] => config.terminal.font = value.to_string(),
         ["terminal", "max_scrollback"] => {
             config.terminal.max_scrollback = parse(value, "terminal.max_scrollback")?
         }
