@@ -34,7 +34,7 @@ mod dialogs;
 mod main;
 pub(crate) mod rail;
 mod sidebar;
-mod terminal_view;
+pub(crate) mod terminal_view;
 mod transcript;
 
 pub(crate) use sidebar::task_titles;

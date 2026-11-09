@@ -8,7 +8,6 @@
 
 use std::path::PathBuf;
 
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{Context, Window};
 
 use qcode_kernel::config::TerminalConfig;
@@ -266,9 +265,9 @@ impl crate::shell::Shell {
     /// nowhere if nothing answers. Both are non-blocking pty writes, so they belong
     /// on the ticker rather than in the paint (ADR-0062 §9).
     pub(crate) fn service_terminal(&mut self, cx: &mut Context<Self>) {
-        let theme = cx.theme();
-        let foreground = to_term_rgb(theme.foreground);
-        let background = to_term_rgb(theme.background);
+        // The terminal's own canvas, not the app's: see `TERMINAL_BACKGROUND`.
+        let foreground = to_term_rgb(crate::render::terminal_view::TERMINAL_FOREGROUND);
+        let background = to_term_rgb(crate::render::terminal_view::TERMINAL_BACKGROUND);
         let Some(tab) = self.terminals.active_mut() else {
             return;
         };
@@ -446,8 +445,8 @@ fn focus_after_frame(
 }
 
 /// Convert a theme colour to the `(r, g, b)` the terminal answers colour queries with.
-fn to_term_rgb(color: gpui_kit::Hsla) -> qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
-    let rgba = color.to_rgb();
+fn to_term_rgb(color: u32) -> qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
+    let rgba = gpui_kit::rgb(color);
     qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
         r: (rgba.r * 255.0).round() as u8,
         g: (rgba.g * 255.0).round() as u8,

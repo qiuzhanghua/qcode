@@ -24,6 +24,12 @@ use crate::shell::Shell;
 
 /// The 16 ANSI colours, xterm's defaults. Programs pick these by number, so they
 /// have to be the ones every other terminal shows.
+/// The terminal draws on its own canvas, not on the app's: a shell's colours are
+/// chosen against a dark background, and a program that paints `\x1b[30m` (black)
+/// on a white pane is invisible. Same reasoning as the ANSI palette below.
+pub(crate) const TERMINAL_BACKGROUND: u32 = 0x1c_1c_21;
+pub(crate) const TERMINAL_FOREGROUND: u32 = 0xd6_d6_d6;
+
 const ANSI: [u32; 16] = [
     0x00_00_00, 0xcd_00_00, 0x00_cd_00, 0xcd_cd_00, 0x00_00_ee, 0xcd_00_cd, 0x00_cd_cd, 0xe5_e5_e5,
     0x7f_7f_7f, 0xff_00_00, 0x00_ff_00, 0xff_ff_00, 0x5c_5c_ff, 0xff_00_ff, 0x00_ff_ff, 0xff_ff_ff,
@@ -45,8 +51,7 @@ fn grid_for(bounds: Bounds<Pixels>, metrics: &Metrics) -> (usize, usize) {
 
 impl Shell {
     pub(crate) fn render_terminal_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let background = theme.background;
+        let background = Hsla::from(gpui_kit::rgb(TERMINAL_BACKGROUND));
 
         div()
             .size_full()
@@ -199,15 +204,18 @@ impl Shell {
         // Snapshot the grid here, not inside the paint callback: painting must not
         // touch the entity that is currently being read, and the reader thread
         // already sets `terminal_dirty` so a repaint follows any new output.
-        let theme = cx.theme();
-        let background = theme.background;
-        let foreground = theme.foreground;
+        let background = Hsla::from(gpui_kit::rgb(TERMINAL_BACKGROUND));
+        let foreground = Hsla::from(gpui_kit::rgb(TERMINAL_FOREGROUND));
         let frame = self
             .terminals
             .active()
             .map(|tab| {
                 tab.session.with_view(|view| {
-                    TerminalFrame::capture(view, theme.foreground, theme.background)
+                    TerminalFrame::capture(
+                        view,
+                        Hsla::from(gpui_kit::rgb(TERMINAL_FOREGROUND)),
+                        Hsla::from(gpui_kit::rgb(TERMINAL_BACKGROUND)),
+                    )
                 })
             })
             .unwrap_or_default();
