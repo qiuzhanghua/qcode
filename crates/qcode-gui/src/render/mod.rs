@@ -34,6 +34,7 @@ mod dialogs;
 mod main;
 pub(crate) mod rail;
 mod sidebar;
+mod terminal_view;
 mod transcript;
 
 pub(crate) use sidebar::task_titles;
@@ -159,7 +160,12 @@ impl Render for Shell {
             // panel group, so the divider between them can be dragged and both
             // sides clamp to their minimum widths.
             .child({
-                let main = self.render_main(window, cx).into_any_element();
+                let main = match self.view {
+                    crate::shell::MainView::Task => self.render_main(window, cx).into_any_element(),
+                    crate::shell::MainView::Terminal => {
+                        self.render_terminal_view(cx).into_any_element()
+                    }
+                };
                 if self.sidebar_visible {
                     h_resizable("root-layout")
                         .child(

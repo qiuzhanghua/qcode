@@ -403,6 +403,14 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
             )
             .child(
+                Button::new("open-terminal")
+                    .accessibility_label("终端")
+                    .child(div().text_size(sp(14.0)).child("终端"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_terminal_view(window, cx);
+                    })),
+            )
+            .child(
                 div()
                     .flex()
                     .flex_row()

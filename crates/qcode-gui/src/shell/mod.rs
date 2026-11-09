@@ -4,6 +4,17 @@ use std::collections::HashMap;
 use task_ui::TaskUi;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
 
+/// What the content area is showing (ADR-0062 §2).
+///
+/// Deliberately *not* folded into `active`: `active` is the task the window is
+/// on, and switching to the terminal must not forget it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum MainView {
+    #[default]
+    Task,
+    Terminal,
+}
+
 pub(crate) struct Shell {
     /// 当前任务的那一份视图。任务专属的状态全在这里（ADR-0058 §4）；窗口级
     /// 的东西（任务列表、侧栏、设置窗口、托盘）留在 `Shell` 上。
@@ -48,6 +59,17 @@ pub(crate) struct Shell {
     pub(crate) pending_task_renames: std::collections::BTreeMap<String, String>,
     /// What sending while a turn runs does: queue it, or steer it.
     pub(crate) busy_delivery: qcode_kernel::config::BusyDelivery,
+    /// Which view the content area shows (ADR-0062 §2). `active` keeps pointing
+    /// at the task, so switching to the terminal and back does not touch it.
+    pub(crate) view: MainView,
+    /// The window's terminals; empty until the first one is opened.
+    pub(crate) terminals: crate::terminal::Terminals,
+    /// Grid size measured by the last terminal frame, applied on the next one.
+    pub(crate) terminal_size: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
+    /// Focus target for typing into the active terminal.
+    pub(crate) terminal_focus: gpui_kit::FocusHandle,
+    /// Set by a terminal's reader thread when there is output to draw.
+    pub(crate) terminal_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Root edits made while a task was running, keyed by task id and applied
     /// when *that* task's turn returns (§7: per session, not one global slot).
     pub(crate) pending_roots: std::collections::BTreeMap<String, Vec<Root>>,
@@ -229,6 +251,11 @@ impl Shell {
             model_groups: crate::provider_models(&config_path),
             _model_search_subscription: model_search_subscription,
             busy_delivery,
+            view: MainView::default(),
+            terminals: crate::terminal::Terminals::default(),
+            terminal_size: std::rc::Rc::new(std::cell::Cell::new(None)),
+            terminal_focus: cx.focus_handle(),
+            terminal_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_send: false,
             sidebar_visible: true,
             minimize_on_close,
@@ -612,6 +639,19 @@ impl Shell {
             loop {
                 let interval = match this.update(cx, |shell, cx| {
                     shell.poll(cx);
+                    // The terminal's reader thread sets `terminal_dirty` instead of
+                    // notifying: this loop is the only place that may touch the
+                    // entity, and it also applies the grid size the last frame
+                    // measured (ADR-0062 §4).
+                    if shell.view == MainView::Terminal {
+                        shell.sync_terminal_size();
+                        if shell
+                            .terminal_dirty
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            cx.notify();
+                        }
+                    }
                     shell.poll_interval()
                 }) {
                     Ok(interval) => interval,
@@ -628,7 +668,10 @@ impl Shell {
     /// everything is idle: the runtime republishes queue snapshots at 250ms and
     /// nothing else is periodic, so waking the UI thread 30×/s would be waste.
     fn poll_interval(&self) -> std::time::Duration {
-        if self.any_turn_running() {
+        if self.view == MainView::Terminal {
+            // A shell's output has no event to wait for; 16ms is one frame.
+            std::time::Duration::from_millis(16)
+        } else if self.any_turn_running() {
             std::time::Duration::from_millis(33)
         } else {
             std::time::Duration::from_millis(150)

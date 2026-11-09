@@ -418,3 +418,87 @@ fn a_flooding_child_is_not_left_running_after_close() {
         processes_matching(&flood)
     );
 }
+
+#[test]
+fn a_wakeup_callback_does_not_block_the_grid() {
+    // The GUI installs an `on_wakeup` that only stores a flag, then reads the grid
+    // from its render loop. If the callback ran under the terminal lock, or the
+    // grid could not be read while a shell was producing output, the window would
+    // freeze on the first frame — so this spins the same way the window does.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let session = run("/bin/sh", &["-c", "printf 'x\\n'; sleep 30"]);
+    let dirty = Arc::new(AtomicBool::new(false));
+    {
+        let dirty = dirty.clone();
+        session.events().on_wakeup(move || {
+            dirty.store(true, Ordering::Relaxed);
+        });
+    }
+
+    let start = std::time::Instant::now();
+    for _ in 0..200 {
+        session.with_view(|view| {
+            let _ = view.contents();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "reading the grid while the shell is alive took {:?}",
+        start.elapsed()
+    );
+    assert!(dirty.load(Ordering::Relaxed), "no wakeup was signalled");
+
+    let _ = session.with_view(|view| view.contents());
+    session.close();
+}
+
+#[test]
+fn a_shell_started_from_the_config_draws_a_prompt() {
+    // The window starts the user's shell from `[terminal] shell`; if that path
+    // produced a session with an empty grid the view would look broken while the
+    // child was perfectly alive.
+    let mut config = SessionConfig::command("/bin/zsh", Vec::<String>::new());
+    config.columns = 80;
+    config.screen_lines = 24;
+    let session = Session::spawn(config).expect("spawn zsh");
+    let saw_prompt = wait_until(|| {
+        session.with_view(|view| {
+            let text = view.contents();
+            text.iter().any(|row| !row.trim().is_empty())
+        })
+    });
+    let contents = session.with_view(|view| view.contents());
+    assert!(saw_prompt, "no prompt appeared; grid: {contents:#?}");
+    session.close();
+}
+
+#[test]
+fn the_window_config_start_shape_gets_output() {
+    // Mirrors `crates/qcode-gui/src/terminal.rs`: an explicit shell, a cwd, and the
+    // two env vars the window sets. If this produced an empty grid the view would be
+    // blank while the child was running.
+    let config = SessionConfig {
+        columns: 100,
+        screen_lines: 30,
+        scrollback: 5_000,
+        shell: Some(("/bin/bash".to_string(), Vec::new())),
+        cwd: Some(std::env::temp_dir()),
+        env: vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("COLORTERM".to_string(), "truecolor".to_string()),
+        ],
+    };
+    let session = Session::spawn(config).expect("spawn");
+    let saw = wait_until(|| {
+        session.with_view(|view| view.contents().iter().any(|r| !r.trim().is_empty()))
+    });
+    assert!(
+        saw,
+        "grid stayed empty: {:#?}",
+        session.with_view(|v| v.contents())
+    );
+    session.close();
+}

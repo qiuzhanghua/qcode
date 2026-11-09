@@ -22,6 +22,7 @@ pub mod runtime;
 pub mod setup;
 mod shell;
 pub mod task_ops;
+mod terminal;
 pub mod tray;
 pub use backend::{Backend, LocalBackend, RebuildFn, RebuildFuture, TaskRow, UnconfiguredBackend};
 pub use run::run;
