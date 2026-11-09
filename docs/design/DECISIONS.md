@@ -4701,6 +4701,13 @@ GUI 落地后这三条边界开始漏：
    原样写回 PTY。core crate 不持有主题，所以它只把请求记录下来并提供
    `answer_colours()`，由 GUI 侧传入主题色。
 
+   `OSC 52` 同理：crate 记录 `ClipboardStore` 的文本与 `ClipboardLoad` 的格式化闭包，
+   提供 `take_clipboard_stores()` / `answer_clipboard(Option<&str>)`，GUI 的 ticker 用
+   真剪贴板回答。**`Osc52` 从 alacritty 的 `OnlyCopy` 改成 `CopyPaste`**：只开拷贝时
+   `tmux`/`ssh` 用不了系统剪贴板，而这正是 OSC 52 存在的理由；代价是 pty 上的程序
+   能把剪贴板读走，本 ADR 认为这是用户选择内建终端的合理代价，记在这里供以后收窄
+   （比如只对可信会话开、或首次询问）。
+
 10. **配置与资源上限**
 
    新增 `[terminal]` 段。注意配置有**两层键白名单**（`config/load.rs` 顶层键 +

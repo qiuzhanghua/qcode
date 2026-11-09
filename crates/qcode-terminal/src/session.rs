@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Osc52, Term};
 use alacritty_terminal::tty::{self, EventedPty, Options, Shell};
 use alacritty_terminal::vte::ansi::{Processor, Rgb};
 
@@ -353,6 +353,9 @@ impl Session {
         let term = Arc::new(FairMutex::new(Term::new(
             Config {
                 scrolling_history: config.scrollback,
+                // Same reason as `Screen::new`: `OSC 52` copy and paste both have
+                // to reach the app, which owns the real clipboard.
+                osc52: Osc52::CopyPaste,
                 ..Config::default()
             },
             &Size {

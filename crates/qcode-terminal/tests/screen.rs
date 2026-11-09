@@ -233,3 +233,45 @@ fn tabs_advance_to_the_next_stop() {
     assert_eq!(term.cursor(), (0, 9));
     assert_eq!(term.contents()[0], "        x");
 }
+
+#[test]
+fn osc52_store_lands_on_our_side_of_the_wire() {
+    let mut screen = qcode_terminal::screen::Screen::new(20, 4, 100);
+    // `OSC 52 ; c ; <base64 "hi">`: the program is putting text on the clipboard.
+    screen.advance(b"\x1b]52;c;aGk=\x07");
+
+    assert_eq!(screen.events().clipboard_stores(), vec!["hi".to_string()]);
+    assert_eq!(
+        screen.events().take_clipboard_stores(),
+        vec!["hi".to_string()]
+    );
+    assert!(screen.events().clipboard_stores().is_empty(), "take drains");
+}
+
+#[test]
+fn osc52_read_is_answered_in_the_encoding_the_program_asked_for() {
+    let mut screen = qcode_terminal::screen::Screen::new(20, 4, 100);
+    // `OSC 52 ; c ; ?`: asking for the clipboard.
+    screen.advance(b"\x1b]52;c;?\x07");
+    assert_eq!(screen.events().clipboard_loads(), 1);
+
+    let reply = screen.events().answer_clipboard(Some("hi"));
+    assert!(
+        reply.contains("aGk="),
+        "the reply should carry base64 of the clipboard, got {reply:?}"
+    );
+    assert_eq!(screen.events().clipboard_loads(), 0, "the answer drains");
+}
+
+#[test]
+fn a_clipboard_read_with_no_system_clipboard_is_dropped() {
+    let mut screen = qcode_terminal::screen::Screen::new(20, 4, 100);
+    screen.advance(b"\x1b]52;c;?\x07");
+
+    assert_eq!(screen.events().answer_clipboard(None), "");
+    assert_eq!(
+        screen.events().clipboard_loads(),
+        0,
+        "the request is consumed"
+    );
+}

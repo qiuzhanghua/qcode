@@ -16,7 +16,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
 
 /// The size `Term::new` and `Term::resize` take.
@@ -76,7 +76,18 @@ struct Recorded {
     wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Number of damage notifications seen, so a test can wait for one.
     wakeups: u64,
+    /// `OSC 52` writes: the program wants *our* clipboard to hold this text.
+    clipboard_stores: Vec<String>,
+    /// `OSC 52` reads: the program wants the clipboard, formatted as it expects
+    /// (the formatter base64-encodes for the reply — see [`Events::answer_clipboard`]).
+    clipboard_loads: Vec<ClipboardFormat>,
 }
+
+/// How a program asked us to format a clipboard read (`OSC 52 ; ?`).
+///
+/// The terminal library hands over the encoder so the reply is byte-identical to
+/// what the application expects; this crate only supplies the text.
+pub type ClipboardFormat = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync + 'static>;
 
 struct ColourRequest {
     index: usize,
@@ -96,6 +107,38 @@ impl Events {
     /// Everything written back since the last call, concatenated.
     pub fn take_pty_writes(&self) -> String {
         std::mem::take(&mut self.lock().pty_writes).concat()
+    }
+
+    /// Text a program put on the clipboard (`OSC 52 ; c ; <base64>`), in order.
+    pub fn clipboard_stores(&self) -> Vec<String> {
+        self.lock().clipboard_stores.clone()
+    }
+
+    /// Everything a program put on the clipboard since the last call.
+    pub fn take_clipboard_stores(&self) -> Vec<String> {
+        std::mem::take(&mut self.lock().clipboard_stores)
+    }
+
+    /// How many clipboard reads are waiting to be answered.
+    pub fn clipboard_loads(&self) -> usize {
+        self.lock().clipboard_loads.len()
+    }
+
+    /// Answer the pending clipboard reads with `text`, returning what to write back.
+    ///
+    /// Formatted per request: the application asked for base64 in a particular
+    /// selection, and guessing the encoding would put the wrong bytes in its
+    /// clipboard. Reads that cannot be answered (no system clipboard) are dropped.
+    pub fn answer_clipboard(&self, text: Option<&str>) -> String {
+        let formats = std::mem::take(&mut self.lock().clipboard_loads);
+        let Some(text) = text else {
+            return String::new();
+        };
+        formats
+            .iter()
+            .map(|format| format(text))
+            .collect::<Vec<_>>()
+            .concat()
     }
 
     /// Palette indices a program asked about, in order (`256` is the foreground,
@@ -180,6 +223,11 @@ impl EventListener for Events {
                 Event::ColorRequest(index, format) => recorded
                     .colour_requests
                     .push(ColourRequest { index, format }),
+                // `OSC 52`: the program either puts text on our clipboard or asks
+                // for what is on it. Both are answered by the app, which owns the
+                // real clipboard; the headless path leaves them unanswered.
+                Event::ClipboardStore(_, text) => recorded.clipboard_stores.push(text),
+                Event::ClipboardLoad(_, format) => recorded.clipboard_loads.push(format),
                 // `None` means the child was killed rather than exiting on its
                 // own, which a caller should show differently from any exit code.
                 Event::ChildExit(status) => {
@@ -187,9 +235,6 @@ impl EventListener for Events {
                     recorded.exited = true;
                 }
                 Event::Wakeup => recorded.wakeups += 1,
-                // Clipboard queries need a live app to answer them; a headless
-                // screen has none, and silently ignoring them is what
-                // `VoidListener` does for every event anyway.
                 _ => {}
             }
             if is_wakeup {
@@ -223,6 +268,12 @@ impl Screen {
         let events = Events::default();
         let config = Config {
             scrolling_history: scrollback,
+            // Both directions of `OSC 52`. Alacritty's default is copy-only because
+            // a read lets any program on the pty lift the clipboard; ADR-0062 §9
+            // asks for both, and the alternative — `tmux` and `ssh` silently unable
+            // to copy — is the more common complaint. The app still decides what
+            // "the clipboard" is, and a session that never asks reads nothing.
+            osc52: Osc52::CopyPaste,
             ..Config::default()
         };
         let size = Size {

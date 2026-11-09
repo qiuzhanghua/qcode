@@ -270,6 +270,20 @@ impl crate::shell::Shell {
             return;
         };
         tab.session.answer_colours(foreground, background);
+
+        // `OSC 52`: a program on the pty either put text on our clipboard or asked
+        // for it. Both go through the real clipboard, which only the app owns.
+        let stored = tab.session.events().take_clipboard_stores();
+        if !stored.is_empty() {
+            let text = stored.concat();
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        }
+        let wanted = cx.read_from_clipboard().and_then(|item| item.text());
+        let reply = tab.session.events().answer_clipboard(wanted.as_deref());
+        if !reply.is_empty() {
+            tab.session.write(reply.as_bytes());
+        }
+
         let pending = tab.session.events().take_pty_writes();
         if !pending.is_empty() {
             tab.session.write(pending.as_bytes());
