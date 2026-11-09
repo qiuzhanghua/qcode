@@ -304,7 +304,7 @@ enum WriterMessage {
 }
 
 /// How many times a pty allocation is retried before the error is reported.
-const PTY_ATTEMPTS: u32 = 4;
+const PTY_ATTEMPTS: u32 = 10;
 
 /// Allocate the pty, retrying the transient failures.
 ///
@@ -319,8 +319,11 @@ fn new_pty(options: &Options, window_size: WindowSize) -> io::Result<tty::Pty> {
         match tty::new(options, window_size, 0) {
             Ok(pty) => return Ok(pty),
             Err(error) if attempt + 1 < PTY_ATTEMPTS && is_transient(&error) => {
+                // Exponential from 5 ms: a machine allocating ptys in a tight loop
+                // needs longer than a fixed 5 ms gap, and ten attempts cap the wait
+                // at ~2.5 s — still inside a user's patience for a new tab.
                 attempt += 1;
-                std::thread::sleep(Duration::from_millis(5 * u64::from(attempt)));
+                std::thread::sleep(Duration::from_millis(5 << (attempt - 1)));
             }
             Err(error) => return Err(error),
         }
@@ -330,7 +333,10 @@ fn new_pty(options: &Options, window_size: WindowSize) -> io::Result<tty::Pty> {
 /// `ENXIO` is the macOS pty clone failure; `EAGAIN`/`EMFILE`/`ENFILE` are the
 /// out-of-resources answers that clear on their own.
 fn is_transient(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(6) | Some(11) | Some(23) | Some(24))
+    matches!(
+        error.raw_os_error(),
+        Some(6) | Some(11) | Some(23) | Some(24)
+    )
 }
 
 impl Session {

@@ -131,7 +131,11 @@ fn output_written_just_before_exit_survives_a_reader_taking_the_lock() {
 fn a_reader_that_never_pauses_still_gets_the_output() {
     // The same failure at its most extreme: a tight loop that does nothing but ask
     // for the grid. Before the fix this lost most sessions.
-    const TIGHT: usize = 8;
+    // Four, not eight: the pty clone on macOS refuses allocations when the rest of
+    // the suite is opening tabs at the same time, and a spawn failure here would be
+    // reported as a lost-output bug. Four still holds the lock in a tight loop,
+    // which is what the reader has to survive.
+    const TIGHT: usize = 4;
 
     let mut handles = Vec::new();
     for index in 0..TIGHT {
