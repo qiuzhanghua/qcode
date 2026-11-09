@@ -597,3 +597,82 @@ fn process_path(pid: u32) -> Option<PathBuf> {
 fn process_path(_pid: u32) -> Option<PathBuf> {
     None
 }
+
+/// The working directory a live process is actually in (ADR-0062 §3).
+///
+/// This is the *real* cwd, not the one recorded at spawn: after the user types
+/// `cd`, the shell's own directory is what a new terminal should inherit.
+///
+/// Known limits, both accepted in the ADR: a symlinked path comes back resolved
+/// (`/proc/<pid>/cwd` and `proc_pidinfo` both report the physical path), and this
+/// is the shell's directory, not the foreground job's.
+pub fn process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        // `proc_pidinfo` returns the bytes written, or <= 0 on failure.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if written < size {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        // libc models the path as `[[c_char; 32]; 32]` (an old-rustc workaround for
+        // a 1024-byte array), so flatten it before reading it as a C string.
+        let path =
+            unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast::<libc::c_char>()) };
+        let bytes = path.to_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Where a new terminal should start (ADR-0062 §3).
+///
+/// `inherited` is the live cwd of the terminal the user was last in; `configured`
+/// is `[terminal] start_cwd`. A directory that no longer exists is skipped rather
+/// than handed to `spawn_command`, which would leave the shell unable to start.
+pub fn resolve_start_cwd(
+    inherited: Option<std::path::PathBuf>,
+    configured: &str,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    if let Some(path) = inherited.filter(|path| path.is_dir()) {
+        return Some(path);
+    }
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let path = std::path::PathBuf::from(configured);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    if let Some(home) = home.filter(|path| path.is_dir()) {
+        return Some(home);
+    }
+    std::env::current_dir().ok().filter(|path| path.is_dir())
+}

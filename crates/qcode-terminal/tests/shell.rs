@@ -507,3 +507,100 @@ fn the_real_parent_chain_is_readable() {
         row.ppid
     );
 }
+
+#[test]
+fn a_live_process_reports_the_directory_it_is_in() {
+    // `process_cwd` is the "inherit where I actually am" half of ADR-0062 §3.
+    // Start a shell in a temp dir, make it `cd` somewhere else, and ask again:
+    // the answer has to be the new directory, not the one the child started in.
+    let first = std::env::temp_dir().join(format!("qcode-cwd-a-{}", std::process::id()));
+    let second = std::env::temp_dir().join(format!("qcode-cwd-b-{}", std::process::id()));
+    std::fs::create_dir_all(&first).expect("first dir");
+    std::fs::create_dir_all(&second).expect("second dir");
+
+    let mut child = std::process::Command::new("/bin/sh")
+        .current_dir(&first)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("shell");
+
+    let settled = wait_for_dir(child.id(), &first);
+    assert!(settled, "the shell never reported its starting directory");
+    // Compare resolved paths: macOS reports `/private/var/...` where `temp_dir()`
+    // says `/var/...`. The ADR accepts that loss of symlink fidelity.
+    assert_eq!(
+        canonical(qcode_terminal::shell::process_cwd(child.id())),
+        canonical(Some(first.clone()))
+    );
+
+    use std::io::Write as _;
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(format!("cd {}\n", second.display()).as_bytes())
+        .expect("write");
+
+    let moved = wait_for_dir(child.id(), &second);
+    assert!(moved, "the shell's cwd change was not visible");
+    assert_eq!(
+        canonical(qcode_terminal::shell::process_cwd(child.id())),
+        canonical(Some(second.clone()))
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+}
+
+fn canonical(path: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    path.and_then(|path| std::fs::canonicalize(path).ok())
+}
+
+fn wait_for_dir(pid: u32, expected: &std::path::Path) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if canonical(qcode_terminal::shell::process_cwd(pid))
+            == canonical(Some(expected.to_path_buf()))
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn a_new_terminal_skips_a_directory_that_is_gone() {
+    let missing = std::env::temp_dir().join(format!("qcode-cwd-gone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let home = std::env::temp_dir().join(format!("qcode-cwd-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("home");
+
+    // An inherited directory that was deleted must not be handed to the shell:
+    // it would fail to start. Fall through to the configured one, then home.
+    assert_eq!(
+        qcode_terminal::shell::resolve_start_cwd(Some(missing.clone()), "", Some(home.clone())),
+        Some(home.clone())
+    );
+    assert_eq!(
+        qcode_terminal::shell::resolve_start_cwd(
+            Some(missing),
+            home.to_str().expect("utf-8"),
+            None
+        ),
+        Some(home.clone())
+    );
+    assert_eq!(
+        qcode_terminal::shell::resolve_start_cwd(None, "", Some(home.clone())),
+        Some(home.clone())
+    );
+    assert!(
+        qcode_terminal::shell::resolve_start_cwd(None, "/definitely/not/here", None).is_some(),
+        "the last resort is the process cwd, not None"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
