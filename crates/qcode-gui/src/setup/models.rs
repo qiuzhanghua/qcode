@@ -37,37 +37,154 @@ fn credential_text(state: qcode_kernel::provider_registry::CredentialState) -> &
     }
 }
 
-/// 一个 provider 是否真正可用：凭证齐全或无需密钥，且无需密钥的
-/// provider（如 ollama）端点必须可达，否则视为不可用——不可用的
-/// provider 不给「设为默认」入口。
-fn provider_usable(
-    config: &Config,
-    row: &qcode_kernel::provider_registry::ConfigurableProvider,
-) -> bool {
-    use qcode_kernel::provider_registry::CredentialState;
-    if matches!(row.credential_state, CredentialState::Missing) {
-        return false;
-    }
-    if matches!(row.credential_state, CredentialState::Keyless) {
-        let base = config
-            .providers
-            .get(&row.route)
-            .and_then(|profile| profile.base_url.as_deref())
-            .or_else(|| {
-                qcode_kernel::config::catalog_entry(&row.route).map(|entry| entry.base_url)
-            });
-        let Some(base) = base else {
-            return false;
-        };
-        return crate::keyless_endpoint_reachable(base);
-    }
-    true
-}
-
 impl SetupView {
+    /// 一个 provider 是否真正可用：凭证齐全或无需密钥，且无需密钥的
+    /// provider（如 ollama）端点必须可达，否则视为不可用——不可用的
+    /// provider 不给「设为默认」入口。端点可达性由后台探测写入
+    /// `self.reachability`（见 `ensure_reachability`），渲染路径只读缓存，
+    /// 探测结果未落地前按不可用处理。
+    fn provider_usable(&self, row: &qcode_kernel::provider_registry::ConfigurableProvider) -> bool {
+        use qcode_kernel::provider_registry::CredentialState;
+        if matches!(row.credential_state, CredentialState::Missing) {
+            return false;
+        }
+        if matches!(row.credential_state, CredentialState::Keyless) {
+            return self.reachability.get(&row.route).copied().unwrap_or(false);
+        }
+        true
+    }
+
+    /// 后台探测无密钥 provider（如 ollama）的端点可达性：渲染路径不再同步
+    /// 做 DNS/TCP（会卡住整窗），只在这里发起探测线程并把结果异步写回缓存。
+    /// 幂等：每个 route 至多一个在途探测，10 秒内不重复探测。
+    fn ensure_reachability(&mut self, cx: &mut Context<Self>) {
+        use qcode_kernel::provider_registry::CredentialState;
+        use std::time::Duration;
+        let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+            .list_configurable_providers(&self.config);
+        let now = std::time::Instant::now();
+        let mut pending: Vec<(String, String)> = Vec::new();
+        for row in &directory {
+            if !matches!(row.credential_state, CredentialState::Keyless) {
+                continue;
+            }
+            let route = row.route.clone();
+            if self.reach_inflight.contains(&route) {
+                continue;
+            }
+            if self
+                .reach_checked_at
+                .get(&route)
+                .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(10))
+            {
+                continue;
+            }
+            let base = self
+                .config
+                .providers
+                .get(&route)
+                .and_then(|profile| profile.base_url.as_deref())
+                .or_else(|| {
+                    qcode_kernel::config::catalog_entry(&route).map(|entry| entry.base_url)
+                });
+            let Some(base) = base else {
+                continue;
+            };
+            pending.push((route, base.to_string()));
+        }
+        if pending.is_empty() {
+            return;
+        }
+        let tx = if let Some(tx) = &self.reach_tx {
+            tx.clone()
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.reach_tx = Some(tx.clone());
+            self.reach_rx = Some(rx);
+            self.spawn_reach_drain(cx);
+            tx
+        };
+        for (route, base) in pending {
+            self.reach_inflight.insert(route.clone());
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                // 阻塞的 DNS/TCP 探测（`endpoint_reachable` 的 DNS 解析无超时）
+                // 跑在后台线程上；UI 线程只在本函数开头读缓存，从不被它卡住。
+                let ok = crate::endpoint_reachable(&base);
+                let _ = tx.send((route, ok));
+            });
+        }
+    }
+
+    /// 唯一一个后台循环：把可达性探测结果从通道取回、写入缓存并重绘。
+    /// 通道断开（所有探测线程已退出）或设置窗口关闭时结束。
+    fn spawn_reach_drain(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |view, cx| {
+                    if view.closing {
+                        view.reach_rx = None;
+                        view.reach_tx = None;
+                        return true;
+                    }
+                    // 先把通道里的结果全部收进本地再写状态：借用 `reach_rx`
+                    // 期间不能同时修改它。
+                    let drained = {
+                        let Some(rx) = &view.reach_rx else {
+                            view.reach_tx = None;
+                            return true;
+                        };
+                        let mut results: Vec<(String, bool)> = Vec::new();
+                        let mut disconnected = false;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(item) => results.push(item),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    disconnected = true;
+                                    break;
+                                }
+                            }
+                        }
+                        (results, disconnected)
+                    };
+                    let (results, disconnected) = drained;
+                    let mut received = false;
+                    for (route, ok) in results {
+                        view.reach_inflight.remove(&route);
+                        view.reachability.insert(route.clone(), ok);
+                        view.reach_checked_at
+                            .insert(route, std::time::Instant::now());
+                        received = true;
+                    }
+                    if disconnected {
+                        view.reach_rx = None;
+                        view.reach_tx = None;
+                    }
+                    if received {
+                        cx.notify();
+                    }
+                    disconnected
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
     /// The provider card list: saved notice, one card per directory row, the
     /// inline editor for the open route, and the add actions.
     pub(crate) fn render_models_providers(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // 后台发起无密钥 provider 端点探测（结果异步落地后 notify 重绘），
+        // 渲染路径只用缓存结果，不会在这里被 DNS/TCP 卡住。
+        self.ensure_reachability(cx);
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
         let theme = cx.theme();
@@ -152,7 +269,7 @@ impl SetupView {
             }
             // 已配置且可用（凭证齐全或无需密钥且端点可达）的 provider，只要
             // 还不是默认，就在卡片上给一个「设为默认」快捷按钮。
-            let usable = provider_usable(&self.config, row);
+            let usable = self.provider_usable(row);
             let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
             if row.configured && usable && !is_default {
                 let route_for_default = route.clone();
@@ -252,9 +369,7 @@ impl SetupView {
             })
             .unwrap_or_else(|| route.clone());
         let configured = entry.map(|row| row.configured).unwrap_or(false);
-        let usable = entry
-            .map(|row| provider_usable(&self.config, row))
-            .unwrap_or(false);
+        let usable = entry.map(|row| self.provider_usable(row)).unwrap_or(false);
         let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
         let key = "providers";
         let row_id = row.id;

@@ -142,6 +142,16 @@ pub struct SetupView {
     /// newest generation fires, so rapid typing coalesces into one write).
     pending_auto_save: Option<AutoSaveKind>,
     auto_save_generation: u64,
+    /// 设置窗口的无密钥 provider 端点可达性（Models 页卡片）：后台探测线程
+    /// 写入，渲染路径只读，不再同步做 DNS/TCP。`reachability` 是每个 route 的
+    /// 最近结果，`reach_checked_at` 是探测时刻（10 秒内不重复探测，与主窗口
+    /// `keyless_endpoint_reachable` 的缓存窗口一致），`reach_inflight` 是在途
+    /// route，tx/rx 是全部探测线程共用的那一条结果通道。
+    reachability: BTreeMap<String, bool>,
+    reach_checked_at: BTreeMap<String, std::time::Instant>,
+    reach_inflight: HashSet<String>,
+    reach_tx: Option<std::sync::mpsc::Sender<(String, bool)>>,
+    reach_rx: Option<std::sync::mpsc::Receiver<(String, bool)>>,
     /// Kept alive so text edits (which fire `InputEvent::Change` on the input
     /// entities, not on this view) can trigger auto saves. Wizard mode never
     /// subscribes.
@@ -330,6 +340,11 @@ impl SetupView {
             closing: false,
             pending_auto_save: None,
             auto_save_generation: 0,
+            reachability: BTreeMap::new(),
+            reach_checked_at: BTreeMap::new(),
+            reach_inflight: HashSet::new(),
+            reach_tx: None,
+            reach_rx: None,
             _input_subscriptions: Vec::new(),
         };
         for field in forms::FIELDS {
