@@ -48,6 +48,14 @@ fn spawn_writer() -> Option<Session> {
 
 /// Run one session the way a window would: keep asking for the grid while the child
 /// runs, then check what was left behind.
+fn spawn_writer_result() -> std::io::Result<Session> {
+    let config = SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "printf 'alpha\\nbravo\\n'".to_string()],
+    );
+    Session::spawn(config)
+}
+
 fn run_with_contention() -> Option<bool> {
     let session = spawn_writer()?;
 
@@ -128,7 +136,13 @@ fn a_reader_that_never_pauses_still_gets_the_output() {
     let mut handles = Vec::new();
     for index in 0..TIGHT {
         handles.push(std::thread::spawn(move || {
-            let session = spawn_writer()?;
+            let session = match spawn_writer_result() {
+                Ok(session) => session,
+                Err(error) => {
+                    eprintln!("session {index} could not start: {error}");
+                    return None;
+                }
+            };
             let start = Instant::now();
             let mut reads = 0u32;
             let mut seen = false;

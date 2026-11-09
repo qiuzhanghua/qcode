@@ -303,6 +303,36 @@ enum WriterMessage {
     Stop,
 }
 
+/// How many times a pty allocation is retried before the error is reported.
+const PTY_ATTEMPTS: u32 = 4;
+
+/// Allocate the pty, retrying the transient failures.
+///
+/// Opening a pty is not always reliable under load: macOS answers `ENXIO` when the
+/// clone cannot be allocated, and the test suite hits it with 28 sessions starting
+/// at once. Nothing has been spawned before this call, so a retry costs only the
+/// microseconds in between — and a user opening several tabs quickly should not see
+/// a tab fail to start for a reason that fixes itself.
+fn new_pty(options: &Options, window_size: WindowSize) -> io::Result<tty::Pty> {
+    let mut attempt = 0;
+    loop {
+        match tty::new(options, window_size, 0) {
+            Ok(pty) => return Ok(pty),
+            Err(error) if attempt + 1 < PTY_ATTEMPTS && is_transient(&error) => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(5 * u64::from(attempt)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// `ENXIO` is the macOS pty clone failure; `EAGAIN`/`EMFILE`/`ENFILE` are the
+/// out-of-resources answers that clear on their own.
+fn is_transient(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(6) | Some(11) | Some(23) | Some(24))
+}
+
 impl Session {
     /// Start the child, the reading thread and the writing thread.
     pub fn spawn(config: SessionConfig) -> io::Result<Self> {
@@ -336,7 +366,7 @@ impl Session {
         };
 
         // Window id 0: nothing registers this terminal with a windowing system.
-        let pty = tty::new(&options, window_size(columns, screen_lines), 0)?;
+        let pty = new_pty(&options, window_size(columns, screen_lines))?;
         let pid = pty.child().id();
 
         #[cfg(unix)]
