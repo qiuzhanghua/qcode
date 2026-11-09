@@ -645,6 +645,7 @@ impl Shell {
                     // measured (ADR-0062 §4).
                     if shell.view == MainView::Terminal {
                         shell.sync_terminal_size();
+                        shell.service_terminal(cx);
                         if shell
                             .terminal_dirty
                             .swap(false, std::sync::atomic::Ordering::Relaxed)

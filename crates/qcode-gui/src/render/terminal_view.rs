@@ -386,7 +386,7 @@ fn paint_frame(
             );
             window.paint_quad(fill(
                 Bounds::new(origin, gpui_kit::size(metrics.advance, metrics.line_height)),
-                foreground.opacity(0.45),
+                foreground.opacity(0.7),
             ));
         }
     }

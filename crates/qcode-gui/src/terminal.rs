@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{Context, Window};
 
 use qcode_kernel::config::TerminalConfig;
@@ -254,6 +255,29 @@ impl crate::shell::Shell {
             tab.session.resize(columns, rows);
         }
     }
+
+    /// Answer what the child asked for since the last tick.
+    ///
+    /// A program that queries the palette (`vim`, `tmux`) blocks until it hears
+    /// back, and one that opens the clipboard through the terminal (`OSC 52`) gets
+    /// nowhere if nothing answers. Both are non-blocking pty writes, so they belong
+    /// on the ticker rather than in the paint (ADR-0062 §9).
+    pub(crate) fn service_terminal(&mut self, cx: &mut Context<Self>) {
+        let theme = cx.theme();
+        let foreground = to_term_rgb(theme.foreground);
+        let background = to_term_rgb(theme.background);
+        let Some(tab) = self.terminals.active_mut() else {
+            return;
+        };
+        tab.session.answer_colours(foreground, background);
+        let pending = tab.session.events().take_pty_writes();
+        if !pending.is_empty() {
+            tab.session.write(pending.as_bytes());
+        }
+        if let Some(code) = tab.session.exit_code() {
+            let _ = code;
+        }
+    }
 }
 
 /// Translate a GPUI key press into the terminal's own key type.
@@ -351,4 +375,14 @@ fn focus_after_frame(
     window.defer(cx, move |window, cx| {
         window.focus(&handle, cx);
     });
+}
+
+/// Convert a theme colour to the `(r, g, b)` the terminal answers colour queries with.
+fn to_term_rgb(color: gpui_kit::Hsla) -> qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
+    let rgba = color.to_rgb();
+    qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
+        r: (rgba.r * 255.0).round() as u8,
+        g: (rgba.g * 255.0).round() as u8,
+        b: (rgba.b * 255.0).round() as u8,
+    }
 }
