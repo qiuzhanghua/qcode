@@ -170,22 +170,60 @@ fn read_pty(end: &mut ReaderEnd, buffer: &mut [u8]) -> io::Result<usize> {
     }
 }
 
-/// Write all of `bytes` to the pty.
-fn write_pty(end: &mut WriterEnd, bytes: &[u8]) -> io::Result<()> {
+/// One write attempt to the pty; returns how many bytes were accepted.
+///
+/// A single `write`, not `write_all`: the caller has to see `WouldBlock` to tell "the
+/// buffer is momentarily full" from "the session is over".
+fn write_pty(end: &mut WriterEnd, bytes: &[u8]) -> io::Result<usize> {
     #[cfg(unix)]
     {
-        end.file.write_all(bytes)
+        end.file.write(bytes)
     }
     #[cfg(windows)]
     {
         let mut guard = end.lock().expect("pty lock");
         let Some(pty) = guard.as_mut() else {
-            return Ok(());
+            return Ok(0);
         };
         // Buffered (`UnblockedWriter` drains it on its own thread), so this does not
         // wait for the child to read.
-        pty.writer().write_all(bytes)
+        pty.writer().write(bytes)
     }
+}
+
+/// Write all of `bytes`, waiting out a full input buffer. `false` means give up.
+///
+/// The pty master is opened `O_NONBLOCK` (by `tty::new`), so a write to a program that
+/// is not reading *yet* fails with `WouldBlock` rather than blocking. Treating that as
+/// fatal — which is what this did at first — is far worse than it sounds: the writing
+/// thread exits, its channel receiver drops, and every later `Session::write` returns
+/// `false`. The user pastes something large into `vim` while it is busy, and from then
+/// on **typing does nothing at all**, silently.
+///
+/// So `WouldBlock` is waited out instead: the bytes stay pending here, the queue grows
+/// if a paste is still arriving, and `Session::write` stays non-blocking for the
+/// caller. Only a real error ends the thread.
+fn write_all_waiting(end: &mut WriterEnd, bytes: &[u8], stopped: &AtomicBool) -> bool {
+    const FULL_BUFFER_RETRY: Duration = Duration::from_millis(1);
+
+    let mut written = 0;
+    while written < bytes.len() {
+        if stopped.load(Ordering::SeqCst) {
+            return false;
+        }
+        match write_pty(end, &bytes[written..]) {
+            Ok(0) => {
+                // A pty that accepts nothing is gone; another attempt would spin.
+                return false;
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(FULL_BUFFER_RETRY);
+            }
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Apply a new size to the pty, which makes the kernel send `SIGWINCH`.
@@ -338,10 +376,11 @@ impl Session {
 
         let writer_thread = {
             let mut writer_end = writer_end;
+            let stopped = stopped.clone();
             std::thread::Builder::new()
                 .name(format!("pty-write-{pid}"))
                 .spawn(move || {
-                    write_loop(&mut writer_end, writer_rx);
+                    write_loop(&mut writer_end, writer_rx, &stopped);
                 })?
         };
 
@@ -615,9 +654,9 @@ fn read_loop(
             // instead of just breaking.
             let deadline = Instant::now() + SHUTDOWN_GRACE;
             loop {
-                pump(end, &mut parser, term, events, &mut buffer);
+                pump(end, &mut parser, term, events, &mut buffer, stopped);
                 if let Some(status) = child_exited(end) {
-                    pump(end, &mut parser, term, events, &mut buffer);
+                    pump(end, &mut parser, term, events, &mut buffer, stopped);
                     term.lock().exit();
                     events.send_event(alacritty_terminal::event::Event::ChildExit(status));
                     return;
@@ -634,13 +673,13 @@ fn read_loop(
         // that preceded it.
         let exit_status = child_exited(end);
 
-        let read_anything = pump(end, &mut parser, term, events, &mut buffer);
+        let read_anything = pump(end, &mut parser, term, events, &mut buffer, stopped);
 
         match exit_status {
             Some(status) => {
                 // One more pass: the child's last write and its exit can be seen in
                 // either order, and losing that tail is exactly the bug above.
-                pump(end, &mut parser, term, events, &mut buffer);
+                pump(end, &mut parser, term, events, &mut buffer, stopped);
                 term.lock().exit();
                 events.send_event(alacritty_terminal::event::Event::ChildExit(status));
                 break;
@@ -651,17 +690,34 @@ fn read_loop(
     }
 }
 
-/// Read and parse until the pty has nothing pending. Returns whether anything came.
+/// How many reads one `pump` will do before handing control back to the loop.
+///
+/// Without a budget a flooding program keeps the pty non-empty forever and `pump`
+/// never returns — which means the exit is never noticed, `stopped` is never seen, and
+/// the tab cannot be closed. The exact number does not matter; it has to be finite.
+const PUMP_BUDGET: usize = 64;
+
+/// Read and parse until the pty has nothing pending or the budget runs out.
+///
+/// Signals a wakeup per read, not once at the end: a flooding program never lets this
+/// return, and a single wakeup afterwards would mean the grid is updated with nobody
+/// told to repaint — a `yes` that prints nothing.
 fn pump(
     end: &mut ReaderEnd,
     parser: &mut Processor,
     term: &Arc<FairMutex<Term<Events>>>,
     events: &Events,
     buffer: &mut [u8],
+    stopped: &AtomicBool,
 ) -> bool {
     let mut read_anything = false;
 
-    loop {
+    for _ in 0..PUMP_BUDGET {
+        if stopped.load(Ordering::SeqCst) && read_anything {
+            // Closing: take what is there, then let the loop report the exit.
+            break;
+        }
+
         match read_pty(end, buffer) {
             // `EIO` on a pty whose child is gone is the normal end, not an error:
             // what was read so far is already parsed, and the loop above reports the
@@ -673,33 +729,32 @@ fn pump(
                 let mut terminal = term.lock();
                 parser.advance(&mut *terminal, &buffer[..count]);
                 drop(terminal);
+                // Per read, so a flood is visible frame by frame instead of never.
+                events.send_event(alacritty_terminal::event::Event::Wakeup);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         }
     }
 
-    if read_anything {
-        events.send_event(alacritty_terminal::event::Event::Wakeup);
-    }
     read_anything
 }
 
 /// Write queued bytes and apply resizes, off the caller's thread.
-fn write_loop(end: &mut WriterEnd, messages: Receiver<WriterMessage>) {
+fn write_loop(end: &mut WriterEnd, messages: Receiver<WriterMessage>, stopped: &AtomicBool) {
     loop {
         let Ok(message) = messages.recv() else {
             return;
         };
-        if !apply(end, message) {
+        if !apply(end, message, stopped) {
             return;
         }
-        // Coalesce whatever queued up while this thread was busy: a paste arrives as
-        // many messages, and a burst of resizes only needs its last state.
+        // Apply whatever queued up while this thread was busy, so a paste does not go
+        // out one message per wakeup. A burst of resizes only needs its last state.
         loop {
             match messages.try_recv() {
                 Ok(next) => {
-                    if !apply(end, next) {
+                    if !apply(end, next, stopped) {
                         return;
                     }
                 }
@@ -711,13 +766,13 @@ fn write_loop(end: &mut WriterEnd, messages: Receiver<WriterMessage>) {
 }
 
 /// Perform one queued operation. `false` means the session is over.
-fn apply(end: &mut WriterEnd, message: WriterMessage) -> bool {
+fn apply(end: &mut WriterEnd, message: WriterMessage, stopped: &AtomicBool) -> bool {
     match message {
         WriterMessage::Bytes(bytes) => {
-            // A program that stops reading its input fills the pty buffer; this
-            // blocks *here* rather than in the frame callback. A hung-up pty fails
-            // instead, which is the end of the session either way.
-            write_pty(end, &bytes).is_ok()
+            // A program that stops reading its input fills the pty buffer; the wait
+            // happens *here*, off the frame callback, and it is a wait rather than a
+            // failure so that typing still works afterwards.
+            write_all_waiting(end, &bytes, stopped)
         }
         WriterMessage::Resize(size) => {
             // A failure means the pty is gone; the reading thread notices too.
@@ -743,7 +798,8 @@ mod tests {
         .expect("temp file");
         let mut end = WriterEnd { file };
 
-        let handle = std::thread::spawn(move || write_loop(&mut end, receiver));
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
         drop(sender);
 
         assert!(
@@ -761,7 +817,8 @@ mod tests {
         .expect("temp file");
         let mut end = WriterEnd { file };
 
-        let handle = std::thread::spawn(move || write_loop(&mut end, receiver));
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
         sender.send(WriterMessage::Stop).expect("send");
 
         assert!(
@@ -789,7 +846,8 @@ mod tests {
         }
         sender.send(WriterMessage::Stop).expect("send");
 
-        let handle = std::thread::spawn(move || write_loop(&mut end, receiver));
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
         assert!(join_with_timeout(handle, Duration::from_secs(2)));
 
         let written = std::fs::read(&path).expect("read back");

@@ -336,3 +336,56 @@ fn the_mode_a_program_sets_decides_how_the_next_key_is_encoded() {
 
     session.close();
 }
+
+#[test]
+fn a_flooding_child_keeps_signalling_and_can_still_be_closed() {
+    // `yes` never stops writing, so the pty is never empty. The first version of the
+    // reading loop accumulated a whole batch and signalled once at the end — with a
+    // flood that end never came, so the grid updated with nobody told to repaint (a
+    // `yes` that draws nothing) and the loop could not be stopped either, because the
+    // stop flag was only checked after the batch.
+    let session = run("/bin/sh", &["-c", "yes qcode-flood"]);
+    let events = session.events();
+
+    assert!(
+        wait_until(|| events.wakeups() > 10),
+        "a flooding child produced only {} wakeups, so nothing would ever repaint",
+        events.wakeups()
+    );
+    assert!(
+        wait_until(|| session.with_view(|view| view.text().contains("qcode-flood"))),
+        "the flood never reached the grid"
+    );
+
+    // And it must still close promptly while flooded.
+    let closed_at = Instant::now();
+    session.close();
+    assert!(
+        closed_at.elapsed() < Duration::from_secs(2),
+        "closing a flooding tab took {:?}",
+        closed_at.elapsed()
+    );
+}
+
+#[test]
+fn a_flooding_child_is_not_left_running_after_close() {
+    // The flood's process must be gone, not merely unsubscribed from: `yes` is exactly
+    // the case where a leaked child burns a core forever without being noticed.
+    // `yes` is the process itself, so its argv is `yes <marker>`; the helper matches
+    // the whole command line, which is what keeps the shell that starts it from
+    // counting as a match.
+    let flood = format!("yes {}", marker(4));
+    let session = run("/bin/sh", &["-c", &flood]);
+    assert!(
+        wait_until(|| !processes_matching(&flood).is_empty()),
+        "the flood never started, so this test would pass vacuously"
+    );
+
+    session.close();
+
+    assert!(
+        wait_until(|| processes_matching(&flood).is_empty()),
+        "closing a flooding tab left {:?} running",
+        processes_matching(&flood)
+    );
+}
