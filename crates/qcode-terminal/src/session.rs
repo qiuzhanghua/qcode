@@ -332,9 +332,13 @@ fn new_pty(options: &Options, window_size: WindowSize) -> io::Result<tty::Pty> {
 
 /// `ENXIO` is the macOS pty clone failure; `EAGAIN`/`EMFILE`/`ENFILE` are the
 /// out-of-resources answers that clear on their own.
+///
+/// `raw_os_error` can come back negative: the pty layer hands up `nix`'s error
+/// verbatim, and macOS answers `-6` for `ENXIO`, so compare on the magnitude —
+/// matching only `6` silently disabled the retry.
 fn is_transient(error: &io::Error) -> bool {
     matches!(
-        error.raw_os_error(),
+        error.raw_os_error().map(i32::abs),
         Some(6) | Some(11) | Some(23) | Some(24)
     )
 }
