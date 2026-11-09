@@ -275,3 +275,31 @@ fn a_clipboard_read_with_no_system_clipboard_is_dropped() {
         "the request is consumed"
     );
 }
+
+#[test]
+fn scrolling_back_shows_history_in_the_visible_rows() {
+    let mut screen = qcode_terminal::screen::Screen::new(20, 3, 100);
+    // Four lines into a three-line screen: the first has to fall into history.
+    screen.advance(b"one\r\ntwo\r\nthree\r\nfour");
+
+    assert_eq!(
+        screen.view().contents()[0],
+        "two",
+        "live screen starts at `two`"
+    );
+
+    screen.scroll(2);
+    let scrolled = screen.view().contents();
+    assert_eq!(scrolled.len(), 3);
+    assert_eq!(
+        scrolled[0], "one",
+        "two lines back puts `one` at the top, got {scrolled:?}"
+    );
+
+    screen.scroll_to_bottom();
+    assert_eq!(
+        screen.view().contents()[0],
+        "two",
+        "bottom returns to the live screen"
+    );
+}

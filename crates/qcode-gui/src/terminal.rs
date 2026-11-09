@@ -232,6 +232,9 @@ impl crate::shell::Shell {
         let Some(tab) = self.terminals.active_mut() else {
             return false;
         };
+        // Typing is a statement about where you want to be; a terminal that keeps
+        // the view parked in history while the shell runs the command is baffling.
+        tab.session.scroll_to_bottom();
         if tab.session.has_exited() {
             return false;
         }
@@ -385,6 +388,21 @@ impl crate::shell::Shell {
         let mode = tab.session.with_view(|view| view.mode());
         let bytes = qcode_terminal::key::paste(&text, mode);
         self.type_into_terminal(&bytes, cx)
+    }
+
+    /// Move the terminal's view through its history.
+    ///
+    /// A view position, not a change to the grid: output keeps arriving underneath
+    /// and [`Shell::scroll_terminal_to_bottom`] returns to it.
+    pub(crate) fn scroll_terminal(&mut self, lines: i32, cx: &mut Context<Self>) {
+        let Some(tab) = self.terminals.active_mut() else {
+            return;
+        };
+        if lines == 0 {
+            return;
+        }
+        tab.session.scroll(lines);
+        cx.notify();
     }
 
     pub(crate) fn terminal_key(

@@ -216,7 +216,7 @@ impl Shell {
         let font_family = self.mono_font.clone();
         let font_size = px(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32);
 
-        canvas(
+        let body = canvas(
             move |bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App| {
                 let text_system = window.text_system().clone();
                 let font = gpui_kit::Font {
@@ -251,7 +251,28 @@ impl Shell {
             },
         )
         .size_full()
-        .into_any_element()
+        .into_any_element();
+
+        div()
+            .size_full()
+            .child(body)
+            .on_scroll({
+                let entity = cx.entity();
+                move |event: &gpui_kit::ScrollEvent, _window, cx| {
+                    // A line of history per line of wheel: pixels are divided by a line
+                    // height so a trackpad flick and a wheel click scroll alike.
+                    let lines = match event.delta {
+                        gpui_kit::ScrollDelta::Lines(point) => point.y.round() as i32,
+                        gpui_kit::ScrollDelta::Pixels(point) => {
+                            (point.y.as_f32() / 20.0).round() as i32
+                        }
+                    };
+                    if lines != 0 {
+                        entity.update(cx, |shell, cx| shell.scroll_terminal(lines, cx));
+                    }
+                }
+            })
+            .into_any_element()
     }
 }
 
@@ -294,7 +315,16 @@ impl TerminalFrame {
             }
             lines.push(runs);
         }
-        let cursor = view.cursor_visible().then(|| view.cursor());
+        // The cursor is a grid position; scrolling pushes the visible rows down, so
+        // a cursor parked in history has to be hidden rather than drawn on top of a
+        // scrolled-back screen.
+        let offset = view.display_offset() as i32;
+        let cursor = view.cursor_visible().then(|| {
+            let (line, column) = view.cursor();
+            let row = line as i32 + offset;
+            (row >= 0 && (row as usize) < rows).then_some((row as usize, column))
+        });
+        let cursor = cursor.flatten();
         Self {
             rows: lines,
             cursor,

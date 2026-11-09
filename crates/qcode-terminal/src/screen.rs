@@ -13,8 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::Line;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
@@ -316,6 +315,16 @@ impl Screen {
     }
 
     /// Read-only access to the grid.
+    /// Scroll the view back through history, for the headless path.
+    pub fn scroll(&mut self, lines: i32) {
+        self.term.scroll_display(Scroll::Delta(lines));
+    }
+
+    /// Return the headless view to the live screen.
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
     pub fn view(&self) -> View<'_> {
         View { term: &self.term }
     }
@@ -374,6 +383,15 @@ impl<'a> View<'a> {
         *self.term.mode()
     }
 
+    /// How far the view is scrolled back into history, in lines.
+    ///
+    /// Zero is the live screen. Everything that maps a grid row to a screen row
+    /// adds this offset, because `display_iter` yields *grid* lines and scrolling
+    /// pushes them negative.
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
     /// The cursor, as `(line, column)` with line 0 at the top of the *visible*
     /// screen.
     pub fn cursor(&self) -> (usize, usize) {
@@ -396,8 +414,9 @@ impl<'a> View<'a> {
     pub fn contents(&self) -> Vec<String> {
         let lines = self.screen_lines();
         let mut rows = vec![String::new(); lines];
+        let offset = self.term.grid().display_offset() as i32;
         for indexed in self.term.grid().display_iter() {
-            let line = indexed.point.line.0;
+            let line = indexed.point.line.0 + offset;
             if line < 0 {
                 continue;
             }
@@ -432,13 +451,14 @@ impl<'a> View<'a> {
 
     /// Every row, every cell, for a renderer that wants to draw the grid itself.
     pub fn cells(&self) -> impl Iterator<Item = (usize, usize, CellView)> + '_ {
+        let offset = self.term.grid().display_offset() as i32;
         self.term
             .grid()
             .display_iter()
-            .filter(|indexed| indexed.point.line >= Line(0))
-            .map(|indexed| {
+            .filter(move |indexed| indexed.point.line.0 + offset >= 0)
+            .map(move |indexed| {
                 (
-                    indexed.point.line.0 as usize,
+                    (indexed.point.line.0 + offset) as usize,
                     indexed.point.column.0,
                     CellView::from(indexed.cell),
                 )
@@ -450,10 +470,13 @@ impl<'a> View<'a> {
         if line >= self.screen_lines() || column >= self.columns() {
             return None;
         }
+        let offset = self.term.grid().display_offset() as i32;
         self.term
             .grid()
             .display_iter()
-            .find(|indexed| indexed.point.line.0 == line as i32 && indexed.point.column.0 == column)
+            .find(|indexed| {
+                indexed.point.line.0 + offset == line as i32 && indexed.point.column.0 == column
+            })
             .map(|indexed| CellView::from(indexed.cell))
     }
 }

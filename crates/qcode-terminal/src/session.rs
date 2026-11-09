@@ -56,6 +56,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{EventListener, WindowSize};
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Osc52, Term};
 use alacritty_terminal::tty::{self, EventedPty, Options, Shell};
@@ -506,6 +507,12 @@ impl Session {
         read(&View::new(&term))
     }
 
+    /// Change the terminal state under the same lock `with_view` takes.
+    fn with_term<R>(&self, change: impl FnOnce(&mut Term<Events>) -> R) -> R {
+        let mut term = self.term.lock();
+        change(&mut term)
+    }
+
     /// Answer the colour queries the child asked, and send the reply.
     ///
     /// Returns the bytes written, empty when nothing was asked. A program that queries
@@ -517,6 +524,19 @@ impl Session {
             self.write(reply.as_bytes());
         }
         reply
+    }
+
+    /// Scroll the view back through history. Negative moves towards the live screen.
+    ///
+    /// The scroll is a *view* position, not a change to the grid: new output keeps
+    /// arriving underneath, and [`Session::scroll_to_bottom`] returns to it.
+    pub fn scroll(&self, lines: i32) {
+        self.with_term(|term| term.scroll_display(Scroll::Delta(lines)));
+    }
+
+    /// Jump back to the live screen.
+    pub fn scroll_to_bottom(&self) {
+        self.with_term(|term| term.scroll_display(Scroll::Bottom));
     }
 
     /// The child's exit code, or `None` if it was killed by a signal — or has not
