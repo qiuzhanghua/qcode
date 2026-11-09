@@ -362,6 +362,15 @@ impl Session {
             events.clone(),
         )));
 
+        // `SHELL` in the child has to name the shell we are about to run: tools
+        // inside the terminal (nested shells, `$SHELL`-aware scripts) read it, and
+        // inheriting the launcher's value would keep the wrong answer alive.
+        let shell_program = config.shell.as_ref().map(|(program, _)| program.clone());
+        let mut env: std::collections::HashMap<String, String> = config.env.into_iter().collect();
+        if let Some(program) = shell_program {
+            env.entry("SHELL".to_string()).or_insert(program);
+        }
+
         let options = Options {
             shell: config
                 .shell
@@ -370,7 +379,7 @@ impl Session {
             // Nothing reads this: it configured `alacritty`'s reading loop, which this
             // module replaced. It stays because `Options` has no default for it.
             drain_on_exit: false,
-            env: config.env.into_iter().collect(),
+            env,
             #[cfg(target_os = "windows")]
             escape_args: false,
         };

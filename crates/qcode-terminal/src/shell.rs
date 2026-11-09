@@ -58,10 +58,10 @@ pub enum Source {
     Configured,
     /// An interactive shell in the parent chain, i.e. the one the user is in.
     ParentProcess,
-    /// `$SHELL`, i.e. the login shell.
-    Environment,
-    /// The login shell in `/etc/passwd`.
+    /// The shell named in the user database, i.e. the one `chsh` sets.
     LoginShell,
+    /// `$SHELL`, the shell of whoever launched this process.
+    Environment,
     /// `/bin/sh`, or `cmd` on Windows.
     Fallback,
 }
@@ -154,6 +154,18 @@ pub fn detect_with(probe: &dyn Probe, configured: Option<&str>) -> Choice {
 
     #[cfg(not(windows))]
     {
+        // The user database before `$SHELL`: a GUI process inherits `$SHELL` from
+        // whatever started it — launchd, a service manager, an install script — and
+        // that is routinely not the shell the user runs. macOS ships `/bin/bash`
+        // this way even when the account was changed to zsh long ago. The passwd
+        // entry is what `chsh` maintains, so it is the better guess once the parent
+        // chain has nothing to say.
+        if let Some(shell) = probe.login_shell().filter(|path| probe.is_executable(path)) {
+            return Choice {
+                program: shell,
+                source: Source::LoginShell,
+            };
+        }
         if let Some(shell) = probe
             .env("SHELL")
             .map(PathBuf::from)
@@ -162,12 +174,6 @@ pub fn detect_with(probe: &dyn Probe, configured: Option<&str>) -> Choice {
             return Choice {
                 program: shell,
                 source: Source::Environment,
-            };
-        }
-        if let Some(shell) = probe.login_shell().filter(|path| probe.is_executable(path)) {
-            return Choice {
-                program: shell,
-                source: Source::LoginShell,
             };
         }
         Choice {
@@ -333,6 +339,14 @@ impl Probe for System {
     }
 
     fn login_shell(&self) -> Option<PathBuf> {
+        // `getpwuid_r` and not `/etc/passwd`: on macOS the account lives in Open
+        // Directory, so the file has no entry for the user and reading it means
+        // answering "unknown" on the very machine this ships to. The file is kept as
+        // a fallback for the odd container that builds passwd by hand.
+        #[cfg(unix)]
+        if let Some(shell) = login_shell_from_passwd_db() {
+            return Some(shell);
+        }
         let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
         login_shell_from(&passwd, current_uid())
     }
@@ -675,4 +689,38 @@ pub fn resolve_start_cwd(
         return Some(home);
     }
     std::env::current_dir().ok().filter(|path| path.is_dir())
+}
+
+/// The shell field of this process's passwd entry, through the C library.
+#[cfg(unix)]
+fn login_shell_from_passwd_db() -> Option<PathBuf> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+
+    // SAFETY: `buffer` outlives `entry`, and `getpwuid_r` only writes into the two
+    // it is given. A non-zero return means "not found or too small", which is a
+    // `None` here rather than an error: the caller has other guesses.
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() || entry.pw_shell.is_null() {
+        return None;
+    }
+
+    // SAFETY: `pw_shell` points into `buffer` and is NUL terminated.
+    let bytes = unsafe { CStr::from_ptr(entry.pw_shell) }.to_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(OsStr::from_bytes(bytes)))
 }

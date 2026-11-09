@@ -4723,9 +4723,23 @@ GUI 落地后这三条边界开始漏：
    非 Windows 的顺序：
 
    ```
-   [terminal] shell（在 PATH 上） > 父进程链里的交互式 shell > $SHELL
-     > /etc/passwd 的登录 shell > /bin/sh
+   [terminal] shell（在 PATH 上） > 父进程链里的交互式 shell > 用户数据库的登录 shell
+     > $SHELL > /bin/sh
    ```
+
+   **登录 shell 排在 `$SHELL` 前面**，与 wezterm/portable-pty 的顺序相反，这是刻意
+   的。GUI 应用没有父进程链可查时，`$SHELL` 是**启动它的那个东西**留下的：launchd、
+   服务管理器、安装脚本。它们给的值经常不是用户现在用的 shell——macOS 上实测
+   `$SHELL=/bin/bash` 而账户早就是 zsh，于是终端一开就是 bash，还附带一句
+   "The default interactive shell is now zsh"。用户数据库是 `chsh` 维护的那份，比继承
+   来的变量可信；`$SHELL` 只在用户库里没有答案时（容器、精简镜像）兜底。
+
+   登录 shell 用 `getpwuid_r` 取，读 `/etc/passwd` 只作为兜底：macOS 的账户在
+   Open Directory 里，文件里根本没有这一行——照文件读会在最该正确的机器上返回
+   "不知道"。
+
+   子进程的 `SHELL` 变量会被改写成实际启动的那个 shell，否则终端里的嵌套 shell 和
+   `$SHELL`-aware 脚本会继续读到一个没人运行的答案。
 
    父进程链：从自身 PID 向上走（上限 12 层），取第一个 basename 落在白名单里的
    进程的 `exe` 路径。白名单是 `bash` / `zsh` / `fish` / `nu` / `elvish` / `xonsh` /
@@ -4761,7 +4775,7 @@ GUI 落地后这三条边界开始漏：
    | 平台 | 顺序 |
    |---|---|
    | Windows | `pwsh` → `powershell` → `cmd` |
-   | 非 Windows | 配置 → 父链 → `$SHELL` → passwd → `/bin/sh` |
+   | 非 Windows | 配置 → 父链 → 登录 shell → `$SHELL` → `/bin/sh` |
 
    每一层都对失效值宽容：路径不存在、不可执行、读不到父进程，一律跳到下一层。
    用户配了 `shell` 却不在 PATH 上时落回探测结果——不能让一个手误就开不了终端。

@@ -502,3 +502,23 @@ fn the_window_config_start_shape_gets_output() {
     );
     session.close();
 }
+
+#[test]
+fn the_child_sees_the_shell_it_is_running() {
+    // `SHELL` is what nested shells and `$SHELL`-aware scripts read. Inheriting the
+    // launcher's value would tell the child about a shell nobody is running.
+    let config = SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "printf '%s' \"$SHELL\"".to_string()],
+    );
+    let session = Session::spawn(config).expect("spawn a child on a PTY");
+
+    let saw_shell =
+        wait_until(|| session.with_view(|view| view.contents().join("").contains("/bin/sh")));
+    assert!(
+        saw_shell,
+        "the child's SHELL never reached the grid; grid: {:#?}",
+        session.with_view(|view| view.contents())
+    );
+    session.close();
+}

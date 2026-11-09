@@ -277,14 +277,19 @@ fn a_configured_absolute_path_is_used_as_written() {
 }
 
 #[test]
-fn the_login_shell_is_only_the_last_resort_before_bin_sh() {
-    // No chain, no $SHELL, but a passwd entry.
+fn the_login_shell_wins_over_a_stale_environment() {
+    // The shape this machine actually has: launched by an app, so no shell in the
+    // parent chain, `$SHELL` still saying bash (macOS sets it from launchd), and
+    // the account changed to zsh long ago. Starting bash would greet the user with
+    // "The default interactive shell is now zsh".
     let fake = Fake::new()
-        .executable("/bin/fish")
-        .passwd_shell("/bin/fish")
+        .env("SHELL", "/bin/bash")
+        .executable("/bin/bash")
+        .executable("/bin/zsh")
+        .passwd_shell("/bin/zsh")
         .chain(1000, "qc", "/usr/bin/qc", 1);
 
-    found(detect_with(&fake, None), "/bin/fish", Source::LoginShell);
+    found(detect_with(&fake, None), "/bin/zsh", Source::LoginShell);
 }
 
 #[test]
@@ -603,4 +608,32 @@ fn a_new_terminal_skips_a_directory_that_is_gone() {
         "the last resort is the process cwd, not None"
     );
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn this_machine_answers_with_the_configured_login_shell() {
+    // The real probe, not a fake: on macOS this is the test that fails when the
+    // login shell is read from `/etc/passwd` (the account is in Open Directory).
+    let choice = detect();
+    assert!(
+        choice.program.is_absolute() && choice.program.exists(),
+        "detected shell {:?} ({:?}) should be a real binary",
+        choice.program,
+        choice.source
+    );
+    eprintln!(
+        "detected shell: {} ({})",
+        choice.program.display(),
+        choice.source.label()
+    );
+}
+
+#[test]
+fn the_real_probe_reads_the_login_shell_from_the_user_database() {
+    // Not the parent chain and not `$SHELL`: this is what a GUI-launched qc sees,
+    // and on macOS it has to come from Open Directory rather than `/etc/passwd`.
+    let shell = qcode_terminal::shell::System.login_shell();
+    eprintln!("login shell from the user database: {shell:?}");
+    let shell = shell.expect("the account should have a login shell");
+    assert!(shell.is_absolute(), "{shell:?} should be an absolute path");
 }
