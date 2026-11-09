@@ -575,11 +575,12 @@ async fn two_sessions_run_at_the_same_time() {
     let workspace = tempfile::tempdir().expect("workspace");
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path());
-    let mut backend = LocalBackend::new(engine_with(
-        workspace.path(),
-        store,
-        MockProvider::scripted(vec![slow_script(), slow_script()]),
-    ));
+    // A's stream is held open: the assertion below is that B starts while A is
+    // still running, and that must follow from the test's own sequencing rather
+    // than from A's script (a fixed amount of work) outlasting the setup here.
+    let (provider, a_gate) =
+        MockProvider::scripted_holding_first(vec![slow_script(), slow_script()]);
+    let mut backend = LocalBackend::new(engine_with(workspace.path(), store, provider));
 
     // Task A: a draft becomes a session on its first turn.
     backend.prompt(None, "first".to_string(), Vec::new());
@@ -609,9 +610,12 @@ async fn two_sessions_run_at_the_same_time() {
     let b = b.expect("a new task was created");
     backend.prompt(Some(&b), "second".to_string(), Vec::new());
 
-    // Collect until both turns have returned, remembering the order.
+    // Collect until both turns have returned, remembering the order. A is held
+    // open until B's turn is visibly running, so the only way A's `TurnEnded`
+    // can be missing from this window is if B never started.
     let mut order: Vec<(String, EventKind)> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut released = false;
     while Instant::now() < deadline {
         if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event) {
             let relevant = matches!(
@@ -622,16 +626,30 @@ async fn two_sessions_run_at_the_same_time() {
                 order.push((event.session.clone(), event.kind));
             }
         }
+        let started = |id: &str| {
+            order
+                .iter()
+                .any(|(session, kind)| session == id && matches!(kind, EventKind::TurnStarted(_)))
+        };
         let ended = |id: &str| {
             order
                 .iter()
                 .any(|(session, kind)| session == id && matches!(kind, EventKind::TurnEnded(_)))
         };
+        // B is running; let A finish.
+        if !released && started(&b) {
+            a_gate.release();
+            released = true;
+        }
         if ended(&a) && ended(&b) {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert!(
+        released,
+        "task B never started while A was held open, got {order:?}"
+    );
 
     let started_b = order
         .iter()
@@ -796,10 +814,17 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     upcoming(&store, "orphan", 1);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
-    engine.schedule_tick = Some(Duration::from_millis(100));
+    // The scheduler treats a beat more than three beats late as "the process was
+    // away" (runtime.rs, ADR-0059 §2) and then only re-schedules instead of
+    // deciding anything, so the tolerance is three times this value. A 100ms tick
+    // therefore tolerates 300ms, and on a loaded runner every beat can qualify as
+    // "away", leaving the orphan undecided until the wait expires. One second puts
+    // the tolerance at 3s — more than scheduling jitter can spend — and the 1s
+    // window below still comes round inside the deadline.
+    engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut status = None;
     while Instant::now() < deadline && status.is_none() {
         status = store_for_check
