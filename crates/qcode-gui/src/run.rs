@@ -56,6 +56,13 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
+                // Cmd+T opens a terminal (and a tab, if none is open yet).
+                KeyBinding::new("cmd-t", OpenTerminalShortcut, None),
+                // Inside the terminal, Cmd+W closes the tab, not the window: the
+                // context-scoped binding wins over the root one.
+                KeyBinding::new("cmd-w", CloseTerminalShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-tab", NextTerminalShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-tab", PrevTerminalShortcut, Some("Terminal")),
                 KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
                 // The focused Textarea owns the "Input" context, so bind there too
                 // or the root handler never sees Cmd+Enter.

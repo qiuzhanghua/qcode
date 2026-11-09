@@ -54,6 +54,10 @@ gpui_kit::actions!(
         PrevTurnShortcut,
         NextTurnShortcut,
         SendMessage,
+        OpenTerminalShortcut,
+        CloseTerminalShortcut,
+        NextTerminalShortcut,
+        PrevTerminalShortcut,
     ]
 );
 use crate::approvals::ApprovalQueue;

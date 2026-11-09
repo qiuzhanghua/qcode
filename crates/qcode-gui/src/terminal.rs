@@ -389,6 +389,39 @@ impl crate::shell::Shell {
         self.type_into_terminal(&bytes, cx)
     }
 
+    /// `Cmd+T`: switch to the terminal view and add a tab.
+    ///
+    /// The empty case goes through `open_terminal_view`, which opens the first tab
+    /// itself; doing both would open two tabs on the first press.
+    pub(crate) fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminals.is_empty() {
+            self.open_terminal_view(window, cx);
+        } else {
+            self.view = crate::shell::MainView::Terminal;
+            self.new_terminal(window, cx);
+        }
+    }
+
+    /// `Ctrl+Tab` / `Ctrl+Shift+Tab`: walk the tabs, wrapping at both ends.
+    pub(crate) fn cycle_terminal(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.terminals.tabs.len();
+        if count < 2 {
+            return;
+        }
+        let active = self.terminals.active;
+        let next = if forward {
+            (active + 1) % count
+        } else {
+            (active + count - 1) % count
+        };
+        self.select_terminal(next, window, cx);
+    }
+
     /// Move the terminal's view through its history.
     ///
     /// A view position, not a change to the grid: output keeps arriving underneath

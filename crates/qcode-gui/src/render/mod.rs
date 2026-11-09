@@ -116,6 +116,9 @@ impl Render for Shell {
                     this.new_session(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &OpenTerminalShortcut, window, cx| {
+                this.open_terminal(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )

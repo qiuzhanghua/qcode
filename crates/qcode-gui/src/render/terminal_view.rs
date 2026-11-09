@@ -11,6 +11,7 @@
 //! callback is what stops the session from being touched while the entity that
 //! owns it is being read.
 
+use crate::{CloseTerminalShortcut, NextTerminalShortcut, PrevTerminalShortcut};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
     App, Bounds, Context, FontStyle, FontWeight, Hsla, Pixels, SharedString, Styled, TextRun,
@@ -60,6 +61,15 @@ impl Shell {
             .bg(background)
             .track_focus(&self.terminal_focus)
             .key_context("Terminal")
+            .on_action(cx.listener(|this, _: &CloseTerminalShortcut, window, cx| {
+                this.close_terminal(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextTerminalShortcut, window, cx| {
+                this.cycle_terminal(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PrevTerminalShortcut, window, cx| {
+                this.cycle_terminal(false, window, cx)
+            }))
             .on_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, _window, cx| {
                     let keystroke = &event.keystroke;
