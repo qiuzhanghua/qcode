@@ -66,3 +66,27 @@ tempfile = "3"
 ratatui = "=0.29.0"
 # MCP SDK. Pinned: the client API is still pre-1.0 and changes between minors.
 rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-child-process"] }
+
+# 发布体积。GUI 版（`--features gui`）把整个 GPU 栈静态链进来，不加这几项时
+# 本机构建是 88 MB，其中 20 MB 是 `.symtab` 里的 18.5 万个符号名。
+#
+# 实测（同一台 Linux amd64，干净的 target 目录）：
+#   默认                 88 MB
+#   仅 strip             66 MB
+#   thin + cgu=1 + strip 55 MB   ← 这里采用，构建 2m30s
+#   fat  + cgu=1 + strip 46 MB   （构建 5m30s，多 3 分钟只再省 9 MB，不值）
+#
+# `codegen-units = 1` 是 LTO 发挥作用的前提：多个 CGU 下 LTO 只能跨 CGU 合并有限
+# 范围。它也让优化机会变多，release 的跑分通常略有提升，代价是编译变慢。
+#
+# `strip = "symbols"` 只去掉符号表，`.debug_*` 本来就没生成（debug=0），所以崩溃
+# 时的 backtrace 本来就只有地址。要可读的栈就另外留一份未 strip 的产物，别为此
+# 放弃 20 MB。
+#
+# 有意不设 `panic = "abort"`：还能再省 7 MB（48 MB），但任何线程 panic 会直接
+# 终止进程，而不是像现在这样被 tokio / GPUI 捕获后只挂掉那个任务。桌面 GUI 里
+# 这个取舍要想清楚再动；加了之后 `cargo test` 仍按 unwind 跑（test profile 独立）。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
