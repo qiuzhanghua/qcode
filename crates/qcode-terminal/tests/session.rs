@@ -31,11 +31,28 @@ fn run(program: &str, args: &[&str]) -> Session {
     Session::spawn(config).expect("spawn a child on a PTY")
 }
 
-/// Whether any process still has `needle` in its command line.
+/// A `sleep` command line unique to one test.
 ///
-/// Reads `/proc` directly rather than shelling out to `pgrep`: the check has to
-/// be exact, and a `pgrep` that is itself a child of the test would match its own
-/// command line.
+/// Two things would make a fixed duration a landmine. A process left behind by an
+/// *earlier* crashed run keeps its command line, so a later run would see a
+/// "survivor" it never created and fail forever; the pid of the test process rules
+/// that out. And the tests in this file share one process, so a pid alone is not
+/// enough either — `tag` separates them, or one test's assertion watches another
+/// test's child (which is exactly how a HUP-ignoring sleeper "orphaned" a
+/// neighbour's run).
+fn marker(tag: u32) -> String {
+    format!("sleep {}", 1_000_000 + std::process::id() * 16 + tag)
+}
+
+/// Pids whose command line is *exactly* `command`.
+///
+/// Exact, not "contains": the shell that runs the marker has it in its own command
+/// line (`/bin/sh -c sleep 1909004; true`), so a substring match answers "yes" before
+/// the marker process exists — and a test that closes the session at that moment is
+/// racing the fork it means to observe, not testing what it says it tests.
+///
+/// Reads `/proc` directly rather than shelling out to `pgrep`: a `pgrep` would match
+/// its own command line.
 fn processes_matching(needle: &str) -> Vec<u32> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -51,7 +68,9 @@ fn processes_matching(needle: &str) -> Vec<u32> {
         let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
             continue;
         };
-        if String::from_utf8_lossy(&cmdline).contains(needle) {
+        // `/proc/<pid>/cmdline` is NUL-separated argv.
+        let argv = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+        if argv.trim_end() == needle {
             found.push(pid);
         }
     }
@@ -65,7 +84,13 @@ fn a_real_child_runs_and_its_output_lands_on_the_grid() {
     let saw_output = wait_until(|| {
         session.with_view(|view| view.contents().iter().any(|row| row.contains("alpha")))
     });
-    assert!(saw_output, "the child's output never reached the grid");
+    assert!(
+        saw_output,
+        "the child's output never reached the grid; grid: {:#?} (wakeups: {}, exited: {:?})",
+        session.with_view(|view| view.contents()),
+        session.events().wakeups(),
+        session.has_exited()
+    );
 
     assert!(
         wait_until(|| session.has_exited()),
@@ -91,14 +116,25 @@ fn typed_input_reaches_the_shell() {
         "write reached the loop"
     );
 
+    // The output line, not the prompt: whether the shell has redrawn its prompt yet
+    // is the shell's business and a race in this test, not a property of the write
+    // path. The typed line (`echo qcode-input`) is skipped for the same reason: a
+    // pty echoes input, so it is there whether or not the command ran.
     let saw_echo = wait_until(|| {
         session.with_view(|view| {
-            view.contents()
-                .iter()
-                .any(|row| row.trim() == "qcode-input")
+            view.contents().iter().any(|row| {
+                let row = row.trim();
+                row != "echo qcode-input" && row.ends_with("qcode-input")
+            })
         })
     });
-    assert!(saw_echo, "the shell never echoed what was typed");
+    assert!(
+        saw_echo,
+        "the shell never echoed what was typed; grid: {:#?} (wakeups: {}, exited: {})",
+        session.with_view(|view| view.contents()),
+        session.events().wakeups(),
+        session.has_exited()
+    );
 }
 
 #[test]
@@ -130,15 +166,15 @@ fn a_background_job_dies_when_the_shell_exits_on_its_own() {
     // because the kernel does the cleanup: the child is a session leader, so when
     // it exits the foreground process group of its terminal gets `SIGHUP`. This
     // test pins that assumption down instead of trusting it.
-    const MARKER: &str = "sleep 2468013";
-    let session = run("/bin/sh", &["-c", &format!("{MARKER} &")]);
+    let marker = marker(1);
+    let session = run("/bin/sh", &["-c", &format!("{marker} &")]);
 
     assert!(
         wait_until(|| session.has_exited()),
         "the shell should exit immediately, leaving the sleep behind"
     );
     assert!(
-        wait_until(|| processes_matching(MARKER).is_empty()),
+        wait_until(|| processes_matching(&marker).is_empty()),
         "a background job survived its shell without close() signalling it"
     );
 
@@ -151,17 +187,17 @@ fn closing_the_session_leaves_no_orphans() {
     // `sleep` to run `true`, so the marker process is a *grandchild* of ours.
     // `Pty::drop` only signals the direct child, so without the process-group
     // teardown this `sleep` survives the tab and is reparented to init.
-    const MARKER: &str = "sleep 3456789";
-    let session = run("/bin/sh", &["-c", &format!("{MARKER}; true")]);
+    let marker = marker(2);
+    let session = run("/bin/sh", &["-c", &format!("{marker}; true")]);
 
     assert!(
-        wait_until(|| !processes_matching(MARKER).is_empty()),
+        wait_until(|| !processes_matching(&marker).is_empty()),
         "the marker process never started, so this test would pass vacuously"
     );
 
     session.close();
 
-    let survivors = processes_matching(MARKER);
+    let survivors = processes_matching(&marker);
     assert!(
         survivors.is_empty(),
         "closing the tab orphaned {survivors:?} — the process group was not signalled"
@@ -172,16 +208,16 @@ fn closing_the_session_leaves_no_orphans() {
 fn closing_escalates_past_a_child_that_ignores_hangup() {
     // A shell that traps `HUP` would survive a polite signal. The escalation to
     // `SIGKILL` is what keeps a stuck tab from becoming a permanent process.
-    const MARKER: &str = "sleep 9876543";
-    let session = run("/bin/sh", &["-c", &format!("trap '' HUP; {MARKER}; true")]);
+    let marker = marker(3);
+    let session = run("/bin/sh", &["-c", &format!("trap '' HUP; {marker}; true")]);
 
-    assert!(wait_until(|| !processes_matching(MARKER).is_empty()));
+    assert!(wait_until(|| !processes_matching(&marker).is_empty()));
 
     let closed_at = Instant::now();
     session.close();
 
     assert!(
-        processes_matching(MARKER).is_empty(),
+        processes_matching(&marker).is_empty(),
         "a child ignoring SIGHUP was left running"
     );
     assert!(
@@ -271,4 +307,32 @@ fn a_session_that_exits_on_its_own_still_closes_cleanly() {
         "closing an already-exited session took {:?}",
         closed_at.elapsed()
     );
+}
+
+#[test]
+fn the_mode_a_program_sets_decides_how_the_next_key_is_encoded() {
+    // The join between the two halves (ADR-0062 §5): the program puts the terminal
+    // in application-cursor mode, the window reads `mode()` from the live session
+    // and hands it to the encoder. Nothing else connects them, so this is the test
+    // that the wiring is even possible.
+    use qcode_terminal::alacritty_terminal::term::TermMode;
+    use qcode_terminal::key::{self, Direction, Key, KeyPress};
+
+    // A child that switches to application cursor keys and then blocks.
+    let session = run("/bin/sh", &["-c", "printf '\\033[?1h'; sleep 30"]);
+
+    let up = KeyPress::new(Key::Arrow(Direction::Up));
+    assert!(
+        wait_until(|| session.with_view(|view| view.mode().contains(TermMode::APP_CURSOR))),
+        "the child's `CSI ?1h` never reached the mode flags"
+    );
+
+    let encoded = session.with_view(|view| key::encode(&up, view.mode()));
+    assert_eq!(
+        encoded.as_deref(),
+        Some(b"\x1bOA".as_slice()),
+        "application cursor mode must produce the SS3 form"
+    );
+
+    session.close();
 }

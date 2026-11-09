@@ -4482,10 +4482,13 @@ GUI 落地后这三条边界开始漏：
    `qcode-core` / `qcode-gui`**。这样 TUI / `qc run` / ACP 的构建不含终端，终端也能
    脱离窗口做 headless 测试。
 
-   每个终端一个 OS 线程，跑 `alacritty_terminal::event_loop::EventLoop`：它自己
-   openpty、读 master、喂 `vte::Parser`、更新 `Term`，发出 `Msg`（`Title` /
-   `PtyWrite` / `Exit` / `Wakeup`）。UI 线程只做一件事——在 `Term` 的锁内取一次
-   `RenderableContent` + `RenderableCursor` 快照，解锁后绘制。
+   每个终端一个 OS 线程，读 PTY master、喂 `vte::Parser`、更新 `Term`，并发出
+   `Title` / `PtyWrite` / `ChildExit` / `Wakeup`。UI 线程只做一件事——在 `Term` 的
+   锁内取一次快照，解锁后绘制。
+
+   这根线程**自己写**，不沿用 `alacritty_terminal::event_loop::EventLoop`：它会丢
+   数据（成因、实测数字与改法见下面第 7 条）。复用的是 `tty::new`（会话创建、
+   `setsid`、控制终端、Windows 上的 `ConPTY`）和 `Term` 状态机，这两块才是难的部分。
 
    这个隔离是「不影响任务与定时任务」的全部依据：终端的读、解析、UTF-8 解码全在
    那一根线程上，`LocalBackend` 的 tick 得不到任何额外负载。**不允许**把 PTY 读取
@@ -4579,8 +4582,9 @@ GUI 落地后这三条边界开始漏：
 
      **必须打整组，不能只打死接子进程**。不做也「看起来正常」：shell 被杀，它
      fork 出去的东西被 init 收养，用户看不见，只会在下次 `ps` 时发现一堆 `sleep`。
-     已实测：`EventLoop` 内部 `Pty::drop` 只对直接子进程发 `SIGHUP`，所以这一步得
-     自己补。
+     已实测：`Pty::drop` 只对直接子进程发 `SIGHUP`，所以这一步得自己补；发完
+     `SIGKILL` 还要**等到组真的空了**才从 `close()` 返回，否则「关闭」只等于「信号
+     发出去了」，紧接着检查的人会看到一个还没被回收的残留。
 
      用 `SIGHUP` 而不是 `SIGTERM`：这是终端挂断的语义，也是 xterm / alacritty 关闭
      终端时发的信号；shell 捕获它来写 history，`SIGTERM` 触发不了那段。此处改掉
@@ -4602,26 +4606,56 @@ GUI 落地后这三条边界开始漏：
    - kill 不能在 UI 主线程做。
    - 关闭前的确认：**一次性**查前台子进程（不是周期轮询），有进程在跑时弹确认。
      这与「不显示忙碌状态」不冲突——不做每帧/周期探测，只在关闭那一刻查一次。
-   - `EventLoop` 内置 `ChildExit`，但 ConPTY 在主 handle 未关时可能不送 read-EOF，
+   - 读线程自己报 `ChildExit`，但 ConPTY 在主 handle 未关时可能不送 read-EOF，
      Windows 上要实测「子进程先退出 → 释放 master → 读到 EOF」的顺序。
    - 窗口「关闭即最小化到托盘」（ADR-0052）时终端**继续跑**，与任务在后台跑一致。
 
-7. **`EventLoop` 的两个接线陷阱（实测）**
+7. **不沿用 `EventLoop`：它会丢数据（实测，已改自持读线程）**
 
-   `alacritty_terminal` 的 `EventLoop` 能直接用，但两处行为和直觉相反：
+   `alacritty_terminal` 的 `EventLoop` 看起来能直接用，实测后**不能**。两个接线陷阱
+   之外，还要加上一条会丢用户数据的设计缺陷——它们共同决定了「读循环自己写」。
 
    | 陷阱 | 表现 | 正确做法 |
    |---|---|---|
    | `Msg::Resize` 只调 `pty.on_resize` | 子进程收到 `SIGWINCH`，网格没变 | 自己再 `Term::resize` |
-   | `Options::drain_on_exit` 无效 | 写完即退出的命令，输出全丢 | 用 `EventLoop::new` 参数 |
+   | `Options::drain_on_exit` 无效 | 写完即退出的命令，输出全丢 | 靠读线程收尾，不靠它 |
+   | 拿不到锁就回去重读 | 渲染每帧抢锁时，最后一段输出被丢弃 | 读线程**阻塞**等锁 |
 
    第一条用 `stty size` 验过：子进程报 `30 100`，`Term` 仍是 `80×24`——两半互不
    蕴含。alacritty 的窗口层自己 resize `Term`，事件循环只负责 ioctl。
 
-   第二条更隐蔽：`sh -c 'printf …'` 得到一个空白 tab，而末尾带 `sleep` 的写法就正常，
-   因为退出事件到达时数据还在管道里。`drain_on_exit` 只是一次非阻塞读，不拖慢关闭。
+   第三条是**数据丢失**，也是这一版重写读循环的直接原因。`EventLoop::pty_read` 的
+   形状是：
 
-   读网格用**闭包**而不是返回锁 guard：`FairMutex` 的锁会阻塞读线程，返回 guard 很
+   ```
+   loop {
+       read(pty)                        // 拿到 "alpha\nbravo\n"
+       match term.try_lock_unfair() {   // 渲染线程每帧持锁
+           None => continue,            //   → 不解析，回去再读
+       }
+       parser.advance(已读字节)          // 只有拿到锁才走这里
+   }
+   ```
+
+   子进程随后退出时，下一次 `read` 在 Linux 上返回 `EIO`，函数**带着未解析的缓冲
+   直接返回**；之后 `drain_on_exit` 再读时管道已空，于是 tab 是白的。这不是理论风
+   险：20 并发、每 2ms 读一次网格，**200 个会话里 166 个丢了输出**；完全不碰锁则
+   0/200。用户看到的是「跑完 `make` 切回窗口，最后几行没了」。
+
+   改法：读线程**自己持有 `Term`**，用阻塞 `lock()` 而不是 `try_lock` + 重试——争用
+   只会延迟解析，绝不丢弃已读字节。配套：
+
+   - 写走独立线程和独立 fd（Unix 上 `dup`），打字不必等解析，程序不读输入也不会
+     卡住帧回调；
+   - 子进程退出仍用 `tty::new` 已建好的、level-triggered 的 `SIGCHLD` 管道，
+     不用自己装信号；
+   - `TIOCSWINSZ` 在写线程的 fd 上做（同一个终端），`EIO`/`Ok(0)` 都当作正常收尾：
+     先把尾巴 `pump` 干净，再报 `ChildExit`；
+   - `close()` 在 `SIGCHLD` 被收割**之前**对进程组发 `SIGHUP`，等 100ms 再
+     `SIGKILL`，并等到组真的空掉才返回——否则 `close()` 只意味着「信号发出去了」，
+     而不是「进程树没了」。pid 可能被回收，所以子进程已退出时不再 `killpg`。
+
+   读网格仍用**闭包**而不是返回锁 guard：`FairMutex` 的锁会阻塞读线程，返回 guard 很
    容易被跨帧持有，等于让子进程的输出等一整帧。闭包拿不走，借用自然在结束时结束。
 
 8. **边界：不沙箱、不审批、不进日志**
@@ -4756,8 +4790,9 @@ GUI 落地后这三条边界开始漏：
   Windows / macOS 构建里未必存在，**必须显式声明**，不能靠传递依赖。
 - 终端只进 `gui` 特性：`qcode-terminal` 由 `qcode-gui` 依赖，TUI / `qc run` / ACP
   构建不含它，精简版发布包不因此变大。
-- Windows 与 macOS 的 PTY 路径首版**未实测**，标为已知风险；`EventLoop` 的
-  `ChildExit` / EOF 行为在 ConPTY 下要单独验。
+- Windows 与 macOS 的 PTY 路径首版**未实测**，标为已知风险；读线程的
+  `ChildExit` / EOF 行为在 ConPTY 下要单独验（Windows 分支按
+  `EventedReadWrite` 走互斥的 `Pty`，不能被 `dup` 拆分）。
 - 终端 IME 是 `xim-ctext` 那条老 bug 的新暴露面（ADR-0051 修的是组合器，终端是
   第二处）。
 - 侧边栏新增一个按钮，`Shell` 新增 `view` 与 tab 状态，`render_main` 外面加一层视图
@@ -4782,7 +4817,7 @@ GUI 落地后这三条边界开始漏：
 **验证（拟）**
 
 1. **状态机 headless**：录 `vim` / `htop` / `tmux` / `less` 的原始字节流，喂给
-   `EventLoop`，断言 `RenderableContent` 的文本、光标位置、`TermMode` 位。不碰 UI。
+   `Screen`，断言网格文本、光标位置、`TermMode` 位。不碰 UI。
 2. **调度隔离（最关键）**：一个终端持续 `yes` 刷屏，同时放一个 orphan 计划待跑，
    断言调度仍在一个 beat 内落 `Orphaned`——直接复验 ADR-0059 的 `away` 判定没被
    拖慢，接上 11-06 加固的
@@ -4805,9 +4840,29 @@ GUI 落地后这三条边界开始漏：
    macOS 那条唯一实现路径也在 Linux CI 里被真实数据跑过。
 5. **按键编码**表驱动：`Ctrl+C`、方向键（两种光标键模式）、`F1`–`F12`、`Alt+x`、
    bracketed paste、`Shift+Tab`。
+
+   **尚未实现**：`modifyOtherKeys`（`CSI > 4 ; m`，vim 打开它以便没有传统编码的组合键
+   也送得出去）与 kitty 键盘协议。两者缺席都不会让键失效——退回 `ESC` 前缀是 xterm 关掉
+   它们时的行为，程序都认——代价是没有传统编码的组合键仍是有歧义的，且 `Ctrl+I` 与
+   `Tab` 同为 `HT`（这一点 xterm 也一样）。
+
+   已实现 28 个用例，其中 4 条**直接和本机 terminfo 对表**（`infocmp xterm-256color`
+   的 `kcuu1` / `kcbt` / `kf1`–`kf12` / `kLFT` 等）：程序查 terminfo 来认按键，所以与
+   它一致才算对。这 4 条用变异测试验过——把 `F5` 的数字或 Shift 的修饰参数改错，它们
+   立刻失败。只和自己对表的编码器测试，写错了也照样绿。
 6. **生命周期**：关 tab 后进程组全部消失（无孤儿）；有前台进程时关闭会弹确认；
    托盘最小化后终端仍在跑。
-7. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
+
+   已实现 10 个用例。其中 `closing_escalates_past_a_child_that_ignores_hangup` 覆盖
+   `SIGHUP` → `SIGKILL` 的升级；三个涉及进程标记的用例用「本进程 pid + 用例编号」生成
+   唯一的 `sleep` 参数——固定标记会被上一次崩溃运行留下的孤儿永久污染，而同一进程内
+   多个用例共用一个 pid 会让 A 用例的断言盯上 B 用例的子进程（两者都实际发生过）。
+7. **不丢输出**：子进程写完即退出、同时有渲染线程每帧抢网格锁时，末尾输出必须完整。
+
+   已实现为 `tests/no_lost_output.rs`：20 并发 × 5 轮，读者每 2 ms 抢一次锁。修复前
+   这一条稳定失败（更狠的压测是 200 个会话里 166 个丢输出），修复后 0/200，且把
+   「输出 60 KiB 后立刻退出」的版本也验了尾巴。
+8. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
 
 **待定**
 
