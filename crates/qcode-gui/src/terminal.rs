@@ -284,6 +284,16 @@ impl crate::shell::Shell {
 ///
 /// `key_char` is preferred for printable keys because the platform has already
 /// applied Shift and the layout (`Shift+1` is `!`, not `1`).
+/// Whether this press means "paste", as a terminal understands it.
+fn is_paste(keystroke: &gpui_kit::Keystroke) -> bool {
+    if !keystroke.key.eq_ignore_ascii_case("v") {
+        return false;
+    }
+    let modifiers = keystroke.modifiers;
+    (modifiers.platform && !modifiers.shift && !modifiers.control && !modifiers.alt)
+        || (modifiers.control && modifiers.shift && !modifiers.platform && !modifiers.alt)
+}
+
 pub(crate) fn to_key_press(keystroke: &gpui_kit::Keystroke) -> Option<qcode_terminal::KeyPress> {
     use qcode_terminal::{Direction, Key, KeyPress};
 
@@ -340,11 +350,37 @@ fn modifiers(keystroke: &gpui_kit::Keystroke) -> qcode_terminal::Modifiers {
 
 impl crate::shell::Shell {
     /// Send one key press to the active terminal. Returns whether it was consumed.
+    /// Paste the clipboard into the terminal the way the program expects it.
+    ///
+    /// `Cmd+V` and `Ctrl+Shift+V` only. Plain `Ctrl+V` stays the program's own
+    /// byte: readline binds it to "quote the next character", and stealing it
+    /// would break that for anyone who relies on it.
+    pub(crate) fn paste_into_terminal(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(tab) = self.terminals.active() else {
+            return false;
+        };
+        if tab.session.has_exited() {
+            return false;
+        }
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        let mode = tab.session.with_view(|view| view.mode());
+        let bytes = qcode_terminal::key::paste(&text, mode);
+        self.type_into_terminal(&bytes, cx)
+    }
+
     pub(crate) fn terminal_key(
         &mut self,
         keystroke: &gpui_kit::Keystroke,
         cx: &mut Context<Self>,
     ) -> bool {
+        if is_paste(keystroke) {
+            return self.paste_into_terminal(cx);
+        }
         let Some(press) = to_key_press(keystroke) else {
             return false;
         };
