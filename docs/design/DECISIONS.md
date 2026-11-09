@@ -4595,7 +4595,25 @@ GUI 落地后这三条边界开始漏：
    - **副作用**：终端里改文件不产生 snapshot（且 `[agent] snapshot_shell` 已默认
      关闭），所以 `qc sessions rollback` **无法回滚终端里的改动**。文档必须写明。
 
-8. **配置与资源上限**
+8. **必须回答终端的「反向查询」**
+
+   `alacritty_terminal` 把三类查询交给 `EventListener`，**不回答就等于终端哑了**：
+
+   | 事件 | 谁在用 | 不回答的后果 |
+   |---|---|---|
+   | `ColorRequest`（`OSC 10/11/12 …?`） | vim 开机就问前景/背景色 | 超时后按猜的配色画 |
+   | `PtyWrite`（`DSR 6n`、`DA`） | vim、tmux、任何用 DSR 定位的程序 | 卡在等响应 |
+   | `ClipboardLoad` / `Store`（`OSC 52`） | 复制粘贴 | 剪贴板走不到系统 |
+
+   录制下来的 vim 字节流里这几个查询都在（`\x1b]10;?\x07`、`\x1b]11;?\x07`，以及
+   `\x1b[6n`、`\x1b[c`），所以这不是理论问题。
+
+   接线要求：`ColorRequest` 的回复要用**主题的**前景/背景色（索引 256/257，`OSC 4`
+   的调色板查询按索引取），格式化函数由 `alacritty_terminal` 提供；`PtyWrite` 的字节
+   原样写回 PTY。core crate 不持有主题，所以它只把请求记录下来并提供
+   `answer_colours()`，由 GUI 侧传入主题色。
+
+9. **配置与资源上限**
 
    新增 `[terminal]` 段。注意配置有**两层键白名单**（`config/load.rs` 顶层键 +
    段内键），不加会在启动时告警：
@@ -4608,14 +4626,43 @@ GUI 落地后这三条边界开始漏：
    max_terminals = 8       # 硬上限
    ```
 
-   shell 探测与 terminal-ts（MIT）一致，多平台：
+   **shell 探测：优先「当前正在用的 shell」，不是 `$SHELL`**。
+
+   `$SHELL` 是**登录 shell**，只是一个继承来的环境变量，并不反映你现在在哪。实测：
+   登录 shell 是 zsh、在 bash 里运行程序，`$SHELL` 仍报 `/usr/bin/zsh`。所以照
+   terminal-ts 那样直接用 `$SHELL`，用户在 bash 里敲 `qc gui` 会得到一个 zsh 终端。
+
+   非 Windows 的顺序：
+
+   ```
+   [terminal] shell（在 PATH 上） > 父进程链里的交互式 shell > $SHELL
+     > /etc/passwd 的登录 shell > /bin/sh
+   ```
+
+   父进程链：从自身 PID 向上走（上限 12 层），取第一个 basename 落在白名单里的
+   进程的 `exe` 路径。白名单是 `bash` / `zsh` / `fish` / `nu` / `elvish` / `xonsh` /
+   `tcsh` / `csh` / `ksh` / `mksh` / `oksh` / `yash` / `pwsh`。
+
+   **`sh` 与 `dash` 刻意不在白名单里**。它们是脚本解释器，`sh -c …`、`#!/bin/sh`
+   的启动器都会出现在父链上——实测我的工具链就是 `python3 → sh → qc`，照「最近一个
+   shell」取会拿到 dash。跳过它们不会漏：真的拿 dash 当登录 shell 的人，`$SHELL`
+   会兜住同一个值。实测两种场景（正常启动、双层包装壳）都正确解析到
+   `/usr/bin/zsh`。
+
+   平台实现：Linux 读 `/proc/<pid>/comm`、`/proc/<pid>/exe`、`status` 的 `PPid`；
+   macOS 用 `libc::proc_pidpath` 取路径、`sysctl(KERN_PROC_PID)` 取 ppid（`libc`
+   已是 workspace 依赖）；Windows 没有等价的 shell 链，维持探测：
 
    | 平台 | 顺序 |
    |---|---|
    | Windows | `pwsh` → `powershell` → `cmd` |
-   | 其他 | `$SHELL` → `/bin/bash` |
+   | 非 Windows | 配置 → 父链 → `$SHELL` → passwd → `/bin/sh` |
 
-   用户配了 `shell` 但不在 PATH 上时，落回探测结果（不能让用户一个手误就开不了终端）。
+   每一层都对失效值宽容：路径不存在、不可执行、读不到父进程，一律跳到下一层。
+   用户配了 `shell` 却不在 PATH 上时落回探测结果——不能让一个手误就开不了终端。
+
+   探测器要能注入（一个取 `(pid, comm, exe)` 链的 trait），否则这段逻辑只能靠真进程
+   树测，覆盖不到「包装壳 / 嵌套 shell / 无 shell」这些分支。
 
    上限不是形式主义：GUI 空闲已 293MB RSS，每个终端 scrollback 约 2–4MB。开 8 个
    +15MB 可接受；不限的话 20 个终端就是 +400MB。
@@ -4640,11 +4687,13 @@ GUI 落地后这三条边界开始漏：
 
 **后果**
 
-- `Cargo.lock` 多出 `alacritty_terminal 0.26.0`（**Apache-2.0，`deny.toml` 已
-  allow，不用改**）及其依赖：`vte 0.15`、`rustix 1.0`（**第三个 rustix**，现有
-  0.38 / 0.4）、`parking_lot`、`signal-hook`、`piper`、`polling`、`regex-automata`、
-  `unicode-width`、`home`、`miow` / `windows-sys`。**没有 fontconfig / X11 / GPU
-  相关**，不会重演 10-19 那次 CI 因缺 `-dev` 包红了十天的事故。
+- `Cargo.lock` 多出 9 个包：`alacritty_terminal 0.26.0`（**Apache-2.0，
+  `deny.toml` 已 allow，不用改**）、`vte 0.15`、`rustix-openpty 0.2`、`miow 0.6`、
+  `home 0.5`、`cursor-icon 1.0`、`signal-hook 0.4`（与既有 0.3 并存）、
+  `windows-sys 0.59`（与既有 0.48/0.52/0.60/0.61 并存，Windows 专用），以及
+  `qcode-terminal` 本身。`rustix` 从 1 个版本变 2 个（`0.38.44` + `1.1.5`）。
+  这些全是纯 Rust，**没有 fontconfig / X11 / GPU 相关**，不会重演 10-19 那次 CI
+  因缺 `-dev` 包红了十天的事故——已实际 `cargo check -p qcode-terminal` 验证通过。
 - 必须**钉死精确版本**（`=0.26.0`），理由与现有 `rmcp = "=3.2.0"`、
   `ratatui = "=0.29.0"` 相同：它 minor 之间会破（0.24 → 0.26 已改过 API）。
 - `sysinfo` 已是间接依赖（`0.31.4`，由 `zed-scap` 在 Linux 屏幕捕获路径引入），但
@@ -4684,11 +4733,14 @@ GUI 落地后这三条边界开始漏：
    `a_schedule_pointing_at_a_deleted_task_is_recorded_not_run`。
 3. **cwd 继承**：A 里 `cd /tmp` → 新终端起在 `/tmp`；把 `/tmp` 换成已删除的目录 →
    落到 `start_cwd` / home，且 shell 能起来。
-4. **按键编码**表驱动：`Ctrl+C`、方向键（两种光标键模式）、`F1`–`F12`、`Alt+x`、
+4. **shell 探测**（注入假进程链，不依赖真进程树）：父链是 `bash` → 取 bash；
+   父链是 `sh → zsh`（包装壳）→ 取 zsh 不是 sh；父链无 shell → 落 `$SHELL`；
+   `$SHELL` 指向不存在的路径 → 落 `/bin/sh`；配置的 shell 不在 PATH → 落回探测。
+5. **按键编码**表驱动：`Ctrl+C`、方向键（两种光标键模式）、`F1`–`F12`、`Alt+x`、
    bracketed paste、`Shift+Tab`。
-5. **生命周期**：关 tab 后进程组全部消失（无孤儿）；有前台进程时关闭会弹确认；
+6. **生命周期**：关 tab 后进程组全部消失（无孤儿）；有前台进程时关闭会弹确认；
    托盘最小化后终端仍在跑。
-6. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
+7. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
 
 **待定**
 
