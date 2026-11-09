@@ -236,6 +236,11 @@ impl Shell {
             .unwrap_or_default();
 
         let size_cell = self.terminal_size.clone();
+        // The IME only delivers text to a registered input handler; registering it
+        // here (per frame) is the documented way for an element that is not a text
+        // field to receive composed input.
+        let input_entity = cx.entity();
+        let input_focus = self.terminal_focus.clone();
         let geometry_cell = self.terminal_geometry.clone();
         let selection = self
             .terminal_selection
@@ -280,6 +285,11 @@ impl Shell {
                 metrics
             },
             move |bounds: Bounds<Pixels>, metrics: Metrics, window: &mut Window, cx: &mut App| {
+                window.handle_input(
+                    &input_focus,
+                    gpui_kit::ElementInputHandler::new(bounds, input_entity.clone()),
+                    cx,
+                );
                 paint_frame(
                     &frame,
                     bounds,

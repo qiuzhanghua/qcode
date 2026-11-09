@@ -642,6 +642,88 @@ pub(crate) fn selected_text(
     rows.join("\n")
 }
 
+/// Text input into the terminal (ADR-0062 §5): the platform's IME needs an
+/// `EntityInputHandler` before it will deliver composed text at all.
+///
+/// Only the commit lands in the pty. Marked (pre-edit) text is deliberately
+/// dropped: a grid has nowhere to draw an underline over "ni", and writing it
+/// through would send half-formed syllables to the shell.
+impl gpui_kit::EntityInputHandler for crate::shell::Shell {
+    fn text_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::UTF16Selection> {
+        Some(gpui_kit::UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        self.type_into_terminal(text.as_bytes(), cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        _new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        _element_bounds: gpui_kit::Bounds<gpui_kit::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
+        None
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui_kit::Point<gpui_kit::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GridPoint, selected_text};
