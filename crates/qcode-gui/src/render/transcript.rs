@@ -553,8 +553,9 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
         // The divider only shows once the turn has finished and its final
         // answer block renders. A streaming preview must not split the
         // process from its result early: the turn may still be executing
-        // tools while the first words arrive.
-        let has_answer = turn.answer_block.is_some();
+        // tools while the first words arrive, and `answer_block` is set as
+        // soon as text starts streaming.
+        let has_answer = !turn.running() && turn.answer_block.is_some();
         card = card
             .child(header)
             .children(process_open.then_some(process))

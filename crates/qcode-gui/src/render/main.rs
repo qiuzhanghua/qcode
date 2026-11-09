@@ -56,14 +56,15 @@ impl Shell {
     fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let provider = self.ui.app.status.provider.clone();
         let model = self.ui.app.status.model.clone();
-        let config_path = self.config_path.clone();
         let shell = cx.entity().downgrade();
         let search_input = self.model_search_input.clone();
         let search_focus = search_input.read(cx).focus_handle(cx);
         // 渲染快照：搜索输入 → Change → 整棵树重渲染，闭包重建拿到新值。
         let query = self.model_search_query.clone();
         let index = self.model_search_index;
-        let groups = crate::provider_models(&config_path);
+        // 分组来自 `model_groups` 缓存（弹层打开时由 `on_open_change`
+        // 重新计算），渲染路径不读配置、不做端点探测。
+        let groups = self.model_groups.clone();
         let current = (provider.clone(), model.clone());
 
         // 弹层 id 与 trigger Button 的 "model-menu" 区分开，避免 GPUI
@@ -82,7 +83,8 @@ impl Shell {
                 let shell = cx.entity().downgrade();
                 let search_input = self.model_search_input.clone();
                 move |open, window, cx| {
-                    // 重新打开菜单：清空搜索词与键盘高亮。
+                    // 重新打开菜单：清空搜索词与键盘高亮，并重算分组缓存
+                    // （此刻才读配置 / 探测无密钥端点，离开每帧渲染路径）。
                     if *open {
                         search_input.update(cx, |state, cx| {
                             state.set_value("", window, cx);
@@ -91,6 +93,7 @@ impl Shell {
                             shell.update(cx, |shell, cx| {
                                 shell.model_search_query.clear();
                                 shell.model_search_index = 0;
+                                shell.refresh_model_groups();
                                 cx.notify();
                             });
                         }
@@ -259,7 +262,7 @@ impl Shell {
                               cx: &mut Context<PopoverState>| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {
-                                    let groups = crate::provider_models(&shell.config_path);
+                                    let groups = shell.model_groups.clone();
                                     let n = flat_model_rows(
                                         &groups,
                                         &shell.model_search_query,
@@ -288,7 +291,7 @@ impl Shell {
                               cx: &mut Context<PopoverState>| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {
-                                    let groups = crate::provider_models(&shell.config_path);
+                                    let groups = shell.model_groups.clone();
                                     let n = flat_model_rows(
                                         &groups,
                                         &shell.model_search_query,
@@ -314,7 +317,7 @@ impl Shell {
                             cx.stop_propagation();
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, cx| {
-                                    let groups = crate::provider_models(&shell.config_path);
+                                    let groups = shell.model_groups.clone();
                                     let flat = flat_model_rows(
                                         &groups,
                                         &shell.model_search_query,
