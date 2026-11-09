@@ -719,7 +719,9 @@ impl Shell {
         // 读新配置），但引擎只在当前 turn 结束后才换，新配置下次任务开始用。
         if self.ui.app.status.running {
             self.pending_rebuild = true;
-            self.ui.app.push_notice("设置已保存，将在当前任务结束后生效");
+            self.ui
+                .app
+                .push_notice("设置已保存，将在当前任务结束后生效");
             self.set_notice("设置已保存，将在当前任务结束后生效".to_string(), false, cx);
             cx.notify();
             return;
