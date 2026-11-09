@@ -17,8 +17,9 @@ use qcode_ui_state::{App, ApprovalPrompt, Block, ContextDisplay, ToolEntry};
 const TOOL_OUTPUT_LINES: usize = 400;
 /// Hard bound on the block window even when every block is a single line.
 const MAX_WINDOW_BLOCKS: usize = 2_000;
-use qcode_core::event::{ToolStatus, TurnStatus};
+use qcode_core::event::{BudgetHint, ToolStatus, TurnStatus};
 use qcode_core::todo::{TodoItem, TodoStatus};
+use qcode_ui_state::PauseCard;
 
 pub fn render(frame: &mut Frame, app: &App) {
     // The composer grows with the number of lines, up to a third of the
@@ -125,10 +126,26 @@ fn status_label(app: &App) -> (&'static str, Color) {
         match app.status.last {
             Some(TurnStatus::Completed) => ("completed", Color::Green),
             Some(TurnStatus::Cancelled) => ("cancelled", Color::Yellow),
+            // Amber, not red: nothing broke, and a new message continues where
+            // this turn stopped (ADR-0060).
+            Some(TurnStatus::Paused) => ("paused", Color::Yellow),
             Some(TurnStatus::Failed) => ("failed", Color::Red),
             None => ("idle", Color::DarkGray),
         }
     }
+}
+
+/// `64/64 turns · $0.12 of $5.00 · window 2` — why the turn stopped, without
+/// opening the transcript.
+fn budget_line(hint: &BudgetHint) -> String {
+    let mut line = format!("{}/{} turns", hint.turns, hint.max_turns);
+    if let Some(max_cost) = hint.max_cost_usd {
+        line.push_str(&format!(" · ${:.2}/${:.2}", hint.cost_usd, max_cost));
+    }
+    if hint.window > 1 {
+        line.push_str(&format!(" · window {}", hint.window));
+    }
+    line
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -163,6 +180,15 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
     ];
+    if app.status.last == Some(TurnStatus::Paused)
+        && let Some(hint) = &app.budget_hint
+    {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            budget_line(hint),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
     if app.status.queued > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -227,7 +253,7 @@ fn block_hidden(app: &App, block: &Block) -> bool {
 
 fn block_rows(block: &Block) -> usize {
     match block {
-        Block::User(text)
+        Block::User { text, .. }
         | Block::Assistant(text)
         | Block::Notice(text)
         | Block::Skill(text)
@@ -268,8 +294,33 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in selected {
         match block {
-            Block::User(text) => {
-                push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan))
+            Block::User {
+                text,
+                images,
+                files,
+            } => {
+                push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan));
+                for file in files {
+                    let label = format!("〔文件 {} — {} 字节〕", file.name, file.bytes);
+                    push_text(
+                        &mut lines,
+                        "  ",
+                        &label,
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
+                for image in images {
+                    let label = format!(
+                        "〔图片 {} — {}×{}，终端只显示占位文字〕",
+                        image.label, image.width, image.height
+                    );
+                    push_text(
+                        &mut lines,
+                        "  ",
+                        &label,
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
             }
             Block::Assistant(text) => {
                 push_text(&mut lines, "  ", text, Style::default());
@@ -308,7 +359,60 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             Style::default().fg(Color::Cyan),
         )));
     }
+    push_pause(&mut lines, app);
     lines
+}
+
+/// The pause card: amber, never "error", and it names the next action.
+fn push_pause(lines: &mut Vec<Line<'static>>, app: &App) {
+    if app.status.running {
+        return;
+    }
+    let Some(index) = app.paused_turn_index() else {
+        return;
+    };
+    let Some(card) = PauseCard::of(app, index) else {
+        return;
+    };
+    let yellow = Style::default().fg(Color::Yellow);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("⏸ {}", card.headline),
+        yellow.add_modifier(Modifier::BOLD),
+    )));
+    if let Some(note) = &card.window_note {
+        lines.push(Line::from(Span::styled(format!("  {note}"), yellow)));
+    }
+    if let Some(files) = &card.files {
+        push_text(lines, "  ", files, yellow);
+    }
+    if let Some(summary) = &card.summary {
+        for line in summary.lines() {
+            push_text(lines, "  ", line, yellow);
+        }
+    }
+    for failure in &card.failures {
+        push_text(lines, "  ✗ ", failure, Style::default().fg(Color::Red));
+    }
+    if !card.commands.is_empty() {
+        let commands: Vec<&str> = card
+            .commands
+            .iter()
+            .map(|line| line.command.as_str())
+            .collect();
+        let mut line = format!("  已运行：{}", commands.join(" · "));
+        if card.more_commands > 0 {
+            line.push_str(&format!(" 等 {} 条", commands.len() + card.more_commands));
+        }
+        lines.push(Line::from(Span::styled(
+            line,
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "  /continue 继续（新预算窗口）  ·  直接发消息也继续  ·  /wrap 收尾",
+        Style::default().fg(Color::DarkGray),
+    )));
 }
 
 fn push_text(lines: &mut Vec<Line<'static>>, prefix: &'static str, text: &str, style: Style) {
@@ -351,6 +455,22 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(u
         Span::raw(" "),
         Span::styled(format!("[{status}{elapsed}]"), Style::default().fg(color)),
     ];
+    if let Some(diff) = &tool.diff {
+        let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
+        let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();
+        if additions > 0 {
+            spans.push(Span::styled(
+                format!(" +{additions}"),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if deletions > 0 {
+            spans.push(Span::styled(
+                format!(" -{deletions}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+    }
     if let Some((count, folded)) = nested
         && count > 0
     {

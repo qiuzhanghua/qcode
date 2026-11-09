@@ -8,11 +8,15 @@
 #![recursion_limit = "512"]
 
 pub mod approvals;
+mod attachments;
 pub mod backend;
+pub mod dormant;
 pub mod forms;
 pub mod gui_prefs;
+pub mod host;
 pub mod platform;
 mod render;
+pub mod restore;
 mod run;
 pub mod runtime;
 pub mod setup;
@@ -57,12 +61,13 @@ use platform::*;
 use qcode_core::event::{EventKind, ToolStatus};
 use qcode_core::inbox::QueuedMessage;
 use qcode_core::task::{Root, RootAccess, is_slug};
-use qcode_ui_bridge::UiEvent;
+use qcode_ui_bridge::{SessionEvent, SessionTarget, UiEvent};
 use qcode_ui_state::{App, Block};
 use render::*;
 use std::collections::HashSet;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
+use task_ops::TaskState;
 
 /// ADR-0041 typography tokens. Keep conversation sizes in one place so the
 /// three display modes do not drift into per-row ad-hoc values.
@@ -78,6 +83,19 @@ const CODE_LINE: f32 = 18.0;
 /// Content inside tool boxes (command + output) and the thinking body:
 /// one step larger than captions with extra line spacing for readability.
 const RESULT_SIZE: f32 = 12.0;
+
+/// Composer placeholder tail: how to send. Each task gets its own composer
+/// (ADR-0058 §4), so the hint is derived from the preference rather than
+/// captured once at startup.
+fn send_hint(send_mode: &str) -> &'static str {
+    if send_mode == "enter" {
+        "Enter 发送 · Shift+Enter 换行"
+    } else if cfg!(target_os = "macos") {
+        "Cmd+Enter 发送 · Enter 换行"
+    } else {
+        "Ctrl+Enter 发送 · Enter 换行"
+    }
+}
 const RESULT_LINE: f32 = 22.0;
 /// The design baseline all *SIZE/*LINE tokens are written at: the default
 /// `GuiPreferences::font_size`. Every token scales from this baseline at
@@ -114,7 +132,9 @@ pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
     FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
     let mut prefs = GuiPreferences::load(data_dir);
     prefs.font_size = next;
-    if let Err(error) = prefs.save(data_dir) {
+    // Only the size: this path can run while the main window is persisting
+    // geometry / last_session into the same file.
+    if let Err(error) = GuiPreferences::update(data_dir, |saved| saved.font_size = next) {
         eprintln!("qcode-gui: cannot save gui.json: {error}");
     }
     prefs.apply(cx);
@@ -123,7 +143,7 @@ pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
     cx.refresh_windows();
 }
 
-const TURN_RAIL_WIDTH: f32 = 20.0;
+const TURN_RAIL_WIDTH: f32 = 34.0;
 /// 输入框上方提示框（权限询问 / 报错 / 轮次提示）比输入框左右各内缩的像素。
 /// 三个提示框都用它，保证宽度完全一致。
 const PROMPT_INSET: f32 = 20.0;
@@ -143,9 +163,6 @@ const MAIN_PAD_R: f32 = 52.0;
 /// 的 px_3/px_6，所以这里左右各补一层内缩，左侧略多，使左缘收窄更明显。
 const TRANSCRIPT_PAD_L: f32 = 32.0;
 const TRANSCRIPT_PAD_R: f32 = 32.0;
-/// 长对话提示轮数的兜底默认值：配置 `[agent] max_turns` 读不到时使用。
-/// 运行时阈值取配置值，见 `Shell::round_hint_threshold`。
-const ROUND_HINT_THRESHOLD: usize = 50;
 
 fn tool_status(status: Option<ToolStatus>) -> &'static str {
     match status {
@@ -433,5 +450,53 @@ mod tests {
         assert_eq!(endpoint_of("localhost:11434"), None, "missing scheme");
         assert_eq!(endpoint_of(""), None);
         assert_eq!(endpoint_of("ftp://host:21"), None, "unsupported scheme");
+    }
+
+    mod rail_popover {
+        use crate::render::rail::{fit_lines, head_and_body};
+
+        #[test]
+        fn the_first_line_becomes_the_title_and_the_rest_the_body() {
+            let message = "继续\n第 3 步完成并推送。\n\n两个远端都在 `0eb286c`。\n";
+            let (title, body) = head_and_body(message);
+            assert_eq!(title, "继续");
+            assert_eq!(body, "第 3 步完成并推送。\n\n两个远端都在 `0eb286c`。");
+        }
+
+        #[test]
+        fn only_the_title_loses_its_markdown_markers() {
+            let (title, body) = head_and_body("## 结果\n| 文件 | 之前 | 现在 |");
+            assert_eq!(title, "结果");
+            assert_eq!(body, "| 文件 | 之前 | 现在 |");
+        }
+
+        #[test]
+        fn a_single_line_message_has_no_body() {
+            let (title, body) = head_and_body("  就这样  ");
+            assert_eq!(title, "就这样");
+            assert!(body.is_empty());
+        }
+
+        #[test]
+        fn fitting_keeps_short_text_verbatim() {
+            assert_eq!(fit_lines("一\n二\n三", 10), "一\n二\n三");
+        }
+
+        #[test]
+        fn fitting_cuts_at_the_budget_and_marks_the_cut() {
+            let text = "第 1 行\n第 2 行\n第 3 行\n第 4 行\n第 5 行\n第 6 行";
+            let fitted = fit_lines(text, 3);
+            assert_eq!(fitted.lines().count(), 3);
+            assert!(fitted.starts_with("第 1 行"));
+            assert!(fitted.ends_with('…'), "{fitted}");
+        }
+
+        #[test]
+        fn a_wide_line_counts_as_more_than_one_row() {
+            let long = "字".repeat(100);
+            let fitted = fit_lines(&long, 1);
+            assert!(fitted.ends_with('…'), "{fitted}");
+            assert!(fitted.chars().count() <= 44);
+        }
     }
 }

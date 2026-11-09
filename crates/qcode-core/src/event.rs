@@ -12,7 +12,18 @@ use time::OffsetDateTime;
 use crate::task::Root;
 
 /// Bumped whenever the on-disk shape changes in a breaking way.
-pub const EVENT_SCHEMA_VERSION: u32 = 4;
+///
+/// v4 added `UserMessage::starts_segment`/`queued_id`; v5 added
+/// `ToolResult::diff`, which is additive — a v5 reader still reads v4 logs, and
+/// the missing diff only costs the inline diff view. v6 makes running out of
+/// budget a pause instead of a failure (`TurnEnded::pause`,
+/// `TurnStatus::Paused`, `budget_hint`, `UserMessage::continuation`); all of it
+/// is additive too, so a v5 log replays unchanged.
+///
+/// v7 turns `UserMessage::attachments` into references into the attachment
+/// store (ADR-0061). No migration: the field was never written non-empty, so
+/// older logs simply omit it.
+pub const EVENT_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -55,6 +66,9 @@ pub enum EventKind {
     ToolResult(ToolResult),
     Compaction(Compaction),
     TurnEnded(TurnEnded),
+    /// A one-off notice that the turn is approaching a budget. Persisted so a
+    /// replay shows the same warning the live run did.
+    BudgetHint(BudgetHint),
     Error(ErrorEvent),
 }
 
@@ -89,8 +103,10 @@ pub struct TurnStarted {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserMessage {
     pub text: String,
+    /// Attachments by reference; the bytes live in the attachment store
+    /// (ADR-0061). Empty for a text-only message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<String>,
+    pub attachments: Vec<qcode_attachments::AttachmentRef>,
     /// The inbox item this message came from, when the engine injected a
     /// steering message. Lets a frontend reconcile its "waiting for the next
     /// step" row with the authoritative message.
@@ -100,6 +116,35 @@ pub struct UserMessage {
     /// it for injected steering, so projections do not have to guess.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starts_segment: bool,
+    /// Set when the message is the engine's "keep going" instruction after a
+    /// pause, so the transcript never pretends the user typed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Continuation>,
+}
+
+/// A continuation the user asked for after a paused turn (ADR-0060 §2.6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Continuation {
+    /// The paused turn this one picks up from.
+    pub turn: u32,
+    /// Budget window of *this* turn: 1 for the first run, 2 after one continue.
+    #[serde(default = "first_window")]
+    pub window: u32,
+    /// Budgets the user raised for this window. `None` = same limits as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raise: Option<RaiseLimit>,
+}
+
+/// A budget the user raised when continuing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct RaiseLimit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd: Option<f64>,
+    /// True when the new value was also written to `config.toml`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub persist: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +261,43 @@ pub struct ToolResult {
     pub output: String,
     #[serde(default)]
     pub metadata: ToolMetadata,
+    /// What this call actually changed on disk. `None` for a read-only tool, a
+    /// failed call, or a log written before schema v5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiff>,
+}
+
+/// The change one write-ish tool call made, as a unified diff plus per-file
+/// counts. Stored on the result rather than in [`ToolMetadata`] because it is
+/// the outcome of the call, not bookkeeping about its text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolDiff {
+    /// Unified diff with `--- a/<path>` / `+++ b/<path>` headers, so the GUI can
+    /// hand it straight to a diff viewer. Empty when [`Self::truncated`].
+    pub patch: String,
+    pub files: Vec<DiffFileStat>,
+    /// The patch outgrew the size cap and was dropped; the counts in `files`
+    /// are still exact.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffFileStat {
+    pub path: String,
+    pub kind: DiffKind,
+    pub additions: u32,
+    pub deletions: u32,
+    /// Size of the resulting file, for the "1KB" chip next to the row.
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    Created,
+    Modified,
+    Deleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +336,10 @@ pub struct TurnEnded {
     pub status: TurnStatus,
     pub usage: Usage,
     pub cost_usd: f64,
+    /// Present exactly when `status` is `Paused`: which budget ran out, at what
+    /// value, and the hand-off summary the model wrote before stopping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<PauseInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +348,62 @@ pub enum TurnStatus {
     Completed,
     Cancelled,
     Failed,
+    /// A budget ran out. Not an error: the work is intact and the user decides
+    /// whether to continue (ADR-0060).
+    Paused,
+}
+
+/// Why a turn paused and what it cost to get there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PauseInfo {
+    pub reason: PauseReason,
+    pub limit: PauseLimit,
+    pub used: PauseUsage,
+    /// 1 for the first budget window of a task, 2 after one continuation, …
+    #[serde(default = "first_window")]
+    pub window: u32,
+    /// The model's "done / remaining / next" hand-off. `None` when the summary
+    /// call was skipped (no budget left) or failed; the locally derived
+    /// progress report still describes the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+fn first_window() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseReason {
+    MaxTurns,
+    MaxCost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum PauseLimit {
+    Turns(u32),
+    Usd(f64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PauseUsage {
+    pub turns: u32,
+    pub cost_usd: f64,
+}
+
+/// Emitted once, when the turn first crosses 75% of a budget.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetHint {
+    pub turns: u32,
+    pub max_turns: u32,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    #[serde(default = "first_window")]
+    pub window: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +428,8 @@ mod tests {
                 queued_id: None,
                 text: "hi".into(),
                 attachments: vec![],
+
+                continuation: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -326,6 +470,8 @@ mod tests {
                 queued_id: Some("q1".into()),
                 text: "steer".into(),
                 attachments: vec![],
+
+                continuation: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -345,6 +491,8 @@ mod tests {
                 queued_id: None,
                 text: "hi".into(),
                 attachments: vec![],
+
+                continuation: None,
             }),
         );
         let value: Value = serde_json::from_str(&serde_json::to_string(&input).unwrap()).unwrap();

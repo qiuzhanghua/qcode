@@ -53,9 +53,28 @@ pub struct App {
     /// `[ui] busy_delivery = "steer"`: sending while a turn runs steers the
     /// draft into it instead of queueing a follow-up.
     pub steer_on_send: bool,
+    /// Latest `budget_hint` of the session, for the status line (ADR-0060 §2.3).
+    pub budget_hint: Option<BudgetHint>,
 }
 
 impl App {
+    /// The turn that paused on a budget, if the newest finished turn is one.
+    /// Replay reports it too; the frontend decides whether it may act on it.
+    pub fn paused_turn(&self) -> Option<&Turn> {
+        self.turns
+            .iter()
+            .rev()
+            .find(|turn| turn.pause.is_some() && turn.ended_at.is_some())
+    }
+
+    /// Index of [`Self::paused_turn`], for frontends that look turns up by
+    /// position (the pause card needs the process rows).
+    pub fn paused_turn_index(&self) -> Option<usize> {
+        self.turns
+            .iter()
+            .rposition(|turn| turn.pause.is_some() && turn.ended_at.is_some())
+    }
+
     pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             blocks: Vec::new(),
@@ -77,6 +96,7 @@ impl App {
                 last: None,
                 queued: 0,
                 steering: 0,
+                window: 1,
             },
             sandbox: "none".to_string(),
             context_tokens: 0,
@@ -89,6 +109,7 @@ impl App {
             skills: Vec::new(),
             restoring: false,
             steer_on_send: false,
+            budget_hint: None,
         }
     }
 

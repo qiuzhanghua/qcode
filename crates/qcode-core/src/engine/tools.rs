@@ -333,6 +333,7 @@ where
             status: output.status,
             output: output.output.clone(),
             metadata,
+            diff: output.diff.clone(),
         }),
         on_event,
     )?;

@@ -2,9 +2,10 @@ use crate::approval::{ApprovalRequest, Approver};
 use crate::compact;
 use crate::cost::Pricing;
 use crate::event::{
-    ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
-    ErrorEvent, Event, EventKind, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted,
-    TurnStatus, Usage, UserMessage,
+    ApprovalDecided, ApprovalRequested, AssistantMessage, BudgetHint, Compaction, ContentBlock,
+    Continuation, Decision, ErrorEvent, Event, EventKind, PauseInfo, PauseLimit, PauseReason,
+    PauseUsage, Scope, ToolCall, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage,
+    UserMessage,
 };
 use crate::history;
 use crate::inbox::Inbox;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+pub mod attachments;
 mod stream;
 mod tools;
 mod turn;
@@ -29,7 +31,7 @@ mod writer;
 
 pub(crate) use stream::*;
 pub(crate) use tools::*;
-pub use turn::run_turn;
+pub use turn::{CONTINUE_PROMPT, WRAP_UP_PROMPT, run_turn};
 
 #[cfg(test)]
 pub(crate) use turn::{ProgressGuard, call_signature};
@@ -151,21 +153,18 @@ pub enum EngineError {
     #[error("stream ended without an end event")]
     IncompleteStream,
     #[error(
-        "exceeded max turns ({0}): raise [agent] max_turns or pass --max-turns, \
-         or send another message to keep going"
-    )]
-    MaxTurns(u32),
-    #[error(
         "no progress: `{tool}` was called with identical arguments {rounds} rounds in a row; \
          stopping instead of burning the turn budget"
     )]
     NoProgress { tool: String, rounds: u32 },
-    #[error("estimated cost ${spent:.6} exceeded --max-cost ${limit:.6}")]
-    MaxCost { spent: f64, limit: f64 },
     #[error("--max-cost requires pricing for the model")]
     MissingPricing,
-    #[error("this provider does not accept image input")]
-    ImagesUnsupported,
+    #[error("{mime} attachments are not supported")]
+    UnsupportedAttachment { mime: String },
+    #[error("attachment payload is not valid base64")]
+    AttachmentDecode,
+    #[error(transparent)]
+    Attachments(#[from] qcode_attachments::StoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -211,19 +210,33 @@ pub struct RunOptions<'a> {
     pub skills: Option<String>,
     /// Egress proxy shared with tools that make network calls.
     pub network: Option<crate::network::SharedNetwork>,
-    /// Images the user attached to this message (base64, no data-URI prefix).
-    pub attachments: Vec<Attachment>,
+    /// Pictures and files attached to this message (ADR-0061).
+    pub attachments: Vec<AttachmentSource>,
     /// Shared pending-message inbox. When present, steering input is claimed
     /// before every model request and appended as user messages, so a push
     /// lands in the running turn's next step instead of waiting for a new turn.
     pub inbox: Option<Arc<Inbox>>,
+    /// Set when the user continued a paused turn: recorded on the injected user
+    /// message so the transcript can label it, and used to number the budget
+    /// window. The engine fills in `window`/`turn` from the log.
+    pub continuation: Option<Continuation>,
 }
 
-/// One image attached to a user message.
+/// One image attached to a user message, still in memory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Attachment {
     pub mime_type: String,
     pub data_base64: String,
+}
+
+/// One attached payload, in whichever form the caller has it.
+///
+/// The CLI hands over bytes (`--image`); the GUI stores the picture the moment
+/// it is pasted and hands over the reference, so nothing is copied twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachmentSource {
+    Inline(Attachment),
+    Stored(qcode_attachments::AttachmentRef),
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +250,15 @@ pub struct RunOutcome {
     pub usage: Usage,
     /// Estimated USD for the whole turn, zero when no pricing is configured.
     pub cost_usd: f64,
+    /// Set when a budget ran out. The turn is intact; the caller decides
+    /// whether to continue, raise a limit, or stop (ADR-0060).
+    pub pause: Option<PauseInfo>,
+}
+
+impl RunOutcome {
+    pub fn is_paused(&self) -> bool {
+        self.pause.is_some()
+    }
 }
 
 #[cfg(test)]

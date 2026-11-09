@@ -57,6 +57,8 @@ fn seed_three_turns(store: &SessionStore) -> String {
                 queued_id: None,
                 text: format!("turn {turn}"),
                 attachments: Vec::new(),
+
+                continuation: None,
             }),
         );
         append(
@@ -81,6 +83,8 @@ fn seed_three_turns(store: &SessionStore) -> String {
                 status: TurnStatus::Completed,
                 usage: Usage::default(),
                 cost_usd: 0.0,
+
+                pause: None,
             }),
         );
     }
@@ -137,6 +141,8 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )
@@ -217,6 +223,8 @@ async fn a_roomy_window_skips_compaction() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

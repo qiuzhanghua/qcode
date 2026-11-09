@@ -61,3 +61,23 @@ fn malformed_and_out_of_range_values_fall_back_safely() {
     assert_eq!(prefs.code_font, "JetBrains Mono");
     assert_eq!(prefs.density, "comfortable");
 }
+
+/// Several windows write the same `gui.json`. A writer that owns one field
+/// (theme from Settings, geometry from render) must not revert `last_session`
+/// to the value its in-memory copy happened to hold — that is what made the
+/// next launch reopen an older task or an empty draft.
+#[test]
+fn update_keeps_fields_another_writer_did_not_touch() {
+    let dir = tempfile::tempdir().expect("temp");
+    let prefs = GuiPreferences {
+        last_session: Some("s-9".to_string()),
+        ..GuiPreferences::default()
+    };
+    prefs.save(dir.path()).expect("save");
+
+    GuiPreferences::update(dir.path(), |saved| saved.theme = "dark".to_string()).expect("update");
+
+    let reloaded = GuiPreferences::load(dir.path());
+    assert_eq!(reloaded.theme, "dark");
+    assert_eq!(reloaded.last_session.as_deref(), Some("s-9"));
+}

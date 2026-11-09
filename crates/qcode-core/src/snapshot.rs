@@ -84,12 +84,20 @@ pub struct SnapshotStore {
     /// Also snapshot the whole workspace before `run_shell`, which can write
     /// anywhere. Off by default in tests, on by default from the config.
     shell: bool,
+    limits: TreeLimits,
 }
 
 /// Limits for a workspace-wide snapshot taken before a shell command.
 const TREE_MAX_FILE: u64 = 4 * 1024 * 1024;
 const TREE_MAX_TOTAL: u64 = 64 * 1024 * 1024;
 /// Directories a shell command rarely means to edit, and that are large.
+///
+/// The toolchain caches earn their place: the file sandbox only allows writes
+/// inside the workspace, so `CARGO_HOME`/`RUSTUP_HOME` end up next to the
+/// sources (see `docs/design/M0-TASKS.md`). This repository's own `.cargo-home`
+/// is 1.6 GB across 64k files — enough to fill the total cap on its own and
+/// leave the snapshot holding registry sources instead of the checkout.
+/// `crates/qcode-eval` skips the same names.
 const TREE_SKIP: &[&str] = &[
     ".git",
     ".hg",
@@ -99,14 +107,42 @@ const TREE_SKIP: &[&str] = &[
     "dist",
     ".tmp",
     ".qcode-data",
+    ".qc-data",
     ".venv",
     "__pycache__",
+    ".cargo-home",
+    ".rustup-home",
+    ".toolchains",
 ];
+
+/// Size bounds for a workspace snapshot. Fields rather than bare constants so
+/// the tests can shrink them instead of writing 64 MB to disk.
+#[derive(Debug, Clone, Copy)]
+struct TreeLimits {
+    file: u64,
+    total: u64,
+}
+
+impl Default for TreeLimits {
+    fn default() -> Self {
+        Self {
+            file: TREE_MAX_FILE,
+            total: TREE_MAX_TOTAL,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TreeReport {
+    /// Files stored for this turn, including what earlier calls in the same
+    /// turn put there: the cap is charged per turn.
     pub files: usize,
+    /// Bytes stored for this turn, on the same accounting.
     pub bytes: u64,
+    /// Files this call wrote. Zero means the turn was already full, which is
+    /// not the same event as hitting the cap and stopping part-way.
+    pub added_files: usize,
+    pub added_bytes: u64,
     pub skipped_large: usize,
     /// The total cap was hit; the snapshot is partial.
     pub capped: bool,
@@ -117,6 +153,7 @@ impl SnapshotStore {
         Self {
             root: root.into(),
             shell: false,
+            limits: TreeLimits::default(),
         }
     }
 
@@ -199,19 +236,40 @@ impl SnapshotStore {
             .session_dir(session)
             .join(turn.to_string())
             .join("files");
-        let mut report = TreeReport::default();
+        // The cap belongs to the turn, not to this call. A turn can run several
+        // shell commands, and charging only fresh writes let each of them copy
+        // another TREE_MAX_TOTAL on top: turns rolled up to gigabytes of trees
+        // that the cap was supposed to prevent.
+        let (files, bytes) = stored_totals(&dir);
+        let mut report = TreeReport {
+            files,
+            bytes,
+            ..TreeReport::default()
+        };
+        if report.bytes >= self.limits.total {
+            // Already full — whether from an earlier command in this turn or,
+            // for turns recorded before the toolchain caches were skipped, from
+            // a size that is over the cap by accident. `added_bytes == 0` tells
+            // the caller this is not a fresh truncation.
+            report.capped = true;
+            return Ok(report);
+        }
         let mut stack = vec![primary_root.to_path_buf()];
         while let Some(current) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&current) else {
                 continue;
             };
-            for entry in entries.flatten() {
+            // Sorted, so a capped snapshot always keeps the same prefix of the
+            // tree instead of whatever order the filesystem happened to report.
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            let mut subdirs = Vec::new();
+            for entry in entries {
                 let path = entry.path();
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
                 if path.is_dir() {
-                    if !TREE_SKIP.contains(&name.as_ref()) {
-                        stack.push(path);
+                    let name = entry.file_name();
+                    if !TREE_SKIP.contains(&name.to_string_lossy().as_ref()) {
+                        subdirs.push(path);
                     }
                     continue;
                 }
@@ -224,15 +282,16 @@ impl SnapshotStore {
                 if !metadata.is_file() {
                     continue;
                 }
-                if metadata.len() > TREE_MAX_FILE {
+                if metadata.len() > self.limits.file {
                     report.skipped_large += 1;
                     continue;
                 }
-                if report.bytes + metadata.len() > TREE_MAX_TOTAL {
+                if report.bytes + metadata.len() > self.limits.total {
                     report.capped = true;
                     break;
                 }
                 let stored = dir.join(relative);
+                // Stored by an earlier call in this turn, and already counted.
                 if stored.exists() {
                     continue;
                 }
@@ -245,10 +304,14 @@ impl SnapshotStore {
                 std::fs::write(&stored, &bytes)?;
                 report.files += 1;
                 report.bytes += bytes.len() as u64;
+                report.added_files += 1;
+                report.added_bytes += bytes.len() as u64;
             }
             if report.capped {
                 break;
             }
+            // Pushed in reverse so the walk stays lexicographic as it pops.
+            stack.extend(subdirs.into_iter().rev());
         }
         Ok(report)
     }
@@ -484,6 +547,29 @@ fn write_absent(dir: &Path, paths: &[PathBuf]) -> io::Result<()> {
     std::fs::write(dir.join("absent.txt"), text)
 }
 
+/// Files and bytes one turn already holds under its `files/` tree.
+fn stored_totals(dir: &Path) -> (usize, u64) {
+    fn walk(dir: &Path, files: &mut usize, bytes: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                walk(&entry.path(), files, bytes);
+            } else {
+                *files += 1;
+                *bytes += metadata.len();
+            }
+        }
+    }
+    let (mut files, mut bytes) = (0, 0);
+    walk(dir, &mut files, &mut bytes);
+    (files, bytes)
+}
+
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     for entry in std::fs::read_dir(dir)?.flatten() {
         let path = entry.path();
@@ -668,6 +754,94 @@ mod tests {
         let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
         assert_eq!(report.files, 1, "{report:?}");
         assert_eq!(report.skipped_large, 1);
+    }
+
+    #[test]
+    fn a_workspace_snapshot_skips_toolchain_caches() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("src.rs"), "source").unwrap();
+        // The sandbox parks CARGO_HOME inside the workspace; a real one is 1.6 GB
+        // and would fill the cap before the checkout is reached.
+        for cache in [".cargo-home/registry", ".rustup-home/toolchains"] {
+            std::fs::create_dir_all(workspace.join(cache)).unwrap();
+            std::fs::write(workspace.join(cache).join("blob"), "cache").unwrap();
+        }
+
+        let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert_eq!(report.files, 1, "{report:?}");
+        assert!(!report.capped);
+        assert_eq!(
+            store.files("s1", 1).expect("files"),
+            vec!["src.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_tree_cap_is_charged_per_turn_not_per_call() {
+        let (_dir, mut store, workspace) = fixture();
+        store.limits = TreeLimits {
+            file: 1024,
+            total: 10,
+        };
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(workspace.join(name), "1234").unwrap();
+        }
+
+        let first = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert_eq!((first.files, first.bytes), (2, 8), "{first:?}");
+        assert!(first.capped);
+
+        // The second shell command in the same turn must not hand out a fresh
+        // budget: the turn already holds 8 of its 10 bytes.
+        let second = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert_eq!((second.files, second.bytes), (2, 8), "{second:?}");
+        assert!(second.capped);
+
+        // A new turn starts from an empty tree and gets its own cap.
+        let next = store.snapshot_tree("s1", 2, &workspace).expect("tree");
+        assert_eq!((next.files, next.bytes), (2, 8), "{next:?}");
+    }
+
+    #[test]
+    fn a_turn_that_was_already_full_adds_nothing_and_says_so() {
+        let (_dir, mut store, workspace) = fixture();
+        store.limits = TreeLimits {
+            file: 1024,
+            total: 10,
+        };
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(workspace.join(name), "1234").unwrap();
+        }
+
+        let first = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert!(first.capped);
+        assert_eq!(first.added_files, 2, "{first:?}");
+
+        // Same turn, second shell command: still capped, but it wrote nothing,
+        // so the caller can stay quiet instead of warning again.
+        let again = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert!(again.capped);
+        assert_eq!(again.added_files, 0, "{again:?}");
+        assert_eq!(again.added_bytes, 0, "{again:?}");
+        assert_eq!((again.files, again.bytes), (2, 8), "{again:?}");
+    }
+
+    #[test]
+    fn a_capped_snapshot_keeps_the_same_prefix_every_time() {
+        let (_dir, mut store, workspace) = fixture();
+        store.limits = TreeLimits {
+            file: 1024,
+            total: 10,
+        };
+        for name in ["d.txt", "b.txt", "a.txt", "c.txt"] {
+            std::fs::write(workspace.join(name), "1234").unwrap();
+        }
+
+        // Sorted walk, so the truncated set is `a.txt` + `b.txt` rather than
+        // whichever two files the filesystem listed first.
+        store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        let stored = store.files("s1", 1).expect("files");
+        assert_eq!(stored, vec!["a.txt".to_string(), "b.txt".to_string()]);
     }
 
     #[test]

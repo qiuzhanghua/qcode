@@ -43,18 +43,62 @@ mod macos_sandbox_tests {
             &[],
         )
         .expect("profile");
-        let write = profile
-            .split("(allow file-write*")
-            .nth(1)
-            .expect("write block");
+        let write = block(&profile, "(allow file-write*");
         assert!(write.contains("(subpath \"/tmp/qcode-sandbox-tests/code\")"));
         assert!(write.contains("(subpath \"/tmp/qcode-sandbox-tests/tmp\")"));
         assert!(!write.contains("(subpath \"/tmp/qcode-sandbox-tests/docs\")"));
-        let read = profile
-            .split("(allow file-read*")
-            .nth(1)
-            .expect("read block");
+        let read = block(&profile, "(allow file-read*");
         assert!(read.contains("(subpath \"/tmp/qcode-sandbox-tests/docs\")"));
+    }
+
+    /// One profile block: from its header line to the closing `)` line.
+    fn block<'a>(profile: &'a str, header: &str) -> &'a str {
+        let start = profile.find(header).expect("block header");
+        let rest = &profile[start..];
+        let end = rest.find("\n)\n").expect("block end") + 3;
+        &rest[..end]
+    }
+
+    /// The read-only roots have to be *denied*, not merely left out of the
+    /// allow list: `/tmp` and `$TMPDIR` are writable for every task, so a
+    /// read-only root below either one would keep its parent's permission.
+    /// Seatbelt applies the last matching rule, so the deny must come after the
+    /// allow block.
+    #[test]
+    fn read_only_roots_are_denied_after_the_writable_ones() {
+        let rw = PathBuf::from("/tmp/qcode-sandbox-tests/code");
+        let ro = PathBuf::from("/tmp/qcode-sandbox-tests/no-such-docs");
+        let profile = profile_for_roots(
+            &[
+                Root {
+                    id: "code".into(),
+                    label: "code".into(),
+                    path: rw,
+                    access: qcode_core::task::RootAccess::ReadWrite,
+                    primary: true,
+                },
+                Root {
+                    id: "docs".into(),
+                    label: "docs".into(),
+                    path: ro,
+                    access: qcode_core::task::RootAccess::ReadOnly,
+                    primary: false,
+                },
+            ],
+            None,
+            SandboxNetwork::Deny,
+            &[],
+        )
+        .expect("profile");
+
+        let allow = profile.find("(allow file-write*").expect("allow block");
+        let deny = profile
+            .find("(deny file-write* (subpath \"/tmp/qcode-sandbox-tests/no-such-docs\"))")
+            .expect("deny rule for the read-only root");
+        assert!(
+            deny > allow,
+            "the deny rule must follow the allow block:\n{profile}"
+        );
     }
 
     #[test]
@@ -255,6 +299,159 @@ mod macos_sandbox_tests {
         // the host file appearing.
         let _ = &output;
         assert!(!outside.exists(), "sandbox created {}", outside.display());
+    }
+
+    fn root(path: &Path, access: qcode_core::task::RootAccess, primary: bool) -> Root {
+        Root {
+            id: path.display().to_string(),
+            label: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "root".to_string()),
+            path: path.to_path_buf(),
+            access,
+            primary,
+        }
+    }
+
+    /// Build a multi-root sandbox for a real run, or `None` when this process is
+    /// itself sandboxed (CI containers, the DSH runner) and `sandbox-exec`
+    /// cannot be nested. Any other preflight failure is a real failure.
+    fn multi_root_or_skip(
+        seed_dir: &Path,
+        roots: &[Root],
+        temp: &Path,
+    ) -> Option<Arc<dyn Sandbox>> {
+        let seed = SandboxExec::new(seed_dir, SandboxNetwork::Deny).expect("profile");
+        if let Err(error) = seed.check() {
+            let detail = error.to_string();
+            assert!(
+                detail.contains("Operation not permitted") || detail.contains("EPERM"),
+                "sandbox-exec preflight failed: {detail}"
+            );
+            eprintln!("skipping: nested sandbox-exec is not permitted here: {detail}");
+            return None;
+        }
+        Some(
+            seed.with_roots(roots, Some(temp))
+                .expect("multi-root sandbox"),
+        )
+    }
+
+    fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> std::process::Output {
+        sandbox
+            .command(
+                OsStr::new("/bin/sh"),
+                &[OsString::from("-c"), OsString::from(script)],
+                cwd,
+            )
+            .expect("command")
+            .output()
+            .expect("run")
+    }
+
+    /// Real run of the root matrix: every root is readable, only read-write
+    /// roots and the turn temp accept writes.
+    ///
+    /// The fixture lives under `$TMPDIR`, which the profile keeps writable for
+    /// every task — the read-only half of this test therefore also proves that
+    /// the `(deny file-write* ...)` rule wins over the parent's allowance.
+    #[test]
+    fn a_read_only_root_refuses_writes_inside_a_writable_temp_tree() {
+        let base = tempfile::tempdir().expect("base");
+        let base = base.path().canonicalize().expect("canonical base");
+        let rw = base.join("code");
+        let ro = base.join("docs");
+        let temp = base.join("turn-tmp");
+        for dir in [&rw, &ro, &temp] {
+            std::fs::create_dir_all(dir).expect("fixture dir");
+        }
+        std::fs::write(ro.join("note.txt"), "readable").expect("fixture file");
+
+        let roots = vec![
+            root(&rw, qcode_core::task::RootAccess::ReadWrite, true),
+            root(&ro, qcode_core::task::RootAccess::ReadOnly, false),
+        ];
+        let Some(sandbox) = multi_root_or_skip(&rw, &roots, &temp) else {
+            return;
+        };
+
+        // Reads are allowed from both roots, read-only included.
+        let read = run(
+            sandbox.as_ref(),
+            &rw,
+            &format!("cat '{}'", ro.join("note.txt").display()),
+        );
+        assert!(read.status.success(), "{read:?}");
+        assert_eq!(String::from_utf8_lossy(&read.stdout), "readable");
+
+        // The read-write root accepts a file, on the host.
+        let written = run(sandbox.as_ref(), &rw, "printf hi > new.txt");
+        assert!(written.status.success(), "{written:?}");
+        assert!(rw.join("new.txt").is_file());
+
+        // The read-only root refuses one even though its parent is writable.
+        let denied = run(
+            sandbox.as_ref(),
+            &rw,
+            &format!("printf x > '{}'", ro.join("denied.txt").display()),
+        );
+        assert!(
+            !denied.status.success(),
+            "read-only root accepted a write: {denied:?}"
+        );
+        assert!(!ro.join("denied.txt").exists());
+
+        // The turn temp is writable and works as a cwd of its own.
+        let scratch = run(sandbox.as_ref(), &temp, "printf hi > scratch.txt");
+        assert!(scratch.status.success(), "{scratch:?}");
+        assert!(temp.join("scratch.txt").is_file());
+    }
+
+    /// A no-root task keeps the turn temp and loses every root: the profile must
+    /// not reach any user file, which is why the fixture lives under `$HOME`
+    /// (a `$TMPDIR` fixture would be readable by design).
+    #[test]
+    fn a_no_root_task_sees_only_its_temp() {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            eprintln!("skipping: HOME is not set");
+            return;
+        };
+        let base = home.join(format!(".qcode-no-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let private = base.join("private");
+        let temp = base.join("turn-tmp");
+        for dir in [&private, &temp] {
+            std::fs::create_dir_all(dir).expect("fixture dir");
+        }
+        std::fs::write(private.join("secret.txt"), "secret").expect("fixture file");
+
+        let sandbox = multi_root_or_skip(&temp, &[], &temp);
+        if let Some(sandbox) = sandbox {
+            let read = run(
+                sandbox.as_ref(),
+                &temp,
+                &format!("cat '{}'", private.join("secret.txt").display()),
+            );
+            assert!(
+                !read.status.success(),
+                "a no-root task read a user file: {read:?}"
+            );
+
+            let write = run(
+                sandbox.as_ref(),
+                &temp,
+                &format!("printf x > '{}'", private.join("denied.txt").display()),
+            );
+            assert!(!write.status.success(), "a no-root task wrote a user file");
+            assert!(!private.join("denied.txt").exists());
+
+            let scratch = run(sandbox.as_ref(), &temp, "printf hi > scratch.txt");
+            assert!(scratch.status.success(), "{scratch:?}");
+            assert!(temp.join("scratch.txt").is_file());
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

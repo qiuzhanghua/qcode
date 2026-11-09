@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use qcode_core::event::ToolMetadata;
+use qcode_core::event::{ToolDiff, ToolMetadata};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use regex::Regex;
@@ -94,11 +94,13 @@ impl Tool for ApplyPatch {
             ops.push(op);
         }
 
-        let summary = commit(ops)?;
-        Ok(ToolOutput::ok(summary).with_metadata(ToolMetadata {
-            bytes: args.diff.len() as u64,
-            ..ToolMetadata::default()
-        }))
+        let (summary, diff) = commit(ops)?;
+        Ok(ToolOutput::ok(summary)
+            .with_metadata(ToolMetadata {
+                bytes: args.diff.len() as u64,
+                ..ToolMetadata::default()
+            })
+            .with_diff(diff))
     }
 }
 
@@ -324,6 +326,11 @@ fn parse_hunk_header(line: &str) -> Result<Option<(usize, usize, usize)>, ToolEr
 /// One planned change. `content = None` means delete.
 struct PlannedOp {
     target: PathBuf,
+    /// Workspace-relative path, for the diff header.
+    path: String,
+    /// The text the file held before the patch; `None` for a new file. Kept so
+    /// the transcript can show a real diff of what landed.
+    before: Option<String>,
     content: Option<String>,
     existed: bool,
 }
@@ -371,6 +378,7 @@ fn plan_file(ctx: &ToolContext, patch: &FilePatch) -> Result<PlannedOp, ToolErro
     }
 
     let resolved = path::resolve_ctx(ctx, trimmed, Access::Write)?;
+    let diff_path = crate::path::diff_path(&resolved);
     let target = resolved.path;
     let metadata = std::fs::symlink_metadata(&target).ok();
     let existed = metadata.is_some();
@@ -407,6 +415,8 @@ fn plan_file(ctx: &ToolContext, patch: &FilePatch) -> Result<PlannedOp, ToolErro
         }
         return Ok(PlannedOp {
             target,
+            path: diff_path,
+            before: existed.then_some(original),
             content: None,
             existed,
         });
@@ -414,6 +424,8 @@ fn plan_file(ctx: &ToolContext, patch: &FilePatch) -> Result<PlannedOp, ToolErro
 
     Ok(PlannedOp {
         target,
+        path: diff_path,
+        before: existed.then(|| original.clone()),
         content: Some(updated),
         existed,
     })
@@ -585,11 +597,16 @@ fn join_lines(lines: &[String], trailing: bool) -> String {
 
 /// Stage every change, then commit with backups. On failure, restore what was
 /// already moved so the patch stays all-or-nothing.
-fn commit(ops: Vec<PlannedOp>) -> Result<String, ToolError> {
+fn commit(ops: Vec<PlannedOp>) -> Result<(String, Option<ToolDiff>), ToolError> {
     let mut staged: Vec<StagedOp> = Vec::with_capacity(ops.len());
     let pid = std::process::id();
+    let mut changed = Vec::with_capacity(ops.len());
 
     for (index, op) in ops.into_iter().enumerate() {
+        if let Some(diff) = crate::diff::file(&op.path, op.before.as_deref(), op.content.as_deref())
+        {
+            changed.push(diff);
+        }
         let temp = op.target.with_file_name(format!(
             ".{}.qcode-patch-{pid}-{index}",
             op.target
@@ -629,7 +646,7 @@ fn commit(ops: Vec<PlannedOp>) -> Result<String, ToolError> {
         };
         summary.push_str(&format!("- {action} {}\n", op.target.display()));
     }
-    Ok(summary)
+    Ok((summary, crate::diff::combine(changed)))
 }
 
 struct StagedOp {

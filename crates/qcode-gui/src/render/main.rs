@@ -54,8 +54,8 @@ impl Shell {
     /// 弹层从输入框发送按钮左侧（窗口底部）向上展开：`Anchor::BottomLeft`
     /// 让弹层从触发器上方展开，避免超出窗口。
     fn render_model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let provider = self.app.status.provider.clone();
-        let model = self.app.status.model.clone();
+        let provider = self.ui.app.status.provider.clone();
+        let model = self.ui.app.status.model.clone();
         let shell = cx.entity().downgrade();
         let search_input = self.model_search_input.clone();
         let search_focus = search_input.read(cx).focus_handle(cx);
@@ -428,11 +428,11 @@ impl Shell {
     pub(crate) fn render_queue_dock(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let border = theme.border;
-        let running = self.turn_in_flight;
+        let running = self.ui.turn_in_flight;
         // 已推送的消息不再出现在 dock：推送即提交，问题已按已发送样式
         // 上屏在对话流里，无需撤回。dock 只管理还没推送的排队消息。
-        let mut rows = Vec::with_capacity(self.queue.len());
-        for item in &self.queue {
+        let mut rows = Vec::with_capacity(self.ui.queue.len());
+        for item in &self.ui.queue {
             let id = item.id.clone();
             let preview: String = item.text.replace('\n', " ").chars().take(48).collect();
             let mut row = div()
@@ -501,19 +501,92 @@ impl Shell {
             .children(rows)
             .into_any_element()
     }
+    /// Thumbnails for the images waiting in the composer. Each one is already
+    /// in the attachment store, so `img()` only needs the path.
+    pub(crate) fn render_attachment_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let border = cx.theme().border;
+        let mut strip = div().flex().flex_row().flex_wrap().items_start().gap_2();
+        for (index, pending) in self.ui.attachments.iter().enumerate() {
+            let remove_entity = entity.clone();
+            let label = if pending.label.chars().count() > 10 {
+                let head: String = pending.label.chars().take(9).collect();
+                format!("{head}…")
+            } else {
+                pending.label.clone()
+            };
+            strip = strip.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(64.0))
+                            .h(px(64.0))
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(border)
+                            .child(
+                                img(pending.preview.clone())
+                                    .object_fit(ObjectFit::Cover)
+                                    .w_full()
+                                    .h_full(),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(2.0))
+                                    .right(px(2.0))
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .rounded(px(8.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .bg(rgba(0x000000a6))
+                                    .text_size(sp(11.0))
+                                    .text_color(rgb(0xffffff))
+                                    .id(format!("attachment-remove-{index}"))
+                                    .hover(|style| style.bg(rgba(0x000000cc)))
+                                    .on_click(move |_, _, cx| {
+                                        remove_entity.update(cx, |shell, cx| {
+                                            shell.remove_attachment(index, cx);
+                                        });
+                                    })
+                                    .child("×"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(10.0))
+                            .text_color(rgb(0x888888))
+                            .child(label),
+                    ),
+            );
+        }
+        strip
+    }
+
     pub(crate) fn render_main(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        self.poll(cx);
+        // 引擎事件由常驻 ticker 排空（`Shell::start_poll_ticker`），不在
+        // render 里：窗口最小化时也要处理 TurnFinished 与审批（ADR-0058 §5）。
         // 执行中且输入框有内容时，发送按钮应保持可用（发送进排队队列）；
         // 只有执行中且输入框为空时，按钮才变成停止红点。
-        let composer_has_draft = !self.input.read(cx).value().trim().is_empty()
-            || !self.attachments.is_empty()
-            || !self.file_refs.is_empty();
+        let composer_has_draft = !self.ui.input.read(cx).value().trim().is_empty()
+            || !self.ui.attachments.is_empty()
+            || !self.ui.files.is_empty();
         // 任务累计 token 用量：汇总所有 turn 的输入/输出/缓存 token。
         let total_tokens: u64 = self
+            .ui
             .app
             .turns
             .iter()
@@ -528,14 +601,20 @@ impl Shell {
                 .flatten()
             })
             .sum();
-        // Turns 超限提示：达到配置 max_turns 轮数且当前任务没被「忽略」时显示。
-        let round_hint_visible = self.app.turns.len() >= self.round_hint_threshold
-            && !self
-                .active
-                .as_ref()
-                .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id));
-        if self.app.status.running && !self.waiting_ticker {
-            self.waiting_ticker = true;
+        // 预算提示由引擎在跨过 75% 时写出的 `budget_hint` 驱动，不再自己数
+        // turn 卡（那是用户消息条数，与 `max_turns` 的「单条消息内的模型调用
+        // 数」不是同一件事，ADR-0060 §1.3）。暂停后由对话流里的暂停卡片接管，
+        // 两处不重复提示。
+        let round_hint = self.ui.app.budget_hint.clone().filter(|_| {
+            self.ui.app.paused_turn().is_none()
+                && !self
+                    .active
+                    .as_ref()
+                    .is_some_and(|id| self.round_hint_dismissed_tasks.contains(id))
+        });
+        let round_hint_visible = round_hint.is_some();
+        if self.ui.app.status.running && !self.ui.waiting_ticker {
+            self.ui.waiting_ticker = true;
             self.tick_waiting(cx);
         }
         if self.pending_send {
@@ -543,12 +622,13 @@ impl Shell {
             self.send_prompt(window, cx);
         }
         let entity = cx.entity();
+        let drop_entity = cx.entity();
         let theme = cx.theme();
         let popover = theme.popover;
         let border = theme.border;
         let running_color = theme.muted_foreground;
         let running_divider = border;
-        let list = MessageScroller::new("transcript", self.scroller.clone(), {
+        let list = MessageScroller::new("transcript", self.ui.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
                 let shell = entity.read(cx);
@@ -595,12 +675,21 @@ impl Shell {
             .child(header)
             .child({
                 let rail = self.render_turn_rail(window, cx);
+                let measured = self.transcript_height.clone();
                 div()
                     .relative()
                     .flex()
                     .flex_row()
                     .flex_grow(1.0)
                     .min_h_0()
+                    // The rail popover sizes itself against the transcript, not
+                    // the window: "half the main area" must exclude the composer
+                    // and the status bar. First child is the scroll column.
+                    .on_children_prepainted(move |bounds, _window, _cx| {
+                        if let Some(scroll) = bounds.first() {
+                            measured.set(scroll.size.height.as_f32());
+                        }
+                    })
                     .child(
                         div()
                             .id("transcript-scroll")
@@ -626,39 +715,31 @@ impl Shell {
                     .child(rail)
                     .child(self.render_floating_actions(cx))
             })
-            .children(self.diff.as_ref().map(|state| {
-                let height = if self.diff_expanded {
-                    px(480.0)
-                } else {
-                    px(220.0)
-                };
+            .children(self.ui.diff_view.as_ref().map(|state| {
                 div()
                     .flex()
                     .flex_col()
-                    .h(height)
+                    .h(px(480.0))
+                    .border_t_1()
                     .child(
                         div()
                             .flex()
                             .flex_row()
-                            .gap_1()
+                            .items_center()
+                            .justify_between()
+                            .px_6()
+                            .py_1()
                             .child(
-                                Button::new("toggle-diff")
-                                    .label(if self.diff_expanded {
-                                        "Collapse diff"
-                                    } else {
-                                        "Expand diff"
-                                    })
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.diff_expanded = !this.diff_expanded;
-                                        cx.notify();
-                                    })),
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .opacity(0.6)
+                                    .child("改动"),
                             )
                             .child(
                                 Button::new("close-diff")
-                                    .label("Close")
+                                    .label("关闭")
                                     .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.diff = None;
-                                        cx.notify();
+                                        this.close_diff_view(cx);
                                     })),
                             ),
                     )
@@ -674,8 +755,8 @@ impl Shell {
                     .pb_2()
                     .children(
                         round_hint_visible.then(|| {
-                                // 和权限问询同款卡片：黄色 title「Turns 超限」，
-                                // 内容区为当前提示文案，两个按钮：新建任务 / 忽略。
+                                // 和权限问询同款卡片：黄色 title「预算接近上限」，
+                                // 内容区为当前用量，两个按钮：新建任务 / 忽略。
                                 div()
                                     .w_full()
                                     .rounded_t(px(10.0))
@@ -700,7 +781,7 @@ impl Shell {
                                                     .line_height(sp(26.0))
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .text_color(rgb(0x000000))
-                                                    .child("Turns 超限"),
+                                                    .child("预算接近上限"),
                                             ),
                                     )
                                     .child(
@@ -716,9 +797,8 @@ impl Shell {
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x000000))
-                                                    .child(format!(
-                                                        "当前任务已达到 {} 轮。",
-                                                        self.round_hint_threshold
+                                                    .child(budget_hint_line(
+                                                        round_hint.as_ref(),
                                                     )),
                                             )
                                             .child(
@@ -726,7 +806,10 @@ impl Shell {
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x000000))
-                                                    .child("创建新任务可能会获得更好的结果。"),
+                                                    .child(
+                                                        "继续跑会消耗更多预算；需要更多空间可以调大 \
+                                                         [agent] max_turns / max_cost_usd，或者在新任务里重开。",
+                                                    ),
                                             )
                                             .child(
                                                 div()
@@ -734,7 +817,7 @@ impl Shell {
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x666666))
                                                     .child(
-                                                        "超过 Max turns 上限后继续对话，可能影响回复质量与上下文管理。",
+                                                        "预算用完时这一轮会「暂停」而不是报错：可以直接继续、收尾，或者先这样。",
                                                     ),
                                             )
                                             .child(
@@ -785,7 +868,7 @@ impl Shell {
                     .children(
                         // 权限问询：有问询时以提示卡片占位展示（输入框隐藏），
                         // 避免输入框自身的边框/圆角从提示框背后透出来。
-                        self.approvals.current().map(|view| {
+                        self.ui.approvals.current().map(|view| {
                             let kind: String = match view.tool.as_str() {
                                 "run_shell" | "shell" => "执行命令".to_string(),
                                 "read_file" | "write_file" | "edit_file" | "apply_patch"
@@ -908,7 +991,7 @@ impl Shell {
                     )
                     .children(
                         // 报错提示：同款卡片，红色 title，单「关闭」按钮。
-                        self.error_banner.clone().map(|message| {
+                        self.ui.error_banner.clone().map(|message| {
                             div()
                                 .w_full()
                                 .rounded_t(px(10.0))
@@ -960,7 +1043,7 @@ impl Shell {
                                                         .label("关闭")
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
-                                                                this.error_banner = None;
+                                                                this.ui.error_banner = None;
                                                                 cx.notify();
                                                             },
                                                         )),
@@ -969,7 +1052,7 @@ impl Shell {
                                 )
                         }),
                     )
-                    .children(self.restoring.as_ref().map(|_| {
+                    .children(self.ui.restoring.as_ref().map(|_| {
                         div()
                             .w_full()
                             .rounded(px(10.0))
@@ -984,11 +1067,11 @@ impl Shell {
                             .child("已提交，等待引擎确认…")
                     }))
                     .when(
-                        // Turns 超限提示也占输入框位置（与权限/报错框一致），
-                        // 显示时输入框隐藏，卡片落在输入框处。
-                        self.approvals.current().is_none()
-                            && self.error_banner.is_none()
-                            && self.restoring.is_none()
+                        // 预算提示也占输入框位置（与权限/报错框一致），显示时
+                        // 输入框隐藏，卡片落在输入框处。
+                        self.ui.approvals.current().is_none()
+                            && self.ui.error_banner.is_none()
+                            && self.ui.restoring.is_none()
                             && !round_hint_visible,
                         |this| {
                             this.child(
@@ -1004,6 +1087,17 @@ impl Shell {
                             .border_color(border)
                             .px_3()
                             .py_2()
+                            // Files dropped anywhere on the composer take the
+                            // same route as the picker: images become
+                            // thumbnails, everything else a path reference.
+                            .on_drop::<ExternalPaths>({
+                                let entity = drop_entity.clone();
+                                move |paths: &ExternalPaths, _window, cx| {
+                                    let paths =
+                                        paths.0.iter().cloned().collect::<Vec<_>>();
+                                    entity.update(cx, |shell, cx| shell.add_paths(paths, cx));
+                                }
+                            })
                             .child({
                 let entity = cx.entity();
                 let mut input_box = div()
@@ -1014,24 +1108,25 @@ impl Shell {
                 // steer into the running turn, move, or drop. 已推送的消息
                 // 不在这里展示（推送即提交），所以只按 queue 判断显隐，
                 // 否则推送后只剩 steering 时会渲染一个空灰框。
-                if !self.queue.is_empty() {
+                if !self.ui.queue.is_empty() {
                     input_box = input_box.child(self.render_queue_dock(cx));
+                }
+                // Images pasted / picked / dropped since the last send, as
+                // thumbnails read straight from the store.
+                if !self.ui.attachments.is_empty() {
+                    input_box = input_box.child(self.render_attachment_strip(cx));
                 }
                 // Pending file references shown as removable chips above the
                 // input, aligned to its left edge; wraps once too wide.
-                if !self.file_refs.is_empty() {
+                if !self.ui.files.is_empty() {
                     let mut chips = div()
                         .flex()
                         .flex_row()
                         .flex_wrap()
                         .gap_1();
-                    for path in &self.file_refs {
-                        let name = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("<file>")
-                            .to_string();
-                        let remove_path = path.clone();
+                    for (index, pending) in self.ui.files.iter().enumerate() {
+                        let name = pending.file.name.clone();
+                        let size = pending.file.bytes;
                         let remove_entity = entity.clone();
                         chips = chips.child(
                             div()
@@ -1043,19 +1138,21 @@ impl Shell {
                                 .bg(rgba(0x7f7f7f14))
                                 .px_2()
                                 .py_1()
+                                .child(div().text_size(sp(CAPTION_SIZE)).child(name))
                                 .child(
                                     div()
                                         .text_size(sp(CAPTION_SIZE))
-                                        .child(name),
+                                        .text_color(rgb(0x999999))
+                                        .child(crate::render::transcript::human_bytes(size)),
                                 )
                                 .child(
                                     div()
-                                        .id(format!("file-remove-{}", remove_path.display()))
+                                        .id(("file-remove", index))
                                         .cursor_pointer()
                                         .text_color(rgb(0xe8463a))
                                         .on_click(move |_, _, cx| {
                                             remove_entity.update(cx, |shell, cx| {
-                                                shell.remove_file_ref(&remove_path, cx);
+                                                shell.remove_file(index, cx);
                                             });
                                         })
                                         .child("×"),
@@ -1082,7 +1179,7 @@ impl Shell {
                                         }
                                     })
                                     .child(
-                                        Textarea::new(&self.input)
+                                        Textarea::new(&self.ui.input)
                                             .bordered(false)
                                             .text_size(sp(15.0))
                                             .aria_label("Message qcode"),
@@ -1123,7 +1220,7 @@ impl Shell {
                                                 // interrupts the running turn — shown only
                                                 // when the turn is running and the draft is
                                                 // empty, so a draft always keeps Send.
-                                                if self.app.status.running && !composer_has_draft {
+                                                if self.ui.app.status.running && !composer_has_draft {
                                                     div()
                                                         .w(px(36.0))
                                                         .h(px(36.0))
@@ -1187,15 +1284,31 @@ impl Shell {
                             .border_color(border)
                             .child(
                                 StatusBar::new()
-                                    .left(self.notice.clone().unwrap_or_default())
+                                    .left(self.ui.notice.clone().unwrap_or_default())
                                     .left(format!(
                                         "{} turn(s) - {} token(s)",
-                                        self.app.status.turn, total_tokens
+                                        self.ui.app.status.turn, total_tokens
                                     ))
-                                    .right(context_label(&self.app))
-                                    .right(format!("sandbox {}", self.app.sandbox)),
+                                    .right(context_label(&self.ui.app))
+                                    .right(format!("sandbox {}", self.ui.app.sandbox)),
                             ),
                     ),
             )
     }
+}
+
+/// `已用 48/64 轮 · $0.83 / $5.00 · 第 2 个预算窗口` — the engine's own count, so
+/// the card can never disagree with the limit that will pause the turn.
+fn budget_hint_line(hint: Option<&qcode_core::event::BudgetHint>) -> String {
+    let Some(hint) = hint else {
+        return String::new();
+    };
+    let mut line = format!("已用 {}/{} 轮", hint.turns, hint.max_turns);
+    if let Some(max_cost) = hint.max_cost_usd {
+        line.push_str(&format!(" · ${:.2} / ${max_cost:.2}", hint.cost_usd));
+    }
+    if hint.window > 1 {
+        line.push_str(&format!(" · 第 {} 个预算窗口", hint.window));
+    }
+    line
 }

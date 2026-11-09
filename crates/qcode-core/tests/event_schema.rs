@@ -6,10 +6,10 @@
 //! `EVENT_SCHEMA_VERSION` and add a migration).
 
 use qcode_core::event::{
-    ApprovalDecided, ApprovalRequested, AssistantMessage, Compaction, ContentBlock, Decision,
-    ErrorEvent, EventKind, RootsChanged, Scope, SessionStarted, TaskConfigured, TaskRenamed,
-    ToolCall, ToolMetadata, ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage,
-    UserMessage,
+    ApprovalDecided, ApprovalRequested, AssistantMessage, BudgetHint, Compaction, ContentBlock,
+    Continuation, Decision, ErrorEvent, EventKind, PauseInfo, PauseLimit, PauseReason, PauseUsage,
+    RootsChanged, Scope, SessionStarted, TaskConfigured, TaskRenamed, ToolCall, ToolMetadata,
+    ToolResult, ToolStatus, TurnEnded, TurnStarted, TurnStatus, Usage, UserMessage,
 };
 use qcode_core::task::{Root, RootAccess};
 use serde_json::{Value, json};
@@ -144,6 +144,8 @@ fn user_message_snapshot_omits_empty_attachments() {
             queued_id: None,
             text: "hi".into(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
         json!({
             "type": "user_message",
@@ -151,16 +153,34 @@ fn user_message_snapshot_omits_empty_attachments() {
         }),
     );
 
+    // v7: attachments are references into the store, never paths or bytes.
+    let id = qcode_attachments::AttachmentId::from_bytes([0x2a; 32]);
     assert_snapshot(
         EventKind::UserMessage(UserMessage {
             starts_segment: false,
             queued_id: None,
             text: "see attached".into(),
-            attachments: vec!["src/lib.rs".into()],
+            attachments: vec![qcode_attachments::AttachmentRef::File(
+                qcode_attachments::FileRef {
+                    id,
+                    name: "src/lib.rs".into(),
+                    bytes: 42,
+                },
+            )],
+
+            continuation: None,
         }),
         json!({
             "type": "user_message",
-            "data": {"text": "see attached", "attachments": ["src/lib.rs"]}
+            "data": {
+                "text": "see attached",
+                "attachments": [{
+                    "kind": "file",
+                    "id": "2a".repeat(32),
+                    "name": "src/lib.rs",
+                    "bytes": 42
+                }]
+            }
         }),
     );
 }
@@ -277,6 +297,7 @@ fn tool_result_snapshot_keeps_default_metadata() {
                 exit_code: Some(130),
                 ..ToolMetadata::default()
             },
+            diff: None,
         }),
         json!({
             "type": "tool_result",
@@ -288,6 +309,54 @@ fn tool_result_snapshot_keeps_default_metadata() {
                     "truncated": false,
                     "bytes": 17,
                     "exit_code": 130
+                }
+            }
+        }),
+    );
+}
+
+#[test]
+fn tool_result_snapshot_carries_the_diff() {
+    assert_snapshot(
+        EventKind::ToolResult(ToolResult {
+            call_id: "call-2".into(),
+            status: ToolStatus::Ok,
+            output: "replaced 1 occurrence(s) in @workspace/notes.md".into(),
+            metadata: ToolMetadata::default(),
+            diff: Some(qcode_core::event::ToolDiff {
+                patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".into(),
+                files: vec![qcode_core::event::DiffFileStat {
+                    path: "notes.md".into(),
+                    kind: qcode_core::event::DiffKind::Modified,
+                    additions: 1,
+                    deletions: 1,
+                    bytes: 2,
+                }],
+                truncated: false,
+            }),
+        }),
+        json!({
+            "type": "tool_result",
+            "data": {
+                "call_id": "call-2",
+                "status": "ok",
+                "output": "replaced 1 occurrence(s) in @workspace/notes.md",
+                "metadata": {
+                    "truncated": false,
+                    "bytes": 0
+                },
+                "diff": {
+                    "patch": "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n",
+                    "files": [
+                        {
+                            "path": "notes.md",
+                            "kind": "modified",
+                            "additions": 1,
+                            "deletions": 1,
+                            "bytes": 2
+                        }
+                    ],
+                    "truncated": false
                 }
             }
         }),
@@ -321,6 +390,7 @@ fn compaction_snapshot() {
 
 #[test]
 fn turn_ended_snapshot_covers_every_status() {
+    // `paused` needs a `pause` payload, so it is asserted on its own below.
     for status in [
         TurnStatus::Completed,
         TurnStatus::Cancelled,
@@ -330,6 +400,7 @@ fn turn_ended_snapshot_covers_every_status() {
             TurnStatus::Completed => "completed",
             TurnStatus::Cancelled => "cancelled",
             TurnStatus::Failed => "failed",
+            TurnStatus::Paused => unreachable!("covered separately"),
         };
         assert_snapshot(
             EventKind::TurnEnded(TurnEnded {
@@ -339,6 +410,7 @@ fn turn_ended_snapshot_covers_every_status() {
                     ..Usage::default()
                 },
                 cost_usd: 0.0,
+                pause: None,
             }),
             json!({
                 "type": "turn_ended",
@@ -350,6 +422,115 @@ fn turn_ended_snapshot_covers_every_status() {
             }),
         );
     }
+}
+
+/// v6: running out of budget is a pause with a hand-off, not a failure.
+#[test]
+fn a_paused_turn_carries_its_budget_and_hand_off() {
+    assert_snapshot(
+        EventKind::TurnEnded(TurnEnded {
+            status: TurnStatus::Paused,
+            usage: Usage {
+                input_tokens: Some(7),
+                ..Usage::default()
+            },
+            cost_usd: 0.12,
+            pause: Some(PauseInfo {
+                reason: PauseReason::MaxTurns,
+                limit: PauseLimit::Turns(64),
+                used: PauseUsage {
+                    turns: 64,
+                    cost_usd: 0.12,
+                },
+                window: 2,
+                summary: Some("done / left".into()),
+            }),
+        }),
+        json!({
+            "type": "turn_ended",
+            "data": {
+                "status": "paused",
+                "usage": {"input_tokens": 7},
+                "cost_usd": 0.12,
+                "pause": {
+                    "reason": "max_turns",
+                    "limit": {"kind": "turns", "value": 64},
+                    "used": {"turns": 64, "cost_usd": 0.12},
+                    "window": 2,
+                    "summary": "done / left"
+                }
+            }
+        }),
+    );
+}
+
+/// A v5 log has no `pause` field and no `budget_hint`; it must still load.
+#[test]
+fn a_v5_turn_ended_still_loads() {
+    let json = json!({
+        "type": "turn_ended",
+        "data": {
+            "status": "failed",
+            "usage": {"input_tokens": 7},
+            "cost_usd": 0.0
+        }
+    });
+    let kind: EventKind = serde_json::from_value(json).expect("v5 turn_ended loads");
+    match kind {
+        EventKind::TurnEnded(ended) => {
+            assert_eq!(ended.status, TurnStatus::Failed);
+            assert!(ended.pause.is_none());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// The 75% notice is its own event so a replay shows it too.
+#[test]
+fn budget_hint_snapshot() {
+    assert_snapshot(
+        EventKind::BudgetHint(BudgetHint {
+            turns: 48,
+            max_turns: 64,
+            cost_usd: 0.0,
+            max_cost_usd: None,
+            window: 1,
+        }),
+        json!({
+            "type": "budget_hint",
+            "data": {
+                "turns": 48,
+                "max_turns": 64,
+                "cost_usd": 0.0,
+                "window": 1
+            }
+        }),
+    );
+}
+
+/// A continuation is recorded on the user message so replay can label it.
+#[test]
+fn a_continuation_is_marked_on_the_user_message() {
+    assert_snapshot(
+        EventKind::UserMessage(UserMessage {
+            starts_segment: false,
+            queued_id: None,
+            text: "[continue]".into(),
+            attachments: Vec::new(),
+            continuation: Some(Continuation {
+                turn: 3,
+                window: 2,
+                raise: None,
+            }),
+        }),
+        json!({
+            "type": "user_message",
+            "data": {
+                "text": "[continue]",
+                "continuation": {"turn": 3, "window": 2}
+            }
+        }),
+    );
 }
 
 #[test]

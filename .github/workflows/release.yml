@@ -27,7 +27,12 @@ jobs:
         include:
           - os: ubuntu-latest
             targets: linux-amd64 linux-arm64
-          - os: macos-14
+          # GitHub 于 2026-11-02 退役了 macOS 14 镜像（actions/runner-images#15226），
+          # 旧的 `macos-14` 标签现在直接解析不出 runner，job 在 0 步被 cancelled，
+          # 报 "The configuration 'macos-14-arm64-us-default' is not supported"。
+          # macos-26 是 arm64 镜像，也是 ci.yml 里 macos-latest 当前指向的那个；
+          # 两个 darwin 目标照旧交叉编译（x86_64 用 SDK 的对应 slice）。
+          - os: macos-26
             targets: darwin-arm64 darwin-amd64
           - os: windows-latest
             targets: windows-amd64 windows-arm64

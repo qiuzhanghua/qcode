@@ -54,9 +54,53 @@ pub fn read_image() -> Result<Image, String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn read_image() -> Result<Image, String> {
-    Err("pasting images is only implemented on Windows".to_string())
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    // SAFETY: `generalPasteboard` and `dataForType:` are safe to call from the
+    // main thread, which is where the GUI paste handler runs.
+    let data = unsafe { pasteboard.dataForType(NSPasteboardTypePNG) };
+    let Some(data) = data else {
+        return Err("the clipboard does not hold a PNG image".to_string());
+    };
+    let bytes = data.to_vec();
+    let (width, height) = png_dimensions(&bytes)?;
+    // The pasteboard already holds encoded PNG, so it is passed through rather
+    // than decoded and re-encoded.
+    Ok(Image {
+        width,
+        height,
+        png: bytes,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn read_image() -> Result<Image, String> {
+    Err("pasting images is not implemented on this platform".to_string())
+}
+
+/// Width and height from a PNG header. Enough to size the thumbnail; the bytes
+/// themselves are handed to the provider untouched.
+///
+/// Only the macOS pasteboard hands over encoded PNG, so on other platforms this
+/// has no caller and must not be compiled in.
+#[cfg(target_os = "macos")]
+fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if bytes.len() < 24 || bytes[0..8] != SIGNATURE {
+        return Err("the clipboard image is not a PNG".to_string());
+    }
+    if &bytes[12..16] != b"IHDR" {
+        return Err("the PNG header is malformed".to_string());
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    if width == 0 || height == 0 {
+        return Err("the clipboard image has no pixels".to_string());
+    }
+    Ok((width, height))
 }
 
 /// Decode a `CF_DIB` payload into RGBA pixels.

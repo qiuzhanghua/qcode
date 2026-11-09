@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use qcode_core::approval::AutoApprove;
 use qcode_core::cost::Pricing;
 use qcode_core::engine::{EngineError, RunOptions, TurnContext, run_turn};
-use qcode_core::event::{EventKind, SessionStarted, TurnStatus, Usage};
+use qcode_core::event::{EventKind, PauseLimit, PauseReason, SessionStarted, TurnStatus, Usage};
 use qcode_core::policy::Policy;
 use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
 use qcode_core::store::SessionStore;
@@ -82,6 +82,8 @@ fn options<'a>(
         network: None,
         attachments: Vec::new(),
         inbox: None,
+
+        continuation: None,
     }
 }
 
@@ -125,13 +127,13 @@ async fn cost_is_reported_when_under_budget() {
 }
 
 #[tokio::test]
-async fn exceeding_the_budget_fails_the_turn_before_tools_run() {
+async fn exceeding_the_budget_pauses_the_turn_before_tools_run() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path().join("data"));
     let (id, _) = store.create(&meta()).unwrap();
 
     // The model asks for a tool, but the budget is already blown: the tool must
-    // not run and the turn must fail.
+    // not run and the turn must pause (a budget is not an error, ADR-0060).
     let provider = MockProvider::scripted(vec![vec![
         StreamEvent::Started,
         StreamEvent::Usage(Usage {
@@ -150,7 +152,7 @@ async fn exceeding_the_budget_fails_the_turn_before_tools_run() {
     let tools = ToolRegistry::new(vec![Arc::new(NoopTool)]);
     let policy = Policy::default();
 
-    let error = run_turn(
+    let outcome = run_turn(
         TurnContext {
             store: &store,
             provider: &provider,
@@ -163,21 +165,24 @@ async fn exceeding_the_budget_fails_the_turn_before_tools_run() {
         |_| {},
     )
     .await
-    .unwrap_err();
+    .expect("a budget is not an error");
 
-    match error {
-        EngineError::MaxCost { spent, limit } => {
-            assert!((spent - 1.0).abs() < 1e-12, "spent {spent}");
-            assert_eq!(limit, 0.5);
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    let pause = outcome.pause.expect("paused");
+    assert_eq!(pause.reason, PauseReason::MaxCost);
+    assert_eq!(pause.limit, PauseLimit::Usd(0.5));
+    assert!((pause.used.cost_usd - 1.0).abs() < 1e-12);
+    assert!(
+        pause.summary.is_some(),
+        "a spent budget buys no call, so the summary comes from the log"
+    );
 
     let events = store.load(&id).unwrap();
-    assert!(events.iter().any(|event| matches!(
-        &event.kind,
-        EventKind::Error(error) if error.kind == "max_cost"
-    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::Error(_))),
+        "pausing writes no error event"
+    );
     assert!(!events.iter().any(|event| matches!(
         event.kind,
         EventKind::ToolResult(_) | EventKind::ToolCall(_)
@@ -189,8 +194,58 @@ async fn exceeding_the_budget_fails_the_turn_before_tools_run() {
             _ => None,
         })
         .expect("turn ended");
-    assert_eq!(ended.status, TurnStatus::Failed);
+    assert_eq!(ended.status, TurnStatus::Paused);
     assert!(ended.cost_usd > 0.5);
+}
+
+/// The brake fires at 95%, not once the budget is already gone: $14.30 of a
+/// $15.00 budget stops the loop even though it is still under the limit.
+#[tokio::test]
+async fn the_cost_brake_fires_ahead_of_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+
+    let provider = MockProvider::scripted(vec![vec![
+        StreamEvent::Started,
+        StreamEvent::Usage(Usage {
+            input_tokens: Some(14_300_000),
+            ..Usage::default()
+        }),
+        StreamEvent::ToolCallDone {
+            call_id: "call-1".to_string(),
+            name: "noop".to_string(),
+            arguments: json!({}),
+        },
+        StreamEvent::Ended {
+            stop_reason: StopReason::ToolUse,
+        },
+    ]]);
+    let tools = ToolRegistry::new(vec![Arc::new(NoopTool)]);
+    let policy = Policy::default();
+
+    let outcome = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        options(&id, dir.path(), Some(15.0)),
+        |_| {},
+    )
+    .await
+    .expect("under the limit, but close enough to stop");
+
+    let pause = outcome.pause.expect("paused");
+    assert_eq!(pause.reason, PauseReason::MaxCost);
+    assert!(
+        pause.used.cost_usd < 15.0,
+        "the loop stopped before the money was gone: {}",
+        pause.used.cost_usd
+    );
 }
 
 #[tokio::test]
@@ -229,7 +284,7 @@ async fn cost_accumulates_across_provider_calls() {
     let policy = Policy::default();
 
     // $10 after the first call (under the $15 budget), $20 after the second.
-    let error = run_turn(
+    let outcome = run_turn(
         TurnContext {
             store: &store,
             provider: &provider,
@@ -242,15 +297,15 @@ async fn cost_accumulates_across_provider_calls() {
         |_| {},
     )
     .await
-    .unwrap_err();
+    .expect("paused");
 
-    match error {
-        EngineError::MaxCost { spent, limit } => {
-            assert!((spent - 20.0).abs() < 1e-9, "spent {spent}");
-            assert_eq!(limit, 15.0);
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    let pause = outcome.pause.expect("paused");
+    assert_eq!(pause.limit, PauseLimit::Usd(15.0));
+    assert!(
+        (pause.used.cost_usd - 20.0).abs() < 1e-9,
+        "spent {}",
+        pause.used.cost_usd
+    );
 
     let events = store.load(&id).unwrap();
     assert_eq!(

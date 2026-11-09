@@ -156,20 +156,23 @@ pub(crate) fn profile_for_roots(
         "/var/folders".into(),
     ];
     for root in roots {
-        readable.push(root.path.clone());
+        let path = profile_path(&root.path);
+        readable.push(path.clone());
         if root.access == qcode_core::task::RootAccess::ReadWrite {
-            writable.push(root.path.clone());
+            writable.push(path);
         }
     }
     if let Some(temp) = temp {
-        readable.push(temp.to_path_buf());
-        writable.push(temp.to_path_buf());
+        let path = profile_path(temp);
+        readable.push(path.clone());
+        writable.push(path);
     }
-    writable.extend(extra_writable.iter().cloned());
+    writable.extend(extra_writable.iter().map(|path| profile_path(path)));
     for key in ["CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "TMPDIR"] {
         if let Some(value) = std::env::var_os(key) {
             let path = PathBuf::from(value);
             if path.is_absolute() {
+                let path = profile_path(&path);
                 readable.push(path.clone());
                 writable.push(path);
             }
@@ -195,6 +198,21 @@ pub(crate) fn profile_for_roots(
         profile.push_str(&format!("    (literal \"{device}\")\n"));
     }
     profile.push_str(")\n");
+    // Seatbelt matches the *real* path (symlinks resolved) and the last
+    // matching rule wins, so read-only roots are denied after the allow block.
+    // Without this a read-only root that happens to live under `/tmp`,
+    // `$TMPDIR` or a toolchain cache would inherit the blanket write
+    // permission of its parent and quietly stay writable (ADR-0048 §2).
+    for root in roots
+        .iter()
+        .filter(|root| root.access == qcode_core::task::RootAccess::ReadOnly)
+    {
+        let path = profile_path(&root.path);
+        profile.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            sbpl_path(&path)?
+        ));
+    }
     match network {
         SandboxNetwork::Deny => {}
         SandboxNetwork::Allow => profile.push_str("(allow network*)\n"),
@@ -205,6 +223,16 @@ pub(crate) fn profile_for_roots(
         }
     }
     Ok(profile)
+}
+
+/// The canonical form of a path for the profile.
+///
+/// SBPL compares against the resolved path — `/var/folders/...` never matches a
+/// filter written as `$TMPDIR/...` — so every path goes through `canonicalize`
+/// first. A path that does not exist (yet) keeps its written form.
+#[cfg(target_os = "macos")]
+fn profile_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// SBPL string literal. The profile is built from trusted paths, but a workspace

@@ -376,6 +376,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "default_provider",
             "default-model",
             "ui",
+            "schedules",
             "providers",
             "approval",
             "pricing",

@@ -236,7 +236,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     }
 
     // Pasted images wait here until the next submit.
-    let mut pending_images: Vec<qcode_core::engine::Attachment> = Vec::new();
+    let mut pending_images: Vec<qcode_core::engine::AttachmentSource> = Vec::new();
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
     let mut engine_running = false;
@@ -255,7 +255,8 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     // Start one turn on the engine task. Steering is claimed by the engine at
     // every step boundary; a follow-up is claimed after the turn ends.
     macro_rules! start_turn {
-        ($text:expr, $attachments:expr) => {{
+        ($text:expr, $attachments:expr) => {{ start_turn!($text, $attachments, None) }};
+        ($text:expr, $attachments:expr, $continuation:expr) => {{
             // A fresh token per turn: cancelling one turn must not poison the
             // next one.
             cancel = CancellationToken::new();
@@ -294,6 +295,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     network: options.network.clone(),
                     attachments,
                     inbox: Some(task_inbox),
+                    continuation: $continuation,
                 },
                 move |event| {
                     let _ = sender.send(TuiMsg::Event(event.clone()));
@@ -385,11 +387,15 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 Ok(image) => {
                                     use base64::Engine as _;
                                     let size_kb = image.png.len() / 1024;
-                                    pending_images.push(qcode_core::engine::Attachment {
-                                        mime_type: "image/png".to_string(),
-                                        data_base64: base64::engine::general_purpose::STANDARD
-                                            .encode(&image.png),
-                                    });
+                                    pending_images.push(
+                                        qcode_core::engine::AttachmentSource::Inline(
+                                            qcode_core::engine::Attachment {
+                                                mime_type: "image/png".to_string(),
+                                                data_base64: base64::engine::general_purpose::STANDARD
+                                                    .encode(&image.png),
+                                            },
+                                        ),
+                                    );
                                     app.push_notice(format!(
                                         "image attached: {}x{} ({} KB) — sent with the next message ({} pending)",
                                         image.width,
@@ -479,6 +485,42 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     "no queued message {position} (see /queue)"
                                 )),
                             },
+                            UiAction::Continue => {
+                                // The engine reads the paused turn from the log
+                                // and numbers this window itself, so nothing the
+                                // UI believes about windows can forge a budget
+                                // (ADR-0060 §2.11).
+                                if engine_running {
+                                    app.status.running = false;
+                                    app.push_notice("a turn is already running".to_string());
+                                } else {
+                                    let paused =
+                                        app.paused_turn().and_then(|turn| turn.pause.clone());
+                                    match paused {
+                                        Some(_) => start_turn!(
+                                            qcode_core::engine::CONTINUE_PROMPT.to_string(),
+                                            Vec::new(),
+                                            Some(qcode_core::event::Continuation::default())
+                                        ),
+                                        None => app.push_notice(
+                                            "nothing is paused; /continue needs a turn that ran \
+                                             out of budget"
+                                                .to_string(),
+                                        ),
+                                    }
+                                }
+                            }
+                            UiAction::WrapUp => {
+                                if engine_running {
+                                    app.status.running = false;
+                                    app.push_notice("a turn is already running".to_string());
+                                } else {
+                                    start_turn!(
+                                        qcode_core::engine::WRAP_UP_PROMPT.to_string(),
+                                        Vec::new()
+                                    )
+                                }
+                            }
                             UiAction::Cancel => cancel.cancel(),
                             UiAction::Checkpoints => {
                                 let turns = snapshots.turns(&session_id).unwrap_or_default();

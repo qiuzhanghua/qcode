@@ -467,15 +467,19 @@ trait Backend {
 - 文件工具在无根 Task 中直接返回 `NoRoots`。
 - 该 temp 仅用于无根 shell；多根 sandbox 的 temp 约束仍由 ADR-0048 处理。
 
-### 多根 shell sandbox（2026-10-21）
+### 多根 shell sandbox（2026-10-21，2026-11-08 macOS 真机复核后修订）
 
 - macOS `sandbox-exec` 已支持按 Task roots 重建 profile：
   - 所有 Root 可读
   - 仅 RW Root + Turn temp 可写
-  - RO Root 不进入 `file-write*`
+  - RO Root 不进入 `file-write*`，并在放行块之后追加 `(deny file-write*)`——否则落在
+    `/tmp`、`$TMPDIR` 或工具链缓存下的 RO Root 会因为父目录被放行而仍可写
   - `extra_writable` 真正进入 profile
+  - 所有路径先 `canonicalize`：SBPL 比的是真实路径，`$TMPDIR`（`/var/folders/...`）不会
+    匹配写错前缀的 filter
 - `run_shell` 在 roots > 1 或无根 temp 场景使用按 Task 重建的 sandbox。
-- Linux `bwrap`/Landlock 和 Windows ACL 的多根重建仍待实现；当前会 fail closed。
+- Linux `bwrap`/Landlock 与 Windows ACL 的多根重建也已完成（各自真机实测，见 ADR-0048
+  文末补充）；仍不支持多根时一律 fail closed，不退回无 sandbox。
 
 ### Pending Root 变更（2026-10-21）
 

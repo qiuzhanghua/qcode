@@ -7,17 +7,23 @@
 use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
+use qcode_core::schedule::{Schedule, ScheduleState, ScheduleStatus, Tick};
 use qcode_core::store::SessionStore;
-use qcode_ui_bridge::{KernelPort, QueueOp, UiCommand};
+use qcode_ui_bridge::{KernelPort, QueueOp, SessionTarget, TaggedPort, UiCommand};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::host::SessionHost;
+
 /// The pieces a running window needs to execute turns.
 ///
 /// Everything here comes from `qcode_kernel::assemble`; the window never wires
-/// its own provider or tools.
+/// its own provider or tools. Held once behind [`crate::host::Deps`] so every
+/// session shares it instead of cloning a provider per session (ADR-0058 §1).
 pub struct Engine {
     pub store: SessionStore,
     pub provider: std::sync::Arc<dyn qcode_core::provider::Provider>,
@@ -39,6 +45,16 @@ pub struct Engine {
     pub context_window: Option<u64>,
     pub network: Option<qcode_core::network::SharedNetwork>,
     pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
+    /// Scheduled turns from `[schedules]` (ADR-0059). Empty = no scheduler.
+    /// Their run state lives in the store, not here.
+    pub schedules: Vec<qcode_core::schedule::Schedule>,
+    /// `[schedules]` entries that did not resolve, with the reason. Shown as a
+    /// broken row so a typo is visible instead of looking like "not configured".
+    pub schedule_errors: Vec<(String, String)>,
+    /// How often the scheduler's clock beats. `None` = 30 s, which is finer
+    /// than a cron expression can express. A test (or a hand check) sets a
+    /// short beat instead of waiting half a minute.
+    pub schedule_tick: Option<Duration>,
 }
 
 /// Create a fresh empty task (no roots) and tell the UI to switch to it.
@@ -50,6 +66,21 @@ pub(crate) fn create_empty_task(
     port: &KernelPort,
     model: &str,
 ) -> Option<String> {
+    create_task(engine, provider_name, port, model, true)
+}
+
+/// Create a task without taking the view with it.
+///
+/// A scheduled fire that creates its own task must land in the sidebar, not on
+/// the screen: the user may be reading something else (ADR-0059 §6). It is the
+/// same call with the `SessionChanged` left out.
+pub(crate) fn create_task(
+    engine: &Engine,
+    provider_name: &str,
+    port: &KernelPort,
+    model: &str,
+    announce: bool,
+) -> Option<String> {
     let meta = SessionStarted {
         model: model.to_string(),
         provider: provider_name.to_string(),
@@ -58,15 +89,22 @@ pub(crate) fn create_empty_task(
     };
     match engine.store.create_task_with_roots(&meta, Vec::new()) {
         Ok(created) => {
+            let target = SessionTarget::Session(created.id.clone());
+            // A new task is a new session: its own "Always" list, not the one
+            // the previous session accumulated.
+            port.clear_allow(&target);
+            let port = port.tagged(target);
             port.send_event(&created.started);
             port.send_event(&created.configured);
-            port.clear_session_allow();
-            port.send_session_changed(Some(created.id.clone()));
+            if announce {
+                port.send_session_changed(Some(created.id.clone()));
+            }
             Some(created.id)
         }
         Err(error) => {
             eprintln!("qcode-gui: cannot create task: {error}");
-            port.send_turn_failed(error.to_string());
+            port.tagged(SessionTarget::Draft)
+                .send_turn_failed(error.to_string());
             None
         }
     }
@@ -80,7 +118,7 @@ struct Published {
     steering: Vec<QueuedMessage>,
 }
 
-fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
+fn publish(port: &TaggedPort, inbox: &SessionQueue, last: &mut Published) {
     let queue = inbox.queued();
     if queue != last.queue {
         port.send_queue_changed(queue.clone());
@@ -90,6 +128,47 @@ fn publish(port: &KernelPort, inbox: &SessionQueue, last: &mut Published) {
     if steering != last.steering {
         port.send_steering_changed(steering.clone());
         last.steering = steering;
+    }
+}
+
+/// Remember a schedule's decision, in memory and in the store.
+///
+/// A store failure is logged, not fatal: the window keeps running with the
+/// in-memory state and simply loses the record across a restart.
+fn save_schedule_state(
+    engine: &Engine,
+    name: &str,
+    state: &ScheduleState,
+    cache: &mut std::collections::BTreeMap<String, ScheduleState>,
+) {
+    cache.insert(name.to_string(), state.clone());
+    if let Err(error) = engine.store.save_schedule_state(name, state) {
+        eprintln!("qcode-gui: cannot save schedule state for {name}: {error}");
+    }
+}
+
+/// Reports a panicking turn to the app loop.
+///
+/// `run_turn` runs inside `tokio::spawn`, so a panic — a bug in a tool, in a
+/// provider decoder, or an `unwrap` on model output — unwinds the spawned task
+/// and the `done` message is never sent. Without this the loop keeps `active`
+/// set forever: the UI stays on "running", Stop targets a task that is gone,
+/// and new sessions keep being refused. Dropping the guard on unwind turns
+/// that into the same `TurnFailed` a returned `Err` produces (ADR-0058 §9 P0).
+struct TurnGuard {
+    done: tokio::sync::mpsc::UnboundedSender<(SessionTarget, Result<(), String>)>,
+    target: SessionTarget,
+    armed: bool,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.done.send((
+                self.target.clone(),
+                Err("the turn task panicked; the engine is idle again, see the logs".to_string()),
+            ));
+        }
     }
 }
 
@@ -111,29 +190,102 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             }
         };
         runtime.block_on(async move {
-            let approver = std::sync::Arc::new(port.approver());
-            let mut session: Option<String> = None;
-            let mut active: Option<CancellationToken> = None;
-            let mut pending: Option<UiCommand> = None;
+            // One host per window: the authority for "which sessions are live".
+            // P1 wires a single slot through it (see `host.rs`).
+            let host = Arc::new(SessionHost::new(engine));
+            let deps = host.deps().clone();
+            let engine = &deps.engine;
+
+            // Where the window is looking. Commands that do not name a session
+            // act on it; it is *not* the engine's idea of the live turn, because
+            // there can be several (ADR-0058 §7, P5).
+            let mut current = SessionTarget::Draft;
+            // One entry per live turn, keyed by the session it belongs to. This
+            // is the loop's authority for "is this session running"; the host
+            // mirrors it so the approval path can see the same thing.
+            let mut live: HashMap<SessionTarget, CancellationToken> = HashMap::new();
             let mut model = engine.model.clone();
             // Mutable provider + provider_name: a cross-provider model switch
             // (grouped header picker, V2.1) rebuilds the provider in place.
             let mut provider = engine.provider.clone();
             let mut provider_name = engine.provider_name.clone();
             let mut pricing = engine.pricing;
+            // Finishing turns report the session they belong to: with more than
+            // one live, "the turn finished" is not enough to route the clean-up.
             let (done_tx, mut done_rx) =
-                tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
-            let queue = SessionQueue::new();
+                tokio::sync::mpsc::unbounded_channel::<(SessionTarget, Result<(), String>)>();
             let mut ticker = tokio::time::interval(Duration::from_millis(250));
-            let mut published = Published::default();
+            // One clock for the whole window, not one per session (ADR-0059):
+            // a minute is the resolution of a cron expression, and 30s leaves
+            // room for the tick to drift without skipping a window.
+            let beat = engine
+                .schedule_tick
+                .unwrap_or(Duration::from_secs(30))
+                .max(Duration::from_millis(50));
+            let mut clock = tokio::time::interval(beat);
+            // Three beats without one is "the process was away", not "the tick
+            // came round": see below.
+            let gap_limit = beat.saturating_mul(3);
+            // Wall-clock windows are compared against the *monotonic* beat to
+            // tell "the tick came round" from "the process was asleep"
+            // (ADR-0059 §2). Without this a suspended laptop would look like a
+            // scheduler that missed nothing, and a clock corrected backwards
+            // would look like one that owes a turn.
+            let mut last_beat: Option<std::time::Instant> = None;
+            let mut published: HashMap<SessionTarget, Published> = HashMap::new();
+
+            // An approval prompt from a scheduled turn expires (ADR-0059 §4):
+            // nobody is watching, so it must not hold the session lock all
+            // night. Set right before `start_turn!` and taken by it.
+            let mut approval_deadline: Option<Duration> = None;
+
+            // The scheduler's run state, mirrored in the store between runs.
+            let schedules: Vec<Schedule> = engine.schedules.clone();
+            let mut schedule_states: std::collections::BTreeMap<String, ScheduleState> =
+                engine.store.schedule_states().unwrap_or_default();
+            let declared: Vec<String> = schedules
+                .iter()
+                .map(|schedule| schedule.name.clone())
+                .collect();
+            if let Err(error) = engine.store.prune_schedules(&declared) {
+                eprintln!("qcode-gui: cannot prune schedule state: {error}");
+            }
+
+            // Publish a session's queue rows, remembering what the UI was told so
+            // an unchanged queue costs nothing.
+            macro_rules! publish_to {
+                ($target:expr) => {{
+                    let target: SessionTarget = $target;
+                    if let Some(queue) = host.queue(&target) {
+                        let last = published.entry(target.clone()).or_default();
+                        publish(&port.tagged(target.clone()), &queue, last);
+                    }
+                }};
+            }
 
             // Run one queued message as its own turn on the engine task. The
             // engine drains the `next-step` inbox before every model request,
             // so steering sent while this turn is live lands in it.
+            //
+            // `$target` is the session the message belongs to. A draft becomes a
+            // logged session on its first turn; every other target already names
+            // one, so a background task's message can never land on the task the
+            // window happens to be looking at.
             macro_rules! start_turn {
-                ($text:expr, $attachments:expr) => {{
-                    let session_id = match session.clone() {
-                        Some(id) => id,
+                ($target:expr, $text:expr, $attachments:expr) => {{
+                    start_turn!(
+                        $target,
+                        $text,
+                        $attachments,
+                        None,
+                        engine.max_turns,
+                        engine.max_cost_usd
+                    )
+                }};
+                ($target:expr, $text:expr, $attachments:expr, $continuation:expr, $max_turns:expr, $max_cost:expr) => {{
+                    let target: SessionTarget = $target;
+                    let target = match target.id() {
+                        Some(_) => target,
                         None => {
                             let created = match engine.store.create_task(&SessionStarted {
                                 model: model.clone(),
@@ -144,21 +296,29 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 Ok(created) => created,
                                 Err(error) => {
                                     eprintln!("qcode-gui: cannot create a task: {error}");
-                                    port.send_turn_failed(error.to_string());
+                                    port.tagged(target).send_turn_failed(error.to_string());
                                     continue;
                                 }
                             };
-                            let id = created.id.clone();
+                            let new_target = SessionTarget::Session(created.id.clone());
+                            // The draft becomes a session: drop whatever the
+                            // draft slot held so nothing leaks by target.
+                            host.close_if_idle(&target);
+                            current = new_target.clone();
+                            let port = port.tagged(new_target.clone());
                             port.send_event(&created.started);
                             port.send_event(&created.configured);
-                            port.send_session_changed(Some(id.clone()));
-                            session = Some(id.clone());
-                            id
+                            port.send_session_changed(Some(created.id.clone()));
+                            new_target
                         }
                     };
-                    let sink = port.clone();
-                    let token = CancellationToken::new();
-                    active = Some(token.clone());
+                    let session_id = target.id().expect("a turn names a session").to_string();
+                    // Every turn of a session runs on that session's slot: its
+                    // cancel token and its follow-up inbox.
+                    let (token, task_queue) = host.open(&target);
+                    host.begin_turn(&target);
+                    let sink = port.tagged(target.clone());
+                    live.insert(target.clone(), token.clone());
                     let store = engine.store.clone();
                     let provider = provider.clone();
                     let tools = engine.tools.clone();
@@ -166,16 +326,28 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let snapshots = engine.snapshots.clone();
                     let network = engine.network.clone();
                     let workspace = engine.workspace.clone();
-                    let max_turns = engine.max_turns;
-                    let max_cost_usd = engine.max_cost_usd;
+                    let max_turns = $max_turns;
+                    let max_cost_usd = $max_cost;
                     let context_window = engine.context_window;
                     let task_model = model.clone();
-                    let task_session = session_id.clone();
-                    let task_approver = approver.clone();
+                    let task_session = session_id;
+                    let task_approver = match approval_deadline.take() {
+                        Some(deadline) => sink.approver_with_deadline(deadline),
+                        None => sink.approver(),
+                    };
+                    let task_target = target;
                     let done = done_tx.clone();
+                    let guard = TurnGuard {
+                        done: done.clone(),
+                        target: task_target.clone(),
+                        armed: true,
+                    };
                     let cancel = token.clone();
-                    let task_inbox = queue.inbox();
+                    let task_inbox = task_queue.inbox();
                     tokio::spawn(async move {
+                        // A panic anywhere below unwinds this task without
+                        // reaching `done.send`; `guard` covers that path.
+                        let mut guard = guard;
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
@@ -197,6 +369,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             network,
                             attachments: $attachments,
                             inbox: Some(task_inbox),
+                            continuation: $continuation,
                         };
                         let result = run_turn(
                             TurnContext {
@@ -204,14 +377,18 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 provider: provider.as_ref(),
                                 tools: &tools,
                                 policy: &policy,
-                                approver: task_approver.as_ref(),
+                                approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
                             },
                             options,
                             move |event| sink.send_event(event),
                         )
                         .await;
-                        let _ = done.send(result.map(|_| ()).map_err(|error| error.to_string()));
+                        guard.armed = false;
+                        let _ = done.send((
+                            task_target,
+                            result.map(|_| ()).map_err(|error| error.to_string()),
+                        ));
                     });
                 }};
             }
@@ -221,7 +398,142 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // The engine claims steering from another thread, so the
                     // pending rows are refreshed on a slow tick rather than
                     // tied to a UI event.
-                    _ = ticker.tick() => publish(&port, &queue, &mut published),
+                    _ = ticker.tick() => {
+                        // The engine claims steering from its own thread, so the
+                        // pending rows are refreshed on a slow tick. Every live
+                        // session is republished, not just the visible one: a
+                        // background turn's queue must not go stale.
+                        let mut targets: Vec<SessionTarget> = live.keys().cloned().collect();
+                        if !targets.contains(&current) {
+                            targets.push(current.clone());
+                        }
+                        for target in targets {
+                            publish_to!(target);
+                        }
+                    }
+                    // The scheduler's beat (ADR-0059 §1–§3). Firing is just a
+                    // prompt into a session's queue, so a scheduled turn runs
+                    // through exactly the same path as a typed one.
+                    _ = clock.tick() => {
+                        let beat = std::time::Instant::now();
+                        // A gap means the process was away: count the windows
+                        // that passed and schedule the next one, without
+                        // replaying them (a night's sleep must not release
+                        // eleven turns at once).
+                        let away = match last_beat {
+                            None => true,
+                            Some(last) => {
+                                beat.duration_since(last) > gap_limit
+                            }
+                        };
+                        last_beat = Some(beat);
+                        let now = qcode_core::schedule::now_local();
+                        for schedule in &schedules {
+                            let previous = schedule_states
+                                .get(&schedule.name)
+                                .cloned()
+                                .unwrap_or_default();
+                            if away {
+                                let recovery =
+                                    qcode_core::schedule::recover(schedule, &previous, now);
+                                let mut next = previous.clone();
+                                next.next_fire_at = recovery.next_fire_at;
+                                next.missed_windows = recovery.missed;
+                                if recovery.missed > 0 {
+                                    next.last_status =
+                                        Some(ScheduleStatus::Missed(recovery.missed));
+                                }
+                                save_schedule_state(
+                                    engine,
+                                    &schedule.name,
+                                    &next,
+                                    &mut schedule_states,
+                                );
+                                continue;
+                            }
+                            // `new = true` creates its task at fire time, so
+                            // there is nothing to be orphaned and nothing to
+                            // look up.
+                            let target = match &schedule.task {
+                                Some(id) => SessionTarget::Session(id.clone()),
+                                None => SessionTarget::Draft,
+                            };
+                            let exists = target
+                                .id()
+                                .is_none_or(|id| engine.store.task(id).is_ok());
+                            let busy = live.contains_key(&target);
+                            let decision =
+                                qcode_core::schedule::tick(schedule, &previous, now, busy, exists);
+                            let status = match decision {
+                                Tick::NotYet => None,
+                                Tick::SkipBusy => Some(ScheduleStatus::Skipped),
+                                Tick::Orphaned => Some(ScheduleStatus::Orphaned),
+                                Tick::Fire => {
+                                    // A fresh task per fire: logs a session but
+                                    // does not steal the view.
+                                    let target = match target.id() {
+                                        Some(_) => target.clone(),
+                                        None => match create_task(
+                                            engine,
+                                            &provider_name,
+                                            &port,
+                                            &model,
+                                            false,
+                                        ) {
+                                            Some(id) => SessionTarget::Session(id),
+                                            None => {
+                                                let next = qcode_core::schedule::advance(
+                                                    schedule,
+                                                    now,
+                                                    ScheduleStatus::Failed(
+                                                        "cannot create a task".to_string(),
+                                                    ),
+                                                );
+                                                save_schedule_state(
+                                                    engine,
+                                                    &schedule.name,
+                                                    &next,
+                                                    &mut schedule_states,
+                                                );
+                                                continue;
+                                            }
+                                        },
+                                    };
+                                    let busy = live.contains_key(&target);
+                                    let queue = host
+                                        .queue(&target)
+                                        .unwrap_or_else(|| host.open(&target).1);
+                                    approval_deadline = schedule.approval_timeout;
+                                    match queue.submit(
+                                        schedule.prompt.clone(),
+                                        Vec::new(),
+                                        busy,
+                                    ) {
+                                        Submission::Start(message) => {
+                                            start_turn!(
+                                                target.clone(),
+                                                message.text,
+                                                message.attachments
+                                            );
+                                            Some(ScheduleStatus::Fired)
+                                        }
+                                        // `overlap = "queue"` on a busy session:
+                                        // the message waits for the current turn.
+                                        Submission::Queued => Some(ScheduleStatus::Fired),
+                                    }
+                                }
+                            };
+                            if let Some(status) = status {
+                                let next = qcode_core::schedule::advance(schedule, now, status);
+                                save_schedule_state(
+                                    engine,
+                                    &schedule.name,
+                                    &next,
+                                    &mut schedule_states,
+                                );
+                            }
+                        }
+                    }
                     command = commands.recv() => {
                         let Some(command) = command else {
                             break;
@@ -236,28 +548,51 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 allow,
                                 session: remember,
                             }),
-                            UiCommand::Cancel => {
-                                if let Some(token) = &active {
+                            UiCommand::Cancel { session } => {
+                                // Per-session stop (ADR-0058 §6): only that
+                                // session's token is tripped, so a stop raced from
+                                // an idle task cannot kill a background turn.
+                                let target = session
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or_else(|| current.clone());
+                                host.cancel(&target);
+                                if let Some(token) = live.get(&target) {
+                                    token.cancel();
+                                }
+                            }
+                            UiCommand::CancelAll => {
+                                host.cancel_all();
+                                for token in live.values() {
                                     token.cancel();
                                 }
                             }
                             UiCommand::NewSession => {
-                                if let Some(token) = &active {
-                                    token.cancel();
-                                    pending = Some(UiCommand::NewSession);
-                                } else {
-                                    session = create_empty_task(&engine, &provider_name, &port, &model);
-                                }
+                                // No stop: the outgoing task keeps its own turn
+                                // (P5). Only its *backend* is recycled, and only
+                                // if it is idle — an idle session replays from the
+                                // log when it is focused again.
+                                host.close_if_idle(&current);
+                                current = create_empty_task(engine, &provider_name, &port, &model)
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or(SessionTarget::Draft);
                             }
                             UiCommand::Resume { id } => {
-                                if let Some(token) = &active {
-                                    token.cancel();
-                                    pending = Some(UiCommand::Resume { id });
-                                } else {
-                                    session = Some(id.clone());
-                                    port.clear_session_allow();
-                                    port.send_session_changed(Some(id));
+                                // Switching is just re-pointing: the outgoing
+                                // session's slot is dropped if it is idle, and a
+                                // background turn keeps running untouched (P5).
+                                let target = SessionTarget::Session(id.clone());
+                                if target != current {
+                                    host.close_if_idle(&current);
                                 }
+                                // A replayed session starts with a clean "Always"
+                                // list, like a fresh window — but a session with a
+                                // turn in flight keeps its own: switching away and
+                                // back must not ask the same question again.
+                                if !live.contains_key(&target) {
+                                    port.clear_allow(&target);
+                                }
+                                current = target.clone();
+                                port.tagged(target).send_session_changed(Some(id));
                             }
                             UiCommand::SetModel {
                                 provider: next_provider,
@@ -283,7 +618,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             eprintln!(
                                                 "qcode-gui: cannot switch provider: {error}"
                                             );
-                                            port.send_turn_failed(format!(
+                                            port.tagged(current.clone()).send_turn_failed(format!(
                                                 "无法切换到 {next_provider}：{error}"
                                             ));
                                         }
@@ -301,29 +636,81 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     eprintln!("qcode-gui: cannot persist default model: {error}");
                                 }
                             }
-                            UiCommand::Prompt { text, attachments } => {
-                                // Running: the message waits in the follow-up
-                                // queue; idle: it starts its own turn now.
-                                match queue.submit(text, attachments, active.is_some()) {
-                                    Submission::Start(message) => {
-                                        start_turn!(message.text, message.attachments)
-                                    }
+                            UiCommand::Prompt {
+                                session,
+                                text,
+                                attachments,
+                            } => {
+                                // The message carries its session, so a stale
+                                // `current` can never post it to another task.
+                                let target = session
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or_else(|| current.clone());
+                                // Running: the message waits in this session's
+                                // follow-up queue; idle: it starts its own turn.
+                                let running = live.contains_key(&target);
+                                let queue = host
+                                    .queue(&target)
+                                    .unwrap_or_else(|| host.open(&target).1);
+                                match queue.submit(text, attachments, running) {
+                                    Submission::Start(message) => start_turn!(
+                                        target.clone(),
+                                        message.text,
+                                        message.attachments
+                                    ),
                                     Submission::Queued => {}
                                 }
-                                publish(&port, &queue, &mut published);
+                                publish_to!(target);
+                            }
+                            UiCommand::Continue { raise } => {
+                                // Only an idle engine continues: a live turn
+                                // already has a window, and a queue submit
+                                // while paused is itself a continue.
+                                if !live.contains_key(&current) {
+                                    let raise = raise.unwrap_or_default();
+                                    let renewal = Some(qcode_core::event::Continuation {
+                                        // The engine fills these in from the log.
+                                        turn: 0,
+                                        window: 1,
+                                        raise: (raise.turns.is_some() || raise.usd.is_some())
+                                            .then(|| raise.into()),
+                                    });
+                                    // The new limits apply to this window only;
+                                    // the next turn falls back to the config.
+                                    let turns = raise.turns.unwrap_or(engine.max_turns);
+                                    let cost = raise.usd.or(engine.max_cost_usd);
+                                    start_turn!(
+                                        current.clone(),
+                                        qcode_core::engine::CONTINUE_PROMPT.to_string(),
+                                        Vec::new(),
+                                        renewal,
+                                        turns,
+                                        cost
+                                    );
+                                }
                             }
                             UiCommand::Steer { text, attachments } => {
                                 // Only a live turn can take steering; the dock
                                 // does not offer it while idle.
-                                queue.steer(text, attachments, active.is_some());
-                                publish(&port, &queue, &mut published);
+                                let target = current.clone();
+                                let running = live.contains_key(&target);
+                                let queue = host
+                                    .queue(&target)
+                                    .unwrap_or_else(|| host.open(&target).1);
+                                queue.steer(text, attachments, running);
+                                publish_to!(target);
                             }
                             UiCommand::QueueOp { id, op } => {
+                                let target = current.clone();
+                                let running = live.contains_key(&target);
+                                let queue = host
+                                    .queue(&target)
+                                    .unwrap_or_else(|| host.open(&target).1);
                                 match op {
                                     // Steering only reaches the running turn;
                                     // an idle engine leaves the queue untouched.
                                     QueueOp::Steer => {
-                                        queue.steer_queued(&id, active.is_some());
+                                        queue.steer_queued(&id, running);
                                     }
                                     QueueOp::MoveUp => {
                                         queue.move_queued(&id, -1);
@@ -338,36 +725,31 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         queue.unsteer(&id);
                                     }
                                 }
-                                publish(&port, &queue, &mut published);
+                                publish_to!(target);
                             }
                         }
                     }
-                    Some(result) = done_rx.recv() => {
-                        active = None;
+                    Some((target, result)) = done_rx.recv() => {
+                        // The finished session is the *one that finished*: with
+                        // several live, cleaning up `current` would clear the
+                        // wrong task's badge (P5).
+                        live.remove(&target);
                         if let Err(error) = result {
                             eprintln!("qcode-gui: turn failed: {error}");
-                            port.send_turn_failed(error);
+                            port.tagged(target.clone()).send_turn_failed(error);
                         }
-                        port.send_turn_finished(session.clone());
-                        if let Some(pending) = pending.take() {
-                            match pending {
-                                UiCommand::NewSession => {
-                                    session = create_empty_task(&engine, &provider_name, &port, &model);
-                                }
-                                UiCommand::Resume { id } => {
-                                    session = Some(id.clone());
-                                    port.clear_session_allow();
-                                    port.send_session_changed(Some(id));
-                                }
-                                _ => {}
-                            }
+                        host.end_turn(&target);
+                        port.tagged(target.clone())
+                            .send_turn_finished(target.id().map(str::to_string));
+                        // Drain that session's follow-up queue: the next queued
+                        // message starts its own turn now that it is idle. Another
+                        // session's queue is untouched.
+                        if let Some(queue) = host.queue(&target)
+                            && let Some(message) = queue.finish()
+                        {
+                            start_turn!(target.clone(), message.text, message.attachments);
                         }
-                        // Drain the follow-up queue: the next queued message
-                        // starts its own turn now that the engine is idle.
-                        if let Some(message) = queue.finish() {
-                            start_turn!(message.text, message.attachments);
-                        }
-                        publish(&port, &queue, &mut published);
+                        publish_to!(target);
                     }
                 }
             }

@@ -93,6 +93,8 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

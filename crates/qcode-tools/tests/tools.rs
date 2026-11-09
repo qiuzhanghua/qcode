@@ -9,6 +9,7 @@ use qcode_core::tool::{Tool, ToolContext};
 use qcode_net::{Egress, EgressOptions};
 use qcode_tools::fetch::WebFetch;
 use qcode_tools::fs::{EditFile, ListDir, ReadFile, WriteFile};
+use qcode_tools::patch::ApplyPatch;
 use qcode_tools::shell::RunShell;
 use serde_json::json;
 #[cfg(unix)]
@@ -116,6 +117,75 @@ async fn write_read_edit_roundtrip() {
         .unwrap();
     assert!(read.output.contains("fn run()"));
     assert!(!read.output.contains("fn main()"));
+}
+
+#[tokio::test]
+async fn the_write_tools_record_what_they_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+
+    // A new file is all additions against /dev/null.
+    let created = WriteFile
+        .execute(&ctx, json!({"path": "notes.md", "content": "one\ntwo\n"}))
+        .await
+        .unwrap();
+    let diff = created.diff.expect("write_file records a diff");
+    assert_eq!(diff.files.len(), 1);
+    assert_eq!(diff.files[0].path, "notes.md");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Created);
+    assert_eq!(diff.files[0].additions, 2);
+    assert!(diff.patch.starts_with("--- /dev/null\n+++ b/notes.md\n"));
+
+    // An edit has a real before/after and therefore a real hunk header.
+    let edited = EditFile
+        .execute(
+            &ctx,
+            json!({"path": "notes.md", "old_string": "two", "new_string": "2"}),
+        )
+        .await
+        .unwrap();
+    let diff = edited.diff.expect("edit_file records a diff");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Modified);
+    assert_eq!((diff.files[0].additions, diff.files[0].deletions), (1, 1));
+    assert!(diff.patch.contains("@@ -1,2 +1,2 @@"), "{}", diff.patch);
+    assert!(diff.patch.contains("-two\n"));
+    assert!(diff.patch.contains("+2\n"));
+
+    // A read-only call has nothing to show.
+    let read = ReadFile
+        .execute(&ctx, json!({"path": "notes.md"}))
+        .await
+        .unwrap();
+    assert!(read.diff.is_none());
+}
+
+#[tokio::test]
+async fn apply_patch_reports_one_diff_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+    std::fs::write(dir.path().join("one.rs"), "fn main() {}\n").unwrap();
+
+    let patch = "--- a/one.rs\n+++ b/one.rs\n@@ -1 +1 @@\n-fn main() {}\n+fn run() {}\n--- /dev/null\n+++ b/two.rs\n@@ -0,0 +1 @@\n+second\n";
+    let output = ApplyPatch
+        .execute(&ctx, json!({ "diff": patch }))
+        .await
+        .unwrap();
+
+    let diff = output.diff.expect("apply_patch records a diff");
+    assert_eq!(diff.files.len(), 2);
+    assert_eq!(diff.files[0].path, "one.rs");
+    assert_eq!(diff.files[0].kind, qcode_core::event::DiffKind::Modified);
+    assert_eq!(diff.files[1].path, "two.rs");
+    assert_eq!(diff.files[1].kind, qcode_core::event::DiffKind::Created);
+    assert!(diff.patch.contains("--- a/one.rs"));
+    // The new file is an addition: nothing on the left-hand side.
+    assert!(diff.patch.contains("--- /dev/null"));
+    assert!(diff.patch.contains("+++ b/two.rs"));
+    // The file itself really changed.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("one.rs")).unwrap(),
+        "fn run() {}\n"
+    );
 }
 
 #[tokio::test]
@@ -380,4 +450,78 @@ async fn shell_receives_the_proxy_environment() {
         .expect("shell");
     assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
     assert!(output.output.contains(&proxy_url), "{}", output.output);
+}
+
+/// `run_shell` rebuilds the confinement for the task's roots (ADR-0048 §2): the
+/// read-write root accepts a file, the read-only root next to it refuses one.
+///
+/// The fixture lives under `$TMPDIR`, which the macOS profile keeps writable for
+/// every task, so the read-only half only holds if the deny rule really wins
+/// over its parent's allowance. Skips when `sandbox-exec` cannot be nested.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn shell_follows_the_root_matrix() {
+    use qcode_tools::sandbox::{Sandbox, SandboxExec, SandboxNetwork};
+
+    let base = tempfile::tempdir().unwrap();
+    let base = base.path().canonicalize().unwrap();
+    let rw = base.join("code");
+    let ro = base.join("docs");
+    for dir in [&rw, &ro] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+
+    let seed = SandboxExec::new(&rw, SandboxNetwork::Deny).unwrap();
+    if let Err(error) = seed.check() {
+        let detail = error.to_string();
+        assert!(
+            detail.contains("Operation not permitted") || detail.contains("EPERM"),
+            "sandbox-exec preflight failed: {detail}"
+        );
+        eprintln!("skipping: nested sandbox-exec is not permitted here: {detail}");
+        return;
+    }
+
+    let ctx = ToolContext::for_test(base.clone()).with_roots(vec![
+        Root {
+            id: "code".into(),
+            label: "code".into(),
+            path: rw.clone(),
+            access: RootAccess::ReadWrite,
+            primary: true,
+        },
+        Root {
+            id: "docs".into(),
+            label: "docs".into(),
+            path: ro.clone(),
+            access: RootAccess::ReadOnly,
+            primary: false,
+        },
+    ]);
+    let shell = RunShell::new(Arc::new(seed));
+
+    let inside = shell
+        .execute(
+            &ctx,
+            json!({"command": format!("printf hi > '{}'", rw.join("ok.txt").display())}),
+        )
+        .await
+        .expect("shell");
+    assert_eq!(inside.metadata.exit_code, Some(0), "{}", inside.output);
+    assert!(rw.join("ok.txt").is_file());
+
+    let outside = shell
+        .execute(
+            &ctx,
+            json!({"command": format!("printf hi > '{}'", ro.join("denied.txt").display())}),
+        )
+        .await
+        .expect("shell");
+    assert_ne!(
+        outside.metadata.exit_code,
+        Some(0),
+        "read-only root accepted a write: {}",
+        outside.output
+    );
+    assert!(!ro.join("denied.txt").exists());
 }

@@ -164,6 +164,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 都发现不了。历史教训：新写的测试里一个 `let b = ...` 没用上就足以让 CI 红，
 因为 `-D warnings` 把 `unused_variables` 也当错误。
 
+还有一类**本机完全看不见**的：平台 cfg 门控掉的分支。`make check` 只编译 host
+target，`#[cfg(target_os = "linux")]` 和
+`#[cfg(not(any(target_os = "macos", target_os = "windows")))]` 在 macOS 上根本
+不参与编译，悬空参数、拼错的符号都只能等 CI 报错。交叉 lint 也救不了——本机拿
+`--target aarch64-unknown-linux-musl` 跑 clippy 会死在 cc-rs 找不到
+`aarch64-linux-musl-gcc`，除非另装交叉工具链。所以改过 cfg 门控，就把这次新增/
+改动的门控行过一遍：
+
+```bash
+git diff <base>..HEAD -- '*.rs' | grep -E '^[+-].*cfg\(' | grep -v '^[+-][+-]'
+```
+
+历史教训：`1a20d6b` 的 `show_window_later` 只有 macOS/Windows 分支用 `cx`（取
+foreground executor 把原生激活推迟到本次 update 之后），Linux 分支只剩
+`window.activate_window()`，参数于是悬空，ubuntu job 红而 macOS 本地全绿。分支里
+确实用不上的参数写 `let _ = cx;` 说明是有意为之：改名 `_cx` 会丢掉与另一分支照签名
+对照的可读性，`#[allow(unused)]` 则会把将来真忘了用的参数一起放过。
+
 另外，**只推一个远端等于没跑 CI**。`gh` 与 `gitee` 是两个独立仓库，GitHub 上
 不存在那个 commit 就不会触发 workflow。`31ca808` 那段「运行中排队与插话」
 （`inbox.rs`，12 个单测）只推了 gitee，带着 fmt 与 clippy 错误存活了 7 天。
@@ -352,8 +370,9 @@ cargo build -p qcode-eval
 - **checkpoint / rollback**：`write_file` / `edit_file` / `apply_patch` 动手之前，把目标文件
   当前内容记进 `<data-dir>/snapshots/<session>/<turn>/`（不存在的文件记为 absent）；
   `[agent] snapshot_shell`（默认 true）还会在每条 `run_shell` 前对整个工作区做一次受限快照
-  （跳过 `.git`/`target`/`node_modules` 等，单文件 4 MB、总量 64 MB 封顶），因此 shell 与 MCP
-  驱动的编辑也能回滚。`qc sessions checkpoints <id>` 看记录，
+  （跳过 `.git`/`target`/`node_modules`/`.cargo-home` 等构建与 VCS 树，单文件 4 MB、每个 turn
+  累计 64 MB 封顶），因此 shell 与 MCP 驱动的编辑也能回滚。
+  `qc sessions checkpoints <id>` 看记录，
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
 - **GUI**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048）：与 `qc run` / `qc acp` /
@@ -380,7 +399,15 @@ cargo build -p qcode-eval
   部分驱逐出摘要输入，再把更早历史用同一模型摘要成 `compaction` 事件；replay / resume
   应用同一摘要。窗口由 `[context] window_tokens` 配置。
 - **成本**：配置 `[pricing."<model>"]` 后，`turn_ended.cost_usd` 与人类模式输出都带估算；
-  `--max-cost` 在模型响应后、工具执行前检查，超限写 `error(max_cost)` 并以失败结束。
+  `--max-cost` 在模型响应后、工具执行前检查，**到 95% 即暂停**（不再花超才停），
+  余下的留一次无工具收尾调用写交接摘要。
+- **预算暂停（ADR-0060）**：`max_turns` / `max_cost` 用尽时 turn 落 `paused` 而不是
+  `failed`——工作完好，用户决定继续。跨过 75% 时先发一次 `budget_hint`（GUI 提示卡、
+  TUI 状态行都读它，不再数对话条数）。暂停时给出一份交接：`PauseInfo.summary`（模型的
+  「已完成 / 未完成 / 下一步」，不计入轮数）+ 从事件流推导的改动与命令清单。
+  `qc run` 退出码 **75**；`qc run --resume <id> --continue` 接着跑，
+  `--raise-turns` / `--raise-cost`（`--raise-persist` 写回配置）只抬这一个窗口。
+  TUI 用 `/continue`、`/wrap`；GUI 是三键卡片（继续 / 收尾 / 先这样）。
 - **子 agent**：`subagent` 工具把独立任务交给新会话运行（同 provider / policy / approver、
   同 workspace、独立 JSONL；工具集去掉 `subagent`，深度固定为 1）。默认 20 轮、上限 40，
   返回最终文本与子 session id；子会话的 usage/cost 汇总进父 `turn_ended` 与 TUI 成本。
@@ -438,7 +465,7 @@ window_tokens = 128000
 [agent]
 max_turns = 64
 # max_cost_usd = 0.50    # 需要 [pricing]；`--max-cost` 覆盖它，比轮数更贴近真实代价
-snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB 总量封顶）；大仓库可关
+snapshot_shell = true   # run_shell 前快照工作区（4MB/文件、64MB/轮封顶）；大仓库可关
 
 # Web 搜索（v2.0）。enabled 默认 true；未配置 key 时不注册 web_search 工具，
 # 由 qc doctor 提示。backend: brave | tavily | searxng。

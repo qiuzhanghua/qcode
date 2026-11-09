@@ -17,7 +17,12 @@ fn every_known_config_key_has_a_control() {
             // ("设为默认") and via "切即默认"; the keys stay known for
             // read-compatibility (no unknown-key warnings on old configs).
             let auto_managed = (section.is_empty() && *key == "default_provider")
-                || (*section == "default-model" && matches!(*key, "provider" | "model"));
+                || (*section == "default-model" && matches!(*key, "provider" | "model"))
+                // `[schedules.<name>]` is a table of tables keyed by a name the
+                // user invents (cron, prompt, task, overlap, timeout). A form
+                // cannot invent keys, so it is edited in the config file; the
+                // sidebar shows the run state (ADR-0059 §1).
+                || (section.is_empty() && *key == "schedules");
             if auto_managed {
                 continue;
             }

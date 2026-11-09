@@ -48,14 +48,14 @@ pub(crate) fn unit_row(
     color: Hsla,
     divider: Hsla,
 ) -> AnyElement {
-    match shell.units.get(index).cloned() {
+    match shell.ui.units.get(index).cloned() {
         Some(DisplayUnit::Loose(block)) => block_row(block, shell, entity),
         Some(DisplayUnit::Turn(turn)) => turn_row(turn, shell, entity),
         Some(DisplayUnit::Pending { text, steered, .. }) => pending_row(text, steered),
         None => {
             // The trailing scroller row holds the blinking typing indicator
             // while a turn streams; once it finishes the row is empty.
-            if shell.app.status.running {
+            if shell.ui.app.status.running {
                 running_row(shell, color, divider)
             } else {
                 div().into_any_element()
@@ -153,6 +153,9 @@ fn header_lead(expanded: bool, icon: IconName, label: impl Into<SharedString>) -
         .child(conversation_icon(icon))
         .child(label.into())
 }
+/// One diff row, so an inline card can be sized without a layout pass.
+const DIFF_ROW_HEIGHT: f32 = 20.0;
+
 /// The QC mark as `currentColor`, so the running row follows the theme.
 const QC_MARK: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -164,6 +167,7 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// driven by the 1s waiting ticker; the mark flips on its own animation.
 pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
     let elapsed = shell
+        .ui
         .app
         .turns
         .last()
@@ -265,7 +269,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
     // This row only renders while thinking is streaming: always show the
     // live text instead of a preview.
     let expanded = true;
-    let preview = reasoning_preview(&shell.app.reasoning_streaming);
+    let preview = reasoning_preview(&shell.ui.app.reasoning_streaming);
     let mut row = div()
         .flex()
         .flex_col()
@@ -314,7 +318,7 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
                     .text_size(sp(SECONDARY_SIZE))
                     .line_height(sp(SECONDARY_LINE))
                     .text_color(rgb(0x777777))
-                    .child(shell.app.reasoning_streaming.clone()),
+                    .child(shell.ui.app.reasoning_streaming.clone()),
             ),
         );
     }
@@ -330,7 +334,8 @@ pub(crate) fn reasoning_row(
     // the text visibly appends; once the thinking completes the block is
     // auto-folded (the shell clears the reasoning expansion) but stays
     // expandable through the header toggle.
-    let streaming = shell.app.status.running && shell.app.streaming_reasoning_block == Some(block);
+    let streaming =
+        shell.ui.app.status.running && shell.ui.app.streaming_reasoning_block == Some(block);
     let expanded = streaming || shell.reasoning_expanded(block);
     let preview = reasoning_preview(&entry.text);
     let mut row = div()
@@ -455,7 +460,7 @@ pub(crate) fn looks_like_list(text: &str) -> bool {
         })
 }
 pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    let turn = &shell.app.turns[index];
+    let turn = &shell.ui.app.turns[index];
     let mut card = div().flex().flex_col().gap_1().w_full();
 
     if let Some(block) = turn.input_block {
@@ -468,24 +473,24 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
         .process
         .iter()
         .copied()
-        .filter(|block| !matches!(shell.app.blocks.get(*block), Some(Block::Notice(_))))
+        .filter(|block| !matches!(shell.ui.app.blocks.get(*block), Some(Block::Notice(_))))
         .collect();
-    let has_process =
-        !process_blocks.is_empty() || (turn.running() && !shell.app.reasoning_streaming.is_empty());
-    let show_process = !shell.collapse_all;
+    let has_process = !process_blocks.is_empty()
+        || (turn.running() && !shell.ui.app.reasoning_streaming.is_empty());
+    let show_process = !shell.ui.collapse_all;
 
     if has_process && show_process {
         // One container for the whole execution process (thinking + tools).
         // It opens with the turn and the header toggles it; once the turn
         // finishes it auto-folds and the answer renders below, outside the
         // container.
-        let process_open = shell.process_open_turns.contains(&index);
+        let process_open = shell.ui.process_open_turns.contains(&index);
         let mut process = div().flex().flex_col().gap_0().w_full().items_start();
         for block in &process_blocks {
-            if let Block::Reasoning(entry) = &shell.app.blocks[*block] {
+            if let Block::Reasoning(entry) = &shell.ui.app.blocks[*block] {
                 if entry.text.is_empty()
                     && turn.running()
-                    && !shell.app.reasoning_streaming.is_empty()
+                    && !shell.ui.app.reasoning_streaming.is_empty()
                 {
                     process = process.child(live_reasoning_row(shell, entity));
                 } else {
@@ -503,6 +508,8 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
             Some(qcode_core::event::TurnStatus::Completed) => "done",
             Some(qcode_core::event::TurnStatus::Failed) => "failed",
             Some(qcode_core::event::TurnStatus::Cancelled) => "cancelled",
+            // Amber, not "failed": a budget pause is a hand-off (ADR-0060).
+            Some(qcode_core::event::TurnStatus::Paused) => "paused",
             None if turn.running() => "running",
             None => "done",
         };
@@ -515,6 +522,8 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                 .map(|d| format!("耗时{}", format_duration(d)))
                 .unwrap_or_default()
         };
+        let process_title = process_label(shell, &process_blocks)
+            .unwrap_or_else(|| format!("执行过程 · {} 项", process_blocks.len()));
         let header = div()
             .flex()
             .flex_row()
@@ -533,7 +542,7 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                     entity.update(cx, |shell, cx| shell.toggle_process(index, cx));
                 }
             })
-            .child(format!("执行过程 · {} 项", process_blocks.len()))
+            .child(process_title)
             .child(status_label)
             .child(elapsed_label)
             .child(conversation_icon(if process_open {
@@ -560,9 +569,15 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
             }));
     }
 
+    if shell.pause_card_visible(index)
+        && let Some(pause) = pause_card(&shell.ui.app, index, shell, entity)
+    {
+        card = card.child(pause);
+    }
+
     if let Some(block) = turn.answer_block {
         card = card.child(block_row(block, shell, entity));
-    } else if turn.running() && !shell.app.streaming.is_empty() {
+    } else if turn.running() && !shell.ui.app.streaming.is_empty() {
         card = card.child(
             div()
                 .px_6()
@@ -572,7 +587,7 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
                 .child(
                     TextView::markdown(
                         format!("streaming-turn-{index}"),
-                        shell.app.streaming.clone(),
+                        shell.ui.app.streaming.clone(),
                     )
                     .code_block_actions(|_, _, _| div().into_any_element())
                     .text_size(sp(ANSWER_SIZE))
@@ -655,6 +670,117 @@ pub(crate) fn fold_toggle(key: String, expanded: bool, entity: &Entity<Shell>) -
         }))
         .into_any_element()
 }
+/// The command of a shell call as its own card: a light background, a status
+/// dot on the first line, a `$` gutter on every line, and a copy button in the
+/// top-right corner.
+fn command_card(
+    shell: &Shell,
+    entity: &Entity<Shell>,
+    tool: &qcode_ui_state::ToolEntry,
+    command: &str,
+    index: usize,
+) -> AnyElement {
+    let dot = match tool.status {
+        Some(ToolStatus::Ok) => rgb(0x4c9a68),
+        Some(ToolStatus::Error) => rgb(0xc26464),
+        Some(ToolStatus::Cancelled) | Some(ToolStatus::Interrupted) => rgb(0xb08a4a),
+        // Still running: the row keeps the neutral colour until it finishes.
+        None => rgb(0xa8a8a8),
+    };
+    let mut lines = div().flex().flex_col().w_full().pr(px(52.0));
+    for (line_index, line) in command.lines().enumerate() {
+        // Only the first line carries the status dot; the rest keep the
+        // gutter so the `$` column stays straight.
+        let gutter = if line_index == 0 {
+            div()
+                .flex_none()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded_full()
+                .bg(dot)
+                .into_any_element()
+        } else {
+            div().flex_none().w(px(8.0)).into_any_element()
+        };
+        lines = lines.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .font_family(shell.mono_font.clone())
+                .text_size(sp(RESULT_SIZE))
+                .line_height(sp(RESULT_LINE))
+                .child(gutter)
+                .child(div().flex_none().text_color(rgb(0x9a9a9a)).child("$"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(rgb(0x333333))
+                        .child(line.to_string()),
+                ),
+        );
+    }
+    div()
+        .relative()
+        .w_full()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(rgb(0xececec))
+        .bg(rgb(0xf7f7f7))
+        .p(px(12.0))
+        .child(lines)
+        .child(
+            div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(8.0))
+                .child(copy_command_button(
+                    entity,
+                    &tool.call_id,
+                    command,
+                    index,
+                    shell,
+                )),
+        )
+        .into_any_element()
+}
+
+/// 「复制」 for a shell command. Copies the raw command (not the rendered
+/// lines, so the `$` gutters stay out of the clipboard) and flips to「已复制」
+/// for a moment afterwards.
+fn copy_command_button(
+    entity: &Entity<Shell>,
+    call_id: &str,
+    command: &str,
+    index: usize,
+    shell: &Shell,
+) -> AnyElement {
+    let copied = shell.copied_recently(call_id);
+    let call_id = call_id.to_string();
+    let command = command.to_string();
+    div()
+        .id(SharedString::from(format!("copy-command-{index}")))
+        .cursor_pointer()
+        .rounded(px(5.0))
+        .px_2()
+        .py_1()
+        .text_size(sp(CAPTION_SIZE))
+        .text_color(if copied { rgb(0x4c9a68) } else { rgb(0x8a8a8a) })
+        .hover(|style| style.bg(rgba(0x7f7f7f14)).text_color(rgb(0x333333)))
+        .child(if copied { "已复制" } else { "复制" })
+        .on_click({
+            let entity = entity.clone();
+            move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+                entity.update(cx, |shell, cx| shell.mark_copied(call_id.clone(), cx));
+            }
+        })
+        .into_any_element()
+}
+
 pub(crate) fn markdown_with_folds(
     index: usize,
     text: &str,
@@ -674,7 +800,7 @@ pub(crate) fn markdown_with_folds(
             MarkdownSegment::Code { language, body } => {
                 let line_count = body.lines().count();
                 let key = format!("{index}:{segment_index}");
-                let expanded = shell.expanded_code.contains(&key);
+                let expanded = shell.ui.expanded_code.contains(&key);
                 let folded = line_count > 20;
                 let visible = if expanded || !folded {
                     body.clone()
@@ -708,26 +834,25 @@ pub(crate) fn markdown_with_folds(
     column.into_any_element()
 }
 pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
-    if index >= shell.app.blocks.len() {
+    if index >= shell.ui.app.blocks.len() {
         return div()
             .px_4()
             .py_2()
             .child(
-                TextView::markdown(format!("streaming-{index}"), shell.app.streaming.clone())
+                TextView::markdown(format!("streaming-{index}"), shell.ui.app.streaming.clone())
                     .code_block_actions(|_, _, _| div().into_any_element()),
             )
             .into_any_element();
     }
 
-    match &shell.app.blocks[index] {
-        Block::User(text) => div()
-            .flex()
-            .flex_col()
-            .items_end()
-            .w_full()
-            .px_6()
-            .py_2()
-            .child(
+    match &shell.ui.app.blocks[index] {
+        Block::User {
+            text,
+            images,
+            files,
+        } => {
+            let mut column = div().flex().flex_col().items_end().gap_2();
+            column = column.child(
                 div()
                     .max_w(px(560.0))
                     .bg(rgba(0x7f7f7f18))
@@ -741,8 +866,44 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                             .text_size(sp(BODY_SIZE))
                             .line_height(sp(BODY_LINE)),
                     ),
-            )
-            .into_any_element(),
+            );
+            // Pictures sit under the question, inside the same bubble column, so
+            // folding the execution process can never hide them.
+            for image in images {
+                column = column.child(image_tile(image, shell, index));
+            }
+            // Files get a chip line: the bytes live in the store, so the name
+            // and size are all the transcript needs.
+            for (slot, file) in files.iter().enumerate() {
+                column = column.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .rounded(px(6.0))
+                        .bg(rgba(0x7f7f7f14))
+                        .px_2()
+                        .py_1()
+                        .child(div().text_size(sp(CAPTION_SIZE)).child(file.name.clone()))
+                        .child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(rgb(0x999999))
+                                .child(human_bytes(file.bytes)),
+                        )
+                        .id(("user-file", index * 32 + slot)),
+                );
+            }
+            div()
+                .flex()
+                .w_full()
+                .justify_end()
+                .px_6()
+                .py_2()
+                .child(column)
+                .into_any_element()
+        }
         Block::Assistant(text) => markdown_with_folds(index, text, shell, entity),
         Block::Tool(tool) => {
             let label = tool_label(&tool.name);
@@ -772,10 +933,16 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 })
                 .child(header_lead(expanded, tool_icon_name(&tool.name), label))
                 .children((!summary.is_empty()).then(|| {
+                    // Truncate the detail, never the counts: a long command or
+                    // path must not push the +N −D off the row.
                     div()
+                        .max_w(px(420.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_color(rgb(0x777777))
                         .child(format!("· {summary}"))
-                }));
+                }))
+                .children(tool.diff.as_ref().map(diff_chips));
             if let Some(status) = status {
                 header = header.child(
                     div()
@@ -794,6 +961,28 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                     .pl_8()
                     .pr_6()
                     .pb_2();
+                // The change itself, above the command/output box.
+                if let Some(state) = shell.inline_diff(&tool.call_id) {
+                    // The viewer fills its parent, so the card needs a height:
+                    // one row per patch line, capped so a huge rewrite does not
+                    // push the rest of the turn off screen.
+                    let rows = tool
+                        .diff
+                        .as_ref()
+                        .map(|diff| diff.patch.lines().count())
+                        .unwrap_or(0);
+                    let height = (rows as f32 * DIFF_ROW_HEIGHT).clamp(96.0, 320.0);
+                    details = details.child(
+                        div()
+                            .w_full()
+                            .h(px(height))
+                            .rounded(px(6.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(rgba(0x7f7f7f20))
+                            .child(Diff::new(&state)),
+                    );
+                }
                 let command = tool
                     .arguments
                     .get("command")
@@ -802,102 +991,71 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                 let output_line_count = tool.output.lines().count();
                 let foldable = output_line_count > 20;
                 let output_key = format!("{index}:output");
-                let output_expanded = shell.expanded_code.contains(&output_key);
+                let output_expanded = shell.ui.expanded_code.contains(&output_key);
                 let output_visible = if output_expanded || !foldable {
                     tool.output.clone()
                 } else {
                     tool.output.lines().take(12).collect::<Vec<_>>().join("\n")
                 };
-                if command.is_some() || !tool.output.is_empty() {
-                    // The command and its result share one box, with a blank
-                    // line between them. When the output is folded the box
-                    // loses its bottom corners so the toggle below reads as
-                    // one piece with it.
+                // The command gets its own card so the block reads like a
+                // shell transcript: light background, a status dot on the
+                // first line, a `$` gutter on every line, and a copy button.
+                if let Some(command) = &command {
+                    details = details.child(command_card(shell, entity, tool, command, index));
+                }
+                if !tool.output.is_empty() {
+                    // Long output keeps square bottom corners so the fold
+                    // toggle below reads as one piece with it.
                     let mut content = div()
                         .w_full()
-                        .rounded_t(px(6.0))
-                        .rounded_b(if foldable { px(0.0) } else { px(6.0) })
+                        .rounded(px(6.0))
                         .bg(rgba(0x7f7f7f08))
                         .border_1()
                         .border_color(rgba(0x7f7f7f20))
                         .p_2()
                         .flex()
                         .flex_col();
-                    if let Some(command) = &command {
+                    if foldable {
+                        content = content.rounded_b(px(0.0));
+                    }
+                    // Lists render as markdown lists; anything else stays
+                    // plain light text — one box, no nested code block.
+                    if looks_like_list(&output_visible) {
                         content = content.child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_baseline()
-                                .gap_1()
                                 .text_size(sp(RESULT_SIZE))
                                 .line_height(sp(RESULT_LINE))
                                 .child(
-                                    div()
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0xc8a86a))
-                                        .child("$"),
-                                )
-                                .child(
-                                    // Markdown inline code (backticks) renders
-                                    // at 0.875x the TextView size, so bump the
-                                    // base size up so the command lands on the
-                                    // same size as the plain output below.
                                     TextView::markdown(
-                                        format!("tool-command-{index}"),
-                                        format!("`{command}`"),
+                                        format!("tool-output-{index}"),
+                                        output_visible,
                                     )
-                                    .text_size(sp(RESULT_SIZE / 0.875))
+                                    .text_size(sp(RESULT_SIZE))
                                     .line_height(sp(RESULT_LINE)),
                                 ),
                         );
-                    }
-                    if !tool.output.is_empty() {
-                        if command.is_some() {
-                            content = content.child(div().h(px(8.0)));
-                        }
-                        // Lists render as markdown lists; anything else stays
-                        // plain light text — one box, no nested code block.
-                        if looks_like_list(&output_visible) {
-                            content = content.child(
-                                div()
+                    } else {
+                        // Plain multi-line output: markdown hard breaks (two
+                        // trailing spaces) keep every line break, so the text
+                        // renders exactly like the original one box — no
+                        // nested code-block frame, same size and colour —
+                        // while staying selectable.
+                        let selectable = output_visible.replace('\n', "  \n");
+                        content = content.child(
+                            div()
+                                .text_size(sp(RESULT_SIZE))
+                                .line_height(sp(RESULT_LINE))
+                                .child(
+                                    TextView::markdown(
+                                        format!("tool-output-plain-{index}"),
+                                        selectable,
+                                    )
                                     .text_size(sp(RESULT_SIZE))
                                     .line_height(sp(RESULT_LINE))
-                                    .child(
-                                        TextView::markdown(
-                                            format!("tool-output-{index}"),
-                                            output_visible,
-                                        )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE)),
-                                    ),
-                            );
-                        } else {
-                            // Plain multi-line output: markdown hard breaks
-                            // (two trailing spaces) keep every line break, so
-                            // the text renders exactly like the original one
-                            // box — no nested code-block frame, same size and
-                            // colour — while staying selectable.
-                            let selectable = output_visible.replace('\n', "  \n");
-                            content = content.child(
-                                div()
-                                    .text_size(sp(RESULT_SIZE))
-                                    .line_height(sp(RESULT_LINE))
-                                    .child(
-                                        TextView::markdown(
-                                            format!("tool-output-plain-{index}"),
-                                            selectable,
-                                        )
-                                        .text_size(sp(RESULT_SIZE))
-                                        .line_height(sp(RESULT_LINE))
-                                        .text_color(rgb(0x888888)),
-                                    ),
-                            );
-                        }
+                                    .text_color(rgb(0x888888)),
+                                ),
+                        );
                     }
-                    // The fold toggle joins the box as one piece when the
-                    // output is long (squared corners, no gap).
                     if foldable {
                         details = details.child(
                             div()
@@ -911,6 +1069,29 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                     } else {
                         details = details.child(content);
                     }
+                }
+                if tool
+                    .diff
+                    .as_ref()
+                    .is_some_and(|diff| !diff.patch.is_empty())
+                    && !shell.diff_broken(&tool.call_id)
+                {
+                    let call_id = tool.call_id.clone();
+                    details = details.child(
+                        div().flex().flex_row().pt_1().child(
+                            Button::new(SharedString::from(format!("view-diff-{index}")))
+                                .label("查看")
+                                .on_click({
+                                    let entity = entity.clone();
+                                    move |_, _, cx| {
+                                        let call_id = call_id.clone();
+                                        entity.update(cx, |shell, cx| {
+                                            shell.open_diff_view(&call_id, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                    );
                 }
                 row = row.child(details);
             }
@@ -954,4 +1135,236 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
             )
             .into_any_element(),
     }
+}
+
+/// The `1KB +1 -1` chips after a tool row's summary.
+fn diff_chips(diff: &ToolDiff) -> Div {
+    let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
+    let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();
+    let bytes: u64 = diff.files.iter().map(|file| file.bytes).sum();
+    let mut row = div().flex().flex_row().items_center().gap_1();
+    if bytes > 0 && additions > 0 && deletions == 0 {
+        row = row.child(div().text_color(rgb(0x999999)).child(human_bytes(bytes)));
+    }
+    if additions > 0 {
+        row = row.child(
+            div()
+                .text_color(rgb(0x4c9a68))
+                .child(format!("+{additions}")),
+        );
+    }
+    if deletions > 0 {
+        row = row.child(
+            div()
+                .text_color(rgb(0xc26464))
+                .child(format!("-{deletions}")),
+        );
+    }
+    row
+}
+
+/// Byte counts as the diff header writes them: `842B`, `1.2KB`, `3.4MB`.
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let value = bytes as f64;
+    if value < KB {
+        format!("{bytes}B")
+    } else if value < KB * KB {
+        format!("{:.0}KB", value / KB)
+    } else {
+        format!("{:.1}MB", value / (KB * KB))
+    }
+}
+
+/// What a turn did, the way the reference UI summarises it: "修改了文件，执行了
+/// 命令，已读取文件". `None` when nothing falls into one of those buckets, so
+/// the caller can fall back to counting items.
+fn process_label(shell: &Shell, blocks: &[usize]) -> Option<String> {
+    let mut writes = false;
+    let mut shells = false;
+    let mut reads = false;
+    for block in blocks {
+        let Some(Block::Tool(tool)) = shell.ui.app.blocks.get(*block) else {
+            continue;
+        };
+        match tool.name.as_str() {
+            "apply_patch" | "edit_file" | "write_file" => writes = true,
+            "run_shell" => shells = true,
+            "read_file" | "list_dir" | "grep" | "glob" => reads = true,
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if writes {
+        parts.push("修改了文件");
+    }
+    if shells {
+        parts.push("执行了命令");
+    }
+    if reads {
+        parts.push("已读取文件");
+    }
+    (!parts.is_empty()).then(|| parts.join("，"))
+}
+
+/// The pause card: why the turn stopped, what it got done, and the three ways
+/// out. Amber rather than red — nothing failed (ADR-0060 §2.7).
+fn pause_card(
+    app: &qcode_ui_state::App,
+    index: usize,
+    shell: &Shell,
+    entity: &Entity<Shell>,
+) -> Option<AnyElement> {
+    let card = qcode_ui_state::PauseCard::of(app, index)?;
+    let amber = rgb(0xd9a441);
+    let muted = rgba(0x7f7f7fcc);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_6()
+        .py_2()
+        .w_full()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(sp(BODY_SIZE))
+                        .text_color(amber)
+                        .child(format!("⏸ 已暂停 · {}", card.headline)),
+                )
+                .children(card.window_note.map(|note| {
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted)
+                        .child(note)
+                })),
+        );
+    if let Some(files) = card.files {
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(muted)
+                .child(files),
+        );
+    }
+    if let Some(summary) = card.summary {
+        body = body.child(
+            TextView::markdown(format!("pause-summary-{index}"), summary)
+                .text_size(sp(BODY_SIZE))
+                .line_height(sp(BODY_LINE)),
+        );
+    }
+    for failure in card.failures {
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(rgb(0xd05050))
+                .child(format!("✗ {failure}")),
+        );
+    }
+    if !card.commands.is_empty() {
+        let runs: Vec<&str> = card
+            .commands
+            .iter()
+            .map(|line| line.command.as_str())
+            .collect();
+        let mut line = format!("已运行：{}", runs.join(" · "));
+        if card.more_commands > 0 {
+            line.push_str(&format!(" 等 {} 条", runs.len() + card.more_commands));
+        }
+        body = body.child(
+            div()
+                .text_size(sp(SECONDARY_SIZE))
+                .text_color(muted)
+                .child(line),
+        );
+    }
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .pt_1()
+        .child(
+            Button::new(("pause-continue", index))
+                .label("继续")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.continue_paused_turn(cx));
+                    }
+                }),
+        )
+        .child(Button::new(("pause-wrap", index)).label("收尾").on_click({
+            let entity = entity.clone();
+            move |_, _, cx| {
+                entity.update(cx, |shell, cx| shell.wrap_up_paused_turn(cx));
+            }
+        }))
+        .child(
+            Button::new(("pause-dismiss", index))
+                .label("先这样")
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| {
+                            shell.dismiss_pause();
+                            cx.notify();
+                        });
+                    }
+                }),
+        )
+        .children((shell.ui.app.status.window > 1).then(|| {
+            div()
+                .text_size(sp(CAPTION_SIZE))
+                .text_color(muted)
+                .child(format!("第 {} 个预算窗口", shell.ui.app.status.window))
+        }));
+    Some(
+        div()
+            .mx_6()
+            .my_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgba(0x7f7f7f30))
+            .bg(rgba(0xd9a44112))
+            .child(body.child(buttons))
+            .into_any_element(),
+    )
+}
+
+/// One attached picture: the bytes are in the attachment store, the ref only
+/// names them.
+fn image_tile(image: &qcode_ui_state::ImageBlock, shell: &Shell, index: usize) -> AnyElement {
+    let Some(id) = qcode_attachments::AttachmentId::from_hex(&image.id) else {
+        return div().into_any_element();
+    };
+    let path = qcode_attachments::AttachmentStore::object_path_in(&shell.data_dir, id);
+    // A wiped data directory or a GC pass can remove the object; say so rather
+    // than drawing an empty box.
+    if !path.exists() {
+        return div()
+            .text_size(sp(SECONDARY_SIZE))
+            .text_color(rgb(0x999999))
+            .child("[图片已不可用]")
+            .into_any_element();
+    }
+    // Fit inside a 360×260 box, never scaling up past the original.
+    let (width, height) = (image.width.max(1) as f32, image.height.max(1) as f32);
+    let scale = (360.0 / width).min(260.0 / height).min(1.0);
+    div()
+        .id(("image", index))
+        .w(px((width * scale).max(1.0)))
+        .h(px((height * scale).max(1.0)))
+        .rounded(px(12.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgba(0x7f7f7f33))
+        .child(img(path).object_fit(ObjectFit::Cover).w_full().h_full())
+        .into_any_element()
 }

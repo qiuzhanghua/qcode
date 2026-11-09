@@ -24,7 +24,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
-        let running = self.active.as_deref() == Some(task_id) && self.turn_in_flight;
+        let running = self.task_running(task_id);
         // 点击菜单外的任意位置（含其它任务行、空白区）关闭菜单；菜单内
         // 的按钮命中菜单 bounds，不会触发。
         let task_id_for_close = task_id.to_string();
@@ -51,6 +51,24 @@ impl Shell {
                     cx.notify();
                 }
             }))
+            .child(
+                Button::new(format!("task-stop-{task_id}"))
+                    .label("停止")
+                    .disabled(!running)
+                    .tooltip(if running {
+                        "停止这个任务（不影响其它任务）"
+                    } else {
+                        "这个任务没有在跑"
+                    })
+                    .on_click(cx.listener({
+                        let task_id = task_id.to_string();
+                        move |this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.task_menu = None;
+                            this.stop_task(&task_id, cx);
+                        }
+                    })),
+            )
             .child(
                 Button::new(format!("task-rename-{task_id}"))
                     .label("重命名")
@@ -94,10 +112,7 @@ impl Shell {
         };
         let task_id = row.task.id.clone();
         let roots = self.task_roots_for_edit(&task_id);
-        let pending = self
-            .pending_roots
-            .as_ref()
-            .is_some_and(|(id, _)| id == &task_id);
+        let pending = self.pending_roots.contains_key(&task_id);
         let mut section = div().flex().flex_col().gap_1().pl_4().pt_1();
         for root in roots {
             let label = root.label.clone();
@@ -175,7 +190,7 @@ impl Shell {
                     .text_color(rgb(0x888888))
                     .child("当前 Turn 结束后应用"),
             );
-        } else if self.turn_in_flight {
+        } else if self.ui.turn_in_flight {
             section = section.child(
                 div()
                     .text_size(sp(CAPTION_SIZE))
@@ -192,7 +207,20 @@ impl Shell {
         for row in &self.tasks {
             let id = row.task.id.clone();
             let active = self.active.as_deref() == Some(row.task.id.as_str());
-            let marker = if active { "●" } else { "○" };
+            // The row is the only place the window can show what a task that is
+            // *not* on screen is doing (ADR-0058 §7). The active row keeps its
+            // filled dot, since it is on screen and its state is right there.
+            let state = self.task_state(&row.task.id);
+            let marker = if active {
+                "●"
+            } else {
+                match state {
+                    TaskState::Running => "▶",
+                    TaskState::WaitingApproval => "⚠",
+                    TaskState::Unread => "◉",
+                    TaskState::Idle => "○",
+                }
+            };
             let full_title = self
                 .titles
                 .get(&row.task.id)
@@ -210,6 +238,10 @@ impl Shell {
                 .count();
             let wonky = if missing > 0 {
                 " · 目录丢失".to_string()
+            } else if !active && state == TaskState::WaitingApproval {
+                " · 待审批".to_string()
+            } else if let Some(hint) = self.schedule_hints.get(&id) {
+                format!(" · {hint}")
             } else {
                 String::new()
             };

@@ -47,6 +47,8 @@ impl<'a> SessionWriter<'a> {
     pub fn begin_turn(
         &mut self,
         input: &str,
+        continuation: Option<Continuation>,
+        attachments: &[qcode_attachments::AttachmentRef],
         sink: &mut dyn FnMut(&Event),
     ) -> Result<(), StoreError> {
         self.turn += 1;
@@ -61,7 +63,8 @@ impl<'a> SessionWriter<'a> {
                 starts_segment: false,
                 queued_id: None,
                 text: input.to_string(),
-                attachments: Vec::new(),
+                attachments: attachments.to_vec(),
+                continuation,
             }),
             sink,
         )?;

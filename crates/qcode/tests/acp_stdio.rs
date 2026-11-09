@@ -21,6 +21,11 @@ struct Session {
 
 impl Session {
     async fn start(provider: &str) -> (Self, tempfile::TempDir) {
+        Self::start_with(provider, "").await
+    }
+
+    /// Same, plus extra config text (`[agent] max_turns = 1`, say).
+    async fn start_with(provider: &str, extra: &str) -> (Self, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = dir.path().join("config.toml");
         std::fs::write(
@@ -29,7 +34,7 @@ impl Session {
             // and must not depend on the host being able to apply a kernel
             // sandbox (a nested container cannot).
             format!(
-                "version = 1\ndefault_provider = \"{provider}\"\n\n[sandbox]\nmode = \"none\"\n"
+                "version = 1\ndefault_provider = \"{provider}\"\n\n[sandbox]\nmode = \"none\"\n{extra}"
             ),
         )
         .expect("write config");

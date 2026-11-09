@@ -167,51 +167,65 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<MacTray> {
     })
 }
 
-/// 隐藏主窗口：关闭按钮 = 最小化到托盘（ADR-0052）。`orderOut:` 把窗口
-/// 从屏幕移除（Dock 图标也跟着消失），恢复走 `show_window` 的
-/// `makeKeyAndOrderFront:`。
-pub fn hide_window(window: &gpui_kit::Window) {
-    let Ok(handle) =
-        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
-    else {
-        return;
-    };
+/// 读 NSWindow 指针并持有一次引用，**不产生任何原生副作用**。
+///
+/// 推迟到后面的 `orderOut:` 执行时窗口可能已被移除，所以这里 `retain`，
+/// 由 [`hide_native`] 负责 `release`。
+pub fn capture(window: &gpui_kit::Window) -> Option<usize> {
+    let handle =
+        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window).ok()?;
     let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return;
-    };
-    unsafe {
-        let ns_view = appkit.ns_view.as_ptr() as *mut AnyObject;
-        if ns_view.is_null() {
-            return;
-        }
-        let ns_window: *mut AnyObject = msg_send![ns_view, window];
-        if ns_window.is_null() {
-            return;
-        }
-        let _: () = msg_send![ns_window, orderOut: std::ptr::null_mut::<AnyObject>()];
-    }
-}
-
-/// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先 deminiaturize。
-pub fn show_window(window: &gpui_kit::Window) {
-    let Ok(handle) =
-        <gpui_kit::Window as raw_window_handle::HasWindowHandle>::window_handle(window)
-    else {
-        return;
-    };
-    let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return;
+        return None;
     };
     unsafe {
         // raw-window-handle 给的是 NSView，NSWindow 要自己取。
         let ns_view = appkit.ns_view.as_ptr() as *mut AnyObject;
         if ns_view.is_null() {
-            return;
+            return None;
         }
         let ns_window: *mut AnyObject = msg_send![ns_view, window];
         if ns_window.is_null() {
-            return;
+            return None;
         }
+        let _: *mut AnyObject = msg_send![ns_window, retain];
+        Some(ns_window as usize)
+    }
+}
+
+/// `orderOut:`：把窗口从屏幕移除（Dock 图标也跟着消失），恢复走
+/// `show_window` 的 `makeKeyAndOrderFront:`。同时归还 [`capture`] 的引用。
+pub fn hide_native(ns_window: usize) {
+    unsafe {
+        let ns_window = ns_window as *mut AnyObject;
+        let _: () = msg_send![ns_window, orderOut: std::ptr::null_mut::<AnyObject>()];
+        let _: () = msg_send![ns_window, release];
+    }
+}
+
+/// 隐藏主窗口：关闭按钮 = 最小化到托盘（ADR-0052）。`orderOut:` 把窗口
+/// 从屏幕移除（Dock 图标也跟着消失），恢复走 `show_window` 的
+/// `makeKeyAndOrderFront:`。
+pub fn hide_window(window: &gpui_kit::Window) {
+    if let Some(ns_window) = capture(window) {
+        hide_native(ns_window);
+    }
+}
+
+/// 从最小化/隐藏恢复到前台。`activate_window()` 只激活不还原，所以先 deminiaturize。
+///
+/// **只能在没有 App 可变借用时调用**，否则 `makeKeyAndOrderFront:` 同步派发的
+/// `windowDidBecomeKey:` 会二次借用 App（见 [`super::hide_window_later`]）。
+pub fn show_window(window: &gpui_kit::Window) {
+    if let Some(ns_window) = capture(window) {
+        show_native(ns_window);
+    }
+    window.activate_window();
+}
+
+/// `deminiaturize:` + `makeKeyAndOrderFront:`，并归还 [`capture`] 的引用。
+pub fn show_native(ns_window: usize) {
+    unsafe {
+        let ns_window = ns_window as *mut AnyObject;
         let minimized: bool = msg_send![ns_window, isMiniaturized];
         if minimized {
             let _: () = msg_send![ns_window, deminiaturize: std::ptr::null_mut::<AnyObject>()];
@@ -220,6 +234,6 @@ pub fn show_window(window: &gpui_kit::Window) {
             ns_window,
             makeKeyAndOrderFront: std::ptr::null_mut::<AnyObject>()
         ];
+        let _: () = msg_send![ns_window, release];
     }
-    window.activate_window();
 }

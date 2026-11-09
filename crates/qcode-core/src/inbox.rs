@@ -10,14 +10,14 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::engine::Attachment;
+use crate::engine::AttachmentSource;
 
 /// One message waiting in an inbox boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedMessage {
     pub id: String,
     pub text: String,
-    pub attachments: Vec<Attachment>,
+    pub attachments: Vec<AttachmentSource>,
 }
 
 /// What an idle frontend should do with a submitted message.
@@ -51,7 +51,12 @@ impl SessionQueue {
     }
 
     /// Submit a user message: start it when idle, queue it while running.
-    pub fn submit(&self, text: String, attachments: Vec<Attachment>, running: bool) -> Submission {
+    pub fn submit(
+        &self,
+        text: String,
+        attachments: Vec<AttachmentSource>,
+        running: bool,
+    ) -> Submission {
         self.inbox.followup(text, attachments);
         if running {
             return Submission::Queued;
@@ -66,7 +71,7 @@ impl SessionQueue {
     pub fn steer(
         &self,
         text: String,
-        attachments: Vec<Attachment>,
+        attachments: Vec<AttachmentSource>,
         running: bool,
     ) -> Option<QueuedMessage> {
         running.then(|| self.inbox.steer(text, attachments))
@@ -147,7 +152,7 @@ impl Inbox {
 
     /// Queue an ordinary follow-up turn. The item becomes the sole ordinary
     /// message of its own turn, executed after every earlier follow-up.
-    pub fn followup(&self, text: String, attachments: Vec<Attachment>) -> QueuedMessage {
+    pub fn followup(&self, text: String, attachments: Vec<AttachmentSource>) -> QueuedMessage {
         let message = new_message(text, attachments);
         self.inner().next_turn.push_back(message.clone());
         message
@@ -155,7 +160,7 @@ impl Inbox {
 
     /// Submit steering for the nearest step boundary. A running turn claims it
     /// before its next model request; an idle turn leaves it pending.
-    pub fn steer(&self, text: String, attachments: Vec<Attachment>) -> QueuedMessage {
+    pub fn steer(&self, text: String, attachments: Vec<AttachmentSource>) -> QueuedMessage {
         let message = new_message(text, attachments);
         self.inner().next_step.push_back(message.clone());
         message
@@ -252,7 +257,7 @@ impl Inbox {
     }
 }
 
-fn new_message(text: String, attachments: Vec<Attachment>) -> QueuedMessage {
+fn new_message(text: String, attachments: Vec<AttachmentSource>) -> QueuedMessage {
     QueuedMessage {
         id: ulid::Ulid::new().to_string(),
         text,

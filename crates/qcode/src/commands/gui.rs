@@ -51,6 +51,13 @@ pub(crate) fn gui_rebuild_hook(
                 context_window: Some(kernel.config.context.window_tokens),
                 network: kernel.network,
                 snapshots: Some(snapshots),
+                schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+                schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
+                    .1
+                    .into_iter()
+                    .map(|error| (error.name().to_string(), error.to_string()))
+                    .collect(),
+                schedule_tick: None,
             };
             Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
         })
@@ -221,6 +228,13 @@ pub(crate) async fn cmd_gui(
         context_window: Some(kernel.config.context.window_tokens),
         network: kernel.network,
         snapshots: Some(snapshots),
+        schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+        schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
+            .1
+            .into_iter()
+            .map(|error| (error.name().to_string(), error.to_string()))
+            .collect(),
+        schedule_tick: None,
     };
     let backend = qcode_gui::LocalBackend::new(engine).with_rebuild(gui_rebuild_hook(
         setup_path.clone(),

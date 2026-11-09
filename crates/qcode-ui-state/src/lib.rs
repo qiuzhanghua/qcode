@@ -5,13 +5,18 @@
 //! and lets the renderer be exercised with `TestBackend`.
 
 pub mod composer;
+pub mod pause;
+mod tool_diff;
 
 use std::collections::HashSet;
 
 pub use composer::{Composer, InputEvent};
 
 use qcode_core::engine::Delta;
-use qcode_core::event::{ContentBlock, Event, EventKind, ToolStatus, TurnStatus, Usage};
+use qcode_core::event::{
+    BudgetHint, ContentBlock, Continuation, Event, EventKind, PauseInfo, ToolDiff, ToolStatus,
+    TurnStatus, Usage,
+};
 use qcode_core::todo::{self, TodoItem};
 use time::{Duration, OffsetDateTime};
 
@@ -21,9 +26,16 @@ const SCROLL_STEP: usize = 10;
 /// One visible item in the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    User(String),
+    /// The user's question, with the pictures and files that came with it.
+    User {
+        text: String,
+        /// Empty for a text-only message.
+        images: Vec<ImageBlock>,
+        /// Attached files, shown by name and size (ADR-0061 §7).
+        files: Vec<FileBlock>,
+    },
     Assistant(String),
-    Tool(ToolEntry),
+    Tool(Box<ToolEntry>),
     /// Progress from a child agent: text, notices and a nested tool row.
     /// `group` is the child session id, shared with its parent `subagent` row.
     Subagent {
@@ -38,6 +50,27 @@ pub enum Block {
     Skill(String),
     /// Model reasoning. Kept separate from the final answer.
     Reasoning(ReasoningEntry),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageBlock {
+    /// Attachment id: 64 lowercase hex characters.
+    pub id: String,
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+    /// File name, or "pasted image" for the clipboard.
+    pub label: String,
+}
+
+/// One file attached to the user's message: enough to name it in the
+/// transcript. The bytes live in the attachment store, addressed by `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileBlock {
+    /// Attachment id: 64 lowercase hex characters.
+    pub id: String,
+    pub name: String,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +97,14 @@ pub struct Turn {
     pub answer_block: Option<usize>,
     pub usage: Usage,
     pub cost_usd: f64,
+    /// Set when this turn stopped on a budget: what ran out and the hand-off.
+    pub pause: Option<PauseInfo>,
+    /// Set when the turn crossed 75% of a budget, so the status line can show
+    /// `已用 51/64 轮` without guessing (ADR-0060 §2.3).
+    pub budget: Option<BudgetHint>,
+    /// Set when the user continued a paused turn: this turn is a continuation,
+    /// not something the user typed.
+    pub continuation: Option<Continuation>,
 }
 
 impl Turn {
@@ -110,6 +151,9 @@ pub struct ToolEntry {
     /// Child session id for a nested tool row, or the linked child session for
     /// the parent `subagent` row.
     pub group: Option<String>,
+    /// What this call changed on disk. Rebuilt from the arguments for logs
+    /// written before schema v5.
+    pub diff: Option<ToolDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +168,9 @@ pub struct Status {
     pub queued: usize,
     /// Steering messages waiting for the next step boundary.
     pub steering: usize,
+    /// Budget window of the running turn: 1 for the first run of a task, 2
+    /// after one continue (ADR-0060 §2.11).
+    pub window: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +258,12 @@ pub enum UiAction {
     SteeringUndo(usize),
     /// Ctrl-V: attach the image on the clipboard to the next message.
     PasteImage,
+    /// /continue: pick a paused turn back up in a fresh budget window. The
+    /// engine numbers the window from the log (ADR-0060 §2.11).
+    Continue,
+    /// /wrap: one more turn whose only job is the hand-off summary, so a paused
+    /// task leaves a usable note even when the summary call ran out of budget.
+    WrapUp,
 }
 
 /// How the status bar renders context usage.
@@ -271,6 +324,25 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string(),
+        // The patch itself is the argument; showing it inline would bury the
+        // row, so name what it touches instead.
+        "apply_patch" => {
+            let patch = arguments
+                .get("diff")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let paths: Vec<&str> = patch
+                .lines()
+                .filter_map(|line| line.strip_prefix("+++ "))
+                .map(|path| path.split('\t').next().unwrap_or(path))
+                .map(|path| path.strip_prefix("b/").unwrap_or(path))
+                .collect();
+            match paths.as_slice() {
+                [] => String::new(),
+                [only] => only.to_string(),
+                many => format!("{} 个文件", many.len()),
+            }
+        }
         _ => arguments.to_string(),
     };
     if raw.chars().count() > 100 {
@@ -288,3 +360,4 @@ mod apply;
 mod tests;
 
 pub use app::App;
+pub use pause::{PauseCard, PauseCommand};

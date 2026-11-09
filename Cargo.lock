@@ -5278,7 +5278,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qcode"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5286,6 +5286,7 @@ dependencies = [
  "embed-resource",
  "futures-util",
  "qcode-acp",
+ "qcode-attachments",
  "qcode-core",
  "qcode-gui",
  "qcode-image",
@@ -5311,7 +5312,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-acp"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5326,13 +5327,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-attachments"
+version = "0.7.9"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "qcode-core"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "globset",
  "libc",
+ "qcode-attachments",
  "reqwest",
  "rusqlite",
  "serde",
@@ -5348,7 +5363,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-eval"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -5357,7 +5372,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-gui"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5367,6 +5382,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "png 0.18.1",
+ "qcode-attachments",
  "qcode-core",
  "qcode-image",
  "qcode-kernel",
@@ -5387,14 +5403,17 @@ dependencies = [
 
 [[package]]
 name = "qcode-image"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "qcode-kernel"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "qcode-core",
  "qcode-mcp",
@@ -5413,7 +5432,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-mcp"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5430,7 +5449,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-net"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "base64 0.22.1",
  "qcode-core",
@@ -5447,12 +5466,15 @@ dependencies = [
 
 [[package]]
 name = "qcode-providers"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
+ "qcode-attachments",
  "qcode-core",
  "qcode-net",
+ "qcode-tools",
  "reqwest",
  "serde",
  "serde_json",
@@ -5465,7 +5487,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tools"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "globset",
@@ -5478,6 +5500,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -5488,7 +5511,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tui"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "insta",
  "qcode-core",
@@ -5501,7 +5524,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-bridge"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5512,8 +5535,9 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-state"
-version = "0.7.2"
+version = "0.7.9"
 dependencies = [
+ "qcode-attachments",
  "qcode-core",
  "serde_json",
  "time",

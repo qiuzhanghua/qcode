@@ -106,6 +106,29 @@ impl App {
             };
         }
 
+        if command == "/continue" || command == "/wrap" {
+            if self.status.running {
+                self.push_notice("a turn is already running; Esc cancels it first");
+                return None;
+            }
+            let Some(turn) = self.paused_turn() else {
+                self.push_notice(
+                    "nothing is paused; /continue needs a turn that ran out of budget",
+                );
+                return None;
+            };
+            if command == "/wrap" {
+                self.status.running = true;
+                return Some(UiAction::WrapUp);
+            }
+            // The transcript keeps the paused card; the continuation turn is
+            // rendered from its own `continuation` marker, not from a user
+            // bubble the user never typed.
+            let _ = turn;
+            self.status.running = true;
+            return Some(UiAction::Continue);
+        }
+
         if command == "/rollback" {
             let turn = argument.parse::<u32>().map_err(|_| ()).ok();
             return match turn {
@@ -115,6 +138,11 @@ impl App {
                     None
                 }
             };
+        }
+
+        if command == "/diff" {
+            self.handle_diff(argument);
+            return None;
         }
 
         if command == "/subagents" {
@@ -162,6 +190,57 @@ impl App {
     }
 
     /// `/subagents` lists child groups; `/subagents N` folds/unfolds one.
+    /// `/diff` lists the write calls in this session; `/diff <n>` prints the
+    /// patch of one. Both are terminal-side conveniences — the model never
+    /// sees the command.
+    pub(crate) fn handle_diff(&mut self, argument: &str) {
+        let calls: Vec<&ToolEntry> = self
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Tool(tool) if tool.diff.is_some() => Some(tool.as_ref()),
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty() {
+            self.push_notice("no file changes in this session");
+            return;
+        }
+
+        if argument.is_empty() {
+            let mut text = format!("file changes ({}):", calls.len());
+            for (index, tool) in calls.iter().enumerate() {
+                let diff = tool.diff.as_ref().expect("filtered above");
+                let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
+                let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();
+                text.push_str(&format!(
+                    "\n  {}. {} · {} +{additions} -{deletions}",
+                    index + 1,
+                    tool.name,
+                    tool.summary
+                ));
+            }
+            text.push_str("\n\nUse /diff <n> to print one patch.");
+            self.push_notice(text);
+            return;
+        }
+
+        match argument.parse::<usize>().ok() {
+            Some(index) if index >= 1 && index <= calls.len() => {
+                let tool = calls[index - 1];
+                let diff = tool.diff.as_ref().expect("filtered above");
+                let mut text = format!("{}\n", tool.summary);
+                if diff.patch.is_empty() {
+                    text.push_str("(this call recorded no patch text)");
+                } else {
+                    text.push_str(&diff.patch);
+                }
+                self.push_notice(text);
+            }
+            _ => self.push_notice(format!("usage: /diff [1..{}]", calls.len())),
+        }
+    }
+
     pub(crate) fn handle_subagents(&mut self, argument: &str) {
         if self.child_groups.is_empty() {
             self.push_notice("no sub-agent runs in this session");

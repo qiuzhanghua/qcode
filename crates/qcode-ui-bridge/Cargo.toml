@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.7.2", path = "../qcode-core" }
+qcode-core = { version = "0.7.9", path = "../qcode-core" }
 async-trait.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "test-util"] }
 tokio-util.workspace = true
 time.workspace = true

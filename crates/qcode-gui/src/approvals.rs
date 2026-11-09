@@ -43,4 +43,13 @@ impl ApprovalQueue {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// Take every still-pending prompt, in arrival order.
+    ///
+    /// Used when a background session's state is merged into the view the user
+    /// just switched to: an approval blocks the engine until someone answers
+    /// it, so it must survive the trip (ADR-0058 §3).
+    pub fn drain(&mut self) -> Vec<ApprovalView> {
+        self.pending.drain(..).collect()
+    }
 }

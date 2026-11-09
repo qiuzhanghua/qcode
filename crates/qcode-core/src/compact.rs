@@ -182,6 +182,8 @@ mod tests {
                 queued_id: None,
                 text: text.into(),
                 attachments: vec![],
+
+                continuation: None,
             }),
         )
     }
@@ -309,6 +311,7 @@ mod tests {
                     status: ToolStatus::Ok,
                     output: huge.clone(),
                     metadata: ToolMetadata::default(),
+                    diff: None,
                 }),
             ),
             event(

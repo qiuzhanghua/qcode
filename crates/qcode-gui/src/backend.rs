@@ -8,7 +8,7 @@ use crate::runtime;
 use qcode_core::event::{Event, EventKind};
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
-use qcode_ui_bridge::{QueueOp, UiCommand, UiEvent, channels};
+use qcode_ui_bridge::{QueueOp, RaiseLimit, SessionEvent, UiCommand, channels};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -20,6 +20,39 @@ pub struct TaskRow {
     pub summary: SessionSummary,
 }
 
+/// One `[schedules.<name>]` entry as the sidebar needs it (ADR-0059 §1, §5).
+///
+/// The declaration plus its stored run state: the window shows "missed", not the
+/// cron, and it never writes either half back to the config file.
+#[derive(Debug, Clone)]
+pub struct ScheduleRow {
+    pub name: String,
+    /// The task it runs on; `None` when every fire creates its own.
+    pub task: Option<String>,
+    pub next_fire_at: Option<qcode_core::schedule::PrimitiveDateTime>,
+    pub status: Option<qcode_core::schedule::ScheduleStatus>,
+    pub missed_windows: u32,
+    /// The entry could not be resolved at all (bad cron, no target, …).
+    pub broken: Option<String>,
+}
+
+impl ScheduleRow {
+    /// What the task row says about this schedule, or `None` when there is
+    /// nothing worth a reader's attention.
+    pub fn hint(&self) -> Option<String> {
+        use qcode_core::schedule::ScheduleStatus;
+        if let Some(reason) = &self.broken {
+            return Some(format!("定时配置有误: {reason}"));
+        }
+        match &self.status {
+            Some(ScheduleStatus::Orphaned) => Some("定时已失效（任务已删除）".to_string()),
+            Some(ScheduleStatus::Missed(windows)) => Some(format!("定时错过 {windows} 次")),
+            Some(ScheduleStatus::Failed(reason)) => Some(format!("定时失败: {reason}")),
+            _ => None,
+        }
+    }
+}
+
 /// Everything the window needs from a kernel, local or remote.
 ///
 /// P0 has exactly one implementation. The methods are synchronous because the
@@ -28,6 +61,11 @@ pub trait Backend {
     /// Where new sessions record their cwd; not an ownership boundary.
     fn cwd(&self) -> &Path;
     fn tasks(&self) -> Result<Vec<TaskRow>, String>;
+    /// Declared schedules and their stored run state; empty when the feature is
+    /// unused, so the sidebar needs no special case.
+    fn schedules(&self) -> Vec<ScheduleRow> {
+        Vec::new()
+    }
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {
         None
@@ -42,14 +80,30 @@ pub trait Backend {
     fn new_session(&mut self);
     /// Load the transcript, then point the engine at the session.
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String>;
-    fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>);
+    /// Send a message to `session` (`None` = wherever the window is, i.e. a
+    /// draft). The session is named explicitly because more than one turn can
+    /// be live: a stale "current" must not post to the wrong task.
+    fn prompt(
+        &mut self,
+        session: Option<&str>,
+        text: String,
+        attachments: Vec<qcode_core::engine::AttachmentSource>,
+    );
+    /// Continue the paused turn in a fresh budget window (ADR-0060). A no-op
+    /// when nothing is paused.
+    fn continue_turn(&mut self, _raise: Option<RaiseLimit>) {}
     /// Steer a message into the running turn's next step. A no-op when idle.
-    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::AttachmentSource>) {}
     /// One operation on a queued (next-turn) message: steer it into the
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
-    fn cancel(&mut self);
+    /// Stop `session`'s turn (`None` = the draft the engine is on). A session
+    /// that is not running is a no-op (ADR-0058 §6).
+    fn cancel(&mut self, session: Option<&str>);
+    /// Stop every live session; the window calls this before quitting and then
+    /// waits for each `TurnFinished`.
+    fn cancel_all(&mut self);
     /// Change the provider+model for subsequent turns (grouped picker, V2.1).
     fn set_model(&mut self, provider: String, model: String);
     /// Model/provider currently active in the backend, for syncing after a
@@ -60,7 +114,7 @@ pub trait Backend {
     fn provider(&self) -> Option<String> {
         None
     }
-    fn try_recv(&mut self) -> Option<UiEvent>;
+    fn try_recv(&mut self) -> Option<SessionEvent>;
     /// Build a fresh backend from the current configuration. The shell calls
     /// this when the config file changes, so saving Settings takes effect
     /// without restarting the process or flashing a new window.
@@ -158,16 +212,24 @@ impl Backend for UnconfiguredBackend {
         self.store.load(id).map_err(|error| error.to_string())
     }
 
-    fn prompt(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
-    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::Attachment>) {}
+    fn prompt(
+        &mut self,
+        _session: Option<&str>,
+        _text: String,
+        _attachments: Vec<qcode_core::engine::AttachmentSource>,
+    ) {
+    }
+    fn steer(&mut self, _text: String, _attachments: Vec<qcode_core::engine::AttachmentSource>) {}
 
     fn answer(&mut self, _call_id: String, _allow: bool, _session: bool) {}
 
-    fn cancel(&mut self) {}
+    fn cancel(&mut self, _session: Option<&str>) {}
+
+    fn cancel_all(&mut self) {}
 
     fn set_model(&mut self, _provider: String, _model: String) {}
 
-    fn try_recv(&mut self) -> Option<UiEvent> {
+    fn try_recv(&mut self) -> Option<SessionEvent> {
         None
     }
 
@@ -199,8 +261,15 @@ pub struct LocalBackend {
     model: String,
     provider: String,
     store: SessionStore,
+    /// `[schedules]` as the config declared it (ADR-0059 §1). The run state is
+    /// read from the store on demand, so the sidebar sees the truth after a
+    /// restart without the window holding a copy.
+    schedules: Vec<qcode_core::schedule::Schedule>,
+    /// Entries that could not be resolved, so a typo is visible rather than
+    /// looking like "no schedules configured".
+    schedule_errors: Vec<(String, String)>,
     commands: UnboundedSender<UiCommand>,
-    events: UnboundedReceiver<UiEvent>,
+    events: UnboundedReceiver<SessionEvent>,
     rebuild: Option<RebuildFn>,
 }
 
@@ -210,6 +279,8 @@ impl LocalBackend {
         let model = engine.model.clone();
         let provider = engine.provider_name.clone();
         let store = engine.store.clone();
+        let schedules = engine.schedules.clone();
+        let schedule_errors = engine.schedule_errors.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
         runtime::spawn(engine, port, commands);
@@ -218,6 +289,8 @@ impl LocalBackend {
             model,
             provider,
             store,
+            schedules,
+            schedule_errors,
             commands: ui.commands,
             events: ui.events,
             rebuild: None,
@@ -238,6 +311,36 @@ impl LocalBackend {
 impl Backend for LocalBackend {
     fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    fn schedules(&self) -> Vec<ScheduleRow> {
+        let states = self.store.schedule_states().unwrap_or_default();
+        let mut rows: Vec<ScheduleRow> = self
+            .schedules
+            .iter()
+            .map(|schedule| {
+                let state = states.get(&schedule.name);
+                ScheduleRow {
+                    name: schedule.name.clone(),
+                    task: schedule.task.clone(),
+                    next_fire_at: state.and_then(|state| state.next_fire_at),
+                    status: state.and_then(|state| state.last_status.clone()),
+                    missed_windows: state.map(|state| state.missed_windows).unwrap_or(0),
+                    broken: None,
+                }
+            })
+            .collect();
+        for (name, reason) in &self.schedule_errors {
+            rows.push(ScheduleRow {
+                name: name.clone(),
+                task: None,
+                next_fire_at: None,
+                status: None,
+                missed_windows: 0,
+                broken: Some(reason.clone()),
+            });
+        }
+        rows
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
@@ -305,11 +408,24 @@ impl Backend for LocalBackend {
         Ok(events)
     }
 
-    fn prompt(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
-        self.send(UiCommand::Prompt { text, attachments });
+    fn prompt(
+        &mut self,
+        session: Option<&str>,
+        text: String,
+        attachments: Vec<qcode_core::engine::AttachmentSource>,
+    ) {
+        self.send(UiCommand::Prompt {
+            session: session.map(str::to_string),
+            text,
+            attachments,
+        });
     }
 
-    fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::Attachment>) {
+    fn continue_turn(&mut self, raise: Option<RaiseLimit>) {
+        self.send(UiCommand::Continue { raise });
+    }
+
+    fn steer(&mut self, text: String, attachments: Vec<qcode_core::engine::AttachmentSource>) {
         self.send(UiCommand::Steer { text, attachments });
     }
 
@@ -325,8 +441,14 @@ impl Backend for LocalBackend {
         });
     }
 
-    fn cancel(&mut self) {
-        self.send(UiCommand::Cancel);
+    fn cancel(&mut self, session: Option<&str>) {
+        self.send(UiCommand::Cancel {
+            session: session.map(str::to_string),
+        });
+    }
+
+    fn cancel_all(&mut self) {
+        self.send(UiCommand::CancelAll);
     }
 
     fn set_model(&mut self, provider: String, model: String) {
@@ -343,7 +465,7 @@ impl Backend for LocalBackend {
         Some(self.provider.clone())
     }
 
-    fn try_recv(&mut self) -> Option<UiEvent> {
+    fn try_recv(&mut self) -> Option<SessionEvent> {
         self.events.try_recv().ok()
     }
 }

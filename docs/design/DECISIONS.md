@@ -1116,7 +1116,8 @@ cargo build -p qcode
    `max_cost_usd` 仍需 `[pricing."<model>"]`，否则启动即报错（原有语义不变）。
 5. 停止顺序：模型不再调工具（正常）→ 取消 → 超预算 → 无进展 → 超轮数。先报更具体的原因，
    用户才知道该改什么。
-6. **不做**（本轮）：命中上限自动续一个预算窗口。它会把「原地打转」伪装成「任务很长」，
+6. **不做**（本轮）：命中上限自动续一个预算窗口。（ADR-0060 后结论不变：仍然不自动续，
+   只是「继续」变成一键、默认焦点，且预算命中不再是 `failed`。）它会把「原地打转」伪装成「任务很长」，
    等无进展检测跑一段时间、有了真实数据再评估；时间预算目前只有 `--timeout`（TUI 无）。
 
 **后果**
@@ -1266,10 +1267,14 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 **决定**
 
 1. `[agent] snapshot_shell`（默认 `true`）：执行 `run_shell` 之前对整个工作区做一次**受限**
-   快照——跳过 `.git` / `target` / `node_modules` / `dist` / `.tmp` / `.qcode-data` /
-   `.venv` / `__pycache__`，单文件超过 4 MB 跳过，总量超过 64 MB 置 `capped` 并停止（打 warn）。
-   同一 turn 内已存过的路径不再复制，所以一个 turn 里第 2、3 条 shell 只付出遍历成本。
-   这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，而不是只有三个内置写工具。
+   快照——跳过 `.git` / `target` / `node_modules` / `dist` / `.tmp` / `.qcode-data` / `.qc-data` /
+   `.venv` / `__pycache__` / `.cargo-home` / `.rustup-home` / `.toolchains`，单文件超过 4 MB
+   跳过，一个 turn 的累计总量超过 64 MB 置 `capped` 并停止（每轮只打一次 warn）。
+   同一 turn 内已存过的路径不再复制，但**已占用的字节计入该 turn 的额度**，所以一个 turn 里
+   第 2、3 条 shell 不会各自再拿到一份 64 MB。这样 rollback 也覆盖 shell 与 MCP 驱动的编辑，
+   而不是只有三个内置写工具。
+   `TreeReport::added_bytes` 区分两种 `capped`：本调用真的截断了（>0，打 warn）vs 该 turn
+   在之前就已满、本次什么都没加（==0，降到 debug）。后者也覆盖修复前留下的超额 turn。
 2. `qc sessions gc --older-than N --yes` 删除会话时顺带删掉该会话的 snapshots，并按现存会话
    列表清理孤儿树（`SnapshotStore::sweep`）；报告每个会话的快照体积与总释放量。
 3. 树快照**不记录 absent**：shell 新建的文件在回滚时不会被删除（只有写工具记录的 absent
@@ -1278,13 +1283,22 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 **后果 / 边界更新**
 
 - 大仓库上每条 shell 命令都要走一遍工作区（有上限）；`snapshot_shell = false` 可关。
-- 快照随 turn 累积；被跳过的目录（`target` 等）里的改动不会被回滚。
+- 快照随 turn 累积，每个 turn 最多 64 MB；被跳过的目录（`target`、`.cargo-home` 等）里的改动
+  不会被回滚。工具链缓存必须跳过：文件沙箱只允许写工作区，`CARGO_HOME` 就落在源码旁边
+  （本仓库的 `.cargo-home` 有 1.6 GB / 6.4 万文件），不跳会让上限全花在 registry 源码上，
+  真正的代码反而进不了快照。
+- 遍历按字典序进行：截断时保留的是稳定的前缀，同一棵树每次截断得到同一批文件。
+- 修复前留下的超额 turn 不会被迁移：它们仍然计入各自那一轮（因此那一轮不再写入），旧缓存
+  需手动删或随 `qc sessions gc` 清掉。新 turn 从自己的额度开始。
 - gc 只清理「会话已删除」与「没有对应会话」的快照，不按天数清理仍在用的会话。
 
 **验证**：新增 4 条 core 测试——树快照能还原 shell 式编辑（改一个、删一个、新建一个）、
 超过 4 MB 的文件被跳过并计数、gc 删除会话 + 清理孤儿树、shell 开关默认关闭且可打开。
 
 ## ADR-0035：图片输入只走一条路——`--image` + 多模态消息（2026-10-22）
+
+> 状态：部分被 ADR-0061 取代——图片改为落盘（内容寻址存储）、事件日志存引用、写入时
+> 归一化、能力门控从报错改为占位降级。§1 的 `--image` 输入面与 §4 的压缩口径不变。
 
 **背景**：DeepSeek 当前模型支持 vision，`Capabilities.images` 早已预留，但用户消息一直是纯文本。
 
@@ -2710,7 +2724,8 @@ v1（单 Root 兼容 + 无根 Task + 最多 16 Root，macOS/Linux 完整，Windo
 
 ## ADR-0048（草案）：多根 Sandbox 与路径能力（2026-10-21）
 
-**状态**：Accepted（2026-10-21）。未实现。依赖 ADR-0047 的 Task/Root 模型。
+**状态**：Accepted（2026-10-21）。**已实现**（2026-11-08；Windows/Linux/macOS 三个平台
+真机实测，见文末补充）。依赖 ADR-0047 的 Task/Root 模型。
 
 **背景**：Task 可以有 0..N 个 Root，Root 有 `read-only` / `read-write`，并且无根 Task 仍允许
 在私有临时目录运行 shell。qcode 现有 sandbox 是“单 workspace”假设：
@@ -2924,6 +2939,26 @@ Landlock 在 ABI 不足时会 skip，但规则构建路径已覆盖。
 
 据此，ADR-0048 的多根矩阵除 macOS 真机复核外全部完成：Windows ACL（实测）、Linux bwrap（实测）、
 Linux Landlock（规则构建通过）、macOS sandbox-exec（profile 测试就绪，待 Mac）。
+
+**补充（2026-11-08，macOS 真机复核完成，并修掉 `$TMPDIR` 下的 RO 漏洞）**：
+macOS arm64 上真机跑通 `cargo test -p qcode-tools --lib sandbox::`（18 条）与
+`crates/qcode-tools/tests/tools.rs::shell_follows_the_root_matrix`，`sandbox-exec` 预检通过、
+没有一条走 skip 分支。复核发现两处需要在 profile 里修的东西：
+
+1. **只读根只是「不在白名单里」并不等于只读。** profile 对所有任务都放开了
+   `/tmp`、`/private/tmp`、`/private/var/folders`、`$TMPDIR` 与 Cargo/Rustup 缓存，
+   所以一个落在这些父目录下的 RO Root 仍然可写。Seatbelt 是「最后一条匹配的规则生效」，
+   于是在 `(allow file-write*)` 之后为每个 RO Root 追加
+   `(deny file-write* (subpath "..."))`，实测该规则确实覆盖父目录的放行
+   （`a_read_only_root_refuses_writes_inside_a_writable_temp_tree` 用 `$TMPDIR` 里的
+   RO 根断言「宿主文件没出现」；把 deny 行去掉这条测试立刻失败）。
+2. **SBPL 比的是真实路径**：`$TMPDIR` 是 `/var/folders/...`，而 filter 要写
+   `/private/var/folders/...` 才匹配。profile 里所有 root / temp / `extra_writable` /
+   环境变量目录统一过 `canonicalize`（`profile_path`），不会因为一个 symlink 前缀而
+   整段失效——此前 `/tmp` 与 `/private/tmp` 都手写进列表，属于同一个坑的补丁式绕过。
+
+据此 ADR-0048 的 §2 平台矩阵除 Landlock 只到规则构建外全部有真机实测：Windows ACL、
+Linux bwrap、macOS sandbox-exec（本机）。
 ## ADR-0050：配置文件的位置、便携模式与写入策略（2026-10-22）
 
 **背景**：设置界面保存失败，报错指向 `~/.config/qcode/.config.toml.tmp-<pid>` 的
@@ -3510,3 +3545,914 @@ macOS 选 FFI 而不是「让 `security` 从 stdin 读」：`security add-generi
   `CredWrite` 写入后由 `CredRead` 脚本读回，结束时 `CredDelete` 清理。
 - 跨平台：`windows_credential_scripts_quote_provider_names` 校验单行、`''` 转义、密钥只来自
   stdin。
+
+## ADR-0057：工具改动落盘——schema v5 的 `ToolDiff` 与两处视图（2026-11-07）
+
+**背景**
+
+对话流里的工具行一直只显示「调用了什么、输出了什么」。DSH 的界面把写文件也当作一等的
+transcript 事实：行头有 `+N −D` 与文件大小，展开就是红绿 diff，底部还有「查看」的全量
+视图。我们此前只有一个从未生效的抽屉（`shell/mod.rs` 读的是 `arguments["patch"]`，而
+`apply_patch` 的参数名是 `diff`），且只覆盖 `apply_patch`。
+
+要让 GUI 与 TUI 都能显示真实改动，事实必须落在日志里：transcript 完全由 JSONL 重建，
+运行时内存里的工具输出到不了回放路径。
+
+**决定**
+
+### 1. `ToolResult` 增加 `diff`，`EVENT_SCHEMA_VERSION` 4 → 5
+
+```text
+ToolResult {
+  call_id, status, output, metadata,
+  diff: Option<ToolDiff>,          // 纯增量，缺省即「非写操作 / 无从得知」
+}
+
+ToolDiff {
+  patch: String,                   // 统一 diff，带 --- / +++ 头
+  files: Vec<DiffFileStat>,        // path, kind(Created|Modified|Deleted), additions, deletions, bytes
+  truncated: bool,                 // 超过 64 KiB，patch 已丢，只信计数
+}
+```
+
+放在 `ToolResult` 而不是 `ToolMetadata`：metadata 描述「输出是怎么被裁剪的」
+（`truncated`/`bytes`/`exit_code`/`full_output_path`），diff 是这次调用的一等结果。
+`bytes` 取**新内容**的字节数，供行头的「1KB」使用，不去 `stat` 文件。
+
+### 2. 产出在这里：工具自己算
+
+- `edit_file`：内存里已有 before/after，直接对两段文本做 `similar::TextDiff`。
+- `write_file`：写之前读一次旧内容（存在、< 256 KiB、UTF-8 才算），没有就是 `Created`。
+- `apply_patch`：`PlannedOp` 补 `before`，落盘后**按实际结果**重算，而不是回声模型给的
+  patch——echo 会漏掉 partial apply 与规范化后的空白。
+- 失败、取消、被拒的调用不产出 diff。3 行上下文、`a/`+`b/` 前缀、缺失侧写 `/dev/null`，
+  与 `DiffFile::parse` 的期望一致。
+
+### 3. 消费侧容错两条路
+
+- 新日志（v5）直接用 `ToolResult.diff`；
+- 老日志（v <= 4）用 `qcode-ui-state::tool_diff::fallback` 从调用参数重建：`apply_patch`
+  用它自己的 patch 原文（含统计），`write_file` 合成全绿，`edit_file` 只有两段片段 →
+  保留计数、放弃 patch 文本（行号留空，不编造）。
+
+### 4. 渲染：懒解析 + 明确失败
+
+- GUI：行头 `+N −D`（仅新建时附大小）；展开区在命令/输出盒子**之上**插 `Diff`；卡片高度
+  按 patch 行数取 `96..320px`（`Diff` 的 body 是 `flex_1`，父容器不给高度会塌成一条线）；
+- `DiffState` 在「展开」或「查看」时才 `DiffFile::parse`，长会话只为看过的 patch 付费；
+  会话加载时 `rebuild_inline_diffs` 一次性重建（回放不走实时钩子）；
+- 解析失败的 patch 记入 `broken_diffs`，行保留计数但**不显示**「查看」，避免点了没反应；
+- 底部抽屉改成「查看」全量视图（480px，只剩「关闭」），修掉 `patch`/`diff` 的死代码；
+- turn 头从「执行过程 · N 项」换成按工具归类的摘要（修改了文件 / 执行了命令 / 已读取文件），
+  无可归类工具时退回原文案；
+- TUI：行头同样 `+N −D`，新增 `/diff`（列出带改动的调用）与 `/diff <n>`（打印 patch）。
+
+**备选方案（未采用）**
+
+- **解析流里的 `run_shell` 输出来造 diff**：只能靠 `git diff` 之类的启发式，跨平台不可靠，
+  且看不到 `apply_patch` 这类直接写盘的工具。
+- **UI 侧根据参数猜**：`edit_file` 的 `old_string`/`new_string` 只是片段，行号与上下文都
+  无从得知——这正是 v4 日志回退路径的已知损失。
+- **每条工具结果都存全量前后文件**：日志体积不可控，且可执行权限之外还多了隐私面。
+
+**后果**
+
+- 日志变大：每次写操作多几百字节到 64 KiB。超限时丢 patch、保留计数。
+- 纯增量字段：旧日志照常读，旧二进制忽略未知字段；`v <= 4` 的投影启发式（`starts_segment`）
+  不受影响。
+- Windows 上 `write_file` 多一次读旧文件（< 256 KiB），可接受。
+
+**验证**
+
+- `crates/qcode-tools/src/diff.rs` 单测：修改/新建/删除/多文件/超限/空改动。
+- `crates/qcode-tools/tests/tools.rs`：三种写工具的 diff 与 `apply_patch` 的 per-file 统计。
+- `crates/qcode-core/tests/event_schema.rs`：`ToolResult` + `diff` 的完整 JSON 快照。
+- `crates/qcode-providers/tests/tool_diff.rs`：用脚本化 provider 让模型真的调 `write_file`，
+  从 `SessionStore::load` 断言 diff 进了日志、文件真的写了。
+- `crates/qcode-ui-state`：v4 回退的三条路径、`/diff` 的列表/单条/越界。
+- `crates/qcode-tui/tests/render.rs`：行头计数。
+- GUI 实跑（v5 与 v4 各一条 fixture 会话）：行头 `+1 -1 · kb/README.md`、展开的红绿卡片、
+  「查看」全量面板。
+
+## ADR-0058：多任务并行——会话宿主、事件归属与 UI 槽位（2026-11-08）
+
+**状态**：Accepted（2026-11-08）。**P0–P6 已实现**（2026-11-08；P6 见 ADR-0059）。
+依赖 ADR-0053（Queue/Steer 语义）与 ADR-0057（日志是 transcript 的唯一权威）。
+实现注记见本文末。
+
+**背景**
+
+GUI 现在同一时刻只能有一个任务在跑：切任务 = 取消当前 turn。
+
+- **UI 闸**：`shell/session.rs:40-45`（新建）与 `:121-127`（恢复）遇到
+  `app.status.running` 直接拒绝，提示「先停止」。
+- **引擎闸**：`runtime.rs:115-128` 只有一个 `session` / `active` / `queue` /
+  `published`；`:244-261` 收到 `NewSession` / `Resume` 时先 `token.cancel()` 再把
+  命令塞进 `pending`，turn 结束才执行。
+- **状态闸**：`shell/mod.rs:14-130` 的转录状态是单份的（一个 `App`、一个
+  `ApprovalQueue`、一个 `queue`/`steering`、一个 `turn_in_flight`、一个 scroller、
+  一套展开集），且 `poll` 只在 `render_main`（`render/main.rs:506`）里跑。
+
+但「多个会话同时跑」在本仓库已经不是新能力：
+
+- subagent 用同一份 store / provider / tools 在另一个 session 上跑 `run_turn`
+  （`qcode/src/subagent.rs:28-47`）；
+- 会话写锁是**按会话**的 flock（`qcode-core/src/store.rs:42-44`、`:279-305`），
+  sqlite 索引有 busy_timeout（`store.rs:421-428`）；
+- ACP 已经是多会话形状：`Agent { sessions: HashMap<String, SessionState{cancel,
+  running}> }`（`qcode-acp/src/server.rs:107-124`），`prompt` 按 session 取
+  `cwd` + `cancel`（`:241-268`），通知出口是 `client.notify(session_id, update)`
+  （`:266-272`）。
+
+缺的不是执行能力，是**宿主**。同时有三处事实缺归属：
+
+1. `Delta`（`qcode-core/src/engine/mod.rs:41-50`）与 `ApprovalView`
+   （`qcode-ui-bridge/src/lib.rs:56-65`）都没有 session 字段——只有
+   `UiEvent::TurnFinished { session }` 带了；
+2. allowlist 是全局 `HashSet<tool>`（`qcode-ui-bridge/src/lib.rs:143-144` 的
+   `session_allowed`），并行后 A 任务的「Always」会替 B 任务放行；
+3. `BridgeApprover` 没有超时：审批事件被丢弃 = 该 turn 永久挂起，会话锁不释放。
+
+顺带修一个现存 bug：`apply_rebuild`（`shell/mod.rs:645-709`）换掉 backend 之后没有
+对 active 会话 `resume`，保存设置后下一条消息会新开 session。
+
+**决定**
+
+### 1. 一个 `SessionHost` 是唯一的多会话权威
+
+```rust
+pub struct SessionHost {
+    deps: Arc<Deps>,                    // store / provider / tools / policy / snapshots
+    slots: Mutex<HashMap<String, Slot>>,
+}
+struct Slot {
+    cancel: CancellationToken,
+    queue: SessionQueue,                // 每会话投递（ADR-0053）
+    phase: Phase,                       // Idle | Running | WaitingApproval
+}
+```
+
+GUI / ACP / TUI / headless / 调度器都只是它的消费者。`Backend` trait 保留，但退化为
+「UI 与 host 之间的适配层」，不再持有单会话状态。宿主只负责三件事：把命令路由到会话、
+把事件打上会话标签、把空闲会话的后端收起来。
+
+### 2. 事件一律带会话标签
+
+```rust
+pub struct SessionEvent { pub target: SessionTarget, pub event: UiEvent }
+pub enum SessionTarget { Session(String), Draft }
+```
+
+`Delta` / `ApprovalView` **不加字段**：由外层携带，避免给每个变体都改签名，也不会在
+新增变体时漏标。`SessionTarget::Draft` 指「还没写日志的草稿会话」——
+`UiEvent::SessionChanged { id: None }` 之后的第一条消息才落盘。
+
+顺序是契约：**同一会话内严格保序**（`App::apply` 的调用顺序就是 transcript 的顺序），
+跨会话不保证。实现上每会话一路 mpsc，UI 侧轮转 drain——一条多生产者 channel 会让一个
+话痨会话饿死其它会话，也让「后台会话只投递边界」的策略没地方落（ADR-0059 §5）。
+
+### 3. 审批按会话隔离，且永不丢
+
+- allowlist 从 `HashSet<String>` 改为 `HashMap<session, HashSet<tool>>`；
+- 审批进**该会话槽位**的 `ApprovalQueue`，UI 只画当前任务的，侧栏给「待审批」徽标；
+- 后台槽位必须一直消费事件，否则 turn 挂起（`BridgeApprover` 无超时）；
+- 回答走 `UiCommand::Answer { session, call_id, allow, grant }`。
+
+第 2、3 条把「`poll` 从 render 移出」从优化升级为硬前提（§5）。
+
+### 4. UI 侧：每任务一个 `TaskUi` 槽位
+
+槽位内容按 `shell/mod.rs` 现状归类：`app`（transcript / status / streaming 块）、
+`units`、`scroller`、`selected_turn`、`approvals`、`queue`、`steering`、
+`turn_in_flight`、`restoring`、`resetting`、`empty_draft`、`error_banner`、`notice`、
+输入框文本 + `attachments` + `file_refs`、`expanded_process`、`expanded_code`、
+`process_open_turns`、`collapse_all`、`collapse_to_list`、`inline_diffs` +
+`broken_diffs` + `diff_view`、`last_blocks`。
+
+交换用 `capture(&mut self) -> TaskUi` / `install(&mut self, ui: TaskUi) -> TaskUi`
+（返回被换下的那份，放回 `parked: BTreeMap<String, TaskUi>`）。字段仍是 `Shell` 的
+顶层字段，只是「内容是当前任务的那一份」——`render/*.rs` 读的永远是 `self.app`、
+`self.scroller`，**一行不改**。
+
+反面的约束必须写死：**所有延迟回调都要按会话 id 校验**（`if self.active.as_deref()
+!= Some(id) { return }`）或改走 host 命令，否则会在切换后写错槽位。今天
+`wake_for_session`（`shell/session.rs:99-119`）与 `set_notice` 的 6 秒 timer
+（`shell/mod.rs:584-601`）就是这种形状，需要逐个核对。
+
+### 5. `poll` 移出 render，改成常驻 ticker
+
+从 `render_main`（`render/main.rs:506`）挪到 `cx.spawn` + `background_executor()
+.timer(33ms)`，或由 host 在事件到达时唤醒 `AsyncApp::update`。理由：窗口最小化 / 隐藏时
+不 render，后台 turn 结束、审批到达、`TurnFinished` 无人处理。今天的注释
+（`shell/mod.rs:571-575`：「`poll` 是在 render 里跑的……要等下一次交互」）就是这个洞的
+自白；并行之后它会从「延迟」变成「挂起」。改完之后 `poll` 是幂等的 drain，可以从任何
+地方调。
+
+### 6. Stop 与退出
+
+- `UiCommand::Cancel { session }` 只停指定会话；输入框的 Stop 传当前任务 id；
+- 侧栏每个任务的 ⋯ 菜单加「停止」，后台任务也能停；
+- 托盘 / 窗口退出 = 向所有会话 `cancel`，等各自 `TurnFinished` 再退；有 turn 在跑时
+  仍走 ADR-0052 的确认；
+- 强杀不需要恢复逻辑：日志是权威源（ADR-0057），下次 `resume` 重放。
+
+### 7. 生命周期与重建
+
+| 任务行状态 | 来源 |
+|---|---|
+| 运行中 | 槽位 `turn_in_flight` |
+| 待审批 | 槽位 `approvals` 非空 |
+| 未读 | 非活动会话在离开后产生了 turn 边界或最终消息 |
+| 空闲 | 以上皆无 |
+
+- 改名 / 删除 / 改 roots 必须按会话排队（现在只看全局 `running`：`shell/tasks.rs:95`、
+  `:233`、`task_ops.rs:8`）；
+- 配置变更（`reload_on_config_change`，`shell/mod.rs:606-643`）→ 标 `pending_rebuild`，
+  等所有会话回到 `Idle` 后统一 `apply_rebuild`，并对每个活跃会话 `resume`，修掉背景里
+  那个 bug；
+- 空闲的非活动会话可以丢后端（drop runtime + bridge），重新聚焦时用 `resume()` 重放；
+  正在跑的不丢。
+
+### 8. 阻塞 IO 出 runtime 线程
+
+`read_file` / `list_dir` / `write_file` 在 `async fn` 里直接 `std::fs`
+（`qcode-tools/src/fs.rs:85`、`:331`、`:30-38`），而 GUI runtime 是
+`new_current_thread`（`qcode-gui/src/runtime.rs:103-108`）。单会话只是偶尔卡一帧；
+多会话会互相卡住（一个任务读大文件时，另一个任务的流式输出与取消全部停摆）。决定：这些
+调用改 `spawn_blocking`。不选「host 换 `new_multi_thread`」——那只是把问题摊到更多线程
+上，ACP / TUI / headless 仍各自为政。
+
+### 9. 落地顺序
+
+| 阶段 | 内容 | 依赖 |
+|---|---|---|
+| P0 | 阻塞 IO 改 `spawn_blocking`；`apply_rebuild` 保留 active 会话；turn panic 兜底发 `TurnFailed` | 独立可合 |
+| P1 | `Engine` → `Arc` 共享；`SessionHost` 骨架（map + 按会话 `cancel`/`queue`）；`SessionEvent` 标签 | P0 |
+| P2 | Shell 拆 `TaskUi` + `capture`/`install` + `parked` | P1 |
+| P3 | `poll` 按会话路由并移出 render；dormant 槽只更新状态不 notify | P2 |
+| P4 | 生命周期：徽标、按会话排队的改名/删除/改目录、`Cancel{session}`、退出聚合 | P3 |
+| P5 | 后端可回收 + `focus` 时 `resume` 重放 | P4 |
+| P6 | 定时触发（ADR-0059） | P5 |
+
+**备选方案（未采用）**
+
+- **每任务一个 backend（`LocalBackend::fork()`）**：`Engine` 全字段可 Clone，fork =
+  clone 再 `runtime::spawn` 一个新线程 + 新桥，`runtime.rs` 与 bridge 完全不动，隔离由
+  结构保证，改动最小。不选的理由是定时任务（ADR-0059）需要「谁在哪个会话跑」的全局
+  视图：N 个独立后端里没有这个视图，只能在旁边再长一个注册表把它们串起来——那是宿主的
+  弱化版，还要付 N 个线程 + N 个 250ms ticker 的空转。另外第一步就该确立事件标签，否则
+  shell 的路由层要写两遍。
+- **只切视图、不并行**：删 `running` 闸、后台槽位吃事件、切回重放。改动最小，但引擎仍是
+  单会话，新任务里没法对话——不满足需求本身。
+- **单 runtime 多会话但不抽宿主**：在 `runtime.rs` 里加 `HashMap<session, (token,
+  queue)>`、删掉 `pending` 的取消-重发。能跑，但 GUI 成为唯一的多会话实现，ACP 那份
+  `sessions` map 与它各写各的，调度器落地时还要写第三份。
+- **给 `Delta` / `ApprovalView` 各加 `session` 字段**：每个构造点都要改，且新增变体容易
+  漏；外层包一层只改一处。
+
+**后果**
+
+- 内存：每个活动任务保留一份 `App`（transcript units 是主要成本）。先不设上限，用 8 个
+  任务实测；超预期再对非活动槽位做「只留最近 N 个 turn，切回从日志重建」。
+- 事件顺序成为新契约（见验证）；
+- 取消语义改为按会话：`UiCommand::Cancel` 与 `Backend::cancel` 签名变，所有调用点跟着改；
+- 审批的「永不丢」只承诺投递，不承诺有人答：后台任务的审批会一直挂着，直到切回去。定时
+  任务的超时规则见 ADR-0059 §4；
+- `shell/mod.rs` 的顶层字段仍是「当前任务的那一份」，是明确的技术债，收敛留待后续。
+
+**验证**
+
+- `SessionHost` 单测：两个会话并发 `run_turn`，事件标签正确、互不串话；同会话第二次提交
+  排队，不撞 `StoreError::Locked`（`store.rs:34`、`:850`）。
+- 审批：A 会话「Always」不影响 B；后台会话的审批不丢，回答后 turn 继续。
+- Shell：`capture` / `install` 往返后同一任务的 render 结果与切换前逐字段一致（草稿、
+  滚动位置、展开集、审批队列、notice）。
+- `poll` 移出 render：不调 render 直接注入 `TurnFinished`，侧栏状态仍更新。
+- 重建：保存设置后 active 会话被 `resume`，下一条消息落在同一会话（今天会新开）。
+- 手工：三个任务同时跑并来回切；后台任务审批到达时侧栏有徽标，切回能答；Stop 只停当前
+  那个。
+
+**实现注记（2026-11-08，P0–P1）**
+
+1. **P0 全部落地，三处都在，可独立回滚**。
+   - `qcode-tools/src/fs.rs` 的 `read_file` / `write_file` / `edit_file` / `list_dir`
+     改走新增的 `blocking()`（`spawn_blocking` + panic 转 `ToolError::Io`）。顺带把
+     `write_file` 的「读旧文本」也搬出去——它同样是一次同步读。
+   - `qcode-gui/src/runtime.rs` 的 `TurnGuard`：`tokio::spawn` 里 panic 会走 Drop 而不是
+     `done.send`，守卫把它变成一条 `TurnFailed`，`active` 因此一定被清掉。回归用例是
+     `tests/backend.rs::a_panicking_turn_reports_turn_failed_and_keeps_the_loop_alive`
+     （临时把守卫关掉，该用例会红 3 秒后失败，确认它测的是这件事）。
+   - `apply_rebuild` 保留 active 会话这条在 `fe6a5d6` 已修，本次只核对未改。
+2. **`SessionHost` 住在 `qcode-gui/src/host.rs`，不在 core**。P1 的消费者只有 GUI；
+   等 ACP / TUI 真正接入（P3 之后）再决定是否上移，避免先抽一个只有一个实现的抽象。
+   它不依赖 GPUI，用例在 `tests/host.rs`（12 条），`qcode-gui` 的 `test = false` 是
+   ADR-0037 的约束。
+3. **§2 的标签没有落成 `UiEvent` 的变体字段**，而是 `SessionEvent { target, event }`
+   包一层，由 `KernelPort::tagged(target)` 产生只认识一个会话的 `TaggedPort`。
+   `Delta` / `ApprovalView` 一行未改——这正是 §2 的意图，顺带保证「新增变体不会漏标」：
+   根本没有不加标签的发法，`KernelPort` 上不再有 `send_event` 这类裸方法。
+4. **`SessionTarget` 同时是 host 的键**（而不是 `String` + 哨兵值）：草稿态是个真正的
+   枚举分支，不需要 `""` 这种假 id。
+5. **§3 的审批隔离已落地**：allowlist 是 `HashMap<session, HashSet<tool>>`，「Always」
+   只settle 同一会话里同工具的并行 prompt（`another_session_keeps_its_own_prompts_after_always`）。
+   `clear_allow` 按会话清，不再是全局清空。
+6. **一个 `Engine` 实例仍按窗口持有，但 turn 通过 `Deps` 的 `Arc` 共享**（§1 的
+   「`Engine` → `Arc` 共享」）：`SessionHost::deps()` 给出唯一一份，turn 只 clone `Arc`。
+   P2 起每会话槽位直接读它。
+7. **P1 时还没做的部分**：`poll` 仍在 `render` 里（§5）、按会话排队改名/删除（§7）、
+   `BridgeApprover` 的超时（§3 第二半）、后端回收与 `resume` 重放（§5）、定时触发（P6）。
+   因此 P1 结束时**没有**让两个 turn 真正并行：`active` 仍是单槽，`Cancel` 已按会话
+   路由但只有一个会话可停。
+
+**实现注记（2026-11-08，P2）**
+
+8. **§4 的落法与原文有一处偏离，是故意的：字段没有留在 `Shell` 的顶层**，而是
+   `Shell { ui: TaskUi, parked: BTreeMap<String, TaskUi>, … }`，`render/*.rs` 里的
+   `self.app` / `self.scroller` 改成了 `self.ui.app` / `self.ui.scroller`（314 处，
+   纯机械、编译期可查）。理由：§3「后台槽位必须一直消费事件」+ §5「`poll` 按会话
+   路由」要求*给一个不在屏上的会话*应用事件。若按原文用「顶层字段 + `capture`/
+   `install` 逐字段搬运」，一次后台事件就要把 30 个字段（含两个 `Entity`）搬进搬出，
+   而 `Entity` 的占位符得用 `cx.new` 现造——每来一条流式 `Delta` 都要造两个实体，
+   P3 会直接卡在这一点上。改成子结构后 `install` 是纯 `mem::replace`，O(1)、不碰
+   实体，后台更新就是 `self.parked.get_mut(&id)`。
+   原文「render 一行不改」的*目的*（渲染层不引入路由错误）仍然守住了：渲染读的永远
+   是「当前任务那一份」，没有任何 render 代码需要知道会话。
+9. **`capture` 留占位视图**：`capture` = `install(fresh_task_ui(..))`，占位视图的
+   `App` 继承 provider/model，状态栏不会闪空。`park_and_clear` 顺手 `active.take()`：
+   草稿没有 id、没有可回去的地方，直接丢掉（原来也是丢的）。
+10. **每个视图有一个 `id`**（单调计数器），三处延迟回调按它校验：两个 observer
+    （滚动同步、回车发送）、`set_notice` 的 6 秒 timer、`wake_for_session` 的轮询
+    循环。这是 §4「所有延迟回调都要按会话 id 校验」的落地形式；用视图 id 而不是会话
+    id，因为草稿没有会话 id 也必须可区分。
+11. **切回去不再重放，除非日志动了**。`TaskUi.seen_seq` 记着这份视图见过的最新
+    `Event.seq`；`resume` 先用 `backend.resume` 拿到日志（顺带完成引擎侧挂接），
+    只有 `seen_seq >= 最后一条 seq` 才把停放视图装回去，否则丢掉它照旧重放。这条闸门
+    是必需的：另一个窗口或 `qcode` CLI 可能趁本窗口停着不动给同一会话写了新 turn，
+    那时停放视图是旧的。重放那条慢但永远对；恢复那条才是「滚动位置、展开集、草稿
+    都还在」的来源。
+12. **恢复时不再往转录里塞 "resumed xxxx"**：停放视图的转录会累积，每切一次多一行。
+    恢复走状态栏的 6 秒 notice，只有真重放时才推转录行（与原行为一致）。
+13. **删除任务会清 `parked`**，否则被删会话的转录与两个实体一直留在内存里。
+14. **没有 cap**：`parked` 随访问过的会话数增长，每个是一份转录。ADR §后果 已接受，
+    本次不设上限（留待实测后再定）。
+15. **仍留在 `Shell` 上、按 §4 清单不进 `TaskUi` 的字段**（各有理由）：
+    `pending_roots` 与 `pending_task_renames`（turn 边界统一落盘，P4 才按会话拆）、
+    `copied_command` / `rail_popup` / `rail_popup_close_at`（几秒内自愈的悬停与复制
+    提示）、`transcript_height`（每帧重新测量的 `Rc<Cell>`）、`busy_delivery`（配置）、
+    `pending_send`（输入事件与下一帧 render 之间就消费掉）。
+16. **P2 没有自动化用例**：`TaskUi` 里有 `Entity`，构造它要 `Window` + `Context`，
+    而 `qcode-gui` 的 `test = false`（ADR-0037：test harness 会把 rustc 栈拓爆）。
+    能给的保证是编译期的：`install` 里那个 `TaskUi { … }` 字面量**没有 `..`**，
+    `TaskUi` 多加一个字段就编不过，不存在「新增字段忘了交换、切任务后串味」这种静默
+    失败。运行时的往返一致性（草稿、滚动位置、展开集、审批队列、notice）仍需按
+    「验证」一节手工确认。
+
+**实现注记（2026-11-08，P3）**
+
+17. **`poll` 搬进常驻 ticker**（§5）。入口是 `Shell::start_poll_ticker`，在 `run.rs`
+    里 `open_window` 拿到实体之后启动一次（幂等，`ticker_running` 兜住重复调用），
+    间隔自适应：有 turn 在跑 33ms，全空闲 150ms（runtime 的队列快照本来就是 250ms
+    一拍，闲时空转 30 次/秒纯属浪费）。`render_main` 里那行 `self.poll(cx)` 删掉。
+    - 顺带删掉 `wake_for_session`：它存在的唯一理由是「poll 只在 render 里跑，新建
+      任务后要主动醒几次」。ticker 一帧内就把 `SessionChanged` 排空并自己 `notify`，
+      这个 100ms×50 的循环没有意义了。
+18. **路由表**（`shell/routing.rs` 的 `apply_to_ui` + `dormant.rs` 的
+    `apply_to_dormant`）：按 `SessionEvent.target` 分三档——
+    - 目标就是屏上那份视图 → 照旧应用，行变了就 `sync_scroller`，并 `notify`；
+    - 目标是 `parked` 里的会话（用户去过）→ 应用到它自己的 `TaskUi`，**不 notify**
+      流式增量，只在 turn 边界/审批这类「一行状态变了」的事件上请求一帧；
+    - 目标是没有视图的会话 → 进 `Dormant`：只有状态（running）、审批队列、队列快照、
+      失败提示，`Delta` 直接丢（切进去时从日志重放，ADR-0057）。
+19. **`SessionChanged` 不分发**，它是窗口级事件：P3 时 runtime 仍是单槽，「引擎现在挂在
+    谁身上」就是「显示谁」（P5 把语义收窄成「只回应窗口自己的 `Resume`/`NewSession`」，
+    见注记 40）。给它做分发需要「给一个没打开过的会话造视图」，而那要
+    `Window`（composer 是实体），`poll` 手上没有。真正的多槽切换（P5）之后它才需要
+    按目标区分；那时也才有窗口上下文可用（切换本来就是用户操作，走 `resume`）。
+20. **审批的「永不丢」现在真的成立了**：后台会话的 `Approval` 进 `Dormant.approvals`
+    （或 `parked` 视图自己的队列），`resume` 时 drain 进新视图，再配合已有的
+    `call_id` 路由（`BridgeApprover` 按 call_id 答，不绑线程），所以后台憋着的 prompt
+    切进去就能答，答完引擎那边继续走。`tests/dormant.rs` 的
+    `an_approval_arriving_in_the_background_is_kept` 钉住这条。
+21. **`Dormant` 会自己收摊**：`is_settled()`（不 running、无审批、无队列、无错误）成立
+    就 `remove`。否则一个窗口看十个会话在后台跑过，就留十个空条目。
+    错误提示例外——它要留到用户看见为止。
+22. **切走时 turn 的收尾事件落在它自己的视图里**：`TurnFinished` / `TurnEnded`
+    按 tag 找到 `parked`，不会再去清屏上那份视图的 `turn_in_flight`。这是 P1/P2
+    遗留的一个真 bug（单会话时看不出来，因为只有一个会话能跑）。
+23. **`task_running(id)` 是三档合一**（屏上 / parked / dormant），侧栏行标记与 ⋯ 菜单
+    共用它：后台在跑的任务行显示 `▶`。审批徽标留给 P4（注记 26，`task_state` 的
+    `waiting_approval` 一起做）；P3 时只有 `dormant.approvals` 被 `resume` 消费。
+24. ~~切走时仍被 `running` 闸拦着~~（`new_session` / `resume`）：runtime 收到 `Resume`
+    会先 `token.cancel()` 再切，引擎侧仍是单槽。**P5 已摘掉**（注记 37）。
+25. **P3 的自动化只覆盖 `Dormant`**（`tests/dormant.rs`，8 条）：路由与 ticker 需要
+    GPUI 的 `Window`/`Context`，仍是手工验证（§验证 里那几条）。
+
+
+**实现注记（2026-11-08，P4）**
+
+26. **徽标（§7 的表）落成 `task_ops::task_state(running, waiting_approval, unread)`**，
+    优先级就是表里的顺序：运行中 > 待审批 > 未读 > 空闲。三份事实按会话各自找家
+    （`Shell::task_facts`）：屏上视图读自己，停放的读 `parked`，没打开过的读
+    `Dormant`。侧栏行标记：屏上 `●`、后台在跑 `▶`、待审批 `⚠`、未读 `◉`、空闲 `○`；
+    待审批另在标题后加「· 待审批」（一个 `⚠` 说不清在等什么）。
+27. **未读是窗口级的集合**（`Shell::unread`），判据是 `task_ops::marks_unread`：
+    会话**不在屏上**时收到 `TurnEnded` / `AssistantMessage` / `TurnFailed` 就打标；
+    `resume` 时清。流式 `Delta` 不算（重放会由权威消息取代），`TurnStarted` 也不算
+    （还在做，不是「有话说」）。删任务时连同 `parked`/`dormant`/未读一起清。
+28. **改名/删除/改 roots 真的按会话排队了**（§7）。`should_queue_rename(turn_in_flight,
+    active, task_id)` 换成 `task_ops::edit_must_wait(task_state(id))`：只有**这个任务**
+    在跑才排队，别的任务在跑不再误伤（以前只要窗口里有一个 turn 在跑，改任何任务都要
+    等）。`pending_roots` 从 `Option<(id, roots)>` 变成 `BTreeMap<id, roots>`，
+    `TurnFinished` 只应用**完成的那个会话**的待处理目录，另一份原样留着。
+29. **`Cancel` 带会话**：`UiCommand::Cancel { session: Option<String> }`（`None` = 草稿）
+    + `UiCommand::CancelAll`；`Backend::cancel(session)` / `cancel_all()`。
+    runtime 侧 `host.cancel(&target)` 总是执行（后台会话的 token 也停掉），
+    turn 的 token 只在 `target == current` 时 cancel——引擎还是单槽，这是「诚实的一半」：
+    接口按会话，实现按「当前那个会话」收敛。`tests/backend.rs` 的
+    `cancel_is_processed_while_a_slow_turn_is_running` 现在先证明**错误的会话 id 不会
+    停掉**在跑的 turn，再证明正确 id 会。
+30. **侧栏 ⋯ 菜单加「停止」**，后台任务也能停：`Shell::stop_task(id)`。停止时的视觉
+    收口（`mark_stopped`）也按会话找家——屏上、停放、dormant 三处各自清 running。
+31. **退出聚合**（§6）：`request_quit` 用 `any_turn_running()`（三处合看）判断要不要弹
+    ADR-0052 的确认；`confirm_quit` 发 `CancelAll`，只清**视觉**上的 `status.running`
+    （`turn_in_flight` 不能动，它才是「引擎那个 turn 还没返回」，也就是要等的东西），
+    置 `quitting`，由 `poll` 在 `any_turn_running()` 变假时 `cx.quit()`。另加 5 秒兜底：
+    provider 一时不理会取消令牌时，退出不能变成卡住——日志是权威源（ADR-0057），强杀
+    不需要恢复逻辑，这正是 §6 允许这么办的理由。
+32. **`TurnFinished` 的 shell 级收尾按会话触发**：`apply_pending_roots(session)` /
+    `apply_pending_task_renames(session)` 在 drain 里对每个 `TurnFinished` 执行，与「是不是
+    屏上那个会话」无关。改名也只落**完成的那一个**：另一个会话还握着它自己的文件锁，
+    替它落盘只会拿到 `Locked` 并把这次编辑丢掉。
+33. **P4 的自动化**：`tests/task_ops.rs`（状态优先级、`edit_must_wait`、未读判据）5 条，
+    `tests/backend.rs` 加了 `cancel_all_stops_the_running_turn` 并在原用例里加了
+    「错 id 不停」。徽标渲染、`quitting` 的等待与 5 秒兜底需要 GPUI，仍是手工验证。
+
+**实现注记（2026-11-08，P5）**
+
+34. **runtime 从单槽改成按会话并行**（§7）。循环里的 `active: Option<CancellationToken>`
+    / `session: Option<String>` / `pending: Option<UiCommand>` 换成
+    `live: HashMap<SessionTarget, CancellationToken>`：每个在跑的 turn 一个条目，`current`
+    只剩下「窗口在看谁」这一个意思。`start_turn!` 第一个参数是目标会话——草稿在第一个
+    turn 变成会话，其余目标本来就带 id，所以后台任务的提问不会落到窗口正在看的那个任务上。
+35. **`done` 通道带会话**：`(SessionTarget, Result<(), String>)`。`TurnGuard`（P0 的 panic
+    兜底）也带上目标，否则 panic 后 `live` 里会留下一个永远不消失的条目。收尾一律
+    `live.remove(&target)` + `host.end_turn(&target)` + 只 drain **那个会话**的 follow-up
+    队列：以前这些都用 `current`，多个 turn 时会清错任务的状态。
+36. **`UiCommand::Prompt { session }`**：提问也带会话（`Backend::prompt(session, …)`）。
+    这是「并行」的必要条件——只按 `current` 路由的话，一次过期的界面切换就会把消息投到
+    别人身上。`Cancel { session }` 的 `None` 现在明确表示「窗口正在看的那个」（草稿），
+    runtime 用 `current` 兜底。
+37. **切任务不再要求先停**（摘掉 P3 遗留的 `running` 闸）：`new_session` / `resume` 里那两处
+    `if status.running { … 请先停止 … }` 删掉。`Resume` / `NewSession` 在 runtime 里也不再
+    `token.cancel()` + `pending` 重发，只是重新指一下 `current`；离开的会话若空闲则
+    `close_if_idle` 回收它的槽（见 39），在跑的话原样留着。切回来时如果它还在跑，
+    `resume` 不清它的 "Always" 列表——同一个 turn 里问第二遍是噪音。
+38. **「后端可回收」在这里的落法**：引擎是共享的（§1），所以会话没有自己的后端可 drop；
+    它持有的是一个槽（cancel token + 队列）。`close_if_idle` 就是全部——空闲且队列空的槽
+    直接忘掉，切回来时 `resume()` 从日志重放（ADR-0057），视图里的一切都重建得出来。
+    这也让 `Dormant` 的自动收摊（注记 21）与槽的回收是同一件事的两种表现。
+39. **配置变更等所有会话空闲**（§7，补上 P4 那段遗留）：新字段
+    `Shell::pending_rebuild`。`reload_on_config_change` 发现还有 turn 在跑就只置位 + 提示，
+    `poll` 在 `any_turn_running()` 变假时调 `apply_config_change` 真正重建并重新挂上屏上的
+    会话。以前是直接 `cancel` 当前 turn 再重建——并行之后那样会连带掐掉别的任务的输出。
+40. **`SessionChanged` 仍是窗口级**，但语义收窄了：它只在 `Resume` / `NewSession` 之后
+    由 runtime 发出（后台 turn 启动不发），所以「引擎现在挂在谁身上」正好等于「显示谁」，
+    不需要分发。广播 `SessionChanged` 反而是 bug——会把用户正在看的视图抢走。
+41. **P5 的自动化**：`tests/backend.rs` 新增
+    `two_sessions_run_at_the_same_time`（B 的 `TurnStarted` 必须早于 A 的 `TurnEnded`，
+    且 A 是 `Completed` 不是 `Cancelled`——切走不等于停）与
+    `stopping_one_task_leaves_the_other_running`（停 B 时 A 仍 `Completed`）。
+    多槽视图切换、`pending_rebuild` 的等待仍要 GPUI，是手工验证。
+42. **模型仍是窗口级的**：`UiCommand::SetModel` 换的是这条引擎任务的 `model` / `provider`，
+    之后**任何**会话新起的 turn 都用它（包括后台任务排队后自动接着跑的那个）。按会话
+    记模型要动 `Task` 与设置持久化，超出这次的范围；现在的行为至少是「所见即所用」：
+    头部选择器显示的就是下一个 turn 会用的模型。写在这里是因为并行之后它第一次有了
+    歧义（以前同时只有一个会话，没有「别人的 turn 用谁的模型」这个问题）。
+43. **P6 已落地**（定时触发，ADR-0059）：前置——「谁在哪个会话跑」的全局视图——由
+    `SessionHost` + `live` 提供，触发走同一个 `SessionQueue`；`queue` / `skip` 的撞车
+    策略、错过计数与审批 deadline 都在 ADR-0059 的实现注记里。本 ADR 的并行骨架因此
+    不再有未完成阶段。
+
+## ADR-0059：定时任务——声明在配置、状态在 store、跑在会话宿主上（2026-11-08）
+
+**状态**：Accepted（2026-11-08）。**已实现**（2026-11-09），依赖 ADR-0058。
+
+**背景**
+
+定时任务对宿主的要求比并行更硬，这也是 ADR-0058 选宿主而不选「每任务一个后端」的主要
+原因：
+
+1. 需要「谁在哪个会话跑」的全局视图，才能决定**排队还是跳过**；
+2. 一个时钟，不是 N 个——每会话后端各带 ticker 的拓扑会把时钟摊开，还会在后台任务上
+   空转；
+3. 无人值守要统一出口：日志 + 未读 + 审计；
+4. 无人应答的审批必须自己收场，否则占着会话锁到早上。
+
+**决定**
+
+### 1. 声明在配置，运行状态在 store
+
+```toml
+[schedules.nightly-review]
+cron = "0 3 * * *"          # 五段，本地时区
+task = "01J..."             # 复用一个已有任务
+# new = true                # 或每次触发新建任务
+prompt = "..."
+overlap = "queue"           # queue | skip
+approval_timeout = "30m"    # 0 = 等到有人答
+enabled = true
+```
+
+`Config` 的字段都没有 `deny_unknown_fields`（`qcode-kernel/src/config/mod.rs:77-121`），
+旧二进制读到 `[schedules]` 会忽略，符合 ADR-0050 的「配置只存可审阅的引用」。
+
+**运行状态（`last_fired_at` / `next_fire_at` / `last_status`）落 store 的
+`schedules` 表，绝不写回配置文件。** 硬理由：`reload_on_config_change`
+（`shell/mod.rs:606-616`）按 mtime 变化触发重建，调度器每触发一次就改配置 = 每触发一次
+就换 backend + 一次 `resume`，还会与用户在 Settings 里的编辑互相覆盖。
+
+### 2. 触发与撞车
+
+- 到期 → 向该会话 `submit`（走 `SessionQueue`，ADR-0053）。会话忙时按 `overlap`：
+  `queue`（默认）排到当前 turn 之后，`skip` 丢弃并记 `schedule_skipped`。
+  **不允许出现 flock 撞车报错**这种路径。
+- `task` 指向的会话已被删除 → 禁用该条目并记 `schedule_orphaned`，不静默跳过。
+- 时钟注入 `Clock` trait（测试用假时钟推进）。判断到期用单调时间，落库用墙钟，两者分开：
+  系统时间被改或机器休眠时，墙钟只影响「下次何时」的显示，不影响本次是否已触发。
+
+### 3. 错过不补跑
+
+进程不在时窗口已过期 → 记一条 `schedule_missed`（带错过窗口数），**不补跑**，侧栏对应
+任务行显示提示。`catchup = false` 是默认，字段留着但不实现。
+
+### 4. 无人值守的审批有 deadline
+
+由调度器触发的 turn，其审批带 `approval_deadline`：超时 → `deny`，turn 继续（日志里就是
+一条 `status: Error` 的 `ToolResult`，`output` 写 `denied: approval timeout`，
+`qcode-core/src/engine/tools.rs:295` 已有这条路径，**不需要改事件 schema**）。
+人工触发的后台任务仍然无限等——人就在机器旁边。
+
+### 5. 后台会话的投递策略
+
+非活动会话只投递：turn 边界（`TurnStarted` / `TurnEnded` / `TurnFinished`）、最终的
+`assistant_message`、失败的 `tool_result`、`Error` 与审批。**`Delta` 与中间过程全部
+丢弃**（`Delta` 本来就不落盘）。跑一晚不等于把整晚的 token 流堆在内存里；切回去
+`resume()` 从日志重建完整过程。
+
+### 6. 宿主住在哪
+
+本轮住在 GUI 进程里：托盘常驻（ADR-0052，关闭窗口 = 最小化），所以「窗口关了」不等于
+「调度停了」；**退出进程则全部停止**，这是明确边界。系统通知不在本轮（不引入新依赖），
+只做侧栏徽标与未读。`qc daemon`（无窗口宿主，复用 `SessionHost`）留 v2——到那时 GUI
+降级为观察者，`[schedules]` 与状态表一行不改。
+
+**备选方案（未采用）**
+
+- **运行状态写进配置文件**：mtime 监听会把它变成重建风暴，还要与 Settings 的写入竞争。
+- **每任务一个后端各自计时**：时钟散在 N 处，撞车只能靠 flock 报错，排队 / 跳过策略无处
+  安放。
+- **错过补跑**：休眠一夜后一次性放出一堆 turn，烧钱且互相争会话锁。
+- **交给系统 cron 调 `qc -p`**：每次触发一个进程，无法复用会话的排队与审批队列；无终端
+  时审批直接失败。
+
+**后果**
+
+- 无人值守链路仍靠 `[agent] max_turns` 兜底：审批被 deny 后模型可能反复尝试，turn 预算
+  是最后一道闸。
+- 无人看的会话会积累日志；保留策略不在本 ADR。
+- `schedules` 表是新 schema 版本（store 迁移，自动补表）。
+- 时区取本地时区；DST 跳变按「跳过该次、记 missed」处理，与 §3 同一路径。
+
+**实现注记（2026-11-09）**
+
+1. **判定是纯逻辑，住在 `qcode-core/src/schedule.rs`**：`CronSpec`（解析 + `matches` +
+   `next_after`）、`tick(schedule, state, now, busy, task_exists)`、`recover`（错过计数）、
+   `advance`（记录本次决定并排下个窗口）。所有函数把「现在」当参数，测试用假时间，
+   `qc daemon` 将来可以复用同一套判定。`crontab(5)` 的细节都跟了：日与星期**都**受限时
+   取「或」、`*` 不算受限、名字（`jan`/`mon`）、`7` 折成周日、`*/15` 与 `5/15` 两种步长。
+2. **时区**：`now_local()` = UTC 现在 + `localtime_r` 给出的偏移，**每次现算**（不是启动时
+   缓存），所以长开窗口遇到 DST 跳变时下个窗口跟着挪。没用 `time` 的 `now_local()`：那个
+   特性文档里写着「多线程下不健全」，而 GUI 线程早就不止一个；`qcode-core` 本来就为会话
+   锁链了 `libc`。
+3. **窗口 vs 清醒**：判定需要区分「tick 到了」和「进程睡过去了」。wall clock 只用来算
+   「下一个窗口何时」，另用单调时钟（`Instant`）记上一拍：间隔超过三拍就算「不在场」，
+   走 `recover`（计数不补跑）。这样系统时间被改前改后都不会凭空多跑或少跑。
+4. **运行状态落 store 的 `schedules` 表**（`name` / `last_fired_at` / `next_fire_at` /
+   `last_status` / `missed_windows`，建表随 `index.sqlite` 的 `CREATE TABLE IF NOT
+   EXISTS` 自动补）。配置文件的 mtime 因此**一次都不变**——ADR 里担心的重建风暴从根上
+   没有了。表里留着的孤儿行由 `prune_schedules(declared)` 清掉。
+5. **配置层**：`Config.schedules: BTreeMap<String, ScheduleConfig>`
+   （`[schedules.<name>]`：`cron` / `task` / `new` / `prompt` / `overlap` /
+   `approval_timeout` / `enabled`），`resolve_schedules` 逐条转成 `Schedule`，坏条目
+   **逐条**报错而不是让整份配置加载失败：一个 cron 打错不该让窗口起不来。旧二进制读到
+   `[schedules]` 只会忽略（顶层键已登记进 `KNOWN_KEYS`，不会打 unknown-key 警告）。
+   Settings 里**没有** cron 编辑器：`[schedules.<name>]` 是「用户自己起名的表套表」，
+   表单造不出键；`tests/schema.rs` 里显式跳过并写明理由。
+6. **触发就是一次排队**：到期的条目把 `prompt` 交给该会话的 `SessionQueue`，与用户打字
+   走同一条路（`Submission::Start` → `start_turn!`，忙则排队）。所以被触发的 turn 没有
+   任何特殊路径：徽标、未读、事件路由、日志全都复用 P3–P5 的东西。`overlap = "skip"` 忙时
+   直接记 `Skipped`；任务被删记 `Orphaned` 并保留在那里等用户处理，不静默跳过。
+7. **`new = true` 由 `create_task(..., announce = false)` 建**：定时任务新建的会话必须落进
+   侧栏，**不能抢走用户正在看的视图**——所以它不发 `SessionChanged`。
+8. **无人值守的审批有 deadline**：`TaggedPort::approver_with_deadline(d)`（`BridgeApprover`
+   多一个 `deadline` 字段，`None` 永远等）。超时 → 撤回 prompt + `Answer::Deny`，turn 继续
+   走既有的「denied」工具结果路径，会话锁按时释放。只有定时 turn 挂 deadline：人触发的
+   后台任务仍然无限等（人可能只是离开了键盘）。`time` 特性加了 `test-util` 才能用
+   `#[tokio::test(start_paused = true)]` 把 30 分钟压缩成瞬间。
+9. **侧栏提示**：`Backend::schedules()` 返回「声明 + store 里的运行状态」，
+   `Shell::schedule_hints` 按任务 id 收好（错过 N 次 / 已失效 / 失败 / 配置有误），任务行
+   在审批提示之后显示它。提示优先于「目录丢失」以外的其它后缀，避免一行里堆三句。
+10. **本轮没做的**（都在 ADR 原文里就划出去或留到后续）：系统通知（不引入新依赖）、
+    `qc daemon`（v2，GUI 关窗 = 托盘常驻仍然负责计时）、`catchup = false` 以外的补跑
+   策略、Settings 里的 cron 编辑、`last_status` 的历史记录（只留最后一次）与
+    `schedule_skipped` / `schedule_orphaned` 的独立事件（现在都写进 `last_status`，
+    因为 `Event` schema 里没有这两类，ADR 也明确说「不需要改事件 schema」）。
+11. **验证**：`crates/qcode-core/src/schedule/tests.rs` 18 条（字段语义、日/星期的或、
+    非法表达式、`next_after` 跨月跨年与永不成立、窗口触发、忙时排队或跳过、禁用与孤儿、
+    错过计数、状态编解码）；`config/schedule/tests.rs` 7 条（默认值、`new` 与 `task` 互斥、
+    超时单位与 `0`、坏条目逐条上报、老配置兼容）；`store` 的 5 条（往返、覆盖非重复、
+    带负载的状态、prune、手改坏时间）；`tests/backend.rs` 端到端 2 条（到期真的在它指向的
+    任务上开了一个 turn；指向已删任务的条目只记录不跑）。`qcode-ui-bridge` 2 条钉住
+    「定时审批超时 deny / 人工审批无限等」。
+
+**验证**
+
+- 假时钟：到期触发一次；同一窗口不重复触发；`next_fire_at` 落库后重启仍准确。
+- 撞车：会话忙 + `queue` → 排在当前 turn 之后；`skip` → 记事件且不排队。
+- 错过：时钟跳过 3 个窗口 → 一条 `schedule_missed`，零 turn 启动。
+- 审批：定时 turn 的审批超时 → deny + turn 正常结束，会话锁释放。
+- 回归：调度器写状态后**配置 mtime 不变**（防重建风暴）。
+- `task` 被删除 → 条目禁用 + `schedule_orphaned`。
+
+## ADR-0060：预算暂停——超限是「交接」，不是「报错」（2026-11-09）
+
+**背景**：`max_turns` 命中时，GUI 弹的是红色「请求报错 · 完整信息」，正文是
+`exceeded max turns (64): …`，只有一个「关闭」按钮。三处预算止停（轮数、成本、
+无进展）走同一条失败通道：写 `error(...)`、`turn_ended(failed)`、返回 `Err`。可是
+**预算用完不是错误**——任务可能完全正常，只是钱或步数到了，重试同样的输入必然原地
+不动。用户真正想知道的是「做到哪了、还差什么」，而这些数据全在手里：usage / cost、
+本轮的 `tool_call` 序列、v5 起每个 `tool_result` 的 `diff`、最后一段助手文本。
+附带一个真 bug：GUI 的「Turns 超限」提示用 `app.turns.len()`（用户消息条数）当轮数，
+而 `max_turns` 是单条消息内的模型调用数——长任务不提示，短任务乱提示。
+
+**决定**
+
+1. **四态**：`TurnStatus` 增加 `Paused`。预算命中落 `Paused`，**无进展与真错误仍落
+   `Failed`**（前者是方法错了，继续只会重复；后者重试可能成功）。落盘 schema 5 → 6；
+   v5 日志无新字段，serde 缺省即可回放，不回填。
+2. **成本提前刹车**：`max_cost_usd` 从「已花超才停」改为 `used >= limit * 0.95` 即停，
+   剩下 5% 留给收尾调用。`max_turns` 仍在「恰好用完、下一轮将超」时停。
+3. **临近时先说**：新增 `EventKind::BudgetHint`，首次跨过 75%（或剩 ≤ 8 轮）发一次，
+   带**引擎自己的** `turns / max_turns / cost_usd / max_cost_usd / window`。GUI 的提示卡
+   与 TUI 状态行都只读它，`app.turns.len() >= threshold` 的口径 bug 随之删除——
+   提示不会在短任务上误报，长任务也不会漏报。
+4. **停时交接**：可推导的不落盘，不可推导的落盘。
+   - `qcode_core::progress::report(events, turn) -> ProgressReport`：纯函数，零成本、
+     可复现，GUI / TUI / ACP / `qc run` 共用（工具调用数、按路径去重并累加计数的
+     `DiffFileStat`、命令列表、失败工具行、截断到 600 字的最后文本）。
+   - `PauseInfo.summary`：停之前给模型**一次无工具的收尾调用**，让它写「已完成 /
+     未完成 / 下一步」。这次调用**不计入 `max_turns`**（否则「为了总结又把预算花光」），
+     成本**照实记账**；估算放不下或调用失败就跳过，`summary = None`，退化为只剩
+     `ProgressReport`。UI 按小标题轻解析，解析失败整段显示——不赌模型出 JSON。
+5. **事件形状**（schema v6）：`TurnEnded{status, usage, cost_usd, pause}`；
+   `PauseInfo{reason, limit: Turns(u32) | Usd(f64), used: {turns, cost_usd}, window, summary}`。
+   `window` 必须进日志：配置会被改、价表会换，事后无法从事件流反推「这是第几个预算窗口」。
+6. **「继续」不是伪造用户消息**：继续 = 新 turn（预算天然重置），但 transcript 不能
+   出现用户没说过的话。`UserMessage` 加 `continuation: Option<Continuation{turn, window, raise}>`，
+   UI 渲染成「继续上一次暂停的任务」的灰底提示条，不再是用户气泡。
+7. **`window` 由引擎数**：`run_turn` 在 `begin_turn` 之前读日志，用
+   `budget_window(&events) + 1` 与最后一个事件的 turn 号**覆盖**前端传来的值。前端算错、
+   传旧值、甚至伪造一个大值，都拿不到新预算窗口。
+8. **三键卡片，琥珀色，不写「报错」**：`继续`（primary）/ `收尾`（再跑一次，只让它写
+   交接）/ `先这样`（把卡收起，暂停态留在日志里）。卡片内容是 `ProgressReport`
+   （改了哪些文件 `+N −D`、跑过的命令、失败的工具行）+ `summary` + 一行预算口径
+   （`已用 64/64 轮` 或 `已达成本预算 $5.00 的 95%`）。GUI 在对话流里渲染（随 turn 滚动，
+   而不是挤在输入框上方抢焦点），TUI 渲染在 transcript 末尾，`/continue` 与 `/wrap`
+   是同一动作的键盘入口。
+9. **无人值守链路默认停，不等**：
+   - `qc run`：退出码 **75**（`EX_TEMPFAIL`，区别于通用失败 1、取消 130、超时 124），
+     打印摘要 + 预算口径 + 继续方式；`--json` 在流末多打一条
+     `{"type":"pause","data":{session_id, reason, limit, used, window, summary}}`。
+   - `--continue`（`--resume <id>` 必需，prompt 可省）接着上次的任务跑；
+     `--raise-turns N` / `--raise-cost USD` 只抬这个窗口的上限，`--raise-persist`
+     才写回 `config.toml`。
+   - ACP：`stop_reason = max_turn_requests` **保留**（协议语义正是「requests 用尽」），
+     但**不再先发 error chunk**——交接摘要走 `agent_message_chunk`，客户端读到的是
+     可继续的正常收尾。
+   - 子 agent：不抛错。`SubagentOutcome.text` 追加
+     `[child paused: used 20/20 turns — the task above is incomplete; …]`，
+     父 agent 自己决定再派一次还是收工，避免把半成品当成品。
+10. **不自动续**：维持 ADR-0031 §6 的立场（自动续会把「原地打转」伪装成「任务很长」），
+    但把「继续」做成一键、默认焦点，体验差距被抹平而原则还在。
+11. **回放卡片只读**：重放不产生副作用；历史 `Paused` 只显示内容，不发任何注入或网络
+    调用。
+
+**备选方案（未采用）**
+
+- 继续伪造一条用户消息：transcript 会说谎，且导出/分享的日志里会出现「你没说过的话」。
+- 前端数 `window`：三条链路（`qc run` / 子 agent / ACP）各数一遍必然分叉，且能被伪造。
+- 把 `ProgressReport` 也落盘：它能从事件流精确重算，落盘只会在 schema 演进时变成第二份
+  真相。
+- `no_progress` 也可继续：它是「方法错了」，继续等于允许原地烧钱。
+- 单独一条 `pause` 事件而不是塞进 `turn_ended`：turn 的结局只该有一个权威记录，两处写
+  一定会有一处先写后崩。
+
+**后果**
+
+- `EngineError::MaxTurns` / `MaxCost` 不再是 `Err`：调用方必须读 `outcome.pause`，
+  否则会把暂停当成功（子 agent 的拼接文本、`qc run` 的退出码、ACP 的 `stop_reason`
+  都在这一处收敛）。
+- 收尾调用花的是真实 token：一次 `Paused` 比过去「直接报错」贵一点，但换来可继续的
+  交接；估算放不下时会跳过。
+- 状态行与提示卡的轮数口径统一到 `budget_hint`，`round_hint_threshold` 字段与
+  `ROUND_HINT_THRESHOLD` 常量删除。
+- 预算窗口（`window > 1`）会出现在三处：暂停卡片、状态行、`qc run --json` 的 pause 行。
+- 老日志回放不产生卡片动作，pause 缺失时一切按 v5 行为（`Failed` 无 `pause`）。
+
+**验证**
+
+- `qcode-providers/tests/cost.rs`：超成本在工具执行前暂停（`PauseReason::MaxCost`、
+  `PauseLimit::Usd`、无 error 事件、无 tool call、`TurnStatus::Paused`）；95% 刹车
+  （$14.30 / $15）；成本累计跨轮仍暂停。
+- `qcode-providers/tests/tool_loop.rs`：第二次运行带 `Continuation` → 事件里
+  `window = 2`，且最后一次请求的消息以交接指令结尾（不是污染 system）。
+- `qcode-ui-state`：`/continue` 无暂停时只给提示、不启动 turn；有暂停时产生
+  `UiAction::Continue` / `WrapUp`；运行中拒绝；`PauseCard` 折叠同一路径的多次改动
+  （`修改了 1 个文件（+15 −3）`）、取首行失败输出、字符安全截断。
+- `qcode-tui/tests/render.rs`：暂停卡片渲染出 `64/64`、`第 2 个预算窗口`、
+  `修改了 1 个文件`、`summary`、失败行与 `/continue` 提示，状态标签 `paused`。
+- `qcode-core`：`progress::report` 的单测（聚合、截断）。
+
+## ADR-0061：附件——引用进日志，字节进内容寻址存储（2026-11-08）
+
+**背景**
+
+ADR-0035 把图片输入收成一条路，并顺手划了三条边界：图片只在内存、事件日志只存文本、
+resume 重放没有图片。本 ADR 取代这三条边界与 ADR-0035 §5；§1 的 `--image` 输入面保留。
+当时只有 `qc run --image` 和 Windows 的 `Ctrl-V`，这些边界是合理的——
+没有前端能显示缩略图，落盘只是浪费。
+
+GUI 落地后这三条边界开始漏：
+
+- composer 粘贴一张图，界面上只有一行 `attached 1568x1024 (228 KB), 1 pending`。发送后
+  转录区也没有图——**用户看不到自己刚发的那张图**。
+- 关窗再开，同一段对话里的图彻底消失，重建出来的消息里也没有。
+- 文件走另一条路：`[附件文件]\n<paths>` 直接拼进 prompt 文本（`shell/session.rs`）。路径
+  没有校验（存在、可读、不是目录），模型拿到的是一个未经确认的字符串；沙箱里那个路径
+  可能根本读不到，模型却仍会"总结"它。
+- provider 层把原图 base64 原样发出去：3.4 MB 的 Retina 截图变成 ~4.5 MB base64，只受
+  8 MB 上限保护。
+
+两条新事实让落盘变得可行：GPUI 有 `gpui_pre::img()`（`ImageSource` → 元素），能真的渲染
+缩略图；`qcode-image` 已有一个无外部依赖的 PNG 编码器（编码侧够用，解码侧还缺，见决定 5）。
+
+**决定**
+
+1. **一个引用类型，两种形态。**
+
+   ```rust
+   pub enum AttachmentRef { Image(ImageRef), File(FileRef) }
+   pub struct ImageRef { id: [u8; 32], mime: ImageMime, bytes: u64,
+                         width: u32, height: u32,
+                         origin: Option<OriginRef>, name: Option<String> }
+   pub struct OriginRef { id: [u8; 32], bytes: u64, width: u32, height: u32 }
+   pub struct FileRef   { id: [u8; 32], name: String, bytes: u64 }
+   ```
+
+   `id` 是内容 sha256（存 32 字节，序列化成十六进制）。`ImageRef` 自带尺寸和字节数，所以
+   列表渲染、token 估算、上限校验都不读盘。`origin` 指向**未归一化的原图**，只在真的发生
+   缩放或重编码时出现；原图与归一化图字节相同时两者同 sha，存储层自然只有一份。
+
+2. **日志只存引用，字节进内容寻址存储。** 目录 `$data/attachments/v1/`：
+
+   ```
+   objects/<sha 前2位>/<sha256>       归一化图片（发给模型的那份）
+   originals/<sha 前2位>/<sha256>     原图（未缩放、未重编码）
+   files/<sha 前2位>/<sha256>/<name>  逐字节文件（同内容只存一份）
+   tmp/                               写入中的临时文件
+   ```
+
+   落盘：写 `tmp/` → fsync → rename 就位（同一文件系统内原子）→ 目标已存在则丢弃新文件
+   （去重）→ 目标设只读。分片目录的理由是 `readdir`：一个目录塞十万个对象会拖慢列表。
+
+3. **schema v6 → v7，但不需要迁移。** `UserMessage.attachments` 从 `Vec<String>` 改成
+   `Vec<AttachmentRef>`。该字段从引入起就没写过非空值（`history.rs`、`store.rs`、
+   `compact.rs` 三处都写 `vec![]`），所以老日志里它要么缺失要么空数组，`#[serde(default)]`
+   就够了；空数组仍然不写。
+
+4. **先落盘，再发送。** 附加动作（粘贴 / 选择 / 拖拽）当场归一化、落盘、拿 ref，composer
+   里显示缩略图或文件卡片；发送时只带 ref。失败＝卡片变红、可重试、不产生半张图。好处是
+   发送瞬间不卡，重试也幂等（同一个 sha 第二次写入直接命中）。
+
+5. **归一化在写入时做一次，四种格式统一。** 引入 `image`（MIT/Apache-2.0 双许可，
+   `default-features = false` + `png`/`jpeg`/`webp`/`gif` 四个 feature）负责解码、EXIF
+   摆正、缩放和编码。参数：长边 2048、存下来的单图 2 MB、永不丢 alpha。编码规则：
+   有透明像素 → PNG（`CompressionType::Best`）；不透明 → JPEG，质量阶梯 85 → 70 → 55；
+   一轮都压不进 2 MB 就把长边乘 0.75 再来一轮，最多八轮。
+
+   已经达标（长边 ≤ 2048、字节 ≤ 2 MB、EXIF 无旋转）的图**原样放行**，不做无意义的
+   重编码——小截图与 2×1 的测试图都走这条路，所以 `unchanged` 为真时 `origin` 为 `None`。
+
+   解码前的输入上限是 **32 MB**（`MAX_IMAGE_BYTES`）：它只负责"一次粘贴最多占多少内存"，
+   真正的落盘上限是上面那个 2 MB。原图保留在 `originals/`（见决定 2），`origin` 只在真的
+   发生缩放或重编码时写；"查看原图"直接读原图，不重新解码归一化副本。
+
+   实现注记：`qcode-image` 原来那个"stored deflate" PNG 编码器不进附件链路——它是给
+   剪贴板兜底的（4 字节/像素），拿来存归一化图会把 2 MB 预算烧光；归一化统一用 `image`
+   的 PNG/JPEG 编码器。
+
+6. **回放是重建，不是缓存。** `ContentBlock::Image` 的形状**不变**（仍是
+   `Image { mime_type: String, data_base64: String }`），引用在重建这一步展开：
+
+   ```rust
+   pub fn messages_from_events_with<F>(events: &[Event], load: F) -> Vec<Message>
+   where
+       F: FnMut(&ImageRef) -> Option<Vec<u8>>;
+   ```
+
+   `history` 遍历 `UserMessage.attachments` 里的 `AttachmentRef::Image`，用 `load` 取字节、
+   编码成 base64 放进 `ContentBlock::Image`；`load` 拿不到对象就丢掉这张图（引用仍留在
+   日志里，下次能补）。turn loop 传 `|image| store.read_image(image).ok()`，provider 只
+   看得到一种 wire 形状。
+
+   原本打算让 `ContentBlock` 长出 `ImageSource { Inline | Stored }`，实现时否掉了：那样
+   provider 层要么认识 store、要么再被投影一次，测试也得拖一个 store 进来。把读盘收在
+   「日志 → messages」这一处等价且少一层；等出现第二个要区分来源的消费者（比如「查看原图」
+   走 GUI 而不是回放）再引入。
+
+7. **文件也进存储，但模型看到的是句柄。** 文件逐字节落盘（不归一化、不解析），prompt 里
+   给一段固定文案，说清楚：文件名、字节数、sha256 前 8 位、只读路径、"要改先复制"、
+   "委派子代理时把路径写进 prompt"。路径解析不出来（沙箱 / 远端执行）时换一句明说
+   "读不到，别声称读过"。这条替换当前的 `[附件文件]\n<paths>`：从"用户给的字符串"变成
+   "我们写的、校验过的副本"。
+
+   单文件上限 **64 MB**：超过则当场拒绝并提示"先拆分或压缩"，不产生临时文件。复制走流式
+   （分块读 → 写 `tmp/` → fsync），不把整个文件读进内存；中途失败就删掉临时文件。
+
+   实现注记：GUI 在选文件/拖文件的那一刻就落盘（输入框上方显示名字、大小、×），发送时
+   只传引用；`qc run --file <PATH>` 走同一条路。事件日志里存 `AttachmentRef::File`，
+   回放时用 `file_handle_text` 重建同一段句柄文案——所以 resume 之后模型仍拿得到路径。
+
+8. **能力门控改为降级。** 模型 `capabilities().images == false` 时不丢弃图片，换成一行
+   占位文本：`[image omitted: this model accepts text only; <mime>, <bytes> bytes. The image
+   stays in the session log, so a model that accepts images can replay it.]`。日志里仍是引用，
+   换成支持视觉的模型重放就能看到原图。ADR-0035 §3 的"直接报错"改成"降级为文本"——报错
+   让用户没法继续，占位只损失一张图。
+
+9. **压缩照旧不看图片字节；请求有预算，超了就从最旧的开始卸载。** `compact.rs` 里图片按
+   `base64.len()/4` 估算，摘要输入里替换为占位文本。另外每个请求有图片预算
+   （`ImageBudget { max_bytes: 20 MB, max_images: 20 }`，按 base64 长度算），超了就把**最旧**
+   的图片换成占位文本 `[image omitted to fit the request image limits; …]`，最新的那张
+   最后才走——用户刚发的那张总能看到。
+
+   卸载**不写日志**：日志里仍是引用，下一个还有余量的请求会把它读回来。因为重建是确定的
+   （同样的 messages 进、同样的占位出），重放不需要额外事件，也就不必动事件 schema。
+
+   实现注记：`offload_images` 与"模型不支持视觉"时的 `omit_images` 是两条独立路径——前者
+   预算问题，后者能力问题，占位文案也不同，读请求日志时能分清是哪种原因。
+
+**边界（明确不做）**
+
+1. **不做 PDF / docx / 表格解析。** 文件只给路径，抽文本交给 agent 跑工具。一旦附件层开始
+   理解格式，就要背 PDF 解析、扫描件 OCR、加密文档、字体子集——这些坑的收益远小于"把路径
+   交给一个会写代码的模型"。
+2. **只处理 8 位 sRGB 的静态首帧。** 16 位深度、CMYK、HEIC/AVIF 一律拒绝并给出明确错误；
+   动图（GIF/WebP 动画）只取首帧，其余帧丢弃；不做色彩管理（不转 ICC），不做无损 WebP 编码。
+3. **不做 GC。** 删除会话不回收对象，对象只增不减。后续 `qc doctor --gc` 扫"日志里没有
+   引用"的对象，而不是在删除路径上做引用计数——那条路要处理崩溃中途、并发会话、跨会话
+   共享三种情况，收益不成比例。
+4. **不做跨会话共享语义。** 同一 sha 在不同会话指向同一份字节（去重是存储层的事），但
+   引用永远属于某一条会话日志。
+5. **TUI 不渲染图片。** 只显示 `[图片 1568x1024, 228 KB]`；渲染留给 GUI。
+6. **ACP 的 `promptCapabilities.image` 暂时保持 false。** 日志能重放之后技术上没障碍，但
+   这是一条新的输入面，等 GUI 路径稳定后再开。
+
+**验证**
+
+- `qcode-attachments`（新 crate，纯逻辑 + 临时目录）：写入→读回字节一致；同内容二次写入
+  不产生第二个对象；`<2>` 分片路径可预测；文件名清洗（`../`、Windows 全路径、控制字符、
+  超长 UTF-8）；只读位真的只读；对象被删后读取报"缺失"而不是 panic；文件上限 64 MB 通过、
+  64 MB + 1 字节被拒，且 `tmp/` 里不残留半个文件。
+- `qcode-attachments` 的归一化：PNG/JPEG/WebP/GIF 各解一张，尺寸与 mime 以**解码结果**为准
+  （声明成 PNG 实际是 JPEG 的输入要被识破）；EXIF 方向 6 的 JPEG 摆正后宽高互换；带 alpha
+  的 PNG 缩放后 alpha 仍在；超 2 MB 时质量阶梯真的降到下一档；`origin` 与 `id` 可分别读回，
+  字节相同时只落一份。
+- `qcode-core`：带 ref 的 `UserMessage` 序列化快照（v7）；`messages_from_events_with` 用
+  store 作 loader 时从带图日志重建出 `ContentBlock::Image`，loader 返回 `None` 时只是丢图、
+  不报错；不带 `attachments` 的老日志仍解析成功；压缩后摘要输入里没有 base64。
+- `qcode-providers`：回放重建出的 user 消息，与首次发送时直接把字节塞进去的结果**逐字节
+  相同**——这是"回放等于首次发送"的硬保证。
+- `qcode-gui`：粘贴→缩略图出现；选择文件→卡片显示名字与大小；发送后转录区用户消息带图；
+  重启后同一会话仍显示。
+- 手工：`--data-dir` 临时目录跑完整流程，再删掉对象文件，确认 GUI 显示"图片已不可用"而
+  不是崩溃。
+
+**待定**
+
+1. 归一化参数：2048 长边 / 2 MB / 三档质量是否合适。视觉模型那边单图 token 有上限，1568
+   通常已够，可能还要往下调。
+2. `qc doctor --gc` 的触发方式与保留策略：`originals/` 是否一起回收；"仍被引用但很久没打开"
+   的对象要不要按时间清扫。
+3. ACP 何时开图片输入。
+4. 解码依赖选型：`image` 一把梭（一个 crate 覆盖四种格式，代价是间接依赖较多），还是
+   `zune-jpeg` + `image-webp` + `png` 组合（体积更小，维护面更大）。

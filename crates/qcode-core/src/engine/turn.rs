@@ -14,6 +14,34 @@ impl Drop for TurnTemp {
 /// deliberate retry (`cargo test` twice).
 pub(crate) const MAX_IDENTICAL_ROUNDS: u32 = 3;
 
+/// What the user's client sends when it continues a paused turn. The marker
+/// stays first so a log reader (and the model) can tell it from a real message;
+/// the rest is the instruction, because the transcript above it carries the task
+/// but not the "don't redo what is done" part.
+pub const CONTINUE_PROMPT: &str = "[continue] 按你上面的计划接着做；已完成的部分不要重做，\
+也不要重复调用同样的工具。如果已经做完，直接给出结论。";
+
+/// The instruction a paused turn's wrap-up sends: stop working, write the note.
+/// The frontends all send this text, so the wording lives next to
+/// [`CONTINUE_PROMPT`] instead of being retyped per UI (ADR-0060 §2.5).
+pub const WRAP_UP_PROMPT: &str = "[wrap-up] 请收尾：不要再调用工具，用不超过 15 行总结这次做了什么、\
+没做什么、还剩什么需要人工处理。";
+
+/// Fraction of a cost budget the loop may spend before it stops. The budget is
+/// a wall, but a call that costs $0.40 cannot be un-placed once it is sent, so
+/// the brake fires slightly early (ADR-0060 §2.2).
+pub(crate) const COST_BRAKE_RATIO: f64 = 0.95;
+
+/// Fraction of a budget at which the "close to the limit" hint fires.
+pub(crate) const BUDGET_HINT_RATIO: f64 = 0.75;
+
+/// The instruction for the hand-off call: one tool-less response that says where
+/// the turn stopped, so the next turn (or the user) can pick it up.
+pub(crate) const HAND_OFF_PROMPT: &str = "You are about to stop: you have no budget left for \
+     another step. Do not call tools. In at most 12 lines, write the hand-off for whoever \
+     continues this task: 已完成 (what is done), 未完成 (what is left), 建议下一步 (the next \
+     concrete action). Plain text, no preamble.";
+
 /// Guards against a model that keeps asking for the same call.
 ///
 /// Compares *consecutive rounds* by name+arguments: a retry with different
@@ -69,26 +97,42 @@ where
     if options.max_cost_usd.is_some() && options.pricing.is_none() {
         return Err(EngineError::MissingPricing);
     }
-    if !options.attachments.is_empty() && !ctx.provider.capabilities().images {
-        return Err(EngineError::ImagesUnsupported);
-    }
+
+    // The window number and the paused turn it continues are the engine's to
+    // decide, from the log: a frontend that sends a stale or forged value must
+    // not be able to claim a fresh budget (ADR-0060 §2.11).
+    let mut events = ctx.store.load(options.session_id)?;
+    let window_no = budget_window(&events);
+    let continuation = options.continuation.clone().map(|mut continuation| {
+        continuation.window = window_no + 1;
+        continuation.turn = events.last().map(|event| event.turn).unwrap_or(0);
+        continuation
+    });
+
+    // Bytes go to the store first, so the log entry below can name them and a
+    // resumed turn can read them back (ADR-0061 §3).
+    let attachment_store = qcode_attachments::AttachmentStore::open(ctx.store.root())?;
+    let attachments = super::attachments::store_sources(&attachment_store, &options.attachments)?;
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
-    writer.begin_turn(&options.input, &mut on_event)?;
-
-    let mut events = ctx.store.load(options.session_id)?;
-    let mut messages = history::messages_from_events(&events);
-    // Images ride on the last user message. The event log keeps the text only,
-    // so a resumed turn replays without them (ADR-0035).
-    if !options.attachments.is_empty()
-        && let Some(message) = messages.iter_mut().rev().find(|m| m.role == Role::User)
-    {
-        for attachment in &options.attachments {
-            message.blocks.push(ContentBlock::Image {
-                mime_type: attachment.mime_type.clone(),
-                data_base64: attachment.data_base64.clone(),
-            });
-        }
+    writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
+    events = ctx.store.load(options.session_id)?;
+    let mut messages = history::messages_from_events_with(
+        &events,
+        |image| attachment_store.read_image(image).ok(),
+        |file| super::attachments::file_handle_text(&attachment_store, file),
+    );
+    // A model without image input still gets a usable turn: the picture becomes
+    // a line of text naming what was attached (ADR-0061 §8).
+    if !ctx.provider.capabilities().images {
+        super::attachments::omit_images(&mut messages);
+    } else {
+        // Even a vision model has a request budget: past a few pictures, the
+        // oldest ones become placeholders and the newest still gets through.
+        super::attachments::offload_images(
+            &mut messages,
+            super::attachments::ImageBudget::default(),
+        );
     }
     // The todo list is session state rebuilt from the log, so a resumed or
     // forked session starts with the list the model last saw.
@@ -122,6 +166,8 @@ where
     let mut progress = ProgressGuard::new();
     let mut total_usage = Usage::default();
     let mut total_cost = 0.0;
+    let mut hint_sent = false;
+    let mut last_text = String::new();
     loop {
         if options.cancel.is_cancelled() {
             return finish(
@@ -134,34 +180,55 @@ where
                 options.session_id,
                 turns,
                 options.inbox.as_deref(),
+                None,
                 &mut on_event,
             );
         }
 
         turns += 1;
         if turns > options.max_turns {
-            let message = format!(
-                "exceeded max turns ({}): raise [agent] max_turns or pass --max-turns, \
-                 or send another message to keep going",
-                options.max_turns
-            );
-            writer.append(
-                EventKind::Error(ErrorEvent {
-                    kind: "max_turns".to_string(),
-                    message,
-                    retryable: false,
-                }),
-                &mut on_event,
-            )?;
-            writer.append(
-                EventKind::TurnEnded(TurnEnded {
-                    status: TurnStatus::Failed,
-                    usage: total_usage.clone(),
+            let pause = PauseInfo {
+                reason: PauseReason::MaxTurns,
+                limit: PauseLimit::Turns(options.max_turns),
+                used: PauseUsage {
+                    turns: options.max_turns,
                     cost_usd: total_cost,
-                }),
+                },
+                window: window_no,
+                summary: None,
+            };
+            let (pause, usage, cost) =
+                hand_off(ctx, &options, &messages, &mut writer, pause, &mut on_event).await;
+            total_usage.merge(&usage);
+            total_cost += cost;
+            return finish(
+                &mut writer,
+                TurnStatus::Paused,
+                total_usage,
+                total_cost,
+                last_text,
+                StopReason::EndTurn,
+                options.session_id,
+                turns,
+                options.inbox.as_deref(),
+                Some(pause),
                 &mut on_event,
-            )?;
-            return Err(EngineError::MaxTurns(options.max_turns));
+            );
+        }
+
+        // The hint fires once, on the first round that crosses 75%, and never on
+        // the round that pauses anyway.
+        if !hint_sent
+            && let Some(hint) = budget_hint(
+                turns,
+                options.max_turns,
+                total_cost,
+                options.max_cost_usd,
+                window_no,
+            )
+        {
+            writer.append(EventKind::BudgetHint(hint), &mut on_event)?;
+            hint_sent = true;
         }
 
         if let Some(window) = options.context_window
@@ -200,6 +267,7 @@ where
                                 options.session_id,
                                 turns,
                                 options.inbox.as_deref(),
+                                None,
                                 &mut on_event,
                             );
                         }
@@ -271,22 +339,30 @@ where
         // images ride only on this request's blocks (like the initial input).
         if let Some(inbox) = &options.inbox {
             for message in inbox.claim_next_step() {
+                // The refs go into the log too, so a resumed turn still sees
+                // the picture the user sent mid-turn.
+                let refs =
+                    super::attachments::store_sources(&attachment_store, &message.attachments)?;
                 writer.append(
                     EventKind::UserMessage(UserMessage {
                         starts_segment: true,
                         queued_id: Some(message.id.clone()),
                         text: message.text.clone(),
-                        attachments: Vec::new(),
+                        attachments: refs.clone(),
+                        // Steering is the user talking, not a continuation.
+                        continuation: None,
                     }),
                     &mut on_event,
                 )?;
-                let mut blocks = vec![ContentBlock::Text { text: message.text }];
-                blocks.extend(message.attachments.into_iter().map(|attachment| {
-                    ContentBlock::Image {
-                        mime_type: attachment.mime_type,
-                        data_base64: attachment.data_base64,
-                    }
-                }));
+                let mut blocks = history::blocks_for_message(
+                    &message.text,
+                    &refs,
+                    |image| attachment_store.read_image(image).ok(),
+                    |file| super::attachments::file_handle_text(&attachment_store, file),
+                );
+                if !ctx.provider.capabilities().images {
+                    super::attachments::omit_images_in(&mut blocks);
+                }
                 messages.push(Message {
                     role: Role::User,
                     blocks,
@@ -334,6 +410,10 @@ where
 
         // Partial output survives cancellation: the model may already have
         // said something useful before Ctrl-C.
+        let step_text = blocks_text(&collected.blocks);
+        if !step_text.trim().is_empty() {
+            last_text = step_text;
+        }
         if !collected.blocks.is_empty() {
             writer.append(
                 EventKind::AssistantMessage(AssistantMessage {
@@ -361,35 +441,40 @@ where
                 options.session_id,
                 turns,
                 options.inbox.as_deref(),
+                None,
                 &mut on_event,
             );
         }
 
         if let Some(limit) = options.max_cost_usd
-            && total_cost > limit
+            && total_cost > limit * COST_BRAKE_RATIO
         {
-            writer.append(
-                EventKind::Error(ErrorEvent {
-                    kind: "max_cost".to_string(),
-                    message: format!(
-                        "estimated cost ${total_cost:.6} exceeded --max-cost ${limit:.6}"
-                    ),
-                    retryable: false,
-                }),
-                &mut on_event,
-            )?;
-            writer.append(
-                EventKind::TurnEnded(TurnEnded {
-                    status: TurnStatus::Failed,
-                    usage: total_usage.clone(),
+            let pause = PauseInfo {
+                reason: PauseReason::MaxCost,
+                limit: PauseLimit::Usd(limit),
+                used: PauseUsage {
+                    turns,
                     cost_usd: total_cost,
-                }),
+                },
+                window: window_no,
+                summary: None,
+            };
+            // A spent cost budget buys no more calls, so the hand-off is built
+            // from what the log already knows instead of asking the model.
+            let pause = with_local_summary(ctx, &options, &events, pause);
+            return finish(
+                &mut writer,
+                TurnStatus::Paused,
+                total_usage,
+                total_cost,
+                last_text,
+                StopReason::EndTurn,
+                options.session_id,
+                turns,
+                options.inbox.as_deref(),
+                Some(pause),
                 &mut on_event,
-            )?;
-            return Err(EngineError::MaxCost {
-                spent: total_cost,
-                limit,
-            });
+            );
         }
 
         let calls: Vec<ToolCallBlock> = collected
@@ -421,6 +506,7 @@ where
                 options.session_id,
                 turns,
                 options.inbox.as_deref(),
+                None,
                 &mut on_event,
             );
         }
@@ -450,6 +536,7 @@ where
                     status: TurnStatus::Failed,
                     usage: total_usage.clone(),
                     cost_usd: total_cost,
+                    pause: None,
                 }),
                 &mut on_event,
             )?;
@@ -460,16 +547,38 @@ where
         // before they touch it. A snapshot failure must not fail the turn: the
         // write still has to happen.
         if let Some(snapshots) = ctx.snapshots {
+            // The cap is charged per turn, so one turn's several shell commands
+            // report it once instead of once per call.
+            let mut capped_reported = false;
             for call in &calls {
                 // A shell command can write anywhere, so guessing paths from the
                 // command line would lose files. When enabled, copy the tree.
                 if call.name == "run_shell" && snapshots.shell_enabled() {
                     match snapshots.snapshot_tree(options.session_id, turns, &options.cwd) {
-                        Ok(report) if report.capped => tracing::warn!(
-                            files = report.files,
-                            bytes = report.bytes,
-                            "workspace snapshot hit its size cap; rollback may be partial"
-                        ),
+                        // The cap is per turn, so report it once per turn. A turn
+                        // that was already full adds nothing: saying "hit its cap"
+                        // there reads like a new truncation and repeats forever on
+                        // turns recorded before toolchain caches were skipped.
+                        Ok(report) if report.capped => {
+                            if !capped_reported {
+                                capped_reported = true;
+                                if report.added_bytes > 0 {
+                                    tracing::warn!(
+                                        files = report.files,
+                                        bytes = report.bytes,
+                                        "workspace snapshot hit its size cap; rollback may be \
+                                         partial"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        files = report.files,
+                                        bytes = report.bytes,
+                                        "workspace snapshot for this turn is already at its size \
+                                         cap; nothing added"
+                                    );
+                                }
+                            }
+                        }
                         Ok(_) => {}
                         Err(error) => {
                             tracing::warn!(%error, "cannot snapshot the workspace before run_shell")
@@ -515,6 +624,7 @@ where
                 options.session_id,
                 turns,
                 options.inbox.as_deref(),
+                None,
                 &mut on_event,
             );
         }
@@ -531,6 +641,166 @@ pub(crate) fn blocks_text(blocks: &[ContentBlock]) -> String {
         .collect()
 }
 
+/// Budget window for this turn: 1 unless the turn's user message is a
+/// continuation, in which case it is that continuation's window.
+fn budget_window(events: &[Event]) -> u32 {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => Some(
+                message
+                    .continuation
+                    .as_ref()
+                    .map(|continuation| continuation.window.max(1))
+                    .unwrap_or(1),
+            ),
+            _ => None,
+        })
+        .unwrap_or(1)
+}
+
+/// The one-off 75% notice, or `None` while the turn is still comfortable.
+///
+/// Either budget can trigger it: a turn on round 48 of 64 is worth warning
+/// about even if it has spent almost nothing, and a turn that has spent 75% of
+/// its money is worth warning about however many rounds it has left. A budget
+/// too small to have a comfortable quarter never warns at all (the pause card is
+/// two rounds away and says more).
+fn budget_hint(
+    turns: u32,
+    max_turns: u32,
+    cost_usd: f64,
+    max_cost_usd: Option<f64>,
+    window: u32,
+) -> Option<BudgetHint> {
+    let near_turns = turns as f64 >= max_turns as f64 * BUDGET_HINT_RATIO;
+    let near_cost =
+        max_cost_usd.is_some_and(|limit| limit > 0.0 && cost_usd >= limit * BUDGET_HINT_RATIO);
+    if !near_turns && !near_cost {
+        return None;
+    }
+    // A hint on the last round is noise: the pause card is about to say the
+    // same thing with more detail.
+    if turns >= max_turns || max_cost_usd.is_some_and(|limit| cost_usd >= limit * COST_BRAKE_RATIO)
+    {
+        return None;
+    }
+    Some(BudgetHint {
+        turns,
+        max_turns,
+        cost_usd,
+        max_cost_usd,
+        window,
+    })
+}
+
+/// Ask the model for the hand-off summary, then return the pause with it.
+///
+/// The call is tool-less and one-shot: if it fails or the user cancels, the
+/// pause still happens and the locally derived summary stands in. Running out
+/// of budget must never turn into an error (ADR-0060 §2.2).
+async fn hand_off<F>(
+    ctx: TurnContext<'_>,
+    options: &RunOptions<'_>,
+    messages: &[Message],
+    writer: &mut SessionWriter<'_>,
+    pause: PauseInfo,
+    on_event: &mut F,
+) -> (PauseInfo, Usage, f64)
+where
+    F: FnMut(&Event),
+{
+    let mut messages = messages.to_vec();
+    messages.push(Message {
+        role: Role::User,
+        blocks: vec![ContentBlock::Text {
+            text: HAND_OFF_PROMPT.to_string(),
+        }],
+        tool_call_id: None,
+    });
+    let request = CompletionRequest {
+        model: options.model.to_string(),
+        system: SYSTEM_PROMPT.to_string(),
+        messages,
+        tools: Vec::new(),
+        max_output_tokens: Some(1024),
+    };
+    match collect_stream(ctx.provider, request, &options.cancel, None).await {
+        Ok(collected) => {
+            let usage = collected.usage.clone();
+            let cost = options
+                .pricing
+                .as_ref()
+                .map(|pricing| pricing.cost_usd(&usage))
+                .unwrap_or(0.0);
+            let text = blocks_text(&collected.blocks);
+            let text = text.trim();
+            // The summary is what the next turn reads; persist it as an
+            // assistant message so a replay shows the same hand-off.
+            if !text.is_empty() {
+                let stored = writer.append(
+                    EventKind::AssistantMessage(AssistantMessage {
+                        blocks: vec![ContentBlock::Text {
+                            text: text.to_string(),
+                        }],
+                        provider_raw: serde_json::Value::Null,
+                        usage: usage.clone(),
+                    }),
+                    on_event,
+                );
+                if stored.is_err() {
+                    tracing::warn!("cannot persist the hand-off summary");
+                }
+            }
+            let pause = PauseInfo {
+                summary: (!text.is_empty()).then(|| text.to_string()),
+                ..pause
+            };
+            (pause, usage, cost)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "hand-off summary failed; pausing without it");
+            (pause, Usage::default(), 0.0)
+        }
+    }
+}
+
+/// Fill in a hand-off from the log when no call can be made (the cost budget is
+/// already spent). Never empty, so the card always says something true.
+fn with_local_summary(
+    ctx: TurnContext<'_>,
+    options: &RunOptions<'_>,
+    _events: &[Event],
+    pause: PauseInfo,
+) -> PauseInfo {
+    let events = ctx.store.load(options.session_id).unwrap_or_default();
+    let report = crate::progress::report(&events, Some(pause.used.turns.max(1)));
+    let report = if report.is_empty() {
+        crate::progress::report(&events, None)
+    } else {
+        report
+    };
+    let mut summary = String::new();
+    match report.files_summary().as_deref() {
+        Some(files) => summary.push_str(files),
+        None => summary.push_str("本次没有改动文件"),
+    }
+    if report.tool_calls > 0 {
+        summary.push_str(&format!("\n调用了 {} 次工具", report.tool_calls));
+    }
+    if !report.failures.is_empty() {
+        summary.push_str(&format!("\n{} 次工具调用失败", report.failures.len()));
+    }
+    if !report.last_text.is_empty() {
+        summary.push_str(&format!("\n最后的说明：{}", report.last_text));
+    }
+    PauseInfo {
+        summary: Some(summary),
+        ..pause
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finish<F>(
     writer: &mut SessionWriter<'_>,
@@ -542,6 +812,7 @@ pub(crate) fn finish<F>(
     session_id: &str,
     turns: u32,
     inbox: Option<&Inbox>,
+    pause: Option<PauseInfo>,
     on_event: &mut F,
 ) -> Result<RunOutcome, EngineError>
 where
@@ -559,6 +830,7 @@ where
             status,
             usage: usage.clone(),
             cost_usd,
+            pause: pause.clone(),
         }),
         on_event,
     )?;
@@ -570,5 +842,6 @@ where
         cancelled: status == TurnStatus::Cancelled,
         usage,
         cost_usd,
+        pause,
     })
 }

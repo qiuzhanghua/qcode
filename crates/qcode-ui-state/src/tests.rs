@@ -129,11 +129,88 @@ fn slash_skill_name_activates_it_as_a_user_message() {
         queued_id: None,
         text,
         attachments: Vec::new(),
+
+        continuation: None,
     })));
     assert!(matches!(
         app.blocks.last(),
         Some(Block::Skill(text)) if text == "activated skill demo"
     ));
+}
+
+#[test]
+fn an_image_attachment_rides_on_the_question_row() {
+    use qcode_attachments::{AttachmentId, AttachmentRef, ImageMime, ImageRef};
+
+    let mut app = App::new("mock", "mock-1");
+    app.status.running = true;
+    app.apply(&event(EventKind::TurnStarted(
+        qcode_core::event::TurnStarted {
+            input: "what is this?".to_string(),
+        },
+    )));
+    let image = ImageRef {
+        id: AttachmentId::from_bytes([7; 32]),
+        mime: ImageMime::Png,
+        bytes: 1234,
+        width: 640,
+        height: 480,
+        origin: None,
+        name: Some("shot.png".to_string()),
+    };
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        starts_segment: true,
+        queued_id: None,
+        text: "what is this?".to_string(),
+        attachments: vec![AttachmentRef::Image(image)],
+        continuation: None,
+    })));
+
+    let Some(Block::User { images, .. }) = app.blocks.last() else {
+        panic!("expected the question row: {:?}", app.blocks);
+    };
+    let [row] = images.as_slice() else {
+        panic!("expected one picture on the question: {images:?}");
+    };
+    assert_eq!(row.id, "07".repeat(32));
+    assert_eq!(row.mime, "image/png");
+    assert_eq!((row.width, row.height), (640, 480));
+    assert_eq!(row.label, "shot.png");
+}
+
+#[test]
+fn a_file_attachment_rides_on_the_question_row() {
+    use qcode_attachments::{AttachmentId, AttachmentRef, FileRef};
+
+    let mut app = App::new("mock", "mock-1");
+    app.status.running = true;
+    app.apply(&event(EventKind::TurnStarted(
+        qcode_core::event::TurnStarted {
+            input: "read this".to_string(),
+        },
+    )));
+    let file = FileRef {
+        id: AttachmentId::from_bytes([9; 32]),
+        name: "notes.txt".to_string(),
+        bytes: 2048,
+    };
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        starts_segment: true,
+        queued_id: None,
+        text: "read this".to_string(),
+        attachments: vec![AttachmentRef::File(file)],
+        continuation: None,
+    })));
+
+    let Some(Block::User { files, .. }) = app.blocks.last() else {
+        panic!("expected the question row: {:?}", app.blocks);
+    };
+    let [row] = files.as_slice() else {
+        panic!("expected one file on the question: {files:?}");
+    };
+    assert_eq!(row.id, "09".repeat(32));
+    assert_eq!(row.name, "notes.txt");
+    assert_eq!(row.bytes, 2048);
 }
 
 #[test]
@@ -396,6 +473,7 @@ fn tool_result_updates_the_matching_row() {
         status: ToolStatus::Ok,
         output: "ok".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     match app.blocks.last() {
@@ -428,6 +506,7 @@ fn todo_write_result_becomes_a_todo_block() {
         status: ToolStatus::Ok,
         output: "Todo list (1/3 done):".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     match app.blocks.last() {
@@ -453,6 +532,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         status: ToolStatus::Ok,
         output: "Todo list (0/1 done):".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c2".to_string(),
@@ -464,6 +544,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         status: ToolStatus::Error,
         output: "item 1 has empty `content`".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     assert_eq!(
@@ -490,6 +571,7 @@ fn empty_todo_write_clears_the_list_with_a_notice() {
         status: ToolStatus::Ok,
         output: "todo list cleared".to_string(),
         metadata: Default::default(),
+        diff: None,
     })));
 
     assert!(matches!(
@@ -545,6 +627,8 @@ fn turns_track_input_process_answer_and_usage() {
             queued_id: None,
             text: "go".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -587,6 +671,8 @@ fn turns_track_input_process_answer_and_usage() {
                 ..Usage::default()
             },
             cost_usd: 0.01,
+
+            pause: None,
         }),
     ));
 
@@ -622,6 +708,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -645,6 +733,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             queued_id: Some("q1".to_string()),
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     app.apply(&Event::new(
@@ -666,6 +756,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             status: TurnStatus::Completed,
             usage: Usage::default(),
             cost_usd: 0.0,
+
+            pause: None,
         }),
     ));
 
@@ -674,11 +766,19 @@ fn steered_follow_up_message_becomes_its_own_turn() {
     let b = &app.turns[1];
     assert_eq!(
         app.blocks[a.input_block.expect("A has input")],
-        Block::User("A".to_string())
+        Block::User {
+            text: "A".to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+        }
     );
     assert_eq!(
         app.blocks[b.input_block.expect("B has input")],
-        Block::User("B".to_string())
+        Block::User {
+            text: "B".to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+        }
     );
     assert_eq!(a.process.len(), 1, "A 的工具属于 A");
     assert_eq!(b.process.len(), 1, "B 的工具属于 B");
@@ -708,6 +808,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     // v4 without the explicit marker: a second user message stays in the
@@ -721,13 +823,19 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             queued_id: None,
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
 
     assert_eq!(app.turns.len(), 1);
     assert_eq!(
         app.blocks[app.turns[0].input_block.expect("input")],
-        Block::User("A".to_string())
+        Block::User {
+            text: "A".to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+        }
     );
 }
 
@@ -751,6 +859,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             queued_id: None,
             text: "A".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     ));
     let mut older = Event::new(
@@ -762,6 +872,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             queued_id: None,
             text: "B".to_string(),
             attachments: Vec::new(),
+
+            continuation: None,
         }),
     );
     older.v = 3;
@@ -770,7 +882,11 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
     assert_eq!(app.turns.len(), 2, "v3 日志仍用启发式拆分");
     assert_eq!(
         app.blocks[app.turns[1].input_block.expect("B has input")],
-        Block::User("B".to_string())
+        Block::User {
+            text: "B".to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+        }
     );
 }
 
@@ -795,6 +911,8 @@ fn turns_are_closed_and_indexed_independently() {
                 queued_id: None,
                 text: input.to_string(),
                 attachments: Vec::new(),
+
+                continuation: None,
             }),
         ));
         app.apply(&Event::new(
@@ -817,6 +935,8 @@ fn turns_are_closed_and_indexed_independently() {
                 status: TurnStatus::Completed,
                 usage: Usage::default(),
                 cost_usd: 0.0,
+
+                pause: None,
             }),
         ));
     }
@@ -955,6 +1075,7 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             status: ToolStatus::Ok,
             output: "contents".to_string(),
             metadata: Default::default(),
+            diff: None,
         }),
     ));
     app.apply_child(&child(
@@ -963,6 +1084,8 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             status: TurnStatus::Completed,
             usage: Usage::default(),
             cost_usd: 0.0,
+
+            pause: None,
         }),
     ));
 
@@ -1124,6 +1247,8 @@ fn turn_ended_updates_status_and_cost() {
         status: TurnStatus::Completed,
         usage: Usage::default(),
         cost_usd: 0.000_015,
+
+        pause: None,
     })));
     assert!(!app.status.running);
     assert_eq!(app.status.last, Some(TurnStatus::Completed));
@@ -1187,6 +1312,8 @@ fn composer_state_tracks_pending_and_restoring() {
         status: TurnStatus::Completed,
         usage: Usage::default(),
         cost_usd: 0.0,
+
+        pause: None,
     })));
     assert_eq!(app.composer_state(), ComposerState::Idle);
 }
@@ -1266,6 +1393,74 @@ fn steering_commands_map_to_frontend_actions() {
 }
 
 #[test]
+fn diff_command_lists_changes_and_prints_a_patch() {
+    use qcode_core::event::{DiffFileStat, DiffKind, ToolDiff, ToolResult, ToolStatus};
+
+    let mut app = App::new("mock", "mock-1");
+    app.apply(&event(EventKind::ToolCall(qcode_core::event::ToolCall {
+        call_id: "c1".to_string(),
+        name: "edit_file".to_string(),
+        arguments: serde_json::json!({"path": "notes.md"}),
+    })));
+    app.apply(&event(EventKind::ToolResult(ToolResult {
+        call_id: "c1".to_string(),
+        status: ToolStatus::Ok,
+        output: "replaced 1 occurrence(s) in @workspace/notes.md".to_string(),
+        metadata: Default::default(),
+        diff: Some(ToolDiff {
+            patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".to_string(),
+            files: vec![DiffFileStat {
+                path: "notes.md".to_string(),
+                kind: DiffKind::Modified,
+                additions: 1,
+                deletions: 1,
+                bytes: 2,
+            }],
+            truncated: false,
+        }),
+    })));
+
+    app.run_command("/diff");
+    let listing = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a listing");
+    assert!(listing.contains("file changes (1)"), "{listing}");
+    assert!(listing.contains("edit_file"), "{listing}");
+    assert!(listing.contains("+1 -1"), "{listing}");
+
+    app.run_command("/diff 1");
+    let patch = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a patch");
+    assert!(patch.contains("+1\n"), "{patch}");
+    assert!(patch.contains("--- a/notes.md"), "{patch}");
+
+    app.run_command("/diff 2");
+    let out_of_range = app
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            Block::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("an error");
+    assert!(out_of_range.contains("usage"), "{out_of_range}");
+}
+
+#[test]
 fn submitted_text_is_rendered_once_the_event_arrives() {
     let mut app = App::new("mock", "mock-1");
     app.composer.apply(InputEvent::InsertStr("hi".to_string()));
@@ -1275,8 +1470,17 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
         queued_id: None,
         text: "hi".to_string(),
         attachments: Vec::new(),
+
+        continuation: None,
     })));
-    assert_eq!(app.blocks, vec![Block::User("hi".to_string())]);
+    assert_eq!(
+        app.blocks,
+        vec![Block::User {
+            text: "hi".to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+        }]
+    );
 }
 
 #[test]
@@ -1328,4 +1532,73 @@ fn reset_transcript_keeps_configuration_and_clears_state() {
     assert_eq!(app.status.model, "deepseek-flash");
     assert_eq!(app.context_tokens, 0);
     assert!(app.child_groups.is_empty());
+}
+
+/// A session whose first turn ended paused on its turn budget.
+fn paused_session() -> App {
+    let mut app = App::new("mock", "mock-1");
+    app.apply(&event(EventKind::TurnStarted(TurnStarted {
+        input: "refactor it".to_string(),
+    })));
+    app.apply(&event(EventKind::UserMessage(UserMessage {
+        text: "refactor it".to_string(),
+        attachments: Vec::new(),
+        queued_id: None,
+        starts_segment: false,
+        continuation: None,
+    })));
+    app.apply(&event(EventKind::TurnEnded(qcode_core::event::TurnEnded {
+        status: qcode_core::event::TurnStatus::Paused,
+        usage: Usage::default(),
+        cost_usd: 0.4,
+        pause: Some(qcode_core::event::PauseInfo {
+            reason: qcode_core::event::PauseReason::MaxTurns,
+            limit: qcode_core::event::PauseLimit::Turns(64),
+            used: qcode_core::event::PauseUsage {
+                turns: 64,
+                cost_usd: 0.4,
+            },
+            window: 1,
+            summary: Some("done: half\nleft: the rest".to_string()),
+        }),
+    })));
+    app
+}
+
+#[test]
+fn continue_requires_a_paused_turn() {
+    let mut app = App::new("mock", "mock-1");
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), None);
+    // Nothing paused: the command explains itself instead of starting a turn.
+    assert!(!app.status.running);
+    assert!(matches!(
+        app.blocks.last(),
+        Some(Block::Notice(text)) if text.contains("nothing is paused")
+    ));
+}
+
+#[test]
+fn continue_and_wrap_actions_on_a_paused_turn() {
+    let mut app = paused_session();
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), Some(UiAction::Continue));
+    assert!(app.status.running);
+
+    let mut app = paused_session();
+    type_text(&mut app, "/wrap");
+    assert_eq!(press(&mut app, "enter"), Some(UiAction::WrapUp));
+    assert!(app.status.running);
+}
+
+#[test]
+fn continue_is_refused_while_a_turn_runs() {
+    let mut app = paused_session();
+    app.status.running = true;
+    type_text(&mut app, "/continue");
+    assert_eq!(press(&mut app, "enter"), None);
+    assert!(matches!(
+        app.blocks.last(),
+        Some(Block::Notice(text)) if text.contains("already running")
+    ));
 }

@@ -25,14 +25,14 @@ use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::component::{Icon, Size};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use qcode_core::event::ToolStatus;
+use qcode_core::event::{ToolDiff, ToolStatus};
 use qcode_core::task::{RootAccess, RootState};
 use qcode_ui_bridge::QueueOp;
 use qcode_ui_state::{App, Block};
 
 mod dialogs;
 mod main;
-mod rail;
+pub(crate) mod rail;
 mod sidebar;
 mod transcript;
 
@@ -50,8 +50,12 @@ impl Render for Shell {
             height: bounds.size.height.as_f32(),
         };
         if self.prefs.window_geometry.as_ref() != Some(&geometry) {
-            self.prefs.window_geometry = Some(geometry);
-            if let Err(error) = self.prefs.save(&self.data_dir) {
+            self.prefs.window_geometry = Some(geometry.clone());
+            // 几何是无主字段的“高频写入”，必须只写自己这一项：整份覆盖会把
+            // 设置窗口/引擎刚写进 gui.json 的 `last_session` 冲回旧值。
+            if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
+                prefs.window_geometry = Some(geometry);
+            }) {
                 eprintln!("qcode-gui: cannot save window geometry: {error}");
             }
         }
@@ -60,7 +64,7 @@ impl Render for Shell {
             .relative()
             .flex()
             .flex_row()
-            .key_context(if self.approvals.current().is_some() {
+            .key_context(if self.ui.approvals.current().is_some() {
                 "Approval"
             } else {
                 "Chat"
@@ -118,7 +122,8 @@ impl Render for Shell {
                 if this.minimize_on_close {
                     // 关闭 = 隐藏到托盘：窗口从任务栏消失，只留托盘图标
                     // （ADR-0052）。最小化还会把图标留在任务栏。
-                    tray::hide_window(window);
+                    // 动作回调持有 `&mut App`，用延迟版本避开重入借用。
+                    tray::hide_window_later(window, cx);
                 } else {
                     window.remove_window();
                 }

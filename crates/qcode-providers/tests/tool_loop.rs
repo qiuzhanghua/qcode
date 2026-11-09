@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::approval::{AutoApprove, AutoDeny};
-use qcode_core::engine::{EngineError, RunOptions, TurnContext, run_turn};
-use qcode_core::event::{EventKind, SessionStarted, ToolStatus, TurnStatus};
+use qcode_core::engine::{RunOptions, TurnContext, run_turn};
+use qcode_core::event::{
+    Continuation, EventKind, PauseLimit, PauseReason, SessionStarted, ToolStatus, TurnStatus,
+};
 use qcode_core::policy::{Action, Policy, Rule};
 use qcode_core::provider::{
     Capabilities, CompletionRequest, EventStream, Provider, ProviderError, StopReason, StreamEvent,
@@ -134,6 +136,8 @@ async fn executes_tool_and_continues() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )
@@ -200,6 +204,8 @@ async fn denial_is_reported_to_the_model() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )
@@ -255,6 +261,8 @@ async fn asking_without_a_tty_denies() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )
@@ -279,16 +287,22 @@ async fn asking_without_a_tty_denies() {
 }
 
 #[tokio::test]
-async fn max_turns_stops_the_loop() {
+async fn max_turns_pauses_the_loop() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new(dir.path().join("data"));
     let (id, _) = store.create(&meta()).unwrap();
 
-    let provider = MockProvider::scripted(vec![tool_response("fake"), tool_response("fake")]);
+    // Two tool rounds exhaust a budget of two; the third scripted response is
+    // the tool-less hand-off the engine asks for before pausing.
+    let provider = MockProvider::scripted(vec![
+        tool_response("fake"),
+        tool_response("fake"),
+        text_response("已完成：读了两遍\n未完成：没写完\n建议下一步：继续"),
+    ]);
     let tools = ToolRegistry::new(vec![Arc::new(FakeTool)]);
     let policy = Policy::default();
 
-    let error = run_turn(
+    let outcome = run_turn(
         TurnContext {
             store: &store,
             provider: &provider,
@@ -313,13 +327,188 @@ async fn max_turns_stops_the_loop() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+            continuation: None,
         },
         |_| {},
     )
     .await
-    .unwrap_err();
+    .expect("a budget is not an error");
 
-    assert!(matches!(error, EngineError::MaxTurns(2)));
+    let pause = outcome.pause.expect("paused");
+    assert_eq!(pause.reason, PauseReason::MaxTurns);
+    assert_eq!(pause.limit, PauseLimit::Turns(2));
+    assert_eq!(pause.used.turns, 2);
+    assert_eq!(pause.window, 1);
+    assert!(
+        pause.summary.as_deref().unwrap_or("").contains("未完成"),
+        "the hand-off is kept: {:?}",
+        pause.summary
+    );
+    assert!(!outcome.cancelled);
+
+    let events = store.load(&id).unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::Error(_))),
+        "pausing must not write an error event"
+    );
+    let ended = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnEnded(ended) => Some(ended),
+            _ => None,
+        })
+        .expect("turn ended");
+    assert_eq!(ended.status, TurnStatus::Paused);
+    assert!(ended.pause.as_ref().is_some_and(|p| p.summary.is_some()));
+}
+
+/// The hand-off is one tool-less call: it must not consume a tool round, or a
+/// model that used every round could never say what it left unfinished.
+#[tokio::test]
+async fn the_hand_off_call_never_asks_for_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+
+    let provider = MockProvider::scripted(vec![
+        tool_response("fake"),
+        text_response("已完成：x\n未完成：y\n建议下一步：z"),
+    ]);
+    let tools = ToolRegistry::new(vec![Arc::new(FakeTool)]);
+    let policy = Policy::default();
+
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        RunOptions {
+            session_id: &id,
+            model: "mock-1",
+            input: "go".to_string(),
+            cwd: dir.path().to_path_buf(),
+            max_turns: 1,
+            cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
+            on_delta: None,
+            context_window: None,
+            agents_md: None,
+            skills: None,
+            network: None,
+            attachments: Vec::new(),
+            inbox: None,
+            continuation: None,
+        },
+        |_| {},
+    )
+    .await
+    .expect("paused");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2, "one tool round + one hand-off");
+    assert!(
+        requests[1].tools.is_empty(),
+        "the hand-off must not offer tools"
+    );
+    let prompt = &requests[1]
+        .messages
+        .last()
+        .expect("hand-off message")
+        .blocks[0];
+    assert!(
+        format!("{prompt:?}").contains("hand-off"),
+        "the hand-off is prompted: {prompt:?}"
+    );
+}
+
+#[tokio::test]
+async fn continuing_a_paused_turn_opens_the_next_budget_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+    let tools = ToolRegistry::new(vec![Arc::new(FakeTool)]);
+    let policy = Policy::default();
+
+    let options = |input: &'static str, continuation| RunOptions {
+        session_id: &id,
+        model: "mock-1",
+        input: input.to_string(),
+        cwd: dir.path().to_path_buf(),
+        max_turns: 1,
+        cancel: CancellationToken::new(),
+        pricing: None,
+        max_cost_usd: None,
+        on_delta: None,
+        context_window: None,
+        agents_md: None,
+        skills: None,
+        network: None,
+        attachments: Vec::new(),
+        inbox: None,
+        continuation,
+    };
+
+    // First window: one tool round then a pause. The window is recorded on the
+    // injected user message by the engine, so a stale frontend value cannot
+    // forge a fresh budget.
+    let provider = MockProvider::scripted(vec![tool_response("fake")]);
+    let first = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        options("go", None),
+        |_| {},
+    )
+    .await
+    .expect("paused");
+    assert_eq!(first.pause.expect("paused").window, 1);
+
+    let provider = MockProvider::text("继续做完了");
+    let second = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+        },
+        options("继续", Some(Continuation::default())),
+        |_| {},
+    )
+    .await
+    .expect("completed");
+    assert!(second.pause.is_none(), "the second window finished");
+
+    let events = store.load(&id).unwrap();
+    let windows: Vec<u32> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::UserMessage(message) => message.continuation.as_ref().map(|c| c.window),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(windows, vec![2], "only the continuation opens a new window");
+    let paused: Vec<u32> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::TurnEnded(ended) => ended.pause.as_ref().map(|pause| pause.window),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paused, vec![1], "only the first window ran out");
 }
 
 /// Blocks until the run is cancelled, the way `run_shell` blocks on a child.
@@ -416,6 +605,8 @@ async fn cancellation_stops_a_running_tool() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     );
@@ -479,6 +670,8 @@ async fn cancellation_stops_a_hanging_stream() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     );

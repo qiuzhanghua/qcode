@@ -110,6 +110,8 @@ async fn truncated_output_is_written_to_disk() {
             network: None,
             attachments: Vec::new(),
             inbox: None,
+
+            continuation: None,
         },
         |_| {},
     )

@@ -1,6 +1,7 @@
 //! Built-in tools. Every path is resolved against the workspace and every
 //! write is atomic (temp file + rename).
 
+pub mod diff;
 pub mod fetch;
 pub mod fs;
 pub mod patch;

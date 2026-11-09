@@ -89,6 +89,8 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         network: None,
         attachments: Vec::new(),
         inbox: None,
+
+        continuation: None,
     }
 }
 

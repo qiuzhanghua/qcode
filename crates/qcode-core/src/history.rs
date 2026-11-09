@@ -4,10 +4,66 @@
 //! (or a fork) reconstructs the conversation instead of relying on in-memory
 //! provider state.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use qcode_attachments::{AttachmentRef, FileRef, ImageRef};
+
 use crate::event::{ContentBlock, Event, EventKind};
 use crate::provider::{Message, Role};
 
 pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
+    messages_from_events_with(events, |_| None, |_| String::new())
+}
+
+/// The blocks one user message turns into: the text, then a block per
+/// attachment. `load` returns `None` when the object is gone (the reference
+/// stays in the log, so a later pass can serve it); `describe_file` returns the
+/// handle text for a stored file, or an empty string to skip it.
+pub fn blocks_for_message<F, G>(
+    text: &str,
+    attachments: &[AttachmentRef],
+    mut load: F,
+    mut describe_file: G,
+) -> Vec<ContentBlock>
+where
+    F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+    G: FnMut(&FileRef) -> String,
+{
+    let mut blocks = vec![ContentBlock::Text {
+        text: text.to_string(),
+    }];
+    for attachment in attachments {
+        match attachment {
+            AttachmentRef::Image(image) => {
+                if let Some(bytes) = load(image) {
+                    blocks.push(ContentBlock::Image {
+                        mime_type: image.mime.as_str().to_string(),
+                        data_base64: BASE64.encode(bytes),
+                    });
+                }
+            }
+            AttachmentRef::File(file) => {
+                let text = describe_file(file);
+                if !text.is_empty() {
+                    blocks.push(ContentBlock::Text { text });
+                }
+            }
+        }
+    }
+    blocks
+}
+
+/// Like [`messages_from_events`], but expands stored references: images come
+/// back as bytes, files as the handle text the model reads (ADR-0061 §7).
+pub fn messages_from_events_with<F, G>(
+    events: &[Event],
+    mut load: F,
+    mut describe_file: G,
+) -> Vec<Message>
+where
+    F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+    G: FnMut(&FileRef) -> String,
+{
     // A compaction event replaces the seq range it names. Older compactions
     // nested inside a newer range are dropped with the rest of that range, so
     // only the newest summary survives.
@@ -37,13 +93,19 @@ pub fn messages_from_events(events: &[Event]) -> Vec<Message> {
                 }],
                 tool_call_id: None,
             }),
-            EventKind::UserMessage(message) => messages.push(Message {
-                role: Role::User,
-                blocks: vec![ContentBlock::Text {
-                    text: message.text.clone(),
-                }],
-                tool_call_id: None,
-            }),
+            EventKind::UserMessage(message) => {
+                let blocks = blocks_for_message(
+                    &message.text,
+                    &message.attachments,
+                    &mut load,
+                    &mut describe_file,
+                );
+                messages.push(Message {
+                    role: Role::User,
+                    blocks,
+                    tool_call_id: None,
+                });
+            }
             EventKind::AssistantMessage(message) => messages.push(Message {
                 role: Role::Assistant,
                 blocks: message.blocks.clone(),
@@ -79,6 +141,88 @@ mod tests {
         Event::new(seq, "s", 1, kind)
     }
 
+    /// A PNG header is enough for the store: it never decodes pixels.
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        bytes.extend_from_slice(&64u32.to_be_bytes());
+        bytes.extend_from_slice(&32u32.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn stored_images_come_back_in_the_user_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = qcode_attachments::AttachmentStore::open(dir.path()).expect("store");
+        let png = png_bytes();
+        let image = store
+            .put_image(qcode_attachments::NewImage {
+                bytes: &png,
+                mime: qcode_attachments::ImageMime::Png,
+                name: Some("shot.png"),
+            })
+            .expect("put image");
+
+        let events = vec![event(
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "look at this".into(),
+                attachments: vec![AttachmentRef::Image(image)],
+                continuation: None,
+            }),
+        )];
+
+        let messages = messages_from_events_with(
+            &events,
+            |image| store.read_image(image).ok(),
+            |_| String::new(),
+        );
+        let blocks = &messages[0].blocks;
+        assert_eq!(blocks.len(), 2, "text plus the image");
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text {
+                text: "look at this".into()
+            }
+        );
+        match &blocks[1] {
+            ContentBlock::Image {
+                mime_type,
+                data_base64,
+            } => {
+                assert_eq!(mime_type, "image/png");
+                assert_eq!(BASE64.decode(data_base64).unwrap(), png);
+            }
+            other => panic!("expected an image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_object_drops_the_image_instead_of_failing() {
+        let events = vec![event(
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: "gone".into(),
+                attachments: vec![AttachmentRef::Image(qcode_attachments::ImageRef {
+                    id: qcode_attachments::AttachmentId::from_bytes([7; 32]),
+                    mime: qcode_attachments::ImageMime::Png,
+                    bytes: 10,
+                    width: 1,
+                    height: 1,
+                    origin: None,
+                    name: None,
+                })],
+                continuation: None,
+            }),
+        )];
+
+        let messages = messages_from_events_with(&events, |_| None, |_| String::new());
+        assert_eq!(messages[0].blocks.len(), 1);
+    }
+
     #[test]
     fn compaction_replaces_its_range_with_a_summary() {
         use crate::event::Compaction;
@@ -91,6 +235,8 @@ mod tests {
                     queued_id: None,
                     text: "old question".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
             event(
@@ -121,6 +267,8 @@ mod tests {
                     queued_id: None,
                     text: "new question".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
         ];
@@ -146,6 +294,8 @@ mod tests {
                     queued_id: None,
                     text: "hi".into(),
                     attachments: vec![],
+
+                    continuation: None,
                 }),
             ),
             event(
@@ -167,6 +317,7 @@ mod tests {
                     status: ToolStatus::Ok,
                     output: "contents".into(),
                     metadata: Default::default(),
+                    diff: None,
                 }),
             ),
         ];

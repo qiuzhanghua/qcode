@@ -32,11 +32,51 @@ impl App {
                 if message.starts_segment || v3_heuristic {
                     self.split_turn(event);
                 }
-                self.ensure_turn(event);
+                let turn = self.ensure_turn(event);
+                self.turns[turn].continuation = message.continuation.clone();
                 if let Some(name) = activated_skill(&message.text) {
                     self.push_input(Block::Skill(format!("activated skill {name}")));
+                } else if message.continuation.is_some() {
+                    // "继续" is the engine's instruction, not something the user
+                    // typed: a continuation row reads as a strip, not a question.
+                    self.push_input(Block::Notice("继续上一次暂停的任务".to_string()));
                 } else {
-                    self.push_input(Block::User(message.text.clone()));
+                    self.push_input(Block::User {
+                        text: message.text.clone(),
+                        images: message
+                            .attachments
+                            .iter()
+                            .filter_map(|attachment| match attachment {
+                                qcode_attachments::AttachmentRef::Image(image) => {
+                                    Some(crate::ImageBlock {
+                                        id: image.id.to_hex(),
+                                        mime: image.mime.as_str().to_string(),
+                                        width: image.width,
+                                        height: image.height,
+                                        label: image
+                                            .name
+                                            .clone()
+                                            .unwrap_or_else(|| "pasted image".to_string()),
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                        files: message
+                            .attachments
+                            .iter()
+                            .filter_map(|attachment| match attachment {
+                                qcode_attachments::AttachmentRef::File(file) => {
+                                    Some(crate::FileBlock {
+                                        id: file.id.to_hex(),
+                                        name: file.name.clone(),
+                                        bytes: file.bytes,
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    });
                 }
             }
             EventKind::AssistantMessage(message) => {
@@ -88,7 +128,7 @@ impl App {
             }
             EventKind::ToolCall(call) => {
                 self.ensure_turn(event);
-                self.push_process(Block::Tool(ToolEntry {
+                self.push_process(Block::Tool(Box::new(ToolEntry {
                     call_id: call.call_id.clone(),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -100,13 +140,20 @@ impl App {
                     elapsed: None,
                     child: false,
                     group: None,
-                }));
+                    diff: None,
+                })));
             }
             EventKind::ToolResult(result) => {
                 let todo_update = self.tool_mut(&result.call_id).and_then(|tool| {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    // v5 records the diff with the result; older logs only have
+                    // the arguments, so rebuild what we can from those.
+                    tool.diff = result.diff.clone().or_else(|| {
+                        (event.v < 5)
+                            .then(|| crate::tool_diff::fallback(&tool.name, &tool.arguments))?
+                    });
                     if result.status != ToolStatus::Ok {
                         tool.expanded = true;
                     }
@@ -151,7 +198,25 @@ impl App {
                 self.status.running = false;
                 self.status.last = Some(ended.status);
                 self.status.cost_usd = ended.cost_usd;
-                self.close_turn(event, ended.status, ended.usage.clone(), ended.cost_usd);
+                if let Some(pause) = &ended.pause {
+                    // The engine counts windows; the UI only shows them.
+                    self.status.window = pause.window;
+                }
+                self.close_turn(
+                    event,
+                    ended.status,
+                    ended.usage.clone(),
+                    ended.cost_usd,
+                    ended.pause.clone(),
+                );
+            }
+            EventKind::BudgetHint(hint) => {
+                // A warning, not a transcript row: it belongs to the turn that
+                // is running out of budget (ADR-0060 §2.3).
+                self.budget_hint = Some(hint.clone());
+                if let Some(turn) = self.current_turn {
+                    self.turns[turn].budget = Some(hint.clone());
+                }
             }
             EventKind::Error(error) => {
                 self.push_process(Block::Notice(format!("{}: {}", error.kind, error.message)));
@@ -212,7 +277,7 @@ impl App {
                 }
             }
             EventKind::ToolCall(call) => {
-                self.push_process(Block::Tool(ToolEntry {
+                self.push_process(Block::Tool(Box::new(ToolEntry {
                     call_id: child_call_id(&group, &call.call_id),
                     name: call.name.clone(),
                     summary: summarize_call(&call.name, &call.arguments),
@@ -224,7 +289,8 @@ impl App {
                     elapsed: None,
                     child: true,
                     group: Some(group),
-                }));
+                    diff: None,
+                })));
             }
             EventKind::ToolResult(result) => {
                 let call_id = child_call_id(&group, &result.call_id);
@@ -232,6 +298,10 @@ impl App {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
+                    tool.diff = result.diff.clone().or_else(|| {
+                        (event.v < 5)
+                            .then(|| crate::tool_diff::fallback(&tool.name, &tool.arguments))?
+                    });
                 }
             }
             EventKind::Error(error) => {
@@ -256,6 +326,7 @@ impl App {
             // never owns the parent status line.
             EventKind::UserMessage(_)
             | EventKind::TurnStarted(_)
+            | EventKind::BudgetHint(_)
             | EventKind::ApprovalRequested(_)
             | EventKind::ApprovalDecided(_)
             | EventKind::TaskConfigured(_)
@@ -317,6 +388,9 @@ impl App {
             answer_block: None,
             usage: Usage::default(),
             cost_usd: 0.0,
+            pause: None,
+            budget: None,
+            continuation: None,
         });
         self.current_turn = Some(index);
     }
@@ -339,6 +413,9 @@ impl App {
             answer_block: None,
             usage: Usage::default(),
             cost_usd: 0.0,
+            pause: None,
+            budget: None,
+            continuation: None,
         });
         self.current_turn = Some(index);
     }
@@ -389,6 +466,7 @@ impl App {
         status: TurnStatus,
         usage: Usage,
         cost_usd: f64,
+        pause: Option<PauseInfo>,
     ) {
         // 排队追加的消息被拆成独立 turn 后，一次 run 可能同时开着多个 turn
         // （A 和插入其中的 B）；`turn_ended` 属于整个 run，把仍开着的全部收口。
@@ -400,6 +478,7 @@ impl App {
                 turn.status = Some(status);
                 turn.usage = usage.clone();
                 turn.cost_usd = cost_usd;
+                turn.pause = pause.clone();
             }
         }
     }
@@ -443,9 +522,17 @@ impl App {
         self.status.running = false;
     }
 
+    /// The row for `call_id`, if the call is still in the transcript.
+    pub fn tool(&self, call_id: &str) -> Option<&ToolEntry> {
+        self.blocks.iter().rev().find_map(|block| match block {
+            Block::Tool(tool) if tool.call_id == call_id => Some(tool.as_ref()),
+            _ => None,
+        })
+    }
+
     pub(crate) fn tool_mut(&mut self, call_id: &str) -> Option<&mut ToolEntry> {
         self.blocks.iter_mut().rev().find_map(|block| match block {
-            Block::Tool(tool) if tool.call_id == call_id => Some(tool),
+            Block::Tool(tool) if tool.call_id == call_id => Some(tool.as_mut()),
             _ => None,
         })
     }

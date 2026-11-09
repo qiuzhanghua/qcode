@@ -20,6 +20,8 @@ fn synthetic_events(count: usize) -> Vec<Event> {
                     queued_id: None,
                     text: format!("question {index}"),
                     attachments: Vec::new(),
+
+                    continuation: None,
                 })
             } else {
                 EventKind::AssistantMessage(AssistantMessage {

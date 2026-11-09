@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use async_trait::async_trait;
 use qcode_core::approval::{Answer, ApprovalRequest, Approver};
 use qcode_core::cost::Pricing;
-use qcode_core::engine::{EngineError, RunOptions, TurnContext, run_turn};
+use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::{ContentBlock as EventContent, Event, EventKind, SessionStarted};
 use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
@@ -298,6 +298,8 @@ impl Agent {
                 network: deps.network.clone(),
                 attachments: Vec::new(),
                 inbox: None,
+
+                continuation: None,
             },
             notify,
         )
@@ -307,12 +309,16 @@ impl Agent {
             state.running = false;
         }
 
+        // A budget pause keeps the protocol's own token for it: a client
+        // already reads `max_turn_requests` as "the model wants to keep going".
+        // What changes is that nothing is reported as an error first — the
+        // hand-off reaches the client as agent text (ADR-0060 §2.9).
         let stop_reason = match &outcome {
             Ok(out) if out.cancelled => "cancelled",
+            Ok(out) if out.pause.is_some() => "max_turn_requests",
             Ok(_) => "end_turn",
-            Err(EngineError::MaxTurns(_)) => "max_turn_requests",
-            // Every other failure already reached the client as an error
-            // chunk; the turn itself still ends normally.
+            // A failure already reached the client as an error chunk; the turn
+            // itself still ends normally.
             Err(_) => "end_turn",
         };
         tracing::info!(session_id, stop_reason, "acp prompt finished");
@@ -432,6 +438,21 @@ pub fn updates_for(event: &Event) -> Vec<SessionUpdate> {
         }
         // Errors are conversation-visible: the client shows them as text so a
         // failed turn is not silent.
+        // A paused turn says what it left unfinished, in the same channel as
+        // ordinary agent text: ACP has no card to hang it on.
+        EventKind::TurnEnded(ended) => ended
+            .pause
+            .as_ref()
+            .and_then(|pause| pause.summary.as_ref())
+            .map(|summary| {
+                vec![SessionUpdate::AgentMessageChunk {
+                    content: OutgoingContent::Text {
+                        text: format!("\n{summary}\n"),
+                    },
+                    message_id: None,
+                }]
+            })
+            .unwrap_or_default(),
         EventKind::Error(error) => vec![SessionUpdate::AgentMessageChunk {
             content: OutgoingContent::Text {
                 text: format!("\n[error] {}\n", error.message),

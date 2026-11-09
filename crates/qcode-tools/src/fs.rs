@@ -13,6 +13,28 @@ use crate::path::{self, Access};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 
+/// Run a synchronous filesystem operation off the runtime thread.
+///
+/// The GUI runs the engine on a `new_current_thread` runtime, so a blocking
+/// `std::fs` call does not just cost a frame: while one task reads a large
+/// file, everything else on that thread — streaming output, cancellation, a
+/// second session's turn — is stopped. ADR-0058 §8: keep the calls, move them
+/// to the blocking pool instead of growing the runtime's thread count.
+async fn blocking<T, F>(work: F) -> Result<T, ToolError>
+where
+    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        // The join only fails when the closure panicked; surface it as an IO
+        // error so the tool row records a failure instead of hanging the turn.
+        Err(error) => Err(ToolError::Io(std::io::Error::other(format!(
+            "blocking task failed: {error}"
+        )))),
+    }
+}
+
 fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     ToolSpec {
         name: name.to_string(),
@@ -82,7 +104,8 @@ impl Tool for ReadFile {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: ReadArgs = parse(args)?;
         let resolved = path::resolve_ctx(ctx, &args.path, Access::Read)?;
-        let bytes = std::fs::read(&resolved.path)?;
+        let target = resolved.path.clone();
+        let bytes = blocking(move || std::fs::read(target).map_err(ToolError::from)).await?;
 
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Ok(ToolOutput::error("binary file; refusing to read as text"));
@@ -114,6 +137,7 @@ impl Tool for ReadFile {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            diff: None,
         })
     }
 }
@@ -169,12 +193,23 @@ impl Tool for WriteFile {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: WriteArgs = parse(args)?;
         let resolved = path::resolve_ctx(ctx, &args.path, Access::Write)?;
-        atomic_write(&resolved.path, &args.content)?;
-        Ok(ToolOutput::ok(format!(
-            "wrote {} bytes to {}",
-            args.content.len(),
-            resolved.display
-        )))
+        // Read the old text before the write so the transcript can show what
+        // changed; a missing or unreadable file simply means "no before".
+        let target = resolved.path.clone();
+        let before_path = target.clone();
+        let before = blocking(move || Ok(crate::diff::read_source(&before_path))).await?;
+        let diff = crate::diff::file(
+            &path::diff_path(&resolved),
+            before.as_deref(),
+            Some(&args.content),
+        );
+        let contents = args.content;
+        let written = contents.len();
+        blocking(move || atomic_write(&target, &contents)).await?;
+        Ok(
+            ToolOutput::ok(format!("wrote {written} bytes to {}", resolved.display))
+                .with_diff(diff),
+        )
     }
 }
 
@@ -244,7 +279,9 @@ impl Tool for EditFile {
 
         let resolved = path::resolve_ctx(ctx, &args.path, Access::Write)?;
         let path = &resolved.path;
-        let original = std::fs::read_to_string(path)?;
+        let read_path = path.clone();
+        let original =
+            blocking(move || std::fs::read_to_string(read_path).map_err(ToolError::from)).await?;
         let matches = original.matches(&args.old_string).count();
 
         if matches == 0 {
@@ -266,12 +303,14 @@ impl Tool for EditFile {
         } else {
             original.replacen(&args.old_string, &args.new_string, 1)
         };
-        atomic_write(path, &updated)?;
-
+        let diff = crate::diff::file(&path::diff_path(&resolved), Some(&original), Some(&updated));
+        let write_path = path.clone();
+        blocking(move || atomic_write(&write_path, &updated)).await?;
         Ok(ToolOutput::ok(format!(
             "replaced {matches} occurrence(s) in {}",
             resolved.display
-        )))
+        ))
+        .with_diff(diff))
     }
 }
 
@@ -313,20 +352,24 @@ impl Tool for ListDir {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: ListArgs = parse(args)?;
         let resolved = path::resolve_ctx(ctx, args.path.as_deref().unwrap_or("."), Access::Read)?;
-        let path = &resolved.path;
+        let target = resolved.path.clone();
 
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if matches!(name.as_str(), ".git" | "target" | "node_modules") {
-                continue;
+        let entries = blocking(move || -> Result<Vec<String>, ToolError> {
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(&target)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if matches!(name.as_str(), ".git" | "target" | "node_modules") {
+                    continue;
+                }
+                let metadata = entry.metadata()?;
+                let kind = if metadata.is_dir() { "dir " } else { "file" };
+                entries.push(format!("{kind} {:>10}  {name}", metadata.len()));
             }
-            let metadata = entry.metadata()?;
-            let kind = if metadata.is_dir() { "dir " } else { "file" };
-            entries.push(format!("{kind} {:>10}  {name}", metadata.len()));
-        }
-        entries.sort();
+            entries.sort();
+            Ok(entries)
+        })
+        .await?;
 
         let raw = entries.join("\n");
         let bytes = raw.len() as u64;
@@ -342,6 +385,7 @@ impl Tool for ListDir {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            diff: None,
         })
     }
 }

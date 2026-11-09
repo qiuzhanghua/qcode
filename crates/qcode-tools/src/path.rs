@@ -67,6 +67,17 @@ pub struct Resolved<'a> {
     pub display: String,
 }
 
+/// The path as a diff header writes it: relative to its root and with `/`
+/// separators, so the same patch reads the same on every platform.
+pub fn diff_path(resolved: &Resolved<'_>) -> String {
+    let alias = format!("@{}/", resolved.root.label);
+    let relative = resolved
+        .display
+        .strip_prefix(&alias)
+        .unwrap_or(&resolved.display);
+    relative.replace('\\', "/")
+}
+
 /// Resolve a path against a task's roots.
 ///
 /// - `@label/path` selects a root explicitly.

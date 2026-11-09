@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use qcode_core::event::{Decision, Event, EventKind, ToolStatus};
+use qcode_core::event::{Decision, Event, EventKind, PauseInfo, PauseLimit, ToolStatus};
 use qcode_kernel::config;
 use qcode_mcp::McpConfig;
 use serde_json::Value;
@@ -165,10 +165,41 @@ pub(crate) fn progress(event: &Event) {
             };
             eprintln!("[approval] {decision}");
         }
+        EventKind::BudgetHint(hint) => {
+            eprintln!(
+                "[budget] {}/{} turns used; one message away from pausing",
+                hint.turns, hint.max_turns
+            );
+        }
         EventKind::TurnEnded(ended) => {
             eprintln!("[turn] {:?}", ended.status);
         }
         _ => {}
+    }
+}
+
+/// One JSON object describing a paused turn, printed after the event stream so
+/// `--json` consumers get the hand-off without re-reading the log.
+pub(crate) fn print_pause(session_id: &str, pause: &PauseInfo) {
+    let value = serde_json::json!({
+        "type": "pause",
+        "data": {
+            "session_id": session_id,
+            "reason": pause.reason,
+            "limit": pause.limit,
+            "used": pause.used,
+            "window": pause.window,
+            "summary": pause.summary,
+        }
+    });
+    println!("{value}");
+}
+
+/// `已用 64/64 轮`, or `成本 $5.00/$5.00`, for the one-line pause report.
+pub(crate) fn pause_line(pause: &PauseInfo) -> String {
+    match pause.limit {
+        PauseLimit::Turns(limit) => format!("used {}/{} turns", pause.used.turns, limit),
+        PauseLimit::Usd(limit) => format!("cost ${:.2} of ${limit:.2}", pause.used.cost_usd),
     }
 }
 
