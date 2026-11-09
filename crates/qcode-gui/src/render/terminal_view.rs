@@ -235,6 +235,10 @@ impl Shell {
             })
             .unwrap_or_default();
 
+        // Remembered for the IME: the candidate window points at the cursor cell.
+        self.terminal_cursor.set(frame.cursor);
+        let cursor_preedit = self.terminal_preedit.clone();
+
         let size_cell = self.terminal_size.clone();
         // The IME only delivers text to a registered input handler; registering it
         // here (per frame) is the documented way for an element that is not a text
@@ -298,6 +302,7 @@ impl Shell {
                         background,
                         foreground,
                         selection,
+                        preedit: cursor_preedit,
                     },
                     window,
                     cx,
@@ -355,6 +360,8 @@ struct PaintStyle {
     background: Hsla,
     foreground: Hsla,
     selection: Option<((usize, usize), (usize, usize))>,
+    /// Text an input method is composing: drawn over the cursor, not in the grid.
+    preedit: Option<String>,
 }
 
 /// One visible frame, copied out of the terminal.
@@ -425,7 +432,9 @@ fn paint_frame(
         background,
         foreground,
         selection,
+        preedit,
     } = paint;
+    let paint_preedit = preedit;
     window.paint_quad(fill(bounds, background));
     let text_system = window.text_system().clone();
     let rows = frame
@@ -509,6 +518,45 @@ fn paint_frame(
             text_system.shape_line(SharedString::from(text), metrics.font_size, &runs, None);
         let _ = shaped.paint(
             point(bounds.origin.x, y),
+            metrics.line_height,
+            gpui_kit::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    if let Some(preedit) = &paint_preedit
+        && let Some((line, column)) = frame.cursor
+        && line < rows
+    {
+        let origin = point(
+            bounds.origin.x + metrics.advance * column as f32,
+            bounds.origin.y + metrics.line_height * line as f32,
+        );
+        let width = metrics.advance * preedit.chars().count() as f32;
+        // The grid has no cell for half a syllable: cover whatever is under the
+        // composition and draw the pre-edit text on top of it (ADR-0062 §5).
+        window.paint_quad(fill(
+            Bounds::new(origin, gpui_kit::size(width, metrics.line_height)),
+            paint.background,
+        ));
+        let run = TextRun {
+            len: preedit.len(),
+            font: metrics.font.clone(),
+            color: paint.foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let line_text = window.text_system().shape_line(
+            preedit.clone().into(),
+            metrics.font_size,
+            &[run],
+            None,
+        );
+        let _ = line_text.paint(
+            origin,
             metrics.line_height,
             gpui_kit::TextAlign::Left,
             None,

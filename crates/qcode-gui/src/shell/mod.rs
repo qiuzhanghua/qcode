@@ -79,6 +79,10 @@ pub(crate) struct Shell {
     pub(crate) terminal_selecting: bool,
     /// A multi-line paste waiting for the user to say yes (ADR-0062 §5).
     pub(crate) pending_terminal_paste: Option<(String, usize)>,
+    /// Text an input method is still composing (underlined, not yet sent).
+    pub(crate) terminal_preedit: Option<String>,
+    /// Where the cursor was on the last painted frame, for IME placement.
+    pub(crate) terminal_cursor: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
     /// Root edits made while a task was running, keyed by task id and applied
     /// when *that* task's turn returns (§7: per session, not one global slot).
     pub(crate) pending_roots: std::collections::BTreeMap<String, Vec<Root>>,
@@ -269,6 +273,8 @@ impl Shell {
             terminal_selection: None,
             terminal_selecting: false,
             pending_terminal_paste: None,
+            terminal_preedit: None,
+            terminal_cursor: std::rc::Rc::new(std::cell::Cell::new(None)),
             pending_send: false,
             sidebar_visible: true,
             minimize_on_close,

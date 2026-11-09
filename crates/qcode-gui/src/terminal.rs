@@ -711,7 +711,11 @@ impl gpui_kit::EntityInputHandler for crate::shell::Shell {
         None
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_preedit.take().is_some() {
+            cx.notify();
+        }
+    }
 
     fn replace_text_in_range(
         &mut self,
@@ -723,17 +727,26 @@ impl gpui_kit::EntityInputHandler for crate::shell::Shell {
         if text.is_empty() {
             return;
         }
+        self.terminal_preedit = None;
         self.type_into_terminal(text.as_bytes(), cx);
     }
 
     fn replace_and_mark_text_in_range(
         &mut self,
         _range: Option<std::ops::Range<usize>>,
-        _new_text: &str,
+        new_text: &str,
         _new_selected_range: Option<std::ops::Range<usize>>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        // Composition stays on our side of the wire: the grid has no cell to put
+        // half a syllable in, so it is drawn over the cursor instead (ADR-0062 §5).
+        self.terminal_preedit = if new_text.is_empty() {
+            None
+        } else {
+            Some(new_text.to_string())
+        };
+        cx.notify();
     }
 
     fn bounds_for_range(
@@ -743,7 +756,18 @@ impl gpui_kit::EntityInputHandler for crate::shell::Shell {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
-        None
+        // Where the candidate window should point: the cell the composition will
+        // land in. Without this the OS puts it wherever it likes.
+        let geometry = self.terminal_geometry.get()?;
+        let (row, column) = self.terminal_cursor.get()?;
+        let origin = gpui_kit::point(
+            geometry.origin.x + geometry.advance * column as f32,
+            geometry.origin.y + geometry.line_height * row as f32,
+        );
+        Some(gpui_kit::Bounds::new(
+            origin,
+            gpui_kit::size(geometry.advance, geometry.line_height),
+        ))
     }
 
     fn character_index_for_point(
