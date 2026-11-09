@@ -4456,3 +4456,246 @@ GUI 落地后这三条边界开始漏：
 3. ACP 何时开图片输入。
 4. 解码依赖选型：`image` 一把梭（一个 crate 覆盖四种格式，代价是间接依赖较多），还是
    `zune-jpeg` + `image-webp` + `png` 组合（体积更小，维护面更大）。
+
+## ADR-0062：内建终端——独立执行体、单入口多 tab、状态只在内存（2026-11-09）
+
+**背景**
+
+`qc gui` 现在只有「任务」一种工作对象。想在同一个窗口里敲命令就得切到系统终端，
+丢掉 cwd 上下文。
+
+第一约束不是「能不能画格子」，而是**不能拖慢已有两件事**：任务 turn 的流式输出，
+和 ADR-0059 的定时 tick。后者不是理论风险——`runtime.rs` 用「相邻 tick 间隔 >
+`3 × beat`」判定进程离开（`away`），一旦成立就只重新排期、**不做任何决定**，孤儿与
+错过窗口状态都写不下去。任何跑在 `LocalBackend` 那个 `current_thread` runtime 里的
+阻塞 I/O（比如读 PTY）都会让这个判定误触发。11-06 加固调度测试时已把这条机制查实。
+
+第二个事实：`gpui-kit 0.9.0`（含 `gpui-component` / `gpui-base`）**没有任何终端
+组件**。两个 crate 的完整组件清单里最接近的 `empty.rs` 是「空状态占位」。所以终端
+必须自己集成，没有现成控件可用。
+
+**决定**
+
+1. **独立 crate，独立执行体，绝不进 `LocalBackend` 的 runtime**
+
+   新建 `crates/qcode-terminal`，只依赖 `gpui-kit` + `alacritty_terminal`，**不依赖
+   `qcode-core` / `qcode-gui`**。这样 TUI / `qc run` / ACP 的构建不含终端，终端也能
+   脱离窗口做 headless 测试。
+
+   每个终端一个 OS 线程，跑 `alacritty_terminal::event_loop::EventLoop`：它自己
+   openpty、读 master、喂 `vte::Parser`、更新 `Term`，发出 `Msg`（`Title` /
+   `PtyWrite` / `Exit` / `Wakeup`）。UI 线程只做一件事——在 `Term` 的锁内取一次
+   `RenderableContent` + `RenderableCursor` 快照，解锁后绘制。
+
+   这个隔离是「不影响任务与定时任务」的全部依据：终端的读、解析、UTF-8 解码全在
+   那一根线程上，`LocalBackend` 的 tick 得不到任何额外负载。**不允许**把 PTY 读取
+   放进 `runtime::spawn` 的 runtime，哪怕是 `spawn_blocking`——`current_thread`
+   运行时下阻塞任务同样会推迟 tick。
+
+2. **单入口 + 内容区多 tab**
+
+   侧边栏在「设置」与「我的任务」之间插一个「终端」按钮，**只有一行**：
+
+   - 当前没有终端 → 新建一个并切入；
+   - 已有终端 → 切到**上次活跃的那一个**（不是新建，也不是第一个）。
+
+   多个终端用内容区顶部的 tab 切换（`gpui-component/tab.rs`）。
+
+   `Shell` 新增视图维度 `view: View { Task, Terminal }`，但**不复用 `active`**：
+   `active` 现在的含义是「活跃任务 id」，`task_state()`、`hovered_task`、
+   `task_menu`、`schedule_hints`、`pending_task_renames`、
+   `round_hint_dismissed_tasks` 全按它索引。切到终端时 `active` **不清空**，切回来
+   必须回到原来那个任务。
+
+   终端视图下整块右侧被 `TerminalView` 取代：输入框、rail 圆点、队列 dock、
+   transcript 都不渲染——它们都是任务的产物。
+
+   **不显示忙碌状态**（不要 tab 上的运行点）。tab 标题取 `Term` 的 `title()`
+   （`vim` 自己会设，`alacritty_terminal` 免费给），为空时退到 shell 名。
+
+3. **状态只在内存，cwd 继承取实时值**
+
+   不持久化：关窗口/重启即消失，不引入 daemon 或 tmux 式 attach。终端 I/O 不进
+   会话事件日志，所以没有「恢复上次终端」这回事，UI 与文档都要说清。
+
+   新建终端的 cwd 优先级：
+
+   ```
+   当前活跃终端的实时 cwd（若目录仍存在）
+     > [terminal] start_cwd（若存在）
+     > home
+   ```
+
+   关键词是**实时**：用户 `cd` 之后 shell 自己的 cwd 变了，新终端要继承这一处，不能
+   在创建时缓存。取法：拿 shell 的 pid，再查它的 cwd（`sysinfo`；Linux 读
+   `/proc/<pid>/cwd`，macOS `proc_pidinfo`，Windows 读 PEB）。
+
+   三个已知坑，实现必须写明：
+
+   - **失效目录必须跳过**。老终端的 cwd 被删掉后直接交给 `spawn_command`，shell 会
+     根本起不来。
+   - **符号链接会丢**。`/proc/<pid>/cwd` 给的是物理解析后的路径；从 `~/work-link`
+     进去，新终端会开在 `/mnt/.../work`。可接受，文档里说明。
+   - **只能拿到 shell 的 cwd，不是前台进程的**。`cd /tmp && python` 时 shell 的 cwd
+     仍是 `/tmp`（正确）；前台进程自己 `chdir` 了则继承不到。够用。
+
+   `alacritty_terminal 0.26` 的 `Term` **不暴露 cwd**（公开方法里有 `title` /
+   `clipboard_*` / `set_hyperlink` / `mode`，没有 cwd），所以 OSC 7 追踪不可用，
+   见「备选方案」。
+
+4. **渲染：canvas 自绘 + damage 重绘**
+
+   `gpui-pre` 的 `canvas()`（prepaint 拿 bounds，paint 里发 `Scene` 原语）配
+   `WindowTextSystem` 度量：
+
+   - 列数 = `width / advance('M')`，行数 = `height / line_height`；resize 时同时
+     `Term::resize` 与 `TIOCSWINSZ`，并防抖（否则 `vim`/`htop` 反复重排）。
+   - 每帧先画脏行背景 quad，再把「同样的 fg/bg/属性」的连续单元格拼成一个 run
+     排版一次。**绝不逐字符 layout**。
+   - 用 `Term` 的 `damage` + `TermDamageIterator` 只重绘脏行；没有输出时整帧跳过。
+   - 字体用 `theme.mono_font_family`，跟随现有字号缩放（`Ctrl+=` / `Ctrl+-`）。
+
+5. **输入编码：mode 感知，且有成文的快捷键归属**
+
+   GPUI `KeyDown` → VT 序列是**全新的工作量**，也是 bug 密度最高的地方。
+   `Term::mode()` 返回 `TermMode`，编码**按终端当前模式决定**：应用光标键
+   （`\x1b[A` vs `\x1bOA`）、bracketed paste（`\x1b[200~`…`\x1b[201~`）、
+   鼠标上报、`modifyOtherKeys`，都不自己猜。
+
+   | 终端聚焦时 | 行为 |
+   |---|---|
+   | 除下列全部按键（含 `Ctrl+C`/`Ctrl+Z`/`Tab`/`Esc`/功能键） | 转发给 PTY |
+   | `Ctrl+Shift+T` / `Ctrl+Shift+W` / `Ctrl+Tab` | 新建 / 关闭 / 切换 tab |
+   | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号缩放（与全窗口一致） |
+   | 侧边栏点击 | 切视图 |
+
+   中文输入：组合器已经有 `vendor/xim-ctext` 补丁（ADR-0051）修正 XIM 预编辑，
+   终端复用同一条输入路径；新增的是**预编辑文本在字符网格里怎么显示**（格子里画
+   preedit，不进 `Term`）。
+
+6. **生命周期与关闭**
+
+   - 关 tab / 退出窗口 → 杀**整个进程组**：`SIGTERM` 宽限后再 `SIGKILL`。
+   - 复用 `qcode-tools/src/shell.rs` 已有的 `process_group(0)` +
+     `signal_group(pid, SIGKILL)` 模式，**不引入 sysinfo 的进程树遍历**。
+   - kill 不能在 UI 主线程做。
+   - 关闭前的确认：**一次性**查前台子进程（不是周期轮询），有进程在跑时弹确认。
+     这与「不显示忙碌状态」不冲突——不做每帧/周期探测，只在关闭那一刻查一次。
+   - `EventLoop` 内置 `ChildExit`，但 ConPTY 在主 handle 未关时可能不送 read-EOF，
+     Windows 上要实测「子进程先退出 → 释放 master → 读到 EOF」的顺序。
+   - 窗口「关闭即最小化到托盘」（ADR-0052）时终端**继续跑**，与任务在后台跑一致。
+
+7. **边界：不沙箱、不审批、不进日志**
+
+   - 终端是**用户自己敲的 shell**，不走 `[sandbox]`、不走审批。否则没法用。
+   - 必须显式和 agent 的 `run_shell` 区分：设置页与文档写一句「沙箱只约束 agent
+     发起的命令，终端不受约束」。不写清会让人以为沙箱开着终端也受限。
+   - 终端 I/O **不进会话事件日志**（量太大，且含用户隐私）。代价是终端里的操作
+     没有审计留痕，这与 agent 工具调用可回放不同。
+   - **副作用**：终端里改文件不产生 snapshot（且 `[agent] snapshot_shell` 已默认
+     关闭），所以 `qc sessions rollback` **无法回滚终端里的改动**。文档必须写明。
+
+8. **配置与资源上限**
+
+   新增 `[terminal]` 段。注意配置有**两层键白名单**（`config/load.rs` 顶层键 +
+   段内键），不加会在启动时告警：
+
+   ```toml
+   [terminal]
+   shell = ""              # 空 = 探测
+   start_cwd = ""          # 空 = home
+   max_scrollback = 10000  # 每终端行数
+   max_terminals = 8       # 硬上限
+   ```
+
+   shell 探测与 terminal-ts（MIT）一致，多平台：
+
+   | 平台 | 顺序 |
+   |---|---|
+   | Windows | `pwsh` → `powershell` → `cmd` |
+   | 其他 | `$SHELL` → `/bin/bash` |
+
+   用户配了 `shell` 但不在 PATH 上时，落回探测结果（不能让用户一个手误就开不了终端）。
+
+   上限不是形式主义：GUI 空闲已 293MB RSS，每个终端 scrollback 约 2–4MB。开 8 个
+   +15MB 可接受；不限的话 20 个终端就是 +400MB。
+
+**备选方案（未采用）**
+
+- **WebView 里跑 xterm.js**（即 `qiuzhanghua/terminal-ts` 的做法）：qcode 用 GPUI，
+  没有 WebView；引入等于多一套运行时（Linux 上是 WebKitGTK），桌面包会显著变大。
+  terminal-ts 的 VTE 与渲染能力**全部**在 xterm.js 里，是 JS，搬不过来。
+- **`portable-pty`**（terminal-ts 用的 `0.8`）：`alacritty_terminal` 的 `tty` 模块与
+  `Term` 同源，尺寸/信号/ConPTY 处理一致，少一处语义鸿沟；Alacritty 本体在 Windows
+  上有大量实测。代价是放弃 terminal-ts 已跑通的 Windows 环境细节——但那些照样要
+  移植（见「后果」）。
+- **侧边栏每个终端一行**（与任务同一列表）：需要把 `active` / `hovered` / `menu` /
+  `schedule_hints` 等按 task id 索引的状态全部升一层，改动面大；且需求已确认为
+  「单入口 + tab」。
+- **持久化进程**（daemon + attach，tmux 模式）：无需求，复杂度高一个量级。
+- **`vte` + 手写状态机**：`alacritty_terminal` 是 Alacritty 本体在用的，`vim` /
+  `htop` / `tmux` 的边角（备用屏幕、滚动区、鼠标上报、wide char）被反复验证过。
+- **OSC 7 追踪 cwd**：更可靠（能跟到子 shell、`sudo -i`），但
+  `alacritty_terminal 0.26` 不暴露 cwd，且需要注入 shell 集成脚本。留作后续增强。
+
+**后果**
+
+- `Cargo.lock` 多出 `alacritty_terminal 0.26.0`（**Apache-2.0，`deny.toml` 已
+  allow，不用改**）及其依赖：`vte 0.15`、`rustix 1.0`（**第三个 rustix**，现有
+  0.38 / 0.4）、`parking_lot`、`signal-hook`、`piper`、`polling`、`regex-automata`、
+  `unicode-width`、`home`、`miow` / `windows-sys`。**没有 fontconfig / X11 / GPU
+  相关**，不会重演 10-19 那次 CI 因缺 `-dev` 包红了十天的事故。
+- 必须**钉死精确版本**（`=0.26.0`），理由与现有 `rmcp = "=3.2.0"`、
+  `ratatui = "=0.29.0"` 相同：它 minor 之间会破（0.24 → 0.26 已改过 API）。
+- `sysinfo` 已是间接依赖（`0.31.4`，由 `zed-scap` 在 Linux 屏幕捕获路径引入），但
+  Windows / macOS 构建里未必存在，**必须显式声明**，不能靠传递依赖。
+- 终端只进 `gui` 特性：`qcode-terminal` 由 `qcode-gui` 依赖，TUI / `qc run` / ACP
+  构建不含它，精简版发布包不因此变大。
+- Windows 与 macOS 的 PTY 路径首版**未实测**，标为已知风险；`EventLoop` 的
+  `ChildExit` / EOF 行为在 ConPTY 下要单独验。
+- 终端 IME 是 `xim-ctext` 那条老 bug 的新暴露面（ADR-0051 修的是组合器，终端是
+  第二处）。
+- 侧边栏新增一个按钮，`Shell` 新增 `view` 与 tab 状态，`render_main` 外面加一层视图
+  分支。任务侧的状态一个都不改。
+
+**从 terminal-ts 移植的部分（MIT，已确认可复用）**
+
+不是搬 VTE / 渲染，而是搬这几处踩过坑的细节：
+
+- `spawn_shell` 的环境处理：`TERM=xterm-256color`、`COLORTERM=truecolor`；**以及
+  `portable-pty` 在 Windows 上从注册表重建环境、会丢掉会话注入的 `PATH`，必须把父
+  进程 `PATH` 重新灌回去**——qcode 用 `cot` 注入 PATH，这个坑一模一样。
+- `pwsh` 的 `$PSStyle.OutputRendering='Ansi'` 特判（否则 ConPTY 下 powershell 首屏
+  无颜色），以及 `-NoLogo -NoProfileLoadTime`。
+- `resolve_start_cwd` 的「跳过不存在的目录」。
+- attach 缓冲语义：listener 注册前的输出先攒着，且**必须在同一把锁内**决定「立即发
+  还是缓冲」，否则缓冲前缀会被实时输出超车。后台新建终端时会用到（本 ADR 不做后台
+  新建，但事件通道的订阅时序同样要保证不丢首个提示符）。
+
+`kill_tree`（sysinfo 进程树倒序 kill）不移植——进程组更干净。
+
+**验证（拟）**
+
+1. **状态机 headless**：录 `vim` / `htop` / `tmux` / `less` 的原始字节流，喂给
+   `EventLoop`，断言 `RenderableContent` 的文本、光标位置、`TermMode` 位。不碰 UI。
+2. **调度隔离（最关键）**：一个终端持续 `yes` 刷屏，同时放一个 orphan 计划待跑，
+   断言调度仍在一个 beat 内落 `Orphaned`——直接复验 ADR-0059 的 `away` 判定没被
+   拖慢，接上 11-06 加固的
+   `a_schedule_pointing_at_a_deleted_task_is_recorded_not_run`。
+3. **cwd 继承**：A 里 `cd /tmp` → 新终端起在 `/tmp`；把 `/tmp` 换成已删除的目录 →
+   落到 `start_cwd` / home，且 shell 能起来。
+4. **按键编码**表驱动：`Ctrl+C`、方向键（两种光标键模式）、`F1`–`F12`、`Alt+x`、
+   bracketed paste、`Shift+Tab`。
+5. **生命周期**：关 tab 后进程组全部消失（无孤儿）；有前台进程时关闭会弹确认；
+   托盘最小化后终端仍在跑。
+6. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
+
+**待定**
+
+1. **渲染与任务的帧预算分配**：终端刷屏（`yes`）时每帧都要重绘，可能拖慢同帧的
+   transcript 打字机效果。倾向「终端不聚焦时降到 100ms 一次」，具体阈值等实测。
+2. **`max_terminals` 与 scrollback 的默认值**：8 / 10000 是估的，要看真实内存实测。
+3. **Windows ConPTY 的 EOF 时序**：需要在真机上验；不通过则要加「子进程退出 → 释放
+   master」的显式步骤（terminal-ts 用两个线程解决）。
+4. **是否需要「终端里也能触发 agent」**（比如把一段命令输出发给任务）：本 ADR 明确
+   不做，但侧边栏已经是单入口，将来加「在终端里选中 → 发给当前任务」的成本不高。
