@@ -7,6 +7,8 @@
 
 #![cfg(unix)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use qcode_terminal::{Session, SessionConfig};
@@ -425,9 +427,6 @@ fn a_wakeup_callback_does_not_block_the_grid() {
     // from its render loop. If the callback ran under the terminal lock, or the
     // grid could not be read while a shell was producing output, the window would
     // freeze on the first frame — so this spins the same way the window does.
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     let session = run("/bin/sh", &["-c", "printf 'x\\n'; sleep 30"]);
     let dirty = Arc::new(AtomicBool::new(false));
     {
@@ -520,5 +519,53 @@ fn the_child_sees_the_shell_it_is_running() {
         "the child's SHELL never reached the grid; grid: {:#?}",
         session.with_view(|view| view.contents())
     );
+    session.close();
+}
+
+#[test]
+fn a_wakeup_that_arrives_before_the_callback_is_replayed() {
+    // A caller spawns a session and only then wires up its repaint. A fast child prints
+    // in that window — a shell drawing its prompt, `sh -c 'printf x'` — and a missed
+    // notification means no repaint is scheduled for that output at all, so the tab
+    // shows an empty grid until something unrelated redraws it.
+    //
+    // Deterministic rather than racy: the child writes, then waits to be let go, so the
+    // wakeup has certainly been raised before the callback is installed.
+    let session = run("/bin/sh", &["-c", "printf 'early\\n'; read -r _"]);
+
+    assert!(
+        wait_until(|| {
+            session.with_view(|view| view.contents().iter().any(|row| row.contains("early")))
+        }),
+        "the child's output never landed, so no wakeup could have been missed"
+    );
+
+    let fired = Arc::new(AtomicBool::new(false));
+    {
+        let fired = fired.clone();
+        session
+            .events()
+            .on_wakeup(move || fired.store(true, Ordering::Relaxed));
+    }
+
+    assert!(
+        fired.load(Ordering::Relaxed),
+        "the wakeup raised before installation was dropped, so nothing would ask for a repaint"
+    );
+
+    // And it must not fire spuriously on a quiet session: the replay is for the missed
+    // one, not a permanent "always dirty".
+    let quiet = Arc::new(AtomicBool::new(false));
+    {
+        let quiet = quiet.clone();
+        session
+            .events()
+            .on_wakeup(move || quiet.store(true, Ordering::Relaxed));
+    }
+    assert!(
+        !quiet.load(Ordering::Relaxed),
+        "installing a second callback replayed a wakeup that had already been delivered"
+    );
+
     session.close();
 }

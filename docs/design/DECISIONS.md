@@ -4936,6 +4936,13 @@ GUI 落地后这三条边界开始漏：
    `0 wakeups`。
 8. **资源**：8 个终端各跑 `yes`，断言帧时间与 RSS 在预算内。
 
+   已实现为 `tests/resource_budget.rs`：两条确定性用例随常规测试跑（滚动上限确实是
+   `scrollback + screen_lines`，且封顶后视图仍能回到实时画面），一条 `#[ignore]` 基线
+   由 `scripts/perf-session.sh` 跑。实测 8 个刷屏 tab 共 156 MiB、快照均值 284 µs；
+   断言的是**形状**而非字节数——封顶后两秒再刷增长必须为 0，footprint 不得超出
+   `terminals × scrollback × columns × size_of::<Cell>()` 的两倍。绝对值随机器与窗口
+   宽度变化，拿死数字当预算只会在宽窗口上误报、或放过真正的泄漏。
+
 9. **手动回归清单**（自动化够不着的交互，每次动到终端渲染或输入都要过一遍）：
 
    | 做什么 | 应该看到 |
@@ -4957,7 +4964,36 @@ GUI 落地后这三条边界开始漏：
 
 1. **渲染与任务的帧预算分配**：终端刷屏（`yes`）时每帧都要重绘，可能拖慢同帧的
    transcript 打字机效果。倾向「终端不聚焦时降到 100ms 一次」，具体阈值等实测。
-2. **`max_terminals` 与 scrollback 的默认值**：8 / 10000 是估的，要看真实内存实测。
+2. **`max_terminals` 与 scrollback 的默认值**：8 / 10000 是估的，现在有实测了——
+   数值本身仍待定，因为这是产品权衡而非技术约束。
+
+   实测（`crates/qcode-terminal/tests/resource_budget.rs`，80 列、`Cell` 24 字节）：
+   一个填满的 10000 行 scrollback 约 **18.3 MiB**（10000 × 80 × 24 B），8 个刷屏
+   tab 共 **156 MiB**，与理论下限 150 MiB 只差 4%（解析器、pty 缓冲、线程栈）。
+   关键是**已封顶**：再刷两秒，footprint 增长 0 KiB，所以「内存会不会涨」有确定答案
+   ——不会，只要 scrollback 上限不变。
+
+   需要注意的两点：
+
+   - 这个数字**随窗口宽度线性增长**。80 列是测试里的保守值；真实窗口 200 列时单个
+     tab 就是 45 MiB，8 个 366 MiB。若 `max_terminals = 8` 要保留，scrollback 或许
+     该按列数反比调（或默认降到 2000–5000 行，用户可配）。没有实测数据前不擅自改
+     默认值。
+   - 帧成本不是瓶颈：一次快照（24 行 `contents()`）均值 **284 µs**、最差 **340 µs**，
+     对 16 ms 的帧预算只占 2%。8 个 tab 同时刷屏也不是「每帧都扫 8 个」——只画当前
+     tab。
+
+   补第 8 条时又发现一个偶发竞态（约 1/11 概率，`session` 里那条 wakeup 用例暴露）：
+   `on_wakeup` 在 `spawn` 之后才安装，若子进程的首个输出先到，这条 `Wakeup` 就永远丢了
+   ——**没有任何重绘被安排**，tab 会一直空着直到别的事件顺带刷新它。GUI 走的就是这个
+   顺序，所以这是真实缺陷而不是测试问题。修法是 `Events` 记下「有通知在无回调时到达」，
+   `on_wakeup` 安装后立刻补发一次；重放后清标记，所以第二次安装不会重复触发。回归用例
+   不靠概率：子进程写完就阻塞在 `read` 上，保证通知一定先于安装发生。
+
+   顺带保留一个可复现的回归：`history_is_capped_so_a_flooding_child_cannot_grow_memory_forever`
+   是**非 ignored** 的确定性断言（滚到最底也只能到 `scrollback + screen_lines`），
+   因为它验的是不变量而不是机器性能。把 scrollback 上限放大 1000 倍做变异，ignored
+   基线立刻报「再刷两秒涨了 3 GB，所以有泄漏」。
 3. **Windows ConPTY 的 EOF 时序**：需要在真机上验；不通过则要加「子进程退出 → 释放
    master」的显式步骤（terminal-ts 用两个线程解决）。
 4. **探测到的 shell 要不要当 login shell 起**：`alacritty` 在 Linux 上裸起（不加

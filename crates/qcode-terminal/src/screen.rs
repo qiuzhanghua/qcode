@@ -75,6 +75,9 @@ struct Recorded {
     wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Number of damage notifications seen, so a test can wait for one.
     wakeups: u64,
+    /// A notification that arrived with no callback installed yet, waiting to be
+    /// replayed when one is. See [`Events::on_wakeup`].
+    wakeup_missed: bool,
     /// `OSC 52` writes: the program wants *our* clipboard to hold this text.
     clipboard_stores: Vec<String>,
     /// `OSC 52` reads: the program wants the clipboard, formatted as it expects
@@ -210,11 +213,36 @@ impl Events {
 
     /// Install a callback for damage notifications.
     ///
-    /// It is called while `Term`'s lock is held, so it must only signal — a
-    /// channel send, a flag, a `cx.notify()`. Locking the terminal from it
-    /// deadlocks.
+    /// It must only signal — a channel send, a flag, a `cx.notify()`. Reading the grid
+    /// from it would stall the parser, which holds the terminal lock while parsing.
+    ///
+    /// A damage notification that arrived *before* installation is delivered by this
+    /// call, synchronously. That is not a convenience: a caller spawns a session and
+    /// then wires up its repaint, and a fast child prints in between — a shell writing
+    /// its prompt, `sh -c 'printf x'`. Without the replay the notification is gone, no
+    /// repaint is ever scheduled for that output, and the tab shows an empty grid until
+    /// something unrelated redraws it.
     pub fn on_wakeup(&self, wakeup: impl Fn() + Send + Sync + 'static) {
-        self.lock().wakeup = Some(Arc::new(wakeup));
+        let missed = {
+            let mut recorded = self.lock();
+            recorded.wakeup = Some(Arc::new(wakeup));
+            // `wakeups` counts every notification ever seen, so a non-zero count with a
+            // freshly installed callback means at least one was not delivered.
+            std::mem::take(&mut recorded.wakeup_missed)
+        };
+        if missed {
+            self.ring_wakeup();
+        }
+    }
+
+    /// Run the installed callback, if any.
+    fn ring_wakeup(&self) {
+        // Taken out before calling: the callback must not run under `inner`, or a
+        // callback that touched `Events` would deadlock.
+        let wakeup = self.lock().wakeup.clone();
+        if let Some(wakeup) = wakeup {
+            wakeup();
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Recorded> {
@@ -225,8 +253,13 @@ impl Events {
 impl EventListener for Events {
     fn send_event(&self, event: Event) {
         let is_wakeup = matches!(&event, Event::Wakeup);
-        // Take the callback out before calling it: it runs with the terminal lock
-        // held, and re-entering `send_event` would deadlock on `inner`.
+        // Taken out before calling, so `inner` is not held while the callback runs: a
+        // callback that touched `Events` would deadlock on it.
+        //
+        // The terminal lock may still be held at that point — events raised by the
+        // parser are sent from inside `advance`. That is why the callback may only
+        // signal. (`Session` sends its own `Wakeup` after dropping the lock, so the
+        // common case is uncontended, but the contract has to cover both.)
         let wakeup = {
             let mut recorded = self.lock();
             match event {
@@ -246,7 +279,12 @@ impl EventListener for Events {
                     recorded.exit = status.code();
                     recorded.exited = true;
                 }
-                Event::Wakeup => recorded.wakeups += 1,
+                Event::Wakeup => {
+                    recorded.wakeups += 1;
+                    if recorded.wakeup.is_none() {
+                        recorded.wakeup_missed = true;
+                    }
+                }
                 _ => {}
             }
             if is_wakeup {
