@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use qcode_terminal::View;
 use qcode_terminal::alacritty_terminal::term::TermMode;
+use qcode_terminal::alacritty_terminal::term::cell::Flags;
 use qcode_terminal::alacritty_terminal::vte::ansi::{Color as TermColor, NamedColor};
 
 use crate::shell::Shell;
@@ -375,6 +376,9 @@ struct Run {
     text: String,
     fg: Hsla,
     bg: Option<Hsla>,
+    /// Grid cells this run covers. A wide (CJK) glyph occupies two cells but only
+    /// one `char`, so the text cannot be laid out by counting characters.
+    cells: usize,
 }
 
 impl TerminalFrame {
@@ -388,6 +392,17 @@ impl TerminalFrame {
                 let Some(cell) = view.cell(row, column) else {
                     break;
                 };
+                // A wide glyph owns two cells: the second one is a spacer whose
+                // text is empty. Drawing it as a space is what put a gap after
+                // every Chinese character.
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                    || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    if let Some(run) = runs.last_mut() {
+                        run.cells += 1;
+                    }
+                    continue;
+                }
                 let fg = resolve(cell.fg, default_fg);
                 let bg = resolve(cell.bg, default_bg);
                 let bg = (bg != default_bg).then_some(bg);
@@ -397,8 +412,16 @@ impl TerminalFrame {
                     cell.c.clone()
                 };
                 match runs.last_mut() {
-                    Some(run) if run.fg == fg && run.bg == bg => run.text.push_str(&text),
-                    _ => runs.push(Run { text, fg, bg }),
+                    Some(run) if run.fg == fg && run.bg == bg => {
+                        run.text.push_str(&text);
+                        run.cells += 1;
+                    }
+                    _ => runs.push(Run {
+                        text,
+                        fg,
+                        bg,
+                        cells: 1,
+                    }),
                 }
             }
             lines.push(runs);
@@ -485,7 +508,7 @@ fn paint_frame(
         let mut runs: Vec<TextRun> = Vec::new();
 
         for run in &frame.rows[row] {
-            let width = run.text.chars().count();
+            let width = run.cells;
             if column >= columns {
                 break;
             }
@@ -760,4 +783,37 @@ fn indexed(index: u8) -> Hsla {
 /// The `TermMode` a key press has to be encoded for.
 pub(crate) fn mode_of(session: &qcode_terminal::Session) -> TermMode {
     session.with_view(|view| view.mode())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalFrame;
+
+    fn capture_line(text: &str) -> String {
+        let mut screen = qcode_terminal::Screen::new(20, 3, 100);
+        screen.advance(text.as_bytes());
+        let frame = TerminalFrame::capture(
+            &screen.view(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_FOREGROUND)),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_BACKGROUND)),
+        );
+        frame.rows[0]
+            .iter()
+            .map(|run| run.text.clone())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn a_wide_glyph_does_not_leave_a_gap_behind_it() {
+        // The grid gives a CJK character two cells; the second is a spacer whose
+        // text is empty. Rendering it as a space put a hole after every character.
+        assert_eq!(capture_line("汉字A\r\n"), "汉字A");
+    }
+
+    #[test]
+    fn plain_ascii_is_unchanged() {
+        assert_eq!(capture_line("echo hi\r\n"), "echo hi");
+    }
 }
