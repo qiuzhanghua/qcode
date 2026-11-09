@@ -8,10 +8,12 @@
 //! the runtime that drives tasks and scheduled ticks, so the parsing side has to
 //! be usable without a `LocalBackend` anywhere in sight.
 
+pub mod key;
 pub mod screen;
 pub mod session;
 pub mod shell;
 
+pub use key::{Direction, Key, KeyPress, Modifiers};
 pub use screen::{CellView, Events, Screen, View};
 pub use session::{Session, SessionConfig};
 pub use shell::{Choice, Probe, ProcessRow, ProcessSource, Source};
