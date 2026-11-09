@@ -120,6 +120,14 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             };
         }
         ["agent", "snapshot_shell"] => config.agent.snapshot_shell = value == "true",
+        ["terminal", "shell"] => config.terminal.shell = value.to_string(),
+        ["terminal", "start_cwd"] => config.terminal.start_cwd = value.to_string(),
+        ["terminal", "max_scrollback"] => {
+            config.terminal.max_scrollback = parse(value, "terminal.max_scrollback")?
+        }
+        ["terminal", "max_terminals"] => {
+            config.terminal.max_terminals = parse(value, "terminal.max_terminals")?
+        }
         ["ui", "busy_delivery"] => {
             config.ui.busy_delivery = match value {
                 "steer" => qcode_kernel::config::BusyDelivery::Steer,

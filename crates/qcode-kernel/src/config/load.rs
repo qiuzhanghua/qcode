@@ -388,6 +388,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "network",
             "search",
             "update",
+            "terminal",
         ],
     ),
     ("approval", &["rules"]),
@@ -424,6 +425,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("default-model", &["provider", "model"]),
     ("ui", &["busy_delivery"]),
+    (
+        "terminal",
+        &["shell", "start_cwd", "max_scrollback", "max_terminals"],
+    ),
 ];
 
 /// Keys each table may contain, per table path. Tables whose children are
