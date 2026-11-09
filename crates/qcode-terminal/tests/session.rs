@@ -51,30 +51,59 @@ fn marker(tag: u32) -> String {
 /// the marker process exists — and a test that closes the session at that moment is
 /// racing the fork it means to observe, not testing what it says it tests.
 ///
-/// Reads `/proc` directly rather than shelling out to `pgrep`: a `pgrep` would match
-/// its own command line.
+/// `/proc` is the cheap path on Linux. macOS has no `/proc`, so it asks `ps` — a tool
+/// whose own command line never equals the marker. Both are looked up by hand rather
+/// than with `pgrep`, which would match its own invocation.
 fn processes_matching(needle: &str) -> Vec<u32> {
-    let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
+    let me = std::process::id();
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return found;
         };
-        if pid == std::process::id() {
-            continue;
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            if pid == me {
+                continue;
+            }
+            let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            // `/proc/<pid>/cmdline` is NUL-separated argv.
+            let argv = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            if argv.trim_end() == needle {
+                found.push(pid);
+            }
         }
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            continue;
-        };
-        // `/proc/<pid>/cmdline` is NUL-separated argv.
-        let argv = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-        if argv.trim_end() == needle {
-            found.push(pid);
-        }
+        found
     }
-    found
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut found = Vec::new();
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=,command="])
+            .output()
+        else {
+            return found;
+        };
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some((pid, command)) = line.trim_start().split_once(' ') else {
+                continue;
+            };
+            let Ok(pid) = pid.parse::<u32>() else {
+                continue;
+            };
+            if pid != me && command.trim() == needle {
+                found.push(pid);
+            }
+        }
+        found
+    }
 }
 
 #[test]
