@@ -404,8 +404,32 @@ impl crate::shell::Shell {
             return false;
         }
         let mode = tab.session.with_view(|view| view.mode());
+        // Without bracketed paste the shell executes every newline as it arrives, so
+        // a copied snippet would run the moment it lands. Ask first (ADR-0062 §5).
+        if !mode.contains(qcode_terminal::alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+            && text.contains('\n')
+        {
+            let lines = text.lines().count();
+            self.pending_terminal_paste = Some((text, lines));
+            cx.notify();
+            return false;
+        }
         let bytes = qcode_terminal::key::paste(&text, mode);
         self.type_into_terminal(&bytes, cx)
+    }
+
+    /// Send the paste the dialog was holding, and close it.
+    pub(crate) fn confirm_terminal_paste(&mut self, cx: &mut Context<Self>) {
+        let Some((text, _)) = self.pending_terminal_paste.take() else {
+            return;
+        };
+        let mode = match self.terminals.active() {
+            Some(tab) => tab.session.with_view(|view| view.mode()),
+            None => return,
+        };
+        let bytes = qcode_terminal::key::paste(&text, mode);
+        self.type_into_terminal(&bytes, cx);
+        cx.notify();
     }
 
     /// `Cmd+T`: switch to the terminal view and add a tab.

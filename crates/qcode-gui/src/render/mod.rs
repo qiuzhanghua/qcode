@@ -84,13 +84,15 @@ impl Render for Shell {
                                 || shell.pending_root_delete.is_some()
                                 || shell.pending_task_delete.is_some()
                                 || shell.task_menu.is_some()
-                                || shell.pending_quit;
+                                || shell.pending_quit
+                                || shell.pending_terminal_paste.is_some();
                             if open {
                                 shell.rename_task = None;
                                 shell.pending_root_delete = None;
                                 shell.pending_task_delete = None;
                                 shell.task_menu = None;
                                 shell.pending_quit = false;
+                                shell.pending_terminal_paste = None;
                                 cx.notify();
                             }
                         });
@@ -191,6 +193,7 @@ impl Render for Shell {
             })
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
+            .child(self.render_terminal_paste_dialog(cx))
             .child(self.render_rename_dialog(cx))
             .child(self.render_quit_dialog(cx))
     }
