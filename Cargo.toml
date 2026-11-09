@@ -16,6 +16,8 @@ members = [
   "crates/qcode-image",
   "crates/qcode-kernel",
   "crates/qcode-attachments",
+  # Terminal emulation core for the desktop GUI; see ADR-0062.
+  "crates/qcode-terminal",
   # Fork of xim-ctext 0.3.0; see [patch.crates-io] below and ADR-0051.
   "vendor/xim-ctext",
 ]
