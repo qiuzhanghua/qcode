@@ -5440,6 +5440,7 @@ dependencies = [
  "qcode-kernel",
  "qcode-mcp",
  "qcode-providers",
+ "qcode-terminal",
  "qcode-tools",
  "qcode-ui-bridge",
  "qcode-ui-state",
@@ -5542,6 +5543,7 @@ name = "qcode-terminal"
 version = "0.7.9"
 dependencies = [
  "alacritty_terminal",
+ "libc",
 ]
 
 [[package]]

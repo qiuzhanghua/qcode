@@ -9,8 +9,10 @@
 //! be usable without a `LocalBackend` anywhere in sight.
 
 pub mod screen;
+pub mod session;
 
-pub use screen::{CellView, Events, Screen};
+pub use screen::{CellView, Events, Screen, View};
+pub use session::{Session, SessionConfig};
 
 // Re-exported so a caller can name `TermMode`, `Color`, `Flags` and friends
 // without depending on `alacritty_terminal` directly at a second version.

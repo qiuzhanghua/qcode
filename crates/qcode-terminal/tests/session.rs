@@ -1,0 +1,274 @@
+//! A real shell on a real PTY (ADR-0062, verification items 2, 3 and 5).
+//!
+//! These are the tests that a state machine alone cannot give you: they start an
+//! actual process, type into it, resize it, and check that closing the tab does
+//! not leave anything running. Unix only — the equivalent on Windows is `ConPTY`,
+//! which has no process groups to signal.
+
+#![cfg(unix)]
+
+use std::time::{Duration, Instant};
+
+use qcode_terminal::{Session, SessionConfig};
+
+/// How long to wait before calling a slow machine broken. Every wait in this
+/// file is a poll rather than a sleep, so this only bounds a genuine hang.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < TIMEOUT {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    condition()
+}
+
+fn run(program: &str, args: &[&str]) -> Session {
+    let config = SessionConfig::command(program, args.iter().map(|arg| arg.to_string()));
+    Session::spawn(config).expect("spawn a child on a PTY")
+}
+
+/// Whether any process still has `needle` in its command line.
+///
+/// Reads `/proc` directly rather than shelling out to `pgrep`: the check has to
+/// be exact, and a `pgrep` that is itself a child of the test would match its own
+/// command line.
+fn processes_matching(needle: &str) -> Vec<u32> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        if String::from_utf8_lossy(&cmdline).contains(needle) {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+#[test]
+fn a_real_child_runs_and_its_output_lands_on_the_grid() {
+    let session = run("/bin/sh", &["-c", "printf 'alpha\\nbravo\\n'"]);
+
+    let saw_output = wait_until(|| {
+        session.with_view(|view| view.contents().iter().any(|row| row.contains("alpha")))
+    });
+    assert!(saw_output, "the child's output never reached the grid");
+
+    assert!(
+        wait_until(|| session.has_exited()),
+        "the child never reported exiting"
+    );
+    assert_eq!(session.exit_code(), Some(0));
+
+    session.with_view(|view| {
+        let rows = view.contents();
+        assert_eq!(rows[0], "alpha");
+        assert_eq!(rows[1], "bravo");
+    });
+}
+
+#[test]
+fn typed_input_reaches_the_shell() {
+    // A shell reading from the PTY needs a working write path, not just a read
+    // path: the keystrokes go through the event loop's `Msg::Input`.
+    let session = run("/bin/sh", &[]);
+
+    assert!(
+        session.write(b"echo qcode-input\n"),
+        "write reached the loop"
+    );
+
+    let saw_echo = wait_until(|| {
+        session.with_view(|view| {
+            view.contents()
+                .iter()
+                .any(|row| row.trim() == "qcode-input")
+        })
+    });
+    assert!(saw_echo, "the shell never echoed what was typed");
+}
+
+#[test]
+fn resize_reaches_the_child_and_the_grid() {
+    let mut session = run("/bin/sh", &[]);
+    assert!(session.resize(100, 30), "resize reached the loop");
+
+    // `stty size` reports the winsize the kernel has for the child, so this
+    // checks the ioctl went through — and not just that our own bookkeeping
+    // changed.
+    assert!(wait_until(|| session.write(b"stty size\n")));
+    let saw_size = wait_until(|| session.with_view(|view| view.text().contains("30 100")));
+    assert!(
+        saw_size,
+        "the child never saw the new size: {:?}",
+        session.with_view(|view| view.contents())
+    );
+
+    session.with_view(|view| {
+        assert_eq!(view.columns(), 100);
+        assert_eq!(view.screen_lines(), 30);
+    });
+}
+
+#[test]
+fn a_background_job_dies_when_the_shell_exits_on_its_own() {
+    // `close()` deliberately skips the group kill when the child already exited —
+    // signalling a reaped pid could hit an unrelated process. That is only safe
+    // because the kernel does the cleanup: the child is a session leader, so when
+    // it exits the foreground process group of its terminal gets `SIGHUP`. This
+    // test pins that assumption down instead of trusting it.
+    const MARKER: &str = "sleep 2468013";
+    let session = run("/bin/sh", &["-c", &format!("{MARKER} &")]);
+
+    assert!(
+        wait_until(|| session.has_exited()),
+        "the shell should exit immediately, leaving the sleep behind"
+    );
+    assert!(
+        wait_until(|| processes_matching(MARKER).is_empty()),
+        "a background job survived its shell without close() signalling it"
+    );
+
+    session.close();
+}
+
+#[test]
+fn closing_the_session_leaves_no_orphans() {
+    // `sh -c 'sleep N; true'` forces a real fork: the shell has to survive the
+    // `sleep` to run `true`, so the marker process is a *grandchild* of ours.
+    // `Pty::drop` only signals the direct child, so without the process-group
+    // teardown this `sleep` survives the tab and is reparented to init.
+    const MARKER: &str = "sleep 3456789";
+    let session = run("/bin/sh", &["-c", &format!("{MARKER}; true")]);
+
+    assert!(
+        wait_until(|| !processes_matching(MARKER).is_empty()),
+        "the marker process never started, so this test would pass vacuously"
+    );
+
+    session.close();
+
+    let survivors = processes_matching(MARKER);
+    assert!(
+        survivors.is_empty(),
+        "closing the tab orphaned {survivors:?} — the process group was not signalled"
+    );
+}
+
+#[test]
+fn closing_escalates_past_a_child_that_ignores_hangup() {
+    // A shell that traps `HUP` would survive a polite signal. The escalation to
+    // `SIGKILL` is what keeps a stuck tab from becoming a permanent process.
+    const MARKER: &str = "sleep 9876543";
+    let session = run("/bin/sh", &["-c", &format!("trap '' HUP; {MARKER}; true")]);
+
+    assert!(wait_until(|| !processes_matching(MARKER).is_empty()));
+
+    let closed_at = Instant::now();
+    session.close();
+
+    assert!(
+        processes_matching(MARKER).is_empty(),
+        "a child ignoring SIGHUP was left running"
+    );
+    assert!(
+        closed_at.elapsed() < Duration::from_secs(2),
+        "closing took {:?}; the escalation grace period is too long",
+        closed_at.elapsed()
+    );
+}
+
+#[test]
+fn a_killed_child_is_reported_as_exited_without_a_code() {
+    // "Killed by a signal" and "still running" both have no exit code, so the
+    // two have to be distinguishable — otherwise a tab whose shell was killed
+    // looks alive forever.
+    let session = run("/bin/sh", &["-c", "sleep 30"]);
+    let events = session.events();
+
+    assert!(wait_until(|| !session.has_exited()));
+    session.close();
+
+    assert!(
+        events.child_exited(),
+        "the child was not reported as exited"
+    );
+    assert_eq!(
+        events.exit_code(),
+        None,
+        "a signalled child has no exit code"
+    );
+}
+
+#[test]
+fn a_colour_reply_travels_the_write_path_to_the_child() {
+    // The reply has to travel the write path, not just be recorded: this spawns a
+    // child that asks for the background colour and echoes whatever comes back.
+    let session = run(
+        "/bin/sh",
+        &[
+            "-c",
+            // Ask (`OSC 11 ; ?` with ST) and then block, so the pty stays open
+            // while we answer. The tty's own echo of our reply is what the test
+            // looks for: it can only be there if the bytes reached the slave.
+            "printf '\\033]11;?\\033\\\\'; sleep 30",
+        ],
+    );
+
+    let answered = wait_until(|| !session.events().colour_requests().is_empty());
+    assert!(answered, "the child's colour query never reached us");
+
+    session.answer_colours(
+        qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
+            r: 0x1d,
+            g: 0x1f,
+            b: 0x21,
+        },
+        qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
+            r: 0xfa,
+            g: 0xfa,
+            b: 0xfa,
+        },
+    );
+
+    // The reply is echoed by the child's terminal, which is proof it travelled the
+    // write path and not just the recorder inside `Events`.
+    let saw_reply =
+        wait_until(|| session.with_view(|view| view.text().contains("rgb:fafa/fafa/fafa")));
+    assert!(
+        saw_reply,
+        "the child never received the colour reply: {:?}",
+        session.with_view(|view| view.contents())
+    );
+}
+
+#[test]
+fn a_session_that_exits_on_its_own_still_closes_cleanly() {
+    // The common case: the user types `exit`, the child is gone before the tab is
+    // closed. Closing must not hang waiting for a process that already exited.
+    let session = run("/bin/sh", &["-c", "exit 3"]);
+    assert!(wait_until(|| session.has_exited()));
+    assert_eq!(session.exit_code(), Some(3));
+
+    let closed_at = Instant::now();
+    let code = session.close();
+    assert_eq!(code, Some(3));
+    assert!(
+        closed_at.elapsed() < Duration::from_secs(1),
+        "closing an already-exited session took {:?}",
+        closed_at.elapsed()
+    );
+}

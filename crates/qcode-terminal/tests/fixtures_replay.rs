@@ -127,6 +127,96 @@ fn nano_enables_bracketed_paste_and_scroll_region() {
 }
 
 #[test]
+fn htop_redraws_cell_by_cell_and_keeps_the_grid_consistent() {
+    // htop is the heaviest cursor-addressing user in this set: 553 escape
+    // sequences for one screenful, because every meter and every header figure is
+    // positioned individually. If `Screen` mishandled a single CUP the header
+    // would smear across the wrong rows — which is exactly why this fixture is
+    // worth more than a synthetic sample.
+    let bytes = fixture("htop");
+    let seen = replay(&bytes);
+
+    assert!(seen.alt_screen, "htop draws in the alternate screen");
+    assert!(
+        seen.seen.contains("Tasks:"),
+        "htop's header never appeared; cursor addressing or SGR is broken"
+    );
+    assert!(
+        !seen.final_mode.contains(TermMode::ALT_SCREEN),
+        "quitting htop restores the primary screen"
+    );
+}
+
+#[test]
+fn tmux_asks_for_device_attributes_and_gets_an_answer() {
+    // tmux probes the terminal before drawing (`DA`, `OSC 10/11`) and adjusts what
+    // it emits based on the replies. The DA answer travels through `PtyWrite`; a
+    // terminal that swallows it leaves tmux drawing for a dumb terminal.
+    let bytes = fixture("tmux");
+    let mut term = Screen::new(COLUMNS, LINES, 2000);
+    term.advance(&bytes);
+
+    let writes = term.events().take_pty_writes();
+    assert!(
+        writes.contains("\x1b[>") || writes.contains("\x1b[?"),
+        "tmux's device-attributes query went unanswered: {writes:?}"
+    );
+
+    let mut replayed = Screen::new(COLUMNS, LINES, 2000);
+    replayed.advance(&bytes);
+    let seen: String = {
+        let mut seen = String::new();
+        for byte in &bytes {
+            replayed.advance(&[*byte]);
+            seen.push_str(&replayed.contents().join("\n"));
+            seen.push('\n');
+        }
+        seen
+    };
+    assert!(
+        seen.contains("alpha line"),
+        "tmux never drew the pane contents"
+    );
+}
+
+#[test]
+fn a_colour_query_is_answered_with_the_terminator_the_program_used() {
+    // vim terminates its OSC queries with BEL, tmux with ST (`ESC \`). The reply
+    // has to use the terminator the program chose, or it will not recognise its
+    // own answer and the query times out anyway.
+    for (name, expected_terminator) in [("vim", "\x07"), ("tmux", "\x1b\\")] {
+        let bytes = fixture(name);
+        let mut term = Screen::new(COLUMNS, LINES, 2000);
+        term.advance(&bytes);
+
+        let asked = term.events().colour_requests();
+        let background =
+            qcode_terminal::alacritty_terminal::vte::ansi::NamedColor::Background as usize;
+        assert!(
+            asked.contains(&background),
+            "{name} should ask for the background colour, asked for {asked:?}"
+        );
+
+        let reply = term.events().answer_colours(
+            Rgb {
+                r: 0x1d,
+                g: 0x1f,
+                b: 0x21,
+            },
+            Rgb {
+                r: 0xfa,
+                g: 0xfa,
+                b: 0xfa,
+            },
+        );
+        assert!(
+            reply.contains(&format!("\x1b]11;rgb:fafa/fafa/fafa{expected_terminator}")),
+            "{name} terminates with {expected_terminator:?}, so the reply must too: {reply:?}"
+        );
+    }
+}
+
+#[test]
 fn vim_asks_for_the_theme_colours_and_gives_up_without_an_answer() {
     // vim opens with `OSC 10 ; ?` and `OSC 11 ; ?` — "what is your foreground and
     // background?" — and waits. A terminal that stays silent leaves vim guessing
@@ -207,7 +297,7 @@ fn vim_stream_is_indifferent_to_read_boundaries() {
 fn every_replayed_screen_keeps_its_rows_within_the_width() {
     // A row wider than the grid would mean the cursor wrapped somewhere it
     // should not have, and the renderer would clip content the user wrote.
-    for name in ["vim", "less", "nano"] {
+    for name in ["vim", "less", "nano", "htop", "tmux"] {
         let bytes = fixture(name);
         let mut term = Screen::new(COLUMNS, LINES, 2000);
         for chunk in bytes.chunks(64) {

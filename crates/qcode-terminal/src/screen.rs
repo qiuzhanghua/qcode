@@ -4,14 +4,20 @@
 //! separate is what makes ADR-0062 testable: the ANSI handling can be driven from
 //! a byte slice in a unit test, with no PTY, no window, and no `LocalBackend`
 //! runtime anywhere in sight.
+//!
+//! Reading the grid lives in [`View`], which borrows a `Term`. That is the one
+//! implementation shared by both entry points: [`Screen`] owns its `Term` and
+//! parses bytes from the caller, [`crate::Session`] shares its `Term` with the
+//! PTY event loop and lends it out under a lock.
 
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Line;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
-use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
 
 /// The size `Term::new` and `Term::resize` take.
 ///
@@ -19,9 +25,9 @@ use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
 /// module, so the implementor is ours. `total_lines == screen_lines` is the
 /// window-size convention: history is something `Term` grows on resize, not
 /// something the caller declares up front.
-struct Size {
-    columns: usize,
-    screen_lines: usize,
+pub(crate) struct Size {
+    pub(crate) columns: usize,
+    pub(crate) screen_lines: usize,
 }
 
 impl Dimensions for Size {
@@ -40,10 +46,10 @@ impl Dimensions for Size {
 
 /// Collects the events `Term` emits, so a test can assert on them.
 ///
-/// `VoidListener` would discard them, but three of them carry information the
-/// caller cannot get from the grid: the window title (what the tab shows), the
-/// bytes a query writes back to the application (`PtyWrite` — cursor position
-/// reports and device attributes answer *through* this), and the clipboard.
+/// `VoidListener` would discard them, but several carry information the caller
+/// cannot get from the grid: the window title (what the tab shows), the bytes a
+/// query writes back to the application (`PtyWrite` — cursor position reports and
+/// device attributes answer *through* this), and the colour queries.
 #[derive(Clone, Default)]
 pub struct Events {
     inner: Arc<Mutex<Recorded>>,
@@ -52,7 +58,7 @@ pub struct Events {
 #[derive(Default)]
 struct Recorded {
     title: String,
-    /// Everything the terminal wrote back to the "application". The real caller
+    /// Everything the terminal wrote back to the "application". The live session
     /// forwards these to the PTY; a test asserts on them.
     pty_writes: Vec<String>,
     /// Colour queries (`OSC 10/11/12 … ?`) waiting for an answer.
@@ -62,6 +68,14 @@ struct Recorded {
     /// startup — blocks until it gets an answer or gives up, so the pending
     /// request is recorded here for [`Events::answer_colours`] to form the reply.
     colour_requests: Vec<ColourRequest>,
+    /// How the child exited, once the OS says so.
+    exit: Option<i32>,
+    /// Whether the child has exited at all — a signalled child has no code.
+    exited: bool,
+    /// Called on every damage notification. Used by the GUI to schedule a repaint.
+    wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Number of damage notifications seen, so a test can wait for one.
+    wakeups: u64,
 }
 
 struct ColourRequest {
@@ -90,7 +104,7 @@ impl Events {
         self.lock()
             .colour_requests
             .iter()
-            .map(|r| r.index)
+            .map(|request| request.index)
             .collect()
     }
 
@@ -101,6 +115,9 @@ impl Events {
     /// any other index is left for a caller that owns a full palette. A program
     /// that asks for one of those simply falls back to its own defaults, which
     /// is what it would do without a terminal at all.
+    ///
+    /// The terminator is the program's own — vim ends its queries with BEL, tmux
+    /// with ST — because a program only recognises the answer it asked for.
     pub fn answer_colours(&self, foreground: Rgb, background: Rgb) -> String {
         let mut recorded = self.lock();
         let mut reply = String::new();
@@ -118,6 +135,33 @@ impl Events {
         reply
     }
 
+    /// The child's exit code, once it has exited.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.lock().exit
+    }
+
+    /// Whether the child has exited.
+    ///
+    /// A child killed by a signal exits without a code, so `exit_code() == None`
+    /// alone cannot tell "still running" from "killed".
+    pub fn child_exited(&self) -> bool {
+        self.lock().exited
+    }
+
+    /// How many damage notifications have arrived.
+    pub fn wakeups(&self) -> u64 {
+        self.lock().wakeups
+    }
+
+    /// Install a callback for damage notifications.
+    ///
+    /// It is called while `Term`'s lock is held, so it must only signal — a
+    /// channel send, a flag, a `cx.notify()`. Locking the terminal from it
+    /// deadlocks.
+    pub fn on_wakeup(&self, wakeup: impl Fn() + Send + Sync + 'static) {
+        self.lock().wakeup = Some(Arc::new(wakeup));
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Recorded> {
         self.inner.lock().expect("events lock")
     }
@@ -125,32 +169,51 @@ impl Events {
 
 impl EventListener for Events {
     fn send_event(&self, event: Event) {
-        let mut recorded = self.lock();
-        match event {
-            Event::Title(title) => recorded.title = title,
-            Event::PtyWrite(text) => recorded.pty_writes.push(text),
-            Event::ColorRequest(index, format) => recorded
-                .colour_requests
-                .push(ColourRequest { index, format }),
-            // Clipboard queries need a live app to answer them; a headless
-            // screen has none, and silently ignoring them is what `VoidListener`
-            // does for every event anyway.
-            _ => {}
+        let is_wakeup = matches!(&event, Event::Wakeup);
+        // Take the callback out before calling it: it runs with the terminal lock
+        // held, and re-entering `send_event` would deadlock on `inner`.
+        let wakeup = {
+            let mut recorded = self.lock();
+            match event {
+                Event::Title(title) => recorded.title = title,
+                Event::PtyWrite(text) => recorded.pty_writes.push(text),
+                Event::ColorRequest(index, format) => recorded
+                    .colour_requests
+                    .push(ColourRequest { index, format }),
+                // `None` means the child was killed rather than exiting on its
+                // own, which a caller should show differently from any exit code.
+                Event::ChildExit(status) => {
+                    recorded.exit = status.code();
+                    recorded.exited = true;
+                }
+                Event::Wakeup => recorded.wakeups += 1,
+                // Clipboard queries need a live app to answer them; a headless
+                // screen has none, and silently ignoring them is what
+                // `VoidListener` does for every event anyway.
+                _ => {}
+            }
+            if is_wakeup {
+                recorded.wakeup.clone()
+            } else {
+                None
+            }
+        };
+
+        if let Some(wakeup) = wakeup {
+            wakeup();
         }
     }
 }
 
-/// One terminal's screen.
+/// One terminal's screen, driven by bytes the caller supplies.
 ///
-/// `advance` takes whatever a PTY handed over, which is *not* guaranteed to
-/// split on escape-sequence boundaries — the parser carries partial sequences
-/// across calls, and [`Screen::advance_byte_by_byte`] exists to prove it.
+/// This is the headless path: the caller reads the PTY (or a fixture) and hands
+/// the bytes over. [`crate::Session`] is the live path, where the PTY event loop
+/// does that instead.
 pub struct Screen {
     term: Term<Events>,
     parser: Processor,
     events: Events,
-    columns: usize,
-    screen_lines: usize,
 }
 
 impl Screen {
@@ -170,8 +233,6 @@ impl Screen {
             term: Term::new(config, &size, events.clone()),
             parser: Processor::new(),
             events,
-            columns,
-            screen_lines,
         }
     }
 
@@ -193,32 +254,73 @@ impl Screen {
 
     /// Resize the visible screen, keeping history.
     pub fn resize(&mut self, columns: usize, screen_lines: usize) {
-        self.columns = columns;
-        self.screen_lines = screen_lines;
         self.term.resize(Size {
             columns,
             screen_lines,
         });
     }
 
+    pub fn events(&self) -> Events {
+        self.events.clone()
+    }
+
+    /// Read-only access to the grid.
+    pub fn view(&self) -> View<'_> {
+        View { term: &self.term }
+    }
+
     pub fn columns(&self) -> usize {
-        self.columns
+        self.term.grid().columns()
     }
 
     pub fn screen_lines(&self) -> usize {
-        self.screen_lines
+        self.term.grid().screen_lines()
+    }
+
+    pub fn contents(&self) -> Vec<String> {
+        self.view().contents()
+    }
+
+    pub fn cursor(&self) -> (usize, usize) {
+        self.view().cursor()
     }
 
     pub fn mode(&self) -> TermMode {
-        *self.term.mode()
+        self.view().mode()
+    }
+
+    pub fn cell(&self, line: usize, column: usize) -> Option<CellView> {
+        self.view().cell(line, column)
     }
 
     pub fn title(&self) -> String {
         self.events.title()
     }
+}
 
-    pub fn events(&self) -> Events {
-        self.events.clone()
+/// Read-only access to a terminal's grid.
+///
+/// Everything that reads the grid goes through here, so the headless [`Screen`]
+/// and the live [`crate::Session`] cannot drift apart in how they interpret it.
+pub struct View<'a> {
+    term: &'a Term<Events>,
+}
+
+impl<'a> View<'a> {
+    pub(crate) fn new(term: &'a Term<Events>) -> Self {
+        Self { term }
+    }
+
+    pub fn columns(&self) -> usize {
+        self.term.grid().columns()
+    }
+
+    pub fn screen_lines(&self) -> usize {
+        self.term.grid().screen_lines()
+    }
+
+    pub fn mode(&self) -> TermMode {
+        *self.term.mode()
     }
 
     /// The cursor, as `(line, column)` with line 0 at the top of the *visible*
@@ -228,12 +330,21 @@ impl Screen {
         (point.line.0.max(0) as usize, point.column.0)
     }
 
+    /// Whether the cursor is being displayed (`DECTCEM`).
+    ///
+    /// A full-screen program hides it while drawing; a renderer that ignores this
+    /// leaves the cursor blinking in the middle of htop's meters.
+    pub fn cursor_visible(&self) -> bool {
+        self.mode().contains(TermMode::SHOW_CURSOR)
+    }
+
     /// Visible screen as text, one `String` per row with trailing blanks removed.
     ///
     /// Trailing blanks are dropped because a terminal row is always full width;
     /// keeping them would make every assertion spell out the padding.
     pub fn contents(&self) -> Vec<String> {
-        let mut rows = vec![String::new(); self.screen_lines];
+        let lines = self.screen_lines();
+        let mut rows = vec![String::new(); lines];
         for indexed in self.term.grid().display_iter() {
             let line = indexed.point.line.0;
             if line < 0 {
@@ -243,7 +354,6 @@ impl Screen {
             if line >= rows.len() {
                 continue;
             }
-            let cell = indexed.cell;
             let row = &mut rows[line];
             // Pad to the column so a gap is a gap, not a shifted string.
             while row.chars().count() < indexed.point.column.0 {
@@ -253,37 +363,67 @@ impl Screen {
             // it), but nothing is drawn there — `GridCell::is_empty` counts it as
             // blank and the renderer skips it. Print a space so the row reads the
             // way it looks.
-            row.push(if cell.c == '\t' { ' ' } else { cell.c });
+            row.push(if indexed.cell.c == '\t' {
+                ' '
+            } else {
+                indexed.cell.c
+            });
         }
         rows.into_iter()
             .map(|row| row.trim_end().to_string())
             .collect()
     }
 
+    /// The whole visible screen as one string, rows joined with `\n`.
+    pub fn text(&self) -> String {
+        self.contents().join("\n")
+    }
+
+    /// Every row, every cell, for a renderer that wants to draw the grid itself.
+    pub fn cells(&self) -> impl Iterator<Item = (usize, usize, CellView)> + '_ {
+        self.term
+            .grid()
+            .display_iter()
+            .filter(|indexed| indexed.point.line >= Line(0))
+            .map(|indexed| {
+                (
+                    indexed.point.line.0 as usize,
+                    indexed.point.column.0,
+                    CellView::from(indexed.cell),
+                )
+            })
+    }
+
     /// The grid cell at `(line, column)`, if it is on screen.
     pub fn cell(&self, line: usize, column: usize) -> Option<CellView> {
-        if line >= self.screen_lines || column >= self.columns {
+        if line >= self.screen_lines() || column >= self.columns() {
             return None;
         }
         self.term
             .grid()
             .display_iter()
             .find(|indexed| indexed.point.line.0 == line as i32 && indexed.point.column.0 == column)
-            .map(|indexed| CellView {
-                c: indexed.cell.c.to_string(),
-                fg: indexed.cell.fg,
-                bg: indexed.cell.bg,
-                flags: indexed.cell.flags,
-            })
+            .map(|indexed| CellView::from(indexed.cell))
     }
 }
 
-/// A single grid cell, copied out so a test does not have to hold a borrow of
+/// A single grid cell, copied out so a caller does not have to hold a borrow of
 /// the `Term`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellView {
     pub c: String,
-    pub fg: alacritty_terminal::vte::ansi::Color,
-    pub bg: alacritty_terminal::vte::ansi::Color,
-    pub flags: alacritty_terminal::term::cell::Flags,
+    pub fg: Color,
+    pub bg: Color,
+    pub flags: Flags,
+}
+
+impl From<&alacritty_terminal::term::cell::Cell> for CellView {
+    fn from(cell: &alacritty_terminal::term::cell::Cell) -> Self {
+        Self {
+            c: cell.c.to_string(),
+            fg: cell.fg,
+            bg: cell.bg,
+            flags: cell.flags,
+        }
+    }
 }
