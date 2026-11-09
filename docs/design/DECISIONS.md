@@ -4562,6 +4562,26 @@ GUI 落地后这三条边界开始漏：
      ——实测过：`汉字A` 渲染成 `汉 字 A`，一半是 spacer 格被当成空格，一半是回退字体
      的 advance 不等于两格。
 
+   - **实现注记（字体选择，2026-11-09）**：先按 `text_system.all_font_names()` 判断
+     装了没有，再依次试 `Sarasa Term SC` / `Sarasa Mono SC` / `Sarasa Fixed SC` /
+     `Sarasa Term J` / `Sarasa Term Slab SC` / `Noto Sans Mono CJK SC`，都没有才退回
+     `theme.mono_font_family`；`[terminal] font` 非空时直接用它。结果缓存在
+     `Shell::terminal_font`，只在第一次 prepaint 算一次——`all_font_names()` 会克隆
+     整个字体表，不能每帧调。选择放在 prepaint 而不是构造期，是因为那里才拿得到
+     `Window::text_system()`。
+   - `~/space/opentj/terminal-ts`（同一作者的另一份实现，Tauri + xterm.js）在这件事上
+     走得更细，留作后续参照：它在 `src/lib/fonts.ts` 里用 DOM 测量 + 一个故意缺失的
+     sentinel 家族来探测「这个字体到底装没装」（阈值 0.1px），因为 WebKit 上首族若未
+     安装，canvas 会直接退到比例字体、根本轮不到链里后面的家族。它的顺序是
+     「Nerd 连字字体 → 普通连字等宽 → 纯 Nerd Font → Menlo 兜底 → CJK 组（Sarasa
+     领头）」，并注明两条经验：Sarasa 的汉字正好是西文 advance 的两倍；**Sarasa 必须
+     排在 Nerd Font 之后**，否则 oh-my-posh 的 PUA 图标（U+E0B0–U+E0B6 等）会被它的
+     CJK 映射抢走，渲染成汉字（例如 `瞵間`）。
+   - 本实现**没有**走「一条 fallback 链」的路线：GPUI 的 `shape_line` 一次给一行、
+     一个 `Font`，链里的第二族不会只在缺字时生效。要拿到 terminal-ts 那种「连字字体
+     画西文、CJK 落到 Sarasa」的效果，得改成 run 级字体（`TextRun::font`）+ 按列定位
+     每段——那会放弃整行 shaping 的连字与 kerning，留给真正需要时再做。
+
 5. **输入编码：mode 感知，且有成文的快捷键归属**
 
    GPUI `KeyDown` → VT 序列是**全新的工作量**，也是 bug 密度最高的地方。
