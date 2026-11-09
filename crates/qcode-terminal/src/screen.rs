@@ -140,6 +140,19 @@ impl Events {
             .concat()
     }
 
+    /// Whether anything is waiting to be answered or written back.
+    ///
+    /// Cheap enough to ask every tick: the lock guards a handful of vectors and is
+    /// never held across a write. The point is to skip the *session* lock for the
+    /// terminals that have nothing to say.
+    pub fn has_pending(&self) -> bool {
+        let recorded = self.lock();
+        !recorded.colour_requests.is_empty()
+            || !recorded.clipboard_stores.is_empty()
+            || !recorded.clipboard_loads.is_empty()
+            || !recorded.pty_writes.is_empty()
+    }
+
     /// Palette indices a program asked about, in order (`256` is the foreground,
     /// `257` the background, `258` the cursor — see `NamedColor`).
     pub fn colour_requests(&self) -> Vec<usize> {

@@ -249,6 +249,26 @@ fn osc52_store_lands_on_our_side_of_the_wire() {
 }
 
 #[test]
+fn a_pending_request_is_visible_without_taking_it() {
+    let mut screen = qcode_terminal::screen::Screen::new(20, 4, 100);
+    assert!(!screen.events().has_pending(), "a fresh screen owes nobody");
+
+    // `OSC 52 ; c ; <base64 "hi">`: something to hand to the clipboard.
+    screen.advance(b"\x1b]52;c;aGk=\x07");
+    assert!(
+        screen.events().has_pending(),
+        "a clipboard write is pending until it is taken"
+    );
+
+    let took = screen.events().take_clipboard_stores();
+    assert_eq!(took, vec!["hi".to_string()]);
+    assert!(
+        !screen.events().has_pending(),
+        "nothing is owed once the write is taken"
+    );
+}
+
+#[test]
 fn osc52_read_is_answered_in_the_encoding_the_program_asked_for() {
     let mut screen = qcode_terminal::screen::Screen::new(20, 4, 100);
     // `OSC 52 ; c ; ?`: asking for the clipboard.

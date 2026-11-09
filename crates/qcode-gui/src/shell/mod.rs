@@ -656,9 +656,11 @@ impl Shell {
                     // notifying: this loop is the only place that may touch the
                     // entity, and it also applies the grid size the last frame
                     // measured (ADR-0062 §4).
+                    // Answers go out even while the task view is showing: a program
+                    // in a background tab can be waiting on one (ADR-0062 §9).
+                    shell.service_terminal(cx);
                     if shell.view == MainView::Terminal {
                         shell.sync_terminal_size();
-                        shell.service_terminal(cx);
                         if shell
                             .terminal_dirty
                             .swap(false, std::sync::atomic::Ordering::Relaxed)

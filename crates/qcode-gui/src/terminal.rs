@@ -283,34 +283,42 @@ impl crate::shell::Shell {
     /// back, and one that opens the clipboard through the terminal (`OSC 52`) gets
     /// nowhere if nothing answers. Both are non-blocking pty writes, so they belong
     /// on the ticker rather than in the paint (ADR-0062 §9).
+    /// Answer whatever the terminals are waiting on, visible or not.
+    ///
+    /// A program that asks for the palette or for `PtyWrite` blocks until it gets
+    /// an answer, and a tab can be in the background while it starts up (`vim` asks
+    /// on open). The check is `Events::has_pending`, which only takes the events
+    /// lock: terminals with nothing to say never touch the grid lock.
     pub(crate) fn service_terminal(&mut self, cx: &mut Context<Self>) {
         // The terminal's own canvas, not the app's: see `TERMINAL_BACKGROUND`.
         let foreground = to_term_rgb(crate::render::terminal_view::TERMINAL_FOREGROUND);
         let background = to_term_rgb(crate::render::terminal_view::TERMINAL_BACKGROUND);
-        let Some(tab) = self.terminals.active_mut() else {
-            return;
-        };
-        tab.session.answer_colours(foreground, background);
+        for tab in &mut self.terminals.tabs {
+            if !tab.session.events().has_pending() {
+                continue;
+            }
+            tab.session.answer_colours(foreground, background);
 
-        // `OSC 52`: a program on the pty either put text on our clipboard or asked
-        // for it. Both go through the real clipboard, which only the app owns.
-        let stored = tab.session.events().take_clipboard_stores();
-        if !stored.is_empty() {
-            let text = stored.concat();
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-        }
-        let wanted = cx.read_from_clipboard().and_then(|item| item.text());
-        let reply = tab.session.events().answer_clipboard(wanted.as_deref());
-        if !reply.is_empty() {
-            tab.session.write(reply.as_bytes());
-        }
+            // `OSC 52`: a program on the pty either put text on our clipboard or
+            // asked for it. Both go through the real clipboard, which only the app
+            // owns.
+            let stored = tab.session.events().take_clipboard_stores();
+            if !stored.is_empty() {
+                let text = stored.concat();
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+            if tab.session.events().clipboard_loads() > 0 {
+                let wanted = cx.read_from_clipboard().and_then(|item| item.text());
+                let reply = tab.session.events().answer_clipboard(wanted.as_deref());
+                if !reply.is_empty() {
+                    tab.session.write(reply.as_bytes());
+                }
+            }
 
-        let pending = tab.session.events().take_pty_writes();
-        if !pending.is_empty() {
-            tab.session.write(pending.as_bytes());
-        }
-        if let Some(code) = tab.session.exit_code() {
-            let _ = code;
+            let pending = tab.session.events().take_pty_writes();
+            if !pending.is_empty() {
+                tab.session.write(pending.as_bytes());
+            }
         }
     }
 }
