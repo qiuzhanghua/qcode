@@ -61,6 +61,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // Inside the terminal, Cmd+W closes the tab, not the window: the
                 // context-scoped binding wins over the root one.
                 KeyBinding::new("cmd-w", CloseTerminalShortcut, Some("Terminal")),
+                // Only inside the terminal: everywhere else Cmd+C belongs to the
+                // text fields and the transcript.
+                KeyBinding::new("cmd-c", CopySelectionShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-c", CopySelectionShortcut, Some("Terminal")),
                 KeyBinding::new("ctrl-tab", NextTerminalShortcut, Some("Terminal")),
                 KeyBinding::new("ctrl-shift-tab", PrevTerminalShortcut, Some("Terminal")),
                 KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),

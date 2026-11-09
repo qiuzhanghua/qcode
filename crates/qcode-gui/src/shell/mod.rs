@@ -70,6 +70,13 @@ pub(crate) struct Shell {
     pub(crate) terminal_focus: gpui_kit::FocusHandle,
     /// Set by a terminal's reader thread when there is output to draw.
     pub(crate) terminal_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Where the grid was last drawn, so mouse positions map back to cells.
+    pub(crate) terminal_geometry:
+        std::rc::Rc<std::cell::Cell<Option<crate::terminal::GridGeometry>>>,
+    /// Selected cells, as `(anchor, focus)` in screen coordinates.
+    pub(crate) terminal_selection: Option<(crate::terminal::GridPoint, crate::terminal::GridPoint)>,
+    /// True while the left button is down after a selection started.
+    pub(crate) terminal_selecting: bool,
     /// Root edits made while a task was running, keyed by task id and applied
     /// when *that* task's turn returns (§7: per session, not one global slot).
     pub(crate) pending_roots: std::collections::BTreeMap<String, Vec<Root>>,
@@ -256,6 +263,9 @@ impl Shell {
             terminal_size: std::rc::Rc::new(std::cell::Cell::new(None)),
             terminal_focus: cx.focus_handle(),
             terminal_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            terminal_geometry: std::rc::Rc::new(std::cell::Cell::new(None)),
+            terminal_selection: None,
+            terminal_selecting: false,
             pending_send: false,
             sidebar_visible: true,
             minimize_on_close,

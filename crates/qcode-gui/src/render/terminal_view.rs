@@ -11,7 +11,9 @@
 //! callback is what stops the session from being touched while the entity that
 //! owns it is being read.
 
-use crate::{CloseTerminalShortcut, NextTerminalShortcut, PrevTerminalShortcut};
+use crate::{
+    CloseTerminalShortcut, CopySelectionShortcut, NextTerminalShortcut, PrevTerminalShortcut,
+};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
     App, Bounds, Context, FontStyle, FontWeight, Hsla, Pixels, SharedString, Styled, TextRun,
@@ -61,6 +63,9 @@ impl Shell {
             .bg(background)
             .track_focus(&self.terminal_focus)
             .key_context("Terminal")
+            .on_action(cx.listener(|this, _: &CopySelectionShortcut, _window, cx| {
+                this.copy_selection(cx);
+            }))
             .on_action(cx.listener(|this, _: &CloseTerminalShortcut, window, cx| {
                 this.close_terminal(window, cx)
             }))
@@ -231,6 +236,11 @@ impl Shell {
             .unwrap_or_default();
 
         let size_cell = self.terminal_size.clone();
+        let geometry_cell = self.terminal_geometry.clone();
+        let selection = self
+            .terminal_selection
+            .map(|(anchor, focus)| ((anchor.row, anchor.column), (focus.row, focus.column)))
+            .map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
         let font_family = self.mono_font.clone();
         let font_size = px(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32);
 
@@ -262,10 +272,26 @@ impl Shell {
                 // Applied on the next tick by `Shell::sync_terminal_size`; doing it
                 // here would touch the session from inside the paint.
                 size_cell.set(Some((columns, rows)));
+                geometry_cell.set(Some(crate::terminal::GridGeometry {
+                    origin: bounds.origin,
+                    advance: metrics.advance,
+                    line_height: metrics.line_height,
+                }));
                 metrics
             },
             move |bounds: Bounds<Pixels>, metrics: Metrics, window: &mut Window, cx: &mut App| {
-                paint_frame(&frame, bounds, &metrics, background, foreground, window, cx);
+                paint_frame(
+                    &frame,
+                    bounds,
+                    &metrics,
+                    PaintStyle {
+                        background,
+                        foreground,
+                        selection,
+                    },
+                    window,
+                    cx,
+                );
             },
         )
         .size_full()
@@ -274,6 +300,26 @@ impl Shell {
         div()
             .size_full()
             .child(body)
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _window, cx| {
+                    this.begin_selection(event.position, cx);
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _window, cx| {
+                    // Hover moves arrive too; only a held left button drags.
+                    if event.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        this.extend_selection(event.position, cx);
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _: &gpui_kit::MouseUpEvent, _window, cx| {
+                    this.end_selection(cx);
+                }),
+            )
             .on_scroll({
                 let entity = cx.entity();
                 move |event: &gpui_kit::ScrollEvent, _window, cx| {
@@ -292,6 +338,13 @@ impl Shell {
             })
             .into_any_element()
     }
+}
+
+/// Colours and selection for one painted frame.
+struct PaintStyle {
+    background: Hsla,
+    foreground: Hsla,
+    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 /// One visible frame, copied out of the terminal.
@@ -354,11 +407,15 @@ fn paint_frame(
     frame: &TerminalFrame,
     bounds: Bounds<Pixels>,
     metrics: &Metrics,
-    background: Hsla,
-    foreground: Hsla,
+    paint: PaintStyle,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let PaintStyle {
+        background,
+        foreground,
+        selection,
+    } = paint;
     window.paint_quad(fill(bounds, background));
     let text_system = window.text_system().clone();
     let rows = frame
@@ -374,6 +431,33 @@ fn paint_frame(
         .min((bounds.size.width / metrics.advance).floor() as usize);
 
     for row in 0..rows {
+        // Below the text: a selection has to look like a highlight behind the
+        // glyphs, not a box drawn over them.
+        if let Some(((start_row, start_column), (end_row, end_column))) = selection
+            && row >= start_row
+            && row <= end_row
+        {
+            let from = if row == start_row { start_column } else { 0 };
+            let to = if row == end_row {
+                end_column + 1
+            } else {
+                columns
+            };
+            let to = to.min(columns);
+            if to > from {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.origin.x + metrics.advance * from as f32,
+                            bounds.origin.y + metrics.line_height * row as f32,
+                        ),
+                        gpui_kit::size(metrics.advance * (to - from) as f32, metrics.line_height),
+                    ),
+                    foreground.opacity(0.22),
+                ));
+            }
+        }
+
         // A hair of top inset: the shaped line is taller than its glyphs and the
         // first row would otherwise clip its ascenders against the tab bar.
         let y = bounds.origin.y + metrics.line_height * row as f32 + px(2.0);

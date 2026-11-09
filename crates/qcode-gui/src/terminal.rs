@@ -34,6 +34,21 @@ impl Tab {
     }
 }
 
+/// A cell in the visible grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct GridPoint {
+    pub(crate) row: usize,
+    pub(crate) column: usize,
+}
+
+/// Where the grid was drawn last frame, so a mouse position maps back to a cell.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GridGeometry {
+    pub(crate) origin: gpui_kit::Point<gpui_kit::Pixels>,
+    pub(crate) advance: gpui_kit::Pixels,
+    pub(crate) line_height: gpui_kit::Pixels,
+}
+
 #[derive(Default)]
 pub(crate) struct Terminals {
     pub(crate) tabs: Vec<Tab>,
@@ -188,6 +203,8 @@ impl crate::shell::Shell {
     /// Back to the task, leaving the terminals running (ADR-0062: they are not tabs
     /// of the transcript, and closing the view is not closing the shells).
     pub(crate) fn show_tasks(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // Leaving the view drops the selection: the cells it referenced are gone.
+        self.clear_selection(cx);
         self.view = crate::shell::MainView::Task;
         cx.notify();
     }
@@ -220,6 +237,7 @@ impl crate::shell::Shell {
     ) {
         if index < self.terminals.tabs.len() {
             self.terminals.active = index;
+            self.clear_selection(cx);
         }
         window.focus(&self.terminal_focus, cx);
         cx.notify();
@@ -234,6 +252,7 @@ impl crate::shell::Shell {
         // Typing is a statement about where you want to be; a terminal that keeps
         // the view parked in history while the shell runs the command is baffling.
         tab.session.scroll_to_bottom();
+        self.terminal_selection = None;
         if tab.session.has_exited() {
             return false;
         }
@@ -422,6 +441,98 @@ impl crate::shell::Shell {
         self.select_terminal(next, window, cx);
     }
 
+    /// Turn a window position into a grid cell, if it is inside the drawn grid.
+    pub(crate) fn terminal_point(
+        &self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+    ) -> Option<GridPoint> {
+        let geometry = self.terminal_geometry.get()?;
+        let x = (position.x - geometry.origin.x).as_f32();
+        let y = (position.y - geometry.origin.y).as_f32();
+        if x < 0.0 || y < 0.0 {
+            return None;
+        }
+        let columns = (geometry.advance.as_f32() > 0.0)
+            .then(|| self.terminal_size.get().map(|(columns, _)| columns))
+            .flatten()
+            .unwrap_or(80);
+        Some(GridPoint {
+            row: (y / geometry.line_height.as_f32()).floor() as usize,
+            column: ((x / geometry.advance.as_f32()).floor() as usize)
+                .min(columns.saturating_sub(1)),
+        })
+    }
+
+    /// Left button down in the grid: start a selection here.
+    pub(crate) fn begin_selection(
+        &mut self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(point) = self.terminal_point(position) else {
+            return;
+        };
+        self.terminal_selection = Some((point, point));
+        self.terminal_selecting = true;
+        cx.notify();
+    }
+
+    /// Drag: grow the selection towards the pointer.
+    pub(crate) fn extend_selection(
+        &mut self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.terminal_selecting {
+            return;
+        }
+        let Some(point) = self.terminal_point(position) else {
+            return;
+        };
+        if let Some((anchor, _)) = self.terminal_selection {
+            self.terminal_selection = Some((anchor, point));
+            cx.notify();
+        }
+    }
+
+    /// Button up: a click that never moved is not a selection.
+    pub(crate) fn end_selection(&mut self, cx: &mut Context<Self>) {
+        self.terminal_selecting = false;
+        if let Some((anchor, focus)) = self.terminal_selection
+            && anchor == focus
+        {
+            self.terminal_selection = None;
+            cx.notify();
+        }
+    }
+
+    /// Drop the selection, without touching the clipboard.
+    pub(crate) fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_selection.take().is_some() {
+            cx.notify();
+        }
+        self.terminal_selecting = false;
+    }
+
+    /// Copy the selected cells to the system clipboard. Returns whether there was
+    /// anything to copy.
+    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.terminal_selection.and_then(|(anchor, focus)| {
+            let tab = self.terminals.active()?;
+            Some(
+                tab.session
+                    .with_view(|view| selected_text(view, anchor, focus)),
+            )
+        }) else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        true
+    }
+
     /// Move the terminal's view through its history.
     ///
     /// A view position, not a change to the grid: output keeps arriving underneath
@@ -434,6 +545,8 @@ impl crate::shell::Shell {
             return;
         }
         tab.session.scroll(lines);
+        // A selection is anchored to screen rows; scrolling moves the rows under it.
+        self.terminal_selection = None;
         cx.notify();
     }
 
@@ -484,5 +597,87 @@ fn to_term_rgb(color: u32) -> qcode_terminal::alacritty_terminal::vte::ansi::Rgb
         r: (rgba.r * 255.0).round() as u8,
         g: (rgba.g * 255.0).round() as u8,
         b: (rgba.b * 255.0).round() as u8,
+    }
+}
+
+/// Normalise a selection so the first point is the earlier cell.
+fn ordered(start: GridPoint, end: GridPoint) -> (GridPoint, GridPoint) {
+    if (start.row, start.column) <= (end.row, end.column) {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
+/// The text under a selection, in reading order.
+///
+/// Rows are joined with `\n` and each line loses its trailing blanks: a terminal
+/// row is always full width, and copying the padding is never what was meant.
+pub(crate) fn selected_text(
+    view: &qcode_terminal::View<'_>,
+    start: GridPoint,
+    end: GridPoint,
+) -> String {
+    let (start, end) = ordered(start, end);
+    let mut rows = Vec::new();
+    for row in start.row..=end.row {
+        let from = if row == start.row { start.column } else { 0 };
+        let to = if row == end.row {
+            end.column
+        } else {
+            view.columns().saturating_sub(1)
+        };
+        let mut line = String::new();
+        for column in from..=to {
+            if let Some(cell) = view.cell(row, column) {
+                line.push(if cell.c.is_empty() {
+                    ' '
+                } else {
+                    cell.c.chars().next().unwrap_or(' ')
+                });
+            }
+        }
+        rows.push(line.trim_end().to_string());
+    }
+    rows.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GridPoint, selected_text};
+
+    fn screen(columns: usize, rows: usize, output: &[u8]) -> qcode_terminal::Screen {
+        let mut screen = qcode_terminal::Screen::new(columns, rows, 100);
+        screen.advance(output);
+        screen
+    }
+
+    #[test]
+    fn a_selection_copies_reading_order_without_trailing_blanks() {
+        let screen = screen(20, 3, b"alpha\r\nbravo\r\ngamma");
+        let start = GridPoint { row: 0, column: 1 };
+        let end = GridPoint { row: 2, column: 2 };
+        assert_eq!(
+            selected_text(&screen.view(), start, end),
+            "lpha\nbravo\ngam"
+        );
+    }
+
+    #[test]
+    fn a_reversed_selection_copies_the_same_text() {
+        let screen = screen(20, 3, b"alpha\r\nbravo\r\ngamma");
+        let start = GridPoint { row: 2, column: 2 };
+        let end = GridPoint { row: 0, column: 1 };
+        assert_eq!(
+            selected_text(&screen.view(), start, end),
+            "lpha\nbravo\ngam"
+        );
+    }
+
+    #[test]
+    fn a_single_cell_selection_copies_one_character() {
+        let screen = screen(20, 2, b"alpha\r\nbravo");
+        let point = GridPoint { row: 1, column: 0 };
+        assert_eq!(selected_text(&screen.view(), point, point), "b");
     }
 }
