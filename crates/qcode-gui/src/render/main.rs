@@ -1181,7 +1181,9 @@ impl Shell {
                                     .child(
                                         Textarea::new(&self.ui.input)
                                             .bordered(false)
-                                            .text_size(sp(15.0))
+                                            // Shared with the terminal: see
+                                            // `COMPOSER_TEXT_SIZE`.
+                                            .text_size(crate::composer_text_size())
                                             .aria_label("Message qcode"),
                                     )
                             })

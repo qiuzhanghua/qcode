@@ -53,6 +53,19 @@ struct Metrics {
     line_height: Pixels,
 }
 
+/// The size the terminal draws text at: the composer's, at the current zoom.
+fn terminal_font_size() -> Pixels {
+    // Routed through the `_at` form on purpose: the test asserts on that one, so the
+    // production path has to be the one under test.
+    terminal_font_size_at(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// `terminal_font_size` for an explicit zoom axis, so the relation to the composer can
+/// be asserted without touching the global.
+fn terminal_font_size_at(axis: u32) -> Pixels {
+    crate::composer_text_size_at(axis)
+}
+
 /// The largest grid that fits in `bounds`, never smaller than a usable terminal.
 fn grid_for(bounds: Bounds<Pixels>, metrics: &Metrics) -> (usize, usize) {
     let columns = (bounds.size.width / metrics.advance).floor() as i32;
@@ -264,7 +277,9 @@ impl Shell {
         let cjk_font_cell = self.terminal_cjk_font.clone();
         let configured_font = self.terminal_config().font;
         let preferred_font = self.mono_font.clone();
-        let font_size = px(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32);
+        // The composer's size, not the raw zoom axis: the two views have to match
+        // (see `COMPOSER_TEXT_SIZE`).
+        let font_size = terminal_font_size();
 
         let body = canvas(
             move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
@@ -931,6 +946,8 @@ pub(crate) fn mode_of(session: &qcode_terminal::Session) -> TermMode {
 
 #[cfg(test)]
 mod tests {
+    use gpui_kit::px;
+
     use super::TerminalFrame;
 
     fn capture_line(text: &str) -> String {
@@ -1041,6 +1058,29 @@ mod tests {
         let (latin, cjk) = super::pick_terminal_fonts("", &mono, &ui);
         assert_eq!(latin, mono);
         assert_eq!(cjk, ui);
+    }
+
+    #[test]
+    fn the_terminal_draws_at_the_composers_size() {
+        // The shell's output and the text you type about it sit inches apart. At
+        // different sizes the terminal reads as a different application pasted into the
+        // window — which is what happened while the terminal drew at the raw zoom axis
+        // (14 px out of the box) and the composer drew 15·(zoom/14).
+        //
+        // Against the composer's *design* size, at three zoom steps: 15 design units on a
+        // 14 px baseline, so 15 px at 1x, and the ratio holds as the user zooms.
+        let baseline = crate::gui_prefs::DEFAULT_FONT_SIZE;
+        assert_eq!(
+            super::terminal_font_size_at(baseline),
+            px(crate::COMPOSER_TEXT_SIZE)
+        );
+        assert_eq!(super::terminal_font_size_at(baseline * 2), px(30.0));
+        // And it must not be the raw axis, which is the bug this replaces.
+        assert_ne!(
+            super::terminal_font_size_at(baseline),
+            px(baseline as f32),
+            "the terminal is drawing at the zoom axis instead of the composer's size"
+        );
     }
 
     #[test]

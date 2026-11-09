@@ -143,10 +143,14 @@ pub struct TerminalConfig {
     /// terminal the user was last in, then home.
     #[serde(default)]
     pub start_cwd: String,
-    /// Font family for the terminal. Empty means "pick one that covers CJK":
-    /// a fixed-width CJK family when the system has one, otherwise the app's
-    /// monospace font. A monospace font without CJK leaves every Chinese
-    /// character to a fallback whose width is not two cells.
+    /// Font family for the terminal, for every script.
+    ///
+    /// Empty means "follow the app": Latin takes the code font (`[gui] code_font`)
+    /// and CJK takes the UI font, the one the composer's text uses. Both are drawn at
+    /// the composer's size, so the terminal and the transcript agree.
+    ///
+    /// A name set here overrides both halves — someone who typed a family wants it
+    /// used, not quietly split in two.
     #[serde(default)]
     pub font: String,
     /// Scrollback lines kept per terminal.

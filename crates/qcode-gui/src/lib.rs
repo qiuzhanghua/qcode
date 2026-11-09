@@ -113,12 +113,45 @@ const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
 static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
 
+/// Design size of the composer's text, at the same baseline every `sp` token is
+/// written at.
+///
+/// It lives here because two views have to agree on it: the composer, and the
+/// terminal. A shell's output and the text you type about it sit inches apart; at
+/// different sizes the terminal reads as a different application pasted into the
+/// window. Before this constant existed the terminal drew at the raw zoom axis (14 px
+/// out of the box) while the composer drew 15·(zoom/14), so they never matched and the
+/// difference survived every zoom step.
+pub(crate) const COMPOSER_TEXT_SIZE: f32 = 15.0;
+
+/// The composer's text size in pixels at the current zoom.
+pub(crate) fn composer_text_size() -> gpui_kit::Pixels {
+    composer_text_size_at(FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The same, for an explicit zoom axis.
+///
+/// The pure form exists so the size relation can be asserted without touching the
+/// global — tests run in parallel threads, and a test that stored to `FONT_SIZE_PX`
+/// would make every other test in the binary read a value it did not set.
+pub(crate) fn composer_text_size_at(axis: u32) -> gpui_kit::Pixels {
+    sp_at(COMPOSER_TEXT_SIZE, axis)
+}
+
 /// Resolve one typography token at the current font scale — a single
 /// runtime font-size axis:
 /// one runtime value drives every conversation font and line height, so the
 /// tokens never drift per-row.
 fn sp(base: f32) -> gpui_kit::Pixels {
-    px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
+    sp_at(
+        base,
+        FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// `sp` for an explicit zoom axis (see `composer_text_size_at`).
+fn sp_at(base: f32, axis: u32) -> gpui_kit::Pixels {
+    px(base * (axis as f32 / BASE_FONT_SIZE))
 }
 
 /// Apply one zoom step to the whole UI's text from anywhere — the global
