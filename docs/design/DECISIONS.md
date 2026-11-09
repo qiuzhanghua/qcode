@@ -4575,9 +4575,30 @@ GUI 落地后这三条边界开始漏：
 
 6. **生命周期与关闭**
 
-   - 关 tab / 退出窗口 → 杀**整个进程组**：`SIGTERM` 宽限后再 `SIGKILL`。
-   - 复用 `qcode-tools/src/shell.rs` 已有的 `process_group(0)` +
-     `signal_group(pid, SIGKILL)` 模式，**不引入 sysinfo 的进程树遍历**。
+   - 关 tab / 退出窗口 → 杀**整个进程组**：`SIGHUP` 宽限后再 `SIGKILL`。
+
+     **必须打整组，不能只打死接子进程**。不做也「看起来正常」：shell 被杀，它
+     fork 出去的东西被 init 收养，用户看不见，只会在下次 `ps` 时发现一堆 `sleep`。
+     已实测：`EventLoop` 内部 `Pty::drop` 只对直接子进程发 `SIGHUP`，所以这一步得
+     自己补。
+
+     用 `SIGHUP` 而不是 `SIGTERM`：这是终端挂断的语义，也是 xterm / alacritty 关闭
+     终端时发的信号；shell 捕获它来写 history，`SIGTERM` 触发不了那段。此处改掉
+     ADR 早先写的 `SIGTERM`。
+
+     实现在 `qcode-terminal`（`libc::killpg`），**不复用**
+     `qcode-tools/src/shell.rs` 的 `process_group(0)`：那里的 `Command` 是我们自己
+     建的，要显式建组；终端的子进程由 `tty::new` 起，内部已 `setsid()`，组 id 等于
+     pid，没有可设的组。
+
+     顺序有讲究：**先打组、后 `join`**。子进程一旦被 `wait` 掉，pid 就可回收，此时
+     `killpg` 可能打到无关的组。实测对 `trap '' HUP` 的 shell，宽限 100 ms 后
+     `SIGKILL` 兜底，整体关闭仍在 2 s 内。
+
+     所以子进程**已经自然退出**时反过来不能再打组（pid 可能已回收）。这不漏杀：
+     子进程是会话首进程，它退出时内核对控制终端的前台进程组发 `SIGHUP`，后台作业
+     自己会死。这条假设有测试兜着
+     （`a_background_job_dies_when_the_shell_exits_on_its_own`），不是空口断言。
    - kill 不能在 UI 主线程做。
    - 关闭前的确认：**一次性**查前台子进程（不是周期轮询），有进程在跑时弹确认。
      这与「不显示忙碌状态」不冲突——不做每帧/周期探测，只在关闭那一刻查一次。
@@ -4585,7 +4606,25 @@ GUI 落地后这三条边界开始漏：
      Windows 上要实测「子进程先退出 → 释放 master → 读到 EOF」的顺序。
    - 窗口「关闭即最小化到托盘」（ADR-0052）时终端**继续跑**，与任务在后台跑一致。
 
-7. **边界：不沙箱、不审批、不进日志**
+7. **`EventLoop` 的两个接线陷阱（实测）**
+
+   `alacritty_terminal` 的 `EventLoop` 能直接用，但两处行为和直觉相反：
+
+   | 陷阱 | 表现 | 正确做法 |
+   |---|---|---|
+   | `Msg::Resize` 只调 `pty.on_resize` | 子进程收到 `SIGWINCH`，网格没变 | 自己再 `Term::resize` |
+   | `Options::drain_on_exit` 无效 | 写完即退出的命令，输出全丢 | 用 `EventLoop::new` 参数 |
+
+   第一条用 `stty size` 验过：子进程报 `30 100`，`Term` 仍是 `80×24`——两半互不
+   蕴含。alacritty 的窗口层自己 resize `Term`，事件循环只负责 ioctl。
+
+   第二条更隐蔽：`sh -c 'printf …'` 得到一个空白 tab，而末尾带 `sleep` 的写法就正常，
+   因为退出事件到达时数据还在管道里。`drain_on_exit` 只是一次非阻塞读，不拖慢关闭。
+
+   读网格用**闭包**而不是返回锁 guard：`FairMutex` 的锁会阻塞读线程，返回 guard 很
+   容易被跨帧持有，等于让子进程的输出等一整帧。闭包拿不走，借用自然在结束时结束。
+
+8. **边界：不沙箱、不审批、不进日志**
 
    - 终端是**用户自己敲的 shell**，不走 `[sandbox]`、不走审批。否则没法用。
    - 必须显式和 agent 的 `run_shell` 区分：设置页与文档写一句「沙箱只约束 agent
@@ -4595,7 +4634,7 @@ GUI 落地后这三条边界开始漏：
    - **副作用**：终端里改文件不产生 snapshot（且 `[agent] snapshot_shell` 已默认
      关闭），所以 `qc sessions rollback` **无法回滚终端里的改动**。文档必须写明。
 
-8. **必须回答终端的「反向查询」**
+9. **必须回答终端的「反向查询」**
 
    `alacritty_terminal` 把三类查询交给 `EventListener`，**不回答就等于终端哑了**：
 
@@ -4613,7 +4652,7 @@ GUI 落地后这三条边界开始漏：
    原样写回 PTY。core crate 不持有主题，所以它只把请求记录下来并提供
    `answer_colours()`，由 GUI 侧传入主题色。
 
-9. **配置与资源上限**
+10. **配置与资源上限**
 
    新增 `[terminal]` 段。注意配置有**两层键白名单**（`config/load.rs` 顶层键 +
    段内键），不加会在启动时告警：
@@ -4731,6 +4770,11 @@ GUI 落地后这三条边界开始漏：
    断言调度仍在一个 beat 内落 `Orphaned`——直接复验 ADR-0059 的 `away` 判定没被
    拖慢，接上 11-06 加固的
    `a_schedule_pointing_at_a_deleted_task_is_recorded_not_run`。
+
+   已实现为 `a_flooding_terminal_does_not_starve_the_scheduler_beat`：orphan 在
+   1.07 s 落定（beat 是 1 s），即没有拖慢。断言的有效性用变异测试验过——在
+   `runtime.rs` 的 beat 分支里插 4 s 忙等，该测试立刻失败。没有这一步，这类测试
+   在「本来就不可能失败」时会永远绿。
 3. **cwd 继承**：A 里 `cd /tmp` → 新终端起在 `/tmp`；把 `/tmp` 换成已删除的目录 →
    落到 `start_cwd` / home，且 shell 能起来。
 4. **shell 探测**（注入假进程链，不依赖真进程树）：父链是 `bash` → 取 bash；
