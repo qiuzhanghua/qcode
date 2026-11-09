@@ -614,7 +614,13 @@ async fn two_sessions_run_at_the_same_time() {
     // open until B's turn is visibly running, so the only way A's `TurnEnded`
     // can be missing from this window is if B never started.
     let mut order: Vec<(String, EventKind)> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // A safety net, not a timing assumption: A is released as soon as B is seen
+    // running, so both turns are done well inside a second on any machine that
+    // is scheduling at all. The bound only exists so a genuine hang fails
+    // instead of blocking the suite, and it is wide enough that a starved
+    // runner — a shared macOS arm64 runner has been observed taking over 10s
+    // for this window — is not mistaken for one.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut released = false;
     while Instant::now() < deadline {
         if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event) {
@@ -653,12 +659,13 @@ async fn two_sessions_run_at_the_same_time() {
 
     let started_b = order
         .iter()
-        .position(|(session, kind)| session == &b && matches!(kind, EventKind::TurnStarted(_)))
-        .expect("task B started its own turn");
+        .position(|(session, kind)| session == &b && matches!(kind, EventKind::TurnStarted(_)));
     let ended_a = order
         .iter()
-        .position(|(session, kind)| session == &a && matches!(kind, EventKind::TurnEnded(_)))
-        .expect("task A's turn returned");
+        .position(|(session, kind)| session == &a && matches!(kind, EventKind::TurnEnded(_)));
+    let (Some(started_b), Some(ended_a)) = (started_b, ended_a) else {
+        panic!("expected B started and A ended, got {order:?}");
+    };
     assert!(
         started_b < ended_a,
         "B must have started while A was still running, got {order:?}"
