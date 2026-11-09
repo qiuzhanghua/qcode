@@ -515,13 +515,12 @@ fn the_encoder_agrees_with_terminfo_about_the_editing_and_cursor_keys() {
         );
     }
 
-    if let Some(expected) = capabilities.get("kbs") {
-        assert_eq!(
-            &encode(&key(Key::Backspace), normal()).expect("encodable"),
-            expected,
-            "kbs (Backspace)"
-        );
-    }
+    // `kbs` is deliberately not compared: terminfo still carries the legacy
+    // `^H` for it, while every modern emulator — xterm included, whose default
+    // is DEL — sends `0x7f`, and that is also what the pty's `VERASE` is set to.
+    // Programs read the terminal's erase character from termios, not from
+    // `kbs`, so matching terminfo here would break Backspace in the shell.
+    // The encoder test above pins `0x7f` explicitly instead.
 }
 
 #[test]
