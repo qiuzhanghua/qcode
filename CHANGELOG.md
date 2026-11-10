@@ -1,6 +1,45 @@
 # Changelog
 
-## 未发布
+## 0.8.2 — 2026-11-10
+
+两个 ADR 与一批「同一件事写在两处」的收口。
+
+- **`run_shell` 现在跑在你自己的 shell 里，并且带上你的环境**（ADR-0064）。以前 POSIX 上
+  固定 `sh -c`，子进程环境被 `env_clear()` 洗过、只回填一张白名单——于是 `c` 那套
+  `JAVA_HOME`/`GOROOT`/`COT_HOME` 在 agent 跑的每条命令里都不存在，`[[ ]]`、`set -e`
+  这类 zsh/bash 语法也会失败。
+  - 解释器不配置：探测逻辑从 `qcode-terminal` 抽成 `crates/qcode-shell`，与终端共用同一份
+    `配置 → 父链 → 登录 shell → $SHELL → /bin/sh` 顺序。终端认得出的 shell，命令行也认得出。
+  - 环境采样一次：会话开始（或 rc 文件变了、或过了 TTL）跑一次 `$SHELL -lic 'env -0'`，
+    结果按 NUL 切块进快照；注入顺序是 `白名单 → 快照 → [shell] env_include → TMPDIR/代理`。
+  - `[shell]` 八个键：`env_sampling`、`env_command`、`env_timeout_ms`、`env_ttl_secs`、
+    `env_include`、`env_exclude`、`env_sample_sandboxed`、`audit`；设置页有对应控件与
+    「采样一次」按钮；`qc shell-env` 打印脱敏清单（`--json` 给脚本，`--full` 需 tty）。
+  - 会话日志新增 `shell_env_sampled` 事件（schema 8），只记变量名与增减，不记值。
+  - 这条改动的代价写在 ADR 里：它撤回了「`env_clear` 让 agent 读不到 API key」这个假设
+    （用户选定 secret 不拦）。关掉采样即回到白名单行为。
+
+- **配置文件只写覆盖项：schema 2**（ADR-0065）。
+  - `models` 可以写 `["deepseek-flash"]`，不必为每个模型写一张 `[[…]]` 表；带 `name` /
+    `context_window` / `max_tokens` 时仍然写表。
+  - `[sandbox] network` 成为唯一的网络开关（`off` / `proxy` / `strict` / `open`），
+    把 `[network] enabled`、`[network] mode` 和旧布尔折成一份 `NetworkPlan`；
+    `[network]` 只剩主机名单那半部分。
+  - `[approval] allow = ["run_shell:echo *"]` / `deny = […]` 简写，等价于规则表，
+    `[[approval.rules]]` 留给需要 scope 的场景。
+  - `qc config migrate` 机械迁移：折 `[providers.*].default_model`、折只有 id 的模型表、
+    折网络开关；先备份 `.bak`，幂等，保留注释与未知键。
+  - 写回只写差异：空 `[providers]`/`[pricing]`、没有内容的 `[approval]` 不再落盘；
+    新文件写 `schema = 2`，旧文件保持原拼写，升级只发生在 `migrate`。
+  - `qc config show` 打印合并后的 `sandbox.network` 与主机名单。
+
+- **`pricing` 不猜价格**。`qc doctor` 现在明说：没有 `[pricing.<model>]` 时 `--max-cost`
+  拦不住，声明了但没设上限时它只用于显示，条目不全时它被忽略。
+
+- **模型探测带上显示名**：`/models` 的 `name`/`context_window`/`max_tokens` 不再被丢掉，
+  探测结果里显示 `id — 显示名`；手输一个不是 id 的名字（例如 `DeepSeek-V4.1-Flash`）时，
+  设置页直接提示「这里填的是 id」。`deepseek` 的 catalog 也按接口实况改成
+  `deepseek-flash` / `deepseek-v4-pro`。
 
 - **设置页改默认模型真的生效了**（ADR-0055 §5）。把**默认 provider** 的「Default
   model」改成别的值，以前是保存成功、表单显示新值、跑任务还是旧模型：`[default-model].model`
