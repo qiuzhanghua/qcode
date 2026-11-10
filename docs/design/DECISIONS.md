@@ -3543,6 +3543,23 @@ model」改成 `DeepSeek-V4.1-Flash`，保存成功、表单显示新值，跑�
   顶栏跨 provider 切换时会话不中断。
 - 手工：把 `[default-model]` 指到未配置的 route，启动回落到第一个可用，再回落到 mock。
 
+**后续（2026-11-10）：id 与显示名**
+
+用户再次报「设了 `deepseek-v4.1-flash` 还是不对」。直接打
+`GET https://api.deepseek.com/models`（`/v1/models` 同样可用）得到的是：
+
+```json
+{"data":[
+  {"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576,
+   "max_output_tokens":393216,"input_modalities":["text","image"], ...},
+  {"id":"deepseek-v4-pro","name":"DeepSeek-V4-Pro", ...}]}
+```
+
+即 **id 是 `deepseek-flash`，`DeepSeek-V4.1-Flash` 是 `name`**。用户照着显示名填，
+拿到的是 400；catalog 当时还写着 `deepseek-v4-flash`，等于把错的名字又坐实了一遍。
+两处都已修：catalog 改成 `deepseek-flash` / `deepseek-v4-pro`（`b630898`），
+探测结果只取 `id` 这一点保持——`name` 是给人看的，写进配置就会被当 id 用。
+
 ## ADR-0056：凭证存储——密钥不进命令行（2026-11-04）
 
 **背景**
