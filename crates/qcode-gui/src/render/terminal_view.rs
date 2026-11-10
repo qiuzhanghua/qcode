@@ -60,6 +60,27 @@ fn terminal_font_size() -> Pixels {
     terminal_font_size_at(crate::FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// Size to draw CJK at so that one em fills exactly two cells.
+///
+/// Measured rather than assumed: a hanzi is one em in essentially every CJK font, but
+/// the *ratio* to the cell depends on the Latin face — a face whose hanzi are narrower
+/// (a condensed cut) has to grow more, and the UI font is not chosen for terminal
+/// metrics at all.
+///
+/// Two fallbacks, both chosen so nothing can drift: an unmeasurable or zero-width em
+/// draws CJK at the Latin size (two cells may be a little wide for a hanzi, but run
+/// positions come from the grid, so the columns still line up), and the result is
+/// clamped to [0.5x, 2x] of the Latin size so a nonsense measurement cannot produce an
+/// invisible or enormous glyph.
+fn cjk_size_for(font_size: Pixels, advance: Pixels, em: Option<Pixels>) -> Pixels {
+    let Some(em) = em.filter(|em| *em > px(0.0)) else {
+        return font_size;
+    };
+    (font_size * (advance * 2.0 / em))
+        .max(font_size * 0.5)
+        .min(font_size * 2.0)
+}
+
 /// `terminal_font_size` for an explicit zoom axis, so the relation to the composer can
 /// be asserted without touching the global.
 fn terminal_font_size_at(axis: u32) -> Pixels {
@@ -284,26 +305,17 @@ impl Shell {
         let body = canvas(
             move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
                 let text_system = window.text_system().clone();
-                let (latin_family, cjk_family) = match font_cell.borrow().clone() {
-                    Some(latin) => {
-                        let cjk = cjk_font_cell.borrow().clone();
-                        match cjk {
-                            Some(cjk) => (latin, cjk),
-                            // Cached Latin without CJK: a config change between the two
-                            // borrows. Re-pick rather than guess.
-                            None => (latin.clone(), latin),
-                        }
-                    }
-                    None => {
-                        use gpui_kit::component::ActiveTheme as _;
-                        let ui_family = cx.theme().font_family.clone();
-                        let picked =
-                            pick_terminal_fonts(&configured_font, &preferred_font, &ui_family);
-                        *font_cell.borrow_mut() = Some(picked.0.clone());
-                        *cjk_font_cell.borrow_mut() = Some(picked.1.clone());
-                        picked
-                    }
+                let ui_family = {
+                    use gpui_kit::component::ActiveTheme as _;
+                    cx.theme().font_family.clone()
                 };
+                let (latin_family, cjk_family) = resolve_terminal_fonts(
+                    &font_cell,
+                    &cjk_font_cell,
+                    &configured_font,
+                    &preferred_font,
+                    &ui_family,
+                );
                 let face = |family: gpui_kit::SharedString| gpui_kit::Font {
                     family,
                     features: Default::default(),
@@ -321,25 +333,15 @@ impl Shell {
                     .map(|size| size.width)
                     .unwrap_or(font_size * 0.6)
                     .max(font_size * 0.4);
-                // The CJK face is scaled so one em spans exactly two cells. Measured
-                // rather than assumed: hanzi are one em in essentially every CJK font,
-                // but the *ratio* to the cell depends on the Latin face, and a face
-                // whose hanzi are narrower (a condensed cut) has to grow more.
+                // The CJK face is scaled so one em spans exactly two cells; the
+                // measurement is done here, the arithmetic in `cjk_size_for` so it can be
+                // tested without a text system.
                 let cjk_font_id = text_system.resolve_font(&cjk_font);
                 let cjk_em = text_system
                     .advance(cjk_font_id, font_size, '中')
                     .map(|size| size.width)
-                    .ok()
-                    .filter(|em| *em > px(0.0));
-                let cjk_font_size = match cjk_em {
-                    Some(em) => (font_size * (advance * 2.0 / em))
-                        .max(font_size * 0.5)
-                        .min(font_size * 2.0),
-                    // No measurement: draw CJK at the Latin size. Two cells may be a
-                    // little wide for a hanzi, but the columns still come from the grid,
-                    // so nothing drifts.
-                    None => font_size,
-                };
+                    .ok();
+                let cjk_font_size = cjk_size_for(font_size, advance, cjk_em);
                 let metrics = Metrics {
                     font,
                     font_size,
@@ -476,6 +478,37 @@ fn pick_terminal_fonts(
         return (family.clone(), family);
     }
     (mono_family.clone(), ui_family.clone())
+}
+
+/// Pick the two faces once and remember them, or hand back what was remembered.
+///
+/// Takes the cache cells by reference instead of reading fields off `Shell`, so the
+/// borrow discipline below can be tested without a `Window` — the panic it used to
+/// cause was "RefCell already borrowed" and had nothing to do with GPUI.
+fn resolve_terminal_fonts(
+    latin_cell: &std::cell::RefCell<Option<gpui_kit::SharedString>>,
+    cjk_cell: &std::cell::RefCell<Option<gpui_kit::SharedString>>,
+    configured: &str,
+    mono_family: &gpui_kit::SharedString,
+    ui_family: &gpui_kit::SharedString,
+) -> (gpui_kit::SharedString, gpui_kit::SharedString) {
+    // The reads finish before the write: `match latin_cell.borrow().clone()` would keep
+    // the shared borrow alive until the end of the `match` (a scrutinee's temporaries
+    // are not dropped early) and then `borrow_mut` in an arm would panic. That is a
+    // first-paint panic, because "nothing cached yet" *is* the first paint.
+    let cached_latin = latin_cell.borrow().clone();
+    let cached_cjk = cjk_cell.borrow().clone();
+    match (cached_latin, cached_cjk) {
+        (Some(latin), Some(cjk)) => (latin, cjk),
+        // Only the Latin half cached: a theme change between the two writes. Pick
+        // again rather than pair a stale family with a fresh one.
+        (None, _) | (Some(_), None) => {
+            let (latin, cjk) = pick_terminal_fonts(configured, mono_family, ui_family);
+            *latin_cell.borrow_mut() = Some(latin.clone());
+            *cjk_cell.borrow_mut() = Some(cjk.clone());
+            (latin, cjk)
+        }
+    }
 }
 
 /// One visible frame, copied out of the terminal.
@@ -640,6 +673,11 @@ fn paint_frame(
         // line drifted. Positioning by column removes the disagreement, and each face is
         // then free to be the best one for its script. Cost: no shaping across runs, so a
         // ligature spanning two colours is not formed (they do not occur in practice).
+        //
+        // The unit is the run, not the cell: `capture` merges neighbours that share a
+        // colour and script, so a coloured `ls` is a handful of shaped lines per row, not
+        // one per character. `runs_tile_the_row_without_gaps` pins the merging down,
+        // because if it ever regressed the frame would go from ~8 shapes a row to 80.
         for run in &frame.rows[row] {
             if run.column >= columns {
                 break;
@@ -1058,6 +1096,123 @@ mod tests {
         let (latin, cjk) = super::pick_terminal_fonts("", &mono, &ui);
         assert_eq!(latin, mono);
         assert_eq!(cjk, ui);
+    }
+
+    #[test]
+    fn the_first_paint_does_not_panic_on_the_font_cache() {
+        // Regression: this used to panic with "RefCell already borrowed" on the very
+        // first paint of every terminal — the click that opens 终端. The reads have to
+        // finish before the cache is written, and "nothing cached yet" is by definition
+        // the first paint, so the bug hit every user immediately.
+        let latin: std::cell::RefCell<Option<gpui_kit::SharedString>> = Default::default();
+        let cjk: std::cell::RefCell<Option<gpui_kit::SharedString>> = Default::default();
+        let mono: gpui_kit::SharedString = "JetBrains Mono".into();
+        let ui: gpui_kit::SharedString = ".SystemUIFont".into();
+
+        let picked = super::resolve_terminal_fonts(&latin, &cjk, "", &mono, &ui);
+
+        assert_eq!(picked.0, mono);
+        assert_eq!(picked.1, ui);
+        // And the cache was filled, so the pick happens once and not per frame.
+        assert_eq!(latin.borrow().as_ref(), Some(&picked.0));
+        assert_eq!(cjk.borrow().as_ref(), Some(&picked.1));
+    }
+
+    #[test]
+    fn a_second_paint_reuses_the_cached_faces() {
+        let latin: std::cell::RefCell<Option<gpui_kit::SharedString>> = Default::default();
+        let cjk: std::cell::RefCell<Option<gpui_kit::SharedString>> = Default::default();
+        let mono: gpui_kit::SharedString = "JetBrains Mono".into();
+        let ui: gpui_kit::SharedString = ".SystemUIFont".into();
+        let first = super::resolve_terminal_fonts(&latin, &cjk, "", &mono, &ui);
+
+        // A different theme on the second call must not be consulted: the faces are
+        // picked once, and re-picking per frame would also mean re-resolving fonts.
+        let other: gpui_kit::SharedString = "Something Else".into();
+        let second = super::resolve_terminal_fonts(&latin, &cjk, "", &other, &other);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn a_half_filled_cache_is_refilled_rather_than_trusted() {
+        // A theme change between the two writes can leave the Latin family cached and
+        // the CJK one not. Pairing a stale family with a fresh one would draw two
+        // scripts from two different themes.
+        let latin: std::cell::RefCell<Option<gpui_kit::SharedString>> =
+            std::cell::RefCell::new(Some("Stale".into()));
+        let cjk: std::cell::RefCell<Option<gpui_kit::SharedString>> = Default::default();
+        let mono: gpui_kit::SharedString = "JetBrains Mono".into();
+        let ui: gpui_kit::SharedString = ".SystemUIFont".into();
+
+        let picked = super::resolve_terminal_fonts(&latin, &cjk, "", &mono, &ui);
+        assert_eq!(picked.0, mono);
+        assert_eq!(picked.1, ui);
+    }
+
+    #[test]
+    fn runs_tile_the_row_without_gaps() {
+        // Runs are positioned by `advance * column`, so a gap or an overlap between two
+        // runs is a shifted glyph. Tiling is the invariant that makes the positioning
+        // safe, and it is cheap to check — unlike the pixels, which no test here sees.
+        let mut screen = qcode_terminal::Screen::new(40, 3, 100);
+        // Colour changes, a wide glyph, and spaces: the three things that split a run.
+        screen.advance(
+            b"\x1b[31mred\x1b[32mgreen\x1b[0m \x1b[1m\xe6\xb1\x89\xe5\xad\x97\x1b[0m tail\r\n",
+        );
+        let frame = TerminalFrame::capture(
+            &screen.view(),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_FOREGROUND)),
+            gpui_kit::Hsla::from(gpui_kit::rgb(super::TERMINAL_BACKGROUND)),
+        );
+
+        let mut next_column = 0;
+        for run in &frame.rows[0] {
+            assert_eq!(
+                run.column, next_column,
+                "run {:?} starts at {} but the previous one ended at {}",
+                run.text, run.column, next_column
+            );
+            assert!(run.cells > 0, "empty run {:?}", run.text);
+            next_column += run.cells;
+        }
+        // And the text survives, in order.
+        let text: String = frame.rows[0].iter().map(|run| run.text.clone()).collect();
+        assert_eq!(text.trim_end(), "redgreen 汉字 tail");
+    }
+
+    #[test]
+    fn a_hanzi_is_drawn_two_cells_wide() {
+        // 15 px Latin with a 9 px cell: two cells are 18 px, so a hanzi whose em is
+        // 15 px has to be drawn at 18 px to fill them. Without this the cell grid and
+        // the glyph disagree and a line of Chinese ends short of where it should.
+        let size = super::cjk_size_for(px(15.0), px(9.0), Some(px(15.0)));
+        assert_eq!(size, px(18.0));
+        // A narrower CJK face grows more: same two cells, smaller em.
+        let size = super::cjk_size_for(px(15.0), px(9.0), Some(px(12.0)));
+        assert_eq!(size, px(22.5));
+    }
+
+    #[test]
+    fn an_unmeasurable_cjk_face_does_not_divide_by_zero() {
+        // `advance('中')` fails when the family has no hanzi at all, which is exactly the
+        // case for a terminal font: the measurement must degrade, not panic.
+        for em in [None, Some(px(0.0))] {
+            assert_eq!(
+                super::cjk_size_for(px(15.0), px(9.0), em),
+                px(15.0),
+                "em={em:?} should fall back to the Latin size"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absurd_cjk_measurement_cannot_make_a_glyph_huge_or_invisible() {
+        // A font that reports a 1 px em, or a 1000 px one, must not scale the text off
+        // the screen: the result stays within half to double the Latin size.
+        let tiny = super::cjk_size_for(px(15.0), px(9.0), Some(px(0.5)));
+        assert_eq!(tiny, px(30.0), "clamped to 2x");
+        let huge = super::cjk_size_for(px(15.0), px(9.0), Some(px(1000.0)));
+        assert_eq!(huge, px(7.5), "clamped to 0.5x");
     }
 
     #[test]
