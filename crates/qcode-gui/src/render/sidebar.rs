@@ -452,7 +452,10 @@ impl Shell {
                         Button::new("open-terminal")
                             .icon(IconName::SquareTerminal)
                             .accessibility_label("终端")
-                            .child(div().text_size(sp(14.0)).child("终端"))
+                            // 按钮内容默认居中（`h_flex().size_full().justify_center()`），
+                            // 所以一个裸文字子元素会把图标拉到中间。撑成整行才让图标贴左，
+                            // 与下面「设置」那行对齐——它本来就是因为徽标需要整行才左对齐的。
+                            .child(div().w_full().text_size(sp(14.0)).child("终端"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_terminal_view(window, cx);
                             })),
