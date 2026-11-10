@@ -4935,6 +4935,10 @@ GUI 落地后这三条边界开始漏：
    探测器要能注入（一个取 `(pid, comm, exe)` 链的 trait），否则这段逻辑只能靠真进程
    树测，覆盖不到「包装壳 / 嵌套 shell / 无 shell」这些分支。
 
+   **后续（2026-11-10）**：这套探测被抽成 `crates/qcode-shell` 供 `run_shell` 共用，见
+   ADR-0064。抽取之后这里只剩 `pub use`，顺序与理由不变；`[terminal] shell` 同时是工具
+   侧解释器的覆盖，避免「终端是 zsh、agent 的命令跑在 sh 里」。
+
    上限不是形式主义：GUI 空闲已 293MB RSS，每个终端 scrollback 约 2–4MB。开 8 个
    +15MB 可接受；不限的话 20 个终端就是 +400MB。
 
@@ -5469,3 +5473,199 @@ ADR-0058 §4 与 ADR-0062 §2 已经定过的同一条：视图维度与任务�
 
 - H 的快捷键：等界面落地、实际用一段时间再判断是否需要直选键。
 - 正式产品名（现为 `AI 工具`）。
+
+## ADR-0064：shell 环境——解释器跟着终端探测，环境采样一次（2026-11-10）
+
+**状态**：Accepted（2026-11-10）。本轮只改 `run_shell` 一侧：解释器探测、环境采样与注入、
+名字级审计。`[shell]` 只有采样开关，**没有解释器这一项**。
+
+**来源**：`derived`（由现有代码、实测与用户反馈推导）；`black-box`（`env -0` 采样、
+「值不进日志、只记名字」的审计形态参考自 dsh 的 shell 集成方式）。
+
+**背景**
+
+`qc gui` 从 Dock / Finder 启动时，进程环境是 launchd 给的：没有 `JAVA_HOME`、`GOROOT`、
+`COT_HOME`，`PATH` 是最小集。用户在自己的终端里跑 `c`（`. ~/cot/bin/activate`）之后才有
+那套变量；GUI 里没有这一步，于是 `run_shell` 跑出来的命令看不到任何工具链。
+
+更糟的是解释器。`crates/qcode-tools/src/shell.rs` 的 `shell_invocation()` 固定返回
+`("sh", ["-c", command])`。`sh` 不认 `[[ ]]`、`set -o pipefail`、数组与关联数组；用户从
+zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像是命令本身写错了。
+
+第三条是安全边界。同一文件里 `command.env_clear()` 之后只注入 12 个白名单变量，注释写着
+“so API keys in the parent process cannot be read by `env`”。这条边界是故意的，也是本 ADR
+要**撤回**的东西——见「撤回的安全假设」。
+
+而「探测」这件事代码里早就有了：`crates/qcode-terminal/src/shell.rs` 的
+`detect_with(&dyn Probe, Option<&str>)`，顺序是「配置 → 父进程链 → 登录 shell
+（`getpwuid_r`；macOS 账户在 Open Directory 里，`/etc/passwd` 查不到）→ `$SHELL` →
+`/bin/sh`」。终端视图用它决定开哪个 shell，`run_shell` 却另走一条硬编码的 `sh`。同一个
+问题两个答案——先把这个修掉，才谈得上环境。
+
+**决定**
+
+1. **解释器不配置，跟终端用同一套探测**
+
+   把探测部分抽成 `crates/qcode-shell`（只依赖 `libc`）：`detect`、`detect_with`、
+   `System`、`enclosing_shell`、`login_shell`、`clean_path`、`resolve_in_path`、
+   `process_cwd`、`resolve_start_cwd`。`crates/qcode-terminal/src/shell.rs` 变成
+   `pub use qcode_shell::*;`，现有调用点一行不改。
+
+   `qcode-tools` 依赖 `qcode-shell`，**不依赖** `qcode-terminal`：后者带着
+   `alacritty_terminal`，为了取一个 shell 路径把终端模拟器拖进工具链不值得。
+
+   `run_shell` 调 `detect_with(&System, terminal_shell_override)`：`[terminal] shell`
+   是同一次探测的覆盖，终端与工具共用一个壳。探测不到（Windows 或极端容器）时退回今天
+   的 `sh -c`。
+
+   配套：`shell_invocation()` 从 `("sh", ["-c", cmd])` 变成 `(detected, ["-c", cmd])`。
+   不加 `-l`：环境由第 3 条的采样提供，每条命令都登录一次只会重复跑 rc、变慢且注入噪声。
+
+2. **`[shell]` 只有采样开关**
+
+   ```toml
+   [shell]
+   env_sampling = "auto"          # auto | off
+   env_command = ""               # 覆盖采样脚本；空 = 按 shell 自动拼
+   env_timeout_ms = 5000
+   env_ttl_secs = 600             # 0 = 只在会话开始与 rc 变化时重采
+   env_include = ["COT_*", "JAVA_HOME", "GOROOT", "M2_HOME"]
+   env_exclude = ["_", "PWD", "OLDPWD", "SHLVL", "RANDOM", "SECONDS"]
+   env_sample_sandboxed = false
+   audit = "names"                # names | off
+   ```
+
+   没有 `program`。用户要换壳就去改 `[terminal] shell`——那是同一个探测的覆盖，两个
+   消费者都跟着变，不会出现「终端是 zsh、工具是 bash」。
+
+   自动拼出来的采样命令：zsh / bash / fish 用 `{shell} -lic 'env -0'`；sh 系（dash、
+   ash）用 `{shell} -lc 'env -0'`（没有 rc 可读，`-i` 只会带来噪声）。
+
+3. **采样一次，注入子进程**
+
+   会话开始（第一个 turn 之前）采一次，结果缓存在 `ShellEnvCache` 里；`RunShell` 每次
+   启动子进程时把快照写进环境。采样命令在**独立进程**里跑，超时与退出码都要检查，绝不
+   让 turn 等它超过 `env_timeout_ms`。
+
+   注入顺序（后者覆盖前者）：
+
+   ```
+   env_clear()
+   → ENV_ALLOWLIST（今天的 12 项，作为「没配采样时」的基线）
+   → 快照
+   → env_include 从 qc 进程直通（仅当 qc 自己带着这些变量）
+   → TMPDIR / TMP / TEMP 与网络代理（必须由我们赢，否则沙箱与代理会失效）
+   ```
+
+   `env_exclude` 在快照落缓存前生效，用于去掉 `PWD`/`SHLVL`/`_` 这类每条命令都变的项。
+
+4. **解析按 NUL 分块，不按行**
+
+   `env -0` 用 NUL 分隔，`PATH` 里的空格、带换行的证书、`PS1` 都不会把解析打散。解析
+   规则：按 NUL 切块 → 每块以**第一个** `=` 分成名字与值 → 名字为空、含空格/换行、或
+   整块没有 `=` 的丢弃。这一条同时解决「`-lic` 跑 rc 时把欢迎语 / `echo` 输出混进
+   stdout」的问题：噪声块没有 `=`，自然被丢掉。
+
+5. **失效与降级**
+
+   顺序即优先级：
+
+   1. 会话开始必采（`env_sampling = "auto"` 时）；
+   2. **rc 指纹**：每个 turn 开始 `stat` 一次 `$ZDOTDIR/.zshrc`、`~/.zshrc`、
+      `~/.zprofile`、`~/.zshenv`、`~/.bash_profile`、`~/.bashrc`、`~/.profile` 的
+      mtime+size，任一变化即失效；
+   3. **TTL**：`env_ttl_secs` 到期重采（覆盖 `nvm use`、换 toolchain 这类不碰 rc 的变化）；
+   4. **手动刷新**：`qc shell-env --refresh` 与设置页按钮。
+
+   采样失败（非零退出、超时、解析空）**不中断命令**：沿用上一份快照并记 `warn`；首次就
+   失败则保持白名单基线，并在会话顶部给一条 notice——不能静默降级。
+
+6. **白名单仍在，但排在快照之下**
+
+   `ENV_ALLOWLIST` 保留，作为「`env_sampling = "off"` 或采样失败」时的兜底，也负责那些
+   不管用户 shell 怎么配都必须存在的变量（`HOME`、`TERM`）。顺序见第 3 条：快照可以覆盖
+   白名单，但 `TMPDIR` 与代理永远最后写。
+
+7. **审计只记名字，值不进日志**
+
+   会话日志新增事件：
+
+   ```json
+   {"type":"shell_env_sampled","data":{"source":"command","program":"/bin/zsh",
+     "count":43,"added":["JAVA_HOME","GOROOT"],"removed":["CARGO_HOME"],
+     "duration_ms":214,"cached":false,"error":null}}
+   ```
+
+   外加一条会话摘要：`环境：zsh -lic（43 项，PATH +12，JAVA_HOME 新增）`。
+
+   `qc shell-env` 在本地打印一张表（名字 + 脱敏值：前 4 个字符 + `…`）；`--full` 才显原值，
+   且只在 tty 下允许。
+
+   **system prompt 里不注入环境明细**：太贵，而且一旦进了上下文就等于进了模型可见面。
+   只注入一行「shell 环境来自 `zsh -lic`，完整列表用 `qc shell-env`」。
+
+8. **采样默认不进沙箱**
+
+   采样要拿的是「用户终端里的真实环境」，而 macOS 的 SBPL 会挡掉不少路径，沙箱内采出来的
+   世界会缺东西。所以 `env_sample_sandboxed = false` 是默认；在意「采样这一步也不该越权」
+   的人可以打开它，代价是快照与终端里的实际环境会有差异。
+
+   注意这不改变 `run_shell` 的沙箱：采样只是读环境，命令本身仍在原来的 sandbox 里跑。
+
+**撤回的安全假设**
+
+本 ADR 明确撤回 `shell.rs` 顶部那条「`env_clear` 防止 API key 被 `env` 读到」的目标。采样
+之后，`DEEPSEEK_API_KEY`、`GITHUB_TOKEN` 这类变量会进 agent 的 shell 环境：
+
+- agent 可以直接 `echo $DEEPSEEK_API_KEY`，也可以被仓库里的 `AGENTS.md`、skill 文本、
+  依赖包里的提示词诱导把它写进文件或网络请求；
+- 这不是「漏洞」，是**选定的行为**：用户认为「工具链可用」比「密钥不可见」重要。
+
+补偿与边界：
+
+- `env_sampling` 可以设成 `"off"`，回到今天的白名单行为；
+- **值永远不进日志**（审计只记名字），所以泄漏面是「模型上下文与它写的文件」，不是日志；
+- `qc shell-env` 的 `--full` 只在本机 tty 下打印原值；
+- 不做 secret 过滤：半吊子的过滤（按 `*_KEY` 匹配）会给人虚假的安全感，也让
+  `DATABASE_URL` 这种带口令的变量漏掉。要么采、要么不采，用户选。
+
+**边界**
+
+- 只认 `env -0` 的输出格式；`env_command` 若输出别的格式，解析结果就是空的（审计里有
+  `count: 0` 可查）。
+- 不做「每条命令重采」：那是 A 方案的代价（慢、噪声），本 ADR 明确不做。
+- 不做 per-project 环境文件（`.qcode/env`）：与 shell 漂移，且要用户手工维护。
+- Windows 的采样模板不在本轮范围：`pwsh` 下没有 `env -0`，等有人真在 Windows 上要。
+- 采样失败不改变退出码、不阻塞 turn；命令照跑。
+- 环境快照**不写进 session 日志**，因此 `qc sessions rollback` 与它无关。
+
+**验证计划**
+
+1. `env -0` 解析：值里含空格 / 换行 / `=`；重复键后者胜；缺 `=` 的块丢弃；rc 噪声丢弃。
+2. `include` / `exclude` 的 glob 语义（`COT_*` 前缀、精确名、大小写敏感）。
+3. `env_command` 非零退出 → 保留旧快照 + 审计 `error`，命令仍可跑。
+4. `env_command` 超时 → 同上，且不拖慢 turn。
+5. rc 文件 mtime 变化 → 下一次取样重新执行（临时目录伪造 rc）。
+6. 解释器跟随探测：`[[ 1 == 1 ]]` 在 zsh 下通过、在 `sh` 下失败（证明壳真的换了）。
+7. 快照的 `PATH` 覆盖白名单，但 `TMPDIR` 与代理仍由我们胜出。
+8. `env_sampling = "off"` → 与今天逐字节一致（回归基线）。
+9. 真机：会话里 `echo $JAVA_HOME` 有值；`LANG=zh_CN.UTF-8 zsh -c 'echo $LANG'` 携带；
+   故意 `echo ${DEEPSEEK_API_KEY:0:4}` 有输出（记录这是选定行为）。
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 每条命令都 `-lic` | 每个命令跑一次 rc：慢、刷屏、`cd` 之类副作用重复执行 |
+| 只放宽白名单 | Dock 启动的父进程里**根本没有**这些变量，白名单放宽也拿不到 |
+| AGENTS.md 里写「先 `source ~/cot/bin/activate`」 | 靠模型自觉，不可验证，且每次会话都要烧上下文 |
+| 默认走 direnv / mise | 外部依赖；而「装 direnv 之前就得有环境」是鸡生蛋 |
+| 每个仓库 `.qcode/env` | 与用户 shell 漂移，成为第二份真相 |
+
+**待定**
+
+- `env_sampling = "auto"` 的首个 turn 成本（100–400ms）是否值得改成「先跑、后台采、下一
+  turn 生效」。先按同步做，用真机数据再判断。
+- Windows 的采样模板与 ConPTY 的配合。
+- 是否允许项目级关闭（`.qcode/config.toml` 的 `[shell].env_sampling = "off"`）——倾向允许。
+- `qc shell-env --full` 是否需要二次确认（当前只要求 tty）。
