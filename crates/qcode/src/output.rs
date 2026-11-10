@@ -49,9 +49,10 @@ pub(crate) fn print_config(config: &config::Config) {
         plan.proxy,
         plan.raw
     );
+    // `[sandbox] network` decides whether there is network at all; this line is
+    // the part the switch does not cover (ADR-0065).
     println!(
-        "network.enabled = {}, allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
-        config.network.enabled,
+        "network.allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
         config.network.allow,
         config.network.allow_private,
         config.network.unknown,
