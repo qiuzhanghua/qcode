@@ -51,6 +51,51 @@ struct Metrics {
     cjk_font_size: Pixels,
     advance: Pixels,
     line_height: Pixels,
+    /// Top-left corner of cell (0, 0), already inside the padding and shifted by the
+    /// leftover cell space. Painter, hit testing and the IME all position from this —
+    /// they used to position from `bounds.origin`, which is why every leftover pixel
+    /// piled up at the right/bottom.
+    grid_origin: gpui_kit::Point<Pixels>,
+}
+
+/// The largest grid that fits in `bounds`, never smaller than a usable terminal.
+fn grid_for(bounds: Bounds<Pixels>, metrics: &Metrics) -> (usize, usize) {
+    let (columns, rows, _) = grid_layout(bounds, metrics.advance, metrics.line_height);
+    (columns, rows)
+}
+
+/// How many whole cells fit, and where to start drawing them.
+///
+/// A terminal grid is made of fixed cells, so a viewport almost never divides evenly:
+/// at the default 15 px text the row is 21 px tall, leaving up to 20 px spare, and
+/// columns leave up to `advance - 1`. Those leftovers used to stay at the right and
+/// bottom, which reads as "the panel is not finished" — and it moved in jumps as the
+/// window was resized.
+///
+/// Splitting them in half puts the same margin on all four sides. The grid stays on
+/// whole cells, so nothing blurs; only where it starts changes.
+fn grid_layout(
+    bounds: Bounds<Pixels>,
+    advance: Pixels,
+    line_height: Pixels,
+) -> (usize, usize, gpui_kit::Point<Pixels>) {
+    let advance_f = advance.as_f32().max(1.0);
+    let line_f = line_height.as_f32().max(1.0);
+    // `max(20)`/`max(4)` keep the terminal usable when the window is tiny; the grid may
+    // then be wider than the view, so the offset is clamped at zero rather than going
+    // negative (which would draw cell 0 outside the element).
+    let columns = ((bounds.size.width.as_f32() / advance_f).floor() as i32).max(20) as usize;
+    let rows = ((bounds.size.height.as_f32() / line_f).floor() as i32).max(4) as usize;
+    let leftover_x = (bounds.size.width.as_f32() - advance_f * columns as f32).max(0.0);
+    let leftover_y = (bounds.size.height.as_f32() - line_f * rows as f32).max(0.0);
+    (
+        columns,
+        rows,
+        gpui_kit::point(
+            bounds.origin.x + px((leftover_x / 2.0).floor()),
+            bounds.origin.y + px((leftover_y / 2.0).floor()),
+        ),
+    )
 }
 
 /// The size the terminal draws text at: the composer's, at the current zoom.
@@ -87,13 +132,6 @@ fn terminal_font_size_at(axis: u32) -> Pixels {
     crate::composer_text_size_at(axis)
 }
 
-/// The largest grid that fits in `bounds`, never smaller than a usable terminal.
-fn grid_for(bounds: Bounds<Pixels>, metrics: &Metrics) -> (usize, usize) {
-    let columns = (bounds.size.width / metrics.advance).floor() as i32;
-    let rows = (bounds.size.height / metrics.line_height).floor() as i32;
-    (columns.max(20) as usize, rows.max(4) as usize)
-}
-
 impl Shell {
     pub(crate) fn render_terminal_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let background = Hsla::from(gpui_kit::rgb(TERMINAL_BACKGROUND));
@@ -126,11 +164,24 @@ impl Shell {
                 }),
             )
             .child(self.render_terminal_tabs(cx))
+            // The body is a panel, not a wash of colour running to the window edge.
+            // Only left/right/bottom: the tab bar above already has a `border_b_1`,
+            // and a fourth side here would draw that separator twice — two hairlines
+            // a few pixels apart read as a mistake, not as depth.
+            //
+            // The top corners get no radius for the same reason: a rounded corner
+            // needs a top edge to turn, and there is none.
             .child(
                 div()
                     .flex_1()
                     .min_h(px(0.0))
                     .relative()
+                    .overflow_hidden()
+                    .rounded_b(px(PANEL_RADIUS))
+                    .border_l_1()
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(self.render_terminal_body(cx)),
             )
     }
@@ -349,17 +400,28 @@ impl Shell {
                     cjk_font_size,
                     advance,
                     line_height: (font_size * 1.4).round(),
+                    // Filled in below, once the bounds are known.
+                    grid_origin: bounds.origin,
                 };
-                let (columns, rows) = grid_for(bounds, &metrics);
+                let (columns, rows, grid_origin) =
+                    grid_layout(bounds, metrics.advance, metrics.line_height);
                 // Applied on the next tick by `Shell::sync_terminal_size`; doing it
                 // here would touch the session from inside the paint.
                 size_cell.set(Some((columns, rows)));
+                // One origin for everything that has to agree: the painter draws from
+                // it, `terminal_point` turns a click into a cell by subtracting it, and
+                // `bounds_for_range` places the IME candidate window from it. Storing
+                // the padded-and-centred corner here is what keeps those three from
+                // drifting apart.
                 geometry_cell.set(Some(crate::terminal::GridGeometry {
-                    origin: bounds.origin,
+                    origin: grid_origin,
                     advance: metrics.advance,
                     line_height: metrics.line_height,
                 }));
-                metrics
+                Metrics {
+                    grid_origin,
+                    ..metrics
+                }
             },
             move |bounds: Bounds<Pixels>, metrics: Metrics, window: &mut Window, cx: &mut App| {
                 window.handle_input(
@@ -435,6 +497,9 @@ impl Shell {
 }
 
 /// Breathing room between the grid and the edge of the view.
+/// Corner radius of the terminal body panel below the tab bar.
+pub(crate) const PANEL_RADIUS: f32 = 8.0;
+
 pub(crate) const TERMINAL_PADDING_X: f32 = 12.0;
 pub(crate) const TERMINAL_PADDING_Y: f32 = 8.0;
 
@@ -650,8 +715,8 @@ fn paint_frame(
                 window.paint_quad(fill(
                     Bounds::new(
                         point(
-                            bounds.origin.x + metrics.advance * from as f32,
-                            bounds.origin.y + metrics.line_height * row as f32,
+                            metrics.grid_origin.x + metrics.advance * from as f32,
+                            metrics.grid_origin.y + metrics.line_height * row as f32,
                         ),
                         gpui_kit::size(metrics.advance * (to - from) as f32, metrics.line_height),
                     ),
@@ -662,7 +727,7 @@ fn paint_frame(
 
         // A hair of top inset: the shaped line is taller than its glyphs and the
         // first row would otherwise clip its ascenders against the tab bar.
-        let y = bounds.origin.y + metrics.line_height * row as f32 + px(2.0);
+        let y = metrics.grid_origin.y + metrics.line_height * row as f32 + px(2.0);
 
         // One shaped line per run, painted at the run's own column.
         //
@@ -682,7 +747,7 @@ fn paint_frame(
             if run.column >= columns {
                 break;
             }
-            let x = bounds.origin.x + metrics.advance * run.column as f32;
+            let x = metrics.grid_origin.x + metrics.advance * run.column as f32;
             let width = run.cells.min(columns - run.column);
             if let Some(bg) = run.bg {
                 window.paint_quad(fill(
@@ -734,8 +799,8 @@ fn paint_frame(
         && line < rows
     {
         let origin = point(
-            bounds.origin.x + metrics.advance * column as f32,
-            bounds.origin.y + metrics.line_height * line as f32,
+            metrics.grid_origin.x + metrics.advance * column as f32,
+            metrics.grid_origin.y + metrics.line_height * line as f32,
         );
         // A composing syllable is Chinese: count it in cells (two per hanzi), not in
         // chars, or the highlight is half as wide as the text it covers.
@@ -791,8 +856,8 @@ fn paint_frame(
     {
         {
             let origin = point(
-                bounds.origin.x + metrics.advance * column as f32,
-                bounds.origin.y + metrics.line_height * line as f32,
+                metrics.grid_origin.x + metrics.advance * column as f32,
+                metrics.grid_origin.y + metrics.line_height * line as f32,
             );
             window.paint_quad(fill(
                 Bounds::new(origin, gpui_kit::size(metrics.advance, metrics.line_height)),
@@ -1147,6 +1212,80 @@ mod tests {
         let picked = super::resolve_terminal_fonts(&latin, &cjk, "", &mono, &ui);
         assert_eq!(picked.0, mono);
         assert_eq!(picked.1, ui);
+    }
+
+    #[test]
+    fn leftover_cell_space_is_split_evenly_instead_of_piling_up_at_the_bottom() {
+        // 800 px tall, 21 px rows: 38 rows use 798 px, so 2 px are spare. Both used to
+        // stay below the last row, which is what made the bottom margin look wrong and
+        // bigger than the top one (and it jumped by up to 20 px when the window moved).
+        let bounds = gpui_kit::Bounds::new(
+            gpui_kit::point(px(0.0), px(0.0)),
+            gpui_kit::size(px(1200.0), px(800.0)),
+        );
+        let (columns, rows, origin) = super::grid_layout(bounds, px(9.0), px(21.0));
+
+        assert_eq!(rows, 38);
+        let spare_y = 800.0 - 21.0 * rows as f32;
+        assert_eq!(origin.y, px((spare_y / 2.0).floor()));
+
+        let spare_x = 1200.0 - 9.0 * columns as f32;
+        assert_eq!(origin.x, px((spare_x / 2.0).floor()));
+
+        // The point of the change: the gap above the first row equals the gap after the
+        // last one, to within a pixel (an odd leftover cannot be split in half).
+        let above = origin.y.as_f32();
+        let below = spare_y - above;
+        assert!(
+            (above - below).abs() <= 1.0,
+            "top gap {above} vs bottom gap {below}"
+        );
+    }
+
+    #[test]
+    fn a_tiny_view_does_not_push_the_grid_out_of_the_element() {
+        // `max(20)`/`max(4)` make the grid wider/taller than the view when the window is
+        // small. The leftover is then negative, and a negative offset would draw cell 0
+        // outside the element — clicks there would map to no cell at all.
+        let bounds = gpui_kit::Bounds::new(
+            gpui_kit::point(px(40.0), px(30.0)),
+            gpui_kit::size(px(100.0), px(50.0)),
+        );
+        let (columns, rows, origin) = super::grid_layout(bounds, px(9.0), px(21.0));
+        assert_eq!((columns, rows), (20, 4));
+        assert_eq!(origin, gpui_kit::point(px(40.0), px(30.0)));
+    }
+
+    #[test]
+    fn a_click_maps_back_to_the_cell_under_it() {
+        // The regression this guards: prepaint, painting and hit testing have to use
+        // one origin. Shifting the drawn grid without shifting this arithmetic would
+        // put every click one or two cells off — and selecting text would follow.
+        let bounds = gpui_kit::Bounds::new(
+            gpui_kit::point(px(12.0), px(8.0)),
+            gpui_kit::size(px(1200.0), px(800.0)),
+        );
+        let (_, _, origin) = super::grid_layout(bounds, px(9.0), px(21.0));
+
+        let geometry = crate::terminal::GridGeometry {
+            origin,
+            advance: px(9.0),
+            line_height: px(21.0),
+        };
+        // Aim at the middle of cell (3, 5) and expect exactly that cell back.
+        let aim = gpui_kit::point(
+            geometry.origin.x + geometry.advance * 3.0 + px(4.0),
+            geometry.origin.y + geometry.line_height * 5.0 + px(10.0),
+        );
+        let as_grid = |position: gpui_kit::Point<gpui_kit::Pixels>| {
+            let x = (position.x - geometry.origin.x).as_f32();
+            let y = (position.y - geometry.origin.y).as_f32();
+            (
+                (y / geometry.line_height.as_f32()).floor() as usize,
+                (x / geometry.advance.as_f32()).floor() as usize,
+            )
+        };
+        assert_eq!(as_grid(aim), (5, 3));
     }
 
     #[test]
