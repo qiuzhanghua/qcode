@@ -56,7 +56,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
-                // Cmd+T opens a terminal (and a tab, if none is open yet).
+                // Cmd+T toggles the terminal view: in, and back out again.
                 KeyBinding::new("cmd-t", OpenTerminalShortcut, None),
                 // Inside the terminal, Cmd+W closes the tab, not the window: the
                 // context-scoped binding wins over the root one.

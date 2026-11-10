@@ -190,6 +190,17 @@ impl TaskUi {
             self.app.status.model.clone(),
         )
     }
+
+    /// Whether the composer holds something a switch would take away: typed
+    /// text, pasted images, picked files.
+    ///
+    /// A draft with none of that is indistinguishable from the empty
+    /// placeholder `capture` installs, so parking it buys nothing.
+    pub(crate) fn has_unsent_content(&self, cx: &gpui_kit::App) -> bool {
+        !self.attachments.is_empty()
+            || !self.files.is_empty()
+            || !self.input.read(cx).value().trim().is_empty()
+    }
 }
 
 impl Shell {
@@ -253,15 +264,64 @@ impl Shell {
         self.install(fresh)
     }
 
-    /// Park the current task's view under `active` and install an empty one.
+    /// Park the current task's view and install an empty one.
     ///
-    /// `active` is cleared: the window is now on a draft. A view with no
-    /// session id (a draft) has nowhere to be restored from and is dropped.
-    pub(crate) fn park_and_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// A view the user has *not* been in before has no session id to be
+    /// restored from, so nothing would ever bring it back — that is fine when
+    /// the view is an empty placeholder (`capture` just made it). A draft is
+    /// not empty: it holds whatever was typed, plus pasted images and picked
+    /// files. It parks under `SessionTarget::Draft` so that a switch — clicking
+    /// another task's row, or leaving for the terminal and clicking one — keeps
+    /// it, and `unpark_draft` hands it back on the next `+`.
+    ///
+    /// Returns true when it parked an unsent draft — a view the user can only
+    /// reach again through `+`, so the caller may want to say so.
+    pub(crate) fn park_and_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let outgoing = self.capture(window, cx);
-        if let Some(id) = self.active.take() {
-            self.parked.insert(id, outgoing);
+        let Some(key) = task_ops::park_slot(
+            self.active.take().as_deref(),
+            outgoing.has_unsent_content(cx),
+        ) else {
+            // An empty draft is worth nothing, and keeping it would make `+`
+            // restore a blank compose instead of creating a task.
+            return false;
+        };
+        let was_draft = key == SessionTarget::Draft;
+        self.parked.insert(key, outgoing);
+        was_draft
+    }
+
+    /// The parked view for session `id`, if the window has been there before.
+    pub(crate) fn parked_mut(&mut self, id: &str) -> Option<&mut TaskUi> {
+        self.parked.get_mut(&SessionTarget::Session(id.to_string()))
+    }
+
+    /// Take a parked draft back as the visible view.
+    ///
+    /// Returns false when there is none — the caller then goes ahead with
+    /// whatever it was about to do (create a session, replay). The draft is
+    /// restored rather than dropped because it is the one view the user built
+    /// up without anything on disk to replay from (ADR-0058 §4).
+    pub(crate) fn unpark_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(outgoing) = self.parked.remove(&SessionTarget::Draft) else {
+            return false;
+        };
+        if !outgoing.has_unsent_content(cx) {
+            return false;
         }
+        // Park whatever is on screen under its own key first: a draft is
+        // restored by `+`, which can be pressed while another task is shown.
+        let placeholder = self.capture(window, cx);
+        if let Some(id) = self.active.take() {
+            self.parked.insert(SessionTarget::Session(id), placeholder);
+        }
+        let dropped = self.install(outgoing);
+        drop(dropped);
+        // For `+` a restored draft behaves like a freshly created one: there is
+        // an unsent compose on screen, so pressing `+` again must not stack a
+        // second one (see `on_empty_draft`).
+        self.ui.empty_draft = true;
+        true
     }
 
     /// Install the parked view for `id` if it is still current, i.e. it has
@@ -273,7 +333,7 @@ impl Shell {
     /// replays instead. A replay is slower but always correct; restoring is
     /// what keeps the scroll position, expansion set and draft.
     pub(crate) fn unpark(&mut self, id: &str, log_seq: u64) -> bool {
-        match self.parked.remove(id) {
+        match self.parked.remove(&SessionTarget::Session(id.to_string())) {
             Some(ui) if ui.seen_seq >= log_seq => {
                 let placeholder = self.install(ui);
                 drop(placeholder);

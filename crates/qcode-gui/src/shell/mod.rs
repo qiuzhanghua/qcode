@@ -20,7 +20,10 @@ pub(crate) struct Shell {
     /// 的东西（任务列表、侧栏、设置窗口、托盘）留在 `Shell` 上。
     pub(crate) ui: TaskUi,
     /// 切走时留下的任务视图，按会话 id 存。切回来时原样装回去，不重放日志。
-    pub(crate) parked: std::collections::BTreeMap<String, TaskUi>,
+    ///
+    /// 键是 [`SessionTarget`]，不是 `String`：还没发第一条消息的草稿没有会话
+    /// id，但它有用户刚打的字，同样必须能停放（`SessionTarget::Draft`）。
+    pub(crate) parked: std::collections::BTreeMap<SessionTarget, TaskUi>,
     /// 没有视图的会话（用户还没打开过）：只留状态与不许可丢的审批
     /// （ADR-0058 §3、§5）。
     pub(crate) dormant: std::collections::BTreeMap<String, Dormant>,
@@ -510,9 +513,10 @@ impl Shell {
             };
             let live = self.is_visible(&target);
             let target_id = target.id().map(str::to_owned);
-            let parked = target_id
-                .as_deref()
-                .is_some_and(|id| self.parked.contains_key(id));
+            let parked = target_id.as_deref().is_some_and(|id| {
+                self.parked
+                    .contains_key(&SessionTarget::Session(id.to_string()))
+            });
             // A session the window is not showing that reaches a turn boundary
             // or a final message is "unread" until the user switches to it
             // (§7). Read before the event is consumed.
@@ -545,8 +549,7 @@ impl Shell {
                 task_ops::Destination::OnScreen => routing::apply_to_ui(&mut self.ui, event),
                 // A session the user has visited: its own parked view (§4).
                 task_ops::Destination::Parked => {
-                    let Some(ui) = target_id.as_deref().and_then(|id| self.parked.get_mut(id))
-                    else {
+                    let Some(ui) = target_id.as_deref().and_then(|id| self.parked_mut(id)) else {
                         continue;
                     };
                     routing::apply_to_ui(ui, event)

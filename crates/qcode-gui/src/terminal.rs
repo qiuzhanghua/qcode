@@ -200,20 +200,12 @@ impl crate::shell::Shell {
         cx.notify();
     }
 
-    /// Back to the task, leaving the terminals running (ADR-0062: they are not tabs
-    /// of the transcript, and closing the view is not closing the shells).
-    pub(crate) fn show_tasks(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.enter_task_view(cx);
-        cx.notify();
-    }
-
     /// Bring the task view to the front.
     ///
-    /// Every path that puts a task on screen has to call this, not just the 回到任务
-    /// button: the sidebar rows and 新建任务 both did their work (resumed the session,
-    /// created a draft) but left `view` on `Terminal`, so the click looked ignored —
-    /// the task loaded behind a running shell and the only way to see it was a button
-    /// that should not have been needed.
+    /// Every path that puts a task on screen has to call this — the sidebar
+    /// rows and 新建任务 both did their work (resumed the session, created a
+    /// draft) but used to leave `view` on `Terminal`, so the click looked
+    /// ignored: the task loaded behind a running shell.
     ///
     /// The terminal is not closed or paused by leaving: it keeps running in the
     /// background, which is the same promise 关闭即最小化到托盘 makes (ADR-0052).
@@ -454,16 +446,27 @@ impl crate::shell::Shell {
         cx.notify();
     }
 
-    /// `Cmd+T`: switch to the terminal view and add a tab.
+    /// `Cmd+T`: the terminal view, both ways round.
     ///
-    /// The empty case goes through `open_terminal_view`, which opens the first tab
-    /// itself; doing both would open two tabs on the first press.
+    /// In the terminal view it goes back to the task; anywhere else it shows the
+    /// terminal. Switching instead of always opening a tab is what makes this a
+    /// toggle — pressing it twice has to land where it started, not on two more
+    /// shells; new tabs come from the `+` at the end of the tab bar. The empty
+    /// case goes through `open_terminal_view`, which opens the first tab itself;
+    /// doing both would open two tabs on the first press.
     pub(crate) fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view == crate::shell::MainView::Terminal {
+            self.enter_task_view(cx);
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
         if self.terminals.is_empty() {
             self.open_terminal_view(window, cx);
         } else {
             self.view = crate::shell::MainView::Terminal;
-            self.new_terminal(window, cx);
+            focus_after_frame(self.terminal_focus.clone(), window, cx);
+            cx.notify();
         }
     }
 

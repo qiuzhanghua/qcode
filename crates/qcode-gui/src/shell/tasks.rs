@@ -41,7 +41,10 @@ impl Shell {
                 unread,
             );
         }
-        if let Some(ui) = self.parked.get(task_id) {
+        if let Some(ui) = self
+            .parked
+            .get(&SessionTarget::Session(task_id.to_string()))
+        {
             return (
                 ui.app.status.running || ui.turn_in_flight,
                 ui.approvals.current().is_some() || ui.restoring.is_some(),
@@ -321,7 +324,8 @@ impl Shell {
         self.unread.remove(task_id);
         // 被删任务的停放视图（以及没打开过时留下的状态）已经没有回去的地方
         // 了；不清理的话它（连同转录和输入框实体）会一直留在内存里。
-        self.parked.remove(task_id);
+        self.parked
+            .remove(&SessionTarget::Session(task_id.to_string()));
         self.dormant.remove(task_id);
         let was_active = self.active.as_deref() == Some(task_id);
         self.refresh_tasks();

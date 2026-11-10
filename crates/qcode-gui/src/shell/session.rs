@@ -42,7 +42,38 @@ impl Shell {
         // 无内容的新任务只允许一个：正停在空任务/空草稿上时直接复用当前
         // 任务，不再创建新的空任务。
         if self.on_empty_draft() {
-            self.ui.app.push_notice("当前任务还没有内容，直接提问即可");
+            if self.ui.has_unsent_content(cx) {
+                self.ui
+                    .app
+                    .push_notice("这份草稿还没发出去：发送它，或清空后再新建任务");
+            } else {
+                self.ui.app.push_notice("当前任务还没有内容，直接提问即可");
+            }
+            cx.notify();
+            return;
+        }
+        // 屏上就是一份有内容、还没发出去的草稿（启动时没有 `last_session` 就
+        // 是这个状态）：`+` 不能把它挤走。换新任务等于把打的字挪进停放视图，
+        // 用户看到的是「字没了」。
+        if self.active.is_none() && self.ui.has_unsent_content(cx) {
+            self.ui
+                .app
+                .push_notice("这份草稿还没发出去：发送它，或清空后再新建任务");
+            cx.notify();
+            return;
+        }
+        // 有一份没发出去就切走的草稿：`+` 要的就是「一个能写的新任务」，它就是。
+        // 装回来比重建一个空的强——重开一个空任务只会让那份草稿停在没人看得见
+        // 的槽位上。提示走状态栏：草稿的转录是空的，塞一行反而像有内容。
+        if self.unpark_draft(window, cx) {
+            self.set_notice("继续未发送的新任务".to_string(), true, cx);
+            self.pending_root_delete = None;
+            self.pending_task_delete = None;
+            self.rename_task = None;
+            self.task_menu = None;
+            self.hovered_task = None;
+            self.enter_task_view(cx);
+            self.focus_composer(window, cx);
             cx.notify();
             return;
         }
@@ -139,7 +170,7 @@ impl Shell {
         // the parked one is already current, so the log is not replayed and the
         // scroll position, expansion set and draft come back with it.
         let log_seq = replayed.last().map(|event| event.seq).unwrap_or(0);
-        self.park_and_clear(window, cx);
+        let parked_draft = self.park_and_clear(window, cx);
         let restored = self.unpark(&id, log_seq);
         if restored {
             // The view came back as it was left; say so in the status bar. A
@@ -165,6 +196,11 @@ impl Shell {
             self.ui
                 .app
                 .push_notice(format!("resumed {}", short_id(&id)));
+        }
+        if parked_draft {
+            // 屏上那份没发出去的新任务被换走了：它还在，但只能从 `+` 回去，
+            // 不说一声就等于用户以为打的字没了。
+            self.set_notice("未发送的新任务已暂存，按 + 回到它".to_string(), true, cx);
         }
         self.ui.resetting = true;
         self.ui.empty_draft = false;
@@ -371,7 +407,7 @@ impl Shell {
         let Some(id) = session else {
             return;
         };
-        if let Some(ui) = self.parked.get_mut(id) {
+        if let Some(ui) = self.parked_mut(id) {
             clear(ui);
         } else if let Some(dormant) = self.dormant.get_mut(id) {
             dormant.running = false;

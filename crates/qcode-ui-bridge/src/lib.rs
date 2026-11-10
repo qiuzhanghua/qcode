@@ -56,7 +56,11 @@ pub enum UiEvent {
 /// The tag rides *outside* [`UiEvent`] rather than inside `Delta` /
 /// `ApprovalView`: one wrapper covers every variant, including the ones added
 /// later, and no constructor has to learn a new field.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord` is for `Shell::parked`, which is a `BTreeMap` keyed by this: the same
+/// type tags an event and names the view slot an event belongs to, so a draft
+/// needs no sentinel string to be parked under.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SessionTarget {
     Session(String),
     /// A draft that has not written a log yet: `UiEvent::SessionChanged { id:

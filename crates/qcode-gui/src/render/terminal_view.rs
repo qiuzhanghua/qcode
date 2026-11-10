@@ -265,17 +265,6 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.new_terminal(window, cx))),
             )
             .child(div().flex_1())
-            .child(
-                div()
-                    .id("terminal-back")
-                    .px_2()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_color(muted)
-                    .hover(|this| this.bg(secondary))
-                    .child("回到任务")
-                    .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx))),
-            )
     }
 
     fn render_terminal_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
