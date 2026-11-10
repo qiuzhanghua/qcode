@@ -217,6 +217,9 @@ impl Render for SetupView {
             for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
                 body = body.child(self.render_field(field, cx));
             }
+            if !self.wizard && page == Page::Appearance {
+                body = body.child(self.render_shell_environment_probe(cx));
+            }
             if !self.wizard && matches!(page, Page::NetworkSandbox) {
                 body = body.child(
                     "Sandbox and network settings apply immediately: each change is saved as you make it.",
@@ -731,5 +734,100 @@ impl SetupView {
                     })),
             )
             .into_any_element()
+    }
+}
+
+impl SetupView {
+    /// The Appearance page's `采样一次` button (ADR-0064).
+    ///
+    /// A sample runs the login shell, which takes up to `env_timeout_ms`;
+    /// doing that on the UI thread would freeze the window, so it goes to a
+    /// worker thread and the summary arrives through a channel. Nothing is
+    /// persisted — this only tells the user what `run_shell` would see.
+    pub(crate) fn probe_shell_environment(&mut self, cx: &mut Context<Self>) {
+        if self.shell_probe_rx.is_some() {
+            return;
+        }
+        let settings = self.config.shell.clone();
+        if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
+            self.shell_probe_note =
+                Some("采样已关闭（[shell] env_sampling = \"off\"）".to_string());
+            cx.notify();
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cache = qcode_tools::shell_env::ShellEnvCache::new(settings);
+            let sample = cache.current();
+            let report = cache.last_report().unwrap_or_default();
+            let message = match sample {
+                Some(sample) => format!(
+                    "{} · {} 个变量 · {}ms{}",
+                    sample.program().display(),
+                    sample.len(),
+                    report.duration_ms,
+                    if report.cached { " · 缓存" } else { "" }
+                ),
+                None => format!(
+                    "采样失败: {}",
+                    report.error.unwrap_or_else(|| "未知原因".to_string())
+                ),
+            };
+            let _ = tx.send(message);
+        });
+        self.shell_probe_rx = Some(rx);
+        self.shell_probe_note = Some("采样中…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |view, cx| {
+                    if view.closing {
+                        view.shell_probe_rx = None;
+                        return true;
+                    }
+                    match view
+                        .shell_probe_rx
+                        .as_ref()
+                        .map(std::sync::mpsc::Receiver::try_recv)
+                    {
+                        Some(Ok(message)) => {
+                            view.shell_probe_rx = None;
+                            view.shell_probe_note = Some(message);
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        _ => {
+                            view.shell_probe_rx = None;
+                            view.shell_probe_note = Some("采样中断".to_string());
+                            cx.notify();
+                            true
+                        }
+                    }
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The button and its one-line result, shown under the `[shell]` fields.
+    pub(crate) fn render_shell_environment_probe(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = div().flex().flex_row().items_center().gap_2().child(
+            Button::new("shell-env-probe")
+                .label("采样一次")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.probe_shell_environment(cx);
+                })),
+        );
+        if let Some(note) = &self.shell_probe_note {
+            row = row.child(note.clone());
+        }
+        row.into_any_element()
     }
 }

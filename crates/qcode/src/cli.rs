@@ -35,6 +35,8 @@ pub(crate) enum Command {
     Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
     Doctor,
+    /// Show the shell environment `run_shell` would see (ADR-0064).
+    ShellEnv(ShellEnvArgs),
     /// Check for a newer release, or install it.
     Update(update::UpdateArgs),
     /// Serve the Agent Client Protocol over stdio (for editors).
@@ -86,6 +88,16 @@ pub(crate) struct SandboxRunArgs {
     /// Everything after `--` is the command to run.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub(crate) args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ShellEnvArgs {
+    /// Print variable values too. Refused when stdout is not a terminal.
+    #[arg(long)]
+    pub(crate) full: bool,
+    /// Machine-readable output: one JSON object, values included only with --full.
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]

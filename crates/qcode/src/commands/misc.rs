@@ -135,3 +135,87 @@ pub(crate) fn cmd_skills(
     println!("\n{} skill(s)", skills.len());
     Ok(ExitCode::SUCCESS)
 }
+
+/// `qc shell-env`: what `run_shell` would hand to a command (ADR-0064).
+///
+/// Names by default: a sample is the user's whole environment, API keys
+/// included, and a terminal is easy to screenshot or paste. Values need
+/// `--full`, which refuses when stdout is not a tty.
+pub(crate) fn cmd_shell_env(
+    args: ShellEnvArgs,
+    config_path: Option<PathBuf>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let loaded = qcode_kernel::load_config(config_path, &workspace)?;
+    let settings = loaded.shell.clone();
+
+    if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
+        println!("environment sampling is off ([shell] env_sampling = \"off\")");
+        println!("run_shell only sees the allow list plus the egress proxy variables");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let cache = qcode_tools::shell_env::ShellEnvCache::new(settings);
+    let started = std::time::Instant::now();
+    let sample = cache.current();
+    let report = cache.last_report().unwrap_or_default();
+    let Some(sample) = sample else {
+        println!("sampling failed after {}ms", started.elapsed().as_millis());
+        if let Some(error) = report.error {
+            println!("  {error}");
+        }
+        return Ok(ExitCode::FAILURE);
+    };
+
+    let full = args.full && std::io::stdout().is_terminal();
+    if args.full && !full {
+        eprintln!("--full needs a terminal; printing names only");
+    }
+
+    if args.json {
+        let mut object = serde_json::Map::new();
+        object.insert(
+            "program".to_string(),
+            serde_json::Value::String(sample.program().display().to_string()),
+        );
+        object.insert("count".to_string(), serde_json::Value::from(sample.len()));
+        if full {
+            object.insert("vars".to_string(), serde_json::to_value(sample.vars())?);
+        } else {
+            object.insert("names".to_string(), serde_json::to_value(sample.names())?);
+        }
+        println!("{}", serde_json::Value::Object(object));
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!(
+        "shell: {}   variables: {}   sampled in {}ms{}",
+        sample.program().display(),
+        sample.len(),
+        report.duration_ms,
+        if report.cached { "  (cached)" } else { "" }
+    );
+    if let Some(error) = &report.error {
+        println!("  last attempt failed: {error}");
+    }
+    if !report.added.is_empty() {
+        println!(
+            "  new since the previous sample: {}",
+            report.added.join(", ")
+        );
+    }
+    if !report.removed.is_empty() {
+        println!(
+            "  gone since the previous sample: {}",
+            report.removed.join(", ")
+        );
+    }
+    println!();
+    for name in sample.names() {
+        match (full, sample.vars().get(&name)) {
+            (true, Some(value)) => println!("{name}={value}"),
+            _ => println!("{name}"),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

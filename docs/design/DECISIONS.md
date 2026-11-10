@@ -5612,6 +5612,12 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 
    注意这不改变 `run_shell` 的沙箱：采样只是读环境，命令本身仍在原来的 sandbox 里跑。
 
+**实现注记（2026-11-10）**：审计目前落在进程日志（`tracing::info!`，只带
+`program`/`count`/`added`/`removed`/`duration_ms`），还没有写进会话日志。原因是采样发生在
+`RunShell` 执行期，那一刻手里没有会话写入者；要发 `shell_env_sampled` 事件就得把 writer
+穿进工具层，代价大于收益。会话日志事件列在 P2，可观测性先由 `qc shell-env` 与设置页的
+「采样一次」承担。
+
 **撤回的安全假设**
 
 本 ADR 明确撤回 `shell.rs` 顶部那条「`env_clear` 防止 API key 被 `env` 读到」的目标。采样

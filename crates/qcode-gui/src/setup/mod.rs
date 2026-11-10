@@ -98,6 +98,10 @@ pub struct SetupView {
     probe_rx: Option<
         std::sync::mpsc::Receiver<Result<Vec<qcode_providers::discovery::ModelCandidate>, String>>,
     >,
+    /// `试一次` for the shell environment (ADR-0064): the summary line, then
+    /// the channel the worker thread reports through.
+    shell_probe_note: Option<String>,
+    shell_probe_rx: Option<std::sync::mpsc::Receiver<String>>,
     /// Models-section state (settings mode, provider card list).
     /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
@@ -331,6 +335,8 @@ impl SetupView {
             saved: false,
             probe_result: None,
             probe_rx: None,
+            shell_probe_note: None,
+            shell_probe_rx: None,
             editing_provider: None,
             editor_expanded: false,
             provider_error: None,

@@ -29,7 +29,7 @@ mod settings;
 pub(crate) use gui::{cmd_gui, cmd_tui};
 #[cfg(windows)]
 pub(crate) use misc::cmd_sandbox;
-pub(crate) use misc::{cmd_acp, cmd_doctor, cmd_skills, cmd_update};
+pub(crate) use misc::{cmd_acp, cmd_doctor, cmd_shell_env, cmd_skills, cmd_update};
 pub(crate) use run::cmd_run;
 pub(crate) use sessions::{cmd_sessions, store_key};
 pub(crate) use settings::{cmd_config, cmd_mcp};

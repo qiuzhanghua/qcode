@@ -501,6 +501,26 @@ impl ShellEnvCache {
             }
         };
 
+        // The audit line (ADR-0064 decision 6). Names only: the values are the
+        // user's, and a log is the easiest place for them to leak from.
+        match (&report.error, self.settings.audit) {
+            (Some(error), _) => tracing::warn!(
+                program = %report.program,
+                duration_ms = report.duration_ms,
+                %error,
+                "shell environment sample failed; keeping the previous snapshot"
+            ),
+            (None, ShellAudit::Names) => tracing::info!(
+                program = %report.program,
+                count = report.count,
+                added = report.added.len(),
+                removed = report.removed.len(),
+                duration_ms = report.duration_ms,
+                "shell environment sampled"
+            ),
+            (None, ShellAudit::Off) => {}
+        }
+
         if let Ok(mut slot) = self.report.write() {
             *slot = Some(report);
         }
