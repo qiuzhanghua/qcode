@@ -381,16 +381,33 @@ fn stamps() -> Vec<FileStamp> {
 /// The snapshot plus the rules for when it stops being true.
 #[derive(Debug)]
 pub struct ShellEnvCache {
+    /// The report of the last sample that no one has logged yet (ADR-0064).
+    pending_audit: std::sync::Mutex<Option<SampleReport>>,
     settings: ShellSettings,
     state: RwLock<Option<Arc<ShellEnv>>>,
     report: RwLock<Option<SampleReport>>,
     stamps: Mutex<Vec<FileStamp>>,
 }
 
+impl From<&SampleReport> for qcode_core::event::ShellEnvSampled {
+    fn from(report: &SampleReport) -> Self {
+        Self {
+            program: report.program.clone(),
+            count: report.count,
+            added: report.added.clone(),
+            removed: report.removed.clone(),
+            duration_ms: report.duration_ms,
+            cached: report.cached,
+            error: report.error.clone(),
+        }
+    }
+}
+
 impl ShellEnvCache {
     pub fn new(settings: ShellSettings) -> Self {
         Self {
             settings,
+            pending_audit: std::sync::Mutex::new(None),
             state: RwLock::new(None),
             report: RwLock::new(None),
             stamps: Mutex::new(stamps()),
@@ -411,6 +428,18 @@ impl ShellEnvCache {
 
     pub fn cached(&self) -> Option<Arc<ShellEnv>> {
         self.state.read().ok().and_then(|state| state.clone())
+    }
+
+    /// Take the report a sample produced, once.
+    ///
+    /// The session log wants each sample exactly once (ADR-0064), while the
+    /// settings page wants the latest one whenever it renders — that is what
+    /// `last_report` is for.
+    pub fn take_audit(&self) -> Option<SampleReport> {
+        self.pending_audit
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     pub fn last_report(&self) -> Option<SampleReport> {
@@ -521,6 +550,9 @@ impl ShellEnvCache {
             (None, ShellAudit::Off) => {}
         }
 
+        if let Ok(mut slot) = self.pending_audit.lock() {
+            *slot = Some(report.clone());
+        }
         if let Ok(mut slot) = self.report.write() {
             *slot = Some(report);
         }

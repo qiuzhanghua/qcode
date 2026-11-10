@@ -45,6 +45,7 @@ fn engine_with_provider(
         context_window: Some(128_000),
         network: None,
         snapshots: None,
+        shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
         schedule_errors: Vec::new(),
         schedule_tick: None,

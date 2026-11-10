@@ -572,3 +572,87 @@ async fn turning_sampling_off_keeps_the_allow_list_behaviour() {
         output.output
     );
 }
+
+/// The real thing: sample the user's own shell, then read a variable back
+/// through `run_shell`.
+///
+/// Ignored by default because it spawns the login shell (reads rc files, up to
+/// `env_timeout_ms`) and the answer depends on the machine. Run it with
+/// `cargo test -p qcode-tools --test tools -- --ignored real_shell`.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "spawns the real login shell"]
+async fn the_real_shell_environment_reaches_the_command() {
+    let cache = Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
+        qcode_tools::shell_env::ShellSettings::default(),
+    ));
+    let Some(sample) = cache.current() else {
+        panic!("sampling failed: {:?}", cache.last_report());
+    };
+
+    // A variable the sample has and this test process does not: that difference
+    // is the thing the injection carries. Values like `COT_SESSION_ID` change on
+    // every shell, so the assertion is "the child sees it", not equality.
+    let inherited = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+    let volatile = [
+        "SESSION",
+        "RANDOM",
+        "PWD",
+        "SHLVL",
+        "TMPDIR",
+        "TERM_SESSION",
+    ];
+    let stable = [
+        "JAVA_HOME",
+        "GOROOT",
+        "COT_HOME",
+        "CARGO_HOME",
+        "NODE_HOME",
+        "M2_HOME",
+        "ANDROID_HOME",
+    ];
+    let pick = |wanted: &dyn Fn(&str) -> bool| {
+        sample
+            .vars()
+            .iter()
+            .find(|(name, value)| {
+                !value.is_empty()
+                    && wanted(name)
+                    && !volatile.iter().any(|part| name.contains(part))
+                    && inherited
+                        .get(*name)
+                        .map(|own| own != *value)
+                        .unwrap_or(true)
+            })
+            .map(|(name, _)| name.clone())
+    };
+    let name = pick(&|name| stable.contains(&name))
+        .or_else(|| pick(&|_| true))
+        .unwrap_or_else(|| {
+            panic!(
+                "the sample ({:?}) is indistinguishable from this process; nothing to prove",
+                sample.program()
+            )
+        });
+
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::for_test(workspace.path());
+    let command = format!("printf '%s' \"${{{name}}}\"");
+    let output = RunShell::with_env(Arc::new(qcode_tools::sandbox::NoSandbox), cache)
+        .execute(&ctx, json!({ "command": command }))
+        .await
+        .unwrap();
+
+    let printed = output
+        .output
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(
+        !printed.is_empty(),
+        "{name} from the sample should reach the command; got: {}",
+        output.output
+    );
+}

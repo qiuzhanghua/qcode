@@ -128,6 +128,9 @@ pub struct Kernel {
     pub network: Option<qcode_core::network::SharedNetwork>,
     /// The sandbox the tools run under, for status bars.
     pub sandbox: String,
+    /// The environment `run_shell` injects (ADR-0064). Callers sample and take
+    /// the audit before a turn so the log records what the agent actually saw.
+    pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 }
 
 use std::path::PathBuf;
@@ -379,6 +382,9 @@ pub struct Assembled {
     pub network: Option<qcode_core::network::SharedNetwork>,
     /// The sandbox the tools run under, for status bars.
     pub sandbox: String,
+    /// The environment `run_shell` injects (ADR-0064). Callers sample and take
+    /// the audit before a turn so the log records what the agent actually saw.
+    pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 }
 
 /// Assemble the kernel for the directory qc was started in.
@@ -430,7 +436,7 @@ pub async fn assemble(
         sandbox,
         ToolWiring {
             network_env: network.as_ref().map(|network| network.env()),
-            shell_env,
+            shell_env: shell_env.clone(),
         },
     )
     .await;
@@ -442,6 +448,7 @@ pub async fn assemble(
         store,
         tools,
         skills,
+        shell_env,
         provider,
         egress,
         network,
