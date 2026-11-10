@@ -380,11 +380,13 @@ impl SetupView {
                 .enable_all()
                 .build();
             let result = match runtime {
-                Ok(runtime) => runtime.block_on(qcode_providers::discover_models(
-                    &base_url,
-                    api_key.as_deref(),
-                    &headers,
-                )),
+                Ok(runtime) => {
+                    runtime.block_on(qcode_providers::discovery::discover_model_candidates(
+                        &base_url,
+                        api_key.as_deref(),
+                        &headers,
+                    ))
+                }
                 Err(error) => Err(format!("cannot start probe runtime: {error}")),
             };
             let _ = tx.send(result);
@@ -416,17 +418,17 @@ impl SetupView {
                     }
                     let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
                     match received {
-                        Some(Ok(Ok(ids))) if ids.is_empty() => {
+                        Some(Ok(Ok(candidates))) if candidates.is_empty() => {
                             view.probe_rx = None;
                             view.probe_result =
                                 Some("该提供方没有列出任何模型，请手动添加。".to_string());
                             cx.notify();
                             true
                         }
-                        Some(Ok(Ok(ids))) => {
+                        Some(Ok(Ok(candidates))) => {
                             view.probe_rx = None;
                             view.probe_result = None;
-                            view.open_probe_picker(&route, &ids, cx);
+                            view.open_probe_picker(&route, &candidates, cx);
                             cx.notify();
                             true
                         }
@@ -459,7 +461,12 @@ impl SetupView {
     /// Open the candidate picker over `ids`: everything not already in the
     /// route's model rows starts picked (adopting a selection never silently
     /// rewrites a capacity the user corrected).
-    fn open_probe_picker(&mut self, route: &str, ids: &[String], cx: &mut Context<Self>) {
+    fn open_probe_picker(
+        &mut self,
+        route: &str,
+        candidates: &[qcode_providers::discovery::ModelCandidate],
+        cx: &mut Context<Self>,
+    ) {
         let known = self
             .tables
             .get("providers")
@@ -476,11 +483,11 @@ impl SetupView {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        self.probe_candidates = Some(ids.to_vec());
-        self.probe_picked = ids
+        self.probe_candidates = Some(candidates.to_vec());
+        self.probe_picked = candidates
             .iter()
-            .filter(|id| !known.contains(*id))
-            .cloned()
+            .map(|candidate| candidate.id.clone())
+            .filter(|id| !known.contains(id))
             .collect();
         self.probe_query = String::new();
     }
@@ -519,12 +526,16 @@ impl SetupView {
         if pending.is_empty() {
             return;
         }
+        let candidates = self.probe_candidates.clone().unwrap_or_default();
         let new_rows = pending
             .iter()
             .map(|id| {
+                let candidate = candidates.iter().find(|candidate| &candidate.id == id);
                 let model = qcode_kernel::config::ModelEntry {
                     id: id.clone(),
-                    ..Default::default()
+                    name: candidate.and_then(|candidate| candidate.name.clone()),
+                    context_window: candidate.and_then(|candidate| candidate.context_window),
+                    max_tokens: candidate.and_then(|candidate| candidate.max_tokens),
                 };
                 self.model_row(window, cx, Some(&model))
             })

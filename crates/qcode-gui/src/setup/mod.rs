@@ -95,7 +95,9 @@ pub struct SetupView {
     /// discovered model ids (one per line) or the error text.
     probe_result: Option<String>,
     /// Channel the probe thread reports through; drained while rendering.
-    probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    probe_rx: Option<
+        std::sync::mpsc::Receiver<Result<Vec<qcode_providers::discovery::ModelCandidate>, String>>,
+    >,
     /// Models-section state (settings mode, provider card list).
     /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
@@ -116,7 +118,7 @@ pub struct SetupView {
     /// Whether the custom-provider declaration card is open.
     declaring: bool,
     /// Probe candidate model ids (U3): open while Some, adopted on confirm.
-    probe_candidates: Option<Vec<String>>,
+    probe_candidates: Option<Vec<qcode_providers::discovery::ModelCandidate>>,
     /// Probe candidates the user picked to adopt.
     probe_picked: HashSet<String>,
     /// Probe candidate search-box text.
@@ -354,6 +356,17 @@ impl SetupView {
             auto_save_generation: 0,
             _input_subscriptions: Vec::new(),
         };
+        // The free-text default-model row warns when the typed name is not a
+        // known id for that provider; that warning lives in `SetupView`, so it
+        // has to hear about every keystroke in the input.
+        view._input_subscriptions.push(cx.subscribe(
+            &view.default_model_input,
+            |_view, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
         for field in forms::FIELDS {
             let key = field.path.join(".");
             match field.kind {

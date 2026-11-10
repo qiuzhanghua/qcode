@@ -125,6 +125,62 @@ pub(super) fn pin_default_fields(config: &mut Config, provider: &str, model: Opt
     }
 }
 
+/// What a candidate row is called: the id, plus the provider's display name
+/// when it differs. The id is what gets written to the config; the name is what
+/// the provider's documentation calls the model.
+fn candidate_label(candidate: &qcode_providers::discovery::ModelCandidate) -> String {
+    match candidate.name.as_deref() {
+        Some(name) if name != candidate.id => format!("{} — {name}", candidate.id),
+        _ => candidate.id.clone(),
+    }
+}
+
+/// The warning under the free-text model box, or `None` when the name is known.
+///
+/// Typing a display name where an id belongs is a real and quiet mistake: the
+/// config saves, the first request comes back 400, and the model name looks
+/// correct because it is — just not as an id.
+fn unknown_model_message(typed: &str, known: &[String]) -> Option<String> {
+    let typed = typed.trim();
+    if typed.is_empty() || known.iter().any(|id| id == typed) {
+        return None;
+    }
+    Some(format!(
+        "「{typed}」不在已知的模型列表里。这里填的是 id，不是显示名（例如 deepseek-flash，而不是 DeepSeek-V4.1-Flash）；可以点卡片上的「获取可用模型」核对。"
+    ))
+}
+
+/// Every model id the settings window already knows for `provider`: the rows in
+/// `[[providers.<p>.models]]`, that provider's `default_model`, the pinned
+/// `[default-model]` when it points here, and the builtin catalog.
+///
+/// Used only to warn when the free-text model box is given something that is
+/// not an id at all — the box still accepts it, because a brand-new model or a
+/// gateway alias has to be typeable before the catalog catches up.
+fn known_model_ids(config: &Config, provider: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(profile) = config.providers.get(provider) {
+        ids.extend(profile.models.iter().map(|model| model.id.clone()));
+        if let Some(model) = &profile.default_model {
+            ids.push(model.clone());
+        }
+    }
+    if config.default_model.provider.as_deref() == Some(provider)
+        && let Some(model) = &config.default_model.model
+    {
+        ids.push(model.clone());
+    }
+    ids.extend(
+        qcode_kernel::config::catalog_models(provider)
+            .into_iter()
+            .map(|model| model.id),
+    );
+    ids.retain(|id| !id.is_empty());
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 impl SetupView {
     /// 顶部那行「当前默认：provider / model」，现在可点：展开一个按 provider
     /// 分组的候选列表，选中即写 `[default-model]`。
@@ -138,6 +194,19 @@ impl SetupView {
     /// 候选来自内存里的草稿配置而不是磁盘：正在编辑的就是它。也不按凭证过滤
     /// ——设置页正是补凭证的地方，把 provider 藏起来只会让人以为它没保存。
     fn render_default_model_line(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // 「手输」是 id 与显示名最容易混起来的地方（DeepSeek 的 id 是
+        // `deepseek-flash`，显示名是 `DeepSeek-V4.1-Flash`）：打了一个已知
+        // 清单里没有的名字时给一句提示，而不是等用户在请求里拿到 400。
+        // 计算放在构建弹层之前，闭包就不必再借 `self`。
+        let unknown_model_hint: Option<String> = {
+            let typed = self.default_model_input.read(cx).value().trim().to_string();
+            match self.config.default_model.provider.clone() {
+                Some(provider) => {
+                    unknown_model_message(&typed, &known_model_ids(&self.config, &provider))
+                }
+                None => None,
+            }
+        };
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let hovered = theme.secondary;
@@ -227,6 +296,7 @@ impl SetupView {
                 }
                 // 目录里没有的模型（新版本、网关别名）只能靠手输：候选列表
                 // 只会列出已经登记的值，没有这一行就「设不成功」。
+                //
                 let free_text = div()
                     .mt_1()
                     .pt_2()
@@ -242,6 +312,14 @@ impl SetupView {
                         },
                     ))
                     .child(Input::new(&input).aria_label("默认模型名"))
+                    .child(match &unknown_model_hint {
+                        Some(message) => div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted)
+                            .child(message.clone())
+                            .into_any_element(),
+                        None => div().into_any_element(),
+                    })
                     .child(
                         Button::new("set-custom-default-model")
                             .label("设为默认")
@@ -1126,12 +1204,24 @@ impl SetupView {
         let query = self.probe_query.trim().to_lowercase();
         let visible = candidates
             .iter()
-            .filter(|id| query.is_empty() || id.to_lowercase().contains(&query))
+            .filter(|candidate| {
+                query.is_empty()
+                    || candidate.id.to_lowercase().contains(&query)
+                    || candidate
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&query))
+            })
             .collect::<Vec<_>>();
-        let all_visible_picked =
-            !visible.is_empty() && visible.iter().all(|id| self.probe_picked.contains(*id));
+        let all_visible_picked = !visible.is_empty()
+            && visible
+                .iter()
+                .all(|candidate| self.probe_picked.contains(&candidate.id));
         let entity = cx.entity();
-        let visible_ids = visible.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let visible_ids = visible
+            .iter()
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
         let mut list = div()
             .id("probe-candidate-list")
             .flex()
@@ -1139,14 +1229,19 @@ impl SetupView {
             .gap_1()
             .max_h(px(320.0))
             .overflow_y_scroll();
-        for id in &visible_ids {
+        for candidate in &visible {
+            let id = &candidate.id;
             let checked = self.probe_picked.contains(id);
+            // The label carries both: the id is what gets written to the config,
+            // the name is what the provider's own docs call the model. Typing the
+            // name where an id belongs is the mistake this line exists to prevent.
+            let label = candidate_label(candidate);
             let id_clone = id.clone();
             let entity = entity.clone();
             list = list.child(
                 Checkbox::new(format!("probe-candidate-{id}"))
                     .checked(checked)
-                    .label(id.clone())
+                    .label(label)
                     .on_change(move |checked, _window, cx| {
                         entity.update(cx, |view, cx| {
                             if *checked {
@@ -1555,5 +1650,53 @@ impl SetupView {
         self.probe_picked.clear();
         self.probe_query.clear();
         self.probe_search = None;
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use qcode_providers::discovery::ModelCandidate;
+
+    fn candidate(id: &str, name: Option<&str>) -> ModelCandidate {
+        ModelCandidate {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            ..ModelCandidate::default()
+        }
+    }
+
+    #[test]
+    fn a_display_name_rides_along_with_the_id() {
+        assert_eq!(
+            candidate_label(&candidate("deepseek-flash", Some("DeepSeek-V4.1-Flash"))),
+            "deepseek-flash — DeepSeek-V4.1-Flash"
+        );
+        // Same name as the id, or no name: the row stays just the id.
+        assert_eq!(
+            candidate_label(&candidate("deepseek-flash", None)),
+            "deepseek-flash"
+        );
+        assert_eq!(
+            candidate_label(&candidate("deepseek-flash", Some("deepseek-flash"))),
+            "deepseek-flash"
+        );
+    }
+
+    #[test]
+    fn a_known_id_gets_no_warning() {
+        let known = vec!["deepseek-flash".to_string(), "deepseek-v4-pro".to_string()];
+        assert_eq!(unknown_model_message("deepseek-flash", &known), None);
+        assert_eq!(unknown_model_message("  deepseek-v4-pro ", &known), None);
+        assert_eq!(unknown_model_message("", &known), None);
+    }
+
+    #[test]
+    fn a_display_name_typed_as_an_id_gets_the_id_warning() {
+        let known = vec!["deepseek-flash".to_string()];
+        let message = unknown_model_message("DeepSeek-V4.1-Flash", &known).unwrap();
+        assert!(message.contains("DeepSeek-V4.1-Flash"));
+        assert!(message.contains("deepseek-flash"));
+        assert!(message.contains("id"));
     }
 }
