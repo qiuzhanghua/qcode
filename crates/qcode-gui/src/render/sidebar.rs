@@ -408,7 +408,23 @@ impl Shell {
                     .px_2()
                     .pt_2()
                     .pb_1()
-                    .child("我的任务")
+                    .child(
+                        // 标题行不是按钮，但下面的「终端」「设置」两行是：`Button` 在
+                        // `Size::Medium` 下把内容右推 `px_2p5`（button.rs 里
+                        // `Size::Medium => this.h_8().px_2p5()`），所以这里补同一个
+                        // `px_2p5`，图标左沿才与下面两行的图标落在同一条竖线上。
+                        // 用同一个函数而不是写死 10px：两者都按 `rem_size` 缩放，
+                        // 缩放之后仍然对齐。
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            // 与 `Button` 在 `Size::Medium` 下给图标和内容的间距一致。
+                            .gap_2()
+                            .pl_2p5()
+                            .child(Icon::new(IconName::FolderKanban).with_size(Size::Medium))
+                            .child("我的任务"),
+                    )
                     .child(
                         Button::new("new-task")
                             .label("+")
