@@ -96,15 +96,16 @@ fn processes_matching(needle: &str) -> Vec<u32> {
             return found;
         };
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let Some((pid, command)) = line.trim_start().split_once(' ') else {
-                continue;
-            };
-            let Ok(pid) = pid.parse::<u32>() else {
+            // macOS 的 `ps -o pid=,command=` 用制表符（或连续空格）分隔两列，
+            // `split_once(' ')` 在制表符上直接返回 None——于是进程表永远被
+            // 读成空，测试在 macOS 上稳定失败。按任意空白切分两列。
+            let mut fields = line.split_whitespace();
+            let Some(pid) = fields.next().and_then(|field| field.parse::<u32>().ok()) else {
                 continue;
             };
             // Whitespace-normalised: `ps` pads its columns, and an exact `==` against
             // a padded field is a check that quietly answers "no such process".
-            let command = command.split_whitespace().collect::<Vec<_>>().join(" ");
+            let command = fields.collect::<Vec<_>>().join(" ");
             let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
             if pid != me && command == wanted {
                 found.push(pid);
