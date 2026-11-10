@@ -5737,6 +5737,11 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 - 审批简写：`[approval] allow = ["run_shell:echo *"]` / `deny = [...]` 在 `build_policy` 里展开成
   `Rule`（`run_shell` 用 `command_prefix`，其他工具用 `path_glob`，裸工具名只匹配工具），id 为
   `allow-0`/`deny-1` 这样的序号；`[[approval.rules]]` 保留给需要 scope 或多条件的情况。
+- 写回：空段不写。`ConfigEdit::apply_config` 末尾的 `prune_empty_sections()` 删掉空的
+  `[providers]`/`[pricing]`，以及既无 `rules` 又无 `allow`/`deny` 的 `[approval]`；只有
+  `id` 的模型表写成 `models = ["id"]`，带 `name`/`context_window`/`max_tokens` 的才写
+  `[[providers.<name>.models]]` 表。新建文件写 `schema = 2`，已有 `version` 的文件保持
+  那个拼写（`schema` 是它的别名）。
 - 设置页写回时**不改 schema**：`ConfigEdit::apply_config` 只在文件里本就有 `schema`、
   或完全没有版本键时才写 `schema`，否则保持原样——升级只发生在 `qc config migrate`。
 

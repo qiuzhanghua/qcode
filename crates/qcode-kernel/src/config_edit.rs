@@ -310,8 +310,12 @@ impl ConfigEdit {
         // jump a v1 file to v2 the first time a setting is saved.
         if self.document.get("schema").is_some() {
             self.set_integer(&["schema"], i64::from(config.schema))?;
-        } else if self.document.get("version").is_none() {
+        } else if self.document.get("version").is_some() {
+            // Keep the spelling the file already uses; `version` is an alias.
             self.set_integer(&["version"], i64::from(config.schema))?;
+        } else {
+            // A new file speaks the current schema.
+            self.set_integer(&["schema"], i64::from(config.schema))?;
         }
         self.set_optional_str(&["default_provider"], config.default_provider.clone())?;
         self.set_optional_str(
@@ -405,20 +409,36 @@ impl ConfigEdit {
                 Item::Value(Value::from(provider.stream_usage)),
             );
             if !provider.models.is_empty() {
-                let mut models = ArrayOfTables::new();
-                for model in &provider.models {
-                    let mut row = Table::new();
-                    row.insert("id", Item::Value(Value::from(model.id.clone())));
-                    set_optional(&mut row, "name", model.name.clone());
-                    if let Some(context) = model.context_window {
-                        row.insert("context_window", Item::Value(Value::from(context as i64)));
+                // A bare id is all most files need; ADR-0065 lets that be a
+                // string array, and writing `[[providers.x.models]]` tables for
+                // one id is exactly the noise the schema change removes.
+                let bare = provider.models.iter().all(|model| {
+                    model.name.is_none()
+                        && model.context_window.is_none()
+                        && model.max_tokens.is_none()
+                });
+                if bare {
+                    let mut ids = toml_edit::Array::new();
+                    for model in &provider.models {
+                        ids.push(model.id.clone());
                     }
-                    if let Some(max) = model.max_tokens {
-                        row.insert("max_tokens", Item::Value(Value::from(max as i64)));
+                    table.insert("models", Item::Value(Value::Array(ids)));
+                } else {
+                    let mut models = ArrayOfTables::new();
+                    for model in &provider.models {
+                        let mut row = Table::new();
+                        row.insert("id", Item::Value(Value::from(model.id.clone())));
+                        set_optional(&mut row, "name", model.name.clone());
+                        if let Some(context) = model.context_window {
+                            row.insert("context_window", Item::Value(Value::from(context as i64)));
+                        }
+                        if let Some(max) = model.max_tokens {
+                            row.insert("max_tokens", Item::Value(Value::from(max as i64)));
+                        }
+                        models.push(row);
                     }
-                    models.push(row);
+                    table.insert("models", Item::ArrayOfTables(models));
                 }
-                table.insert("models", Item::ArrayOfTables(models));
             }
             providers.insert(name, Item::Table(table));
         }
@@ -488,7 +508,53 @@ impl ConfigEdit {
             servers.push(table);
         }
         self.set_array_of_tables(&["mcp", "servers"], servers)?;
+
+        self.prune_empty_sections();
         Ok(())
+    }
+
+    /// Drop sections that ended up empty (ADR-0065 决定 8).
+    ///
+    /// A saved file should say what differs from the defaults. `set_*` writes
+    /// unconditionally, so a config with no providers or no pricing would grow
+    /// `[providers]` / `[pricing]` shells that mean nothing.
+    fn prune_empty_sections(&mut self) {
+        let empty_table = |document: &toml_edit::DocumentMut, name: &str| {
+            document
+                .get(name)
+                .map(|item| match item {
+                    Item::Table(table) => table.is_empty(),
+                    _ => false,
+                })
+                .unwrap_or(false)
+        };
+        for section in ["providers", "pricing"] {
+            if empty_table(&self.document, section) {
+                self.document.remove(section);
+            }
+        }
+
+        let approval = self
+            .document
+            .get("approval")
+            .and_then(|item| item.as_table_like());
+        if let Some(table) = approval {
+            let rules_empty = table
+                .get("rules")
+                .and_then(|item| item.as_array_of_tables())
+                .map(|rules| rules.is_empty())
+                .unwrap_or(true);
+            let list_empty = |name: &str| {
+                table
+                    .get(name)
+                    .and_then(|item| item.as_array())
+                    .map(|array| array.is_empty())
+                    .unwrap_or(true)
+            };
+            if rules_empty && list_empty("allow") && list_empty("deny") {
+                self.document.remove("approval");
+            }
+        }
     }
 
     fn set_optional_float(&mut self, path: &[&str], value: Option<f64>) -> Result<(), ConfigError> {
@@ -648,6 +714,52 @@ mod tests {
 
     fn temp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn a_default_config_writes_no_empty_sections() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# keep me\n").expect("write");
+
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        let config = crate::config::Config::default();
+        edit.apply_config(&config).expect("apply");
+        edit.save().expect("save");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("[providers]"), "{text}");
+        assert!(!text.contains("[pricing]"), "{text}");
+        assert!(!text.contains("[approval]"), "{text}");
+        assert!(text.contains("# keep me"), "{text}");
+    }
+
+    #[test]
+    fn bare_model_ids_are_written_as_a_string_array() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        let mut config = crate::config::Config::default();
+        config.providers.insert(
+            "p".to_string(),
+            crate::config::ProviderConfig {
+                base_url: Some("https://example.test/v1".to_string()),
+                models: vec![crate::config::ModelEntry {
+                    id: "m".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        edit.apply_config(&config).expect("apply");
+        edit.save().expect("save");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains(r#"models = ["m"]"#), "{text}");
+        assert!(!text.contains("[[providers.p.models]]"), "{text}");
+
+        let loaded: crate::config::Config = toml::from_str(&text).expect("reload");
+        assert_eq!(loaded.providers["p"].models[0].id, "m");
     }
 
     #[test]
