@@ -715,8 +715,8 @@ fn project_context_and_sandbox_only_override_when_present() {
 #[test]
 fn a_config_without_a_version_is_the_current_schema() {
     let config: Config = toml::from_str("").expect("empty config");
-    assert_eq!(config.version, CONFIG_VERSION);
-    assert_eq!(Config::default().version, CONFIG_VERSION);
+    assert_eq!(config.schema, CONFIG_VERSION);
+    assert_eq!(Config::default().schema, CONFIG_VERSION);
 }
 
 #[test]
@@ -1157,4 +1157,39 @@ fn first_usable_skips_mock_and_unusable_routes_then_falls_back_to_mock() {
     let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
     assert_eq!(resolved.name, "mock");
     assert_eq!(resolved.model, "mock-1");
+}
+
+#[test]
+fn models_accept_a_bare_list_of_ids() {
+    // ADR-0065: the shorthand is what the settings page writes.
+    let config: Config = toml::from_str(
+        "[providers.deepseek]\nmodels = [\"deepseek-flash\", \"deepseek-v4-pro\"]\n",
+    )
+    .expect("parse");
+    let models = &config.providers["deepseek"].models;
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "deepseek-flash");
+    assert!(models[0].name.is_none());
+    assert_eq!(models[1].id, "deepseek-v4-pro");
+}
+
+#[test]
+fn models_still_accept_tables_with_metadata() {
+    let config: Config = toml::from_str(
+        "[providers.gw]\nmodels = [{ id = \"m\", name = \"M\", context_window = 1000 }]\n",
+    )
+    .expect("parse");
+    let model = &config.providers["gw"].models[0];
+    assert_eq!(model.id, "m");
+    assert_eq!(model.name.as_deref(), Some("M"));
+    assert_eq!(model.context_window, Some(1000));
+}
+
+#[test]
+fn a_version_key_is_read_as_the_schema() {
+    // Files written before ADR-0065 say `version = 1`.
+    let config: Config = toml::from_str("version = 1\n").expect("parse");
+    assert_eq!(config.schema, 1);
+    let config: Config = toml::from_str("schema = 2\n").expect("parse");
+    assert_eq!(config.schema, 2);
 }

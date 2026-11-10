@@ -170,7 +170,7 @@ impl Doctor {
                     "config schema",
                     format!(
                         "version {} (this build supports {})",
-                        config.version,
+                        config.schema,
                         config::CONFIG_VERSION
                     ),
                 );

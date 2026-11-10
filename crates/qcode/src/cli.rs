@@ -112,6 +112,10 @@ pub(crate) enum ConfigCommand {
     Show,
     /// Open the user config in $EDITOR.
     Edit,
+    /// Rewrite a v1 file into the schema-2 shape (ADR-0065): fold
+    /// `[providers.*].default_model` into `[default-model]`, collapse model
+    /// tables that only carry an id, and switch `version` to `schema`.
+    Migrate,
     /// Store an API key in the platform key store (ADR-0039).
     Key {
         #[command(subcommand)]

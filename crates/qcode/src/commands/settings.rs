@@ -9,6 +9,13 @@ pub(crate) fn cmd_config(
             let workspace = std::env::current_dir()?.canonicalize()?;
             let loaded = qcode_kernel::load_config(config_path, &workspace)?;
             print_config(&loaded);
+            if loaded.schema < qcode_kernel::config::CONFIG_VERSION {
+                println!(
+                    "\nthis file is schema {}; `qc config migrate` can drop duplicated defaults \
+                     (backup kept as .bak)",
+                    loaded.schema
+                );
+            }
         }
         ConfigCommand::Key { command } => match command {
             KeyCommand::Set {
@@ -17,6 +24,39 @@ pub(crate) fn cmd_config(
                 account,
             } => return store_key(&provider, &service, account.as_deref()),
         },
+        ConfigCommand::Migrate => {
+            let path = config::edit_path(config_path)?;
+            let report = qcode_kernel::config_edit::migrate_user_config(&path)?;
+            if !report.changed {
+                println!(
+                    "{}: already schema {} (nothing to do)",
+                    path.display(),
+                    report.from
+                );
+            } else {
+                println!(
+                    "{}: schema {} → {}",
+                    path.display(),
+                    report.from,
+                    qcode_kernel::config::CONFIG_VERSION
+                );
+                if report.folded_defaults > 0 {
+                    println!(
+                        "  folded {} provider default_model key(s) into [default-model]",
+                        report.folded_defaults
+                    );
+                }
+                if report.collapsed_models > 0 {
+                    println!(
+                        "  collapsed {} model table(s) into `models = [\"id\", …]`",
+                        report.collapsed_models
+                    );
+                }
+                if let Some(backup) = &report.backup {
+                    println!("  backup: {}", backup.display());
+                }
+            }
+        }
         ConfigCommand::Edit => {
             let path = config::edit_path(config_path)?;
             if let Some(parent) = path.parent() {

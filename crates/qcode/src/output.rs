@@ -30,8 +30,8 @@ pub(crate) fn print_event(event: &Event, include_raw: bool) {
 
 pub(crate) fn print_config(config: &config::Config) {
     println!(
-        "version = {} (this build supports {})",
-        config.version,
+        "schema = {} (this build supports {})",
+        config.schema,
         config::CONFIG_VERSION
     );
     println!("default_provider = {:?}", config.default_provider);

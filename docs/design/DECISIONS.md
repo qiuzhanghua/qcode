@@ -5720,6 +5720,17 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 9. **`qc config show --effective` 是唯一权威视图。** 打印合并后的值与来源（file/env/flag/catalog），
    `--json` 给脚本用。
 
+**实现注记（2026-11-10）**
+
+- 键名：`Config.schema` 带 `#[serde(alias = "version")]`，两种拼写都读得懂。`migrate` 遇到
+  用 `version` 的文件**保留这个键名**、只把值改成 2——改名会用 `toml_edit` 的 `insert`
+  把键上挂着的注释一起丢掉；而 alias 让两种拼写等价，保留旧名不损失语义。
+- `models` 的两种写法由 `models_from_entries_or_ids` 统一接受（`["id"]` 或
+  `[{ id, name, context_window }]`，可混写）；`migrate` 只把「只有一个 `id`」的表折成
+  字符串数组，带元数据的表原样保留。
+- 设置页写回时**不改 schema**：`ConfigEdit::apply_config` 只在文件里本就有 `schema`、
+  或完全没有版本键时才写 `schema`，否则保持原样——升级只发生在 `qc config migrate`。
+
 **不变式**
 
 - v1 与 v2 都能读，任何读路径都不因 schema 不同而改变语义。

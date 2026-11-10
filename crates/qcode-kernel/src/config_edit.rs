@@ -305,7 +305,14 @@ impl ConfigEdit {
     /// servers) are replaced as a unit; comments inside those tables are not
     /// preserved. Unknown sections are never touched.
     pub fn apply_config(&mut self, config: &crate::config::Config) -> Result<(), ConfigError> {
-        self.set_integer(&["version"], i64::from(config.version))?;
+        // ADR-0065: a file keeps the schema it was written with; only
+        // `qc config migrate` upgrades it. Writing `schema` here would silently
+        // jump a v1 file to v2 the first time a setting is saved.
+        if self.document.get("schema").is_some() {
+            self.set_integer(&["schema"], i64::from(config.schema))?;
+        } else if self.document.get("version").is_none() {
+            self.set_integer(&["version"], i64::from(config.schema))?;
+        }
         self.set_optional_str(&["default_provider"], config.default_provider.clone())?;
         self.set_optional_str(
             &["default-model", "provider"],
@@ -935,5 +942,267 @@ mod tests {
         let loaded = crate::config::load(&fresh).expect("valid");
         assert_eq!(loaded.default_model.provider.as_deref(), Some("ollama"));
         assert_eq!(loaded.default_model.model.as_deref(), Some("qwen"));
+    }
+}
+
+/// What `qc config migrate` changed (ADR-0065).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationReport {
+    /// The schema found in the file before migrating.
+    pub from: u32,
+    /// Whether anything was written.
+    pub changed: bool,
+    /// `[providers.*].default_model` keys folded into `[default-model]`.
+    pub folded_defaults: usize,
+    /// `[[providers.*.models]]` tables collapsed to `models = ["id"]`.
+    pub collapsed_models: usize,
+    /// Where the pre-migration copy went, when a file was rewritten.
+    pub backup: Option<PathBuf>,
+}
+
+/// Rewrite a v1 file into the v2 shape (ADR-0065).
+///
+/// The mechanical part only: fold `[providers.*].default_model` into
+/// `[default-model]`, collapse model tables that carry nothing but an id, and
+/// switch `version` to `schema`. Comments outside those tables survive; the
+/// file is backed up to `.bak` first, and running this twice changes nothing.
+pub fn migrate_user_config(path: &Path) -> Result<MigrationReport, ConfigError> {
+    let mut edit = ConfigEdit::open(path)?;
+    if !edit.existed() {
+        return Ok(MigrationReport::default());
+    }
+    let from = edit
+        .document()
+        .get("schema")
+        .or_else(|| edit.document().get("version"))
+        .and_then(|item| item.as_integer())
+        .unwrap_or(1) as u32;
+    if from >= crate::config::CONFIG_VERSION {
+        return Ok(MigrationReport {
+            from,
+            ..MigrationReport::default()
+        });
+    }
+
+    let mut folded_defaults = 0usize;
+    let mut collapsed_models = 0usize;
+
+    // 1. `[providers.X].default_model` → `[default-model]` when that is still
+    //    empty. A provider that loses its key keeps working: the resolver falls
+    //    back to the catalog's default model.
+    let providers: Vec<String> = edit
+        .document()
+        .get("providers")
+        .and_then(|item| item.as_table_like())
+        .map(|table| table.iter().map(|(name, _)| name.to_string()).collect())
+        .unwrap_or_default();
+    let already_set = edit
+        .document()
+        .get("default-model")
+        .and_then(|item| item.as_table_like())
+        .and_then(|table| table.get("model"))
+        .and_then(|item| item.as_str())
+        .map(|model| !model.is_empty())
+        .unwrap_or(false);
+    for (index, provider) in providers.iter().enumerate() {
+        let Some(table) = edit
+            .document_mut()
+            .get_mut("providers")
+            .and_then(|item| item.as_table_like_mut())
+            .and_then(|table| table.get_mut(provider))
+            .and_then(|item| item.as_table_like_mut())
+        else {
+            continue;
+        };
+        let Some(default) = table.remove("default_model") else {
+            continue;
+        };
+        folded_defaults += 1;
+        if !already_set
+            && index == 0
+            && let Some(model) = default.as_str()
+        {
+            let _ = edit.set_str(&["default-model", "model"], model);
+            let _ = edit.set_str(&["default-model", "provider"], provider.clone());
+        }
+    }
+
+    // 2. A model table that only says `id` is the shorthand we would have
+    //    written; anything with metadata stays a table. Both encodings matter:
+    //    `models = [{ id = "x" }]` is an array of inline tables, while
+    //    `[[providers.x.models]]` is an array of tables.
+    for provider in &providers {
+        let Some(item) = edit
+            .document_mut()
+            .get_mut("providers")
+            .and_then(|item| item.as_table_like_mut())
+            .and_then(|table| table.get_mut(provider))
+            .and_then(|item| item.as_table_like_mut())
+            .and_then(|table| table.get_mut("models"))
+        else {
+            continue;
+        };
+        let mut ids: Option<Vec<String>> = None;
+        if let Some(array) = item.as_array() {
+            let mut found = Vec::new();
+            let mut ok = true;
+            for entry in array.iter() {
+                let Some(table) = entry.as_inline_table() else {
+                    ok = false;
+                    break;
+                };
+                let Some(id) = table.get("id").and_then(|value| value.as_str()) else {
+                    ok = false;
+                    break;
+                };
+                if table.len() != 1 {
+                    ok = false;
+                    break;
+                }
+                found.push(id.to_string());
+            }
+            if ok {
+                ids = Some(found);
+            }
+        } else if let Some(array) = item.as_array_of_tables() {
+            let mut found = Vec::new();
+            let mut ok = true;
+            for table in array.iter() {
+                let Some(id) = table.get("id").and_then(|value| value.as_str()) else {
+                    ok = false;
+                    break;
+                };
+                if table.len() != 1 {
+                    ok = false;
+                    break;
+                }
+                found.push(id.to_string());
+            }
+            if ok {
+                ids = Some(found);
+            }
+        }
+        let Some(ids) = ids else { continue };
+        let count = ids.len();
+        let mut list = toml_edit::Array::new();
+        for id in ids {
+            list.push(id);
+        }
+        let _ = edit.set_value(&["providers", provider, "models"], Value::Array(list));
+        collapsed_models += count;
+    }
+
+    // 3. The version key itself. A file that says `version` keeps the key and
+    //    gets the new number; renaming it would drop the comment attached to it,
+    //    and the alias makes both spellings read the same. Files that already
+    //    say `schema` (or said nothing) get `schema`.
+    if let Some(value) = edit
+        .document_mut()
+        .get_mut("version")
+        .and_then(|item| item.as_value_mut())
+    {
+        // In place: `insert` would replace the key and take its comment with it.
+        *value = Value::from(i64::from(crate::config::CONFIG_VERSION));
+    } else {
+        edit.set_integer(&["schema"], i64::from(crate::config::CONFIG_VERSION))?;
+    }
+    edit.save()?;
+
+    Ok(MigrationReport {
+        from,
+        changed: true,
+        folded_defaults,
+        collapsed_models,
+        backup: Some(backup_path(path)),
+    })
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".bak");
+    PathBuf::from(name)
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn v1_file(dir: &tempfile::TempDir) -> PathBuf {
+        let path = dir.path().join("config.toml");
+        let mut file = std::fs::File::create(&path).expect("create");
+        write!(
+            file,
+            r#"# my qcode config
+version = 1
+
+[providers.deepseek]
+api_key_env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-flash"
+models = [{{ id = "deepseek-flash" }}, {{ id = "deepseek-v4-pro" }}]
+
+[providers.gw]
+base_url = "http://localhost:8000/v1"
+models = [{{ id = "m", name = "M" }}]
+"#
+        )
+        .expect("write");
+        path
+    }
+
+    #[test]
+    fn migrate_folds_defaults_and_collapses_bare_model_tables() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = v1_file(&dir);
+
+        let report = migrate_user_config(&path).expect("migrate");
+        assert!(report.changed);
+        assert_eq!(report.from, 1);
+        assert_eq!(report.folded_defaults, 1);
+        assert_eq!(report.collapsed_models, 2);
+        assert!(report.backup.expect("backup path").exists());
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        // A file that used `version` keeps the spelling, with the new number.
+        assert!(
+            text.contains("version = 2") || text.contains("schema = 2"),
+            "{text}"
+        );
+        assert!(!text.contains("version = 1"), "{text}");
+        assert!(
+            !text.contains(
+                "[providers.deepseek]\napi_key_env = \"DEEPSEEK_API_KEY\"\ndefault_model"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"models = ["deepseek-flash", "deepseek-v4-pro"]"#),
+            "{text}"
+        );
+        // A table with metadata keeps its shape.
+        assert!(text.contains(r#"{ id = "m", name = "M" }"#), "{text}");
+        // The comment outside the rewritten tables survives.
+        assert!(text.contains("# my qcode config"), "{text}");
+
+        // The result is a file this build loads without complaints.
+        let loaded: crate::config::Config = toml::from_str(&text).expect("reload");
+        assert_eq!(loaded.schema, crate::config::CONFIG_VERSION);
+        assert_eq!(
+            loaded.default_model.model.as_deref(),
+            Some("deepseek-flash")
+        );
+    }
+
+    #[test]
+    fn migrating_twice_changes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = v1_file(&dir);
+        migrate_user_config(&path).expect("first");
+        let after_first = std::fs::read_to_string(&path).expect("read");
+
+        let report = migrate_user_config(&path).expect("second");
+        assert!(!report.changed);
+        assert_eq!(report.from, crate::config::CONFIG_VERSION);
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), after_first);
     }
 }

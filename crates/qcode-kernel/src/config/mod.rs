@@ -40,7 +40,11 @@ pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 /// versioning existed must keep loading unchanged. A file that declares a
 /// *newer* version is an error, because this build cannot know which of its
 /// interpretations changed.
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
+
+/// The schema a file without a version is read as. Files written by this build
+/// carry [`CONFIG_VERSION`]; a `version = 1` file is still read (ADR-0065).
+pub const LEGACY_CONFIG_VERSION: u32 = 1;
 
 /// How a message typed while a turn is running is delivered (ADR-0042).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -77,9 +81,10 @@ pub struct DefaultModelConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Schema version of the file. Absent means [`CONFIG_VERSION`].
-    #[serde(default = "default_version")]
-    pub version: u32,
+    /// Schema version of the file. Absent means [`CONFIG_VERSION`]. `version`
+    /// is still accepted so a file written before ADR-0065 keeps loading.
+    #[serde(default = "default_version", alias = "version")]
+    pub schema: u32,
     /// Provider used when neither `--provider` nor `QCODE_PROVIDER` is set.
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -191,7 +196,7 @@ fn default_version() -> u32 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: CONFIG_VERSION,
+            schema: CONFIG_VERSION,
             default_provider: None,
             default_model: DefaultModelConfig::default(),
             providers: BTreeMap::new(),
@@ -565,7 +570,7 @@ pub struct ProviderConfig {
     /// This route's own model catalog (U0). An empty list means "serve the
     /// catalog's built-in models"; any entry replaces that catalog, so a row is
     /// only ever added deliberately.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "models_from_entries_or_ids")]
     pub models: Vec<ModelEntry>,
 }
 
@@ -588,6 +593,55 @@ impl Default for ProviderConfig {
 /// One model a provider route serves. Hand-declared routes carry their own
 /// list (hand-filled or adopted from an endpoint probe); catalog routes
 /// inherit their static catalog entries until the user overrides them.
+/// Accept both spellings of a model list (ADR-0065):
+///
+/// ```toml
+/// models = ["deepseek-flash", "deepseek-v4-pro"]      # the shorthand
+/// models = [{ id = "deepseek-flash", name = "…" }]    # when overriding
+/// ```
+///
+/// Mixed lists are fine: a bare string is a model with no overrides.
+fn models_from_entries_or_ids<'de, D>(deserializer: D) -> Result<Vec<ModelEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EntryOrId {
+        Id(String),
+        Entry(ModelEntryInput),
+    }
+
+    #[derive(Deserialize)]
+    struct ModelEntryInput {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        context_window: Option<u64>,
+        #[serde(default)]
+        max_tokens: Option<u64>,
+    }
+
+    let raw = Vec::<EntryOrId>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|item| match item {
+            EntryOrId::Id(id) => ModelEntry {
+                id,
+                ..Default::default()
+            },
+            EntryOrId::Entry(entry) => ModelEntry {
+                id: entry.id,
+                name: entry.name,
+                context_window: entry.context_window,
+                max_tokens: entry.max_tokens,
+            },
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ModelEntry {
     #[serde(default)]
