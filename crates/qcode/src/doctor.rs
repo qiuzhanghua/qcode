@@ -240,6 +240,7 @@ impl Doctor {
                 } else {
                     self.ok("credentials", "keyless provider");
                 }
+                self.check_pricing(config, &resolved.model);
             }
             Err(err) => {
                 let missing_key =
@@ -251,6 +252,40 @@ impl Doctor {
                     }
                 }
             }
+        }
+    }
+
+    /// Prices are never guessed (ADR-0065 决定 7): say what `--max-cost` will
+    /// do instead of inventing a number.
+    fn check_pricing(&mut self, config: &Config, model: &str) {
+        let limit = config.agent.max_cost_usd;
+        match config.pricing.get(model) {
+            Some(price) if price.validate() => {
+                if limit.is_some() {
+                    self.ok(
+                        "pricing",
+                        format!("{model} declared; `--max-cost` stops at the limit"),
+                    );
+                } else {
+                    self.ok(
+                        "pricing",
+                        format!(
+                            "{model} declared; set `--max-cost` or `[agent] max_cost_usd` to actually stop"
+                        ),
+                    );
+                }
+            }
+            Some(_) => self.warn(
+                "pricing",
+                format!("the `[pricing.{model}]` entry is incomplete; it is ignored"),
+            ),
+            None => self.warn(
+                "pricing",
+                format!(
+                    "no `[pricing.{model}]` entry; `--max-cost` cannot stop the run. \
+                     Prices are not guessed — declare the rates or ignore this line"
+                ),
+            ),
         }
     }
 
