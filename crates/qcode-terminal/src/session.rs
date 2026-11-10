@@ -275,9 +275,8 @@ fn child_exited(end: &mut ReaderEnd) -> Option<std::process::ExitStatus> {
     #[cfg(windows)]
     {
         let mut guard = end.lock().expect("pty lock");
-        let Some(pty) = guard.as_mut() else {
-            return None;
-        };
+        // `?` would return from the function, which is what `None` means here.
+        let pty = guard.as_mut()?;
         match pty.next_child_event() {
             Some(tty::ChildEvent::Exited(status)) => status,
             None => None,
