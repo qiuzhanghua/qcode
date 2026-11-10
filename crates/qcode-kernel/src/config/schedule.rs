@@ -156,6 +156,7 @@ fn resolve_one(name: &str, entry: &ScheduleConfig) -> Result<Schedule, ScheduleC
     Ok(Schedule {
         name: name.to_string(),
         cron,
+        cron_text: entry.cron.clone(),
         task,
         prompt: entry.prompt.clone(),
         overlap,
