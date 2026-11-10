@@ -86,34 +86,23 @@ fn processes_matching(needle: &str) -> Vec<u32> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        // `-ww`: without it `ps` truncates the command column to the terminal width,
-        // and a truncated command line never equals the marker.
-        let mut found = Vec::new();
-        let Ok(output) = std::process::Command::new("ps")
-            .args(["-A", "-ww", "-o", "pid=,command="])
+        // macOS 的 `ps -o command` 会把 argv[0] 显示成完整路径（`/usr/bin/yes ...`），
+        // 而且列分隔符随版本变化；两处都踩过。`pgrep -f` 直接按内核里的命令行匹配，
+        // 锚定 `^...$` 避免匹配到 `/bin/sh -c yes ...` 这条 shell 命令行，也避免
+        // 匹配 pgrep 自己（它自己的命令行以 pgrep 开头）。
+        let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pattern = format!("^{wanted}$");
+        let Ok(output) = std::process::Command::new("pgrep")
+            .args(["-f", &pattern])
             .output()
         else {
             return found;
         };
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            // macOS 的 `ps -o pid=,command=` 用制表符（或连续空格）分隔两列，
-            // `split_once(' ')` 在制表符上直接返回 None——于是进程表永远被
-            // 读成空，测试在 macOS 上稳定失败。按任意空白切分两列。
-            let mut fields = line.split_whitespace();
-            let Some(pid) = fields.next().and_then(|field| field.parse::<u32>().ok()) else {
+            let Ok(pid) = line.trim().parse::<u32>() else {
                 continue;
             };
-            // Whitespace-normalised: `ps` pads its columns, and an exact `==` against
-            // a padded field is a check that quietly answers "no such process".
-            let command = fields.collect::<Vec<_>>().join(" ");
-            let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
-            // macOS 的 `ps -o command` 显示的是完整路径（`/usr/bin/yes ...`），
-            // 而 marker 写的是 `yes ...`；允许“路径前缀 + 完整命令”的匹配。
-            let same = command == wanted
-                || command
-                    .strip_suffix(&wanted)
-                    .is_some_and(|prefix| prefix.ends_with('/'));
-            if pid != me && same {
+            if pid != me {
                 found.push(pid);
             }
         }
@@ -489,7 +478,7 @@ fn a_wakeup_callback_does_not_block_the_grid() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
+        start.elapsed() < TIMEOUT,
         "reading the grid while the shell is alive took {:?}",
         start.elapsed()
     );
