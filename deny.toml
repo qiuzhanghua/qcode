@@ -21,9 +21,23 @@ ignore = [
     "RUSTSEC-2025-0134", # rustls-pemfile
     "RUSTSEC-2026-0206", # rustybuzz
     "RUSTSEC-2026-0192", # ttf-parser
+    # RUSTSEC-2026-0370..0372 — zbus 的那一组，同上。
     "RUSTSEC-2026-0370", # zvariant
     "RUSTSEC-2026-0371", # zbus_names
     "RUSTSEC-2026-0372", # zvariant_derive
+    # lru 0.12.5 的两条 unsound 告警，**不可达**，且升不上去：
+    # `lru` 只经 TUI 的 `ratatui 0.29` 进来，而 `ratatui` 的版本被 `tui-textarea`
+    # 钉住——0.7.0（当前最新）要求 `ratatui ^0.29.0`，所以 `ratatui` 到 `0.30`
+    # 要么等 `tui-textarea` 发版，要么自己替掉那个输入控件（TUI 重构，不是升级）。
+    #
+    # 可达性查过了：ratatui 把 `LruCache` 只当布局缓存用
+    # （`src/layout/layout.rs:39`），全 crate 对它的调用只有 `get_or_insert`
+    # 与 `resize`。两条告警分别在 `LruCache::pop()` 的 panic 安全性
+    # 和 `IterMut` 的 Stacked Borrows 上，两个方法 ratatui 都没调。
+    #
+    # 一旦 `tui-textarea` 放出支持 ratatui 0.30 的版本，这两条要删掉。
+    "RUSTSEC-2026-0253", # lru: LruCache::pop() 的 panic 安全性
+    "RUSTSEC-2026-0002", # lru: IterMut 违反 Stacked Borrows
 ]
 
 [licenses]

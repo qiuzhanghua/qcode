@@ -1,4 +1,21 @@
 use super::*;
+
+/// The app mark, as bytes. Same file the running row uses: it is already
+/// `currentColor`, so the theme drives it and there is no second copy of the
+/// artwork to keep in sync.
+const QC_MARK: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../qcode/res/icons/src/qcode-mark-current.svg"
+));
+
+/// The product label in the sidebar header.
+///
+/// Deliberately not the binary name (`qc`) or the crate name (`qcode`): the
+/// Chinese labels around it — 我的任务 / 定时任务 / 终端 / 设置 — are feature
+/// names, and this one is the product's. A placeholder until a real name exists;
+/// renaming it is this one string (ADR-0063 §2).
+const PRODUCT_NAME: &str = "AI 工具";
+
 pub(crate) fn task_titles(
     tasks: &[TaskRow],
     backend: &dyn Backend,
@@ -200,7 +217,109 @@ impl Shell {
         }
         section.into_any_element()
     }
+
+    /// The expanded sidebar: header, two accordion sections, footer (ADR-0063).
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let tasks_open = self.sidebar_section == SidebarSection::Tasks;
+
+        // Three fixed zones around one scrolling one: the header never moves, the
+        // two section headers never move, and only the open section's list scrolls.
+        // Making the whole column scrollable (which this was before v0.8.0) pushed
+        // the bottom rows out of view exactly when the list got long.
+        div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .id("task-sidebar")
+            // Sidebar sits on the base `sidebar` token, one step lighter than the
+            // row hover (`sidebar_accent` at reduced opacity), so the list reads as
+            // a surface and the hovered row still stands out.
+            .bg(cx.theme().sidebar)
+            .child(self.render_sidebar_header(cx))
+            .child(self.render_section_header(
+                SidebarSection::Tasks,
+                "我的任务",
+                Some((
+                    "new-task",
+                    "+",
+                    "新建任务",
+                    // 新建任务只从展开态的段头进入：图标轨里没有 `+`
+                    // （ADR-0063 §1、§4）。A2 的代价就是这个，用户已确认。
+                    SidebarAction::NewTask,
+                )),
+                tasks_open,
+                cx,
+            ))
+            .when(tasks_open, |this| this.child(self.render_task_list(cx)))
+            .child(self.render_section_header(
+                SidebarSection::Schedule,
+                "定时任务",
+                None,
+                !tasks_open,
+                cx,
+            ))
+            .when(!tasks_open, |this| {
+                this.child(self.render_schedule_list(cx))
+            })
+            // Fixed at the bottom, separated from the list by a hairline: above is
+            // content, below is tools.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .pt_2()
+                    .pb_2()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Button::new("open-terminal")
+                            .icon(IconName::SquareTerminal)
+                            .accessibility_label("终端")
+                            // 按钮内容默认居中（`h_flex().size_full().justify_center()`），
+                            // 所以一个裸文字子元素会把图标拉到中间。撑成整行才让图标贴左，
+                            // 与下面「设置」那行对齐——它本来就是因为徽标需要整行才左对齐的。
+                            .child(div().w_full().text_size(sp(14.0)).child("终端"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_terminal_view(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("open-settings")
+                            .icon(IconName::Settings)
+                            // The badge says "this one opens a separate window":
+                            // 终端 switches the main view, 设置 opens a window of its
+                            // own. Side by side at the bottom, they would otherwise
+                            // read as the same kind of thing.
+                            .tooltip("设置（在新窗口中打开）")
+                            .accessibility_label("设置，在新窗口中打开")
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
+                                    .child(div().text_size(sp(14.0)).child("设置"))
+                                    .child(
+                                        Icon::new(IconName::ExternalLink)
+                                            .with_size(Size::Small)
+                                            .text_color(muted),
+                                    ),
+                            )
+                            .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
+                    ),
+            )
+    }
+
+    /// One element per task row, plus the roots editor under the active one.
+    fn render_task_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let row_hover = cx.theme().sidebar_accent.opacity(0.55);
         let row_active = cx.theme().sidebar_accent;
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -285,7 +404,7 @@ impl Shell {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_size(sp(BODY_SIZE))
+                        .text_size(sp(13.0))
                         .whitespace_nowrap()
                         .child(label),
                 );
@@ -380,44 +499,402 @@ impl Shell {
                 rows.push(self.render_task_roots(cx));
             }
         }
+        rows
+    }
 
+    /// Top row: mark, product name, collapse button (ADR-0063 §2).
+    ///
+    /// The mark is the same `currentColor` svg the running row uses, so it follows
+    /// the theme without a second copy of the artwork.
+    fn render_sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .w_full()
-            .h_full()
             .flex()
-            .flex_col()
-            .gap_1()
-            .p_2()
-            .id("task-sidebar")
-            // Sidebar sits on the base `sidebar` token, one step lighter than
-            // the row hover (`sidebar_accent` at reduced opacity), so the list
-            // reads as a surface and the hovered row still stands out.
-            .bg(cx.theme().sidebar)
-            .overflow_y_scroll()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .px_2()
+            .pt_2()
+            .pb_1()
+            .gap_2()
             .child(
-                Button::new("open-settings")
-                    .icon(IconName::Settings)
-                    // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
-                    .accessibility_label("设置")
-                    .child(div().text_size(sp(14.0)).child("设置"))
-                    .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
+                // 与下面的段头、以及底部两行按钮共用同一个左内缩 `px_2p5`：
+                // `Button` 在 `Size::Medium` 下自己带这个内缩，非按钮行必须补上，
+                // 否则图标左沿差 10px。
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .min_w(px(0.0))
+                    .pl_2p5()
+                    .child(
+                        Icon::default()
+                            .data(QC_MARK)
+                            .size(px(18.0))
+                            .text_color(cx.theme().foreground),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            // A placeholder name: the binary is `qc`, the crate is
+                            // `qcode`, and this is the product label the window
+                            // shows. Renaming it is a one-string change.
+                            .child(PRODUCT_NAME),
+                    ),
             )
+            .child(
+                Button::new("collapse-sidebar")
+                    .icon(IconName::ChevronLeft)
+                    .tooltip("折叠侧栏")
+                    .accessibility_label("折叠侧栏")
+                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_sidebar(cx))),
+            )
+    }
+
+    /// One accordion header. `action` is the段头 button (only 我的任务 has one).
+    fn render_section_header(
+        &self,
+        section: SidebarSection,
+        label: &'static str,
+        action: Option<(&'static str, &'static str, &'static str, SidebarAction)>,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let section_for_click = section;
+        div()
+            .id(("sidebar-section", section as usize))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .px_2()
+            .pt_2()
+            .pb_1()
+            .cursor_pointer()
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .child("我的任务")
+                    .gap_1()
+                    .pl_1p5()
                     .child(
-                        Button::new("new-task")
-                            .label("+")
-                            .tooltip("新建任务")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_session(window, cx);
-                            })),
+                        // The open header must LOOK open: clicking it does nothing
+                        // (exactly one section is always open), and a no-op on an
+                        // unmarked row reads as a broken button (ADR-0063 §3).
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .with_size(Size::Small)
+                        .text_color(muted),
+                    )
+                    .child(
+                        // 与收起态同一个图标：段头展开时也要一眼看出是「任务」还是「定时」。
+                        Icon::new(match section {
+                            SidebarSection::Tasks => IconName::FolderKanban,
+                            SidebarSection::Schedule => IconName::CalendarClock,
+                        })
+                        .with_size(Size::Medium)
+                        .text_color(if open { foreground } else { muted }),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if open { foreground } else { muted })
+                            .child(label),
                     ),
             )
-            .children(rows)
+            .when_some(action, |this, (id, label, tooltip, kind)| {
+                let kind_for_click = kind;
+                this.child(
+                    Button::new(id)
+                        .label(label)
+                        .tooltip(tooltip)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            // The `+` sits inside a clickable header; without this
+                            // the row would also toggle the section.
+                            cx.stop_propagation();
+                            match kind_for_click {
+                                SidebarAction::NewTask => {
+                                    // 「我的任务」可能是收起态：先把它打开，
+                                    // 否则任务建出来了、行却在另一个段后面。
+                                    this.open_sidebar_section(SidebarSection::Tasks, cx);
+                                    this.new_session(window, cx);
+                                }
+                            }
+                        })),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.open_sidebar_section(section_for_click, cx);
+            }))
+            .into_any_element()
     }
+
+    /// The open section's list: the only scrolling zone in the sidebar.
+    ///
+    /// `min_h(0)` lets it shrink below its content; without it the flex item
+    /// refuses to and the footer is pushed off-screen. `.id()` is required, not
+    /// decorative: `overflow_y_scroll` lives on `StatefulInteractiveElement`.
+    fn render_task_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("task-list")
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .overflow_y_scroll()
+            .children(self.render_task_rows(cx))
+    }
+
+    /// The collapsed sidebar: five icon slots (ADR-0063 §4).
+    ///
+    /// All four functional icons only switch the main view — none of them changes
+    /// the sidebar's width, so they stay uniform. Crossing 任务/定时任务 also records
+    /// which section the next expand lands on; that is remembered state, not layout.
+    pub(crate) fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+        div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .py_2()
+            .gap_1()
+            .id("task-sidebar-rail")
+            .bg(cx.theme().sidebar)
+            .child(self.rail_button(
+                "rail-expand",
+                IconName::ChevronRight,
+                "展开侧栏",
+                false,
+                None,
+                cx,
+            ))
+            .child(self.rail_button(
+                "rail-tasks",
+                IconName::FolderKanban,
+                "任务",
+                self.view == MainView::Task,
+                self.task_badge(),
+                cx,
+            ))
+            .child(div().flex_1())
+            .child(self.rail_button(
+                "rail-schedule",
+                IconName::CalendarClock,
+                "定时",
+                self.view == MainView::Schedule,
+                self.schedule_badge(),
+                cx,
+            ))
+            .child(self.rail_button(
+                "rail-terminal",
+                IconName::SquareTerminal,
+                "终端",
+                self.view == MainView::Terminal,
+                None,
+                cx,
+            ))
+            .child(div().w(px(24.0)).border_t_1().border_color(border).my_1())
+            .child(self.rail_button(
+                "rail-settings",
+                IconName::Settings,
+                "设置（在新窗口中打开）",
+                false,
+                None,
+                cx,
+            ))
+    }
+
+    fn rail_button(
+        &self,
+        id: &'static str,
+        icon: IconName,
+        label: &'static str,
+        active: bool,
+        badge: Option<bool>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let accent = cx.theme().info;
+        let button = Button::new(id)
+            .icon(icon)
+            .tooltip(label)
+            .accessibility_label(label)
+            .tooltip(label)
+            .cursor_pointer();
+
+        let button = if active {
+            button.text_color(foreground)
+        } else {
+            button.text_color(muted)
+        };
+        let target = match id {
+            "rail-expand" => RailAction::Expand,
+            "rail-tasks" => RailAction::Tasks,
+            "rail-schedule" => RailAction::Schedule,
+            "rail-terminal" => RailAction::Terminal,
+            _ => RailAction::Settings,
+        };
+        let button = button.on_click(cx.listener(move |this, _, window, cx| match target {
+            RailAction::Expand => this.toggle_sidebar(cx),
+            RailAction::Tasks => {
+                this.show_main_view(MainView::Task, Some(SidebarSection::Tasks), window, cx)
+            }
+            RailAction::Schedule => this.show_main_view(
+                MainView::Schedule,
+                Some(SidebarSection::Schedule),
+                window,
+                cx,
+            ),
+            RailAction::Terminal => this.show_main_view(MainView::Terminal, None, window, cx),
+            RailAction::Settings => this.open_settings(cx),
+        }));
+        if badge == Some(true) {
+            // A dot, not a count: 48px cannot hold a legible number, and the two
+            // signals (approval/未读 vs 定时 problems) mean the same thing to the
+            // reader — "there is something in here" (ADR-0063 §6).
+            //
+            // 叠在按钮右上角，而不是塞进按钮内容里：rail 只有 48px，塞进去会把
+            // 图标挤偏；而 zero-size 的锚点会被按钮裁掉（之前那颗点根本看不见）。
+            div()
+                .relative()
+                .child(button)
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(2.0))
+                        .right(px(2.0))
+                        .w(px(6.0))
+                        .h(px(6.0))
+                        .rounded(px(3.0))
+                        .bg(accent),
+                )
+                .into_any_element()
+        } else {
+            button.into_any_element()
+        }
+    }
+
+    /// The open schedule section's list: one line per entry, no cards.
+    ///
+    /// The sidebar is 240px wide by default; a card per entry would repeat the
+    /// name, the cron and the status in a column too narrow for any of them. The
+    /// board in the content area is where the detail lives (ADR-0063 §5); this is
+    /// the index, and clicking a line goes there.
+    fn render_schedule_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        div()
+            .id("schedule-list")
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .overflow_y_scroll()
+            .when(self.schedule_rows.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted)
+                        .child("还没有定时任务——在 config.toml 的 [schedules.<名字>] 里声明"),
+                )
+            })
+            .children(self.schedule_rows.iter().map(|row| {
+                let attention = row.hint();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .w_full()
+                    .min_h(px(30.0))
+                    .px_2()
+                    .rounded(px(6.0))
+                    .id(format!("schedule-row-{}", row.name))
+                    .cursor_pointer()
+                    .when(!row.enabled, |this| this.opacity(0.55))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(sp(BODY_SIZE))
+                            .child(row.name.clone()),
+                    )
+                    .when(attention.is_some(), |this| {
+                        this.child(
+                            Icon::new(IconName::CircleAlert)
+                                .with_size(Size::Small)
+                                .text_color(cx.theme().danger),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.view = MainView::Schedule;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            }))
+    }
+
+    /// Whether the 任务 icon should show a dot: anything on screen or behind it
+    /// wants attention (待审批 / 未读 / 后台在跑), ADR-0063 §6.
+    fn task_badge(&self) -> Option<bool> {
+        let any = !self.unread.is_empty()
+            || self.ui.turn_in_flight
+            || self
+                .dormant
+                .values()
+                .any(|dormant| dormant.running || !dormant.approvals.is_empty());
+        Some(any)
+    }
+
+    /// Whether the 定时任务 icon should show a dot: any entry that says something
+    /// is wrong (bad cron, orphaned, missed windows, failed). Same source as the
+    /// per-task hints, so the two can never disagree (ADR-0059 §3).
+    fn schedule_badge(&self) -> Option<bool> {
+        Some(
+            self.schedule_rows
+                .iter()
+                .any(|row| row.broken.is_some() || row.hint().is_some()),
+        )
+    }
+}
+
+/// What a rail icon does. A named enum keeps the click handler one closure
+/// instead of five copies of the same shape.
+#[derive(Clone, Copy)]
+enum RailAction {
+    Expand,
+    Tasks,
+    Schedule,
+    Terminal,
+    Settings,
+}
+
+/// The section-header action button, when there is one.
+#[derive(Clone, Copy)]
+enum SidebarAction {
+    NewTask,
 }

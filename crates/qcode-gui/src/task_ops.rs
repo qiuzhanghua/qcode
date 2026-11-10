@@ -1,7 +1,7 @@
 //! 任务操作的纯决策逻辑，便于在集成测试里覆盖（ADR-0058 §7）。
 
 use qcode_core::event::EventKind;
-use qcode_ui_bridge::UiEvent;
+use qcode_ui_bridge::{SessionTarget, UiEvent};
 
 /// 任务行在侧栏上显示的四种状态，顺序即优先级（ADR-0058 §7 的表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +87,22 @@ pub fn destination(
         Destination::Background
     } else {
         Destination::Draft
+    }
+}
+
+/// 视图切走时它停放到哪个槽位（`None` = 直接丢掉）。
+///
+/// 草稿没有会话 id，但「能不能停放」与 id 无关：决定它的是有没有**没发出去
+/// 的东西**。以前这里只问 `active`，草稿于是永远被丢——在草稿上点一下侧栏的
+/// 任务行（或在终端里点一下），刚打的字就没了，而且看不出是被丢了。
+///
+/// 草稿用 `SessionTarget::Draft` 当键，不是一个哨兵字符串：枚举分支既不跟
+/// 会话 id 抢值，也让「草稿」和「名叫某串字符的会话」在类型上就不相等。
+pub fn park_slot(active: Option<&str>, has_unsent_content: bool) -> Option<SessionTarget> {
+    match active {
+        Some(id) => Some(SessionTarget::Session(id.to_string())),
+        None if has_unsent_content => Some(SessionTarget::Draft),
+        None => None,
     }
 }
 

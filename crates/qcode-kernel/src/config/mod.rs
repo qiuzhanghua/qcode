@@ -126,6 +126,59 @@ pub struct Config {
     /// binary reading this file simply ignores the table.
     #[serde(default)]
     pub schedules: BTreeMap<String, ScheduleConfig>,
+    /// The built-in terminal (ADR-0062).
+    #[serde(default)]
+    pub terminal: TerminalConfig,
+}
+
+/// `[terminal]`: how `qc gui` starts its shells (ADR-0062 §10).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TerminalConfig {
+    /// Shell to run. Empty means "detect": the shell the user is actually in,
+    /// then `$SHELL`, then the passwd entry, then `/bin/sh`. A configured value
+    /// that is not on `PATH` falls back to detection rather than failing.
+    #[serde(default)]
+    pub shell: String,
+    /// Directory a new terminal starts in. Empty means "inherit": the cwd of the
+    /// terminal the user was last in, then home.
+    #[serde(default)]
+    pub start_cwd: String,
+    /// Font family for the terminal, for every script.
+    ///
+    /// Empty means "follow the app": Latin takes the code font (`[gui] code_font`)
+    /// and CJK takes the UI font, the one the composer's text uses. Both are drawn at
+    /// the composer's size, so the terminal and the transcript agree.
+    ///
+    /// A name set here overrides both halves — someone who typed a family wants it
+    /// used, not quietly split in two.
+    #[serde(default)]
+    pub font: String,
+    /// Scrollback lines kept per terminal.
+    #[serde(default = "default_terminal_scrollback")]
+    pub max_scrollback: usize,
+    /// How many terminals may be open at once.
+    #[serde(default = "default_terminal_max")]
+    pub max_terminals: usize,
+}
+
+fn default_terminal_scrollback() -> usize {
+    10_000
+}
+
+fn default_terminal_max() -> usize {
+    8
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+            start_cwd: String::new(),
+            font: String::new(),
+            max_scrollback: default_terminal_scrollback(),
+            max_terminals: default_terminal_max(),
+        }
+    }
 }
 
 fn default_version() -> u32 {
@@ -151,6 +204,7 @@ impl Default for Config {
             update: UpdateConfig::default(),
             ui: UiConfig::default(),
             schedules: BTreeMap::new(),
+            terminal: TerminalConfig::default(),
         }
     }
 }

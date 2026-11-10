@@ -14,3 +14,7 @@ cargo test -p qcode-core --test session_perf -- --ignored --nocapture
 echo
 echo "== UI state: replay / TUI open cost =="
 cargo test -p qcode-ui-state --test replay_perf -- --ignored --nocapture
+
+echo
+echo "== terminal: 8 flooding tabs, RSS and snapshot cost =="
+cargo test -p qcode-terminal --test resource_budget -- --ignored --nocapture

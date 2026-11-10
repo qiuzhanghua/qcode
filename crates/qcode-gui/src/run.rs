@@ -56,6 +56,21 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 KeyBinding::new("cmd-.", StopTurnShortcut, None),
                 KeyBinding::new("cmd-alt-up", PrevTurnShortcut, None),
                 KeyBinding::new("cmd-alt-down", NextTurnShortcut, None),
+                // Cmd+T toggles the terminal view: in, and back out again.
+                KeyBinding::new("cmd-t", OpenTerminalShortcut, None),
+                // Inside the terminal, Cmd+W closes the tab, not the window: the
+                // context-scoped binding wins over the root one.
+                KeyBinding::new("cmd-w", CloseTerminalShortcut, Some("Terminal")),
+                // Escape closes 设置. Scoped to the settings window's own key context:
+                // unbindable otherwise, since every other Escape in the app belongs to
+                // whatever has focus (a text field cancels its IME with it).
+                KeyBinding::new("escape", CloseSettingsShortcut, Some("Settings")),
+                // Only inside the terminal: everywhere else Cmd+C belongs to the
+                // text fields and the transcript.
+                KeyBinding::new("cmd-c", CopySelectionShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-c", CopySelectionShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-tab", NextTerminalShortcut, Some("Terminal")),
+                KeyBinding::new("ctrl-shift-tab", PrevTerminalShortcut, Some("Terminal")),
                 KeyBinding::new("cmd-enter", SendMessage, Some("Chat")),
                 // The focused Textarea owns the "Input" context, so bind there too
                 // or the root handler never sees Cmd+Enter.

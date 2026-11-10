@@ -132,6 +132,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "alacritty_terminal"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.13.2",
+ "home",
+ "libc",
+ "log",
+ "miow",
+ "parking_lot",
+ "piper",
+ "polling",
+ "regex-automata",
+ "rustix 1.1.5",
+ "rustix-openpty",
+ "serde",
+ "signal-hook 0.4.6",
+ "unicode-width 0.2.0",
+ "vte",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -649,6 +674,9 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "bitstream-io"
@@ -1311,7 +1339,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rustix 0.38.44",
- "signal-hook",
+ "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
 ]
@@ -1359,6 +1387,12 @@ dependencies = [
  "link-section",
  "linktime-proc-macro",
 ]
+
+[[package]]
+name = "cursor-icon"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "740bb192a8e2d1350119916954f4409ee7f62f149b536911eeb78ba5a20526bf"
 
 [[package]]
 name = "darling"
@@ -2956,9 +2990,6 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash",
-]
 
 [[package]]
 name = "hashbrown"
@@ -2993,11 +3024,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.9.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.14.5",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -3050,6 +3081,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.7",
+]
+
+[[package]]
+name = "home"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5444c27eef6923071f7ebcc33e3444508466a76f7a2b93da00ed6e19f30c1ddb"
+dependencies = [
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3803,9 +3843,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.30.1"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4131,6 +4171,15 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "miow"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "359f76430b20a79f9e20e115b3428614e654f04fab314482fc0fda0ebd3c6044"
+dependencies = [
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -5216,9 +5265,9 @@ dependencies = [
 
 [[package]]
 name = "process-wrap"
-version = "9.1.1"
+version = "10.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f95f6259ebd0640685b7cd26d635861f39208df0f89b2b61ff5cf76310fa54f6"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
 dependencies = [
  "futures",
  "indexmap",
@@ -5278,7 +5327,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qcode"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5312,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-acp"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5328,7 +5377,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-attachments"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "image",
  "serde",
@@ -5340,7 +5389,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-core"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5363,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-eval"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5372,7 +5421,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-gui"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5388,6 +5437,7 @@ dependencies = [
  "qcode-kernel",
  "qcode-mcp",
  "qcode-providers",
+ "qcode-terminal",
  "qcode-tools",
  "qcode-ui-bridge",
  "qcode-ui-state",
@@ -5403,7 +5453,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-image"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -5413,7 +5463,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-kernel"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "qcode-core",
  "qcode-mcp",
@@ -5432,7 +5482,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-mcp"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5449,7 +5499,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-net"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "qcode-core",
@@ -5466,7 +5516,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-providers"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5486,8 +5536,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-terminal"
+version = "0.8.1"
+dependencies = [
+ "alacritty_terminal",
+ "libc",
+]
+
+[[package]]
 name = "qcode-tools"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "globset",
@@ -5511,7 +5569,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tui"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "insta",
  "qcode-core",
@@ -5524,7 +5582,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-bridge"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5535,7 +5593,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-state"
-version = "0.7.9"
+version = "0.8.1"
 dependencies = [
  "qcode-attachments",
  "qcode-core",
@@ -6072,17 +6130,19 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.2.0"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
  "chrono",
  "futures",
  "indexmap",
+ "libc",
  "pin-project-lite",
  "process-wrap",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -6115,10 +6175,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusqlite"
-version = "0.32.1"
+name = "rsqlite-vfs"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.41.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -6126,6 +6195,7 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
+ "sqlite-wasm-rs",
 ]
 
 [[package]]
@@ -6250,7 +6320,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6264,6 +6334,17 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.12.1",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "rustix-openpty"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de16c7c59892b870a6336f185dc10943517f1327447096bbb7bb32cd85e2393"
+dependencies = [
+ "errno",
+ "libc",
+ "rustix 1.1.5",
 ]
 
 [[package]]
@@ -6692,6 +6773,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-mio"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6699,7 +6790,7 @@ checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio",
- "signal-hook",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]
@@ -6870,6 +6961,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "sqlite-wasm-rs"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36bd8e29bf08189a005b2df1df99823aa0861cabe9044e5f31ed54ca292ee618"
+dependencies = [
+ "cc",
+ "rsqlite-vfs",
 ]
 
 [[package]]
@@ -7896,6 +7997,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.2",
+ "cursor-icon",
+ "log",
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "waker-fn"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8742,6 +8857,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

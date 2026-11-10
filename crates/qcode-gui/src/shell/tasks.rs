@@ -4,9 +4,13 @@ impl Shell {
     pub(crate) fn refresh_tasks(&mut self) {
         // 定时任务的提示随任务一起刷新：错过的窗口、失效的条目、失败的触发都
         // 记在这里，跟着它指向的那一行显示（ADR-0059 §3）。
-        self.schedule_hints = self
-            .backend
-            .schedules()
+        //
+        // 同一份 `schedules()` 既喂任务行的提示，也喂定时视图的看板
+        // （ADR-0063 §5）：两个视图读同一份数据，提示与看板就不可能互相矛盾。
+        // 拉一次、存两份，不每帧去问 backend（那要读配置和 store）。
+        let schedules = self.backend.schedules();
+        self.schedule_rows = schedules.clone();
+        self.schedule_hints = schedules
             .iter()
             .filter_map(|schedule| {
                 let task = schedule.task.clone()?;
@@ -41,7 +45,10 @@ impl Shell {
                 unread,
             );
         }
-        if let Some(ui) = self.parked.get(task_id) {
+        if let Some(ui) = self
+            .parked
+            .get(&SessionTarget::Session(task_id.to_string()))
+        {
             return (
                 ui.app.status.running || ui.turn_in_flight,
                 ui.approvals.current().is_some() || ui.restoring.is_some(),
@@ -321,7 +328,8 @@ impl Shell {
         self.unread.remove(task_id);
         // 被删任务的停放视图（以及没打开过时留下的状态）已经没有回去的地方
         // 了；不清理的话它（连同转录和输入框实体）会一直留在内存里。
-        self.parked.remove(task_id);
+        self.parked
+            .remove(&SessionTarget::Session(task_id.to_string()));
         self.dormant.remove(task_id);
         let was_active = self.active.as_deref() == Some(task_id);
         self.refresh_tasks();

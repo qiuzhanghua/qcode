@@ -763,6 +763,7 @@ fn schedule(name: &str, task: Option<&str>, prompt: &str) -> qcode_core::schedul
     qcode_core::schedule::Schedule {
         name: name.to_string(),
         cron: qcode_core::schedule::CronSpec::parse("* * * * *").expect("every minute"),
+        cron_text: "* * * * *".to_string(),
         task: task.map(str::to_string),
         prompt: prompt.to_string(),
         overlap: qcode_core::schedule::Overlap::Queue,
@@ -848,4 +849,84 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
         "an orphaned entry must not create a turn"
     );
     let _ = backend.try_recv();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
+    // ADR-0062's load-bearing claim: terminal I/O never runs on the runtime that
+    // drives the beat. `yes` on a PTY generates output as fast as the CPU allows.
+    //
+    // The engine already has its own thread (`runtime.rs::spawn` builds a
+    // current-thread runtime there), so this cannot fail as long as the terminal
+    // stays off it — which is the point: the mistake ADR-0062 warns about is
+    // wiring the terminal's pump *onto* that runtime, and that would show up here
+    // as a beat that stops landing.
+    //
+    // The bound below was checked by mutation: inserting a 4 s busy-wait into the
+    // beat arm of `runtime.rs` makes this test fail at the status assertion, so
+    // it is measuring the beat and not just happening to pass.
+    use qcode_terminal::{Session, SessionConfig};
+
+    let flood = Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "yes qcode-flood".to_string()],
+    ))
+    .expect("start a flooding terminal");
+    let flood_events = flood.events();
+
+    // Same shape as the test above: a schedule whose task was deleted.
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path().to_path_buf());
+    let store_for_check = store.clone();
+    upcoming(&store, "orphan", 1);
+    let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
+    engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
+    engine.schedule_tick = Some(Duration::from_secs(1));
+    let mut backend = LocalBackend::new(engine);
+
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(15);
+    let mut status = None;
+    while Instant::now() < deadline && status.is_none() {
+        status = store_for_check
+            .schedule_states()
+            .ok()
+            .and_then(|states| states.get("orphan").cloned())
+            .and_then(|state| state.last_status);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let decided_after = start.elapsed();
+    let wakeups_during = flood_events.wakeups();
+
+    assert_eq!(
+        status,
+        Some(qcode_core::schedule::ScheduleStatus::Orphaned),
+        "the beat never decided the orphan while a terminal was flooding"
+    );
+
+    // Without this the test would pass on a machine where the flood never
+    // started: nothing was competing, so nothing was proven.
+    assert!(
+        wakeups_during > 10,
+        "the flooding terminal produced only {wakeups_during} wakeups; \
+         it was not actually loading the machine"
+    );
+    assert!(
+        flood.with_view(|view| view.text().contains("qcode-flood")),
+        "the flood's output never reached its grid"
+    );
+
+    // A beat that starves shows up as a decision that takes many beats. The beat
+    // is 1s and the scheduler tolerates a 3s gap before treating it as "away",
+    // so one missed beat is allowed and a starved loop is not.
+    assert!(
+        decided_after < Duration::from_secs(6),
+        "the orphan took {decided_after:?} to be decided while a terminal was \
+         flooding; the terminal is competing with the beat"
+    );
+
+    let _ = backend.try_recv();
+    flood.close();
 }

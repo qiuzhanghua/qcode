@@ -1,0 +1,952 @@
+//! A live terminal session: a child process on a PTY, and the threads that drive it.
+//!
+//! ADR-0062 requires that terminal I/O never runs on the runtime that drives tasks
+//! and scheduled ticks. That is what this module is for: `spawn` starts a child on a
+//! PTY and hands the reading and parsing to a dedicated thread, so a `yes` flood
+//! cannot delay a scheduled beat.
+//!
+//! # Why the reading loop is ours
+//!
+//! The first version used `alacritty_terminal`'s `EventLoop` for the reading, on the
+//! theory that its `SIGCHLD` and `EIO` handling were worth reusing. It has a
+//! data-loss bug a user hits:
+//!
+//! ```text
+//! loop {
+//!     read(pty)                          // got bytes
+//!     match terminal.try_lock_unfair() {  // a renderer holds it every frame
+//!         None => continue,               //   -> re-read instead of waiting
+//!     }
+//!     parse(bytes)                        // only reached with the lock
+//! }
+//! ```
+//!
+//! When the child then exits, the next `read` fails with `EIO` and the loop returns
+//! *with the bytes still unparsed*; the `drain_on_exit` read afterwards finds an
+//! empty pipe. Measured before this rewrite: 166 of 200 sessions lost the output of
+//! a command that finished while the grid was being read — which is what happens
+//! when you run `make` and switch windows. So the loop is ours now:
+//!
+//! - the reading thread owns the terminal and **blocks** for the lock; it never
+//!   re-reads to dodge contention, so bytes it has taken from the pty always reach
+//!   the parser;
+//! - the writing thread owns a separate fd, so typing never waits for the parser
+//!   and a program that stops reading its input cannot block the frame callback;
+//! - child exit is reported by the level-triggered `SIGCHLD` stream that
+//!   `alacritty_terminal` already sets up race-free in `tty::new`.
+//!
+//! What is still reused is the hard part: `tty::new` (session creation, `setsid`,
+//! controlling terminal, `ConPTY` on Windows) and the `Term` state machine.
+//!
+//! # Locking
+//!
+//! One lock matters: `FairMutex<Term>` — the parser blocks on it, readers (the GUI)
+//! hold it while copying out a frame. It is never held across a pty read or write.
+//! The pty handles have their own locks on Windows, and never both at once, so
+//! there is no lock ordering to get wrong.
+
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use alacritty_terminal::event::{EventListener, WindowSize};
+use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::{Config, Osc52, Term};
+use alacritty_terminal::tty::{self, EventedPty, Options, Shell};
+// `reader`/`writer` live on this trait, not on `Pty` itself. Only the Windows arms
+// call them (a Unix pty master is an fd), so without this import the crate simply
+// does not compile for Windows.
+#[cfg(windows)]
+use alacritty_terminal::tty::EventedReadWrite;
+use alacritty_terminal::vte::ansi::{Processor, Rgb};
+
+use crate::screen::{Events, Size, View};
+
+/// How much a single `read` takes from the pty.
+const READ_BUFFER: usize = 8 * 1024;
+
+/// How long an idle reading thread waits before looking at its stop flag again.
+const POLL_INTERVAL: Duration = Duration::from_millis(4);
+
+/// How long `close` waits for a thread before giving up on it.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the reading thread keeps looking for the child's exit once the session
+/// is closing. `close` signals the group first, so the exit is normally immediate;
+/// this is the bound on a child that is slow to die, and it must stay below
+/// `JOIN_TIMEOUT` so a stuck exit is reported as "no code" rather than as a hang.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+/// How to start a session.
+pub struct SessionConfig {
+    pub columns: usize,
+    pub screen_lines: usize,
+    /// History lines, not visible lines.
+    pub scrollback: usize,
+    /// The program and its arguments. `None` uses the platform default shell.
+    pub shell: Option<(String, Vec<String>)>,
+    pub cwd: Option<PathBuf>,
+    /// Extra environment variables, on top of the inherited ones.
+    pub env: Vec<(String, String)>,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            columns: 80,
+            screen_lines: 24,
+            scrollback: 10_000,
+            shell: None,
+            cwd: None,
+            env: Vec::new(),
+        }
+    }
+}
+
+impl SessionConfig {
+    /// Run one command instead of a shell.
+    ///
+    /// The tests use this to get deterministic output out of a real pty without
+    /// depending on the user's shell configuration.
+    pub fn command(program: impl Into<String>, args: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            shell: Some((program.into(), args.into_iter().collect())),
+            ..Self::default()
+        }
+    }
+}
+
+/// The size the pty and the grid are told about, in cells.
+///
+/// `cell_width` / `cell_height` are pixels. Zero means "unknown": the grid lays cells
+/// out in logical units, so inventing a pixel size would tell the program something
+/// false about how its output will look.
+fn window_size(columns: usize, screen_lines: usize) -> WindowSize {
+    WindowSize {
+        num_lines: screen_lines as u16,
+        num_cols: columns as u16,
+        cell_width: 0,
+        cell_height: 0,
+    }
+}
+
+/// The reading side of the pty.
+///
+/// Unix: the pty itself (for `SIGCHLD`) plus a dup of its fd to read from. Windows:
+/// the pty behind a lock, because `ConPTY` hands out `&mut` reader/writer accessors
+/// and cannot be split by cloning a handle. Both are non-blocking, so the lock is
+/// never held across a wait.
+#[cfg(unix)]
+struct ReaderEnd {
+    pty: tty::Pty,
+    file: std::fs::File,
+}
+
+/// The writing side of the pty: its own fd, so a write never queues behind a read.
+#[cfg(unix)]
+struct WriterEnd {
+    file: std::fs::File,
+}
+
+#[cfg(windows)]
+type ReaderEnd = Arc<Mutex<Option<tty::Pty>>>;
+#[cfg(windows)]
+type WriterEnd = Arc<Mutex<Option<tty::Pty>>>;
+
+/// Read once from the pty. `WouldBlock` means nothing is pending.
+fn read_pty(end: &mut ReaderEnd, buffer: &mut [u8]) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        end.file.read(buffer)
+    }
+    #[cfg(windows)]
+    {
+        let mut guard = end.lock().expect("pty lock");
+        let Some(pty) = guard.as_mut() else {
+            return Ok(0);
+        };
+        pty.reader().read(buffer)
+    }
+}
+
+/// One write attempt to the pty; returns how many bytes were accepted.
+///
+/// A single `write`, not `write_all`: the caller has to see `WouldBlock` to tell "the
+/// buffer is momentarily full" from "the session is over".
+fn write_pty(end: &mut WriterEnd, bytes: &[u8]) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        end.file.write(bytes)
+    }
+    #[cfg(windows)]
+    {
+        let mut guard = end.lock().expect("pty lock");
+        let Some(pty) = guard.as_mut() else {
+            return Ok(0);
+        };
+        // Buffered (`UnblockedWriter` drains it on its own thread), so this does not
+        // wait for the child to read.
+        pty.writer().write(bytes)
+    }
+}
+
+/// Write all of `bytes`, waiting out a full input buffer. `false` means give up.
+///
+/// The pty master is opened `O_NONBLOCK` (by `tty::new`), so a write to a program that
+/// is not reading *yet* fails with `WouldBlock` rather than blocking. Treating that as
+/// fatal — which is what this did at first — is far worse than it sounds: the writing
+/// thread exits, its channel receiver drops, and every later `Session::write` returns
+/// `false`. The user pastes something large into `vim` while it is busy, and from then
+/// on **typing does nothing at all**, silently.
+///
+/// So `WouldBlock` is waited out instead: the bytes stay pending here, the queue grows
+/// if a paste is still arriving, and `Session::write` stays non-blocking for the
+/// caller. Only a real error ends the thread.
+fn write_all_waiting(end: &mut WriterEnd, bytes: &[u8], stopped: &AtomicBool) -> bool {
+    const FULL_BUFFER_RETRY: Duration = Duration::from_millis(1);
+
+    let mut written = 0;
+    while written < bytes.len() {
+        if stopped.load(Ordering::SeqCst) {
+            return false;
+        }
+        match write_pty(end, &bytes[written..]) {
+            Ok(0) => {
+                // A pty that accepts nothing is gone; another attempt would spin.
+                return false;
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(FULL_BUFFER_RETRY);
+            }
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Apply a new size to the pty, which makes the kernel send `SIGWINCH`.
+fn resize_pty(end: &mut WriterEnd, size: WindowSize) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        // The same `TIOCSWINSZ` that `OnResize` performs, done on this fd because the
+        // pty itself belongs to the reading thread. It is the same terminal, so the
+        // effect is identical.
+        let winsize = alacritty_terminal::tty::ToWinsize::to_winsize(size);
+        let result = unsafe {
+            libc::ioctl(
+                std::os::fd::AsRawFd::as_raw_fd(&end.file),
+                libc::TIOCSWINSZ,
+                &winsize as *const _,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let mut guard = end.lock().expect("pty lock");
+        let Some(pty) = guard.as_mut() else {
+            return Ok(());
+        };
+        alacritty_terminal::event::OnResize::on_resize(pty, size);
+        Ok(())
+    }
+}
+
+/// Poll for the child's exit. Level-triggered: safe to call in a loop.
+fn child_exited(end: &mut ReaderEnd) -> Option<std::process::ExitStatus> {
+    #[cfg(unix)]
+    {
+        match end.pty.next_child_event() {
+            Some(tty::ChildEvent::Exited(status)) => status,
+            None => None,
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut guard = end.lock().expect("pty lock");
+        // `?` would return from the function, which is what `None` means here.
+        let pty = guard.as_mut()?;
+        match pty.next_child_event() {
+            Some(tty::ChildEvent::Exited(status)) => status,
+            None => None,
+        }
+    }
+}
+
+/// A child process on a pty, with the threads that read it and write to it.
+pub struct Session {
+    term: Arc<FairMutex<Term<Events>>>,
+    events: Events,
+    writer: Sender<WriterMessage>,
+    /// Set on close; the threads read it instead of being killed, so a blocked
+    /// syscall is not torn in half.
+    stopped: Arc<AtomicBool>,
+    reader: Option<JoinHandle<()>>,
+    writer_thread: Option<JoinHandle<()>>,
+    /// Held only on Windows, where the writer thread needs the pty the reader owns.
+    #[cfg(windows)]
+    pty: WriterEnd,
+    pid: u32,
+    columns: usize,
+    screen_lines: usize,
+}
+
+enum WriterMessage {
+    Bytes(Vec<u8>),
+    Resize(WindowSize),
+    Stop,
+}
+
+/// How many times a pty allocation is retried before the error is reported.
+const PTY_ATTEMPTS: u32 = 10;
+
+/// Allocate the pty, retrying the transient failures.
+///
+/// Opening a pty is not always reliable under load: macOS answers `ENXIO` when the
+/// clone cannot be allocated, and the test suite hits it with 28 sessions starting
+/// at once. Nothing has been spawned before this call, so a retry costs only the
+/// microseconds in between — and a user opening several tabs quickly should not see
+/// a tab fail to start for a reason that fixes itself.
+fn new_pty(options: &Options, window_size: WindowSize) -> io::Result<tty::Pty> {
+    let mut attempt = 0;
+    loop {
+        match tty::new(options, window_size, 0) {
+            Ok(pty) => return Ok(pty),
+            Err(error) if attempt + 1 < PTY_ATTEMPTS && is_transient(&error) => {
+                // Exponential from 5 ms: a machine allocating ptys in a tight loop
+                // needs longer than a fixed 5 ms gap, and ten attempts cap the wait
+                // at ~2.5 s — still inside a user's patience for a new tab.
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(5 << (attempt - 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// `ENXIO` is the macOS pty clone failure; `EAGAIN`/`EMFILE`/`ENFILE` are the
+/// out-of-resources answers that clear on their own.
+///
+/// `raw_os_error` can come back negative: the pty layer hands up `nix`'s error
+/// verbatim, and macOS answers `-6` for `ENXIO`, so compare on the magnitude —
+/// matching only `6` silently disabled the retry.
+fn is_transient(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error().map(i32::abs),
+        Some(6) | Some(11) | Some(23) | Some(24)
+    )
+}
+
+impl Session {
+    /// Start the child, the reading thread and the writing thread.
+    pub fn spawn(config: SessionConfig) -> io::Result<Self> {
+        let columns = config.columns;
+        let screen_lines = config.screen_lines;
+
+        let events = Events::default();
+        let term = Arc::new(FairMutex::new(Term::new(
+            Config {
+                scrolling_history: config.scrollback,
+                // Same reason as `Screen::new`: `OSC 52` copy and paste both have
+                // to reach the app, which owns the real clipboard.
+                osc52: Osc52::CopyPaste,
+                ..Config::default()
+            },
+            &Size {
+                columns,
+                screen_lines,
+            },
+            events.clone(),
+        )));
+
+        // `SHELL` in the child has to name the shell we are about to run: tools
+        // inside the terminal (nested shells, `$SHELL`-aware scripts) read it, and
+        // inheriting the launcher's value would keep the wrong answer alive.
+        let shell_program = config.shell.as_ref().map(|(program, _)| program.clone());
+        let mut env: std::collections::HashMap<String, String> = config.env.into_iter().collect();
+        if let Some(program) = shell_program {
+            env.entry("SHELL".to_string()).or_insert(program);
+        }
+
+        let options = Options {
+            shell: config
+                .shell
+                .map(|(program, args)| Shell::new(program, args)),
+            working_directory: config.cwd,
+            // Nothing reads this: it configured `alacritty`'s reading loop, which this
+            // module replaced. It stays because `Options` has no default for it.
+            drain_on_exit: false,
+            env,
+            #[cfg(target_os = "windows")]
+            escape_args: false,
+        };
+
+        // Window id 0: nothing registers this terminal with a windowing system.
+        let pty = new_pty(&options, window_size(columns, screen_lines))?;
+        // `Pty` exposes the child differently per platform: a `std::process::Child` on
+        // Unix, a watcher carrying an optional pid on Windows. Either way this is only
+        // for thread names and `Session::pid`, so 0 ("unknown") is an acceptable
+        // Windows answer rather than a reason to fail a spawn.
+        #[cfg(unix)]
+        let pid = pty.child().id();
+        #[cfg(windows)]
+        let pid = pty.child_watcher().pid().map(|pid| pid.get()).unwrap_or(0);
+
+        #[cfg(unix)]
+        let (reader_end, writer_end) = {
+            // Both dups are taken before the pty moves into the reading thread.
+            let reader_file = pty.file().try_clone()?;
+            let writer_file = pty.file().try_clone()?;
+            (
+                ReaderEnd {
+                    pty,
+                    file: reader_file,
+                },
+                WriterEnd { file: writer_file },
+            )
+        };
+
+        #[cfg(windows)]
+        let (reader_end, writer_end, session_pty) = {
+            let pty = Arc::new(Mutex::new(Some(pty)));
+            (pty.clone(), pty.clone(), pty)
+        };
+
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (writer, writer_rx) = mpsc::channel();
+
+        let mut reader_end = reader_end;
+        let reader = {
+            let term = term.clone();
+            let events = events.clone();
+            let stopped = stopped.clone();
+            std::thread::Builder::new()
+                .name(format!("pty-read-{pid}"))
+                .spawn(move || {
+                    read_loop(&mut reader_end, &term, &events, &stopped);
+                })?
+        };
+
+        let writer_thread = {
+            let mut writer_end = writer_end;
+            let stopped = stopped.clone();
+            std::thread::Builder::new()
+                .name(format!("pty-write-{pid}"))
+                .spawn(move || {
+                    write_loop(&mut writer_end, writer_rx, &stopped);
+                })?
+        };
+
+        Ok(Self {
+            term,
+            events,
+            writer,
+            stopped,
+            reader: Some(reader),
+            writer_thread: Some(writer_thread),
+            #[cfg(windows)]
+            pty: session_pty,
+            pid,
+            columns,
+            screen_lines,
+        })
+    }
+
+    /// The child's process id.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    pub fn events(&self) -> Events {
+        self.events.clone()
+    }
+
+    /// Send keystrokes (or a paste) to the child.
+    ///
+    /// Asynchronous by design: the bytes are queued for the writing thread, so a
+    /// program that stops reading its input cannot block the caller — which in the
+    /// GUI is the frame callback. `false` means the session is gone.
+    pub fn write(&self, bytes: impl Into<Vec<u8>>) -> bool {
+        self.writer.send(WriterMessage::Bytes(bytes.into())).is_ok()
+    }
+
+    /// Resize the child's terminal and the grid.
+    ///
+    /// Both halves are needed and neither implies the other: `TIOCSWINSZ` (hence
+    /// `SIGWINCH`) tells the child, and the `Term` has to be resized here so the grid
+    /// matches what the child believes it has.
+    pub fn resize(&mut self, columns: usize, screen_lines: usize) -> bool {
+        self.columns = columns;
+        self.screen_lines = screen_lines;
+        self.term.lock().resize(Size {
+            columns,
+            screen_lines,
+        });
+        self.writer
+            .send(WriterMessage::Resize(window_size(columns, screen_lines)))
+            .is_ok()
+    }
+
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    pub fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+
+    /// Read the grid, holding the terminal lock for the duration of `read`.
+    ///
+    /// A closure rather than a returned guard: this is the lock the parser blocks
+    /// on, so it must be held only long enough to copy out what is needed. A guard
+    /// can be stored and held across a repaint (or a future), which stalls the
+    /// child's output for a whole frame; a closure cannot be returned, so the borrow
+    /// ends where it should.
+    pub fn with_view<R>(&self, read: impl FnOnce(&View<'_>) -> R) -> R {
+        let term = self.term.lock();
+        read(&View::new(&term))
+    }
+
+    /// Change the terminal state under the same lock `with_view` takes.
+    fn with_term<R>(&self, change: impl FnOnce(&mut Term<Events>) -> R) -> R {
+        let mut term = self.term.lock();
+        change(&mut term)
+    }
+
+    /// Answer the colour queries the child asked, and send the reply.
+    ///
+    /// Returns the bytes written, empty when nothing was asked. A program that queries
+    /// the palette on startup (vim, tmux) waits for this; staying silent makes it
+    /// guess a colour scheme that will not match the window.
+    pub fn answer_colours(&self, foreground: Rgb, background: Rgb) -> String {
+        let reply = self.events.answer_colours(foreground, background);
+        if !reply.is_empty() {
+            self.write(reply.as_bytes());
+        }
+        reply
+    }
+
+    /// Scroll the view back through history. Negative moves towards the live screen.
+    ///
+    /// The scroll is a *view* position, not a change to the grid: new output keeps
+    /// arriving underneath, and [`Session::scroll_to_bottom`] returns to it.
+    pub fn scroll(&self, lines: i32) {
+        self.with_term(|term| term.scroll_display(Scroll::Delta(lines)));
+    }
+
+    /// Jump back to the live screen.
+    pub fn scroll_to_bottom(&self) {
+        self.with_term(|term| term.scroll_display(Scroll::Bottom));
+    }
+
+    /// The child's exit code, or `None` if it was killed by a signal — or has not
+    /// exited at all. [`Events::child_exited`] tells the two apart.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.events.exit_code()
+    }
+
+    /// Whether the child has exited.
+    pub fn has_exited(&self) -> bool {
+        self.events.child_exited()
+    }
+
+    /// Stop the session and return the exit code if there was one.
+    ///
+    /// More than dropping the pty. `alacritty`'s `Pty::drop` sends `SIGHUP` to the
+    /// direct child only, which leaves whatever that child forked — a foreground
+    /// `sleep`, a pipeline, a `vim` — running as an orphan reparented to init. A
+    /// terminal that leaks a process tree per closed tab is a bug the user cannot
+    /// see, so the whole process group is signalled first.
+    ///
+    /// The group signal happens *before* joining, while the child is still
+    /// unreaped: once it is reaped the pid can be recycled, and `killpg` on a
+    /// recycled pid would signal an unrelated process.
+    pub fn close(mut self) -> Option<i32> {
+        self.close_inner();
+        self.events.exit_code()
+    }
+
+    fn close_inner(&mut self) {
+        // Only signal a group whose leader is still alive. If the child already
+        // exited its pid is free for reuse, so `killpg` on that number could hit an
+        // unrelated process. Nothing is leaked by skipping: `tty::new` calls
+        // `setsid`, so the child is a session leader, and when a session leader exits
+        // the kernel sends `SIGHUP` to the foreground process group of its
+        // controlling terminal — which is what takes down its background jobs.
+        if !self.has_exited() {
+            kill_process_group(self.pid);
+        }
+
+        self.stopped.store(true, Ordering::SeqCst);
+        let _ = self.writer.send(WriterMessage::Stop);
+
+        if let Some(thread) = self.reader.take() {
+            join_with_timeout(thread, JOIN_TIMEOUT);
+        }
+        if let Some(thread) = self.writer_thread.take() {
+            join_with_timeout(thread, JOIN_TIMEOUT);
+        }
+
+        #[cfg(windows)]
+        {
+            // Drop the pty while the session still owns it.
+            if let Ok(mut guard) = self.pty.lock() {
+                guard.take();
+            }
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.close_inner();
+    }
+}
+
+/// How long a `SIGHUP` gets before the escalation to `SIGKILL`.
+///
+/// Long enough for a well-behaved tree to die and short enough that closing a tab
+/// still feels instant.
+#[cfg(unix)]
+const HANGUP_GRACE: Duration = Duration::from_millis(100);
+
+/// How long the wait after `SIGKILL` is allowed to take.
+///
+/// `SIGKILL` cannot be caught, so a process sent it *will* die; the wait is for the
+/// kernel to finish tearing it down. Returning on the signal alone would make
+/// `close()` mean "the signals were sent" rather than "the process tree is gone", and
+/// a caller that checked right afterwards would see a ghost.
+#[cfg(unix)]
+const KILL_GRACE: Duration = Duration::from_millis(200);
+
+/// Send `SIGHUP`, give the group a moment, then `SIGKILL` whatever is left — and
+/// return only once the group is actually gone.
+///
+/// The escalation is the point: a shell that traps `HUP` (or a program that ignores
+/// it) would otherwise survive a polite close, and a stuck tab would become a
+/// permanent process. Waiting for the group to empty afterwards is what lets
+/// `close()` promise that a closed tab has left nothing running; without it, "closed"
+/// would only mean "signalled".
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let pid = pid as libc::pid_t;
+    // `killpg`, not `kill`: `tty::new` calls `setsid`, so the child leads its own
+    // process group and the group id equals its pid — and the group is where the
+    // orphans are.
+    let sent = unsafe { libc::killpg(pid, libc::SIGHUP) };
+    if sent != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+        // The group lookup failed for another reason; signal the child directly so
+        // that at least the direct child goes away.
+        unsafe {
+            libc::kill(pid, libc::SIGHUP);
+        }
+    }
+
+    if wait_until_group_gone(pid, HANGUP_GRACE) {
+        return;
+    }
+
+    unsafe {
+        libc::killpg(pid, libc::SIGKILL);
+    }
+
+    // Bounded, so that a process stuck in uninterruptible sleep — which `SIGKILL`
+    // cannot end either — cannot hang the window.
+    wait_until_group_gone(pid, KILL_GRACE);
+}
+
+/// Wait up to `grace` for the group to disappear. `true` if it did.
+#[cfg(unix)]
+fn wait_until_group_gone(pid: libc::pid_t, grace: Duration) -> bool {
+    const STEP: Duration = Duration::from_millis(2);
+
+    let start = Instant::now();
+    loop {
+        if !process_group_exists(pid) {
+            return true;
+        }
+        if start.elapsed() >= grace {
+            return false;
+        }
+        std::thread::sleep(STEP);
+    }
+}
+
+/// Whether any process is left in the group.
+#[cfg(unix)]
+fn process_group_exists(pid: libc::pid_t) -> bool {
+    // Signal 0 checks for existence without delivering anything.
+    unsafe { libc::killpg(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {
+    // Windows has no process groups to signal; a job object is the equivalent and is
+    // v2 work (ADR-0062: v1 is macOS + Linux). `Pty::drop` still terminates the
+    // direct child.
+}
+
+/// Wait for a thread without risking the caller forever.
+///
+/// `JoinHandle` has no timeout, and a thread stuck in a syscall must not hold the
+/// window open. A leaked thread holds only its own state — its fd is closed when the
+/// pty is dropped, which makes its next `read` fail and the thread exit on its own.
+fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if handle.is_finished() {
+            let _ = handle.join();
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+/// Read, parse, report the exit — once.
+///
+/// The terminal lock is taken with a *blocking* `lock()`, never `try_lock` plus a
+/// retry: contention must delay parsing, never discard what was read. That retry is
+/// the bug this function replaced.
+fn read_loop(
+    end: &mut ReaderEnd,
+    term: &Arc<FairMutex<Term<Events>>>,
+    events: &Events,
+    stopped: &AtomicBool,
+) {
+    let mut parser = Processor::new();
+    let mut buffer = vec![0u8; READ_BUFFER];
+
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            // The session is closing. Anything the child wrote before it died is
+            // still owed to the grid, and so is the exit itself: `close()` returns
+            // the exit code, and a tab that reports "still running" after being
+            // killed would look alive forever. So drain and wait out the exit
+            // instead of just breaking.
+            let deadline = Instant::now() + SHUTDOWN_GRACE;
+            loop {
+                pump(end, &mut parser, term, events, &mut buffer, stopped);
+                if let Some(status) = child_exited(end) {
+                    pump(end, &mut parser, term, events, &mut buffer, stopped);
+                    term.lock().exit();
+                    events.send_event(alacritty_terminal::event::Event::ChildExit(status));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            break;
+        }
+
+        // Checked before the read so the exit is never reported ahead of the bytes
+        // that preceded it.
+        let exit_status = child_exited(end);
+
+        let read_anything = pump(end, &mut parser, term, events, &mut buffer, stopped);
+
+        match exit_status {
+            Some(status) => {
+                // One more pass: the child's last write and its exit can be seen in
+                // either order, and losing that tail is exactly the bug above.
+                pump(end, &mut parser, term, events, &mut buffer, stopped);
+                term.lock().exit();
+                events.send_event(alacritty_terminal::event::Event::ChildExit(status));
+                break;
+            }
+            None if !read_anything => std::thread::sleep(POLL_INTERVAL),
+            None => {}
+        }
+    }
+}
+
+/// How many reads one `pump` will do before handing control back to the loop.
+///
+/// Without a budget a flooding program keeps the pty non-empty forever and `pump`
+/// never returns — which means the exit is never noticed, `stopped` is never seen, and
+/// the tab cannot be closed. The exact number does not matter; it has to be finite.
+const PUMP_BUDGET: usize = 64;
+
+/// Read and parse until the pty has nothing pending or the budget runs out.
+///
+/// Signals a wakeup per read, not once at the end: a flooding program never lets this
+/// return, and a single wakeup afterwards would mean the grid is updated with nobody
+/// told to repaint — a `yes` that prints nothing.
+fn pump(
+    end: &mut ReaderEnd,
+    parser: &mut Processor,
+    term: &Arc<FairMutex<Term<Events>>>,
+    events: &Events,
+    buffer: &mut [u8],
+    stopped: &AtomicBool,
+) -> bool {
+    let mut read_anything = false;
+
+    for _ in 0..PUMP_BUDGET {
+        if stopped.load(Ordering::SeqCst) && read_anything {
+            // Closing: take what is there, then let the loop report the exit.
+            break;
+        }
+
+        match read_pty(end, buffer) {
+            // `EIO` on a pty whose child is gone is the normal end, not an error:
+            // what was read so far is already parsed, and the loop above reports the
+            // exit. `Ok(0)` is the same situation seen from the other side.
+            Ok(0) => break,
+            Ok(count) => {
+                read_anything = true;
+                // Blocking on purpose. See `read_loop`.
+                let mut terminal = term.lock();
+                parser.advance(&mut *terminal, &buffer[..count]);
+                drop(terminal);
+                // Per read, so a flood is visible frame by frame instead of never.
+                events.send_event(alacritty_terminal::event::Event::Wakeup);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+
+    read_anything
+}
+
+/// Write queued bytes and apply resizes, off the caller's thread.
+fn write_loop(end: &mut WriterEnd, messages: Receiver<WriterMessage>, stopped: &AtomicBool) {
+    loop {
+        let Ok(message) = messages.recv() else {
+            return;
+        };
+        if !apply(end, message, stopped) {
+            return;
+        }
+        // Apply whatever queued up while this thread was busy, so a paste does not go
+        // out one message per wakeup. A burst of resizes only needs its last state.
+        loop {
+            match messages.try_recv() {
+                Ok(next) => {
+                    if !apply(end, next, stopped) {
+                        return;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        }
+    }
+}
+
+/// Perform one queued operation. `false` means the session is over.
+fn apply(end: &mut WriterEnd, message: WriterMessage, stopped: &AtomicBool) -> bool {
+    match message {
+        WriterMessage::Bytes(bytes) => {
+            // A program that stops reading its input fills the pty buffer; the wait
+            // happens *here*, off the frame callback, and it is a wait rather than a
+            // failure so that typing still works afterwards.
+            write_all_waiting(end, &bytes, stopped)
+        }
+        WriterMessage::Resize(size) => {
+            // A failure means the pty is gone; the reading thread notices too.
+            let _ = resize_pty(end, size);
+            true
+        }
+        WriterMessage::Stop => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Every case here drives a writer thread through a file standing in for the pty;
+    // a Windows `WriterEnd` is a ConPTY handle, so there is nothing to import there.
+    #[cfg(unix)]
+    use super::*;
+
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_writer_thread_ends_on_its_own() {
+        // The writer holds an fd on the pty; if it outlived the session the pty would
+        // never report EOF and the reading thread would never finish.
+        let (sender, receiver) = mpsc::channel();
+        let file = std::fs::File::create(
+            std::env::temp_dir().join(format!("qcode-terminal-writer-{}", std::process::id())),
+        )
+        .expect("temp file");
+        let mut end = WriterEnd { file };
+
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
+        drop(sender);
+
+        assert!(
+            join_with_timeout(handle, Duration::from_secs(2)),
+            "the writer did not exit after its channel closed"
+        );
+    }
+
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_message_ends_the_writer_before_the_channel_closes() {
+        let (sender, receiver) = mpsc::channel();
+        let file = std::fs::File::create(
+            std::env::temp_dir().join(format!("qcode-terminal-writer-stop-{}", std::process::id())),
+        )
+        .expect("temp file");
+        let mut end = WriterEnd { file };
+
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
+        sender.send(WriterMessage::Stop).expect("send");
+
+        assert!(
+            join_with_timeout(handle, Duration::from_secs(2)),
+            "the writer ignored the stop message"
+        );
+    }
+
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
+    #[test]
+    fn a_full_queue_is_drained_in_order() {
+        // Coalescing must not reorder bytes: a smuggled reorder would corrupt input
+        // in a way that is very hard to see in a test that only checks "it arrived".
+        let (sender, receiver) = mpsc::channel();
+        let path = std::env::temp_dir().join(format!(
+            "qcode-terminal-writer-order-{}",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).expect("temp file");
+        let mut end = WriterEnd { file };
+
+        for byte in b"abcdef" {
+            sender
+                .send(WriterMessage::Bytes(vec![*byte]))
+                .expect("send");
+        }
+        sender.send(WriterMessage::Stop).expect("send");
+
+        let stopped = AtomicBool::new(false);
+        let handle = std::thread::spawn(move || write_loop(&mut end, receiver, &stopped));
+        assert!(join_with_timeout(handle, Duration::from_secs(2)));
+
+        let written = std::fs::read(&path).expect("read back");
+        assert_eq!(written, b"abcdef");
+        let _ = std::fs::remove_file(&path);
+    }
+}

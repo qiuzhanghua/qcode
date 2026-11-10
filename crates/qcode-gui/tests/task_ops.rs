@@ -4,9 +4,9 @@ use qcode_core::event::{
     AssistantMessage, Event, EventKind, ToolCall, TurnEnded, TurnStarted, TurnStatus,
 };
 use qcode_gui::task_ops::{
-    Destination, TaskState, destination, edit_must_wait, marks_unread, task_state,
+    Destination, TaskState, destination, edit_must_wait, marks_unread, park_slot, task_state,
 };
-use qcode_ui_bridge::{ApprovalView, UiEvent};
+use qcode_ui_bridge::{ApprovalView, SessionTarget, UiEvent};
 
 fn event(kind: EventKind) -> UiEvent {
     UiEvent::Event(Event::new(1, "s", 1, kind))
@@ -136,4 +136,41 @@ fn a_parked_session_keeps_its_own_view() {
 fn a_draft_event_with_no_session_has_nowhere_to_go() {
     let delta = UiEvent::Delta(qcode_core::engine::Delta::Text("partial".to_string()));
     assert_eq!(destination(&delta, false, false, false), Destination::Draft);
+}
+
+/// 有内容的草稿必须能停放（ADR-0058 §4 的回归）。
+///
+/// 原来 `park_and_clear` 只问 `active`：草稿没有会话 id，于是每次切任务都
+/// 直接丢掉刚打的字。用户看到的是「点了一下侧栏，输入框空了」。
+#[test]
+fn an_unsent_draft_parks_instead_of_being_dropped() {
+    assert_eq!(
+        park_slot(None, true),
+        Some(SessionTarget::Draft),
+        "a draft with typed text has somewhere to go: its own slot"
+    );
+}
+
+/// 空草稿照旧丢掉：留着它只会让下一次 `+` 装回一个空输入框，而不是建任务。
+#[test]
+fn an_empty_draft_is_still_dropped() {
+    assert_eq!(park_slot(None, false), None);
+}
+
+/// 真任务不看有没有内容：它的键是会话 id，内容归它自己的视图。
+#[test]
+fn a_session_parks_under_its_id_even_with_an_empty_composer() {
+    assert_eq!(
+        park_slot(Some("01J8ZK"), false),
+        Some(SessionTarget::Session("01J8ZK".to_string()))
+    );
+}
+
+/// 草稿键不是哨兵字符串：一个真名叫 `"draft"` 的会话必须落在另一个槽位上，
+/// 否则它的视图和草稿会互相覆盖。
+#[test]
+fn a_session_named_draft_does_not_share_the_draft_slot() {
+    let session = park_slot(Some("draft"), false);
+    assert_eq!(session, Some(SessionTarget::Session("draft".to_string())));
+    assert_ne!(session, Some(SessionTarget::Draft));
 }

@@ -498,19 +498,11 @@ impl Shell {
             }
             let view =
                 cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));
-            // Mark the view closing as the window tears down, so its background
-            // tasks (probe poll, auto-save debounce) stop short-circuiting, and
-            // close through `close_settings_window`: hide first, then remove on
-            // a later tick, so the platform's deactivation callback never
-            // targets a removed window ("window not found").
-            let view_for_close = view.clone();
-            window.on_window_should_close(cx, move |window, cx| {
-                view_for_close.update(cx, |view, _cx| {
-                    view.closing = true;
-                });
-                crate::setup::close_settings_window(window, cx);
-                false
-            });
+            // One close path for all three settings windows: flush the pending
+            // auto save, stop background tasks, then hide-then-remove so the
+            // platform's deactivation callback never targets a removed window
+            // ("window not found"). See `setup::wire_close_handler`.
+            crate::setup::wire_close_handler(window, &view, cx);
             view
         });
         match result {
@@ -523,5 +515,74 @@ impl Shell {
             }
             Err(error) => eprintln!("qcode-gui: cannot open settings: {error}"),
         }
+    }
+
+    /// Expand ↔ icon rail (ADR-0063 §1). The one writer for `sidebar_expanded`,
+    /// shared by `Cmd+B` and the rail's expand button so the two can never drift.
+    pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_expanded = !self.sidebar_expanded;
+        self.persist_sidebar(cx);
+        cx.notify();
+    }
+
+    /// Open one sidebar section. Clicking the header of the open section is a
+    /// no-op: exactly one section is always open (ADR-0063 §3), and the header
+    /// shows its open state so the no-op does not read as a dead button.
+    pub(crate) fn open_sidebar_section(
+        &mut self,
+        section: crate::shell::SidebarSection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_section == section {
+            return;
+        }
+        self.sidebar_section = section;
+        self.persist_sidebar(cx);
+        cx.notify();
+    }
+
+    /// What the rail's 任务 / 定时任务 icons do: switch the main view, and record
+    /// which section the next expand should land on — without touching the
+    /// sidebar's width. Icon semantics stay uniform (ADR-0063 §4, choice A2).
+    pub(crate) fn show_main_view(
+        &mut self,
+        view: crate::shell::MainView,
+        section: Option<crate::shell::SidebarSection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match view {
+            crate::shell::MainView::Task => {
+                if let Some(section) = section {
+                    self.sidebar_section = section;
+                }
+                self.enter_task_view(cx);
+            }
+            crate::shell::MainView::Schedule => {
+                if let Some(section) = section {
+                    self.sidebar_section = section;
+                }
+                self.view = crate::shell::MainView::Schedule;
+            }
+            crate::shell::MainView::Terminal => self.open_terminal_view(window, cx),
+        }
+        self.persist_sidebar(cx);
+        cx.notify();
+    }
+
+    /// Write the two sidebar states to `gui.json`. Collapsing is a mouse-reachable
+    /// act now, so starting expanded every launch would read as broken (§7).
+    fn persist_sidebar(&self, cx: &mut Context<Self>) {
+        let expanded = self.sidebar_expanded;
+        let section = self.sidebar_section.as_str().to_string();
+        if let Err(error) = crate::GuiPreferences::update(&self.data_dir, |prefs| {
+            prefs.sidebar_expanded = expanded;
+            prefs.sidebar_section = section;
+        }) {
+            // A failed write is not worth a dialog: the window still works, and
+            // the next successful write catches up.
+            eprintln!("qcode-gui: cannot save sidebar state: {error}");
+        }
+        let _ = cx;
     }
 }

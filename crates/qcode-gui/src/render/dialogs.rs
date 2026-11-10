@@ -221,3 +221,64 @@ impl Shell {
             .into_any_element()
     }
 }
+
+impl Shell {
+    /// A paste that would run more than one command asks first (ADR-0062 §5).
+    pub(crate) fn render_terminal_paste_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((_, lines)) = self.pending_terminal_paste.clone() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(420.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_4()
+                    .text_color(theme.popover_foreground)
+                    .child(format!("粘贴 {lines} 行？"))
+                    .child(
+                        div()
+                            .text_size(sp(SECONDARY_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .child("终端没有开启 bracketed paste，粘贴的换行会被立即执行。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(Button::new("terminal-paste-cancel").label("取消").on_click(
+                                cx.listener(|this, _, _window, cx| {
+                                    this.pending_terminal_paste = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Button::new("terminal-paste-ok")
+                                    .label("粘贴")
+                                    .primary()
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.confirm_terminal_paste(cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}

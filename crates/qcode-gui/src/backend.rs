@@ -27,8 +27,21 @@ pub struct TaskRow {
 #[derive(Debug, Clone)]
 pub struct ScheduleRow {
     pub name: String,
+    /// Verbatim cron string. Shown as written: the user edits this text, so
+    /// translating it to prose would hide the thing they came to check
+    /// (ADR-0063 §5).
+    pub cron: String,
     /// The task it runs on; `None` when every fire creates its own.
     pub task: Option<String>,
+    /// `new = true`: every fire makes a fresh task.
+    pub new_task: bool,
+    /// `queue` or `skip`, as configured.
+    pub overlap: Option<String>,
+    /// How long a scheduled turn's approval may sit unanswered.
+    pub approval_timeout: Option<String>,
+    /// `enabled = false` entries exist but never fire; they still get a row so
+    /// the board shows them instead of hiding them (ADR-0063 §5).
+    pub enabled: bool,
     pub next_fire_at: Option<qcode_core::schedule::PrimitiveDateTime>,
     pub status: Option<qcode_core::schedule::ScheduleStatus>,
     pub missed_windows: u32,
@@ -322,7 +335,27 @@ impl Backend for LocalBackend {
                 let state = states.get(&schedule.name);
                 ScheduleRow {
                     name: schedule.name.clone(),
+                    // Verbatim, not the parsed spec: see `Schedule::cron_text`.
+                    cron: schedule.cron_text.clone(),
                     task: schedule.task.clone(),
+                    new_task: schedule.creates_task(),
+                    overlap: Some(match schedule.overlap {
+                        qcode_core::Overlap::Queue => "queue".to_string(),
+                        qcode_core::Overlap::Skip => "skip".to_string(),
+                    }),
+                    approval_timeout: schedule.approval_timeout.map(|timeout| {
+                        let seconds = timeout.as_secs();
+                        if seconds == 0 {
+                            "0".to_string()
+                        } else if seconds % 3600 == 0 {
+                            format!("{}h", seconds / 3600)
+                        } else if seconds % 60 == 0 {
+                            format!("{}m", seconds / 60)
+                        } else {
+                            format!("{seconds}s")
+                        }
+                    }),
+                    enabled: schedule.enabled,
                     next_fire_at: state.and_then(|state| state.next_fire_at),
                     status: state.and_then(|state| state.last_status.clone()),
                     missed_windows: state.map(|state| state.missed_windows).unwrap_or(0),
@@ -333,7 +366,14 @@ impl Backend for LocalBackend {
         for (name, reason) in &self.schedule_errors {
             rows.push(ScheduleRow {
                 name: name.clone(),
+                // A broken entry has no parsed config to show; the reason is the
+                // only thing worth a reader's attention.
+                cron: String::new(),
                 task: None,
+                new_task: false,
+                overlap: None,
+                approval_timeout: None,
+                enabled: false,
                 next_fire_at: None,
                 status: None,
                 missed_windows: 0,

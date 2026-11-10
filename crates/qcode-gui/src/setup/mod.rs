@@ -152,10 +152,40 @@ pub struct SetupView {
     reach_inflight: HashSet<String>,
     reach_tx: Option<std::sync::mpsc::Sender<(String, bool)>>,
     reach_rx: Option<std::sync::mpsc::Receiver<(String, bool)>>,
+    /// One close attempt has already been refused because the last write failed.
+    /// The next one goes through, so a read-only config cannot trap the user.
+    close_after_save_error: bool,
     /// Kept alive so text edits (which fire `InputEvent::Change` on the input
     /// entities, not on this view) can trigger auto saves. Wizard mode never
     /// subscribes.
     _input_subscriptions: Vec<gpui_kit::Subscription>,
+}
+
+/// Install the one close path every settings/setup window shares.
+///
+/// Three places open these windows (the wizard, `qcode settings`, and 设置 in the GUI)
+/// and each used to spell out its own teardown. Spelling it out again for the save
+/// flush is how one of them ends up without it, so the whole sequence — flush, mark
+/// closing, hide-then-remove — lives here, and every opener calls this.
+pub(crate) fn wire_close_handler(
+    window: &mut Window,
+    view: &gpui_kit::Entity<SetupView>,
+    cx: &mut App,
+) {
+    let view = view.clone();
+    window.on_window_should_close(cx, move |window, cx| {
+        // Returns false when the last edit could not be written: the view puts the
+        // reason on screen, and the window stays open so it is read.
+        //
+        // `update` returns a plain bool here (not a Result): the entity is alive by
+        // construction — it is the window being processed.
+        let may_close = view.update(cx, |view, cx| view.prepare_to_close(cx));
+        if !may_close {
+            return false;
+        }
+        close_settings_window(window, cx);
+        false
+    });
 }
 
 /// Close a settings/setup window without racing the platform's teardown.
@@ -179,6 +209,9 @@ pub struct SetupView {
 ///    queues the `active_status_change` callback while it is still registered.
 /// 3. The removal is enqueued after that callback, so it runs before the
 ///    window disappears.
+///
+/// `wire_close_handler` is the entry point that uses it; nothing else should call
+/// this directly, or that caller would skip the auto-save flush.
 pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
     // 这里始终处于 `on_window_should_close` 的 `cx.update` 内（持有
     // `&mut App`），所以隐藏必须推迟：macOS 的 `orderOut:` 会同步派发
@@ -244,15 +277,7 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             window.activate_window();
             let view = cx.new(|cx| SetupView::new(path, data_dir, true, window, cx));
-            // Same close path as the settings window (see `close_settings_window`).
-            let view_for_close = view.clone();
-            window.on_window_should_close(cx, move |window, cx| {
-                view_for_close.update(cx, |view, _cx| {
-                    view.closing = true;
-                });
-                close_settings_window(window, cx);
-                false
-            });
+            wire_close_handler(window, &view, cx);
             view
         })
         .expect("failed to open the setup window");
@@ -266,16 +291,7 @@ pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             window.activate_window();
             let view = cx.new(|cx| SetupView::new(path, data_dir, false, window, cx));
-            // See `close_settings_window`: stop background tasks as the window
-            // closes and remove the window on a later tick.
-            let view_for_close = view.clone();
-            window.on_window_should_close(cx, move |window, cx| {
-                view_for_close.update(cx, |view, _cx| {
-                    view.closing = true;
-                });
-                close_settings_window(window, cx);
-                false
-            });
+            wire_close_handler(window, &view, cx);
             view
         })
         .expect("failed to open the settings window");
@@ -338,6 +354,7 @@ impl SetupView {
             custom_models: Vec::new(),
             custom_error: None,
             closing: false,
+            close_after_save_error: false,
             pending_auto_save: None,
             auto_save_generation: 0,
             reachability: BTreeMap::new(),

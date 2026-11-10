@@ -20,6 +20,8 @@ fn defaults_and_round_trip() {
             width: 1200.0,
             height: 800.0,
         }),
+        sidebar_expanded: false,
+        sidebar_section: "schedule".to_string(),
     };
     prefs.save(dir.path()).expect("save");
     assert_eq!(GuiPreferences::load(dir.path()), prefs);

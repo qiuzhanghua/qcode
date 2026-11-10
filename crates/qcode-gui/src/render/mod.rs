@@ -33,7 +33,9 @@ use qcode_ui_state::{App, Block};
 mod dialogs;
 mod main;
 pub(crate) mod rail;
+mod schedule;
 mod sidebar;
+pub(crate) mod terminal_view;
 mod transcript;
 
 pub(crate) use sidebar::task_titles;
@@ -83,13 +85,15 @@ impl Render for Shell {
                                 || shell.pending_root_delete.is_some()
                                 || shell.pending_task_delete.is_some()
                                 || shell.task_menu.is_some()
-                                || shell.pending_quit;
+                                || shell.pending_quit
+                                || shell.pending_terminal_paste.is_some();
                             if open {
                                 shell.rename_task = None;
                                 shell.pending_root_delete = None;
                                 shell.pending_task_delete = None;
                                 shell.task_menu = None;
                                 shell.pending_quit = false;
+                                shell.pending_terminal_paste = None;
                                 cx.notify();
                             }
                         });
@@ -115,6 +119,9 @@ impl Render for Shell {
                     this.new_session(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &OpenTerminalShortcut, window, cx| {
+                this.open_terminal(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &OpenSettingsShortcut, _window, cx| this.open_settings(cx)),
             )
@@ -130,8 +137,7 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
-                this.sidebar_visible = !this.sidebar_visible;
-                cx.notify();
+                this.toggle_sidebar(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
                 this.toggle_theme(cx);
@@ -159,8 +165,16 @@ impl Render for Shell {
             // panel group, so the divider between them can be dragged and both
             // sides clamp to their minimum widths.
             .child({
-                let main = self.render_main(window, cx).into_any_element();
-                if self.sidebar_visible {
+                let main = match self.view {
+                    crate::shell::MainView::Task => self.render_main(window, cx).into_any_element(),
+                    crate::shell::MainView::Schedule => {
+                        self.render_schedule_view(cx).into_any_element()
+                    }
+                    crate::shell::MainView::Terminal => {
+                        self.render_terminal_view(cx).into_any_element()
+                    }
+                };
+                if self.sidebar_expanded {
                     h_resizable("root-layout")
                         .child(
                             resizable_panel()
@@ -175,13 +189,27 @@ impl Render for Shell {
                         )
                         .into_any_element()
                 } else {
+                    // The rail is a fixed width, not a resizable panel: there is
+                    // nothing to drag at 48px, and a divider there would be a
+                    // handle for a range with one value in it (ADR-0063 §1).
                     h_resizable("root-layout")
-                        .child(resizable_panel().child(main))
+                        .child(
+                            resizable_panel()
+                                .size(px(SIDEBAR_RAIL_WIDTH))
+                                .size_range(px(SIDEBAR_RAIL_WIDTH)..px(SIDEBAR_RAIL_WIDTH))
+                                .child(self.render_sidebar_rail(cx).into_any_element()),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
+                                .child(main),
+                        )
                         .into_any_element()
                 }
             })
             .child(self.render_delete_dialog(cx))
             .child(self.render_task_delete_dialog(cx))
+            .child(self.render_terminal_paste_dialog(cx))
             .child(self.render_rename_dialog(cx))
             .child(self.render_quit_dialog(cx))
     }

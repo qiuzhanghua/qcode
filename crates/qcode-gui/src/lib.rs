@@ -22,12 +22,19 @@ pub mod runtime;
 pub mod setup;
 mod shell;
 pub mod task_ops;
+mod terminal;
 pub mod tray;
-pub use backend::{Backend, LocalBackend, RebuildFn, RebuildFuture, TaskRow, UnconfiguredBackend};
+pub use backend::{
+    Backend, LocalBackend, RebuildFn, RebuildFuture, ScheduleRow, TaskRow, UnconfiguredBackend,
+};
 pub use run::run;
 pub use runtime::Engine;
 pub use setup::{run_settings, run_setup};
 pub(crate) use shell::Shell;
+// Public so the integration tests can pin the accordion's invariants without a
+// window: "exactly one section is open" is a type-level promise (ADR-0063 §3),
+// and a test is the only place it can be asserted as one.
+pub use shell::{MainView, SidebarSection};
 
 use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::component::diff::{DiffFile, DiffState};
@@ -53,6 +60,12 @@ gpui_kit::actions!(
         PrevTurnShortcut,
         NextTurnShortcut,
         SendMessage,
+        OpenTerminalShortcut,
+        CloseTerminalShortcut,
+        NextTerminalShortcut,
+        PrevTerminalShortcut,
+        CopySelectionShortcut,
+        CloseSettingsShortcut,
     ]
 );
 use crate::approvals::ApprovalQueue;
@@ -107,12 +120,45 @@ const BASE_FONT_SIZE: f32 = crate::gui_prefs::DEFAULT_FONT_SIZE as f32;
 static FONT_SIZE_PX: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(crate::gui_prefs::DEFAULT_FONT_SIZE);
 
+/// Design size of the composer's text, at the same baseline every `sp` token is
+/// written at.
+///
+/// It lives here because two views have to agree on it: the composer, and the
+/// terminal. A shell's output and the text you type about it sit inches apart; at
+/// different sizes the terminal reads as a different application pasted into the
+/// window. Before this constant existed the terminal drew at the raw zoom axis (14 px
+/// out of the box) while the composer drew 15·(zoom/14), so they never matched and the
+/// difference survived every zoom step.
+pub(crate) const COMPOSER_TEXT_SIZE: f32 = 15.0;
+
+/// The composer's text size in pixels at the current zoom.
+pub(crate) fn composer_text_size() -> gpui_kit::Pixels {
+    composer_text_size_at(FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The same, for an explicit zoom axis.
+///
+/// The pure form exists so the size relation can be asserted without touching the
+/// global — tests run in parallel threads, and a test that stored to `FONT_SIZE_PX`
+/// would make every other test in the binary read a value it did not set.
+pub(crate) fn composer_text_size_at(axis: u32) -> gpui_kit::Pixels {
+    sp_at(COMPOSER_TEXT_SIZE, axis)
+}
+
 /// Resolve one typography token at the current font scale — a single
 /// runtime font-size axis:
 /// one runtime value drives every conversation font and line height, so the
 /// tokens never drift per-row.
 fn sp(base: f32) -> gpui_kit::Pixels {
-    px(base * (FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed) as f32 / BASE_FONT_SIZE))
+    sp_at(
+        base,
+        FONT_SIZE_PX.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// `sp` for an explicit zoom axis (see `composer_text_size_at`).
+fn sp_at(base: f32, axis: u32) -> gpui_kit::Pixels {
+    px(base * (axis as f32 / BASE_FONT_SIZE))
 }
 
 /// Apply one zoom step to the whole UI's text from anywhere — the global
@@ -151,6 +197,12 @@ const PROMPT_INSET: f32 = 20.0;
 /// between the sidebar and the conversation clamps to these.
 const SIDEBAR_MIN_WIDTH: f32 = 180.0;
 const SIDEBAR_MAX_WIDTH: f32 = 560.0;
+/// Width of the collapsed sidebar — the icon rail (ADR-0063 §1).
+///
+/// A layout constant, not a preference: the thing users can adjust is the
+/// expanded width, via the divider. 48px fits a 16px icon inside a 32px hit
+/// target with 8px of breathing room on each side.
+const SIDEBAR_RAIL_WIDTH: f32 = 48.0;
 /// Minimum width of the main conversation panel, in pixels.
 const MAIN_MIN_WIDTH: f32 = 380.0;
 /// 右侧内容区（对话展示框、提示框、输入框、状态栏）的两侧留白：

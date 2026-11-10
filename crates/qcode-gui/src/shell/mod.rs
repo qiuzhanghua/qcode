@@ -4,12 +4,65 @@ use std::collections::HashMap;
 use task_ui::TaskUi;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
 
+/// What the content area is showing (ADR-0062 §2).
+///
+/// Deliberately *not* folded into `active`: `active` is the task the window is
+/// on, and switching to the terminal must not forget it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MainView {
+    #[default]
+    Task,
+    /// Read-only board of `[schedules]` entries (ADR-0063 §5).
+    Schedule,
+    Terminal,
+}
+
+/// Which sidebar section the accordion has open (ADR-0063 §3).
+///
+/// Deliberately not `Option`: exactly one section is always open, so "both
+/// collapsed" is not a state the type can hold. Clicking the header of the open
+/// section therefore does nothing — which is why the open header has to *look*
+/// open (chevron down + highlighted), or a no-op would read as broken.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SidebarSection {
+    #[default]
+    Tasks,
+    Schedule,
+}
+
+impl SidebarSection {
+    /// The `GuiPreferences::sidebar_section` spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    /// Every section, in display order. The accordion's invariant — exactly one
+    /// of these is open — is expressed by the type having no third option.
+    pub const ALL: [Self; 2] = [Self::Tasks, Self::Schedule];
+
+    /// What a stored spelling means. Never fails: an unknown value from a newer
+    /// version lands on the default section instead of making `gui.json`
+    /// unreadable (ADR-0063 §3).
+    pub fn from_stored(value: &str) -> Self {
+        match value {
+            "schedule" => Self::Schedule,
+            _ => Self::Tasks,
+        }
+    }
+}
+
 pub(crate) struct Shell {
     /// 当前任务的那一份视图。任务专属的状态全在这里（ADR-0058 §4）；窗口级
     /// 的东西（任务列表、侧栏、设置窗口、托盘）留在 `Shell` 上。
     pub(crate) ui: TaskUi,
     /// 切走时留下的任务视图，按会话 id 存。切回来时原样装回去，不重放日志。
-    pub(crate) parked: std::collections::BTreeMap<String, TaskUi>,
+    ///
+    /// 键是 [`SessionTarget`]，不是 `String`：还没发第一条消息的草稿没有会话
+    /// id，但它有用户刚打的字，同样必须能停放（`SessionTarget::Draft`）。
+    pub(crate) parked: std::collections::BTreeMap<SessionTarget, TaskUi>,
     /// 没有视图的会话（用户还没打开过）：只留状态与不许可丢的审批
     /// （ADR-0058 §3、§5）。
     pub(crate) dormant: std::collections::BTreeMap<String, Dormant>,
@@ -39,7 +92,14 @@ pub(crate) struct Shell {
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pub(crate) pending_send: bool,
-    pub(crate) sidebar_visible: bool,
+    /// Whether the sidebar is expanded. `false` renders the icon rail instead of
+    /// hiding it: collapsing gives up width, not reachability (ADR-0063 §1).
+    pub(crate) sidebar_expanded: bool,
+    /// Which sidebar section is open. Never "none" — see [`SidebarSection`].
+    pub(crate) sidebar_section: SidebarSection,
+    /// Cached `Backend::schedules()` for the board. Refreshed with the task list,
+    /// never per frame: it reads config and the store (ADR-0063 §8).
+    pub(crate) schedule_rows: Vec<ScheduleRow>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
     pub(crate) minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
@@ -48,6 +108,35 @@ pub(crate) struct Shell {
     pub(crate) pending_task_renames: std::collections::BTreeMap<String, String>,
     /// What sending while a turn runs does: queue it, or steer it.
     pub(crate) busy_delivery: qcode_kernel::config::BusyDelivery,
+    /// Which view the content area shows (ADR-0062 §2). `active` keeps pointing
+    /// at the task, so switching to the terminal and back does not touch it.
+    pub(crate) view: MainView,
+    /// The window's terminals; empty until the first one is opened.
+    pub(crate) terminals: crate::terminal::Terminals,
+    /// Grid size measured by the last terminal frame, applied on the next one.
+    pub(crate) terminal_size: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
+    /// Focus target for typing into the active terminal.
+    pub(crate) terminal_focus: gpui_kit::FocusHandle,
+    /// Set by a terminal's reader thread when there is output to draw.
+    pub(crate) terminal_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Where the grid was last drawn, so mouse positions map back to cells.
+    pub(crate) terminal_geometry:
+        std::rc::Rc<std::cell::Cell<Option<crate::terminal::GridGeometry>>>,
+    /// Selected cells, as `(anchor, focus)` in screen coordinates.
+    pub(crate) terminal_selection: Option<(crate::terminal::GridPoint, crate::terminal::GridPoint)>,
+    /// True while the left button is down after a selection started.
+    pub(crate) terminal_selecting: bool,
+    /// A multi-line paste waiting for the user to say yes (ADR-0062 §5).
+    pub(crate) pending_terminal_paste: Option<(String, usize)>,
+    /// Family the terminal draws Latin with, picked once (see `pick_terminal_fonts`).
+    pub(crate) terminal_font: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::SharedString>>>,
+    /// Family the terminal draws CJK with: the same face the composer uses, so Chinese
+    /// looks the same in both places (see `pick_terminal_fonts`).
+    pub(crate) terminal_cjk_font: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::SharedString>>>,
+    /// Text an input method is still composing (underlined, not yet sent).
+    pub(crate) terminal_preedit: Option<String>,
+    /// Where the cursor was on the last painted frame, for IME placement.
+    pub(crate) terminal_cursor: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
     /// Root edits made while a task was running, keyed by task id and applied
     /// when *that* task's turn returns (§7: per session, not one global slot).
     pub(crate) pending_roots: std::collections::BTreeMap<String, Vec<Root>>,
@@ -229,8 +318,23 @@ impl Shell {
             model_groups: crate::provider_models(&config_path),
             _model_search_subscription: model_search_subscription,
             busy_delivery,
+            view: MainView::default(),
+            terminals: crate::terminal::Terminals::default(),
+            terminal_size: std::rc::Rc::new(std::cell::Cell::new(None)),
+            terminal_focus: cx.focus_handle(),
+            terminal_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            terminal_geometry: std::rc::Rc::new(std::cell::Cell::new(None)),
+            terminal_selection: None,
+            terminal_selecting: false,
+            pending_terminal_paste: None,
+            terminal_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            terminal_cjk_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            terminal_preedit: None,
+            terminal_cursor: std::rc::Rc::new(std::cell::Cell::new(None)),
             pending_send: false,
-            sidebar_visible: true,
+            sidebar_expanded: prefs.sidebar_expanded,
+            sidebar_section: SidebarSection::from_stored(&prefs.sidebar_section),
+            schedule_rows: Vec::new(),
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),
@@ -457,9 +561,10 @@ impl Shell {
             };
             let live = self.is_visible(&target);
             let target_id = target.id().map(str::to_owned);
-            let parked = target_id
-                .as_deref()
-                .is_some_and(|id| self.parked.contains_key(id));
+            let parked = target_id.as_deref().is_some_and(|id| {
+                self.parked
+                    .contains_key(&SessionTarget::Session(id.to_string()))
+            });
             // A session the window is not showing that reaches a turn boundary
             // or a final message is "unread" until the user switches to it
             // (§7). Read before the event is consumed.
@@ -492,8 +597,7 @@ impl Shell {
                 task_ops::Destination::OnScreen => routing::apply_to_ui(&mut self.ui, event),
                 // A session the user has visited: its own parked view (§4).
                 task_ops::Destination::Parked => {
-                    let Some(ui) = target_id.as_deref().and_then(|id| self.parked.get_mut(id))
-                    else {
+                    let Some(ui) = target_id.as_deref().and_then(|id| self.parked_mut(id)) else {
                         continue;
                     };
                     routing::apply_to_ui(ui, event)
@@ -612,6 +716,22 @@ impl Shell {
             loop {
                 let interval = match this.update(cx, |shell, cx| {
                     shell.poll(cx);
+                    // The terminal's reader thread sets `terminal_dirty` instead of
+                    // notifying: this loop is the only place that may touch the
+                    // entity, and it also applies the grid size the last frame
+                    // measured (ADR-0062 §4).
+                    // Answers go out even while the task view is showing: a program
+                    // in a background tab can be waiting on one (ADR-0062 §9).
+                    shell.service_terminal(cx);
+                    if shell.view == MainView::Terminal {
+                        shell.sync_terminal_size();
+                        if shell
+                            .terminal_dirty
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            cx.notify();
+                        }
+                    }
                     shell.poll_interval()
                 }) {
                     Ok(interval) => interval,
@@ -628,7 +748,10 @@ impl Shell {
     /// everything is idle: the runtime republishes queue snapshots at 250ms and
     /// nothing else is periodic, so waking the UI thread 30×/s would be waste.
     fn poll_interval(&self) -> std::time::Duration {
-        if self.any_turn_running() {
+        if self.view == MainView::Terminal {
+            // A shell's output has no event to wait for; 16ms is one frame.
+            std::time::Duration::from_millis(16)
+        } else if self.any_turn_running() {
             std::time::Duration::from_millis(33)
         } else {
             std::time::Duration::from_millis(150)

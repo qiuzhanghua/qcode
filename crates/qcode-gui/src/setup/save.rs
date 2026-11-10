@@ -307,7 +307,7 @@ impl SetupView {
         if debounce {
             self.schedule_auto_save(cx, kind);
         } else {
-            self.flush_auto_save(kind, cx);
+            let _ = self.flush_auto_save(kind, cx);
         }
     }
 
@@ -329,17 +329,73 @@ impl SetupView {
                 if view.auto_save_generation == generation
                     && let Some(kind) = view.pending_auto_save.take()
                 {
-                    view.flush_auto_save(kind, cx);
+                    let _ = view.flush_auto_save(kind, cx);
                 }
             });
         })
         .detach();
     }
 
-    fn flush_auto_save(&mut self, kind: AutoSaveKind, cx: &mut Context<Self>) {
+    /// Get the pending edit onto disk, then say whether the window may go away.
+    ///
+    /// Closing used to lose the last edit: the debounce timer woke up, saw `closing`,
+    /// and returned without writing. Anything typed in the final ~250 ms — the last
+    /// character of an API key — was silently dropped, by the X button and by a window
+    /// close alike, on a screen that says 自动保存 · 修改即时写入.
+    ///
+    /// Unconditional rather than "ask about unsaved changes": under auto save there is
+    /// no unsaved state, only a timer that has not fired yet, so asking would be asking
+    /// the user to answer a question the program can answer itself. The case worth
+    /// interrupting for is a write that *fails* — disk full, read-only config — so then
+    /// the window stays open with the reason on screen, once. A second attempt closes
+    /// anyway: a broken config file must not trap someone in the settings window.
+    pub(crate) fn prepare_to_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let wizard = self.wizard;
+        let warned = self.close_after_save_error;
+        let pending = if wizard {
+            None
+        } else {
+            self.pending_auto_save.take()
+        };
+        if pending.is_some() {
+            // Retire the armed timer: this flush supersedes it, and its generation
+            // check would otherwise write the same kind a second time.
+            self.auto_save_generation += 1;
+        }
+        // The decision itself is a pure function (see `decide_close`), because it is
+        // the part that silently lost an edit and the part a test can reach without a
+        // window.
+        let outcome = decide_close(wizard, pending, warned, |kind| {
+            self.flush_auto_save(kind, cx)
+        });
+        match outcome {
+            CloseOutcome::Close | CloseOutcome::CloseDespiteFailure => {
+                self.closing = true;
+                true
+            }
+            CloseOutcome::StayOpen(reason) => {
+                self.close_after_save_error = true;
+                // Keep it pending, so editing again (or closing again) retries instead
+                // of starting from nothing.
+                self.pending_auto_save = pending;
+                self.error = Some(reason);
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    /// Write whatever the debounce has been holding. `Err` carries why it could not, so
+    /// a caller about to lose the window (see `prepare_to_close`) can say so instead of
+    /// only logging it to a console nobody is looking at.
+    fn flush_auto_save(
+        &mut self,
+        kind: AutoSaveKind,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         match kind {
             AutoSaveKind::Scalar(path) if path.first() == Some(&"gui") => {
-                self.auto_save_gui(path, cx);
+                self.auto_save_gui(path, cx)
             }
             AutoSaveKind::Scalar(path) => self.auto_save_scalar(path, cx),
             AutoSaveKind::Tables => match self.build_config(cx, false) {
@@ -350,8 +406,12 @@ impl SetupView {
                         // any pending scalar edit, so drop it to avoid a
                         // redundant rewrite.
                         self.pending_auto_save = None;
+                        Ok(())
                     }
-                    Err(error) => eprintln!("qcode-gui: auto-save failed: {error}"),
+                    Err(error) => {
+                        eprintln!("qcode-gui: auto-save failed: {error}");
+                        Err(format!("config.toml 没能写入：{error}"))
+                    }
                 },
                 // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
                 // 设置页顶部，避免“编辑不生效又看不到错误”。
@@ -359,6 +419,7 @@ impl SetupView {
                     self.error = Some(error.clone());
                     cx.notify();
                     eprintln!("qcode-gui: auto-save skipped (invalid form): {error}");
+                    Err(format!("表单还有问题，改动没有写入：{error}"))
                 }
             },
         }
@@ -367,14 +428,23 @@ impl SetupView {
     /// Persist one scalar config key. `apply_scalar` is authoritative for what
     /// a field writes, so the value is validated through it before the file is
     /// touched; a half-typed numeric field never writes junk.
-    fn auto_save_scalar(&mut self, path: &'static [&'static str], cx: &Context<Self>) {
+    fn auto_save_scalar(
+        &mut self,
+        path: &'static [&'static str],
+        cx: &Context<Self>,
+    ) -> Result<(), String> {
         let Some(value) = self.field_value(path, cx) else {
-            return;
+            // The widget is gone (the page changed under the debounce). Nothing was
+            // typed into it, so nothing can be lost by calling this a success.
+            return Ok(());
         };
         let mut config = self.config.clone();
         if let Err(error) = apply_scalar(&mut config, path, &value) {
             eprintln!("qcode-gui: auto-save skipped ({error})");
-            return;
+            return Err(format!(
+                "{} 的值不合法，改动没有写入：{error}",
+                path.join(".")
+            ));
         }
         let write_value = if value.trim().is_empty() && OPTIONAL_PATHS.contains(&path) {
             None
@@ -382,16 +452,26 @@ impl SetupView {
             Some(value.as_str())
         };
         match qcode_kernel::config_edit::set_scalar(&self.path, path, write_value) {
-            Ok(()) => self.config = config,
-            Err(error) => eprintln!("qcode-gui: auto-save failed: {error}"),
+            Ok(()) => {
+                self.config = config;
+                Ok(())
+            }
+            Err(error) => {
+                eprintln!("qcode-gui: auto-save failed: {error}");
+                Err(format!("{} 没能写入：{error}", path.join(".")))
+            }
         }
     }
 
     /// Persist one `gui.json` preference (Appearance section) and apply it to
     /// the running windows immediately.
-    fn auto_save_gui(&mut self, path: &'static [&'static str], cx: &mut Context<Self>) {
+    fn auto_save_gui(
+        &mut self,
+        path: &'static [&'static str],
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let Some(value) = self.field_value(path, cx) else {
-            return;
+            return Ok(());
         };
         // Same rule as `save`: touch only the field this control owns, so a
         // stale in-memory copy cannot revert `last_session`.
@@ -425,10 +505,11 @@ impl SetupView {
         });
         if let Err(error) = saved {
             eprintln!("qcode-gui: auto-save failed (gui.json): {error}");
-            return;
+            return Err(format!("gui.json 没能写入：{error}"));
         }
         self.prefs = prefs;
         self.prefs.apply(cx);
+        Ok(())
     }
 
     /// Read the form's current value for `path`, the same way `build_config`
@@ -498,4 +579,46 @@ pub(crate) fn write_config(
     let mut edit = ConfigEdit::open(path)?;
     edit.apply_config(config)?;
     edit.save()
+}
+
+/// What a close attempt should do.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CloseOutcome {
+    /// Nothing left to write, or the write succeeded.
+    Close,
+    /// The write failed: stay open so the reason is read.
+    StayOpen(String),
+    /// The write failed once before and the user asked again: honour that.
+    CloseDespiteFailure,
+}
+
+/// Decide what closing the window does with a pending auto save.
+///
+/// Split out from [`SetupView::prepare_to_close`] because this is where an edit used to
+/// disappear: the debounce timer woke up, saw `closing`, and returned without writing,
+/// so the last ~250 ms of typing was dropped by the X button and by Escape alike. The
+/// rule is "write it, and only interrupt for a failure" — under auto save there is no
+/// unsaved state to confirm, just a timer that has not fired.
+///
+/// `warned_before` is what keeps a broken config from trapping someone: the first
+/// failed close keeps the window open with the reason, the second one closes.
+pub(crate) fn decide_close(
+    wizard: bool,
+    pending: Option<AutoSaveKind>,
+    warned_before: bool,
+    flush: impl FnOnce(AutoSaveKind) -> Result<(), String>,
+) -> CloseOutcome {
+    if wizard {
+        // The wizard has an explicit save form and never auto saves; closing it
+        // without saving is what its Cancel has always meant.
+        return CloseOutcome::Close;
+    }
+    let Some(kind) = pending else {
+        return CloseOutcome::Close;
+    };
+    match flush(kind) {
+        Ok(()) => CloseOutcome::Close,
+        Err(_) if warned_before => CloseOutcome::CloseDespiteFailure,
+        Err(reason) => CloseOutcome::StayOpen(reason),
+    }
 }
