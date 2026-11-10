@@ -254,6 +254,138 @@ fn a_table_save_keeps_the_model_the_menu_just_picked() {
     assert_eq!(draft.default_model.model.as_deref(), Some("deepseek-flash"));
 }
 
+/// 上面两条测的是函数。这一条测**落盘**：设置页保存走 `write_config`
+/// （fresh `ConfigEdit::open` + `apply_config` + 原子写），如果 `apply_config`
+/// 或 `save` 不写 `[default-model]`，前两条全绿也没用——文件里还是旧值。
+#[test]
+fn the_synced_model_survives_a_real_write_and_read() {
+    use super::save::write_config;
+    use qcode_kernel::config::{Overrides, resolve};
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let seed = "\
+version = 1
+
+[providers.deepseek]
+base_url = \"https://api.deepseek.com/v1\"
+api_key_env = \"DEEPSEEK_API_KEY\"
+default_model = \"deepseek-flash\"
+
+[default-model]
+provider = \"deepseek\"
+model = \"deepseek-flash\"
+";
+    std::fs::File::create(&path)
+        .expect("seed")
+        .write_all(seed.as_bytes())
+        .expect("seed write");
+
+    let mut config = qcode_kernel::config::load(&path).expect("load");
+    assert_eq!(config.default_model.provider.as_deref(), Some("deepseek"));
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-flash")
+    );
+
+    // What the form's save path does with an edited "Default model" cell.
+    config
+        .providers
+        .get_mut("deepseek")
+        .expect("row")
+        .default_model = Some("DeepSeek-V4.1-Flash".into());
+    let row_model = config.providers["deepseek"].default_model.clone();
+    assert!(sync_default_model(
+        &mut config.default_model,
+        "deepseek",
+        row_model.as_deref()
+    ));
+    write_config(&path, &config).expect("write");
+
+    let text = std::fs::read_to_string(&path).expect("read back");
+    assert!(
+        text.contains("model = \"DeepSeek-V4.1-Flash\""),
+        "[default-model] 没跟着落盘：\n{text}"
+    );
+    // The file must stay loadable and comment-free of duplicates: a second
+    // `[default-model]` table would make TOML invalid.
+    let reread = qcode_kernel::config::load(&path).expect("reload");
+    assert_eq!(
+        reread.default_model.model.as_deref(),
+        Some("DeepSeek-V4.1-Flash")
+    );
+    assert_eq!(
+        reread.providers["deepseek"].default_model.as_deref(),
+        Some("DeepSeek-V4.1-Flash")
+    );
+
+    let env = |key: &str| (key == "DEEPSEEK_API_KEY").then(|| "sk-test".to_string());
+    assert_eq!(
+        resolve(&reread, &Overrides::default(), &env)
+            .expect("resolves")
+            .model,
+        "DeepSeek-V4.1-Flash"
+    );
+}
+
+/// 用户手选/手输的模型必须扛得住下一次无关的表格保存。
+///
+/// `pin_default` 只写 `[default-model]`（第一版就是这样）时，用户选完模型后
+/// 改任何别的字段 —— `apply_tables` 都会用 provider 行的旧 `default_model`
+/// 覆盖回去，界面上「已设 X 为默认」然后下次打开变回旧模型。所以两处必须一起
+/// 写，这条用例钉的是这个成对关系。
+#[test]
+fn a_pinned_model_survives_the_next_table_save() {
+    use qcode_kernel::config::{Config, ModelEntry, ProviderConfig};
+    let mut config = Config {
+        default_model: qcode_kernel::config::DefaultModelConfig {
+            provider: Some("deepseek".into()),
+            model: Some("deepseek-flash".into()),
+        },
+        ..Config::default()
+    };
+    config.providers.insert(
+        "deepseek".into(),
+        ProviderConfig {
+            default_model: Some("deepseek-flash".into()),
+            models: vec![ModelEntry {
+                id: "deepseek-v4-pro".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    // 用户手输一个目录里没有的模型名（就是本次报告里的那个）。
+    super::models::pin_default_fields(&mut config, "deepseek", Some("DeepSeek-V4.1-Flash"));
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("DeepSeek-V4.1-Flash")
+    );
+    assert_eq!(
+        config.providers["deepseek"].default_model.as_deref(),
+        Some("DeepSeek-V4.1-Flash")
+    );
+
+    // 之后改一个无关字段 → 表格保存 → `apply_tables` 用行值同步回来：
+    // 值必须还是用户选的那个。
+    let row_model = config.providers["deepseek"].default_model.clone();
+    assert!(
+        !sync_default_model(&mut config.default_model, "deepseek", row_model.as_deref()),
+        "行值与全局默认已经一致，不该再报一次改动"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("DeepSeek-V4.1-Flash")
+    );
+
+    // 遗留键不能被继续写。
+    config.default_provider = Some("minimax".into());
+    super::models::pin_default_fields(&mut config, "deepseek", Some("DeepSeek-V4.1-Flash"));
+    assert_eq!(config.default_provider, None);
+}
+
 #[test]
 fn extra_body_cell_parses_json_and_falls_back_to_strings() {
     let body = extra_body_from_lines(&[

@@ -133,6 +133,10 @@ pub struct SetupView {
     /// Model drafts on the declaration card (adopted only on create).
     custom_models: Vec<ModelRowState>,
     custom_error: Option<String>,
+    /// The default-model picker's "type a model name" box. A model that is in no
+    /// provider's catalog (a brand-new release, a gateway alias) can only be
+    /// reached by typing it, and typing it is exactly what the picker lacked.
+    default_model_input: Entity<InputState>,
     /// Set when the settings window is closing: background tasks (the model
     /// probe poll loop, auto-save debounce) short-circuit instead of touching
     /// the removed window, which GPUI would report as "window not found".
@@ -343,6 +347,7 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
+            default_model_input: input(window, cx, String::new(), "输入模型名"),
             closing: false,
             close_after_save_error: false,
             pending_auto_save: None,

@@ -3478,6 +3478,42 @@ model」改成 `DeepSeek-V4.1-Flash`，保存成功、表单显示新值，跑�
 断言保存后返回的模型变了（只断言「同步函数被调用过」可以全绿而用户仍看到旧模型）；
 `a_table_save_keeps_the_model_the_menu_just_picked` 覆盖反向保护。
 
+#### 5.1 仍然失败：界面根本不让你写下这个模型名
+
+上面那版修完后用户复测仍然是「没有成功」。查证据：`~/.config/qcode/config.toml`
+的 mtime 停在修复之前，且 `.bak` 与正文只差一个无关字段——**他的编辑一次都没有落盘**。
+所以问题不在「写了被覆盖」，在「压根写不下去」。
+
+真原因是模型名本身：`DeepSeek-V4.1-Flash` 既不在 `catalog`（deepseek 只有
+`deepseek-v4-flash` / `-vision-exp` / `-pro`），也不在 `[[providers.deepseek.models]]`。
+而两处「设模型」的界面都**只列已登记的模型**：
+
+- 设置页顶部的「当前默认」选择器（§5 刚加的那个）：候选 = `models` ∪ `default_model` ∪
+  目录模型；
+- 主窗口底部的模型菜单：同一个来源。
+
+于是这个模型名在界面上**没有任何位置可以输入**，用户只能手改配置文件。这不是「没生效」，
+是「没有入口」——上一版修的是「入口不生效」，这一版补的是入口本身。
+
+修法：
+
+- 设置页选择器底部加一行「设为 {provider} 的默认模型」+ 输入框 + 「设为默认」
+  （`SetupView::default_model_input`）。手输的模型落在当前默认 provider 上；没有默认
+  时落在候选里的第一个。
+- 底部模型菜单：搜索框里打一个列表中没有的名字时，多出一行「使用「x」（provider）」，
+  Enter 同样生效。手输的模型名不该只能点鼠标。
+- `pin_default` 现在**同时**写 `[default-model]` 与 `providers.<p>.default_model`
+  （`pin_default_fields`）。只写前者的第一版有个延迟撤销：任何一次表格自动保存都会用
+  行值把 `[default-model]` 同步回去，用户选完模型改个别字段就被改回来。
+
+界面「只列已登记模型」这条规则本身是对的（不能凭空造模型），缺的是**逃逸口**：
+模型名是新版本、网关别名、或者目录还没跟上时，必须能直接输入。
+
+验证：`a_pinned_model_survives_the_next_table_save` 钉住「两处成对写」以及「后续
+`sync_default_model` 同步不会撤回」；`the_synced_model_survives_a_real_write_and_read` 走真实
+`write_config` → 读取 → `resolve`，证明落盘链路（`apply_config` 会写
+`[default-model]`，不是只写内存）。
+
 **备选方案（未采用）**
 
 - **继续用 FIELDS 手写表单**：加一个配置项仍要改三处，正是最初的痛点。

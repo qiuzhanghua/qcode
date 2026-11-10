@@ -107,6 +107,24 @@ pub(super) fn default_model_candidates(config: &Config) -> Vec<(String, Vec<Stri
     out
 }
 
+/// `pin_default` 的内存部分：把 provider 与 model 写进 `[default-model]`，
+/// **并**写进 `providers.<provider>.default_model`。
+///
+/// 两处都写不是冗余：`apply_tables` 里 `sync_default_model` 用行值覆盖
+/// `[default-model]`，只写后者的化，用户下次改任何表格字段都会把刚选的模型
+/// 改回去。抽成纯函数是为了能在无窗口的测试里钉住这条不变量。
+pub(super) fn pin_default_fields(config: &mut Config, provider: &str, model: Option<&str>) {
+    config.default_model.provider = Some(provider.to_string());
+    config.default_model.model = model.map(str::to_string);
+    // V2.1：遗留键永不写新值，留着会与 [default-model] 争默认。
+    config.default_provider = None;
+    if let Some(model) = model
+        && let Some(entry) = config.providers.get_mut(provider)
+    {
+        entry.default_model = Some(model.to_string());
+    }
+}
+
 impl SetupView {
     /// 顶部那行「当前默认：provider / model」，现在可点：展开一个按 provider
     /// 分组的候选列表，选中即写 `[default-model]`。
@@ -131,7 +149,13 @@ impl SetupView {
             _ => "未设置默认；将使用第一个可用的提供方。".to_string(),
         };
         let groups = default_model_candidates(&self.config);
+        // 目标 provider：当前默认的那个；没有默认时取候选里的第一个，否则用户
+        // 输入的模型无处可去。
+        let target_provider = provider
+            .clone()
+            .or_else(|| groups.first().map(|(name, _)| name.clone()));
         let shell = cx.entity().downgrade();
+        let input = self.default_model_input.clone();
 
         Popover::new("default-model-popover")
             .anchor(Anchor::BottomLeft)
@@ -191,7 +215,7 @@ impl SetupView {
                                 .on_click(move |_event, window, cx| {
                                     if let Some(shell) = shell.upgrade() {
                                         shell.update(cx, |view, cx| {
-                                            view.pin_default(&p, Some(m.as_str()), cx);
+                                            view.pin_default(&p, Some(m.as_str()), window, cx);
                                         });
                                     }
                                     if let Some(state) = state.upgrade() {
@@ -201,6 +225,60 @@ impl SetupView {
                         );
                     }
                 }
+                // 目录里没有的模型（新版本、网关别名）只能靠手输：候选列表
+                // 只会列出已经登记的值，没有这一行就「设不成功」。
+                let free_text = div()
+                    .mt_1()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(muted)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
+                        match &target_provider {
+                            Some(provider) => format!("设为 {provider} 的默认模型"),
+                            None => "先配置一个 provider".to_string(),
+                        },
+                    ))
+                    .child(Input::new(&input).aria_label("默认模型名"))
+                    .child(
+                        Button::new("set-custom-default-model")
+                            .label("设为默认")
+                            .on_click({
+                                let shell = shell.clone();
+                                let state = state.clone();
+                                let input = input.clone();
+                                let target = target_provider.clone();
+                                move |_event, window, cx| {
+                                    let Some(provider) = target.clone() else {
+                                        return;
+                                    };
+                                    let typed = input.read(cx).value().trim().to_string();
+                                    if typed.is_empty() {
+                                        return;
+                                    }
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |view, cx| {
+                                            view.pin_default(
+                                                &provider,
+                                                Some(typed.as_str()),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                    input.update(cx, |input, cx| {
+                                        input.set_value("", window, cx);
+                                        cx.notify();
+                                    });
+                                    if let Some(state) = state.upgrade() {
+                                        state.update(cx, |state, cx| state.dismiss(window, cx));
+                                    }
+                                }
+                            }),
+                    );
+                rows = rows.child(free_text);
                 rows.into_any_element()
             })
             .into_any_element()
@@ -288,8 +366,8 @@ impl SetupView {
                 head = head.child(
                     Button::new(format!("default-provider-{route}"))
                         .label("设为默认")
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.make_default(&route_for_default, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.make_default(&route_for_default, window, cx);
                         })),
                 );
             }
@@ -477,8 +555,8 @@ impl SetupView {
                 footer = footer.child(
                     Button::new(format!("dialog-default-{route}"))
                         .label("设为默认")
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.make_default(&route_for_default, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.make_default(&route_for_default, window, cx);
                         })),
                 );
             }
@@ -1250,7 +1328,7 @@ impl SetupView {
     /// Pin `route` as the global default (V2.1): write `[default-model]` with
     /// the row's `default_model` (falling back to its first model), and drop
     /// the legacy `default_provider` so it can never shadow the new default.
-    fn make_default(&mut self, route: &str, cx: &mut Context<Self>) {
+    fn make_default(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
         let previous_model = self.config.default_model.model.clone();
         let model = self
             .tables
@@ -1279,20 +1357,24 @@ impl SetupView {
                 .then_some(previous_model)
                 .flatten()
         });
-        self.pin_default(route, model.as_deref(), cx);
+        self.pin_default(route, model.as_deref(), window, cx);
     }
 
     /// 把 `[default-model]` 指向 `provider` / `model` 并立即落盘。设置页顶部
     /// 的选择器和卡片上的「设为默认」都走这里，两条路写的是同一个字段。
+    ///
+    /// 同时把该 provider 行的 `default_model` 一起改掉：`apply_tables` 里的
+    /// `sync_default_model` 会用**行值**覆盖 `[default-model]`，只写后者的话，
+    /// 用户下次改任何表格字段都会把刚选的模型改回去。
     pub(crate) fn pin_default(
         &mut self,
         provider: &str,
         model: Option<&str>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.config.default_model.provider = Some(provider.to_string());
-        self.config.default_model.model = model.map(str::to_string);
-        self.config.default_provider = None;
+        pin_default_fields(&mut self.config, provider, model);
+        self.set_row_default_model(provider, model, window, cx);
         let notice = match model {
             Some(model) => format!("已设 {provider} / {model} 为默认。"),
             None => format!("已设 {provider} 为默认提供方。"),
@@ -1302,6 +1384,38 @@ impl SetupView {
             Err(error) => self.error = Some(error.to_string()),
         }
         cx.notify();
+    }
+
+    /// 把 provider 行里的 `default_model` 单元格也改成 `model`，让界面显示与
+    /// 配置一致（`Input::set_value` 不触发 `Change`，所以不会引起额外保存）。
+    fn set_row_default_model(
+        &mut self,
+        provider: &str,
+        model: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(model) = model else {
+            return;
+        };
+        let Some(input) = self
+            .tables
+            .get("providers")
+            .and_then(|table| {
+                table
+                    .rows
+                    .iter()
+                    .find(|row| cell(row, "name", cx).trim() == provider)
+            })
+            .and_then(|row| row.cells.get("default_model"))
+            .cloned()
+        else {
+            return;
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(model, window, cx);
+            cx.notify();
+        });
     }
 
     /// Open one provider's edit dialog; one provider at a time, so opening a
