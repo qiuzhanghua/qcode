@@ -20,7 +20,10 @@ async-trait.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 globset.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"] }
+# `bundled` compiles SQLite from source. `fallible_uint` is what makes `u64`
+# `ToSql`/`FromSql` exist at all — `Event.seq` and `last_seq` are `u64`, and the
+# two impls moved behind that feature by 0.41 (without it they do not compile).
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 
 [dev-dependencies]
 tempfile.workspace = true

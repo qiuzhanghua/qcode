@@ -66,8 +66,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 ratatui = "=0.29.0"
-# MCP SDK. Pinned: the client API is still pre-1.0 and changes between minors.
-rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-child-process"] }
+# MCP SDK. Pinned to a major-minor we can read: the client API is still
+# pre-1.0 and changes between minors. Bumped 3.2.0 → 3.9.0 for
+# RUSTSEC-2026-0457/0461/0462 (all three are Streamable-HTTP / OAuth paths;
+# this crate only enables `client` + `transport-child-process`, so they were
+# never reachable here — the bump is to get off a version the audit reports).
+rmcp = { version = "=3.9.0", default-features = false, features = ["client", "transport-child-process"] }
 
 # 发布体积。GUI 版（`--features gui`）把整个 GPU 栈静态链进来，不加这几项时
 # 本机构建是 88 MB，其中 20 MB 是 `.symtab` 里的 18.5 万个符号名。
