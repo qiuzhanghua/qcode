@@ -28,6 +28,17 @@ fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
+/// Whether a pid still exists. `kill -0` needs no `/proc` and no `ps`; the
+/// session reaps its child, so a reaped pid answers "no" here.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn run(program: &str, args: &[&str]) -> Session {
     let config = SessionConfig::command(program, args.iter().map(|arg| arg.to_string()));
     Session::spawn(config).expect("spawn a child on a PTY")
@@ -442,18 +453,16 @@ fn a_flooding_child_is_not_left_running_after_close() {
     // counting as a match.
     let flood = format!("yes {}", marker(4));
     let session = run("/bin/sh", &["-c", &flood]);
-    assert!(
-        wait_until(|| !processes_matching(&flood).is_empty()),
-        "the flood never started, so this test would pass vacuously ({} )",
-        probe_help()
-    );
+    let pid = session.pid();
+    // 直接看会话的子进程：macOS runner 上 `ps` / `pgrep` 的命令行展示都不可靠，
+    // 而 close 要保证的正是「这个 pid 不在了」。
+    assert!(pid_alive(pid), "the flood never started (pid {pid})");
 
     session.close();
 
     assert!(
-        wait_until(|| processes_matching(&flood).is_empty()),
-        "closing a flooding tab left {:?} running",
-        processes_matching(&flood)
+        wait_until(|| !pid_alive(pid)),
+        "closing a flooding tab left pid {pid} running"
     );
 }
 
