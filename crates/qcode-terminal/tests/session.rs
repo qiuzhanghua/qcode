@@ -134,7 +134,7 @@ fn probe_help() -> String {
                 "status={:?} stderr={:?} stdout[..800]={:?}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr),
-                &String::from_utf8_lossy(&output.stdout)
+                String::from_utf8_lossy(&output.stdout)
                     .chars()
                     .take(800)
                     .collect::<String>()
