@@ -12,6 +12,8 @@ use qcode_core::policy::{Action, Rule};
 use qcode_kernel::config::{self, Config, NetworkMode, ProviderConfig, UnknownHost};
 use qcode_kernel::config_edit::ConfigEdit;
 use qcode_tools::sandbox::SandboxMode;
+
+use qcode_kernel::config::SandboxNetworkMode;
 use qcode_tools::web_search::SearchBackend;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;

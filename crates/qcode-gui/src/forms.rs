@@ -102,7 +102,7 @@ const SANDBOX_MODES: &[&str] = &["none", "landlock", "bwrap"];
 const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec"];
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const SANDBOX_MODES: &[&str] = &["none"];
-const NETWORK_MODES: &[&str] = &["off", "proxy", "strict"];
+const NETWORK_MODES: &[&str] = &["off", "proxy", "strict", "open"];
 const UNKNOWN_HOSTS: &[&str] = &["ask", "deny", "allow"];
 const SEARCH_BACKENDS: &[&str] = &["brave", "tavily", "searxng"];
 const RULE_ACTIONS: &[&str] = &["allow", "ask", "deny"];
@@ -244,10 +244,24 @@ pub const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         path: &["sandbox", "network"],
-        label: "Allow network in sandbox",
+        label: "Network",
         page: Page::NetworkSandbox,
-        kind: FieldKind::Bool,
-        help: "Ignored when network.mode = strict",
+        kind: FieldKind::Select(NETWORK_MODES),
+        help: "off: no egress; proxy: through the proxy; strict: proxy only (macOS); open: raw sockets",
+    },
+    FieldSpec {
+        path: &["approval", "allow"],
+        label: "Always allow",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Lines,
+        help: "One `tool:pattern` per line, e.g. run_shell:echo * (ADR-0065)",
+    },
+    FieldSpec {
+        path: &["approval", "deny"],
+        label: "Never allow",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Lines,
+        help: "Same shorthand; a deny wins over an allow",
     },
     FieldSpec {
         path: &["sandbox", "extra_writable"],

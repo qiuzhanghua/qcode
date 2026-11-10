@@ -445,7 +445,7 @@ impl Doctor {
         // preflight independent of a live proxy.
         let network = if strict {
             SandboxNetwork::Deny
-        } else if config.sandbox.network {
+        } else if config.network_plan().raw {
             SandboxNetwork::Allow
         } else {
             SandboxNetwork::Deny

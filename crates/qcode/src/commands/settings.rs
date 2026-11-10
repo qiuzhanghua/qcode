@@ -46,6 +46,9 @@ pub(crate) fn cmd_config(
                         report.folded_defaults
                     );
                 }
+                if report.folded_network {
+                    println!("  folded [network] enabled/mode into [sandbox] network");
+                }
                 if report.collapsed_models > 0 {
                     println!(
                         "  collapsed {} model table(s) into `models = [\"id\", …]`",

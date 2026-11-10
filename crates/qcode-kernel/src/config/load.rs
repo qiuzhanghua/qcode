@@ -392,7 +392,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "terminal",
         ],
     ),
-    ("approval", &["rules"]),
+    ("approval", &["rules", "allow", "deny"]),
     ("context", &["window_tokens"]),
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     ("mcp", &["servers"]),

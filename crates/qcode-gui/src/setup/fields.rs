@@ -48,6 +48,11 @@ pub(crate) fn secret_input(
 pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) -> String {
     match path {
         ["context", "window_tokens"] => config.context.window_tokens.to_string(),
+        ["sandbox", "network"] => config
+            .sandbox
+            .network_mode_with(&config.network)
+            .label()
+            .to_string(),
         ["agent", "max_turns"] => config.agent.max_turns.to_string(),
         ["agent", "max_cost_usd"] => config
             .agent
@@ -95,6 +100,8 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         ["shell", "env_command"] => config.shell.env_command.clone(),
         ["shell", "env_timeout_ms"] => config.shell.env_timeout_ms.to_string(),
         ["shell", "env_ttl_secs"] => config.shell.env_ttl_secs.to_string(),
+        ["approval", "allow"] => config.approval.allow.join("\n"),
+        ["approval", "deny"] => config.approval.deny.join("\n"),
         ["shell", "env_include"] => config.shell.env_include.join("\n"),
         ["shell", "env_exclude"] => config.shell.env_exclude.join("\n"),
         ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed.to_string(),
@@ -111,7 +118,6 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
 pub(crate) fn scalar_bool(config: &Config, path: &[&str]) -> bool {
     match path {
         ["agent", "snapshot_shell"] => config.agent.snapshot_shell,
-        ["sandbox", "network"] => config.sandbox.network,
         ["network", "enabled"] => config.network.enabled,
         ["network", "allow_private"] => config.network.allow_private,
         ["network", "audit"] => config.network.audit,
@@ -153,6 +159,8 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
         ["shell", "env_ttl_secs"] => {
             config.shell.env_ttl_secs = parse(value, "shell.env_ttl_secs")?
         }
+        ["approval", "allow"] => config.approval.allow = lines_from(value),
+        ["approval", "deny"] => config.approval.deny = lines_from(value),
         ["shell", "env_include"] => config.shell.env_include = lines_from(value),
         ["shell", "env_exclude"] => config.shell.env_exclude = lines_from(value),
         ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed = value == "true",
@@ -175,7 +183,7 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             };
         }
         ["sandbox", "mode"] => config.sandbox.mode = parse_sandbox(value)?,
-        ["sandbox", "network"] => config.sandbox.network = value == "true",
+        ["sandbox", "network"] => config.sandbox.network = Some(parse_sandbox_network(value)?),
         ["sandbox", "extra_writable"] => {
             config.sandbox.extra_writable = lines_from(value)
                 .into_iter()
@@ -354,6 +362,16 @@ pub(crate) fn parse_f64(
     cx: &Context<SetupView>,
 ) -> Result<f64, String> {
     parse(&cell(row, key, cx), key)
+}
+
+pub(crate) fn parse_sandbox_network(value: &str) -> Result<SandboxNetworkMode, String> {
+    match value {
+        "off" => Ok(SandboxNetworkMode::Off),
+        "proxy" => Ok(SandboxNetworkMode::Proxy),
+        "strict" => Ok(SandboxNetworkMode::Strict),
+        "open" => Ok(SandboxNetworkMode::Open),
+        other => Err(format!("unknown network mode {other}")),
+    }
 }
 
 pub(crate) fn parse_sandbox(value: &str) -> Result<SandboxMode, String> {

@@ -35,7 +35,11 @@ pub fn build_policy(
             }
             rules
         }
-        None => loaded.approval.rules.clone(),
+        None => {
+            let mut rules = loaded.approval.rules.clone();
+            rules.extend(loaded.approval.shorthand_rules());
+            rules
+        }
     };
     Ok(Policy::new(rules))
 }
@@ -54,7 +58,7 @@ pub async fn build_egress(
     data_dir: &Path,
     base_url: Option<&str>,
 ) -> Result<Option<Arc<Egress>>, Box<dyn std::error::Error>> {
-    if !loaded.network.enabled || loaded.network.mode == config::NetworkMode::Off {
+    if !loaded.network_plan().proxy {
         return Ok(None);
     }
     let mut allow = loaded.network.allow.clone();
@@ -94,7 +98,7 @@ fn sandbox_network(
     loaded: &config::Config,
     egress: Option<&Egress>,
 ) -> Result<SandboxNetwork, Box<dyn std::error::Error>> {
-    if loaded.network.mode == config::NetworkMode::Strict {
+    if loaded.network_plan().strict {
         if loaded.sandbox.mode != SandboxMode::SandboxExec {
             return Err(
                 "network.mode = \"strict\" requires [sandbox] mode = \"sandbox-exec\" (macOS)"
@@ -108,7 +112,7 @@ fn sandbox_network(
             port: egress.port(),
         });
     }
-    Ok(if loaded.sandbox.network {
+    Ok(if loaded.network_plan().raw {
         SandboxNetwork::Allow
     } else {
         SandboxNetwork::Deny

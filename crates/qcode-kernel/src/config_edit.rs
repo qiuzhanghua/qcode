@@ -336,7 +336,10 @@ impl ConfigEdit {
         )?;
 
         self.set_str(&["sandbox", "mode"], sandbox_mode(&config.sandbox.mode))?;
-        self.set_bool(&["sandbox", "network"], config.sandbox.network)?;
+        self.set_str(
+            &["sandbox", "network"],
+            config.sandbox.network_mode_with(&config.network).label(),
+        )?;
         self.set_string_array(
             &["sandbox", "extra_writable"],
             config
@@ -458,6 +461,11 @@ impl ConfigEdit {
             rules.push(table);
         }
         self.set_array_of_tables(&["approval", "rules"], rules)?;
+        self.set_string_array(
+            &["approval", "allow"],
+            config.approval.allow.iter().cloned(),
+        )?;
+        self.set_string_array(&["approval", "deny"], config.approval.deny.iter().cloned())?;
 
         let mut servers = Vec::new();
         for server in &config.mcp.servers {
@@ -748,7 +756,7 @@ mod tests {
         config.agent.max_cost_usd = Some(0.5);
         config.agent.snapshot_shell = false;
         config.sandbox.mode = SandboxMode::SandboxExec;
-        config.sandbox.network = false;
+        config.sandbox.network = Some(crate::config::SandboxNetworkMode::Proxy);
         config.sandbox.extra_writable = vec![std::path::PathBuf::from("/tmp/extra")];
         config.network.mode = NetworkMode::Strict;
         config.network.allow = vec!["api.example.com:443".to_string()];
@@ -956,6 +964,8 @@ pub struct MigrationReport {
     pub folded_defaults: usize,
     /// `[[providers.*.models]]` tables collapsed to `models = ["id"]`.
     pub collapsed_models: usize,
+    /// `[network] enabled`/`mode` folded into `[sandbox] network`.
+    pub folded_network: bool,
     /// Where the pre-migration copy went, when a file was rewritten.
     pub backup: Option<PathBuf>,
 }
@@ -986,6 +996,7 @@ pub fn migrate_user_config(path: &Path) -> Result<MigrationReport, ConfigError> 
 
     let mut folded_defaults = 0usize;
     let mut collapsed_models = 0usize;
+    let mut folded_network = false;
 
     // 1. `[providers.X].default_model` → `[default-model]` when that is still
     //    empty. A provider that loses its key keeps working: the resolver falls
@@ -1092,7 +1103,46 @@ pub fn migrate_user_config(path: &Path) -> Result<MigrationReport, ConfigError> 
         collapsed_models += count;
     }
 
-    // 3. The version key itself. A file that says `version` keeps the key and
+    // 3. `[network] enabled/mode` → `[sandbox] network` (ADR-0065). The rest of
+    //    the section (allow list, unknown policy, audit) stays where it is: the
+    //    knob answers "may it reach the network", not "which hosts".
+    let legacy_enabled = edit
+        .document()
+        .get("network")
+        .and_then(|item| item.as_table_like())
+        .and_then(|table| table.get("enabled"))
+        .and_then(|item| item.as_bool());
+    let legacy_mode = edit
+        .document()
+        .get("network")
+        .and_then(|item| item.as_table_like())
+        .and_then(|table| table.get("mode"))
+        .and_then(|item| item.as_str())
+        .map(str::to_string);
+    // A legacy `network = true|false` is a bool, not a mode name; only a string
+    // counts as "already migrated".
+    let knob = edit
+        .document()
+        .get("sandbox")
+        .and_then(|item| item.as_table_like())
+        .and_then(|table| table.get("network"));
+    let legacy_flag = knob.and_then(|item| item.as_bool());
+    let has_knob = knob.is_some_and(|item| item.as_str().is_some());
+    if !has_knob && (legacy_enabled.is_some() || legacy_mode.is_some()) {
+        let mode = match (legacy_mode.as_deref(), legacy_enabled, legacy_flag) {
+            (_, _, Some(true)) => "open",
+            (Some("strict"), _, _) => "strict",
+            (Some("off"), _, _) => "off",
+            (_, Some(false), _) => "off",
+            _ => "proxy",
+        };
+        let _ = edit.set_str(&["sandbox", "network"], mode);
+        edit.remove(&["network", "mode"]);
+        edit.remove(&["network", "enabled"]);
+        folded_network = true;
+    }
+
+    // 4. The version key itself. A file that says `version` keeps the key and
     //    gets the new number; renaming it would drop the comment attached to it,
     //    and the alias makes both spellings read the same. Files that already
     //    say `schema` (or said nothing) get `schema`.
@@ -1113,6 +1163,7 @@ pub fn migrate_user_config(path: &Path) -> Result<MigrationReport, ConfigError> 
         changed: true,
         folded_defaults,
         collapsed_models,
+        folded_network,
         backup: Some(backup_path(path)),
     })
 }
@@ -1190,6 +1241,43 @@ models = [{{ id = "m", name = "M" }}]
         assert_eq!(
             loaded.default_model.model.as_deref(),
             Some("deepseek-flash")
+        );
+    }
+
+    #[test]
+    fn migrate_folds_the_network_switch_and_keeps_the_host_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"version = 1
+
+[sandbox]
+mode = "sandbox-exec"
+network = false
+
+[network]
+enabled = false
+allow = ["api.deepseek.com"]
+audit = true
+"#,
+        )
+        .expect("write");
+
+        let report = migrate_user_config(&path).expect("migrate");
+        assert!(report.folded_network);
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains(r#"network = "off""#), "{text}");
+        assert!(!text.contains("enabled = false"), "{text}");
+        // The host list is not part of the switch and stays put.
+        assert!(text.contains(r#"allow = ["api.deepseek.com"]"#), "{text}");
+        assert!(text.contains("audit = true"), "{text}");
+
+        let loaded: crate::config::Config = toml::from_str(&text).expect("reload");
+        assert_eq!(
+            loaded.sandbox_network_mode(),
+            crate::config::SandboxNetworkMode::Off
         );
     }
 

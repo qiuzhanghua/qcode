@@ -5728,6 +5728,15 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 - `models` 的两种写法由 `models_from_entries_or_ids` 统一接受（`["id"]` 或
   `[{ id, name, context_window }]`，可混写）；`migrate` 只把「只有一个 `id`」的表折成
   字符串数组，带元数据的表原样保留。
+- 网络：`[sandbox] network` 接受 `off`/`proxy`/`strict`/`open`，也接受旧布尔（`true` 读作
+  `open`，`false` 读作「没表态」）。这四个值折成 `Config::network_plan() -> NetworkPlan { proxy, strict, raw }`，
+  `build_egress` 与 `sandbox_network` 都只读这份计划，不再各读一个键。缺省（没写这个键）时仍按
+  `[network] mode/enabled` 推导，所以 v1 文件的行为不变。`migrate` 把 `[network] enabled/mode`
+  折成 `[sandbox] network` 并删掉这两个键，**保留** `allow`/`allow_private`/`unknown`/`audit`——
+  这个开关回答的是「能不能上网」，不是「能上哪些主机」。
+- 审批简写：`[approval] allow = ["run_shell:echo *"]` / `deny = [...]` 在 `build_policy` 里展开成
+  `Rule`（`run_shell` 用 `command_prefix`，其他工具用 `path_glob`，裸工具名只匹配工具），id 为
+  `allow-0`/`deny-1` 这样的序号；`[[approval.rules]]` 保留给需要 scope 或多条件的情况。
 - 设置页写回时**不改 schema**：`ConfigEdit::apply_config` 只在文件里本就有 `schema`、
   或完全没有版本键时才写 `schema`，否则保持原样——升级只发生在 `qc config migrate`。
 

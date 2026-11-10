@@ -42,6 +42,13 @@ pub(crate) fn print_config(config: &config::Config) {
             provider.base_url, provider.default_model, provider.api_key_env, provider.stream_usage
         );
     }
+    let plan = config.network_plan();
+    println!(
+        "sandbox.network = {} (proxy: {}, raw: {})",
+        config.sandbox_network_mode().label(),
+        plan.proxy,
+        plan.raw
+    );
     println!(
         "network.enabled = {}, allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
         config.network.enabled,
@@ -73,7 +80,7 @@ pub(crate) fn print_config(config: &config::Config) {
     println!(
         "sandbox.mode = {}, network = {}, extra_writable = {:?}",
         config.sandbox.mode.label(),
-        config.sandbox.network,
+        config.sandbox_network_mode().label(),
         config.sandbox.extra_writable
     );
     println!(

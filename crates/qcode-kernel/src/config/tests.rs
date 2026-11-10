@@ -12,7 +12,7 @@ fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 fn sandbox_mode_defaults_to_the_platform_backend() {
     let config: Config = toml::from_str("").unwrap();
     assert_eq!(config.sandbox.mode, default_sandbox_mode());
-    assert!(!config.sandbox.network);
+    assert_eq!(config.sandbox.network, None);
 
     let config: Config = toml::from_str(
         r#"
@@ -23,7 +23,7 @@ fn sandbox_mode_defaults_to_the_platform_backend() {
     )
     .unwrap();
     assert_eq!(config.sandbox.mode, SandboxMode::SandboxExec);
-    assert!(config.sandbox.network);
+    assert_eq!(config.sandbox.network, Some(SandboxNetworkMode::Open));
 
     let config: Config = toml::from_str("[sandbox]\nmode = \"bwrap\"\n").unwrap();
     assert_eq!(config.sandbox.mode, SandboxMode::Bwrap);
@@ -703,13 +703,15 @@ fn project_context_and_sandbox_only_override_when_present() {
     .unwrap();
     let merged = load_merged(&base_path, &workspace).expect("merged");
     assert_eq!(merged.context.window_tokens, 32_000);
-    assert!(merged.sandbox.network);
+    assert_eq!(merged.sandbox.network, Some(SandboxNetworkMode::Open));
 
     // A project file without these sections must not reset the user values.
     std::fs::write(workspace.join(".qcode/config.toml"), "\n").unwrap();
     let merged = load_merged(&base_path, &workspace).expect("merged without sections");
     assert_eq!(merged.context.window_tokens, 100_000);
-    assert!(!merged.sandbox.network);
+    // The user file says `network = false`, which is the pre-ADR spelling of
+    // "no explicit choice" — the plan then follows `[network]`.
+    assert_eq!(merged.sandbox.network, None);
 }
 
 #[test]
@@ -1192,4 +1194,114 @@ fn a_version_key_is_read_as_the_schema() {
     assert_eq!(config.schema, 1);
     let config: Config = toml::from_str("schema = 2\n").expect("parse");
     assert_eq!(config.schema, 2);
+}
+
+#[test]
+fn approval_shorthand_expands_to_prefix_and_glob_rules() {
+    let config: Config = toml::from_str(
+        r#"
+[approval]
+allow = ["run_shell:echo *", "read_file:src/**", "web_search"]
+deny = ["run_shell:rm -rf *"]
+"#,
+    )
+    .expect("parse");
+    let rules = config.approval.shorthand_rules();
+    assert_eq!(rules.len(), 4);
+
+    assert_eq!(rules[0].id, "allow-0");
+    assert_eq!(rules[0].tool.as_deref(), Some("run_shell"));
+    assert_eq!(rules[0].command_prefix.as_deref(), Some("echo "));
+    assert!(matches!(rules[0].action, Action::Allow));
+
+    assert_eq!(rules[1].path_glob.as_deref(), Some("src/**"));
+    assert_eq!(rules[1].tool.as_deref(), Some("read_file"));
+
+    // A bare tool matches the tool alone.
+    assert_eq!(rules[2].tool.as_deref(), Some("web_search"));
+    assert!(rules[2].command_prefix.is_none());
+    assert!(rules[2].path_glob.is_none());
+
+    assert_eq!(rules[3].id, "deny-0");
+    assert!(matches!(rules[3].action, Action::Deny));
+}
+
+#[test]
+fn approval_shorthand_decides_like_the_long_form() {
+    use qcode_core::policy::Policy;
+    use qcode_core::tool::ApprovalClass;
+    use serde_json::json;
+
+    let config: Config =
+        toml::from_str("[approval]\nallow = [\"run_shell:echo *\"]\n").expect("parse");
+    let policy = Policy::new(config.approval.shorthand_rules());
+
+    let allowed = policy.evaluate(
+        "run_shell",
+        ApprovalClass::Execute,
+        &json!({"command": "echo hi"}),
+    );
+    assert!(matches!(allowed.action, Action::Allow), "{allowed:?}");
+    let denied = policy.evaluate(
+        "run_shell",
+        ApprovalClass::Execute,
+        &json!({"command": "rm -rf /"}),
+    );
+    assert!(!matches!(denied.action, Action::Allow), "{denied:?}");
+}
+
+#[test]
+fn an_unknown_allow_key_in_approval_is_reported() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[approval]\nallows = [\"x\"]\n").expect("write");
+    let workspace = dir.path().to_path_buf();
+    let _ = workspace;
+    let document: toml::Table = toml::from_str("[approval]\nallows = [\"x\"]\n").expect("parse");
+    let unknown = crate::config::unknown_keys(&document);
+    assert!(
+        unknown.iter().any(|key| key == "approval.allows"),
+        "{unknown:?}"
+    );
+}
+
+#[test]
+fn the_network_plan_folds_the_legacy_keys_in() {
+    // A file written before ADR-0065: `[network] enabled = false`.
+    let config: Config = toml::from_str("[network]\nenabled = false\n").expect("parse");
+    assert!(!config.network_plan().proxy);
+    assert_eq!(config.sandbox_network_mode(), SandboxNetworkMode::Off);
+
+    // The default: proxy on, sandbox loopback-only.
+    let config = Config::default();
+    assert!(config.network_plan().proxy);
+    assert!(!config.network_plan().raw);
+    assert_eq!(config.sandbox_network_mode(), SandboxNetworkMode::Proxy);
+
+    // `[network] mode = "strict"` still means strict.
+    let config: Config = toml::from_str("[network]\nmode = \"strict\"\n").expect("parse");
+    assert!(config.network_plan().strict);
+
+    // `[sandbox] network = true` used to mean raw network.
+    let config: Config = toml::from_str("[sandbox]\nnetwork = true\n").expect("parse");
+    assert_eq!(config.sandbox_network_mode(), SandboxNetworkMode::Open);
+    assert!(config.network_plan().raw);
+    assert!(!config.network_plan().proxy);
+}
+
+#[test]
+fn the_new_switch_wins_over_the_legacy_section() {
+    let config: Config =
+        toml::from_str("[network]\nenabled = true\n\n[sandbox]\nnetwork = \"off\"\n")
+            .expect("parse");
+    let plan = config.network_plan();
+    assert!(!plan.proxy);
+    assert!(!plan.raw);
+    assert_eq!(config.sandbox_network_mode(), SandboxNetworkMode::Off);
+
+    let config: Config =
+        toml::from_str("[network]\nenabled = true\n\n[sandbox]\nnetwork = \"open\"\n")
+            .expect("parse");
+    assert!(config.network_plan().raw);
+    assert!(!config.network_plan().proxy);
 }
