@@ -17,7 +17,7 @@ use crate::{
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
     App, Bounds, Context, FontStyle, FontWeight, Hsla, Pixels, SharedString, Styled, TextRun,
-    Window, canvas, div, point, prelude::*, px, rgb,
+    Window, canvas, div, point, prelude::*, px, rgb, rgba,
 };
 use qcode_terminal::View;
 use qcode_terminal::alacritty_terminal::term::TermMode;
@@ -171,6 +171,11 @@ impl Shell {
             //
             // The top corners get no radius for the same reason: a rounded corner
             // needs a top edge to turn, and there is none.
+            //
+            // `rgba(0x7f7f7f20)` rather than `theme.border`: the panel border is a
+            // divider between two dark surfaces, not a control outline, so it should
+            // be a hint of an edge. The same token is used for the transcript and
+            // settings separators.
             .child(
                 div()
                     .flex_1()
@@ -181,7 +186,7 @@ impl Shell {
                     .border_l_1()
                     .border_r_1()
                     .border_b_1()
-                    .border_color(cx.theme().border)
+                    .border_color(rgba(0x7f_7f_7f_20))
                     .child(self.render_terminal_body(cx)),
             )
     }
