@@ -8,6 +8,7 @@ use crate::{CAPTION_SIZE, SECONDARY_SIZE, sp};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::popover::Popover;
 
 /// `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`: a route id usable as a settings key.
 fn route_valid(route: &str) -> bool {
@@ -64,7 +65,147 @@ fn provider_usable(
     true
 }
 
+/// 默认模型选择器的候选：按 provider 分组，来自**内存里的草稿配置**。
+///
+/// 与 `crate::provider_models` 有两点不同，都是刻意的：
+///
+/// - 读 `config` 而不是磁盘上的 config.toml —— 设置页正在编辑的就是这份草稿，
+///   改了 provider 的模型目录还没落盘时，选择器就该看得见。
+/// - 不按凭证/端点可用性过滤。设置页正是补凭证的地方；把 provider 从列表里
+///   藏起来，用户会以为自己的修改没保存。真正不能用的 provider 在跑任务时
+///   才会报错，那时错误信息比列表里少一行有用得多。
+pub(super) fn default_model_candidates(config: &Config) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for (name, provider) in &config.providers {
+        // mock 路由不是真 provider，不该被选成默认。
+        if matches!(
+            name.as_str(),
+            "mock" | "mock-tools" | "mock-approval" | "mock-todo" | "mock-subagent"
+        ) {
+            continue;
+        }
+        let mut models: Vec<String> = provider
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        if let Some(default) = &provider.default_model
+            && !models.iter().any(|model| model == default)
+        {
+            models.push(default.clone());
+        }
+        if models.is_empty() {
+            models = config::catalog_models(name)
+                .into_iter()
+                .map(|model| model.id)
+                .collect();
+        }
+        if !models.is_empty() {
+            out.push((name.clone(), models));
+        }
+    }
+    out
+}
+
 impl SetupView {
+    /// 顶部那行「当前默认：provider / model」，现在可点：展开一个按 provider
+    /// 分组的候选列表，选中即写 `[default-model]`。
+    ///
+    /// 加这个入口之前，设置页**没有**改默认模型的途径：每张卡片的「设为默认」
+    /// 只改 provider（已经是默认时不渲染），而 provider 行里的「Default
+    /// model」被 `[default-model].model` 压着（见 `sync_default_model`）。
+    /// 于是「换同一家的另一个模型」这件事只能在底部模型菜单里做，或者手改
+    /// config.toml。这里把它放回设置页。
+    ///
+    /// 候选来自内存里的草稿配置而不是磁盘：正在编辑的就是它。也不按凭证过滤
+    /// ——设置页正是补凭证的地方，把 provider 藏起来只会让人以为它没保存。
+    fn render_default_model_line(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let hovered = theme.secondary;
+        let provider = self.config.default_model.provider.clone();
+        let model = self.config.default_model.model.clone();
+        let label = match (&provider, &model) {
+            (Some(provider), Some(model)) => format!("当前默认：{provider} / {model}"),
+            (Some(provider), None) => format!("当前默认提供方：{provider}"),
+            _ => "未设置默认；将使用第一个可用的提供方。".to_string(),
+        };
+        let groups = default_model_candidates(&self.config);
+        let shell = cx.entity().downgrade();
+
+        Popover::new("default-model-popover")
+            .anchor(Anchor::BottomLeft)
+            .appearance(true)
+            .overlay_closable(true)
+            .trigger(
+                Button::new("default-model-trigger")
+                    .label(label)
+                    .text()
+                    .dropdown_caret(true),
+            )
+            .content(move |_state, _window, cx| {
+                let state = cx.entity().downgrade();
+                let mut rows = div().flex().flex_col().gap_1().p_1().min_w(px(240.0));
+                if groups.is_empty() {
+                    rows = rows.child(
+                        div()
+                            .p_2()
+                            .text_size(sp(SECONDARY_SIZE))
+                            .text_color(muted)
+                            .child("还没有可选的模型：先给一个 provider 配上模型或默认模型。"),
+                    );
+                }
+                for (group_provider, models) in &groups {
+                    rows = rows.child(
+                        div()
+                            .h(px(22.0))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted)
+                            .child(group_provider.clone()),
+                    );
+                    for group_model in models {
+                        let checked = provider.as_deref() == Some(group_provider.as_str())
+                            && model.as_deref() == Some(group_model.as_str());
+                        let p = group_provider.clone();
+                        let m = group_model.clone();
+                        let shell = shell.clone();
+                        let state = state.clone();
+                        rows = rows.child(
+                            div()
+                                .id(format!("default-model-row-{group_provider}-{group_model}"))
+                                .h(px(24.0))
+                                .px_2()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .text_size(sp(SECONDARY_SIZE))
+                                .hover(move |this| this.bg(hovered))
+                                .child(div().flex_1().child(m.clone()))
+                                .when(checked, |this| this.child("✓"))
+                                .on_click(move |_event, window, cx| {
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |view, cx| {
+                                            view.pin_default(&p, Some(m.as_str()), cx);
+                                        });
+                                    }
+                                    if let Some(state) = state.upgrade() {
+                                        state.update(cx, |state, cx| state.dismiss(window, cx));
+                                    }
+                                }),
+                        );
+                    }
+                }
+                rows.into_any_element()
+            })
+            .into_any_element()
+    }
+
     /// The provider card list: saved notice, one card per directory row, the
     /// inline editor for the open route, and the add actions.
     pub(crate) fn render_models_providers(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -75,21 +216,9 @@ impl SetupView {
             (theme.success, theme.muted_foreground, theme.border);
         let mut cards = div().flex().flex_col().gap_2();
         // V2.1: the three legacy default fields were removed; the effective
-        // default is summarized here and pinned per card via "设为默认".
-        let default_line = match (
-            self.config.default_model.provider.as_deref(),
-            self.config.default_model.model.as_deref(),
-        ) {
-            (Some(provider), Some(model)) => format!("当前默认：{provider} / {model}"),
-            (Some(provider), None) => format!("当前默认提供方：{provider}"),
-            _ => "未设置默认；将使用第一个可用的提供方。".to_string(),
-        };
-        cards = cards.child(
-            div()
-                .text_size(sp(SECONDARY_SIZE))
-                .text_color(muted_color)
-                .child(default_line),
-        );
+        // default is summarized here (and changeable by clicking it) and
+        // pinned per card via "设为默认".
+        cards = cards.child(self.render_default_model_line(cx));
         if let Some(notice) = &self.saved_notice {
             cards = cards.child(
                 div()
@@ -445,6 +574,15 @@ impl SetupView {
             .into_any_element()
     }
 
+    /// 本行的 `default_model` 是否被 `[default-model].model` 压住（读配置时
+    /// 那个字段优先）。判据在 `overridden_default_model` 里，这里只负责把
+    /// 行里的值读出来。
+    fn overridden_by_global(&self, row: &RowState, cx: &Context<Self>) -> Option<String> {
+        let own = cell(row, "default_model", cx);
+        let name = cell(row, "name", cx);
+        overridden_default_model(&self.config.default_model, &name, &own).map(str::to_string)
+    }
+
     /// One labeled provider column in the edit dialog's expanded section
     /// (protocol / base URL / key env / …). The provider id column is handled
     /// by the dialog itself.
@@ -455,6 +593,7 @@ impl SetupView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let key = "providers";
+        let muted_color = cx.theme().muted_foreground;
         let control = match column.kind {
             FieldKind::Bool => Switch::new(format!("table-{key}-{}-{}", row.id, column.key))
                 .checked(*row.bools.get(column.key).unwrap_or(&false))
@@ -516,9 +655,26 @@ impl SetupView {
             }
             _ => {
                 let input = row.cells.get(column.key)?;
-                Input::new(input)
+                let control = Input::new(input)
                     .aria_label(column.label)
-                    .into_any_element()
+                    .into_any_element();
+                if column.key != "default_model" {
+                    return Some(control);
+                }
+                // `[default-model].model` 压着这一行（provider 匹配时它优先），
+                // 不改 `[default-model]` 的话这里填什么都不生效。保存会把它
+                // 同步过去（`sync_default_model`），但改完还没保存的那几秒
+                // 必须说清楚现在生效的是哪个，否则又是一次「改了没反应」。
+                let mut field = div().flex().flex_col().gap_1().child(control);
+                if let Some(global) = self.overridden_by_global(row, cx) {
+                    field = field.child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted_color)
+                            .child(format!("被全局默认「{global}」覆盖；保存后以这里为准")),
+                    );
+                }
+                field.into_any_element()
             }
         };
         Some(
@@ -1095,6 +1251,7 @@ impl SetupView {
     /// the row's `default_model` (falling back to its first model), and drop
     /// the legacy `default_provider` so it can never shadow the new default.
     fn make_default(&mut self, route: &str, cx: &mut Context<Self>) {
+        let previous_model = self.config.default_model.model.clone();
         let model = self
             .tables
             .get("providers")
@@ -1115,11 +1272,33 @@ impl SetupView {
                     Some(default_model)
                 }
             });
-        self.config.default_model.provider = Some(route.to_string());
-        self.config.default_model.model = model;
+        // 同一 provider 再点「设为默认」不该丢掉已经钉好的模型（比如从底部
+        // 菜单切过的那一个）：没有行内默认时保留旧值。
+        let model = model.or_else(|| {
+            (self.config.default_model.provider.as_deref() == Some(route))
+                .then_some(previous_model)
+                .flatten()
+        });
+        self.pin_default(route, model.as_deref(), cx);
+    }
+
+    /// 把 `[default-model]` 指向 `provider` / `model` 并立即落盘。设置页顶部
+    /// 的选择器和卡片上的「设为默认」都走这里，两条路写的是同一个字段。
+    pub(crate) fn pin_default(
+        &mut self,
+        provider: &str,
+        model: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        self.config.default_model.provider = Some(provider.to_string());
+        self.config.default_model.model = model.map(str::to_string);
         self.config.default_provider = None;
+        let notice = match model {
+            Some(model) => format!("已设 {provider} / {model} 为默认。"),
+            None => format!("已设 {provider} 为默认提供方。"),
+        };
         match super::save::write_config(&self.path, &self.config) {
-            Ok(()) => self.saved_notice = Some(format!("已设 {route} 为默认。")),
+            Ok(()) => self.saved_notice = Some(notice),
             Err(error) => self.error = Some(error.to_string()),
         }
         cx.notify();

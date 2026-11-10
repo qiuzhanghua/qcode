@@ -1,5 +1,31 @@
 use super::*;
 
+/// `keep_foreign_default_model` 的判定本体（纯函数，便于在无窗口的测试里
+/// 覆盖）：draft 的 `[default-model]` 若没被这次保存改过，就用磁盘上的现值
+/// 覆盖它。
+///
+/// 为什么需要：设置页每写一次表格都会重写整份配置，而 `[default-model]`
+/// 也在这份配置里——但它的另一个写者（主窗口模型菜单的「切即默认」）在
+/// 设置窗口之外。不刷新就会用草稿里的旧值把人家刚切的模型改回去。
+pub(crate) fn adopt_disk_default_model(
+    draft: &mut Config,
+    snapshot: &config::DefaultModelConfig,
+    disk: Option<&Config>,
+) {
+    let moved = draft.default_model.provider != snapshot.provider
+        || draft.default_model.model != snapshot.model;
+    if moved {
+        // 这次保存刚刚改过它（`sync_default_model`：用户编辑了默认 provider
+        // 的 Default model）—— 草稿才是新的，磁盘上的是旧值。
+        return;
+    }
+    let Some(disk) = disk else {
+        return;
+    };
+    draft.default_model.provider = disk.default_model.provider.clone();
+    draft.default_model.model = disk.default_model.model.clone();
+}
+
 impl SetupView {
     pub(crate) fn next(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.validate_page(cx) {
@@ -75,8 +101,20 @@ impl SetupView {
         Ok(config)
     }
 
+    /// 设置页**不拥有** `[default-model]`：主窗口的模型菜单（「切即默认」）
+    /// 也写它，而这份草稿是窗口打开那一刻读的。写盘前把磁盘上的现值取回来，
+    /// 否则一次无关的表格自动保存会把用户刚在主窗口切好的模型改回草稿里的
+    /// 旧值 —— 又是一次「改完又被改回去」。
+    ///
+    /// 例外：这次保存**刚刚**改过它（`sync_default_model`：用户编辑了默认
+    /// provider 的 Default model）。那时草稿才是新的，不能被磁盘的值压回去。
+    fn keep_foreign_default_model(&self, config: &mut Config) {
+        let disk = qcode_kernel::config::load(&self.path).ok();
+        adopt_disk_default_model(config, &self.config.default_model, disk.as_ref());
+    }
+
     pub(crate) fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let config = match self.build_config(cx, true) {
+        let mut config = match self.build_config(cx, true) {
             Ok(config) => config,
             Err(error) => {
                 self.error = Some(error);
@@ -84,6 +122,7 @@ impl SetupView {
                 return;
             }
         };
+        self.keep_foreign_default_model(&mut config);
         let mut prefs = self.prefs.clone();
         prefs.theme = self
             .selects
@@ -233,7 +272,17 @@ impl SetupView {
                                 .unwrap_or_default(),
                             models,
                         };
+                        let synced = provider.default_model.clone();
                         config.providers.insert(name.trim().to_string(), provider);
+                        // `[default-model].model` outranks this row's
+                        // `default_model` at read time, so an edit to the
+                        // *default* provider's model would otherwise be saved
+                        // and then silently ignored. Keep the two in step.
+                        sync_default_model(
+                            &mut config.default_model,
+                            name.trim(),
+                            synced.as_deref(),
+                        );
                     }
                     ["pricing"] => {
                         let model = cell(row, "model", cx);
@@ -399,20 +448,23 @@ impl SetupView {
             }
             AutoSaveKind::Scalar(path) => self.auto_save_scalar(path, cx),
             AutoSaveKind::Tables => match self.build_config(cx, false) {
-                Ok(config) => match write_config(&self.path, &config) {
-                    Ok(()) => {
-                        self.config = config;
-                        // The last flush won: a table write already persisted
-                        // any pending scalar edit, so drop it to avoid a
-                        // redundant rewrite.
-                        self.pending_auto_save = None;
-                        Ok(())
+                Ok(mut config) => {
+                    self.keep_foreign_default_model(&mut config);
+                    match write_config(&self.path, &config) {
+                        Ok(()) => {
+                            self.config = config;
+                            // The last flush won: a table write already persisted
+                            // any pending scalar edit, so drop it to avoid a
+                            // redundant rewrite.
+                            self.pending_auto_save = None;
+                            Ok(())
+                        }
+                        Err(error) => {
+                            eprintln!("qcode-gui: auto-save failed: {error}");
+                            Err(format!("config.toml 没能写入：{error}"))
+                        }
                     }
-                    Err(error) => {
-                        eprintln!("qcode-gui: auto-save failed: {error}");
-                        Err(format!("config.toml 没能写入：{error}"))
-                    }
-                },
+                }
                 // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
                 // 设置页顶部，避免“编辑不生效又看不到错误”。
                 Err(error) => {

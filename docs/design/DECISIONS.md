@@ -3444,6 +3444,40 @@ configured、凭证状态）与 `list_configurable_providers(config)`；Provider
   「第一个可用」= 遍历 `config.providers`（按字母序、排除 `mock*`），取第一个端点合法
   （http/https）、凭据可用、且能推导出模型的 route。
 
+### 5. 勘误：设置页改默认模型不生效（2026-11-10）
+
+V2.1 收敛后留下一个缺口，用户实测踩到：在设置页把**默认 provider** 的「Default
+model」改成 `DeepSeek-V4.1-Flash`，保存成功、表单显示新值，跑任务用的还是旧模型。
+
+根因是两条写路径撞在同一个语义上：
+
+- `[default-model].model` 在读时**优先于** `providers.<route>.default_model`（§4 选择链）；
+- 设置页 provider 行的「Default model」只写后者，「设为默认」只改 provider 名（已经是
+  默认时不渲染），底部模型菜单的「切即默认」是唯一真正生效的入口——但它不在设置页。
+
+于是同一个 provider 内换默认模型，设置页**没有任何入口能生效**，而 UI 也没说清。
+
+修法（两处，互补）：
+
+- **保存时同步**：`setup/fields.rs::sync_default_model` 在 `apply_tables` 里，若被保存的
+  provider 就是 `[default-model].provider`，把它的 `default_model` 写进
+  `[default-model].model`。语义变成「一个 provider 只有一个默认模型」，两个字段不再是
+  两个真相。行被清空（交回目录默认）时**不动**全局值：那是菜单单独钉的，一次无关的
+  表格自动保存不该抹掉它。
+- **设置页补入口**：顶部「当前默认：provider / model」变成可点按钮，展开按 provider
+  分组的候选（读内存草稿，不按凭证过滤——设置页正是补凭证的地方），选中即写
+  `[default-model]`（`pin_default`）。被 `[default-model]` 压住的 provider 行给出注脚
+  「被全局默认『x』覆盖；保存后以这里为准」（`overridden_default_model`）。
+
+同时补一条反向保护：设置页每次存表格都会重写整份配置，而 `[default-model]` 另有一个
+写者（主窗口菜单）。`adopt_disk_default_model` 在写盘前取回磁盘现值——这次保存没改过
+它就用磁盘的，改过（同步刚发生）才用草稿。没有这一条，「改完又被改回去」会从另一个
+方向复现。
+
+验证：`a_saved_provider_model_is_the_one_resolve_returns` 走**真实 `resolve`**，
+断言保存后返回的模型变了（只断言「同步函数被调用过」可以全绿而用户仍看到旧模型）；
+`a_table_save_keeps_the_model_the_menu_just_picked` 覆盖反向保护。
+
 **备选方案（未采用）**
 
 - **继续用 FIELDS 手写表单**：加一个配置项仍要改三处，正是最初的痛点。

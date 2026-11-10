@@ -220,6 +220,50 @@ pub(crate) fn stale_model_default(name: &str, model: Option<String>) -> Option<S
     (!stale).then_some(model)
 }
 
+/// 让 `[default-model].model` 跟着它所指的那个 provider 的 `default_model` 走。
+///
+/// 读配置时 `[default-model].model` **优先于** `providers.*.default_model`
+/// （见 `config::resolve`，provider 名匹配时前者先被选中）。于是设置页里把
+/// 默认 provider 的「Default model」改成别的值会变成一条假消息：保存成功、
+/// 表单显示新值、下一次对话请求的还是旧模型。两条路只能有一个真话，这里让
+/// provider 那一行当唯一入口，保存时把它同步进 `[default-model]`。
+///
+/// 只在行里有值时才同步。行被清空表示「交给目录默认」——此时
+/// `[default-model].model` 是用户从模型菜单单独钉的，一次无关的表格自动保存
+/// 不该顺手把它抹掉。
+pub(crate) fn sync_default_model(
+    default: &mut config::DefaultModelConfig,
+    name: &str,
+    model: Option<&str>,
+) -> bool {
+    let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
+        return false;
+    };
+    if default.provider.as_deref() != Some(name) || default.model.as_deref() == Some(model) {
+        return false;
+    }
+    default.model = Some(model.to_string());
+    true
+}
+
+/// 某一行的 `default_model` 是否被 `[default-model].model` 压住，返回压着它
+/// 的那个模型名。
+///
+/// 只有「这一行就是默认 provider」时才可能被压：`config::resolve` 里
+/// `[default-model].model` 只在 provider 名匹配时生效。
+pub(crate) fn overridden_default_model<'a>(
+    default: &'a config::DefaultModelConfig,
+    name: &str,
+    own: &str,
+) -> Option<&'a str> {
+    let global = default.model.as_deref()?;
+    if default.provider.as_deref() != Some(name.trim()) {
+        return None;
+    }
+    let own = own.trim();
+    (!own.is_empty() && own != global).then_some(global)
+}
+
 pub(crate) fn optional(
     row: &RowState,
     key: &'static str,

@@ -2,6 +2,16 @@
 
 ## 未发布
 
+- **设置页改默认模型真的生效了**（ADR-0055 §5）。把**默认 provider** 的「Default
+  model」改成别的值，以前是保存成功、表单显示新值、跑任务还是旧模型：`[default-model].model`
+  在读配置时压着 `providers.*.default_model`，而设置页只写后者；同一个 provider 内换模型
+  也没有任何 UI 入口能改到前者。
+  - 保存时同步：被保存的 provider 若是 `[default-model].provider`，它的 `default_model`
+    写进 `[default-model].model`。行被清空时不动全局值（那是模型菜单单独钉的）。
+  - 设置页顶部「当前默认：provider / model」变成可点选择器，按 provider 分组列出模型，
+    选中即写 `[default-model]`。被覆盖的 provider 行给出注脚说明改写后会以哪边为准。
+  - 反向保护：设置页存表格会重写整份配置，写盘前取回磁盘上的 `[default-model]`（除非这次
+    保存刚改过它），否则会把用户在主窗口刚切的模型改回去。
 - **终端 tab 标题单行、小一号**。shell 把标题设成当前目录，之前放开换行，tab 条会被撑成
   好几行、把内容区往下推；标题现在是 `sp(13)` 单行省略、高度 ~26px，`×` 与 `+` 定成
   14/20px 方形可点区（ADR-0062 §2 修订）。
