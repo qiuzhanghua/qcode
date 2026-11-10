@@ -86,7 +86,9 @@ fn processes_matching(needle: &str) -> Vec<u32> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        // macOS 的 `ps -o command` 会把 argv[0] 显示成完整路径（`/usr/bin/yes ...`），
+        let mut found = Vec::new();
+        // macOS 上 `ps -o command` 的路径与列分隔符都不可靠；`pgrep -f` 直接按
+        // 内核命令行匹配，锚定 `^...$` 排除 `/bin/sh -c` 包装和 pgrep 自身。（`/usr/bin/yes ...`），
         // 而且列分隔符随版本变化；两处都踩过。`pgrep -f` 直接按内核里的命令行匹配，
         // 锚定 `^...$` 避免匹配到 `/bin/sh -c yes ...` 这条 shell 命令行，也避免
         // 匹配 pgrep 自己（它自己的命令行以 pgrep 开头）。
