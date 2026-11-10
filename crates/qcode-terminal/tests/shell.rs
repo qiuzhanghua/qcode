@@ -10,8 +10,12 @@ use std::path::{Path, PathBuf};
 
 use qcode_terminal::shell::{
     Choice, Probe, ProcessRow, ProcessSource, Source, detect, detect_with, enclosing_shell,
-    login_shell_from, parse_ps_table, resolve_in_path,
+    login_shell_from, parse_ps_table,
 };
+// Only the Unix case below looks a bare name up on `PATH`; Windows appends `PATHEXT`
+// and resolves through `qcode_terminal::shell` itself.
+#[cfg(unix)]
+use qcode_terminal::shell::resolve_in_path;
 
 /// A probe whose process tree, PATH and user database are all invented.
 struct Fake {

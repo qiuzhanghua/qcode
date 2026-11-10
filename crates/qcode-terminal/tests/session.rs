@@ -86,9 +86,11 @@ fn processes_matching(needle: &str) -> Vec<u32> {
 
     #[cfg(not(target_os = "linux"))]
     {
+        // `-ww`: without it `ps` truncates the command column to the terminal width,
+        // and a truncated command line never equals the marker.
         let mut found = Vec::new();
         let Ok(output) = std::process::Command::new("ps")
-            .args(["-A", "-o", "pid=,command="])
+            .args(["-A", "-ww", "-o", "pid=,command="])
             .output()
         else {
             return found;
@@ -100,11 +102,45 @@ fn processes_matching(needle: &str) -> Vec<u32> {
             let Ok(pid) = pid.parse::<u32>() else {
                 continue;
             };
-            if pid != me && command.trim() == needle {
+            // Whitespace-normalised: `ps` pads its columns, and an exact `==` against
+            // a padded field is a check that quietly answers "no such process".
+            let command = command.split_whitespace().collect::<Vec<_>>().join(" ");
+            let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+            if pid != me && command == wanted {
                 found.push(pid);
             }
         }
         found
+    }
+}
+
+/// What the process table probe currently sees, for the case where a marker
+/// process is not found.
+///
+/// A bare "the flood never started" is indistinguishable from "the probe cannot
+/// see processes here", and the two need opposite fixes.
+fn probe_help() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        "Linux: /proc/<pid>/cmdline scan, no external tool involved".to_string()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match std::process::Command::new("ps")
+            .args(["-A", "-ww", "-o", "pid=,command="])
+            .output()
+        {
+            Ok(output) => format!(
+                "status={:?} stderr={:?} stdout[..800]={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+                &String::from_utf8_lossy(&output.stdout)
+                    .chars()
+                    .take(800)
+                    .collect::<String>()
+            ),
+            Err(error) => format!("ps could not run: {error}"),
+        }
     }
 }
 
@@ -223,7 +259,8 @@ fn closing_the_session_leaves_no_orphans() {
 
     assert!(
         wait_until(|| !processes_matching(&marker).is_empty()),
-        "the marker process never started, so this test would pass vacuously"
+        "the marker process never started, so this test would pass vacuously ({})",
+        probe_help()
     );
 
     session.close();
@@ -409,7 +446,8 @@ fn a_flooding_child_is_not_left_running_after_close() {
     let session = run("/bin/sh", &["-c", &flood]);
     assert!(
         wait_until(|| !processes_matching(&flood).is_empty()),
-        "the flood never started, so this test would pass vacuously"
+        "the flood never started, so this test would pass vacuously ({} )",
+        probe_help()
     );
 
     session.close();
@@ -459,10 +497,19 @@ fn a_shell_started_from_the_config_draws_a_prompt() {
     // The window starts the user's shell from `[terminal] shell`; if that path
     // produced a session with an empty grid the view would look broken while the
     // child was perfectly alive.
-    let mut config = SessionConfig::command("/bin/zsh", Vec::<String>::new());
+    //
+    // Which shell: whichever of these the host has, rather than a hard-coded
+    // `/bin/zsh`. Ubuntu runners do not ship zsh, so naming it here failed the spawn
+    // before the thing under test — a prompt on the grid — was ever reached. The
+    // shell *choice* is covered by `tests/shell.rs`; this test is about drawing.
+    let shell = ["/bin/zsh", "/bin/bash", "/bin/sh"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .expect("no shell to start");
+    let mut config = SessionConfig::command(shell, Vec::<String>::new());
     config.columns = 80;
     config.screen_lines = 24;
-    let session = Session::spawn(config).expect("spawn zsh");
+    let session = Session::spawn(config).unwrap_or_else(|error| panic!("spawn {shell}: {error}"));
     let saw_prompt = wait_until(|| {
         session.with_view(|view| {
             let text = view.contents();
@@ -470,7 +517,10 @@ fn a_shell_started_from_the_config_draws_a_prompt() {
         })
     });
     let contents = session.with_view(|view| view.contents());
-    assert!(saw_prompt, "no prompt appeared; grid: {contents:#?}");
+    assert!(
+        saw_prompt,
+        "no prompt appeared from {shell}; grid: {contents:#?}"
+    );
     session.close();
 }
 

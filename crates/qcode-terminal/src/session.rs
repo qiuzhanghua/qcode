@@ -60,6 +60,11 @@ use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Osc52, Term};
 use alacritty_terminal::tty::{self, EventedPty, Options, Shell};
+// `reader`/`writer` live on this trait, not on `Pty` itself. Only the Windows arms
+// call them (a Unix pty master is an fd), so without this import the crate simply
+// does not compile for Windows.
+#[cfg(windows)]
+use alacritty_terminal::tty::EventedReadWrite;
 use alacritty_terminal::vte::ansi::{Processor, Rgb};
 
 use crate::screen::{Events, Size, View};
@@ -390,7 +395,14 @@ impl Session {
 
         // Window id 0: nothing registers this terminal with a windowing system.
         let pty = new_pty(&options, window_size(columns, screen_lines))?;
+        // `Pty` exposes the child differently per platform: a `std::process::Child` on
+        // Unix, a watcher carrying an optional pid on Windows. Either way this is only
+        // for thread names and `Session::pid`, so 0 ("unknown") is an acceptable
+        // Windows answer rather than a reason to fail a spawn.
+        #[cfg(unix)]
         let pid = pty.child().id();
+        #[cfg(windows)]
+        let pid = pty.child_watcher().pid().map(|pid| pid.get()).unwrap_or(0);
 
         #[cfg(unix)]
         let (reader_end, writer_end) = {
@@ -857,8 +869,14 @@ fn apply(end: &mut WriterEnd, message: WriterMessage, stopped: &AtomicBool) -> b
 
 #[cfg(test)]
 mod tests {
+    // Every case here drives a writer thread through a file standing in for the pty;
+    // a Windows `WriterEnd` is a ConPTY handle, so there is nothing to import there.
+    #[cfg(unix)]
     use super::*;
 
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
     #[test]
     fn a_stopped_writer_thread_ends_on_its_own() {
         // The writer holds an fd on the pty; if it outlived the session the pty would
@@ -880,6 +898,9 @@ mod tests {
         );
     }
 
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
     #[test]
     fn a_stop_message_ends_the_writer_before_the_channel_closes() {
         let (sender, receiver) = mpsc::channel();
@@ -899,6 +920,9 @@ mod tests {
         );
     }
 
+    // The stand-in for a pty here is a temp file, i.e. an fd: on Windows a
+    // `WriterEnd` is a ConPTY handle instead, so this harness cannot be built there.
+    #[cfg(unix)]
     #[test]
     fn a_full_queue_is_drained_in_order() {
         // Coalescing must not reorder bytes: a smuggled reorder would corrupt input
