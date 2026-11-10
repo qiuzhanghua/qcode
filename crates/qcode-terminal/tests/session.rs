@@ -107,7 +107,13 @@ fn processes_matching(needle: &str) -> Vec<u32> {
             // a padded field is a check that quietly answers "no such process".
             let command = fields.collect::<Vec<_>>().join(" ");
             let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
-            if pid != me && command == wanted {
+            // macOS 的 `ps -o command` 显示的是完整路径（`/usr/bin/yes ...`），
+            // 而 marker 写的是 `yes ...`；允许“路径前缀 + 完整命令”的匹配。
+            let same = command == wanted
+                || command
+                    .strip_suffix(&wanted)
+                    .is_some_and(|prefix| prefix.ends_with('/'));
+            if pid != me && same {
                 found.push(pid);
             }
         }
