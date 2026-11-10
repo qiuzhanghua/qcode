@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-attachments = { version = "0.8.0", path = "../qcode-attachments" }
+qcode-attachments = { version = "0.8.1", path = "../qcode-attachments" }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
