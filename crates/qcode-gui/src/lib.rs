@@ -24,11 +24,17 @@ mod shell;
 pub mod task_ops;
 mod terminal;
 pub mod tray;
-pub use backend::{Backend, LocalBackend, RebuildFn, RebuildFuture, TaskRow, UnconfiguredBackend};
+pub use backend::{
+    Backend, LocalBackend, RebuildFn, RebuildFuture, ScheduleRow, TaskRow, UnconfiguredBackend,
+};
 pub use run::run;
 pub use runtime::Engine;
 pub use setup::{run_settings, run_setup};
 pub(crate) use shell::Shell;
+// Public so the integration tests can pin the accordion's invariants without a
+// window: "exactly one section is open" is a type-level promise (ADR-0063 §3),
+// and a test is the only place it can be asserted as one.
+pub use shell::{MainView, SidebarSection};
 
 use gpui_kit::base::{h_resizable, resizable_panel};
 use gpui_kit::component::diff::{DiffFile, DiffState};
@@ -191,6 +197,12 @@ const PROMPT_INSET: f32 = 20.0;
 /// between the sidebar and the conversation clamps to these.
 const SIDEBAR_MIN_WIDTH: f32 = 180.0;
 const SIDEBAR_MAX_WIDTH: f32 = 560.0;
+/// Width of the collapsed sidebar — the icon rail (ADR-0063 §1).
+///
+/// A layout constant, not a preference: the thing users can adjust is the
+/// expanded width, via the divider. 48px fits a 16px icon inside a 32px hit
+/// target with 8px of breathing room on each side.
+const SIDEBAR_RAIL_WIDTH: f32 = 48.0;
 /// Minimum width of the main conversation panel, in pixels.
 const MAIN_MIN_WIDTH: f32 = 380.0;
 /// 右侧内容区（对话展示框、提示框、输入框、状态栏）的两侧留白：

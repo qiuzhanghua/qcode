@@ -4,9 +4,13 @@ impl Shell {
     pub(crate) fn refresh_tasks(&mut self) {
         // 定时任务的提示随任务一起刷新：错过的窗口、失效的条目、失败的触发都
         // 记在这里，跟着它指向的那一行显示（ADR-0059 §3）。
-        self.schedule_hints = self
-            .backend
-            .schedules()
+        //
+        // 同一份 `schedules()` 既喂任务行的提示，也喂定时视图的看板
+        // （ADR-0063 §5）：两个视图读同一份数据，提示与看板就不可能互相矛盾。
+        // 拉一次、存两份，不每帧去问 backend（那要读配置和 store）。
+        let schedules = self.backend.schedules();
+        self.schedule_rows = schedules.clone();
+        self.schedule_hints = schedules
             .iter()
             .filter_map(|schedule| {
                 let task = schedule.task.clone()?;

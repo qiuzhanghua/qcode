@@ -33,6 +33,7 @@ use qcode_ui_state::{App, Block};
 mod dialogs;
 mod main;
 pub(crate) mod rail;
+mod schedule;
 mod sidebar;
 pub(crate) mod terminal_view;
 mod transcript;
@@ -136,8 +137,7 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebarShortcut, _window, cx| {
-                this.sidebar_visible = !this.sidebar_visible;
-                cx.notify();
+                this.toggle_sidebar(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleThemeShortcut, _window, cx| {
                 this.toggle_theme(cx);
@@ -167,11 +167,14 @@ impl Render for Shell {
             .child({
                 let main = match self.view {
                     crate::shell::MainView::Task => self.render_main(window, cx).into_any_element(),
+                    crate::shell::MainView::Schedule => {
+                        self.render_schedule_view(cx).into_any_element()
+                    }
                     crate::shell::MainView::Terminal => {
                         self.render_terminal_view(cx).into_any_element()
                     }
                 };
-                if self.sidebar_visible {
+                if self.sidebar_expanded {
                     h_resizable("root-layout")
                         .child(
                             resizable_panel()
@@ -186,8 +189,21 @@ impl Render for Shell {
                         )
                         .into_any_element()
                 } else {
+                    // The rail is a fixed width, not a resizable panel: there is
+                    // nothing to drag at 48px, and a divider there would be a
+                    // handle for a range with one value in it (ADR-0063 §1).
                     h_resizable("root-layout")
-                        .child(resizable_panel().child(main))
+                        .child(
+                            resizable_panel()
+                                .size(px(SIDEBAR_RAIL_WIDTH))
+                                .size_range(px(SIDEBAR_RAIL_WIDTH)..px(SIDEBAR_RAIL_WIDTH))
+                                .child(self.render_sidebar_rail(cx).into_any_element()),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
+                                .child(main),
+                        )
                         .into_any_element()
                 }
             })

@@ -9,10 +9,49 @@ use task_ui::TaskUi;
 /// Deliberately *not* folded into `active`: `active` is the task the window is
 /// on, and switching to the terminal must not forget it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum MainView {
+pub enum MainView {
     #[default]
     Task,
+    /// Read-only board of `[schedules]` entries (ADR-0063 §5).
+    Schedule,
     Terminal,
+}
+
+/// Which sidebar section the accordion has open (ADR-0063 §3).
+///
+/// Deliberately not `Option`: exactly one section is always open, so "both
+/// collapsed" is not a state the type can hold. Clicking the header of the open
+/// section therefore does nothing — which is why the open header has to *look*
+/// open (chevron down + highlighted), or a no-op would read as broken.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SidebarSection {
+    #[default]
+    Tasks,
+    Schedule,
+}
+
+impl SidebarSection {
+    /// The `GuiPreferences::sidebar_section` spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks",
+            Self::Schedule => "schedule",
+        }
+    }
+
+    /// Every section, in display order. The accordion's invariant — exactly one
+    /// of these is open — is expressed by the type having no third option.
+    pub const ALL: [Self; 2] = [Self::Tasks, Self::Schedule];
+
+    /// What a stored spelling means. Never fails: an unknown value from a newer
+    /// version lands on the default section instead of making `gui.json`
+    /// unreadable (ADR-0063 §3).
+    pub fn from_stored(value: &str) -> Self {
+        match value {
+            "schedule" => Self::Schedule,
+            _ => Self::Tasks,
+        }
+    }
 }
 
 pub(crate) struct Shell {
@@ -53,7 +92,14 @@ pub(crate) struct Shell {
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
     pub(crate) pending_send: bool,
-    pub(crate) sidebar_visible: bool,
+    /// Whether the sidebar is expanded. `false` renders the icon rail instead of
+    /// hiding it: collapsing gives up width, not reachability (ADR-0063 §1).
+    pub(crate) sidebar_expanded: bool,
+    /// Which sidebar section is open. Never "none" — see [`SidebarSection`].
+    pub(crate) sidebar_section: SidebarSection,
+    /// Cached `Backend::schedules()` for the board. Refreshed with the task list,
+    /// never per frame: it reads config and the store (ADR-0063 §8).
+    pub(crate) schedule_rows: Vec<ScheduleRow>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
     pub(crate) minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
@@ -286,7 +332,9 @@ impl Shell {
             terminal_preedit: None,
             terminal_cursor: std::rc::Rc::new(std::cell::Cell::new(None)),
             pending_send: false,
-            sidebar_visible: true,
+            sidebar_expanded: prefs.sidebar_expanded,
+            sidebar_section: SidebarSection::from_stored(&prefs.sidebar_section),
+            schedule_rows: Vec::new(),
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),

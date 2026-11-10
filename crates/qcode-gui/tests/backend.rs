@@ -763,6 +763,7 @@ fn schedule(name: &str, task: Option<&str>, prompt: &str) -> qcode_core::schedul
     qcode_core::schedule::Schedule {
         name: name.to_string(),
         cron: qcode_core::schedule::CronSpec::parse("* * * * *").expect("every minute"),
+        cron_text: "* * * * *".to_string(),
         task: task.map(str::to_string),
         prompt: prompt.to_string(),
         overlap: qcode_core::schedule::Overlap::Queue,
