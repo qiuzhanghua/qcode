@@ -61,6 +61,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 // Inside the terminal, Cmd+W closes the tab, not the window: the
                 // context-scoped binding wins over the root one.
                 KeyBinding::new("cmd-w", CloseTerminalShortcut, Some("Terminal")),
+                // Escape closes 设置. Scoped to the settings window's own key context:
+                // unbindable otherwise, since every other Escape in the app belongs to
+                // whatever has focus (a text field cancels its IME with it).
+                KeyBinding::new("escape", CloseSettingsShortcut, Some("Settings")),
                 // Only inside the terminal: everywhere else Cmd+C belongs to the
                 // text fields and the transcript.
                 KeyBinding::new("cmd-c", CopySelectionShortcut, Some("Terminal")),

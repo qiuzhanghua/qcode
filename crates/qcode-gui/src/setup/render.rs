@@ -1,4 +1,5 @@
 use super::*;
+use crate::CloseSettingsShortcut;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
@@ -339,6 +340,21 @@ impl Render for SetupView {
             .size_full()
             .flex()
             .flex_col()
+            // Escape closes the window, but only in settings mode: the wizard's Escape
+            // would mean "cancel setup", which nobody asked for, so it gets no key
+            // context and keeps the platform's default behaviour.
+            .when(!self.wizard, |this| {
+                this.key_context("Settings").on_action(cx.listener(
+                    |this, _: &CloseSettingsShortcut, window, cx| {
+                        // Same path as the X button: flush the pending edit first, and
+                        // stay open (with the reason on screen) if the write failed.
+                        if !this.prepare_to_close(cx) {
+                            return;
+                        }
+                        crate::setup::close_settings_window(window, cx);
+                    },
+                ))
+            })
             .child(
                 div()
                     .flex()

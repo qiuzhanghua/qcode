@@ -381,41 +381,33 @@ impl Shell {
             }
         }
 
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+
+        // Three zones, not one scrolling column: the list is the only thing that may
+        // scroll, so 我的任务 stays at the top and 终端/设置 stay at the bottom however
+        // many tasks there are. Making the whole column scrollable (which this was)
+        // pushed the bottom two out of view exactly when the list got long.
         div()
             .w_full()
             .h_full()
             .flex()
             .flex_col()
-            .gap_1()
-            .p_2()
             .id("task-sidebar")
             // Sidebar sits on the base `sidebar` token, one step lighter than
             // the row hover (`sidebar_accent` at reduced opacity), so the list
             // reads as a surface and the hovered row still stands out.
             .bg(cx.theme().sidebar)
-            .overflow_y_scroll()
-            .child(
-                Button::new("open-settings")
-                    .icon(IconName::Settings)
-                    // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
-                    .accessibility_label("设置")
-                    .child(div().text_size(sp(14.0)).child("设置"))
-                    .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
-            )
-            .child(
-                Button::new("open-terminal")
-                    .accessibility_label("终端")
-                    .child(div().text_size(sp(14.0)).child("终端"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_terminal_view(window, cx);
-                    })),
-            )
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
+                    .w_full()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
                     .child("我的任务")
                     .child(
                         Button::new("new-task")
@@ -426,6 +418,71 @@ impl Shell {
                             })),
                     ),
             )
-            .children(rows)
+            // The one scrolling zone. `min_h(0)` lets it shrink below its content;
+            // without it the flex item refuses to and the footer is pushed off-screen.
+            // `.id()` is required, not decorative: `overflow_y_scroll` lives on
+            // `StatefulInteractiveElement`, which is keyed by id.
+            .child(
+                div()
+                    .id("task-list")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            // Fixed at the bottom, separated from the list by a hairline: above is
+            // content, below is tools.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .pt_2()
+                    .pb_2()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Button::new("open-terminal")
+                            .icon(IconName::SquareTerminal)
+                            .accessibility_label("终端")
+                            .child(div().text_size(sp(14.0)).child("终端"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_terminal_view(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("open-settings")
+                            .icon(IconName::Settings)
+                            // The badge says "this one opens a separate window":
+                            // 终端 switches the main view, 设置 opens a window of its
+                            // own. Side by side at the bottom, they would otherwise
+                            // read as the same kind of thing.
+                            .tooltip("设置（在新窗口中打开）")
+                            .accessibility_label("设置，在新窗口中打开")
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
+                                    .child(div().text_size(sp(14.0)).child("设置"))
+                                    .child(
+                                        Icon::new(IconName::ExternalLink)
+                                            .with_size(Size::Small)
+                                            .text_color(muted),
+                                    ),
+                            )
+                            .on_click(cx.listener(|this, _, _window, cx| this.open_settings(cx))),
+                    ),
+            )
     }
 }

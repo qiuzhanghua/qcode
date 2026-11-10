@@ -1,4 +1,5 @@
-use super::{extra_body_from_lines, is_lines_cell, stale_model_default};
+use super::save::{CloseOutcome, decide_close};
+use super::{AutoSaveKind, extra_body_from_lines, is_lines_cell, stale_model_default};
 use crate::forms::{self, FieldKind};
 
 /// Every `FieldKind::Lines` table column must be edited with a multi-line
@@ -178,4 +179,75 @@ fn macos_keychain_store_keeps_the_secret_out_of_argv() {
 #[cfg(target_os = "macos")]
 fn is_keychain_unavailable(error: &str) -> bool {
     error.contains("errSecInteractionNotAllowed") || error.contains("errSecNoSuchKeychain")
+}
+
+/// Closing the window must not drop the edit the debounce is still holding.
+///
+/// The bug this pins down: the timer woke up, saw `closing`, and returned without
+/// writing, so anything typed in the last ~250 ms was lost — by the X button and by a
+/// window close alike, on a screen that says 自动保存 · 修改即时写入.
+#[test]
+fn closing_flushes_the_pending_auto_save_instead_of_dropping_it() {
+    let mut flushed = Vec::new();
+    let outcome = decide_close(
+        false,
+        Some(AutoSaveKind::Scalar(&["providers", "key"])),
+        false,
+        |kind| {
+            flushed.push(kind);
+            Ok(())
+        },
+    );
+    assert_eq!(outcome, CloseOutcome::Close);
+    assert_eq!(
+        flushed,
+        vec![AutoSaveKind::Scalar(&["providers", "key"])],
+        "the pending edit was never written"
+    );
+}
+
+#[test]
+fn closing_with_nothing_pending_writes_nothing() {
+    let mut flushed = false;
+    let outcome = decide_close(false, None, false, |_| {
+        flushed = true;
+        Ok(())
+    });
+    assert_eq!(outcome, CloseOutcome::Close);
+    assert!(
+        !flushed,
+        "nothing was pending, so nothing should be written"
+    );
+}
+
+#[test]
+fn a_failed_write_keeps_the_window_open_once_and_then_lets_it_go() {
+    let failing = |_: AutoSaveKind| Err("config.toml 没能写入：磁盘满".to_string());
+    let pending = Some(AutoSaveKind::Tables);
+
+    // First attempt: stay open so the message is read.
+    let first = decide_close(false, pending, false, failing);
+    assert_eq!(
+        first,
+        CloseOutcome::StayOpen("config.toml 没能写入：磁盘满".to_string()),
+        "a failed write must not lose the edit silently"
+    );
+
+    // Second attempt: the user has seen the message and asked again. A read-only
+    // config file must not trap someone in the settings window.
+    let second = decide_close(false, pending, true, failing);
+    assert_eq!(second, CloseOutcome::CloseDespiteFailure);
+}
+
+/// The wizard has an explicit save form and never auto saves, so closing it is its
+/// Cancel — no flush, and no "did you save?" interruption.
+#[test]
+fn the_wizard_closes_without_touching_auto_save() {
+    let mut flushed = false;
+    let outcome = decide_close(true, Some(AutoSaveKind::Tables), false, |_| {
+        flushed = true;
+        Ok(())
+    });
+    assert_eq!(outcome, CloseOutcome::Close);
+    assert!(!flushed);
 }
