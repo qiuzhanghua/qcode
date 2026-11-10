@@ -5536,11 +5536,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-shell"
+version = "0.8.1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "qcode-terminal"
 version = "0.8.1"
 dependencies = [
  "alacritty_terminal",
  "libc",
+ "qcode-shell",
 ]
 
 [[package]]
@@ -5554,6 +5562,7 @@ dependencies = [
  "qcode-core",
  "qcode-net",
  "qcode-providers",
+ "qcode-shell",
  "regex",
  "reqwest",
  "serde",

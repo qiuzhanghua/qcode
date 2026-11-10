@@ -71,8 +71,14 @@ const ENV_WINDOWS: &[&str] = &[
 fn shell_invocation(command: &str) -> Result<(OsString, Vec<OsString>), ToolError> {
     #[cfg(not(windows))]
     {
+        // ADR-0064: same probe as the terminal, so a command typed by the model
+        // runs in the shell the user actually uses (`[[ ]]`, `setopt`,
+        // `pipefail`). The environment does *not* come from a login shell — the
+        // snapshot in `shell_env` provides it, and re-running rc per command
+        // would be slow and noisy.
+        let program = qcode_shell::detect().program;
         Ok((
-            OsString::from("sh"),
+            program.into_os_string(),
             vec![OsString::from("-c"), OsString::from(command)],
         ))
     }
@@ -129,11 +135,20 @@ fn find_program(names: &[&str]) -> Option<OsString> {
 
 pub struct RunShell {
     sandbox: Arc<dyn Sandbox>,
+    /// The user's shell environment, sampled once per session (ADR-0064).
+    env: Arc<crate::shell_env::ShellEnvCache>,
 }
 
 impl RunShell {
     pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
-        Self { sandbox }
+        Self::with_env(
+            sandbox,
+            Arc::new(crate::shell_env::ShellEnvCache::disabled()),
+        )
+    }
+
+    pub fn with_env(sandbox: Arc<dyn Sandbox>, env: Arc<crate::shell_env::ShellEnvCache>) -> Self {
+        Self { sandbox, env }
     }
 
     pub fn unsandboxed() -> Self {
@@ -226,12 +241,6 @@ impl Tool for RunShell {
                 .command(program.as_os_str(), &shell_args, &cwd)
                 .map_err(|err| ToolError::Sandbox(err.to_string()))?,
         );
-        if let Some(temp) = &ctx.temp_dir {
-            command
-                .env("TMPDIR", temp)
-                .env("TMP", temp)
-                .env("TEMP", temp);
-        }
         command
             .current_dir(&cwd)
             .stdin(Stdio::null())
@@ -257,6 +266,29 @@ impl Tool for RunShell {
             if let Ok(value) = std::env::var(key) {
                 command.env(key, value);
             }
+        }
+        // The user's shell environment sits *above* the allow-list: it is what
+        // `c`, nvm and friends put there, and the allow-list cannot know about
+        // it. Values from this process (`env_include`) come next, and the two
+        // things the tool itself depends on — the temp dir and the network
+        // proxy — win over all of it (ADR-0064).
+        if let Some(snapshot) = self.env.current_with(Some(self.sandbox.as_ref())) {
+            for (key, value) in snapshot.vars() {
+                command.env(key, value);
+            }
+        }
+        for pattern in &self.env.settings().env_include {
+            for (key, value) in std::env::vars() {
+                if crate::shell_env::matches_pattern(pattern, &key) {
+                    command.env(key, value);
+                }
+            }
+        }
+        if let Some(temp) = &ctx.temp_dir {
+            command
+                .env("TMPDIR", temp)
+                .env("TMP", temp)
+                .env("TEMP", temp);
         }
         if let Some(network) = &ctx.network {
             for (key, value) in network.env() {
@@ -475,9 +507,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unix_runs_the_command_through_sh() {
-        let (program, args) = shell_invocation("true").expect("sh");
-        assert_eq!(program, OsString::from("sh"));
+    fn unix_runs_the_command_through_the_detected_shell() {
+        // ADR-0064: the same probe as the terminal, so `[[ ]]` and `pipefail`
+        // behave the way the user's own shell behaves.
+        let detected = qcode_shell::detect().program;
+        let (program, args) = shell_invocation("true").expect("a shell");
+        assert_eq!(program, detected.into_os_string());
         assert_eq!(args, vec![OsString::from("-c"), OsString::from("true")]);
     }
 

@@ -88,6 +88,20 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         ["update", "repo"] => config.update.repo.clone(),
         ["update", "base_url"] => config.update.base_url.clone().unwrap_or_default(),
         ["terminal", "shell"] => config.terminal.shell.clone(),
+        ["shell", "env_sampling"] => match config.shell.env_sampling {
+            qcode_tools::shell_env::EnvSampling::Auto => "auto".to_string(),
+            qcode_tools::shell_env::EnvSampling::Off => "off".to_string(),
+        },
+        ["shell", "env_command"] => config.shell.env_command.clone(),
+        ["shell", "env_timeout_ms"] => config.shell.env_timeout_ms.to_string(),
+        ["shell", "env_ttl_secs"] => config.shell.env_ttl_secs.to_string(),
+        ["shell", "env_include"] => config.shell.env_include.join("\n"),
+        ["shell", "env_exclude"] => config.shell.env_exclude.join("\n"),
+        ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed.to_string(),
+        ["shell", "audit"] => match config.shell.audit {
+            qcode_tools::shell_env::ShellAudit::Names => "names".to_string(),
+            qcode_tools::shell_env::ShellAudit::Off => "off".to_string(),
+        },
         ["terminal", "start_cwd"] => config.terminal.start_cwd.clone(),
         ["terminal", "font"] => config.terminal.font.clone(),
         _ => options.first().unwrap_or(&"").to_string(),
@@ -126,6 +140,28 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
         ["terminal", "shell"] => config.terminal.shell = value.to_string(),
         ["terminal", "start_cwd"] => config.terminal.start_cwd = value.to_string(),
         ["terminal", "font"] => config.terminal.font = value.to_string(),
+        ["shell", "env_sampling"] => {
+            config.shell.env_sampling = match value {
+                "off" => qcode_tools::shell_env::EnvSampling::Off,
+                _ => qcode_tools::shell_env::EnvSampling::Auto,
+            };
+        }
+        ["shell", "env_command"] => config.shell.env_command = value.to_string(),
+        ["shell", "env_timeout_ms"] => {
+            config.shell.env_timeout_ms = parse(value, "shell.env_timeout_ms")?
+        }
+        ["shell", "env_ttl_secs"] => {
+            config.shell.env_ttl_secs = parse(value, "shell.env_ttl_secs")?
+        }
+        ["shell", "env_include"] => config.shell.env_include = lines_from(value),
+        ["shell", "env_exclude"] => config.shell.env_exclude = lines_from(value),
+        ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed = value == "true",
+        ["shell", "audit"] => {
+            config.shell.audit = match value {
+                "off" => qcode_tools::shell_env::ShellAudit::Off,
+                _ => qcode_tools::shell_env::ShellAudit::Names,
+            };
+        }
         ["terminal", "max_scrollback"] => {
             config.terminal.max_scrollback = parse(value, "terminal.max_scrollback")?
         }

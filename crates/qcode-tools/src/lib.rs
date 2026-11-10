@@ -9,6 +9,7 @@ pub mod path;
 pub mod sandbox;
 pub mod search;
 pub mod shell;
+pub mod shell_env;
 pub mod skills;
 pub mod subagent;
 pub mod todo;
@@ -29,6 +30,14 @@ pub fn builtin_registry() -> ToolRegistry {
 
 /// Built-ins with the configured sandbox applied to `run_shell`.
 pub fn builtin_registry_with(sandbox: Arc<dyn Sandbox>) -> ToolRegistry {
+    builtin_registry_with_env(sandbox, Arc::new(shell_env::ShellEnvCache::disabled()))
+}
+
+/// Built-ins with both the sandbox and the sampled shell environment (ADR-0064).
+pub fn builtin_registry_with_env(
+    sandbox: Arc<dyn Sandbox>,
+    env: Arc<shell_env::ShellEnvCache>,
+) -> ToolRegistry {
     ToolRegistry::new(vec![
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
@@ -38,7 +47,7 @@ pub fn builtin_registry_with(sandbox: Arc<dyn Sandbox>) -> ToolRegistry {
         Arc::new(search::GlobTool),
         Arc::new(search::GrepTool),
         Arc::new(fetch::WebFetch),
-        Arc::new(shell::RunShell::new(sandbox)),
+        Arc::new(shell::RunShell::with_env(sandbox, env)),
         Arc::new(todo::TodoWrite),
     ])
 }

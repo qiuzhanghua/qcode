@@ -135,10 +135,17 @@ use std::path::PathBuf;
 use qcode_core::provider::Provider;
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
-use qcode_tools::builtin_registry_with;
+use qcode_tools::builtin_registry_with_env;
 use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork};
 use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
 use qcode_tools::web_search::WebSearch;
+pub struct ToolWiring {
+    /// Proxy variables the egress layer injects into every child.
+    pub network_env: Option<Vec<(String, String)>>,
+    /// The user's shell environment, sampled once per session (ADR-0064).
+    pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
+}
+
 pub async fn build_tools(
     mcp: &McpConfig,
     search: &config::SearchConfig,
@@ -146,10 +153,14 @@ pub async fn build_tools(
     data_dir: &Path,
     skills: &Arc<SkillSet>,
     sandbox: Arc<dyn Sandbox>,
-    network_env: Option<Vec<(String, String)>>,
+    wiring: ToolWiring,
 ) -> ToolRegistry {
+    let ToolWiring {
+        network_env,
+        shell_env,
+    } = wiring;
     let confine_sandbox = sandbox.clone();
-    let mut tools = builtin_registry_with(sandbox);
+    let mut tools = builtin_registry_with_env(sandbox, shell_env);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
         if settings.is_usable() {
@@ -407,6 +418,9 @@ pub async fn assemble(
         .map(|egress| egress as qcode_core::network::SharedNetwork);
     let provider = build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?;
     let skills = load_skills(&loaded.skills, cwd);
+    let shell_env = std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
+        loaded.shell.clone(),
+    ));
     let tools = build_tools(
         &loaded.mcp,
         &loaded.search,
@@ -414,7 +428,10 @@ pub async fn assemble(
         &data_dir,
         &skills,
         sandbox,
-        network.as_ref().map(|network| network.env()),
+        ToolWiring {
+            network_env: network.as_ref().map(|network| network.env()),
+            shell_env,
+        },
     )
     .await;
     let store = qcode_core::store::SessionStore::new(data_dir);

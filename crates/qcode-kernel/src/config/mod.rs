@@ -129,6 +129,9 @@ pub struct Config {
     /// The built-in terminal (ADR-0062).
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// How `run_shell` learns the user's shell environment (ADR-0064).
+    #[serde(default)]
+    pub shell: qcode_tools::shell_env::ShellSettings,
 }
 
 /// `[terminal]`: how `qc gui` starts its shells (ADR-0062 §10).
@@ -205,6 +208,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             schedules: BTreeMap::new(),
             terminal: TerminalConfig::default(),
+            shell: qcode_tools::shell_env::ShellSettings::default(),
         }
     }
 }

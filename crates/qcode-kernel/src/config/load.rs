@@ -427,7 +427,26 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("ui", &["busy_delivery"]),
     (
         "terminal",
-        &["shell", "start_cwd", "max_scrollback", "max_terminals"],
+        &[
+            "shell",
+            "font",
+            "start_cwd",
+            "max_scrollback",
+            "max_terminals",
+        ],
+    ),
+    (
+        "shell",
+        &[
+            "env_sampling",
+            "env_command",
+            "env_timeout_ms",
+            "env_ttl_secs",
+            "env_include",
+            "env_exclude",
+            "env_sample_sandboxed",
+            "audit",
+        ],
     ),
 ];
 

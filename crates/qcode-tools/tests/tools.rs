@@ -525,3 +525,50 @@ async fn shell_follows_the_root_matrix() {
     );
     assert!(!ro.join("denied.txt").exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sampled_environment_reaches_the_command() {
+    // ADR-0064: what the user's shell knows has to show up inside `run_shell`,
+    // otherwise `JAVA_HOME`/`GOROOT` stay invisible to the agent.
+    let settings = qcode_tools::shell_env::ShellSettings {
+        env_command: "echo QCODE_SAMPLED=yes".to_string(),
+        ..qcode_tools::shell_env::ShellSettings::default()
+    };
+    let cache = Arc::new(qcode_tools::shell_env::ShellEnvCache::new(settings));
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::for_test(workspace.path());
+
+    let output = RunShell::with_env(Arc::new(qcode_tools::sandbox::NoSandbox), cache)
+        .execute(&ctx, json!({"command": "printf '%s' \"$QCODE_SAMPLED\""}))
+        .await
+        .unwrap();
+    assert!(
+        output.output.contains("yes"),
+        "the sampled variable should be visible: {}",
+        output.output
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn turning_sampling_off_keeps_the_allow_list_behaviour() {
+    let settings = qcode_tools::shell_env::ShellSettings {
+        env_sampling: qcode_tools::shell_env::EnvSampling::Off,
+        env_command: "echo QCODE_SAMPLED=yes".to_string(),
+        ..qcode_tools::shell_env::ShellSettings::default()
+    };
+    let cache = Arc::new(qcode_tools::shell_env::ShellEnvCache::new(settings));
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::for_test(workspace.path());
+
+    let output = RunShell::with_env(Arc::new(qcode_tools::sandbox::NoSandbox), cache)
+        .execute(&ctx, json!({"command": "printf '%s' \"$QCODE_SAMPLED\""}))
+        .await
+        .unwrap();
+    assert!(
+        !output.output.contains("yes"),
+        "sampling is off, so the variable must not exist: {}",
+        output.output
+    );
+}
