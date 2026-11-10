@@ -5675,3 +5675,83 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 - Windows 的采样模板与 ConPTY 的配合。
 - 是否允许项目级关闭（`.qcode/config.toml` 的 `[shell].env_sampling = "off"`）——倾向允许。
 - `qc shell-env --full` 是否需要二次确认（当前只要求 tty）。
+
+## ADR-0065：配置文件只写覆盖项——schema 2（2026-11-10）
+
+**状态**：拟议。分三期落地，第一期只加 `schema` 与 `qc config migrate`。
+
+**来源类别**：derived。来自现状代码（`crates/qcode-kernel/src/config`）与用户反馈「配置
+文件应该如何简化」——今天的默认文件一百来行，其中大半是 resolver 本来就能填的默认值。
+
+**背景**
+
+一个刚装好的 qcode 会写出这样一份文件：`[providers.deepseek]` 里有 `base_url`、
+`api_key_env`、`default_model`，还有一张 `[[providers.deepseek.models]]` 表，每项重复
+`id`、`name`、`context_window`；`[default-model]` 又写一遍 provider 与 model；
+`[sandbox]` 管进程沙箱而 `[network]` 管出口，用户的心智模型却是「这个 shell 能不能上网」。
+
+三个具体的痛：
+
+1. **默认模型有两个来源。** `[providers.X].default_model` 与 `[default-model]` 都声明默认，
+   谁赢要靠 `sync_default_model` 在写盘时替用户对齐（ADR-0055）。这是把一个数据模型问题
+   变成了同步问题。
+2. **`models` 表在重复 catalog 已经知道的事。** `/models` 与内置 catalog 能给出
+   `name`/`context_window`/`max_tokens`，文件里再抄一遍，一旦上游改名就变成两份真相
+   （见 ADR-0055 的「后续：id 与显示名」）。
+3. **网络与沙箱分裂。** 用户配的是「让 agent 能装包」，而这既要有出口代理（`[network]`）
+   又要决定 `run_shell` 是否进沙箱（`[sandbox]`），两处分开写容易只改一半。
+
+**决定**
+
+1. **`schema = 2` 取代 `version`。** 缺省视为 1；v1 文件按 v1 解释，写回仍写 v1，直到用户
+   显式 `qc config migrate`。理由：读兼容可以永远做，写升级必须由用户点一次。
+2. **provider 段只写覆盖项。** `[providers.deepseek]` 里可以只有 `api_key_env = "DEEPSEEK_API_KEY"`；
+   `base_url`、协议、`models` 缺省取 catalog。没写的键不是「空」，是「用默认」。
+3. **删 `[providers.*].default_model`。** 默认模型只由 `[default-model]` 或设置页卡片上的
+   「设为默认」写；读 v1 时把它当作 `[default-model]` 的候选，写 v2 时不再产出。
+4. **`models = ["deepseek-flash", "deepseek-v4-pro"]` 简写。** 只有需要覆盖元数据时才写表
+   （`models = [{ id = "…", name = "…" }]`）；探测结果写回时只用简写。
+5. **`[sandbox]` 收编 `[network]`。** 新键 `network = "on" | "off" | "strict"`（`strict` 即今
+   天的 deny 出口），旧的 `[network]` 段读入时映射过来，v2 不再写出。
+6. **审批规则用简写表。** `allow = ["run_shell:echo *"]`、`deny = ["run_shell:rm -rf *"]`，
+   等价于今天的规则表；需要「一次/会话」这类粒度时才退回表。
+7. **`pricing` 缺省取内置 catalog。** 只有模型不在 catalog 里、或用户要覆盖价格时才写。
+8. **写回时删空表。** 与默认值相同的段不落盘；`qc config init` 写出的是空文件加注释。
+9. **`qc config show --effective` 是唯一权威视图。** 打印合并后的值与来源（file/env/flag/catalog），
+   `--json` 给脚本用。
+
+**不变式**
+
+- v1 与 v2 都能读，任何读路径都不因 schema 不同而改变语义。
+- catalog 是默认值的唯一来源；文件只覆盖，不复制。
+- `qc config show` 永远显示**合并后**的结果，不显示「文件里写了什么」。
+
+**迁移**
+
+- `qc config migrate`：读 v1 → 写 v2，先写 `config.toml.bak`，幂等；只动用户文件
+  （`~/.config/qcode/config.toml`），项目级 `.qcode.toml` 只读、不改。
+- 认不出的键保留并在 stderr 列出，不静默丢弃。
+- 迁移不自动执行：`qc config show` 在 v1 文件上提示一句「可以 `qc config migrate`」。
+
+**分期与验收**
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| P1 | `schema` 字段、`--effective`、`migrate` 的机械部分（删 `default_model`、`models` 简写） | v1 文件 migrate 后逐字段等价；再读一遍不报 unknown key |
+| P2 | `[sandbox] network`、审批简写、pricing catalog | 旧 `[network]` 读入等价；简写规则与规则表展开结果相同 |
+| P3 | 写回删空表、设置页按 v2 渲染 | `qc config init` 产物为空文件；设置页保存不写默认值 |
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 不动，只在注释里说明默认值 | 文件仍是两份真相；用户改 A 忘记改 B 的问题不会消失 |
+| 只做 `--effective`，不改 schema | 解决了「看不清」但没解决「写重复」，文件只会更长 |
+| 换成 JSON5 / YAML | 换格式不解决数据模型重复，还多一个迁移 |
+| 全部收进 CLI flag | 用户要的是可版本化的项目配置，不是 shell history |
+
+**待定**
+
+- `version` 是否保留为 `schema` 的别名（旧脚本可能写 `version`）。
+- 项目级 `.qcode.toml` 是否也升 schema 2，还是永远按 v1 只读。
+- `migrate` 是否提供 `--dry-run` 输出 diff（倾向提供）。
