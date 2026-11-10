@@ -277,6 +277,13 @@ impl Overlap {
 pub struct Schedule {
     pub name: String,
     pub cron: CronSpec,
+    /// The cron expression exactly as the user wrote it.
+    ///
+    /// Kept next to the parsed spec because the board shows it back to its
+    /// author (ADR-0063 §5): `*/15` and `0,15,30,45` parse to the same spec, and
+    /// showing the second to someone who typed the first reads as "the app
+    /// rewrote my config".
+    pub cron_text: String,
     /// Reuse an existing task, or create a fresh one on every fire.
     pub task: Option<String>,
     pub prompt: String,

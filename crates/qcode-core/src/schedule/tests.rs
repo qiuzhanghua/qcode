@@ -136,6 +136,7 @@ fn schedule(overlap: Overlap, task: Option<&str>) -> Schedule {
     Schedule {
         name: "nightly".to_string(),
         cron: parses("0 3 * * *"),
+        cron_text: "0 3 * * *".to_string(),
         task: task.map(str::to_string),
         prompt: "review the night's changes".to_string(),
         overlap,
