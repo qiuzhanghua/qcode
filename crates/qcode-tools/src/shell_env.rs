@@ -8,6 +8,7 @@
 //! ```text
 //! {shell} -lic 'env -0'     # zsh / bash / fish
 //! {shell} -lc  'env -0'     # sh, dash, ash: no rc to read
+//! pwsh -NoProfile ...       # Windows: -lic is POSIX-only, env does not exist
 //! ```
 //!
 //! Things this module deliberately does **not** do:
@@ -228,22 +229,46 @@ pub fn sampling_command(
         }
     }
 
+    // Windows shells have no `-lic "env -0"`: pwsh rejects `-lic`, and `env`
+    // does not exist. The environment lives in the registry, not a profile, so a
+    // `-NoProfile` pwsh sees the same set the user sees. `[Console]::Out.Write`
+    // bypasses the formatting pipeline so the `NAME=VALUE\0` blocks survive the
+    // pipe; pinning `OutputEncoding` to UTF-8 also covers Windows PowerShell
+    // 5.1, whose redirected stdout would otherwise be ANSI (GBK on a Chinese
+    // system, which `parse_env_nul` cannot read).
+    #[cfg(windows)]
+    {
+        let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-ChildItem Env: | ForEach-Object { [Console]::Out.Write($_.Name + '=' + $_.Value + [char]0) }";
+        Some((
+            program.to_path_buf(),
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                script.to_string(),
+            ],
+        ))
+    }
+
     // `env -0` needs a login, interactive shell to see what the user sees: `-l`
     // reads the profile, `-i` reads `.zshrc` / `.bashrc`, where the toolchain
     // hooks live. `sh` and its relatives have no rc worth reading, and `-i` there
-    // only adds noise.
-    let login_only = matches!(
-        program
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default(),
-        "sh" | "dash" | "ash"
-    );
-    let flag = if login_only { "-lc" } else { "-lic" };
-    Some((
-        program.to_path_buf(),
-        vec![flag.to_string(), "env -0".to_string()],
-    ))
+    // only adds noise. (Windows never gets here: the pwsh branch above returns.)
+    #[cfg(not(windows))]
+    {
+        let login_only = matches!(
+            program
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default(),
+            "sh" | "dash" | "ash"
+        );
+        let flag = if login_only { "-lc" } else { "-lic" };
+        Some((
+            program.to_path_buf(),
+            vec![flag.to_string(), "env -0".to_string()],
+        ))
+    }
 }
 
 /// Run the sampling command once.
@@ -715,6 +740,24 @@ mod tests {
         let (_, args) =
             sampling_command(&ShellSettings::default(), Path::new("/bin/sh")).expect("cmd");
         assert_eq!(args, vec!["-lc".to_string(), "env -0".to_string()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sampling_command_uses_pwsh_flags_and_null_separated_output() {
+        let program = Path::new(r"C:\Program Files\PowerShell\7\pwsh.exe");
+        let (cmd, args) = sampling_command(&ShellSettings::default(), program).expect("command");
+        assert_eq!(cmd, program);
+        assert_eq!(
+            args,
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-ChildItem Env: | ForEach-Object { [Console]::Out.Write($_.Name + '=' + $_.Value + [char]0) }"
+                    .to_string(),
+            ]
+        );
     }
 
     #[cfg(unix)]
