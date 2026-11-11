@@ -9,6 +9,7 @@ impl Sandbox for NoSandbox {
         &self,
         _roots: &[Root],
         _temp: Option<&Path>,
+        _outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
         Ok(Arc::new(NoSandbox))
     }

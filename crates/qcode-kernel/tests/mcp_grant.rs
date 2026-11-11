@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use qcode_core::tool::{Tool, ToolContext};
 use qcode_mcp::{GrantInput, GrantSet, McpConfig, McpServerConfig, connect_all_with};
-use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork, build};
+use qcode_tools::sandbox::{OutsideRoots, Sandbox, SandboxMode, SandboxNetwork, build};
 use serde_json::json;
 
 const STUB: &str = env!("CARGO_BIN_EXE_mcp-probe-stub");
@@ -137,7 +137,11 @@ async fn without_the_grant_the_same_server_is_refused() {
         let workspace_root = workspace_root.clone();
         Box::new(move |program, args, cwd, _grant| {
             let per_server = sandbox
-                .with_roots(std::slice::from_ref(&workspace_root), None)
+                .with_roots(
+                    std::slice::from_ref(&workspace_root),
+                    None,
+                    OutsideRoots::Nothing,
+                )
                 .map_err(|error| error.to_string())?;
             per_server
                 .command(program, args, cwd)
@@ -168,14 +172,19 @@ async fn writes_and_reads_stop_at_the_grant() {
         return;
     };
     let binary = install_under(&home);
-    // `tempfile` lives under `/tmp`, and the Landlock backend grants `/tmp` and
-    // `/var/tmp` writable unconditionally — so an "outside" path has to be
-    // somewhere else entirely. `CARGO_TARGET_TMPDIR` is under the repo's
-    // `target/`, which is neither.
+    // Two "outside" paths, because until ADR-0066's write-set revision they
+    // failed for different reasons and only one of them was a real refusal:
+    //
+    // * `$CARGO_TARGET_TMPDIR` (under the repo's `target/`) was always refused.
+    // * `/tmp` was *not*: the Landlock backend granted `/tmp` and `/var/tmp`
+    //   writable unconditionally, so this test used to route around it. Now an
+    //   MCP server gets `OutsideRoots::Nothing` and both must be denied.
     let elsewhere = Path::new(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(elsewhere).unwrap();
     let outside = elsewhere.join("mcp-grant-outside.txt");
     let _ = std::fs::remove_file(&outside);
+    let scratch = std::env::temp_dir().join("qc-mcp-grant-scratch.txt");
+    let _ = std::fs::remove_file(&scratch);
     let inside = workspace.path().join("inside.txt");
 
     let confine = qcode_kernel::mcp_confine(sandbox, workspace.path());
@@ -194,7 +203,11 @@ async fn writes_and_reads_stop_at_the_grant() {
         "mcp__probe__probe",
         json!({
             "read": [home.display().to_string()],
-            "write": [inside.display().to_string(), outside.display().to_string()],
+            "write": [
+                inside.display().to_string(),
+                outside.display().to_string(),
+                scratch.display().to_string(),
+            ],
         }),
     )
     .await;
@@ -230,8 +243,73 @@ async fn writes_and_reads_stop_at_the_grant() {
         report.contains(&format!("write {} = denied", outside.display())),
         "writing outside the workspace must stay denied:\n{report}"
     );
+    // The host scratch directory is not in the grant. This is the assertion
+    // that would have caught the bug: `tempfile`-style paths used to be
+    // writable by every MCP server because the backend shared `run_shell`'s
+    // build-cache allowance.
+    assert!(
+        report.contains(&format!("write {} = denied", scratch.display())),
+        "writing to the host temp dir must be denied:\n{report}"
+    );
     assert!(inside.exists());
     assert!(!outside.exists());
+    assert!(!scratch.exists());
+}
+
+/// The build caches, end to end: a real child spawned through `mcp_confine`
+/// must not be able to write into `CARGO_HOME`.
+///
+/// This is the one that matters for severity. `writable_paths()` is what
+/// `run_shell` uses to let `cargo build` write `$CARGO_HOME/registry`, and it
+/// was applied to every MCP server too. A third-party server that can write
+/// `$CARGO_HOME/config.toml` can set `[build] rustc-wrapper` and get arbitrary
+/// code execution the next time anyone builds anything in that HOME.
+#[tokio::test]
+async fn the_build_caches_are_not_in_a_servers_write_grant() {
+    let home = outside_tmp("grant-home-cargo");
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let Some(sandbox) = landlock(workspace.path()) else {
+        return;
+    };
+    let binary = install_under(&home);
+    let cargo_home = outside_tmp("grant-cargo-home");
+    let config_toml = cargo_home.join("config.toml");
+
+    // `writable_paths()` reads this out of the process env, so pointing it at a
+    // directory this test owns is the only way to observe the difference.
+    // SAFETY: no other test in this binary reads CARGO_HOME, and the guard
+    // restores whatever was there.
+    let previous = std::env::var_os("CARGO_HOME");
+    unsafe { std::env::set_var("CARGO_HOME", &cargo_home) };
+    let confine = qcode_kernel::mcp_confine(sandbox, workspace.path());
+    let tools = connect_all_with(
+        &mcp(server("probe", &binary)),
+        workspace.path(),
+        data.path(),
+        &[],
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
+    )
+    .await;
+    let report = call(
+        &tools,
+        "mcp__probe__probe",
+        json!({"write": [config_toml.display().to_string()]}),
+    )
+    .await;
+    match previous {
+        // SAFETY: as above.
+        Some(value) => unsafe { std::env::set_var("CARGO_HOME", value) },
+        // SAFETY: as above.
+        None => unsafe { std::env::remove_var("CARGO_HOME") },
+    }
+
+    assert_eq!(tools.len(), 3, "the server did not start");
+    assert!(
+        report.contains("= denied"),
+        "an MCP server wrote $CARGO_HOME/config.toml, which names a rustc-wrapper:\n{report}"
+    );
+    assert!(!config_toml.exists());
 }
 
 #[tokio::test]

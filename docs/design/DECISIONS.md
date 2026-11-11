@@ -5998,7 +5998,7 @@ sandbox = "off"        # warn + doctor partial
 | `crates/qcode-mcp/src/config.rs` | `McpServerConfig` 加 `read_paths` / `writable_paths` / `credentials` / `sandbox`；`McpConfig` 加 `sandbox`；`validate()` 加「`off` 与 `confine` 之外的取值报错」 |
 | `crates/qcode-mcp/src/lib.rs` | `Confine` 回调加一个 `&GrantSet` 参数；`connect_all_with` 每 server 先 `derive`，再按 grant 设环境与 HOME，最后交给 `confine`。crate 仍然不依赖 `qcode-tools`（回调而非类型依赖） |
 | `crates/qcode-kernel/src/lib.rs` | 闭包从「一个 `confine_sandbox` 套全部 server」改为按 grant 现算：`sandbox.with_roots(任务 roots + runtime 只读根, 私有 temp)` |
-| `crates/qcode-tools/src/sandbox/mod.rs` | **不改**。`with_roots(&[Root], temp)` 已经支持只读根，Linux 侧 `RootAccess::ReadOnly` 只给读位、不给写位——正好是这里要的 |
+| `crates/qcode-tools/src/sandbox/mod.rs` | ~~**不改**。`with_roots(&[Root], temp)` 已经支持只读根，Linux 侧 `RootAccess::ReadOnly` 只给读位、不给写位——正好是这里要的~~ → **改了**：`with_roots` 多了第三个参数 `OutsideRoots`。原判断「不改」错在只看了「有没有只读根」，没看「多给了什么」——见下方 §1 写集修订注记 |
 | `crates/qcode/src/commands/*` | `qc mcp add` 加 `--read-path`、`--write-path`、`--credential`（可重复）、`--sandbox`；`qc doctor` 逐 server 打印授权集 |
 
 **后果**
@@ -6131,6 +6131,76 @@ P2 的验收是「`qc doctor` 打印授权集」，但同一份授权集在 GUI 
 - 变异验证两次：`read_paths` 不从行里读 → 映射测试失败；删掉 `credentials` 列 → 列覆盖
   测试失败并打印现有的列名。
 
+**§1 写集修订注记（2026-11-11，MCP 的写集严格等于那三个集合）**
+
+§1 写的是「三个不相交的集合，**此外一律无**」。实现没有做到，而且是双向的偏差：
+
+- **文档窄、代码宽。** `with_roots` 重建的沙箱仍然带着 `run_shell` 的两项额外授权：
+  Linux 侧 `install_rules()` 无条件给 `/tmp` 和 `/var/tmp` 写位，再无条件并上
+  `writable_paths()`（`$CARGO_HOME`、`$RUSTUP_HOME`、`$CARGO_TARGET_DIR`、`~/.cargo`、
+  `~/.rustup`）；macOS 侧同样把 `/private/tmp`、`/var/folders`、那几个 cache 变量和
+  `$TMPDIR` 都写进 `(allow file-write*)`。这些与 server 的 grant **无关**——同一个 `Sandbox`
+  实例既服务 `run_shell`（那里它们是对的，编译器要写 cache），也服务 MCP（那里它们不该存在）。
+- **最重的一条是可写 `$CARGO_HOME/config.toml`。** 那个文件里有 `[build] rustc-wrapper`，
+  也就是**下次 `cargo build` 时执行任意代码**。一个 `npm i` 或 `pip install` 装来的第三方
+  server 能改它，这不是「多给了一个临时目录」。
+
+实测（wordcraft-cli 0.15.2，本机 Landlock）：MCP 服务进程写 `/tmp/qc-wc/outside/` 成功、
+写 `$CARGO_HOME/` 成功、写 `/home/q/space/opentj/qc-escape-probe/` 被拒。也就是说沙箱本身
+有效，只是**多给了两处不该给的**。
+
+**决定**
+
+`Sandbox::with_roots` 多一个参数 `OutsideRoots`，两个取值：
+
+| 取值 | 谁用 | 含义 |
+|---|---|---|
+| `BuildCaches` | `run_shell` | roots + 构建缓存 + **宿主** `/tmp` |
+| `Nothing` | MCP server | 只有 roots |
+
+必须是**调用方显式写**，不给默认值：这个量同时服务两个需求相反的调用方，任何默认都会让其中
+一个静默错下去。三个后端同一语义：
+
+- **Landlock**：`Nothing` 时不加 `/tmp`、`/var/tmp`，也不并 `writable_paths()`。
+- **bwrap**：`Nothing` 时不 bind 任何 cache，也不再把 `TMPDIR` 强设成 `/tmp`（那样会把
+  §3 的私有 HOME 顶掉）。**私有的 `--tmpfs /tmp` 保留**——它不是宿主的 `/tmp`，走了也
+  不会落到宿主上，而按 `/tmp` 硬编码的运行时（Node、部分 Python 包）离开它会直接崩。
+  这一条是有意的不对称：宿主的 `/tmp` 是洞，私有的 tmpfs 不是。
+- **macOS**：`Nothing` 时写块里去掉 `/private/tmp`、`/tmp`、`/var/folders` 与那几个 cache
+  变量；**读**权限保留（二进制可能就住在 `$CARGO_HOME` 下，去掉会变成另一种「server 起不来」）。
+- **windows-acl**：本来就只给「可写 roots + temp」，从来没有 cache 授权，语义上已经是
+  `Nothing`。参数照样接受，只是 `debug_assert` 一句，免得第四个后端将来悄悄不同意。
+
+三个后端的 `describe()` 现在都带上写集（`writes: roots only` / `roots + build caches +
+host /tmp`）。理由同 §1 那条不变式：`doctor` 打印的东西必须就是实际生效的东西，
+只说「landlock」而不说给了哪些写权限，等于把这次的 bug 又留一遍。
+
+**为什么不给 MCP 留 `/tmp`**
+
+§3 已经把 `TMPDIR`/`TMP`/`TEMP` 指到私有 HOME，而私有 HOME **本身就在 write 集合里**
+（实测 server 进程的 `TMPDIR` 确实是 `<data_dir>/mcp/<server>/home`）。所以「临时目录不够用」
+这个理由在这里不成立。真有个 server 硬编码 `/tmp`，正确做法是它自己的
+`writable_paths = ["/tmp/<its-own-dir>"]`——显式的、能 diff 的、只给它一个子目录，
+而不是替所有 server 默认打开宿主的 `/tmp`。
+
+**验证**
+
+- 真机单测（Landlock，同一份 kernel 跑两次 `with_roots`）：`BuildCaches` 能写 `/tmp` 与
+  `$CARGO_HOME/config.toml`，`Nothing` 两者都 EACCES。之前这里是**测不出来**的：既有测试
+  `writes_and_reads_stop_at_the_grant` 的注释写着「`tempfile` 在 `/tmp`，而 Landlock 无条件
+  授权 `/tmp` 和 `/var/tmp`，所以『外面』得挑别处」——测试绕开了被 bug 覆盖的那块，于是
+  bug 一直在。现在那条测试把 `/tmp` 也断言进去，并把这段注释改写成它真正想说的话。
+- bwrap 参数断言（两个取值各一条，且互相为对照）：`Nothing` 没有 cache 的 `--bind`、没有
+  `--setenv TMPDIR`，但仍有私有 `--tmpfs /tmp`。
+- macOS profile 断言：拿整段 `(allow file-write* ...)` 逐个路径比对（第一版把 `)\n` 当成
+  块结束，只截到第一个 `subpath`，是测试自己的 bug，靠「该出现的路径没出现」发现的）。
+- 端到端（真 Landlock + 真子进程 + 真 `tools/call`）：`$CARGO_HOME/config.toml` 写不进去。
+- 变异验证四次：kernel 改回 `BuildCaches` → 端到端两条同时失败；Landlock 改成无条件授权 →
+  两条真机单测失败；macOS 改成无条件授权 → profile 断言失败。
+- **`run_shell` 未受影响**：`BuildCaches` 是它的老路径，全量 1021 条测试里 shell 相关全绿；
+  真机上 `qc` 的 `mcp__wordcraft__*` 仍然 19 个工具、`new_document` + `save_document` 写出
+  6531 字节的真 `.docx`（`file` 认作 Microsoft Word 2007+）。
+
 **待定**
 
 - `credentials` 预设表要不要可扩展（用户自定义 preset），还是只做固定的这几条。
@@ -6146,8 +6216,11 @@ P2 的验收是「`qc doctor` 打印授权集」，但同一份授权集在 GUI 
   fail：起不来的 server 只丢自己的工具，会话照常，doctor 不该因此退出非零。
   `describe()` 的凭据段同时改成「已授予的 `~/...` + 未命中的 `preset(not found)`」，
   以便区分「要了」与「拿到了」。
-- `qc doctor` 还没有能力探测的段（`discover` / `resources/list` 是否真的通）：那要等
-  ADR-0067 的传输层落地，现在 doctor 只做静态检查，不连 server。
+- ~~`qc doctor` 还没有能力探测的段（`discover` / `resources/list` 是否真的通）：那要等
+  ADR-0067 的传输层落地，现在 doctor 只做静态检查，不连 server。~~ **已做（2026-11-11）**：
+  `qc doctor --probe` 真连、真问、并把「声明与实际是否一致」两个方向都报出来。默认仍是
+  静态检查（连 server 会启动每个 stdio server、为远程 server 起出口代理，不该是默认动作）。
+  见 ADR-0068 §4 的 B-2 修订注记。
 
 ## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
 

@@ -47,6 +47,39 @@ impl SandboxMode {
     }
 }
 
+/// What a sandbox grants **beyond** the roots it was given.
+///
+/// The two shapes exist because qcode has two very different callers, and until
+/// this enum they silently shared one rule set (ADR-0066 §1 says an MCP server
+/// gets exactly its grant — three disjoint sets, nothing else):
+///
+/// * [`Self::BuildCaches`] — `run_shell`. A compiler writes to `CARGO_HOME`,
+///   `RUSTUP_HOME`, `~/.cargo`, `~/.rustup`, and anything that opens a socket or
+///   a `mktemp` writes to the host `/tmp`. None of that is in the task roots, so
+///   it is handed out on top.
+/// * [`Self::Nothing`] — an MCP server. It is third-party code that was never
+///   going to run `cargo build`; `TMPDIR` already points into its private HOME,
+///   which *is* one of its roots (ADR-0068 §3), so a scratch directory is not
+///   missing. Measured before this existed: a server could write
+///   `/tmp/anything` and, on any machine with a Rust toolchain, rewrite
+///   `~/.cargo/config.toml` — whose `[build] rustc-wrapper` is arbitrary code
+///   execution on the next `cargo build` in that HOME.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutsideRoots {
+    /// Build caches and the host scratch directories, on top of the roots.
+    BuildCaches,
+    /// Exactly the roots. Nothing is added.
+    #[default]
+    Nothing,
+}
+
+impl OutsideRoots {
+    /// Whether the build caches / host scratch directories are handed out.
+    pub fn grants_build_caches(self) -> bool {
+        matches!(self, Self::BuildCaches)
+    }
+}
+
 /// Network policy passed to an OS sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxNetwork {
@@ -159,12 +192,18 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
 
     /// Rebuild this sandbox for a task's root set.
     ///
+    /// `outside` is what the caller wants on top of those roots, and it has to
+    /// be stated rather than inherited: the same backend serves `run_shell`
+    /// (which needs build caches) and MCP servers (which must get nothing),
+    /// and a default would make one of them silently wrong.
+    ///
     /// The default backend does not support multiple roots; callers must fail
     /// closed rather than falling back to an unconfined command.
     fn with_roots(
         &self,
         _roots: &[Root],
         _temp: Option<&Path>,
+        _outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
         Err(SandboxError::Unsupported("multi-root sandbox"))
     }

@@ -27,6 +27,7 @@ pub(crate) fn bwrap_args(
     cwd: &Path,
     network: bool,
     writable: &[PathBuf],
+    outside: OutsideRoots,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
@@ -62,15 +63,25 @@ pub(crate) fn bwrap_args(
     args.push("/dev".into());
     // A workspace under /tmp cannot be bound after a tmpfs is mounted over the
     // source path, so only give /tmp a private tmpfs when it is safe.
+    //
+    // A private tmpfs is kept for both `OutsideRoots` shapes: it is *not* the
+    // host's /tmp, so an MCP server writing `/tmp/x` writes into a directory
+    // that vanishes with the process and that nothing else can see. Denying it
+    // outright would break runtimes that ignore TMPDIR for no security gain.
     let touches_tmp = roots.iter().any(|root| root.path.starts_with("/tmp"));
     if !touches_tmp {
         args.push("--tmpfs".into());
         args.push("/tmp".into());
     }
-    // The host may point TMPDIR at a path that is not mounted in here.
-    args.push("--setenv".into());
-    args.push("TMPDIR".into());
-    args.push("/tmp".into());
+    // The host may point TMPDIR at a path that is not mounted in here. When the
+    // caller granted no build caches, TMPDIR is left as qcode set it — for an
+    // MCP server that is its private HOME (ADR-0068 §3), which is a bound,
+    // writable root, so this keeps the scratch directory inside the grant.
+    if outside.grants_build_caches() {
+        args.push("--setenv".into());
+        args.push("TMPDIR".into());
+        args.push("/tmp".into());
+    }
 
     // Each root is bound exactly where it lives: read-write roots share the
     // host directory, read-only roots are copied as immutably visible.
@@ -80,13 +91,15 @@ pub(crate) fn bwrap_args(
         args.push(root.path.clone().into());
         args.push(root.path.clone().into());
     }
-    for path in writable {
-        if roots.iter().any(|root| &root.path == path) {
-            continue;
+    if outside.grants_build_caches() {
+        for path in writable {
+            if roots.iter().any(|root| &root.path == path) {
+                continue;
+            }
+            args.push("--bind".into());
+            args.push(path.into());
+            args.push(path.into());
         }
-        args.push("--bind".into());
-        args.push(path.into());
-        args.push(path.into());
     }
 
     args.push("--chdir".into());
@@ -127,6 +140,7 @@ pub(crate) fn writable_paths() -> Vec<PathBuf> {
 pub struct Bwrap {
     roots: Vec<BwrapRoot>,
     network: bool,
+    outside: OutsideRoots,
 }
 
 #[cfg(target_os = "linux")]
@@ -143,6 +157,9 @@ impl Bwrap {
                 writable: true,
             }],
             network,
+            // The base sandbox is only a factory and a preflight: every real
+            // command comes from `with_roots`, which states this for itself.
+            outside: OutsideRoots::BuildCaches,
         })
     }
 
@@ -153,6 +170,7 @@ impl Bwrap {
             cwd,
             self.network,
             &writable_paths(),
+            self.outside,
         ));
         command.arg(program).args(args);
         command
@@ -171,6 +189,7 @@ impl Sandbox for Bwrap {
         &self,
         roots: &[Root],
         temp: Option<&Path>,
+        outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
         let mut mapped: Vec<BwrapRoot> = roots
             .iter()
@@ -193,13 +212,23 @@ impl Sandbox for Bwrap {
         Ok(Arc::new(Self {
             roots: mapped,
             network: self.network,
+            outside,
         }))
     }
 
     fn describe(&self) -> String {
+        // The write scope is part of the description because ADR-0066 §1 is
+        // exactly about not letting the printed grant and the enforced grant
+        // drift apart: "bubblewrap" alone does not say whether build caches
+        // came along.
         format!(
-            "bubblewrap (network {})",
-            if self.network { "allowed" } else { "denied" }
+            "bubblewrap (network {}, writes: {})",
+            if self.network { "allowed" } else { "denied" },
+            if self.outside.grants_build_caches() {
+                "roots + build caches + host /tmp"
+            } else {
+                "roots only"
+            }
         )
     }
 
@@ -328,19 +357,26 @@ pub struct Landlock {
     roots: Vec<(PathBuf, bool)>,
     /// Where the preflight runs; the first root (or the turn temp).
     cwd: PathBuf,
+    /// Build caches and the host `/tmp`, or neither. Carried rather than read
+    /// from the environment at install time so the answer is a property of this
+    /// ruleset, visible in `describe()` and in the tests.
+    outside: OutsideRoots,
     ruleset_fd: RawFd,
 }
 
 #[cfg(target_os = "linux")]
 impl Landlock {
     pub fn new(workspace: &Path) -> Result<Self, SandboxError> {
-        Self::for_roots(vec![(workspace.to_path_buf(), true)])
+        Self::for_roots(
+            vec![(workspace.to_path_buf(), true)],
+            OutsideRoots::BuildCaches,
+        )
     }
 
     /// Build a ruleset for a set of roots and a directory to run the preflight
     /// in. Read-only roots only get the read bits, which is all Landlock needs:
     /// unlike the other backends there is no mount table to prepare.
-    fn for_roots(roots: Vec<(PathBuf, bool)>) -> Result<Self, SandboxError> {
+    fn for_roots(roots: Vec<(PathBuf, bool)>, outside: OutsideRoots) -> Result<Self, SandboxError> {
         if let Some((path, _)) = roots.iter().find(|(path, _)| path == Path::new("/")) {
             return Err(SandboxError::Setup(format!(
                 "refusing to sandbox the filesystem root as a root: {}",
@@ -358,6 +394,7 @@ impl Landlock {
         let sandbox = Self {
             roots,
             cwd,
+            outside,
             ruleset_fd,
         };
         // `Drop` closes the fd on error.
@@ -405,14 +442,21 @@ impl Landlock {
             }
         }
 
-        let mut writable = vec![PathBuf::from("/tmp")];
-        if Path::new("/var/tmp").exists() {
-            writable.push(PathBuf::from("/var/tmp"));
-        }
-        writable.extend(writable_paths());
-        for path in writable {
-            if path.exists() {
-                add_path_rule(self.ruleset_fd, &path, allowed)?;
+        // Only when the caller asked for them. Landlock has no "private tmpfs"
+        // trick: granting `/tmp` here grants the host's `/tmp`, which is why an
+        // MCP server could write `/tmp/anything` before `OutsideRoots::Nothing`
+        // existed. The build caches are worse — `~/.cargo/config.toml` decides
+        // the next `cargo build`'s `rustc-wrapper`.
+        if self.outside.grants_build_caches() {
+            let mut writable = vec![PathBuf::from("/tmp")];
+            if Path::new("/var/tmp").exists() {
+                writable.push(PathBuf::from("/var/tmp"));
+            }
+            writable.extend(writable_paths());
+            for path in writable {
+                if path.exists() {
+                    add_path_rule(self.ruleset_fd, &path, allowed)?;
+                }
             }
         }
 
@@ -466,6 +510,7 @@ impl Sandbox for Landlock {
         &self,
         roots: &[Root],
         temp: Option<&Path>,
+        outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
         let mut mapped: Vec<(PathBuf, bool)> = roots
             .iter()
@@ -484,11 +529,18 @@ impl Sandbox for Landlock {
                 "landlock needs at least one root or a turn temp",
             ));
         }
-        Ok(Arc::new(Self::for_roots(mapped)?))
+        Ok(Arc::new(Self::for_roots(mapped, outside)?))
     }
 
     fn describe(&self) -> String {
-        "Landlock filesystem confinement (network not restricted)".to_string()
+        format!(
+            "Landlock filesystem confinement (network not restricted, writes: {})",
+            if self.outside.grants_build_caches() {
+                "roots + build caches + host /tmp"
+            } else {
+                "roots only"
+            }
+        )
     }
 
     fn command(

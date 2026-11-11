@@ -241,7 +241,13 @@ pub fn mcp_confine(sandbox: Arc<dyn Sandbox>, workspace: &Path) -> Box<qcode_mcp
     Box::new(move |program, args, cwd, grant| {
         let roots = mcp_roots(&workspace, grant);
         let per_server = sandbox
-            .with_roots(&roots, None)
+            // `OutsideRoots::Nothing` is the whole point of ADR-0066 §1: an MCP
+            // server writes to its grant (workspace, private HOME, declared
+            // `writable_paths`) and nowhere else. `run_shell`'s build caches and
+            // the host `/tmp` are *not* part of that grant, and handing them
+            // over quietly made `~/.cargo/config.toml` writable by third-party
+            // code — whose `[build] rustc-wrapper` runs on the next build.
+            .with_roots(&roots, None, qcode_tools::sandbox::OutsideRoots::Nothing)
             .map_err(|error| format!("{error} (grant: {})", grant.describe()))?;
         let command = per_server
             .command(program, args, cwd)

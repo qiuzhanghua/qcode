@@ -21,6 +21,40 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 - 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
   四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
 
+### MCP server 不再能写 `/tmp` 和 Rust 构建缓存（ADR-0066 §1 修订）
+
+ADR-0066 §1 写的是「三个不相交的集合，**此外一律无**」，实现没做到：MCP server 和
+`run_shell` 共用同一个 `Sandbox`，于是 `run_shell` 需要的两项额外授权被一并继承——
+Linux/macOS 上的宿主 `/tmp`，以及 `$CARGO_HOME` / `$RUSTUP_HOME` / `$CARGO_TARGET_DIR` /
+`~/.cargo` / `~/.rustup`。实测：一个 MCP server 能写 `/tmp/anything`，也能写
+`$CARGO_HOME/config.toml`。
+
+后者不是「多了一个临时目录」：那个文件里的 `[build] rustc-wrapper` 就是下次 `cargo build`
+时的任意代码执行。装着 Rust 的机器上，`npm i` / `pip install` 装来的第三方 server 就能改它。
+
+- `Sandbox::with_roots` 新增 `OutsideRoots` 参数，**由调用方显式写**，没有默认值：这个量同时
+  服务两个需求相反的调用方，任何默认都会让其中一个静默错下去。`run_shell` 是
+  `BuildCaches`（行为不变），MCP 是 `Nothing`。
+- 三个后端同一语义。Landlock 不加 `/tmp`、`/var/tmp`、不并 `writable_paths()`；bwrap 不
+  bind cache、不再强设 `TMPDIR=/tmp`（那会顶掉 ADR-0068 §3 的私有 HOME），但**保留私有的
+  `--tmpfs /tmp`**——它不是宿主的 `/tmp`，走了也不会落到宿主上，而按 `/tmp` 硬编码的运行时
+  离开它会直接崩；macOS 从写块里去掉 `/private/tmp`、`/var/folders` 和那几个 cache 变量，
+  读权限保留（二进制可能就住在 `$CARGO_HOME` 下）。
+- 三个后端的 `describe()` 现在都带写集（`writes: roots only` / `roots + build caches +
+  host /tmp`）——`doctor` 打印的必须就是实际生效的。
+- `TMPDIR` 早在 ADR-0068 §3 就指向私有 HOME，而私有 HOME 本来就在 write 集合里，所以
+  「临时目录不够用」这个理由不成立。真有个 server 硬编码 `/tmp`，正确做法是它自己的
+  `writable_paths = ["/tmp/<its-own-dir>"]`，而不是替所有 server 默认打开宿主的 `/tmp`。
+
+顺带修好的一个测试盲区：既有集成测试的注释写着「`tempfile` 在 `/tmp`，而 Landlock 无条件
+授权 `/tmp`，所以『外面』得挑别处」——测试绕开了被 bug 覆盖的那块。现在它把 `/tmp` 也断言
+进去。新增：真机单测（同一份 kernel 两种 `OutsideRoots`，`/tmp` 与 `$CARGO_HOME` 一开一关）、
+bwrap 参数断言、macOS profile 断言、端到端（真子进程 + 真 `tools/call` 写
+`$CARGO_HOME/config.toml`）。变异验证四次全部被抓到。
+
+真机回归：`run_shell` 行为不变；wordcraft 仍注册 19 个工具，`new_document` +
+`save_document` 写出 6531 字节的真 `.docx`（`file` 认作 Microsoft Word 2007+）。
+
 ### MCP 连接不再探测能力；`qc doctor --probe` 取而代之（ADR-0068 §4 修订）
 
 上一版 §4 只让 2026-07-28 的 server 免于探测，legacy 仍然「试一次」。用 `wordcraft-cli

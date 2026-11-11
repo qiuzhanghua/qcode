@@ -337,7 +337,10 @@ cargo build -p qcode-eval
   推导之外还需要什么就写 `read_paths` / `writable_paths`；`/`、`$HOME` 和 workspace 的
   父目录不会被自动授予。任何一个 server 都可以 `sandbox = "off"` 单独关掉沙箱，届时
   启动 warn、`qc doctor` 标出来。授权集在启动日志里以 `mcp server grant` 一行打印。
-  注意 `landlock` 后端本来就允许写 `/tmp` 与 `/var/tmp`。
+  **写集严格等于上面那几个集合，此外一律无**：`run_shell` 需要的宿主 `/tmp` 和 Rust 构建
+  缓存（`$CARGO_HOME`、`~/.cargo` 等）**不会**带给 MCP server——`TMPDIR` 已经指向私有
+  `HOME`，而 `$CARGO_HOME/config.toml` 里的 `[build] rustc-wrapper` 等于任意代码执行。
+  某个 server 确实要写别处，就写它自己的 `writable_paths`。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
   `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。

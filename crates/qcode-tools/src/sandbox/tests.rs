@@ -41,6 +41,7 @@ mod macos_sandbox_tests {
             Some(Path::new("/tmp/qcode-sandbox-tests/tmp")),
             SandboxNetwork::Deny,
             &[],
+            OutsideRoots::BuildCaches,
         )
         .expect("profile");
         let write = block(&profile, "(allow file-write*");
@@ -88,6 +89,7 @@ mod macos_sandbox_tests {
             None,
             SandboxNetwork::Deny,
             &[],
+            OutsideRoots::BuildCaches,
         )
         .expect("profile");
 
@@ -268,7 +270,6 @@ mod macos_sandbox_tests {
         assert!(workspace.path().join("inside.txt").is_file());
     }
 
-    #[test]
     fn denies_writes_outside_the_workspace() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         let Some(sandbox) = sandbox_or_skip(workspace.path()) else {
@@ -333,7 +334,7 @@ mod macos_sandbox_tests {
             return None;
         }
         Some(
-            seed.with_roots(roots, Some(temp))
+            seed.with_roots(roots, Some(temp), OutsideRoots::BuildCaches)
                 .expect("multi-root sandbox"),
         )
     }
@@ -483,7 +484,13 @@ mod bwrap_tests {
 
     #[test]
     fn binds_workspace_read_write_and_chdirs() {
-        let args = strings(&bwrap_args(&rw_roots(), &cwd(), false, &[]));
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+        ));
         assert!(
             args.windows(3).any(|window| window
                 == [
@@ -509,7 +516,13 @@ mod bwrap_tests {
             path: workspace.clone(),
             writable: true,
         }];
-        let args = strings(&bwrap_args(&roots, &workspace, false, &[]));
+        let args = strings(&bwrap_args(
+            &roots,
+            &workspace,
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+        ));
         assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
         assert!(
             args.windows(2)
@@ -519,10 +532,22 @@ mod bwrap_tests {
 
     #[test]
     fn network_is_denied_unless_opted_in() {
-        let denied = strings(&bwrap_args(&rw_roots(), &cwd(), false, &[]));
+        let denied = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+        ));
         assert!(denied.contains(&"--unshare-net".to_string()));
 
-        let allowed = strings(&bwrap_args(&rw_roots(), &cwd(), true, &[]));
+        let allowed = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            true,
+            &[],
+            OutsideRoots::BuildCaches,
+        ));
         assert!(!allowed.contains(&"--unshare-net".to_string()));
     }
 
@@ -539,7 +564,13 @@ mod bwrap_tests {
                 writable: false,
             },
         ];
-        let args = strings(&bwrap_args(&roots, &cwd(), false, &[]));
+        let args = strings(&bwrap_args(
+            &roots,
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+        ));
         assert!(
             args.windows(3)
                 .any(|window| window[0] == "--bind" && window[1] == w.to_string_lossy()),
@@ -560,12 +591,72 @@ mod bwrap_tests {
             &cwd(),
             false,
             std::slice::from_ref(&cargo),
+            OutsideRoots::BuildCaches,
         ));
         let binds = args
             .windows(3)
             .filter(|window| window[0] == "--bind" && window[1] == cargo.to_string_lossy())
             .count();
         assert_eq!(binds, 1, "{args:?}");
+    }
+
+    /// `OutsideRoots::Nothing`: no build-cache binds, and `TMPDIR` is left as
+    /// qcode set it (its private HOME for an MCP server, ADR-0068 §3).
+    ///
+    /// The private `--tmpfs /tmp` stays: it is not the host's `/tmp`, so a
+    /// server that ignores `TMPDIR` writes into a directory that disappears
+    /// with the process. Only the *host* path is what the fix is about.
+    #[test]
+    fn outside_roots_nothing_binds_no_build_caches() {
+        let cargo = PathBuf::from("/tmp/qcode-bwrap-tests/cargo");
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            std::slice::from_ref(&cargo),
+            OutsideRoots::Nothing,
+        ));
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "--bind" && w[1] == cargo.to_string_lossy()),
+            "CARGO_HOME was bound read-write: {args:?}"
+        );
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "--setenv" && w[1] == "TMPDIR"),
+            "TMPDIR was forced to /tmp, which is not the server's private HOME: {args:?}"
+        );
+        // The isolation itself survives.
+        assert!(
+            args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == "/tmp"),
+            "the private tmpfs must stay: {args:?}"
+        );
+    }
+
+    /// And the same call with build caches does bind them, so the assertion
+    /// above is a difference and not an artefact of the fixture.
+    #[test]
+    fn outside_roots_build_caches_binds_them() {
+        let cargo = PathBuf::from("/tmp/qcode-bwrap-tests/cargo");
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            std::slice::from_ref(&cargo),
+            OutsideRoots::BuildCaches,
+        ));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--bind" && w[1] == cargo.to_string_lossy()),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--setenv" && w[1] == "TMPDIR"),
+            "{args:?}"
+        );
     }
 }
 
@@ -609,7 +700,9 @@ mod linux_tests {
                 primary: false,
             },
         ];
-        let sandbox = seed.with_roots(&roots, None).expect("multi-root sandbox");
+        let sandbox = seed
+            .with_roots(&roots, None, OutsideRoots::BuildCaches)
+            .expect("multi-root sandbox");
 
         let write = |cwd: &Path, target: &Path| {
             let mut command = sandbox
@@ -805,6 +898,129 @@ mod landlock_runtime {
         assert!(workspace.path().join("inside.txt").is_file());
     }
 
+    /// The write set is the roots, and the two shapes must actually differ on a
+    /// real kernel — otherwise `OutsideRoots` is decoration.
+    ///
+    /// `/tmp` is the probe because it is where the bug was: the backend granted
+    /// it unconditionally, so every MCP server could write there (measured on
+    /// wordcraft-cli, which happily wrote a .docx into `/tmp/...`). `run_shell`
+    /// keeps it; an MCP server must not.
+    #[test]
+    fn the_host_temp_dir_is_writable_only_when_build_caches_are_granted() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let Some(seed) = landlock_or_skip(workspace.path()) else {
+            return;
+        };
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        let target =
+            std::env::temp_dir().join(format!("qcode-outside-roots-{}", std::process::id()));
+        let _ = std::fs::remove_file(&target);
+        let write = |sandbox: &dyn Sandbox| {
+            let mut command = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!("printf x > '{}'", target.display())),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command");
+            let output = command.output().expect("run");
+            let wrote = target.exists();
+            let _ = std::fs::remove_file(&target);
+            (output.status.success(), wrote)
+        };
+
+        // `run_shell`: the host temp dir comes with the build caches.
+        let shell = seed
+            .with_roots(&roots, None, OutsideRoots::BuildCaches)
+            .expect("build caches sandbox");
+        let (ok, wrote) = write(shell.as_ref());
+        assert!(ok && wrote, "run_shell must keep writing to /tmp");
+
+        // An MCP server: exactly the roots.
+        let server = seed
+            .with_roots(&roots, None, OutsideRoots::Nothing)
+            .expect("roots-only sandbox");
+        let (ok, wrote) = write(server.as_ref());
+        assert!(!wrote, "an MCP server wrote to the host /tmp");
+        assert!(!ok, "the write must fail, not merely be dropped");
+    }
+
+    /// The build caches are the other half of the same allowance, and the one
+    /// with teeth: `~/.cargo/config.toml` gets to name a `rustc-wrapper`.
+    #[test]
+    fn the_build_caches_are_writable_only_when_granted() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let Some(seed) = landlock_or_skip(workspace.path()) else {
+            return;
+        };
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        let target = cache.path().join("config.toml");
+        let write = |sandbox: &dyn Sandbox| {
+            let mut command = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!("printf x > '{}'", target.display())),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command");
+            let output = command.output().expect("run");
+            let wrote = target.exists();
+            let _ = std::fs::remove_file(&target);
+            (output.status.success(), wrote)
+        };
+
+        // `writable_paths()` reads `CARGO_HOME` out of the *process* env, so the
+        // only way to point at a temp dir is to set it here. SAFETY: this test
+        // binary has no other user of the variable, and the guard restores it.
+        let previous = std::env::var_os("CARGO_HOME");
+        // SAFETY: single-threaded use inside this test (see the comment above).
+        unsafe { std::env::set_var("CARGO_HOME", cache.path()) };
+
+        let shell = seed
+            .with_roots(&roots, None, OutsideRoots::BuildCaches)
+            .expect("build caches sandbox");
+        let (ok, wrote) = write(shell.as_ref());
+        let server = seed
+            .with_roots(&roots, None, OutsideRoots::Nothing)
+            .expect("roots-only sandbox");
+        let (server_ok, server_wrote) = write(server.as_ref());
+
+        match previous {
+            // SAFETY: as above.
+            Some(value) => unsafe { std::env::set_var("CARGO_HOME", value) },
+            None => {
+                // SAFETY: as above.
+                unsafe { std::env::remove_var("CARGO_HOME") }
+            }
+        }
+
+        assert!(ok && wrote, "run_shell must keep writing to CARGO_HOME");
+        assert!(
+            !server_wrote,
+            "an MCP server wrote into CARGO_HOME — its config.toml can name a rustc-wrapper"
+        );
+        assert!(!server_ok, "the write must fail, not merely be dropped");
+    }
+
     #[test]
     fn denies_writes_outside_the_workspace() {
         let workspace = tempfile::tempdir().expect("temp workspace");
@@ -844,6 +1060,71 @@ mod macos_profile_tests {
     use crate::sandbox::macos::*;
     use crate::sandbox::*;
 
+    /// The macOS half of the same rule: no host scratch directories and no
+    /// cache writes when the caller granted nothing. Read access to them stays
+    /// (a binary may live under `CARGO_HOME`), which is why this asserts on the
+    /// write block specifically.
+    #[test]
+    fn outside_roots_nothing_drops_the_scratch_and_cache_writes() {
+        let roots = vec![Root {
+            id: "r1".to_string(),
+            label: "app".to_string(),
+            path: PathBuf::from("/Users/test/project"),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        // The whole `(allow file-write* ...)` sexp, not just its first entry:
+        // `)\n` would match the closing paren of the first `(subpath ...)`.
+        let write_block = |profile: &str| -> String {
+            let start = profile.find("(allow file-write*").expect("write block");
+            let rest = &profile[start..];
+            let end = rest.find("\n)\n").expect("write block end");
+            rest[..end].to_string()
+        };
+
+        let shell = profile_for_roots(
+            &roots,
+            None,
+            SandboxNetwork::Deny,
+            &[],
+            OutsideRoots::BuildCaches,
+        )
+        .expect("profile");
+        let shell_write = write_block(&shell);
+        assert!(shell_write.contains("/private/tmp"), "{shell_write}");
+        assert!(shell_write.contains("/Users/test/project"), "{shell_write}");
+
+        let server = profile_for_roots(
+            &roots,
+            None,
+            SandboxNetwork::Deny,
+            &[],
+            OutsideRoots::Nothing,
+        )
+        .expect("profile");
+        let server_write = write_block(&server);
+        assert!(
+            server_write.contains("/Users/test/project"),
+            "{server_write}"
+        );
+        for outside in ["/private/tmp", "/tmp", "/var/folders"] {
+            assert!(
+                !server_write.contains(outside),
+                "{outside} is writable for an MCP server: {server_write}"
+            );
+        }
+        if let Some(cargo) = std::env::var_os("CARGO_HOME") {
+            let cargo = cargo.to_string_lossy();
+            assert!(
+                !server_write.contains(cargo.as_ref()),
+                "CARGO_HOME is writable for an MCP server: {server_write}"
+            );
+        }
+    }
+
+    use crate::sandbox::macos::*;
+    use crate::sandbox::*;
+
     #[test]
     fn the_profile_writes_extra_roots() {
         let root = tempfile::tempdir().unwrap();
@@ -860,6 +1141,7 @@ mod macos_profile_tests {
             None,
             SandboxNetwork::Deny,
             &[extra.path().to_path_buf()],
+            OutsideRoots::BuildCaches,
         )
         .expect("profile");
         let write_section = profile
