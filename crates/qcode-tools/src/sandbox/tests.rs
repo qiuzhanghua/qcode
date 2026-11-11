@@ -270,6 +270,7 @@ mod macos_sandbox_tests {
         assert!(workspace.path().join("inside.txt").is_file());
     }
 
+    #[test]
     fn denies_writes_outside_the_workspace() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         let Some(sandbox) = sandbox_or_skip(workspace.path()) else {
@@ -1121,9 +1122,6 @@ mod macos_profile_tests {
             );
         }
     }
-
-    use crate::sandbox::macos::*;
-    use crate::sandbox::*;
 
     #[test]
     fn the_profile_writes_extra_roots() {

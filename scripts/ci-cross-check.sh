@@ -27,6 +27,11 @@ set -o pipefail
 # Windows triples, so passing them explicitly keeps the "not checked" line
 # meaning "this one is missing here" instead of naming targets the caller never
 # intended to check.
+# Note on the aarch64 triples: a C build script (`cc-rs`) needs the matching
+# cross compiler, e.g. `aarch64-w64-mingw32-clang` for windows-gnullvm. The
+# release environment has llvm-mingw (`build-for-release` requires it); a stock
+# CI runner does not, which is why the workflow names only
+# `x86_64-pc-windows-gnullvm` and this default list is for developer machines.
 SHIPPED=(
     x86_64-pc-windows-gnullvm
     aarch64-pc-windows-gnullvm

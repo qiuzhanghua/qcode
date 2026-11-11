@@ -21,6 +21,23 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 - 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
   四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
 
+### 修 CI：cross-check 的 aarch64 目标 + 两处 macOS 门控错误
+
+`cross-check` job 上线后第一次真正跑，红了两个地方，都是这次新代码的问题：
+
+- **aarch64-pc-windows-gnullvm 编不过**：`cc-rs: failed to find tool
+  "aarch64-w64-mingw32-clang"`。C 构建脚本要 llvm-mingw 交叉工具链，发布环境
+  （`build-for-release`）有，stock ubuntu runner 没有。CI 改为只查
+  `x86_64-pc-windows-gnullvm`；全仓库没有 `cfg(target_arch)` 门控，所以 Windows 的 cfg
+  分支覆盖不变。aarch64 与 darwin 仍留给有工具链的开发机（脚本默认列表）。
+- **macOS 侧两处**（`test (macos-latest)` 报的，本机看不到）：`crates/qcode-tools/src/sandbox/tests.rs`
+  里一个 `#[test]` 属性被划走，导致 `denies_writes_outside_the_workspace` 「从未使用」；
+  `macos_profile_tests` 里一对重复的 `use` 变成 unused import。都是上一版移动代码块时
+  切错行留下的。
+
+教训已写进 README：**翻 cfg 在本地验 macOS 要翻全部相关模块，并且跑 clippy 而不是只看
+测试过没过**——上一版只翻了一半，测试照样通过。
+
 ### 审批规则的 `tool` 支持通配
 
 `[[rules]]` 的 `tool` 之前是精确比较（`name != tool`），写 `tool = "mcp__wordcraft__*"` 会
@@ -57,9 +74,16 @@ fail-open → 不匹配那条失败。
   也在列表里，没装 std 就跳过并明说跳了哪些。
 - 有两条「不能静默成功」的守卫：一个 target 都没检查时**失败**（防「我检查了其他平台」
   变成不可证伪的说法），跳过哪些明确打印。
-- CI 加 `cross-check` job（ubuntu）：只装那两个 windows 三元组并显式传参。**darwin 故意
-  不在 CI 里查**——从 Linux 编译 Apple 框架的 C shim 从没试过，按猜测加的 job 会永久红；
-  macOS 后端本来就有 `test (macos-latest)` 在真机上编译并跑测试，那才是真覆盖。
+- CI 加 `cross-check` job（ubuntu）。**只查 `x86_64-pc-windows-gnullvm`**，两个理由都是
+  实际撞出来的：
+  - 第一版带了 `aarch64-pc-windows-gnullvm`，跑起来红在
+    `cc-rs: failed to find tool "aarch64-w64-mingw32-clang"`——C 构建脚本要 llvm-mingw
+    交叉工具链，发布环境（`build-for-release`）有，stock ubuntu runner 没有。
+  - 去掉它不损失覆盖：全仓库**没有任何 `cfg(target_arch)` 门控**（grep 过），所以 Windows
+    的 cfg 分支在同一条路上都编到。aarch64 与 darwin 三元组仍留在脚本默认列表里，给有
+    工具链的开发机用。
+  - **darwin 也不在 CI 里查**：从 Linux 编译 Apple 框架的 C shim 从没试过，按猜测加的 job
+    会永久红；macOS 后端本来就有 `test (macos-latest)` 在真机上编译并跑测试。
 - 变异验证：把调用点改回两参数 → 脚本 `E0061` 且退出码 1；把目标列表换成未装的
   `wasm32-unknown-unknown` → 报「nothing was verified」并退出码 1。
 

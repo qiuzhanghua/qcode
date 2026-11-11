@@ -188,6 +188,19 @@ target，`#[cfg(windows)]`、`#[cfg(target_os = "macos")]` 的代码在本机根
 （`#![cfg(windows)]`）漏改了调用点。Linux 上 `cargo test --workspace` 全绿——那个文件
 压根没被编译。`make check-platforms` 第一次跑就报了 `E0061`。
 
+这条命令只覆盖 **Windows**（darwin 需要 `rustup target add`，而且从 Linux 编 Apple 框架的
+C shim 从没验证过）。macOS 门控的代码只能用改 cfg 的办法在本地过一遍：
+
+```bash
+# 临时把 target_os = "macos" 改成 "linux"（macos.rs 里的 #[cfg] 一并去掉），
+# 跑 clippy -D warnings，然后 git checkout 还原
+cargo clippy -p qcode-tools --all-targets -- -D warnings
+```
+
+历史教训：这条只翻了一半（只翻了 profile 测试模块）就以为验过了，结果 CI 在 macOS 上报
+出两处——一个 `#[test]` 属性被划走导致函数「从未使用」，一对重复的 `use` 变成 unused
+import。**翻 cfg 要翻全部相关模块，并且用 clippy 而不是只看测试是否通过。**
+
 这条命令替代不了 CI 的 macOS/Windows job（它们跑在真系统上，macOS 还会真跑测试），
 所以仍然要等 CI 绿。它挡不住的另一类：门控本身没编译错、但**运行时**才炸的东西——
 `debug_assert!`、`cfg` 分支里的逻辑。`windows-build` 只做 `cargo test --workspace

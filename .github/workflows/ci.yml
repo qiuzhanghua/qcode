@@ -89,7 +89,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnullvm, aarch64-pc-windows-gnullvm
+          targets: x86_64-pc-windows-gnullvm
       - uses: Swatinem/rust-cache@v2
       # Same pkg-config set as `test`: `--workspace` reaches qcode-gui, whose
       # fontconfig build script is a *host* build script and still runs.
@@ -101,12 +101,18 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
       - name: cargo check for the shipping triples
         shell: bash
-        # The two triples installed above, named explicitly so the script's
-        # "not checked" line reports a genuinely missing target and not the
-        # darwin ones this job deliberately does not install.
-        run: |
-          bash scripts/ci-cross-check.sh \
-            x86_64-pc-windows-gnullvm aarch64-pc-windows-gnullvm
+        # x86_64 only. The first run of this job failed on aarch64 with
+        # `cc-rs: failed to find tool "aarch64-w64-mingw32-clang"` — a C build
+        # script needs the llvm-mingw cross toolchain, which exists in the
+        # release environment (`build-for-release` requires it for the windows
+        # targets) but not on a stock ubuntu runner.
+        #
+        # Dropping it costs no coverage: there are no `cfg(target_arch)` gates
+        # anywhere in this workspace (verified with a grep), so all Windows
+        # cfg-gated code is compiled either way. The aarch64 triple stays in
+        # the script's default list for machines that do have the toolchain —
+        # here, name only what this runner can actually build.
+        run: bash scripts/ci-cross-check.sh x86_64-pc-windows-gnullvm
 
   windows-build:
     name: windows (build + smoke)
