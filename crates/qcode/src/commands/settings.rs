@@ -95,30 +95,22 @@ pub(crate) fn cmd_config(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `--credential` values. Accepts the preset names `credentials` takes in the
-/// config file, so the CLI and the file cannot drift.
+/// `--credential` values. The table lives in `qcode-mcp` so the CLI, the GUI's
+/// picker and the config loader cannot drift; only the error message is ours.
 fn parse_credential(name: &str) -> Result<qcode_mcp::CredentialPreset, String> {
-    match name {
-        "aws" => Ok(qcode_mcp::CredentialPreset::Aws),
-        "docker" => Ok(qcode_mcp::CredentialPreset::Docker),
-        "github" => Ok(qcode_mcp::CredentialPreset::Github),
-        "netrc" => Ok(qcode_mcp::CredentialPreset::Netrc),
-        "npm" => Ok(qcode_mcp::CredentialPreset::Npm),
-        "ssh" => Ok(qcode_mcp::CredentialPreset::Ssh),
-        other => Err(format!(
-            "unknown credential preset {other:?}; use one of: aws, docker, github, netrc, npm, ssh"
-        )),
-    }
+    qcode_mcp::CredentialPreset::from_label(name).ok_or_else(|| {
+        let choices = qcode_mcp::CredentialPreset::ALL
+            .iter()
+            .map(|preset| preset.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("unknown credential preset {name:?}; use one of: {choices}")
+    })
 }
 
 fn parse_sandbox(mode: &str) -> Result<qcode_mcp::McpSandboxMode, String> {
-    match mode {
-        "confine" => Ok(qcode_mcp::McpSandboxMode::Confine),
-        "off" => Ok(qcode_mcp::McpSandboxMode::Off),
-        other => Err(format!(
-            "unknown sandbox mode {other:?}; use \"confine\" or \"off\""
-        )),
-    }
+    qcode_mcp::McpSandboxMode::from_label(mode)
+        .ok_or_else(|| format!("unknown sandbox mode {mode:?}; use \"confine\" or \"off\""))
 }
 
 /// Split `--header "Name: value"` into a pair.

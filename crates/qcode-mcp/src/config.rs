@@ -44,6 +44,21 @@ impl McpSandboxMode {
     pub fn is_confined(self) -> bool {
         matches!(self, Self::Confine)
     }
+
+    /// Both modes, in the order the GUI offers them.
+    pub const ALL: &'static [Self] = &[Self::Confine, Self::Off];
+
+    /// Parse a mode as written in `config.toml`.
+    ///
+    /// Unlike [`crate::CredentialPreset::from_label`] there is no default
+    /// branch: "inherit `[mcp] sandbox`" is `None` at the field, not a third
+    /// value here, so `None` from this function means the text was wrong.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|mode| mode.label() == label.trim())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -393,6 +393,9 @@ cargo build -p qcode-eval
   支持 **2026-07-28** 的远程 server 直接读握手里的 `capabilities`，不再多打
   `resources/list` / `prompts/list`；旧协议的 server 才试一次（野外的老 server 常把
   `capabilities` 写错，那里宁可多问一句）。
+  每个 server 的授权集（`read_paths` / `writable_paths` / `credentials` / `sandbox`）在设置页
+  里有对应的列，也由 `qc doctor` 逐条打印；`qc mcp add --read-path/--write-path/--credential/
+  --sandbox` 写的是同一份配置。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。

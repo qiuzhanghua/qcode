@@ -30,7 +30,16 @@ pub(crate) fn textarea(
 /// Whether a table column holds a newline-joined list (one item per line) and
 /// therefore needs a multi-line editor instead of a single-line [`InputState`].
 pub(crate) fn is_lines_cell(key: &str) -> bool {
-    matches!(key, "api_key_command" | "extra_body" | "args" | "env")
+    matches!(
+        key,
+        "api_key_command"
+            | "extra_body"
+            | "args"
+            | "env"
+            | "read_paths"
+            | "writable_paths"
+            | "credentials"
+    )
 }
 
 pub(crate) fn secret_input(
@@ -434,6 +443,34 @@ pub(crate) fn parse_action(value: Option<&str>) -> Action {
         Some("deny") => Action::Deny,
         _ => Action::Ask,
     }
+}
+
+/// The MCP sandbox column. `inherit` (and anything unrecognised) becomes
+/// `None`, which is what keeps a server following `[mcp] sandbox`: an explicit
+/// `confine` written on every save would override a later global switch.
+pub(crate) fn parse_sandbox_mode(value: Option<&str>) -> Option<qcode_mcp::McpSandboxMode> {
+    value.and_then(qcode_mcp::McpSandboxMode::from_label)
+}
+
+/// The `credentials` column: one preset name per line. Names the loader does
+/// not know are dropped with a note in the status line rather than written —
+/// a config the settings screen produced must be a config that loads.
+pub(crate) fn credential_presets(
+    lines: &[String],
+) -> (Vec<qcode_mcp::CredentialPreset>, Vec<String>) {
+    let mut presets = Vec::new();
+    let mut unknown = Vec::new();
+    for line in lines {
+        match qcode_mcp::CredentialPreset::from_label(line) {
+            Some(preset) => {
+                if !presets.contains(&preset) {
+                    presets.push(preset);
+                }
+            }
+            None => unknown.push(line.clone()),
+        }
+    }
+    (presets, unknown)
 }
 
 pub(crate) fn parse_scope(value: Option<&str>) -> Scope {

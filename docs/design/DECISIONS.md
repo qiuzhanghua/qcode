@@ -6032,7 +6032,7 @@ sandbox = "off"        # warn + doctor partial
 | 期 | 内容 | 验收 |
 |---|---|---|
 | P1 | `grant.rs` 推导 + 合成 HOME + 逐 server `with_roots` + 可诊断报错 + `sandbox = "off"` | wordcraft 原址可用；`README` §沙箱那段（「`run_shell` 与 MCP stdio server 都由对应工具包裹」「`npx` 的 cache 要加进 `extra_writable`」）按新授权集改写 |
-| P2 | `credentials` 预设与合成 HOME 里的符号链接 + `qc doctor` 打印授权集 | `credentials = ["github"]` 后 gh 类 server 可用；不带预设时读不到 |
+| P2 ✅ | `credentials` 预设与合成 HOME 里的符号链接 + `qc doctor` 打印授权集 | `credentials = ["github"]` 后 gh 类 server 可用；不带预设时读不到 |
 | P3 | `qc mcp add` 的新 flag 与写回 | `add` 写的配置能被 `show --effective` 读回，字段不丢 |
 
 **备选方案（未采用）**
@@ -6081,9 +6081,10 @@ sandbox = "off"        # warn + doctor partial
 另外两条不属于偏差但值得记：
 
 - **GUI 设置页会清空新字段，如果不管它。** `qcode-gui/src/setup/save.rs` 的
-  `apply_tables` 先 `servers.clear()` 再按表格重建，表格里没有授权集这几列。已按
+  `apply_tables` 先 `servers.clear()` 再按表格重建，表格里没有授权集这几列。当时按
   `providers[..].headers` 的既有做法从 `self.config` 里按名字取回，否则用户每次在设置页
-  点保存都会静默丢掉 `read_paths`。
+  点保存都会静默丢掉 `read_paths`。**（已由下面的 P2 收尾注记取代：列补上了，取回逻辑随之
+  删除。）**
 - **真机验证的结果与预期不同。** 在 `/home/q/.local/lib/qc-probe/bin/probe`（一个真实的
   `$HOME` 下安装位置）上，默认配置能启动并注册 3 个工具——这正是要修的失败类。
   但 `wordcraft 0.15.2` 的 `bin/wordcraft` 是**桌面应用**（`--control PORT` 才是给 agent 用的
@@ -6091,6 +6092,41 @@ sandbox = "off"        # warn + doctor partial
   就不传它）之后它自己起来了、日志里能看到启动横幅和走代理的更新检查，但永远不回
   `initialize`。所以「wordcraft 原址 19 个工具」这条验收**在本机无法成立**，原因不在沙箱：
   它根本没实现 MCP。
+
+**P2 收尾注记（2026-11-11，授权集进设置页的表格）**
+
+P2 的验收是「`qc doctor` 打印授权集」，但同一份授权集在 GUI 设置页上是一直是**只读**的：
+表格没有这四列，保存时靠「按名字从旧 config 里取回」把它们硬扛过去。能跑，但两件事不对：
+用户改不了 `read_paths`（只能去手写 TOML），而且「界面上看得到的值」与「实际生效的值」是
+两个不同的东西——正是本 ADR §1 那句「不允许文档说 A、实际给 B」要消灭的形态。
+
+- **四列**：`read_paths`、`writable_paths`、`credentials`、`sandbox`。前三列是 `Lines`
+  （一行一项），`is_lines_cell` 同步更新——单行 `Input` 会静默吃掉 `\n`，把两项粘成一项，
+  这条有既有单测把 `FieldKind::Lines` 与 `is_lines_cell` 强制对齐。
+- **`sandbox` 是三态而不是两态**：`inherit` / `confine` / `off`。字段是 `Option`，写死成
+  显式 `confine` 会让这个 server 从此不跟随 `[mcp] sandbox` 的全局开关——用户在全局关掉
+  沙箱、某个 server 却还在 confine 里，且界面上看不出来。`inherit` 就是 `None`。
+- **取回逻辑删掉了**。列与「从文件复制」并存，会让可见值静默输给不可见值。留着的两处取回
+  现在只有 `bearer_token_env_var` 与 `headers`（ADR-0067 P3 还没做列），并在注释里点名。
+- **映射抽成 `mcp_server_from_cells(McpRowCells, previous)`**，纯函数、不需要窗口。原来这段
+  逻辑埋在 `apply_tables` 里，而 gpui 的表格行要 `Entity<InputState>`，没有测试可以构造——
+  也就是说「设置页写出的配置」这条路此前一条测试都覆盖不到。参数收进 `McpRowCells` 结构体
+  不只是为了过 clippy 的 7 参数上限：`read_paths`/`writable_paths` 同类型、`args`/`env`/
+  `credentials` 同类型，位置参数调换能编过，只会表现为「server 读得到、写不了」。
+- **`CredentialPreset::from_label` / `McpSandboxMode::from_label` / `::ALL` 移进
+  `qcode-mcp`**。此前 CLI 的 `--credential` 在 `qcode/src/commands/settings.rs` 里手写了一份
+  六分支 match，GUI 再写一份就是第三份。现在三处（CLI flag、GUI 选择器、配置文件）共用同一
+  张表，错误消息也从 `ALL` 生成。认不出的名字返回 `None` 而不是猜：把拼错的名字当成
+  `github` 会实打实地多给一个凭据子树。
+- **测试 6 条**：`mcp_server_from_cells` 的完整映射（含 `env` 里没有 `=` 的行被丢弃、名字两端
+  空格被裁、空名字不成行）；无列字段的取回与「原有远程 server 不会被改成 stdio」；GUI 侧
+  `credentials`/`sandbox` 单元格的解析（未知名字不写进配置、`inherit` → `None`）；保存后
+  重新加载的往返（走 `write_config` + `config::load`，即真的落盘再读回，而不是拿 `Config`
+  跟自己比）；`inherit` 不写出 `sandbox` 键；以及一条结构性断言——**四个授权字段必须都有
+  列**，这条钉的是「以后加字段忘了加列 → 保存即静默删除」，也就是当初那个取回 hack 存在的
+  理由。
+- 变异验证两次：`read_paths` 不从行里读 → 映射测试失败；删掉 `credentials` 列 → 列覆盖
+  测试失败并打印现有的列名。
 
 **待定**
 

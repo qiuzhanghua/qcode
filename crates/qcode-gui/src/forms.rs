@@ -110,6 +110,12 @@ const RULE_SCOPES: &[&str] = &["session", "project", "user"];
 /// `[mcp] sandbox`: the crate-wide default, overridable per server (ADR-0066).
 /// `confine` is the default value, so it is what an untouched config means.
 const MCP_SANDBOX_MODES: &[&str] = &["confine", "off"];
+/// The same choice on one server's row, where "no override" is a real state:
+/// the field is `Option`, and writing an explicit `confine` would freeze that
+/// server out of a later `[mcp] sandbox = "off"` (ADR-0066 §1). A third entry
+/// rather than a sentinel value, so the picker cannot produce a name the loader
+/// rejects.
+const MCP_SERVER_SANDBOX_MODES: &[&str] = &["inherit", "confine", "off"];
 
 pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
@@ -566,6 +572,31 @@ pub const TABLES: &[TableSpec] = &[
                 key: "timeout_secs",
                 label: "Timeout (s)",
                 kind: FieldKind::Integer,
+            },
+            // ADR-0066 §1: the grant set, editable here so the settings screen
+            // is not a lossy round trip. Before these columns existed the grid
+            // preserved the four fields by copying them from the file on save
+            // — invisible, and unusable for "give this server its project
+            // directory".
+            ColumnSpec {
+                key: "read_paths",
+                label: "Read paths (one per line)",
+                kind: FieldKind::Lines,
+            },
+            ColumnSpec {
+                key: "writable_paths",
+                label: "Writable paths (one per line)",
+                kind: FieldKind::Lines,
+            },
+            ColumnSpec {
+                key: "credentials",
+                label: "Credentials (one per line)",
+                kind: FieldKind::Lines,
+            },
+            ColumnSpec {
+                key: "sandbox",
+                label: "Sandbox",
+                kind: FieldKind::Select(MCP_SERVER_SANDBOX_MODES),
             },
         ],
     },

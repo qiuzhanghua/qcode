@@ -47,6 +47,33 @@ impl CredentialPreset {
         }
     }
 
+    /// Every preset, in the order the error messages and the GUI list them.
+    ///
+    /// Exists so "what can I write here?" has one answer: the CLI's
+    /// `--credential`, the GUI's picker and the config file's accepted values
+    /// are all this list.
+    pub const ALL: &'static [Self] = &[
+        Self::Aws,
+        Self::Docker,
+        Self::Github,
+        Self::Netrc,
+        Self::Npm,
+        Self::Ssh,
+    ];
+
+    /// Parse a preset name as written in `config.toml`.
+    ///
+    /// The GUI needs this as much as the CLI does: a settings screen that
+    /// accepted a name the loader rejects would write a config that fails to
+    /// load. Unknown names return `None` rather than a guess — silently turning
+    /// a typo into `github` would grant a credential subtree nobody asked for.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|preset| preset.label() == label.trim())
+    }
+
     /// Paths relative to the real `$HOME`.
     ///
     /// Public so `qc doctor` can answer "`credentials = [\"github\"]` but is there

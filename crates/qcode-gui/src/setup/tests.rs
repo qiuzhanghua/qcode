@@ -1,9 +1,11 @@
 use super::save::{CloseOutcome, decide_close, split_target};
+use super::save::{GrantCells, McpRowCells};
 use super::{
-    AutoSaveKind, extra_body_from_lines, is_lines_cell, overridden_default_model,
-    stale_model_default, sync_default_model,
+    AutoSaveKind, credential_presets, extra_body_from_lines, is_lines_cell, lines_from,
+    overridden_default_model, parse_sandbox_mode, stale_model_default, sync_default_model,
 };
 use crate::forms::{self, FieldKind};
+use std::path::PathBuf;
 
 /// Every `FieldKind::Lines` table column must be edited with a multi-line
 /// textarea; `is_lines_cell` is the classification used when seeding rows. A
@@ -637,4 +639,276 @@ fn an_emptied_mcp_transport_cell_sets_neither_field() {
     // a stdio server with an empty command.
     assert_eq!(split_target(None, "   "), (None, None));
     assert_eq!(split_target(Some("https://a.test/mcp"), ""), (None, None));
+}
+
+/// ADR-0066 §1: the grant set is part of the server row now, so the settings
+/// screen must be a lossless round trip. Before the columns existed the four
+/// fields were copied back from the file on every save — which worked, but made
+/// them uneditable and left the "value you can see" and "value that gets used"
+/// as two different things.
+///
+/// Written through the same `write_config` the save path uses and read back
+/// through the same loader qcode uses, because a test that compared `Config` to
+/// itself would not catch a field the writer forgets.
+#[test]
+fn the_mcp_grant_set_survives_a_save_and_reload() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    let server = qcode_mcp::McpServerConfig {
+        name: "probe".into(),
+        command: Some("/usr/bin/true".into()),
+        read_paths: vec!["/opt/probe".into()],
+        writable_paths: vec!["/tmp/probe-logs".into()],
+        credentials: vec![
+            qcode_mcp::CredentialPreset::Github,
+            qcode_mcp::CredentialPreset::Ssh,
+        ],
+        sandbox: Some(qcode_mcp::McpSandboxMode::Off),
+        ..Default::default()
+    };
+    let config = qcode_kernel::config::Config {
+        mcp: qcode_mcp::McpConfig {
+            sandbox: qcode_mcp::McpSandboxMode::Confine,
+            servers: vec![server.clone()],
+        },
+        ..Default::default()
+    };
+
+    super::save::write_config(&path, &config).expect("write");
+    let reread = qcode_kernel::config::load(&path).expect("reload");
+
+    let back = &reread.mcp.servers[0];
+    assert_eq!(back.read_paths, server.read_paths);
+    assert_eq!(back.writable_paths, server.writable_paths);
+    assert_eq!(back.credentials, server.credentials);
+    assert_eq!(back.sandbox, server.sandbox);
+}
+
+/// The other half of the same invariant: `sandbox` is `Option`, and "no
+/// override" has to survive as `None` rather than being written out as an
+/// explicit `confine`. Otherwise a server pinned in the GUI would stop
+/// following a later `[mcp] sandbox = "off"`.
+#[test]
+fn an_inherited_sandbox_stays_inherited() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    let config = qcode_kernel::config::Config {
+        mcp: qcode_mcp::McpConfig {
+            sandbox: qcode_mcp::McpSandboxMode::Off,
+            servers: vec![qcode_mcp::McpServerConfig {
+                name: "probe".into(),
+                command: Some("/usr/bin/true".into()),
+                ..Default::default()
+            }],
+        },
+        ..Default::default()
+    };
+
+    super::save::write_config(&path, &config).expect("write");
+    let reread = qcode_kernel::config::load(&path).expect("reload");
+    assert_eq!(
+        reread.mcp.servers[0].sandbox, None,
+        "no key must be written"
+    );
+    // And the effective mode still follows the global switch.
+    assert_eq!(
+        reread.mcp.servers[0].sandbox_mode(reread.mcp.sandbox),
+        qcode_mcp::McpSandboxMode::Off
+    );
+}
+
+/// `credentials` and `sandbox` cells are free text at heart, so the parsers are
+/// what keep a typo from becoming a config the loader rejects.
+#[test]
+fn unknown_grant_text_is_not_written_verbatim() {
+    let (presets, unknown) = credential_presets(&[
+        "github".to_string(),
+        " ssh ".to_string(),
+        "github".to_string(),
+        "github-enterprise".to_string(),
+    ]);
+    assert_eq!(
+        presets,
+        vec![
+            qcode_mcp::CredentialPreset::Github,
+            qcode_mcp::CredentialPreset::Ssh
+        ],
+        "known names parse, duplicates collapse"
+    );
+    assert_eq!(unknown, vec!["github-enterprise".to_string()]);
+
+    // `inherit` is the absence of an override, not a mode.
+    assert_eq!(parse_sandbox_mode(Some("inherit")), None);
+    assert_eq!(parse_sandbox_mode(None), None);
+    assert_eq!(
+        parse_sandbox_mode(Some("confine")),
+        Some(qcode_mcp::McpSandboxMode::Confine)
+    );
+    assert_eq!(
+        parse_sandbox_mode(Some("off")),
+        Some(qcode_mcp::McpSandboxMode::Off)
+    );
+    // The picker cannot produce this; a hand-edited file could, and the safe
+    // reading is "leave the global default alone".
+    assert_eq!(parse_sandbox_mode(Some("yolo")), None);
+}
+
+/// The grid is the only place the grant set is edited, so this mapping is the
+/// whole feature: everything the user typed must land in the config entry, and
+/// nothing the loader would reject may be written.
+#[test]
+fn an_mcp_row_becomes_the_config_entry() {
+    let server = super::save::mcp_server_from_cells(
+        McpRowCells {
+            name: "  probe  ".to_string(),
+            transport: "/usr/bin/probe".to_string(),
+            args: vec!["--port".to_string(), "0".to_string()],
+            env: vec![
+                "RUST_LOG=debug".to_string(),
+                "  SPACED = value  ".to_string(),
+                "not-a-pair".to_string(),
+            ],
+            enabled: true,
+            timeout_secs: 45,
+            grant: GrantCells {
+                read_paths: vec!["/opt/probe".to_string()],
+                writable_paths: vec!["/tmp/probe-logs".to_string()],
+                credentials: vec!["github".to_string(), "ssh".to_string()],
+                sandbox: Some("off".to_string()),
+            },
+        },
+        None,
+    )
+    .expect("a named row becomes a server");
+
+    assert_eq!(server.name, "probe", "surrounding spaces are trimmed");
+    assert_eq!(server.command.as_deref(), Some("/usr/bin/probe"));
+    assert_eq!(server.url, None);
+    assert_eq!(server.args, vec!["--port", "0"]);
+    assert_eq!(
+        server.env.into_iter().collect::<Vec<_>>(),
+        vec![
+            ("RUST_LOG".to_string(), "debug".to_string()),
+            ("SPACED".to_string(), "value".to_string()),
+        ],
+        "a line without `=` is dropped rather than stored whole"
+    );
+    assert_eq!(server.timeout_secs, 45);
+    assert_eq!(server.read_paths, vec![PathBuf::from("/opt/probe")]);
+    assert_eq!(
+        server.writable_paths,
+        vec![PathBuf::from("/tmp/probe-logs")]
+    );
+    assert_eq!(
+        server.credentials,
+        vec![
+            qcode_mcp::CredentialPreset::Github,
+            qcode_mcp::CredentialPreset::Ssh
+        ]
+    );
+    assert_eq!(server.sandbox, Some(qcode_mcp::McpSandboxMode::Off));
+
+    // An unnamed row is not a server: it would be an entry with an empty name,
+    // which `validate()` rejects and which nothing could ever address.
+    assert!(
+        super::save::mcp_server_from_cells(
+            McpRowCells {
+                name: "   ".to_string(),
+                transport: "/bin/true".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                enabled: true,
+                timeout_secs: 60,
+                grant: GrantCells {
+                    read_paths: Vec::new(),
+                    writable_paths: Vec::new(),
+                    credentials: Vec::new(),
+                    sandbox: None,
+                },
+            },
+            None,
+        )
+        .is_none()
+    );
+}
+
+/// Two things the grid still cannot show must survive a save. `servers.clear()`
+/// runs before the rows are re-added, so a field nobody copies is a field that
+/// disappears the first time the user touches anything.
+#[test]
+fn fields_without_columns_are_carried_over_from_the_previous_entry() {
+    let previous = qcode_mcp::McpServerConfig {
+        name: "probe".into(),
+        url: Some("https://example.test/mcp".into()),
+        bearer_token_env_var: Some("PROBE_TOKEN".into()),
+        headers: [("X-Team".to_string(), "ops".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let server = super::save::mcp_server_from_cells(
+        McpRowCells {
+            name: "probe".to_string(),
+            // The single transport cell: for an existing remote server this
+            // text must go back into `url`, not `command`.
+            transport: "https://example.test/mcp".to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            enabled: true,
+            timeout_secs: 60,
+            grant: GrantCells {
+                read_paths: Vec::new(),
+                writable_paths: Vec::new(),
+                credentials: Vec::new(),
+                sandbox: Some("inherit".to_string()),
+            },
+        },
+        Some(&previous),
+    )
+    .expect("server");
+
+    assert_eq!(server.url.as_deref(), Some("https://example.test/mcp"));
+    assert_eq!(server.command, None, "a remote server must stay remote");
+    assert_eq!(server.bearer_token_env_var.as_deref(), Some("PROBE_TOKEN"));
+    assert_eq!(server.headers, previous.headers);
+    assert_eq!(server.sandbox, None, "inherit is not an override");
+}
+
+/// Every grant field needs a column, because the row is now its only source.
+/// Re-adding a field without a column would silently delete it on save — which
+/// is exactly the bug the old "copy it back from the file" hack existed to
+/// avoid.
+#[test]
+fn every_mcp_grant_field_has_a_column() {
+    let table = forms::TABLES
+        .iter()
+        .find(|table| table.path == ["mcp", "servers"])
+        .expect("the mcp table");
+    let keys: Vec<&str> = table.columns.iter().map(|column| column.key).collect();
+    for expected in ["read_paths", "writable_paths", "credentials", "sandbox"] {
+        assert!(
+            keys.contains(&expected),
+            "{expected} has no column in {keys:?}"
+        );
+    }
+}
+
+/// Paths going into a cell and coming back out must be the same list. `PathBuf`
+/// → `display()` → `PathBuf::from` is not guaranteed lossless on every OS, so
+/// pin the invariant where it matters: an ordinary absolute path.
+#[test]
+fn path_cells_round_trip() {
+    let paths = vec![
+        PathBuf::from("/opt/probe"),
+        PathBuf::from("/tmp/probe logs"),
+    ];
+    let text = super::tables::lines_from_paths(&paths);
+    assert_eq!(text, "/opt/probe\n/tmp/probe logs");
+    assert_eq!(
+        lines_from(&text)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>(),
+        paths
+    );
 }

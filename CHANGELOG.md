@@ -2,6 +2,25 @@
 
 ## 未发布
 
+### MCP 授权集在设置页里可编辑了（ADR-0066 P2 收尾）
+
+`read_paths` / `writable_paths` / `credentials` / `sandbox` 四个字段一直没有表格列：设置页
+能显示一个 server 却说不出它拿到了什么权限，用户想改只能手写 TOML。保存时靠「按名字从旧
+config 里取回」把它们硬扛过去——能跑，但界面上看得到的值和实际生效的值是两个东西。
+
+- **四列补齐**，前三个是「一行一项」的多行单元格（单行 `Input` 会静默吃掉换行，把两项粘成
+  一项）。
+- **`sandbox` 是三态**：`inherit` / `confine` / `off`。字段是 `Option`，写死成显式 `confine`
+  会让这个 server 从此不跟随 `[mcp] sandbox` 的全局开关，而界面上看不出来。
+- **取回逻辑删掉了**。列与「从文件复制」并存，只会让可见值静默输给不可见值。仍无列的只剩
+  `bearer_token_env_var` 与 `headers`（ADR-0067 P3）。
+- **映射抽成纯函数** `mcp_server_from_cells`。原来埋在 `apply_tables` 里，而表格行要
+  `Entity<InputState>`，没有测试构造得出来——「设置页写出的配置」这条路此前零测试覆盖。
+- `CredentialPreset` / `McpSandboxMode` 的解析与全量列表移进 `qcode-mcp`，CLI flag、GUI
+  选择器与配置文件共用一张表，不再各写一份 match。认不出的名字返回 `None` 而不是猜。
+- 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
+  四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
+
 ### MCP 能力探测不再问已知答案（ADR-0068 §4）
 
 ADR-0033 §3 决定「能力探测靠试一次：握手后调 `resources/list` 与 `prompts/list`，成功才
