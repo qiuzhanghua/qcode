@@ -6206,7 +6206,9 @@ host /tmp`）。理由同 §1 那条不变式：`doctor` 打印的东西必须�
 - `credentials` 预设表要不要可扩展（用户自定义 preset），还是只做固定的这几条。
 - 合成 HOME 里的凭据符号链接在 macOS `sandbox-exec` 下是否需要显式放行 target（`file-read`
   按解析后路径匹配，预期够用，需实测）。
-- `writable_paths` 指向真实 `$HOME` 的某处（例如某个 server 的日志目录）时要不要 warn。
+- ~~`writable_paths` 指向真实 `$HOME` 的某处（例如某个 server 的日志目录）时要不要 warn。~~
+  **已做（2026-11-11）**：不是 warn 而是拒绝，见下面的修订注记——`~` 展开后 `["~/"]` 与
+  `["~/Documents"]` 只差两个字符，正是需要拦的形状。
 - **已做（2026-11-11）**：`qc doctor` 现在有 MCP 段，逐 server 一行打印授权集，并把四个
   「配置了但没用」的情形变成 warn：`read_paths`/`writable_paths` 指向不存在的路径、
   `credentials` 预设在本机无对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
@@ -6857,3 +6859,62 @@ ADR-0033 §3 的「试一次」由此被完全取代，它不再是 legacy 的�
 - 是否把 `instructions` 的 hash 记进事件日志，便于 replay 时解释「当时模型看到的是哪一版自述」。
 - 白名单要不要加 `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` 的「按需透传」开关，
   还是坚持「要就写 `env`」。倾向后者：默认不传显示服务句柄更安全。
+
+## ADR-0066 §2 修订注记：配置里的 `~`，以及写侧的危险根（2026-11-11）
+
+**问题**：同一份 `config.toml` 里，`~` 有三套语义。`[skills] roots` 认 `~/x`，并且**还把
+相对路径按 workspace 解析**；`[sandbox] extra_read/writable` 什么都不校验（相对路径由
+`bwrap` / `sandbox-exec` 按 qcode 的 cwd 解释，landlock 则因为 `path.exists()` 为假而在启动
+时报「不存在」）；`[mcp.servers] read_paths/writable_paths` 强制绝对路径，`~/x` 直接被拒。
+用户写 `~/.config/qcode/config.toml` 时无从知道该用哪一种。
+
+**决定**
+
+1. **`~` 只认两种写法**：`~` 与 `~/x`，展开成真实 home。`~user/x` 不展开（需要 passwd
+   查找，且「给别的用户的 home 授权」从来不是 per-task 配置想表达的事），裸相对路径也不展开
+   （配置文件是用户级、workspace 是每任务一个，「相对于什么」没有稳定答案）。剩下的写法
+   被 MCP 的 `validate()` 当作非绝对路径拒绝，报错里点名 `~user/...` 不支持。
+2. **展开点在校验之前，且只有一个实现**：`expand_tilde`（纯函数，home 由调用方传入）+
+   `expand_paths`（遍历五处列表）。调用点是 `load` / `merge_project_file` /
+   `validate_document`——正好是原先调 `mcp.validate()` 的三个地方，所以「展开是校验的前提」
+   这条不变量没有新增概念面。
+3. **不用 `#[serde(deserialize_with)]`**。它把不变量提到类型层（任何 `McpServerConfig`
+   都绝对），代价是 `qcode-mcp` 得自己读环境算 `$HOME`——那个 crate 不依赖
+   `qcode-kernel`，于是仓库里就有两个 home 解析器。ADR-0068 §1 清掉的正是这类两套规则。
+   流程级不变量的漏网是「直接 `toml::from_str::<Config>`」的代码，而那种代码后面紧跟着
+   `validate()`，等于有兜底。
+4. **`writable_paths` 补 `dangerous()`**。读侧一直有；写侧只做了 canonicalize + push。
+   `~/` 展开后等于 `$HOME`，而能写 `$HOME` 的 server 可以塞 `.gitconfig` 的
+   `core.hooksPath`、shell rc 一行、`~/.config/gh/hosts.yml` —— 下一条命令就生效，不需要
+   第二次写，所以「只读凭据 + 一次写」的隔离在写侧是全开的。只检查用户写的条目：
+   workspace 与私有 HOME 是无条件授予的，把它们也纳入检查会让「从 `$HOME` 启动 qcode」
+   导致每个 server 都起不来。
+5. **`[skills] roots` 保留相对路径**。技能根是「要扫描的目录」而不是授权，`.qcode/skills`
+   写在仓库里是有用的；所以它用同一个 `expand_tilde`，再叠自己的 workspace 相对规则。
+
+**代价**
+
+- `writable_paths` 里的 workspace 祖先（例如 workspace 是 `/w/a/b` 时写 `/w`）以前能用，
+  现在被拒。这是 `dangerous()` 本来的定义，读侧一直如此；写侧对齐后属于行为变更，写进
+  CHANGELOG。
+- 配置文件里 `~` 的展开与**工具参数里的 `~` 无关**。后者由那个 MCP server 自己解析：实测
+  wordcraft（Rust 实现）把 `~/x.docx` 当字面路径，在 workspace 下建一个名叫 `~` 的目录并
+  静默写入——因为 workspace 可写，所以不报错。文档只能给出「要可靠就传绝对路径」，这点
+  必须写清楚，否则 `~` 支持会被误读成「工具参数也能用 `~` 了」。
+
+**验证**
+
+- `tilde_expands_only_for_this_user`（六种写法逐条）、`tilde_without_a_home_leaves_the_path_alone`、
+  `expansion_is_idempotent`、`every_configured_path_list_gets_expanded`（五处列表全覆盖）、
+  `a_relative_mcp_path_is_still_rejected_after_expansion`（`~/x` 通过、`Documents` 与
+  `~user/x` 仍报错）、`skill_roots_keep_expanding_and_keep_resolving_against_the_workspace`。
+- 写侧两条：`["~/"]` 展开成 home 被 `DangerousWriteRoot` 拒绝且报错文案点名
+  `writable_paths`；`["~/Documents"]` 正常授予。
+- doctor 四条（集成）：`~/Documents` 存在时打 `~/Documents → /abs`；不存在时点名它在
+  **展开后**的位置；`["~/"]` 报「your home directory」；`~user/x` 在 config 行 `[fail]`。
+
+**待定**
+
+- `[sandbox]` 的 `extra_read` / `extra_writable` 仍然没有加载期校验（相对路径只在 landlock
+  启动时以「不存在」失败）。为它们加「必须绝对」会在 `mode = "none"` 的用户身上把原本无害
+  的配置变成加载失败，所以这轮只做展开，不动校验。

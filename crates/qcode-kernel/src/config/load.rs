@@ -9,12 +9,16 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         path: path.to_path_buf(),
         source: Box::new(source),
     })?;
-    let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+    let mut config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source: Box::new(source),
     })?;
     check_version(path, config.schema)?;
     warn_unknown_keys(path, &document);
+    // Before `validate()`: it is what turns an unexpanded `~` into an error, so
+    // expanding first is the difference between "`~/x` works" and "`~/x` is a
+    // relative path".
+    expand_paths(&mut config);
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
     // Same for approval rules: a rule whose glob does not parse never matches,
@@ -126,6 +130,10 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
         search: document.contains_key("search"),
     };
     merge_project(base, project, sections);
+    // The project file is where a path like `~/Documents` is most likely to be
+    // written by hand, and `merge_project` moves every path into `base`, so one
+    // pass over `base` covers both files.
+    expand_paths(base);
     base.mcp.validate()?;
     Ok(())
 }
@@ -219,6 +227,73 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+/// Expand a leading `~` against `home` — and nothing else.
+///
+/// Exactly the two spellings that name *this* user's home directory: `~` and
+/// `~/x`. `~user/x` is left untouched on purpose. Resolving it means a passwd
+/// lookup, and every caller here grants access to paths under the *running*
+/// user's home; leaving it alone makes the caller's "must be absolute" check
+/// reject it instead of silently granting something else.
+///
+/// Relative paths are not expanded either: the config file is user-wide while
+/// the workspace is per-task, so "relative to what" would have no stable
+/// answer. `expand_root` keeps its own workspace-relative rule for
+/// `[skills] roots` on top of this helper.
+///
+/// Idempotent: absolute paths come back untouched, so expanding a config that
+/// was already expanded (user config, then project overlay) cannot change the
+/// answer.
+pub fn expand_tilde(path: &Path, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+    if path == Path::new("~") {
+        return home.to_path_buf();
+    }
+    match path.to_str().and_then(|text| text.strip_prefix("~/")) {
+        Some(rest) => home.join(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Expand `~` in every path the config holds, in place.
+///
+/// Called from each point where a parsed config becomes usable — [`load`],
+/// [`merge_project_file`] and [`validate_document`] — and never from serde.
+/// A `#[serde(deserialize_with)]` would put a second `$HOME` resolver inside
+/// `qcode-mcp`, which does not depend on this crate and would have to read the
+/// environment for itself; two resolvers is how `$XDG_CONFIG_HOME` disagreements
+/// start (ADR-0068 §1).
+///
+/// What is expanded is the list of paths qcode *grants* or *hashes into* — the
+/// MCP read/write roots, the sandbox extras, the skill roots. Paths handed to a
+/// toy at call time (`save_document("~/x.docx")`) are not in the config and are
+/// not ours to touch.
+pub fn expand_paths(config: &mut Config) {
+    let home = home_dir();
+    expand_paths_with(config, home.as_deref());
+}
+
+/// [`expand_paths`] with the home directory spelled out, so the rule is testable
+/// without touching `$HOME` (a process-wide variable, and these tests run in
+/// parallel with everything else).
+pub fn expand_paths_with(config: &mut Config, home: Option<&Path>) {
+    fn expand(paths: &mut [PathBuf], home: Option<&Path>) {
+        for path in paths.iter_mut() {
+            *path = expand_tilde(path.as_path(), home);
+        }
+    }
+    // `&mut Vec<PathBuf>` derefs to `&mut [PathBuf]`, so one helper serves all
+    // five lists. A free function rather than a closure: nothing to capture.
+    expand(&mut config.sandbox.extra_read, home);
+    expand(&mut config.sandbox.extra_writable, home);
+    expand(&mut config.skills.roots, home);
+    for server in &mut config.mcp.servers {
+        expand(&mut server.read_paths, home);
+        expand(&mut server.writable_paths, home);
+    }
 }
 
 /// A resolved config location plus where it came from.
@@ -382,10 +457,15 @@ pub(crate) fn write_document(path: &Path, document: &toml::Value) -> Result<(), 
 pub(crate) fn validate_document(document: &toml::Value) -> Result<(), ConfigError> {
     let text = toml::to_string_pretty(document)
         .map_err(|err| ConfigError::InvalidDocument(err.to_string()))?;
-    let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+    let mut config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: PathBuf::from("<edit>"),
         source: Box::new(source),
     })?;
+    // `document` itself is never touched — it is `&` and the caller writes it
+    // out afterwards — because the whole point of `~/x` is that the file keeps
+    // saying `~/x`. Only this throwaway parse is expanded, so the check below
+    // sees what the grant will see.
+    expand_paths(&mut config);
     config.mcp.validate()?;
     Ok(())
 }

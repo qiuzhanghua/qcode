@@ -96,9 +96,18 @@ pub struct McpServerConfig {
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     /// Read + execute roots on top of the derived ones (ADR-0066 §2).
+    ///
+    /// `~/x` is expanded against the real home at load time; relative paths are
+    /// rejected. `validate()` sees the expanded value, so it stays a plain
+    /// "must be absolute" check.
     #[serde(default)]
     pub read_paths: Vec<PathBuf>,
     /// Writable roots on top of the workspace and the synthetic HOME.
+    ///
+    /// `~/x` is expanded at load time, same as `read_paths`. A root that is
+    /// `$HOME`, `/` or a parent of the workspace is refused by the grant
+    /// (`GrantError::DangerousWriteRoot`): two characters of typing should not
+    /// hand a server the whole home directory.
     #[serde(default)]
     pub writable_paths: Vec<PathBuf>,
     /// Credential subtrees under the real `$HOME` this server may read.
@@ -257,7 +266,11 @@ pub enum McpConfigError {
     HeaderInjection { server: String, name: String },
     #[error("MCP server '{0}' must set timeout_secs to at least 1")]
     ZeroTimeout(String),
-    #[error("MCP server '{server}' {field} entry {path} must be an absolute path")]
+    #[error(
+        "MCP server '{server}' {field} entry {path} must be an absolute path \
+         (`~` and `~/...` are expanded against your home; `~user/...` and relative \
+         paths are not)"
+    )]
     RelativePath {
         server: String,
         field: &'static str,

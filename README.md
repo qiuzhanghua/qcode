@@ -377,11 +377,13 @@ cargo build -p qcode-eval
   ```toml
   [sandbox]
   mode = "landlock"
-  extra_read = ["/home/q/cot", "/opt/tools"]
+  extra_read = ["~/cot", "/opt/tools"]
   ```
 
   这一项**只给读**（含可执行位，否则目录里的二进制跑不动）。给一个目录是完整决定：
-  `extra_read = ["$HOME"]` 同时把 `~/.ssh`、`~/.aws` 交给 agent，要窄就写窄。
+  `extra_read = ["~"]` 同时把 `~/.ssh`、`~/.aws` 交给 agent，要窄就写窄。
+  **`~` 在配置文件里由 qcode 展开成真实 home**（只认 `~` 和 `~/x` 两种写法；`~user/x`
+  与裸相对路径不展开，仍然按「必须是绝对路径」处理）。所以上面这行在别的机器上也是对的。
   **它是 `[sandbox]` 级设置，因此也作用于 MCP server 的沙箱**（MCP 沙箱由同一个后端派生），
   也就是说这些前缀对第三方 server 同样可读。ADR-0066 §1 的「读集 = 推导出的运行时 +
   凭据子树」因此被放宽；如果只想让 `run_shell` 拿到它，就把它写窄到工具链目录本身。
@@ -396,8 +398,16 @@ cargo build -p qcode-eval
   `~/.config/gh` 默认全都看不见，要哪一个就写 `credentials = ["github"]` 这类预设
   （只给该子树，并在私有 `HOME` 里放符号链接指过去，只读）。
   推导之外还需要什么就写 `read_paths` / `writable_paths`；`/`、`$HOME` 和 workspace 的
-  父目录不会被自动授予。任何一个 server 都可以 `sandbox = "off"` 单独关掉沙箱，届时
-  启动 warn、`qc doctor` 标出来。授权集在启动日志里以 `mcp server grant` 一行打印。
+  父目录不会被自动授予——`writable_paths` 里写这三样会被 grant 直接拒绝（`~/` 展开后就是
+  `$HOME`，两个字符的笔误不该把整个家目录交出去）。两个字段都认 `~/x`，在加载时展开成
+  真实 home，所以 `writable_paths = ["~/Documents"]` 是跨机器可移植的写法。
+  **注意这只管配置文件**：把 `~/Documents/a.docx` 当参数传给某个 server 的 tool 时，
+  qcode 不参与解析，是否认 `~` 完全看那个 server 自己（Rust 写的会把它当字面目录名，
+  在 workspace 下建一个叫 `~` 的目录且不报错）。要可靠就传绝对路径。
+  任何一个 server 都可以 `sandbox = "off"` 单独关掉沙箱，届时
+  启动 warn、`qc doctor` 标出来。授权集在启动日志里以 `mcp server grant` 一行打印，
+  `qc doctor` 会把每条配好的路径打成 `~/Documents → /home/q/Documents` 两种写法，
+  并在目录不存在时说明它被跳过了。
   **写集严格等于上面那几个集合，此外一律无**：`run_shell` 需要的宿主 `/tmp` 和 Rust 构建
   缓存（`$CARGO_HOME`、`~/.cargo` 等）**不会**带给 MCP server——`TMPDIR` 已经指向私有
   `HOME`，而 `$CARGO_HOME/config.toml` 里的 `[build] rustc-wrapper` 等于任意代码执行。
@@ -632,7 +642,8 @@ env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 enabled = true
 # 沙箱授权（ADR-0066）：运行时目录由 command 推导，读不到真实 $HOME。
 read_paths = ["/opt/some-tool"]   # 可选，推导之外的只读+执行目录
-writable_paths = []               # 可选；默认 workspace + 私有 HOME 已可写
+writable_paths = ["~/Documents"]  # 可选；默认 workspace + 私有 HOME 已可写。
+                                  # `~/x` 在加载时展开，`$HOME` / `/` 会被拒绝
 credentials = ["github"]          # 可选：github / aws / ssh / npm / netrc / docker
 sandbox = "confine"               # 可选，覆盖 [mcp] sandbox
 
@@ -671,7 +682,8 @@ audit = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
 extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
-extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归
+extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归。
+                     # 这两项都认 `~/cot`，在加载时展开成真实 home
 
 # 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。
 # check_days 是启动时查询新版本的最小间隔（结果缓存进 data-dir）；repo / base_url

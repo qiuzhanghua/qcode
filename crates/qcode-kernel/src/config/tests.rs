@@ -1463,3 +1463,176 @@ fn the_new_switch_wins_over_the_legacy_section() {
     assert!(config.network_plan().raw);
     assert!(!config.network_plan().proxy);
 }
+
+// ---- `~` in configured paths ---------------------------------------------
+//
+// The rule is one helper (`expand_tilde`) called from one place per parse
+// (`expand_paths`), and the tests below are the three things that can go wrong
+// with it: it expands too little (`~/x` stays relative and the MCP validator
+// rejects a config that should work), too much (`~user/x` or `Documents`
+// silently becoming something), or differently on the second pass.
+
+fn test_home() -> PathBuf {
+    PathBuf::from("/home/q")
+}
+
+#[test]
+fn tilde_expands_only_for_this_user() {
+    let home = Some(test_home());
+    let cases = [
+        // written, expected
+        ("~", "/home/q"),
+        ("~/Documents", "/home/q/Documents"),
+        // Not expanded: another account's home needs a passwd lookup, and
+        // granting a path under it is never what a per-task config means.
+        ("~ftp/x", "~ftp/x"),
+        // Not expanded: the config is user-wide, the workspace is per-task.
+        ("Documents", "Documents"),
+        // Idempotent: already absolute, unchanged.
+        ("/tmp/x", "/tmp/x"),
+    ];
+    for (written, expected) in cases {
+        assert_eq!(
+            expand_tilde(Path::new(written), home.as_deref()),
+            PathBuf::from(expected),
+            "{written}"
+        );
+    }
+}
+
+#[test]
+fn tilde_without_a_home_leaves_the_path_alone() {
+    // A missing `$HOME` must not invent one. The path stays as written, so the
+    // MCP validator's "must be absolute" check still rejects it instead of the
+    // grant silently pointing at `/x`.
+    assert_eq!(
+        expand_tilde(Path::new("~/Documents"), None),
+        PathBuf::from("~/Documents")
+    );
+}
+
+#[test]
+fn expansion_is_idempotent() {
+    let home = test_home();
+    let once = expand_tilde(Path::new("~/Documents"), Some(home.as_path()));
+    let twice = expand_tilde(&once, Some(home.as_path()));
+    assert_eq!(once, twice);
+    assert_eq!(twice, PathBuf::from("/home/q/Documents"));
+}
+
+#[test]
+fn every_configured_path_list_gets_expanded() {
+    let mut config: Config = toml::from_str(
+        r#"
+            [sandbox]
+            extra_read = ["~/cot"]
+            extra_writable = ["~/scratch"]
+
+            [skills]
+            roots = ["~/skills"]
+
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            read_paths = ["~/cot/lib/wordcraft"]
+            writable_paths = ["~/Documents", "/srv/shared"]
+            "#,
+    )
+    .expect("parse");
+
+    let home = test_home();
+    expand_paths_with(&mut config, Some(home.as_path()));
+
+    assert_eq!(config.sandbox.extra_read, [PathBuf::from("/home/q/cot")]);
+    assert_eq!(
+        config.sandbox.extra_writable,
+        [PathBuf::from("/home/q/scratch")]
+    );
+    assert_eq!(config.skills.roots, [PathBuf::from("/home/q/skills")]);
+    let server = &config.mcp.servers[0];
+    assert_eq!(
+        server.read_paths,
+        [PathBuf::from("/home/q/cot/lib/wordcraft")]
+    );
+    // Mixed list: the `~` entry expands, the absolute one is untouched.
+    assert_eq!(
+        server.writable_paths,
+        [
+            PathBuf::from("/home/q/Documents"),
+            PathBuf::from("/srv/shared")
+        ]
+    );
+}
+
+#[test]
+fn a_relative_mcp_path_is_still_rejected_after_expansion() {
+    // The whole point of expanding *before* `validate()`: `~/x` becomes
+    // absolute and passes, `Documents` does not and still fails. Otherwise
+    // expansion would have quietly turned the validator off.
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["~/Documents"]
+            "#,
+    )
+    .expect("parse");
+    let home = test_home();
+    expand_paths_with(&mut config, Some(home.as_path()));
+    if let Err(error) = config.mcp.validate() {
+        panic!("`~/Documents` must be accepted once expanded: {error}");
+    }
+
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["Documents"]
+            "#,
+    )
+    .expect("parse");
+    expand_paths_with(&mut config, Some(home.as_path()));
+    let error = config.mcp.validate().expect_err("relative path");
+    assert!(
+        error.to_string().contains("must be an absolute path"),
+        "{error}"
+    );
+
+    // `~user` is not `~`: it is left as written and therefore rejected, rather
+    // than silently granted as something under the running user's home.
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["~user/Documents"]
+            "#,
+    )
+    .expect("parse");
+    expand_paths_with(&mut config, Some(home.as_path()));
+    let error = config.mcp.validate().expect_err("~user");
+    assert!(error.to_string().contains("~user/Documents"), "{error}");
+}
+
+#[test]
+fn skill_roots_keep_expanding_and_keep_resolving_against_the_workspace() {
+    let workspace = Path::new("/w");
+    let home = Some(test_home());
+    // Same helper as everything else for `~`...
+    assert_eq!(
+        crate::expand_root(Path::new("~/skills"), workspace, home.as_deref()),
+        PathBuf::from("/home/q/skills")
+    );
+    // ...but a skill root is a directory to scan, not a grant, so a relative
+    // one keeps its workspace meaning (`.qcode/skills` in a repository).
+    assert_eq!(
+        crate::expand_root(Path::new("skills"), workspace, home.as_deref()),
+        PathBuf::from("/w/skills")
+    );
+    assert_eq!(
+        crate::expand_root(Path::new("/opt/skills"), workspace, home.as_deref()),
+        PathBuf::from("/opt/skills")
+    );
+}

@@ -2,6 +2,34 @@
 
 ## 未发布
 
+### 配置里的路径支持 `~`，MCP 写授权补上危险根检查
+
+`[mcp.servers] read_paths` / `writable_paths` 原先强制绝对路径，而 `[sandbox] extra_read` /
+`extra_writable` 根本没有校验——同一份配置里，`~` 在三处语义不同（`[skills] roots` 认 `~`，
+另外两处不认）。现在是一个 helper、一次展开：
+
+- **`~` 和 `~/x` 在加载时展开成真实 home**，覆盖 `read_paths`、`writable_paths`、
+  `extra_read`、`extra_writable`、`skills.roots`。`~user/x` 与裸相对路径仍然不展开：前者要
+  passwd 查找且永远不是「给本任务的授权」，后者在用户级配置里没有稳定基准（workspace 是
+  每个任务一个）。
+- **展开点在 `validate()` 上游**（`load` / `merge_project_file` / `validate_document` 三处，
+  正是原先调 `mcp.validate()` 的三个地方），不是 `#[serde(deserialize_with)]`：后者等于在
+  不依赖 `qcode-kernel` 的 `qcode-mcp` 里再养一个 `$HOME` 解析器。展开幂等，漏展开会被
+  既有的「必须是绝对路径」校验挡住并报错——失败模式是明确的，不是静默的。
+- **`writable_paths` 补上 `dangerous()` 检查**（读侧一直有，写侧没有）。`~/` 展开后就是
+  `$HOME`，两个字符的笔误不该把整个家目录交出去：能写 `$HOME` 的 server 可以塞
+  `.gitconfig` 的 `core.hooksPath`、shell rc 一行或 `~/.config/gh/hosts.yml`，下一条命令就
+  生效，不需要第二次写。只检查用户写的条目，workspace 与私有 HOME 不参与——否则从 `$HOME`
+  目录启动 qcode 会让每个 server 都起不来。
+- `dangerous()` 的 home 一侧改为 canonicalize 后比较。另一侧（`writable_paths`）本来就是
+  canonicalize 过的，macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，不统一就会让「这是你的家
+  目录」这条恰好漏判。
+- `qc doctor` 把每条配好的路径打成 `~/Documents → /home/q/Documents` 两种写法，目录不存在
+  时说明被 grant 跳过了；`[sandbox] extra_read` / `extra_writable` 同样逐条打印。
+- 配置文件里的 `~` 与**工具参数里的 `~` 无关**：后者 qcode 不参与解析，由那个 MCP server
+  自己决定。Rust 实现（如 wordcraft）会把 `~/Documents/x.docx` 当字面目录名，在 workspace
+  下建一个叫 `~` 的目录并静默写入。README 里写明了，要可靠就传绝对路径。
+
 ### MCP 授权集在设置页里可编辑了（ADR-0066 P2 收尾）
 
 `read_paths` / `writable_paths` / `credentials` / `sandbox` 四个字段一直没有表格列：设置页
