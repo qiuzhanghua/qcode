@@ -1,8 +1,9 @@
 //! Approval policy: deterministic rules over tool name and arguments.
 //!
 //! `deny` always wins. Otherwise the most specific matching rule wins. With no
-//! match, the default depends on the call class: reads and workspace-internal
-//! writes are allowed, writes outside the workspace and process execution ask.
+//! match, the default depends on the call class: reads, workspace-internal
+//! writes and read-only network fetches are allowed; writes outside the
+//! workspace, process execution and sandbox escalation ask.
 
 use globset::Glob;
 use serde::Deserialize;
@@ -144,7 +145,7 @@ impl Policy {
             ApprovalClass::Execute => (Action::Ask, "default: process execution"),
             ApprovalClass::External => (Action::Ask, "default: external tool"),
             ApprovalClass::BulkWrite => (Action::Ask, "default: multi-file write"),
-            ApprovalClass::Network => (Action::Ask, "default: network access"),
+            ApprovalClass::Network => (Action::Allow, "default: read-only network access"),
             ApprovalClass::Question => (Action::Allow, "default: user question"),
             ApprovalClass::Shell => (Action::Allow, "default: shell within session scope"),
             ApprovalClass::Escalation => (Action::Ask, "default: sandbox escalation"),
@@ -217,7 +218,8 @@ mod tests {
             policy
                 .evaluate("web_fetch", ApprovalClass::Network, &json!({}))
                 .action,
-            Action::Ask
+            Action::Allow,
+            "a read-only network fetch runs without a prompt"
         );
         assert_eq!(
             policy
