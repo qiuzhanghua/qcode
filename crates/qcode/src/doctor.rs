@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use qcode_core::Network;
 use qcode_core::event::ContentBlock;
 use qcode_core::provider::{CompletionRequest, Message, ProviderError, Role};
 use qcode_mcp::McpServerConfig;
@@ -16,6 +17,7 @@ use crate::config::{self, Config};
 pub async fn run(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    probe: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut doctor = Doctor { failures: 0 };
 
@@ -33,6 +35,9 @@ pub async fn run(
     doctor.check_token();
     doctor.check_sandbox(&config);
     doctor.check_mcp(&config, &data_dir);
+    if probe {
+        doctor.check_mcp_capabilities(&config, &data_dir).await;
+    }
     doctor.ok(
         "acp",
         format!(
@@ -508,6 +513,154 @@ impl Doctor {
                 }
             }
             Err(err) => self.fail("sandbox", err.to_string()),
+        }
+    }
+
+    /// `qc doctor --probe`: connect for real and compare the handshake's
+    /// `capabilities` with what the server actually answers (ADR-0068 §4).
+    ///
+    /// This is the other half of "trust the declaration at connect time": the
+    /// trust is not free, so the check exists — just on demand, where it costs a
+    /// probe the user asked for instead of two round trips per server on every
+    /// start.
+    ///
+    /// Both directions are reported, because they fail differently:
+    ///
+    /// * **declares, refuses** — the resource/prompt tools are registered and
+    ///   every call to them will fail. The user sees two broken tools.
+    /// * **serves, does not declare** — the tools are silently absent. The user
+    ///   sees nothing at all, which is the worse failure and the one the old
+    ///   connect-time probe could not detect either (it only asked, and believed
+    ///   the answer).
+    async fn check_mcp_capabilities(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
+        if config.mcp.servers.iter().all(|server| !server.enabled) {
+            return;
+        }
+        let dir = qcode_kernel::resolve_data_dir(data_dir.clone());
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // The same two seams a run wires: a per-server sandbox from
+        // `[sandbox] mode`, and the session egress proxy for remote servers
+        // (ADR-0067 §2 forbids building a bare client here).
+        let sandbox_network = if config.network_plan().proxy {
+            SandboxNetwork::Allow
+        } else {
+            SandboxNetwork::Deny
+        };
+        let sandbox = match sandbox::build(
+            config.sandbox.mode,
+            &workspace,
+            sandbox_network,
+            &config.sandbox.extra_writable,
+        ) {
+            Ok(sandbox) => sandbox,
+            Err(error) => {
+                self.warn("mcp probe", format!("no sandbox: {error}"));
+                return;
+            }
+        };
+        let confine = qcode_kernel::mcp_confine(sandbox, &workspace);
+        let egress = match qcode_kernel::build_egress(config, &dir, None).await {
+            Ok(egress) => egress,
+            Err(error) => {
+                self.warn(
+                    "mcp probe",
+                    format!(
+                        "cannot start the egress proxy, remote servers will be skipped: {error}"
+                    ),
+                );
+                None
+            }
+        };
+        let http = egress.as_ref().map(|egress| egress.client());
+        let env = egress
+            .as_ref()
+            .map(|egress| Network::env(egress.as_ref()))
+            .unwrap_or_default();
+
+        let reports = qcode_mcp::probe_capabilities(
+            &config.mcp,
+            &workspace,
+            &dir,
+            &env,
+            qcode_mcp::ConnectOptions {
+                http: http.as_ref(),
+                confine: Some(confine.as_ref()),
+            },
+        )
+        .await;
+
+        for report in &reports {
+            let label = format!("mcp probe {}", report.server);
+            if let Some(error) = &report.error {
+                // `warn`, not `fail`: one unreachable server loses its own
+                // tools and the session still runs (ADR-0066's rule for the
+                // whole MCP section).
+                self.warn(&label, error);
+                continue;
+            }
+            let registered = if report.registered.is_empty() {
+                "none".to_string()
+            } else {
+                report
+                    .registered
+                    .iter()
+                    .map(|extra| extra.suffix())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.ok(
+                &label,
+                format!(
+                    "protocol {} · declares tools={} resources={} prompts={} · registered {registered}{}",
+                    report.protocol_version.as_deref().unwrap_or("-"),
+                    report.declared.tools,
+                    report.declared.resources,
+                    report.declared.prompts,
+                    match report.instructions_bytes {
+                        Some(bytes) => format!(" · instructions {bytes} bytes"),
+                        None => String::new(),
+                    }
+                ),
+            );
+
+            // `declares, refuses`: two tools that exist and always fail.
+            for (name, declared, answer) in [
+                ("resources", report.declared.resources, &report.resources),
+                ("prompts", report.declared.prompts, &report.prompts),
+            ] {
+                if answer.agrees_with(declared) {
+                    continue;
+                }
+                let detail = match (declared, answer) {
+                    (true, qcode_mcp::ProbeAnswer::Refused(message)) => format!(
+                        "declares {name} but `{name}/list` failed ({message}); the {name} tools \
+                         are registered and every call to them will fail — this is a server bug"
+                    ),
+                    (true, qcode_mcp::ProbeAnswer::TimedOut) => format!(
+                        "declares {name} but `{name}/list` did not answer in {}s; the {name} \
+                         tools are registered and may hang",
+                        config
+                            .mcp
+                            .servers
+                            .iter()
+                            .find(|server| server.name == report.server)
+                            .map(|server| server.timeout_secs)
+                            .unwrap_or(0)
+                    ),
+                    (false, qcode_mcp::ProbeAnswer::Supported) => format!(
+                        "does not declare {name} but `{name}/list` answers; qcode registers no \
+                         {name} tools for it, so they are missing from the model's tool list — \
+                         the declaration in the handshake is what is wrong"
+                    ),
+                    // Covered by `agrees_with`; listed so the match is total.
+                    _ => continue,
+                };
+                self.warn(&format!("mcp probe {} {name}", report.server), detail);
+            }
         }
     }
 

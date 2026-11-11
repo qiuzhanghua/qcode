@@ -49,6 +49,10 @@ fn main() {
     // ADR-0068 §4: which optional capabilities to declare in the handshake.
     // Empty by default, so the zero-probe assertion has something to assert on.
     let mut caps: Vec<String> = Vec::new();
+    // Capabilities the server *answers* but does not declare. This is the
+    // mismatch `qc doctor --probe` exists to find: the tools are silently
+    // missing because the handshake said no.
+    let mut served: Vec<String> = Vec::new();
     let mut tokens: Vec<String> = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -63,6 +67,14 @@ fn main() {
             "--capabilities" => {
                 index += 1;
                 caps = args[index]
+                    .split(',')
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+            }
+            "--serve-caps" => {
+                index += 1;
+                served = args[index]
                     .split(',')
                     .map(|name| name.trim().to_string())
                     .filter(|name| !name.is_empty())
@@ -96,6 +108,7 @@ fn main() {
         ttl_ms,
         instructions,
         capabilities: capabilities(&caps),
+        served,
         tokens,
         audit,
     });
@@ -126,6 +139,8 @@ struct State {
     ttl_ms: u64,
     instructions: Option<String>,
     capabilities: Value,
+    /// Capabilities answered even though they are not declared (`--serve-caps`).
+    served: Vec<String>,
     tokens: Vec<String>,
     audit: Arc<Mutex<Option<PathBuf>>>,
 }
@@ -217,9 +232,17 @@ fn handle(mut stream: TcpStream, state: &State) -> std::io::Result<()> {
                 id,
                 json!({"content": [{"type": "text", "text": "probe says hi"}]}),
             ),
-            // No resources or prompts: the client's capability probe gets an
-            // error and registers no extra tools, which is the path most
-            // servers take.
+            // Answered only when `--serve-caps` says so: a server that serves
+            // a capability it forgot to declare in the handshake.
+            ("resources/list", _) if state.served.iter().any(|name| name == "resources") => {
+                ok(id, json!({"resources": []}))
+            }
+            ("prompts/list", _) if state.served.iter().any(|name| name == "prompts") => {
+                ok(id, json!({"prompts": []}))
+            }
+            // Otherwise: the -32601 a server without the capability sends. Note
+            // this is also what a server that *declares* the capability but
+            // cannot answer sends, which is the other mismatch direction.
             _ => json!({
                 "jsonrpc": "2.0",
                 "id": id,

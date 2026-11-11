@@ -406,20 +406,171 @@ async fn a_modern_server_is_never_probed_for_resources_or_prompts() {
     );
 }
 
-/// The other half of §4: the probe is scoped to legacy, not deleted. A
-/// 2025-era server still gets asked, because that branch's handshake field is
-/// not trustworthy in the wild.
+/// ADR-0068 §4 as revised (B-2): legacy is not special any more. The version
+/// split went away because the reason for distrusting a legacy declaration was
+/// a guess — wordcraft-cli 0.15.2 is a real 2025-06-18 server and declares
+/// exactly what it serves — while the probe it justified cost a `-32601` per
+/// server on every connect.
 #[tokio::test]
-async fn a_legacy_server_is_still_probed_once() {
+async fn a_legacy_server_is_not_probed_either() {
     let probe = Probe::start(&["--legacy"]);
     let tools = connect(&probe).await;
     assert_eq!(tools.len(), 1, "the legacy server's tool should arrive");
 
     let methods = probe.rpc_methods();
     let count = |method: &str| methods.iter().filter(|seen| *seen == method).count();
-    assert_eq!(count("initialize"), 1, "{methods:?}");
-    assert_eq!(count("resources/list"), 1, "{methods:?}");
-    assert_eq!(count("prompts/list"), 1, "{methods:?}");
+    assert_eq!(count("initialize"), 1, "a legacy server still handshakes");
+    assert_eq!(count("resources/list"), 0, "{methods:?}");
+    assert_eq!(count("prompts/list"), 0, "{methods:?}");
+}
+
+/// And the declaration still decides, on legacy too: declared resources means
+/// the two tools exist, with no request sent to confirm it.
+#[tokio::test]
+async fn a_legacy_server_gets_its_declared_extras_without_a_probe() {
+    let probe = Probe::start(&["--legacy", "--capabilities", "resources,prompts"]);
+    let tools = connect(&probe).await;
+    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    for expected in [
+        "ping",
+        "list_resources",
+        "read_resource",
+        "list_prompts",
+        "get_prompt",
+    ] {
+        assert!(
+            names.iter().any(|name| name.contains(expected)),
+            "{expected} is missing from {names:?}"
+        );
+    }
+    let methods = probe.rpc_methods();
+    assert!(
+        !methods.contains(&"resources/list".to_string()),
+        "{methods:?}"
+    );
+    assert!(
+        !methods.contains(&"prompts/list".to_string()),
+        "{methods:?}"
+    );
+}
+
+/// `qc doctor --probe`: the diagnostic that replaced the connect-time probe.
+///
+/// This server declares nothing and serves nothing, so every answer agrees with
+/// the declaration — the boring case, pinned because "reports OK" must be
+/// distinguishable from "reports nothing".
+#[tokio::test]
+async fn the_probe_reports_a_server_that_tells_the_truth() {
+    let probe = Probe::start(&["--modern"]);
+    let reports = qcode_mcp::probe_capabilities(
+        &config(McpServerConfig {
+            name: "probe".to_string(),
+            command: None,
+            url: Some(probe.url()),
+            ..Default::default()
+        }),
+        &workspace(),
+        &tempfile::tempdir().expect("data").keep(),
+        &[],
+        ConnectOptions::with_http(&client()),
+    )
+    .await;
+
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(report.protocol_version.as_deref(), Some("2026-07-28"));
+    assert!(
+        report.declared.tools,
+        "the probe server always serves tools"
+    );
+    assert!(!report.declared.resources);
+    assert!(!report.declared.prompts);
+    assert!(
+        matches!(report.resources, qcode_mcp::ProbeAnswer::Refused(_)),
+        "{:?}",
+        report.resources
+    );
+    assert!(report.registered.is_empty(), "{:?}", report.registered);
+
+    // The probe asked even though nothing was declared: that is what makes
+    // "serves but does not declare" detectable at all.
+    let methods = probe.rpc_methods();
+    assert!(
+        methods.contains(&"resources/list".to_string()),
+        "{methods:?}"
+    );
+    assert!(methods.contains(&"prompts/list".to_string()), "{methods:?}");
+}
+
+/// Mismatch direction A: **serves, does not declare.** The tools are silently
+/// missing from the session — the failure nobody can see without this check.
+#[tokio::test]
+async fn the_probe_finds_a_capability_served_but_not_declared() {
+    let probe = Probe::start(&["--modern", "--serve-caps", "resources"]);
+    let reports = qcode_mcp::probe_capabilities(
+        &config(McpServerConfig {
+            name: "probe".to_string(),
+            command: None,
+            url: Some(probe.url()),
+            ..Default::default()
+        }),
+        &workspace(),
+        &tempfile::tempdir().expect("data").keep(),
+        &[],
+        ConnectOptions::with_http(&client()),
+    )
+    .await;
+
+    let report = &reports[0];
+    assert!(!report.declared.resources, "it does not declare resources");
+    assert_eq!(report.resources, qcode_mcp::ProbeAnswer::Supported);
+    assert!(
+        !report.resources.agrees_with(report.declared.resources),
+        "the mismatch must be visible to the caller"
+    );
+
+    // The connect path still registers nothing, which is the point of the
+    // warning: the tools exist on the server and are absent from the model.
+    let tools = connect(&probe).await;
+    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    assert!(
+        !names.iter().any(|name| name.contains("list_resources")),
+        "{names:?}"
+    );
+}
+
+/// Mismatch direction B: **declares, refuses.** The tools are registered and
+/// every call fails. Reported separately from A because the user-visible damage
+/// is opposite.
+#[tokio::test]
+async fn the_probe_finds_a_capability_declared_but_refused() {
+    let probe = Probe::start(&["--modern", "--capabilities", "prompts"]);
+    let reports = qcode_mcp::probe_capabilities(
+        &config(McpServerConfig {
+            name: "probe".to_string(),
+            command: None,
+            url: Some(probe.url()),
+            ..Default::default()
+        }),
+        &workspace(),
+        &tempfile::tempdir().expect("data").keep(),
+        &[],
+        ConnectOptions::with_http(&client()),
+    )
+    .await;
+
+    let report = &reports[0];
+    assert!(report.declared.prompts);
+    assert!(matches!(report.prompts, qcode_mcp::ProbeAnswer::Refused(_)));
+    assert!(!report.prompts.agrees_with(report.declared.prompts));
+
+    let tools = connect(&probe).await;
+    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    assert!(
+        names.iter().any(|name| name.contains("list_prompts")),
+        "the declaration registered the tool: {names:?}"
+    );
 }
 
 /// Reading the field must reach the same conclusion the probe would have: a

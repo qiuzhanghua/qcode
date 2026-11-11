@@ -34,7 +34,7 @@ pub(crate) enum Command {
     /// Manage configured MCP servers.
     Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Show the shell environment `run_shell` would see (ADR-0064).
     ShellEnv(ShellEnvArgs),
     /// Check for a newer release, or install it.
@@ -58,6 +58,19 @@ pub(crate) enum Command {
     #[cfg(windows)]
     #[command(hide = true, name = "whoami")]
     Whoami,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DoctorArgs {
+    /// Connect to every MCP server and compare what it declares in the
+    /// handshake with what it actually answers (ADR-0068 §4).
+    ///
+    /// Off by default: a session must not pay one probe per server, and doctor
+    /// is where that question gets asked on purpose. This starts each stdio
+    /// server, and for remote ones the session's egress proxy — the same
+    /// machinery a real run uses, so the network side is exercised too.
+    #[arg(long)]
+    pub(crate) probe: bool,
 }
 
 #[cfg(windows)]

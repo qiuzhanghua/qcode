@@ -390,9 +390,10 @@ cargo build -p qcode-eval
   **server 的自述会进 system prompt**（ADR-0068）：握手里的 `instructions` 以
   `# MCP: <server>` 小节注入，总数封顶 8 KiB，超出截断并注明。这段文字只是文本——它不改变
   任何审批决定，显式 `deny` 规则照样 deny。
-  支持 **2026-07-28** 的远程 server 直接读握手里的 `capabilities`，不再多打
-  `resources/list` / `prompts/list`；旧协议的 server 才试一次（野外的老 server 常把
-  `capabilities` 写错，那里宁可多问一句）。
+  **能力一律读握手里的 `capabilities`，连接期零探测**（不分协议版本）。想知道某个 server
+  的声明是否属实，跑 `qc doctor --probe`：它按需连接、把 `resources/list` 与 `prompts/list`
+  都问一遍，并报出两种相反的不匹配——「声明了却拒绝」（工具在、每次调用都失败）与
+  「服务了却没声明」（工具静默缺失）。
   每个 server 的授权集（`read_paths` / `writable_paths` / `credentials` / `sandbox`）在设置页
   里有对应的列，也由 `qc doctor` 逐条打印；`qc mcp add --read-path/--write-path/--credential/
   --sandbox` 写的是同一份配置。
@@ -461,6 +462,10 @@ cargo build -p qcode-eval
   `credentials` 预设在本机没有对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
   让 `[mcp] sandbox = "confine"` 形同虚设。`env` 里形如 `GITHUB_TOKEN = "ghp_..."` 的
   字面量密钥也会被点名（值不打印），提示改写成 `"${GITHUB_TOKEN}"`。
+  加 `--probe` 则会**真的连上去**：逐 server 打印协商的协议版本、握手里声明了哪些能力、
+  以及因此注册了哪些工具，再把 `resources/list` 与 `prompts/list` 都问一遍做比对。默认不开，
+  因为一次会话不该为每个 server 付这个往返；启动期的日志只有一行
+  `mcp capabilities read from the handshake` 说明判定依据。
 - **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
   `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
   只认 GitHub Releases API 给出的 `browser_download_url`，校验和不符则不落盘——没有归档解包器，

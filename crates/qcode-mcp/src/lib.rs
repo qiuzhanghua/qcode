@@ -548,6 +548,9 @@ pub(crate) struct ServerHandle {
     /// not change mid-session, and re-probing them every turn would cost two
     /// round trips per server for a set that never moves.
     extras: Vec<Extra>,
+    /// What the handshake declared. Kept because `qc doctor --probe` compares it
+    /// with what the wire actually answers (ADR-0068 §4, B-2).
+    capabilities: ServerCapabilities,
     protocol_version: Option<String>,
     /// The server's own `instructions`, from whichever handshake answered
     /// (ADR-0068 §3). `None` when the server sent none.
@@ -735,42 +738,48 @@ async fn finish(
     );
     let table = ToolTable::new(listed, ttl, dirty);
 
-    // Resources and prompts are optional, and how to find out depends on which
-    // lifecycle answered (ADR-0068 §4).
+    // Resources and prompts are optional, and the handshake already said which
+    // ones exist (ADR-0068 §4, revised): the declaration is the answer for every
+    // protocol version, not just 2026-07-28.
+    //
+    // Why the old per-version split went away: the reason for distrusting a
+    // legacy server's `capabilities` was a guess, and wordcraft-cli 0.15.2 — a
+    // real 2025-06-18 server — declares exactly what it serves. Meanwhile the
+    // probe cost a `-32601` round trip per server on every connect and could
+    // never detect the case that actually hurts (a server that *serves* a
+    // capability it forgot to declare, whose tools were silently missing).
+    // That case is what `qc doctor --probe` exists for, on demand.
+    let capabilities = info
+        .as_ref()
+        .map(|info| info.capabilities.clone())
+        .unwrap_or_default();
+    if info.is_none() {
+        // A successful handshake always fills `peer_info`; if it somehow did
+        // not, nothing is registered rather than guessed. `qc doctor --probe`
+        // is how to find out what the server really serves.
+        tracing::warn!(
+            server = %server.name,
+            "handshake left no capabilities; registering no resource/prompt tools (try `qc doctor --probe`)"
+        );
+    }
+    let (resources, prompts) = declared_extras(&capabilities);
     let mut extras = Vec::new();
-    let (resources, prompts) = match info.as_ref() {
-        // 2026-07-28: `server/discover` already carried `capabilities`. Asking
-        // anyway would be knowing the answer and requesting it regardless — a
-        // server that declares no `prompts` answers `-32601` and the only thing
-        // bought is a round trip and a log line.
-        Some(info) if !info.protocol_version.has_initialize() => {
-            let (resources, prompts) = declared_extras(&info.capabilities);
-            tracing::info!(
-                server = %server.name,
-                protocol = %info.protocol_version,
-                resources,
-                prompts,
-                "mcp capabilities read from the handshake"
-            );
-            (resources, prompts)
-        }
-        // Legacy (and the impossible "no peer_info" case, which fails toward
-        // asking): ADR-0033 §3's probe stays, scoped to this branch. Wild
-        // 2025-era servers misreport `capabilities` often enough that the
-        // handshake field is not worth trusting there.
-        _ => {
-            let resources = probe_resources(server, &service, timeout).await;
-            let prompts = probe_prompts(server, &service, timeout).await;
-            (resources, prompts)
-        }
-    };
-
     if resources {
         extras.extend([Extra::ListResources, Extra::ReadResource]);
     }
     if prompts {
         extras.extend([Extra::ListPrompts, Extra::GetPrompt]);
     }
+    tracing::info!(
+        server = %server.name,
+        protocol = info
+            .as_ref()
+            .map(|info| info.protocol_version.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        resources,
+        prompts,
+        "mcp capabilities read from the handshake"
+    );
 
     if let Some(text) = instructions.as_deref().map(str::trim) {
         // Name and size only: the text itself is third-party content and the
@@ -789,6 +798,7 @@ async fn finish(
         table,
         timeout,
         extras,
+        capabilities,
         protocol_version,
         instructions,
     })
@@ -806,55 +816,190 @@ fn declared_extras(capabilities: &ServerCapabilities) -> (bool, bool) {
     )
 }
 
-/// ADR-0033 §3's probe, kept for legacy servers only (ADR-0068 §4).
-///
-/// Returning `false` means "the server did not answer successfully", which is
-/// how a missing capability looks on the wire. The log is `info` rather than
-/// `debug` because "this server has no resources" is something the user wants
-/// to know at the default level — the ADR-0033 后果 note complained that it was
-/// invisible.
-async fn probe_resources(
-    server: &McpServerConfig,
-    service: &Service,
-    timeout: std::time::Duration,
-) -> bool {
-    match tokio::time::timeout(timeout, service.list_resources(None)).await {
-        Ok(Ok(_)) => true,
-        Ok(Err(error)) => {
-            tracing::info!(server = %server.name, %error, "no resources capability");
-            false
+/// What the server said about itself in the handshake.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclaredCapabilities {
+    pub tools: bool,
+    pub resources: bool,
+    pub prompts: bool,
+}
+
+impl DeclaredCapabilities {
+    fn from_wire(capabilities: &ServerCapabilities) -> Self {
+        let (resources, prompts) = declared_extras(capabilities);
+        Self {
+            tools: capabilities.tools.is_some(),
+            resources,
+            prompts,
         }
-        Err(_) => {
-            tracing::warn!(
-                server = %server.name,
-                secs = server.timeout_secs,
-                "resources/list timed out; skipping resource tools"
-            );
-            false
+    }
+
+    /// The capabilities this declaration registers tools for, in the order the
+    /// probe writes them.
+    fn registered(&self) -> Vec<Extra> {
+        let mut extras = Vec::new();
+        if self.resources {
+            extras.extend([Extra::ListResources, Extra::ReadResource]);
+        }
+        if self.prompts {
+            extras.extend([Extra::ListPrompts, Extra::GetPrompt]);
+        }
+        extras
+    }
+}
+
+/// What `*/list` actually answered when asked (ADR-0068 §4, B-2).
+///
+/// Distinguishing these three matters: `Refused` next to `declared: true` is a
+/// server whose tools exist but fail at call time, while `Supported` next to
+/// `declared: false` is a server whose tools are silently missing. Both are
+/// mismatches, and both are invisible without this distinction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeAnswer {
+    /// The server answered `*/list` with a result.
+    Supported,
+    /// The server answered with a JSON-RPC error — how a server without the
+    /// capability replies, and also how a broken one does.
+    Refused(String),
+    /// No answer inside the server's `timeout_secs`.
+    TimedOut,
+}
+
+impl ProbeAnswer {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Supported => "answers",
+            Self::Refused(_) => "refuses",
+            Self::TimedOut => "timed out",
+        }
+    }
+
+    /// Whether declaration and wire agree.
+    pub fn agrees_with(&self, declared: bool) -> bool {
+        match self {
+            Self::Supported => declared,
+            Self::Refused(_) | Self::TimedOut => !declared,
         }
     }
 }
 
-/// The same for `prompts`.
-async fn probe_prompts(
-    server: &McpServerConfig,
-    service: &Service,
-    timeout: std::time::Duration,
-) -> bool {
+/// One server as `qc doctor --probe` found it.
+///
+/// This is the diagnostic that replaced connect-time probing: the connection
+/// itself trusts the handshake, and this reports where the handshake lies.
+#[derive(Debug, Clone)]
+pub struct CapabilityProbe {
+    pub server: String,
+    pub transport: Option<Transport>,
+    /// Version actually negotiated, `None` when the handshake failed.
+    pub protocol_version: Option<String>,
+    pub declared: DeclaredCapabilities,
+    /// The extra tools that declaration made qcode register.
+    pub registered: Vec<Extra>,
+    pub resources: ProbeAnswer,
+    pub prompts: ProbeAnswer,
+    pub instructions_bytes: Option<usize>,
+    /// Why the server could not be reached at all. When set, every field above
+    /// but `server`/`transport` is meaningless.
+    pub error: Option<String>,
+}
+
+impl CapabilityProbe {
+    fn unreachable(server: &McpServerConfig, error: String) -> Self {
+        Self {
+            server: server.name.clone(),
+            transport: server.transport(),
+            protocol_version: None,
+            declared: DeclaredCapabilities::default(),
+            registered: Vec::new(),
+            resources: ProbeAnswer::TimedOut,
+            prompts: ProbeAnswer::TimedOut,
+            instructions_bytes: None,
+            error: Some(error),
+        }
+    }
+}
+
+/// Connect to every enabled server and compare its declaration with the wire.
+///
+/// Deliberately separate from [`connect_detailed`]: a session must not pay two
+/// round trips per server on every start (that probe is what ADR-0033 §3 did
+/// and ADR-0068 §4 removed), but "is this server lying about what it serves?" is
+/// a real question, asked rarely and on purpose.
+///
+/// Both lists are always asked, whatever the declaration says — including when
+/// it says no. Skipping the undeclared ones would make the interesting case
+/// (serves but does not declare) undetectable by construction.
+pub async fn probe_capabilities(
+    mcp: &McpConfig,
+    workspace: &Path,
+    data_dir: &Path,
+    env: &[(String, String)],
+    options: ConnectOptions<'_>,
+) -> Vec<CapabilityProbe> {
+    let log_dir = data_dir.join("logs");
+    let mut reports = Vec::new();
+    for server in mcp.servers.iter().filter(|server| server.enabled) {
+        let Some(transport) = server.transport() else {
+            reports.push(CapabilityProbe::unreachable(
+                server,
+                "sets both or neither of `command` and `url`".to_string(),
+            ));
+            continue;
+        };
+        match connect_server(
+            server, transport, workspace, data_dir, &log_dir, env, options,
+        )
+        .await
+        {
+            Ok(found) => {
+                let timeout = found.timeout;
+                let declared = DeclaredCapabilities::from_wire(&found.capabilities);
+                let resources = probe_resources(&found.service, timeout).await;
+                let prompts = probe_prompts(&found.service, timeout).await;
+                reports.push(CapabilityProbe {
+                    server: server.name.clone(),
+                    transport: server.transport(),
+                    protocol_version: found.protocol_version.clone(),
+                    registered: declared.registered(),
+                    declared,
+                    resources,
+                    prompts,
+                    instructions_bytes: found
+                        .instructions
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::len),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                reports.push(CapabilityProbe::unreachable(server, error.to_string()));
+            }
+        }
+    }
+    reports
+}
+
+/// Ask one server for `resources/list` and report what came back.
+///
+/// `false`-shaped answers are not errors here: "this server has no resources" is
+/// an ordinary state that the caller reports, not a problem to log at `warn`.
+async fn probe_resources(service: &Service, timeout: std::time::Duration) -> ProbeAnswer {
+    match tokio::time::timeout(timeout, service.list_resources(None)).await {
+        Ok(Ok(_)) => ProbeAnswer::Supported,
+        Ok(Err(error)) => ProbeAnswer::Refused(error.to_string()),
+        Err(_) => ProbeAnswer::TimedOut,
+    }
+}
+
+/// The same for `prompts/list`.
+async fn probe_prompts(service: &Service, timeout: std::time::Duration) -> ProbeAnswer {
     match tokio::time::timeout(timeout, service.list_prompts(None)).await {
-        Ok(Ok(_)) => true,
-        Ok(Err(error)) => {
-            tracing::info!(server = %server.name, %error, "no prompts capability");
-            false
-        }
-        Err(_) => {
-            tracing::warn!(
-                server = %server.name,
-                secs = server.timeout_secs,
-                "prompts/list timed out; skipping prompt tools"
-            );
-            false
-        }
+        Ok(Ok(_)) => ProbeAnswer::Supported,
+        Ok(Err(error)) => ProbeAnswer::Refused(error.to_string()),
+        Err(_) => ProbeAnswer::TimedOut,
     }
 }
 

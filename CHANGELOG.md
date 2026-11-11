@@ -21,6 +21,33 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 - 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
   四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
 
+### MCP 连接不再探测能力；`qc doctor --probe` 取而代之（ADR-0068 §4 修订）
+
+上一版 §4 只让 2026-07-28 的 server 免于探测，legacy 仍然「试一次」。用 `wordcraft-cli
+0.15.2` 真机实测后这条改了，两个理由：
+
+1. **ADR 立项时引用的那条证据其实没被修好。** 背景段写「wordcraft 明说没有 prompts，我们
+   仍然打了一次 `prompts/list`」——可 wordcraft 是 2025-06-18，上一版让它照旧试一次，
+   请求照发，只是日志从 debug 升到 info。
+2. **它恰好是反例。** 它的 `initialize` 返回 `capabilities: { resources: {}, tools: {} }`，
+   与实际行为完全一致。上一版拒绝信任 legacy 声明的理由是猜测。
+
+- **连接期零探测，所有协议一视同仁。** `peer_info.capabilities` 是唯一来源；日志改为一行
+  `mcp capabilities read from the handshake`（`info` 级），带 protocol / resources / prompts。
+- **`qc doctor --probe`** 承担「声明与实际是否一致」：走与连接完全相同的路径（grant、env
+  白名单、沙箱、egress client），**两个 list 都问**，包括声明说不的那些——跳过未声明的会让
+  「服务了但没声明」在构造上不可检测。
+- **三态而不是 bool**：`Supported` / `Refused(<消息>)` / `TimedOut`。两种不匹配的用户可见
+  损坏是相反的：声明了却拒绝 → 工具存在但每次调用都失败；没声明却服务 → 工具静默缺失
+  （最坏形态，旧探测同样看不见）。
+- `--probe` 对远程 server 用 `build_egress` 的 client 而不是裸 `reqwest::Client`：在诊断命令
+  里绕过代理，测的就不是真实运行路径（ADR-0067 §2）。
+
+测试：反转 legacy 用例（`initialize` 1 次、两个 list 0 次）、新增 legacy 声明即得、探针三条
+（说真话 / 服务但没声明 / 声明但拒绝，HTTP probe server 新增 `--serve-caps` 造后一种）。
+变异验证两次都被抓到。真机：wordcraft 的 `--probe` 报 `declares tools=true resources=true
+prompts=false · instructions 912 bytes` 且无 warn；`qc run` 工具数仍是 19，与原行为一致。
+
 ### MCP 能力探测不再问已知答案（ADR-0068 §4）
 
 ADR-0033 §3 决定「能力探测靠试一次：握手后调 `resources/list` 与 `prompts/list`，成功才

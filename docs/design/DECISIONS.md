@@ -1236,15 +1236,18 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 `tools,resources,prompts` 时四个额外工具出现且 `read_resource` 返回 stub 正文、
 缺 `uri` 报错、`get_prompt` 返回渲染后的消息；不设时仍然只有 7 个工具。
 
-**实现注记（2026-11-11，§3 与「后果」第二条被 ADR-0068 §4 收窄）**
+**实现注记（2026-11-11，§3 与「后果」第二条被 ADR-0068 §4 取代）**
 
-- §3 的「试一次」**只在 legacy 分支保留**。2026-07-28 的 `server/discover` 直接带
-  `capabilities`，继续试一次等于明知有答案还去问。判据不是比较版本字符串，而是
-  rmcp 的 `ProtocolVersion::has_initialize()`——它回答的正是「这条连接是不是 `discover`
-  答的」。stdio 仍然走 `initialize`（ADR-0067 实现注记），因此 stdio server 照旧试一次，
-  这是生命周期的直接后果，不是遗漏。
-- 「后果」第二条「探测失败只有 debug 日志」**已修**：legacy 分支的两次失败现在是 `info`。
-  「这个 server 没有 prompts」是用户想知道的，不该要求 `RUST_LOG=debug`。
+- §3 的「试一次」**已作废**（ADR-0068 §4 的 B-2 修订）：**本 ADR 不再有任何探测**。
+  握手的 `capabilities` 是唯一来源，与协议版本无关。「声明与实际是否一致」这个问题移交
+  `qc doctor --probe`——它按需运行、两边都问、并做比对，而这正是 §3 当初「试一次」做不到的
+  （它只问、然后把答案当真相，从不与声明对照）。
+- **第一版曾把这条收窄到 legacy 分支，那次收窄也已作废。** 保留一句当时的理由以免有人重提：
+  「野外的 2025 时代 server 经常把 `capabilities` 写得不准」。这句话是猜测——真机实测的
+  `wordcraft-cli 0.15.2`（2025-06-18）声明与行为完全一致，见 ADR-0068 §4 的 B-2 注记。
+- 「后果」第二条「探测失败只有 debug 日志」**已无对象**（不探测了）。但同一诉求换了位置：
+  连接期那行 `mcp capabilities read from the handshake` 是 `info`，`RUST_LOG=info` 下能直接
+  看到每个 server 的三个能力布尔值，不需要 `debug`。
 - 「后果」第四条「不把 prompts 自动塞进 system prompt」**不变**，且现在有了新的相邻物：
   `instructions`（握手自述）会注入，`prompts`（模板）不会。两者不是一类东西，见 ADR-0068
   §3——这条区分现在有两处测试守着，不要再合并。
@@ -6455,7 +6458,8 @@ OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本
 
 ## ADR-0068：MCP server 的环境白名单与自述注入（2026-11-11）
 
-**状态**：P1 / P2 / P3 与 §4 已实现（2026-11-11）。
+**状态**：P1 / P2 / P3 与 §4 已实现（2026-11-11）；§4 于同日按 B-2 注记修订为
+「一律信握手声明、探测改为 `qc doctor --probe`」。
 `[[mcp.servers]] env` 的语义收窄（新增 `${VAR}` 引用）；`instructions`
 从「丢弃」改为「注入 system prompt」。承接 ADR-0066 §5（授权集与环境同源）留的接口。
 
@@ -6565,16 +6569,19 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
 显式 `get_prompt` 取用；`instructions` 是握手期的自述，两者不是一类东西。这条区分要写在
 两处，避免下一个人把它们合并掉。
 
-### 4. 能力探测：modern 读字段，legacy 试一次
+### 4. 能力探测：读字段，零请求（2026-11-11 修订，见下方 B-2 注记）
 
-| 协议 | 探测方式 |
-|---|---|
-| 2026-07-28（`discover`） | 读 `DiscoverResult.capabilities`，**不发** `resources/list` / `prompts/list` |
-| legacy（`initialize` 回退，2025-11-25 及以下） | 保留 ADR-0033 §3 的试一次 |
+~~| 协议 | 探测方式 |~~
+~~|---|---|~~
+~~| 2026-07-28（`discover`） | 读 `DiscoverResult.capabilities`，**不发** `resources/list` / `prompts/list` |~~
+~~| legacy（`initialize` 回退，2025-11-25 及以下） | 保留 ADR-0033 §3 的试一次 |~~
 
-即 ADR-0033 §3 不是被废弃，而是被限定在 legacy 分支。附带好处：legacy 的两次探测失败今天
-只有 `debug` 日志，默认级别下看不见（ADR-0033 后果段自己写了这条缺陷），顺手改成
-`info`——「这个 server 没有 prompts」是用户想知道的信息。
+**修订后的决定**：**所有协议版本**都只读握手里的 `capabilities`，连接期**零探测**。
+ADR-0033 §3 的「试一次」由此被完全取代，它不再是 legacy 的做法，而是**不存在**了；
+要说「这个 server 到底服务什么」，用 `qc doctor --probe`（显式、按需、可比对）。
+
+保留的附带改动：能力来自哪个分支的日志都是 `info`，`RUST_LOG=info` 下能看到
+`mcp capabilities read from the handshake` 与它读到的那三个布尔值。
 
 **实现**
 
@@ -6671,7 +6678,9 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
   预算消耗。
 - ~~§4 未做~~：见下一条注记。
 
-**§4 实现注记（2026-11-11，能力探测按生命周期分流）**
+**§4 实现注记（2026-11-11，第一版：按生命周期分流；已被下面 B-2 注记取代）**
+
+> 保留下面的内容只为解释「为什么当时那样写」。**当前实现按 B-2 注记，不再分协议。**
 
 - **判据是 `ProtocolVersion::has_initialize()`，不是版本号比较。** 它回答的正是「这条连接
   是不是 `discover` 答的」：`false` 即 2026-07-28 起无握手的生命周期，`capabilities` 来自
@@ -6695,6 +6704,76 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
   把 modern 分支关掉 → 零探测与「声明即得」两条失败（审计日志里能看到
   `resources/list` 真的又发出去了）；让 `declared_extras` 恒返 `(false, false)` →
   「声明即得」失败。
+
+**§4 修订注记（2026-11-11，B-2：一律信声明，探测改为显式诊断）**
+
+触发这次修订的是真机实测，不是重新讨论：用 `wordcraft-cli 0.15.2`（**2025-06-18**，装在
+`$HOME` 下）跑通了整个 stdio 链路，得到两个事实。
+
+1. **本 ADR 立项时引用的那条证据，其实没被修好。** 背景段写「实测 wordcraft 明说没有
+   prompts，我们仍然打了一次 `prompts/list`，换来一个 `-32601`」。但 wordcraft 是 legacy，
+   第一版 §4 让它走「保留试一次」——请求照发，只是日志从 `debug` 升到 `info`。问题看得见了，
+   没被解决。
+2. **而且它恰恰是「legacy 声明可信」的反例。** 它的 `initialize` 返回
+   `capabilities: { resources: {}, tools: {} }`，与其实际行为完全一致：声明有 resources、
+   探测成功；声明无 prompts、探测得 `-32601`。第一版拒绝信任 legacy `capabilities` 的理由
+   ——「野外的 2025 时代 server 经常写得不准」——在这个真实样本上站不住，它当时是猜测。
+
+**修订后的决定**
+
+| 项 | 内容 |
+|---|---|
+| 连接期 | **零探测**。`peer_info.capabilities` 是唯一来源，不再区分协议版本 |
+| 声明 vs 实际的比对 | `qc doctor --probe`，显式、按需 |
+| `peer_info` 缺失 | 注册 0 个额外工具 + 一条 warn（不猜；用 `--probe` 查） |
+
+**实现**
+
+- `finish()` 删掉整段探测，改为 `declared_extras(&capabilities)`；`ServerHandle` 多存一份
+  `capabilities`，供探针比对。连接期日志改成一行 `mcp capabilities read from the handshake`
+  带 `protocol` / `resources` / `prompts` 三个字段——这是「判定依据」的唯一可见处。
+- `probe_capabilities()`：新公开 API，对每个启用的 server 走**与连接完全相同**的路径
+  （`connect_server`，含 grant / env 白名单 / confine / egress client），然后**两个 list 都问**
+  ——包括声明说不的那些。跳过未声明的会让「服务了但没声明」在构造上不可检测，而那正是这次
+  要能看见的失败。
+- `ProbeAnswer` 分三态而不是 bool：`Supported` / `Refused(<消息>)` / `TimedOut`。两种不匹配的
+  用户可见损坏是相反的，混成一个「不一致」会丢掉这个区别：
+
+  | 声明 | 实际 | 用户看到 |
+  |---|---|---|
+  | 有 | `Refused` | 两个工具存在，**每次调用都失败** |
+  | 无 | `Supported` | **什么都没有**（工具静默缺失，最坏的形态） |
+
+  后者在旧实现里同样看不见：旧探测只问、然后把答案当真相，从不与声明对照。
+- `qc doctor --probe`（新 flag，默认关）。doctor 需要两个缝：`sandbox::build` + 
+  `mcp_confine`（逐 server 沙箱），以及 `build_egress` 的 client（远程 server）。用
+  `build_egress` 而不是裸 `reqwest::Client` 是硬要求——ADR-0067 §2 就写在这份代码里，
+  在诊断命令里绕过代理等于让 `--probe` 走出与真实运行不同的网络路径，那它测的就不是真东西。
+  实测对着本地 probe server 跑：不带 allowlist 时 egress 回 `HTTP 403 not-allowlisted`，
+  加上 `[network] allow` 后才拿到握手——路径确实一致。
+- **失败一律 warn 不 fail**，沿用 ADR-0066 对 MCP 全段的规矩：一个 server 连不上只丢它自己的
+  工具。
+
+**代价**
+
+- 「声明漏了但实际支持」的 server 会静默少两个工具，直到有人跑 `--probe`。这是本修订换掉
+  两次往返所付的钱，也是 `--probe` 存在的理由。ADR-0033 §3 里那句「试一次」由此作废。
+- stdio server 仍然只走 `initialize`（ADR-0067），所以它们全部是 legacy；但探测不再因此发生。
+
+**验证**
+
+- 反转既有用例：`a_legacy_server_is_still_probed_once` → `a_legacy_server_is_not_probed_either`
+  （`initialize` 1 次、两个 list **0** 次）；新增 `a_legacy_server_gets_its_declared_extras_without_a_probe`
+  （声明了就注册，仍然零请求）。
+- 探针三条（HTTP probe server 新增 `--serve-caps`，用来造「服务但没声明」）：
+  说真话时逐项一致；`--serve-caps resources` → 报「没声明却应答」；`--capabilities prompts`
+  → 报「声明了却 `-32601`」。
+- 变异验证两次：把 legacy 分支改回探测 → 反转后的两条失败；让 `probe_capabilities` 复用声明
+  而不真问 → 探针三条全部失败。
+- **真机**：`wordcraft-cli 0.15.2` 上 `qc doctor --probe` 输出
+  `declares tools=true resources=true prompts=false · registered list_resources, read_resource
+  · instructions 912 bytes`，无 warn（声明属实）；`qc run` 的 info 日志里不再出现
+  两次 list 请求，工具数仍是 19（17 native + 2），与原行为一致。
 
 **待定**
 
