@@ -107,6 +107,9 @@ const UNKNOWN_HOSTS: &[&str] = &["ask", "deny", "allow"];
 const SEARCH_BACKENDS: &[&str] = &["brave", "tavily", "searxng"];
 const RULE_ACTIONS: &[&str] = &["allow", "ask", "deny"];
 const RULE_SCOPES: &[&str] = &["session", "project", "user"];
+/// `[mcp] sandbox`: the crate-wide default, overridable per server (ADR-0066).
+/// `confine` is the default value, so it is what an untouched config means.
+const MCP_SANDBOX_MODES: &[&str] = &["confine", "off"];
 
 pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
@@ -402,6 +405,13 @@ pub const FIELDS: &[FieldSpec] = &[
         page: Page::Update,
         kind: FieldKind::OptionalText,
         help: "Mirror or local test server",
+    },
+    FieldSpec {
+        path: &["mcp", "sandbox"],
+        label: "MCP sandbox default",
+        page: Page::Mcp,
+        kind: FieldKind::Select(MCP_SANDBOX_MODES),
+        help: "confine derives a per-server grant; each server may override it",
     },
 ];
 

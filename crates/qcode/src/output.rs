@@ -101,10 +101,43 @@ pub(crate) fn print_config(config: &config::Config) {
 pub(crate) fn print_mcp(config: &McpConfig) {
     println!("mcp servers ({}):", config.servers.len());
     for server in &config.servers {
-        println!(
-            "  {} enabled={} timeout={}s command={:?} args={:?}",
-            server.name, server.enabled, server.timeout_secs, server.command, server.args
-        );
+        // One line that names the transport and then only the fields that
+        // transport actually uses: `command=None url=https://…` on a remote
+        // server reads like a broken stdio server.
+        match server.transport() {
+            Some(qcode_mcp::Transport::Stdio) => println!(
+                "  {} transport=stdio enabled={} timeout={}s command={:?} args={:?}",
+                server.name,
+                server.enabled,
+                server.timeout_secs,
+                server.command.as_deref().unwrap_or_default(),
+                server.args
+            ),
+            Some(qcode_mcp::Transport::StreamableHttp) => {
+                let token = server.bearer_token_env_var.as_deref().unwrap_or("-");
+                println!(
+                    "  {} transport=streamable-http enabled={} timeout={}s url={:?} \
+                     bearer_token_env_var={token} headers={:?}",
+                    server.name,
+                    server.enabled,
+                    server.timeout_secs,
+                    server.url.as_deref().unwrap_or_default(),
+                    server.headers.keys().collect::<Vec<_>>()
+                );
+            }
+            // `validate()` rejects this, so `qc mcp list` only reaches it when
+            // the config was written by something that skipped validation.
+            None => println!(
+                "  {} transport=<invalid: sets both or neither of command and url> \
+                 enabled={} command={:?} url={:?}",
+                server.name, server.enabled, server.command, server.url
+            ),
+        }
+        // A remote server has no grant, so the grant line is only printed for
+        // stdio ones (ADR-0067 §7).
+        if server.transport() == Some(qcode_mcp::Transport::StreamableHttp) {
+            continue;
+        }
         // The sandbox decision and its explicit extras (ADR-0066). The full
         // grant is computed at startup; this is what the file asks for.
         let sandbox = server.sandbox_mode(config.sandbox).label();

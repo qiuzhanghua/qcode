@@ -660,7 +660,10 @@ fn mcp_add_and_remove_edit_the_config_file() {
         &path,
         NewMcpServer {
             name: "filesystem",
-            command: "npx",
+            command: Some("npx"),
+            url: None,
+            bearer_token_env_var: None,
+            headers: &[],
             args: &args,
             enabled: false,
             timeout_secs: Some(30),
@@ -688,7 +691,7 @@ fn mcp_add_and_remove_edit_the_config_file() {
             &path,
             NewMcpServer {
                 name: "filesystem",
-                command: "npx",
+                command: Some("npx"),
                 ..Default::default()
             }
         ),
@@ -849,13 +852,25 @@ fn every_section_key_the_build_reads_is_known() {
              [providers.ollama]
              base_url = "http://127.0.0.1:11434/v1"
 
+             [mcp]
+             sandbox = "confine"
+
              [[mcp.servers]]
              name = "filesystem"
              command = "npx"
+
+             [[mcp.servers]]
+             name = "context7"
+             url = "https://mcp.context7.com/mcp"
+             bearer_token_env_var = "CONTEXT7_TOKEN"
         "#
     .parse()
     .expect("document");
 
+    // Every key the README documents has to be here, or the sample config
+    // warns about its own valid keys. `[mcp] sandbox` was documented and
+    // missing from this list until ADR-0067 — the sample in the README was
+    // reported as a typo on every load.
     assert!(
         unknown_keys(&document).is_empty(),
         "{:?}",

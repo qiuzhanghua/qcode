@@ -1,4 +1,4 @@
-use super::save::{CloseOutcome, decide_close};
+use super::save::{CloseOutcome, decide_close, split_target};
 use super::{
     AutoSaveKind, extra_body_from_lines, is_lines_cell, overridden_default_model,
     stale_model_default, sync_default_model,
@@ -592,4 +592,49 @@ fn the_wizard_closes_without_touching_auto_save() {
     });
     assert_eq!(outcome, CloseOutcome::Close);
     assert!(!flushed);
+}
+
+/// The MCP grid has one transport cell, so this decides which field is written
+/// back (ADR-0067 §1). Getting it wrong is not cosmetic: a remote server that
+/// ends up with `command = "https://…"` is a stdio server that tries to exec a
+/// URL, and the failure would show up as "server failed to start" much later.
+#[test]
+fn a_new_mcp_row_is_classified_by_its_value() {
+    assert_eq!(
+        split_target(None, "https://mcp.context7.com/mcp"),
+        (None, Some("https://mcp.context7.com/mcp".to_string()))
+    );
+    assert_eq!(
+        split_target(None, "http://127.0.0.1:8080/mcp"),
+        (None, Some("http://127.0.0.1:8080/mcp".to_string()))
+    );
+    assert_eq!(split_target(None, "npx"), (Some("npx".to_string()), None));
+    // A path that merely mentions "http" is still a command.
+    assert_eq!(
+        split_target(None, "/opt/http-tool/bin/http-tool"),
+        (Some("/opt/http-tool/bin/http-tool".to_string()), None)
+    );
+}
+
+#[test]
+fn an_existing_remote_mcp_row_stays_remote() {
+    // The previous row wins over the text: retyping the URL must not flip the
+    // transport, and neither must text that does not look like a URL.
+    let previous = Some("https://old.example.test/mcp");
+    for value in ["https://new.example.test/mcp", "not-a-url", "npx"] {
+        assert_eq!(
+            split_target(previous, value),
+            (None, Some(value.to_string())),
+            "{value} should have stayed in `url`"
+        );
+    }
+}
+
+#[test]
+fn an_emptied_mcp_transport_cell_sets_neither_field() {
+    // `validate()` rejects a server with neither, which is the right outcome:
+    // the row is broken and the save should say so rather than silently invent
+    // a stdio server with an empty command.
+    assert_eq!(split_target(None, "   "), (None, None));
+    assert_eq!(split_target(Some("https://a.test/mcp"), ""), (None, None));
 }

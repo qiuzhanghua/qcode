@@ -46,7 +46,7 @@ fn install_under(home: &Path) -> PathBuf {
 fn server(name: &str, command: &Path) -> McpServerConfig {
     McpServerConfig {
         name: name.to_string(),
-        command: command.display().to_string(),
+        command: Some(command.display().to_string()),
         timeout_secs: 20,
         ..Default::default()
     }
@@ -100,7 +100,7 @@ async fn a_server_installed_under_the_home_directory_runs_under_its_grant() {
         workspace.path(),
         data.path(),
         &[],
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
     )
     .await;
 
@@ -149,7 +149,7 @@ async fn without_the_grant_the_same_server_is_refused() {
         workspace.path(),
         data.path(),
         &[],
-        Some(old_style.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(old_style.as_ref()),
     )
     .await;
 
@@ -184,7 +184,7 @@ async fn writes_and_reads_stop_at_the_grant() {
         workspace.path(),
         data.path(),
         &[],
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
     )
     .await;
     assert_eq!(tools.len(), 3);
@@ -258,7 +258,7 @@ async fn the_server_sees_a_private_home_and_no_inherited_secrets() {
         workspace.path(),
         data.path(),
         &[],
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
     )
     .await;
     assert_eq!(tools.len(), 3);

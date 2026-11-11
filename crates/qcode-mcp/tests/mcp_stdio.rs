@@ -16,7 +16,7 @@ const STUB: &str = env!("CARGO_BIN_EXE_mcp-stub");
 fn config(name: &str) -> McpServerConfig {
     McpServerConfig {
         name: name.to_string(),
-        command: STUB.to_string(),
+        command: Some(STUB.to_string()),
         timeout_secs: 10,
         ..Default::default()
     }
@@ -180,7 +180,7 @@ async fn disabled_and_missing_servers_degrade_to_no_tools() {
     disabled.enabled = false;
     let missing = McpServerConfig {
         name: "missing".to_string(),
-        command: dir.path().join("does-not-exist").display().to_string(),
+        command: Some(dir.path().join("does-not-exist").display().to_string()),
         timeout_secs: 2,
         ..Default::default()
     };
@@ -211,7 +211,7 @@ async fn a_confine_decides_how_the_server_is_started() {
         dir.path(),
         dir.path(),
         &[],
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
     )
     .await;
 
@@ -230,7 +230,7 @@ async fn a_confine_that_refuses_the_server_skips_it() {
         dir.path(),
         dir.path(),
         &[],
-        Some(refuse.as_ref()),
+        qcode_mcp::ConnectOptions::with_confine(refuse.as_ref()),
     )
     .await;
     assert!(tools.is_empty());

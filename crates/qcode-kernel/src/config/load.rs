@@ -395,7 +395,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("approval", &["rules", "allow", "deny"]),
     ("context", &["window_tokens"]),
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
-    ("mcp", &["servers"]),
+    // `sandbox` is the crate-wide default; each server may override it.
+    ("mcp", &["servers", "sandbox"]),
     ("skills", &["enabled", "roots"]),
     ("sandbox", &["mode", "network", "extra_writable"]),
     (

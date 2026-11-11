@@ -7,7 +7,15 @@ use super::*;
 #[derive(Debug, Default)]
 pub struct NewMcpServer<'a> {
     pub name: &'a str,
-    pub command: &'a str,
+    /// Stdio transport. Exactly one of `command` and `url` is set; which one
+    /// decides the transport (ADR-0067 §1).
+    pub command: Option<&'a str>,
+    /// Streamable HTTP transport.
+    pub url: Option<&'a str>,
+    /// Name of the environment variable holding the bearer token.
+    pub bearer_token_env_var: Option<&'a str>,
+    /// Extra request headers, already parsed into name/value pairs.
+    pub headers: &'a [(String, String)],
     pub args: &'a [String],
     pub enabled: bool,
     pub timeout_secs: Option<u64>,
@@ -23,6 +31,9 @@ pub fn mcp_add(path: &Path, new: NewMcpServer<'_>) -> Result<(), ConfigError> {
     let NewMcpServer {
         name,
         command,
+        url,
+        bearer_token_env_var,
+        headers,
         args,
         enabled,
         timeout_secs,
@@ -55,10 +66,30 @@ pub fn mcp_add(path: &Path, new: NewMcpServer<'_>) -> Result<(), ConfigError> {
 
     let mut server = toml::Table::new();
     server.insert("name".to_string(), toml::Value::String(name.to_string()));
-    server.insert(
-        "command".to_string(),
-        toml::Value::String(command.to_string()),
-    );
+    // Only the field that was given, so the file reads the way the user would
+    // have written it and `validate()` sees exactly one transport.
+    if let Some(command) = command {
+        server.insert(
+            "command".to_string(),
+            toml::Value::String(command.to_string()),
+        );
+    }
+    if let Some(url) = url {
+        server.insert("url".to_string(), toml::Value::String(url.to_string()));
+    }
+    if let Some(var) = bearer_token_env_var {
+        server.insert(
+            "bearer_token_env_var".to_string(),
+            toml::Value::String(var.to_string()),
+        );
+    }
+    if !headers.is_empty() {
+        let mut table = toml::Table::new();
+        for (key, value) in headers {
+            table.insert(key.clone(), toml::Value::String(value.clone()));
+        }
+        server.insert("headers".to_string(), toml::Value::Table(table));
+    }
     if !args.is_empty() {
         server.insert(
             "args".to_string(),

@@ -45,11 +45,16 @@ cargo test --workspace
 # 交互式审批演练：run_shell 默认 ask（在真实终端里跑；y 执行，n 拒绝）
 ./target/debug/qc run "demo" --provider mock-approval
 
-# MCP：在 config.toml 里配置 stdio server，工具以 mcp__<server>__<tool> 暴露
+# MCP：stdio server 或远程 Streamable HTTP server，工具以 mcp__<server>__<tool> 暴露
 # [[mcp.servers]]
 # name = "filesystem"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+#
+# [[mcp.servers]]                     # 远程：command 与 url 恰好二选一
+# name = "context7"
+# url = "https://mcp.context7.com/mcp"
+# bearer_token_env_var = "CONTEXT7_TOKEN"   # 只写变量名，不写 token
 # 默认每次调用都要审批；server 起不来只丢它自己的工具，不影响 session。
 
 # Skills：项目级放在 .qcode/skills/<name>/SKILL.md（公开 Agent Skills 格式）
@@ -362,7 +367,8 @@ cargo build -p qcode-eval
   只放 `name` / `description`；模型调用 `skill` 工具按需加载正文，或用 `file` 参数读
   `references/` 等附件。非法/超限/symlink 的 skill 跳过并告警，
   global < user < config < project(.agents) < project(.qcode)。`qc skills list` 可查看全部发现结果。
-- **MCP（tools + resources + prompts）**：启动时连接启用的 stdio server，`tools/list` 后以
+- **MCP（tools + resources + prompts，stdio 与 Streamable HTTP）**：启动时连接启用的
+  server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
   `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
@@ -371,6 +377,12 @@ cargo build -p qcode-eval
   四个工具（能力靠握手时的一次 `list` 探测，服务器不支持就只丢这四个）。
   `[[mcp.servers]] env` 把变量追加到子进程环境，需要 token 或自建缓存目录的 server
   不必再写 wrapper 脚本；出口代理变量在这些之后注入，仍以 qcode 的代理为准。
+  **远程 server 写 `url` 而不是 `command`**（二者恰好一个，ADR-0067）：走 Streamable HTTP，
+  优先用 `server/discover`（协议 2026-07-28，无握手、结果带 `ttlMs`），对只认 `initialize`
+  的存量 server 自动回退。HTTP 请求**只走出口代理**，因此同样受 `[network] allow`、
+  `network.jsonl` 审计与私网拦截；没进 allowlist 的 host 会被 403 且不产生任何工具——先在
+  `[network] allow` 里加一行。token 只写 `bearer_token_env_var = "VAR"`（变量名），
+  `headers` 里出现 authorization/cookie/token/key/secret/password 会被配置校验拒绝。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
@@ -520,7 +532,8 @@ tool = "write_file"
 path_glob = ".env*"
 action = "deny"
 
-# MCP：stdio server。enabled 默认 true，timeout_secs 默认 120。
+# MCP：stdio server 需 command，远程 server 需 url，二者恰好一个（ADR-0067）。
+# enabled 默认 true，timeout_secs 默认 120。
 # 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
 # server 声明 resources / prompts 能力时，额外注册
 # mcp__<server>__list_resources / read_resource / list_prompts / get_prompt 四个工具。
@@ -540,6 +553,16 @@ read_paths = ["/opt/some-tool"]   # 可选，推导之外的只读+执行目录
 writable_paths = []               # 可选；默认 workspace + 私有 HOME 已可写
 credentials = ["github"]          # 可选：github / aws / ssh / npm / netrc / docker
 sandbox = "confine"               # 可选，覆盖 [mcp] sandbox
+
+# 远程 server（ADR-0067）：没有子进程，因此 args/env/read_paths/writable_paths/
+# credentials/sandbox 一律不许出现（配置校验会拒绝——它们在这里是空操作）。
+# 它的唯一边界是出口代理，所以该 host 必须进 [network] allow。
+# [[mcp.servers]]
+# name = "context7"
+# url = "https://mcp.context7.com/mcp"
+# bearer_token_env_var = "CONTEXT7_TOKEN"   # 变量名；token 本身不进文件
+# [mcp.servers.headers]                     # 可选，只放非敏感头
+# Accept = "application/json, text/event-stream"
 
 # Skills：默认开启；enabled = false 可完全跳过发现。
 # 默认还会扫描 ~/.agents/skills（npx skills -g）、~/.config/agents/skills、
@@ -640,7 +663,7 @@ action = "allow"
 crates/qcode-core        domain、event、store、task/roots、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible + Anthropic Messages）
 crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
-crates/qcode-mcp         MCP client（stdio，仅 tools）
+crates/qcode-mcp         MCP client（stdio + Streamable HTTP，tools/resources/prompts）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-kernel      kernel assembly、config、provider/tool/sandbox 组装

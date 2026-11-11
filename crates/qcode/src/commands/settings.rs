@@ -121,6 +121,24 @@ fn parse_sandbox(mode: &str) -> Result<qcode_mcp::McpSandboxMode, String> {
     }
 }
 
+/// Split `--header "Name: value"` into a pair.
+///
+/// The credential and line-break checks live in `McpConfig::validate`, which
+/// runs when `mcp_add` validates the document it wrote — one implementation, so
+/// `qc mcp add` cannot accept a header that loading the file would reject.
+fn parse_header(raw: &str) -> Result<(String, String), String> {
+    let Some((name, value)) = raw.split_once(':') else {
+        return Err(format!(
+            "header {raw:?} is not `Name: value`; use e.g. --header 'Accept: application/json'"
+        ));
+    };
+    let (name, value) = (name.trim(), value.trim());
+    if name.is_empty() {
+        return Err(format!("header {raw:?} has no name"));
+    }
+    Ok((name.to_string(), value.to_string()))
+}
+
 pub(crate) fn cmd_mcp(
     args: McpArgs,
     config_path: Option<PathBuf>,
@@ -133,7 +151,7 @@ pub(crate) fn cmd_mcp(
         }
         McpCommand::Add {
             name,
-            command,
+            transport,
             args,
             disabled,
             timeout_secs,
@@ -147,12 +165,20 @@ pub(crate) fn cmd_mcp(
                 .map(|name| parse_credential(name))
                 .collect::<Result<Vec<_>, _>>()?;
             let sandbox = sandbox.as_deref().map(parse_sandbox).transpose()?;
+            let headers = transport
+                .headers
+                .iter()
+                .map(|header| parse_header(header))
+                .collect::<Result<Vec<_>, _>>()?;
             let path = config::edit_path(config_path)?;
             config::mcp_add(
                 &path,
                 config::NewMcpServer {
                     name: &name,
-                    command: &command,
+                    command: transport.command.as_deref(),
+                    url: transport.url.as_deref(),
+                    bearer_token_env_var: transport.bearer_token_env.as_deref(),
+                    headers: &headers,
                     args: &args,
                     enabled: !disabled,
                     timeout_secs,
@@ -162,7 +188,15 @@ pub(crate) fn cmd_mcp(
                     sandbox,
                 },
             )?;
-            println!("added MCP server '{name}' to {}", path.display());
+            println!(
+                "added MCP server '{name}' ({}) to {}",
+                if transport.url.is_some() {
+                    "streamable-http"
+                } else {
+                    "stdio"
+                },
+                path.display()
+            );
         }
         McpCommand::Remove { name } => {
             let path = config::edit_path(config_path)?;

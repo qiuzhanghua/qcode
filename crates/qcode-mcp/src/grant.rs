@@ -140,6 +140,12 @@ pub enum GrantError {
         key: String,
         variable: String,
     },
+    /// A remote server has no child process, so there is no grant to derive
+    /// (ADR-0067 §7). Its only boundary is the egress proxy.
+    #[error(
+        "MCP server '{server}' is remote (`url`), so it has no filesystem grant;          drop request paths from its config"
+    )]
+    NotAProcess { server: String },
 }
 
 /// One granted credential subtree: absolute, plus the `$HOME`-relative form
@@ -197,8 +203,17 @@ impl GrantSet {
             confined,
         } = input;
 
+        // `validate()` already rejects these fields on a remote server; this is
+        // the second line so a caller that skipped validation gets an error
+        // instead of a grant for a program that does not exist.
+        let Some(command) = server.command.as_deref() else {
+            return Err(GrantError::NotAProcess {
+                server: server.name.clone(),
+            });
+        };
+
         let mut runtime = BTreeSet::new();
-        let program = resolve_program(&server.name, &server.command)?;
+        let program = resolve_program(&server.name, command)?;
         collect_runtime(&server.name, &program, 0, &mut runtime)?;
         for extra in &server.read_paths {
             if let Ok(path) = extra.canonicalize() {
@@ -648,7 +663,7 @@ mod tests {
     fn server(name: &str, command: &Path) -> McpServerConfig {
         McpServerConfig {
             name: name.to_string(),
-            command: command.display().to_string(),
+            command: Some(command.display().to_string()),
             ..Default::default()
         }
     }

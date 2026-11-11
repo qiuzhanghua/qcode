@@ -2,8 +2,47 @@
 
 ## 未发布
 
-MCP server 的三处安全与可用性缺口（ADR-0066 / ADR-0068 P1）。起因很具体：一个装在
-`/home/q/cot/lib/...` 的 server 报 `Permission denied`，拷到 `/tmp` 就能跑。
+### 远程 MCP server（ADR-0067 P1 / P3）
+
+上一批修的是「stdio server 装在本机却被沙箱杀掉」。这一批修的是更根本的一条：**qcode 装不上
+绝大多数已登记的远程 server**。官方 Registry 抽样 100 条，约 93 条只有 `remotes`
+（`type = "streamable-http"`）；这些在旧版写进配置直接报 `missing field 'command'`。
+
+- **`[[mcp.servers]]` 的 `command` 与 `url` 恰好二选一**。`command` 由 `String` 变为
+  `Option<String>`（源码级 breaking，配置层不破坏：老配置一行不改继续用，仍然走 stdio）。
+  都没有、或都有，都是配置错误，且错误信息说清是哪一种。
+- **Streamable HTTP 走 `rmcp` 的 `StreamableHttpClient`，并且只用调用方给的 client。**
+  这不是风格问题：`new_simple(url)` 会内部造一个 `reqwest::Client`，等于让 MCP 的 HTTP
+  直接出网——**静默绕过** egress allowlist、`network.jsonl` 审计与私网拦截，唯一症状是
+  「审计文件里少了几行」。所以 `qcode-mcp` 的 `ConnectOptions.http` 是
+  `Option<&reqwest::Client>`，`None` 意味着**不连**（明确的错误），内核把
+  `Network::client()` 传进去。
+- **协议版本：`Auto`，首选 2026-07-28，回退 `initialize`。** 2026-07-28 删掉了握手（版本
+  搬进每请求的 `_meta`）、结果带 `ttlMs`。但存量 server 只认 `initialize`——所以用 rmcp
+  的 `Auto`：先 `server/discover`，对端报 `-32601` 或在 10s 内不回就回退，回退时声明上限
+  `2025-11-25`（`initialize` 能回声的最高版本）。stdio 仍固定走 `initialize`，理由见 ADR。
+- **认证只从环境取**：`bearer_token_env_var = "VAR"` 是变量名，token 本身不进配置文件；
+  `headers` 里出现 `authorization` / `cookie` / `token` / `key` / `secret` / `password`
+  会被配置校验拒绝（配置文件不是密钥库），换行符也拒（防 header 注入）。
+- **远程 server 上的 stdio 字段一律拒绝**：`args` / `env` / `read_paths` /
+  `writable_paths` / `credentials` / `sandbox`。它们在这里都是空操作，静默接受等于让用户
+  以为设了什么。
+- **`qc mcp add --url / --bearer-token-env / --header`**；`--command` 与 `--url` 由 clap
+  的 `ArgGroup` 表达「恰好一个」，报错是同一条 `--command|--url`，不会只点名其中一个。
+  `qc mcp list` 按 transport 分开打印（远程不再显示成 `command=None`）。
+- **`qc doctor` 认远程 server**：打印 transport、URL、token 变量是否已设置、headers 数量、
+  以及**是否经代理审计**；`[network] enabled = false` 时如实说「nothing is audited」而不是
+  「audited」。host 不在 `[network] allow` 里时，直接给出要加的那一行——这是首次配远程
+  server 最容易踩的坑，而代理侧的表现只是一个稍后才出现的 403。
+- **RUSTSEC 前置条件复跑**：开 HTTP feature 后重跑 `cargo deny`。`rmcp` 精确 pin 在
+  `=3.9.0` 从此有承载力——RUSTSEC-2026-0462（客户端响应体无界缓冲）在 3.9.0 修，
+  而这条路径现在可达。另两条（0457 OAuth SSRF、0461 服务端 transport）分别关在 `auth` 与
+  `transport-streamable-http-server` feature 后，两者都未开。
+
+### MCP server 的三处安全与可用性缺口（ADR-0066 / ADR-0068 P1）
+
+起因很具体：一个装在 `/home/q/cot/lib/...` 的 server 报 `Permission denied`，拷到 `/tmp`
+就能跑。
 
 - **`~/.local` 里的 server 不再被沙箱静默杀掉**（ADR-0066）。MCP server 原先直接套用
   `run_shell` 的沙箱，而 Landlock 的只读白名单是 `/usr /bin /sbin /lib /lib64 /etc /opt

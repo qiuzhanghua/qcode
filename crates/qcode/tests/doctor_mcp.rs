@@ -296,3 +296,197 @@ fn no_mcp_section_when_no_servers_are_configured() {
     let text = fixture.doctor(&config);
     assert!(!text.contains("mcp"), "unexpected MCP output:\n{text}");
 }
+
+// ---------------------------------------------------------------------------
+// Remote servers (ADR-0067).
+//
+// Doctor does not connect: it reads the config and says whether a connection
+// *could* succeed. These cases are the ones that fail silently otherwise.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_remote_server_reports_its_transport_and_transparency() {
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        allow = ["mcp.context7.com"]
+
+        [[mcp.servers]]
+        name = "context7"
+        url = "https://mcp.context7.com/mcp"
+        bearer_token_env_var = "QCODE_DOCTOR_TEST_TOKEN"
+
+        [mcp.servers.headers]
+        Accept = "application/json, text/event-stream"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "mcp context7:");
+    assert!(line.starts_with("[ok]"), "{line}");
+    assert!(line.contains("streamable-http"), "{line}");
+    assert!(line.contains("https://mcp.context7.com/mcp"), "{line}");
+    // ADR-0067 §8's last item: the user must be able to confirm the traffic is
+    // audited without reading the source.
+    assert!(line.contains("audited"), "{line}");
+    assert!(line.contains("headers [1]"), "{line}");
+    // The variable *name* is fine to print; a value never is.
+    assert!(line.contains("QCODE_DOCTOR_TEST_TOKEN"), "{line}");
+}
+
+#[test]
+fn a_remote_server_without_proxy_says_nothing_is_audited() {
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = false
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://mcp.context7.com/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let summary = line(&text, "mcp remote:");
+    assert!(
+        summary.contains("nothing is audited"),
+        "with no proxy, `audited` would be a lie: {summary}"
+    );
+    let warned = line(&text, "mcp remote network:");
+    assert!(warned.starts_with("[warn]"), "{warned}");
+    assert!(warned.contains("no egress client"), "{warned}");
+}
+
+#[test]
+fn a_remote_host_outside_the_allowlist_names_the_line_to_add() {
+    // The first thing that goes wrong with a new remote server, and the error
+    // the proxy produces is a bare 403 at a later moment.
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        unknown = "deny"
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://api.example.test/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "mcp remote network:");
+    assert!(line.starts_with("[warn]"), "{line}");
+    assert!(line.contains("403"), "{line}");
+    assert!(line.contains("api.example.test:443"), "{line}");
+    assert!(line.contains("allow = "), "{line}");
+}
+
+#[test]
+fn an_allowlisted_host_gets_no_network_warning() {
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        unknown = "deny"
+        allow = ["api.example.test:443"]
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://api.example.test/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    assert!(
+        !text.contains("mcp remote network:"),
+        "an allowlisted host must not be warned about:\n{text}"
+    );
+}
+
+#[test]
+fn unknown_allow_is_reported_as_the_reason_it_gets_through() {
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        unknown = "allow"
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://api.example.test/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "mcp remote network:");
+    assert!(line.contains("unknown = \"allow\""), "{line}");
+}
+
+#[test]
+fn an_unset_token_variable_is_a_warning() {
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        allow = ["api.example.test:443"]
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://api.example.test/mcp"
+        bearer_token_env_var = "QCODE_DOCTOR_SURELY_UNSET_TOKEN"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "mcp remote bearer_token_env_var:");
+    assert!(line.starts_with("[warn]"), "{line}");
+    assert!(line.contains("QCODE_DOCTOR_SURELY_UNSET_TOKEN"), "{line}");
+}
+
+#[test]
+fn a_remote_server_gets_no_sandbox_grant_line() {
+    // A remote server has no process, so there is no grant to report. Printing
+    // one (or reporting "sandbox confine") would claim a boundary that does not
+    // exist: the egress proxy is the only one.
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [network]
+        enabled = true
+        allow = ["api.example.test:443"]
+
+        [[mcp.servers]]
+        name = "remote"
+        url = "https://api.example.test/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "mcp remote:");
+    assert!(!line.contains("runtime ["), "{line}");
+    assert!(!line.contains("sandbox confine"), "{line}");
+}
+
+#[test]
+fn an_ambiguous_transport_fails_the_config_check() {
+    // Not a warning from the MCP section: `validate()` rejects the file at load
+    // time, so this is a `[fail]` on the config line and doctor never gets as
+    // far as describing a transport it cannot determine. That is the right
+    // severity — a server with both `command` and `url` cannot run at all.
+    let fixture = Fixture::new();
+    let config = fixture.config(
+        r#"
+        [[mcp.servers]]
+        name = "confused"
+        command = "/usr/bin/env"
+        url = "https://api.example.test/mcp"
+        "#,
+    );
+    let text = fixture.doctor(&config);
+    let line = line(&text, "config:");
+    assert!(line.starts_with("[fail]"), "{line}");
+    assert!(line.contains("both `command` and `url`"), "{line}");
+    // ... and the exit code says so, rather than "all checks passed".
+    assert!(text.contains("1 check(s) failed"), "{text}");
+}

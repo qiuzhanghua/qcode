@@ -491,7 +491,23 @@ impl ConfigEdit {
         for server in &config.mcp.servers {
             let mut table = Table::new();
             table.insert("name", Item::Value(Value::from(server.name.clone())));
-            table.insert("command", Item::Value(Value::from(server.command.clone())));
+            // Exactly one of these is set (ADR-0067 §1); writing the one that is
+            // set and nothing otherwise is what keeps `apply_config` from
+            // turning a remote server into a broken stdio one on save.
+            set_optional(&mut table, "command", server.command.clone());
+            set_optional(&mut table, "url", server.url.clone());
+            set_optional(
+                &mut table,
+                "bearer_token_env_var",
+                server.bearer_token_env_var.clone(),
+            );
+            if !server.headers.is_empty() {
+                let mut headers = Table::new();
+                for (name, value) in &server.headers {
+                    headers.insert(name, Item::Value(Value::from(value.clone())));
+                }
+                table.insert("headers", Item::Table(headers));
+            }
             table.insert("args", Item::Value(argv_value(&server.args)));
             if !server.env.is_empty() {
                 let mut env = Table::new();
@@ -505,7 +521,50 @@ impl ConfigEdit {
                 "timeout_secs",
                 Item::Value(Value::from(server.timeout_secs as i64)),
             );
+            // The ADR-0066 grant fields. `set_array_of_tables` replaces the whole
+            // array, so anything left out here is dropped from the file on save —
+            // including fields the user wrote by hand.
+            for (key, paths) in [
+                ("read_paths", &server.read_paths),
+                ("writable_paths", &server.writable_paths),
+            ] {
+                if paths.is_empty() {
+                    continue;
+                }
+                table.insert(
+                    key,
+                    Item::Value(Value::Array(
+                        paths
+                            .iter()
+                            .map(|path| Value::from(path.display().to_string()))
+                            .collect(),
+                    )),
+                );
+            }
+            if !server.credentials.is_empty() {
+                table.insert(
+                    "credentials",
+                    Item::Value(Value::Array(
+                        server
+                            .credentials
+                            .iter()
+                            .map(|preset| Value::from(preset.label().to_string()))
+                            .collect(),
+                    )),
+                );
+            }
+            if let Some(mode) = server.sandbox {
+                table.insert("sandbox", Item::Value(Value::from(mode.label())));
+            }
             servers.push(table);
+        }
+        // The crate-wide MCP sandbox default. Written only when it differs from
+        // the default, so an untouched config does not grow a `[mcp]` shell —
+        // same rule as `prune_empty_sections` (ADR-0065 决定 8).
+        if config.mcp.sandbox == qcode_mcp::McpSandboxMode::default() {
+            self.remove(&["mcp", "sandbox"]);
+        } else {
+            self.set_str(&["mcp", "sandbox"], config.mcp.sandbox.label())?;
         }
         self.set_array_of_tables(&["mcp", "servers"], servers)?;
 
@@ -905,9 +964,10 @@ mod tests {
             action: Action::Allow,
             scope: Some(Scope::Project),
         });
+        config.mcp.sandbox = qcode_mcp::McpSandboxMode::Off;
         config.mcp.servers.push(McpServerConfig {
             name: "demo".to_string(),
-            command: "demo-server".to_string(),
+            command: Some("demo-server".to_string()),
             args: vec!["--stdio".to_string()],
             env: BTreeMap::from([("TOKEN".to_string(), "x".to_string())]),
             enabled: false,
@@ -956,6 +1016,9 @@ mod tests {
         assert_eq!(loaded.approval.rules.len(), 1);
         assert_eq!(loaded.approval.rules[0].action, Action::Allow);
         assert_eq!(loaded.approval.rules[0].scope, Some(Scope::Project));
+        // The crate-wide default and the per-server override, both of which are
+        // easy to drop on save because they are not part of the servers array.
+        assert_eq!(loaded.mcp.sandbox, qcode_mcp::McpSandboxMode::Off);
         assert_eq!(loaded.mcp.servers.len(), 1);
         assert_eq!(loaded.mcp.servers[0].timeout_secs, 7);
         assert!(!loaded.mcp.servers[0].enabled);
@@ -1003,6 +1066,35 @@ mod tests {
         assert_eq!(loaded.agent.max_turns, 12, "other keys survive");
         let backup = std::fs::read_to_string(dir.path().join("config.toml.bak")).expect("backup");
         assert!(backup.contains("deepseek"), "{backup}");
+    }
+
+    /// The MCP page's new "sandbox default" control (ADR-0067 P1) writes a
+    /// single scalar under a section that `apply_config` does not rebuild, so
+    /// it takes the generic `set_scalar` path. Round trip it, and check that a
+    /// value the enum does not accept is refused by the save's validation
+    /// rather than written and silently ignored at load time.
+    #[test]
+    fn the_mcp_sandbox_default_round_trips_and_rejects_garbage() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "version = 1\n").expect("seed");
+
+        set_scalar(&path, &["mcp", "sandbox"], Some("off")).expect("write");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert_eq!(loaded.mcp.sandbox, qcode_mcp::McpSandboxMode::Off);
+
+        // The default is `confine`; writing it back is a no-op in meaning but
+        // must still be accepted.
+        set_scalar(&path, &["mcp", "sandbox"], Some("confine")).expect("write default");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert_eq!(loaded.mcp.sandbox, qcode_mcp::McpSandboxMode::Confine);
+
+        assert!(
+            set_scalar(&path, &["mcp", "sandbox"], Some("maybe")).is_err(),
+            "an unknown mode must fail the save, not land in the file"
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("maybe"), "{text}");
     }
 
     #[test]

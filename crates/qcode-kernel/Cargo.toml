@@ -25,6 +25,14 @@ toml_edit = "0.22"
 name = "mcp-probe-stub"
 path = "tests/support/mcp_probe_stub.rs"
 
+# Test-only Streamable HTTP server for the egress test (ADR-0067 §2). The file
+# itself lives in `qcode-mcp`; see the shim's comment.
+[[bin]]
+# A distinct name from `qcode-mcp`'s copy: two packages in one workspace cannot
+# share an output filename, and Cargo warns that it will become an error.
+name = "mcp-http-probe"
+path = "tests/support/http_probe_server.rs"
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio.workspace = true

@@ -149,6 +149,10 @@ use qcode_tools::web_search::WebSearch;
 pub struct ToolWiring {
     /// Proxy variables the egress layer injects into every child.
     pub network_env: Option<Vec<(String, String)>>,
+    /// The session's egress client, handed to remote MCP servers (ADR-0067
+    /// §2). `None` when `[network]` is off, which makes a remote server fail
+    /// with "no egress client" instead of connecting around the proxy.
+    pub network: Option<qcode_core::network::SharedNetwork>,
     /// The user's shell environment, sampled once per session (ADR-0064).
     pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 }
@@ -164,6 +168,7 @@ pub async fn build_tools(
 ) -> ToolRegistry {
     let ToolWiring {
         network_env,
+        network,
         shell_env,
     } = wiring;
     let mut tools = builtin_registry_with_env(sandbox.clone(), shell_env);
@@ -183,12 +188,19 @@ pub async fn build_tools(
     // not `run_shell`'s: the runtime directory is readable and executable,
     // writes are limited to the workspace plus a private HOME.
     let confine = mcp_confine(sandbox.clone(), workspace);
+    // The remote half of ADR-0067: `Network::client()` is the only client a
+    // streamable-http server may use, so its traffic is allowlisted, audited
+    // and private-address-blocked like every other outbound request.
+    let http = network.as_ref().map(|network| network.client());
     let mcp_tools = qcode_mcp::connect_all_with(
         mcp,
         workspace,
         data_dir,
         network_env.as_deref().unwrap_or(&[]),
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions {
+            http: http.as_ref(),
+            confine: Some(confine.as_ref()),
+        },
     )
     .await;
     if !mcp_tools.is_empty() {
@@ -491,6 +503,7 @@ pub async fn assemble(
         sandbox,
         ToolWiring {
             network_env: network.as_ref().map(|network| network.env()),
+            network: network.clone(),
             shell_env: shell_env.clone(),
         },
     )

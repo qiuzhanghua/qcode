@@ -328,9 +328,26 @@ impl SetupView {
                             .servers
                             .iter()
                             .find(|old| old.name == name.trim());
+                        // One "command" column holds `command` or `url`
+                        // (ADR-0067 §1: exactly one is ever set). For an
+                        // existing row the previous transport decides, so
+                        // typing into a remote server's cell cannot silently
+                        // turn it into a stdio one that tries to exec the URL.
+                        // A new row is classified by the value itself.
+                        let (command, url) = split_target(
+                            previous.and_then(|old| old.url.as_deref()),
+                            &cell(row, "command", cx),
+                        );
                         config.mcp.servers.push(qcode_mcp::McpServerConfig {
                             name: name.trim().to_string(),
-                            command: cell(row, "command", cx),
+                            command,
+                            url,
+                            // Preserved from the file: the grid has no columns
+                            // for them yet (ADR-0067 P3), and `servers.clear()`
+                            // above means forgetting one deletes it on save.
+                            bearer_token_env_var: previous
+                                .and_then(|old| old.bearer_token_env_var.clone()),
+                            headers: previous.map(|old| old.headers.clone()).unwrap_or_default(),
                             args: lines(row, "args", cx),
                             env: lines(row, "env", cx)
                                 .into_iter()
@@ -693,5 +710,32 @@ pub(crate) fn decide_close(
         Ok(()) => CloseOutcome::Close,
         Err(_) if warned_before => CloseOutcome::CloseDespiteFailure,
         Err(reason) => CloseOutcome::StayOpen(reason),
+    }
+}
+
+/// Split the grid's single transport cell back into `command` or `url`.
+///
+/// `previous_url` is what the row used to be: `Some` means it was a remote
+/// server, so the text belongs in `url` whatever it looks like. For a new row
+/// (`None`) the value is classified by inspection — an absolute `http(s)` URL
+/// is a remote server, anything else is a command. Guessing from the text is
+/// only safe for the case with no previous state to contradict, which is why
+/// the previous row wins when there is one.
+pub(crate) fn split_target(
+    previous_url: Option<&str>,
+    value: &str,
+) -> (Option<String>, Option<String>) {
+    let value = value.trim();
+    let remote = match previous_url {
+        Some(_) => true,
+        None => value.starts_with("http://") || value.starts_with("https://"),
+    };
+    if value.is_empty() {
+        return (None, None);
+    }
+    if remote {
+        (None, Some(value.to_string()))
+    } else {
+        (Some(value.to_string()), None)
     }
 }

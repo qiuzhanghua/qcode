@@ -10,10 +10,22 @@ rust-version.workspace = true
 name = "mcp-stub"
 path = "tests/support/mcp_stub.rs"
 
+# Test-only Streamable HTTP server (ADR-0067 验证: a local probe server, so the
+# remote transport is tested without the network).
+[[bin]]
+name = "http-probe-server"
+path = "tests/support/http_probe_server.rs"
+
 [dependencies]
 qcode-core = { version = "0.8.3", path = "../qcode-core" }
 async-trait.workspace = true
+# Header types for the HTTP transport's `custom_headers`, and the same `http`
+# rmcp itself depends on (one version in the graph, so the types unify).
+http.workspace = true
 rmcp.workspace = true
+# The HTTP client for streamable-http servers is handed in by the caller (see
+# `HttpClient` in lib.rs); this dependency is what makes the type nameable.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -22,5 +34,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 qcode-providers = { version = "0.8.3", path = "../qcode-providers" }
+# `blocking` is for the one non-async test that pokes the probe directly.
+reqwest = { workspace = true, features = ["blocking"] }
 tempfile.workspace = true
 tokio-util.workspace = true

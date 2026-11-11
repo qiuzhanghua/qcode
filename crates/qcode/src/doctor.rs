@@ -7,6 +7,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use qcode_core::event::ContentBlock;
 use qcode_core::provider::{CompletionRequest, Message, ProviderError, Role};
+use qcode_mcp::McpServerConfig;
 use qcode_tools::sandbox::{self, SandboxMode, SandboxNetwork};
 use tokio_util::sync::CancellationToken;
 
@@ -510,6 +511,102 @@ impl Doctor {
         }
     }
 
+    /// One line per remote server, plus the two things that stop it working
+    /// silently: no proxy, and a host outside the allowlist (ADR-0067 §8).
+    ///
+    /// No live probe here. Connecting would mean starting every stdio server
+    /// or opening a second egress proxy inside a diagnostic command, and the
+    /// questions the user actually has — "is the proxy on", "is the host
+    /// allowed", "is the token variable set" — are all answerable from the
+    /// config. The negotiated protocol version is logged at startup instead.
+    fn check_remote(&mut self, label: &str, server: &McpServerConfig, config: &Config) {
+        let Some(url) = server.url.as_deref() else {
+            self.warn(label, "no url; qcode will skip it");
+            return;
+        };
+        let parsed = match reqwest::Url::parse(url) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.warn(label, format!("url {url:?} is unusable: {error}"));
+                return;
+            }
+        };
+        let host = parsed.host_str().unwrap_or_default().to_string();
+        let port = parsed
+            .port_or_known_default()
+            .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+
+        let token = match &server.bearer_token_env_var {
+            Some(var) if std::env::var_os(var).is_some() => format!("{var} (set)"),
+            Some(var) => format!("{var} (NOT set)"),
+            None => "none".to_string(),
+        };
+        // Three states, and the middle one matters: `audit = true` is the
+        // default, but with no proxy there is no audit log to write to, so
+        // "audited" would be a claim about a mechanism that is not running.
+        let proxy = config.network_plan().proxy;
+        let audit = if !proxy {
+            "no proxy, so nothing is audited"
+        } else if config.network.audit {
+            "audited"
+        } else {
+            "not audited ([network] audit = false)"
+        };
+        self.ok(
+            label,
+            format!(
+                "transport streamable-http, {url}, credentials [bearer {token}], headers [{}], \
+                 {audit}",
+                server.headers.len()
+            ),
+        );
+
+        // A named-but-unset variable is a hard stop for this server: the
+        // request is never made, so nothing else here can compensate.
+        if let Some(var) = &server.bearer_token_env_var
+            && std::env::var_os(var).is_none()
+        {
+            self.warn(
+                &format!("{label} bearer_token_env_var"),
+                format!("${var} is not set in qcode's environment, so this server is skipped"),
+            );
+        }
+
+        if !proxy {
+            // The kernel hands MCP the `Network` the proxy provides; without
+            // one there is no client, and a remote server is refused rather
+            // than connected around the proxy (ADR-0067 §2).
+            self.warn(
+                &format!("{label} network"),
+                "[network] enabled = false, so qcode has no egress client and will refuse this \
+                 server instead of connecting around the proxy",
+            );
+            return;
+        }
+        if qcode_net::is_allowlisted(&config.network.allow, &host, port) {
+            return;
+        }
+        if config.network.unknown == config::UnknownHost::Allow {
+            // `unknown = "allow"` lets the proxy through, but it lets every
+            // other host through too; worth one line so it is a choice.
+            self.warn(
+                &format!("{label} network"),
+                format!(
+                    "{host}:{port} is not in [network] allow, and it will be reached only \
+                     because [network] unknown = \"allow\""
+                ),
+            );
+            return;
+        }
+        self.warn(
+            &format!("{label} network"),
+            format!(
+                "{host}:{port} is not in [network] allow, so the proxy will answer 403 and this \
+                 server will contribute no tools; add allow = [\"{host}:{port}\"] under [network]"
+            ),
+        );
+    }
+
     /// MCP servers: one line per server with the grant it would get
     /// (ADR-0066), plus the silent no-ops that make a server "configured but
     /// useless" (ADR-0068 §2).
@@ -546,6 +643,24 @@ impl Doctor {
             if !server.enabled {
                 self.ok(&label, "disabled; skipped at startup");
                 continue;
+            }
+
+            // A remote server has no process and therefore no grant: its only
+            // boundary is the egress proxy (ADR-0067 后果). Everything the
+            // grant section checks is inapplicable, and the proxy replaces it.
+            match server.transport() {
+                Some(qcode_mcp::Transport::StreamableHttp) => {
+                    self.check_remote(&label, server, config);
+                    continue;
+                }
+                Some(qcode_mcp::Transport::Stdio) => {}
+                None => {
+                    self.warn(
+                        &label,
+                        "sets both or neither of `command` and `url`; qcode will skip it",
+                    );
+                    continue;
+                }
             }
 
             // The one way a token still reaches the config file.

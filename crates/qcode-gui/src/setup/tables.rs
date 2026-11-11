@@ -182,7 +182,18 @@ impl SetupView {
         self.row(
             [
                 ("name", server.name.clone()),
-                ("command", server.command.clone()),
+                // `command` and `url` share one column: a server has exactly one
+                // of them (ADR-0067 §1), and an empty other half plus a header
+                // saying which is set would just be noise. Save parses the cell
+                // back into the right field.
+                (
+                    "command",
+                    server
+                        .command
+                        .clone()
+                        .or_else(|| server.url.clone())
+                        .unwrap_or_default(),
+                ),
                 ("args", server.args.join("\n")),
                 ("env", env),
                 ("timeout_secs", server.timeout_secs.to_string()),

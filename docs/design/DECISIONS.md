@@ -6099,7 +6099,8 @@ sandbox = "off"        # warn + doctor partial
 
 ## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
 
-**状态**：拟议。`[[mcp.servers]]` 的 `command` 由必填改为「与 `url` 恰好二选一」；老配置
+**状态**：P1 / P3 已实现（2026-11-11），P2（`ttlMs` / 动态工具表）待做。
+`[[mcp.servers]]` 的 `command` 由必填改为「与 `url` 恰好二选一」；老配置
 一行不改继续可用。协议版本一次对齐到 2026-07-28，但保留 `initialize` 回退——理由见 §3。
 
 **来源**：`derived`（现有代码与 rmcp 3.9.0 的实际 API）、`black-box`（规范正文与官方 Registry
@@ -6134,6 +6135,17 @@ legacy SSE 不进 v1」。这条决定的隐含前提是「MCP server 都跑在�
 **本 ADR 正好要让它们可达。** 所以「bump 过了」不等于「安全」——这三条要在 3.9.0 上重新过
 `cargo deny`，并且 OAuth 相关的那条（如果修法是把 OAuth 挪到 `auth` feature 之后）要确认我们
 不开 `auth` feature 时那条路径确实关着。这是本 ADR 的**前置条件**，不是后续事项。
+
+**已核（2026-11-11）**：前置条件闭合，三条分别落位——
+
+| 告警 | 结论 |
+|---|---|
+| RUSTSEC-2026-0457（OAuth client SSRF） | 不可达。代码在 `#[cfg(feature = "auth")]` 后（`transport.rs:96`），而 `reqwest` feature 只展开 `["__reqwest", "reqwest?/rustls"]`，不牵 `auth`。`cargo tree -e features` 确认该 feature 未开 |
+| RUSTSEC-2026-0461（服务端 HTTP transport 的无界工具缓存） | 不可达。在 `transport-streamable-http-server` / `server-side-http` 后，我们只开 `transport-streamable-http-client*`，`server` 也未开 |
+| RUSTSEC-2026-0462（客户端响应体无界缓冲） | **可达，且已修**。9.0.0 起 JSON 体限 16 MiB、非成功体限 64 KiB。所以 `rmcp = "=3.9.0"` 这个精确 pin 从此是有承载力的：降级即重新打开一个可达的 DoS |
+
+`cargo deny check`（advisories/bans/licenses/sources）在开 HTTP feature 之后复跑通过，
+三条都不在 `ignore` 列表里——它们是被版本和 feature 选择排除的，不是被静音掉的。
 
 ### 3. 协议版本换代，而且不能单轨
 
@@ -6315,9 +6327,31 @@ command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"   # 原�
 
 | 期 | 内容 | 验收 |
 |---|---|---|
-| P1 | `command`/`url` 校验 + `Network::client()` 接线 + `Auto` 生命周期 + doctor 打印 | probe server 直连可用；wordcraft 仍走 legacy；`network.jsonl` 有记录 |
+| P1 ✅ | `command`/`url` 校验 + `Network::client()` 接线 + `Auto` 生命周期 + doctor 打印 | probe server 直连可用；legacy server 回退成功；`network.jsonl` 有记录 |
 | P2 | `ttlMs`/`cacheScope`/`list_changed` + turn 边界刷新 + `McpToolsRefreshed` 事件 | 三条缓存断言通过 |
-| P3 | `qc mcp add --url` 与新 flag | 写回的配置能被 `show --effective` 读回 |
+| P3 ✅ | `qc mcp add --url` 与新 flag | 写回的配置能被 `mcp list` / `doctor` 读回 |
+
+**P1 / P3 实现注记（2026-11-11）**
+
+- **stdio 仍走 `Initialize`，不加 `Auto`。** 探测一个 stdio server 要冒的风险是不对称的：
+  回 `-32601` 的会被识别为 legacy 并回退（可以），但 3.9.0 里对 `server/discover` 回一个
+  合法 JSON-RPC 结果之外的响应会走 `ExpectedInitResult` —— 那是**硬错误，不回退**；而完全不
+  回的 server 每次连接都要白等 10s 探测超时。`Auto` 目前只给远程用。
+- **`describe()` 与 doctor 的「是否经代理」是三态**：`[network] enabled = false` 时没有代理，
+  也就没有审计文件，这一行必须说「nothing is audited」而不是默认的「audited」。
+- **doctor 不连 server。** §8 想要「协商到的协议版本」需要真连一次；那意味着在一条诊断命令里
+  起全部 stdio server 或另起一个 egress 代理。折中是：doctor 只做静态判断（transport、是否
+  经代理、host 是否在 allowlist、token 变量是否设置），**协商结果在启动日志里**
+  （`mcp server ready protocol=2026-07-28`）。
+- **`qc mcp list` 的分行按 transport 分开写。** 原来一行打印 `command={:?}`，远程 server 会
+  显示成 `command=None`，读起来像一个坏掉的 stdio server。
+- **GUI 的 MCP 表格只有一列 `command`**，远程 session 共用它（`server.command.or(url)`）。
+  保存时按上一行的形态决定写回哪个字段，所以在一个远程 server 的单元格里打字不会把它悄悄变成
+  stdio。`bearer_token_env_var` / `headers` 从文件原样保留——表格没有这两列，而
+  `apply_config` 会整段重写 `[[mcp.servers]]`，忘记保留就是保存一次删一次。
+- **两处配置写入都补全了 ADR-0066 的字段。** `apply_config` 之前只写 `command/args/env`，
+  保存一次 GUI 设置就会把 `read_paths` / `credentials` / `sandbox` 抹掉；这个洞在本次改动里
+  一并堵上（那是既有 bug，不是本 ADR 引入的）。
 
 OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本 ADR**：
 2026-07-28 已把 DCR 标记废弃，改推 Client ID Metadata Documents，那是一个独立的认证流程，
@@ -6340,6 +6374,8 @@ OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本
   `discover` 报 -32601 → 回退」识别 legacy；但一个**实现了 `discover` 却在
   `supported_versions` 里只报到 2025-11-25** 的 server 会走 `select_protocol_version`
   返回 `None` → `NoCompatibleProtocolVersion`，而不是回退。这种 server 存不存在还不知道。
+  P1 实现严格照此：只列 `2026-07-28`。真撞上这类 server 时，症状会是一条明确的手册错误，
+  而不是静默降级——那正是先想要的行为。
 - SSE 流式响应在 `max_sse_event_size`（默认值）之外要不要单独设上限——qcode 对工具输出有
   32KB 截断，但那是**结果**，不是传输层单帧。
 - 同一个 server 的远程与本地形态并存时（例如既想 `npx` 又想 `url`）是否允许两条配置项，

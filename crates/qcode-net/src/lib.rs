@@ -472,10 +472,29 @@ fn normalize_host(host: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// One `[network] allow` entry: `host`, `host:port` or `*.suffix`.
+///
+/// Public with [`is_allowlisted`] so `qc doctor` can answer "will this host get
+/// through?" with the matcher the proxy actually uses. A second, private
+/// implementation would drift, and doctor would then reassure the user about a
+/// host the proxy rejects.
 #[derive(Debug)]
-struct AllowRule {
+pub struct AllowRule {
     pattern: String,
     port: Option<u16>,
+}
+
+/// Whether `allow` would let a connection to `host:port` through.
+///
+/// Only the rule list is consulted: `allow_private`, the session allowlist and
+/// `[network] unknown = "allow"` are separate ways through, and the caller has
+/// to know about them anyway to explain the answer.
+pub fn is_allowlisted(allow: &[String], host: &str, port: u16) -> bool {
+    let host = normalize_host(host);
+    allow
+        .iter()
+        .filter_map(|rule| AllowRule::parse(rule))
+        .any(|rule| rule.matches(&host, port))
 }
 
 impl AllowRule {

@@ -146,14 +146,20 @@ pub(crate) struct McpArgs {
 }
 
 #[derive(Debug, Subcommand)]
+// `Add` carries a dozen strings and paths while `List`/`Remove` carry none, so
+// the variants differ by ~200 bytes. Boxing would mean a `Box<…>` field that
+// clap's derive cannot flatten into, for an enum that exists for the duration
+// of one argument parse. The allow is the honest trade.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum McpCommand {
     /// List configured servers.
     List,
     /// Append a server to the user config.
     Add {
         name: String,
-        #[arg(long)]
-        command: String,
+        /// Which transport, and the fields that belong to it (ADR-0067 §1).
+        #[command(flatten)]
+        transport: McpTransportArgs,
         /// Repeatable: one argument for the server command.
         #[arg(long = "arg")]
         args: Vec<String>,
@@ -181,6 +187,38 @@ pub(crate) enum McpCommand {
     },
     /// Remove a server by name.
     Remove { name: String },
+}
+
+/// The transport half of `qc mcp add`: exactly one of `--command` and `--url`.
+///
+/// A separate struct because clap wants options in a struct or a variant, and
+/// because the pair is what `McpServerConfig::transport()` mirrors — keeping
+/// them together here means the CLI cannot drift from the config shape.
+///
+/// The group is required and single-valued. Expressing "exactly one" as an
+/// `ArgGroup` rather than two separate `conflicts_with`/`required_unless_present`
+/// constraints is what makes clap report `--command|--url` as one choice
+/// instead of naming whichever field it happened to check first.
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("transport").required(true).multiple(false).args(["command", "url"])
+))]
+pub(crate) struct McpTransportArgs {
+    /// Stdio transport: the program to start.
+    #[arg(long)]
+    pub(crate) command: Option<String>,
+    /// Streamable HTTP transport: the endpoint URL (ADR-0067).
+    #[arg(long, value_name = "URL")]
+    pub(crate) url: Option<String>,
+    /// Name of the environment variable holding the bearer token. The token
+    /// itself is never written to the config file.
+    #[arg(long, value_name = "VAR", requires = "url")]
+    pub(crate) bearer_token_env: Option<String>,
+    /// Extra request header, `Name: value`. Repeatable. Sensitive names
+    /// (authorization, cookie, token, key, secret, password) are refused: use
+    /// `--bearer-token-env`.
+    #[arg(long = "header", value_name = "NAME:VALUE", requires = "url")]
+    pub(crate) headers: Vec<String>,
 }
 
 #[derive(Debug, Args)]
