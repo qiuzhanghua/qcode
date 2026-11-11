@@ -1525,6 +1525,20 @@ cargo 只打一行 `patch … was not used in the crate graph` 警告并静默�
 行为变化集中在 `input/editor`（按行分隔符排版、可配置的 `CursorBlink`）、`MessageScroller`
 （padding 计入滚动范围，滚动条能到底）、`PopupMenu`（子菜单在窗口右缘向左翻转）。
 `metal 0.33` 已从依赖图移除（改用 `objc2-metal`），`block` 的 future-incompat 警告随之消失。
+**补充（2026-11-11，依赖刷新执行记录）**：`gpui-kit` 0.9.0 → 0.9.1（`gpui-base 0.9.1`、
+`gpui-component 0.9.1`、`gpui-kit-assets 0.9.1`、`gpui-pre =0.3.12`，zed 快照 `f816e1f` →
+`d2a4fb6`）。上游把它定位为 backward compatible patch：不删公共名字，也不再像 0.9.0 那样动
+theme 结构体的 `#[non_exhaustive]`，`crates/qcode-gui` 源码零改动即可编译运行（`gpui-base` /
+`gpui-component` 只新增 `GridLayout`、`ColumnFixed::Right`、`TransitionState`、
+`Text::on_task_toggle` 等）。`vendor/gpui-pre-windows` 同步到 0.3.12 并重贴 `IsWindow` 守卫
+（上游仍无此修复，`close_one_window` 依旧由 `WM_GPUI_CLOSE_ONE_WINDOW` 驱动延迟剪枝）；0.3.12
+的依赖集合与 0.3.11 完全一致，守卫的落点也没变，只是 `build.rs` 少编一个
+`color_text_raster.hlsl`、`platform.rs` 撤掉了 DirectWrite 文本系统的 GPU-lost 挂钩。升级后
+同样必须 `cargo update -p gpui-pre-windows`：vendor manifest 与 `gpui-pre` 的 `=0.3.12` 要求
+不一致时，cargo 只打一行 `patch … was not used in the crate graph` 警告并静默使用 registry
+版本，守卫随之消失。验证：`cargo test --workspace`、`make check`（fmt / clippy -D warnings /
+test / cargo-deny）、`make check-platforms`（3 个交叉目标，其中两个 Windows 三元组会真正
+type-check 这份 vendor 代码）。
 ### ADR-0037 spike 结论（2026-10-22）：GPUI Kit 通过
 
 **实测结果**
