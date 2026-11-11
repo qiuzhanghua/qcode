@@ -1,9 +1,12 @@
 use super::*;
 use gpui_kit::base::actions::{Confirm, SelectDown, SelectUp};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::v_flex;
+
+use crate::questions::QuestionInputState;
 
 /// 按搜索词过滤模型分组：仅匹配模型名（大小写不敏感子串匹配），过滤后
 /// 为空的 Provider 组整组剔除；搜索词为空时返回全量分组。
@@ -676,6 +679,53 @@ impl Shell {
             self.ui.question_ticker = true;
             self.tick_question(cx);
         }
+        // 无选项的自由文本提问需要输入框。实体按「面板 call_id + 题目序号」懒
+        // 创建，面板换题或关闭时丢弃重建（输入框跟着题目走，不串题）。
+        let input_need = self.ui.question.as_ref().map(|panel| {
+            (
+                panel.view.call_id.clone(),
+                panel.index,
+                panel.current().options.is_empty(),
+            )
+        });
+        if let Some((call_id, index, true)) = &input_need
+            && self
+                .ui
+                .question_input
+                .as_ref()
+                .map(|state| (&state.call_id, state.index))
+                != Some((call_id, *index))
+        {
+            let input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 4)
+                    .placeholder("输入回答…")
+            });
+            let subscription = cx.subscribe(&input, |shell, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    if let Some(panel) = shell.ui.question.as_mut() {
+                        panel.set_custom(text);
+                    }
+                    cx.notify();
+                }
+            });
+            let focus = input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            self.ui.question_input = Some(QuestionInputState {
+                input,
+                call_id: call_id.clone(),
+                index: *index,
+                _subscription: subscription,
+            });
+        } else if self
+            .ui
+            .question
+            .as_ref()
+            .is_none_or(|panel| !panel.current().options.is_empty())
+        {
+            self.ui.question_input = None;
+        }
         if self.pending_send {
             self.pending_send = false;
             self.send_prompt(window, cx);
@@ -1194,6 +1244,11 @@ impl Shell {
                                                     }))
                                             },
                                         ))
+                                        .children(self.ui.question_input.as_ref().map(|state| {
+                                            div()
+                                                .w_full()
+                                                .child(Textarea::new(&state.input))
+                                        }))
                                         .child(
                                             div()
                                                 .flex()

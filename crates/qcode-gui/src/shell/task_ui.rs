@@ -61,6 +61,8 @@ pub(crate) struct TaskUi {
     pub(crate) questions: QuestionQueue,
     /// The panel state of the question currently on screen.
     pub(crate) question: Option<QuestionPanel>,
+    /// The free-text input of the current question (lazy, see render).
+    pub(crate) question_input: Option<QuestionInputState>,
     /// A countdown ticker is running for the question panel.
     pub(crate) question_ticker: bool,
     /// Follow-up messages waiting for the running turn to end (FIFO).
@@ -171,6 +173,7 @@ impl TaskUi {
             approvals: ApprovalQueue::default(),
             questions: QuestionQueue::default(),
             question: None,
+            question_input: None,
             question_ticker: false,
             queue: Vec::new(),
             steering: Vec::new(),
@@ -240,6 +243,7 @@ impl Shell {
             approvals: std::mem::replace(&mut self.ui.approvals, ui.approvals),
             questions: std::mem::replace(&mut self.ui.questions, ui.questions),
             question: std::mem::replace(&mut self.ui.question, ui.question),
+            question_input: std::mem::replace(&mut self.ui.question_input, ui.question_input),
             question_ticker: std::mem::replace(&mut self.ui.question_ticker, ui.question_ticker),
             queue: std::mem::replace(&mut self.ui.queue, ui.queue),
             steering: std::mem::replace(&mut self.ui.steering, ui.steering),

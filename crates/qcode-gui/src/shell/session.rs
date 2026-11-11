@@ -409,6 +409,7 @@ impl Shell {
             ui.approvals = ApprovalQueue::default();
             ui.questions = QuestionQueue::default();
             ui.question = None;
+            ui.question_input = None;
             ui.question_ticker = false;
             ui.restoring = None;
         };
@@ -490,6 +491,7 @@ impl Shell {
         let text = qcode_core::question::reply_text(&call_id, &questions, &answers);
         let session = self.active.clone();
         self.ui.question_ticker = false;
+        self.ui.question_input = None;
         // The submitted batch leaves the queue before the next one opens, or
         // `current()` would hand the same call back.
         self.ui.questions.closed(&call_id);

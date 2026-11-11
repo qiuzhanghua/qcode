@@ -118,6 +118,7 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
                 .is_some_and(|panel| panel.view.call_id == call_id)
             {
                 ui.question = None;
+                ui.question_input = None;
                 ui.question_ticker = false;
             }
             applied.repaint = true;

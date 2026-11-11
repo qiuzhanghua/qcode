@@ -179,3 +179,14 @@ impl QuestionPanel {
             .collect()
     }
 }
+
+/// The free-text input of the question on screen, plus the subscription that
+/// writes typed text into the panel's `customs`. Recreated whenever the panel
+/// moves to a different question or batch.
+#[derive(Debug)]
+pub struct QuestionInputState {
+    pub input: gpui_kit::Entity<gpui_kit::component::input::TextareaState>,
+    pub call_id: String,
+    pub index: usize,
+    pub _subscription: gpui_kit::Subscription,
+}
