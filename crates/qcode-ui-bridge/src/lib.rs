@@ -152,6 +152,10 @@ pub struct ApprovalView {
     pub rule_id: Option<String>,
     pub argv: Option<String>,
     pub cwd: Option<String>,
+    /// A `run_shell` escalation request (SANDBOX-MODE.md): the scope the call
+    /// asks to widen to, plus the model's justification.
+    pub requested_scope: Option<String>,
+    pub justification: Option<String>,
 }
 
 impl From<&ApprovalRequest> for ApprovalView {
@@ -164,6 +168,10 @@ impl From<&ApprovalRequest> for ApprovalView {
             rule_id: request.rule_id.clone(),
             argv: request.argv.clone(),
             cwd: request.cwd.clone(),
+            requested_scope: request
+                .requested_scope
+                .map(|scope| scope.label().to_string()),
+            justification: request.justification.clone(),
         }
     }
 }
@@ -817,6 +825,8 @@ mod tests {
             rule_id: None,
             argv: Some("npm test".to_string()),
             cwd: Some("/w".to_string()),
+            requested_scope: None,
+            justification: None,
         }
     }
 

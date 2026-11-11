@@ -10,6 +10,8 @@ fn view(id: &str) -> ApprovalView {
         rule_id: None,
         argv: Some("echo hi".to_string()),
         cwd: Some("/w".to_string()),
+        requested_scope: None,
+        justification: None,
     }
 }
 

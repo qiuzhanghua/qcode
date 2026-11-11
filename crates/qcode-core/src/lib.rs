@@ -24,6 +24,7 @@ pub mod store;
 pub mod task;
 pub mod todo;
 pub mod tool;
+pub mod write_scope;
 
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
 pub use cost::Pricing;
@@ -53,3 +54,4 @@ pub use store::{SessionStore, SessionSummary, StoreError};
 pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
+pub use write_scope::{WriteScope, is_escalation, wider_scopes};

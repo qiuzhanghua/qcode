@@ -966,6 +966,8 @@ mod tests {
             rule_id: None,
             argv: Some("echo hi".to_string()),
             cwd: Some("/tmp".to_string()),
+            requested_scope: None,
+            justification: None,
         }
     }
 

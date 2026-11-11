@@ -23,6 +23,10 @@ pub struct ApprovalRequest {
     pub argv: Option<String>,
     /// Effective working directory for shell calls.
     pub cwd: Option<String>,
+    /// A `run_shell` call asking to widen its write scope (SANDBOX-MODE.md).
+    pub requested_scope: Option<crate::write_scope::WriteScope>,
+    /// The model's stated reason for the escalation, shown to the user.
+    pub justification: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,12 @@ impl Approver for InteractiveApprover {
                 eprintln!("  rule: {rule}");
             }
             eprintln!("  reason: {}", request.reason);
+            if let Some(scope) = request.requested_scope {
+                eprintln!("  escalate to: {} (sandbox_permissions)", scope.label());
+            }
+            if let Some(justification) = &request.justification {
+                eprintln!("  justification: {justification}");
+            }
             eprint!("  allow? [y/N] ");
             let _ = std::io::stderr().flush();
 

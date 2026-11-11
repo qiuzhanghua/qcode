@@ -1023,6 +1023,21 @@ impl Shell {
                                                 .text_color(rgb(0x666666))
                                                 .child(format!("> {}", view.summary)),
                                         )
+                                        .children(view.requested_scope.as_ref().map(|scope| {
+                                            // 提权请求（SANDBOX-MODE.md）：把
+                                            // 模型申请的范围和理由直接摆给用户。
+                                            div()
+                                                .pl(px(20.0))
+                                                .text_size(sp(13.0))
+                                                .line_height(sp(22.0))
+                                                .text_color(rgb(0xb45309))
+                                                .child(format!(
+                                                    "请求提权到 {scope}：{}",
+                                                    view.justification
+                                                        .as_deref()
+                                                        .unwrap_or("（未说明理由）")
+                                                ))
+                                        }))
                                         .child(
                                             div()
                                                 .flex()

@@ -221,6 +221,24 @@ where
     let mut aborted = false;
 
     if decision.action == Action::Ask {
+        // An escalation request carries its scope and the model's reason
+        // (SANDBOX-MODE.md); the prompt shows both.
+        let requested_scope = (class == ApprovalClass::Escalation)
+            .then(|| {
+                call.arguments
+                    .get("sandbox_permissions")
+                    .and_then(Value::as_str)
+                    .and_then(crate::write_scope::WriteScope::parse)
+            })
+            .flatten();
+        let justification = (class == ApprovalClass::Escalation)
+            .then(|| {
+                call.arguments
+                    .get("justification")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .flatten();
         let request = ApprovalRequest {
             call_id: call.call_id.clone(),
             tool: call.name.clone(),
@@ -249,6 +267,8 @@ where
                     None => base.display().to_string(),
                 }
             }),
+            requested_scope,
+            justification,
         };
         writer.append(
             EventKind::ApprovalRequested(ApprovalRequested {

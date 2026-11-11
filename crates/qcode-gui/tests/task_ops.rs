@@ -85,6 +85,8 @@ fn work_in_progress_does_not_mark_unread() {
         rule_id: None,
         argv: None,
         cwd: None,
+        requested_scope: None,
+        justification: None,
     })));
 }
 

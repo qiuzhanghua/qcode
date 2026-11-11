@@ -146,6 +146,8 @@ impl Policy {
             ApprovalClass::BulkWrite => (Action::Ask, "default: multi-file write"),
             ApprovalClass::Network => (Action::Ask, "default: network access"),
             ApprovalClass::Question => (Action::Allow, "default: user question"),
+            ApprovalClass::Shell => (Action::Allow, "default: shell within session scope"),
+            ApprovalClass::Escalation => (Action::Ask, "default: sandbox escalation"),
         };
         Decision {
             action,
@@ -216,6 +218,20 @@ mod tests {
                 .evaluate("web_fetch", ApprovalClass::Network, &json!({}))
                 .action,
             Action::Ask
+        );
+        assert_eq!(
+            policy
+                .evaluate("run_shell", ApprovalClass::Shell, &json!({}))
+                .action,
+            Action::Allow,
+            "a plain shell call runs at the session scope without a prompt"
+        );
+        assert_eq!(
+            policy
+                .evaluate("run_shell", ApprovalClass::Escalation, &json!({}))
+                .action,
+            Action::Ask,
+            "only an escalation request prompts"
         );
     }
 

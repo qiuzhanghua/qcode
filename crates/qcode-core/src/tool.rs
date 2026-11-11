@@ -162,6 +162,13 @@ pub enum ApprovalClass {
     /// it: the question *is* the interaction, gating it again would only add a
     /// prompt nobody asked for.
     Question,
+    /// A shell command at the session's write scope (`run_shell` without a
+    /// `sandbox_permissions` argument). Default allow: the sandbox — not a
+    /// per-command prompt — is the boundary (SANDBOX-MODE.md).
+    Shell,
+    /// A shell command asking to widen its write scope. Default ask: this is
+    /// the only point where a command prompts for permission.
+    Escalation,
 }
 
 #[derive(Debug, Clone)]

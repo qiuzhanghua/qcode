@@ -47,6 +47,8 @@ fn approval(call_id: &str) -> UiEvent {
         rule_id: None,
         argv: None,
         cwd: None,
+        requested_scope: None,
+        justification: None,
     })
 }
 
