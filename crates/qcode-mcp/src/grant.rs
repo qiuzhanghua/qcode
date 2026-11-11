@@ -309,6 +309,10 @@ impl GrantSet {
         let home = home.canonicalize().unwrap_or(home);
 
         let mut writable: Vec<PathBuf> = Vec::new();
+        // Kept exactly as the caller spelled it: `mcp_roots` decides which root
+        // is `primary` by comparing against this path, so canonicalizing here
+        // alone would silently demote a workspace the caller passed as
+        // `/var/...` while the set says `/private/var/...`.
         push_unique(&mut writable, workspace.to_path_buf());
         for extra in &server.writable_paths {
             let Ok(path) = extra.canonicalize() else {
@@ -1067,7 +1071,10 @@ mod tests {
         .unwrap();
 
         let write = grant.writable().to_vec();
-        assert!(write.contains(&workspace.canonicalize().unwrap()));
+        // The workspace goes in exactly as the caller spelled it (see `derive`):
+        // comparing against a canonicalized copy fails on macOS, where a temp
+        // dir arrives as `/var/...` and resolves to `/private/var/...`.
+        assert!(write.contains(&workspace.to_path_buf()));
         assert!(write.contains(&grant.home().to_path_buf()));
         assert!(grant.runtime().iter().all(|path| !write.contains(path)));
 

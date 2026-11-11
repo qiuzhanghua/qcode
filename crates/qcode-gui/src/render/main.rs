@@ -997,6 +997,7 @@ impl Shell {
                             // 拦截原因映射成中文，其余情况直接展示原文。
                             let reason_cn = match view.reason.as_str() {
                                 reason if reason.contains("process execution") => "进程执行策略",
+                                reason if reason.contains("sandbox escalation") => "沙箱提权策略",
                                 reason if reason.contains("write outside workspace") => {
                                     "工作区外写入策略"
                                 }

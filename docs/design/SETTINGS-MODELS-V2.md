@@ -44,7 +44,7 @@
 
 ### 2.2 模型 / Provider 配置（`crates/qcode-kernel`）
 
-- `Config.providers: BTreeMap<String, ProviderConfig>`；`ProviderConfig` = `base_url / api_key_env / api_key_command / default_model / stream_usage / extra_body`（`config/mod.rs`）。
+- `Config.providers: BTreeMap<String, ProviderConfig>`；`ProviderConfig` = `base_url / api_key_env / api_key_command / default_model / protocol / images / stream_usage / extra_body / headers / models`（`config/mod.rs`；`images` 见 ADR-0071）。
 - 内置 provider 硬编码：`builtin()`（`config/resolve.rs`）内联 openai / deepseek / ollama / minimax / anthropic|claude 的端点与 key env。
 - 适配器分发硬编码：`build_provider`（`lib.rs`）按 `resolved.name` match：mock* → `MockProvider`，anthropic|claude → `AnthropicProvider`，其余全部落到 `OpenAiCompatProvider`。
 

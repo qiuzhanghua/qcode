@@ -23,6 +23,10 @@ pub struct Resolved {
     pub protocol: Protocol,
     /// Provider-specific body fields, already merged with the builtin defaults.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
+    /// Whether the model accepts image input. The route decides (catalog) and
+    /// `providers.<route>.images` overrides it; the engine degrades images to a
+    /// text placeholder when this is false (ADR-0061 §8).
+    pub images: bool,
     /// Deployment-level request headers (gateway auth, custom headers).
     pub headers: std::collections::BTreeMap<String, String>,
 }
@@ -162,6 +166,7 @@ pub fn resolve(
             is_mock: true,
             protocol: Protocol::Mock,
             extra_body: serde_json::Map::new(),
+            images: false,
             headers: std::collections::BTreeMap::new(),
         });
     }
@@ -184,6 +189,17 @@ pub fn resolve(
         .protocol
         .or_else(|| catalog.map(|catalog| catalog.protocol))
         .unwrap_or(Protocol::OpenAi);
+
+    // Image input is a property of the deployment, not of the wire protocol:
+    // DeepSeek answers images over its OpenAI-compatible endpoint *and* its
+    // Anthropic-compatible one, while a self-hosted gateway in front of a
+    // text-only model does neither. So: catalog first, config overrides, and
+    // an unknown route is text-only (the engine then says so in the prompt
+    // instead of letting the server 400).
+    let images = entry
+        .images
+        .or_else(|| catalog.map(|catalog| catalog.images))
+        .unwrap_or(false);
 
     let base_url = overrides
         .base_url
@@ -260,6 +276,7 @@ pub fn resolve(
         stream_usage: overrides.stream_usage.unwrap_or(entry.stream_usage),
         is_mock: false,
         protocol,
+        images,
         extra_body,
         headers: entry.headers.clone(),
     })

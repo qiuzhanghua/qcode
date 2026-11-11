@@ -2,6 +2,28 @@
 
 ## 未发布
 
+### OpenAI 兼容路由终于能发图了：`images` 从常量变成配置（ADR-0071）
+
+在 DeepSeek 路由下贴一张图，模型回「this session only accepts text input」——可它明明能
+看图。断点不在服务端也不在模型，而在 `openai_compat.rs` 里 `images: false` 这一行常量：
+引擎按 `capabilities().images` 决定发图还是发一行占位文本，所以图片在请求构造阶段就被换成
+`[image omitted: …]`，早就写好的 `image_url` 线格式代码永远走不到。Anthropic 适配器则是
+另一个方向的同一个错误（常量 `true`）。
+
+- **`images` 现在是 `[providers.<route>]` 的配置项**（`Option<bool>`），缺省继承内建目录：
+  openai / deepseek / anthropic 为真，ollama / minimax 为假；目录没收录的路由缺省为假。
+  适配器只转述这个值，不再自己判断协议「能不能」看图——能力是部署的属性，不是协议的。
+- **降级语义不变**（ADR-0061 §8）：关掉时仍发占位文本而不是报错，日志里仍是引用，换个
+  支持视觉的模型重放就能看到原图。
+- **设置页多一列 `images`**；布尔列表达不了「继承」，所以只有与目录答案**不一致**时才写这个
+  键——没动过开关不会把今天的目录冻结进配置文件。
+- **顺带修好 `protocol` 存不下来**：`ConfigEdit::apply_config` 重建 provider 表时从来不写
+  `protocol` 这个键，而设置页保存走的正是它——把 deepseek 切到 Anthropic 端点、保存、再打开，
+  协议列又变回目录默认值。两个三态字段（`protocol` / `images`）现在在同一处写入，`None` 表示
+  「继承目录」、不落键。
+- DeepSeek 两条端点（`/v1/chat/completions` 与 `/anthropic/v1/messages`）都能看图，
+  **不必再把协议改成 anthropic**；此前给出的那个改法现在只是可选路径。
+
 ### 保存设置不再把 `~` 固化成绝对路径
 
 `writable_paths = ["~/Documents"]` 是 ADR-0066 §2 修订注记想要的跨机器写法，但加载时它被

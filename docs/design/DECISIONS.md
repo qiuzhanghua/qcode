@@ -7040,3 +7040,60 @@ ADR-0064 已经为 `run_shell` 解决过一次（`{shell} -lic 'env -0'` 采样�
   （`env = { ... }` 与 `credentials`）。
 - `PATH` 过桥后，`qc doctor` 里"这个 server 的 runtime 根为什么是 `~/cot/lib/...`"已经能
   看出来，但"哪一条 `PATH` 条目命中的"还没有单独打印。若有人提出，加一行即可。
+
+## ADR-0071：图片能力属于「路由」，不属于协议——修好 OpenAI 兼容路由永远看不到图（2026-11-11）
+
+**状态**：已实现（2026-11-11）。
+
+**问题**
+
+用户在 DeepSeek 路由下发一张图，模型回「this session only accepts text input」。可这条路由
+的模型**能看图**：`POST https://api.deepseek.com/v1/chat/completions` 带 `image_url` 的
+data URL 返回 200 且正确描述图片；`POST https://api.deepseek.com/anthropic/v1/messages`
+带 Anthropic `image` block 同样 200 且正确（2026-11-11 用真 key 各测三次）。
+
+真正的断点在适配器的一行常量：`OpenAiCompatConfig` 的 `capabilities()` 里
+`images: false` 是**硬编码**。引擎按 `capabilities().images` 决定「发图还是发占位」，
+于是每张图在请求构造阶段就被换成一行 `[image omitted: …]`，`openai_compat.rs` 里早就写好
+的 `image_url` 线格式代码永远走不到。Anthropic 适配器则是另一个硬编码 `true`——同一个
+错误的两个方向：协议被当成了能力的来源。
+
+**决定**
+
+1. **`images` 变成配置项，缺省继承目录。** `ProviderConfig.images: Option<bool>`，
+   `CatalogEntry.images: bool` 给内建路由一个默认答案（openai / deepseek / anthropic 为真，
+   ollama / minimax 为假），`Resolved.images` 是两者合一的结果。目录没收录的路由缺省**为假**
+   ——手写网关背后是什么模型，qcode 不知道。
+2. **适配器只转述配置，不再自己判。** `OpenAiCompatConfig.images` /
+   `AnthropicConfig.images` 来自 `Resolved.images`，`capabilities()` 原样返回。
+3. **降级语义不变（ADR-0061 §8）。** 为假时仍然发占位文本而不是报错；改的只是「谁说了算」。
+4. **设置页加一列 `images`。** 布尔列只有两态，表达不了「继承」，所以 `setup/save.rs` 只在
+   **与目录不一致时才写**这个键：没动过开关就不会把今天的目录答案冻结进配置文件。
+   `config_edit.rs` 的 `set_optional_bool` 同理（`None` 不落键）。
+5. **顺带修掉 `protocol` 根本不落盘。** `ConfigEdit::apply_config` 重建 provider 表时从来没写
+   `protocol`，而设置页的保存走的正是它——把路由切到 Anthropic 端点、保存、再打开，协议列
+   又是目录默认值。两个三态字段现在在同一处写入，`None` 都是「继承」。
+6. **DeepSeek 不需要换协议。** 此前给出的临时建议——把 deepseek 路由改成
+   `protocol = "anthropic"` + `base_url = .../anthropic`——现在只是可选路径，不再是看图的
+   前提：两条端点都能看图，Chat Completions 那条现在也真的把图发出去了。
+
+**验证**
+
+- `qcode-kernel`：`resolve_reports_whether_the_route_takes_images`（目录真/假、未收录路由
+  缺省假、`images = false` 关掉目录的真、`images = true` 打开未收录路由）；
+  `the_built_provider_reports_the_resolved_image_capability`（两种协议各构建一次 provider，
+  `capabilities().images` 跟随配置而不是常量）。
+- `qcode-providers`：`capabilities_carry_the_configured_image_support`；既有的
+  `an_image_turns_the_message_content_into_typed_parts` 钉住 `image_url` 的线格式。
+- 端到端（真 key，release 二进制，`--image` 一张 128×128 纯蓝方块 PNG）：
+  默认配置 → 「Deep blue colour.」；`images = false` → 「Cannot see image.」；
+  后再改回 `true` → 「The square is blue.」三条路径各自对应一个开关状态。
+
+**待定**
+
+- 目录里的 `images` 是按**厂商**填的（DeepSeek 全绿），但真实粒度是**模型**。
+  `SETTINGS-MODELS-V2.md` §4.4 已经要把能力挪到模型条目上；等模型级元数据落地，
+  这里的 `CatalogEntry.images` 应降级为「该路由是否需要用户显式声明」，不再是唯一来源。
+- `[providers.X.headers]` 里的 `authorization` 会与 `api_key_env` 派生出的 `x-api-key`
+  **同时发送**（注释声称的 replace 语义不成立）。这次没有改动：修它要决定「谁赢」，
+  且会改变已验证可用的配置行为。

@@ -257,6 +257,16 @@ impl SetupView {
                                 Some("anthropic") => Some(config::Protocol::Anthropic),
                                 _ => None,
                             },
+                            // Bool column: the switch has only two states, so
+                            // "inherit from the catalog" is not representable
+                            // here — `images_override` writes an explicit value
+                            // only when it disagrees with the catalog, so a save
+                            // that never touched this switch cannot freeze
+                            // today's catalog answer into the file.
+                            images: images_override(
+                                &name,
+                                row.bools.get("images").copied().unwrap_or(false),
+                            ),
                             stream_usage: row.bools.get("stream_usage").copied().unwrap_or(true),
                             // One `key = value` per line; the value is JSON
                             // when it parses, otherwise kept as a plain string

@@ -36,7 +36,7 @@ fn non_tty_denies_and_the_model_continues() {
         "default approver did not deny in:\n{stdout}"
     );
     assert!(
-        stdout.contains("denied: default: process execution"),
+        stdout.contains("denied: default: sandbox escalation"),
         "denial was not reported as a tool result in:\n{stdout}"
     );
     // The second scripted response still runs: denial is data, not a crash.

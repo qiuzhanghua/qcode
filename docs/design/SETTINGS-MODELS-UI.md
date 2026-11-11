@@ -265,7 +265,7 @@ E) 删除确认 Modal：
 |---|---|---|
 | 目录行（route/display/protocol/configured/credential） | `ProviderRegistry::list_configurable_providers(&config)` | 复用，不变 |
 | 默认模型（provider/model） | `[default-model]` + `default_provider` 回退链（M1 已落地） | 复用，不变 |
-| 路由 profile | `providers.<route>`：base_url / api_key_env / api_key_command / protocol / stream_usage / headers / extra_body | 复用；**新增 `models` 字段**（前置数据缺口，见 3.3） |
+| 路由 profile | `providers.<route>`：base_url / api_key_env / api_key_command / protocol / images / stream_usage / headers / extra_body | 复用；**新增 `models` 字段**（前置数据缺口，见 3.3）；`images` 见 ADR-0071（缺省继承目录，开关与目录一致时不落键） |
 | 密钥 | 现有 `api_key_env` / Keychain「Store key」/ `api_key_command` | 保留，UI 收敛为行内密码框（替代表格 `__key` 列） |
 | 写路径 | `ConfigEdit` 叶子 diff（toml_edit 保留注释 + 原子写） | 复用；卡片保存 = 一次叶子写 + 一次凭证写 |
 | 探测 | `qcode_providers::discover_models(base_url, key, headers)` | 复用，仅 UI 升级为候选 Modal |

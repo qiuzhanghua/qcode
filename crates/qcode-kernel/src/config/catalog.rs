@@ -59,6 +59,14 @@ pub struct CatalogEntry {
     pub reasoning_split: bool,
     /// Models this route advertises, for selection surfaces.
     pub models: &'static [&'static str],
+    /// Whether this route's default models accept image input.
+    ///
+    /// This is a property of the *route*, not of the wire protocol: DeepSeek
+    /// serves vision over both its Chat Completions and its Anthropic-compatible
+    /// endpoint (verified 2026-11-11), while `claude` has always taken images.
+    /// `providers.<route>.images` overrides it — a gateway may differ from the
+    /// vendor it fronts, and a brand-new model may outrun this table.
+    pub images: bool,
 }
 
 /// The built-in provider catalog, in presentation order.
@@ -93,6 +101,7 @@ pub const CATALOG: &[CatalogEntry] = &[
             "o3",
             "o3-mini",
         ],
+        images: true,
     },
     CatalogEntry {
         route: "deepseek",
@@ -107,6 +116,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         default_model: Some("deepseek-flash"),
         reasoning_split: false,
         models: &["deepseek-flash", "deepseek-v4-pro"],
+        images: true,
     },
     CatalogEntry {
         route: "ollama",
@@ -117,6 +127,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         default_model: None,
         reasoning_split: false,
         models: &[],
+        images: false,
     },
     // MiniMax exposes an OpenAI-compatible Chat Completions API, so it needs
     // no new provider code, only the endpoint and key variable. The default
@@ -131,6 +142,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         default_model: Some("MiniMax-M3"),
         reasoning_split: true,
         models: &["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        images: false,
     },
     // Anthropic Messages API. `claude` is accepted as a friendlier alias;
     // both resolve to the same provider and key.
@@ -153,6 +165,7 @@ pub const CATALOG: &[CatalogEntry] = &[
             "claude-haiku-4-5",
             "claude-fable-5",
         ],
+        images: true,
     },
 ];
 

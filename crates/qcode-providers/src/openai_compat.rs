@@ -39,6 +39,15 @@ pub struct OpenAiCompatConfig {
     /// Applied before the mandatory headers, so reserved names like
     /// `authorization` and `content-type` can never be overridden.
     pub headers: BTreeMap<String, String>,
+    /// Whether this deployment's models accept image input.
+    ///
+    /// Not a constant of the protocol: Chat Completions carries images as
+    /// `image_url` parts, and whether the model behind the endpoint looks at
+    /// them is the deployment's business. It lives here (rather than being
+    /// hardcoded `false`) because `false` made the engine replace every
+    /// picture with a placeholder *before* sending, so a vision model never
+    /// got the chance to answer.
+    pub images: bool,
 }
 
 impl std::fmt::Debug for OpenAiCompatConfig {
@@ -48,6 +57,7 @@ impl std::fmt::Debug for OpenAiCompatConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("stream_usage", &self.stream_usage)
+            .field("images", &self.images)
             .field("proxy_url", &self.proxy_url)
             // Header *names* only: values may carry gateway secrets.
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
@@ -100,7 +110,7 @@ impl Provider for OpenAiCompatProvider {
             streaming_tool_args: true,
             reasoning: true,
             prompt_cache: true,
-            images: false,
+            images: self.config.images,
             max_context: None,
             max_output: None,
         }
@@ -659,6 +669,27 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_carry_the_configured_image_support() {
+        let base = |images| OpenAiCompatConfig {
+            name: "deepseek".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            api_key: Some("sk-test".to_string()),
+            stream_usage: true,
+            proxy_url: None,
+            extra_body: Default::default(),
+            headers: Default::default(),
+            images,
+        };
+        // The engine asks the adapter, so the adapter has to answer from
+        // configuration — a constant here is what made every vision model
+        // report itself text-only.
+        for images in [true, false] {
+            let provider = OpenAiCompatProvider::new(base(images)).expect("provider");
+            assert_eq!(provider.capabilities().images, images);
+        }
+    }
+
+    #[test]
     fn debug_redacts_api_key() {
         let config = OpenAiCompatConfig {
             name: "test".to_string(),
@@ -668,6 +699,7 @@ mod tests {
             proxy_url: None,
             extra_body: Default::default(),
             headers: Default::default(),
+            images: false,
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-secret-value"));
