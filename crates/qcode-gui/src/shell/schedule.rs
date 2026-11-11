@@ -37,8 +37,14 @@ impl Shell {
         self.new_session(window, cx);
         // 预填提示保持简短；「未明确周期时先向用户确认」的引导在
         // schedule_create 工具描述里（模型调用工具时读到），不占输入框。
+        const PREFILL: &str = "请根据需求创建一个定时任务。\n";
         self.ui.input.update(cx, |input, cx| {
-            input.set_value("请根据需求创建一个定时任务。\n", window, cx);
+            input.set_value(PREFILL, window, cx);
+            // 合成器是多行文本域：set_value 会把选择清到 0..0（开头），
+            // 光标落在第一行而不是预填句子的下一行。把光标移到文本末尾，
+            // 用户直接在下行输入需求。
+            let end = input.value().len();
+            input.set_selected_range(end..end, cx);
             cx.notify();
         });
     }
