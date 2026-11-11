@@ -15,6 +15,7 @@ pub mod network;
 pub mod policy;
 pub mod progress;
 pub mod provider;
+pub mod question;
 pub mod schedule;
 pub mod scheduler;
 pub mod snapshot;
@@ -36,6 +37,11 @@ pub use network::{Network, SharedNetwork};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;
+pub use question::{
+    AnswerItem, InteractiveQuestioner, QuestionAnswer, QuestionError, QuestionIntent, QuestionItem,
+    QuestionOption, QuestionReply, QuestionRequest, Questioner, answer_covers, pending_result,
+    reply_text, validate_request,
+};
 pub use schedule::{
     Advance, CronSpec, DeliveryReceipt, Overlap, Schedule, ScheduleState, ScheduleStatus,
     ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery,

@@ -146,6 +146,7 @@ fn user_message_snapshot_omits_empty_attachments() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
         }),
         json!({
             "type": "user_message",
@@ -169,6 +170,7 @@ fn user_message_snapshot_omits_empty_attachments() {
             )],
 
             continuation: None,
+            question_reply: None,
         }),
         json!({
             "type": "user_message",
@@ -522,6 +524,7 @@ fn a_continuation_is_marked_on_the_user_message() {
                 window: 2,
                 raise: None,
             }),
+            question_reply: None,
         }),
         json!({
             "type": "user_message",

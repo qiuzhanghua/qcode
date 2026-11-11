@@ -164,6 +164,9 @@ where
     if ctx.scheduler.is_some() {
         tool_context = tool_context.with_scheduler(ctx.scheduler.clone());
     }
+    if ctx.questioner.is_some() {
+        tool_context = tool_context.with_questioner(ctx.questioner.clone());
+    }
 
     let mut turns = 0;
     let mut progress = ProgressGuard::new();
@@ -354,6 +357,7 @@ where
                         attachments: refs.clone(),
                         // Steering is the user talking, not a continuation.
                         continuation: None,
+                        question_reply: message.question_reply.clone(),
                     }),
                     &mut on_event,
                 )?;

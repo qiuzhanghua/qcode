@@ -28,12 +28,12 @@ use qcode_core::provider::Provider;
 use qcode_core::store::SessionStore;
 use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_tools::subagent::SubagentTool;
-use qcode_tui::{App, ApprovalPrompt, SkillView, UiAction, render};
+use qcode_tui::{App, ApprovalPrompt, QuestionPrompt, SkillView, UiAction, render};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, Event as TermEvent, KeyEvent, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, Event as TermEvent, KeyCode, KeyEvent, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -87,6 +87,13 @@ enum TuiMsg {
         argv: Option<String>,
         cwd: Option<String>,
         reply: oneshot::Sender<Answer>,
+    },
+    Question {
+        call_id: String,
+        questions: Vec<qcode_core::question::QuestionItem>,
+        intent: qcode_core::question::QuestionIntent,
+        timeout_secs: Option<i64>,
+        reply: oneshot::Sender<qcode_core::question::QuestionAnswer>,
     },
 }
 
@@ -153,6 +160,156 @@ impl Approver for TuiApprover {
     }
 }
 
+/// Bridges the engine's `Questioner` port to the TUI keyboard. A question owns
+/// the input until answered or cancelled; the oneshot returns the batch.
+pub struct TuiQuestioner {
+    tx: mpsc::UnboundedSender<TuiMsg>,
+}
+
+impl TuiQuestioner {
+    fn new(tx: mpsc::UnboundedSender<TuiMsg>) -> Self {
+        Self { tx }
+    }
+}
+
+impl std::fmt::Debug for TuiQuestioner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TuiQuestioner")
+    }
+}
+
+#[async_trait]
+impl qcode_core::question::Questioner for TuiQuestioner {
+    async fn ask(
+        &self,
+        request: &qcode_core::question::QuestionRequest,
+        cancel: CancellationToken,
+    ) -> qcode_core::question::QuestionAnswer {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .tx
+            .send(TuiMsg::Question {
+                call_id: request.call_id.clone(),
+                questions: request.questions.clone(),
+                intent: request.intent,
+                timeout_secs: request.timeout,
+                reply,
+            })
+            .is_err()
+        {
+            return qcode_core::question::QuestionAnswer::Cancelled;
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => qcode_core::question::QuestionAnswer::Cancelled,
+            answer = answer => answer.unwrap_or(qcode_core::question::QuestionAnswer::Cancelled),
+        }
+    }
+}
+
+/// A question on screen in the TUI: the batch, the page, the selections so
+/// far, and the oneshot the answer goes back through.
+struct PendingQuestion {
+    questions: Vec<qcode_core::question::QuestionItem>,
+    index: usize,
+    selected: Vec<Vec<usize>>,
+    reply: oneshot::Sender<qcode_core::question::QuestionAnswer>,
+}
+
+impl PendingQuestion {
+    fn current(&self) -> &qcode_core::question::QuestionItem {
+        &self.questions[self.index]
+    }
+
+    fn toggle(&mut self, option: usize) {
+        let multi = self.current().multi_select;
+        let slot = &mut self.selected[self.index];
+        if let Some(position) = slot.iter().position(|index| *index == option) {
+            slot.remove(position);
+        } else if multi {
+            slot.push(option);
+        } else {
+            slot.clear();
+            slot.push(option);
+        }
+    }
+
+    /// Clear the current question and move on. `false` at the end of the batch.
+    fn skip(&mut self) -> bool {
+        self.selected[self.index].clear();
+        self.next()
+    }
+
+    fn next(&mut self) -> bool {
+        if self.index + 1 < self.questions.len() {
+            self.index += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn answers(&self) -> Vec<qcode_core::question::AnswerItem> {
+        self.questions
+            .iter()
+            .enumerate()
+            .map(|(i, question)| qcode_core::question::AnswerItem {
+                id: question.id.clone(),
+                selected: self.selected[i]
+                    .iter()
+                    .map(|index| question.options[*index].label.clone())
+                    .collect(),
+                custom: None,
+            })
+            .collect()
+    }
+
+    fn submit(self) {
+        let answers = self.answers();
+        let _ = self
+            .reply
+            .send(qcode_core::question::QuestionAnswer::Answered(answers));
+    }
+}
+
+/// A question owns the keyboard: digits pick options, `s` skips, Enter
+/// advances / submits the last one, Esc cancels. Returns `true` when the key
+/// was consumed (always, while a question is up).
+fn handle_question_key(pending: &mut Option<PendingQuestion>, key: &KeyEvent) -> bool {
+    let Some(question) = pending.as_mut() else {
+        return false;
+    };
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+            let option = (c as usize) - ('1' as usize);
+            if option < question.current().options.len() {
+                question.toggle(option);
+            }
+        }
+        KeyCode::Char('s' | 'S') if !question.skip() => {
+            if let Some(question) = pending.take() {
+                question.submit();
+            }
+        }
+        KeyCode::Char('s' | 'S') => {}
+        KeyCode::Enter if !question.next() => {
+            if let Some(question) = pending.take() {
+                question.submit();
+            }
+        }
+        KeyCode::Enter => {}
+        KeyCode::Esc => {
+            if let Some(question) = pending.take() {
+                let _ = question
+                    .reply
+                    .send(qcode_core::question::QuestionAnswer::Cancelled);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
     // Validate the session before touching the terminal.
     let history = options
@@ -177,12 +334,16 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let approver: Arc<dyn Approver> = Arc::new(TuiApprover::new(tx.clone()));
+    let questioner: Arc<dyn qcode_core::question::Questioner> =
+        Arc::new(TuiQuestioner::new(tx.clone()));
     let input = InputThread::spawn(tx.clone());
     let mut terminal = TerminalGuard::enter()?;
 
     // The child registry excludes `subagent`, so nesting stops at depth one;
     // it also drops the schedule tools, whose runtime driver only exists on the
-    // GUI side (a sub-agent cannot create or manage scheduled tasks).
+    // GUI side (a sub-agent cannot create or manage scheduled tasks), and
+    // `ask_user`, because interaction belongs to the runtime root (a sub-agent
+    // reports its unanswered question to the parent model instead).
     let mut tools = options.tools.clone();
     let child_sender = tx.clone();
     let on_child: crate::subagent::ChildEventSink = Arc::new(move |event: &Event| {
@@ -194,7 +355,13 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let runner = crate::subagent::build(
         options.store,
         options.provider.clone(),
-        tools.without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
+        tools.without(
+            &[
+                qcode_tools::schedule::SCHEDULE_TOOL_NAMES.as_slice(),
+                qcode_tools::ask::ASK_USER_TOOL_NAMES.as_slice(),
+            ]
+            .concat(),
+        ),
         options.policy,
         approver.clone(),
         &options.workspace,
@@ -241,6 +408,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let mut pending_images: Vec<qcode_core::engine::AttachmentSource> = Vec::new();
     let mut cancel = CancellationToken::new();
     let mut pending_approval: Option<(String, oneshot::Sender<Answer>)> = None;
+    let mut pending_question: Option<PendingQuestion> = None;
     let mut engine_running = false;
     let mut engine: Pin<Box<dyn Future<Output = Result<RunOutcome, EngineError>> + '_>> =
         Box::pin(std::future::pending());
@@ -263,6 +431,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
             // next one.
             cancel = CancellationToken::new();
             pending_approval = None;
+            pending_question = None;
             engine_running = true;
             let input: String = $text;
             let attachments = $attachments;
@@ -279,6 +448,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     approver: approver.as_ref(),
                     snapshots: Some(&snapshots),
                     scheduler: None,
+                    questioner: Some(questioner.clone()),
                 },
                 RunOptions {
                     session_id: &session_id,
@@ -325,6 +495,14 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     TuiMsg::Event(event) => app.apply(&event),
                     TuiMsg::Child(event) => app.apply_child(&event),
                     TuiMsg::Key(key) => {
+                        // A pending question owns the keyboard until answered.
+                        if pending_question.is_some() {
+                            handle_question_key(&mut pending_question, &key);
+                            if pending_question.is_none() {
+                                app.question = None;
+                            }
+                            continue;
+                        }
                         let Some(press) = qcode_tui::translate(key) else {
                             continue;
                         };
@@ -594,6 +772,27 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             cwd,
                         });
                         pending_approval = Some((call_id, reply));
+                    }
+                    TuiMsg::Question {
+                        call_id,
+                        questions,
+                        intent,
+                        timeout_secs,
+                        reply,
+                    } => {
+                        let count = questions.len();
+                        app.question = Some(QuestionPrompt {
+                            call_id: call_id.clone(),
+                            questions: questions.clone(),
+                            intent,
+                            timeout_secs,
+                        });
+                        pending_question = Some(PendingQuestion {
+                            questions,
+                            index: 0,
+                            selected: vec![Vec::new(); count],
+                            reply,
+                        });
                     }
                 }
             }

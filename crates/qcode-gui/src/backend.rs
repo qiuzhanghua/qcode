@@ -6,6 +6,7 @@
 use crate::Engine;
 use crate::runtime;
 use qcode_core::event::{Event, EventKind};
+use qcode_core::question::AnswerItem;
 use qcode_core::schedule::ScheduledTask;
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
@@ -119,6 +120,17 @@ pub trait Backend {
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
+    /// Answer an `ask_user` question. `session` names the task (`None` = the
+    /// window's current one); `text` is the model-visible reply (the original
+    /// questions plus the answers).
+    fn answer_question(
+        &mut self,
+        _session: Option<String>,
+        _call_id: String,
+        _text: String,
+        _answers: Vec<AnswerItem>,
+    ) {
+    }
     /// Stop `session`'s turn (`None` = the draft the engine is on). A session
     /// that is not running is a no-op (ADR-0058 §6).
     fn cancel(&mut self, session: Option<&str>);
@@ -500,6 +512,21 @@ impl Backend for LocalBackend {
             call_id,
             allow,
             session,
+        });
+    }
+
+    fn answer_question(
+        &mut self,
+        session: Option<String>,
+        call_id: String,
+        text: String,
+        answers: Vec<AnswerItem>,
+    ) {
+        self.send(UiCommand::AnswerQuestion {
+            session,
+            call_id,
+            text,
+            answers,
         });
     }
 

@@ -122,12 +122,21 @@ impl Shell {
         let Dormant {
             running,
             mut approvals,
+            mut questions,
             queue,
             steering,
             error_banner,
         } = dormant;
         for view in approvals.drain() {
             self.ui.approvals.push(view);
+        }
+        for view in questions.drain() {
+            self.ui.questions.push(view);
+        }
+        if self.ui.question.is_none()
+            && let Some(view) = self.ui.questions.current().cloned()
+        {
+            self.ui.question = Some(QuestionPanel::new(view));
         }
         self.ui.queue = queue;
         self.ui.steering = steering;
@@ -398,6 +407,9 @@ impl Shell {
             ui.app.status.running = false;
             ui.app.status.last = None;
             ui.approvals = ApprovalQueue::default();
+            ui.questions = QuestionQueue::default();
+            ui.question = None;
+            ui.question_ticker = false;
             ui.restoring = None;
         };
         if session.is_none() || session == self.active.as_deref() {
@@ -412,6 +424,7 @@ impl Shell {
         } else if let Some(dormant) = self.dormant.get_mut(id) {
             dormant.running = false;
             dormant.approvals = ApprovalQueue::default();
+            dormant.questions = QuestionQueue::default();
         }
     }
 
@@ -424,5 +437,104 @@ impl Shell {
         self.ui.restoring = Some(view.call_id.clone());
         self.backend.answer(view.call_id, allow, session);
         cx.notify();
+    }
+
+    /// Toggle one option of the question on screen.
+    pub(crate) fn question_toggle(&mut self, option: usize, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ui.question.as_mut() {
+            panel.toggle(option);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn question_next(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ui.question.as_mut() {
+            panel.advance();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn question_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ui.question.as_mut() {
+            panel.back();
+        }
+        cx.notify();
+    }
+
+    /// Skip the current question. On the last one that means "submit the batch
+    /// with this question answered as skipped".
+    pub(crate) fn question_skip(&mut self, cx: &mut Context<Self>) {
+        let done = self
+            .ui
+            .question
+            .as_mut()
+            .map(|panel| !panel.skip())
+            .unwrap_or(false);
+        if done {
+            self.question_submit(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// Submit the whole batch. The answer is handed to the backend; the panel
+    /// closes (an open question resolves through the bridge, a continued one is
+    /// steered in as a user message), and the next queued question opens.
+    pub(crate) fn question_submit(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.ui.question.take() else {
+            return;
+        };
+        let call_id = panel.view.call_id.clone();
+        let questions = panel.view.questions.clone();
+        let answers = panel.answers();
+        let text = qcode_core::question::reply_text(&call_id, &questions, &answers);
+        let session = self.active.clone();
+        self.ui.question_ticker = false;
+        // The submitted batch leaves the queue before the next one opens, or
+        // `current()` would hand the same call back.
+        self.ui.questions.closed(&call_id);
+        if let Some(view) = self.ui.questions.current().cloned() {
+            self.ui.question = Some(QuestionPanel::new(view));
+        }
+        self.backend
+            .answer_question(session, call_id, text, answers);
+        cx.notify();
+    }
+
+    /// Second-by-second countdown for the question panel. When the host
+    /// deadline passes, the panel flips to "continued": the answer then travels
+    /// as a user message instead of the tool result.
+    pub(crate) fn tick_question(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1000))
+                    .await;
+                let alive = this.update(cx, |shell, cx| {
+                    let Some(panel) = shell.ui.question.as_mut() else {
+                        shell.ui.question_ticker = false;
+                        return None;
+                    };
+                    let Some(deadline) = panel.deadline else {
+                        shell.ui.question_ticker = false;
+                        return None;
+                    };
+                    if std::time::Instant::now() >= deadline && !panel.continued {
+                        panel.continued = true;
+                    }
+                    if panel.continued {
+                        shell.ui.question_ticker = false;
+                    } else {
+                        cx.notify();
+                    }
+                    Some(())
+                });
+                match alive {
+                    Ok(Some(())) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
     }
 }

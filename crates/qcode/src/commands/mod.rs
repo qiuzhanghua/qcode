@@ -5,6 +5,7 @@ use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover}
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::provider::Provider;
+use qcode_core::question::{InteractiveQuestioner, Questioner};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::Tool;
 use qcode_kernel::config;

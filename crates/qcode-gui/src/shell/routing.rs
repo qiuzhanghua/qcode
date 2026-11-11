@@ -99,6 +99,29 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
             }
             applied.repaint = true;
         }
+        UiEvent::Question(view) => {
+            ui.questions.push(view);
+            // One panel at a time: open it now if nothing is on screen.
+            if ui.question.is_none()
+                && let Some(view) = ui.questions.current().cloned()
+            {
+                ui.question = Some(QuestionPanel::new(view));
+            }
+            applied.repaint = true;
+        }
+        UiEvent::QuestionClosed { call_id } => {
+            ui.questions.closed(&call_id);
+            // The panel on screen belongs to this call: dismiss it.
+            if ui
+                .question
+                .as_ref()
+                .is_some_and(|panel| panel.view.call_id == call_id)
+            {
+                ui.question = None;
+                ui.question_ticker = false;
+            }
+            applied.repaint = true;
+        }
         UiEvent::SessionChanged { id } => {
             ui.empty_draft = false;
             applied.session_changed = Some(id);

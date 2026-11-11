@@ -77,6 +77,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,

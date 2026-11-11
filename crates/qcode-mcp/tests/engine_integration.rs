@@ -72,6 +72,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,

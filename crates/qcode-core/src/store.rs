@@ -927,6 +927,7 @@ mod tests {
                     attachments: Vec::new(),
 
                     continuation: None,
+                    question_reply: None,
                 }),
             ))
             .expect("user message");
@@ -942,6 +943,7 @@ mod tests {
                     attachments: Vec::new(),
 
                     continuation: None,
+                    question_reply: None,
                 }),
             ))
             .expect("user message");

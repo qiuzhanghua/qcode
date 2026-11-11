@@ -15,6 +15,7 @@ pub mod forms;
 pub mod gui_prefs;
 pub mod host;
 pub mod platform;
+pub mod questions;
 mod render;
 pub mod restore;
 mod run;

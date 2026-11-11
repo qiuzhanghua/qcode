@@ -170,6 +170,7 @@ mod tests {
                 text: "look at this".into(),
                 attachments: vec![AttachmentRef::Image(image)],
                 continuation: None,
+                question_reply: None,
             }),
         )];
 
@@ -216,6 +217,7 @@ mod tests {
                     name: None,
                 })],
                 continuation: None,
+                question_reply: None,
             }),
         )];
 
@@ -237,6 +239,7 @@ mod tests {
                     attachments: vec![],
 
                     continuation: None,
+                    question_reply: None,
                 }),
             ),
             event(
@@ -269,6 +272,7 @@ mod tests {
                     attachments: vec![],
 
                     continuation: None,
+                    question_reply: None,
                 }),
             ),
         ];
@@ -296,6 +300,7 @@ mod tests {
                     attachments: vec![],
 
                     continuation: None,
+                    question_reply: None,
                 }),
             ),
             event(

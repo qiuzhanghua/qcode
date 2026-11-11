@@ -184,6 +184,7 @@ mod tests {
                 queued_id: None,
                 starts_segment: false,
                 continuation: None,
+                question_reply: None,
             }),
         ];
         all.extend(events);

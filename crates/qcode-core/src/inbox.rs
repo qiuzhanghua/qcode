@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::AttachmentSource;
+use crate::question::{AnswerItem, QuestionReply};
 
 /// One message waiting in an inbox boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,10 @@ pub struct QueuedMessage {
     pub id: String,
     pub text: String,
     pub attachments: Vec<AttachmentSource>,
+    /// A late answer to a timed-out `ask_user` call, carried as a user message
+    /// so the running turn picks it up at the next step boundary. `None` for
+    /// ordinary messages.
+    pub question_reply: Option<QuestionReply>,
 }
 
 /// What an idle frontend should do with a submitted message.
@@ -75,6 +80,19 @@ impl SessionQueue {
         running: bool,
     ) -> Option<QueuedMessage> {
         running.then(|| self.inbox.steer(text, attachments))
+    }
+
+    /// Steer a late answer to a timed-out question into the nearest step
+    /// boundary, whether or not a turn is currently running. An idle leftover
+    /// becomes its own follow-up turn (the engine promotes it), so the answer
+    /// always reaches the model.
+    pub fn steer_question_reply(
+        &self,
+        call_id: String,
+        answers: Vec<AnswerItem>,
+        text: String,
+    ) -> QueuedMessage {
+        self.inbox.steer_reply(call_id, answers, text)
     }
 
     /// A turn ended: the next follow-up (or promoted leftover steering) starts.
@@ -162,6 +180,25 @@ impl Inbox {
     /// before its next model request; an idle turn leaves it pending.
     pub fn steer(&self, text: String, attachments: Vec<AttachmentSource>) -> QueuedMessage {
         let message = new_message(text, attachments);
+        self.inner().next_step.push_back(message.clone());
+        message
+    }
+
+    /// Submit a late answer to a timed-out `ask_user` call as a steered user
+    /// message. Unlike [`Self::steer`] it does not need a running turn: a
+    /// leftover is promoted to its own follow-up turn.
+    pub fn steer_reply(
+        &self,
+        call_id: String,
+        answers: Vec<AnswerItem>,
+        text: String,
+    ) -> QueuedMessage {
+        let message = QueuedMessage {
+            id: ulid::Ulid::new().to_string(),
+            text,
+            attachments: Vec::new(),
+            question_reply: Some(QuestionReply { call_id, answers }),
+        };
         self.inner().next_step.push_back(message.clone());
         message
     }
@@ -262,6 +299,7 @@ fn new_message(text: String, attachments: Vec<AttachmentSource>) -> QueuedMessag
         id: ulid::Ulid::new().to_string(),
         text,
         attachments,
+        question_reply: None,
     }
 }
 

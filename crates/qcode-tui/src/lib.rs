@@ -9,7 +9,7 @@ pub mod ui;
 
 pub use keys::{KeyPress, translate};
 pub use qcode_ui_state::{
-    App, AppAction, ApprovalPrompt, Block, Composer, ContextDisplay, InputEvent, SkillView, Status,
-    ToolEntry, UiAction,
+    App, AppAction, ApprovalPrompt, Block, Composer, ContextDisplay, InputEvent, QuestionPrompt,
+    SkillView, Status, ToolEntry, UiAction,
 };
 pub use ui::render;

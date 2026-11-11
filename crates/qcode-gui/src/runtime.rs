@@ -366,6 +366,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         Some(deadline) => sink.approver_with_deadline(deadline),
                         None => sink.approver(),
                     };
+                    let task_questioner = sink.questioner();
                     let task_target = target;
                     let done = done_tx.clone();
                     let guard = TurnGuard {
@@ -423,6 +424,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
                                 scheduler: Some(task_scheduler),
+                                questioner: Some(std::sync::Arc::new(task_questioner)),
                             },
                             options,
                             move |event| sink.send_event(event),
@@ -771,6 +773,28 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 allow,
                                 session: remember,
                             }),
+                            UiCommand::AnswerQuestion {
+                                session,
+                                call_id,
+                                text,
+                                answers,
+                            } => {
+                                // Fast path: the question is still open in the
+                                // bridge registry (the tool is waiting). A
+                                // timed-out question has no registry entry, so
+                                // the answer is steered in as a user message —
+                                // the running turn claims it at its next step
+                                // boundary, and an idle leftover becomes its own
+                                // follow-up turn.
+                                let target = session
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or_else(|| current.clone());
+                                if !port.answer_question(&call_id, answers.clone())
+                                    && let Some(queue) = host.queue(&target)
+                                {
+                                    queue.steer_question_reply(call_id.clone(), answers, text);
+                                }
+                            }
                             UiCommand::Cancel { session } => {
                                 // Per-session stop (ADR-0058 §6): only that
                                 // session's token is tripped, so a stop raced from

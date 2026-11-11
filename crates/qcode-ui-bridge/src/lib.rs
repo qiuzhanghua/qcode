@@ -22,6 +22,9 @@ use qcode_core::engine::AttachmentSource;
 use qcode_core::engine::Delta;
 use qcode_core::event::Event;
 use qcode_core::inbox::QueuedMessage;
+use qcode_core::question::{
+    AnswerItem, QuestionAnswer, QuestionIntent, QuestionItem, QuestionRequest, Questioner,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -38,6 +41,12 @@ pub enum UiEvent {
     ApprovalClosed { call_id: String },
     /// An approval is blocking the turn until the UI answers.
     Approval(ApprovalView),
+    /// An `ask_user` question is blocking the turn until the UI answers.
+    Question(QuestionView),
+    /// The question was answered or cancelled; the panel can be dismissed. A
+    /// timed-out question does *not* emit this: it stays on screen as
+    /// "continued" so the user can still answer it late.
+    QuestionClosed { call_id: String },
     /// The active session changed. `None` means a new draft session that has
     /// not written a log yet.
     SessionChanged { id: Option<String> },
@@ -159,6 +168,29 @@ impl From<&ApprovalRequest> for ApprovalView {
     }
 }
 
+/// An `ask_user` question prompt, without the reply channel: answer it with
+/// [`UiCommand::AnswerQuestion`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionView {
+    pub call_id: String,
+    pub questions: Vec<QuestionItem>,
+    pub intent: QuestionIntent,
+    /// Seconds the question waits (the client counts down); `None` = blocking,
+    /// `-1` = wait forever.
+    pub timeout_secs: Option<i64>,
+}
+
+impl From<&QuestionRequest> for QuestionView {
+    fn from(request: &QuestionRequest) -> Self {
+        Self {
+            call_id: request.call_id.clone(),
+            questions: request.questions.clone(),
+            intent: request.intent,
+            timeout_secs: request.timeout,
+        }
+    }
+}
+
 /// A budget the user raised for the continuation window. Mirrors
 /// `qcode_core::event::RaiseLimit`, minus the equality bound `UiCommand` needs.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -224,6 +256,16 @@ pub enum UiCommand {
         call_id: String,
         allow: bool,
         session: bool,
+    },
+    /// Answer an `ask_user` question. The kernel resolves a still-open question
+    /// directly; a timed-out (continued) question is steered in as a user
+    /// message so the running turn picks it up. `text` is the model-visible
+    /// reply (original questions plus answers), built by the caller.
+    AnswerQuestion {
+        session: Option<String>,
+        call_id: String,
+        text: String,
+        answers: Vec<AnswerItem>,
     },
     /// Start a new draft session; the first prompt creates the log.
     NewSession,
@@ -312,6 +354,10 @@ pub struct UiPort {
 pub struct KernelPort {
     events: mpsc::UnboundedSender<SessionEvent>,
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    /// Open `ask_user` questions by `call_id`, answered with
+    /// [`KernelPort::answer_question`]. A timed-out entry is removed here, so a
+    /// late answer routes to the steering path instead of a stale oneshot.
+    question_pending: Arc<Mutex<HashMap<String, PendingQuestion>>>,
     /// Session-scoped "Always": session id → tools allowed without asking.
     /// Per session, not global: A's "Always" must not answer B's prompt.
     session_allowed: Arc<Mutex<HashMap<String, HashSet<String>>>>,
@@ -333,6 +379,7 @@ pub fn channels() -> (UiPort, KernelPort) {
     let port = KernelPort {
         events: events_tx,
         pending: Arc::new(Mutex::new(HashMap::new())),
+        question_pending: Arc::new(Mutex::new(HashMap::new())),
         session_allowed: Arc::new(Mutex::new(HashMap::new())),
         commands: Arc::new(Mutex::new(Some(commands_rx))),
     };
@@ -409,6 +456,27 @@ impl KernelPort {
             },
         );
         pending.sender.send(answer).is_ok()
+    }
+
+    /// Resolve a pending question. Returns `false` when the question is unknown
+    /// — already answered, cancelled, or timed out — in which case the caller
+    /// routes the answer as a late `question_reply` user message instead.
+    pub fn answer_question(&self, call_id: &str, answers: Vec<AnswerItem>) -> bool {
+        let pending = self
+            .question_pending
+            .lock()
+            .expect("question registry")
+            .remove(call_id);
+        let Some(pending) = pending else {
+            return false;
+        };
+        self.emit(
+            &pending.target,
+            UiEvent::QuestionClosed {
+                call_id: call_id.to_string(),
+            },
+        );
+        pending.sender.send(answers).is_ok()
     }
 
     /// Forget one session's "Always" decisions. Sessions that are not named
@@ -530,6 +598,16 @@ impl TaggedPort {
             ..self.approver()
         }
     }
+
+    /// The questioner the engine should be given: questions are tagged with
+    /// this session and answered against its own registry.
+    pub fn questioner(&self) -> BridgeQuestioner {
+        BridgeQuestioner {
+            events: self.port.events.clone(),
+            pending: self.port.question_pending.clone(),
+            target: self.target.clone(),
+        }
+    }
 }
 
 /// An [`Approver`] that asks the UI and waits for [`KernelPort::answer`].
@@ -626,10 +704,105 @@ impl Approver for BridgeApprover {
     }
 }
 
+/// A [`Questioner`] that asks the UI and waits for [`KernelPort::answer_question`].
+#[derive(Clone)]
+pub struct BridgeQuestioner {
+    events: mpsc::UnboundedSender<SessionEvent>,
+    pending: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    target: SessionTarget,
+}
+
+struct PendingQuestion {
+    target: SessionTarget,
+    sender: oneshot::Sender<Vec<AnswerItem>>,
+}
+
+impl std::fmt::Debug for BridgeQuestioner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BridgeQuestioner")
+    }
+}
+
+impl BridgeQuestioner {
+    /// Drop a question that was answered by nobody (cancelled), so the registry
+    /// does not keep a call id that can never be resolved. A timed-out question
+    /// is dropped silently instead: it stays answerable late.
+    fn withdraw(&self, call_id: &str) {
+        self.pending
+            .lock()
+            .expect("question registry")
+            .remove(call_id);
+        self.emit(UiEvent::QuestionClosed {
+            call_id: call_id.to_string(),
+        });
+    }
+
+    fn emit(&self, event: UiEvent) {
+        let _ = self
+            .events
+            .send(SessionEvent::new(self.target.clone(), event));
+    }
+}
+
+#[async_trait]
+impl Questioner for BridgeQuestioner {
+    async fn ask(&self, request: &QuestionRequest, cancel: CancellationToken) -> QuestionAnswer {
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().expect("question registry").insert(
+            request.call_id.clone(),
+            PendingQuestion {
+                target: self.target.clone(),
+                sender: tx,
+            },
+        );
+        self.emit(UiEvent::Question(QuestionView::from(request)));
+        if self.events.is_closed() {
+            // No UI left to answer: fail closed.
+            self.withdraw(&request.call_id);
+            return QuestionAnswer::Cancelled;
+        }
+        // `-1` means wait forever: no deadline branch at all.
+        let give_up = async {
+            match request.timeout {
+                Some(seconds) if seconds > 0 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(seconds as u64)).await
+                }
+                _ => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            answers = rx => {
+                // Answered: close the panel and hand the batch to the tool.
+                self.emit(UiEvent::QuestionClosed {
+                    call_id: request.call_id.clone(),
+                });
+                QuestionAnswer::Answered(answers.unwrap_or_default())
+            }
+            // A cancelled turn must not hang waiting for a click.
+            _ = cancel.cancelled() => {
+                self.withdraw(&request.call_id);
+                QuestionAnswer::Cancelled
+            }
+            // The window elapsed. Drop the pending entry (a late answer must
+            // arrive as a `question_reply` user message) but do *not* close the
+            // panel: the user can still answer, and the UI flips it to
+            // "continued".
+            _ = give_up => {
+                self.pending
+                    .lock()
+                    .expect("question registry")
+                    .remove(&request.call_id);
+                QuestionAnswer::TimedOut
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use qcode_core::approval::ApprovalRequest;
+    use qcode_core::question::QuestionOption;
 
     fn request() -> ApprovalRequest {
         request_with("c1", "run_shell")
@@ -940,5 +1113,85 @@ mod tests {
 
         assert!(port.answer("call-2", Answer::Allow));
         assert_eq!(answer.await.expect("joined"), Answer::Allow);
+    }
+
+    fn question_request(call_id: &str) -> QuestionRequest {
+        QuestionRequest {
+            call_id: call_id.to_string(),
+            questions: vec![QuestionItem {
+                id: "q1".to_string(),
+                header: None,
+                question: "pick one".to_string(),
+                detail: None,
+                options: vec![
+                    QuestionOption {
+                        label: "A".to_string(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        label: "B".to_string(),
+                        description: None,
+                    },
+                ],
+                multi_select: false,
+            }],
+            intent: QuestionIntent::Confirm,
+            timeout: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_is_answered_through_the_bridge() {
+        let (mut ui, kernel) = channels();
+        let questioner = kernel.tagged("s1").questioner();
+        let task = tokio::spawn(async move {
+            questioner
+                .ask(&question_request("c1"), CancellationToken::new())
+                .await
+        });
+
+        let event = ui.events.recv().await.expect("event");
+        let UiEvent::Question(view) = event.event else {
+            panic!("expected a question: {event:?}");
+        };
+        assert_eq!(view.call_id, "c1");
+
+        let answered = kernel.answer_question(
+            "c1",
+            vec![AnswerItem {
+                id: "q1".to_string(),
+                selected: vec!["A".to_string()],
+                custom: None,
+            }],
+        );
+        assert!(answered);
+        assert!(matches!(
+            task.await.expect("join"),
+            QuestionAnswer::Answered(_)
+        ));
+
+        // The panel is closed for the UI.
+        let closed = next_for(&mut ui, "s1").await;
+        assert!(matches!(closed.event, UiEvent::QuestionClosed { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_question_that_times_out_stays_answerable_late() {
+        let (mut ui, kernel) = channels();
+        let questioner = kernel.tagged("s1").questioner();
+        let mut request = question_request("c1");
+        request.timeout = Some(1);
+        let task =
+            tokio::spawn(async move { questioner.ask(&request, CancellationToken::new()).await });
+        let _ = ui.events.recv().await; // UiEvent::Question
+
+        // The window elapses: pending, and the fast path is gone — a late
+        // answer must arrive as a `question_reply` user message instead.
+        assert_eq!(task.await.expect("join"), QuestionAnswer::TimedOut);
+        assert!(
+            !kernel.answer_question("c1", Vec::new()),
+            "the registry entry was dropped on timeout"
+        );
+        // The panel is NOT closed on timeout (no QuestionClosed arrives).
     }
 }

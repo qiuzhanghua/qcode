@@ -135,6 +135,7 @@ impl SubagentRunner for EngineSubagent {
                 approver: self.approver.as_ref(),
                 snapshots: self.snapshots.as_ref(),
                 scheduler: None,
+                questioner: None,
             },
             options,
             move |event| {

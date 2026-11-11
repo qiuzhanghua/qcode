@@ -93,8 +93,10 @@ where
                         .expect("read call has a tool")
                         .clone();
                     let arguments = planned[slot].call.arguments.clone();
+                    let call_id = planned[slot].call.call_id.clone();
                     async move {
-                        let output = match tool.execute(tool_context, arguments).await {
+                        let call_context = tool_context.clone().with_call_id(&call_id);
+                        let output = match tool.execute(&call_context, arguments).await {
                             Ok(output) => output,
                             Err(err) => ToolOutput::error(err.to_string()),
                         };
@@ -122,8 +124,11 @@ where
             .as_ref()
             .expect("planned call has a tool")
             .clone();
+        let call_context = tool_context
+            .clone()
+            .with_call_id(&planned[index].call.call_id);
         let output = match tool
-            .execute(tool_context, planned[index].call.arguments.clone())
+            .execute(&call_context, planned[index].call.arguments.clone())
             .await
         {
             Ok(output) => output,

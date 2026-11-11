@@ -149,6 +149,7 @@ async fn run(
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,

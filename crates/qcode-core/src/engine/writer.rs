@@ -82,6 +82,7 @@ impl<'a> SessionWriter<'a> {
                 text: input.to_string(),
                 attachments: attachments.to_vec(),
                 continuation,
+                question_reply: None,
             }),
             sink,
         )?;

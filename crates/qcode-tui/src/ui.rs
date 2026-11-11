@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block as UiBlock, Clear, Paragraph, Wrap},
 };
 
-use qcode_ui_state::{App, ApprovalPrompt, Block, ContextDisplay, ToolEntry};
+use qcode_ui_state::{App, ApprovalPrompt, Block, ContextDisplay, QuestionPrompt, ToolEntry};
 
 /// Expanded tool output is capped so one huge result cannot dominate a frame.
 const TOOL_OUTPUT_LINES: usize = 400;
@@ -41,6 +41,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     if let Some(prompt) = &app.approval {
         render_approval(frame, prompt, &app.sandbox);
+    }
+    if let Some(prompt) = &app.question {
+        render_question(frame, prompt);
     }
 }
 
@@ -678,6 +681,78 @@ fn render_approval(frame: &mut Frame, prompt: &ApprovalPrompt, sandbox: &str) {
     frame.render_widget(paragraph, area);
 }
 
+fn render_question(frame: &mut Frame, prompt: &QuestionPrompt) {
+    let area = centered(80, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let label = Style::default().fg(Color::Gray);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("call    ", label),
+            Span::raw(prompt.call_id.clone()),
+        ]),
+        Line::from(""),
+    ];
+    let mut index = 0;
+    for question in &prompt.questions {
+        index += 1;
+        if prompt.questions.len() > 1 {
+            lines.push(Line::from(vec![Span::styled(
+                format!("— 第 {index} 题 / 共 {} 题 —", prompt.questions.len()),
+                label,
+            )]));
+        }
+        if let Some(header) = &question.header {
+            lines.push(Line::from(vec![Span::styled(
+                header.clone(),
+                Style::default().fg(Color::Cyan),
+            )]));
+        }
+        lines.push(Line::from(question.question.clone()));
+        if let Some(detail) = &question.detail {
+            lines.push(Line::from(detail.clone()));
+        }
+        if question.options.is_empty() {
+            lines.push(Line::from("（无选项，直接输入回答）"));
+        }
+        for (option_index, option) in question.options.iter().enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", option_index + 1),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(option.label.clone()),
+            ]));
+            if let Some(description) = &option.description {
+                lines.push(Line::from(vec![
+                    Span::styled("  ", label),
+                    Span::styled(description.clone(), label),
+                ]));
+            }
+        }
+        if index < prompt.questions.len() {
+            lines.push(Line::from(""));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "[1-9] 选择选项 · 逗号分隔多选 · [s] 跳过 · [Enter] 下一题/提交 · [Esc] 取消",
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            UiBlock::bordered()
+                .title(" Question ")
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
 fn centered(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),

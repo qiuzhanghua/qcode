@@ -145,6 +145,7 @@ impl Policy {
             ApprovalClass::External => (Action::Ask, "default: external tool"),
             ApprovalClass::BulkWrite => (Action::Ask, "default: multi-file write"),
             ApprovalClass::Network => (Action::Ask, "default: network access"),
+            ApprovalClass::Question => (Action::Allow, "default: user question"),
         };
         Decision {
             action,

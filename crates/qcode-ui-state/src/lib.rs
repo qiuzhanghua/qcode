@@ -184,6 +184,17 @@ pub struct ApprovalPrompt {
     pub cwd: Option<String>,
 }
 
+/// An `ask_user` question on screen (display only; the answer travels through
+/// the frontend's own channel).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionPrompt {
+    pub call_id: String,
+    pub questions: Vec<qcode_core::question::QuestionItem>,
+    pub intent: qcode_core::question::QuestionIntent,
+    /// `None` = blocking, `-1` = wait forever, else seconds.
+    pub timeout_secs: Option<i64>,
+}
+
 /// What the composer is doing right now (ADR-0042 §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerState {

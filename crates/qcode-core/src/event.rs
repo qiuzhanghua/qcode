@@ -27,7 +27,11 @@ use crate::task::Root;
 /// v8 adds `ShellEnvSampled` (ADR-0064), an additive diagnostic: a v7 reader
 /// that ignores unknown kinds replays the log unchanged, and a log without the
 /// event simply means "sampling was off or never ran".
-pub const EVENT_SCHEMA_VERSION: u32 = 8;
+///
+/// v9 adds `UserMessage::question_reply`, an additive optional field for a late
+/// answer to a timed-out `ask_user` call: an old reader replays the log as a
+/// plain user message (the payload is also present in `text`).
+pub const EVENT_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -127,6 +131,12 @@ pub struct UserMessage {
     /// pause, so the transcript never pretends the user typed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<Continuation>,
+    /// Set when this message is a late answer to a timed-out `ask_user` call
+    /// (steered in as a user message). The payload is also serialized into
+    /// `text`, so an old reader still shows the answer; the structured field is
+    /// what lets a projection pair it with the pending question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_reply: Option<crate::question::QuestionReply>,
 }
 
 /// A continuation the user asked for after a paused turn (ADR-0060 §2.6).
@@ -464,6 +474,7 @@ mod tests {
                 attachments: vec![],
 
                 continuation: None,
+                question_reply: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -506,6 +517,7 @@ mod tests {
                 attachments: vec![],
 
                 continuation: None,
+                question_reply: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -527,6 +539,7 @@ mod tests {
                 attachments: vec![],
 
                 continuation: None,
+                question_reply: None,
             }),
         );
         let value: Value = serde_json::from_str(&serde_json::to_string(&input).unwrap()).unwrap();
