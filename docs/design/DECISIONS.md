@@ -3444,6 +3444,76 @@ configured、凭证状态）与 `list_configurable_providers(config)`；Provider
   「第一个可用」= 遍历 `config.providers`（按字母序、排除 `mock*`），取第一个端点合法
   （http/https）、凭据可用、且能推导出模型的 route。
 
+### 5. 勘误：设置页改默认模型不生效（2026-11-10）
+
+V2.1 收敛后留下一个缺口，用户实测踩到：在设置页把**默认 provider** 的「Default
+model」改成 `DeepSeek-V4.1-Flash`，保存成功、表单显示新值，跑任务用的还是旧模型。
+
+根因是两条写路径撞在同一个语义上：
+
+- `[default-model].model` 在读时**优先于** `providers.<route>.default_model`（§4 选择链）；
+- 设置页 provider 行的「Default model」只写后者，「设为默认」只改 provider 名（已经是
+  默认时不渲染），底部模型菜单的「切即默认」是唯一真正生效的入口——但它不在设置页。
+
+于是同一个 provider 内换默认模型，设置页**没有任何入口能生效**，而 UI 也没说清。
+
+修法（两处，互补）：
+
+- **保存时同步**：`setup/fields.rs::sync_default_model` 在 `apply_tables` 里，若被保存的
+  provider 就是 `[default-model].provider`，把它的 `default_model` 写进
+  `[default-model].model`。语义变成「一个 provider 只有一个默认模型」，两个字段不再是
+  两个真相。行被清空（交回目录默认）时**不动**全局值：那是菜单单独钉的，一次无关的
+  表格自动保存不该抹掉它。
+- **设置页补入口**：顶部「当前默认：provider / model」变成可点按钮，展开按 provider
+  分组的候选（读内存草稿，不按凭证过滤——设置页正是补凭证的地方），选中即写
+  `[default-model]`（`pin_default`）。被 `[default-model]` 压住的 provider 行给出注脚
+  「被全局默认『x』覆盖；保存后以这里为准」（`overridden_default_model`）。
+
+同时补一条反向保护：设置页每次存表格都会重写整份配置，而 `[default-model]` 另有一个
+写者（主窗口菜单）。`adopt_disk_default_model` 在写盘前取回磁盘现值——这次保存没改过
+它就用磁盘的，改过（同步刚发生）才用草稿。没有这一条，「改完又被改回去」会从另一个
+方向复现。
+
+验证：`a_saved_provider_model_is_the_one_resolve_returns` 走**真实 `resolve`**，
+断言保存后返回的模型变了（只断言「同步函数被调用过」可以全绿而用户仍看到旧模型）；
+`a_table_save_keeps_the_model_the_menu_just_picked` 覆盖反向保护。
+
+#### 5.1 仍然失败：界面根本不让你写下这个模型名
+
+上面那版修完后用户复测仍然是「没有成功」。查证据：`~/.config/qcode/config.toml`
+的 mtime 停在修复之前，且 `.bak` 与正文只差一个无关字段——**他的编辑一次都没有落盘**。
+所以问题不在「写了被覆盖」，在「压根写不下去」。
+
+真原因是模型名本身：`DeepSeek-V4.1-Flash` 既不在 `catalog`（deepseek 只有
+`deepseek-v4-flash` / `-vision-exp` / `-pro`），也不在 `[[providers.deepseek.models]]`。
+而两处「设模型」的界面都**只列已登记的模型**：
+
+- 设置页顶部的「当前默认」选择器（§5 刚加的那个）：候选 = `models` ∪ `default_model` ∪
+  目录模型；
+- 主窗口底部的模型菜单：同一个来源。
+
+于是这个模型名在界面上**没有任何位置可以输入**，用户只能手改配置文件。这不是「没生效」，
+是「没有入口」——上一版修的是「入口不生效」，这一版补的是入口本身。
+
+修法：
+
+- 设置页选择器底部加一行「设为 {provider} 的默认模型」+ 输入框 + 「设为默认」
+  （`SetupView::default_model_input`）。手输的模型落在当前默认 provider 上；没有默认
+  时落在候选里的第一个。
+- 底部模型菜单：搜索框里打一个列表中没有的名字时，多出一行「使用「x」（provider）」，
+  Enter 同样生效。手输的模型名不该只能点鼠标。
+- `pin_default` 现在**同时**写 `[default-model]` 与 `providers.<p>.default_model`
+  （`pin_default_fields`）。只写前者的第一版有个延迟撤销：任何一次表格自动保存都会用
+  行值把 `[default-model]` 同步回去，用户选完模型改个别字段就被改回来。
+
+界面「只列已登记模型」这条规则本身是对的（不能凭空造模型），缺的是**逃逸口**：
+模型名是新版本、网关别名、或者目录还没跟上时，必须能直接输入。
+
+验证：`a_pinned_model_survives_the_next_table_save` 钉住「两处成对写」以及「后续
+`sync_default_model` 同步不会撤回」；`the_synced_model_survives_a_real_write_and_read` 走真实
+`write_config` → 读取 → `resolve`，证明落盘链路（`apply_config` 会写
+`[default-model]`，不是只写内存）。
+
 **备选方案（未采用）**
 
 - **继续用 FIELDS 手写表单**：加一个配置项仍要改三处，正是最初的痛点。
@@ -3472,6 +3542,23 @@ configured、凭证状态）与 `list_configurable_providers(config)`；Provider
 - 设置页：Provider 目录显示凭证状态；「设为默认」写 `[default-model]` 并清 `default_provider`；
   顶栏跨 provider 切换时会话不中断。
 - 手工：把 `[default-model]` 指到未配置的 route，启动回落到第一个可用，再回落到 mock。
+
+**后续（2026-11-10）：id 与显示名**
+
+用户再次报「设了 `deepseek-v4.1-flash` 还是不对」。直接打
+`GET https://api.deepseek.com/models`（`/v1/models` 同样可用）得到的是：
+
+```json
+{"data":[
+  {"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576,
+   "max_output_tokens":393216,"input_modalities":["text","image"], ...},
+  {"id":"deepseek-v4-pro","name":"DeepSeek-V4-Pro", ...}]}
+```
+
+即 **id 是 `deepseek-flash`，`DeepSeek-V4.1-Flash` 是 `name`**。用户照着显示名填，
+拿到的是 400；catalog 当时还写着 `deepseek-v4-flash`，等于把错的名字又坐实了一遍。
+两处都已修：catalog 改成 `deepseek-flash` / `deepseek-v4-pro`（`b630898`），
+探测结果只取 `id` 这一点保持——`name` 是给人看的，写进配置就会被当 id 用。
 
 ## ADR-0056：凭证存储——密钥不进命令行（2026-11-04）
 
@@ -4519,6 +4606,14 @@ GUI 落地后这三条边界开始漏：
    **不显示忙碌状态**（不要 tab 上的运行点）。tab 标题取 `Term` 的 `title()`
    （`vim` 自己会设，`alacritty_terminal` 免费给），为空时退到 shell 名。
 
+   **tab 标题单行、13pt**（2026-11-10 修订）：shell 把标题设成当前目录，那是一条
+   路径——放开换行后 tab 条会变成两三行的块，把内容区往下推。标题因此
+   `whitespace_nowrap()` + `text_ellipsis()` + `max_w(180)`，行高 `sp(18)`，整条
+   tab 走 `px_2 / py(3)`（高度 ~26px）。字号用 `sp(13)` 而不是终端的
+   `COMPOSER_TEXT_SIZE`：它是内容区的**说明文字**，跟着窗口其它小字一起缩放，
+   与 `vim` 画出来的字不该一样大。关闭按钮 `×` 与末尾的 `+` 定成 14/20px 的方
+   形可点区，不再靠 padding 撑，鼠标靶子因此与视觉一致。
+
 3. **状态只在内存，cwd 继承取实时值**
 
    不持久化：关窗口/重启即消失，不引入 daemon 或 tmux 式 attach。终端 I/O 不进
@@ -4839,6 +4934,10 @@ GUI 落地后这三条边界开始漏：
 
    探测器要能注入（一个取 `(pid, comm, exe)` 链的 trait），否则这段逻辑只能靠真进程
    树测，覆盖不到「包装壳 / 嵌套 shell / 无 shell」这些分支。
+
+   **后续（2026-11-10）**：这套探测被抽成 `crates/qcode-shell` 供 `run_shell` 共用，见
+   ADR-0064。抽取之后这里只剩 `pub use`，顺序与理由不变；`[terminal] shell` 同时是工具
+   侧解释器的覆盖，避免「终端是 zsh、agent 的命令跑在 sh 里」。
 
    上限不是形式主义：GUI 空闲已 293MB RSS，每个终端 scrollback 约 2–4MB。开 8 个
    +15MB 可接受；不限的话 20 个终端就是 +400MB。
@@ -5374,3 +5473,315 @@ ADR-0058 §4 与 ADR-0062 §2 已经定过的同一条：视图维度与任务�
 
 - H 的快捷键：等界面落地、实际用一段时间再判断是否需要直选键。
 - 正式产品名（现为 `AI 工具`）。
+
+## ADR-0064：shell 环境——解释器跟着终端探测，环境采样一次（2026-11-10）
+
+**状态**：Accepted（2026-11-10）。本轮只改 `run_shell` 一侧：解释器探测、环境采样与注入、
+名字级审计。`[shell]` 只有采样开关，**没有解释器这一项**。
+
+**来源**：`derived`（由现有代码、实测与用户反馈推导）；`black-box`（`env -0` 采样、
+「值不进日志、只记名字」的审计形态参考自 dsh 的 shell 集成方式）。
+
+**背景**
+
+`qc gui` 从 Dock / Finder 启动时，进程环境是 launchd 给的：没有 `JAVA_HOME`、`GOROOT`、
+`COT_HOME`，`PATH` 是最小集。用户在自己的终端里跑 `c`（`. ~/cot/bin/activate`）之后才有
+那套变量；GUI 里没有这一步，于是 `run_shell` 跑出来的命令看不到任何工具链。
+
+更糟的是解释器。`crates/qcode-tools/src/shell.rs` 的 `shell_invocation()` 固定返回
+`("sh", ["-c", command])`。`sh` 不认 `[[ ]]`、`set -o pipefail`、数组与关联数组；用户从
+zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像是命令本身写错了。
+
+第三条是安全边界。同一文件里 `command.env_clear()` 之后只注入 12 个白名单变量，注释写着
+“so API keys in the parent process cannot be read by `env`”。这条边界是故意的，也是本 ADR
+要**撤回**的东西——见「撤回的安全假设」。
+
+而「探测」这件事代码里早就有了：`crates/qcode-terminal/src/shell.rs` 的
+`detect_with(&dyn Probe, Option<&str>)`，顺序是「配置 → 父进程链 → 登录 shell
+（`getpwuid_r`；macOS 账户在 Open Directory 里，`/etc/passwd` 查不到）→ `$SHELL` →
+`/bin/sh`」。终端视图用它决定开哪个 shell，`run_shell` 却另走一条硬编码的 `sh`。同一个
+问题两个答案——先把这个修掉，才谈得上环境。
+
+**决定**
+
+1. **解释器不配置，跟终端用同一套探测**
+
+   把探测部分抽成 `crates/qcode-shell`（只依赖 `libc`）：`detect`、`detect_with`、
+   `System`、`enclosing_shell`、`login_shell`、`clean_path`、`resolve_in_path`、
+   `process_cwd`、`resolve_start_cwd`。`crates/qcode-terminal/src/shell.rs` 变成
+   `pub use qcode_shell::*;`，现有调用点一行不改。
+
+   `qcode-tools` 依赖 `qcode-shell`，**不依赖** `qcode-terminal`：后者带着
+   `alacritty_terminal`，为了取一个 shell 路径把终端模拟器拖进工具链不值得。
+
+   `run_shell` 调 `detect_with(&System, terminal_shell_override)`：`[terminal] shell`
+   是同一次探测的覆盖，终端与工具共用一个壳。探测不到（Windows 或极端容器）时退回今天
+   的 `sh -c`。
+
+   配套：`shell_invocation()` 从 `("sh", ["-c", cmd])` 变成 `(detected, ["-c", cmd])`。
+   不加 `-l`：环境由第 3 条的采样提供，每条命令都登录一次只会重复跑 rc、变慢且注入噪声。
+
+2. **`[shell]` 只有采样开关**
+
+   ```toml
+   [shell]
+   env_sampling = "auto"          # auto | off
+   env_command = ""               # 覆盖采样脚本；空 = 按 shell 自动拼
+   env_timeout_ms = 5000
+   env_ttl_secs = 600             # 0 = 只在会话开始与 rc 变化时重采
+   env_include = ["COT_*", "JAVA_HOME", "GOROOT", "M2_HOME"]
+   env_exclude = ["_", "PWD", "OLDPWD", "SHLVL", "RANDOM", "SECONDS"]
+   env_sample_sandboxed = false
+   audit = "names"                # names | off
+   ```
+
+   没有 `program`。用户要换壳就去改 `[terminal] shell`——那是同一个探测的覆盖，两个
+   消费者都跟着变，不会出现「终端是 zsh、工具是 bash」。
+
+   自动拼出来的采样命令：zsh / bash / fish 用 `{shell} -lic 'env -0'`；sh 系（dash、
+   ash）用 `{shell} -lc 'env -0'`（没有 rc 可读，`-i` 只会带来噪声）。
+
+3. **采样一次，注入子进程**
+
+   会话开始（第一个 turn 之前）采一次，结果缓存在 `ShellEnvCache` 里；`RunShell` 每次
+   启动子进程时把快照写进环境。采样命令在**独立进程**里跑，超时与退出码都要检查，绝不
+   让 turn 等它超过 `env_timeout_ms`。
+
+   注入顺序（后者覆盖前者）：
+
+   ```
+   env_clear()
+   → ENV_ALLOWLIST（今天的 12 项，作为「没配采样时」的基线）
+   → 快照
+   → env_include 从 qc 进程直通（仅当 qc 自己带着这些变量）
+   → TMPDIR / TMP / TEMP 与网络代理（必须由我们赢，否则沙箱与代理会失效）
+   ```
+
+   `env_exclude` 在快照落缓存前生效，用于去掉 `PWD`/`SHLVL`/`_` 这类每条命令都变的项。
+
+4. **解析按 NUL 分块，不按行**
+
+   `env -0` 用 NUL 分隔，`PATH` 里的空格、带换行的证书、`PS1` 都不会把解析打散。解析
+   规则：按 NUL 切块 → 每块以**第一个** `=` 分成名字与值 → 名字为空、含空格/换行、或
+   整块没有 `=` 的丢弃。这一条同时解决「`-lic` 跑 rc 时把欢迎语 / `echo` 输出混进
+   stdout」的问题：噪声块没有 `=`，自然被丢掉。
+
+5. **失效与降级**
+
+   顺序即优先级：
+
+   1. 会话开始必采（`env_sampling = "auto"` 时）；
+   2. **rc 指纹**：每个 turn 开始 `stat` 一次 `$ZDOTDIR/.zshrc`、`~/.zshrc`、
+      `~/.zprofile`、`~/.zshenv`、`~/.bash_profile`、`~/.bashrc`、`~/.profile` 的
+      mtime+size，任一变化即失效；
+   3. **TTL**：`env_ttl_secs` 到期重采（覆盖 `nvm use`、换 toolchain 这类不碰 rc 的变化）；
+   4. **手动刷新**：`qc shell-env --refresh` 与设置页按钮。
+
+   采样失败（非零退出、超时、解析空）**不中断命令**：沿用上一份快照并记 `warn`；首次就
+   失败则保持白名单基线，并在会话顶部给一条 notice——不能静默降级。
+
+6. **白名单仍在，但排在快照之下**
+
+   `ENV_ALLOWLIST` 保留，作为「`env_sampling = "off"` 或采样失败」时的兜底，也负责那些
+   不管用户 shell 怎么配都必须存在的变量（`HOME`、`TERM`）。顺序见第 3 条：快照可以覆盖
+   白名单，但 `TMPDIR` 与代理永远最后写。
+
+7. **审计只记名字，值不进日志**
+
+   会话日志新增事件：
+
+   ```json
+   {"type":"shell_env_sampled","data":{"source":"command","program":"/bin/zsh",
+     "count":43,"added":["JAVA_HOME","GOROOT"],"removed":["CARGO_HOME"],
+     "duration_ms":214,"cached":false,"error":null}}
+   ```
+
+   外加一条会话摘要：`环境：zsh -lic（43 项，PATH +12，JAVA_HOME 新增）`。
+
+   `qc shell-env` 在本地打印一张表（名字 + 脱敏值：前 4 个字符 + `…`）；`--full` 才显原值，
+   且只在 tty 下允许。
+
+   **system prompt 里不注入环境明细**：太贵，而且一旦进了上下文就等于进了模型可见面。
+   只注入一行「shell 环境来自 `zsh -lic`，完整列表用 `qc shell-env`」。
+
+8. **采样默认不进沙箱**
+
+   采样要拿的是「用户终端里的真实环境」，而 macOS 的 SBPL 会挡掉不少路径，沙箱内采出来的
+   世界会缺东西。所以 `env_sample_sandboxed = false` 是默认；在意「采样这一步也不该越权」
+   的人可以打开它，代价是快照与终端里的实际环境会有差异。
+
+   注意这不改变 `run_shell` 的沙箱：采样只是读环境，命令本身仍在原来的 sandbox 里跑。
+
+**实现注记（2026-11-10）**：审计目前落在进程日志（`tracing::info!`，只带
+`program`/`count`/`added`/`removed`/`duration_ms`），还没有写进会话日志。原因是采样发生在
+`RunShell` 执行期，那一刻手里没有会话写入者；要发 `shell_env_sampled` 事件就得把 writer
+穿进工具层，代价大于收益。会话日志事件列在 P2，可观测性先由 `qc shell-env` 与设置页的
+「采样一次」承担。
+
+**撤回的安全假设**
+
+本 ADR 明确撤回 `shell.rs` 顶部那条「`env_clear` 防止 API key 被 `env` 读到」的目标。采样
+之后，`DEEPSEEK_API_KEY`、`GITHUB_TOKEN` 这类变量会进 agent 的 shell 环境：
+
+- agent 可以直接 `echo $DEEPSEEK_API_KEY`，也可以被仓库里的 `AGENTS.md`、skill 文本、
+  依赖包里的提示词诱导把它写进文件或网络请求；
+- 这不是「漏洞」，是**选定的行为**：用户认为「工具链可用」比「密钥不可见」重要。
+
+补偿与边界：
+
+- `env_sampling` 可以设成 `"off"`，回到今天的白名单行为；
+- **值永远不进日志**（审计只记名字），所以泄漏面是「模型上下文与它写的文件」，不是日志；
+- `qc shell-env` 的 `--full` 只在本机 tty 下打印原值；
+- 不做 secret 过滤：半吊子的过滤（按 `*_KEY` 匹配）会给人虚假的安全感，也让
+  `DATABASE_URL` 这种带口令的变量漏掉。要么采、要么不采，用户选。
+
+**边界**
+
+- 只认 `env -0` 的输出格式；`env_command` 若输出别的格式，解析结果就是空的（审计里有
+  `count: 0` 可查）。
+- 不做「每条命令重采」：那是 A 方案的代价（慢、噪声），本 ADR 明确不做。
+- 不做 per-project 环境文件（`.qcode/env`）：与 shell 漂移，且要用户手工维护。
+- Windows 的采样模板不在本轮范围：`pwsh` 下没有 `env -0`，等有人真在 Windows 上要。
+- 采样失败不改变退出码、不阻塞 turn；命令照跑。
+- 环境快照**不写进 session 日志**，因此 `qc sessions rollback` 与它无关。
+
+**验证计划**
+
+1. `env -0` 解析：值里含空格 / 换行 / `=`；重复键后者胜；缺 `=` 的块丢弃；rc 噪声丢弃。
+2. `include` / `exclude` 的 glob 语义（`COT_*` 前缀、精确名、大小写敏感）。
+3. `env_command` 非零退出 → 保留旧快照 + 审计 `error`，命令仍可跑。
+4. `env_command` 超时 → 同上，且不拖慢 turn。
+5. rc 文件 mtime 变化 → 下一次取样重新执行（临时目录伪造 rc）。
+6. 解释器跟随探测：`[[ 1 == 1 ]]` 在 zsh 下通过、在 `sh` 下失败（证明壳真的换了）。
+7. 快照的 `PATH` 覆盖白名单，但 `TMPDIR` 与代理仍由我们胜出。
+8. `env_sampling = "off"` → 与今天逐字节一致（回归基线）。
+9. 真机：会话里 `echo $JAVA_HOME` 有值；`LANG=zh_CN.UTF-8 zsh -c 'echo $LANG'` 携带；
+   故意 `echo ${DEEPSEEK_API_KEY:0:4}` 有输出（记录这是选定行为）。
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 每条命令都 `-lic` | 每个命令跑一次 rc：慢、刷屏、`cd` 之类副作用重复执行 |
+| 只放宽白名单 | Dock 启动的父进程里**根本没有**这些变量，白名单放宽也拿不到 |
+| AGENTS.md 里写「先 `source ~/cot/bin/activate`」 | 靠模型自觉，不可验证，且每次会话都要烧上下文 |
+| 默认走 direnv / mise | 外部依赖；而「装 direnv 之前就得有环境」是鸡生蛋 |
+| 每个仓库 `.qcode/env` | 与用户 shell 漂移，成为第二份真相 |
+
+**待定**
+
+- `env_sampling = "auto"` 的首个 turn 成本（100–400ms）是否值得改成「先跑、后台采、下一
+  turn 生效」。先按同步做，用真机数据再判断。
+- Windows 的采样模板与 ConPTY 的配合。
+- 是否允许项目级关闭（`.qcode/config.toml` 的 `[shell].env_sampling = "off"`）——倾向允许。
+- `qc shell-env --full` 是否需要二次确认（当前只要求 tty）。
+
+## ADR-0065：配置文件只写覆盖项——schema 2（2026-11-10）
+
+**状态**：拟议。分三期落地，第一期只加 `schema` 与 `qc config migrate`。
+
+**来源类别**：derived。来自现状代码（`crates/qcode-kernel/src/config`）与用户反馈「配置
+文件应该如何简化」——今天的默认文件一百来行，其中大半是 resolver 本来就能填的默认值。
+
+**背景**
+
+一个刚装好的 qcode 会写出这样一份文件：`[providers.deepseek]` 里有 `base_url`、
+`api_key_env`、`default_model`，还有一张 `[[providers.deepseek.models]]` 表，每项重复
+`id`、`name`、`context_window`；`[default-model]` 又写一遍 provider 与 model；
+`[sandbox]` 管进程沙箱而 `[network]` 管出口，用户的心智模型却是「这个 shell 能不能上网」。
+
+三个具体的痛：
+
+1. **默认模型有两个来源。** `[providers.X].default_model` 与 `[default-model]` 都声明默认，
+   谁赢要靠 `sync_default_model` 在写盘时替用户对齐（ADR-0055）。这是把一个数据模型问题
+   变成了同步问题。
+2. **`models` 表在重复 catalog 已经知道的事。** `/models` 与内置 catalog 能给出
+   `name`/`context_window`/`max_tokens`，文件里再抄一遍，一旦上游改名就变成两份真相
+   （见 ADR-0055 的「后续：id 与显示名」）。
+3. **网络与沙箱分裂。** 用户配的是「让 agent 能装包」，而这既要有出口代理（`[network]`）
+   又要决定 `run_shell` 是否进沙箱（`[sandbox]`），两处分开写容易只改一半。
+
+**决定**
+
+1. **`schema = 2` 取代 `version`。** 缺省视为 1；v1 文件按 v1 解释，写回仍写 v1，直到用户
+   显式 `qc config migrate`。理由：读兼容可以永远做，写升级必须由用户点一次。
+2. **provider 段只写覆盖项。** `[providers.deepseek]` 里可以只有 `api_key_env = "DEEPSEEK_API_KEY"`；
+   `base_url`、协议、`models` 缺省取 catalog。没写的键不是「空」，是「用默认」。
+3. **删 `[providers.*].default_model`。** 默认模型只由 `[default-model]` 或设置页卡片上的
+   「设为默认」写；读 v1 时把它当作 `[default-model]` 的候选，写 v2 时不再产出。
+4. **`models = ["deepseek-flash", "deepseek-v4-pro"]` 简写。** 只有需要覆盖元数据时才写表
+   （`models = [{ id = "…", name = "…" }]`）；探测结果写回时只用简写。
+5. **`[sandbox]` 收编 `[network]`。** 新键 `network = "on" | "off" | "strict"`（`strict` 即今
+   天的 deny 出口），旧的 `[network]` 段读入时映射过来，v2 不再写出。
+6. **审批规则用简写表。** `allow = ["run_shell:echo *"]`、`deny = ["run_shell:rm -rf *"]`，
+   等价于今天的规则表；需要「一次/会话」这类粒度时才退回表。
+7. **`pricing` 仍须显式声明，缺省时由 `qc doctor` 提示。**
+   原方案是「缺省取内置 catalog」，实现时否掉了：仓库里没有可信的价格来源，猜一个数会让
+   `--max-cost` 默默算错，比留空更糟（留空时成本显示为 `—`，用户知道它不知道）。
+   因此 `[pricing]` 保持今天的语义——写了才算，没写就是 `None`；`qc doctor` 在缺省时给一行
+   「没有价格，`--max-cost` 不会生效；在 `[pricing]` 里声明或忽略这条」。等有了可核对的价目表
+   （例如随 release 分发的快照，带来源与日期）再把缺省值加回来。
+8. **写回时删空表。** 与默认值相同的段不落盘；`qc config init` 写出的是空文件加注释。
+9. **`qc config show --effective` 是唯一权威视图。** 打印合并后的值与来源（file/env/flag/catalog），
+   `--json` 给脚本用。
+
+**实现注记（2026-11-10）**
+
+- 键名：`Config.schema` 带 `#[serde(alias = "version")]`，两种拼写都读得懂。`migrate` 遇到
+  用 `version` 的文件**保留这个键名**、只把值改成 2——改名会用 `toml_edit` 的 `insert`
+  把键上挂着的注释一起丢掉；而 alias 让两种拼写等价，保留旧名不损失语义。
+- `models` 的两种写法由 `models_from_entries_or_ids` 统一接受（`["id"]` 或
+  `[{ id, name, context_window }]`，可混写）；`migrate` 只把「只有一个 `id`」的表折成
+  字符串数组，带元数据的表原样保留。
+- 网络：`[sandbox] network` 接受 `off`/`proxy`/`strict`/`open`，也接受旧布尔（`true` 读作
+  `open`，`false` 读作「没表态」）。这四个值折成 `Config::network_plan() -> NetworkPlan { proxy, strict, raw }`，
+  `build_egress` 与 `sandbox_network` 都只读这份计划，不再各读一个键。缺省（没写这个键）时仍按
+  `[network] mode/enabled` 推导，所以 v1 文件的行为不变。`migrate` 把 `[network] enabled/mode`
+  折成 `[sandbox] network` 并删掉这两个键，**保留** `allow`/`allow_private`/`unknown`/`audit`——
+  这个开关回答的是「能不能上网」，不是「能上哪些主机」。
+- 审批简写：`[approval] allow = ["run_shell:echo *"]` / `deny = [...]` 在 `build_policy` 里展开成
+  `Rule`（`run_shell` 用 `command_prefix`，其他工具用 `path_glob`，裸工具名只匹配工具），id 为
+  `allow-0`/`deny-1` 这样的序号；`[[approval.rules]]` 保留给需要 scope 或多条件的情况。
+- 写回：空段不写。`ConfigEdit::apply_config` 末尾的 `prune_empty_sections()` 删掉空的
+  `[providers]`/`[pricing]`，以及既无 `rules` 又无 `allow`/`deny` 的 `[approval]`；只有
+  `id` 的模型表写成 `models = ["id"]`，带 `name`/`context_window`/`max_tokens` 的才写
+  `[[providers.<name>.models]]` 表。新建文件写 `schema = 2`，已有 `version` 的文件保持
+  那个拼写（`schema` 是它的别名）。
+- 设置页写回时**不改 schema**：`ConfigEdit::apply_config` 只在文件里本就有 `schema`、
+  或完全没有版本键时才写 `schema`，否则保持原样——升级只发生在 `qc config migrate`。
+
+**不变式**
+
+- v1 与 v2 都能读，任何读路径都不因 schema 不同而改变语义。
+- catalog 是默认值的唯一来源；文件只覆盖，不复制。
+- `qc config show` 永远显示**合并后**的结果，不显示「文件里写了什么」。
+
+**迁移**
+
+- `qc config migrate`：读 v1 → 写 v2，先写 `config.toml.bak`，幂等；只动用户文件
+  （`~/.config/qcode/config.toml`），项目级 `.qcode.toml` 只读、不改。
+- 认不出的键保留并在 stderr 列出，不静默丢弃。
+- 迁移不自动执行：`qc config show` 在 v1 文件上提示一句「可以 `qc config migrate`」。
+
+**分期与验收**
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| P1 | `schema` 字段、`--effective`、`migrate` 的机械部分（删 `default_model`、`models` 简写） | v1 文件 migrate 后逐字段等价；再读一遍不报 unknown key |
+| P2 | `[sandbox] network`、审批简写、pricing catalog | 旧 `[network]` 读入等价；简写规则与规则表展开结果相同 |
+| P3 | 写回删空表、设置页按 v2 渲染 | `qc config init` 产物为空文件；设置页保存不写默认值 |
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 不动，只在注释里说明默认值 | 文件仍是两份真相；用户改 A 忘记改 B 的问题不会消失 |
+| 只做 `--effective`，不改 schema | 解决了「看不清」但没解决「写重复」，文件只会更长 |
+| 换成 JSON5 / YAML | 换格式不解决数据模型重复，还多一个迁移 |
+| 全部收进 CLI flag | 用户要的是可版本化的项目配置，不是 shell history |
+
+**待定**
+
+- `version` 是否保留为 `schema` 的别名（旧脚本可能写 `version`）。
+- 项目级 `.qcode.toml` 是否也升 schema 2，还是永远按 v1 只读。
+- `migrate` 是否提供 `--dry-run` 输出 diff（倾向提供）。

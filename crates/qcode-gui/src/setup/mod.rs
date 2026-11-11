@@ -6,12 +6,20 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
+// `*` re-exports `gpui_macros::test` — a proc-macro attribute named `test`.
+// Anything that globs this module (`use super::*` in a child, or a test module
+// added straight to one of these files) resolves `#[test]` to that macro, whose
+// expansion re-emits an unqualified `#[test]`: infinite recursion until the
+// crate's `recursion_limit` trips. Test modules here must import names
+// explicitly. See `models::label_tests`.
 use gpui_kit::{div, prelude::*, *};
 use qcode_core::event::Scope;
 use qcode_core::policy::{Action, Rule};
 use qcode_kernel::config::{self, Config, NetworkMode, ProviderConfig, UnknownHost};
 use qcode_kernel::config_edit::ConfigEdit;
 use qcode_tools::sandbox::SandboxMode;
+
+use qcode_kernel::config::SandboxNetworkMode;
 use qcode_tools::web_search::SearchBackend;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -95,7 +103,13 @@ pub struct SetupView {
     /// discovered model ids (one per line) or the error text.
     probe_result: Option<String>,
     /// Channel the probe thread reports through; drained while rendering.
-    probe_rx: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    probe_rx: Option<
+        std::sync::mpsc::Receiver<Result<Vec<qcode_providers::discovery::ModelCandidate>, String>>,
+    >,
+    /// `试一次` for the shell environment (ADR-0064): the summary line, then
+    /// the channel the worker thread reports through.
+    shell_probe_note: Option<String>,
+    shell_probe_rx: Option<std::sync::mpsc::Receiver<String>>,
     /// Models-section state (settings mode, provider card list).
     /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
@@ -116,7 +130,7 @@ pub struct SetupView {
     /// Whether the custom-provider declaration card is open.
     declaring: bool,
     /// Probe candidate model ids (U3): open while Some, adopted on confirm.
-    probe_candidates: Option<Vec<String>>,
+    probe_candidates: Option<Vec<qcode_providers::discovery::ModelCandidate>>,
     /// Probe candidates the user picked to adopt.
     probe_picked: HashSet<String>,
     /// Probe candidate search-box text.
@@ -133,6 +147,10 @@ pub struct SetupView {
     /// Model drafts on the declaration card (adopted only on create).
     custom_models: Vec<ModelRowState>,
     custom_error: Option<String>,
+    /// The default-model picker's "type a model name" box. A model that is in no
+    /// provider's catalog (a brand-new release, a gateway alias) can only be
+    /// reached by typing it, and typing it is exactly what the picker lacked.
+    default_model_input: Entity<InputState>,
     /// Set when the settings window is closing: background tasks (the model
     /// probe poll loop, auto-save debounce) short-circuit instead of touching
     /// the removed window, which GPUI would report as "window not found".
@@ -335,6 +353,8 @@ impl SetupView {
             saved: false,
             probe_result: None,
             probe_rx: None,
+            shell_probe_note: None,
+            shell_probe_rx: None,
             editing_provider: None,
             editor_expanded: false,
             provider_error: None,
@@ -353,6 +373,7 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
+            default_model_input: input(window, cx, String::new(), "输入模型名"),
             closing: false,
             close_after_save_error: false,
             pending_auto_save: None,
@@ -364,6 +385,17 @@ impl SetupView {
             reach_rx: None,
             _input_subscriptions: Vec::new(),
         };
+        // The free-text default-model row warns when the typed name is not a
+        // known id for that provider; that warning lives in `SetupView`, so it
+        // has to hear about every keystroke in the input.
+        view._input_subscriptions.push(cx.subscribe(
+            &view.default_model_input,
+            |_view, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
         for field in forms::FIELDS {
             let key = field.path.join(".");
             match field.kind {

@@ -9,6 +9,9 @@ impl App {
                 self.status.provider = started.provider.clone();
                 self.status.model = started.model.clone();
             }
+            // ADR-0064: a diagnostic for the log and `qc shell-env`; the
+            // transcript has no row for it (it would be noise on every turn).
+            EventKind::ShellEnvSampled(_) => {}
             EventKind::TurnStarted(_) => {
                 self.status.turn = event.turn;
                 self.status.running = true;
@@ -239,6 +242,7 @@ impl App {
     pub fn apply_child(&mut self, event: &Event) {
         let group = event.session.clone();
         match &event.kind {
+            EventKind::ShellEnvSampled(_) => {}
             EventKind::SessionStarted(started) => {
                 if !self.child_groups.iter().any(|known| known == &group) {
                     self.child_groups.push(group.clone());

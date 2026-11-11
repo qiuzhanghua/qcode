@@ -48,6 +48,11 @@ pub(crate) fn secret_input(
 pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) -> String {
     match path {
         ["context", "window_tokens"] => config.context.window_tokens.to_string(),
+        ["sandbox", "network"] => config
+            .sandbox
+            .network_mode_with(&config.network)
+            .label()
+            .to_string(),
         ["agent", "max_turns"] => config.agent.max_turns.to_string(),
         ["agent", "max_cost_usd"] => config
             .agent
@@ -88,6 +93,22 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         ["update", "repo"] => config.update.repo.clone(),
         ["update", "base_url"] => config.update.base_url.clone().unwrap_or_default(),
         ["terminal", "shell"] => config.terminal.shell.clone(),
+        ["shell", "env_sampling"] => match config.shell.env_sampling {
+            qcode_tools::shell_env::EnvSampling::Auto => "auto".to_string(),
+            qcode_tools::shell_env::EnvSampling::Off => "off".to_string(),
+        },
+        ["shell", "env_command"] => config.shell.env_command.clone(),
+        ["shell", "env_timeout_ms"] => config.shell.env_timeout_ms.to_string(),
+        ["shell", "env_ttl_secs"] => config.shell.env_ttl_secs.to_string(),
+        ["approval", "allow"] => config.approval.allow.join("\n"),
+        ["approval", "deny"] => config.approval.deny.join("\n"),
+        ["shell", "env_include"] => config.shell.env_include.join("\n"),
+        ["shell", "env_exclude"] => config.shell.env_exclude.join("\n"),
+        ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed.to_string(),
+        ["shell", "audit"] => match config.shell.audit {
+            qcode_tools::shell_env::ShellAudit::Names => "names".to_string(),
+            qcode_tools::shell_env::ShellAudit::Off => "off".to_string(),
+        },
         ["terminal", "start_cwd"] => config.terminal.start_cwd.clone(),
         ["terminal", "font"] => config.terminal.font.clone(),
         _ => options.first().unwrap_or(&"").to_string(),
@@ -97,7 +118,6 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
 pub(crate) fn scalar_bool(config: &Config, path: &[&str]) -> bool {
     match path {
         ["agent", "snapshot_shell"] => config.agent.snapshot_shell,
-        ["sandbox", "network"] => config.sandbox.network,
         ["network", "enabled"] => config.network.enabled,
         ["network", "allow_private"] => config.network.allow_private,
         ["network", "audit"] => config.network.audit,
@@ -126,6 +146,30 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
         ["terminal", "shell"] => config.terminal.shell = value.to_string(),
         ["terminal", "start_cwd"] => config.terminal.start_cwd = value.to_string(),
         ["terminal", "font"] => config.terminal.font = value.to_string(),
+        ["shell", "env_sampling"] => {
+            config.shell.env_sampling = match value {
+                "off" => qcode_tools::shell_env::EnvSampling::Off,
+                _ => qcode_tools::shell_env::EnvSampling::Auto,
+            };
+        }
+        ["shell", "env_command"] => config.shell.env_command = value.to_string(),
+        ["shell", "env_timeout_ms"] => {
+            config.shell.env_timeout_ms = parse(value, "shell.env_timeout_ms")?
+        }
+        ["shell", "env_ttl_secs"] => {
+            config.shell.env_ttl_secs = parse(value, "shell.env_ttl_secs")?
+        }
+        ["approval", "allow"] => config.approval.allow = lines_from(value),
+        ["approval", "deny"] => config.approval.deny = lines_from(value),
+        ["shell", "env_include"] => config.shell.env_include = lines_from(value),
+        ["shell", "env_exclude"] => config.shell.env_exclude = lines_from(value),
+        ["shell", "env_sample_sandboxed"] => config.shell.env_sample_sandboxed = value == "true",
+        ["shell", "audit"] => {
+            config.shell.audit = match value {
+                "off" => qcode_tools::shell_env::ShellAudit::Off,
+                _ => qcode_tools::shell_env::ShellAudit::Names,
+            };
+        }
         ["terminal", "max_scrollback"] => {
             config.terminal.max_scrollback = parse(value, "terminal.max_scrollback")?
         }
@@ -139,7 +183,7 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             };
         }
         ["sandbox", "mode"] => config.sandbox.mode = parse_sandbox(value)?,
-        ["sandbox", "network"] => config.sandbox.network = value == "true",
+        ["sandbox", "network"] => config.sandbox.network = Some(parse_sandbox_network(value)?),
         ["sandbox", "extra_writable"] => {
             config.sandbox.extra_writable = lines_from(value)
                 .into_iter()
@@ -220,6 +264,50 @@ pub(crate) fn stale_model_default(name: &str, model: Option<String>) -> Option<S
     (!stale).then_some(model)
 }
 
+/// 让 `[default-model].model` 跟着它所指的那个 provider 的 `default_model` 走。
+///
+/// 读配置时 `[default-model].model` **优先于** `providers.*.default_model`
+/// （见 `config::resolve`，provider 名匹配时前者先被选中）。于是设置页里把
+/// 默认 provider 的「Default model」改成别的值会变成一条假消息：保存成功、
+/// 表单显示新值、下一次对话请求的还是旧模型。两条路只能有一个真话，这里让
+/// provider 那一行当唯一入口，保存时把它同步进 `[default-model]`。
+///
+/// 只在行里有值时才同步。行被清空表示「交给目录默认」——此时
+/// `[default-model].model` 是用户从模型菜单单独钉的，一次无关的表格自动保存
+/// 不该顺手把它抹掉。
+pub(crate) fn sync_default_model(
+    default: &mut config::DefaultModelConfig,
+    name: &str,
+    model: Option<&str>,
+) -> bool {
+    let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
+        return false;
+    };
+    if default.provider.as_deref() != Some(name) || default.model.as_deref() == Some(model) {
+        return false;
+    }
+    default.model = Some(model.to_string());
+    true
+}
+
+/// 某一行的 `default_model` 是否被 `[default-model].model` 压住，返回压着它
+/// 的那个模型名。
+///
+/// 只有「这一行就是默认 provider」时才可能被压：`config::resolve` 里
+/// `[default-model].model` 只在 provider 名匹配时生效。
+pub(crate) fn overridden_default_model<'a>(
+    default: &'a config::DefaultModelConfig,
+    name: &str,
+    own: &str,
+) -> Option<&'a str> {
+    let global = default.model.as_deref()?;
+    if default.provider.as_deref() != Some(name.trim()) {
+        return None;
+    }
+    let own = own.trim();
+    (!own.is_empty() && own != global).then_some(global)
+}
+
 pub(crate) fn optional(
     row: &RowState,
     key: &'static str,
@@ -274,6 +362,16 @@ pub(crate) fn parse_f64(
     cx: &Context<SetupView>,
 ) -> Result<f64, String> {
     parse(&cell(row, key, cx), key)
+}
+
+pub(crate) fn parse_sandbox_network(value: &str) -> Result<SandboxNetworkMode, String> {
+    match value {
+        "off" => Ok(SandboxNetworkMode::Off),
+        "proxy" => Ok(SandboxNetworkMode::Proxy),
+        "strict" => Ok(SandboxNetworkMode::Strict),
+        "open" => Ok(SandboxNetworkMode::Open),
+        other => Err(format!("unknown network mode {other}")),
+    }
 }
 
 pub(crate) fn parse_sandbox(value: &str) -> Result<SandboxMode, String> {

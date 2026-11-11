@@ -30,8 +30,8 @@ pub(crate) fn print_event(event: &Event, include_raw: bool) {
 
 pub(crate) fn print_config(config: &config::Config) {
     println!(
-        "version = {} (this build supports {})",
-        config.version,
+        "schema = {} (this build supports {})",
+        config.schema,
         config::CONFIG_VERSION
     );
     println!("default_provider = {:?}", config.default_provider);
@@ -42,9 +42,17 @@ pub(crate) fn print_config(config: &config::Config) {
             provider.base_url, provider.default_model, provider.api_key_env, provider.stream_usage
         );
     }
+    let plan = config.network_plan();
     println!(
-        "network.enabled = {}, allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
-        config.network.enabled,
+        "sandbox.network = {} (proxy: {}, raw: {})",
+        config.sandbox_network_mode().label(),
+        plan.proxy,
+        plan.raw
+    );
+    // `[sandbox] network` decides whether there is network at all; this line is
+    // the part the switch does not cover (ADR-0065).
+    println!(
+        "network.allow = {:?}, allow_private = {}, unknown = {:?}, audit = {}",
         config.network.allow,
         config.network.allow_private,
         config.network.unknown,
@@ -73,7 +81,7 @@ pub(crate) fn print_config(config: &config::Config) {
     println!(
         "sandbox.mode = {}, network = {}, extra_writable = {:?}",
         config.sandbox.mode.label(),
-        config.sandbox.network,
+        config.sandbox_network_mode().label(),
         config.sandbox.extra_writable
     );
     println!(

@@ -102,7 +102,7 @@ const SANDBOX_MODES: &[&str] = &["none", "landlock", "bwrap"];
 const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec"];
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const SANDBOX_MODES: &[&str] = &["none"];
-const NETWORK_MODES: &[&str] = &["off", "proxy", "strict"];
+const NETWORK_MODES: &[&str] = &["off", "proxy", "strict", "open"];
 const UNKNOWN_HOSTS: &[&str] = &["ask", "deny", "allow"];
 const SEARCH_BACKENDS: &[&str] = &["brave", "tavily", "searxng"];
 const RULE_ACTIONS: &[&str] = &["allow", "ask", "deny"];
@@ -166,6 +166,62 @@ pub const FIELDS: &[FieldSpec] = &[
         help: "Open tabs beyond this are refused",
     },
     FieldSpec {
+        path: &["shell", "env_sampling"],
+        label: "Shell environment",
+        page: Page::Appearance,
+        kind: FieldKind::Select(&["auto", "off"]),
+        help: "auto asks the login shell once per session; off keeps the allow-list only",
+    },
+    FieldSpec {
+        path: &["shell", "env_command"],
+        label: "Sampling command",
+        page: Page::Appearance,
+        kind: FieldKind::Text,
+        help: "Empty derives `{shell} -lic 'env -0'`; {shell} is substituted",
+    },
+    FieldSpec {
+        path: &["shell", "env_timeout_ms"],
+        label: "Sampling timeout (ms)",
+        page: Page::Appearance,
+        kind: FieldKind::Integer,
+        help: "A timeout keeps the previous snapshot instead of blocking the turn",
+    },
+    FieldSpec {
+        path: &["shell", "env_ttl_secs"],
+        label: "Snapshot lifetime (s)",
+        page: Page::Appearance,
+        kind: FieldKind::Integer,
+        help: "0 keeps the first snapshot until an rc file changes",
+    },
+    FieldSpec {
+        path: &["shell", "env_include"],
+        label: "Pass-through variables",
+        page: Page::Appearance,
+        kind: FieldKind::Lines,
+        help: "One prefix (COT_*) or exact name per line, copied from this process",
+    },
+    FieldSpec {
+        path: &["shell", "env_exclude"],
+        label: "Dropped variables",
+        page: Page::Appearance,
+        kind: FieldKind::Lines,
+        help: "Noise such as PWD or SHLVL, removed from the snapshot",
+    },
+    FieldSpec {
+        path: &["shell", "env_sample_sandboxed"],
+        label: "Sample inside the sandbox",
+        page: Page::Appearance,
+        kind: FieldKind::Bool,
+        help: "Off by default: the sandbox hides most of the user's real environment",
+    },
+    FieldSpec {
+        path: &["shell", "audit"],
+        label: "Environment audit",
+        page: Page::Appearance,
+        kind: FieldKind::Select(&["names", "off"]),
+        help: "names records variable names and changes, never values",
+    },
+    FieldSpec {
         path: &["ui", "busy_delivery"],
         label: "Busy delivery",
         page: Page::Agent,
@@ -188,10 +244,24 @@ pub const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         path: &["sandbox", "network"],
-        label: "Allow network in sandbox",
+        label: "Network",
         page: Page::NetworkSandbox,
-        kind: FieldKind::Bool,
-        help: "Ignored when network.mode = strict",
+        kind: FieldKind::Select(NETWORK_MODES),
+        help: "off: no egress; proxy: through the proxy; strict: proxy only (macOS); open: raw sockets",
+    },
+    FieldSpec {
+        path: &["approval", "allow"],
+        label: "Always allow",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Lines,
+        help: "One `tool:pattern` per line, e.g. run_shell:echo * (ADR-0065)",
+    },
+    FieldSpec {
+        path: &["approval", "deny"],
+        label: "Never allow",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Lines,
+        help: "Same shorthand; a deny wins over an allow",
     },
     FieldSpec {
         path: &["sandbox", "extra_writable"],

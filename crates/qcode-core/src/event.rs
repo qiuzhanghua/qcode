@@ -23,7 +23,11 @@ use crate::task::Root;
 /// v7 turns `UserMessage::attachments` into references into the attachment
 /// store (ADR-0061). No migration: the field was never written non-empty, so
 /// older logs simply omit it.
-pub const EVENT_SCHEMA_VERSION: u32 = 7;
+///
+/// v8 adds `ShellEnvSampled` (ADR-0064), an additive diagnostic: a v7 reader
+/// that ignores unknown kinds replays the log unchanged, and a log without the
+/// event simply means "sampling was off or never ran".
+pub const EVENT_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -69,6 +73,9 @@ pub enum EventKind {
     /// A one-off notice that the turn is approaching a budget. Persisted so a
     /// replay shows the same warning the live run did.
     BudgetHint(BudgetHint),
+    /// What the shell environment sampling produced for this turn (ADR-0064).
+    /// Names only: a value could be an API key, and the log outlives the turn.
+    ShellEnvSampled(ShellEnvSampled),
     Error(ErrorEvent),
 }
 
@@ -404,6 +411,33 @@ pub struct BudgetHint {
     pub max_cost_usd: Option<f64>,
     #[serde(default = "first_window")]
     pub window: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellEnvSampled {
+    /// The shell the sample came from, e.g. `/bin/zsh`.
+    pub program: String,
+    /// How many variables the snapshot holds.
+    pub count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    pub duration_ms: u64,
+    /// True when this turn reused a snapshot instead of running the shell.
+    #[serde(default)]
+    pub cached: bool,
+    /// Why the last attempt failed, when it did (the snapshot is then stale).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ShellEnvSampled {
+    /// Nothing worth a log line: sampling was off, or it produced no snapshot
+    /// and no failure (the first attempt in a brand-new session).
+    pub fn is_quiet(&self) -> bool {
+        self.count == 0 && self.error.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

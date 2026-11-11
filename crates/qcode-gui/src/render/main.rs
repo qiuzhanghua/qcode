@@ -246,6 +246,52 @@ impl Shell {
                     );
                 }
 
+                // 目录里没有的模型（新版本、网关别名）只能靠手输。搜索框里打字
+                // 找不到任何条目时，这一行让用户直接用打进去的名字开跑，而不是
+                // 以为「这个模型不能用」。它落在当前 provider 上——切换 provider
+                // 是上面那几行的职责。
+                let typed = query.trim().to_string();
+                if !typed.is_empty() {
+                    let already_listed = filtered
+                        .iter()
+                        .any(|(_, models)| models.iter().any(|model| model == &typed));
+                    if !already_listed {
+                        let p = current.0.clone();
+                        let m = typed.clone();
+                        let shell = shell.clone();
+                        let state_entity = state_entity.clone();
+                        rows.push(
+                            div()
+                                .id("model-menu-use-typed")
+                                .h(px(26.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .px_2()
+                                .rounded(cx.theme().radius)
+                                .gap_2()
+                                .cursor_pointer()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(sp(13.0))
+                                        .child(format!("使用「{typed}」（{p}）")),
+                                )
+                                .on_click(move |_event, window, cx| {
+                                    if let Some(shell) = shell.upgrade() {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.switch_model(p.clone(), m.clone(), cx);
+                                        });
+                                    }
+                                    if let Some(state) = state_entity.upgrade() {
+                                        state.update(cx, |state, cx| state.dismiss(window, cx));
+                                    }
+                                })
+                                .into_any_element(),
+                        );
+                    }
+                }
+
                 let search_input = search_input.clone();
                 v_flex()
                     .id("model-menu-content")
@@ -325,6 +371,15 @@ impl Shell {
                                     );
                                     if let Some((p, m)) = flat.get(shell.model_search_index) {
                                         shell.switch_model(p.clone(), m.clone(), cx);
+                                    } else {
+                                        // 列表为空（目录里没有这个模型）时 Enter 直接
+                                        // 用它打进去的名字，与下面那一行「使用「x」」
+                                        // 同义：手输的模型不该只能点鼠标。
+                                        let typed = shell.model_search_query.trim().to_string();
+                                        let provider = shell.ui.app.status.provider.clone();
+                                        if !typed.is_empty() {
+                                            shell.switch_model(provider, typed, cx);
+                                        }
                                     }
                                 });
                                 state.dismiss(window, cx);

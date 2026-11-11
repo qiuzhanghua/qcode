@@ -25,6 +25,17 @@ use qcode_terminal::alacritty_terminal::term::cell::Flags;
 use qcode_terminal::alacritty_terminal::vte::ansi::{Color as TermColor, NamedColor};
 
 use crate::shell::Shell;
+use crate::sp;
+
+/// Tab label size. Chrome, not content: the pane draws at `COMPOSER_TEXT_SIZE`
+/// and the tab is a caption above it, so it follows the same `sp` zoom axis the
+/// rest of the window's small text uses.
+const TAB_TEXT_SIZE: f32 = 13.0;
+
+/// Widest a tab gets before its title is ellipsized. A shell names its tab after
+/// the directory it is in, and those names are long; without a cap two tabs
+/// leave no room for the `+`.
+const TAB_MAX_WIDTH: f32 = 180.0;
 
 /// The 16 ANSI colours, xterm's defaults. Programs pick these by number, so they
 /// have to be the ones every other terminal shows.
@@ -203,6 +214,8 @@ impl Shell {
             .flex_row()
             .items_center()
             .gap_1()
+            .flex_1()
+            .min_w(px(0.0))
             .overflow_hidden();
         for (index, tab) in self.terminals.tabs.iter().enumerate() {
             let active = index == self.terminals.active;
@@ -214,8 +227,10 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_1()
+                    .min_w(px(0.0))
+                    .max_w(px(TAB_MAX_WIDTH))
                     .px_2()
-                    .py_1()
+                    .py(px(3.0))
                     .rounded_md()
                     .cursor_pointer()
                     .bg(if active {
@@ -224,12 +239,31 @@ impl Shell {
                         gpui_kit::transparent_black()
                     })
                     .text_color(if active { foreground } else { muted })
-                    .child(div().max_w(px(180.0)).overflow_hidden().child(label))
+                    // One line, always. A shell sets its title to the directory it
+                    // is in, and left to wrap that path turns the tab bar into a
+                    // two- or three-line block (ADR-0062 §4). The label is
+                    // `sp(13)` like every other piece of chrome: it is a caption
+                    // on the pane, not a heading.
+                    .child(
+                        div()
+                            .text_size(sp(TAB_TEXT_SIZE))
+                            .line_height(sp(TAB_TEXT_SIZE + 5.0))
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(label),
+                    )
                     .child(
                         div()
                             .id(("terminal-close", tab.id))
-                            .px_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(14.0))
+                            .h(px(14.0))
                             .rounded_sm()
+                            .text_size(px(12.0))
                             .hover(|this| this.bg(muted))
                             .child("×")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -249,22 +283,26 @@ impl Shell {
             .items_center()
             .gap_1()
             .px_2()
-            .py_1()
+            .py(px(3.0))
             .border_b_1()
             .border_color(border)
             .child(tabs)
             .child(
                 div()
                     .id("terminal-new")
-                    .px_2()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(20.0))
+                    .h(px(20.0))
                     .rounded_sm()
+                    .text_size(sp(TAB_TEXT_SIZE))
                     .cursor_pointer()
                     .text_color(muted)
                     .hover(|this| this.bg(secondary))
                     .child("+")
                     .on_click(cx.listener(|this, _, window, cx| this.new_terminal(window, cx))),
             )
-            .child(div().flex_1())
     }
 
     fn render_terminal_body(&self, cx: &mut Context<Self>) -> impl IntoElement {

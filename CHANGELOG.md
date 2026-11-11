@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.8.3 — 2026-11-11
+
+0.8.2 之后的事后检查：一个会让 `run_shell` 挂死的真 bug，加几处「门禁是绿的，
+但什么都没测」的收拾。
+
+- **后台进程组里 `run_shell` 会挂死，超时也救不回来**（0.8.2 引入的回归）。
+  ADR-0064 让 `run_shell` 跑在用户自己的 shell 里，环境采样器是 `$SHELL -lic env -0`。
+  `-i` 是必需的（`.zshrc` / `.bashrc` 里才有工具链 hook），但交互式 shell 会**直接
+  打开 `/dev/tty`**，不读 fd 0，所以 `Stdio::null()` 拦不住它。
+  - 触发条件是「`qc` 处于某个终端会话的后台进程组」：`make check &`、IDE 的 task
+    runner、管道化的运行、在终端里 `cmd &` 之后跑 `qc`。这时 `/dev/tty` 的读会把
+    `SIGTTIN` 发给采样器，采样器被 stop，**轮询它的父进程也被 stop**——`run_with_timeout`
+    的超时循环本身停了，于是 `env_timeout_ms` 永远不触发，整个进程挂到有人 `fg` 为止。
+  - 修法是 `pre_exec` 里 `setsid()`，让采样器进入独立会话、没有控制终端：`/dev/tty`
+    打开即 `ENXIO`，`-i` 退化成「no job control in this shell」，采样照常成功。
+    有意不用 `process_group(0)`——没有新会话的进程组长仍然握着旧会话的终端。
+  - 前台正常使用不受影响，CI 上也不复现（无 tty），所以 0.8.2 的发布没拦住它。
+
+- **`ci.yml` 的两个 sandbox 门禁是空转的**。过滤名少了 `tests::` 一段，而模块实际在
+  `sandbox::tests::{linux_tests, landlock_runtime}` 下，于是这两行匹配不到任何测试、
+  以 0 退出、一步绿灯——bubblewrap / Landlock 坏了也报不出来。现在匹配 3 + 2 个测试。
+
+- **GUI lib 的单元测试回到了 `cargo test --workspace`**。`[lib] test = false` 是
+  2026-10-21 加的，理由是「GPUI 的宏展开在 lib test harness 里撑爆 rustc」；实际是
+  `setup/models.rs` 的测试模块 `use super::*` 继承了 `gpui_kit::*` 里名为 `test` 的
+  proc-macro 属性，`#[test]` 因此无限自递归——一个导入 bug，不是宏展开的固有代价。
+  改具名导入即可，harness 正常，52 个测试（51 过 1 忽略）0.01s 跑完，不需要窗口。
+  workspace 通过数 848 → 899；这 51 个测试此前只有显式 `--lib` 才会跑。
+
+- **README 版本与状态段**：抬头停在 v0.6.1，状态段里「Linux bwrap/Landlock 与 Windows
+  ACL 的多目录重建仍待补齐」是照抄 ADR-0047 草案期的注记——三个平台的 `with_roots`
+  早在 2026-10-22 前后就已落地。改成陈述现状，并补上 0.7/0.8 落地的东西。
+
+- **定时任务测试的 beat 容差**：`gap_limit = 3 × beat`，而
+  `a_scheduled_window_fires_a_turn_on_the_task_it_names` 用 100ms tick，容差只有
+  300ms——共享 runner 上每个 beat 都够格算「进程离开过」，那个分支只重排期、不触发，
+  于是等满 20s 一个 `TurnStarted` 都没有。改成与相邻测试一致的 1s tick（容差 3s）。
+
+## 0.8.2 — 2026-11-10
+
+两个 ADR 与一批「同一件事写在两处」的收口。
+
+- **`run_shell` 现在跑在你自己的 shell 里，并且带上你的环境**（ADR-0064）。以前 POSIX 上
+  固定 `sh -c`，子进程环境被 `env_clear()` 洗过、只回填一张白名单——于是 `c` 那套
+  `JAVA_HOME`/`GOROOT`/`COT_HOME` 在 agent 跑的每条命令里都不存在，`[[ ]]`、`set -e`
+  这类 zsh/bash 语法也会失败。
+  - 解释器不配置：探测逻辑从 `qcode-terminal` 抽成 `crates/qcode-shell`，与终端共用同一份
+    `配置 → 父链 → 登录 shell → $SHELL → /bin/sh` 顺序。终端认得出的 shell，命令行也认得出。
+  - 环境采样一次：会话开始（或 rc 文件变了、或过了 TTL）跑一次 `$SHELL -lic 'env -0'`，
+    结果按 NUL 切块进快照；注入顺序是 `白名单 → 快照 → [shell] env_include → TMPDIR/代理`。
+  - `[shell]` 八个键：`env_sampling`、`env_command`、`env_timeout_ms`、`env_ttl_secs`、
+    `env_include`、`env_exclude`、`env_sample_sandboxed`、`audit`；设置页有对应控件与
+    「采样一次」按钮；`qc shell-env` 打印脱敏清单（`--json` 给脚本，`--full` 需 tty）。
+  - 会话日志新增 `shell_env_sampled` 事件（schema 8），只记变量名与增减，不记值。
+  - 这条改动的代价写在 ADR 里：它撤回了「`env_clear` 让 agent 读不到 API key」这个假设
+    （用户选定 secret 不拦）。关掉采样即回到白名单行为。
+
+- **配置文件只写覆盖项：schema 2**（ADR-0065）。
+  - `models` 可以写 `["deepseek-flash"]`，不必为每个模型写一张 `[[…]]` 表；带 `name` /
+    `context_window` / `max_tokens` 时仍然写表。
+  - `[sandbox] network` 成为唯一的网络开关（`off` / `proxy` / `strict` / `open`），
+    把 `[network] enabled`、`[network] mode` 和旧布尔折成一份 `NetworkPlan`；
+    `[network]` 只剩主机名单那半部分。
+  - `[approval] allow = ["run_shell:echo *"]` / `deny = […]` 简写，等价于规则表，
+    `[[approval.rules]]` 留给需要 scope 的场景。
+  - `qc config migrate` 机械迁移：折 `[providers.*].default_model`、折只有 id 的模型表、
+    折网络开关；先备份 `.bak`，幂等，保留注释与未知键。
+  - 写回只写差异：空 `[providers]`/`[pricing]`、没有内容的 `[approval]` 不再落盘；
+    新文件写 `schema = 2`，旧文件保持原拼写，升级只发生在 `migrate`。
+  - `qc config show` 打印合并后的 `sandbox.network` 与主机名单。
+
+- **`pricing` 不猜价格**。`qc doctor` 现在明说：没有 `[pricing.<model>]` 时 `--max-cost`
+  拦不住，声明了但没设上限时它只用于显示，条目不全时它被忽略。
+
+- **模型探测带上显示名**：`/models` 的 `name`/`context_window`/`max_tokens` 不再被丢掉，
+  探测结果里显示 `id — 显示名`；手输一个不是 id 的名字（例如 `DeepSeek-V4.1-Flash`）时，
+  设置页直接提示「这里填的是 id」。`deepseek` 的 catalog 也按接口实况改成
+  `deepseek-flash` / `deepseek-v4-pro`。
+
+- **设置页改默认模型真的生效了**（ADR-0055 §5）。把**默认 provider** 的「Default
+  model」改成别的值，以前是保存成功、表单显示新值、跑任务还是旧模型：`[default-model].model`
+  在读配置时压着 `providers.*.default_model`，而设置页只写后者；同一个 provider 内换模型
+  也没有任何 UI 入口能改到前者。
+  - 保存时同步：被保存的 provider 若是 `[default-model].provider`，它的 `default_model`
+    写进 `[default-model].model`。行被清空时不动全局值（那是模型菜单单独钉的）。
+  - 设置页顶部「当前默认：provider / model」变成可点选择器，按 provider 分组列出模型，
+    选中即写 `[default-model]`。被覆盖的 provider 行给出注脚说明改写后会以哪边为准。
+  - 反向保护：设置页存表格会重写整份配置，写盘前取回磁盘上的 `[default-model]`（除非这次
+    保存刚改过它），否则会把用户在主窗口刚切的模型改回去。
+- **目录里没有的模型现在能设了**。`DeepSeek-V4.1-Flash` 这类不在 `catalog` 也不在
+  `[[providers.*.models]]` 里的模型名，以前**在任何界面都选不到**：设置页的「当前默认」
+  选择器与底部模型菜单都只列已登记的模型，于是只能手改 config.toml。现在两处都能手输
+  ——设置页选择器底部有「设为 {provider} 的默认模型」输入行，底部菜单在搜索框里打一个
+  列表里没有的名字会多出一行「使用「x」」（Enter 同样生效）。
+  - 顺手修掉一处会撤销手选的地方：`pin_default` 只写 `[default-model]` 不写
+    `providers.<p>.default_model`，而任何一次表格自动保存都会用行值把 `[default-model]`
+    同步回去——选完模型改个别字段就被改回来。现在两处一起写。
+- **终端 tab 标题单行、小一号**。shell 把标题设成当前目录，之前放开换行，tab 条会被撑成
+  好几行、把内容区往下推；标题现在是 `sp(13)` 单行省略、高度 ~26px，`×` 与 `+` 定成
+  14/20px 方形可点区（ADR-0062 §2 修订）。
+
 ## 0.8.0 — 2026-11-10
 
 内建终端（ADR-0062）：`qc gui` 里多一个「终端」，独立执行体、单入口多 tab、状态只在

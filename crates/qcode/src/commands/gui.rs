@@ -51,6 +51,7 @@ pub(crate) fn gui_rebuild_hook(
                 context_window: Some(kernel.config.context.window_tokens),
                 network: kernel.network,
                 snapshots: Some(snapshots),
+                shell_env: kernel.shell_env.clone(),
                 schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
                 schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
                     .1
@@ -228,6 +229,7 @@ pub(crate) async fn cmd_gui(
         context_window: Some(kernel.config.context.window_tokens),
         network: kernel.network,
         snapshots: Some(snapshots),
+        shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
         schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
             .1

@@ -18,6 +18,8 @@ members = [
   "crates/qcode-attachments",
   # Terminal emulation core for the desktop GUI; see ADR-0062.
   "crates/qcode-terminal",
+  # Shell detection + cwd probing shared by the terminal and `run_shell`; ADR-0064.
+  "crates/qcode-shell",
   # Fork of xim-ctext 0.3.0; see [patch.crates-io] below and ADR-0051.
   "vendor/xim-ctext",
 ]
@@ -37,7 +39,7 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.3"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"

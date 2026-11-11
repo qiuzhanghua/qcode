@@ -49,6 +49,9 @@ pub struct Engine {
     pub context_window: Option<u64>,
     pub network: Option<qcode_core::network::SharedNetwork>,
     pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
+    /// The environment `run_shell` injects (ADR-0064); the turn samples it
+    /// first and records what the agent sees.
+    pub shell_env: std::sync::Arc<qcode_tools::shell_env::ShellEnvCache>,
     /// Scheduled turns from `[schedules]` (ADR-0059). Empty = no scheduler.
     /// Their run state lives in the store, not here.
     pub schedules: Vec<qcode_core::schedule::Schedule>,
@@ -372,6 +375,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     };
                     let cancel = token.clone();
                     let task_inbox = task_queue.inbox();
+                    let task_shell_env = engine.shell_env.clone();
                     tokio::spawn(async move {
                         // A panic anywhere below unwinds this task without
                         // reaching `done.send`; `guard` covers that path.
@@ -379,6 +383,17 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
+                        // ADR-0064: sample once (or when an rc file moved),
+                        // then write what the agent will actually see. This
+                        // runs on the turn's task, not the UI thread.
+                        task_shell_env.current();
+                        if let Some(report) = task_shell_env.take_audit() {
+                            let _ = qcode_core::engine::SessionWriter::record_shell_audit(
+                                &store,
+                                &task_session,
+                                (&report).into(),
+                            );
+                        }
                         let options = RunOptions {
                             session_id: &task_session,
                             model: &task_model,

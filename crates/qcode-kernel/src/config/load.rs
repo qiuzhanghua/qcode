@@ -13,15 +13,16 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         path: path.to_path_buf(),
         source: Box::new(source),
     })?;
-    check_version(path, config.version)?;
+    check_version(path, config.schema)?;
     warn_unknown_keys(path, &document);
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
     Ok(config)
 }
 
-/// Reject a version this build cannot interpret; anything older is migrated by
-/// the current parser in place (version 1 has no predecessors).
+/// Reject a version this build cannot interpret. Anything older is read by the
+/// current parser in place: `version = 1` keeps its own meaning until the user
+/// runs `qc config migrate` (ADR-0065).
 fn check_version(path: &Path, version: u32) -> Result<(), ConfigError> {
     if version == 0 {
         return Err(ConfigError::InvalidDocument(format!(
@@ -114,7 +115,7 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
         path: path.clone(),
         source: Box::new(source),
     })?;
-    check_version(&path, project.version)?;
+    check_version(&path, project.schema)?;
     warn_unknown_keys(&path, &document);
     let sections = ProjectSections {
         context: document.contains_key("context"),
@@ -391,7 +392,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "terminal",
         ],
     ),
-    ("approval", &["rules"]),
+    ("approval", &["rules", "allow", "deny"]),
     ("context", &["window_tokens"]),
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     ("mcp", &["servers"]),
@@ -427,7 +428,26 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("ui", &["busy_delivery"]),
     (
         "terminal",
-        &["shell", "start_cwd", "max_scrollback", "max_terminals"],
+        &[
+            "shell",
+            "font",
+            "start_cwd",
+            "max_scrollback",
+            "max_terminals",
+        ],
+    ),
+    (
+        "shell",
+        &[
+            "env_sampling",
+            "env_command",
+            "env_timeout_ms",
+            "env_ttl_secs",
+            "env_include",
+            "env_exclude",
+            "env_sample_sandboxed",
+            "audit",
+        ],
     ),
 ];
 

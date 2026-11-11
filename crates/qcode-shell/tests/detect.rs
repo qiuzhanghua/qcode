@@ -8,14 +8,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use qcode_terminal::shell::{
+use qcode_shell::{
     Choice, Probe, ProcessRow, ProcessSource, Source, detect, detect_with, enclosing_shell,
     login_shell_from, parse_ps_table,
 };
 // Only the Unix case below looks a bare name up on `PATH`; Windows appends `PATHEXT`
-// and resolves through `qcode_terminal::shell` itself.
+// and resolves through `qcode_shell` itself.
 #[cfg(unix)]
-use qcode_terminal::shell::resolve_in_path;
+use qcode_shell::resolve_in_path;
 
 /// A probe whose process tree, PATH and user database are all invented.
 struct Fake {
@@ -479,7 +479,7 @@ fn the_proc_and_ps_sources_agree_about_this_process() {
     // The `ps` parser is the only source on macOS, where CI cannot run it. Checking
     // it against /proc here means the parsing is exercised against real system
     // output on every platform.
-    let from_proc = qcode_terminal::shell::system_process_row(std::process::id())
+    let from_proc = qcode_shell::system_process_row(std::process::id())
         .expect("/proc should describe this process");
     let from_ps = parse_ps_table(&ps_output()).remove(&std::process::id());
 
@@ -507,11 +507,11 @@ fn the_real_parent_chain_is_readable() {
     // on that, and a silently empty chain would make every case fall through to
     // `$SHELL`.
     let me = std::process::id();
-    let row = qcode_terminal::shell::system_process_row(me).expect("own row");
+    let row = qcode_shell::system_process_row(me).expect("own row");
     assert_eq!(row.pid, me);
     assert_ne!(row.ppid, 0, "the test runner should have a parent");
     assert!(
-        qcode_terminal::shell::system_process_row(row.ppid).is_some(),
+        qcode_shell::system_process_row(row.ppid).is_some(),
         "the parent {} is not readable",
         row.ppid
     );
@@ -540,7 +540,7 @@ fn a_live_process_reports_the_directory_it_is_in() {
     // Compare resolved paths: macOS reports `/private/var/...` where `temp_dir()`
     // says `/var/...`. The ADR accepts that loss of symlink fidelity.
     assert_eq!(
-        canonical(qcode_terminal::shell::process_cwd(child.id())),
+        canonical(qcode_shell::process_cwd(child.id())),
         canonical(Some(first.clone()))
     );
 
@@ -555,7 +555,7 @@ fn a_live_process_reports_the_directory_it_is_in() {
     let moved = wait_for_dir(child.id(), &second);
     assert!(moved, "the shell's cwd change was not visible");
     assert_eq!(
-        canonical(qcode_terminal::shell::process_cwd(child.id())),
+        canonical(qcode_shell::process_cwd(child.id())),
         canonical(Some(second.clone()))
     );
 
@@ -572,9 +572,7 @@ fn canonical(path: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
 fn wait_for_dir(pid: u32, expected: &std::path::Path) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        if canonical(qcode_terminal::shell::process_cwd(pid))
-            == canonical(Some(expected.to_path_buf()))
-        {
+        if canonical(qcode_shell::process_cwd(pid)) == canonical(Some(expected.to_path_buf())) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -592,23 +590,19 @@ fn a_new_terminal_skips_a_directory_that_is_gone() {
     // An inherited directory that was deleted must not be handed to the shell:
     // it would fail to start. Fall through to the configured one, then home.
     assert_eq!(
-        qcode_terminal::shell::resolve_start_cwd(Some(missing.clone()), "", Some(home.clone())),
+        qcode_shell::resolve_start_cwd(Some(missing.clone()), "", Some(home.clone())),
         Some(home.clone())
     );
     assert_eq!(
-        qcode_terminal::shell::resolve_start_cwd(
-            Some(missing),
-            home.to_str().expect("utf-8"),
-            None
-        ),
+        qcode_shell::resolve_start_cwd(Some(missing), home.to_str().expect("utf-8"), None),
         Some(home.clone())
     );
     assert_eq!(
-        qcode_terminal::shell::resolve_start_cwd(None, "", Some(home.clone())),
+        qcode_shell::resolve_start_cwd(None, "", Some(home.clone())),
         Some(home.clone())
     );
     assert!(
-        qcode_terminal::shell::resolve_start_cwd(None, "/definitely/not/here", None).is_some(),
+        qcode_shell::resolve_start_cwd(None, "/definitely/not/here", None).is_some(),
         "the last resort is the process cwd, not None"
     );
     let _ = std::fs::remove_dir_all(&home);
@@ -636,7 +630,7 @@ fn this_machine_answers_with_the_configured_login_shell() {
 fn the_real_probe_reads_the_login_shell_from_the_user_database() {
     // Not the parent chain and not `$SHELL`: this is what a GUI-launched qc sees,
     // and on macOS it has to come from Open Directory rather than `/etc/passwd`.
-    let shell = qcode_terminal::shell::System.login_shell();
+    let shell = qcode_shell::System.login_shell();
     eprintln!("login shell from the user database: {shell:?}");
     let shell = shell.expect("the account should have a login shell");
     assert!(shell.is_absolute(), "{shell:?} should be an absolute path");

@@ -100,13 +100,13 @@ pub const CATALOG: &[CatalogEntry] = &[
         protocol: Protocol::OpenAi,
         base_url: "https://api.deepseek.com/v1",
         api_key_env: "DEEPSEEK_API_KEY",
-        default_model: Some("deepseek-v4-flash"),
+        // What `GET https://api.deepseek.com/models` answers, as of 2026-11-10:
+        // `deepseek-flash` (display name `DeepSeek-V4.1-Flash`) and
+        // `deepseek-v4-pro`. The display name is not an id — typing it as one
+        // gets a 400 from the API, which is exactly how this list went stale.
+        default_model: Some("deepseek-flash"),
         reasoning_split: false,
-        models: &[
-            "deepseek-v4-flash",
-            "deepseek-v4-flash-vision-exp",
-            "deepseek-v4-pro",
-        ],
+        models: &["deepseek-flash", "deepseek-v4-pro"],
     },
     CatalogEntry {
         route: "ollama",

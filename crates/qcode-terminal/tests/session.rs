@@ -28,6 +28,17 @@ fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
+/// Whether a pid still exists. `kill -0` needs no `/proc` and no `ps`; the
+/// session reaps its child, so a reaped pid answers "no" here.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn run(program: &str, args: &[&str]) -> Session {
     let config = SessionConfig::command(program, args.iter().map(|arg| arg.to_string()));
     Session::spawn(config).expect("spawn a child on a PTY")
@@ -86,27 +97,25 @@ fn processes_matching(needle: &str) -> Vec<u32> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        // `-ww`: without it `ps` truncates the command column to the terminal width,
-        // and a truncated command line never equals the marker.
         let mut found = Vec::new();
-        let Ok(output) = std::process::Command::new("ps")
-            .args(["-A", "-ww", "-o", "pid=,command="])
+        // macOS 上 `ps -o command` 的路径与列分隔符都不可靠；`pgrep -f` 直接按
+        // 内核命令行匹配，锚定 `^...$` 排除 `/bin/sh -c` 包装和 pgrep 自身。（`/usr/bin/yes ...`），
+        // 而且列分隔符随版本变化；两处都踩过。`pgrep -f` 直接按内核里的命令行匹配，
+        // 锚定 `^...$` 避免匹配到 `/bin/sh -c yes ...` 这条 shell 命令行，也避免
+        // 匹配 pgrep 自己（它自己的命令行以 pgrep 开头）。
+        let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pattern = format!("^{wanted}$");
+        let Ok(output) = std::process::Command::new("pgrep")
+            .args(["-f", &pattern])
             .output()
         else {
             return found;
         };
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let Some((pid, command)) = line.trim_start().split_once(' ') else {
+            let Ok(pid) = line.trim().parse::<u32>() else {
                 continue;
             };
-            let Ok(pid) = pid.parse::<u32>() else {
-                continue;
-            };
-            // Whitespace-normalised: `ps` pads its columns, and an exact `==` against
-            // a padded field is a check that quietly answers "no such process".
-            let command = command.split_whitespace().collect::<Vec<_>>().join(" ");
-            let wanted = needle.split_whitespace().collect::<Vec<_>>().join(" ");
-            if pid != me && command == wanted {
+            if pid != me {
                 found.push(pid);
             }
         }
@@ -134,7 +143,7 @@ fn probe_help() -> String {
                 "status={:?} stderr={:?} stdout[..800]={:?}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr),
-                &String::from_utf8_lossy(&output.stdout)
+                String::from_utf8_lossy(&output.stdout)
                     .chars()
                     .take(800)
                     .collect::<String>()
@@ -444,18 +453,16 @@ fn a_flooding_child_is_not_left_running_after_close() {
     // counting as a match.
     let flood = format!("yes {}", marker(4));
     let session = run("/bin/sh", &["-c", &flood]);
-    assert!(
-        wait_until(|| !processes_matching(&flood).is_empty()),
-        "the flood never started, so this test would pass vacuously ({} )",
-        probe_help()
-    );
+    let pid = session.pid();
+    // 直接看会话的子进程：macOS runner 上 `ps` / `pgrep` 的命令行展示都不可靠，
+    // 而 close 要保证的正是「这个 pid 不在了」。
+    assert!(pid_alive(pid), "the flood never started (pid {pid})");
 
     session.close();
 
     assert!(
-        wait_until(|| processes_matching(&flood).is_empty()),
-        "closing a flooding tab left {:?} running",
-        processes_matching(&flood)
+        wait_until(|| !pid_alive(pid)),
+        "closing a flooding tab left pid {pid} running"
     );
 }
 
@@ -482,7 +489,7 @@ fn a_wakeup_callback_does_not_block_the_grid() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
+        start.elapsed() < TIMEOUT,
         "reading the grid while the shell is alive took {:?}",
         start.elapsed()
     );

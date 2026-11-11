@@ -45,8 +45,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
-          cargo test -p qcode-tools --lib sandbox::linux_tests -- --nocapture
-          cargo test -p qcode-tools --lib sandbox::landlock_runtime -- --nocapture
+          # The filters need the `tests::` segment: the modules live in
+          # `sandbox::tests::{linux_tests, landlock_runtime}`, so the shorter
+          # paths matched nothing and both lines passed with "0 passed; 89
+          # filtered out" — a green step that tested no sandbox assertion.
+          cargo test -p qcode-tools --lib sandbox::tests::linux_tests -- --nocapture
+          cargo test -p qcode-tools --lib sandbox::tests::landlock_runtime -- --nocapture
       # ADR-0051: the GUI's XIM client decodes preedit text with
       # `xim_ctext::..expect("Encoding Error")`, which panics on the GB 2312
       # COMPOUND_TEXT every Chinese IME sends. `vendor/xim-ctext` fixes it via

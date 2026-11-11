@@ -40,7 +40,11 @@ pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/qcode/config.toml";
 /// versioning existed must keep loading unchanged. A file that declares a
 /// *newer* version is an error, because this build cannot know which of its
 /// interpretations changed.
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
+
+/// The schema a file without a version is read as. Files written by this build
+/// carry [`CONFIG_VERSION`]; a `version = 1` file is still read (ADR-0065).
+pub const LEGACY_CONFIG_VERSION: u32 = 1;
 
 /// How a message typed while a turn is running is delivered (ADR-0042).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -77,9 +81,10 @@ pub struct DefaultModelConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Schema version of the file. Absent means [`CONFIG_VERSION`].
-    #[serde(default = "default_version")]
-    pub version: u32,
+    /// Schema version of the file. Absent means [`CONFIG_VERSION`]. `version`
+    /// is still accepted so a file written before ADR-0065 keeps loading.
+    #[serde(default = "default_version", alias = "version")]
+    pub schema: u32,
     /// Provider used when neither `--provider` nor `QCODE_PROVIDER` is set.
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -129,6 +134,9 @@ pub struct Config {
     /// The built-in terminal (ADR-0062).
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// How `run_shell` learns the user's shell environment (ADR-0064).
+    #[serde(default)]
+    pub shell: qcode_tools::shell_env::ShellSettings,
 }
 
 /// `[terminal]`: how `qc gui` starts its shells (ADR-0062 §10).
@@ -188,7 +196,7 @@ fn default_version() -> u32 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: CONFIG_VERSION,
+            schema: CONFIG_VERSION,
             default_provider: None,
             default_model: DefaultModelConfig::default(),
             providers: BTreeMap::new(),
@@ -205,6 +213,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             schedules: BTreeMap::new(),
             terminal: TerminalConfig::default(),
+            shell: qcode_tools::shell_env::ShellSettings::default(),
         }
     }
 }
@@ -423,6 +432,66 @@ fn default_context_window() -> u64 {
 pub struct ApprovalConfig {
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Shorthand for "allow this, no question" (ADR-0065): `"run_shell:echo *"`
+    /// means `command_prefix = "echo "`, `"read_file:src/**"` means
+    /// `path_glob = "src/**"`, a bare `"web_search"` matches the tool alone.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// The same shorthand for "never, not even with approval".
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+impl ApprovalConfig {
+    /// Expand [`Self::allow`]/[`Self::deny`] into rules, in that order.
+    ///
+    /// The shorthand keeps `[[approval.rules]]` for the cases that need a
+    /// scope, an id, or several predicates at once; everything else reads
+    /// better as a list of `tool:pattern` lines.
+    pub fn shorthand_rules(&self) -> Vec<Rule> {
+        let mut rules = Vec::with_capacity(self.allow.len() + self.deny.len());
+        for (action, entries) in [(Action::Allow, &self.allow), (Action::Deny, &self.deny)] {
+            for (index, entry) in entries.iter().enumerate() {
+                rules.push(shorthand_rule(action, entry, index));
+            }
+        }
+        rules
+    }
+}
+
+fn shorthand_rule(action: Action, entry: &str, index: usize) -> Rule {
+    let (tool, pattern) = match entry.split_once(':') {
+        Some((tool, pattern)) => (tool.trim(), Some(pattern.trim())),
+        None => (entry.trim(), None),
+    };
+    let mut rule = Rule {
+        id: format!(
+            "{}-{index}",
+            if action == Action::Allow {
+                "allow"
+            } else {
+                "deny"
+            }
+        ),
+        tool: if tool.is_empty() || tool == "*" {
+            None
+        } else {
+            Some(tool.to_string())
+        },
+        command_prefix: None,
+        path_glob: None,
+        action,
+        scope: None,
+    };
+    match pattern.filter(|pattern| !pattern.is_empty()) {
+        Some(pattern) if tool == "run_shell" => {
+            // `rm -rf *` and `rm -rf` mean the same thing: the prefix.
+            rule.command_prefix = Some(pattern.trim_end_matches('*').to_string());
+        }
+        Some(pattern) => rule.path_glob = Some(pattern.to_string()),
+        None => {}
+    }
+    rule
 }
 
 /// Turn budget for one user message.
@@ -484,29 +553,145 @@ fn default_sandbox_mode() -> SandboxMode {
     }
 }
 
+/// One switch for "may the agent reach the network?" (ADR-0065).
+///
+/// Today it takes three cooperating knobs: `[network] enabled`, `[network]
+/// mode` and `[sandbox] network`. They answer one question between them, and
+/// answering it in two places is how a config ends up half-changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxNetworkMode {
+    /// No proxy, and the sandbox blocks outbound traffic.
+    Off,
+    /// The egress proxy runs; the sandbox only allows loopback to it.
+    #[default]
+    Proxy,
+    /// Proxy plus "unknown hosts are denied" (macOS Seatbelt enforces it).
+    Strict,
+    /// Raw network inside the sandbox, no proxy: the agent talks to the
+    /// internet directly.
+    Open,
+}
+
+impl SandboxNetworkMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Proxy => "proxy",
+            Self::Strict => "strict",
+            Self::Open => "open",
+        }
+    }
+}
+
+/// What [`Config::network_plan`] decided, after folding the legacy keys in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkPlan {
+    /// Start the egress proxy.
+    pub proxy: bool,
+    /// Deny unknown hosts (the strict mode's policy half).
+    pub strict: bool,
+    /// Hand the OS sandbox a raw network allowance instead of loopback-only.
+    pub raw: bool,
+}
+
+/// Accept `network = true|false` (files before ADR-0065) and the new names.
+fn network_mode_from_any<'de, D>(deserializer: D) -> Result<Option<SandboxNetworkMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Flag(bool),
+        Name(SandboxNetworkMode),
+    }
+    Ok(match Option::<Either>::deserialize(deserializer)? {
+        None => None,
+        // `network = true` used to mean "raw network inside the sandbox".
+        Some(Either::Flag(true)) => Some(SandboxNetworkMode::Open),
+        Some(Either::Flag(false)) => None,
+        Some(Either::Name(name)) => Some(name),
+    })
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SandboxConfig {
     /// OS sandbox for `run_shell`. Defaults to the platform backend; `none`
     /// keeps approval as the boundary.
     #[serde(default = "default_sandbox_mode")]
     pub mode: SandboxMode,
-    /// Proxy mode: allow unrestricted network inside the OS sandbox. Ignored in
-    /// strict mode, which always allows only the loopback proxy port.
-    /// Enforced by `sandbox-exec` and `bwrap`; Landlock and Windows ACL only
-    /// record the setting.
-    #[serde(default)]
-    pub network: bool,
+    /// May the agent reach the network? `None` means "derive it from the legacy
+    /// `[network]` section", which is what files written before ADR-0065 have.
+    #[serde(
+        default,
+        rename = "network",
+        deserialize_with = "network_mode_from_any"
+    )]
+    pub network: Option<SandboxNetworkMode>,
     /// Extra roots the `windows-acl` backend grants write access to, besides the
     /// workspace and its private temp directory.
     #[serde(default)]
     pub extra_writable: Vec<PathBuf>,
 }
 
+impl SandboxConfig {
+    /// The mode this file asks for, folding the pre-ADR-0065 keys in.
+    ///
+    /// Precedence, most specific first: `[sandbox] network`, then
+    /// `[sandbox] network = true` (read as `open`), then `[network] mode`,
+    /// then `[network] enabled`.
+    pub fn network_mode_with(&self, network: &NetworkConfig) -> SandboxNetworkMode {
+        if let Some(mode) = self.network {
+            return mode;
+        }
+        match network.mode {
+            NetworkMode::Off => SandboxNetworkMode::Off,
+            NetworkMode::Strict => SandboxNetworkMode::Strict,
+            NetworkMode::Proxy if !network.enabled => SandboxNetworkMode::Off,
+            NetworkMode::Proxy => SandboxNetworkMode::Proxy,
+        }
+    }
+}
+
+impl Config {
+    /// The single answer to "may the agent reach the network?".
+    pub fn network_plan(&self) -> NetworkPlan {
+        match self.sandbox.network_mode_with(&self.network) {
+            SandboxNetworkMode::Off => NetworkPlan {
+                proxy: false,
+                strict: false,
+                raw: false,
+            },
+            SandboxNetworkMode::Proxy => NetworkPlan {
+                proxy: true,
+                strict: false,
+                raw: false,
+            },
+            SandboxNetworkMode::Strict => NetworkPlan {
+                proxy: true,
+                strict: true,
+                raw: false,
+            },
+            SandboxNetworkMode::Open => NetworkPlan {
+                proxy: false,
+                strict: false,
+                raw: true,
+            },
+        }
+    }
+
+    /// The mode the plan came from, for messages.
+    pub fn sandbox_network_mode(&self) -> SandboxNetworkMode {
+        self.sandbox.network_mode_with(&self.network)
+    }
+}
+
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             mode: default_sandbox_mode(),
-            network: false,
+            network: None,
             extra_writable: Vec::new(),
         }
     }
@@ -561,7 +746,7 @@ pub struct ProviderConfig {
     /// This route's own model catalog (U0). An empty list means "serve the
     /// catalog's built-in models"; any entry replaces that catalog, so a row is
     /// only ever added deliberately.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "models_from_entries_or_ids")]
     pub models: Vec<ModelEntry>,
 }
 
@@ -584,6 +769,55 @@ impl Default for ProviderConfig {
 /// One model a provider route serves. Hand-declared routes carry their own
 /// list (hand-filled or adopted from an endpoint probe); catalog routes
 /// inherit their static catalog entries until the user overrides them.
+/// Accept both spellings of a model list (ADR-0065):
+///
+/// ```toml
+/// models = ["deepseek-flash", "deepseek-v4-pro"]      # the shorthand
+/// models = [{ id = "deepseek-flash", name = "…" }]    # when overriding
+/// ```
+///
+/// Mixed lists are fine: a bare string is a model with no overrides.
+fn models_from_entries_or_ids<'de, D>(deserializer: D) -> Result<Vec<ModelEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EntryOrId {
+        Id(String),
+        Entry(ModelEntryInput),
+    }
+
+    #[derive(Deserialize)]
+    struct ModelEntryInput {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        context_window: Option<u64>,
+        #[serde(default)]
+        max_tokens: Option<u64>,
+    }
+
+    let raw = Vec::<EntryOrId>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|item| match item {
+            EntryOrId::Id(id) => ModelEntry {
+                id,
+                ..Default::default()
+            },
+            EntryOrId::Entry(entry) => ModelEntry {
+                id: entry.id,
+                name: entry.name,
+                context_window: entry.context_window,
+                max_tokens: entry.max_tokens,
+            },
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ModelEntry {
     #[serde(default)]

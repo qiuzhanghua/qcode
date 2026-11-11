@@ -1,0 +1,13 @@
+[package]
+name = "qcode-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+# `getpwuid_r` for the login shell, `proc_pidinfo` for a live cwd, and the
+# `kill`/`waitpid` probes the tests drive.
+libc.workspace = true
