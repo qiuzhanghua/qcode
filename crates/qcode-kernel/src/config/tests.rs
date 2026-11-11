@@ -82,6 +82,129 @@ fn policy_file_errors_name_the_path() {
     }
 }
 
+/// A `deny` whose glob does not parse is worse than a crash: it reads as
+/// "denied" in the file and never matches at runtime. Both loaders must refuse
+/// it, and the message must name the rule so the typo is findable.
+#[test]
+fn an_unparsable_rule_pattern_fails_to_load() {
+    let dir = std::env::temp_dir().join(format!("qcode-policy-glob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let policy = dir.join("policy.toml");
+    std::fs::write(
+        &policy,
+        r#"
+            [[rules]]
+            id = "deny-broken"
+            tool = "mcp__[__x"
+            action = "deny"
+        "#,
+    )
+    .unwrap();
+    match load_policy(&policy) {
+        Err(ConfigError::InvalidPolicyRule { path, detail }) => {
+            assert_eq!(path, policy);
+            assert!(detail.contains("deny-broken"), "{detail}");
+            assert!(detail.contains("tool"), "{detail}");
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+
+    // The config file goes through the same check.
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        r#"
+            version = 1
+
+            [[approval.rules]]
+            id = "deny-broken"
+            tool = "mcp__[__x"
+            action = "deny"
+        "#,
+    )
+    .unwrap();
+    match load(&config) {
+        Err(ConfigError::InvalidPolicyRule { detail, .. }) => {
+            assert!(detail.contains("deny-broken"), "{detail}");
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+
+    // A wildcard that does parse is accepted — the check must not be so eager
+    // that it rejects the feature itself.
+    let good = dir.join("good.toml");
+    std::fs::write(
+        &good,
+        r#"
+            [[rules]]
+            id = "allow-wordcraft"
+            tool = "mcp__wordcraft__*"
+            action = "allow"
+        "#,
+    )
+    .unwrap();
+    let rules = load_policy(&good).expect("a valid glob must load");
+    assert_eq!(rules.len(), 1);
+}
+
+/// A key the build knows must not be reported as unknown.
+///
+/// Cheap test, real bug: `[...] extra_read` was added to `SandboxConfig` and to
+/// serde, but not to `KNOWN_KEYS`. Everything compiled and every config
+/// round-tripped — and every user who set the key got
+/// "unknown config keys are ignored", which is exactly the warning that teaches
+/// people to ignore warnings. Written because that mistake was made.
+#[test]
+fn every_sandbox_key_is_known() {
+    let document: toml::Table = r#"
+        [sandbox]
+        mode = "landlock"
+        network = false
+        extra_writable = ["/tmp/w"]
+        extra_read = ["/home/q/cot"]
+    "#
+    .parse()
+    .expect("parse");
+    let unknown = super::load::unknown_keys(&document);
+    assert!(unknown.is_empty(), "reported as unknown: {unknown:?}");
+}
+
+/// `[sandbox] extra_read` is a list of directories, each recursive.
+///
+/// Recursion is the point: the reason the field exists is a toolchain prefix
+/// with `bin/`, `lib/` and `share/` under it, and listing those three by hand
+/// (and again for every new tool) is what nobody does.
+#[test]
+fn sandbox_extra_read_is_a_list_of_directories() {
+    let config: Config = toml::from_str(
+        r#"
+            version = 1
+
+            [sandbox]
+            mode = "landlock"
+            extra_read = ["/home/q/cot", "/opt/tools"]
+
+            [[approval.rules]]
+            id = "allow-read"
+            tool = "read_file"
+            action = "allow"
+        "#,
+    )
+    .expect("parse");
+    assert_eq!(
+        config.sandbox.extra_read,
+        vec![
+            PathBuf::from("/home/q/cot"),
+            PathBuf::from("/opt/tools"),
+        ]
+    );
+    // The two lists must not be confused for one another: a config that sets
+    // only `extra_read` grants no write access.
+    assert!(config.sandbox.extra_writable.is_empty());
+}
+
 #[test]
 fn defaults_to_mock() {
     let resolved = resolve(&Config::default(), &Overrides::default(), &env_from(&[])).unwrap();
@@ -653,13 +776,25 @@ fn mcp_add_and_remove_edit_the_config_file() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("config.toml");
 
+    let args = ["-y".to_string(), "server".to_string()];
+    let read_paths = [PathBuf::from("/opt/tool")];
+    let credentials = [qcode_mcp::CredentialPreset::Github];
     mcp_add(
         &path,
-        "filesystem",
-        "npx",
-        &["-y".to_string(), "server".to_string()],
-        false,
-        Some(30),
+        NewMcpServer {
+            name: "filesystem",
+            command: Some("npx"),
+            url: None,
+            bearer_token_env_var: None,
+            headers: &[],
+            args: &args,
+            enabled: false,
+            timeout_secs: Some(30),
+            read_paths: &read_paths,
+            writable_paths: &[],
+            credentials: &credentials,
+            sandbox: Some(qcode_mcp::McpSandboxMode::Confine),
+        },
     )
     .expect("add");
     let config = load(&path).expect("load");
@@ -669,9 +804,20 @@ fn mcp_add_and_remove_edit_the_config_file() {
     assert_eq!(server.args, vec!["-y", "server"]);
     assert!(!server.enabled);
     assert_eq!(server.timeout_secs, 30);
+    // The ADR-0066 extras survive the round trip through the file.
+    assert_eq!(server.read_paths, read_paths);
+    assert_eq!(server.credentials, credentials);
+    assert_eq!(server.sandbox, Some(qcode_mcp::McpSandboxMode::Confine));
 
     assert!(matches!(
-        mcp_add(&path, "filesystem", "npx", &[], true, None),
+        mcp_add(
+            &path,
+            NewMcpServer {
+                name: "filesystem",
+                command: Some("npx"),
+                ..Default::default()
+            }
+        ),
         Err(ConfigError::McpExists(_))
     ));
 
@@ -829,13 +975,25 @@ fn every_section_key_the_build_reads_is_known() {
              [providers.ollama]
              base_url = "http://127.0.0.1:11434/v1"
 
+             [mcp]
+             sandbox = "confine"
+
              [[mcp.servers]]
              name = "filesystem"
              command = "npx"
+
+             [[mcp.servers]]
+             name = "context7"
+             url = "https://mcp.context7.com/mcp"
+             bearer_token_env_var = "CONTEXT7_TOKEN"
         "#
     .parse()
     .expect("document");
 
+    // Every key the README documents has to be here, or the sample config
+    // warns about its own valid keys. `[mcp] sandbox` was documented and
+    // missing from this list until ADR-0067 — the sample in the README was
+    // reported as a typo on every load.
     assert!(
         unknown_keys(&document).is_empty(),
         "{:?}",
@@ -1304,4 +1462,177 @@ fn the_new_switch_wins_over_the_legacy_section() {
             .expect("parse");
     assert!(config.network_plan().raw);
     assert!(!config.network_plan().proxy);
+}
+
+// ---- `~` in configured paths ---------------------------------------------
+//
+// The rule is one helper (`expand_tilde`) called from one place per parse
+// (`expand_paths`), and the tests below are the three things that can go wrong
+// with it: it expands too little (`~/x` stays relative and the MCP validator
+// rejects a config that should work), too much (`~user/x` or `Documents`
+// silently becoming something), or differently on the second pass.
+
+fn test_home() -> PathBuf {
+    PathBuf::from("/home/q")
+}
+
+#[test]
+fn tilde_expands_only_for_this_user() {
+    let home = Some(test_home());
+    let cases = [
+        // written, expected
+        ("~", "/home/q"),
+        ("~/Documents", "/home/q/Documents"),
+        // Not expanded: another account's home needs a passwd lookup, and
+        // granting a path under it is never what a per-task config means.
+        ("~ftp/x", "~ftp/x"),
+        // Not expanded: the config is user-wide, the workspace is per-task.
+        ("Documents", "Documents"),
+        // Idempotent: already absolute, unchanged.
+        ("/tmp/x", "/tmp/x"),
+    ];
+    for (written, expected) in cases {
+        assert_eq!(
+            expand_tilde(Path::new(written), home.as_deref()),
+            PathBuf::from(expected),
+            "{written}"
+        );
+    }
+}
+
+#[test]
+fn tilde_without_a_home_leaves_the_path_alone() {
+    // A missing `$HOME` must not invent one. The path stays as written, so the
+    // MCP validator's "must be absolute" check still rejects it instead of the
+    // grant silently pointing at `/x`.
+    assert_eq!(
+        expand_tilde(Path::new("~/Documents"), None),
+        PathBuf::from("~/Documents")
+    );
+}
+
+#[test]
+fn expansion_is_idempotent() {
+    let home = test_home();
+    let once = expand_tilde(Path::new("~/Documents"), Some(home.as_path()));
+    let twice = expand_tilde(&once, Some(home.as_path()));
+    assert_eq!(once, twice);
+    assert_eq!(twice, PathBuf::from("/home/q/Documents"));
+}
+
+#[test]
+fn every_configured_path_list_gets_expanded() {
+    let mut config: Config = toml::from_str(
+        r#"
+            [sandbox]
+            extra_read = ["~/cot"]
+            extra_writable = ["~/scratch"]
+
+            [skills]
+            roots = ["~/skills"]
+
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            read_paths = ["~/cot/lib/wordcraft"]
+            writable_paths = ["~/Documents", "/srv/shared"]
+            "#,
+    )
+    .expect("parse");
+
+    let home = test_home();
+    expand_paths_with(&mut config, Some(home.as_path()));
+
+    assert_eq!(config.sandbox.extra_read, [PathBuf::from("/home/q/cot")]);
+    assert_eq!(
+        config.sandbox.extra_writable,
+        [PathBuf::from("/home/q/scratch")]
+    );
+    assert_eq!(config.skills.roots, [PathBuf::from("/home/q/skills")]);
+    let server = &config.mcp.servers[0];
+    assert_eq!(
+        server.read_paths,
+        [PathBuf::from("/home/q/cot/lib/wordcraft")]
+    );
+    // Mixed list: the `~` entry expands, the absolute one is untouched.
+    assert_eq!(
+        server.writable_paths,
+        [
+            PathBuf::from("/home/q/Documents"),
+            PathBuf::from("/srv/shared")
+        ]
+    );
+}
+
+#[test]
+fn a_relative_mcp_path_is_still_rejected_after_expansion() {
+    // The whole point of expanding *before* `validate()`: `~/x` becomes
+    // absolute and passes, `Documents` does not and still fails. Otherwise
+    // expansion would have quietly turned the validator off.
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["~/Documents"]
+            "#,
+    )
+    .expect("parse");
+    let home = test_home();
+    expand_paths_with(&mut config, Some(home.as_path()));
+    if let Err(error) = config.mcp.validate() {
+        panic!("`~/Documents` must be accepted once expanded: {error}");
+    }
+
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["Documents"]
+            "#,
+    )
+    .expect("parse");
+    expand_paths_with(&mut config, Some(home.as_path()));
+    let error = config.mcp.validate().expect_err("relative path");
+    assert!(
+        error.to_string().contains("must be an absolute path"),
+        "{error}"
+    );
+
+    // `~user` is not `~`: it is left as written and therefore rejected, rather
+    // than silently granted as something under the running user's home.
+    let mut config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "wordcraft"
+            command = "/usr/bin/env"
+            writable_paths = ["~user/Documents"]
+            "#,
+    )
+    .expect("parse");
+    expand_paths_with(&mut config, Some(home.as_path()));
+    let error = config.mcp.validate().expect_err("~user");
+    assert!(error.to_string().contains("~user/Documents"), "{error}");
+}
+
+#[test]
+fn skill_roots_keep_expanding_and_keep_resolving_against_the_workspace() {
+    let workspace = Path::new("/w");
+    let home = Some(test_home());
+    // Same helper as everything else for `~`...
+    assert_eq!(
+        crate::expand_root(Path::new("~/skills"), workspace, home.as_deref()),
+        PathBuf::from("/home/q/skills")
+    );
+    // ...but a skill root is a directory to scan, not a grant, so a relative
+    // one keeps its workspace meaning (`.qcode/skills` in a repository).
+    assert_eq!(
+        crate::expand_root(Path::new("skills"), workspace, home.as_deref()),
+        PathBuf::from("/w/skills")
+    );
+    assert_eq!(
+        crate::expand_root(Path::new("/opt/skills"), workspace, home.as_deref()),
+        PathBuf::from("/opt/skills")
+    );
 }

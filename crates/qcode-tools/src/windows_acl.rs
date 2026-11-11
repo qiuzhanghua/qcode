@@ -76,7 +76,7 @@ use windows_sys::Win32::System::Threading::{
     STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
 };
 
-use crate::sandbox::{Sandbox, SandboxError};
+use crate::sandbox::{OutsideRoots, Sandbox, SandboxError};
 
 /// The hidden subcommand that [`WindowsAcl::command`] launches.
 pub const HELPER_COMMAND: &str = "sandbox-run";
@@ -222,7 +222,17 @@ impl Sandbox for WindowsAcl {
         &self,
         roots: &[qcode_core::task::Root],
         temp: Option<&Path>,
+        outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+        // Windows confines writes only, and this backend never granted build
+        // caches in the first place: the write scope is already "the writable
+        // roots plus temp" — there is no CARGO_HOME clause to remove, because
+        // `%USERPROFILE%` is never in scope and cargo writes its registry under
+        // `%CARGO_HOME%` only if the user pointed it somewhere writable. So both
+        // `OutsideRoots` shapes produce the same answer here, which is the point
+        // of accepting the parameter: the three backends are asked the same
+        // question instead of one of them silently disagreeing (ADR-0066 §1).
+        let _ = outside;
         let (workspace, extra, temp) = Self::write_scope(roots, temp, &self.temp)?;
         Ok(Arc::new(WindowsAcl {
             workspace,

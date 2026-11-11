@@ -303,9 +303,120 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError>;
 }
 
+/// One server's tool table changed, as reported by a [`ToolSource`].
+///
+/// Names are the *bare* server-side names; the source applies whatever
+/// namespacing the public registry expects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerToolsChanged {
+    pub server: String,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+impl ServerToolsChanged {
+    /// Whether anything actually moved. A refresh that fetched the same list is
+    /// not a change and must not produce an event.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// A server's own description of itself, for the system prompt (ADR-0068 §3).
+///
+/// Carried through the tool source rather than through `RunOptions` on purpose:
+/// the text belongs to the connected server, so every frontend (CLI, TUI, GUI,
+/// ACP) and every sub-agent gets it without threading a new field through each
+/// one. A `RunOptions` field would have to be filled in at 28 call sites, and
+/// the one that gets forgotten is silently wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPrompt {
+    /// Server name, used as the section heading.
+    pub server: String,
+    /// The server's `instructions` string, as received.
+    pub text: String,
+}
+
+/// The result of asking a source for its current tools.
+#[derive(Default)]
+pub struct ToolRefresh {
+    pub tools: Vec<Arc<dyn Tool>>,
+    /// Only the servers whose table actually changed.
+    pub changed: Vec<ServerToolsChanged>,
+}
+
+/// A tool set that may change while the session runs (MCP, ADR-0067 §5).
+///
+/// Refreshing is deliberately not automatic. The engine asks once, at the start
+/// of a turn, and uses the answer for the whole turn: a table that changed
+/// between the request the model saw and the calls that request produced would
+/// let the model name a tool it was shown and have it be gone by the time the
+/// call arrives. `ttlMs = 0` therefore means "before every turn", not "before
+/// every round".
+///
+/// Implementations decide for themselves whether a refresh costs a round trip:
+/// `refresh` is allowed to return the cached tools unchanged.
+#[async_trait]
+pub trait ToolSource: Send + Sync {
+    async fn refresh(&self) -> ToolRefresh;
+
+    /// Self-descriptions to inject into the system prompt.
+    ///
+    /// Provided so a source that has none does not have to say so. The text is
+    /// injected, never interpreted: it cannot change an approval decision
+    /// (ADR-0068 §3.2).
+    fn prompts(&self) -> Vec<ServerPrompt> {
+        Vec::new()
+    }
+}
+
+/// Tools this registry no longer has, and why.
+///
+/// Only used to turn "unknown tool" into something a model can act on: the
+/// difference between "you invented a name" and "that server dropped the tool
+/// while you were running" is the whole of ADR-0067 §5's error requirement.
+#[derive(Debug, Clone, Default)]
+pub struct RetiredTools {
+    entries: BTreeMap<String, String>,
+}
+
+impl RetiredTools {
+    pub fn insert(&mut self, name: impl Into<String>, reason: impl Into<String>) {
+        self.entries.insert(name.into(), reason.into());
+    }
+
+    pub fn reason(&self, name: &str) -> Option<&str> {
+        self.entries.get(name).map(String::as_str)
+    }
+
+    pub fn remove(&mut self, name: &str) {
+        self.entries.remove(name);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    /// Sources whose contents the engine re-reads at the start of every turn.
+    /// A snapshot returned by [`Self::refreshed`] carries none of these, so a
+    /// refresh cannot recurse.
+    sources: Vec<Arc<dyn ToolSource>>,
+    /// Tools the registry used to hold, so a call to one explains itself.
+    retired: RetiredTools,
+    /// Names removed by [`Self::without`], kept so a refresh cannot put them
+    /// back. Without this the filter would only hold until the first turn's
+    /// call to [`Self::refreshed`], which re-reads the sources and re-inserts
+    /// whatever they serve — and the registry returned by `without` is exactly
+    /// the one a sub-agent and the ACP service run their turns with.
+    excluded: Vec<String>,
 }
 
 impl ToolRegistry {
@@ -314,7 +425,12 @@ impl ToolRegistry {
         for tool in tools {
             map.insert(tool.name().to_string(), tool);
         }
-        Self { tools: map }
+        Self {
+            tools: map,
+            sources: Vec::new(),
+            retired: RetiredTools::default(),
+            excluded: Vec::new(),
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -334,6 +450,11 @@ impl ToolRegistry {
     ///
     /// 用于子代理 / 无头服务：定时任务管理工具只对带运行时驱动的会话开放，
     /// 子代理上下文拿不到 `SchedulerHandle`，直接从工具清单里去掉更干净。
+    ///
+    /// `sources` 保留下来（丢掉它们会让子代理与 ACP 的 MCP 工具表从启动起就冻结，
+    /// ADR-0067 §5 的每轮刷新形同虚设），因此被排除的名字必须记在 `excluded` 里，
+    /// 由 [`Self::refreshed`] 重新套用——否则第一轮刷新就会把它们插回来，
+    /// 「不含给定工具」这个承诺只成立到第一个 turn。
     pub fn without(&self, names: &[&str]) -> Self {
         let mut map = BTreeMap::new();
         for (name, tool) in &self.tools {
@@ -341,7 +462,18 @@ impl ToolRegistry {
                 map.insert(name.clone(), tool.clone());
             }
         }
-        Self { tools: map }
+        let mut excluded = self.excluded.clone();
+        for name in names {
+            if !excluded.iter().any(|seen| seen == name) {
+                excluded.push((*name).to_string());
+            }
+        }
+        Self {
+            tools: map,
+            sources: self.sources.clone(),
+            retired: self.retired.clone(),
+            excluded,
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -354,5 +486,108 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// Register a source that is re-read at the start of every turn.
+    pub fn add_source(&mut self, source: Arc<dyn ToolSource>) {
+        self.sources.push(source);
+    }
+
+    pub fn has_sources(&self) -> bool {
+        !self.sources.is_empty()
+    }
+
+    /// Every source's self-description, in registration order.
+    ///
+    /// Deduplicated by server name because one server may be reachable through
+    /// more than one source in a future with per-transport sources; two
+    /// identical sections would just be tokens spent twice.
+    pub fn server_prompts(&self) -> Vec<ServerPrompt> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut prompts = Vec::new();
+        for source in &self.sources {
+            for prompt in source.prompts() {
+                if !seen.insert(prompt.server.clone()) {
+                    continue;
+                }
+                prompts.push(prompt);
+            }
+        }
+        prompts
+    }
+
+    /// Why `name` is no longer available, if it used to be.
+    pub fn retired_reason(&self, name: &str) -> Option<&str> {
+        self.retired.reason(name)
+    }
+
+    /// Tool present in this registry but not in `next`, as a retired entry.
+    fn retire(missing: impl IntoIterator<Item = String>, reason: &str) -> RetiredTools {
+        let mut retired = RetiredTools::default();
+        for name in missing {
+            retired.insert(name, reason.to_string());
+        }
+        retired
+    }
+
+    /// Ask every source for its current tools and return a frozen snapshot.
+    ///
+    /// The returned registry has no sources, so the engine can use it for the
+    /// whole turn without anything swapping underneath it. `changed` lists only
+    /// servers whose table actually moved; a refresh that fetched the same list
+    /// produces nothing and therefore writes no event.
+    pub async fn refreshed(&self) -> (Self, Vec<ServerToolsChanged>) {
+        if self.sources.is_empty() {
+            return (self.clone(), Vec::new());
+        }
+        let mut snapshot = ToolRegistry {
+            tools: self.tools.clone(),
+            sources: Vec::new(),
+            retired: self.retired.clone(),
+            excluded: self.excluded.clone(),
+        };
+        let mut changed = Vec::new();
+        for source in &self.sources {
+            let refresh = source.refresh().await;
+            // Whatever the source itself carries is authoritative for its own
+            // names; the merge is a replace, not an append, so a tool the
+            // server dropped disappears here.
+            snapshot.extend(refresh.tools);
+            for diff in refresh.changed {
+                if diff.is_empty() {
+                    continue;
+                }
+                // Removal has to be explicit: `extend` is an insert, so a tool
+                // the source stopped reporting would otherwise linger and the
+                // model would keep seeing a name that is gone.
+                for name in &diff.removed {
+                    snapshot.tools.remove(name);
+                    snapshot.retired.insert(
+                        name.clone(),
+                        format!(
+                            "tool '{name}' no longer exists on MCP server '{}'; it was dropped \
+                             from the tool list since the previous turn",
+                            diff.server
+                        ),
+                    );
+                }
+                for name in &diff.added {
+                    snapshot.retired.remove(name);
+                }
+                changed.push(diff);
+            }
+        }
+        // Re-apply `without`'s filter: a source may serve a name the caller
+        // excluded, and the snapshot is what the whole turn runs with.
+        for name in &self.excluded {
+            snapshot.tools.remove(name);
+        }
+        (snapshot, changed)
+    }
+
+    /// Drop names from this registry, recording why. Used by tests and by any
+    /// caller that wants the retired explanation without a live source.
+    pub fn retire_missing(&mut self, missing: impl IntoIterator<Item = String>, reason: &str) {
+        self.retired = Self::retire(missing, reason);
     }
 }

@@ -214,6 +214,24 @@ impl App {
                     ended.pause.clone(),
                 );
             }
+            EventKind::McpToolsRefreshed(refreshed) => {
+                // A notice, not a tool row: the model did not call anything, an
+                // MCP server changed its tool table between turns (ADR-0067
+                // §5). Silence would leave the next call to a vanished tool
+                // looking like the model's mistake.
+                let mut parts = Vec::new();
+                if !refreshed.added.is_empty() {
+                    parts.push(format!("+{}", refreshed.added.len()));
+                }
+                if !refreshed.removed.is_empty() {
+                    parts.push(format!("-{}", refreshed.removed.len()));
+                }
+                self.blocks.push(Block::Notice(format!(
+                    "MCP server '{}' changed its tools ({})",
+                    refreshed.server,
+                    parts.join(" ")
+                )));
+            }
             EventKind::BudgetHint(hint) => {
                 // A warning, not a transcript row: it belongs to the turn that
                 // is running out of budget (ADR-0060 §2.3).
@@ -332,6 +350,7 @@ impl App {
             EventKind::UserMessage(_)
             | EventKind::TurnStarted(_)
             | EventKind::BudgetHint(_)
+            | EventKind::McpToolsRefreshed(_)
             | EventKind::ApprovalRequested(_)
             | EventKind::ApprovalDecided(_)
             | EventKind::TaskConfigured(_)

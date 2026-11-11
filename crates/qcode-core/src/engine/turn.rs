@@ -122,6 +122,41 @@ where
         options.scheduled.clone(),
         &mut on_event,
     )?;
+
+    // ADR-0067 §5: the MCP tool table is re-read here, at the turn boundary, and
+    // whatever comes back is used for the whole turn. Two reasons it is a
+    // snapshot rather than a live view:
+    //
+    // * a table that moved between the request the model saw and the calls that
+    //   request produced would let it name a tool it was shown and have the call
+    //   arrive after the tool is gone;
+    // * `ttlMs = 0` is a server saying "assume this is stale" — acting on that
+    //   per round would mean a round trip before every model call.
+    //
+    // Sources that are still fresh answer from their own cache, so a session
+    // with a `ttlMs = 5000` server makes one extra call per turn at most.
+    let (tools, changed) = ctx.tools.refreshed().await;
+    for diff in changed {
+        writer.append(
+            EventKind::McpToolsRefreshed(crate::event::McpToolsRefreshed {
+                server: diff.server.clone(),
+                added: diff.added.clone(),
+                removed: diff.removed.clone(),
+            }),
+            &mut on_event,
+        )?;
+    }
+    // Read before the shadowing below: the snapshot deliberately carries no
+    // sources (so a refresh cannot recurse), which means it also carries no
+    // `instructions`. Those come from the handshake and never change, so reading
+    // them once per turn from the live registry is both correct and cheap.
+    let mcp_prompts = ctx.tools.server_prompts();
+    // Shadowing keeps the rest of the function reading the same way; the
+    // snapshot lives as long as this borrow scope, which is the whole turn.
+    let ctx = TurnContext {
+        tools: &tools,
+        ..ctx
+    };
     events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events_with(
         &events,
@@ -386,12 +421,18 @@ where
             }
         }
 
+        // ADR-0068 §3: third-party `instructions` from the connected servers.
+        // Read from the registry rather than from `RunOptions` so every
+        // frontend and every sub-agent gets them without extra wiring.
         let mut system = system_prompt(
             options.agents_md.as_deref(),
             options.skills.as_deref(),
+            &mcp_prompts,
             todos.as_deref().unwrap_or(&[]),
         );
         system.push_str(&roots_prompt(&task.roots));
+        // Measured before the request takes ownership of the string.
+        let system_tokens = compact::estimate_text_tokens(&system);
         let request = CompletionRequest {
             model: options.model.to_string(),
             system,
@@ -405,8 +446,12 @@ where
         if let Some(window) = options.context_window
             && let Some(sink) = &options.on_delta
         {
+            // The system prompt counts too. ADR-0068 后果 flags this
+            // explicitly: `estimate_tokens` only walks `messages`, so without
+            // this the MCP `instructions` sections are a silent budget cost the
+            // status bar cannot show.
             sink.emit(Delta::Context {
-                tokens: compact::estimate_tokens(&messages),
+                tokens: compact::estimate_tokens(&messages) + system_tokens,
                 window,
             });
         }

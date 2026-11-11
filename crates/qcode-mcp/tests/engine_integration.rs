@@ -8,7 +8,7 @@ use qcode_core::policy::Policy;
 use qcode_core::provider::{StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
-use qcode_mcp::{McpServerConfig, connect_all};
+use qcode_mcp::{McpConfig, McpServerConfig, connect_all};
 use qcode_providers::MockProvider;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -18,15 +18,16 @@ async fn engine_asks_then_calls_the_mcp_tool() {
     let data = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
 
-    let server = McpServerConfig {
-        name: "stub".to_string(),
-        command: env!("CARGO_BIN_EXE_mcp-stub").to_string(),
-        args: Vec::new(),
-        env: Default::default(),
-        enabled: true,
-        timeout_secs: 10,
+    let mcp = McpConfig {
+        servers: vec![McpServerConfig {
+            name: "stub".to_string(),
+            command: Some(env!("CARGO_BIN_EXE_mcp-stub").to_string()),
+            timeout_secs: 10,
+            ..Default::default()
+        }],
+        ..Default::default()
     };
-    let tools = connect_all(&[server], workspace.path(), &data.path().join("logs"), &[]).await;
+    let tools = connect_all(&mcp, workspace.path(), data.path(), &[]).await;
     assert_eq!(tools.len(), 7);
 
     let mut registry = ToolRegistry::new(Vec::new());

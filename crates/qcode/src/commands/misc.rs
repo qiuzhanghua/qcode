@@ -87,8 +87,9 @@ pub(crate) async fn cmd_acp(
 pub(crate) async fn cmd_doctor(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    probe: bool,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let healthy = doctor::run(data_dir, config_path).await?;
+    let healthy = doctor::run(data_dir, config_path, probe).await?;
     Ok(if healthy {
         ExitCode::SUCCESS
     } else {

@@ -630,9 +630,30 @@ pub struct SandboxConfig {
     )]
     pub network: Option<SandboxNetworkMode>,
     /// Extra roots the `windows-acl` backend grants write access to, besides the
-    /// workspace and its private temp directory.
+    /// workspace and its private temp directory. `~/x` is expanded at load time.
     #[serde(default)]
     pub extra_writable: Vec<PathBuf>,
+    /// Extra roots every backend grants **read** (and execute) access to,
+    /// besides the fixed system allowlist and the task roots.
+    ///
+    /// The system allowlist is a fixed list of distro paths (`/usr`, `/bin`,
+    /// `/lib`, `/etc`, …), so a toolchain installed anywhere else is invisible
+    /// to a confined `run_shell`. This machine is the example: Rust lives in
+    /// `~/cot/lib/rust_*`, and with `mode = "landlock"` and no `extra_read` the
+    /// agent could not read it — `cargo`, `gh` and every other tool under that
+    /// prefix failed with `Permission denied` before starting. Listing the
+    /// prefix here fixes that without opening the write side.
+    ///
+    /// `~/cot` is expanded against the real home at load time, so the entry
+    /// reads the same on every machine. Relative paths are not expanded: the
+    /// config is user-wide and the workspace is per-task, so "relative to what"
+    /// has no stable answer.
+    ///
+    /// Recursive: each entry grants its whole subtree. Granting a directory is
+    /// therefore a real decision — `extra_read = ["~"]` hands the agent
+    /// `~/.ssh` and `~/.aws` too.
+    #[serde(default)]
+    pub extra_read: Vec<PathBuf>,
 }
 
 impl SandboxConfig {
@@ -693,6 +714,7 @@ impl Default for SandboxConfig {
             mode: default_sandbox_mode(),
             network: None,
             extra_writable: Vec::new(),
+            extra_read: Vec::new(),
         }
     }
 }
@@ -859,6 +881,13 @@ pub enum ConfigError {
         path: PathBuf,
         source: Box<toml::de::Error>,
     },
+    /// A rule whose `tool` or `path_glob` does not parse as a glob.
+    ///
+    /// Fatal rather than skipped: a `deny` rule with a typo would otherwise
+    /// never match, which reads as "denied" on paper and "asked" (or allowed)
+    /// at runtime. The message names the file so the fix is obvious.
+    #[error("{path}: {detail}")]
+    InvalidPolicyRule { path: PathBuf, detail: String },
     #[error("unknown provider '{0}'; add a [providers.{0}] section or pass --base-url and --model")]
     UnknownProvider(String),
     #[error(

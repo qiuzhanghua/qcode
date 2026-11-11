@@ -69,17 +69,136 @@ fn roots_prompt_lists_aliases_and_access() {
 
 #[test]
 fn agents_md_and_skills_are_appended_to_the_system_prompt() {
-    assert_eq!(system_prompt(None, None, &[]), SYSTEM_PROMPT);
-    assert_eq!(system_prompt(Some("   "), None, &[]), SYSTEM_PROMPT);
+    assert_eq!(system_prompt(None, None, &[], &[]), SYSTEM_PROMPT);
+    assert_eq!(system_prompt(Some("   "), None, &[], &[]), SYSTEM_PROMPT);
 
-    let with_rules = system_prompt(Some("  use tabs  "), None, &[]);
+    let with_rules = system_prompt(Some("  use tabs  "), None, &[], &[]);
     assert!(with_rules.starts_with(SYSTEM_PROMPT));
     assert!(with_rules.contains("# AGENTS.md"));
     assert!(with_rules.ends_with("use tabs"));
 
-    let with_skills = system_prompt(Some("use tabs"), Some("# Skills\n\n- `x` (user): y"), &[]);
+    let with_skills = system_prompt(
+        Some("use tabs"),
+        Some("# Skills\n\n- `x` (user): y"),
+        &[],
+        &[],
+    );
     assert!(with_skills.contains("# AGENTS.md"));
     assert!(with_skills.ends_with("- `x` (user): y"));
+}
+
+/// ADR-0068 §3.1: 8 KiB across all servers, truncation noted, and the note is
+/// charged to the same budget so the returned string never exceeds it.
+#[test]
+fn mcp_instructions_are_capped_at_the_budget() {
+    let big = crate::tool::ServerPrompt {
+        server: "big".to_string(),
+        text: "x".repeat(40_000),
+    };
+    let rendered = mcp_prompt(&[big]);
+    assert!(
+        rendered.len() <= MCP_INSTRUCTIONS_BUDGET,
+        "{} bytes exceeds the {} budget",
+        rendered.len(),
+        MCP_INSTRUCTIONS_BUDGET
+    );
+    assert!(rendered.contains("# MCP: big"));
+    assert!(rendered.contains("truncated"));
+
+    // Under the budget: verbatim, no note.
+    let small = crate::tool::ServerPrompt {
+        server: "small".to_string(),
+        text: "Use `echo` first.".to_string(),
+    };
+    let rendered = mcp_prompt(&[small]);
+    assert!(rendered.contains("Use `echo` first."));
+    assert!(!rendered.contains("truncated"));
+}
+
+/// The budget is shared, and a server that does not fit is skipped rather than
+/// half-rendered: an empty heading would cost tokens and say nothing.
+#[test]
+fn the_budget_is_shared_across_servers() {
+    let prompts: Vec<crate::tool::ServerPrompt> = (0..4)
+        .map(|index| crate::tool::ServerPrompt {
+            server: format!("s{index}"),
+            // Each takes a quarter of the budget minus what the heading eats.
+            text: "y".repeat(2_000),
+        })
+        .collect();
+    let rendered = mcp_prompt(&prompts);
+    assert!(
+        rendered.len() <= MCP_INSTRUCTIONS_BUDGET,
+        "{}",
+        rendered.len()
+    );
+    assert!(rendered.contains("# MCP: s0"), "the first always fits");
+    // Only whole sections: every heading that appears is followed by text.
+    for index in 0..4 {
+        if let Some(rest) = rendered.split(&format!("# MCP: s{index}")).nth(1) {
+            assert!(
+                !rest.trim().is_empty(),
+                "s{index} got a heading with nothing under it"
+            );
+        }
+    }
+}
+
+/// A multi-byte character split in half would be a corrupt prompt.
+#[test]
+fn truncation_lands_on_a_character_boundary() {
+    let prompt = crate::tool::ServerPrompt {
+        server: "wide".to_string(),
+        // Three bytes per char, so a naive byte cut lands mid-character.
+        text: "工".repeat(MCP_INSTRUCTIONS_BUDGET),
+    };
+    let rendered = mcp_prompt(&[prompt]);
+    assert!(rendered.len() <= MCP_INSTRUCTIONS_BUDGET);
+    // `String` is already valid UTF-8 by construction; what this pins down is
+    // that the cut did not silently drop the whole section.
+    assert!(rendered.contains("# MCP: wide"));
+    assert!(rendered.contains('工'));
+    assert!(rendered.contains("truncated"));
+}
+
+/// Empty and whitespace-only instructions produce nothing at all.
+#[test]
+fn blank_instructions_produce_no_section() {
+    let prompts = vec![
+        crate::tool::ServerPrompt {
+            server: "empty".to_string(),
+            text: String::new(),
+        },
+        crate::tool::ServerPrompt {
+            server: "blank".to_string(),
+            text: "   \n\t ".to_string(),
+        },
+    ];
+    assert_eq!(mcp_prompt(&prompts), "");
+}
+
+/// The section sits after the skills index and before the todo list: project
+/// rules first, third-party text next, live session state last.
+#[test]
+fn mcp_sections_sit_between_skills_and_todos() {
+    let todos = vec![TodoItem {
+        content: "write tests".to_string(),
+        status: crate::todo::TodoStatus::InProgress,
+    }];
+    let prompt = system_prompt(
+        Some("use tabs"),
+        Some("# Skills\n\n- `x` (user): y"),
+        &[crate::tool::ServerPrompt {
+            server: "stub".to_string(),
+            text: "Handshake prose.".to_string(),
+        }],
+        &todos,
+    );
+    let skills_at = prompt.find("# Skills").expect("skills");
+    let mcp_at = prompt.find("# MCP: stub").expect("mcp");
+    let todo_at = prompt.find("# Todo").expect("todo");
+    assert!(skills_at < mcp_at, "{prompt}");
+    assert!(mcp_at < todo_at, "{prompt}");
 }
 
 #[test]
@@ -91,6 +210,7 @@ fn todo_section_is_appended_after_skills() {
     let prompt = system_prompt(
         Some("use tabs"),
         Some("# Skills\n\n- `x` (user): y"),
+        &[],
         &todos,
     );
     assert!(prompt.contains("# Skills"));

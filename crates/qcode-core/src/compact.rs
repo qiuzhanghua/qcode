@@ -38,6 +38,16 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
     (chars / 4) as u64
 }
 
+/// The same 4-chars-per-token estimate for a bare string.
+///
+/// The system prompt is part of the request but not part of `messages`, so
+/// counting only the messages would under-report exactly the sections that grow
+/// on their own — AGENTS.md, the skills index and MCP `instructions`
+/// (ADR-0068 后果).
+pub fn estimate_text_tokens(text: &str) -> u64 {
+    (text.len() / 4) as u64
+}
+
 fn message_chars(message: &Message) -> usize {
     message
         .blocks

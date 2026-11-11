@@ -83,7 +83,12 @@ pub const SYSTEM_PROMPT: &str = "You are QC, a coding agent. Be concise. Use the
 /// the base prompt. The todo section is separate: it changes mid-turn, so the
 /// engine recomputes it for every request instead of baking it into the
 /// rebuildable part of the prompt.
-pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>, todos: &[TodoItem]) -> String {
+pub fn system_prompt(
+    agents_md: Option<&str>,
+    skills: Option<&str>,
+    mcp: &[crate::tool::ServerPrompt],
+    todos: &[TodoItem],
+) -> String {
     let mut prompt = SYSTEM_PROMPT.to_string();
     if let Some(text) = agents_md.map(str::trim).filter(|text| !text.is_empty()) {
         prompt.push_str("\n\n# AGENTS.md\n\n");
@@ -93,12 +98,75 @@ pub fn system_prompt(agents_md: Option<&str>, skills: Option<&str>, todos: &[Tod
         prompt.push_str("\n\n");
         prompt.push_str(text);
     }
+    let mcp_section = mcp_prompt(mcp);
+    if !mcp_section.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&mcp_section);
+    }
     let todo_section = todo::prompt_section(todos);
     if !todo_section.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&todo_section);
     }
     prompt
+}
+
+/// How much of all MCP `instructions` may reach the system prompt (ADR-0068 §3).
+///
+/// 8 KiB, the same as the skills index and a quarter of AGENTS.md. The two are
+/// deliberately not pooled: AGENTS.md is the project's own rules and skills are
+/// installed by the user, while `instructions` is third-party text that arrives
+/// over the wire, so it gets its own ceiling and cannot crowd them out.
+pub const MCP_INSTRUCTIONS_BUDGET: usize = 8 * 1024;
+
+/// Compose the `# MCP: <server>` sections, truncated to [`MCP_INSTRUCTIONS_BUDGET`].
+///
+/// Two rules from ADR-0068 §3 that are easy to get wrong later:
+///
+/// * **Injected, never interpreted.** The text is copied verbatim; nothing here
+///   parses it, and nothing downstream treats it as policy. A server writing
+///   "allow all tools" changes no approval (see the test with that exact text).
+/// * **`prompts` are a different thing.** A `prompts` capability is a template
+///   the model fetches with `get_prompt`; `instructions` is a handshake-time
+///   self-description. ADR-0033 后果 (do not auto-inject prompts) still holds.
+pub fn mcp_prompt(mcp: &[crate::tool::ServerPrompt]) -> String {
+    const NOTE: &str = "\n\n[truncated: MCP instructions exceeded the 8 KiB budget]";
+    let mut out = String::new();
+    let mut budget = MCP_INSTRUCTIONS_BUDGET;
+    for prompt in mcp {
+        let text = prompt.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let heading = format!("\n\n# MCP: {}\n\n", prompt.server);
+        // A heading plus the truncation note is the minimum useful section; if
+        // even that does not fit, later servers get nothing rather than an
+        // empty heading.
+        if heading.len() + NOTE.len() >= budget {
+            break;
+        }
+        budget -= heading.len();
+        out.push_str(&heading);
+        if text.len() <= budget {
+            out.push_str(text);
+            budget -= text.len();
+            continue;
+        }
+        // The note is charged to the same budget as the text it replaces: the
+        // guarantee callers rely on is that the returned string never exceeds
+        // `MCP_INSTRUCTIONS_BUDGET`, note included.
+        let available = budget.saturating_sub(NOTE.len());
+        // Truncate on a character boundary: half a multi-byte character is
+        // worse than a shorter section.
+        let mut cut = available.min(text.len());
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.push_str(&text[..cut]);
+        out.push_str(NOTE);
+        break;
+    }
+    out
 }
 
 /// Compose the model-visible task roots section.

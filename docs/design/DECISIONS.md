@@ -124,7 +124,8 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 ### 4.10 MCP
 
 - server = 显式信任的插件；装即信代码，但每次调用仍走审批。
-- server 进程默认不套 FS 沙箱；记录 argv 与来源；用户可配置关闭。
+- server 进程默认套 FS 沙箱：运行时目录只读+执行，写入只给 workspace 与每个 server 的私有
+  HOME；凭据目录需显式声明。记录 argv 与来源；用户可显式关闭（见 ADR-0066）。
 - 工具名 `mcp__<server>__<tool>` 防冲突。
 - 权限按工具粒度配置，默认 ask。
 - 输出加来源标记；输出里的“指令”不改变任何权限。
@@ -175,8 +176,8 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
   依赖 pin 死 `=0.44.0`，外面包一层自有 `Provider` trait 做防腐层。
 - 事件日志存 provider wire JSON，不存 rig 类型；禁用 `Agent::resume` / `RUN_FORMAT`。
 - rig 自带的 terminal coding agent 只允许看 API 用法示例，不作为架构与 prompt 参考。
-- rmcp 3.2.0（pin `=3.2.0`）：v1 只用 stdio + tools；streamable HTTP 与 2024-11-05 legacy SSE
-  不进 v1。`call_tool` 外层自包 timeout（库没有 per-request deadline）。
+- rmcp `=3.9.0`（ADR-0067 修正了原先的 `=3.2.0`）：stdio + Streamable HTTP，2024-11-05 legacy
+  SSE 仍不做。`call_tool` 外层自包 timeout（库没有 per-request deadline）。
 - provider v1：OpenAI-compatible（DeepSeek / Ollama / vLLM）+ Anthropic 原生。
 - DeepSeek 默认模型：`deepseek-flash`（2026-10-18 用户选择；可用 `--model` 覆盖）。
 - 已知成本：rig 强制 `serde_json` 的 `preserve_order` + `float_roundtrip`。
@@ -244,6 +245,8 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 **决定**
 
 1. 用 `rmcp = "=3.2.0"`，只开 `client` + `transport-child-process`。
+   **修正（2026-11-11）**：版本已是 `=3.9.0`（见 ADR-0067），features 增加
+   `transport-streamable-http-client-reqwest`；「只 stdio」的前提见 ADR-0067 §1。
 2. 在构建 registry 时串行连接所有 enabled server，`tools/list` 后立即注册；握手上限 20s。
    失败只 `warn` 并跳过该 server（spawn / 握手 / list 都是）。
 3. 每 server `timeout_secs`（默认 120）同时约束 `tools/list` 与 `tools/call`；取消走
@@ -255,7 +258,9 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 
 - 启动延迟随 enabled server 数量线性增长。后续若要并行连接，只改 `connect_all`，
   工具契约不变。
-- `tools/list` 不缓存 TTL：进程生命周期内只列一次；长会话里 server 动态增删工具需重启 qc。
+- ~~`tools/list` 不缓存 TTL：进程生命周期内只列一次；长会话里 server 动态增删工具需重启 qc。~~
+  **2026-11-11 作废**：2026-07-28 用 `ttlMs` / `cacheScope` 规定缓存寿命，`list_changed` 通知
+  要求立即失效，「只列一次」不再是可选实现而是协议违规。见 ADR-0067 §5。
 - `rmcp` pre-1.0，升级必须连同 `call_tool` 返回类型与工具生命周期一起评估。
 
 ## ADR-0003：并行只读工具（2026-10-19）
@@ -926,6 +931,10 @@ cargo build -p qcode
 
 **补充：MCP 与 TMP 交接（2026-10-20）**
 
+**补注（2026-11-11）**：下面这段的前提「server 因此和 `run_shell` 一样被 helper 拉起」
+在 2026-11-11 被推翻——同一份 helper，但**授权集不再同一份**。MCP server 拿不到
+`run_shell` 那种「整个 workspace 读写」的边界，见 ADR-0066。
+
 - MCP stdio server 也走同一道边界：`qcode_mcp::connect_all_with` 接受一个
   `Confine` 回调（`main.rs` 用 `Sandbox::command` 构造），server 因此和 `run_shell`
   一样被 helper 拉起；`connect_all` 保持原签名（无 confine）给测试用。
@@ -1226,6 +1235,22 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 `MCP_STUB_CAPS` 环境变量反向证明 `env` 真的传到了子进程：设成
 `tools,resources,prompts` 时四个额外工具出现且 `read_resource` 返回 stub 正文、
 缺 `uri` 报错、`get_prompt` 返回渲染后的消息；不设时仍然只有 7 个工具。
+
+**实现注记（2026-11-11，§3 与「后果」第二条被 ADR-0068 §4 取代）**
+
+- §3 的「试一次」**已作废**（ADR-0068 §4 的 B-2 修订）：**本 ADR 不再有任何探测**。
+  握手的 `capabilities` 是唯一来源，与协议版本无关。「声明与实际是否一致」这个问题移交
+  `qc doctor --probe`——它按需运行、两边都问、并做比对，而这正是 §3 当初「试一次」做不到的
+  （它只问、然后把答案当真相，从不与声明对照）。
+- **第一版曾把这条收窄到 legacy 分支，那次收窄也已作废。** 保留一句当时的理由以免有人重提：
+  「野外的 2025 时代 server 经常把 `capabilities` 写得不准」。这句话是猜测——真机实测的
+  `wordcraft-cli 0.15.2`（2025-06-18）声明与行为完全一致，见 ADR-0068 §4 的 B-2 注记。
+- 「后果」第二条「探测失败只有 debug 日志」**已无对象**（不探测了）。但同一诉求换了位置：
+  连接期那行 `mcp capabilities read from the handshake` 是 `info`，`RUST_LOG=info` 下能直接
+  看到每个 server 的三个能力布尔值，不需要 `debug`。
+- 「后果」第四条「不把 prompts 自动塞进 system prompt」**不变**，且现在有了新的相邻物：
+  `instructions`（握手自述）会注入，`prompts`（模板）不会。两者不是一类东西，见 ADR-0068
+  §3——这条区分现在有两处测试守着，不要再合并。
 
 ## ADR-0034：checkpoint / rollback 只记录「即将被改的文件」（2026-10-20）
 
@@ -5785,3 +5810,1233 @@ zsh 里粘过来的命令会以「语法错误」失败，而报错看起来像�
 - `version` 是否保留为 `schema` 的别名（旧脚本可能写 `version`）。
 - 项目级 `.qcode.toml` 是否也升 schema 2，还是永远按 v1 只读。
 - `migrate` 是否提供 `--dry-run` 输出 diff（倾向提供）。
+
+## ADR-0066：MCP server 的沙箱——运行时 r+exec，写入只给私有 HOME（2026-11-11）
+
+**状态**：拟议。`[[mcp.servers]]` 原有字段不变，新增四个可选字段；不写新字段的配置行为
+应当与今天**不同**（默认值从「什么都进不去」变成「推导着进得去」），因此这是一次可用性
+修复，不是兼容性破坏。
+
+**来源**：`derived`。来自一次实测、一次文档与代码的矛盾，以及三轮方案讨论被否掉的过程。
+
+**背景**
+
+本文件 §4.10 在此之前写着「server 进程默认不套 FS 沙箱」，实现却是无条件套：
+`crates/qcode-kernel/src/lib.rs` 把 `run_shell` 用的那个 `Sandbox` 直接做成 `Confine`
+闭包传给所有 MCP server。两边谁也没赢——用户在真机上遇到的是最坏的那种组合：
+**沙箱在生效，但没有为 MCP 场景做过授权。**
+
+实测（Linux + Landlock，2026-11-11）：
+
+| 布置 | 结果 |
+|---|---|
+| `command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"` | `Permission denied` |
+| `command = "<workspace>/bin/wordcraft"`（符号链接到上面那处） | `No such file` |
+| `command = "/tmp/wordcraft/bin/wordcraft"`（拷一份过去） | ✅ 19 个工具 |
+
+原因单纯：`crates/qcode-tools/src/sandbox/linux.rs` 的只读白名单是
+`/usr /bin /sbin /lib /lib64 /etc /opt /sys /proc /run /dev`，**`/home` 不在里面**；
+而 Landlock 的 `path_beneath` 规则按**解析后的真实路径**判定，`/home/q/cot` 不在集合里，
+符号链接过不去（实测报 `No such file` 而不是 `Permission denied`，同一条规则的两种表现）。
+所以「拷到 `/tmp` 就好了」不是巧合：`/tmp` 在写白名单里。也就是说，**这个失败模式与用户
+把 server 装在哪强相关**——装在 `/usr/local` 能用、装在 `~/.local` 不能用，而 `~/.local/bin`
+恰恰是 pipx / uv / npm 的默认安装位置。
+
+ADR-0027 的补充段只记了 Windows 一侧的同类做法，Linux 与 macOS 连这条「实现偏离了决定」
+的注记都没有；这一段本 ADR 一并补上（见 ADR-0027 的补注）。
+
+**被否掉的三个方向**（记下来，避免下一个人重新提）
+
+1. **撤沙箱。** 第一版 ADR 草案就是这个方向，理由是「回到 4.10 的原文」。否决：MCP server
+   是第三方代码，`npm i` / `pip install` 装来的，信任对象是「装即信它做它声称的事」，
+   不是「信它无人值守地读写 `$HOME`」。撤掉之后唯一的补偿是工具审批，而审批覆盖不到
+   server 在**握手期**自己做的事——今天已经能观察到 server 在 `initialize` 之前就读文件。
+2. **放宽到 `$HOME` 只读。** 只是把上一版的洞缩小到「读全部 `$HOME`」。`~/.ssh/id_rsa`、
+   `~/.aws/credentials`、`~/.config/gh/hosts.yml` 全在 `$HOME` 下，等于给每个 server 发一张
+   通读证。同一轮实测里 wrapper dump 出 119 个继承变量（含 `GITHUB_TOKEN`、
+   `DEEPSEEK_API_KEY`、`SSH_AUTH_SOCK`），说明「环境里的好东西」本来就已经在漏。
+3. **只让用户手写 `read_paths`。** 能跑，但第一次上手必然报错：用户不知道 `pipx` 的真身是
+   `~/.local/pipx/venvs/<name>/bin/python`、也想不到 `<pkg>/node_modules/.bin/x` 的边界。
+   把「推导」推给用户，等于把 §4.10 的问题原样保留，只是换了个报错位置。
+
+**决定**
+
+### 1. 默认 confine，逐 server 一份授权集
+
+`[mcp] sandbox = "confine"` 是默认值。每个 server 在 spawn 前算出一份 `GrantSet`：三个
+不相交的集合，**此外一律无**。
+
+| 集合 | 来源 |
+|---|---|
+| runtime（只读 + 执行） | 由 `command` / `args` 推导，`read_paths` 补充 |
+| write | 任务 workspace roots（沿用现状）+ 该 server 的私有 HOME + `writable_paths` |
+| 环境变量 | 与上面两个集合同源（见 §5） |
+
+`GrantSet` 是纯数据、可打印、可序列化。`qc doctor` 打印的那一份和 spawn 时用的必须是
+**同一个结构体**，不允许「文档说 A、实际给 B」。
+
+### 2. runtime 的推导规则
+
+按顺序：
+
+1. `canonicalize` 解析 `command` 的符号链接，得到真实文件。
+2. 读 shebang。`#!/usr/bin/env node` 要再解析出 `node` 的绝对路径。没有 shebang 的
+   native binary 到此为止。
+3. 向上归到**生态根**，而不是给整个父目录：
+
+   | 形态 | 授权 |
+   |---|---|
+   | `<venv>/bin/python`（含 pipx `~/.local/pipx/venvs/<n>`） | 整个 `<venv>` 子树 r+x |
+   | `<pkg>/node_modules/.bin/<x>` | 该 `<pkg>` 根 r+x |
+   | `<target>/debug/<x>`（自编译的 stub） | **只给这一个文件** r+x |
+   | 其余 | 只给该文件所在目录 r+x，且要求目录深度 ≥ 2 |
+
+4. **危险根一律拒绝**，需要显式 opt-in：推导结果若等于 `/`、`$HOME`、`/home`、`/Users`，
+   或是 workspace 的祖先，报错并让用户写 `read_paths`。这一条是防「自动推导把整机送出去」，
+   不是为了拦用户——用户真想给，`read_paths = ["/"]` 也写得出来，但那是人写的、能 diff 的。
+
+### 3. 合成 HOME
+
+每个 server 一个私有目录 `<data_dir>/mcp/<server>/home`，**读写**授权；spawn 时把
+`HOME`、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`XDG_DATA_HOME`、`TMPDIR`/`TMP`/`TEMP`
+指过去。
+
+这一步同时解决三件事：
+
+- `npx` / `uvx` / pipx 需要写 cache，以前只能靠把 server 挪进 workspace 或 `/tmp` 来让
+  它们跑起来（实测就是这么绕过去的）；
+- 真实 `$HOME` 作为**变量值**消失，未声明的子目录一律不可达——`~/.ssh`、`~/.aws` 默认既读
+  不到、也「不知道该去哪儿读」；声明的凭据子树是唯一例外（§4）；
+- `TMPDIR` 不再依赖 ADR-0027 里那条「helper 在 spawn 前改写 `TMP`/`TEMP`/`TMPDIR`」的
+  Windows 特例，三平台统一。
+
+### 4. 凭据预设（`credentials`）
+
+只给 `$HOME` 里的**具体子路径**，按语义命名，不让用户记路径：
+
+| 预设 | 只读子树 | 透传的环境变量 |
+|---|---|---|
+| `github` | `~/.config/gh`、`~/.config/git` | `GITHUB_TOKEN`、`GH_TOKEN`、`GH_HOST` |
+| `aws` | `~/.aws` | `AWS_PROFILE`、`AWS_REGION`、`AWS_DEFAULT_REGION`、`AWS_CONFIG_FILE`、`AWS_SHARED_CREDENTIALS_FILE`、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN` |
+| `ssh` | `~/.ssh` | `SSH_AUTH_SOCK` |
+| `npm` | `~/.npmrc` | `NPM_TOKEN`、`NODE_AUTH_TOKEN` |
+| `netrc` | `~/.netrc` | — |
+| `docker` | `~/.docker/config.json` | — |
+
+被选中的子树在合成 HOME 里各放一个**符号链接**（`<home>/.config/gh -> ~/.config/gh`），
+这样 `gh` 按 `$HOME/.config/gh` 找得到，Landlock 又只放行了那一个真实子树。只读，所以
+`gh` 想刷新 token 会失败——这是有意的，写回真实凭据库应该走 `qc` 自己（ADR-0056），
+不是让 server 代劳。
+
+`credentials` 里只写名字不写值：preset 只扩展成「路径 + 变量名」，密钥仍然只从进程环境或系统
+凭据库来，符合 ADR-0018 与 ADR-0056「密钥不落盘、不进 argv」的既有约束。
+
+### 5. 环境变量与授权集同源
+
+`GrantSet` 决定哪些变量透传到子进程：预设里点名的变量 + 一份基础白名单
+（`PATH`、`LANG`/`LC_*`、`TZ`）+ ADR-0023 的代理四件套
+（`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`）。**其余一律不传。**
+
+代理四件套必须留：ADR-0023 第 3 条依赖「给 shell/MCP 注入代理变量」来把 MCP 的出口纳入
+审计；如果净化时把它们一起清掉，ADR-0023 会当场失效，而且失败是静默的（server 直连成功，
+审计里什么都没有）。具体白名单的完整定义与 `instructions` 的处置见 ADR-0068，本文只钉
+「同源」这条不变式。
+
+### 6. 逃逸阀：`sandbox = "off"` 保留
+
+`[mcp.servers] sandbox = "off"` 让**这一个** server 不进 OS 沙箱。这是显式 opt-out，
+不是错误回退——`Sandbox::command` 的既有契约是「实现可以拒绝，调用方不得在出错后回落到
+不受限命令」，本条款不违反它：拒绝仍然拒绝，只有配置里明写 `off` 才不套。
+
+代价必须可见：启动时 `warn` 一条、`qc doctor` 把该 server 标 `partial`、事件日志记一次。
+默认值永远是 `confine`。
+
+### 7. 报错要说清楚是哪条路径
+
+`Permission denied` 直接透出是这次最难查的地方。改为：沙箱拒绝时把**被拒的路径**和
+**建议加的 `read_paths`**一起报出来，`qc doctor` 另给一行「运行时目录不在授权集内」
+（今天的行为是 `warn` + `skipping MCP server`，一句轻描淡写就把 server 丢了）。
+
+### 8. 配置形状
+
+```toml
+[mcp]
+# "confine"（默认）| "off"——后者只影响没单独写的 server
+sandbox = "confine"
+
+[[mcp.servers]]
+name = "wordcraft"
+command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"
+# 自动推导之外的补充（只读 + 执行）
+read_paths = ["/home/q/cot/lib/wordcraft_0.15.2_linux_amd64"]
+# 默认已有 workspace + 私有 HOME；这里补其它需要写的目录
+writable_paths = []
+# 语义化的凭据授权
+credentials = ["github"]
+
+[[mcp.servers]]
+name = "legacy"
+command = "/opt/legacy/mcp"
+sandbox = "off"        # warn + doctor partial
+```
+
+**不变式**
+
+- 授权集是可打印的纯数据；spawn 只消费它，不在 spawn 路径上重新推导。
+- 补不上就不启动：推导失败一律拒绝，唯一例外是显式 `sandbox = "off"`。
+- `HOME`（以及 `XDG_*`、`TMPDIR`）指向的目录必须在 write 集合里，否则就是
+  「env 说 A、只授权 B」——这是最难查的一类错。
+- 真实 `$HOME` 不出现在子进程环境里（`sandbox = "off"` 除外，此时 `HOME` 仍是真实的）。
+- Windows 的 `windows-acl` 后端**只限写**，读不受限（ADR-0027）。因此凭据预设在那里的
+  效果是「写不进去」，不是「读不出来」；文档与 `doctor` 必须如实写，不能假装三平台一样。
+
+**实现**
+
+| 文件 | 改动 |
+|---|---|
+| `crates/qcode-mcp/src/grant.rs`（新） | `GrantSet::derive(command, args, read_paths, credentials) -> Result<GrantSet, GrantError>`：canonicalize、shebang、生态根、危险根检查。纯逻辑，可单测，不依赖 `qcode-tools` |
+| `crates/qcode-mcp/src/config.rs` | `McpServerConfig` 加 `read_paths` / `writable_paths` / `credentials` / `sandbox`；`McpConfig` 加 `sandbox`；`validate()` 加「`off` 与 `confine` 之外的取值报错」 |
+| `crates/qcode-mcp/src/lib.rs` | `Confine` 回调加一个 `&GrantSet` 参数；`connect_all_with` 每 server 先 `derive`，再按 grant 设环境与 HOME，最后交给 `confine`。crate 仍然不依赖 `qcode-tools`（回调而非类型依赖） |
+| `crates/qcode-kernel/src/lib.rs` | 闭包从「一个 `confine_sandbox` 套全部 server」改为按 grant 现算：`sandbox.with_roots(任务 roots + runtime 只读根, 私有 temp)` |
+| `crates/qcode-tools/src/sandbox/mod.rs` | ~~**不改**。`with_roots(&[Root], temp)` 已经支持只读根，Linux 侧 `RootAccess::ReadOnly` 只给读位、不给写位——正好是这里要的~~ → **改了**：`with_roots` 多了第三个参数 `OutsideRoots`。原判断「不改」错在只看了「有没有只读根」，没看「多给了什么」——见下方 §1 写集修订注记 |
+| `crates/qcode/src/commands/*` | `qc mcp add` 加 `--read-path`、`--write-path`、`--credential`（可重复）、`--sandbox`；`qc doctor` 逐 server 打印授权集 |
+
+**后果**
+
+- 「装即信」的前提变硬了：以前装上去就能跑（如果路径恰好落在白名单里），现在**必须**声明
+  凭据。这是有意的——读不到 `~/.ssh` 是功能，不是缺陷。
+- 合成 HOME 让 server 的状态与真实配置隔离：同一个 server 在 qcode 里和手跑一遍看到的
+  cache 可能不同。doctor 要能打印私有 HOME 的路径，用户才知道去哪儿看。
+- 首次使用需要一次「推导 → 报错 → 加 `read_paths`」的来回。设计上接受这个来回，因为它只
+  发生在**装新 server** 时；对比今天，是每次都要把 server 挪到 `/tmp`。
+- `[sandbox] extra_writable` 是 `windows-acl` 专用的（`crates/qcode-kernel/src/config/mod.rs`
+  的文档注释就写着），Linux 下它根本不生效——这也是为什么「已经加了 `extra_writable`
+  还是 `Permission denied`」。本 ADR 不扩展它的语义，MCP 的授权走 `read_paths` /
+  `writable_paths`，`extra_writable` 保持只服务 `run_shell`。
+- 远程 MCP（Streamable HTTP，另篇）没有子进程，本 ADR 完全不适用；它的边界是出口代理。
+
+**验证**
+
+- 单测（纯逻辑，无沙箱）：推导表逐行覆盖——shebang 的 `env node` 形态、venv、
+  `node_modules/.bin`、单文件、无 shebang；危险根（`/`、`$HOME`、workspace 祖先）逐个报错；
+  `sandbox = "off"` 时 grant 仍被算出来（doctor 要打印）。
+- 集成（Linux，真 Landlock）：把 stub server 装在 `$HOME` 下的临时目录 →
+  **(a)** 默认配置能启动并列出工具（今天会 `Permission denied`）；
+  **(b)** 写 workspace 外被拒；
+  **(c)** 读 `~/.ssh/id_rsa` 被拒；
+  **(d)** npx 形态的 server 首次运行能建 cache（合成 HOME 生效）。
+- 真机：`/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft` 原址，不拷 `/tmp`，
+  19 个工具。
+- macOS / Windows：`extra_writable` 语义不变；Windows 只验「写不进去」那一条，并在
+  doctor 里如实标 `partial`。
+
+**分期**
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| P1 | `grant.rs` 推导 + 合成 HOME + 逐 server `with_roots` + 可诊断报错 + `sandbox = "off"` | wordcraft 原址可用；`README` §沙箱那段（「`run_shell` 与 MCP stdio server 都由对应工具包裹」「`npx` 的 cache 要加进 `extra_writable`」）按新授权集改写 |
+| P2 ✅ | `credentials` 预设与合成 HOME 里的符号链接 + `qc doctor` 打印授权集 | `credentials = ["github"]` 后 gh 类 server 可用；不带预设时读不到 |
+| P3 | `qc mcp add` 的新 flag 与写回 | `add` 写的配置能被 `show --effective` 读回，字段不丢 |
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 撤沙箱（回到 §4.10 原文） | server 无人值守读写 `$HOME`；审批覆盖不到握手期（见「被否掉的三个方向」1） |
+| `$HOME` 只读 | 等于给每个 server 一张凭据通读证（同上 2） |
+| 只暴露 `read_paths`，不推导 | 首次上手必错，问题只是换了位置（同上 3） |
+| 用 bwrap 而不是 Landlock | bwrap 要建挂载命名空间，与「复用 `run_shell` 的后端」冲突；且 macOS/Windows 还是得各写一套 |
+| 逃逸阀只做 CLI flag、配置里不让写 | 用户明确要求保留在配置里：装新 server 的来回要能在版本化的项目配置里表达 |
+| 给每个 server 一份真实 `$HOME` 的 bind | 隔离归零，等于方案 1 |
+
+**实现注记（2026-11-11，P1 + P2 的一部分）**
+
+落地的是：`grant.rs`（推导 / 危险根 / 合成 HOME / 凭据链接）、`config.rs` 的四个新字段与
+`sandbox` 枚举、`lib.rs` 的 `env_clear` + 白名单 + 逐 server inline `GrantSet`、
+`qcode-kernel` 的 `mcp_confine` + `mcp_roots`、以及 `qc mcp add --read-path/--write-path/
+--credential/--sandbox`。五处与本文原文有偏差，都是实现时撞出来的：
+
+1. **授权以目录为单位，不是文件为单位。** §2 的推导表写着「`<target>/debug/<x>`
+   只给这一个文件」。`Sandbox::with_roots` 只吃 `Root`（目录），改它要动三个后端；而
+   `<target>/debug` 这一层已经足够窄，且二进制常要读同目录的 `.so`。所以统一按目录授权，
+   §2 那句按「只给该文件所在目录」理解。
+2. **Linux 后端本来就允许写 `/tmp` 与 `/var/tmp`。** `sandbox/linux.rs` 的 `install_rules`
+   无条件把这两个和 `writable_paths()`（`CARGO_HOME` 等）加成可写。所以本 ADR 说的
+   「写只给 workspace + 私有 HOME」准确说法是「workspace + 私有 HOME + `/tmp` + `/var/tmp`
+   + cargo 目录」。这是既有的、与 `run_shell` 共享的行为，本 ADR 没有收紧它；要收紧是另一件事。
+   它同时意味着**测试不能用 `tempfile` 目录冒充「workspace 之外」**——`/tmp` 本来就是可写的，
+   断言会假绿。集成测试因此改用 `CARGO_TARGET_TMPDIR`（仓库 `target/` 下）。
+3. **`Sandbox::command` 返回值依赖 sandbox 还活着。** `Landlock::command` 的 `pre_exec`
+   捕获 `ruleset_fd`，而 `Drop for Landlock` 会 `close` 它。原来的写法
+   `with_roots(..)?.command(..)` 一行表达式会在 `spawn()` 之前 drop 掉 sandbox，子进程
+   于是死在 `exec` 前，报 `EBADFD`（`os error 77`）——看起来像权限问题，其实不是。
+   `run_shell` 一直把 `with_roots` 的结果绑在局部变量上，所以没暴露。修法两处：给 trait 的
+   `command` 补上「sandbox 必须比 `spawn()` 活得久」的文档，以及让 `mcp_confine` 把每个
+   server 的 sandbox 停在 `Confine` 盒子里（生命周期覆盖 `connect_all_with` 的全部 spawn）。
+4. **`XDG_CONFIG_HOME` 必须与凭据链接的位置一致。** 第一版把 `XDG_CONFIG_HOME` 指向
+   `<home>/config`、把凭据链接放在 `<home>/.config/gh`，于是 `gh` 会去 `$XDG_CONFIG_HOME/gh`
+   找 token 而找不到——`credentials = ["github"]` 成了一个什么都不做的选项。现在三处统一用
+   XDG 的默认布局（`.config` / `.cache` / `.local/share`）。
+5. **私有 HOME 必须先 `canonicalize`。** `--data-dir ./data` 这种相对路径会让 `HOME` 变成
+   相对路径，server 起来后行为不可预期（实测就是握手直接失败）。`derive` 现在建目录并
+   canonicalize，失败即 `GrantError::HomeUnavailable`。
+
+另外两条不属于偏差但值得记：
+
+- **GUI 设置页会清空新字段，如果不管它。** `qcode-gui/src/setup/save.rs` 的
+  `apply_tables` 先 `servers.clear()` 再按表格重建，表格里没有授权集这几列。当时按
+  `providers[..].headers` 的既有做法从 `self.config` 里按名字取回，否则用户每次在设置页
+  点保存都会静默丢掉 `read_paths`。**（已由下面的 P2 收尾注记取代：列补上了，取回逻辑随之
+  删除。）**
+- **真机验证的结果与预期不同。** 在 `/home/q/.local/lib/qc-probe/bin/probe`（一个真实的
+  `$HOME` 下安装位置）上，默认配置能启动并注册 3 个工具——这正是要修的失败类。
+  但 `wordcraft 0.15.2` 的 `bin/wordcraft` 是**桌面应用**（`--control PORT` 才是给 agent 用的
+  接口），不是 MCP server：给它 `DISPLAY`（经 `env = { DISPLAY = "${DISPLAY}" }`，白名单本来
+  就不传它）之后它自己起来了、日志里能看到启动横幅和走代理的更新检查，但永远不回
+  `initialize`。所以「wordcraft 原址 19 个工具」这条验收**在本机无法成立**，原因不在沙箱：
+  它根本没实现 MCP。
+
+**P2 收尾注记（2026-11-11，授权集进设置页的表格）**
+
+P2 的验收是「`qc doctor` 打印授权集」，但同一份授权集在 GUI 设置页上是一直是**只读**的：
+表格没有这四列，保存时靠「按名字从旧 config 里取回」把它们硬扛过去。能跑，但两件事不对：
+用户改不了 `read_paths`（只能去手写 TOML），而且「界面上看得到的值」与「实际生效的值」是
+两个不同的东西——正是本 ADR §1 那句「不允许文档说 A、实际给 B」要消灭的形态。
+
+- **四列**：`read_paths`、`writable_paths`、`credentials`、`sandbox`。前三列是 `Lines`
+  （一行一项），`is_lines_cell` 同步更新——单行 `Input` 会静默吃掉 `\n`，把两项粘成一项，
+  这条有既有单测把 `FieldKind::Lines` 与 `is_lines_cell` 强制对齐。
+- **`sandbox` 是三态而不是两态**：`inherit` / `confine` / `off`。字段是 `Option`，写死成
+  显式 `confine` 会让这个 server 从此不跟随 `[mcp] sandbox` 的全局开关——用户在全局关掉
+  沙箱、某个 server 却还在 confine 里，且界面上看不出来。`inherit` 就是 `None`。
+- **取回逻辑删掉了**。列与「从文件复制」并存，会让可见值静默输给不可见值。留着的两处取回
+  现在只有 `bearer_token_env_var` 与 `headers`（ADR-0067 P3 还没做列），并在注释里点名。
+- **映射抽成 `mcp_server_from_cells(McpRowCells, previous)`**，纯函数、不需要窗口。原来这段
+  逻辑埋在 `apply_tables` 里，而 gpui 的表格行要 `Entity<InputState>`，没有测试可以构造——
+  也就是说「设置页写出的配置」这条路此前一条测试都覆盖不到。参数收进 `McpRowCells` 结构体
+  不只是为了过 clippy 的 7 参数上限：`read_paths`/`writable_paths` 同类型、`args`/`env`/
+  `credentials` 同类型，位置参数调换能编过，只会表现为「server 读得到、写不了」。
+- **`CredentialPreset::from_label` / `McpSandboxMode::from_label` / `::ALL` 移进
+  `qcode-mcp`**。此前 CLI 的 `--credential` 在 `qcode/src/commands/settings.rs` 里手写了一份
+  六分支 match，GUI 再写一份就是第三份。现在三处（CLI flag、GUI 选择器、配置文件）共用同一
+  张表，错误消息也从 `ALL` 生成。认不出的名字返回 `None` 而不是猜：把拼错的名字当成
+  `github` 会实打实地多给一个凭据子树。
+- **测试 6 条**：`mcp_server_from_cells` 的完整映射（含 `env` 里没有 `=` 的行被丢弃、名字两端
+  空格被裁、空名字不成行）；无列字段的取回与「原有远程 server 不会被改成 stdio」；GUI 侧
+  `credentials`/`sandbox` 单元格的解析（未知名字不写进配置、`inherit` → `None`）；保存后
+  重新加载的往返（走 `write_config` + `config::load`，即真的落盘再读回，而不是拿 `Config`
+  跟自己比）；`inherit` 不写出 `sandbox` 键；以及一条结构性断言——**四个授权字段必须都有
+  列**，这条钉的是「以后加字段忘了加列 → 保存即静默删除」，也就是当初那个取回 hack 存在的
+  理由。
+- 变异验证两次：`read_paths` 不从行里读 → 映射测试失败；删掉 `credentials` 列 → 列覆盖
+  测试失败并打印现有的列名。
+
+**§1 写集修订注记（2026-11-11，MCP 的写集严格等于那三个集合）**
+
+§1 写的是「三个不相交的集合，**此外一律无**」。实现没有做到，而且是双向的偏差：
+
+- **文档窄、代码宽。** `with_roots` 重建的沙箱仍然带着 `run_shell` 的两项额外授权：
+  Linux 侧 `install_rules()` 无条件给 `/tmp` 和 `/var/tmp` 写位，再无条件并上
+  `writable_paths()`（`$CARGO_HOME`、`$RUSTUP_HOME`、`$CARGO_TARGET_DIR`、`~/.cargo`、
+  `~/.rustup`）；macOS 侧同样把 `/private/tmp`、`/var/folders`、那几个 cache 变量和
+  `$TMPDIR` 都写进 `(allow file-write*)`。这些与 server 的 grant **无关**——同一个 `Sandbox`
+  实例既服务 `run_shell`（那里它们是对的，编译器要写 cache），也服务 MCP（那里它们不该存在）。
+- **最重的一条是可写 `$CARGO_HOME/config.toml`。** 那个文件里有 `[build] rustc-wrapper`，
+  也就是**下次 `cargo build` 时执行任意代码**。一个 `npm i` 或 `pip install` 装来的第三方
+  server 能改它，这不是「多给了一个临时目录」。
+
+实测（wordcraft-cli 0.15.2，本机 Landlock）：MCP 服务进程写 `/tmp/qc-wc/outside/` 成功、
+写 `$CARGO_HOME/` 成功、写 `/home/q/space/opentj/qc-escape-probe/` 被拒。也就是说沙箱本身
+有效，只是**多给了两处不该给的**。
+
+**决定**
+
+`Sandbox::with_roots` 多一个参数 `OutsideRoots`，两个取值：
+
+| 取值 | 谁用 | 含义 |
+|---|---|---|
+| `BuildCaches` | `run_shell` | roots + 构建缓存 + **宿主** `/tmp` |
+| `Nothing` | MCP server | 只有 roots |
+
+必须是**调用方显式写**，不给默认值：这个量同时服务两个需求相反的调用方，任何默认都会让其中
+一个静默错下去。三个后端同一语义：
+
+- **Landlock**：`Nothing` 时不加 `/tmp`、`/var/tmp`，也不并 `writable_paths()`。
+- **bwrap**：`Nothing` 时不 bind 任何 cache，也不再把 `TMPDIR` 强设成 `/tmp`（那样会把
+  §3 的私有 HOME 顶掉）。**私有的 `--tmpfs /tmp` 保留**——它不是宿主的 `/tmp`，走了也
+  不会落到宿主上，而按 `/tmp` 硬编码的运行时（Node、部分 Python 包）离开它会直接崩。
+  这一条是有意的不对称：宿主的 `/tmp` 是洞，私有的 tmpfs 不是。
+- **macOS**：`Nothing` 时写块里去掉 `/private/tmp`、`/tmp`、`/var/folders` 与那几个 cache
+  变量；**读**权限保留（二进制可能就住在 `$CARGO_HOME` 下，去掉会变成另一种「server 起不来」）。
+- **windows-acl**：本来就只给「可写 roots + temp」，从来没有 cache 授权，语义上已经是
+  `Nothing`。参数照样接受，只是 `debug_assert` 一句，免得第四个后端将来悄悄不同意。
+
+三个后端的 `describe()` 现在都带上写集（`writes: roots only` / `roots + build caches +
+host /tmp`）。理由同 §1 那条不变式：`doctor` 打印的东西必须就是实际生效的东西，
+只说「landlock」而不说给了哪些写权限，等于把这次的 bug 又留一遍。
+
+**为什么不给 MCP 留 `/tmp`**
+
+§3 已经把 `TMPDIR`/`TMP`/`TEMP` 指到私有 HOME，而私有 HOME **本身就在 write 集合里**
+（实测 server 进程的 `TMPDIR` 确实是 `<data_dir>/mcp/<server>/home`）。所以「临时目录不够用」
+这个理由在这里不成立。真有个 server 硬编码 `/tmp`，正确做法是它自己的
+`writable_paths = ["/tmp/<its-own-dir>"]`——显式的、能 diff 的、只给它一个子目录，
+而不是替所有 server 默认打开宿主的 `/tmp`。
+
+**验证**
+
+- 真机单测（Landlock，同一份 kernel 跑两次 `with_roots`）：`BuildCaches` 能写 `/tmp` 与
+  `$CARGO_HOME/config.toml`，`Nothing` 两者都 EACCES。之前这里是**测不出来**的：既有测试
+  `writes_and_reads_stop_at_the_grant` 的注释写着「`tempfile` 在 `/tmp`，而 Landlock 无条件
+  授权 `/tmp` 和 `/var/tmp`，所以『外面』得挑别处」——测试绕开了被 bug 覆盖的那块，于是
+  bug 一直在。现在那条测试把 `/tmp` 也断言进去，并把这段注释改写成它真正想说的话。
+- bwrap 参数断言（两个取值各一条，且互相为对照）：`Nothing` 没有 cache 的 `--bind`、没有
+  `--setenv TMPDIR`，但仍有私有 `--tmpfs /tmp`。
+- macOS profile 断言：拿整段 `(allow file-write* ...)` 逐个路径比对（第一版把 `)\n` 当成
+  块结束，只截到第一个 `subpath`，是测试自己的 bug，靠「该出现的路径没出现」发现的）。
+- 端到端（真 Landlock + 真子进程 + 真 `tools/call`）：`$CARGO_HOME/config.toml` 写不进去。
+- 变异验证四次：kernel 改回 `BuildCaches` → 端到端两条同时失败；Landlock 改成无条件授权 →
+  两条真机单测失败；macOS 改成无条件授权 → profile 断言失败。
+- **`run_shell` 未受影响**：`BuildCaches` 是它的老路径，全量 1021 条测试里 shell 相关全绿；
+  真机上 `qc` 的 `mcp__wordcraft__*` 仍然 19 个工具、`new_document` + `save_document` 写出
+  6531 字节的真 `.docx`（`file` 认作 Microsoft Word 2007+）。
+
+**待定**
+
+- `credentials` 预设表要不要可扩展（用户自定义 preset），还是只做固定的这几条。
+- 合成 HOME 里的凭据符号链接在 macOS `sandbox-exec` 下是否需要显式放行 target（`file-read`
+  按解析后路径匹配，预期够用，需实测）。
+- ~~`writable_paths` 指向真实 `$HOME` 的某处（例如某个 server 的日志目录）时要不要 warn。~~
+  **已做（2026-11-11）**：不是 warn 而是拒绝，见下面的修订注记——`~` 展开后 `["~/"]` 与
+  `["~/Documents"]` 只差两个字符，正是需要拦的形状。
+- **已做（2026-11-11）**：`qc doctor` 现在有 MCP 段，逐 server 一行打印授权集，并把四个
+  「配置了但没用」的情形变成 warn：`read_paths`/`writable_paths` 指向不存在的路径、
+  `credentials` 预设在本机无对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
+  时 `[mcp] sandbox = "confine"` 形同虚设（最后这条是写 doctor 时才发现的：内核用
+  `[sandbox] mode` 造 MCP 沙箱，`[mcp] sandbox` 单独开不出来，doctor 若照配置念
+  「confine」就是这次要消灭的那种「文档说一套、代码做一套」）。这些一律用 warn 而不是
+  fail：起不来的 server 只丢自己的工具，会话照常，doctor 不该因此退出非零。
+  `describe()` 的凭据段同时改成「已授予的 `~/...` + 未命中的 `preset(not found)`」，
+  以便区分「要了」与「拿到了」。
+- ~~`qc doctor` 还没有能力探测的段（`discover` / `resources/list` 是否真的通）：那要等
+  ADR-0067 的传输层落地，现在 doctor 只做静态检查，不连 server。~~ **已做（2026-11-11）**：
+  `qc doctor --probe` 真连、真问、并把「声明与实际是否一致」两个方向都报出来。默认仍是
+  静态检查（连 server 会启动每个 stdio server、为远程 server 起出口代理，不该是默认动作）。
+  见 ADR-0068 §4 的 B-2 修订注记。
+
+## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
+
+**状态**：已实现（2026-11-11），P1 / P2 / P3 全部完成。
+`[[mcp.servers]]` 的 `command` 由必填改为「与 `url` 恰好二选一」；老配置
+一行不改继续可用。协议版本一次对齐到 2026-07-28，但保留 `initialize` 回退——理由见 §3。
+
+**来源**：`derived`（现有代码与 rmcp 3.9.0 的实际 API）、`black-box`（规范正文与官方 Registry
+的公开样本；按 SOURCES.md 只借事实，不借实现与文案）。
+
+**背景**
+
+### 1. 「v1 只做 stdio」的前提没了
+
+ADR-0002 与 §5 选型都写着「`rmcp = "=3.2.0"`，v1 只用 stdio + tools，streamable HTTP 与
+legacy SSE 不进 v1」。这条决定的隐含前提是「MCP server 都跑在本机」。事实不是这样：
+
+- 官方 Registry（`registry.modelcontextprotocol.io`）抽样 100 条：**约 93 条只有 `remotes`**
+  （`type = "streamable-http"`），纯 stdio 的只有 7 条。
+- 六个真实端点用 GET 探活（规范要求 GET 到 Streamable HTTP 端点返回 `text/event-stream`
+  或 **405**）：`mcp.context7.com/mcp`、`api.aard.ai/mcp`、`mizan.ac/mcp`、
+  `events.aero/mcp/events`、`api.adadvisor.ai/mcp` 都是 405 + JSON-RPC 错误体；
+  `mcp.snag.ac/mcp` 是 404 `Cannot GET /mcp`（活，但不合规）。
+- qcode 今天的表现：配置里写 `url = "..."` 报 `missing field 'command'`——`command` 是
+  `String`（`crates/qcode-mcp/src/config.rs:23`）而不是 `Option`。
+
+也就是说：**按今天的实现，绝大多数已登记的远程 server 装不上**，而「只做 stdio」是 2026-10-19
+的决定，那时还没有这条样本。
+
+### 2. 开 HTTP feature 会重新打开三条 RUSTSEC
+
+`Cargo.toml` 里那次 3.2.0 → 3.9.0 的 bump 是为 RUSTSEC-2026-0457 / 0461 / 0462，注释写得很清楚：
+
+> all three are Streamable-HTTP / OAuth paths; this crate only enables `client` +
+> `transport-child-process`, so they were never reachable here
+
+**本 ADR 正好要让它们可达。** 所以「bump 过了」不等于「安全」——这三条要在 3.9.0 上重新过
+`cargo deny`，并且 OAuth 相关的那条（如果修法是把 OAuth 挪到 `auth` feature 之后）要确认我们
+不开 `auth` feature 时那条路径确实关着。这是本 ADR 的**前置条件**，不是后续事项。
+
+**已核（2026-11-11）**：前置条件闭合，三条分别落位——
+
+| 告警 | 结论 |
+|---|---|
+| RUSTSEC-2026-0457（OAuth client SSRF） | 不可达。代码在 `#[cfg(feature = "auth")]` 后（`transport.rs:96`），而 `reqwest` feature 只展开 `["__reqwest", "reqwest?/rustls"]`，不牵 `auth`。`cargo tree -e features` 确认该 feature 未开 |
+| RUSTSEC-2026-0461（服务端 HTTP transport 的无界工具缓存） | 不可达。在 `transport-streamable-http-server` / `server-side-http` 后，我们只开 `transport-streamable-http-client*`，`server` 也未开 |
+| RUSTSEC-2026-0462（客户端响应体无界缓冲） | **可达，且已修**。9.0.0 起 JSON 体限 16 MiB、非成功体限 64 KiB。所以 `rmcp = "=3.9.0"` 这个精确 pin 从此是有承载力的：降级即重新打开一个可达的 DoS |
+
+`cargo deny check`（advisories/bans/licenses/sources）在开 HTTP feature 之后复跑通过，
+三条都不在 `ignore` 列表里——它们是被版本和 feature 选择排除的，不是被静音掉的。
+
+### 3. 协议版本换代，而且不能单轨
+
+2026-07-28 是破坏性的：删掉 `initialize` 握手、删掉 session、新增 `server/discover`、
+`resultType`、`ttlMs` / `cacheScope`（SEP-2549）、MRTR；废弃 Roots / Sampling / Logging。
+
+但存量不是。实测 wordcraft 停在 **2025-06-18**，`server/discover` 回 `-32601`。
+
+于是只有三种可能：
+
+| 方案 | 后果 |
+|---|---|
+| 只走 `initialize` | wordcraft 能用，但拿不到 `ttlMs`/无状态；新 server 也还是慢（多一个握手往返） |
+| 只走 `discover` | wordcraft 直接不可用 |
+| **探测 + 回退** | 两者都能用，代价是 legacy 多一次探测往返 |
+
+第三种是规范自己在向后兼容指引里给的路径，而且 rmcp 3.9.0 已经把它做成一个枚举——
+`ClientLifecycleMode::{Initialize, Discover, Auto}`，其中 `Auto { preferred_versions,
+legacy_version }` 就是「先探测 `server/discover`，对端报 legacy 或在
+`DEFAULT_AUTO_DISCOVER_TIMEOUT`（10s）内不回则回退 initialize」。**双轨是库给的，不是我们造的。**
+
+**决定**
+
+### 1. 传输二选一
+
+`[[mcp.servers]]` 的 `command` 改为 `Option<String>`，新增 `url`；`validate()` 要求两者
+**恰好一个**，都没有、或都有，都是配置错误。
+
+`command` 变 `Option` 是源码级 breaking（`qcode-mcp` 的公开字段类型变了），配置层不破坏：
+老配置只写 `command`，新代码照旧。是否因此 bump 到 v0.9.0 由发布时决定，与本 ADR 的语义无关。
+
+### 2. HTTP client 必须来自 `Network::client()`
+
+`StreamableHttpClientTransport` 有两个构造入口：
+
+- `new_simple(url)` —— 内部用 `C::default()` 造 reqwest client；
+- `new(client, config)` —— 用调用方给的 client。
+
+**只用后者。** 用前者等于让 MCP 的 HTTP 直接出网：ADR-0023 §2 的名单今天是
+「provider、`web_fetch`、`web_search`」三项，MCP 一旦走进程内 HTTP 而不在名单里，就是
+**完全绕过 egress allowlist、`network.jsonl` 审计与 SSRF 私网拦截**——而且是静默的，
+唯一症状是「审计文件里少了这些请求」。
+
+这条同时要求 `qcode-mcp` 依赖 `qcode-core` 的 `Network` trait（已有的
+`crates/qcode-core/src/network.rs`），或者由 CLI 传一个 `reqwest::Client` 进去。选后者更贴合
+本 crate 现有的「回调而非类型依赖」风格（`Confine` 就是这么做的）：新增
+`HttpClient = Arc<reqwest::Client>` 参数，与 `Confine` 并列。
+
+### 3. 协议版本：`Auto`，首选 2026-07-28，回退 `initialize`
+
+```rust
+ClientLifecycleMode::Auto {
+    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+    legacy_version: Some(ProtocolVersion::V_2025_11_25),
+}
+```
+
+`legacy_version` 取 **`V_2025_11_25`** 而不是 `V_2025_06_18`：rmcp 把
+`LATEST_WITH_INITIALIZE` 定义成 `2025-11-25`——`initialize` 握手能回声的最高版本就是它，
+再往后（`NO_INITIALIZE` = 2026-07-28）生命周期已经搬进每请求的 `_meta`，没有握手可答。
+这只是**客户端在回退时声明的上限**；wordcraft 只支持到 2025-06-18，握手时按它自己的版本
+协商成功，不受影响。
+
+回退的两条触发路径（`Auto` 分支里各一条）：探测收到**可关联的非 modern JSON-RPC 错误**
+（`DiscoverOutcome::Legacy`，`-32601` method not found 就是这一类），或探测在 10s 内无响应。
+传输层错误与 modern 拒绝**不回退**，直接报错——这两种情况重试握手也是白费。
+
+握手超时沿用 `HANDSHAKE_TIMEOUT_SECS = 20`；`Auto` 自己的探测超时是 10s，两者不冲突
+（探测 10s 内没回即回退，回退再失败才计入 20s）。
+
+### 4. 无状态与会话恢复
+
+- `allow_stateless = true`：2026-07-28 没有 session，服务端可能不发 `Mcp-Session-Id`。
+  关掉这个选项会让无状态 server 在 3.9.0 的 transport 里被判为「会话没建立」。
+- `reinit_on_expired_session = true`：legacy server 的 session 会过期（HTTP 404），
+  3.9.0 自带一次重建 + 重试。这是**必需的**，否则长会话里 server 一重启 qcode 就废了。
+
+`max_concurrent_requests` / `control_request_timeout` / `session_recovery_timeout` 用默认值；
+`call_tool` 外层仍由我们自己的 `timeout_secs` 包一层（ADR-0002 §3 不变）。
+
+### 5. `ttlMs` / `cacheScope` / `list_changed`：工具表变成有寿命的
+
+这条是**唯一一处必须改架构的地方**，也是 ADR-0002 后果段被作废的原因。
+
+2026-07-28 规定可缓存结果带 `ttlMs` 与 `cacheScope`；`tools/list` 的结果是其中之一。
+词义：
+
+| `ttlMs` | 含义 | 我们的做法 |
+|---|---|---|
+| 缺失（legacy） | 没有寿命信息 | 进程生命周期内不重取（等于今天的行为） |
+| `0` | 不可缓存 | 每个 turn 边界重取 |
+| `n > 0` | `n` 毫秒内新鲜 | 过期后下一个 turn 边界重取 |
+
+另外 `notifications/tools/list_changed` 一到，**立即**把该 server 的缓存标脏。
+
+两个实现细节，都是踩过的坑：
+
+1. **不能用 `list_all_tools()`。** 它返回 `Vec<Tool>`，把 `ListToolsResult` 里的
+   `ttl_ms` / `cache_scope` / `result_type` 全丢了（`PaginatedResult` 宏给的是
+   `ttl_ms: Option<u64>`，而 `list_all_tools` 只 `tools.extend(result.tools)`）。要自己
+   循环 `list_tools()` 并保留第一页的 `ttl_ms`。
+2. **工具表不能中途换。** 它决定了发给模型的工具定义，正在跑的 turn 里换掉会让模型看到
+   一套、执行时是另一套。所以缓存失效**只在 turn 边界生效**，并且发一个事件
+   （`McpToolsRefreshed { server, added, removed }`）。已经消失的工具被调用 → 明确的
+   工具错误（「该工具在上一个 turn 后不存在了」），不是 panic，也不是静默重试。
+
+`cacheScope = "public"` 在我们这里没有额外含义：qcode 没有跨进程的工具缓存，所以
+`public` 与 `private` 行为相同。写明这点，避免下一个人以为漏了实现。
+
+### 6. 认证只从环境取
+
+新增 `bearer_token_env_var`（变量名，不是值）。`headers` 只允许非敏感头，`validate()` 拒绝
+名字匹配 `authorization|cookie|token|key|secret|password` 的 header。
+
+这条是给 ADR-0018「密钥从不落盘，因此无需额外脱敏」补前提：那条成立的前提是「没有地方能
+写密钥」，而 HTTP 的 header 表就是这样一个地方。与 ADR-0056 的立场一致。
+
+### 7. 配置形状
+
+```toml
+[[mcp.servers]]
+name = "context7"
+url = "https://mcp.context7.com/mcp"
+bearer_token_env_var = "CONTEXT7_TOKEN"   # 可选
+
+# 可选；只放非敏感头，敏感的一律走 bearer_token_env_var
+[mcp.servers.headers]
+Accept = "application/json, text/event-stream"
+
+[[mcp.servers]]
+name = "wordcraft"
+command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"   # 原样，不受影响
+```
+
+`qc mcp add` 加 `--url`、`--bearer-token-env`、`--header K:V`（可重复）。与 `--command`
+互斥，由 clap 的 `conflicts_with` 表达，`validate()` 再查一遍（TOML 边界比 CLI 宽）。
+
+`url` 与 `sandbox = "off"` 同时出现是配置错误：远程 server 没有子进程，ADR-0066 的
+`GrantSet` 不适用，`off` 是空操作——静默接受会让用户以为关掉了什么。
+
+### 8. `qc doctor` 打印协商结果
+
+逐 server 一行：传输（stdio / streamable-http）、协商到的协议版本、`ttlMs`、
+以及 HTTP 是否经代理。最后一项是 §2 的可见性保障：用户能自己确认远端流量确实被审计了。
+
+**后果**
+
+- **启动延迟**：远程 server 不再有进程 spawn，通常比 stdio 快；但 legacy server 多一次
+  `discover` 探测往返（10s 上限内）。ADR-0002 后果段「随 enabled server 数量线性增长」
+  仍然成立。
+- **工具表动态化**是本 ADR 最贵的改动：`build_registry` 之后的工具集合不再是常量，
+  引擎需要在 turn 边界比对。ADR-0002 的「只列一次」正式作废。
+- **`resultType` 与 MRTR**：2026-07-28 的 `tools/call` 可能返回 `InputRequired`
+  （多轮往返），而 §4.10 已定「elicitation 不用于审批」。本 ADR 的做法是：`InputRequired`
+  → 工具错误，说明「该 server 要求多轮往返，qcode 不支持」，并把原始 payload 记进日志。
+  不静默重试，不当作空结果。
+- **远程 server 的安全边界只剩出口代理**。「server 是第三方代码」这一点没变，但约束手段从
+  文件系统换成了 host allowlist；没进 allowlist 的主机在 `unknown = "ask"` 下对 MCP 是
+  **直接拒绝**（ADR-0023 的实现状态注记：shell/MCP 没有交互式 ask）。首次配一个远程 server
+  要手写 `[network] allow`，这一点必须写进文档。
+- RUSTSEC-2026-0457/0461/0462 重新进入可达面，`cargo deny` 必须复跑（§2 的前置条件）。
+
+**验证**
+
+- 本地合规 probe server（Python，`uvicorn` 一个最小 Streamable HTTP 实现，`--features` 无关）
+  → `discover` 成功、走 2026-07-28、`tools/list` 带 `ttlMs`。**不依赖外网**，进
+  `crates/qcode-mcp/tests/`——现有测试目录只有 `mcp_stdio.rs` 与 `engine_integration.rs`，
+  HTTP 侧是空的。
+- 只认 `initialize` 的 stub（wordcraft 形态）→ `Auto` 回退成功，`qc doctor` 显示 2025-06-18。
+- 缓存三条：`ttlMs = 0` 每个 turn 重取、`ttlMs = 5000` 五秒内不重取、
+  `list_changed` 立即失效且只在 turn 边界生效（用 `MockProvider` 跑两个 turn 断言）。
+- 出口代理：probe server 起在 127.0.0.1，测试配置 `allow_private`（否则被 SSRF 拦截挡在
+  更前面，测不到代理），断言 `network.jsonl` 里有这条 CONNECT；
+  另加一条**负向**测试——把 `Network::client()` 换成默认 client 时这条断言必须失败
+  （证明测试真的在测代理，而不是恰好都通）。
+- 401：断言错误里带 `WWW-Authenticate`，不是一句 `request failed`。
+
+**分期**
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| P1 ✅ | `command`/`url` 校验 + `Network::client()` 接线 + `Auto` 生命周期 + doctor 打印 | probe server 直连可用；legacy server 回退成功；`network.jsonl` 有记录 |
+| P2 ✅ | `ttlMs`/`cacheScope`/`list_changed` + turn 边界刷新 + `McpToolsRefreshed` 事件 | 三条缓存断言通过 |
+| P3 ✅ | `qc mcp add --url` 与新 flag | 写回的配置能被 `mcp list` / `doctor` 读回 |
+
+**P1 / P3 实现注记（2026-11-11）**
+
+- **stdio 仍走 `Initialize`，不加 `Auto`。** 探测一个 stdio server 要冒的风险是不对称的：
+  回 `-32601` 的会被识别为 legacy 并回退（可以），但 3.9.0 里对 `server/discover` 回一个
+  合法 JSON-RPC 结果之外的响应会走 `ExpectedInitResult` —— 那是**硬错误，不回退**；而完全不
+  回的 server 每次连接都要白等 10s 探测超时。`Auto` 目前只给远程用。
+- **`describe()` 与 doctor 的「是否经代理」是三态**：`[network] enabled = false` 时没有代理，
+  也就没有审计文件，这一行必须说「nothing is audited」而不是默认的「audited」。
+- **doctor 不连 server。** §8 想要「协商到的协议版本」需要真连一次；那意味着在一条诊断命令里
+  起全部 stdio server 或另起一个 egress 代理。折中是：doctor 只做静态判断（transport、是否
+  经代理、host 是否在 allowlist、token 变量是否设置），**协商结果在启动日志里**
+  （`mcp server ready protocol=2026-07-28`）。
+- **`qc mcp list` 的分行按 transport 分开写。** 原来一行打印 `command={:?}`，远程 server 会
+  显示成 `command=None`，读起来像一个坏掉的 stdio server。
+
+**P2 实现注记（2026-11-11）**
+
+- **「turn 边界」被实现为 `run_turn` 的入口，并且是快照。** `ToolRegistry::refreshed()` 返回
+  一个**没有 source** 的克隆，整轮 turn 都用它；`ctx.tools` 仍是 `&ToolRegistry`，下一轮再问
+  一次。这样 mid-turn 换表在类型层面就不可能，不需要额外的守卫。首个模型请求发出前的那次
+  刷新就是边界本身。
+- **`list_changed` 需要自定义 `ClientHandler`。** `()` 的默认实现把通知丢掉，所以我们serve
+  时传 `ListChangedHandler`，它只做一件事：把一个 `Arc<AtomicBool>` 置脏。服务类型因此从
+  `RunningService<RoleClient, ()>` 变成 `…<ListChangedHandler>`，`McpTool` / `McpExtra`
+  改用统一的 `crate::Service` 别名。
+- **刷新失败保留旧表。** SEP-2549 允许在 re-fetch 失败时继续用过期结果；把整个 server 的
+  工具因为一次网络抖动清空，比表老一轮糟得多。dirty 位不清，下一轮再试。
+- **`cacheScope` 明确不实现。** qcode 没有跨进程工具缓存，`public` 与 `private` 行为相同。
+  这条写在 `finish()` 的日志注释里，避免下一个人以为漏了。
+- **`rmcp` 自己的 `tools/list` 响应缓存与我们的 TTL 对齐**（同一个 `ttlMs` 同时驱动两边的
+  `expires_at`），所以「我们判定过期 → 真的发出请求」之间不会出现假刷新。
+- **分页自己写。** `Peer::list_all_tools` 返回 `Vec<Tool>`，把 `ttl_ms` / `cache_scope` /
+  `result_type` 全丢了。现在按 `nextCursor` 循环，**只取第一页的 `ttlMs`**，并且遇到重复
+  cursor 或第 64 页就停（一个不停换 cursor 的 server 否则能把 turn 预算耗光）。
+- **stdio 侧的 `list_changed` 由 stub 触发**（`notifications/tools/list_changed` 走 stdin/stdout
+  的 JSON 行），HTTP 侧要发 SSE 事件，P2 没有为它单独造 fixture；两条路径共用同一个
+  `ClientHandler`，差别只在传输层。
+- **GUI 的 MCP 表格只有一列 `command`**，远程 session 共用它（`server.command.or(url)`）。
+  保存时按上一行的形态决定写回哪个字段，所以在一个远程 server 的单元格里打字不会把它悄悄变成
+  stdio。`bearer_token_env_var` / `headers` 从文件原样保留——表格没有这两列，而
+  `apply_config` 会整段重写 `[[mcp.servers]]`，忘记保留就是保存一次删一次。
+- **两处配置写入都补全了 ADR-0066 的字段。** `apply_config` 之前只写 `command/args/env`，
+  保存一次 GUI 设置就会把 `read_paths` / `credentials` / `sandbox` 抹掉；这个洞在本次改动里
+  一并堵上（那是既有 bug，不是本 ADR 引入的）。
+
+OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本 ADR**：
+2026-07-28 已把 DCR 标记废弃，改推 Client ID Metadata Documents，那是一个独立的认证流程，
+单独立项，不要和传输搅在一起。
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| stdio→HTTP 桥接脚本 | 已验证可用（30 行 Python 转发 `initialize`/`tools/list`/`resources/list`/`prompts/list`），但每个 server 一个 wrapper、多一个子进程、多一层 ADR-0066 的沙箱授权，且把「远程」伪装成「本机」——排错时看到的是桥不是 server。只当过渡手段 |
+| 2024-11-05 legacy SSE | 规范已废弃；`client-side-sse` 是被 `transport-streamable-http-client` 顺带引入的，不是我们主动支持 |
+| 只走 `initialize`（不探测） | 拿不到 `ttlMs` 与无状态收益，且新 server 永远多一个握手往返 |
+| 只走 `discover` | wordcraft 这类存量 server 直接不可用（实测 `-32601`） |
+| `new_simple(url)` | 见 §2：静默造直连 client，绕过整个出口策略 |
+| 工具表每个 turn 无条件重取 | 每个 turn 多一次往返；`ttlMs` 存在就是为了避免这个 |
+
+**待定**
+
+- `preferred_versions` 要不要同时列 `2025-11-25`。现在只列 2026-07-28，靠「server 对
+  `discover` 报 -32601 → 回退」识别 legacy；但一个**实现了 `discover` 却在
+  `supported_versions` 里只报到 2025-11-25** 的 server 会走 `select_protocol_version`
+  返回 `None` → `NoCompatibleProtocolVersion`，而不是回退。这种 server 存不存在还不知道。
+  P1 实现严格照此：只列 `2026-07-28`。真撞上这类 server 时，症状会是一条明确的手册错误，
+  而不是静默降级——那正是先想要的行为。
+- SSE 流式响应在 `max_sse_event_size`（默认值）之外要不要单独设上限——qcode 对工具输出有
+  32KB 截断，但那是**结果**，不是传输层单帧。
+- 同一个 server 的远程与本地形态并存时（例如既想 `npx` 又想 `url`）是否允许两条配置项，
+  还是强制用户起两个名字。
+
+## ADR-0068：MCP server 的环境白名单与自述注入（2026-11-11）
+
+**状态**：P1 / P2 / P3 与 §4 已实现（2026-11-11）；§4 于同日按 B-2 注记修订为
+「一律信握手声明、探测改为 `qc doctor --probe`」。
+`[[mcp.servers]] env` 的语义收窄（新增 `${VAR}` 引用）；`instructions`
+从「丢弃」改为「注入 system prompt」。承接 ADR-0066 §5（授权集与环境同源）留的接口。
+
+**来源**：`derived`（实测泄漏、grep 证实零消费、ADR-0033 的探测逻辑已过时）；
+`black-box`（只借「server 有自述、客户端应当转达」这一事实）。
+
+**背景**
+
+### 1. 每个 MCP server 继承 qcode 的全部环境
+
+`crates/qcode-mcp/src/lib.rs:143-148` 只有两句 `envs`，没有 `env_clear`：
+
+```rust
+command
+    .envs(server.env.iter())
+    .envs(env.iter().map(|(key, value)| (key, value)))
+```
+
+对照 `crates/qcode-tools/src/shell.rs:258`——`run_shell` 是 `env_clear()` 之后按
+`ENV_ALLOWLIST` 注入的。**同一个进程里，两条路径的边界不一样，而更宽松的那条跑的是第三方
+代码。** 实测用一个 dump 包装器启动 server，子进程里数到 **119 个变量**，其中包含：
+
+| 变量 | 为什么会在这里 |
+|---|---|
+| `GITHUB_TOKEN` | 用户在 shell 里 `export` 的 |
+| `DEEPSEEK_API_KEY` | qcode 自己的 provider 密钥 |
+| `SSH_AUTH_SOCK` | 登录会话给的，能直接签 git 提交 |
+
+这不是理论风险：MCP server 是 `npm i` / `pip install` 来的，安装即信任（§4.10），但「信任它
+做它声称的事」不等于「信任它无人值守地拿走凭据」。而且 ADR-0023 已经决定给 MCP 注入代理变量
+——也就是说我们**已经在**管它的环境了，只是一直管得一塌糊涂：注入 4 个想要的，剩下 119 个
+不想要的全跟着去。
+
+### 2. server 的自述被整个丢掉
+
+`InitializeResult.instructions`（`Option<String>`）和 2026-07-28 的
+`DiscoverResult.instructions` 都在协议里存在。qcode 一个都不读：`grep -rn instructions
+crates/qcode-mcp/src crates/qcode-kernel/src` 是**空**的。
+
+实测 wordcraft 在握手里给了一段 912 字节的自述（说明它有哪些工具、该怎么组合使用）。这段
+文字被代理截获过，但从没进过上下文——模型只能靠工具名和 JSON Schema 猜用法。
+
+### 3. 能力探测的方式已经过时
+
+ADR-0033 §3 决定「能力探测靠**试一次**：握手后调 `resources/list` 与 `prompts/list`，成功才
+注册」。当时这么选是对的，理由是「rmcp 的 capability 结构与注册逻辑会重复表达同一件事，而
+试一次的代价是两次请求」。
+
+2026-07-28 之后这个理由不成立了：`server/discover` 的返回里**直接带 `capabilities`**，一个
+字段就能读到。继续试一次等于明知有答案还去问。实测 wordcraft 明说没有 prompts，我们仍然打
+了一次 `prompts/list`，换来一个 `-32601`。
+
+**决定**
+
+### 1. 环境：白名单制，与 GrantSet 同源
+
+spawn 前 `env_clear()`，然后按**固定顺序**注入，后者覆盖前者：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | 基础白名单 | `PATH`、`LANG`/`LC_*`、`TZ`，Windows 另加 `ENV_WINDOWS` 那组（`SystemRoot`/`SystemDrive`/`ComSpec`/`PATHEXT`/`APPDATA`/`LOCALAPPDATA` 等）。沿用 `shell.rs` 的清单，不另立一套 |
+| 2 | 合成 HOME | `HOME`、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`XDG_DATA_HOME`、`TMPDIR`/`TMP`/`TEMP`（ADR-0066 §3） |
+| 3 | `credentials` 预设点名的变量 | ADR-0066 §4 的表 |
+| 4 | `[[mcp.servers]] env` | 用户显式写的 |
+| 5 | 出口代理四件套 | `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`——**最后**，理由见下 |
+
+第 5 步必须在最后，这是 ADR-0033 §1 的既有结论（「server 自己写的 `HTTPS_PROXY` 不能把业务
+流量从 qcode 的代理下偷走」）。ADR-0023 依赖这一点才能把 MCP 的出口纳入审计；顺序错了，
+ADR-0023 当场失效，而且失败是静默的——server 直连成功，`network.jsonl` 里什么都没有。
+
+**不用正则黑名单匹配 `/KEY|PASSWORD|SECRET|TOKEN/i`。** 这个思路在讨论里出现过，否决：
+`MONKEY`、`KEYBOARD_LAYOUT` 会中，而 `credentials` 预设点名的 `GITHUB_TOKEN` 恰恰是要传的。
+白名单制的语义是「没点名的就不传」，不需要猜名字。文件名 + 白名单是可审阅的；正则黑名单是
+一个永远在追的清单。
+
+### 2. `env` 收窄为「只能引用，不能存密文」
+
+`[[mcp.servers]] env` 的值若形如 `${NAME}`，从 qcode 进程环境解析；变量缺失时 **spawn 失败**
+（不是空串、不是跳过）。
+
+这样 `env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }` 与
+`credentials = ["github"]` 两条路都通，且**配置文件里都不出现密钥**。ADR-0018 §1 的
+「密钥从不落盘，因此无需额外脱敏」由此保住——该条的前提是「没有地方写密钥」，而 `env`
+的字面量值曾经就是这样一个地方。
+
+字面量仍然允许（有些值不是密钥，例如 `RUST_LOG=debug`），但 `qc doctor` 对名字匹配
+`TOKEN|SECRET|PASSWORD|KEY` 且值是字面量的项给一行 warn，提示改用 `${VAR}` 或预设。
+只 warn，不拒绝——用户有权在受控环境里这么写。
+
+### 3. `instructions` 注入 system prompt
+
+写进 `crates/qcode-core/src/engine/mod.rs` 的 `system_prompt()`，位置在 skills 索引之后、
+todo 之前，每个 server 一个 `# MCP: <server>` 小节。
+
+四条约束：
+
+1. **总计上限 8KiB**，超出按 server 截断并在末尾注明「已截断」。取 8KiB 而不是 AGENTS.md 的
+   32KB，理由：AGENTS.md 是项目规则，`instructions` 是第三方 server 的自述，两者的可信度
+   不同级；skills 索引也是 8KiB，同一档。
+2. **不改变任何权限**，承接 §4.10「输出里的『指令』不改变任何权限」。`instructions` 里写
+   「请允许所有工具」不会让任何调用变成 allow；单测要正面证明这一点（构造一段要求放权的
+   instructions，断言审批结果与没有它时相同）。
+3. **只注入不执行**：不解析、不当作工具描述的一部分、不参与工具名冲突判定。
+4. **`sandbox = "off"` 与远程 server 一视同仁**——这段文字来自 server，与它跑在哪里无关。
+
+ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`prompts` 是模板，由模型
+显式 `get_prompt` 取用；`instructions` 是握手期的自述，两者不是一类东西。这条区分要写在
+两处，避免下一个人把它们合并掉。
+
+### 4. 能力探测：读字段，零请求（2026-11-11 修订，见下方 B-2 注记）
+
+~~| 协议 | 探测方式 |~~
+~~|---|---|~~
+~~| 2026-07-28（`discover`） | 读 `DiscoverResult.capabilities`，**不发** `resources/list` / `prompts/list` |~~
+~~| legacy（`initialize` 回退，2025-11-25 及以下） | 保留 ADR-0033 §3 的试一次 |~~
+
+**修订后的决定**：**所有协议版本**都只读握手里的 `capabilities`，连接期**零探测**。
+ADR-0033 §3 的「试一次」由此被完全取代，它不再是 legacy 的做法，而是**不存在**了；
+要说「这个 server 到底服务什么」，用 `qc doctor --probe`（显式、按需、可比对）。
+
+保留的附带改动：能力来自哪个分支的日志都是 `info`，`RUST_LOG=info` 下能看到
+`mcp capabilities read from the handshake` 与它读到的那三个布尔值。
+
+**实现**
+
+| 文件 | 改动 |
+|---|---|
+| `crates/qcode-mcp/src/lib.rs` | spawn 前 `env_clear()` + 按 §1 的顺序注入；握手后取 `instructions` 与 `capabilities` |
+| `crates/qcode-mcp/src/config.rs` | `env` 值的 `${VAR}` 解析（在 `validate()` 之后、spawn 之前，纯函数可测） |
+| `crates/qcode-core/src/engine/mod.rs` | `system_prompt(agents_md, skills, mcp_instructions, todos)`——**签名变更**，调用点只有 `turn.rs:374` 与 `tests.rs` 的 5 处调用 |
+| `crates/qcode-kernel/src/lib.rs` | 把 `connect_all_with` 返回的 `instructions` 透传给 engine options |
+
+**后果**
+
+- **所有现有 stdio server 的环境都变了。** 依赖继承环境的 server 会失败，报错必须是
+  「缺变量 X，加到 `[[mcp.servers]] env` 或 `credentials`」，不是一句 spawn 失败。
+  这是本 ADR 唯一的破坏面，也是为什么它和 ADR-0066 的合成 HOME 必须同批落地——单独上
+  `env_clear()` 会让 `npx` 类 server 直接跑不起来。
+- `no_progress` 一类检测不受影响，但 `credentials` 缺失导致的失败会在启动期暴露，而不是
+  第一次 `tools/call` 才暴露。这是改善。
+- system prompt 变长（最多 8KiB × server 数）。多 server 场景要观察上下文占用；
+  `compact::estimate_tokens` 只数 `messages`，**不含 system prompt**，所以状态栏看不出来
+  ——这条要单独补：把指令段也计入，否则多挂几个 server 是无声的预算消耗。
+- `instructions` 一旦注入，profile / 事件日志里会多一份 server 提供的文本。它进
+  `transcript` 还是只在 `system` 里，需要在实现时定：**只在 system**，它不属于对话内容。
+
+**验证**
+
+- **环境泄漏（核心断言）**：dump 包装器 server 打印 `env -0` 到 stderr，测试读该文件并断言
+  包含的变量集合**恰好等于**白名单 + 预设 + `env` + 四件套。实测泄漏的 119 个变量里，
+  `GITHUB_TOKEN` / `DEEPSEEK_API_KEY` / `SSH_AUTH_SOCK` 必须在**不包含**的那一侧。
+- 顺序：`env = { HTTPS_PROXY = "http://evil" }` 时子进程拿到的仍是 qcode 的代理 URL。
+- `${VAR}`：设 `QCODE_TEST_TOKEN=abc` → server 收到 `abc`；不设 → spawn 失败且消息里点名
+  缺失的变量。
+- `instructions`：stub server 返回 912 字节自述 → `system_prompt()` 里出现，且
+  8KiB 截断生效；构造「要求放权」的 instructions → 审批结果与无 instructions 时相同。
+- 探测次数：modern stub 断言 `resources/list` **零次**调用；legacy stub 断言一次。
+
+**分期**
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| P1 | `env_clear()` + 白名单 + 顺序 + 可诊断报错 | dump 断言通过；`npx` 形态 server 仍可用 |
+| P2 ✅ | `instructions` 注入 + 8KiB 预算 + 权限无关性 | stub 自述进 prompt；放权单测通过 |
+| P3 | `env` 的 `${VAR}` 与 doctor warn | 字面量密钥配置被提示 |
+
+**备选方案（未采用）**
+
+| 方案 | 为什么不做 |
+|---|---|
+| 沿用继承 + 正则黑名单 | 见 §1：`MONKEY`/`KEYBOARD` 误杀，`GITHUB_TOKEN` 漏判，且清单永远不完整 |
+| 全清空、只给 `[[mcp.servers]] env` | 每个 server 都要手写 `PATH`，`npx` 直接不可用；白名单的意义就是不用重复写 |
+| `instructions` 不注入，只在 `qc mcp list` 里给人看 | 模型仍然靠猜；采集了不用等于没采集 |
+| `instructions` 与 skills 共用一个预算 | 两者可信度不同级，共池会让一个第三方 server 挤掉项目技能索引 |
+| `instructions` 注入同时解析成结构化提示词 | 那是执行 server 的指令，违反 §4.10 |
+
+**实现注记（2026-11-11，P1 + P3 已落地；P2 见下一条）**
+
+- §1 与 §2 已实现：`env_clear()` 后按 白名单 → 合成 HOME → 凭据变量 → `[[mcp.servers]] env`
+  → 出口代理 的顺序注入；`env` 值支持整值 `${NAME}`，缺变量时 spawn 失败并点名（实测在
+  真机上用一个 `$HOME` 下安装的 server 验证：dump 出的变量集合只剩白名单那几项）。
+- §3 `instructions` 注入与 §4 的 modern 能力探测当成一批做（它们依赖 ADR-0067 的
+  `discover`/`capabilities`）：两条都已完成，见下面两条注记。
+- **白名单会连带清掉 `DISPLAY`。** 实测：这个开发机有 `DISPLAY=:1`，而 whitelist 只留
+  `PATH`/`LANG`/`TZ`/`LC_*`，于是需要显示服务的 server（wordcraft 这类桌面应用）启动即死，
+  报「neither WAYLAND_DISPLAY nor DISPLAY is set」。这不是缺陷，是 §1 的直接后果，解法
+  正是 §2 给的：`env = { DISPLAY = "${DISPLAY}" }`，实测有效。文档与报错要能指向这一点。
+- **P3 已做（2026-11-11）**：`qc doctor` 对「名字像密钥且是字面量」的 `env` 项给一行 warn，
+  提示改写成 `${NAME}`。名字按 `_`/`-` 分段匹配（`TOKEN`/`SECRET`/`PASSWORD`/`KEY` 等），
+  而不是 §1 里被否掉的那个子串正则——`MONKEY`、`KEYBOARD_LAYOUT` 不该中，而
+  `GITHUB_TOKEN`、`API_KEY` 必须中，分段匹配两者都对。只在值是字面量时告警，
+  `${VAR}` 形式正是解药，不报。这条 warn 同时是 §2「只 warn 不拒绝」的落点。
+
+**P2 实现注记（2026-11-11，`instructions` 注入 + 8KiB 预算）**
+
+- **注入走 `ToolSource::prompts()`，不走 `RunOptions`。** 实现表里写的是「kernel 把
+  `connect_all_with` 返回的 instructions 透传给 engine options」，实际选的是让 MCP 的
+  `ToolSource` 自己报（默认实现返回空）。理由：`RunOptions` 有 28 个构造点，CLI / TUI /
+  GUI / ACP / subagent 各一份，加字段意味着 28 次补写，而漏掉的那一处是**静默**的——
+  subagent 就会看不到任何 server 自述。挂在 registry 上则一处接通、所有前端与子 agent 同时
+  生效，且「instructions 属于已连接的 server」这个事实直接体现在类型上。
+- **一个真 bug，被测试当场抓到。** 第一版在 `run_turn` 里直接用 `ctx.tools.server_prompts()`，
+  而 `ctx.tools` 在 P2 里已被换成刷新快照，快照**故意不带 source**（防递归），于是
+  `server_prompts()` 恒为空、instructions 一条也进不了 prompt。现在在换快照之前读一次：
+  instructions 来自握手、整局不变，每个 turn 读一次既正确又便宜。
+- **预算按 §3.1 的全局 8 KiB**（`待定` 里那条「全局还是每 server」按全局落地）：一个 server
+  能吃掉全部预算，下一个就得到一整段「已截断」的提示。截断**注记也计入预算**——调用方能依赖
+  的不变量是「返回串不超过 8 KiB」，不是「正文不超过 8 KiB，注记白送」。截断落在字符边界上
+  （中文一个字符三字节，按字节切会切出半个字）。
+- **`# MCP: <server>` 的位置**：AGENTS.md → skills 索引 → MCP 自述 → todo，与 §3 一致。
+  空串与纯空白的 instructions 不产生小节：一个只有标题的小节纯属浪费 token。
+- **日志只记名字与字节数**，不记正文。理由同 ADR-0064 记变量名不记变量值：日志活得比会话长，
+  而这段文字是第三方内容。
+- **`compact::estimate_text_tokens`**：`Delta::Context` 之前只估 `messages`，system prompt
+  完全不计。ADR-0068 后果段点名要补，现在把 system 一起算进去，否则多挂几个 server 是无声的
+  预算消耗。
+- ~~§4 未做~~：见下一条注记。
+
+**§4 实现注记（2026-11-11，第一版：按生命周期分流；已被下面 B-2 注记取代）**
+
+> 保留下面的内容只为解释「为什么当时那样写」。**当前实现按 B-2 注记，不再分协议。**
+
+- **判据是 `ProtocolVersion::has_initialize()`，不是版本号比较。** 它回答的正是「这条连接
+  是不是 `discover` 答的」：`false` 即 2026-07-28 起无握手的生命周期，`capabilities` 来自
+  `DiscoverResult`；`true` 即 legacy。自己写 `>= "2026-07-28"` 也能对（版本是日期串），
+  但那是把 rmcp 的知识抄一遍，将来新增版本要跟着改。
+- **modern 分支读 `capabilities`，零请求。** 映射是纯函数 `declared_extras()`：
+  `resources.is_some()` / `prompts.is_some()` 各决定两个工具，一对一，没有协商也没有猜。
+  实测一个声明「只有 tools」的 2026-07-28 server 过去要挨两次 `-32601`，现在是 0 次。
+- **legacy 分支保留 ADR-0033 §3 的试一次**，这是刻意的：野外的 2025 时代 server 经常把
+  `capabilities` 写得不准，握手里的那个字段在那里不值得信。ADR-0033 注记里记了这条收窄。
+  legacy 两次失败日志从 `debug` 提到 `info`（§4 要求）。
+- **stdio 仍走 `initialize`**（ADR-0067 实现注记），所以 stdio server 一律落在 legacy 分支、
+  照旧试一次。这不是漏改：`Auto` 在 stdio 上被关掉是有原因的（见那条注记），生命周期的
+  选择决定了探测方式，§4 的分流只是如实地跟着它。
+- **`peer_info` 缺失时走向「问」**。这种情况几乎不可能发生（`serve` 握手成功必有
+  `peer_info`），但失败方向要选对：多两次请求，好过静默丢掉 resources/prompts 工具。
+- **验证**：`http_probe_server` 新增 `--capabilities` 开关（默认不声明，正好给零探测断言
+  一个对象）。四条测试：modern 零次 `resources/list` / `prompts/list`、legacy 各一次、
+  modern 声明了就拿到四个工具且仍是零次列表请求、modern 没声明就一个多余工具都没有。
+  两条单测钉住 `declared_extras` 的四格表与 `has_initialize` 的边界。变异验证：
+  把 modern 分支关掉 → 零探测与「声明即得」两条失败（审计日志里能看到
+  `resources/list` 真的又发出去了）；让 `declared_extras` 恒返 `(false, false)` →
+  「声明即得」失败。
+
+**§4 修订注记（2026-11-11，B-2：一律信声明，探测改为显式诊断）**
+
+触发这次修订的是真机实测，不是重新讨论：用 `wordcraft-cli 0.15.2`（**2025-06-18**，装在
+`$HOME` 下）跑通了整个 stdio 链路，得到两个事实。
+
+1. **本 ADR 立项时引用的那条证据，其实没被修好。** 背景段写「实测 wordcraft 明说没有
+   prompts，我们仍然打了一次 `prompts/list`，换来一个 `-32601`」。但 wordcraft 是 legacy，
+   第一版 §4 让它走「保留试一次」——请求照发，只是日志从 `debug` 升到 `info`。问题看得见了，
+   没被解决。
+2. **而且它恰恰是「legacy 声明可信」的反例。** 它的 `initialize` 返回
+   `capabilities: { resources: {}, tools: {} }`，与其实际行为完全一致：声明有 resources、
+   探测成功；声明无 prompts、探测得 `-32601`。第一版拒绝信任 legacy `capabilities` 的理由
+   ——「野外的 2025 时代 server 经常写得不准」——在这个真实样本上站不住，它当时是猜测。
+
+**修订后的决定**
+
+| 项 | 内容 |
+|---|---|
+| 连接期 | **零探测**。`peer_info.capabilities` 是唯一来源，不再区分协议版本 |
+| 声明 vs 实际的比对 | `qc doctor --probe`，显式、按需 |
+| `peer_info` 缺失 | 注册 0 个额外工具 + 一条 warn（不猜；用 `--probe` 查） |
+
+**实现**
+
+- `finish()` 删掉整段探测，改为 `declared_extras(&capabilities)`；`ServerHandle` 多存一份
+  `capabilities`，供探针比对。连接期日志改成一行 `mcp capabilities read from the handshake`
+  带 `protocol` / `resources` / `prompts` 三个字段——这是「判定依据」的唯一可见处。
+- `probe_capabilities()`：新公开 API，对每个启用的 server 走**与连接完全相同**的路径
+  （`connect_server`，含 grant / env 白名单 / confine / egress client），然后**两个 list 都问**
+  ——包括声明说不的那些。跳过未声明的会让「服务了但没声明」在构造上不可检测，而那正是这次
+  要能看见的失败。
+- `ProbeAnswer` 分三态而不是 bool：`Supported` / `Refused(<消息>)` / `TimedOut`。两种不匹配的
+  用户可见损坏是相反的，混成一个「不一致」会丢掉这个区别：
+
+  | 声明 | 实际 | 用户看到 |
+  |---|---|---|
+  | 有 | `Refused` | 两个工具存在，**每次调用都失败** |
+  | 无 | `Supported` | **什么都没有**（工具静默缺失，最坏的形态） |
+
+  后者在旧实现里同样看不见：旧探测只问、然后把答案当真相，从不与声明对照。
+- `qc doctor --probe`（新 flag，默认关）。doctor 需要两个缝：`sandbox::build` + 
+  `mcp_confine`（逐 server 沙箱），以及 `build_egress` 的 client（远程 server）。用
+  `build_egress` 而不是裸 `reqwest::Client` 是硬要求——ADR-0067 §2 就写在这份代码里，
+  在诊断命令里绕过代理等于让 `--probe` 走出与真实运行不同的网络路径，那它测的就不是真东西。
+  实测对着本地 probe server 跑：不带 allowlist 时 egress 回 `HTTP 403 not-allowlisted`，
+  加上 `[network] allow` 后才拿到握手——路径确实一致。
+- **失败一律 warn 不 fail**，沿用 ADR-0066 对 MCP 全段的规矩：一个 server 连不上只丢它自己的
+  工具。
+
+**代价**
+
+- 「声明漏了但实际支持」的 server 会静默少两个工具，直到有人跑 `--probe`。这是本修订换掉
+  两次往返所付的钱，也是 `--probe` 存在的理由。ADR-0033 §3 里那句「试一次」由此作废。
+- stdio server 仍然只走 `initialize`（ADR-0067），所以它们全部是 legacy；但探测不再因此发生。
+
+**验证**
+
+- 反转既有用例：`a_legacy_server_is_still_probed_once` → `a_legacy_server_is_not_probed_either`
+  （`initialize` 1 次、两个 list **0** 次）；新增 `a_legacy_server_gets_its_declared_extras_without_a_probe`
+  （声明了就注册，仍然零请求）。
+- 探针三条（HTTP probe server 新增 `--serve-caps`，用来造「服务但没声明」）：
+  说真话时逐项一致；`--serve-caps resources` → 报「没声明却应答」；`--capabilities prompts`
+  → 报「声明了却 `-32601`」。
+- 变异验证两次：把 legacy 分支改回探测 → 反转后的两条失败；让 `probe_capabilities` 复用声明
+  而不真问 → 探针三条全部失败。
+- **真机**：`wordcraft-cli 0.15.2` 上 `qc doctor --probe` 输出
+  `declares tools=true resources=true prompts=false · registered list_resources, read_resource
+  · instructions 912 bytes`，无 warn（声明属实）；`qc run` 的 info 日志里不再出现
+  两次 list 请求，工具数仍是 19（17 native + 2），与原行为一致。
+
+**待定**
+
+- `credentials` 预设之外，用户能否自己定义 preset（与 ADR-0066 的同一条待定合并处理）。
+- ~~`instructions` 的 8KiB 是**全局**还是**每 server**~~：P2 按全局落地（`mcp_prompt`），多
+  server 时先进先得、后来的被截断并在末尾注明。真要每 server 配额时再改，`ServerPrompt` 列表
+  是现成的切分点。
+- 是否把 `instructions` 的 hash 记进事件日志，便于 replay 时解释「当时模型看到的是哪一版自述」。
+- 白名单要不要加 `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` 的「按需透传」开关，
+  还是坚持「要就写 `env`」。倾向后者：默认不传显示服务句柄更安全。
+
+## ADR-0066 §2 修订注记：配置里的 `~`，以及写侧的危险根（2026-11-11）
+
+**问题**：同一份 `config.toml` 里，`~` 有三套语义。`[skills] roots` 认 `~/x`，并且**还把
+相对路径按 workspace 解析**；`[sandbox] extra_read/writable` 什么都不校验（相对路径由
+`bwrap` / `sandbox-exec` 按 qcode 的 cwd 解释，landlock 则因为 `path.exists()` 为假而在启动
+时报「不存在」）；`[mcp.servers] read_paths/writable_paths` 强制绝对路径，`~/x` 直接被拒。
+用户写 `~/.config/qcode/config.toml` 时无从知道该用哪一种。
+
+**决定**
+
+1. **`~` 只认两种写法**：`~` 与 `~/x`，展开成真实 home。`~user/x` 不展开（需要 passwd
+   查找，且「给别的用户的 home 授权」从来不是 per-task 配置想表达的事），裸相对路径也不展开
+   （配置文件是用户级、workspace 是每任务一个，「相对于什么」没有稳定答案）。剩下的写法
+   被 MCP 的 `validate()` 当作非绝对路径拒绝，报错里点名 `~user/...` 不支持。
+2. **展开点在校验之前，且只有一个实现**：`expand_tilde`（纯函数，home 由调用方传入）+
+   `expand_paths`（遍历五处列表）。调用点是 `load` / `merge_project_file` /
+   `validate_document`——正好是原先调 `mcp.validate()` 的三个地方，所以「展开是校验的前提」
+   这条不变量没有新增概念面。
+3. **不用 `#[serde(deserialize_with)]`**。它把不变量提到类型层（任何 `McpServerConfig`
+   都绝对），代价是 `qcode-mcp` 得自己读环境算 `$HOME`——那个 crate 不依赖
+   `qcode-kernel`，于是仓库里就有两个 home 解析器。ADR-0068 §1 清掉的正是这类两套规则。
+   流程级不变量的漏网是「直接 `toml::from_str::<Config>`」的代码，而那种代码后面紧跟着
+   `validate()`，等于有兜底。
+4. **`writable_paths` 补 `dangerous()`**。读侧一直有；写侧只做了 canonicalize + push。
+   `~/` 展开后等于 `$HOME`，而能写 `$HOME` 的 server 可以塞 `.gitconfig` 的
+   `core.hooksPath`、shell rc 一行、`~/.config/gh/hosts.yml` —— 下一条命令就生效，不需要
+   第二次写，所以「只读凭据 + 一次写」的隔离在写侧是全开的。只检查用户写的条目：
+   workspace 与私有 HOME 是无条件授予的，把它们也纳入检查会让「从 `$HOME` 启动 qcode」
+   导致每个 server 都起不来。
+5. **`[skills] roots` 保留相对路径**。技能根是「要扫描的目录」而不是授权，`.qcode/skills`
+   写在仓库里是有用的；所以它用同一个 `expand_tilde`，再叠自己的 workspace 相对规则。
+
+**代价**
+
+- `writable_paths` 里的 workspace 祖先（例如 workspace 是 `/w/a/b` 时写 `/w`）以前能用，
+  现在被拒。这是 `dangerous()` 本来的定义，读侧一直如此；写侧对齐后属于行为变更，写进
+  CHANGELOG。
+- 配置文件里 `~` 的展开与**工具参数里的 `~` 无关**。后者由那个 MCP server 自己解析：实测
+  wordcraft（Rust 实现）把 `~/x.docx` 当字面路径，在 workspace 下建一个名叫 `~` 的目录并
+  静默写入——因为 workspace 可写，所以不报错。文档只能给出「要可靠就传绝对路径」，这点
+  必须写清楚，否则 `~` 支持会被误读成「工具参数也能用 `~` 了」。
+
+**验证**
+
+- `tilde_expands_only_for_this_user`（六种写法逐条）、`tilde_without_a_home_leaves_the_path_alone`、
+  `expansion_is_idempotent`、`every_configured_path_list_gets_expanded`（五处列表全覆盖）、
+  `a_relative_mcp_path_is_still_rejected_after_expansion`（`~/x` 通过、`Documents` 与
+  `~user/x` 仍报错）、`skill_roots_keep_expanding_and_keep_resolving_against_the_workspace`。
+- 写侧两条：`["~/"]` 展开成 home 被 `DangerousWriteRoot` 拒绝且报错文案点名
+  `writable_paths`；`["~/Documents"]` 正常授予。
+- doctor 四条（集成）：`~/Documents` 存在时打 `~/Documents → /abs`；不存在时点名它在
+  **展开后**的位置；`["~/"]` 报「your home directory」；`~user/x` 在 config 行 `[fail]`。
+
+**待定**
+
+- `[sandbox]` 的 `extra_read` / `extra_writable` 仍然没有加载期校验（相对路径只在 landlock
+  启动时以「不存在」失败）。为它们加「必须绝对」会在 `mode = "none"` 的用户身上把原本无害
+  的配置变成加载失败，所以这轮只做展开，不动校验。
+
+**2026-11-11 补记：写回会固化 `~`**
+
+§2 的展开点是加载，所以内存里的 `Config` 只有绝对路径。而 `ConfigEdit::apply_config` （GUI
+设置页与首启向导保存时走的唯一路径）把 `Config` 序列化回 TOML——于是「保存任意一个设置」
+都会把 `writable_paths = ["~/Documents"]` 写成 `/home/q/Documents`。用户没改过那一条、界面上
+也看不出来，等把配置拷到另一台机器才发现它只对 `/home/q` 成立。§1 想要的「跨机器可移植的
+写法」因此活不过一次保存。
+
+**修法**：写侧不再取 `Config` 的拼法，而是**保留文件里已有的拼法**。`spell_paths` 拿新值
+（绝对）去和旧数组里的字面量逐个比，比的是 `expand_tilde(字面量) == 新值` 而不是字符串相等
+——两种拼法是同一个路径，而文件里那种才是更好的。匹配按值、按消费（一对一则移除），所以
+排序变化不会改拼法，重复项各留各的写法；没匹配上的回退到绝对形式（= 修复前的行为，绝不
+丢路径）。落点两处：`set_path_array`（`[sandbox]` 两条 + `[skills] roots`）与
+`existing_server_path_literals`（`[[mcp.servers]]` 的 `read_paths` / `writable_paths`，
+必须在 `set_array_of_tables` 整体替换之前读出来）。
+
+**没有采用的方案**
+
+| 方案 | 否决理由 |
+|---|---|
+| `Config` 存原文 + 展开值（dual-field） | 能一并解决将来的 `$VAR`，但要把「路径」从一个 `PathBuf` 变成一对值，改动面覆盖 `validate()`、grant 推导、doctor、GUI 每个读 `PathBuf` 的地方；而 bug 的范围只是「写回时别覆盖原文」。等真要做 `$VAR` 时再做，那时它才有第二个理由 |
+| GUI 显示 `~/x`（把 home 前缀缩写） | 只改显示不改内存，仍要在写侧做同一件事；而且让界面写回**未展开**的 `~/Documents`，会让 `self.config` 里出现非绝对路径——grant 推导对非绝对路径是**静默丢弃**（`canonicalize()` 失败即跳过），于是「界面上有、实际没授权」。比原来的 bug 更难查 |
+| 保存前重新读一遍文件、只写差异键 | `apply_config` 的语义就是「把内存态写成文件」，改成增量 diff 会让删除操作（清空 `extra_read`）无法表达 |
+
+**代价**
+
+- 用户在界面里把 `~/Documents` 手工改成 `/home/q/Documents`（同一台机器上语义完全相同的
+  两个拼法）后，存盘仍写 `~/Documents`。这是刻意的：界面无法区分「想换拼法」和「只是
+  保存了别的东西」，而 `~` 的形式在下一台机器上仍然正确。
+- 设置页的输入框显示的是**展开后**的绝对路径（`fields.rs` 取 `path.display()`），与文件里
+  的 `~/x` 不一致。纯显示问题：文件内容是对的，且界面里直接输入 `~/x` 也会被原样写入。
+  要一致就得让界面看得见原文，那是上面被否决的 dual-field。
+
+**验证**
+
+- `a_mcp_tilde_path_survives_a_save_that_did_not_touch_it`、`every_tilde_path_list_keeps_its_spelling`
+  （五处列表全覆盖）、`a_tilde_path_that_changed_is_rewritten`（改过的必须写全，否则修复就
+  退化成「永不重写」）、`reordered_paths_keep_their_own_spellings`、
+  `unmatched_values_fall_back_to_the_absolute_form`。
+- 第一条在**关掉修复**时确实失败，报 `the tilde was frozen into an absolute path`——不是
+  恒真断言。
+
+## ADR-0070：MCP 的 `command` 走 shell 环境快照的 PATH（2026-11-11）
+
+**状态**：已实现（2026-11-11）。
+
+**问题**
+
+`[[mcp.servers]] command` 要写绝对路径，而这个机器上的路径带版本号：
+`/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft-cli`。每次升级都要改配置，
+换台机器还要改用户名。裸名字 `wordcraft-cli` 本来是该写的东西，但它在两种启动方式下表现
+不同：
+
+- 终端里启动 `qc`：`PATH` 来自你的 shell，找得到；
+- 从 Dock 启动 `qc gui`：`PATH` 是 launchd 的最小集，找不到 → `CommandNotFound`。
+
+ADR-0064 已经为 `run_shell` 解决过一次（`{shell} -lic 'env -0'` 采样一次）。MCP 侧从来没
+接上：`GrantSet::derive` 与 `base_env()` 各读一次 `std::env::var_os("PATH")`，读的都是 qcode
+进程自己的那份。
+
+**决定**
+
+1. **裸 `command`（不含 `/`）按 shell 快照的 `PATH` 解析**；绝对/相对路径完全按字面，行为
+   不变。`GrantInput.path: SearchPath` 与 `ConnectOptions.path: Option<&OsStr>` 携带它。
+2. **推导与启动必须用同一个值**，这条是本 ADR 的核心约束。`Command::new` 拿的是**裸名字**
+   （见 `connect_stdio`），所以真正的查找发生在子进程里、由子进程的 `PATH` 完成。如果
+   `derive` 用快照 `PATH` 而子进程拿的是 qcode 的 `PATH`，沙箱会为"另一个文件"建根——要么
+   起不来，要么跑的不是被授权的那一个。因此 `connect_stdio` 在 `env_clear()` → 白名单之后
+   覆盖 `PATH`，位置在 `server.env` 之前（server 自己写 `PATH` 仍然赢）。
+3. **只在需要时采样**。`mcp_needs_path_lookup` 为假（没有任何启用中的 stdio server 用裸名字）
+   就不跑 shell。采样在 `spawn_blocking` 里做：`assemble` 被 await 在 GUI 的 UI executor 上，
+   阻塞它等于冻窗口。这次为此把 `tokio` 加进 `qcode-kernel` 的正式依赖（此前只在
+   dev-dependencies 里）。
+4. **拿不到快照就退回旧行为**（qcode 自己的 `PATH`），不报错：`env_sampling = "off"` 是用户
+   的显式选择，采样失败也只是少一次机会。`qc doctor` 会把这件事说明白。
+5. **`grep` 一份判定，不写两份**：`mcp_needs_path_lookup` / `mcp_path_from_snapshot` 放在
+   kernel，`qc doctor` 调它们。doctor 各自写一份的话，迟早变成「doctor 采样、实跑不采样」，
+   而两边都不会报错——ADR-0068 收拾过的正是这类"两处拼写漂移"。
+6. **失败文案点名查的是哪份 `PATH`**。`command "x" was not found` 单看无法区分"拼错了"和
+   "这个 GUI 的 PATH 比你的终端小"，后者恰恰是这个 ADR 存在的原因。
+
+**被否掉的方案**
+
+| 方案 | 否决理由 |
+|---|---|
+| 配置里支持 `$VAR` / `${VAR}` 展开 | `env` 里已有 `${NAME}` 表示"从 qcode 环境读"，再加一种内嵌展开就有两种变量语法；而且从 Dock 启动时 `WORDCRAFT_HOME` 同样不在环境里，展开只会把"找不到文件"换成"找不到变量"，一个都没解决。ADR-0068 §2 的"只认整值"也不该为了它松掉 |
+| 让用户自己写软链接 | 能用（`~/.local/bin/x -> ~/cot/lib/<版本>/bin/x`），但每个 server 一条，且软链接本身还是要维护；快照方案一次解决所有 server |
+| MCP 继承整个 shell 环境 | ADR-0068 §1 的 `env_clear()` + 白名单是刻意的（第三方进程不拿用户的密钥）。本 ADR 只借 `PATH` 一个变量——它不是密钥，而且正是"找不到程序"的唯一原因 |
+| 在 `resolve_program` 里静默合并两份 `PATH`（快照 + 进程） | 子进程只认一份。合并后 `derive` 可能命中只有 qcode `PATH` 里才有的目录，而子进程找不到 → 违反第 2 条 |
+
+**代价 / 已知边界**
+
+- **只有 `PATH` 过桥**。`command` 里写 `${VAR}` 仍然不被展开（`MissingEnv` 的语义只对 `env`
+  表生效）；从 Dock 启动时 `WORDCRAFT_HOME` 之类的变量依旧不在。要变量就等 dual-field
+  （文件原文 + 运行时展开值）那一轮。
+- **子进程的 `PATH` 变了**：从"qcode 的"变成"你的 shell 的"。这与 ADR-0064 对 `run_shell`
+  做的事一致，但对已有的 MCP 配置是一次行为变更——若 rc 文件里的 `node` 与 qcode 启动时的
+  `node` 不同版本，server 现在看到的是前者。这正是用户在自己终端里看到的世界。
+- **`PATH` 里的目录不会因此变成可写根**。只有解析出的那一个程序的上游目录进 `runtime`
+  （只读 + 执行），且仍过 `dangerous()`；`writable_paths` 与它无关。
+- Windows 上 `resolve_program` 仍不补 `PATHEXT`（`node` 不会自动试 `node.exe`）。这是既有
+  缺陷，本 ADR 不做也不加重。
+
+**验证**
+
+- 单元（`qcode-mcp`）：同一个名字在两处安装、只有给定 `PATH` 里那处在 `runtime` 里；
+  缺失时报错点名 `shell environment's PATH`；`SearchPath::from(None)` 回退到进程 `PATH`。
+- 端到端（真 Landlock + 真子进程，`crates/qcode-kernel/tests/mcp_grant.rs`）：
+  `command = "probe"` + `with_path(<bin 目录>)` 起得来（3 个工具）；同一配置不给 `PATH`
+  则被跳过。这两条合起来钉的是"推导与启动用同一份 `PATH`"——只改一半时它们会失败。
+- doctor 三条：假 `env_command = "printf 'PATH=...\0'"` → 打 `mcp path` 且 grant 落在该目录；
+  `env_sampling = "off"` → warn 且 `not found` 文案含 PATH；绝对 `command` + 一个必然失败的
+  `env_command = "exit 1"` → 完全不出 `mcp path` 行（证明没有采样）。
+
+**待定**
+
+- `[shell] env_include` 的 `COT_*` 等前缀要不要也过桥给 MCP。目前只过 `PATH`：那是"起不来"
+  的唯一原因，其余的属于"第三方进程该不该看见你的变量"，应留给 ADR-0068 的口子
+  （`env = { ... }` 与 `credentials`）。
+- `PATH` 过桥后，`qc doctor` 里"这个 server 的 runtime 根为什么是 `~/cot/lib/...`"已经能
+  看出来，但"哪一条 `PATH` 条目命中的"还没有单独打印。若有人提出，加一行即可。

@@ -39,7 +39,7 @@ async fn main() -> ExitCode {
         Some(Command::Skills(args)) => cmd_skills(args, config),
         Some(Command::Config(args)) => cmd_config(args, config),
         Some(Command::Mcp(args)) => cmd_mcp(args, config),
-        Some(Command::Doctor) => cmd_doctor(data_dir, config).await,
+        Some(Command::Doctor(args)) => cmd_doctor(data_dir, config, args.probe).await,
         Some(Command::ShellEnv(args)) => cmd_shell_env(args, config),
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,

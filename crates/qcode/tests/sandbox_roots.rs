@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use qcode_core::task::{Root, RootAccess};
-use qcode_tools::sandbox::Sandbox;
+use qcode_tools::sandbox::{OutsideRoots, Sandbox};
 use qcode_tools::windows_acl::WindowsAcl;
 
 fn run(sandbox: &dyn Sandbox, cwd: &Path, script: &str) -> Option<bool> {
@@ -69,7 +69,11 @@ fn a_read_only_root_refuses_writes_while_a_read_write_root_accepts_them() {
             primary: false,
         },
     ];
-    let sandbox = match seed.with_roots(&roots, None) {
+    // `BuildCaches` is what the real caller passes — a multi-root task context
+    // comes from `run_shell` — and on this backend it changes nothing:
+    // `windows-acl`'s write scope is "writable roots plus temp" either way, so
+    // this test's claim stays exactly about the roots.
+    let sandbox = match seed.with_roots(&roots, None, OutsideRoots::BuildCaches) {
         Ok(sandbox) => sandbox,
         Err(error) => {
             eprintln!("skip: with_roots failed: {error}");

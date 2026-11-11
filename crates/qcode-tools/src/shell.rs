@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
 use crate::path::{self, Access};
-use crate::sandbox::{NoSandbox, Sandbox};
+use crate::sandbox::{NoSandbox, OutsideRoots, Sandbox};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
 /// How long a cancelled or timed-out group gets to exit on SIGTERM before the
@@ -272,8 +272,16 @@ impl Tool for RunShell {
         // instead of the directory qc happened to start from.
         let needs_roots = !ctx.roots.is_empty() || ctx.temp_dir.is_some();
         let sandbox = if needs_roots {
+            // `run_shell` is the caller that needs the build caches: a build
+            // inside the workspace writes to CARGO_HOME / ~/.cargo, and it may
+            // write to the host /tmp. An MCP server explicitly does not (see
+            // `OutsideRoots`).
             self.sandbox
-                .with_roots(&ctx.roots, ctx.temp_dir.as_deref())
+                .with_roots(
+                    &ctx.roots,
+                    ctx.temp_dir.as_deref(),
+                    OutsideRoots::BuildCaches,
+                )
                 .map_err(|err| ToolError::Sandbox(err.to_string()))?
         } else {
             self.sandbox.clone()

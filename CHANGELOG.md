@@ -1,5 +1,410 @@
 # Changelog
 
+## 未发布
+
+### 保存设置不再把 `~` 固化成绝对路径
+
+`writable_paths = ["~/Documents"]` 是 ADR-0066 §2 修订注记想要的跨机器写法，但加载时它被
+展开成 `/home/q/Documents`，而 GUI 设置页保存时把内存里的 `Config` 整个序列化回 TOML ——
+于是**保存任何设置**都会把它写成绝对路径。用户没改过那一条，界面上也看不出来，等把配置
+拷到另一台机器才发现它只对 `/home/q` 成立。
+
+- 写侧改为**保留文件里已有的拼法**：新值拿去和旧数组逐项比，比的是
+  `expand_tilde(旧字面量) == 新值`，匹配上就写回原来的 `~/x`。五处路径列表全覆盖
+  （`[sandbox] extra_read`/`extra_writable`、`[skills] roots`、每个 server 的
+  `read_paths`/`writable_paths`）。
+- 匹配按值、按消费：排序变化不改拼法，重复项各留各的写法；**改过的路径照旧写全**，
+  没匹配上的回退到绝对形式（绝不丢路径）。
+- 设置页的输入框仍显示展开后的绝对路径（`fields.rs` 取 `path.display()`），与文件里的
+  `~/x` 不一致——纯显示问题，文件内容是对的，界面里直接输入 `~/x` 也会原样写入。要一致
+  需要让界面看得见原文，即 dual-field，见 ADR-0066 §2 修订注记的补记。
+- 反向的情况同样成立：`~/Documents` 在界面上被手工改成 `/home/q/Documents`（同机等价的
+  两个拼法）后存盘仍写 `~/Documents`，因为界面分不清「想换拼法」和「只是保存了别的东西」。
+
+### MCP 的 `command` 可以写裸名字：按你 shell 的 PATH 解析（ADR-0070）
+
+`command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft-cli"` 每个版本都要
+改一次，而 `command = "wordcraft-cli"` 在终端里启动 qcode 能用、从 Dock 启动 GUI 就
+`not found` —— 因为 `qc` 进程自己的 `PATH` 是 launchd 给的最小集，工具链的 hook 只在你的
+shell rc 里。ADR-0064 已经为 `run_shell` 解决了这件事（采样一次 `zsh -lic 'env -0'`），
+但 MCP 侧从没接上。
+
+- **裸 `command`（不含 `/`）现在按 shell 快照的 `PATH` 解析**，与 `run_shell` 同一份采样。
+  绝对路径不再做任何查找，行为和以前完全一样。
+- **只在需要时才采样**：配置里全是绝对路径就不跑 shell，不为一次查找付启动代价。
+- **同一个 `PATH` 交给子进程**。`Command::new` 拿的是裸名字，真正由子进程的 `PATH` 找到它；
+  若推导 grant 用一份 `PATH`、启动用另一份，沙箱会为"另一个文件"建根。这一条有端到端测试
+  （真 Landlock + 真子进程）。
+- **`env_clear` 之后按位置覆盖**：白名单 → 我们的 `PATH` → `env` 表 → 出口代理，所以 server
+  自己写 `PATH` 仍然赢。`PATH=""` 与"没有 `PATH`"区分开（前者会让 `execvp` 什么也找不到）。
+- `CommandNotFound` 现在点名**查的是哪份 `PATH`**：`not found` 单看无法区分"拼错了"和
+  "这个 GUI 的 PATH 比你的终端小"，而后者正是来问的那批人。
+- `qc doctor` 用同一份 `PATH` 推导（`--probe` 也是），并单列一行 `mcp path: ...`；没有快照时
+  给 warn 说明只用 qcode 自己的 `PATH`、GUI 场景下会失败。裸路径判定与 PATH 读取抽成
+  `qcode_kernel::mcp_needs_path_lookup` / `mcp_path_from_snapshot`，doctor 与 kernel 共用一份，
+  不各写一遍。
+- `qcode-kernel` 因此直接依赖 `tokio`（只为 `spawn_blocking`）：`assemble` 在 GUI 的 UI
+  executor 上被 await，采样阻塞它会冻窗口。
+- `[shell] env_sampling = "off"` 时退回旧行为（qcode 自己的 `PATH`），并在 doctor 里明说。
+
+### 配置里的路径支持 `~`，MCP 写授权补上危险根检查
+
+`[mcp.servers] read_paths` / `writable_paths` 原先强制绝对路径，而 `[sandbox] extra_read` /
+`extra_writable` 根本没有校验——同一份配置里，`~` 在三处语义不同（`[skills] roots` 认 `~`，
+另外两处不认）。现在是一个 helper、一次展开：
+
+- **`~` 和 `~/x` 在加载时展开成真实 home**，覆盖 `read_paths`、`writable_paths`、
+  `extra_read`、`extra_writable`、`skills.roots`。`~user/x` 与裸相对路径仍然不展开：前者要
+  passwd 查找且永远不是「给本任务的授权」，后者在用户级配置里没有稳定基准（workspace 是
+  每个任务一个）。
+- **展开点在 `validate()` 上游**（`load` / `merge_project_file` / `validate_document` 三处，
+  正是原先调 `mcp.validate()` 的三个地方），不是 `#[serde(deserialize_with)]`：后者等于在
+  不依赖 `qcode-kernel` 的 `qcode-mcp` 里再养一个 `$HOME` 解析器。展开幂等，漏展开会被
+  既有的「必须是绝对路径」校验挡住并报错——失败模式是明确的，不是静默的。
+- **`writable_paths` 补上 `dangerous()` 检查**（读侧一直有，写侧没有）。`~/` 展开后就是
+  `$HOME`，两个字符的笔误不该把整个家目录交出去：能写 `$HOME` 的 server 可以塞
+  `.gitconfig` 的 `core.hooksPath`、shell rc 一行或 `~/.config/gh/hosts.yml`，下一条命令就
+  生效，不需要第二次写。只检查用户写的条目，workspace 与私有 HOME 不参与——否则从 `$HOME`
+  目录启动 qcode 会让每个 server 都起不来。
+- `dangerous()` 的 home 一侧改为 canonicalize 后比较。另一侧（`writable_paths`）本来就是
+  canonicalize 过的，macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，不统一就会让「这是你的家
+  目录」这条恰好漏判。
+- `qc doctor` 把每条配好的路径打成 `~/Documents → /home/q/Documents` 两种写法，目录不存在
+  时说明被 grant 跳过了；`[sandbox] extra_read` / `extra_writable` 同样逐条打印。
+- 配置文件里的 `~` 与**工具参数里的 `~` 无关**：后者 qcode 不参与解析，由那个 MCP server
+  自己决定。Rust 实现（如 wordcraft）会把 `~/Documents/x.docx` 当字面目录名，在 workspace
+  下建一个叫 `~` 的目录并静默写入。README 里写明了，要可靠就传绝对路径。
+
+### MCP 授权集在设置页里可编辑了（ADR-0066 P2 收尾）
+
+`read_paths` / `writable_paths` / `credentials` / `sandbox` 四个字段一直没有表格列：设置页
+能显示一个 server 却说不出它拿到了什么权限，用户想改只能手写 TOML。保存时靠「按名字从旧
+config 里取回」把它们硬扛过去——能跑，但界面上看得到的值和实际生效的值是两个东西。
+
+- **四列补齐**，前三个是「一行一项」的多行单元格（单行 `Input` 会静默吃掉换行，把两项粘成
+  一项）。
+- **`sandbox` 是三态**：`inherit` / `confine` / `off`。字段是 `Option`，写死成显式 `confine`
+  会让这个 server 从此不跟随 `[mcp] sandbox` 的全局开关，而界面上看不出来。
+- **取回逻辑删掉了**。列与「从文件复制」并存，只会让可见值静默输给不可见值。仍无列的只剩
+  `bearer_token_env_var` 与 `headers`（ADR-0067 P3）。
+- **映射抽成纯函数** `mcp_server_from_cells`。原来埋在 `apply_tables` 里，而表格行要
+  `Entity<InputState>`，没有测试构造得出来——「设置页写出的配置」这条路此前零测试覆盖。
+- `CredentialPreset` / `McpSandboxMode` 的解析与全量列表移进 `qcode-mcp`，CLI flag、GUI
+  选择器与配置文件共用一张表，不再各写一份 match。认不出的名字返回 `None` 而不是猜。
+- 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
+  四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
+
+### 修 CI：cross-check 的 aarch64 目标 + 两处 macOS 门控错误
+
+`cross-check` job 上线后第一次真正跑，红了两个地方，都是这次新代码的问题：
+
+- **aarch64-pc-windows-gnullvm 编不过**：`cc-rs: failed to find tool
+  "aarch64-w64-mingw32-clang"`。C 构建脚本要 llvm-mingw 交叉工具链，发布环境
+  （`build-for-release`）有，stock ubuntu runner 没有。CI 改为只查
+  `x86_64-pc-windows-gnullvm`；全仓库没有 `cfg(target_arch)` 门控，所以 Windows 的 cfg
+  分支覆盖不变。aarch64 与 darwin 仍留给有工具链的开发机（脚本默认列表）。
+- **macOS 侧两处**（`test (macos-latest)` 报的，本机看不到）：`crates/qcode-tools/src/sandbox/tests.rs`
+  里一个 `#[test]` 属性被划走，导致 `denies_writes_outside_the_workspace` 「从未使用」；
+  `macos_profile_tests` 里一对重复的 `use` 变成 unused import。都是上一版移动代码块时
+  切错行留下的。
+
+教训已写进 README：**翻 cfg 在本地验 macOS 要翻全部相关模块，并且跑 clippy 而不是只看
+测试过没过**——上一版只翻了一半，测试照样通过。
+
+### `[sandbox] extra_read`：让沙箱外的工具链可读可执行
+
+沙箱的读允许集是固定的发行版目录（`/usr`、`/bin`、`/lib`、`/lib64`、`/etc`、`/opt`、
+`/sys`、`/proc`、`/run`、`/dev`）加任务 roots。工具链装在别处就完全不可达——而这不只是
+「写不了」：
+
+- 实测（Landlock）：开 `mode = "landlock"` 后，agent 自己的 shell 读不了 `/home/q/cot`
+  （那台机器上唯一的 Rust 工具链就在里面），`cargo`、`rustc`、`gh` 全部 `Permission
+  denied`，连锁导致**连修复代码都编译不了**。
+- `extra_writable` 帮不上：它只对 `windows-acl` 与 macOS 生效，Linux 后端 `let _ =` 掉了。
+
+新字段 `[sandbox] extra_read = ["/home/q/cot", "/opt/tools"]`，**列表，每项一棵子树**，
+授予**读 + 可执行**：
+
+- 四个后端统一：Landlock 加 `LL_READ_* | LL_EXECUTE` 规则；bwrap 加 `--ro-bind`；
+  macOS 加进 `(allow file-read*)`；`windows-acl` 本就不限制读，是空操作（文档里写明，
+  不假装三平台一致）。
+- 可执行位是有意的：目录里读得到却跑不了二进制没有意义，而这正是这条需求的全部内容。
+- **在 `with_roots` 里继续传递**。`run_shell` 每轮都用任务的 roots 重建沙箱，只在 seed
+  上生效的修复到不了任何一个真实工具调用——测试特意走 `with_roots` 验证这一点。
+- 不存在的路径在启动时报错并点名（`[sandbox] extra_read: X does not exist`）。否则
+  Landlock 什么规则都不装，表现和「功能没生效」一模一样。
+- `describe()` 打印 `extra read: [...]`，`qc config` 也打印该字段：doctor 说得出给了什么，
+  否则「实际能碰到什么」在外部无法回答（ADR-0066 §1）。
+
+**一个需要知道的副作用**：`extra_read` 是 `[sandbox]` 级设置，而 MCP server 的沙箱由同一个
+后端派生，所以这些前缀对第三方 server 同样可读——ADR-0066 §1 的「读集 = 推导运行时 + 凭据
+子树」因此被放宽。要只给 `run_shell` 用，就写窄到工具链目录本身。若将来需要严格隔离，应给
+`[mcp]` 加独立的白名单，而不是让两边共享这一项。
+
+`build()` 的 `extra_writable` / `extra_read` 收进 `SandboxPaths` 结构体，不做成两个相邻的
+`&[PathBuf]` 位置参数——同类参数调换能编过，只会表现为「读得到、写不了」，
+这正是 `ConnectOptions` 当初存在的原因。
+
+测试：真机 Landlock（不加则读和执都被拒 → 加上后两者都通，且经 `with_roots` 传递）、
+缺路径报错、bwrap 的 `--ro-bind` 且绝不 bind 成读写、已 bind 的 root 不重复、
+TOML 解析成列表且不与 `extra_writable` 混淆。
+
+### 审批规则的 `tool` 支持通配
+
+`[[rules]]` 的 `tool` 之前是精确比较（`name != tool`），写 `tool = "mcp__wordcraft__*"` 会
+**静默不匹配**——不报错，直接落到 `default: external tool: ask`。一个 MCP server 有十几个
+工具，手写十几条规则是没人愿意做的事，于是第一版配置就是这么写的，然后所有 MCP 调用被
+审批挡下。
+
+- `tool` 现在接受 glob（`mcp__wordcraft__*`）。不含 `* ? [ ] { }` 的值仍然走精确比较的
+  快路径，所以字面名字进不了 glob 解析器。
+- **精确名 > 通配 > 无条件**，且与规则在文件里的先后无关。这条是有意为之：`mcp__*` 必须
+  盖不过一条精确的 `deny`，否则加通配就等于加了「顺序敏感、读不出行为」的隐患。
+  `specificity()` 由此拆成 `tool_rank()` + `extra_predicates()`。
+- **非法 glob 在加载配置时失败**，报错点名 rule id 与字段（`InvalidPolicyRule`）。
+  运行时对解析失败的 pattern 一律「不匹配」而不是「匹配一切」——把 typo 变成
+  静默放行是最坏的失败方向。config 的 `[[approval.rules]]` 与 `--approval-policy` 文件
+  走同一个 `validate_rules`。
+
+测试 7 条（通配覆盖整 server / glob 两端锚定不匹配子串 / 精确胜过通配且与顺序无关 /
+deny 仍胜过通配 / 非法 pattern 不匹配且被报告 / path_glob 非法被报告 / 两个加载器都拒绝
+非法 pattern）。变异验证两次：把 glob 排到与精确同级 → 顺序无关那条失败；让非法 pattern
+fail-open → 不匹配那条失败。
+
+### 跨目标 check：`make check-platforms` + CI 的 cross-check job
+
+`cargo test --workspace` 在 Linux 上全绿不代表这棵树能编译：`#[cfg(windows)]` /
+`#[cfg(target_os = "macos")]` 的代码在本机根本不参与编译。上一版给
+`Sandbox::with_roots` 加参数时，`crates/qcode/tests/sandbox_roots.rs`（`#![cfg(windows)]`）
+漏改了调用点，Linux 上一切正常。
+
+- `scripts/ci-cross-check.sh` + `make check-platforms`：用 `cargo check --target` 把出货
+  三元组（`x86_64/aarch64-pc-windows-gnullvm`，`build-for-release` 打的就是这两个，
+  不是 msvc——本仓库没有 `cfg(target_env)`/`cfg(target_vendor)` 门控，故等价）在本机
+  过一遍类型检查。`cargo check` 不需要链接器，只要有该 target 的 std。darwin 三元组
+  也在列表里，没装 std 就跳过并明说跳了哪些。
+- 有两条「不能静默成功」的守卫：一个 target 都没检查时**失败**（防「我检查了其他平台」
+  变成不可证伪的说法），跳过哪些明确打印。
+- CI 加 `cross-check` job（ubuntu）。**只查 `x86_64-pc-windows-gnullvm`**，两个理由都是
+  实际撞出来的：
+  - 第一版带了 `aarch64-pc-windows-gnullvm`，跑起来红在
+    `cc-rs: failed to find tool "aarch64-w64-mingw32-clang"`——C 构建脚本要 llvm-mingw
+    交叉工具链，发布环境（`build-for-release`）有，stock ubuntu runner 没有。
+  - 去掉它不损失覆盖：全仓库**没有任何 `cfg(target_arch)` 门控**（grep 过），所以 Windows
+    的 cfg 分支在同一条路上都编到。aarch64 与 darwin 三元组仍留在脚本默认列表里，给有
+    工具链的开发机用。
+  - **darwin 也不在 CI 里查**：从 Linux 编译 Apple 框架的 C shim 从没试过，按猜测加的 job
+    会永久红；macOS 后端本来就有 `test (macos-latest)` 在真机上编译并跑测试。
+- 变异验证：把调用点改回两参数 → 脚本 `E0061` 且退出码 1；把目标列表换成未装的
+  `wasm32-unknown-unknown` → 报「nothing was verified」并退出码 1。
+
+同时修掉上一个提交引入的 Windows 编译错误（`crates/qcode/tests/sandbox_roots.rs` 的
+`with_roots` 少了 `OutsideRoots` 参数）——正是这条 check 第一次跑抓到的。
+
+**已知缺口（未改，记在这里）**：`windows-build` 只做 `cargo test --workspace --no-run`，
+编译测试但从不执行，所以 `windows_acl` 的单测在 CI 里一条都没跑过。上一版那处
+`debug_assert` 条件写反，就算有 Windows CI 也发现不了。要补得先确认那些测试在
+Windows runner 上真的能过——没有依据就加，等于加一个永久红的 job。
+
+### MCP server 不再能写 `/tmp` 和 Rust 构建缓存（ADR-0066 §1 修订）
+
+ADR-0066 §1 写的是「三个不相交的集合，**此外一律无**」，实现没做到：MCP server 和
+`run_shell` 共用同一个 `Sandbox`，于是 `run_shell` 需要的两项额外授权被一并继承——
+Linux/macOS 上的宿主 `/tmp`，以及 `$CARGO_HOME` / `$RUSTUP_HOME` / `$CARGO_TARGET_DIR` /
+`~/.cargo` / `~/.rustup`。实测：一个 MCP server 能写 `/tmp/anything`，也能写
+`$CARGO_HOME/config.toml`。
+
+后者不是「多了一个临时目录」：那个文件里的 `[build] rustc-wrapper` 就是下次 `cargo build`
+时的任意代码执行。装着 Rust 的机器上，`npm i` / `pip install` 装来的第三方 server 就能改它。
+
+- `Sandbox::with_roots` 新增 `OutsideRoots` 参数，**由调用方显式写**，没有默认值：这个量同时
+  服务两个需求相反的调用方，任何默认都会让其中一个静默错下去。`run_shell` 是
+  `BuildCaches`（行为不变），MCP 是 `Nothing`。
+- 三个后端同一语义。Landlock 不加 `/tmp`、`/var/tmp`、不并 `writable_paths()`；bwrap 不
+  bind cache、不再强设 `TMPDIR=/tmp`（那会顶掉 ADR-0068 §3 的私有 HOME），但**保留私有的
+  `--tmpfs /tmp`**——它不是宿主的 `/tmp`，走了也不会落到宿主上，而按 `/tmp` 硬编码的运行时
+  离开它会直接崩；macOS 从写块里去掉 `/private/tmp`、`/var/folders` 和那几个 cache 变量，
+  读权限保留（二进制可能就住在 `$CARGO_HOME` 下）。
+- 三个后端的 `describe()` 现在都带写集（`writes: roots only` / `roots + build caches +
+  host /tmp`）——`doctor` 打印的必须就是实际生效的。
+- `TMPDIR` 早在 ADR-0068 §3 就指向私有 HOME，而私有 HOME 本来就在 write 集合里，所以
+  「临时目录不够用」这个理由不成立。真有个 server 硬编码 `/tmp`，正确做法是它自己的
+  `writable_paths = ["/tmp/<its-own-dir>"]`，而不是替所有 server 默认打开宿主的 `/tmp`。
+
+顺带修好的一个测试盲区：既有集成测试的注释写着「`tempfile` 在 `/tmp`，而 Landlock 无条件
+授权 `/tmp`，所以『外面』得挑别处」——测试绕开了被 bug 覆盖的那块。现在它把 `/tmp` 也断言
+进去。新增：真机单测（同一份 kernel 两种 `OutsideRoots`，`/tmp` 与 `$CARGO_HOME` 一开一关）、
+bwrap 参数断言、macOS profile 断言、端到端（真子进程 + 真 `tools/call` 写
+`$CARGO_HOME/config.toml`）。变异验证四次全部被抓到。
+
+真机回归：`run_shell` 行为不变；wordcraft 仍注册 19 个工具，`new_document` +
+`save_document` 写出 6531 字节的真 `.docx`（`file` 认作 Microsoft Word 2007+）。
+
+### MCP 连接不再探测能力；`qc doctor --probe` 取而代之（ADR-0068 §4 修订）
+
+上一版 §4 只让 2026-07-28 的 server 免于探测，legacy 仍然「试一次」。用 `wordcraft-cli
+0.15.2` 真机实测后这条改了，两个理由：
+
+1. **ADR 立项时引用的那条证据其实没被修好。** 背景段写「wordcraft 明说没有 prompts，我们
+   仍然打了一次 `prompts/list`」——可 wordcraft 是 2025-06-18，上一版让它照旧试一次，
+   请求照发，只是日志从 debug 升到 info。
+2. **它恰好是反例。** 它的 `initialize` 返回 `capabilities: { resources: {}, tools: {} }`，
+   与实际行为完全一致。上一版拒绝信任 legacy 声明的理由是猜测。
+
+- **连接期零探测，所有协议一视同仁。** `peer_info.capabilities` 是唯一来源；日志改为一行
+  `mcp capabilities read from the handshake`（`info` 级），带 protocol / resources / prompts。
+- **`qc doctor --probe`** 承担「声明与实际是否一致」：走与连接完全相同的路径（grant、env
+  白名单、沙箱、egress client），**两个 list 都问**，包括声明说不的那些——跳过未声明的会让
+  「服务了但没声明」在构造上不可检测。
+- **三态而不是 bool**：`Supported` / `Refused(<消息>)` / `TimedOut`。两种不匹配的用户可见
+  损坏是相反的：声明了却拒绝 → 工具存在但每次调用都失败；没声明却服务 → 工具静默缺失
+  （最坏形态，旧探测同样看不见）。
+- `--probe` 对远程 server 用 `build_egress` 的 client 而不是裸 `reqwest::Client`：在诊断命令
+  里绕过代理，测的就不是真实运行路径（ADR-0067 §2）。
+
+测试：反转 legacy 用例（`initialize` 1 次、两个 list 0 次）、新增 legacy 声明即得、探针三条
+（说真话 / 服务但没声明 / 声明但拒绝，HTTP probe server 新增 `--serve-caps` 造后一种）。
+变异验证两次都被抓到。真机：wordcraft 的 `--probe` 报 `declares tools=true resources=true
+prompts=false · instructions 912 bytes` 且无 warn；`qc run` 工具数仍是 19，与原行为一致。
+
+### MCP 能力探测不再问已知答案（ADR-0068 §4）
+
+ADR-0033 §3 决定「能力探测靠试一次：握手后调 `resources/list` 与 `prompts/list`，成功才
+注册」。当时理由成立：两条请求比维护第二套判定便宜。2026-07-28 之后不成立了——
+`server/discover` 的返回里直接带 `capabilities`，一个字段就能读到。实测一个明说没有
+prompts 的 server 仍然挨了一次 `prompts/list`，换来一个 `-32601`。
+
+- **modern（2026-07-28）读字段，零请求**。判据是 rmcp 的
+  `ProtocolVersion::has_initialize()`，即「这条连接是不是 `discover` 答的」，不是自己比较
+  版本号字符串。映射是纯函数：`resources.is_some()` / `prompts.is_some()` 各决定两个工具。
+- **legacy 保留试一次**，且这是刻意的：野外的 2025 时代 server 经常把 `capabilities` 写得
+  不准。ADR-0033 §3 由此从「通用做法」收窄为「legacy 分支的做法」。
+- **legacy 探测失败的日志从 `debug` 提到 `info`**。ADR-0033 的后果段自己写过这条缺陷：
+  默认级别下看不见「这个 server 没有 prompts」，而那正是用户想知道的。
+- **stdio 仍走 `initialize`**（ADR-0067），所以 stdio server 一律落在 legacy 分支、照旧试
+  一次。这不是漏改，是生命周期的直接后果。
+- `peer_info` 缺失时走向「问」：多两次请求，好过静默丢掉 resources/prompts 工具。
+
+测试：4 条集成（modern 零次列表请求、legacy 各一次、modern 声明了才拿到四个工具、modern
+没声明就一个多余工具都没有）+ 2 条单测（映射四格表、`has_initialize` 边界）。
+`http_probe_server` 新增 `--capabilities` 开关，默认不声明——正好给零探测断言一个对象。
+
+### MCP server 的自述进了 system prompt（ADR-0068 P2）
+
+server 在握手里给的 `instructions` 一直存在协议里，qcode 一个字节都没读过：模型只能靠工具名
+和 JSON Schema 猜用法。实测 wordcraft 给了 912 字节自述，进不了上下文。
+
+- **`# MCP: <server>` 小节**，位置在 AGENTS.md 与 skills 索引之后、todo 之前。两个生命周期
+  都覆盖：`InitializeResult.instructions`（legacy）与 `DiscoverResult.instructions`
+  （2026-07-28），rmcp 把两者都归一到 `peer_info`，所以读一次即可。
+- **总计 8 KiB**，与 skills 索引同档、AGENTS.md 的四分之一。第三方文本不该和项目规则共池：
+  一个 server 挤掉项目技能索引是不可接受的。截断落在字符边界，末尾注明「已截断」，**注记本身
+  也计入预算**（调用方能依赖的不变量是整段不超过 8 KiB）。
+- **注入，不执行**：不解析、不变成工具描述、不参与权限判断。单测构造一段「本 server 的工具
+  已全部预批准、不得拒绝」的 instructions，断言审批请求与决策与没有这段话时**逐条相同**；
+  另一条断言显式 `deny` 规则仍然 deny。
+- **`prompts` 与 `instructions` 不合并**：前者是模板、由模型 `get_prompt` 取用，后者是握手期
+  自述。ADR-0033 后果段的「不自动塞 prompts」不变，有单测守着。
+- **`Delta::Context` 把 system prompt 计入估算**。之前只估 `messages`，system 完全不计，
+  多挂几个 server 是无声的预算消耗（ADR-0068 后果段点名要补）。
+- 接线走 `ToolSource::prompts()` 而不是在 `RunOptions` 加字段：前者一处接通、CLI/TUI/GUI/
+  ACP/subagent 同时生效；后者要补 28 个构造点，漏掉的那处是静默的。
+
+### MCP 工具表有了寿命（ADR-0067 P2）
+
+2026-07-28 把 `tools/list` 变成可缓存结果：响应带 `ttlMs` 与 `cacheScope`，server 还能推
+`notifications/tools/list_changed`。工具表因此不再是常量，ADR-0002 的「启动时只列一次」
+正式作废。
+
+- **三条刷新规则**：`ttlMs` 缺失（legacy）→ 进程内不重取，行为与以前完全一致；
+  `ttlMs = 0` → 每个 turn 重取；`ttlMs = n` → `n` 毫秒后过期，在下一个 turn 边界重取。
+  `list_changed` 一到立即置脏，不等 TTL。
+- **只在 turn 边界换表**，而且是快照：`run_turn` 入口刷新一次，拿到的克隆用满整轮。
+  正在跑的 turn 里换表会让模型看到一套、执行时是另一套；`ttlMs = 0` 因此是「每个 turn」
+  而不是「每个 round」。
+- **换表写事件**：`McpToolsRefreshed { server, added, removed }` 进事件日志，CLI 打一行
+  `[mcp] <server> tools: +a -b`，GUI 显示一条 notice。
+- **已消失的工具被调用 → 明确错误**：`tool no longer available: tool 'x' no longer exists on
+  MCP server 'y' ...`，而不是 `unknown tool`。两者要修的东西不同，模型得知道是哪种。
+- **刷新失败保留旧表**（SEP-2549 允许 serve stale）：一次网络抖动不该让整个 server 的工具
+  消失，dirty 位留着下一轮再试。
+- **分页自己写**：`list_all_tools` 会把 `ttlMs` / `cacheScope` / `resultType` 丢掉，按
+  `nextCursor` 循环并只取第一页的 `ttlMs`；重复 cursor 或第 64 页即停。
+- `cacheScope` 明确不实现：qcode 没有跨进程工具缓存，`public` 与 `private` 行为相同。
+
+### 远程 MCP server（ADR-0067 P1 / P3）
+
+上一批修的是「stdio server 装在本机却被沙箱杀掉」。这一批修的是更根本的一条：**qcode 装不上
+绝大多数已登记的远程 server**。官方 Registry 抽样 100 条，约 93 条只有 `remotes`
+（`type = "streamable-http"`）；这些在旧版写进配置直接报 `missing field 'command'`。
+
+- **`[[mcp.servers]]` 的 `command` 与 `url` 恰好二选一**。`command` 由 `String` 变为
+  `Option<String>`（源码级 breaking，配置层不破坏：老配置一行不改继续用，仍然走 stdio）。
+  都没有、或都有，都是配置错误，且错误信息说清是哪一种。
+- **Streamable HTTP 走 `rmcp` 的 `StreamableHttpClient`，并且只用调用方给的 client。**
+  这不是风格问题：`new_simple(url)` 会内部造一个 `reqwest::Client`，等于让 MCP 的 HTTP
+  直接出网——**静默绕过** egress allowlist、`network.jsonl` 审计与私网拦截，唯一症状是
+  「审计文件里少了几行」。所以 `qcode-mcp` 的 `ConnectOptions.http` 是
+  `Option<&reqwest::Client>`，`None` 意味着**不连**（明确的错误），内核把
+  `Network::client()` 传进去。
+- **协议版本：`Auto`，首选 2026-07-28，回退 `initialize`。** 2026-07-28 删掉了握手（版本
+  搬进每请求的 `_meta`）、结果带 `ttlMs`。但存量 server 只认 `initialize`——所以用 rmcp
+  的 `Auto`：先 `server/discover`，对端报 `-32601` 或在 10s 内不回就回退，回退时声明上限
+  `2025-11-25`（`initialize` 能回声的最高版本）。stdio 仍固定走 `initialize`，理由见 ADR。
+- **认证只从环境取**：`bearer_token_env_var = "VAR"` 是变量名，token 本身不进配置文件；
+  `headers` 里出现 `authorization` / `cookie` / `token` / `key` / `secret` / `password`
+  会被配置校验拒绝（配置文件不是密钥库），换行符也拒（防 header 注入）。
+- **远程 server 上的 stdio 字段一律拒绝**：`args` / `env` / `read_paths` /
+  `writable_paths` / `credentials` / `sandbox`。它们在这里都是空操作，静默接受等于让用户
+  以为设了什么。
+- **`qc mcp add --url / --bearer-token-env / --header`**；`--command` 与 `--url` 由 clap
+  的 `ArgGroup` 表达「恰好一个」，报错是同一条 `--command|--url`，不会只点名其中一个。
+  `qc mcp list` 按 transport 分开打印（远程不再显示成 `command=None`）。
+- **`qc doctor` 认远程 server**：打印 transport、URL、token 变量是否已设置、headers 数量、
+  以及**是否经代理审计**；`[network] enabled = false` 时如实说「nothing is audited」而不是
+  「audited」。host 不在 `[network] allow` 里时，直接给出要加的那一行——这是首次配远程
+  server 最容易踩的坑，而代理侧的表现只是一个稍后才出现的 403。
+- **RUSTSEC 前置条件复跑**：开 HTTP feature 后重跑 `cargo deny`。`rmcp` 精确 pin 在
+  `=3.9.0` 从此有承载力——RUSTSEC-2026-0462（客户端响应体无界缓冲）在 3.9.0 修，
+  而这条路径现在可达。另两条（0457 OAuth SSRF、0461 服务端 transport）分别关在 `auth` 与
+  `transport-streamable-http-server` feature 后，两者都未开。
+
+### MCP server 的三处安全与可用性缺口（ADR-0066 / ADR-0068 P1）
+
+起因很具体：一个装在 `/home/q/cot/lib/...` 的 server 报 `Permission denied`，拷到 `/tmp`
+就能跑。
+
+- **`~/.local` 里的 server 不再被沙箱静默杀掉**（ADR-0066）。MCP server 原先直接套用
+  `run_shell` 的沙箱，而 Landlock 的只读白名单是 `/usr /bin /sbin /lib /lib64 /etc /opt
+  /sys /proc /run /dev`——**没有 `/home`**。于是 server 能不能跑取决于它装在哪：
+  `/usr/local` 能跑、`~/.local`（pipx / uv / npm 的默认位置）不能，而 §4.10 一直写着
+  「默认不套 FS 沙箱」，实现与文档各说各话。现在改成按 server 现算一份授权：运行时目录
+  （`command` 推导：venv、`node_modules`、`<dist>/bin`）只读+可执行，写只给 workspace 与
+  每个 server 私有的 `HOME`，读不到真实 `$HOME`；`read_paths` / `writable_paths` /
+  `credentials = ["github"]` 这类预设负责补授权，`/`、`$HOME`、workspace 父目录一律拒绝
+  自动授予。单个 server 仍可 `sandbox = "off"`，但启动会 warn。
+- **子进程不再继承你的 119 个环境变量**（ADR-0068 P1）。`run_shell` 早就 `env_clear()`
+  后按白名单注入，MCP 却是两句 `envs`——实测子进程里能数到 `GITHUB_TOKEN`、
+  `DEEPSEEK_API_KEY`、`SSH_AUTH_SOCK`。现在同样白名单：`PATH`/`LANG`/`TZ`/`LC_*`、合成
+  `HOME`、凭据预设点名的变量、server 自己的 `env`，最后才是出口代理四件套（顺序错一个
+  位，ADR-0023 的审计会静默失效）。`env` 的值可以写 `${NAME}`，密钥不必落盘。
+- **`qc doctor` 有 MCP 段了**。逐 server 打印它实际拿到的授权集（运行时 / 可写 / 凭据 /
+  私有 HOME），并把「配了但没用」的四种情形标成 warn：`read_paths` 指向不存在的路径、
+  `credentials = ["github"]` 但本机没有 `~/.config/gh`、`sandbox = "off"`、以及
+  `[sandbox] mode = "none"` 让 `[mcp] sandbox = "confine"` 形同虚设——最后这条是写 doctor
+  时才发现的，内核用 `[sandbox] mode` 造沙箱，`[mcp] sandbox` 单独开不出来。
+  `env` 里的字面量密钥也会被点名（值不打印），提示改写成 `"${VAR}"`。
+  授权集摘要同时区分「要了」与「拿到了」：`credentials [~/.ssh, npm(not found)]`。
+- **`qc mcp add` 认识新字段**：`--read-path`、`--write-path`、`--credential`、`--sandbox`。
+  `qc mcp list` 会打印 server 的沙箱模式与显式授权项。
+- **`Sandbox::command` 的文档补了一条真踩到的坑**：返回的 `Command` 依赖 sandbox 还活着
+  （Landlock 的 ruleset fd 在 `Drop` 里关）。`with_roots(..)?.command(..)` 一行写完会在
+  `spawn()` 前 drop 掉 sandbox，子进程报 `EBADFD`，看起来像权限问题，其实不是。
+- 修的顺带两处：GUI 设置页保存时不再清空新字段（`apply_tables` 会 `servers.clear()`）；
+  MCP 的私有 `HOME` 会先 canonicalize，`--data-dir ./data` 这种相对路径不再让 server 拿到
+  相对 `HOME`。
+
+
 ## 0.8.3 — 2026-11-11
 
 0.8.2 之后的事后检查：一个会让 `run_shell` 挂死的真 bug，加几处「门禁是绿的，

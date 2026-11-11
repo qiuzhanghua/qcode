@@ -59,6 +59,9 @@ async-trait = "0.1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+# Same major as rmcp's `http`, so `HeaderName`/`HeaderValue` unify across the
+# MCP HTTP transport boundary.
+http = "1"
 globset = "0.4"
 libc = "0.2"
 ignore = "0.4"
@@ -69,11 +72,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 ratatui = "=0.29.0"
 # MCP SDK. Pinned to a major-minor we can read: the client API is still
-# pre-1.0 and changes between minors. Bumped 3.2.0 → 3.9.0 for
-# RUSTSEC-2026-0457/0461/0462 (all three are Streamable-HTTP / OAuth paths;
-# this crate only enables `client` + `transport-child-process`, so they were
-# never reachable here — the bump is to get off a version the audit reports).
-rmcp = { version = "=3.9.0", default-features = false, features = ["client", "transport-child-process"] }
+# pre-1.0 and changes between minors.
+#
+# The pin to exactly 3.9.0 is now load-bearing, not tidiness: ADR-0067 enables
+# `transport-streamable-http-client-reqwest`, which puts the HTTP client path in
+# reach, and RUSTSEC-2026-0462 (unbounded response body buffering in exactly
+# that path) is patched in 3.9.0 and nothing earlier. Downgrading re-opens a
+# reachable DoS. The other two advisories the 3.2.0 → 3.9.0 bump was made for
+# stay out of reach by feature selection: 0457 is OAuth (we never enable `auth`)
+# and 0461 is the server-side HTTP transport (never enabled either).
+rmcp = { version = "=3.9.0", default-features = false, features = [
+  "client",
+  "transport-child-process",
+  # Streamable HTTP client. The `reqwest` feature is separate and needed too:
+  # `transport-streamable-http-client-reqwest` only enables the optional
+  # dependency, while `reqwest` adds `reqwest?/rustls`. Without it the transport
+  # would have no TLS backend.
+  "transport-streamable-http-client-reqwest",
+  "reqwest",
+] }
 
 # 发布体积。GUI 版（`--features gui`）把整个 GPU 栈静态链进来，不加这几项时
 # 本机构建是 88 MB，其中 20 MB 是 `.symtab` 里的 18.5 万个符号名。

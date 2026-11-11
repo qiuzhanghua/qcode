@@ -45,11 +45,16 @@ cargo test --workspace
 # 交互式审批演练：run_shell 默认 ask（在真实终端里跑；y 执行，n 拒绝）
 ./target/debug/qc run "demo" --provider mock-approval
 
-# MCP：在 config.toml 里配置 stdio server，工具以 mcp__<server>__<tool> 暴露
+# MCP：stdio server 或远程 Streamable HTTP server，工具以 mcp__<server>__<tool> 暴露
 # [[mcp.servers]]
 # name = "filesystem"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+#
+# [[mcp.servers]]                     # 远程：command 与 url 恰好二选一
+# name = "context7"
+# url = "https://mcp.context7.com/mcp"
+# bearer_token_env_var = "CONTEXT7_TOKEN"   # 只写变量名，不写 token
 # 默认每次调用都要审批；server 起不来只丢它自己的工具，不影响 session。
 
 # Skills：项目级放在 .qcode/skills/<name>/SKILL.md（公开 Agent Skills 格式）
@@ -71,6 +76,8 @@ cargo test --workspace
 ./target/debug/qc config edit
 ./target/debug/qc mcp list
 ./target/debug/qc mcp add filesystem --command npx --arg=-y --arg=@modelcontextprotocol/server-filesystem
+./target/debug/qc mcp add wordcraft --command ~/cot/lib/wordcraft/bin/wordcraft \
+    --read-path ~/cot/lib/wordcraft --credential github       # 授权集同款 flag
 ./target/debug/qc mcp remove filesystem
 
 # 真实 provider：可以读写文件、跑命令
@@ -151,7 +158,8 @@ wayland 后端，不经过 XIM。
 
 **提交前跑 `make check`**（等价于 fmt / `clippy -D warnings` / test / cargo-deny）。
 它和 `.github/workflows/ci.yml` 是同一组命令，本地过不了的提交在 CI 上也过不了，
-区别只是 CI 要等十几分钟才发现。
+区别只是 CI 要等十几分钟才发现。改过平台 cfg 门控的话，再加 `make check-platforms`
+（见下）。
 
 最容易漏的两步：
 
@@ -165,12 +173,41 @@ cargo clippy --workspace --all-targets -- -D warnings
 因为 `-D warnings` 把 `unused_variables` 也当错误。
 
 还有一类**本机完全看不见**的：平台 cfg 门控掉的分支。`make check` 只编译 host
-target，`#[cfg(target_os = "linux")]` 和
-`#[cfg(not(any(target_os = "macos", target_os = "windows")))]` 在 macOS 上根本
-不参与编译，悬空参数、拼错的符号都只能等 CI 报错。交叉 lint 也救不了——本机拿
-`--target aarch64-unknown-linux-musl` 跑 clippy 会死在 cc-rs 找不到
-`aarch64-linux-musl-gcc`，除非另装交叉工具链。所以改过 cfg 门控，就把这次新增/
-改动的门控行过一遍：
+target，`#[cfg(windows)]`、`#[cfg(target_os = "macos")]` 的代码在本机根本不参与
+编译，悬空参数、拼错的符号、漏改的调用点都只能等 CI 报错。
+
+**改过 cfg 门控就跑 `make check-platforms`**（等价于 `scripts/ci-cross-check.sh`）。
+它用 `cargo check --target` 把这几处门控在本机过一遍类型检查——`cargo check` 不需要
+链接器，所以只要有该 target 的 std（cot 的 rust 已经装好）就能跑，几秒钟出结果。
+检查的正是出货用的三元组：`build-for-release` 打的是 `x86_64/aarch64-pc-windows-gnullvm`，
+不是 msvc；本仓库没有 `cfg(target_env)` / `cfg(target_vendor)` 门控，所以这两者在这里
+等价。darwin 三元组也在列表里，但需要 `rustup target add` 才有 std，没有就跳过并明说
+跳了哪些（跳过不是静默成功：一个 target 都没检查时脚本会失败）。
+
+历史教训：给 `Sandbox::with_roots` 加第三个参数时，`crates/qcode/tests/sandbox_roots.rs`
+（`#![cfg(windows)]`）漏改了调用点。Linux 上 `cargo test --workspace` 全绿——那个文件
+压根没被编译。`make check-platforms` 第一次跑就报了 `E0061`。
+
+这条命令只覆盖 **Windows**（darwin 需要 `rustup target add`，而且从 Linux 编 Apple 框架的
+C shim 从没验证过）。macOS 门控的代码只能用改 cfg 的办法在本地过一遍：
+
+```bash
+# 临时把 target_os = "macos" 改成 "linux"（macos.rs 里的 #[cfg] 一并去掉），
+# 跑 clippy -D warnings，然后 git checkout 还原
+cargo clippy -p qcode-tools --all-targets -- -D warnings
+```
+
+历史教训：这条只翻了一半（只翻了 profile 测试模块）就以为验过了，结果 CI 在 macOS 上报
+出两处——一个 `#[test]` 属性被划走导致函数「从未使用」，一对重复的 `use` 变成 unused
+import。**翻 cfg 要翻全部相关模块，并且用 clippy 而不是只看测试是否通过。**
+
+这条命令替代不了 CI 的 macOS/Windows job（它们跑在真系统上，macOS 还会真跑测试），
+所以仍然要等 CI 绿。它挡不住的另一类：门控本身没编译错、但**运行时**才炸的东西——
+`debug_assert!`、`cfg` 分支里的逻辑。`windows-build` 只做 `cargo test --workspace
+--no-run`（编译测试但从不执行），所以 Windows 侧的 `windows_acl` 单测在 CI 里
+至今一条没跑过。改 Windows 运行时代码时，别把「CI 绿」当成「测过了」。
+
+改完 cfg 门控，也可以顺带把这些行过一遍，确认自己改的是不是真落在门控里：
 
 ```bash
 git diff <base>..HEAD -- '*.rs' | grep -E '^[+-].*cfg\(' | grep -v '^[+-][+-]'
@@ -304,26 +341,83 @@ cargo build -p qcode-eval
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
   `glob` / `grep` / `run_shell` / `web_fetch` / `web_search` / `todo_write` / `subagent`，多轮调用直到任务完成。
   `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
-- **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
-  每次决策写事件，含命中的 rule id。TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
+- **审批**：三值策略（allow / ask / deny），规则匹配工具名、命令前缀与路径 glob；
+  `deny` 永远优先，其余按「最具体者胜」——**精确工具名 > 通配 > 无条件**，与规则在文件里的
+  先后无关，所以一条 `mcp__*` 不会盖掉一条精确的 `deny`。每次决策写事件，含命中的 rule id。
+  TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
+  `tool` 支持通配（`mcp__wordcraft__*` 一条覆盖整个 server，否则一个 server 的十几个工具
+  要手写十几条——实际踩过：`mcp__wordcraft__*` 在支持之前是静默不匹配，直接落到
+  `default: external tool: ask`）。写成非法 glob（如 `mcp__[__x`）会在**加载配置时**报错并
+  点名 rule id，而不是安静地永不匹配：
+
+  ```toml
+  [[rules]]
+  id = "allow-wordcraft"
+  tool = "mcp__wordcraft__*"
+  action = "allow"
+  ```
 - **跑飞兜底**：同一个工具带**完全相同参数**连续 3 轮（例如模型反复重跑同一条命令）即终止
   turn，写 `error(no_progress)`；`[agent] max_turns` 与 `[agent] max_cost_usd` 是另外两道预算。
 - **安全边界**：文件工具限制在 Task 授权的目录内（`..` 与 symlink 逃逸被拒）；
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。macOS `sandbox-exec` 已按
   Task 的 RO/RW 目录重建 profile；Linux/Windows 多目录重建仍待补齐。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 与 MCP stdio server 都
-  由对应工具包裹：默认 deny，
+  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
   （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
-  与命名管道不在覆盖范围，因此报 `partial`）。`windows-acl` 下子进程的 `TMP`/`TEMP`
-  指向本次运行的私有 temp；需要自己缓存目录的 MCP server（例如 `npx` 的 npm cache）
-  要把它加进 `extra_writable`。`windows-acl` 的授权是常驻 ACE：
-  `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
-  启用时先 preflight，失败则 `qc` 拒绝启动
+  与命名管道不在覆盖范围，因此报 `partial`）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
-  unprivileged userns）；默认 `none`，审批仍是主边界。
+  unprivileged userns）；默认 `none`，审批仍是主边界。`windows-acl` 的授权是常驻 ACE：
+  `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
+  沙箱的**读**允许集是固定的发行版目录（`/usr`、`/bin`、`/lib`、`/etc`…）加任务 roots，
+  所以装在别处的工具链在 `mode = "landlock"` 下会被挡住——不只是写，连读都不行，`cargo`
+  起不来。用 `[sandbox] extra_read` 把这些前缀加进来，**它是列表，每项一棵子树**：
+
+  ```toml
+  [sandbox]
+  mode = "landlock"
+  extra_read = ["~/cot", "/opt/tools"]
+  ```
+
+  这一项**只给读**（含可执行位，否则目录里的二进制跑不动）。给一个目录是完整决定：
+  `extra_read = ["~"]` 同时把 `~/.ssh`、`~/.aws` 交给 agent，要窄就写窄。
+  **`~` 在配置文件里由 qcode 展开成真实 home**（只认 `~` 和 `~/x` 两种写法；`~user/x`
+  与裸相对路径不展开，仍然按「必须是绝对路径」处理）。所以上面这行在别的机器上也是对的。
+  **它是 `[sandbox]` 级设置，因此也作用于 MCP server 的沙箱**（MCP 沙箱由同一个后端派生），
+  也就是说这些前缀对第三方 server 同样可读。ADR-0066 §1 的「读集 = 推导出的运行时 +
+  凭据子树」因此被放宽；如果只想让 `run_shell` 拿到它，就把它写窄到工具链目录本身。
+  注意 `extra_writable` 一直只对 `windows-acl` 与 macOS 生效，Linux 后端忽略它——这是
+  既有行为，`extra_read` 则四个后端都认（Windows 不限制读，所以那里是空操作）。
+
+- **MCP server 的沙箱是另一份授权（ADR-0066）**：同一个后端，但边界按 server 现算，
+  而不是照抄 `run_shell` 的。运行时目录（由 `command` 推导：venv、`node_modules`、
+  `<dist>/bin` 之类）**只读 + 可执行**；**写**只给 workspace 与每个 server 私有的
+  `HOME`（`<data-dir>/mcp/<name>/home`，`XDG_*` 与 `TMPDIR` 也指向那里，所以 `npx`
+  的 cache 不用再手工授权）。**读**不到真实 `$HOME`——`~/.ssh`、`~/.aws`、
+  `~/.config/gh` 默认全都看不见，要哪一个就写 `credentials = ["github"]` 这类预设
+  （只给该子树，并在私有 `HOME` 里放符号链接指过去，只读）。
+  **`command` 可以写裸名字**（`wordcraft-cli`，不含 `/`），此时在两个地方查 PATH：
+  qcode 自己的，以及——优先——**你 shell 环境里那份**（ADR-0070，就是 `run_shell` 用的
+  同一份采样）。所以从 Dock 启动的 GUI 也找得到终端里才有的工具链，配置也不必随版本
+  升级改路径。`[shell] env_sampling = "off"` 时退回 qcode 自己的 PATH。同一个 PATH 也
+  交给子进程，否则"按 A 推导授权、按 B 启动进程"会指向两个不同的文件。
+  `qc doctor` 会用同一份 PATH 推导并在起不来时点名查过哪份 PATH。
+  推导之外还需要什么就写 `read_paths` / `writable_paths`；`/`、`$HOME` 和 workspace 的
+  父目录不会被自动授予——`writable_paths` 里写这三样会被 grant 直接拒绝（`~/` 展开后就是
+  `$HOME`，两个字符的笔误不该把整个家目录交出去）。两个字段都认 `~/x`，在加载时展开成
+  真实 home，所以 `writable_paths = ["~/Documents"]` 是跨机器可移植的写法。
+  **注意这只管配置文件**：把 `~/Documents/a.docx` 当参数传给某个 server 的 tool 时，
+  qcode 不参与解析，是否认 `~` 完全看那个 server 自己（Rust 写的会把它当字面目录名，
+  在 workspace 下建一个叫 `~` 的目录且不报错）。要可靠就传绝对路径。
+  任何一个 server 都可以 `sandbox = "off"` 单独关掉沙箱，届时
+  启动 warn、`qc doctor` 标出来。授权集在启动日志里以 `mcp server grant` 一行打印，
+  `qc doctor` 会把每条配好的路径打成 `~/Documents → /home/q/Documents` 两种写法，
+  并在目录不存在时说明它被跳过了。
+  **写集严格等于上面那几个集合，此外一律无**：`run_shell` 需要的宿主 `/tmp` 和 Rust 构建
+  缓存（`$CARGO_HOME`、`~/.cargo` 等）**不会**带给 MCP server——`TMPDIR` 已经指向私有
+  `HOME`，而 `$CARGO_HOME/config.toml` 里的 `[build] rustc-wrapper` 等于任意代码执行。
+  某个 server 确实要写别处，就写它自己的 `writable_paths`。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
   `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
@@ -353,7 +447,8 @@ cargo build -p qcode-eval
   只放 `name` / `description`；模型调用 `skill` 工具按需加载正文，或用 `file` 参数读
   `references/` 等附件。非法/超限/symlink 的 skill 跳过并告警，
   global < user < config < project(.agents) < project(.qcode)。`qc skills list` 可查看全部发现结果。
-- **MCP（tools + resources + prompts）**：启动时连接启用的 stdio server，`tools/list` 后以
+- **MCP（tools + resources + prompts，stdio 与 Streamable HTTP）**：启动时连接启用的
+  server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
   有每 server 超时与取消；server 退出、协议错误只影响该 server，stderr 落
   `<data-dir>/logs/mcp-<server>.log`。输出同样 32KB 截断。
@@ -362,6 +457,26 @@ cargo build -p qcode-eval
   四个工具（能力靠握手时的一次 `list` 探测，服务器不支持就只丢这四个）。
   `[[mcp.servers]] env` 把变量追加到子进程环境，需要 token 或自建缓存目录的 server
   不必再写 wrapper 脚本；出口代理变量在这些之后注入，仍以 qcode 的代理为准。
+  **远程 server 写 `url` 而不是 `command`**（二者恰好一个，ADR-0067）：走 Streamable HTTP，
+  优先用 `server/discover`（协议 2026-07-28，无握手、结果带 `ttlMs`），对只认 `initialize`
+  的存量 server 自动回退。HTTP 请求**只走出口代理**，因此同样受 `[network] allow`、
+  `network.jsonl` 审计与私网拦截；没进 allowlist 的 host 会被 403 且不产生任何工具——先在
+  `[network] allow` 里加一行。token 只写 `bearer_token_env_var = "VAR"`（变量名），
+  `headers` 里出现 authorization/cookie/token/key/secret/password 会被配置校验拒绝。
+  **工具表有寿命**：server 在 `tools/list` 里给的 `ttlMs` 决定多久重读一次（缺失=不重读，
+  `0`=每个 turn 重读，`n`=n 毫秒后下一个 turn 重读），`notifications/tools/list_changed`
+  立即置脏。重读只发生在 turn 边界，换表会写一条 `McpToolsRefreshed` 事件；已经被删掉的
+  工具被调用时得到 `tool no longer available` 而不是 `unknown tool`。
+  **server 的自述会进 system prompt**（ADR-0068）：握手里的 `instructions` 以
+  `# MCP: <server>` 小节注入，总数封顶 8 KiB，超出截断并注明。这段文字只是文本——它不改变
+  任何审批决定，显式 `deny` 规则照样 deny。
+  **能力一律读握手里的 `capabilities`，连接期零探测**（不分协议版本）。想知道某个 server
+  的声明是否属实，跑 `qc doctor --probe`：它按需连接、把 `resources/list` 与 `prompts/list`
+  都问一遍，并报出两种相反的不匹配——「声明了却拒绝」（工具在、每次调用都失败）与
+  「服务了却没声明」（工具静默缺失）。
+  每个 server 的授权集（`read_paths` / `writable_paths` / `credentials` / `sandbox`）在设置页
+  里有对应的列，也由 `qc doctor` 逐条打印；`qc mcp add --read-path/--write-path/--credential/
+  --sandbox` 写的是同一份配置。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
@@ -422,6 +537,15 @@ cargo build -p qcode-eval
   MCP server；`qc doctor` 打印协商的协议版本。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain、`web_search` 配置，并对非 mock
   provider 做一次真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
+  MCP 也有一段：逐 server 打印它实际拿到的授权集（运行时目录 / 可写目录 / 凭据 / 私有
+  `HOME`），并把四种「配了但没用」的情形标成 warn——`read_paths` 指向不存在的路径、
+  `credentials` 预设在本机没有对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
+  让 `[mcp] sandbox = "confine"` 形同虚设。`env` 里形如 `GITHUB_TOKEN = "ghp_..."` 的
+  字面量密钥也会被点名（值不打印），提示改写成 `"${GITHUB_TOKEN}"`。
+  加 `--probe` 则会**真的连上去**：逐 server 打印协商的协议版本、握手里声明了哪些能力、
+  以及因此注册了哪些工具，再把 `resources/list` 与 `prompts/list` 都问一遍做比对。默认不开，
+  因为一次会话不该为每个 server 付这个往返；启动期的日志只有一行
+  `mcp capabilities read from the handshake` 说明判定依据。
 - **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
   `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
   只认 GitHub Releases API 给出的 `browser_download_url`，校验和不符则不落盘——没有归档解包器，
@@ -506,16 +630,41 @@ tool = "write_file"
 path_glob = ".env*"
 action = "deny"
 
-# MCP：stdio server。enabled 默认 true，timeout_secs 默认 120；env 追加到子进程环境。
+# MCP：stdio server 需 command，远程 server 需 url，二者恰好一个（ADR-0067）。
+# enabled 默认 true，timeout_secs 默认 120。
 # 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
 # server 声明 resources / prompts 能力时，额外注册
 # mcp__<server>__list_resources / read_resource / list_prompts / get_prompt 四个工具。
+[mcp]
+sandbox = "confine"   # 默认；每个 server 都可以单独覆盖成 "off"
+
 [[mcp.servers]]
 name = "filesystem"
+# `command` 写裸名字（不含 `/`）时走 PATH 查找，用的是**你的 shell 环境**里那份
+# PATH（ADR-0070，与 run_shell 同一份采样），所以从 Dock 启动的 GUI 也找得到。
+# 绝对值路径则完全按字面解析，不做任何查找。
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
-env = { GITHUB_TOKEN = "..." }   # 可选；需要 token/缓存目录的 server 用它，不必写 wrapper 脚本
+# 子进程不再继承你的环境（ADR-0068）：只有 PATH/LANG/TZ/LC_*/合成 HOME/出口代理会传下去。
+# 值写成 ${NAME} 表示从 qcode 的环境读，密钥因此不进配置文件。
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 enabled = true
+# 沙箱授权（ADR-0066）：运行时目录由 command 推导，读不到真实 $HOME。
+read_paths = ["/opt/some-tool"]   # 可选，推导之外的只读+执行目录
+writable_paths = ["~/Documents"]  # 可选；默认 workspace + 私有 HOME 已可写。
+                                  # `~/x` 在加载时展开，`$HOME` / `/` 会被拒绝
+credentials = ["github"]          # 可选：github / aws / ssh / npm / netrc / docker
+sandbox = "confine"               # 可选，覆盖 [mcp] sandbox
+
+# 远程 server（ADR-0067）：没有子进程，因此 args/env/read_paths/writable_paths/
+# credentials/sandbox 一律不许出现（配置校验会拒绝——它们在这里是空操作）。
+# 它的唯一边界是出口代理，所以该 host 必须进 [network] allow。
+# [[mcp.servers]]
+# name = "context7"
+# url = "https://mcp.context7.com/mcp"
+# bearer_token_env_var = "CONTEXT7_TOKEN"   # 变量名；token 本身不进文件
+# [mcp.servers.headers]                     # 可选，只放非敏感头
+# Accept = "application/json, text/event-stream"
 
 # Skills：默认开启；enabled = false 可完全跳过发现。
 # 默认还会扫描 ~/.agents/skills（npx skills -g）、~/.config/agents/skills、
@@ -542,6 +691,8 @@ audit = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
 extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
+extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归。
+                     # 这两项都认 `~/cot`，在加载时展开成真实 home
 
 # 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。
 # check_days 是启动时查询新版本的最小间隔（结果缓存进 data-dir）；repo / base_url
@@ -616,7 +767,7 @@ action = "allow"
 crates/qcode-core        domain、event、store、task/roots、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible + Anthropic Messages）
 crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
-crates/qcode-mcp         MCP client（stdio，仅 tools）
+crates/qcode-mcp         MCP client（stdio + Streamable HTTP，tools/resources/prompts）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
 crates/qcode-kernel      kernel assembly、config、provider/tool/sandbox 组装

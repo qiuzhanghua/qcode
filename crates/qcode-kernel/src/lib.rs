@@ -149,6 +149,10 @@ use qcode_tools::web_search::WebSearch;
 pub struct ToolWiring {
     /// Proxy variables the egress layer injects into every child.
     pub network_env: Option<Vec<(String, String)>>,
+    /// The session's egress client, handed to remote MCP servers (ADR-0067
+    /// §2). `None` when `[network]` is off, which makes a remote server fail
+    /// with "no egress client" instead of connecting around the proxy.
+    pub network: Option<qcode_core::network::SharedNetwork>,
     /// The user's shell environment, sampled once per session (ADR-0064).
     pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 }
@@ -164,10 +168,16 @@ pub async fn build_tools(
 ) -> ToolRegistry {
     let ToolWiring {
         network_env,
+        network,
         shell_env,
     } = wiring;
-    let confine_sandbox = sandbox.clone();
-    let mut tools = builtin_registry_with_env(sandbox, shell_env);
+    // ADR-0070: a bare `command` (`wordcraft-cli`) is the portable spelling, but
+    // qcode's own `PATH` is launchd's minimal one when the GUI starts from the
+    // Dock. Ask the shell for its environment — the same snapshot `run_shell`
+    // uses — and resolve/start the servers with that. Sampled only when a
+    // server actually needs it; an absolute `command` costs nothing.
+    let search_path = mcp_search_path(mcp, &shell_env).await;
+    let mut tools = builtin_registry_with_env(sandbox.clone(), shell_env);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
         if settings.is_usable() {
@@ -180,26 +190,37 @@ pub async fn build_tools(
             );
         }
     }
-    // MCP servers get the same write boundary as `run_shell`. They are started
-    // through the sandbox's command builder instead of `Command::new`, so a
-    // server cannot write outside the workspace either.
-    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
-        confine_sandbox
-            .command(program, args, cwd)
-            .map_err(|error| error.to_string())
-    });
-    let mcp_tools = qcode_mcp::connect_all_with(
-        &mcp.servers,
+    // MCP servers run under a sandbox built from their own grant (ADR-0066),
+    // not `run_shell`'s: the runtime directory is readable and executable,
+    // writes are limited to the workspace plus a private HOME.
+    let confine = mcp_confine(sandbox.clone(), workspace);
+    // The remote half of ADR-0067: `Network::client()` is the only client a
+    // streamable-http server may use, so its traffic is allowlisted, audited
+    // and private-address-blocked like every other outbound request.
+    let http = network.as_ref().map(|network| network.client());
+    let mcp = qcode_mcp::connect_detailed(
+        mcp,
         workspace,
-        &data_dir.join("logs"),
+        data_dir,
         network_env.as_deref().unwrap_or(&[]),
-        Some(confine.as_ref()),
+        qcode_mcp::ConnectOptions {
+            http: http.as_ref(),
+            confine: Some(confine.as_ref()),
+            path: search_path.as_deref(),
+        },
     )
     .await;
-    if !mcp_tools.is_empty() {
-        tracing::info!(count = mcp_tools.len(), "registered MCP tools");
+    if !mcp.tools.is_empty() {
+        tracing::info!(count = mcp.tools.len(), "registered MCP tools");
     }
-    tools.extend(mcp_tools);
+    tools.extend(mcp.tools);
+    // The tool table follows the server's `ttlMs` and `list_changed`
+    // (ADR-0067 §5). Registering the source is what makes the engine re-read it
+    // once per turn; without it the list would stay whatever it was at startup,
+    // which is the pre-2026-07-28 behaviour.
+    if let Some(source) = mcp.source {
+        tools.add_source(source as std::sync::Arc<dyn qcode_core::tool::ToolSource>);
+    }
 
     if !skills.is_empty() {
         tracing::info!(count = skills.len(), "registered the skill tool");
@@ -207,6 +228,142 @@ pub async fn build_tools(
     }
 
     tools
+}
+
+/// The `PATH` MCP servers are resolved in and started with (ADR-0070).
+///
+/// `None` keeps the pre-ADR-0070 behaviour: qcode's own `PATH`. That is the
+/// right answer in three cases — no server needs a lookup, sampling is off, or
+/// the sample produced nothing — and in all three there is nothing better to
+/// offer.
+///
+/// Sampling blocks for as long as the shell takes (bounded by `env_timeout_ms`),
+/// so it runs on a blocking thread rather than on the caller's runtime. It is
+/// also asked for only when [`needs_path_lookup`] says a bare `command` exists:
+/// a config full of absolute paths must not pay a shell startup per launch.
+async fn mcp_search_path(
+    mcp: &McpConfig,
+    shell_env: &std::sync::Arc<qcode_tools::shell_env::ShellEnvCache>,
+) -> Option<std::ffi::OsString> {
+    if !mcp_needs_path_lookup(mcp) {
+        return None;
+    }
+    let cache = shell_env.clone();
+    let snapshot = tokio::task::spawn_blocking(move || cache.current())
+        .await
+        .ok()
+        .flatten()?;
+    match mcp_path_from_snapshot(Some(snapshot.as_ref())) {
+        Some(path) => {
+            tracing::info!("resolving MCP server commands against the shell environment's PATH");
+            Some(path)
+        }
+        None => {
+            // The snapshot exists but has no `PATH` — a shell that unsets it.
+            // Falling back silently would leave "not found" unexplained.
+            tracing::warn!(
+                "the shell environment snapshot has no PATH; MCP server commands are resolved \
+                 against qcode's PATH"
+            );
+            None
+        }
+    }
+}
+
+/// Whether any enabled stdio server's `command` is a bare name.
+///
+/// A bare name (no `/`) is the only thing a `PATH` lookup helps: an absolute or
+/// relative path is resolved from the string itself. Remote servers have no
+/// process at all (ADR-0067 §7).
+///
+/// Public because `qc doctor` has to answer the same question before it can
+/// report *which* `PATH` it used, and two copies of this predicate would drift
+/// into "doctor samples, a run does not" without either side noticing.
+pub fn mcp_needs_path_lookup(mcp: &McpConfig) -> bool {
+    mcp.servers
+        .iter()
+        .filter(|server| server.enabled)
+        .any(|server| {
+            matches!(server.transport(), Some(qcode_mcp::Transport::Stdio))
+                && server.command.as_deref().is_some_and(|command| {
+                    !command.is_empty() && !command.contains('/') && !command.contains('\\')
+                })
+        })
+}
+
+/// The `PATH` out of a shell snapshot, or `None` when there is nothing usable.
+///
+/// Split out from [`mcp_search_path`] so the synchronous caller (`qc doctor`)
+/// shares the reading rules with the async one instead of restating them.
+pub fn mcp_path_from_snapshot(
+    snapshot: Option<&qcode_tools::shell_env::ShellEnv>,
+) -> Option<std::ffi::OsString> {
+    match snapshot.and_then(|env| env.vars().get("PATH")) {
+        Some(path) if !path.is_empty() => Some(path.into()),
+        _ => None,
+    }
+}
+
+/// The sandbox seam for MCP servers (ADR-0066): one sandbox per server, built
+/// from that server's own grant.
+///
+/// Kept public so the integration test wires exactly what the kernel wires
+/// instead of copying the closure and drifting.
+pub fn mcp_confine(sandbox: Arc<dyn Sandbox>, workspace: &Path) -> Box<qcode_mcp::Confine> {
+    // `Box<dyn Fn>` has no lifetime bound, so the closure owns the path.
+    let workspace = workspace.to_path_buf();
+    // Every `Command` keeps a reference to the sandbox that built it (see
+    // `Sandbox::command`): dropping the sandbox before `spawn()` makes the
+    // child fail with EBADFD. `run_shell` keeps its per-task sandbox in a local
+    // for the same reason; here the locals die with this closure, so the
+    // per-server sandboxes are parked in a list that lives as long as the
+    // `Confine` box — which spans every spawn in `connect_all_with`.
+    let alive: Arc<std::sync::Mutex<Vec<Arc<dyn Sandbox>>>> = Arc::default();
+    Box::new(move |program, args, cwd, grant| {
+        let roots = mcp_roots(&workspace, grant);
+        let per_server = sandbox
+            // `OutsideRoots::Nothing` is the whole point of ADR-0066 §1: an MCP
+            // server writes to its grant (workspace, private HOME, declared
+            // `writable_paths`) and nowhere else. `run_shell`'s build caches and
+            // the host `/tmp` are *not* part of that grant, and handing them
+            // over quietly made `~/.cargo/config.toml` writable by third-party
+            // code — whose `[build] rustc-wrapper` runs on the next build.
+            .with_roots(&roots, None, qcode_tools::sandbox::OutsideRoots::Nothing)
+            .map_err(|error| format!("{error} (grant: {})", grant.describe()))?;
+        let command = per_server
+            .command(program, args, cwd)
+            .map_err(|error| error.to_string())?;
+        alive
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(per_server);
+        Ok(command)
+    })
+}
+
+/// Turn one server's grant into task roots for `Sandbox::with_roots`.
+///
+/// The workspace is the primary root (it is also the server's cwd); everything
+/// else is either read-only runtime or a credential subtree. `with_roots`
+/// already understands `RootAccess::ReadOnly` on all three backends, so this
+/// needs no new sandbox API (ADR-0066 实现).
+pub fn mcp_roots(workspace: &Path, grant: &qcode_mcp::GrantSet) -> Vec<qcode_core::task::Root> {
+    grant
+        .roots()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (path, writable))| qcode_core::task::Root {
+            id: format!("mcp-{index}"),
+            label: format!("mcp-{index}"),
+            primary: path == workspace,
+            access: if writable {
+                qcode_core::task::RootAccess::ReadWrite
+            } else {
+                qcode_core::task::RootAccess::ReadOnly
+            },
+            path,
+        })
+        .collect()
 }
 
 /// Discover skills unless the config disables them. A missing `HOME` only
@@ -250,20 +407,19 @@ pub fn config_roots(
         .collect()
 }
 
+/// Expand one `[skills] roots` entry.
+///
+/// `~` handling is [`config::expand_tilde`], the same helper every other
+/// configured path goes through, so there is one answer to "what is `~`".
+/// Unlike those, a relative entry is allowed here and resolves against the
+/// workspace: a skill root is a *directory to scan*, not a grant, and
+/// `.qcode/skills` in a repository is a useful thing to write.
 pub fn expand_root(path: &Path, workspace: &Path, home: Option<&Path>) -> PathBuf {
-    if let Some(home) = home {
-        if path == Path::new("~") {
-            return home.to_path_buf();
-        }
-        if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix("~/")) {
-            return home.join(rest);
-        }
+    let expanded = config::expand_tilde(path, home);
+    if expanded != path || path.is_absolute() {
+        return expanded;
     }
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace.join(path)
-    }
+    workspace.join(path)
 }
 
 pub fn load_config(
@@ -413,12 +569,15 @@ pub async fn assemble(
     let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let sandbox_network = sandbox_network(&loaded, egress.as_deref())?;
     // The sandbox is configuration, not a frontend choice: mode, network
-    // policy and extra writable roots all come from `[sandbox]`/`[network]`.
+    // policy and the extra read/write roots all come from `[sandbox]`/`[network]`.
     let sandbox: Arc<dyn Sandbox> = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
         cwd,
         sandbox_network,
-        &loaded.sandbox.extra_writable,
+        qcode_tools::sandbox::SandboxPaths {
+            writable: &loaded.sandbox.extra_writable,
+            readable: &loaded.sandbox.extra_read,
+        },
     )?;
     let sandbox_name = sandbox.name().to_string();
     // The proxy doubles as the network the tools and the engine share, so its
@@ -440,6 +599,7 @@ pub async fn assemble(
         sandbox,
         ToolWiring {
             network_env: network.as_ref().map(|network| network.env()),
+            network: network.clone(),
             shell_env: shell_env.clone(),
         },
     )

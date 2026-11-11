@@ -322,21 +322,32 @@ impl SetupView {
                         if name.trim().is_empty() {
                             continue;
                         }
-                        config.mcp.servers.push(qcode_mcp::McpServerConfig {
-                            name: name.trim().to_string(),
-                            command: cell(row, "command", cx),
-                            args: lines(row, "args", cx),
-                            env: lines(row, "env", cx)
-                                .into_iter()
-                                .filter_map(|line| {
-                                    line.split_once('=').map(|(key, value)| {
-                                        (key.trim().to_string(), value.trim().to_string())
-                                    })
-                                })
-                                .collect(),
-                            enabled: row.bools.get("enabled").copied().unwrap_or(true),
-                            timeout_secs: cell(row, "timeout_secs", cx).parse().unwrap_or(60),
-                        });
+                        let previous = self
+                            .config
+                            .mcp
+                            .servers
+                            .iter()
+                            .find(|old| old.name == name.trim());
+                        let server = mcp_server_from_cells(
+                            McpRowCells {
+                                name,
+                                transport: cell(row, "command", cx),
+                                args: lines(row, "args", cx),
+                                env: lines(row, "env", cx),
+                                enabled: row.bools.get("enabled").copied().unwrap_or(true),
+                                timeout_secs: cell(row, "timeout_secs", cx).parse().unwrap_or(60),
+                                grant: GrantCells {
+                                    read_paths: lines(row, "read_paths", cx),
+                                    writable_paths: lines(row, "writable_paths", cx),
+                                    credentials: lines(row, "credentials", cx),
+                                    sandbox: row.selects.get("sandbox").cloned(),
+                                },
+                            },
+                            previous,
+                        );
+                        if let Some(server) = server {
+                            config.mcp.servers.push(server);
+                        }
                     }
                     _ => {}
                 }
@@ -633,6 +644,95 @@ pub(crate) fn write_config(
     edit.save()
 }
 
+/// The four grant columns of one MCP row, as typed (ADR-0066 §1).
+///
+/// A struct rather than four more positional arguments: `read_paths` and
+/// `writable_paths` are the same type, so swapped arguments would compile and
+/// show up only as a server that cannot write where it was told to read.
+pub(crate) struct GrantCells {
+    pub read_paths: Vec<String>,
+    pub writable_paths: Vec<String>,
+    pub credentials: Vec<String>,
+    pub sandbox: Option<String>,
+}
+
+/// One `[mcp.servers]` row, as the grid holds it.
+///
+/// A struct rather than nine positional arguments: `read_paths` and
+/// `writable_paths` are the same type, and so are `args`, `env` and
+/// `credentials`, so a swap would compile and show up only as a server that
+/// cannot write where it was told to read.
+pub(crate) struct McpRowCells {
+    pub name: String,
+    /// The single transport cell: `command` or `url` (ADR-0067 §1).
+    pub transport: String,
+    pub args: Vec<String>,
+    pub env: Vec<String>,
+    pub enabled: bool,
+    pub timeout_secs: u64,
+    pub grant: GrantCells,
+}
+
+/// Turn one `[mcp.servers]` row into a config entry.
+///
+/// Split out of [`SetupView::apply_tables`] so the mapping is testable without
+/// a window: the grid is the only place these fields are edited now, and "the
+/// screen wrote something the loader rejects" is not a bug a compile error can
+/// catch.
+///
+/// `previous` is the entry this row used to be, looked up by name. It supplies
+/// the two fields that still have no column (ADR-0067 P3: `bearer_token_env_var`
+/// and `headers`) and the old transport, so typing into a remote server's
+/// single command cell cannot silently turn it into a stdio one that tries to
+/// exec the URL.
+pub(crate) fn mcp_server_from_cells(
+    cells: McpRowCells,
+    previous: Option<&qcode_mcp::McpServerConfig>,
+) -> Option<qcode_mcp::McpServerConfig> {
+    let McpRowCells {
+        name,
+        transport,
+        args,
+        env,
+        enabled,
+        timeout_secs,
+        grant,
+    } = cells;
+    if name.trim().is_empty() {
+        return None;
+    }
+    let (command, url) = split_target(previous.and_then(|old| old.url.as_deref()), &transport);
+    Some(qcode_mcp::McpServerConfig {
+        name: name.trim().to_string(),
+        command,
+        url,
+        bearer_token_env_var: previous.and_then(|old| old.bearer_token_env_var.clone()),
+        headers: previous.map(|old| old.headers.clone()).unwrap_or_default(),
+        args,
+        env: env
+            .into_iter()
+            .filter_map(|line| {
+                line.split_once('=')
+                    .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+            })
+            .collect(),
+        enabled,
+        timeout_secs,
+        // The row is the only source now. These used to be copied back from the
+        // file because the grid had nowhere to show them; keeping that copy
+        // *and* the columns would mean the visible value silently loses to the
+        // invisible one.
+        read_paths: grant.read_paths.into_iter().map(PathBuf::from).collect(),
+        writable_paths: grant
+            .writable_paths
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        credentials: credential_presets(&grant.credentials).0,
+        sandbox: parse_sandbox_mode(grant.sandbox.as_deref()),
+    })
+}
+
 /// What a close attempt should do.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CloseOutcome {
@@ -672,5 +772,32 @@ pub(crate) fn decide_close(
         Ok(()) => CloseOutcome::Close,
         Err(_) if warned_before => CloseOutcome::CloseDespiteFailure,
         Err(reason) => CloseOutcome::StayOpen(reason),
+    }
+}
+
+/// Split the grid's single transport cell back into `command` or `url`.
+///
+/// `previous_url` is what the row used to be: `Some` means it was a remote
+/// server, so the text belongs in `url` whatever it looks like. For a new row
+/// (`None`) the value is classified by inspection — an absolute `http(s)` URL
+/// is a remote server, anything else is a command. Guessing from the text is
+/// only safe for the case with no previous state to contradict, which is why
+/// the previous row wins when there is one.
+pub(crate) fn split_target(
+    previous_url: Option<&str>,
+    value: &str,
+) -> (Option<String>, Option<String>) {
+    let value = value.trim();
+    let remote = match previous_url {
+        Some(_) => true,
+        None => value.starts_with("http://") || value.starts_with("https://"),
+    };
+    if value.is_empty() {
+        return (None, None);
+    }
+    if remote {
+        (None, Some(value.to_string()))
+    } else {
+        (Some(value.to_string()), None)
     }
 }

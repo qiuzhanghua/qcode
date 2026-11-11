@@ -273,10 +273,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 &schedules,
                 &schedule_states,
                 qcode_core::schedule::now_local(),
-            ) {
-                if added > 0 {
-                    eprintln!("qcode-gui: imported {added} [schedules] entries as tasks");
-                }
+            ) && added > 0
+            {
+                eprintln!("qcode-gui: imported {added} [schedules] entries as tasks");
             }
 
             // Publish a session's queue rows, remembering what the UI was told so

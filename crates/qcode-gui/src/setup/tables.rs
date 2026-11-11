@@ -1,5 +1,16 @@
 use super::*;
 
+use std::path::PathBuf;
+
+/// Paths as the one-per-line cell text.
+pub(crate) fn lines_from_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl SetupView {
     pub(crate) fn seed_table(
         &mut self,
@@ -182,13 +193,45 @@ impl SetupView {
         self.row(
             [
                 ("name", server.name.clone()),
-                ("command", server.command.clone()),
+                // `command` and `url` share one column: a server has exactly one
+                // of them (ADR-0067 §1), and an empty other half plus a header
+                // saying which is set would just be noise. Save parses the cell
+                // back into the right field.
+                (
+                    "command",
+                    server
+                        .command
+                        .clone()
+                        .or_else(|| server.url.clone())
+                        .unwrap_or_default(),
+                ),
                 ("args", server.args.join("\n")),
                 ("env", env),
                 ("timeout_secs", server.timeout_secs.to_string()),
+                // The grant set (ADR-0066 §1), seeded so the settings screen
+                // shows what will actually be given to the server rather than
+                // an empty box next to a non-empty config.
+                ("read_paths", lines_from_paths(&server.read_paths)),
+                ("writable_paths", lines_from_paths(&server.writable_paths)),
+                (
+                    "credentials",
+                    server
+                        .credentials
+                        .iter()
+                        .map(|preset| preset.label())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
             ],
             [("enabled", server.enabled)],
-            [],
+            [(
+                "sandbox",
+                // `inherit` is the absence of an override, not a third mode.
+                server
+                    .sandbox
+                    .map(|mode| mode.label().to_string())
+                    .unwrap_or_else(|| "inherit".to_string()),
+            )],
             window,
             cx,
         )

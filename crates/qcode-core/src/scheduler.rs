@@ -520,13 +520,13 @@ mod tests {
         let states = BTreeMap::new();
         assert_eq!(
             scheduler
-                .import_config(&[schedule.clone()], &states, now())
+                .import_config(std::slice::from_ref(&schedule), &states, now())
                 .expect("import"),
             1
         );
         assert_eq!(
             scheduler
-                .import_config(&[schedule.clone()], &states, now())
+                .import_config(std::slice::from_ref(&schedule), &states, now())
                 .expect("import"),
             0
         );

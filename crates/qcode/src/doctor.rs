@@ -1,12 +1,14 @@
 //! `qc doctor`: answer "why doesn't it run?" in one command.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use qcode_core::Network;
 use qcode_core::event::ContentBlock;
 use qcode_core::provider::{CompletionRequest, Message, ProviderError, Role};
+use qcode_mcp::McpServerConfig;
 use qcode_tools::sandbox::{self, SandboxMode, SandboxNetwork};
 use tokio_util::sync::CancellationToken;
 
@@ -15,6 +17,7 @@ use crate::config::{self, Config};
 pub async fn run(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    probe: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut doctor = Doctor { failures: 0 };
 
@@ -31,6 +34,10 @@ pub async fn run(
     #[cfg(windows)]
     doctor.check_token();
     doctor.check_sandbox(&config);
+    doctor.check_mcp(&config, &data_dir);
+    if probe {
+        doctor.check_mcp_capabilities(&config, &data_dir).await;
+    }
     doctor.ok(
         "acp",
         format!(
@@ -91,7 +98,7 @@ impl Doctor {
     /// Prove the config directory accepts a new file: a policy can allow
     /// rewriting config.toml while denying new files beside it, which is exactly
     /// the failure the settings dialog hit.
-    fn write_probe(&mut self, path: &std::path::Path) {
+    fn write_probe(&mut self, path: &Path) {
         let Some(dir) = path.parent() else {
             self.fail("config writable", "config path has no parent directory");
             return;
@@ -490,11 +497,26 @@ impl Doctor {
             .ok()
             .and_then(|path| path.canonicalize().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        // Same two spellings as the MCP section, for the same reason: `~/cot`
+        // in the file has to be recognisable as `/home/q/cot` in the failure
+        // message that `extra_read` produces when the directory is gone.
+        let home = config::home_dir();
+        for (field, paths) in [
+            ("sandbox extra_read", &config.sandbox.extra_read),
+            ("sandbox extra_writable", &config.sandbox.extra_writable),
+        ] {
+            for path in paths {
+                self.ok(field, show_path(path, home.as_deref()));
+            }
+        }
         match sandbox::build(
             config.sandbox.mode,
             &workspace,
             network,
-            &config.sandbox.extra_writable,
+            sandbox::SandboxPaths {
+                writable: &config.sandbox.extra_writable,
+                readable: &config.sandbox.extra_read,
+            },
         ) {
             Ok(sandbox) => {
                 self.ok("sandbox", sandbox.describe());
@@ -507,5 +529,586 @@ impl Doctor {
             }
             Err(err) => self.fail("sandbox", err.to_string()),
         }
+    }
+
+    /// `qc doctor --probe`: connect for real and compare the handshake's
+    /// `capabilities` with what the server actually answers (ADR-0068 §4).
+    ///
+    /// This is the other half of "trust the declaration at connect time": the
+    /// trust is not free, so the check exists — just on demand, where it costs a
+    /// probe the user asked for instead of two round trips per server on every
+    /// start.
+    ///
+    /// Both directions are reported, because they fail differently:
+    ///
+    /// * **declares, refuses** — the resource/prompt tools are registered and
+    ///   every call to them will fail. The user sees two broken tools.
+    /// * **serves, does not declare** — the tools are silently absent. The user
+    ///   sees nothing at all, which is the worse failure and the one the old
+    ///   connect-time probe could not detect either (it only asked, and believed
+    ///   the answer).
+    async fn check_mcp_capabilities(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
+        if config.mcp.servers.iter().all(|server| !server.enabled) {
+            return;
+        }
+        let dir = qcode_kernel::resolve_data_dir(data_dir.clone());
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        // Sampling blocks, and this is an `async fn` — but `--probe` already
+        // awaits a real server handshake per server, so one shell startup is not
+        // the expensive part. Not doing it would make `--probe` disagree with a
+        // run about whether a bare `command` exists (ADR-0070).
+        let search_path = self.mcp_search_path(config);
+
+        // The same two seams a run wires: a per-server sandbox from
+        // `[sandbox] mode`, and the session egress proxy for remote servers
+        // (ADR-0067 §2 forbids building a bare client here).
+        let sandbox_network = if config.network_plan().proxy {
+            SandboxNetwork::Allow
+        } else {
+            SandboxNetwork::Deny
+        };
+        let sandbox = match sandbox::build(
+            config.sandbox.mode,
+            &workspace,
+            sandbox_network,
+            sandbox::SandboxPaths {
+                writable: &config.sandbox.extra_writable,
+                readable: &config.sandbox.extra_read,
+            },
+        ) {
+            Ok(sandbox) => sandbox,
+            Err(error) => {
+                self.warn("mcp probe", format!("no sandbox: {error}"));
+                return;
+            }
+        };
+        let confine = qcode_kernel::mcp_confine(sandbox, &workspace);
+        let egress = match qcode_kernel::build_egress(config, &dir, None).await {
+            Ok(egress) => egress,
+            Err(error) => {
+                self.warn(
+                    "mcp probe",
+                    format!(
+                        "cannot start the egress proxy, remote servers will be skipped: {error}"
+                    ),
+                );
+                None
+            }
+        };
+        let http = egress.as_ref().map(|egress| egress.client());
+        let env = egress
+            .as_ref()
+            .map(|egress| Network::env(egress.as_ref()))
+            .unwrap_or_default();
+
+        let reports = qcode_mcp::probe_capabilities(
+            &config.mcp,
+            &workspace,
+            &dir,
+            &env,
+            qcode_mcp::ConnectOptions {
+                http: http.as_ref(),
+                confine: Some(confine.as_ref()),
+                // Same `PATH` the run would use (ADR-0070), or `--probe` would
+                // report "not found" for a server that starts fine.
+                path: search_path.as_deref(),
+            },
+        )
+        .await;
+
+        for report in &reports {
+            let label = format!("mcp probe {}", report.server);
+            if let Some(error) = &report.error {
+                // `warn`, not `fail`: one unreachable server loses its own
+                // tools and the session still runs (ADR-0066's rule for the
+                // whole MCP section).
+                self.warn(&label, error);
+                continue;
+            }
+            let registered = if report.registered.is_empty() {
+                "none".to_string()
+            } else {
+                report
+                    .registered
+                    .iter()
+                    .map(|extra| extra.suffix())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.ok(
+                &label,
+                format!(
+                    "protocol {} · declares tools={} resources={} prompts={} · registered {registered}{}",
+                    report.protocol_version.as_deref().unwrap_or("-"),
+                    report.declared.tools,
+                    report.declared.resources,
+                    report.declared.prompts,
+                    match report.instructions_bytes {
+                        Some(bytes) => format!(" · instructions {bytes} bytes"),
+                        None => String::new(),
+                    }
+                ),
+            );
+
+            // `declares, refuses`: two tools that exist and always fail.
+            for (name, declared, answer) in [
+                ("resources", report.declared.resources, &report.resources),
+                ("prompts", report.declared.prompts, &report.prompts),
+            ] {
+                if answer.agrees_with(declared) {
+                    continue;
+                }
+                let detail = match (declared, answer) {
+                    (true, qcode_mcp::ProbeAnswer::Refused(message)) => format!(
+                        "declares {name} but `{name}/list` failed ({message}); the {name} tools \
+                         are registered and every call to them will fail — this is a server bug"
+                    ),
+                    (true, qcode_mcp::ProbeAnswer::TimedOut) => format!(
+                        "declares {name} but `{name}/list` did not answer in {}s; the {name} \
+                         tools are registered and may hang",
+                        config
+                            .mcp
+                            .servers
+                            .iter()
+                            .find(|server| server.name == report.server)
+                            .map(|server| server.timeout_secs)
+                            .unwrap_or(0)
+                    ),
+                    (false, qcode_mcp::ProbeAnswer::Supported) => format!(
+                        "does not declare {name} but `{name}/list` answers; qcode registers no \
+                         {name} tools for it, so they are missing from the model's tool list — \
+                         the declaration in the handshake is what is wrong"
+                    ),
+                    // Covered by `agrees_with`; listed so the match is total.
+                    _ => continue,
+                };
+                self.warn(&format!("mcp probe {} {name}", report.server), detail);
+            }
+        }
+    }
+
+    /// One line per remote server, plus the two things that stop it working
+    /// silently: no proxy, and a host outside the allowlist (ADR-0067 §8).
+    ///
+    /// No live probe here. Connecting would mean starting every stdio server
+    /// or opening a second egress proxy inside a diagnostic command, and the
+    /// questions the user actually has — "is the proxy on", "is the host
+    /// allowed", "is the token variable set" — are all answerable from the
+    /// config. The negotiated protocol version is logged at startup instead.
+    fn check_remote(&mut self, label: &str, server: &McpServerConfig, config: &Config) {
+        let Some(url) = server.url.as_deref() else {
+            self.warn(label, "no url; qcode will skip it");
+            return;
+        };
+        let parsed = match reqwest::Url::parse(url) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.warn(label, format!("url {url:?} is unusable: {error}"));
+                return;
+            }
+        };
+        let host = parsed.host_str().unwrap_or_default().to_string();
+        let port = parsed
+            .port_or_known_default()
+            .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+
+        let token = match &server.bearer_token_env_var {
+            Some(var) if std::env::var_os(var).is_some() => format!("{var} (set)"),
+            Some(var) => format!("{var} (NOT set)"),
+            None => "none".to_string(),
+        };
+        // Three states, and the middle one matters: `audit = true` is the
+        // default, but with no proxy there is no audit log to write to, so
+        // "audited" would be a claim about a mechanism that is not running.
+        let proxy = config.network_plan().proxy;
+        let audit = if !proxy {
+            "no proxy, so nothing is audited"
+        } else if config.network.audit {
+            "audited"
+        } else {
+            "not audited ([network] audit = false)"
+        };
+        self.ok(
+            label,
+            format!(
+                "transport streamable-http, {url}, credentials [bearer {token}], headers [{}], \
+                 {audit}",
+                server.headers.len()
+            ),
+        );
+
+        // A named-but-unset variable is a hard stop for this server: the
+        // request is never made, so nothing else here can compensate.
+        if let Some(var) = &server.bearer_token_env_var
+            && std::env::var_os(var).is_none()
+        {
+            self.warn(
+                &format!("{label} bearer_token_env_var"),
+                format!("${var} is not set in qcode's environment, so this server is skipped"),
+            );
+        }
+
+        if !proxy {
+            // The kernel hands MCP the `Network` the proxy provides; without
+            // one there is no client, and a remote server is refused rather
+            // than connected around the proxy (ADR-0067 §2).
+            self.warn(
+                &format!("{label} network"),
+                "[network] enabled = false, so qcode has no egress client and will refuse this \
+                 server instead of connecting around the proxy",
+            );
+            return;
+        }
+        if qcode_net::is_allowlisted(&config.network.allow, &host, port) {
+            return;
+        }
+        if config.network.unknown == config::UnknownHost::Allow {
+            // `unknown = "allow"` lets the proxy through, but it lets every
+            // other host through too; worth one line so it is a choice.
+            self.warn(
+                &format!("{label} network"),
+                format!(
+                    "{host}:{port} is not in [network] allow, and it will be reached only \
+                     because [network] unknown = \"allow\""
+                ),
+            );
+            return;
+        }
+        self.warn(
+            &format!("{label} network"),
+            format!(
+                "{host}:{port} is not in [network] allow, so the proxy will answer 403 and this \
+                 server will contribute no tools; add allow = [\"{host}:{port}\"] under [network]"
+            ),
+        );
+    }
+
+    /// The `PATH` the kernel will resolve bare `command`s in (ADR-0070).
+    ///
+    /// Mirrors `qcode_kernel::build_tools`: sample only when some enabled stdio
+    /// server has a bare name, because sampling costs a shell startup. The
+    /// sample is synchronous here — `qc doctor` is a one-shot diagnostic with no
+    /// executor to block — which is also why doctor gets its own cache instead
+    /// of the session's (`qc shell-env` does the same).
+    fn mcp_search_path(&mut self, config: &Config) -> Option<std::ffi::OsString> {
+        // Shared with the kernel on purpose: two copies of this predicate would
+        // drift into "doctor samples, a run does not".
+        if !qcode_kernel::mcp_needs_path_lookup(&config.mcp) {
+            return None;
+        }
+        let cache = qcode_tools::shell_env::ShellEnvCache::new(config.shell.clone());
+        let snapshot = cache.current();
+        match qcode_kernel::mcp_path_from_snapshot(snapshot.as_deref()) {
+            Some(path) => {
+                let program = snapshot
+                    .as_ref()
+                    .map(|env| env.program().display().to_string())
+                    .unwrap_or_default();
+                // Which `PATH` is in play is the whole answer when a bare name
+                // is not found, so it goes on its own line rather than being
+                // inferred from a `not found` message.
+                self.ok(
+                    "mcp path",
+                    format!(
+                        "{} (sampled with {program})",
+                        show_path_list(&path.to_string_lossy())
+                    ),
+                );
+                Some(path)
+            }
+            None => {
+                self.warn(
+                    "mcp path",
+                    "no shell environment snapshot, so a bare `command` is looked up in qcode's \
+                     own PATH only; under `qc gui` from the Dock that is launchd's minimal one — \
+                     use an absolute path, or check `qc shell-env`",
+                );
+                None
+            }
+        }
+    }
+
+    /// MCP servers: one line per server with the grant it would get
+    /// (ADR-0066), plus the silent no-ops that make a server "configured but
+    /// useless" (ADR-0068 §2).
+    ///
+    /// Nothing here counts as a failure. A broken server only loses its own
+    /// tools and the session continues, so exiting non-zero would overstate it;
+    /// what doctor owes the user is the *reason*, which is what the warnings
+    /// are.
+    fn check_mcp(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
+        if config.mcp.servers.is_empty() {
+            return;
+        }
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
+        let real_home = qcode_mcp::real_home();
+        // ADR-0070: the same `PATH` the kernel will resolve bare commands in.
+        // Doctor has to *sample* rather than read a cache — it is a separate
+        // process, and the cache belongs to a session that does not exist yet.
+        // Only when a bare `command` exists, exactly like `build_tools`.
+        let search_path = self.mcp_search_path(config);
+        // `[mcp] sandbox` is not the last word: the kernel builds MCP sandboxes
+        // out of `[sandbox] mode`, and `none` there means nothing is confined
+        // whatever the per-server setting says. Saying "sandbox confine" in
+        // that case is exactly the doc-says-one-thing, code-does-another bug
+        // this ADR set out to remove.
+        let global = config.sandbox.mode != SandboxMode::None;
+        if !global && config.mcp.servers.iter().any(|server| server.enabled) {
+            self.warn(
+                "mcp",
+                "[sandbox] mode = \"none\": no server is confined, whatever [mcp] sandbox says",
+            );
+        }
+
+        for server in &config.mcp.servers {
+            let label = format!("mcp {}", server.name);
+            if !server.enabled {
+                self.ok(&label, "disabled; skipped at startup");
+                continue;
+            }
+
+            // A remote server has no process and therefore no grant: its only
+            // boundary is the egress proxy (ADR-0067 后果). Everything the
+            // grant section checks is inapplicable, and the proxy replaces it.
+            match server.transport() {
+                Some(qcode_mcp::Transport::StreamableHttp) => {
+                    self.check_remote(&label, server, config);
+                    continue;
+                }
+                Some(qcode_mcp::Transport::Stdio) => {}
+                None => {
+                    self.warn(
+                        &label,
+                        "sets both or neither of `command` and `url`; qcode will skip it",
+                    );
+                    continue;
+                }
+            }
+
+            // The one way a token still reaches the config file.
+            for (key, value) in &server.env {
+                if !is_secret_name(key) || is_env_reference(value) {
+                    continue;
+                }
+                self.warn(
+                    &format!("{label} env {key}"),
+                    "the value is a literal, so the secret is in the config file; write \
+                     ${NAME} instead so it is read from qcode's environment",
+                );
+            }
+
+            // `derive` drops explicit paths that do not exist and presets with
+            // nothing behind them, which is correct (the server may create the
+            // directory itself) but leaves the user with a server that fails
+            // for no visible reason. Say it here.
+            //
+            // Every entry gets a line, existing or not, in `~/x → /abs` form:
+            // `~` is expanded at load time, so this is the only place the two
+            // spellings — the one in the config file, the one the grant uses —
+            // can be seen next to each other.
+            for (field, paths) in [
+                ("read_paths", &server.read_paths),
+                ("writable_paths", &server.writable_paths),
+            ] {
+                for path in paths {
+                    let shown = show_path(path, real_home.as_deref());
+                    if path.exists() {
+                        self.ok(&format!("{label} {field}"), shown);
+                    } else {
+                        self.warn(
+                            &format!("{label} {field}"),
+                            format!("{shown} does not exist; the grant skips it"),
+                        );
+                    }
+                }
+            }
+            for preset in &server.credentials {
+                let granted = real_home.as_ref().is_some_and(|home| {
+                    preset
+                        .home_paths()
+                        .iter()
+                        .any(|relative| home.join(relative).exists())
+                });
+                if granted {
+                    continue;
+                }
+                let wanted = preset
+                    .home_paths()
+                    .iter()
+                    .map(|relative| format!("~/{relative}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                self.warn(
+                    &format!("{label} credentials"),
+                    format!(
+                        "\"{}\" grants nothing on this machine (no {wanted})",
+                        preset.label()
+                    ),
+                );
+            }
+
+            if !server.sandbox_mode(config.mcp.sandbox).is_confined() {
+                self.warn(
+                    &label,
+                    "sandbox = \"off\"; the server is not confined, so it reads and writes \
+                     whatever your user can",
+                );
+                continue;
+            }
+
+            let grant = qcode_mcp::GrantSet::derive(qcode_mcp::GrantInput {
+                server,
+                workspace: &workspace,
+                server_state: server.state_dir(&data_dir),
+                real_home: real_home.as_deref(),
+                confined: global,
+                path: qcode_mcp::SearchPath::from(search_path.as_deref()),
+            });
+            match grant {
+                Ok(grant) => self.ok(&label, grant.describe()),
+                Err(error) => self.warn(&label, error.to_string()),
+            }
+        }
+    }
+}
+
+/// A `PATH` value, shortened for a doctor line.
+///
+/// Directories under the real home print as `~/...`: a full `PATH` on this
+/// machine is 700+ characters of `~/cot/lib/...`, and a line nobody can read is
+/// a line nobody checks. Deliberately the *short* form only — unlike a
+/// configured path, a `PATH` entry has no "spelling in the file" to compare
+/// against, so the `~/x → /abs` form would be noise repeated twelve times.
+fn show_path_list(path: &str) -> String {
+    let home = config::home_dir();
+    let shown: Vec<String> = std::env::split_paths(path)
+        .map(|dir| shorten_path(&dir, home.as_deref()))
+        .collect();
+    if shown.len() <= 6 {
+        return shown.join(":");
+    }
+    let head = shown[..3].join(":");
+    let tail = shown[shown.len() - 2..].join(":");
+    format!("{head}:…({} more)…:{tail}", shown.len() - 5)
+}
+
+/// `~/Documents` for a path under the real home, otherwise the path as-is.
+fn shorten_path(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home
+        && let Ok(rest) = path.strip_prefix(home)
+        && !rest.as_os_str().is_empty()
+    {
+        return format!("~/{}", rest.display());
+    }
+    path.display().to_string()
+}
+
+/// A configured path in both spellings: `~/Documents → /home/q/Documents`.
+///
+/// Doctor only ever sees the expanded value — `~` is resolved at load time — so
+/// this re-derives the short form rather than remembering it. Both statements
+/// are true of the path regardless of how the file spells it, and putting them
+/// next to each other is what makes "did my `~` mean what I thought" a
+/// one-line check instead of an experiment.
+///
+/// The `~` form is only used under the real home; everything else is printed
+/// as-is, because `~` there would be a lie.
+fn show_path(path: &Path, home: Option<&Path>) -> String {
+    let short = shorten_path(path, home);
+    if short == path.display().to_string() {
+        return short;
+    }
+    format!("{short} → {}", path.display())
+}
+
+/// Does this variable name look like it holds a secret?
+///
+/// Matched per `_`/`-`-separated segment, not as a substring: the substring
+/// version that ADR-0068 rejected hits `MONKEY` and `KEYBOARD_LAYOUT` while
+/// missing nothing that the segment version catches. A false positive here is
+/// only a warning, but it is a warning users learn to ignore.
+fn is_secret_name(key: &str) -> bool {
+    const SECRET_SEGMENTS: &[&str] = &[
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "KEY",
+        "APIKEY",
+        "CREDENTIAL",
+        "CREDENTIALS",
+    ];
+    key.split(['_', '-'])
+        .any(|segment| SECRET_SEGMENTS.contains(&segment.to_ascii_uppercase().as_str()))
+}
+
+/// `"${NAME}"` — the whole-value form `expand_env` understands.
+fn is_env_reference(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|name| !name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_names_are_matched_by_segment() {
+        for name in [
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "API_KEY",
+            "NPM_TOKEN",
+            "DOCKER_PASSWORD",
+            "GH_TOKEN",
+        ] {
+            assert!(is_secret_name(name), "{name} should look like a secret");
+        }
+        // The substring approach ADR-0068 rejected caught these.
+        for name in ["MONKEY", "KEYBOARD_LAYOUT", "PATH", "LANG"] {
+            assert!(
+                !is_secret_name(name),
+                "{name} should not look like a secret"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_whole_value_form_counts_as_a_reference() {
+        assert!(is_env_reference("${GITHUB_TOKEN}"));
+        assert!(!is_env_reference("$GITHUB_TOKEN"));
+        assert!(!is_env_reference("Bearer ${TOKEN}"));
+        assert!(!is_env_reference("${}"));
+        assert!(!is_env_reference("literal"));
+    }
+
+    #[test]
+    fn a_path_under_the_home_directory_is_shown_in_both_spellings() {
+        let home = Path::new("/home/q");
+        assert_eq!(
+            show_path(Path::new("/home/q/Documents"), Some(home)),
+            "~/Documents → /home/q/Documents"
+        );
+        // Outside the home there is no `~` form to offer, and inventing one
+        // would be the "docs say A, code does B" failure this section exists
+        // to avoid.
+        assert_eq!(show_path(Path::new("/opt/tool"), Some(home)), "/opt/tool");
+        // The home directory itself has no `/`-less suffix; `~/` would claim a
+        // subdirectory that is not there.
+        assert_eq!(show_path(home, Some(home)), "/home/q");
+        // No home known at all (`$HOME` unset): plain path.
+        assert_eq!(
+            show_path(Path::new("/home/q/Documents"), None),
+            "/home/q/Documents"
+        );
     }
 }
