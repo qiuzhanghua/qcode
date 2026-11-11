@@ -77,14 +77,13 @@ async fn tools_for(
 ) -> Vec<String> {
     let loaded =
         qcode_kernel::load_config(Some(config_path.to_path_buf()), workspace).expect("load config");
-    let sandbox =
-        qcode_tools::sandbox::build(
-            SandboxMode::None,
-            workspace,
-            SandboxNetwork::Deny,
-            qcode_tools::sandbox::SandboxPaths::default(),
-        )
-            .expect("sandbox");
+    let sandbox = qcode_tools::sandbox::build(
+        SandboxMode::None,
+        workspace,
+        SandboxNetwork::Deny,
+        qcode_tools::sandbox::SandboxPaths::default(),
+    )
+    .expect("sandbox");
     let skills = std::sync::Arc::new(qcode_tools::skills::SkillSet::default());
     let shell_env = std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
         loaded.shell.clone(),

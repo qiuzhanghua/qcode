@@ -195,10 +195,7 @@ fn sandbox_extra_read_is_a_list_of_directories() {
     .expect("parse");
     assert_eq!(
         config.sandbox.extra_read,
-        vec![
-            PathBuf::from("/home/q/cot"),
-            PathBuf::from("/opt/tools"),
-        ]
+        vec![PathBuf::from("/home/q/cot"), PathBuf::from("/opt/tools"),]
     );
     // The two lists must not be confused for one another: a config that sets
     // only `extra_read` grants no write access.

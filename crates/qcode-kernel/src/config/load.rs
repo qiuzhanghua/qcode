@@ -499,7 +499,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // `sandbox` is the crate-wide default; each server may override it.
     ("mcp", &["servers", "sandbox"]),
     ("skills", &["enabled", "roots"]),
-    ("sandbox", &["mode", "network", "extra_writable", "extra_read"]),
+    (
+        "sandbox",
+        &["mode", "network", "extra_writable", "extra_read"],
+    ),
     (
         "network",
         &[

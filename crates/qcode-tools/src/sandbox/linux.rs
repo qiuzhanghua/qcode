@@ -159,7 +159,11 @@ pub struct Bwrap {
 
 #[cfg(target_os = "linux")]
 impl Bwrap {
-    pub fn new(workspace: &Path, network: bool, extra_read: &[PathBuf]) -> Result<Self, SandboxError> {
+    pub fn new(
+        workspace: &Path,
+        network: bool,
+        extra_read: &[PathBuf],
+    ) -> Result<Self, SandboxError> {
         if workspace == Path::new("/") {
             return Err(SandboxError::Setup(
                 "refusing to sandbox the filesystem root as the workspace".to_string(),
