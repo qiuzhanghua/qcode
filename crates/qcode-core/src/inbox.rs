@@ -33,7 +33,12 @@ pub struct QueuedMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Submission {
     /// No turn is running: start this message as its own turn now.
-    Start(QueuedMessage),
+    ///
+    /// Boxed because a `QueuedMessage` carries a whole `ScheduledMessage` and
+    /// an optional `QuestionReply` and is therefore ~216 bytes, while the other
+    /// variant has no payload at all — inline, every `Queued` (the common
+    /// answer while a turn runs) would be padded to the size of `Start`.
+    Start(Box<QueuedMessage>),
     /// A turn is running: the message waits in the follow-up queue.
     Queued,
 }
@@ -71,7 +76,7 @@ impl SessionQueue {
             return Submission::Queued;
         }
         match self.inbox.claim_next_turn() {
-            Some(message) => Submission::Start(message),
+            Some(message) => Submission::Start(Box::new(message)),
             None => Submission::Queued,
         }
     }
@@ -448,6 +453,18 @@ mod tests {
         let queued: Vec<String> = inbox.queued().into_iter().map(|m| m.text).collect();
         assert_eq!(queued, vec!["queued", "a"]);
         assert_eq!(inbox.unsteer("missing"), None);
+    }
+
+    #[test]
+    fn a_submission_does_not_carry_a_whole_message_inline() {
+        // `Queued` is the answer while a turn runs, i.e. the common one, so it
+        // must not be padded to the size of `Start`'s payload. The bound is
+        // deliberately loose: a pointer plus a tag, not an exact layout.
+        assert!(
+            std::mem::size_of::<Submission>() <= 2 * std::mem::size_of::<usize>(),
+            "Submission grew to {} bytes",
+            std::mem::size_of::<Submission>()
+        );
     }
 
     #[test]
