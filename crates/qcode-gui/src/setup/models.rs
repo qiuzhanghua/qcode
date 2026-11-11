@@ -1655,7 +1655,11 @@ impl SetupView {
 
 #[cfg(test)]
 mod label_tests {
-    use super::*;
+    // Named imports on purpose. `setup` glob-imports `gpui_kit::*`, which
+    // re-exports GPUI's own `test` proc-macro attribute; `use super::*` would
+    // pull it in, and every `#[test]` below would then expand to the GPUI macro
+    // instead of the built-in attribute, recursing until the limit trips.
+    use super::{candidate_label, unknown_model_message};
     use qcode_providers::discovery::ModelCandidate;
 
     fn candidate(id: &str, name: Option<&str>) -> ModelCandidate {

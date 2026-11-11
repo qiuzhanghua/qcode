@@ -6,6 +6,12 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
+// `*` re-exports `gpui_macros::test` — a proc-macro attribute named `test`.
+// Anything that globs this module (`use super::*` in a child, or a test module
+// added straight to one of these files) resolves `#[test]` to that macro, whose
+// expansion re-emits an unqualified `#[test]`: infinite recursion until the
+// crate's `recursion_limit` trips. Test modules here must import names
+// explicitly. See `models::label_tests`.
 use gpui_kit::{div, prelude::*, *};
 use qcode_core::event::Scope;
 use qcode_core::policy::{Action, Rule};
