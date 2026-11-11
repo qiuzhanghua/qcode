@@ -143,7 +143,9 @@ impl Tool for ScheduleCreate {
                 "The task lives in the store and keeps running after this session closes. ",
                 "When the user did not specify when the task runs (rule) or where it ",
                 "delivers (target), ask the user to confirm those first — never invent a ",
-                "default schedule such as \"every day at 08:00\"."
+                "default schedule such as \"every day at 08:00\". For the delivery target ",
+                "the question is exactly two options: reuse one session for every delivery, ",
+                "or create a new session each time — do not offer vague alternatives."
             )
             .to_string(),
             parameters: json!({
@@ -163,7 +165,7 @@ impl Tool for ScheduleCreate {
                     },
                     "target": {
                         "type": "string",
-                        "description": "投递目标：new_once（默认，首次投递建会话并复用）、new（每次新建会话）、session:<会话ID>（投到指定会话）。"
+                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。"
                     },
                     "overlap": {
                         "type": "string",
@@ -215,7 +217,7 @@ impl Tool for ScheduleCreate {
             Some(target) => target,
             None => {
                 return Ok(ToolOutput::error(
-                    "target 需为 new_once / new / session:<会话ID>".to_string(),
+                    "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>".to_string(),
                 ));
             }
         };
