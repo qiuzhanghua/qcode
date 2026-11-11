@@ -34,7 +34,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use qcode_core::tool::{ServerPrompt, ServerToolsChanged, Tool, ToolRefresh, ToolSource};
 use rmcp::ServiceExt;
-use rmcp::model::ProtocolVersion;
+use rmcp::model::{ProtocolVersion, ServerCapabilities};
 use rmcp::service::{ClientLifecycleMode, RunningService};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
@@ -735,28 +735,41 @@ async fn finish(
     );
     let table = ToolTable::new(listed, ttl, dirty);
 
-    // Resources and prompts are optional. Asking once is the detection: a
-    // server that does not implement the capability answers with an error and
-    // simply gets no extra tools.
+    // Resources and prompts are optional, and how to find out depends on which
+    // lifecycle answered (ADR-0068 §4).
     let mut extras = Vec::new();
-    match tokio::time::timeout(timeout, service.list_resources(None)).await {
-        Ok(Ok(_)) => extras.extend([Extra::ListResources, Extra::ReadResource]),
-        Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no resources capability"),
-        Err(_) => tracing::warn!(
-            server = %server.name,
-            secs = server.timeout_secs,
-            "resources/list timed out; skipping resource tools"
-        ),
-    }
+    let (resources, prompts) = match info.as_ref() {
+        // 2026-07-28: `server/discover` already carried `capabilities`. Asking
+        // anyway would be knowing the answer and requesting it regardless — a
+        // server that declares no `prompts` answers `-32601` and the only thing
+        // bought is a round trip and a log line.
+        Some(info) if !info.protocol_version.has_initialize() => {
+            let (resources, prompts) = declared_extras(&info.capabilities);
+            tracing::info!(
+                server = %server.name,
+                protocol = %info.protocol_version,
+                resources,
+                prompts,
+                "mcp capabilities read from the handshake"
+            );
+            (resources, prompts)
+        }
+        // Legacy (and the impossible "no peer_info" case, which fails toward
+        // asking): ADR-0033 §3's probe stays, scoped to this branch. Wild
+        // 2025-era servers misreport `capabilities` often enough that the
+        // handshake field is not worth trusting there.
+        _ => {
+            let resources = probe_resources(server, &service, timeout).await;
+            let prompts = probe_prompts(server, &service, timeout).await;
+            (resources, prompts)
+        }
+    };
 
-    match tokio::time::timeout(timeout, service.list_prompts(None)).await {
-        Ok(Ok(_)) => extras.extend([Extra::ListPrompts, Extra::GetPrompt]),
-        Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no prompts capability"),
-        Err(_) => tracing::warn!(
-            server = %server.name,
-            secs = server.timeout_secs,
-            "prompts/list timed out; skipping prompt tools"
-        ),
+    if resources {
+        extras.extend([Extra::ListResources, Extra::ReadResource]);
+    }
+    if prompts {
+        extras.extend([Extra::ListPrompts, Extra::GetPrompt]);
     }
 
     if let Some(text) = instructions.as_deref().map(str::trim) {
@@ -779,6 +792,70 @@ async fn finish(
         protocol_version,
         instructions,
     })
+}
+
+/// Which extra tools a declared capability set justifies (ADR-0068 §4).
+///
+/// Pure, so the mapping is testable without a server: the rule is one-way —
+/// a declared capability registers the tools, an undeclared one does not. There
+/// is no negotiation and no guessing.
+fn declared_extras(capabilities: &ServerCapabilities) -> (bool, bool) {
+    (
+        capabilities.resources.is_some(),
+        capabilities.prompts.is_some(),
+    )
+}
+
+/// ADR-0033 §3's probe, kept for legacy servers only (ADR-0068 §4).
+///
+/// Returning `false` means "the server did not answer successfully", which is
+/// how a missing capability looks on the wire. The log is `info` rather than
+/// `debug` because "this server has no resources" is something the user wants
+/// to know at the default level — the ADR-0033 后果 note complained that it was
+/// invisible.
+async fn probe_resources(
+    server: &McpServerConfig,
+    service: &Service,
+    timeout: std::time::Duration,
+) -> bool {
+    match tokio::time::timeout(timeout, service.list_resources(None)).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(error)) => {
+            tracing::info!(server = %server.name, %error, "no resources capability");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(
+                server = %server.name,
+                secs = server.timeout_secs,
+                "resources/list timed out; skipping resource tools"
+            );
+            false
+        }
+    }
+}
+
+/// The same for `prompts`.
+async fn probe_prompts(
+    server: &McpServerConfig,
+    service: &Service,
+    timeout: std::time::Duration,
+) -> bool {
+    match tokio::time::timeout(timeout, service.list_prompts(None)).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(error)) => {
+            tracing::info!(server = %server.name, %error, "no prompts capability");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(
+                server = %server.name,
+                secs = server.timeout_secs,
+                "prompts/list timed out; skipping prompt tools"
+            );
+            false
+        }
+    }
 }
 
 /// A bare `Permission denied` was the hardest part of the original bug report
@@ -846,6 +923,49 @@ fn stderr_log(server: &McpServerConfig, log_dir: &Path) -> Stdio {
                 "cannot open the MCP log file; inheriting stderr"
             );
             Stdio::inherit()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0068 §4: the declared capability is the whole answer, and the
+    /// mapping is one-to-one. Written as a table because the failure mode to
+    /// catch later is "someone added a third capability and forgot it here".
+    #[test]
+    fn declared_capabilities_map_to_extras() {
+        let caps = |resources: bool, prompts: bool| {
+            let mut capabilities = ServerCapabilities::default();
+            if resources {
+                capabilities.resources = Some(rmcp::model::ResourcesCapability::default());
+            }
+            if prompts {
+                capabilities.prompts = Some(rmcp::model::PromptsCapability::default());
+            }
+            capabilities
+        };
+
+        assert_eq!(declared_extras(&caps(false, false)), (false, false));
+        assert_eq!(declared_extras(&caps(true, false)), (true, false));
+        assert_eq!(declared_extras(&caps(false, true)), (false, true));
+        assert_eq!(declared_extras(&caps(true, true)), (true, true));
+    }
+
+    /// A modern peer is defined by the lifecycle, not by a version string we
+    /// compare ourselves: `has_initialize()` is rmcp's answer to "did
+    /// `server/discover` answer this connection".
+    #[test]
+    fn only_the_no_initialize_lifecycle_counts_as_modern() {
+        assert!(!ProtocolVersion::V_2026_07_28.has_initialize());
+        for legacy in [
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2024_11_05,
+        ] {
+            assert!(legacy.has_initialize(), "{legacy} must probe");
         }
     }
 }

@@ -2,6 +2,28 @@
 
 ## 未发布
 
+### MCP 能力探测不再问已知答案（ADR-0068 §4）
+
+ADR-0033 §3 决定「能力探测靠试一次：握手后调 `resources/list` 与 `prompts/list`，成功才
+注册」。当时理由成立：两条请求比维护第二套判定便宜。2026-07-28 之后不成立了——
+`server/discover` 的返回里直接带 `capabilities`，一个字段就能读到。实测一个明说没有
+prompts 的 server 仍然挨了一次 `prompts/list`，换来一个 `-32601`。
+
+- **modern（2026-07-28）读字段，零请求**。判据是 rmcp 的
+  `ProtocolVersion::has_initialize()`，即「这条连接是不是 `discover` 答的」，不是自己比较
+  版本号字符串。映射是纯函数：`resources.is_some()` / `prompts.is_some()` 各决定两个工具。
+- **legacy 保留试一次**，且这是刻意的：野外的 2025 时代 server 经常把 `capabilities` 写得
+  不准。ADR-0033 §3 由此从「通用做法」收窄为「legacy 分支的做法」。
+- **legacy 探测失败的日志从 `debug` 提到 `info`**。ADR-0033 的后果段自己写过这条缺陷：
+  默认级别下看不见「这个 server 没有 prompts」，而那正是用户想知道的。
+- **stdio 仍走 `initialize`**（ADR-0067），所以 stdio server 一律落在 legacy 分支、照旧试
+  一次。这不是漏改，是生命周期的直接后果。
+- `peer_info` 缺失时走向「问」：多两次请求，好过静默丢掉 resources/prompts 工具。
+
+测试：4 条集成（modern 零次列表请求、legacy 各一次、modern 声明了才拿到四个工具、modern
+没声明就一个多余工具都没有）+ 2 条单测（映射四格表、`has_initialize` 边界）。
+`http_probe_server` 新增 `--capabilities` 开关，默认不声明——正好给零探测断言一个对象。
+
 ### MCP server 的自述进了 system prompt（ADR-0068 P2）
 
 server 在握手里给的 `instructions` 一直存在协议里，qcode 一个字节都没读过：模型只能靠工具名

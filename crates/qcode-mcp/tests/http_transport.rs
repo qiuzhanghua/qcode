@@ -379,3 +379,117 @@ fn the_audit_path_is_the_one_the_test_reads() {
     let probe = Probe::start(&["--modern"]);
     assert!(Path::new(&probe.audit).ends_with("requests.jsonl"));
 }
+
+/// ADR-0068 §4, the point of the change: a 2026-07-28 server already told us
+/// its capabilities in `server/discover`, so asking again is a wasted round
+/// trip. Counting requests is the only way to see that no regression
+/// reintroduced the probe — a probe that comes back still "works", it just
+/// costs two requests and logs an error per server.
+#[tokio::test]
+async fn a_modern_server_is_never_probed_for_resources_or_prompts() {
+    let probe = Probe::start(&["--modern"]);
+    let tools = connect(&probe).await;
+    assert_eq!(tools.len(), 1, "the modern server's tool should arrive");
+
+    let methods = probe.rpc_methods();
+    assert!(
+        !methods.contains(&"resources/list".to_string()),
+        "resources/list was sent to a modern server: {methods:?}"
+    );
+    assert!(
+        !methods.contains(&"prompts/list".to_string()),
+        "prompts/list was sent to a modern server: {methods:?}"
+    );
+    assert!(
+        !methods.contains(&"initialize".to_string()),
+        "a modern server must not see initialize: {methods:?}"
+    );
+}
+
+/// The other half of §4: the probe is scoped to legacy, not deleted. A
+/// 2025-era server still gets asked, because that branch's handshake field is
+/// not trustworthy in the wild.
+#[tokio::test]
+async fn a_legacy_server_is_still_probed_once() {
+    let probe = Probe::start(&["--legacy"]);
+    let tools = connect(&probe).await;
+    assert_eq!(tools.len(), 1, "the legacy server's tool should arrive");
+
+    let methods = probe.rpc_methods();
+    let count = |method: &str| methods.iter().filter(|seen| *seen == method).count();
+    assert_eq!(count("initialize"), 1, "{methods:?}");
+    assert_eq!(count("resources/list"), 1, "{methods:?}");
+    assert_eq!(count("prompts/list"), 1, "{methods:?}");
+}
+
+/// Reading the field must reach the same conclusion the probe would have: a
+/// modern server that *does* declare resources and prompts gets those tools
+/// without a single list request.
+#[tokio::test]
+async fn a_modern_server_gets_its_declared_extras() {
+    let probe = Probe::start(&["--modern", "--capabilities", "resources,prompts"]);
+    let tools = connect(&probe).await;
+
+    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    for expected in [
+        "ping",
+        "list_resources",
+        "read_resource",
+        "list_prompts",
+        "get_prompt",
+    ] {
+        assert!(
+            names.iter().any(|name| name.contains(expected)),
+            "{expected} is missing from {names:?}"
+        );
+    }
+
+    let methods = probe.rpc_methods();
+    assert!(
+        !methods.contains(&"resources/list".to_string()),
+        "the capability was declared; no probe should be needed: {methods:?}"
+    );
+    assert!(
+        !methods.contains(&"prompts/list".to_string()),
+        "the capability was declared; no probe should be needed: {methods:?}"
+    );
+}
+
+/// And the converse, so "declared" is not simply "always on": a modern server
+/// declaring nothing gets no extra tools.
+#[tokio::test]
+async fn a_modern_server_without_extras_gets_no_extra_tools() {
+    let probe = Probe::start(&["--modern"]);
+    let tools = connect(&probe).await;
+    let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    for absent in [
+        "list_resources",
+        "read_resource",
+        "list_prompts",
+        "get_prompt",
+    ] {
+        assert!(
+            !names.iter().any(|name| name.contains(absent)),
+            "{absent} should not exist: {names:?}"
+        );
+    }
+}
+
+/// One place to build the connect call for the tests above.
+async fn connect(probe: &Probe) -> Vec<std::sync::Arc<dyn qcode_core::tool::Tool>> {
+    let mcp = config(McpServerConfig {
+        name: "probe".to_string(),
+        command: None,
+        url: Some(probe.url()),
+        ..Default::default()
+    });
+    connect_all_with(
+        &mcp,
+        &workspace(),
+        &tempfile::tempdir().expect("data").keep(),
+        &[],
+        ConnectOptions::with_http(&client()),
+    )
+    .await
+}

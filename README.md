@@ -390,6 +390,9 @@ cargo build -p qcode-eval
   **server 的自述会进 system prompt**（ADR-0068）：握手里的 `instructions` 以
   `# MCP: <server>` 小节注入，总数封顶 8 KiB，超出截断并注明。这段文字只是文本——它不改变
   任何审批决定，显式 `deny` 规则照样 deny。
+  支持 **2026-07-28** 的远程 server 直接读握手里的 `capabilities`，不再多打
+  `resources/list` / `prompts/list`；旧协议的 server 才试一次（野外的老 server 常把
+  `capabilities` 写错，那里宁可多问一句）。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。

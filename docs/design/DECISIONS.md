@@ -1236,6 +1236,19 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 `tools,resources,prompts` 时四个额外工具出现且 `read_resource` 返回 stub 正文、
 缺 `uri` 报错、`get_prompt` 返回渲染后的消息；不设时仍然只有 7 个工具。
 
+**实现注记（2026-11-11，§3 与「后果」第二条被 ADR-0068 §4 收窄）**
+
+- §3 的「试一次」**只在 legacy 分支保留**。2026-07-28 的 `server/discover` 直接带
+  `capabilities`，继续试一次等于明知有答案还去问。判据不是比较版本字符串，而是
+  rmcp 的 `ProtocolVersion::has_initialize()`——它回答的正是「这条连接是不是 `discover`
+  答的」。stdio 仍然走 `initialize`（ADR-0067 实现注记），因此 stdio server 照旧试一次，
+  这是生命周期的直接后果，不是遗漏。
+- 「后果」第二条「探测失败只有 debug 日志」**已修**：legacy 分支的两次失败现在是 `info`。
+  「这个 server 没有 prompts」是用户想知道的，不该要求 `RUST_LOG=debug`。
+- 「后果」第四条「不把 prompts 自动塞进 system prompt」**不变**，且现在有了新的相邻物：
+  `instructions`（握手自述）会注入，`prompts`（模板）不会。两者不是一类东西，见 ADR-0068
+  §3——这条区分现在有两处测试守着，不要再合并。
+
 ## ADR-0034：checkpoint / rollback 只记录「即将被改的文件」（2026-10-20）
 
 **背景**：agent 改坏代码时，`sessions fork` 只能分叉对话，不能把工作区还原。
@@ -6406,7 +6419,7 @@ OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本
 
 ## ADR-0068：MCP server 的环境白名单与自述注入（2026-11-11）
 
-**状态**：P1 / P2 / P3 已实现（2026-11-11），§4（modern 直接读 `capabilities`）待做。
+**状态**：P1 / P2 / P3 与 §4 已实现（2026-11-11）。
 `[[mcp.servers]] env` 的语义收窄（新增 `${VAR}` 引用）；`instructions`
 从「丢弃」改为「注入 system prompt」。承接 ADR-0066 §5（授权集与环境同源）留的接口。
 
@@ -6586,7 +6599,7 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
   → 出口代理 的顺序注入；`env` 值支持整值 `${NAME}`，缺变量时 spawn 失败并点名（实测在
   真机上用一个 `$HOME` 下安装的 server 验证：dump 出的变量集合只剩白名单那几项）。
 - §3 `instructions` 注入与 §4 的 modern 能力探测当成一批做（它们依赖 ADR-0067 的
-  `discover`/`capabilities`）：§3 已完成，§4 **仍未做**，见下一条注记。
+  `discover`/`capabilities`）：两条都已完成，见下面两条注记。
 - **白名单会连带清掉 `DISPLAY`。** 实测：这个开发机有 `DISPLAY=:1`，而 whitelist 只留
   `PATH`/`LANG`/`TZ`/`LC_*`，于是需要显示服务的 server（wordcraft 这类桌面应用）启动即死，
   报「neither WAYLAND_DISPLAY nor DISPLAY is set」。这不是缺陷，是 §1 的直接后果，解法
@@ -6620,9 +6633,32 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
 - **`compact::estimate_text_tokens`**：`Delta::Context` 之前只估 `messages`，system prompt
   完全不计。ADR-0068 后果段点名要补，现在把 system 一起算进去，否则多挂几个 server 是无声的
   预算消耗。
-- **§4 未做**：modern（`discover`）本该直接读 `capabilities` 而不再试 `resources/list` /
-  `prompts/list`，legacy 才试一次。现在两条路径都还试一次，两次失败的日志级别也仍是 `debug`
-  （§4 承诺把 legacy 那次提到 `info`）。这条留在 §4 一次性做，避免只为 legacy 分支写一遍。
+- ~~§4 未做~~：见下一条注记。
+
+**§4 实现注记（2026-11-11，能力探测按生命周期分流）**
+
+- **判据是 `ProtocolVersion::has_initialize()`，不是版本号比较。** 它回答的正是「这条连接
+  是不是 `discover` 答的」：`false` 即 2026-07-28 起无握手的生命周期，`capabilities` 来自
+  `DiscoverResult`；`true` 即 legacy。自己写 `>= "2026-07-28"` 也能对（版本是日期串），
+  但那是把 rmcp 的知识抄一遍，将来新增版本要跟着改。
+- **modern 分支读 `capabilities`，零请求。** 映射是纯函数 `declared_extras()`：
+  `resources.is_some()` / `prompts.is_some()` 各决定两个工具，一对一，没有协商也没有猜。
+  实测一个声明「只有 tools」的 2026-07-28 server 过去要挨两次 `-32601`，现在是 0 次。
+- **legacy 分支保留 ADR-0033 §3 的试一次**，这是刻意的：野外的 2025 时代 server 经常把
+  `capabilities` 写得不准，握手里的那个字段在那里不值得信。ADR-0033 注记里记了这条收窄。
+  legacy 两次失败日志从 `debug` 提到 `info`（§4 要求）。
+- **stdio 仍走 `initialize`**（ADR-0067 实现注记），所以 stdio server 一律落在 legacy 分支、
+  照旧试一次。这不是漏改：`Auto` 在 stdio 上被关掉是有原因的（见那条注记），生命周期的
+  选择决定了探测方式，§4 的分流只是如实地跟着它。
+- **`peer_info` 缺失时走向「问」**。这种情况几乎不可能发生（`serve` 握手成功必有
+  `peer_info`），但失败方向要选对：多两次请求，好过静默丢掉 resources/prompts 工具。
+- **验证**：`http_probe_server` 新增 `--capabilities` 开关（默认不声明，正好给零探测断言
+  一个对象）。四条测试：modern 零次 `resources/list` / `prompts/list`、legacy 各一次、
+  modern 声明了就拿到四个工具且仍是零次列表请求、modern 没声明就一个多余工具都没有。
+  两条单测钉住 `declared_extras` 的四格表与 `has_initialize` 的边界。变异验证：
+  把 modern 分支关掉 → 零探测与「声明即得」两条失败（审计日志里能看到
+  `resources/list` 真的又发出去了）；让 `declared_extras` 恒返 `(false, false)` →
+  「声明即得」失败。
 
 **待定**
 

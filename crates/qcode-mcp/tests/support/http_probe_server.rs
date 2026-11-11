@@ -46,6 +46,9 @@ fn main() {
     let mut audit: Option<PathBuf> = None;
     let mut ttl_ms: u64 = 30_000;
     let mut instructions: Option<String> = None;
+    // ADR-0068 §4: which optional capabilities to declare in the handshake.
+    // Empty by default, so the zero-probe assertion has something to assert on.
+    let mut caps: Vec<String> = Vec::new();
     let mut tokens: Vec<String> = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -56,6 +59,14 @@ fn main() {
             "--ttl-ms" => {
                 index += 1;
                 ttl_ms = args[index].parse().expect("--ttl-ms takes a number");
+            }
+            "--capabilities" => {
+                index += 1;
+                caps = args[index]
+                    .split(',')
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+                    .collect();
             }
             "--instructions" => {
                 index += 1;
@@ -84,6 +95,7 @@ fn main() {
         mode,
         ttl_ms,
         instructions,
+        capabilities: capabilities(&caps),
         tokens,
         audit,
     });
@@ -97,10 +109,23 @@ fn main() {
     }
 }
 
+/// The `capabilities` object the handshake reports, from `--capabilities`.
+///
+/// `tools` is always there (every mode serves `tools/list`); the rest is opt-in
+/// so a mode that declares nothing is the default.
+fn capabilities(names: &[String]) -> Value {
+    let mut caps = json!({"tools": {}});
+    for name in names {
+        caps[name.as_str()] = json!({});
+    }
+    caps
+}
+
 struct State {
     mode: Mode,
     ttl_ms: u64,
     instructions: Option<String>,
+    capabilities: Value,
     tokens: Vec<String>,
     audit: Arc<Mutex<Option<PathBuf>>>,
 }
@@ -160,7 +185,7 @@ fn handle(mut stream: TcpStream, state: &State) -> std::io::Result<()> {
                 let mut result = json!({
                     "resultType": "complete",
                     "supportedVersions": ["2026-07-28"],
-                    "capabilities": {"tools": {}},
+                    "capabilities": state.capabilities,
                     "ttlMs": state.ttl_ms,
                     "cacheScope": "public",
                 });
@@ -175,7 +200,7 @@ fn handle(mut stream: TcpStream, state: &State) -> std::io::Result<()> {
                 id,
                 json!({
                     "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
+                    "capabilities": state.capabilities,
                     "serverInfo": {"name": "http-probe", "version": "0.0.1"},
                 }),
             ),
