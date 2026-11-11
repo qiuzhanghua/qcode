@@ -11,6 +11,36 @@ use serde_json::Value;
 use crate::event::Scope;
 use crate::tool::ApprovalClass;
 
+/// The characters `globset` treats as metacharacters.
+///
+/// Used to decide whether a `tool` value is a literal name or a pattern. A
+/// literal comparison is not just a fast path: it also keeps a name containing
+/// `_`, `:` or `.` out of the glob parser entirely, so a future globset change
+/// to escapes cannot silently turn an exact allowlist entry into something
+/// broader.
+const GLOB_METACHARACTERS: [char; 6] = ['*', '?', '[', ']', '{', '}'];
+
+/// Does `pattern` contain glob syntax at all?
+fn is_pattern(pattern: &str) -> bool {
+    pattern.contains(GLOB_METACHARACTERS)
+}
+
+/// Match a tool name against a literal or a glob.
+///
+/// An unparsable pattern matches nothing. That direction is deliberate: the
+/// alternative (treating a broken pattern as `*`) turns a typo in a `deny` rule
+/// into a silent allow-everything. `Rule::validate` is what reports the typo;
+/// this only has to stay on the safe side while it does.
+fn tool_matches(pattern: &str, tool: &str) -> bool {
+    if !is_pattern(pattern) {
+        return pattern == tool;
+    }
+    match Glob::new(pattern) {
+        Ok(glob) => glob.compile_matcher().is_match(tool),
+        Err(_) => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -22,6 +52,15 @@ pub enum Action {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Rule {
     pub id: String,
+    /// Exact tool name, or a glob such as `mcp__wordcraft__*`.
+    ///
+    /// The glob form exists because an MCP server contributes a dozen tools at
+    /// once and hand-listing them is the step people skip: the first real use
+    /// of this field as an allowlist needed 19 rules for one server, and the
+    /// natural spelling `mcp__wordcraft__*` silently matched nothing until it
+    /// was supported (it then fell through to `default: external tool: ask`).
+    /// An exact name always outranks a pattern, so `mcp__*` cannot shadow a
+    /// precise `deny`.
     #[serde(default)]
     pub tool: Option<String>,
     /// Matches when the `command` argument starts with this prefix.
@@ -37,8 +76,59 @@ pub struct Rule {
 }
 
 impl Rule {
+    /// Report a pattern that cannot be parsed, so loading fails instead of the
+    /// rule quietly never matching.
+    ///
+    /// Called by both loaders (config `[[approval.rules]]` and a
+    /// `--approval-policy` file). Not a method on `Deserialize` because the
+    /// error should name the rule id and the field, which TOML's own message
+    /// cannot.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(pattern) = &self.tool
+            && is_pattern(pattern)
+            && let Err(error) = Glob::new(pattern)
+        {
+            return Err(format!(
+                "rule '{}' has an invalid `tool` pattern {:?}: {error}",
+                self.id, pattern
+            ));
+        }
+        if let Some(pattern) = &self.path_glob
+            && let Err(error) = Glob::new(pattern)
+        {
+            return Err(format!(
+                "rule '{}' has an invalid `path_glob` {:?}: {error}",
+                self.id, pattern
+            ));
+        }
+        Ok(())
+    }
+
+    /// How specific a tool predicate is: exact beats glob beats absent.
+    ///
+    /// A glob is *not* "as specific as a name" — that is the whole risk of
+    /// adding wildcards. Ranking them separately is what makes
+    /// `tool = "mcp__*"` lose to `tool = "mcp__github__pr_merge"` regardless of
+    /// the order the two rules appear in the file, so an allowlist stays
+    /// auditable by reading it.
+    fn tool_rank(&self) -> u8 {
+        match self.tool.as_deref() {
+            None => 0,
+            Some(pattern) if is_pattern(pattern) => 1,
+            Some(_) => 2,
+        }
+    }
+
+    /// Number of further predicates; more conditions win between otherwise
+    /// equal rules.
+    fn extra_predicates(&self) -> usize {
+        usize::from(self.command_prefix.is_some()) + usize::from(self.path_glob.is_some())
+    }
+
     fn matches(&self, tool: &str, args: &Value) -> bool {
-        if self.tool.as_deref().is_some_and(|name| name != tool) {
+        if let Some(pattern) = &self.tool
+            && !tool_matches(pattern, tool)
+        {
             return false;
         }
         if let Some(prefix) = &self.command_prefix {
@@ -61,12 +151,6 @@ impl Rule {
             }
         }
         true
-    }
-
-    fn specificity(&self) -> usize {
-        usize::from(self.tool.is_some())
-            + usize::from(self.command_prefix.is_some())
-            + usize::from(self.path_glob.is_some())
     }
 
     fn scope_rank(&self) -> u8 {
@@ -122,7 +206,8 @@ impl Policy {
             .filter(|rule| rule.action != Action::Deny)
             .max_by_key(|rule| {
                 (
-                    rule.specificity(),
+                    rule.tool_rank(),
+                    rule.extra_predicates(),
                     rule.scope_rank(),
                     rule.command_prefix.as_deref().map_or(0, str::len),
                     rule.path_glob.as_deref().map_or(0, str::len),
@@ -279,6 +364,170 @@ mod tests {
                 .action,
             Action::Ask
         );
+    }
+
+    /// One rule for a whole MCP server, which is the case that motivated the
+    /// glob: a server contributes a dozen tools and listing them by hand is the
+    /// step people skip.
+    #[test]
+    fn tool_pattern_covers_a_whole_server() {
+        let policy = Policy::new(vec![rule(
+            "allow-wordcraft",
+            Some("mcp__wordcraft__*"),
+            None,
+            Action::Allow,
+        )]);
+        for tool in [
+            "mcp__wordcraft__new_document",
+            "mcp__wordcraft__save_document",
+            "mcp__wordcraft__batch",
+            "mcp__wordcraft__x",
+        ] {
+            assert_eq!(
+                policy
+                    .evaluate(tool, ApprovalClass::External, &json!({}))
+                    .action,
+                Action::Allow,
+                "{tool} should be allowed"
+            );
+        }
+        // Another server, and the built-ins, stay on the default.
+        for tool in [
+            "mcp__github__pr_merge",
+            "mcp__wordcraft",
+            "mcp__wordcraftX__a",
+        ] {
+            assert_eq!(
+                policy
+                    .evaluate(tool, ApprovalClass::External, &json!({}))
+                    .action,
+                Action::Ask,
+                "{tool} should not be allowed"
+            );
+        }
+    }
+
+    /// The pattern must not reach across the `__` separator by accident: a `*`
+    /// is greedy, so `mcp__wordcraft__*` has to be anchored by the literal
+    /// prefix rather than matching `mcp__other__wordcraft__x`.
+    #[test]
+    fn a_tool_pattern_matches_the_whole_name_not_a_substring() {
+        let policy = Policy::new(vec![rule(
+            "allow-wordcraft",
+            Some("mcp__wordcraft__*"),
+            None,
+            Action::Allow,
+        )]);
+        assert_eq!(
+            policy
+                .evaluate("pre_mcp__wordcraft__x", ApprovalClass::External, &json!({}))
+                .action,
+            Action::Ask,
+            "a glob is anchored at both ends"
+        );
+    }
+
+    /// An exact name outranks a pattern, whatever the order in the file. This is
+    /// the property that keeps a wildcard from shadowing a precise exception.
+    #[test]
+    fn an_exact_tool_name_beats_a_pattern() {
+        for rules in [
+            vec![
+                rule("allow-all-mcp", Some("mcp__*"), None, Action::Allow),
+                rule("ask-dangerous", Some("mcp__fs__delete"), None, Action::Ask),
+            ],
+            // Same two rules, opposite order: the answer must not depend on it.
+            vec![
+                rule("ask-dangerous", Some("mcp__fs__delete"), None, Action::Ask),
+                rule("allow-all-mcp", Some("mcp__*"), None, Action::Allow),
+            ],
+        ] {
+            let policy = Policy::new(rules);
+            assert_eq!(
+                policy
+                    .evaluate("mcp__fs__delete", ApprovalClass::External, &json!({}))
+                    .action,
+                Action::Ask
+            );
+            assert_eq!(
+                decision_rule(&policy, "mcp__fs__delete").as_deref(),
+                Some("ask-dangerous")
+            );
+            assert_eq!(
+                policy
+                    .evaluate("mcp__fs__read", ApprovalClass::External, &json!({}))
+                    .action,
+                Action::Allow
+            );
+        }
+    }
+
+    /// `deny` wins over a matching allow pattern too — the rule the module doc
+    /// states first, re-checked now that patterns can match.
+    #[test]
+    fn deny_beats_an_allow_pattern() {
+        let policy = Policy::new(vec![
+            rule("allow-all-mcp", Some("mcp__*"), None, Action::Allow),
+            rule("deny-delete", Some("mcp__fs__delete"), None, Action::Deny),
+        ]);
+        assert_eq!(
+            policy
+                .evaluate("mcp__fs__delete", ApprovalClass::External, &json!({}))
+                .action,
+            Action::Deny
+        );
+    }
+
+    /// A broken pattern matches nothing and is reported by `validate`, so the
+    /// two halves agree: never a silent allow-everything, never a silent lie.
+    #[test]
+    fn an_invalid_tool_pattern_matches_nothing_and_is_reported() {
+        let broken = "mcp__[__x";
+        let policy = Policy::new(vec![rule(
+            "allow-broken",
+            Some(broken),
+            None,
+            Action::Allow,
+        )]);
+        assert_eq!(
+            policy
+                .evaluate("mcp__fs__read", ApprovalClass::External, &json!({}))
+                .action,
+            Action::Ask,
+            "an unparsable pattern must not match"
+        );
+        let error = policy.rules()[0].validate().expect_err("must be reported");
+        assert!(error.contains("allow-broken"), "{error}");
+        assert!(error.contains("tool"), "{error}");
+
+        // And a literal name containing no metacharacter is never parsed as a
+        // glob, so it cannot be reported as broken either.
+        assert!(
+            rule("literal", Some("mcp__fs__read"), None, Action::Allow)
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_invalid_path_glob_is_reported() {
+        let bad = Rule {
+            id: "bad-path".to_string(),
+            tool: None,
+            command_prefix: None,
+            path_glob: Some("src/[".to_string()),
+            action: Action::Deny,
+            scope: None,
+        };
+        let error = bad.validate().expect_err("must be reported");
+        assert!(error.contains("bad-path"), "{error}");
+        assert!(error.contains("path_glob"), "{error}");
+    }
+
+    fn decision_rule(policy: &Policy, tool: &str) -> Option<String> {
+        policy
+            .evaluate(tool, ApprovalClass::External, &json!({}))
+            .rule_id
     }
 
     #[test]

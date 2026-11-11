@@ -859,6 +859,13 @@ pub enum ConfigError {
         path: PathBuf,
         source: Box<toml::de::Error>,
     },
+    /// A rule whose `tool` or `path_glob` does not parse as a glob.
+    ///
+    /// Fatal rather than skipped: a `deny` rule with a typo would otherwise
+    /// never match, which reads as "denied" on paper and "asked" (or allowed)
+    /// at runtime. The message names the file so the fix is obvious.
+    #[error("{path}: {detail}")]
+    InvalidPolicyRule { path: PathBuf, detail: String },
     #[error("unknown provider '{0}'; add a [providers.{0}] section or pass --base-url and --model")]
     UnknownProvider(String),
     #[error(

@@ -21,6 +21,28 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 - 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
   四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
 
+### 审批规则的 `tool` 支持通配
+
+`[[rules]]` 的 `tool` 之前是精确比较（`name != tool`），写 `tool = "mcp__wordcraft__*"` 会
+**静默不匹配**——不报错，直接落到 `default: external tool: ask`。一个 MCP server 有十几个
+工具，手写十几条规则是没人愿意做的事，于是第一版配置就是这么写的，然后所有 MCP 调用被
+审批挡下。
+
+- `tool` 现在接受 glob（`mcp__wordcraft__*`）。不含 `* ? [ ] { }` 的值仍然走精确比较的
+  快路径，所以字面名字进不了 glob 解析器。
+- **精确名 > 通配 > 无条件**，且与规则在文件里的先后无关。这条是有意为之：`mcp__*` 必须
+  盖不过一条精确的 `deny`，否则加通配就等于加了「顺序敏感、读不出行为」的隐患。
+  `specificity()` 由此拆成 `tool_rank()` + `extra_predicates()`。
+- **非法 glob 在加载配置时失败**，报错点名 rule id 与字段（`InvalidPolicyRule`）。
+  运行时对解析失败的 pattern 一律「不匹配」而不是「匹配一切」——把 typo 变成
+  静默放行是最坏的失败方向。config 的 `[[approval.rules]]` 与 `--approval-policy` 文件
+  走同一个 `validate_rules`。
+
+测试 7 条（通配覆盖整 server / glob 两端锚定不匹配子串 / 精确胜过通配且与顺序无关 /
+deny 仍胜过通配 / 非法 pattern 不匹配且被报告 / path_glob 非法被报告 / 两个加载器都拒绝
+非法 pattern）。变异验证两次：把 glob 排到与精确同级 → 顺序无关那条失败；让非法 pattern
+fail-open → 不匹配那条失败。
+
 ### 跨目标 check：`make check-platforms` + CI 的 cross-check job
 
 `cargo test --workspace` 在 Linux 上全绿不代表这棵树能编译：`#[cfg(windows)]` /

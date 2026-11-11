@@ -82,6 +82,73 @@ fn policy_file_errors_name_the_path() {
     }
 }
 
+/// A `deny` whose glob does not parse is worse than a crash: it reads as
+/// "denied" in the file and never matches at runtime. Both loaders must refuse
+/// it, and the message must name the rule so the typo is findable.
+#[test]
+fn an_unparsable_rule_pattern_fails_to_load() {
+    let dir = std::env::temp_dir().join(format!("qcode-policy-glob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let policy = dir.join("policy.toml");
+    std::fs::write(
+        &policy,
+        r#"
+            [[rules]]
+            id = "deny-broken"
+            tool = "mcp__[__x"
+            action = "deny"
+        "#,
+    )
+    .unwrap();
+    match load_policy(&policy) {
+        Err(ConfigError::InvalidPolicyRule { path, detail }) => {
+            assert_eq!(path, policy);
+            assert!(detail.contains("deny-broken"), "{detail}");
+            assert!(detail.contains("tool"), "{detail}");
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+
+    // The config file goes through the same check.
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        r#"
+            version = 1
+
+            [[approval.rules]]
+            id = "deny-broken"
+            tool = "mcp__[__x"
+            action = "deny"
+        "#,
+    )
+    .unwrap();
+    match load(&config) {
+        Err(ConfigError::InvalidPolicyRule { detail, .. }) => {
+            assert!(detail.contains("deny-broken"), "{detail}");
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+
+    // A wildcard that does parse is accepted — the check must not be so eager
+    // that it rejects the feature itself.
+    let good = dir.join("good.toml");
+    std::fs::write(
+        &good,
+        r#"
+            [[rules]]
+            id = "allow-wordcraft"
+            tool = "mcp__wordcraft__*"
+            action = "allow"
+        "#,
+    )
+    .unwrap();
+    let rules = load_policy(&good).expect("a valid glob must load");
+    assert_eq!(rules.len(), 1);
+}
+
 #[test]
 fn defaults_to_mock() {
     let resolved = resolve(&Config::default(), &Overrides::default(), &env_from(&[])).unwrap();

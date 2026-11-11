@@ -328,8 +328,21 @@ cargo build -p qcode-eval
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
   `glob` / `grep` / `run_shell` / `web_fetch` / `web_search` / `todo_write` / `subagent`，多轮调用直到任务完成。
   `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
-- **审批**：三值策略（allow / ask / deny），规则匹配工具名与命令前缀；
-  每次决策写事件，含命中的 rule id。TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
+- **审批**：三值策略（allow / ask / deny），规则匹配工具名、命令前缀与路径 glob；
+  `deny` 永远优先，其余按「最具体者胜」——**精确工具名 > 通配 > 无条件**，与规则在文件里的
+  先后无关，所以一条 `mcp__*` 不会盖掉一条精确的 `deny`。每次决策写事件，含命中的 rule id。
+  TUI 审批面板按 `a` 本会话放行该工具，不再逐次询问。
+  `tool` 支持通配（`mcp__wordcraft__*` 一条覆盖整个 server，否则一个 server 的十几个工具
+  要手写十几条——实际踩过：`mcp__wordcraft__*` 在支持之前是静默不匹配，直接落到
+  `default: external tool: ask`）。写成非法 glob（如 `mcp__[__x`）会在**加载配置时**报错并
+  点名 rule id，而不是安静地永不匹配：
+
+  ```toml
+  [[rules]]
+  id = "allow-wordcraft"
+  tool = "mcp__wordcraft__*"
+  action = "allow"
+  ```
 - **跑飞兜底**：同一个工具带**完全相同参数**连续 3 轮（例如模型反复重跑同一条命令）即终止
   turn，写 `error(no_progress)`；`[agent] max_turns` 与 `[agent] max_cost_usd` 是另外两道预算。
 - **安全边界**：文件工具限制在 Task 授权的目录内（`..` 与 symlink 逃逸被拒）；

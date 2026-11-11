@@ -17,6 +17,9 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     warn_unknown_keys(path, &document);
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
+    // Same for approval rules: a rule whose glob does not parse never matches,
+    // so a mistyped `deny` silently stops denying.
+    validate_rules(path, &config.approval.rules)?;
     Ok(config)
 }
 
@@ -190,7 +193,25 @@ pub fn load_policy(path: &Path) -> Result<Vec<Rule>, ConfigError> {
         path: path.to_path_buf(),
         source: Box::new(source),
     })?;
+    validate_rules(path, &file.rules)?;
     Ok(file.rules)
+}
+
+/// Reject unparsable globs in `tool` / `path_glob` at load time.
+///
+/// Both entry points call this (this one and the config's
+/// `[[approval.rules]]`), because a rule that never matches is a rule whose
+/// author believes something false. Reporting it once at startup beats
+/// discovering it as an unexpected approval prompt.
+fn validate_rules(path: &Path, rules: &[Rule]) -> Result<(), ConfigError> {
+    for rule in rules {
+        rule.validate()
+            .map_err(|detail| ConfigError::InvalidPolicyRule {
+                path: path.to_path_buf(),
+                detail,
+            })?;
+    }
+    Ok(())
 }
 
 /// Home directory across platforms. Windows has no `HOME` by default.
