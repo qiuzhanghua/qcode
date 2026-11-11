@@ -311,6 +311,8 @@ fn run_with_timeout(
     mut command: Command,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
+    #[cfg(unix)]
+    detach_from_controlling_terminal(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start the sampler: {error}"))?;
@@ -326,6 +328,41 @@ fn run_with_timeout(
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(error) => return Err(error.to_string()),
         }
+    }
+}
+
+/// Give the sampler its own session, and with it no controlling terminal.
+///
+/// The default sampler is `$SHELL -lic env -0`. `-i` is not decoration: `.zshrc`
+/// and `.bashrc` are what define the toolchain hooks this snapshot exists to
+/// capture, and a shell only reads them with `-i`. But an interactive shell also
+/// opens `/dev/tty` *directly* rather than reading fd 0, so `Stdio::null()` on
+/// stdin does not protect it.
+///
+/// That only bites when `qc` runs in a background process group of a terminal
+/// session — `make check &`, `cargo test` under an IDE task runner, anything
+/// piped. The `/dev/tty` read raises `SIGTTIN`, which stops the sampler *and*
+/// the parent polling for it, so the `timeout` in [`run_with_timeout`] can never
+/// fire: its loop is stopped too. The job hangs until someone `fg`s it.
+///
+/// A new session has no controlling terminal, so `/dev/tty` fails with `ENXIO`,
+/// `-i` degrades to "no job control in this shell", and the sample still works.
+/// Note this is deliberately *not* `process_group(0)`: a process-group leader
+/// without a session still has the old session's terminal available.
+#[cfg(unix)]
+fn detach_from_controlling_terminal(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+
+    // SAFETY: `setsid` is async-signal-safe and touches only the forked child's
+    // own session state, which is what `pre_exec` closures are restricted to.
+    unsafe {
+        command.pre_exec(|| {
+            // Best effort, and silent on purpose: `EPERM` means the child is
+            // already a process-group leader, and failing the spawn over it
+            // would turn a fix for a hang into a broken sampler.
+            libc::setsid();
+            Ok(())
+        });
     }
 }
 
