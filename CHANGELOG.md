@@ -19,6 +19,13 @@ MCP server 的三处安全与可用性缺口（ADR-0066 / ADR-0068 P1）。起�
   `DEEPSEEK_API_KEY`、`SSH_AUTH_SOCK`。现在同样白名单：`PATH`/`LANG`/`TZ`/`LC_*`、合成
   `HOME`、凭据预设点名的变量、server 自己的 `env`，最后才是出口代理四件套（顺序错一个
   位，ADR-0023 的审计会静默失效）。`env` 的值可以写 `${NAME}`，密钥不必落盘。
+- **`qc doctor` 有 MCP 段了**。逐 server 打印它实际拿到的授权集（运行时 / 可写 / 凭据 /
+  私有 HOME），并把「配了但没用」的四种情形标成 warn：`read_paths` 指向不存在的路径、
+  `credentials = ["github"]` 但本机没有 `~/.config/gh`、`sandbox = "off"`、以及
+  `[sandbox] mode = "none"` 让 `[mcp] sandbox = "confine"` 形同虚设——最后这条是写 doctor
+  时才发现的，内核用 `[sandbox] mode` 造沙箱，`[mcp] sandbox` 单独开不出来。
+  `env` 里的字面量密钥也会被点名（值不打印），提示改写成 `"${VAR}"`。
+  授权集摘要同时区分「要了」与「拿到了」：`credentials [~/.ssh, npm(not found)]`。
 - **`qc mcp add` 认识新字段**：`--read-path`、`--write-path`、`--credential`、`--sandbox`。
   `qc mcp list` 会打印 server 的沙箱模式与显式授权项。
 - **`Sandbox::command` 的文档补了一条真踩到的坑**：返回的 `Command` 依赖 sandbox 还活着

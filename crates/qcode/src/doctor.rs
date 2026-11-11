@@ -31,6 +31,7 @@ pub async fn run(
     #[cfg(windows)]
     doctor.check_token();
     doctor.check_sandbox(&config);
+    doctor.check_mcp(&config, &data_dir);
     doctor.ok(
         "acp",
         format!(
@@ -507,5 +508,184 @@ impl Doctor {
             }
             Err(err) => self.fail("sandbox", err.to_string()),
         }
+    }
+
+    /// MCP servers: one line per server with the grant it would get
+    /// (ADR-0066), plus the silent no-ops that make a server "configured but
+    /// useless" (ADR-0068 §2).
+    ///
+    /// Nothing here counts as a failure. A broken server only loses its own
+    /// tools and the session continues, so exiting non-zero would overstate it;
+    /// what doctor owes the user is the *reason*, which is what the warnings
+    /// are.
+    fn check_mcp(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
+        if config.mcp.servers.is_empty() {
+            return;
+        }
+        let workspace = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
+        let real_home = qcode_mcp::real_home();
+        // `[mcp] sandbox` is not the last word: the kernel builds MCP sandboxes
+        // out of `[sandbox] mode`, and `none` there means nothing is confined
+        // whatever the per-server setting says. Saying "sandbox confine" in
+        // that case is exactly the doc-says-one-thing, code-does-another bug
+        // this ADR set out to remove.
+        let global = config.sandbox.mode != SandboxMode::None;
+        if !global && config.mcp.servers.iter().any(|server| server.enabled) {
+            self.warn(
+                "mcp",
+                "[sandbox] mode = \"none\": no server is confined, whatever [mcp] sandbox says",
+            );
+        }
+
+        for server in &config.mcp.servers {
+            let label = format!("mcp {}", server.name);
+            if !server.enabled {
+                self.ok(&label, "disabled; skipped at startup");
+                continue;
+            }
+
+            // The one way a token still reaches the config file.
+            for (key, value) in &server.env {
+                if !is_secret_name(key) || is_env_reference(value) {
+                    continue;
+                }
+                self.warn(
+                    &format!("{label} env {key}"),
+                    "the value is a literal, so the secret is in the config file; write \
+                     ${NAME} instead so it is read from qcode's environment",
+                );
+            }
+
+            // `derive` drops explicit paths that do not exist and presets with
+            // nothing behind them, which is correct (the server may create the
+            // directory itself) but leaves the user with a server that fails
+            // for no visible reason. Say it here.
+            for (field, paths) in [
+                ("read_paths", &server.read_paths),
+                ("writable_paths", &server.writable_paths),
+            ] {
+                for path in paths {
+                    if !path.exists() {
+                        self.warn(
+                            &format!("{label} {field}"),
+                            format!("{} does not exist; the grant skips it", path.display()),
+                        );
+                    }
+                }
+            }
+            for preset in &server.credentials {
+                let granted = real_home.as_ref().is_some_and(|home| {
+                    preset
+                        .home_paths()
+                        .iter()
+                        .any(|relative| home.join(relative).exists())
+                });
+                if granted {
+                    continue;
+                }
+                let wanted = preset
+                    .home_paths()
+                    .iter()
+                    .map(|relative| format!("~/{relative}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                self.warn(
+                    &format!("{label} credentials"),
+                    format!(
+                        "\"{}\" grants nothing on this machine (no {wanted})",
+                        preset.label()
+                    ),
+                );
+            }
+
+            if !server.sandbox_mode(config.mcp.sandbox).is_confined() {
+                self.warn(
+                    &label,
+                    "sandbox = \"off\"; the server is not confined, so it reads and writes \
+                     whatever your user can",
+                );
+                continue;
+            }
+
+            let grant = qcode_mcp::GrantSet::derive(qcode_mcp::GrantInput {
+                server,
+                workspace: &workspace,
+                server_state: server.state_dir(&data_dir),
+                real_home: real_home.as_deref(),
+                confined: global,
+            });
+            match grant {
+                Ok(grant) => self.ok(&label, grant.describe()),
+                Err(error) => self.warn(&label, error.to_string()),
+            }
+        }
+    }
+}
+
+/// Does this variable name look like it holds a secret?
+///
+/// Matched per `_`/`-`-separated segment, not as a substring: the substring
+/// version that ADR-0068 rejected hits `MONKEY` and `KEYBOARD_LAYOUT` while
+/// missing nothing that the segment version catches. A false positive here is
+/// only a warning, but it is a warning users learn to ignore.
+fn is_secret_name(key: &str) -> bool {
+    const SECRET_SEGMENTS: &[&str] = &[
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "KEY",
+        "APIKEY",
+        "CREDENTIAL",
+        "CREDENTIALS",
+    ];
+    key.split(['_', '-'])
+        .any(|segment| SECRET_SEGMENTS.contains(&segment.to_ascii_uppercase().as_str()))
+}
+
+/// `"${NAME}"` — the whole-value form `expand_env` understands.
+fn is_env_reference(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|name| !name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_names_are_matched_by_segment() {
+        for name in [
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "API_KEY",
+            "NPM_TOKEN",
+            "DOCKER_PASSWORD",
+            "GH_TOKEN",
+        ] {
+            assert!(is_secret_name(name), "{name} should look like a secret");
+        }
+        // The substring approach ADR-0068 rejected caught these.
+        for name in ["MONKEY", "KEYBOARD_LAYOUT", "PATH", "LANG"] {
+            assert!(
+                !is_secret_name(name),
+                "{name} should not look like a secret"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_whole_value_form_counts_as_a_reference() {
+        assert!(is_env_reference("${GITHUB_TOKEN}"));
+        assert!(!is_env_reference("$GITHUB_TOKEN"));
+        assert!(!is_env_reference("Bearer ${TOKEN}"));
+        assert!(!is_env_reference("${}"));
+        assert!(!is_env_reference("literal"));
     }
 }

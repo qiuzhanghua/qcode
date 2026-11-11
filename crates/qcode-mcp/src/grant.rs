@@ -48,7 +48,10 @@ impl CredentialPreset {
     }
 
     /// Paths relative to the real `$HOME`.
-    fn home_paths(self) -> &'static [&'static str] {
+    ///
+    /// Public so `qc doctor` can answer "`credentials = [\"github\"]` but is there
+    /// a `~/.config/gh` at all?" without re-listing the table.
+    pub fn home_paths(self) -> &'static [&'static str] {
         match self {
             Self::Aws => &[".aws"],
             Self::Docker => &[".docker/config.json"],
@@ -420,12 +423,25 @@ impl GrantSet {
             list(self.runtime.iter().cloned()),
             list(self.writable.iter().cloned()),
             {
+                // Granted subtrees in `~/...` form, then the presets that
+                // matched nothing: "credentials [github]" next to a `!aws` is
+                // the difference between "asked for" and "actually got", which
+                // is precisely what went wrong silently before.
                 let mut parts: Vec<String> = self
-                    .credentials()
-                    .map(Path::to_path_buf)
-                    .map(|path| path.display().to_string())
+                    .credentials
+                    .iter()
+                    .map(|granted| format!("~/{}", granted.relative.display()))
                     .collect();
-                parts.extend(self.presets.iter().map(|preset| preset.label().to_string()));
+                for preset in &self.presets {
+                    let matched = preset.home_paths().iter().any(|relative| {
+                        self.credentials
+                            .iter()
+                            .any(|granted| granted.relative == Path::new(relative))
+                    });
+                    if !matched {
+                        parts.push(format!("{}(not found)", preset.label()));
+                    }
+                }
                 if parts.is_empty() {
                     "—".to_string()
                 } else {

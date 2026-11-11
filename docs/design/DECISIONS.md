@@ -6085,8 +6085,17 @@ sandbox = "off"        # warn + doctor partial
 - 合成 HOME 里的凭据符号链接在 macOS `sandbox-exec` 下是否需要显式放行 target（`file-read`
   按解析后路径匹配，预期够用，需实测）。
 - `writable_paths` 指向真实 `$HOME` 的某处（例如某个 server 的日志目录）时要不要 warn。
-- `qc doctor` 逐 server 打印授权集（P2 剩下的部分）：现在只有启动日志里的 `mcp server grant`
-  一行，和 `qc mcp list` 里的配置显式项；`doctor` 还没有 MCP 段。
+- **已做（2026-11-11）**：`qc doctor` 现在有 MCP 段，逐 server 一行打印授权集，并把四个
+  「配置了但没用」的情形变成 warn：`read_paths`/`writable_paths` 指向不存在的路径、
+  `credentials` 预设在本机无对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
+  时 `[mcp] sandbox = "confine"` 形同虚设（最后这条是写 doctor 时才发现的：内核用
+  `[sandbox] mode` 造 MCP 沙箱，`[mcp] sandbox` 单独开不出来，doctor 若照配置念
+  「confine」就是这次要消灭的那种「文档说一套、代码做一套」）。这些一律用 warn 而不是
+  fail：起不来的 server 只丢自己的工具，会话照常，doctor 不该因此退出非零。
+  `describe()` 的凭据段同时改成「已授予的 `~/...` + 未命中的 `preset(not found)`」，
+  以便区分「要了」与「拿到了」。
+- `qc doctor` 还没有能力探测的段（`discover` / `resources/list` 是否真的通）：那要等
+  ADR-0067 的传输层落地，现在 doctor 只做静态检查，不连 server。
 
 ## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
 
@@ -6522,8 +6531,11 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
   `PATH`/`LANG`/`TZ`/`LC_*`，于是需要显示服务的 server（wordcraft 这类桌面应用）启动即死，
   报「neither WAYLAND_DISPLAY nor DISPLAY is set」。这不是缺陷，是 §1 的直接后果，解法
   正是 §2 给的：`env = { DISPLAY = "${DISPLAY}" }`，实测有效。文档与报错要能指向这一点。
-- `qc doctor` 对「名字像密钥且是字面量」的 `env` 项给 warn（P3）**没有做**：它需要 doctor
-  先有 MCP 段（与 ADR-0066 的同一条待定合并）。
+- **P3 已做（2026-11-11）**：`qc doctor` 对「名字像密钥且是字面量」的 `env` 项给一行 warn，
+  提示改写成 `${NAME}`。名字按 `_`/`-` 分段匹配（`TOKEN`/`SECRET`/`PASSWORD`/`KEY` 等），
+  而不是 §1 里被否掉的那个子串正则——`MONKEY`、`KEYBOARD_LAYOUT` 不该中，而
+  `GITHUB_TOKEN`、`API_KEY` 必须中，分段匹配两者都对。只在值是字面量时告警，
+  `${VAR}` 形式正是解药，不报。这条 warn 同时是 §2「只 warn 不拒绝」的落点。
 
 **待定**
 

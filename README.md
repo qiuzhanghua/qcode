@@ -431,6 +431,11 @@ cargo build -p qcode-eval
   MCP server；`qc doctor` 打印协商的协议版本。
 - **诊断**：`qc doctor` 检查配置、凭据、数据目录、toolchain、`web_search` 配置，并对非 mock
   provider 做一次真实连通性探测（10s 超时；认证/请求错误记为 fail，网络错误记 warn）。
+  MCP 也有一段：逐 server 打印它实际拿到的授权集（运行时目录 / 可写目录 / 凭据 / 私有
+  `HOME`），并把四种「配了但没用」的情形标成 warn——`read_paths` 指向不存在的路径、
+  `credentials` 预设在本机没有对应文件、`sandbox = "off"`、以及 `[sandbox] mode = "none"`
+  让 `[mcp] sandbox = "confine"` 形同虚设。`env` 里形如 `GITHUB_TOKEN = "ghp_..."` 的
+  字面量密钥也会被点名（值不打印），提示改写成 `"${GITHUB_TOKEN}"`。
 - **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
   `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
   只认 GitHub Releases API 给出的 `browser_download_url`，校验和不符则不落盘——没有归档解包器，
