@@ -254,13 +254,7 @@ impl Shell {
                 cx,
             ))
             .when(tasks_open, |this| this.child(self.render_task_list(cx)))
-            .child(self.render_section_header(
-                SidebarSection::Schedule,
-                "定时任务",
-                None,
-                !tasks_open,
-                cx,
-            ))
+            .child(self.render_schedule_section_header(cx))
             .when(!tasks_open, |this| {
                 this.child(self.render_schedule_list(cx))
             })
@@ -792,12 +786,145 @@ impl Shell {
         }
     }
 
-    /// The open schedule section's list: one line per entry, no cards.
+    /// 定时任务段的段头：左侧与其它段头同构（chevron + 图标 + 名称），右侧
+    /// 是两个动作按钮——「＋」新建（跳新对话预填创建提示）与「⋮」菜单
+    /// （在对话中创建 / 手动创建）。
+    fn render_schedule_section_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let open = self.sidebar_section == SidebarSection::Schedule;
+        let mut header = div()
+            .id(("sidebar-section", SidebarSection::Schedule as usize))
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .px_2()
+            .pt_2()
+            .pb_1()
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .pl_1p5()
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .with_size(Size::Small)
+                        .text_color(muted),
+                    )
+                    .child(
+                        Icon::new(IconName::CalendarClock)
+                            .with_size(Size::Medium)
+                            .text_color(if open { foreground } else { muted }),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if open { foreground } else { muted })
+                            .child("定时任务"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_0p5()
+                    .child(
+                        Button::new("new-schedule-task")
+                            .compact()
+                            .label("+")
+                            .tooltip("在对话中创建定时任务")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.new_schedule_draft(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("schedule-menu")
+                            .compact()
+                            .label("⋮")
+                            .tooltip("定时任务操作")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_schedule_menu(cx);
+                            })),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.open_sidebar_section(SidebarSection::Schedule, cx);
+            }));
+        if self.schedule_menu_open {
+            header = header.child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.0), px(28.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(self.render_schedule_menu(cx)),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
+        }
+        header.into_any_element()
+    }
+
+    /// 定时任务段头「⋮」的弹出菜单：在对话中创建 / 手动创建。
+    fn render_schedule_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        div()
+            .id("schedule-menu-popover")
+            .w(px(168.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(8.0))
+            .bg(theme.popover)
+            .border_1()
+            .border_color(theme.border)
+            .p_1()
+            .text_color(theme.popover_foreground)
+            .on_mouse_down_out(cx.listener(|this, _, _window, cx| {
+                this.schedule_menu_open = false;
+                cx.notify();
+            }))
+            .child(
+                Button::new("schedule-create-in-chat")
+                    .label("在对话中创建")
+                    .tooltip("新建会话，让模型按你的描述创建定时任务")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.new_schedule_draft(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("schedule-manual-create")
+                    .label("手动创建")
+                    .tooltip("填写名称 / 内容 / 周期等，直接创建")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_schedule_form(window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The open schedule section's list: one line per runtime task.
     ///
     /// The sidebar is 240px wide by default; a card per entry would repeat the
     /// name, the cron and the status in a column too narrow for any of them. The
-    /// board in the content area is where the detail lives (ADR-0063 §5); this is
-    /// the index, and clicking a line goes there.
+    /// detail + run log lives in the content area (`render_schedule_view`); this
+    /// is the index, and clicking a line goes there.
     fn render_schedule_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         div()
@@ -810,18 +937,27 @@ impl Shell {
             .gap_1()
             .px_2()
             .overflow_y_scroll()
-            .when(self.schedule_rows.is_empty(), |this| {
+            .when(self.schedule_tasks.is_empty(), |this| {
                 this.child(
                     div()
                         .px_2()
                         .py_1()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(muted)
-                        .child("还没有定时任务——在 config.toml 的 [schedules.<名字>] 里声明"),
+                        .child("还没有定时任务——点「＋」在对话中创建，或用「⋮」手动创建"),
                 )
             })
-            .children(self.schedule_rows.iter().map(|row| {
-                let attention = row.hint();
+            .children(self.schedule_tasks.iter().map(|task| {
+                let marker = match task.status {
+                    qcode_core::schedule::TaskStatus::Active => "●",
+                    qcode_core::schedule::TaskStatus::Paused => "○",
+                    qcode_core::schedule::TaskStatus::Ended => "■",
+                };
+                let next = task
+                    .next_fire_at
+                    .map_or_else(String::new, |at| format!(" · {}", at.time()));
+                let label = format!("{marker} {}{next}", task.title);
+                let task_id = task.id.clone();
                 div()
                     .flex()
                     .flex_row()
@@ -831,9 +967,12 @@ impl Shell {
                     .min_h(px(30.0))
                     .px_2()
                     .rounded(px(6.0))
-                    .id(format!("schedule-row-{}", row.name))
+                    .id(format!("schedule-row-{}", task.id))
                     .cursor_pointer()
-                    .when(!row.enabled, |this| this.opacity(0.55))
+                    .when(
+                        task.status == qcode_core::schedule::TaskStatus::Ended,
+                        |this| this.opacity(0.55),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -841,18 +980,10 @@ impl Shell {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(sp(BODY_SIZE))
-                            .child(row.name.clone()),
+                            .child(label),
                     )
-                    .when(attention.is_some(), |this| {
-                        this.child(
-                            Icon::new(IconName::CircleAlert)
-                                .with_size(Size::Small)
-                                .text_color(cx.theme().danger),
-                        )
-                    })
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.view = MainView::Schedule;
-                        cx.notify();
+                        this.open_schedule_detail(&task_id, cx);
                     }))
                     .into_any_element()
             }))

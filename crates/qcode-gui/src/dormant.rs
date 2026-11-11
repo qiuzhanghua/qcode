@@ -128,6 +128,8 @@ pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
         }
         // Window-level: handled by `Shell::poll` before routing.
         UiEvent::SessionChanged { .. } => {}
+        // 定时任务事件是 host 级的，不进会话视图。
+        UiEvent::ScheduleChanged | UiEvent::ScheduleNotice { .. } => {}
     }
     applied
 }

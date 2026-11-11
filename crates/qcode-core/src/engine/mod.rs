@@ -178,6 +178,9 @@ pub struct TurnContext<'a> {
     /// Pre-images of files the agent is about to write, so a later rollback can
     /// put the workspace back. `None` disables checkpointing for this turn.
     pub snapshots: Option<&'a crate::snapshot::SnapshotStore>,
+    /// 定时任务管理服务。GUI 引擎注入运行时 `Scheduler`；其余前端（CLI / ACP /
+    /// 子代理 / 测试）为 `None`，schedule 工具返回"服务不可用"。
+    pub scheduler: Option<std::sync::Arc<dyn crate::scheduler::SchedulerHandle>>,
 }
 
 #[derive(Debug, Clone)]

@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::event::{ToolDiff, ToolMetadata, ToolStatus, Usage};
 use crate::network::Network;
 use crate::provider::ToolSpec;
+use crate::scheduler::SchedulerHandle;
 use crate::task::{Root, RootAccess};
 
 /// Everything a tool is allowed to know about its surroundings.
@@ -32,6 +33,9 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     /// Egress proxy for tools that make network calls.
     pub network: Option<Arc<dyn Network>>,
+    /// 定时任务管理服务（GUI 引擎注入；`None` = 该环境没有定时任务引擎，
+    /// schedule 工具返回错误而不是静默失败）。
+    pub scheduler: Option<Arc<dyn SchedulerHandle>>,
 }
 
 impl ToolContext {
@@ -56,6 +60,7 @@ impl ToolContext {
             temp_dir: None,
             cancel: CancellationToken::new(),
             network: None,
+            scheduler: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl ToolContext {
             temp_dir: None,
             cancel: CancellationToken::new(),
             network: None,
+            scheduler: None,
         }
     }
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
@@ -100,6 +106,12 @@ impl ToolContext {
 
     pub fn with_network(mut self, network: Arc<dyn Network>) -> Self {
         self.network = Some(network);
+        self
+    }
+
+    /// 注入定时任务管理服务（`None` 可显式清除）。引擎在 turn 开始时设置它。
+    pub fn with_scheduler(mut self, scheduler: Option<Arc<dyn SchedulerHandle>>) -> Self {
+        self.scheduler = scheduler;
         self
     }
 }
@@ -267,6 +279,20 @@ impl ToolRegistry {
         for tool in tools {
             self.tools.insert(tool.name().to_string(), tool);
         }
+    }
+
+    /// 一个不含给定工具的新注册表（原注册表不变）。
+    ///
+    /// 用于子代理 / 无头服务：定时任务管理工具只对带运行时驱动的会话开放，
+    /// 子代理上下文拿不到 `SchedulerHandle`，直接从工具清单里去掉更干净。
+    pub fn without(&self, names: &[&str]) -> Self {
+        let mut map = BTreeMap::new();
+        for (name, tool) in &self.tools {
+            if !names.contains(&name.as_str()) {
+                map.insert(name.clone(), tool.clone());
+            }
+        }
+        Self { tools: map }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {

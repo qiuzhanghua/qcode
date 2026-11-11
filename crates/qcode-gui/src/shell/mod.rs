@@ -1,5 +1,7 @@
 use crate::dormant::Dormant;
 use crate::*;
+use qcode_core::schedule::ScheduledTask;
+use schedule::ScheduleFormState;
 use std::collections::HashMap;
 use task_ui::TaskUi;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
@@ -100,6 +102,14 @@ pub(crate) struct Shell {
     /// Cached `Backend::schedules()` for the board. Refreshed with the task list,
     /// never per frame: it reads config and the store (ADR-0063 §8).
     pub(crate) schedule_rows: Vec<ScheduleRow>,
+    /// 运行时定时任务缓存（`Backend::schedule_tasks()`）：侧栏列表与详情页共用。
+    pub(crate) schedule_tasks: Vec<ScheduledTask>,
+    /// 侧栏「定时任务」段头 ⋮ 菜单是否展开。
+    pub(crate) schedule_menu_open: bool,
+    /// 定时任务详情页当前选中的任务 id（`None` = 空态）。
+    pub(crate) schedule_detail: Option<String>,
+    /// 手动创建定时任务的表单（`Some` = 弹窗打开中）。
+    pub(crate) schedule_form: Option<ScheduleFormState>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
     pub(crate) minimize_on_close: bool,
     /// 托盘“退出”在任务运行中时的确认。
@@ -200,6 +210,7 @@ pub(crate) struct Shell {
 }
 
 mod routing;
+pub(crate) mod schedule;
 mod session;
 mod task_ui;
 mod tasks;
@@ -335,6 +346,10 @@ impl Shell {
             sidebar_expanded: prefs.sidebar_expanded,
             sidebar_section: SidebarSection::from_stored(&prefs.sidebar_section),
             schedule_rows: Vec::new(),
+            schedule_tasks: Vec::new(),
+            schedule_menu_open: false,
+            schedule_detail: None,
+            schedule_form: None,
             minimize_on_close,
             pending_quit: false,
             pending_task_renames: std::collections::BTreeMap::new(),
@@ -555,6 +570,18 @@ impl Shell {
         let mut failed: Option<String> = None;
 
         while let Some(SessionEvent { target, event }) = self.backend.try_recv() {
+            // 定时任务事件是 host 级的，先于会话路由处理。
+            match &event {
+                UiEvent::ScheduleChanged => {
+                    self.refresh_tasks();
+                    continue;
+                }
+                UiEvent::ScheduleNotice { message } => {
+                    self.set_notice(message.clone(), true, cx);
+                    continue;
+                }
+                _ => {}
+            }
             let finished = match &event {
                 UiEvent::TurnFinished { session } => Some(session.clone()),
                 _ => None,

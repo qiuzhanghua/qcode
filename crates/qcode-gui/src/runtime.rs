@@ -7,10 +7,14 @@
 use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
-use qcode_core::schedule::{Schedule, ScheduleState, ScheduleStatus, Tick};
+use qcode_core::schedule::{
+    Advance, DeliveryReceipt, Schedule, ScheduleState, ScheduleStatus, ScheduledTask, Target,
+    TaskStatus, TaskTick, Tick, advance_rule, append_delivery, task_tick,
+};
+use qcode_core::scheduler::{EditTask, NewTask, Scheduler};
 use qcode_core::store::SessionStore;
-use qcode_ui_bridge::{KernelPort, QueueOp, SessionTarget, TaggedPort, UiCommand};
-use std::collections::HashMap;
+use qcode_ui_bridge::{KernelPort, QueueOp, ScheduleOp, SessionTarget, TaggedPort, UiCommand};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -251,6 +255,27 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 eprintln!("qcode-gui: cannot prune schedule state: {error}");
             }
 
+            // 运行时定时任务（Scheduled Tasks）：任务定义由 `Scheduler` 管理，
+            // 投递在本时钟 beat 扫描（与 config 条目并存；迁移后这里接管）。
+            // 单一时钟 beat 驱动全量扫描——cron 分钟级、interval ≥60s，30s
+            // beat 的精度足够，也省去独立定时器与 kick 信号。
+            let scheduler = Arc::new(Scheduler::new(engine.store.clone()));
+            // in-flight 占位：已投递、等待确认的任务不再被扫描。
+            let mut inflight: HashSet<String> = HashSet::new();
+            // message_id -> [(task_id, 目标会话, 投递文案)]：对应 user/message
+            // 事件落盘后确认（主消息落盘不带 queued_id，按文案匹配）。
+            let mut pending_ack: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+            // ADR-0059 迁移：config 声明条目导入为运行时任务（幂等）。
+            if let Ok(added) = scheduler.import_config(
+                &schedules,
+                &schedule_states,
+                qcode_core::schedule::now_local(),
+            ) {
+                if added > 0 {
+                    eprintln!("qcode-gui: imported {added} [schedules] entries as tasks");
+                }
+            }
+
             // Publish a session's queue rows, remembering what the UI was told so
             // an unchanged queue costs nothing.
             macro_rules! publish_to {
@@ -326,6 +351,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let snapshots = engine.snapshots.clone();
                     let network = engine.network.clone();
                     let workspace = engine.workspace.clone();
+                    // 定时任务服务随回合注入：工具经 `ToolContext.scheduler`
+                    // 拿到运行时 `Scheduler`（模型可创建 / 管理定时任务）。
+                    let task_scheduler = scheduler.clone();
                     let max_turns = $max_turns;
                     let max_cost_usd = $max_cost;
                     let context_window = engine.context_window;
@@ -379,6 +407,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 policy: &policy,
                                 approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
+                                scheduler: Some(task_scheduler),
                             },
                             options,
                             move |event| sink.send_event(event),
@@ -390,6 +419,54 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             result.map(|_| ()).map_err(|error| error.to_string()),
                         ));
                     });
+                }};
+            }
+
+            // 投递一个到期的定时任务组：同一固定会话的多个任务合并为一条消息；
+            // `New`/`NewOnce` 目标的会话已由调用方建好。投递只是把消息放进收件箱
+            // （瞬态内存），落盘确认在 beat 扫描里按 messageId 查日志完成。
+            macro_rules! deliver_schedule_group {
+                ($session_id:expr, $tasks:expr) => {{
+                    let session_id: String = $session_id;
+                    let tasks: Vec<ScheduledTask> = $tasks;
+                    let target = SessionTarget::Session(session_id.clone());
+                    let busy = live.contains_key(&target);
+                    let queue = host.queue(&target).unwrap_or_else(|| host.open(&target).1);
+                    // 批量合并：同一会话的多个任务合成一条消息（framing 带任务 id）。
+                    let framed: Vec<String> = tasks
+                        .iter()
+                        .map(|task| {
+                            format!(
+                                "[SCHEDULED TASK REMINDER] ({}) {}",
+                                task.id, task.prompt
+                            )
+                        })
+                        .collect();
+                    let message = queue.inbox().followup(framed.join("\n"), Vec::new());
+                    for task in &tasks {
+                        inflight.insert(task.id.clone());
+                    }
+                    pending_ack
+                        .entry(message.id.clone())
+                        .or_default()
+                        .extend(tasks.iter().zip(&framed).map(|(task, prompt)| {
+                            (
+                                task.id.clone(),
+                                session_id.clone(),
+                                prompt.clone(),
+                            )
+                        }));
+                    // 空闲会话立刻开回合；忙碌会话消息留在队列，回合结束后由
+                    // `done_rx` 分支自动接管。
+                    if !busy {
+                        approval_deadline = tasks
+                            .iter()
+                            .find_map(|task| task.approval_timeout)
+                            .or(approval_deadline);
+                        if let Some(claimed) = queue.finish() {
+                            start_turn!(target.clone(), claimed.text, claimed.attachments);
+                        }
+                    }
                 }};
             }
 
@@ -532,6 +609,137 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     &mut schedule_states,
                                 );
                             }
+                        }
+
+                        // ==== 运行时定时任务（Scheduled Tasks）====
+                        // 迁移导入后的任务由这里接管投递。与 config 条目共用同一
+                        // 时钟 beat：cron 分钟级、interval ≥60s，30s beat 精度足够。
+                        let now = qcode_core::schedule::now_local();
+
+                        // ① 确认已投递：user/message 事件落盘 = 投递已确认
+                        //（回执 ≠ 执行完成；以日志为事实源）。
+                        let mut confirmed: Vec<String> = Vec::new();
+                        for (message_id, pending) in pending_ack.iter() {
+                            let mut all_landed = true;
+                            for (task_id, session, prompt) in pending {
+                                let landed = engine
+                                    .store
+                                    .schedule_delivery_landed(session, prompt)
+                                    .unwrap_or(false);
+                                if !landed {
+                                    all_landed = false;
+                                    continue;
+                                }
+                                if scheduler
+                                    .update(task_id, |task| {
+                                        let receipt = DeliveryReceipt {
+                                            occurrence_at: task.next_fire_at.unwrap_or(now),
+                                            delivered_at: now,
+                                            message_id: message_id.clone(),
+                                            target_session_id: Some(session.clone()),
+                                        };
+                                        if append_delivery(
+                                            &mut task.delivery_log,
+                                            receipt.clone(),
+                                            now,
+                                        ) {
+                                            task.earlier_records_pruned = true;
+                                        }
+                                        task.last_receipt = Some(receipt);
+                                        match advance_rule(&task.rule, now) {
+                                            Advance::Next(next) => {
+                                                task.next_fire_at = Some(next);
+                                            }
+                                            Advance::Ended => {
+                                                task.status = TaskStatus::Ended;
+                                                task.next_fire_at = None;
+                                            }
+                                        }
+                                    })
+                                    .is_ok()
+                                {
+                                    inflight.remove(task_id);
+                                }
+                            }
+                            if all_landed {
+                                confirmed.push(message_id.clone());
+                            }
+                        }
+                        for message_id in confirmed {
+                            pending_ack.remove(&message_id);
+                        }
+
+                        // ② 扫描到期任务：跳过 in-flight 与 rearm 间隔内的。
+                        let mut due: Vec<ScheduledTask> = Vec::new();
+                        for task in scheduler.list() {
+                            if task.status != TaskStatus::Active || inflight.contains(&task.id) {
+                                continue;
+                            }
+                            if let Some(last) = &task.last_receipt
+                                && now - last.delivered_at
+                                    < time::Duration::seconds(
+                                        task.rearm_after.as_secs() as i64,
+                                    )
+                            {
+                                continue;
+                            }
+                            let target = task
+                                .target
+                                .session_id()
+                                .map(|id| SessionTarget::Session(id.to_string()));
+                            let busy = target
+                                .as_ref()
+                                .is_some_and(|target| live.contains_key(target));
+                            let exists = target
+                                .as_ref()
+                                .and_then(|target| target.id())
+                                .is_none_or(|id| engine.store.task(id).is_ok());
+                            match task_tick(&task, now, busy, exists) {
+                                TaskTick::Fire => due.push(task),
+                                TaskTick::SkipBusy => {
+                                    // 与 config 的 skip 一致：跳过本次并推进。
+                                    let _ = scheduler.update(&task.id, |task| {
+                                        match advance_rule(&task.rule, now) {
+                                            Advance::Next(next) => {
+                                                task.next_fire_at = Some(next);
+                                            }
+                                            Advance::Ended => {
+                                                task.status = TaskStatus::Ended;
+                                                task.next_fire_at = None;
+                                            }
+                                        }
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ③ 分组投递：同一固定会话合并为一条消息；New/NewOnce
+                        // 各自建会话再投。
+                        let mut groups: BTreeMap<String, Vec<ScheduledTask>> = BTreeMap::new();
+                        let mut fresh: Vec<ScheduledTask> = Vec::new();
+                        for task in due {
+                            match task.target.session_id() {
+                                Some(id) => {
+                                    groups.entry(id.to_string()).or_default().push(task);
+                                }
+                                None => fresh.push(task),
+                            }
+                        }
+                        for task in fresh {
+                            let Some(id) =
+                                create_task(engine, &provider_name, &port, &model, false)
+                            else {
+                                continue; // 建会话失败：下一个 beat 再试。
+                            };
+                            let _ = scheduler.update(&task.id, |task| {
+                                task.reserved_session_id = Some(id.clone());
+                                task.target = Target::Session { id: id.clone() };
+                            });
+                            deliver_schedule_group!(id, vec![task]);
+                        }
+                        for (session_id, tasks) in groups {
+                            deliver_schedule_group!(session_id, tasks);
                         }
                     }
                     command = commands.recv() => {
@@ -726,6 +934,101 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     }
                                 }
                                 publish_to!(target);
+                            }
+                            UiCommand::ScheduleOp(op) => {
+                                let changed = !matches!(
+                                    op,
+                                    ScheduleOp::List | ScheduleOp::Get { .. }
+                                );
+                                let now = qcode_core::schedule::now_local();
+                                let result: Result<Option<String>, String> = match op {
+                                    ScheduleOp::Create {
+                                        title,
+                                        prompt,
+                                        rule,
+                                        target,
+                                        overlap,
+                                        approval_timeout,
+                                        rearm_after,
+                                    } => scheduler
+                                        .create(
+                                            NewTask {
+                                                title,
+                                                prompt,
+                                                rule,
+                                                target,
+                                                overlap,
+                                                approval_timeout,
+                                                rearm_after,
+                                            },
+                                            now,
+                                        )
+                                        .map(|task| {
+                                            Some(format!(
+                                                "已创建定时任务 `{}`",
+                                                task.title
+                                            ))
+                                        })
+                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::List => Ok(Some(format!(
+                                        "共 {} 个定时任务",
+                                        scheduler.list().len()
+                                    ))),
+                                    ScheduleOp::Get { id } => match scheduler.find(&id) {
+                                        Some(task) => Ok(Some(format!("{task:?}"))),
+                                        None => Err("定时任务不存在".to_string()),
+                                    },
+                                    ScheduleOp::Edit {
+                                        id,
+                                        title,
+                                        prompt,
+                                        rule,
+                                        target,
+                                        overlap,
+                                        approval_timeout,
+                                        rearm_after,
+                                    } => scheduler
+                                        .edit(
+                                            &id,
+                                            EditTask {
+                                                title,
+                                                prompt,
+                                                rule,
+                                                target,
+                                                overlap,
+                                                approval_timeout,
+                                                rearm_after,
+                                            },
+                                            now,
+                                        )
+                                        .map(|_| Some("已保存".to_string()))
+                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::Pause { id } => scheduler
+                                        .pause(&id)
+                                        .map(|_| Some("已暂停".to_string()))
+                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::Resume { id } => scheduler
+                                        .resume(&id, now)
+                                        .map(|_| Some("已恢复".to_string()))
+                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::RunNow { id } => scheduler
+                                        .run_now(&id, now)
+                                        .map(|_| Some("已触发".to_string()))
+                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::Delete { id } => scheduler
+                                        .delete(&id)
+                                        .map(|_| Some("已删除".to_string()))
+                                        .map_err(|error| error.to_string()),
+                                };
+                                match result {
+                                    Ok(_) if changed => port
+                                        .tagged(SessionTarget::Draft)
+                                        .send_schedule_changed(),
+                                    Err(message) => port
+                                        .tagged(SessionTarget::Draft)
+                                        .send_schedule_notice(message),
+                                    _ => {}
+                                }
                             }
                         }
                     }

@@ -76,6 +76,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             policy: &Policy::default(),
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,

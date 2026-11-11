@@ -82,3 +82,4 @@ debug.log
 
 # Local config and data kept next to the checkout
 /.qcode/
+/.trae/

@@ -64,6 +64,7 @@ async fn a_write_tool_records_its_diff_in_the_session_log() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,

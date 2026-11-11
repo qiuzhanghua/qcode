@@ -38,4 +38,5 @@ windows-sys = { version = "0.61.2", features = [
 qcode-net = { version = "0.8.1", path = "../qcode-net" }
 qcode-providers = { version = "0.8.1", path = "../qcode-providers" }
 tempfile.workspace = true
+time.workspace = true
 tokio-util.workspace = true

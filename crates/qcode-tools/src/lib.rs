@@ -7,6 +7,7 @@ pub mod fs;
 pub mod patch;
 pub mod path;
 pub mod sandbox;
+pub mod schedule;
 pub mod search;
 pub mod shell;
 pub mod skills;
@@ -40,6 +41,10 @@ pub fn builtin_registry_with(sandbox: Arc<dyn Sandbox>) -> ToolRegistry {
         Arc::new(fetch::WebFetch),
         Arc::new(shell::RunShell::new(sandbox)),
         Arc::new(todo::TodoWrite),
+        Arc::new(schedule::ScheduleCreate),
+        Arc::new(schedule::ScheduleList),
+        Arc::new(schedule::ScheduleView),
+        Arc::new(schedule::ScheduleEdit),
     ])
 }
 
@@ -95,6 +100,17 @@ mod tests {
         let registry = builtin_registry();
         assert!(registry.get("apply_patch").is_some());
         assert!(registry.get("web_fetch").is_some());
+        assert!(registry.get("todo_write").is_some());
+        assert!(registry.get("schedule_create").is_some());
+        assert!(registry.get("schedule_list").is_some());
+        assert!(registry.get("schedule_view").is_some());
+        assert!(registry.get("schedule_edit").is_some());
+        assert!(
+            registry
+                .without(&crate::schedule::SCHEDULE_TOOL_NAMES)
+                .get("schedule_create")
+                .is_none()
+        );
         assert!(registry.get("todo_write").is_some());
     }
 }

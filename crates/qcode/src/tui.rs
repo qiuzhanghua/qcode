@@ -180,7 +180,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let input = InputThread::spawn(tx.clone());
     let mut terminal = TerminalGuard::enter()?;
 
-    // The child registry excludes `subagent`, so nesting stops at depth one.
+    // The child registry excludes `subagent`, so nesting stops at depth one;
+    // it also drops the schedule tools, whose runtime driver only exists on the
+    // GUI side (a sub-agent cannot create or manage scheduled tasks).
     let mut tools = options.tools.clone();
     let child_sender = tx.clone();
     let on_child: crate::subagent::ChildEventSink = Arc::new(move |event: &Event| {
@@ -192,7 +194,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     let runner = crate::subagent::build(
         options.store,
         options.provider.clone(),
-        tools.clone(),
+        tools.without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
         options.policy,
         approver.clone(),
         &options.workspace,
@@ -276,6 +278,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     policy: options.policy,
                     approver: approver.as_ref(),
                     snapshots: Some(&snapshots),
+                    scheduler: None,
                 },
                 RunOptions {
                     session_id: &session_id,

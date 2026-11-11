@@ -16,6 +16,7 @@ pub mod policy;
 pub mod progress;
 pub mod provider;
 pub mod schedule;
+pub mod scheduler;
 pub mod snapshot;
 pub mod state;
 pub mod store;
@@ -35,7 +36,12 @@ pub use network::{Network, SharedNetwork};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;
-pub use schedule::{CronSpec, Overlap, Schedule, ScheduleState, ScheduleStatus, Tick, now_local};
+pub use schedule::{
+    Advance, CronSpec, DeliveryReceipt, Overlap, Schedule, ScheduleState, ScheduleStatus,
+    ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery,
+    import_config_schedule, now_local, parse_rule, task_tick,
+};
+pub use scheduler::{EditTask, NewTask, ScheduleError, Scheduler, SchedulerHandle};
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};
 pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};

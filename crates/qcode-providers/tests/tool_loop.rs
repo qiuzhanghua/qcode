@@ -119,6 +119,7 @@ async fn executes_tool_and_continues() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -187,6 +188,7 @@ async fn denial_is_reported_to_the_model() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -244,6 +246,7 @@ async fn asking_without_a_tty_denies() {
             policy: &policy,
             approver: &AutoDeny,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -310,6 +313,7 @@ async fn max_turns_pauses_the_loop() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -387,6 +391,7 @@ async fn the_hand_off_call_never_asks_for_tools() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -467,6 +472,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options("go", None),
         |_| {},
@@ -484,6 +490,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options("继续", Some(Continuation::default())),
         |_| {},
@@ -588,6 +595,7 @@ async fn cancellation_stops_a_running_tool() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,
@@ -653,6 +661,7 @@ async fn cancellation_stops_a_hanging_stream() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,

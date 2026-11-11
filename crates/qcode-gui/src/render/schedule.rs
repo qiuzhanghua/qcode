@@ -1,23 +1,20 @@
-//! The schedule board: a read-only view of `[schedules.<name>]` (ADR-0063 §5).
+//! 定时任务的内容区视图：从侧栏点进某个任务后的「详情 + 运行记录」页
+//! （ADR-0063 §5 的 config 只读看板已升级为运行时任务详情；config 条目启动时
+//! 迁移进运行时任务，见 `Scheduler::import_config`）。
 //!
-//! Read-only is a decision, not a shortcut. Every edit would have to write
-//! `config.toml`, and `reload_on_config_change` turns a config change into a
-//! backend rebuild plus a `resume` — so "edit from the GUI" means "rebuild the
-//! world on every keystroke's commit", and it races the settings window's
-//! writes on the same file. ADR-0059 §1 already ruled that state must never be
-//! written back to config; the same reasoning keeps edits out of this view.
-//!
-//! The data comes from `Backend::schedules()`, cached in `Shell::schedule_rows`
-//! and refreshed with the task list — never per frame, since it reads config and
-//! the store.
+//! 数据来自 `Shell::schedule_tasks`（`Backend::schedule_tasks()` 的缓存，
+//! 随任务列表一起刷新）；动作经 `Backend::schedule_op()` 下发，结果由
+//! `ScheduleChanged` / `ScheduleNotice` 事件回传。
 
 use super::*;
+use crate::shell::schedule::ScheduleAction;
+use qcode_core::schedule::{ScheduledTask, TaskStatus};
 
 /// Relative "when will this fire", computed at render time.
 ///
 /// Computed here rather than stored, so "3 分钟后" counts down on its own without
-/// a refresh (ADR-0063 §8). A past instant is a missed window, not a bug: say so
-/// instead of showing a negative countdown.
+/// a refresh. A past instant is a missed window, not a bug: say so instead of
+/// showing a negative countdown.
 fn format_next_fire(next: Option<time::PrimitiveDateTime>, now: time::PrimitiveDateTime) -> String {
     let Some(next) = next else {
         return "—".to_string();
@@ -46,13 +43,31 @@ fn format_next_fire(next: Option<time::PrimitiveDateTime>, now: time::PrimitiveD
     format!("{days} 天后")
 }
 
-impl Shell {
-    /// The content area's schedule board (ADR-0063 §5).
-    pub(crate) fn render_schedule_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let foreground = cx.theme().foreground;
-        let secondary = cx.theme().secondary;
+/// 任务状态的中文标签。
+fn status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Active => "运行中",
+        TaskStatus::Paused => "已暂停",
+        TaskStatus::Ended => "已结束",
+    }
+}
 
+impl Shell {
+    /// 内容区的定时任务视图：选中任务时展示「详情 + 运行记录」，否则是空态。
+    pub(crate) fn render_schedule_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self
+            .schedule_detail
+            .as_deref()
+            .and_then(|id| self.schedule_tasks.iter().find(|task| task.id == id));
+        match selected {
+            Some(task) => self.render_schedule_detail(task, cx).into_any_element(),
+            None => self.render_schedule_empty(cx).into_any_element(),
+        }
+    }
+
+    /// 空态：没有选中任务时给一个引导，而不是一块白板。
+    fn render_schedule_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
         div()
             .size_full()
             .flex()
@@ -69,13 +84,71 @@ impl Shell {
             .child(
                 div().px(px(MAIN_PAD_L)).pt_1().child(
                     div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                        "在 config.toml 的 [schedules.<名字>] 里声明。这里只读，不做增删改。",
+                        "从左侧选择一个定时任务查看详情与运行记录；点「＋」在对话中创建，或用「⋮」手动创建。",
                     ),
                 ),
             )
+    }
+
+    /// 详情 + 运行记录页。
+    fn render_schedule_detail(
+        &self,
+        task: &ScheduledTask,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let border = theme.border;
+        let now = {
+            let utc = time::OffsetDateTime::from(std::time::SystemTime::now());
+            time::PrimitiveDateTime::new(utc.date(), utc.time())
+        };
+        let status = task.status;
+        let task_id = task.id.clone();
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme.background)
             .child(
                 div()
-                    .id("schedule-board")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px(px(MAIN_PAD_L))
+                    .pt_4()
+                    .child(
+                        Button::new("schedule-back")
+                            .label("←")
+                            .tooltip("返回定时任务列表")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.schedule_detail = None;
+                                this.view = MainView::Schedule;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(18.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(task.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(if status == TaskStatus::Active {
+                                theme.info
+                            } else {
+                                muted
+                            })
+                            .child(status_label(status)),
+                    ),
+            )
+            .child(
+                div()
+                    .id("schedule-detail")
                     .flex_1()
                     .min_h(px(0.0))
                     .w_full()
@@ -83,154 +156,191 @@ impl Shell {
                     .flex_col()
                     .gap_2()
                     .px(px(MAIN_PAD_L))
-                    .pt_4()
+                    .pt_3()
                     .pb_4()
                     .overflow_y_scroll()
-                    .when(self.schedule_rows.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_size(sp(BODY_SIZE))
-                                        .text_color(foreground)
-                                        .child("还没有定时任务"),
-                                )
-                                .child(
-                                    div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                                        format!(
-                                            "在 {} 里加一段 [schedules.<名字>]，例如 cron = \"0 3 * * *\"。",
-                                            self.config_path.display()
-                                        ),
-                                    ),
-                                ),
-                        )
-                    })
-                    .children(
-                        self.schedule_rows
-                            .iter()
-                            .map(|row| self.render_schedule_card(row, cx)),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(MAIN_PAD_L))
-                    .pb_3()
-                    .text_size(sp(CAPTION_SIZE))
-                    .text_color(secondary)
-                    .child(format!("共 {} 条", self.schedule_rows.len())),
-            )
-    }
-
-    fn render_schedule_card(&self, row: &ScheduleRow, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let border = cx.theme().border;
-        let now = std::time::SystemTime::now();
-        let now = {
-            // `PrimitiveDateTime` is what the schedule module uses; the crate has
-            // no `now_local`, so convert through the local offset when the
-            // platform reports one and fall back to UTC (display only).
-            let utc = time::OffsetDateTime::from(now);
-            time::PrimitiveDateTime::new(utc.date(), utc.time())
-        };
-
-        // The task column: a link when the entry points at a task, otherwise the
-        // honest answer for `new = true` (ADR-0063 §5).
-        let target_task = row.task.clone();
-        let target_label = match &row.task {
-            Some(id) => self
-                .titles
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| id.chars().take(8).collect()),
-            None => "每次新建任务".to_string(),
-        };
-
-        div()
-            .id(format!("schedule-card-{}", row.name))
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_3()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(border)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
                     .child(
                         div()
-                            .text_size(sp(BODY_SIZE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(row.name.clone()),
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .p_3()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(border)
+                            .child(self.detail_line(cx, "周期", &task.rule.describe()))
+                            .child(self.detail_line(cx, "目标", &task.target.describe()))
+                            .child(self.detail_line(
+                                cx,
+                                "下次触发",
+                                &task.next_fire_at.map_or_else(
+                                    || "—".to_string(),
+                                    |at| format!("{at}（{}）", format_next_fire(Some(at), now)),
+                                ),
+                            ))
+                            .child(self.detail_line(
+                                cx,
+                                "投递间隔",
+                                &format!("{}s", task.rearm_after.as_secs()),
+                            ))
+                            .when_some(task.approval_timeout, |this, timeout| {
+                                this.child(self.detail_line(
+                                    cx,
+                                    "审批超时",
+                                    &format!("{}s", timeout.as_secs()),
+                                ))
+                            })
+                            .when_some(task.reserved_session_id.as_deref(), |this, session| {
+                                this.child(self.detail_line(cx, "预留会话", session))
+                            })
+                            .when_some(task.last_receipt.as_ref(), |this, receipt| {
+                                this.child(self.detail_line(
+                                    cx,
+                                    "最近投递",
+                                    &format!(
+                                        "{} → {}（message {}）",
+                                        receipt.delivered_at,
+                                        receipt.target_session_id.as_deref().unwrap_or("-"),
+                                        receipt.message_id,
+                                    ),
+                                ))
+                            }),
                     )
                     .child(
-                        // The cron string verbatim: the user wrote it, and
-                        // translating it to prose loses the thing they edit.
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("schedule-run-now")
+                                    .label("立即执行")
+                                    .disabled(status != TaskStatus::Active)
+                                    .tooltip("立即投递一次（不影响周期）")
+                                    .on_click({
+                                        let task_id = task_id.clone();
+                                        cx.listener(move |this, _, _window, cx| {
+                                            this.schedule_action(
+                                                &task_id,
+                                                ScheduleAction::RunNow,
+                                                cx,
+                                            );
+                                        })
+                                    }),
+                            )
+                            .child(if status == TaskStatus::Active {
+                                Button::new("schedule-pause").label("暂停").on_click({
+                                    let task_id = task_id.clone();
+                                    cx.listener(move |this, _, _window, cx| {
+                                        this.schedule_action(&task_id, ScheduleAction::Pause, cx);
+                                    })
+                                })
+                            } else {
+                                Button::new("schedule-resume")
+                                    .label("恢复")
+                                    .disabled(status == TaskStatus::Ended)
+                                    .tooltip("已结束的任务不能恢复")
+                                    .on_click({
+                                        let task_id = task_id.clone();
+                                        cx.listener(move |this, _, _window, cx| {
+                                            this.schedule_action(
+                                                &task_id,
+                                                ScheduleAction::Resume,
+                                                cx,
+                                            );
+                                        })
+                                    })
+                            })
+                            .when_some(
+                                task.target.session_id().map(str::to_owned),
+                                |this, session| {
+                                    this.child(
+                                        Button::new("schedule-open-session")
+                                            .label("打开会话")
+                                            .on_click({
+                                                cx.listener(move |this, _, window, cx| {
+                                                    this.open_sidebar_section(
+                                                        SidebarSection::Tasks,
+                                                        cx,
+                                                    );
+                                                    this.resume(session.clone(), window, cx);
+                                                })
+                                            }),
+                                    )
+                                },
+                            )
+                            .child(
+                                Button::new("schedule-delete")
+                                    .label("删除")
+                                    .danger()
+                                    .tooltip("删除任务及其运行记录")
+                                    .on_click({
+                                        let task_id = task_id.clone();
+                                        cx.listener(move |this, _, _window, cx| {
+                                            this.schedule_action(
+                                                &task_id,
+                                                ScheduleAction::Delete,
+                                                cx,
+                                            );
+                                        })
+                                    }),
+                            ),
+                    )
+                    .child(
                         div()
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(muted)
-                            .child(row.cron.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .text_size(sp(CAPTION_SIZE))
-                    .text_color(muted)
-                    .child(format!("下次 {}", format_next_fire(row.next_fire_at, now)))
-                    .child(match &row.task {
-                        Some(_) => format!("任务 {target_label}"),
-                        None => target_label,
-                    })
-                    .when(row.missed_windows > 0, |this| {
-                        this.child(format!("错过 {} 次", row.missed_windows))
-                    })
-                    .when_some(row.status.as_ref(), |this, status| {
-                        this.child(schedule_status_label(status))
+                            .child(format!(
+                                "运行记录：共 {} 条（保留最近 30 天 / 200 条）",
+                                task.delivery_log.len()
+                            )),
+                    )
+                    .children(task.delivery_log.iter().rev().take(30).map(|receipt| {
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .p_2()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(border)
+                            .child(
+                                div()
+                                    .text_size(sp(BODY_SIZE))
+                                    .child(format!("{}", receipt.occurrence_at)),
+                            )
+                            .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
+                                format!(
+                                    "投递到 {} · message {}",
+                                    receipt.target_session_id.as_deref().unwrap_or("-"),
+                                    receipt.message_id,
+                                ),
+                            ))
+                            .into_any_element()
+                    }))
+                    .when(task.earlier_records_pruned, |this| {
+                        this.child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(muted)
+                                .child("（更早的记录已被裁剪）"),
+                        )
                     }),
             )
-            .when_some(row.hint(), |this, hint| {
-                // Same string the task row would show (ADR-0059 §3), so the two
-                // places can never disagree about what went wrong.
-                this.child(
-                    div()
-                        .text_size(sp(CAPTION_SIZE))
-                        .text_color(cx.theme().danger)
-                        .child(hint),
-                )
-            })
-            .when_some(target_task, |this, id| {
-                this.child(
-                    Button::new(format!("schedule-open-{}", row.name))
-                        .label("打开任务")
-                        .tooltip("切到这个任务")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_sidebar_section(SidebarSection::Tasks, cx);
-                            this.resume(id.clone(), window, cx);
-                        })),
-                )
-            })
-            .into_any_element()
     }
-}
 
-fn schedule_status_label(status: &qcode_core::schedule::ScheduleStatus) -> String {
-    use qcode_core::schedule::ScheduleStatus;
-    match status {
-        ScheduleStatus::Orphaned => "失效".to_string(),
-        ScheduleStatus::Missed(_) => "错过".to_string(),
-        ScheduleStatus::Failed(_) => "失败".to_string(),
-        other => format!("{other:?}"),
+    /// 详情页里的一行「键：值」。
+    fn detail_line(&self, cx: &Context<Self>, key: &str, value: &str) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        div()
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap_2()
+            .text_size(sp(CAPTION_SIZE))
+            .child(div().w(px(72.0)).text_color(muted).child(key.to_string()))
+            .child(div().text_size(sp(BODY_SIZE)).child(value.to_string()))
     }
 }

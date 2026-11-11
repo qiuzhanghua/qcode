@@ -134,6 +134,7 @@ impl SubagentRunner for EngineSubagent {
                 policy: &self.policy,
                 approver: self.approver.as_ref(),
                 snapshots: self.snapshots.as_ref(),
+                scheduler: None,
             },
             options,
             move |event| {

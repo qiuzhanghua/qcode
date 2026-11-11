@@ -71,6 +71,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             policy: &Policy::default(),
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,

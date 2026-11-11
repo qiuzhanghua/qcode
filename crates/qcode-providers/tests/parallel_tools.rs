@@ -148,6 +148,7 @@ async fn run(
             policy: &Policy::default(),
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,

@@ -78,6 +78,7 @@ async fn an_image_is_stored_once_and_replayed_verbatim() {
             policy: &policy,
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options(
             &id,
@@ -167,6 +168,7 @@ async fn an_image_is_stored_once_and_replayed_verbatim() {
             policy: &policy,
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options(
             &id,
@@ -204,6 +206,7 @@ async fn a_mislabelled_attachment_is_refused_before_anything_is_written() {
             policy: &policy,
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options(
             &id,
@@ -252,6 +255,7 @@ async fn a_text_only_model_gets_a_placeholder_instead_of_an_image() {
             policy: &policy,
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options(
             &id,
@@ -358,6 +362,7 @@ async fn past_the_request_budget_the_oldest_pictures_become_placeholders() {
             policy: &policy,
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         options(&id, dir.path(), attachments),
         |_| {},

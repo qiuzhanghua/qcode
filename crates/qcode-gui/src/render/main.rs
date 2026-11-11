@@ -663,6 +663,15 @@ impl Shell {
             .px_2()
             .py_4()
             .child(header_label.clone())
+            // 页头时钟标记：当前会话被某个定时任务盯着时，显示下次触发时刻。
+            .when_some(self.schedule_clock_hint(), |this, hint| {
+                this.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(hint),
+                )
+            })
             .child(div().flex_grow(1.0));
 
         div()

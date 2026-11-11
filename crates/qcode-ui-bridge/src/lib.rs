@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::approval::{Answer, ApprovalRequest, Approver};
@@ -49,6 +50,11 @@ pub enum UiEvent {
     /// Steering that has not been injected yet (waiting for the next step);
     /// the dock shows it as pending and lets the user take it back.
     SteeringChanged { items: Vec<QueuedMessage> },
+    /// 定时任务（运行时任务）定义有变化：创建/编辑/启停/删除/投递推进。UI 应
+    /// 刷新任务列表（host 级事件，与具体会话无关）。
+    ScheduleChanged,
+    /// 定时任务管理操作失败的提示信息。
+    ScheduleNotice { message: String },
 }
 
 /// Which session an event belongs to (ADR-0058 §2).
@@ -229,6 +235,48 @@ pub enum UiCommand {
     /// Continue the paused turn with the same task and a fresh budget window
     /// (ADR-0060). Ignored while a turn is running.
     Continue { raise: Option<RaiseLimit> },
+    /// 定时任务（运行时任务）管理操作，由 GUI 发起、引擎线程执行。
+    ScheduleOp(ScheduleOp),
+}
+
+/// 定时任务（运行时任务）管理操作。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScheduleOp {
+    Create {
+        title: String,
+        prompt: String,
+        rule: qcode_core::schedule::Rule,
+        target: qcode_core::schedule::Target,
+        overlap: qcode_core::schedule::Overlap,
+        approval_timeout: Option<Duration>,
+        rearm_after: Duration,
+    },
+    List,
+    Get {
+        id: String,
+    },
+    Edit {
+        id: String,
+        title: Option<String>,
+        prompt: Option<String>,
+        rule: Option<qcode_core::schedule::Rule>,
+        target: Option<qcode_core::schedule::Target>,
+        overlap: Option<qcode_core::schedule::Overlap>,
+        approval_timeout: Option<Option<Duration>>,
+        rearm_after: Option<Duration>,
+    },
+    Pause {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
+    RunNow {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 /// One operation on a queued (next-turn) message.
@@ -446,6 +494,17 @@ impl TaggedPort {
     pub fn send_steering_changed(&self, items: Vec<QueuedMessage>) {
         self.port
             .emit(&self.target, UiEvent::SteeringChanged { items });
+    }
+
+    /// 定时任务定义有变化：UI 刷新任务列表（host 级，与具体会话无关）。
+    pub fn send_schedule_changed(&self) {
+        self.port.emit(&self.target, UiEvent::ScheduleChanged);
+    }
+
+    /// 定时任务管理操作失败的提示。
+    pub fn send_schedule_notice(&self, message: String) {
+        self.port
+            .emit(&self.target, UiEvent::ScheduleNotice { message });
     }
 
     /// The approver the engine should be given: prompts are tagged with this

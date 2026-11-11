@@ -93,6 +93,7 @@ async fn truncated_output_is_written_to_disk() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,

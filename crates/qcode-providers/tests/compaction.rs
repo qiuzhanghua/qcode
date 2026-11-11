@@ -124,6 +124,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,
@@ -206,6 +207,7 @@ async fn a_roomy_window_skips_compaction() {
             policy: &Policy::default(),
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,

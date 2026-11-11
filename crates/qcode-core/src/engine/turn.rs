@@ -161,6 +161,9 @@ where
     if let Some(network) = &options.network {
         tool_context = tool_context.with_network(network.clone());
     }
+    if ctx.scheduler.is_some() {
+        tool_context = tool_context.with_scheduler(ctx.scheduler.clone());
+    }
 
     let mut turns = 0;
     let mut progress = ProgressGuard::new();

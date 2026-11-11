@@ -6,9 +6,10 @@
 use crate::Engine;
 use crate::runtime;
 use qcode_core::event::{Event, EventKind};
+use qcode_core::schedule::ScheduledTask;
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
-use qcode_ui_bridge::{QueueOp, RaiseLimit, SessionEvent, UiCommand, channels};
+use qcode_ui_bridge::{QueueOp, RaiseLimit, ScheduleOp, SessionEvent, UiCommand, channels};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -79,6 +80,13 @@ pub trait Backend {
     fn schedules(&self) -> Vec<ScheduleRow> {
         Vec::new()
     }
+    /// 运行时定时任务（含 config 迁移导入的条目）；空 = 未使用。
+    fn schedule_tasks(&self) -> Vec<ScheduledTask> {
+        Vec::new()
+    }
+    /// 对定时任务的操作（创建 / 编辑 / 暂停 / 恢复 / 立即执行 / 删除）。
+    /// 结果经 `ScheduleChanged` / `ScheduleNotice` 事件回传，不在本方法里返回。
+    fn schedule_op(&mut self, _op: ScheduleOp) {}
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {
         None
@@ -224,6 +232,12 @@ impl Backend for UnconfiguredBackend {
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String> {
         self.store.load(id).map_err(|error| error.to_string())
     }
+
+    fn schedule_tasks(&self) -> Vec<ScheduledTask> {
+        self.store.load_schedule_tasks()
+    }
+
+    fn schedule_op(&mut self, _op: ScheduleOp) {}
 
     fn prompt(
         &mut self,
@@ -440,6 +454,14 @@ impl Backend for LocalBackend {
 
     fn new_session(&mut self) {
         self.send(UiCommand::NewSession);
+    }
+
+    fn schedule_tasks(&self) -> Vec<ScheduledTask> {
+        self.store.load_schedule_tasks()
+    }
+
+    fn schedule_op(&mut self, op: ScheduleOp) {
+        self.send(UiCommand::ScheduleOp(op));
     }
 
     fn resume(&mut self, id: &str) -> Result<Vec<Event>, String> {

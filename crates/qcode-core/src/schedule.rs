@@ -17,8 +17,90 @@
 use std::fmt;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use time::Duration as TimeSpan;
 use time::{Date, Month, Time, Weekday};
+
+/// `time::serde::rfc3339` / `iso8601` 只支持带时区的 `OffsetDateTime`；墙钟时刻
+/// (`PrimitiveDateTime`) 用自定义字符串编解码：`YYYY-MM-DDTHH:MM:SS`。
+mod serde_wall_clock {
+    use serde::Deserialize;
+    use time::{Date, Month, PrimitiveDateTime, Time};
+
+    pub fn serialize<S>(value: &PrimitiveDateTime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&format(value))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PrimitiveDateTime, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        parse(&text).ok_or_else(|| serde::de::Error::custom("invalid wall clock"))
+    }
+
+    /// `Option<PrimitiveDateTime>`：`None` → `null`。
+    pub mod option {
+        use super::*;
+
+        pub fn serialize<S>(
+            value: &Option<PrimitiveDateTime>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            match value {
+                Some(value) => serializer.serialize_some(&format(value)),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<PrimitiveDateTime>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let text = Option::<String>::deserialize(deserializer)?;
+            text.map(|text| {
+                parse(&text).ok_or_else(|| serde::de::Error::custom("invalid wall clock"))
+            })
+            .transpose()
+        }
+    }
+
+    fn format(value: &PrimitiveDateTime) -> String {
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            value.year(),
+            u8::from(value.month()),
+            value.day(),
+            value.hour(),
+            value.minute(),
+            value.second()
+        )
+    }
+
+    fn parse(text: &str) -> Option<PrimitiveDateTime> {
+        let (date, time) = text.split_once('T')?;
+        let mut date_parts = date.split('-');
+        let year: i32 = date_parts.next()?.parse().ok()?;
+        let month: u8 = date_parts.next()?.parse().ok()?;
+        let day: u8 = date_parts.next()?.parse().ok()?;
+        let mut time_parts = time.split(':');
+        let hour: u8 = time_parts.next()?.parse().ok()?;
+        let minute: u8 = time_parts.next()?.parse().ok()?;
+        let second: u8 = time_parts.next().unwrap_or("0").parse().ok()?;
+        let month = Month::try_from(month).ok()?;
+        let date = Date::from_calendar_date(year, month, day).ok()?;
+        Some(PrimitiveDateTime::new(
+            date,
+            Time::from_hms(hour, minute, second).ok()?,
+        ))
+    }
+}
 
 /// Wall clock without a time zone: what a cron expression matches against.
 pub use time::PrimitiveDateTime;
@@ -253,7 +335,8 @@ fn weekday_of(day: Weekday) -> u32 {
 }
 
 /// What a scheduled turn does when the session is already busy (ADR-0059 §2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Overlap {
     /// Wait for the current turn, then run (the default).
     #[default]
@@ -465,6 +548,449 @@ pub fn advance(
         next_fire_at: schedule.cron.next_after(now),
         last_status: Some(status),
         missed_windows: 0,
+    }
+}
+
+// ===== 运行时定时任务（Scheduled Tasks）====
+//
+// `[schedules]` 之上（只读 config 声明，ADR-0063）的运行时任务：由模型工具 / GUI
+// 创建，支持 5 种规则，投递语义为"投递器"——回执只证明投递成功，不等于执行完成。
+// 全部是纯数据 + 纯函数，wall clock 作参数，延续本模块的可测风格。
+
+/// 定时规则：5 种。`Cron` 保存表达式文本（解析复用 [`CronSpec`]），其余为纯数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Rule {
+    /// 5 字段 cron（本地时间，crontab(5)）。
+    Cron { expr: String },
+    /// 一次性：指定墙钟时刻（本地时间）。
+    Once {
+        #[serde(with = "serde_wall_clock")]
+        at: PrimitiveDateTime,
+    },
+    /// 每 N 秒（≥ 60）。
+    Interval { seconds: u64 },
+    /// 每天 HH:MM。
+    Daily { hour: u8, minute: u8 },
+    /// 每周某天 HH:MM（`weekday`：0=周日，同 crontab；7 折算为 0）。
+    Weekly { weekday: u8, hour: u8, minute: u8 },
+}
+
+/// 规则描述解析失败的原因。
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RuleError {
+    #[error("rule `{text}`: unknown kind; use cron / once / every / daily / weekly")]
+    UnknownKind { text: String },
+    #[error("rule `{text}`: {source}")]
+    Cron {
+        text: String,
+        #[source]
+        source: CronError,
+    },
+    #[error("rule `{text}`: {reason}")]
+    Invalid { text: String, reason: String },
+}
+
+/// 把一条规则描述解析为冻结的 [`Rule`]。
+///
+/// 识别形式：
+/// - `cron <expr>` 或裸 5 字段 cron 表达式
+/// - `once <YYYY-MM-DD HH:MM>`（本地墙钟）
+/// - `every <秒>`（≥ 60）
+/// - `daily <HH:MM>`
+/// - `weekly <weekday> <HH:MM>`（weekday：`sun`/`mon`/… 或 0..7，0=周日）
+pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
+    let text = text.trim();
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    match parts.first().copied() {
+        Some("cron") => {
+            let expr = parts[1..].join(" ");
+            if expr.is_empty() {
+                return Err(RuleError::Invalid {
+                    text: text.to_string(),
+                    reason: "missing cron expression".to_string(),
+                });
+            }
+            let _ = CronSpec::parse(&expr).map_err(|source| RuleError::Cron {
+                text: text.to_string(),
+                source,
+            })?;
+            Ok(Rule::Cron { expr })
+        }
+        Some("once") => {
+            let at = parse_once(&parts[1..].join(" ")).ok_or_else(|| RuleError::Invalid {
+                text: text.to_string(),
+                reason: "expected `once YYYY-MM-DD HH:MM`".to_string(),
+            })?;
+            Ok(Rule::Once { at })
+        }
+        Some("every") => {
+            let seconds: u64 =
+                parts
+                    .get(1)
+                    .and_then(|part| part.parse().ok())
+                    .ok_or_else(|| RuleError::Invalid {
+                        text: text.to_string(),
+                        reason: "expected `every <seconds>`".to_string(),
+                    })?;
+            if seconds < 60 {
+                return Err(RuleError::Invalid {
+                    text: text.to_string(),
+                    reason: "interval must be at least 60 seconds".to_string(),
+                });
+            }
+            Ok(Rule::Interval { seconds })
+        }
+        Some("daily") => {
+            let (hour, minute) =
+                parse_hhmm(parts.get(1).copied().unwrap_or("")).ok_or_else(|| {
+                    RuleError::Invalid {
+                        text: text.to_string(),
+                        reason: "expected `daily HH:MM`".to_string(),
+                    }
+                })?;
+            Ok(Rule::Daily { hour, minute })
+        }
+        Some("weekly") => {
+            let weekday = parts
+                .get(1)
+                .and_then(|part| parse_weekday(part))
+                .ok_or_else(|| RuleError::Invalid {
+                    text: text.to_string(),
+                    reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                })?;
+            let (hour, minute) =
+                parse_hhmm(parts.get(2).copied().unwrap_or("")).ok_or_else(|| {
+                    RuleError::Invalid {
+                        text: text.to_string(),
+                        reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                    }
+                })?;
+            Ok(Rule::Weekly {
+                weekday,
+                hour,
+                minute,
+            })
+        }
+        // 裸表达式：当 cron 解析。
+        Some(_) if parts.len() == 5 => {
+            let _ = CronSpec::parse(text).map_err(|source| RuleError::Cron {
+                text: text.to_string(),
+                source,
+            })?;
+            Ok(Rule::Cron {
+                expr: text.to_string(),
+            })
+        }
+        _ => Err(RuleError::UnknownKind {
+            text: text.to_string(),
+        }),
+    }
+}
+
+/// `YYYY-MM-DD HH:MM` → 墙钟时刻。
+fn parse_once(text: &str) -> Option<PrimitiveDateTime> {
+    let (date, time) = text.split_once(' ')?;
+    let mut date_parts = date.split('-');
+    let year: i32 = date_parts.next()?.parse().ok()?;
+    let month: u8 = date_parts.next()?.parse().ok()?;
+    let day: u8 = date_parts.next()?.parse().ok()?;
+    let month = Month::try_from(month).ok()?;
+    let date = Date::from_calendar_date(year, month, day).ok()?;
+    let (hour, minute) = parse_hhmm(time)?;
+    Some(PrimitiveDateTime::new(
+        date,
+        Time::from_hms(hour, minute, 0).ok()?,
+    ))
+}
+
+/// `HH:MM` → (时, 分)。
+fn parse_hhmm(text: &str) -> Option<(u8, u8)> {
+    let (hour, minute) = text.split_once(':')?;
+    let hour: u8 = hour.parse().ok()?;
+    let minute: u8 = minute.parse().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some((hour, minute))
+}
+
+/// `sun`/`mon`/… 或 0..7 → 0=周日。
+fn parse_weekday(text: &str) -> Option<u8> {
+    let lower = text.trim().to_ascii_lowercase();
+    if let Ok(number) = lower.parse::<u8>() {
+        return (number <= 7).then(|| number % 7);
+    }
+    DAY_NAMES
+        .iter()
+        .position(|name| *name == lower.as_str())
+        .map(|index| index as u8)
+}
+
+impl Rule {
+    /// 该规则在 `now` 之后的最近一次发生点；一次性规则已过即 `None`。
+    pub fn next_after(&self, now: PrimitiveDateTime) -> Option<PrimitiveDateTime> {
+        match self {
+            Rule::Cron { expr } => CronSpec::parse(expr).ok()?.next_after(now),
+            Rule::Once { at } => (*at > now).then_some(*at),
+            Rule::Interval { seconds } => {
+                Some(now + TimeSpan::seconds(i64::try_from(*seconds).ok()?))
+            }
+            Rule::Daily { hour, minute } => {
+                let time = Time::from_hms(*hour, *minute, 0).ok()?;
+                let today = now.date();
+                let candidate = PrimitiveDateTime::new(today, time);
+                if candidate > now {
+                    Some(candidate)
+                } else {
+                    Some(PrimitiveDateTime::new(today.next_day()?, time))
+                }
+            }
+            Rule::Weekly {
+                weekday,
+                hour,
+                minute,
+            } => {
+                let time = Time::from_hms(*hour, *minute, 0).ok()?;
+                let today = now.date();
+                let today_ix = weekday_of(today.weekday()) as u8; // 0=周日
+                let target = weekday % 7;
+                let delta = (target + 7 - today_ix) % 7;
+                let days = if delta == 0 {
+                    // 今天：时刻还没到 → 今天；已过 → 下周。
+                    if time > now.time() { 0 } else { 7 }
+                } else {
+                    i64::from(delta)
+                };
+                Some(PrimitiveDateTime::new(today + TimeSpan::days(days), time))
+            }
+        }
+    }
+
+    /// 规则的紧凑描述（列表 / 详情展示用）。
+    pub fn describe(&self) -> String {
+        match self {
+            Rule::Cron { expr } => format!("cron `{expr}`"),
+            Rule::Once { at } => format!("once {at}"),
+            Rule::Interval { seconds } => format!("every {seconds}s"),
+            Rule::Daily { hour, minute } => format!("daily {:02}:{:02}", hour, minute),
+            Rule::Weekly {
+                weekday,
+                hour,
+                minute,
+            } => {
+                let day = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+                    [(*weekday % 7) as usize];
+                format!("weekly {day} {:02}:{:02}", hour, minute)
+            }
+        }
+    }
+}
+
+/// 一次投递后的推进：循环规则算出下一次，一次性规则收尾。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Advance {
+    Next(PrimitiveDateTime),
+    Ended,
+}
+
+/// 推进一次发生点（latest-only：只取 `now` 之后的最近一次，从不补发积压）。
+pub fn advance_rule(rule: &Rule, now: PrimitiveDateTime) -> Advance {
+    match rule.next_after(now) {
+        Some(next) => Advance::Next(next),
+        None => Advance::Ended,
+    }
+}
+
+/// 投递目标。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Target {
+    /// 既有会话（任务 id）。
+    Session { id: String },
+    /// 首次投递创建保留会话，之后复用。
+    NewOnce,
+    /// 每次投递都新建会话（先落盘 `reserved_session_id`）。
+    New,
+}
+
+impl Target {
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Target::Session { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// 投递目标的紧凑描述（列表 / 详情展示用）。
+    pub fn describe(&self) -> String {
+        match self {
+            Target::Session { id } => format!("会话 `{id}`"),
+            Target::NewOnce => "新会话（首次投递创建并复用）".to_string(),
+            Target::New => "新会话（每次投递都新建）".to_string(),
+        }
+    }
+}
+
+/// 任务生命周期状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Active,
+    Paused,
+    Ended,
+}
+
+impl TaskStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskStatus::Active => "active",
+            TaskStatus::Paused => "paused",
+            TaskStatus::Ended => "ended",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "active" => Some(TaskStatus::Active),
+            "paused" => Some(TaskStatus::Paused),
+            "ended" => Some(TaskStatus::Ended),
+            _ => None,
+        }
+    }
+}
+
+/// 一次投递的回执。**回执 ≠ 执行完成**：只证明消息已作为 `user/message` 事件写入
+/// 目标会话日志。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryReceipt {
+    /// 对应哪个发生点。
+    #[serde(with = "serde_wall_clock")]
+    pub occurrence_at: PrimitiveDateTime,
+    /// 投递确认时刻。
+    #[serde(with = "serde_wall_clock")]
+    pub delivered_at: PrimitiveDateTime,
+    /// 共享同一条投递消息（批量合并时多个任务共用一个 id）。
+    pub message_id: String,
+    /// 实际投往的会话（`new` 目标在投递后才确定）。
+    pub target_session_id: Option<String>,
+}
+
+/// 运行时定时任务。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledTask {
+    pub id: String,
+    pub title: String,
+    pub prompt: String,
+    pub rule: Rule,
+    pub target: Target,
+    pub overlap: Overlap,
+    /// 定时回合的审批超时：超时自动拒绝（`None` 一直等人工）。
+    pub approval_timeout: Option<Duration>,
+    pub status: TaskStatus,
+    /// 牵涉会话（只增不减），用于变更通知路由。
+    pub stakeholders: Vec<String>,
+    pub last_receipt: Option<DeliveryReceipt>,
+    /// 投递历史，按保留策略裁剪（见 [`append_delivery`]）。
+    pub delivery_log: Vec<DeliveryReceipt>,
+    pub earlier_records_pruned: bool,
+    /// `new` 目标：投递前先落盘预定会话 id，崩溃后复用同一会话。
+    pub reserved_session_id: Option<String>,
+    #[serde(with = "serde_wall_clock::option")]
+    pub next_fire_at: Option<PrimitiveDateTime>,
+    /// 最小投递间隔：空闲后也要等这么久才能再投。
+    pub rearm_after: Duration,
+}
+
+/// 投递历史保留策略：最多保留最近 30 天 / 200 条。
+pub const DELIVERY_LOG_MAX_DAYS: i64 = 30;
+pub const DELIVERY_LOG_MAX_RECORDS: usize = 200;
+
+/// 追加一条回执并按保留策略裁剪。返回是否发生了裁剪。
+pub fn append_delivery(
+    log: &mut Vec<DeliveryReceipt>,
+    receipt: DeliveryReceipt,
+    now: PrimitiveDateTime,
+) -> bool {
+    log.push(receipt);
+    let cutoff = now - TimeSpan::days(DELIVERY_LOG_MAX_DAYS);
+    log.retain(|receipt| receipt.delivered_at >= cutoff);
+    if log.len() > DELIVERY_LOG_MAX_RECORDS {
+        let keep = log.len() - DELIVERY_LOG_MAX_RECORDS;
+        log.drain(..keep);
+        true
+    } else {
+        false
+    }
+}
+
+/// 一个运行时任务的到期判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskTick {
+    NotYet,
+    Fire,
+    SkipBusy,
+    Orphaned,
+}
+
+pub fn task_tick(
+    task: &ScheduledTask,
+    now: PrimitiveDateTime,
+    busy: bool,
+    task_exists: bool,
+) -> TaskTick {
+    if task.status != TaskStatus::Active {
+        return TaskTick::NotYet;
+    }
+    let Some(next) = task.next_fire_at else {
+        return TaskTick::NotYet;
+    };
+    if now < next {
+        return TaskTick::NotYet;
+    }
+    if task.target.session_id().is_some() && !task_exists {
+        return TaskTick::Orphaned;
+    }
+    if busy && task.overlap == Overlap::Skip {
+        return TaskTick::SkipBusy;
+    }
+    TaskTick::Fire
+}
+
+/// 把 config 声明的 `[schedules.<name>]` 条目导入为运行时任务（ADR-0059 迁移）。
+///
+/// `state` 保留 store 里已有的触发进度（`next_fire_at`）；没有则按 `now` 计算。
+/// 迁移是幂等的：同一名字的任务已存在时不重复导入（由调用方判重）。
+pub fn import_config_schedule(
+    schedule: &Schedule,
+    state: Option<&ScheduleState>,
+    now: PrimitiveDateTime,
+) -> ScheduledTask {
+    let next_fire_at = state
+        .and_then(|s| s.next_fire_at)
+        .or_else(|| schedule.cron.next_after(now));
+    let (target, stakeholders) = match &schedule.task {
+        Some(id) => (Target::Session { id: id.clone() }, vec![id.clone()]),
+        None => (Target::New, Vec::new()),
+    };
+    ScheduledTask {
+        id: schedule.name.clone(),
+        title: schedule.name.clone(),
+        prompt: schedule.prompt.clone(),
+        rule: Rule::Cron {
+            expr: schedule.cron_text.clone(),
+        },
+        target,
+        overlap: schedule.overlap,
+        approval_timeout: schedule.approval_timeout,
+        status: TaskStatus::Active,
+        stakeholders,
+        last_receipt: None,
+        delivery_log: Vec::new(),
+        earlier_records_pruned: false,
+        reserved_session_id: None,
+        next_fire_at,
+        rearm_after: Duration::ZERO,
     }
 }
 

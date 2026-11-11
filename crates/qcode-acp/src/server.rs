@@ -281,6 +281,7 @@ impl Agent {
                 policy: &deps.policy,
                 approver: &approver,
                 snapshots: Some(&self.snapshots),
+                scheduler: None,
             },
             RunOptions {
                 session_id: &session_id,

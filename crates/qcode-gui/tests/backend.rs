@@ -851,6 +851,83 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     let _ = backend.try_recv();
 }
 
+#[tokio::test]
+async fn a_runtime_task_fires_delivers_and_advances() {
+    // 运行时定时任务（非 config 声明）：到期 → 投递进目标会话 → 回执落盘 →
+    // once 收尾为 ended。
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let meta = qcode_core::event::SessionStarted {
+        model: "mock-1".to_string(),
+        provider: "mock".to_string(),
+        cwd: workspace.path().display().to_string(),
+        version: "0.0.0".to_string(),
+    };
+    let created = store.create_task(&meta).expect("task");
+
+    let at = qcode_core::schedule::now_local() + time::Duration::seconds(2);
+    store
+        .save_schedule_tasks(&[qcode_core::schedule::ScheduledTask {
+            id: "once-task".to_string(),
+            title: "once".to_string(),
+            prompt: "do the thing".to_string(),
+            rule: qcode_core::schedule::Rule::Once { at },
+            target: qcode_core::schedule::Target::Session {
+                id: created.id.clone(),
+            },
+            overlap: qcode_core::schedule::Overlap::Queue,
+            approval_timeout: None,
+            status: qcode_core::schedule::TaskStatus::Active,
+            stakeholders: vec![created.id.clone()],
+            last_receipt: None,
+            delivery_log: Vec::new(),
+            earlier_records_pruned: false,
+            reserved_session_id: None,
+            next_fire_at: Some(at),
+            rearm_after: Duration::ZERO,
+        }])
+        .expect("tasks");
+
+    let mut engine = engine_with(workspace.path(), store.clone(), MockProvider::text("done"));
+    engine.schedule_tick = Some(Duration::from_millis(100));
+    let mut backend = LocalBackend::new(engine);
+
+    // 到期后投递进目标会话，回合在它上面开始。
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut started = None;
+    while Instant::now() < deadline && started.is_none() {
+        if let Some(UiEvent::Event(event)) = backend.try_recv().map(|tagged| tagged.event)
+            && matches!(event.kind, EventKind::TurnStarted(_))
+        {
+            started = Some(event.session.clone());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        started.as_deref(),
+        Some(created.id.as_str()),
+        "the delivered prompt must start a turn on the target session"
+    );
+
+    // 投递确认后：once 任务收尾为 ended，回执记录 message_id 与目标会话。
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut ended = None;
+    while Instant::now() < deadline && ended.is_none() {
+        ended = store.load_schedule_tasks().into_iter().find(|task| {
+            task.status == qcode_core::schedule::TaskStatus::Ended && task.last_receipt.is_some()
+        });
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let task = ended.expect("the once task must end with a receipt after delivery");
+    let receipt = task.last_receipt.expect("receipt");
+    assert_eq!(
+        receipt.target_session_id.as_deref(),
+        Some(created.id.as_str())
+    );
+    assert!(!receipt.message_id.is_empty());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {

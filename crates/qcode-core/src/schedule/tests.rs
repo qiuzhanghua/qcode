@@ -308,3 +308,294 @@ fn overlap_parsing_matches_the_config_spelling() {
     assert_eq!(Overlap::parse("later"), None);
     assert_eq!(Overlap::default(), Overlap::Queue);
 }
+
+// ==== 运行时定时任务（Scheduled Tasks）====
+
+fn task_with(
+    rule: Rule,
+    target: Target,
+    status: TaskStatus,
+    next: Option<PrimitiveDateTime>,
+) -> ScheduledTask {
+    ScheduledTask {
+        id: "t1".to_string(),
+        title: "nightly".to_string(),
+        prompt: "review".to_string(),
+        rule,
+        target,
+        overlap: Overlap::Queue,
+        approval_timeout: None,
+        status,
+        stakeholders: Vec::new(),
+        last_receipt: None,
+        delivery_log: Vec::new(),
+        earlier_records_pruned: false,
+        reserved_session_id: None,
+        next_fire_at: next,
+        rearm_after: Duration::ZERO,
+    }
+}
+
+#[test]
+fn parse_rule_recognizes_all_five_kinds() {
+    assert_eq!(
+        parse_rule("cron 0 3 * * *"),
+        Ok(Rule::Cron {
+            expr: "0 3 * * *".to_string()
+        })
+    );
+    assert_eq!(
+        parse_rule("0 3 * * *"),
+        Ok(Rule::Cron {
+            expr: "0 3 * * *".to_string()
+        })
+    );
+    assert_eq!(
+        parse_rule("every 3600"),
+        Ok(Rule::Interval { seconds: 3600 })
+    );
+    assert_eq!(
+        parse_rule("daily 09:30"),
+        Ok(Rule::Daily {
+            hour: 9,
+            minute: 30
+        })
+    );
+    assert_eq!(
+        parse_rule("weekly mon 09:30"),
+        Ok(Rule::Weekly {
+            weekday: 1,
+            hour: 9,
+            minute: 30
+        })
+    );
+    assert_eq!(
+        parse_rule("weekly 7 09:30"),
+        Ok(Rule::Weekly {
+            weekday: 0,
+            hour: 9,
+            minute: 30
+        }),
+        "7 folds onto Sunday (0)"
+    );
+    assert!(matches!(
+        parse_rule("once 2026-11-10 09:30"),
+        Ok(Rule::Once { .. })
+    ));
+}
+
+#[test]
+fn parse_rule_rejects_bad_input() {
+    assert!(matches!(
+        parse_rule("every 30"),
+        Err(RuleError::Invalid { .. })
+    ));
+    assert!(matches!(
+        parse_rule("daily 25:00"),
+        Err(RuleError::Invalid { .. })
+    ));
+    assert!(matches!(
+        parse_rule("cron 60 3 * * *"),
+        Err(RuleError::Cron { .. })
+    ));
+    assert!(matches!(
+        parse_rule("banana"),
+        Err(RuleError::UnknownKind { .. })
+    ));
+}
+
+#[test]
+fn interval_daily_and_weekly_compute_the_next_occurrence() {
+    // 2026-06-01 is a Monday.
+    let now = at(2026, June, 1, 10, 0);
+    assert_eq!(
+        Rule::Interval { seconds: 3600 }.next_after(now),
+        Some(at(2026, June, 1, 11, 0))
+    );
+    // 09:30 already passed today → tomorrow.
+    assert_eq!(
+        Rule::Daily {
+            hour: 9,
+            minute: 30
+        }
+        .next_after(now),
+        Some(at(2026, June, 2, 9, 30))
+    );
+    assert_eq!(
+        Rule::Daily {
+            hour: 12,
+            minute: 0
+        }
+        .next_after(now),
+        Some(at(2026, June, 1, 12, 0))
+    );
+    // Weekly Monday 09:30 passed → next Monday.
+    assert_eq!(
+        Rule::Weekly {
+            weekday: 1,
+            hour: 9,
+            minute: 30
+        }
+        .next_after(now),
+        Some(at(2026, June, 8, 9, 30))
+    );
+    assert_eq!(
+        Rule::Weekly {
+            weekday: 1,
+            hour: 12,
+            minute: 0
+        }
+        .next_after(now),
+        Some(at(2026, June, 1, 12, 0))
+    );
+    // A cron rule reuses CronSpec's own calendar.
+    assert_eq!(
+        Rule::Cron {
+            expr: "0 3 * * *".to_string()
+        }
+        .next_after(now),
+        Some(at(2026, June, 2, 3, 0))
+    );
+}
+
+#[test]
+fn once_rule_fires_once_then_ends() {
+    let now = at(2026, June, 1, 10, 0);
+    let future = Rule::Once {
+        at: at(2026, June, 2, 9, 0),
+    };
+    assert_eq!(future.next_after(now), Some(at(2026, June, 2, 9, 0)));
+    let past = Rule::Once {
+        at: at(2026, June, 1, 8, 0),
+    };
+    assert_eq!(past.next_after(now), None);
+    assert_eq!(advance_rule(&past, now), Advance::Ended);
+    assert_eq!(
+        advance_rule(&Rule::Interval { seconds: 60 }, now),
+        Advance::Next(at(2026, June, 1, 10, 1))
+    );
+}
+
+#[test]
+fn task_tick_considers_status_target_and_overlap() {
+    let now = at(2026, June, 1, 10, 0);
+    let fire = task_with(
+        Rule::Interval { seconds: 60 },
+        Target::Session {
+            id: "s1".to_string(),
+        },
+        TaskStatus::Active,
+        Some(now),
+    );
+    assert_eq!(task_tick(&fire, now, false, true), TaskTick::Fire);
+    // Paused never fires.
+    let paused = task_with(
+        Rule::Interval { seconds: 60 },
+        Target::Session {
+            id: "s1".to_string(),
+        },
+        TaskStatus::Paused,
+        Some(now),
+    );
+    assert_eq!(task_tick(&paused, now, false, true), TaskTick::NotYet);
+    // Window not yet come.
+    let early = task_with(
+        Rule::Interval { seconds: 60 },
+        Target::Session {
+            id: "s1".to_string(),
+        },
+        TaskStatus::Active,
+        Some(at(2026, June, 1, 11, 0)),
+    );
+    assert_eq!(task_tick(&early, now, false, true), TaskTick::NotYet);
+    // Session target gone → orphaned.
+    assert_eq!(task_tick(&fire, now, false, false), TaskTick::Orphaned);
+    // Busy + skip → skip; busy + queue → still fire.
+    let mut skip = fire.clone();
+    skip.overlap = Overlap::Skip;
+    assert_eq!(task_tick(&skip, now, true, true), TaskTick::SkipBusy);
+    assert_eq!(task_tick(&fire, now, true, true), TaskTick::Fire);
+}
+
+#[test]
+fn delivery_log_is_pruned_to_the_retention_policy() {
+    let now = at(2026, June, 1, 10, 0);
+    let mut log = Vec::new();
+    for day in 0..40 {
+        let at = now - TimeSpan::days(day as i64);
+        append_delivery(
+            &mut log,
+            DeliveryReceipt {
+                occurrence_at: at,
+                delivered_at: at,
+                message_id: format!("m{day}"),
+                target_session_id: None,
+            },
+            now,
+        );
+    }
+    // 最近 30 天（含第 30 天边界）保留。
+    assert_eq!(log.len(), 31);
+
+    let mut log = Vec::new();
+    let mut pruned = false;
+    for index in 0..205 {
+        pruned = append_delivery(
+            &mut log,
+            DeliveryReceipt {
+                occurrence_at: now,
+                delivered_at: now,
+                message_id: format!("m{index}"),
+                target_session_id: None,
+            },
+            now,
+        );
+    }
+    assert_eq!(log.len(), DELIVERY_LOG_MAX_RECORDS);
+    assert!(pruned);
+}
+
+#[test]
+fn import_config_schedule_carries_state_and_target_over() {
+    let entry = schedule(Overlap::Queue, Some("t1"));
+    let imported = import_config_schedule(
+        &entry,
+        Some(&state(at(2026, June, 2, 3, 0))),
+        at(2026, June, 1, 10, 0),
+    );
+    assert_eq!(imported.id, "nightly");
+    assert_eq!(
+        imported.rule,
+        Rule::Cron {
+            expr: "0 3 * * *".to_string()
+        }
+    );
+    assert_eq!(
+        imported.target,
+        Target::Session {
+            id: "t1".to_string()
+        }
+    );
+    assert_eq!(imported.status, TaskStatus::Active);
+    assert_eq!(imported.next_fire_at, Some(at(2026, June, 2, 3, 0)));
+
+    // 无状态 → 按 now 计算下一个窗口。
+    let fresh = import_config_schedule(&entry, None, at(2026, June, 1, 10, 0));
+    assert_eq!(fresh.next_fire_at, Some(at(2026, June, 2, 3, 0)));
+}
+
+#[test]
+fn target_status_and_overlap_round_trip_through_serde() {
+    let task = task_with(
+        Rule::Daily {
+            hour: 9,
+            minute: 30,
+        },
+        Target::NewOnce,
+        TaskStatus::Active,
+        Some(at(2026, June, 2, 9, 30)),
+    );
+    let encoded = serde_json::to_string(&task).expect("serialize");
+    let decoded: ScheduledTask = serde_json::from_str(&encoded).expect("deserialize");
+    assert_eq!(decoded, task);
+}

@@ -219,11 +219,13 @@ pub(crate) async fn cmd_run(
     let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(&data_dir)
         .with_shell(loaded.agent.snapshot_shell);
 
-    // The child registry excludes `subagent`, so nesting stops at depth one.
+    // The child registry excludes `subagent`, so nesting stops at depth one;
+    // it also drops the schedule tools, whose runtime driver only exists on the
+    // GUI side (a sub-agent cannot create or manage scheduled tasks).
     let runner = subagent::build(
         &store,
         provider.clone(),
-        tools.clone(),
+        tools.without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
         &policy,
         approver.clone(),
         &workspace,
@@ -259,6 +261,7 @@ pub(crate) async fn cmd_run(
             policy: &policy,
             approver: approver.as_ref(),
             snapshots: Some(&snapshots),
+            scheduler: None,
         },
         RunOptions {
             session_id: &session_id,

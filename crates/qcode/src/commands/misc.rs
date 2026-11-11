@@ -64,7 +64,10 @@ pub(crate) async fn cmd_acp(
     let deps = qcode_acp::Deps {
         store: kernel.store,
         provider: kernel.provider.into(),
-        tools: kernel.tools,
+        // ACP 是无头服务：定时任务工具依赖 GUI 引擎的运行时驱动，这里剔除。
+        tools: kernel
+            .tools
+            .without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
         policy: kernel.policy,
         workspace,
         model: kernel.resolved.model.clone(),

@@ -15,7 +15,7 @@ use crate::event::{
     Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, TaskRenamed, ToolResult,
     ToolStatus,
 };
-use crate::schedule::{ScheduleState, ScheduleStatus};
+use crate::schedule::{ScheduleState, ScheduleStatus, ScheduledTask};
 use crate::task::{Root, Task, TaskError};
 
 /// Wall clock in the store, at minute resolution. The scheduler only needs
@@ -806,6 +806,56 @@ impl SessionStore {
             }
         }
         Ok(removed)
+    }
+
+    // ==== 运行时定时任务（Scheduled Tasks）存储 ====
+    //
+    // 任务定义存 `<root>/schedule/tasks.json`（JSON 数组，原子写）。与会话日志
+    // （JSONL）不同，任务是 host 级资源，不属于任何会话，独立文件即可。
+
+    pub fn schedule_tasks_path(&self) -> PathBuf {
+        self.root.join("schedule").join("tasks.json")
+    }
+
+    /// 容错读取任务定义：文件缺失 / 损坏都视为空（下次保存会覆盖坏数据）。
+    pub fn load_schedule_tasks(&self) -> Vec<ScheduledTask> {
+        let Ok(text) = fs::read_to_string(self.schedule_tasks_path()) else {
+            return Vec::new();
+        };
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    /// 原子写任务定义：先写临时文件再 rename。
+    pub fn save_schedule_tasks(&self, tasks: &[ScheduledTask]) -> Result<(), StoreError> {
+        let path = self.schedule_tasks_path();
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let text = serde_json::to_string_pretty(tasks)?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, text)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// 目标会话日志里是否已经出现某条投递文案对应的 `user/message` 事件。
+    ///
+    /// 崩溃恢复 / 投递确认用它区分"投过没投过"。主消息（follow-up）落盘时
+    /// `queued_id` 为 `None`（只有 steering 消息才带 id），所以按文案匹配：
+    /// 定时投递的 framing 文案（`[SCHEDULED TASK REMINDER] (id) …`）是任务
+    /// 独有的，与用户输入撞车的概率可以忽略。
+    pub fn schedule_delivery_landed(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<bool, StoreError> {
+        let events = self.load(session_id)?;
+        Ok(events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::UserMessage(message) if message.text == prompt
+            )
+        }))
     }
 
     fn validate_id(&self, id: &str) -> Result<(), StoreError> {

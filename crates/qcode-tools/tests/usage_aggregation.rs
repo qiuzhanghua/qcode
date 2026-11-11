@@ -98,6 +98,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            scheduler: None,
         },
         RunOptions {
             session_id: &id,

@@ -17,6 +17,9 @@ impl Shell {
                 Some((task, schedule.hint()?))
             })
             .collect();
+        // 运行时定时任务（含 config 迁移导入的条目）随同一轮刷新：侧栏列表、
+        // 详情页与页头时钟标记都读这份缓存。
+        self.schedule_tasks = self.backend.schedule_tasks();
         match self.backend.tasks() {
             Ok(tasks) => {
                 self.titles = task_titles(&tasks, self.backend.as_ref());
