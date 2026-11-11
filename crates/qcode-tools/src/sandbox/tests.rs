@@ -42,6 +42,7 @@ mod macos_sandbox_tests {
             SandboxNetwork::Deny,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         )
         .expect("profile");
         let write = block(&profile, "(allow file-write*");
@@ -90,6 +91,7 @@ mod macos_sandbox_tests {
             SandboxNetwork::Deny,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         )
         .expect("profile");
 
@@ -126,7 +128,7 @@ mod macos_sandbox_tests {
             SandboxMode::None,
             &workspace(),
             SandboxNetwork::ProxyOnly { port: 43123 },
-            &[],
+            SandboxPaths::default(),
         )
         .expect_err("rejected");
         assert!(
@@ -491,6 +493,7 @@ mod bwrap_tests {
             false,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(
             args.windows(3).any(|window| window
@@ -523,6 +526,7 @@ mod bwrap_tests {
             false,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
         assert!(
@@ -539,6 +543,7 @@ mod bwrap_tests {
             false,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(denied.contains(&"--unshare-net".to_string()));
 
@@ -548,6 +553,7 @@ mod bwrap_tests {
             true,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(!allowed.contains(&"--unshare-net".to_string()));
     }
@@ -571,6 +577,7 @@ mod bwrap_tests {
             false,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(
             args.windows(3)
@@ -593,12 +600,55 @@ mod bwrap_tests {
             false,
             std::slice::from_ref(&cargo),
             OutsideRoots::BuildCaches,
+            &[],
         ));
         let binds = args
             .windows(3)
             .filter(|window| window[0] == "--bind" && window[1] == cargo.to_string_lossy())
             .count();
         assert_eq!(binds, 1, "{args:?}");
+    }
+
+    /// `[sandbox] extra_read` becomes read-only binds, and a root that is
+    /// already bound is not bound twice.
+    #[test]
+    fn extra_read_adds_read_only_binds() {
+        let prefix = PathBuf::from("/opt/toolchain");
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+            std::slice::from_ref(&prefix),
+        ));
+        let binds = args
+            .windows(3)
+            .filter(|window| window[0] == "--ro-bind" && window[1] == prefix.to_string_lossy())
+            .count();
+        assert_eq!(binds, 1, "{args:?}");
+        assert!(
+            !args
+                .windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == prefix.to_string_lossy()),
+            "a read root must never be bound read-write: {args:?}"
+        );
+
+        // A root the task already has needs no extra bind.
+        let workspace = rw_roots()[0].path.clone();
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::BuildCaches,
+            std::slice::from_ref(&workspace),
+        ));
+        let duplicate = args
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind" && w[1] == workspace.to_string_lossy())
+            .count();
+        assert_eq!(duplicate, 0, "{args:?}");
     }
 
     /// `OutsideRoots::Nothing`: no build-cache binds, and `TMPDIR` is left as
@@ -616,6 +666,7 @@ mod bwrap_tests {
             false,
             std::slice::from_ref(&cargo),
             OutsideRoots::Nothing,
+            &[],
         ));
         assert!(
             !args
@@ -647,6 +698,7 @@ mod bwrap_tests {
             false,
             std::slice::from_ref(&cargo),
             OutsideRoots::BuildCaches,
+            &[],
         ));
         assert!(
             args.windows(2)
@@ -667,7 +719,7 @@ mod linux_tests {
     use crate::sandbox::*;
 
     fn bwrap_or_skip(workspace: &Path) -> Option<Bwrap> {
-        let sandbox = Bwrap::new(workspace, false).expect("sandbox");
+        let sandbox = Bwrap::new(workspace, false, &[]).expect("sandbox");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -863,7 +915,7 @@ mod landlock_runtime {
             eprintln!("skipping: landlock unavailable here: {err}");
             return None;
         }
-        let sandbox = Landlock::new(workspace).expect("build the landlock ruleset");
+        let sandbox = Landlock::new(workspace, &[]).expect("build the landlock ruleset");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -897,6 +949,141 @@ mod landlock_runtime {
         assert!(output.status.success(), "{output:?}");
         assert_eq!(String::from_utf8_lossy(&output.stdout), "hi");
         assert!(workspace.path().join("inside.txt").is_file());
+    }
+
+    /// `[sandbox] extra_read`: a subtree outside the fixed system allowlist
+    /// becomes readable **and executable**, which is the whole point — the
+    /// toolchain on the machine this was written for lives under `$HOME`.
+    ///
+    /// Both halves run under `OutsideRoots::Nothing` on purpose. `tempfile`
+    /// puts the fixture under `/tmp`, and `BuildCaches` grants `/tmp` writable
+    /// unconditionally — comparing "bare" against "bare + extra_read" under
+    /// `BuildCaches` would have passed for the wrong reason (the same trap that
+    /// made an earlier test route around `/tmp` instead of asserting on it).
+    /// Under `Nothing`, `/tmp` is not granted at all, so `extra_read` is the
+    /// only difference between the two sandboxes.
+    #[test]
+    fn extra_read_grants_a_subtree_outside_the_system_allowlist() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let tool = tempfile::tempdir().expect("tool prefix");
+        std::fs::write(tool.path().join("hello.sh"), "#!/bin/sh\necho ok\n").expect("script");
+        let script = tool.path().join("hello.sh");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        // Driven through `with_roots`, because that is the call `run_shell`
+        // makes every turn: a fix that only worked on the seed sandbox would
+        // never reach a single tool.
+        let build = |extra_read: &[PathBuf]| {
+            let seed = Landlock::new(workspace.path(), extra_read).expect("ruleset");
+            seed.with_roots(&roots, None, OutsideRoots::Nothing)
+                .expect("multi-root sandbox")
+        };
+        let read = |sandbox: &dyn Sandbox| {
+            let mut command = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!("cat '{}' >/dev/null", script.display())),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command");
+            command.output().expect("run").status.success()
+        };
+        let run_script = |sandbox: &dyn Sandbox| {
+            let mut command = sandbox
+                .command(OsStr::new(&script), &[], workspace.path())
+                .expect("command");
+            command.output().expect("run").status.success()
+        };
+
+        // Without it: unreachable. This is the failure that motivated the field.
+        let bare = build(&[]);
+        if let Err(err) = bare.check() {
+            eprintln!("skipping: landlock preflight failed here: {err}");
+            return;
+        }
+        assert!(
+            !read(bare.as_ref()),
+            "the fixture must be unreadable without extra_read, or this proves nothing"
+        );
+        assert!(
+            !run_script(bare.as_ref()),
+            "executing outside the allowlist must be denied too"
+        );
+
+        // With it: read works, and so does execute — a prefix whose binaries
+        // cannot run is the situation this field exists to end.
+        let granted = build(&[tool.path().to_path_buf()]);
+        assert!(
+            read(granted.as_ref()),
+            "extra_read did not grant {}",
+            tool.path().display()
+        );
+        assert!(
+            run_script(granted.as_ref()),
+            "extra_read must include execute, or a toolchain under it cannot run"
+        );
+        assert!(
+            granted.describe().contains("extra read"),
+            "doctor must be able to say what was granted: {}",
+            granted.describe()
+        );
+        // And it stayed read-only: the subtree must not become writable.
+        let write = granted
+            .command(
+                OsStr::new("/bin/sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from(format!("printf x > '{}/w.txt'", tool.path().display())),
+                ],
+                workspace.path(),
+            )
+            .expect("command")
+            .output()
+            .expect("run");
+        assert!(
+            !write.status.success(),
+            "extra_read granted write access: {write:?}"
+        );
+    }
+
+    /// A read root that does not exist is a startup error that names itself,
+    /// rather than a rule Landlock silently skips.
+    #[test]
+    fn extra_read_rejects_a_missing_root() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+        let missing = workspace.path().join("no-such-prefix");
+        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing))
+            .expect_err("a missing extra_read root must be rejected");
+        assert!(
+            error.to_string().contains("extra_read"),
+            "the message must name the field: {error}"
+        );
+        assert!(
+            error.to_string().contains("no-such-prefix"),
+            "the message must name the path: {error}"
+        );
     }
 
     /// The write set is the roots, and the two shapes must actually differ on a
@@ -1089,6 +1276,7 @@ mod macos_profile_tests {
             SandboxNetwork::Deny,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
         )
         .expect("profile");
         let shell_write = write_block(&shell);
@@ -1101,6 +1289,7 @@ mod macos_profile_tests {
             SandboxNetwork::Deny,
             &[],
             OutsideRoots::Nothing,
+            &[],
         )
         .expect("profile");
         let server_write = write_block(&server);
@@ -1140,6 +1329,7 @@ mod macos_profile_tests {
             SandboxNetwork::Deny,
             &[extra.path().to_path_buf()],
             OutsideRoots::BuildCaches,
+            &[],
         )
         .expect("profile");
         let write_section = profile

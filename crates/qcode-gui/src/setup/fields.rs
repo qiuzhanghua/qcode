@@ -96,6 +96,13 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join("\n"),
+        ["sandbox", "extra_read"] => config
+            .sandbox
+            .extra_read
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
         ["update", "enabled"] => config.update.enabled.to_string(),
         ["update", "check"] => config.update.check.to_string(),
         ["update", "check_days"] => config.update.check_days.to_string(),
@@ -195,6 +202,12 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
         ["sandbox", "network"] => config.sandbox.network = Some(parse_sandbox_network(value)?),
         ["sandbox", "extra_writable"] => {
             config.sandbox.extra_writable = lines_from(value)
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect();
+        }
+        ["sandbox", "extra_read"] => {
+            config.sandbox.extra_read = lines_from(value)
                 .into_iter()
                 .map(std::path::PathBuf::from)
                 .collect();

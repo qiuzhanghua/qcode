@@ -489,12 +489,15 @@ pub async fn assemble(
     let egress = build_egress(&loaded, &data_dir, resolved.base_url.as_deref()).await?;
     let sandbox_network = sandbox_network(&loaded, egress.as_deref())?;
     // The sandbox is configuration, not a frontend choice: mode, network
-    // policy and extra writable roots all come from `[sandbox]`/`[network]`.
+    // policy and the extra read/write roots all come from `[sandbox]`/`[network]`.
     let sandbox: Arc<dyn Sandbox> = qcode_tools::sandbox::build(
         loaded.sandbox.mode,
         cwd,
         sandbox_network,
-        &loaded.sandbox.extra_writable,
+        qcode_tools::sandbox::SandboxPaths {
+            writable: &loaded.sandbox.extra_writable,
+            readable: &loaded.sandbox.extra_read,
+        },
     )?;
     let sandbox_name = sandbox.name().to_string();
     // The proxy doubles as the network the tools and the engine share, so its

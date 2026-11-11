@@ -38,6 +38,44 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 教训已写进 README：**翻 cfg 在本地验 macOS 要翻全部相关模块，并且跑 clippy 而不是只看
 测试过没过**——上一版只翻了一半，测试照样通过。
 
+### `[sandbox] extra_read`：让沙箱外的工具链可读可执行
+
+沙箱的读允许集是固定的发行版目录（`/usr`、`/bin`、`/lib`、`/lib64`、`/etc`、`/opt`、
+`/sys`、`/proc`、`/run`、`/dev`）加任务 roots。工具链装在别处就完全不可达——而这不只是
+「写不了」：
+
+- 实测（Landlock）：开 `mode = "landlock"` 后，agent 自己的 shell 读不了 `/home/q/cot`
+  （那台机器上唯一的 Rust 工具链就在里面），`cargo`、`rustc`、`gh` 全部 `Permission
+  denied`，连锁导致**连修复代码都编译不了**。
+- `extra_writable` 帮不上：它只对 `windows-acl` 与 macOS 生效，Linux 后端 `let _ =` 掉了。
+
+新字段 `[sandbox] extra_read = ["/home/q/cot", "/opt/tools"]`，**列表，每项一棵子树**，
+授予**读 + 可执行**：
+
+- 四个后端统一：Landlock 加 `LL_READ_* | LL_EXECUTE` 规则；bwrap 加 `--ro-bind`；
+  macOS 加进 `(allow file-read*)`；`windows-acl` 本就不限制读，是空操作（文档里写明，
+  不假装三平台一致）。
+- 可执行位是有意的：目录里读得到却跑不了二进制没有意义，而这正是这条需求的全部内容。
+- **在 `with_roots` 里继续传递**。`run_shell` 每轮都用任务的 roots 重建沙箱，只在 seed
+  上生效的修复到不了任何一个真实工具调用——测试特意走 `with_roots` 验证这一点。
+- 不存在的路径在启动时报错并点名（`[sandbox] extra_read: X does not exist`）。否则
+  Landlock 什么规则都不装，表现和「功能没生效」一模一样。
+- `describe()` 打印 `extra read: [...]`，`qc config` 也打印该字段：doctor 说得出给了什么，
+  否则「实际能碰到什么」在外部无法回答（ADR-0066 §1）。
+
+**一个需要知道的副作用**：`extra_read` 是 `[sandbox]` 级设置，而 MCP server 的沙箱由同一个
+后端派生，所以这些前缀对第三方 server 同样可读——ADR-0066 §1 的「读集 = 推导运行时 + 凭据
+子树」因此被放宽。要只给 `run_shell` 用，就写窄到工具链目录本身。若将来需要严格隔离，应给
+`[mcp]` 加独立的白名单，而不是让两边共享这一项。
+
+`build()` 的 `extra_writable` / `extra_read` 收进 `SandboxPaths` 结构体，不做成两个相邻的
+`&[PathBuf]` 位置参数——同类参数调换能编过，只会表现为「读得到、写不了」，
+这正是 `ConnectOptions` 当初存在的原因。
+
+测试：真机 Landlock（不加则读和执都被拒 → 加上后两者都通，且经 `with_roots` 传递）、
+缺路径报错、bwrap 的 `--ro-bind` 且绝不 bind 成读写、已 bind 的 root 不重复、
+TOML 解析成列表且不与 `extra_writable` 混淆。
+
 ### 审批规则的 `tool` 支持通配
 
 `[[rules]]` 的 `tool` 之前是精确比较（`name != tool`），写 `tool = "mcp__wordcraft__*"` 会

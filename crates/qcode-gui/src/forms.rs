@@ -277,7 +277,14 @@ pub const FIELDS: &[FieldSpec] = &[
         label: "Extra writable roots",
         page: Page::NetworkSandbox,
         kind: FieldKind::Lines,
-        help: "One path per line; windows-acl only",
+        help: "One path per line; windows-acl and macOS only",
+    },
+    FieldSpec {
+        path: &["sandbox", "extra_read"],
+        label: "Extra readable roots",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Lines,
+        help: "One path per line, whole subtree; read + execute, every backend",
     },
     FieldSpec {
         path: &["network", "mode"],

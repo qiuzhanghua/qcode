@@ -7,6 +7,8 @@ pub struct SandboxExec {
     profile: String,
     network: SandboxNetwork,
     extra_writable: Vec<PathBuf>,
+    /// `[sandbox] extra_read`, carried so `with_roots` keeps it.
+    extra_read: Vec<PathBuf>,
 }
 
 #[cfg(target_os = "macos")]
@@ -14,13 +16,14 @@ impl SandboxExec {
     pub(crate) const EXEC: &'static str = "/usr/bin/sandbox-exec";
 
     pub fn new(workspace: &Path, network: SandboxNetwork) -> Result<Self, SandboxError> {
-        Self::new_with_extra(workspace, network, &[])
+        Self::new_with_extra(workspace, network, &[], &[])
     }
 
     pub fn new_with_extra(
         workspace: &Path,
         network: SandboxNetwork,
         extra_writable: &[PathBuf],
+        extra_read: &[PathBuf],
     ) -> Result<Self, SandboxError> {
         let roots = vec![Root {
             id: qcode_core::task::LEGACY_ROOT_LABEL.to_string(),
@@ -36,9 +39,11 @@ impl SandboxExec {
                 network,
                 extra_writable,
                 OutsideRoots::BuildCaches,
+                extra_read,
             )?,
             network,
             extra_writable: extra_writable.to_vec(),
+            extra_read: extra_read.to_vec(),
         })
     }
 
@@ -56,9 +61,17 @@ impl Sandbox for SandboxExec {
         outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
         Ok(Arc::new(Self {
-            profile: profile_for_roots(roots, temp, self.network, &self.extra_writable, outside)?,
+            profile: profile_for_roots(
+                roots,
+                temp,
+                self.network,
+                &self.extra_writable,
+                outside,
+                &self.extra_read,
+            )?,
             network: self.network,
             extra_writable: self.extra_writable.clone(),
+            extra_read: self.extra_read.clone(),
         }))
     }
 
@@ -133,6 +146,7 @@ pub(crate) fn profile_for_roots(
     network: SandboxNetwork,
     extra_writable: &[PathBuf],
     outside: OutsideRoots,
+    extra_read: &[PathBuf],
 ) -> Result<String, SandboxError> {
     if roots.iter().any(|root| root.path == Path::new("/")) {
         return Err(SandboxError::Setup(
@@ -184,6 +198,12 @@ pub(crate) fn profile_for_roots(
         writable.push(path);
     }
     writable.extend(extra_writable.iter().map(|path| profile_path(path)));
+    // `[sandbox] extra_read`: read access only, so `(allow file-read*)` covers
+    // these. Seatbelt's `file-read*` includes the execute check for a binary
+    // launched under `(allow process-exec)`, which this profile grants.
+    for path in extra_read {
+        readable.push(profile_path(path));
+    }
     // The caches are read-only-visible either way (a binary may live under
     // CARGO_HOME); only the write bit depends on the caller.
     for key in ["CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR", "TMPDIR"] {

@@ -92,14 +92,48 @@ pub enum SandboxNetwork {
     ProxyOnly { port: u16 },
 }
 
+/// Extra roots granted beyond the task roots, both lists recursive.
+///
+/// Grouped in a struct rather than passed as two more positional parameters: two
+/// `&[PathBuf]`s next to each other swap silently and still type-check, and the
+/// result is a sandbox that reads where it should write. (`qcode_mcp`'s
+/// `ConnectOptions` was created for the same reason.)
+///
+/// The two lists are not symmetric across backends, and pretending otherwise
+/// would be the "docs say A, code does B" failure this ADR set out to remove:
+///
+/// * `readable` is honoured by **every** backend. On Windows reads are not
+///   restricted at all, so it is a no-op there rather than a promise.
+/// * `writable` is honoured by `sandbox-exec` and `windows-acl`. The Linux
+///   backends ignore it — long-standing behaviour, documented in
+///   `[sandbox] extra_writable`'s own doc comment and left alone here.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SandboxPaths<'a> {
+    /// Extra roots granted read-write.
+    pub writable: &'a [PathBuf],
+    /// Extra roots granted read + execute, recursively.
+    ///
+    /// Exists because the system read allowlist is a fixed list of distro paths
+    /// plus the task roots, so a toolchain installed anywhere else (`/opt/tool`,
+    /// a package manager's own prefix, `$HOME/cot`) is invisible to a confined
+    /// `run_shell` — `cargo`, `gh`, anything under it fails with `Permission
+    /// denied` before it even starts. Measured: with this unset, a Landlocked
+    /// agent could not read `/home/q/cot`, which is where the only Rust
+    /// toolchain on that machine lives.
+    pub readable: &'a [PathBuf],
+}
+
 /// Build the configured sandbox. `SandboxExec` is preflighted here so a broken
 /// sandbox fails before any tool runs.
 pub fn build(
     mode: SandboxMode,
     primary_root: &Path,
     network: SandboxNetwork,
-    extra_writable: &[PathBuf],
+    paths: SandboxPaths<'_>,
 ) -> Result<Arc<dyn Sandbox>, SandboxError> {
+    let SandboxPaths { writable, readable } = paths;
+    let extra_writable = writable;
+    let extra_read = readable;
     if matches!(network, SandboxNetwork::ProxyOnly { .. }) && mode != SandboxMode::SandboxExec {
         return Err(SandboxError::Setup(
             "network hard mode (proxy-only) is only implemented for macOS sandbox-exec".to_string(),
@@ -110,13 +144,14 @@ pub fn build(
         SandboxMode::SandboxExec => {
             #[cfg(target_os = "macos")]
             {
-                let sandbox = SandboxExec::new_with_extra(primary_root, network, extra_writable)?;
+                let sandbox =
+                    SandboxExec::new_with_extra(primary_root, network, extra_writable, extra_read)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let _ = (primary_root, network, extra_writable);
+                let _ = (primary_root, network, extra_writable, extra_read);
                 Err(SandboxError::Unsupported("sandbox-exec"))
             }
         }
@@ -124,13 +159,17 @@ pub fn build(
             #[cfg(target_os = "linux")]
             {
                 let _ = extra_writable;
-                let sandbox = Bwrap::new(primary_root, matches!(network, SandboxNetwork::Allow))?;
+                let sandbox = Bwrap::new(
+                    primary_root,
+                    matches!(network, SandboxNetwork::Allow),
+                    extra_read,
+                )?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (primary_root, network, extra_writable);
+                let _ = (primary_root, network, extra_writable, extra_read);
                 Err(SandboxError::Unsupported("bwrap"))
             }
         }
@@ -139,13 +178,13 @@ pub fn build(
             {
                 let _ = extra_writable;
                 let _ = network;
-                let sandbox = Landlock::new(primary_root)?;
+                let sandbox = Landlock::new(primary_root, extra_read)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (primary_root, network, extra_writable);
+                let _ = (primary_root, network, extra_writable, extra_read);
                 Err(SandboxError::Unsupported("landlock"))
             }
         }
@@ -153,13 +192,16 @@ pub fn build(
             #[cfg(windows)]
             {
                 let _ = network;
+                // `extra_read` is a no-op here: this backend restricts writes
+                // only, so reads are already unrestricted.
+                let _ = extra_read;
                 let sandbox = crate::windows_acl::WindowsAcl::new(primary_root, extra_writable)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(windows))]
             {
-                let _ = (primary_root, network, extra_writable);
+                let _ = (primary_root, network, extra_writable, extra_read);
                 Err(SandboxError::Unsupported("windows-acl"))
             }
         }

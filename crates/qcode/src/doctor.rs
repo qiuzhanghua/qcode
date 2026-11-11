@@ -501,7 +501,10 @@ impl Doctor {
             config.sandbox.mode,
             &workspace,
             network,
-            &config.sandbox.extra_writable,
+            sandbox::SandboxPaths {
+                writable: &config.sandbox.extra_writable,
+                readable: &config.sandbox.extra_read,
+            },
         ) {
             Ok(sandbox) => {
                 self.ok("sandbox", sandbox.describe());
@@ -554,7 +557,10 @@ impl Doctor {
             config.sandbox.mode,
             &workspace,
             sandbox_network,
-            &config.sandbox.extra_writable,
+            sandbox::SandboxPaths {
+                writable: &config.sandbox.extra_writable,
+                readable: &config.sandbox.extra_read,
+            },
         ) {
             Ok(sandbox) => sandbox,
             Err(error) => {

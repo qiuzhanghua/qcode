@@ -352,6 +352,14 @@ impl ConfigEdit {
                 .iter()
                 .map(|path| path.display().to_string()),
         )?;
+        self.set_string_array(
+            &["sandbox", "extra_read"],
+            config
+                .sandbox
+                .extra_read
+                .iter()
+                .map(|path| path.display().to_string()),
+        )?;
 
         self.set_str(&["network", "mode"], network_mode(&config.network.mode))?;
         self.set_bool(&["network", "enabled"], config.network.enabled)?;
@@ -671,7 +679,7 @@ pub fn set_default_model(
 /// `None` removes the key (an "unset" optional). The value string is typed by
 /// inspection: `true`/`false` → bool, an integer literal → integer, a float
 /// literal → float, anything else → a string. The array keys
-/// (`sandbox.extra_writable`, `network.allow`, `skills.roots`,
+/// (`sandbox.extra_writable`, `sandbox.extra_read`, `network.allow`, `skills.roots`,
 /// `search.api_key_command`) take one entry per line. This mirrors what
 /// [`ConfigEdit::apply_config`] writes for the same keys, so a settings auto
 /// save never changes the file's shape.
@@ -687,6 +695,7 @@ pub fn set_scalar(path: &Path, keys: &[&str], value: Option<&str>) -> Result<(),
 fn set_scalar_value(edit: &mut ConfigEdit, keys: &[&str], value: &str) -> Result<(), ConfigError> {
     match keys {
         ["sandbox", "extra_writable"]
+        | ["sandbox", "extra_read"]
         | ["network", "allow"]
         | ["skills", "roots"]
         | ["search", "api_key_command"] => {

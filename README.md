@@ -370,6 +370,24 @@ cargo build -p qcode-eval
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
   unprivileged userns）；默认 `none`，审批仍是主边界。`windows-acl` 的授权是常驻 ACE：
   `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
+  沙箱的**读**允许集是固定的发行版目录（`/usr`、`/bin`、`/lib`、`/etc`…）加任务 roots，
+  所以装在别处的工具链在 `mode = "landlock"` 下会被挡住——不只是写，连读都不行，`cargo`
+  起不来。用 `[sandbox] extra_read` 把这些前缀加进来，**它是列表，每项一棵子树**：
+
+  ```toml
+  [sandbox]
+  mode = "landlock"
+  extra_read = ["/home/q/cot", "/opt/tools"]
+  ```
+
+  这一项**只给读**（含可执行位，否则目录里的二进制跑不动）。给一个目录是完整决定：
+  `extra_read = ["$HOME"]` 同时把 `~/.ssh`、`~/.aws` 交给 agent，要窄就写窄。
+  **它是 `[sandbox]` 级设置，因此也作用于 MCP server 的沙箱**（MCP 沙箱由同一个后端派生），
+  也就是说这些前缀对第三方 server 同样可读。ADR-0066 §1 的「读集 = 推导出的运行时 +
+  凭据子树」因此被放宽；如果只想让 `run_shell` 拿到它，就把它写窄到工具链目录本身。
+  注意 `extra_writable` 一直只对 `windows-acl` 与 macOS 生效，Linux 后端忽略它——这是
+  既有行为，`extra_read` 则四个后端都认（Windows 不限制读，所以那里是空操作）。
+
 - **MCP server 的沙箱是另一份授权（ADR-0066）**：同一个后端，但边界按 server 现算，
   而不是照抄 `run_shell` 的。运行时目录（由 `command` 推导：venv、`node_modules`、
   `<dist>/bin` 之类）**只读 + 可执行**；**写**只给 workspace 与每个 server 私有的
@@ -653,6 +671,7 @@ audit = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
 extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
+extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归
 
 # 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。
 # check_days 是启动时查询新版本的最小间隔（结果缓存进 data-dir）；repo / base_url

@@ -149,6 +149,62 @@ fn an_unparsable_rule_pattern_fails_to_load() {
     assert_eq!(rules.len(), 1);
 }
 
+/// A key the build knows must not be reported as unknown.
+///
+/// Cheap test, real bug: `[...] extra_read` was added to `SandboxConfig` and to
+/// serde, but not to `KNOWN_KEYS`. Everything compiled and every config
+/// round-tripped — and every user who set the key got
+/// "unknown config keys are ignored", which is exactly the warning that teaches
+/// people to ignore warnings. Written because that mistake was made.
+#[test]
+fn every_sandbox_key_is_known() {
+    let document: toml::Table = r#"
+        [sandbox]
+        mode = "landlock"
+        network = false
+        extra_writable = ["/tmp/w"]
+        extra_read = ["/home/q/cot"]
+    "#
+    .parse()
+    .expect("parse");
+    let unknown = super::load::unknown_keys(&document);
+    assert!(unknown.is_empty(), "reported as unknown: {unknown:?}");
+}
+
+/// `[sandbox] extra_read` is a list of directories, each recursive.
+///
+/// Recursion is the point: the reason the field exists is a toolchain prefix
+/// with `bin/`, `lib/` and `share/` under it, and listing those three by hand
+/// (and again for every new tool) is what nobody does.
+#[test]
+fn sandbox_extra_read_is_a_list_of_directories() {
+    let config: Config = toml::from_str(
+        r#"
+            version = 1
+
+            [sandbox]
+            mode = "landlock"
+            extra_read = ["/home/q/cot", "/opt/tools"]
+
+            [[approval.rules]]
+            id = "allow-read"
+            tool = "read_file"
+            action = "allow"
+        "#,
+    )
+    .expect("parse");
+    assert_eq!(
+        config.sandbox.extra_read,
+        vec![
+            PathBuf::from("/home/q/cot"),
+            PathBuf::from("/opt/tools"),
+        ]
+    );
+    // The two lists must not be confused for one another: a config that sets
+    // only `extra_read` grants no write access.
+    assert!(config.sandbox.extra_writable.is_empty());
+}
+
 #[test]
 fn defaults_to_mock() {
     let resolved = resolve(&Config::default(), &Overrides::default(), &env_from(&[])).unwrap();

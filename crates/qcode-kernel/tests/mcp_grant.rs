@@ -61,7 +61,12 @@ fn mcp(server: McpServerConfig) -> McpConfig {
 
 /// `None` when this machine cannot run the sandbox at all.
 fn landlock(workspace: &Path) -> Option<Arc<dyn Sandbox>> {
-    match build(SandboxMode::Landlock, workspace, SandboxNetwork::Allow, &[]) {
+    match build(
+        SandboxMode::Landlock,
+        workspace,
+        SandboxNetwork::Allow,
+        qcode_tools::sandbox::SandboxPaths::default(),
+    ) {
         Ok(sandbox) => Some(sandbox),
         Err(error) => {
             eprintln!("skipping: no usable landlock sandbox here: {error}");

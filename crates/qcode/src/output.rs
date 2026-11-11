@@ -79,10 +79,11 @@ pub(crate) fn print_config(config: &config::Config) {
         config.update.base_url
     );
     println!(
-        "sandbox.mode = {}, network = {}, extra_writable = {:?}",
+        "sandbox.mode = {}, network = {}, extra_writable = {:?}, extra_read = {:?}",
         config.sandbox.mode.label(),
         config.sandbox_network_mode().label(),
-        config.sandbox.extra_writable
+        config.sandbox.extra_writable,
+        config.sandbox.extra_read
     );
     println!(
         "skills.enabled = {}, roots = {:?}",
