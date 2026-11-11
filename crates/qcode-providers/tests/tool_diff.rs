@@ -85,6 +85,7 @@ async fn a_write_tool_records_its_diff_in_the_session_log() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

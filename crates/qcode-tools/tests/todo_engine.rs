@@ -43,6 +43,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 

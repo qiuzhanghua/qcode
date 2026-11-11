@@ -185,6 +185,7 @@ mod tests {
                 starts_segment: false,
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         ];
         all.extend(events);

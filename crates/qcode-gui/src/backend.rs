@@ -20,6 +20,21 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 pub struct TaskRow {
     pub task: Task,
     pub summary: SessionSummary,
+    /// True when any message in the session log is a scheduled-task delivery
+    /// (ADR-0059): the sidebar shows a clock mark on such tasks.
+    pub has_scheduled: bool,
+}
+
+/// Whether the session log contains a scheduled-task delivery message.
+fn has_scheduled_message(store: &SessionStore, id: &str) -> bool {
+    store
+        .load(id)
+        .map(|events| {
+            events.iter().any(|event| {
+                matches!(&event.kind, EventKind::UserMessage(message) if message.scheduled.is_some())
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// One `[schedules.<name>]` entry as the sidebar needs it (ADR-0059 §1, §5).
@@ -206,7 +221,11 @@ impl Backend for UnconfiguredBackend {
                     .task(&summary.id)
                     .or_else(|_| summary.legacy_task())
                     .ok()?;
-                Some(TaskRow { task, summary })
+                Some(TaskRow {
+                    task,
+                    has_scheduled: has_scheduled_message(&self.store, &summary.id),
+                    summary,
+                })
             })
             .collect())
     }
@@ -427,7 +446,11 @@ impl Backend for LocalBackend {
                     .task(&summary.id)
                     .or_else(|_| summary.legacy_task())
                     .ok()?;
-                Some(TaskRow { task, summary })
+                Some(TaskRow {
+                    task,
+                    has_scheduled: has_scheduled_message(&self.store, &summary.id),
+                    summary,
+                })
             })
             .collect();
         Ok(tasks)

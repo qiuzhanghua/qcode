@@ -31,7 +31,10 @@ use crate::task::Root;
 /// v9 adds `UserMessage::question_reply`, an additive optional field for a late
 /// answer to a timed-out `ask_user` call: an old reader replays the log as a
 /// plain user message (the payload is also present in `text`).
-pub const EVENT_SCHEMA_VERSION: u32 = 9;
+///
+/// v10 adds `UserMessage::scheduled` (ADR-0059), an additive optional field for
+/// a scheduled-task delivery: an old reader replays it as a plain user message.
+pub const EVENT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -137,6 +140,11 @@ pub struct UserMessage {
     /// what lets a projection pair it with the pending question.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_reply: Option<crate::question::QuestionReply>,
+    /// Set when this message is a scheduled-task delivery (ADR-0059), so the
+    /// UI can render it as a scheduled-execution card and the title derivation
+    /// can tell it apart from a typed message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<crate::schedule::ScheduledMessage>,
 }
 
 /// A continuation the user asked for after a paused turn (ADR-0060 §2.6).
@@ -475,6 +483,7 @@ mod tests {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -518,6 +527,7 @@ mod tests {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -540,6 +550,7 @@ mod tests {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
         let value: Value = serde_json::from_str(&serde_json::to_string(&input).unwrap()).unwrap();

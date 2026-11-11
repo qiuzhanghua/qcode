@@ -169,6 +169,7 @@ async fn run(
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

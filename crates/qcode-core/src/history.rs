@@ -171,6 +171,7 @@ mod tests {
                 attachments: vec![AttachmentRef::Image(image)],
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         )];
 
@@ -218,6 +219,7 @@ mod tests {
                 })],
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         )];
 
@@ -240,6 +242,7 @@ mod tests {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 }),
             ),
             event(
@@ -273,6 +276,7 @@ mod tests {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 }),
             ),
         ];
@@ -301,6 +305,7 @@ mod tests {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 }),
             ),
             event(

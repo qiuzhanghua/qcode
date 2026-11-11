@@ -58,6 +58,7 @@ fn queued(id: &str) -> QueuedMessage {
         text: format!("follow-up {id}"),
         attachments: Vec::new(),
         question_reply: None,
+        scheduled: None,
     }
 }
 

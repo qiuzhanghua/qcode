@@ -65,6 +65,7 @@ fn app_with_transcript() -> App {
 
             continuation: None,
             question_reply: None,
+            scheduled: None,
         }),
     );
     apply(
@@ -542,6 +543,7 @@ fn page_keys_scroll_the_transcript_window() {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
     }
@@ -595,6 +597,7 @@ fn scrolled_view_shows_the_offset_in_the_status_bar() {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
     }
@@ -687,6 +690,7 @@ fn renders_the_pause_card() {
             starts_segment: false,
             continuation: None,
             question_reply: None,
+            scheduled: None,
         }),
     );
     apply(

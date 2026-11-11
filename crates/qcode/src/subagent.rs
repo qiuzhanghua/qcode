@@ -123,6 +123,7 @@ impl SubagentRunner for EngineSubagent {
             // A child never continues a pause itself: spending more of the
             // parent's budget is the parent's (or the user's) call.
             continuation: None,
+            scheduled: None,
         };
 
         let sink = self.on_event.clone();

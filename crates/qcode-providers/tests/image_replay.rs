@@ -52,6 +52,7 @@ fn options<'a>(id: &'a str, cwd: &std::path::Path, attachments: Vec<Attachment>)
             .collect(),
         inbox: None,
         continuation: None,
+        scheduled: None,
     }
 }
 

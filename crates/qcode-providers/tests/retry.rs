@@ -91,6 +91,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 

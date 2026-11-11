@@ -301,6 +301,7 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
                 text,
                 images,
                 files,
+                scheduled: _,
             } => {
                 push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan));
                 for file in files {

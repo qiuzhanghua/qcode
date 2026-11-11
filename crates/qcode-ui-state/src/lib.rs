@@ -33,6 +33,9 @@ pub enum Block {
         images: Vec<ImageBlock>,
         /// Attached files, shown by name and size (ADR-0061 §7).
         files: Vec<FileBlock>,
+        /// Set when this message is a scheduled-task delivery (ADR-0059), so
+        /// the UI can render it as a distinct card instead of a typed message.
+        scheduled: Option<qcode_core::schedule::ScheduledMessage>,
     },
     Assistant(String),
     Tool(Box<ToolEntry>),

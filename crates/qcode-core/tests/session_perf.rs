@@ -60,6 +60,7 @@ fn session_events(id: &str) -> Vec<Event> {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         });
         seq += 1;

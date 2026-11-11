@@ -114,6 +114,7 @@ async fn truncated_output_is_written_to_disk() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

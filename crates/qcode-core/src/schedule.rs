@@ -21,6 +21,18 @@ use serde::{Deserialize, Serialize};
 use time::Duration as TimeSpan;
 use time::{Date, Month, Time, Weekday};
 
+/// A scheduled-task delivery, riding on the user message it turned into
+/// (ADR-0059). Lets the UI render it as a distinct "scheduled execution" card
+/// and keeps it from masquerading as a typed message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledMessage {
+    pub task_id: String,
+    pub title: String,
+    pub prompt: String,
+    /// The wall-clock occurrence this delivery represents (`YYYY-MM-DDTHH:MM:SS`).
+    pub at: String,
+}
+
 /// `time::serde::rfc3339` / `iso8601` 只支持带时区的 `OffsetDateTime`；墙钟时刻
 /// (`PrimitiveDateTime`) 用自定义字符串编解码：`YYYY-MM-DDTHH:MM:SS`。
 mod serde_wall_clock {

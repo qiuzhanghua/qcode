@@ -123,6 +123,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

@@ -84,6 +84,7 @@ fn options<'a>(
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 

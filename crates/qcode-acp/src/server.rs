@@ -302,6 +302,7 @@ impl Agent {
                 inbox: None,
 
                 continuation: None,
+                scheduled: None,
             },
             notify,
         )

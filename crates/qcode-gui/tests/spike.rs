@@ -23,6 +23,7 @@ fn synthetic_events(count: usize) -> Vec<Event> {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 })
             } else {
                 EventKind::AssistantMessage(AssistantMessage {

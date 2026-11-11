@@ -185,6 +185,7 @@ mod tests {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         )
     }

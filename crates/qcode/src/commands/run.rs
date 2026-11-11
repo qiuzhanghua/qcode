@@ -298,6 +298,7 @@ pub(crate) async fn cmd_run(
             attachments,
             inbox: None,
             continuation,
+            scheduled: None,
         },
         |event| {
             if json {

@@ -46,6 +46,7 @@ fn options<'a>(id: &'a str, cwd: &std::path::Path, files: Vec<FileRef>) -> RunOp
             .collect(),
         inbox: None,
         continuation: None,
+        scheduled: None,
     }
 }
 

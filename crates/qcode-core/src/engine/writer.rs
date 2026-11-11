@@ -66,6 +66,7 @@ impl<'a> SessionWriter<'a> {
         input: &str,
         continuation: Option<Continuation>,
         attachments: &[qcode_attachments::AttachmentRef],
+        scheduled: Option<crate::schedule::ScheduledMessage>,
         sink: &mut dyn FnMut(&Event),
     ) -> Result<(), StoreError> {
         self.turn += 1;
@@ -83,6 +84,7 @@ impl<'a> SessionWriter<'a> {
                 attachments: attachments.to_vec(),
                 continuation,
                 question_reply: None,
+                scheduled,
             }),
             sink,
         )?;

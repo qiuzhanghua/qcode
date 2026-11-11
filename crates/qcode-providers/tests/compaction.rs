@@ -60,6 +60,7 @@ fn seed_three_turns(store: &SessionStore) -> String {
 
                 continuation: None,
                 question_reply: None,
+                scheduled: None,
             }),
         );
         append(
@@ -146,6 +147,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -230,6 +232,7 @@ async fn a_roomy_window_skips_compaction() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

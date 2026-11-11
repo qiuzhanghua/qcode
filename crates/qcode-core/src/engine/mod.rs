@@ -226,6 +226,10 @@ pub struct RunOptions<'a> {
     /// message so the transcript can label it, and used to number the budget
     /// window. The engine fills in `window`/`turn` from the log.
     pub continuation: Option<Continuation>,
+    /// A scheduled-task delivery this turn was started by (ADR-0059). The
+    /// engine records it on the opening user message so the UI can render the
+    /// delivery as a scheduled-execution card.
+    pub scheduled: Option<crate::schedule::ScheduledMessage>,
 }
 
 /// One image attached to a user message, still in memory.

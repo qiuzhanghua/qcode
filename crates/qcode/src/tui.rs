@@ -469,6 +469,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     attachments,
                     inbox: Some(task_inbox),
                     continuation: $continuation,
+                    scheduled: None,
                 },
                 move |event| {
                     let _ = sender.send(TuiMsg::Event(event.clone()));

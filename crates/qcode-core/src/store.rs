@@ -928,6 +928,7 @@ mod tests {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 }),
             ))
             .expect("user message");
@@ -944,6 +945,7 @@ mod tests {
 
                     continuation: None,
                     question_reply: None,
+                    scheduled: None,
                 }),
             ))
             .expect("user message");

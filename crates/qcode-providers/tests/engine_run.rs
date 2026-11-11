@@ -44,6 +44,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 

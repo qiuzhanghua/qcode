@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::AttachmentSource;
 use crate::question::{AnswerItem, QuestionReply};
+use crate::schedule::ScheduledMessage;
 
 /// One message waiting in an inbox boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,9 @@ pub struct QueuedMessage {
     /// so the running turn picks it up at the next step boundary. `None` for
     /// ordinary messages.
     pub question_reply: Option<QuestionReply>,
+    /// A scheduled-task delivery (ADR-0059): the engine writes it into the
+    /// `UserMessage` event so the UI can render it distinctly.
+    pub scheduled: Option<ScheduledMessage>,
 }
 
 /// What an idle frontend should do with a submitted message.
@@ -176,6 +180,20 @@ impl Inbox {
         message
     }
 
+    /// Queue a scheduled-task delivery as its own follow-up turn. `text` is the
+    /// clean prompt; the structured marker lets the UI render it distinctly.
+    pub fn followup_scheduled(&self, text: String, scheduled: ScheduledMessage) -> QueuedMessage {
+        let message = QueuedMessage {
+            id: ulid::Ulid::new().to_string(),
+            text,
+            attachments: Vec::new(),
+            question_reply: None,
+            scheduled: Some(scheduled),
+        };
+        self.inner().next_turn.push_back(message.clone());
+        message
+    }
+
     /// Submit steering for the nearest step boundary. A running turn claims it
     /// before its next model request; an idle turn leaves it pending.
     pub fn steer(&self, text: String, attachments: Vec<AttachmentSource>) -> QueuedMessage {
@@ -198,6 +216,7 @@ impl Inbox {
             text,
             attachments: Vec::new(),
             question_reply: Some(QuestionReply { call_id, answers }),
+            scheduled: None,
         };
         self.inner().next_step.push_back(message.clone());
         message
@@ -300,6 +319,7 @@ fn new_message(text: String, attachments: Vec<AttachmentSource>) -> QueuedMessag
         text,
         attachments,
         question_reply: None,
+        scheduled: None,
     }
 }
 

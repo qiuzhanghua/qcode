@@ -115,7 +115,13 @@ where
     let attachments = super::attachments::store_sources(&attachment_store, &options.attachments)?;
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
-    writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
+    writer.begin_turn(
+        &options.input,
+        continuation,
+        &attachments,
+        options.scheduled.clone(),
+        &mut on_event,
+    )?;
     events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events_with(
         &events,
@@ -358,6 +364,7 @@ where
                         // Steering is the user talking, not a continuation.
                         continuation: None,
                         question_reply: message.question_reply.clone(),
+                        scheduled: None,
                     }),
                     &mut on_event,
                 )?;

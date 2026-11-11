@@ -97,6 +97,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
