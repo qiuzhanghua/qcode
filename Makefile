@@ -20,7 +20,7 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check perf release archive clean gui app app-debug $(PLATFORMS)
+.PHONY: all native list check check-platforms perf release archive clean gui app app-debug $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -33,6 +33,13 @@ list:
 
 check:
 	./build-for-release --check
+
+# Type-check the code this host cannot compile: the Windows and macOS backends
+# behind `#[cfg(...)]`. Only needs the target's std (`rustup target add ...`),
+# no linker, so it runs in seconds. See scripts/ci-cross-check.sh for why a
+# green `cargo test --workspace` on Linux does not mean the tree compiles.
+check-platforms:
+	./scripts/ci-cross-check.sh
 
 perf:
 	./scripts/perf-session.sh

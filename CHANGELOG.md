@@ -21,6 +21,34 @@ config 里取回」把它们硬扛过去——能跑，但界面上看得到的�
 - 测试 6 条，含**真的落盘再读回**的往返（`write_config` + `config::load`）与一条结构性断言：
   四个授权字段必须都有列——它钉的是「以后加字段忘了加列 → 保存即静默删除」。
 
+### 跨目标 check：`make check-platforms` + CI 的 cross-check job
+
+`cargo test --workspace` 在 Linux 上全绿不代表这棵树能编译：`#[cfg(windows)]` /
+`#[cfg(target_os = "macos")]` 的代码在本机根本不参与编译。上一版给
+`Sandbox::with_roots` 加参数时，`crates/qcode/tests/sandbox_roots.rs`（`#![cfg(windows)]`）
+漏改了调用点，Linux 上一切正常。
+
+- `scripts/ci-cross-check.sh` + `make check-platforms`：用 `cargo check --target` 把出货
+  三元组（`x86_64/aarch64-pc-windows-gnullvm`，`build-for-release` 打的就是这两个，
+  不是 msvc——本仓库没有 `cfg(target_env)`/`cfg(target_vendor)` 门控，故等价）在本机
+  过一遍类型检查。`cargo check` 不需要链接器，只要有该 target 的 std。darwin 三元组
+  也在列表里，没装 std 就跳过并明说跳了哪些。
+- 有两条「不能静默成功」的守卫：一个 target 都没检查时**失败**（防「我检查了其他平台」
+  变成不可证伪的说法），跳过哪些明确打印。
+- CI 加 `cross-check` job（ubuntu）：只装那两个 windows 三元组并显式传参。**darwin 故意
+  不在 CI 里查**——从 Linux 编译 Apple 框架的 C shim 从没试过，按猜测加的 job 会永久红；
+  macOS 后端本来就有 `test (macos-latest)` 在真机上编译并跑测试，那才是真覆盖。
+- 变异验证：把调用点改回两参数 → 脚本 `E0061` 且退出码 1；把目标列表换成未装的
+  `wasm32-unknown-unknown` → 报「nothing was verified」并退出码 1。
+
+同时修掉上一个提交引入的 Windows 编译错误（`crates/qcode/tests/sandbox_roots.rs` 的
+`with_roots` 少了 `OutsideRoots` 参数）——正是这条 check 第一次跑抓到的。
+
+**已知缺口（未改，记在这里）**：`windows-build` 只做 `cargo test --workspace --no-run`，
+编译测试但从不执行，所以 `windows_acl` 的单测在 CI 里一条都没跑过。上一版那处
+`debug_assert` 条件写反，就算有 Windows CI 也发现不了。要补得先确认那些测试在
+Windows runner 上真的能过——没有依据就加，等于加一个永久红的 job。
+
 ### MCP server 不再能写 `/tmp` 和 Rust 构建缓存（ADR-0066 §1 修订）
 
 ADR-0066 §1 写的是「三个不相交的集合，**此外一律无**」，实现没做到：MCP server 和

@@ -158,7 +158,8 @@ wayland 后端，不经过 XIM。
 
 **提交前跑 `make check`**（等价于 fmt / `clippy -D warnings` / test / cargo-deny）。
 它和 `.github/workflows/ci.yml` 是同一组命令，本地过不了的提交在 CI 上也过不了，
-区别只是 CI 要等十几分钟才发现。
+区别只是 CI 要等十几分钟才发现。改过平台 cfg 门控的话，再加 `make check-platforms`
+（见下）。
 
 最容易漏的两步：
 
@@ -172,12 +173,28 @@ cargo clippy --workspace --all-targets -- -D warnings
 因为 `-D warnings` 把 `unused_variables` 也当错误。
 
 还有一类**本机完全看不见**的：平台 cfg 门控掉的分支。`make check` 只编译 host
-target，`#[cfg(target_os = "linux")]` 和
-`#[cfg(not(any(target_os = "macos", target_os = "windows")))]` 在 macOS 上根本
-不参与编译，悬空参数、拼错的符号都只能等 CI 报错。交叉 lint 也救不了——本机拿
-`--target aarch64-unknown-linux-musl` 跑 clippy 会死在 cc-rs 找不到
-`aarch64-linux-musl-gcc`，除非另装交叉工具链。所以改过 cfg 门控，就把这次新增/
-改动的门控行过一遍：
+target，`#[cfg(windows)]`、`#[cfg(target_os = "macos")]` 的代码在本机根本不参与
+编译，悬空参数、拼错的符号、漏改的调用点都只能等 CI 报错。
+
+**改过 cfg 门控就跑 `make check-platforms`**（等价于 `scripts/ci-cross-check.sh`）。
+它用 `cargo check --target` 把这几处门控在本机过一遍类型检查——`cargo check` 不需要
+链接器，所以只要有该 target 的 std（cot 的 rust 已经装好）就能跑，几秒钟出结果。
+检查的正是出货用的三元组：`build-for-release` 打的是 `x86_64/aarch64-pc-windows-gnullvm`，
+不是 msvc；本仓库没有 `cfg(target_env)` / `cfg(target_vendor)` 门控，所以这两者在这里
+等价。darwin 三元组也在列表里，但需要 `rustup target add` 才有 std，没有就跳过并明说
+跳了哪些（跳过不是静默成功：一个 target 都没检查时脚本会失败）。
+
+历史教训：给 `Sandbox::with_roots` 加第三个参数时，`crates/qcode/tests/sandbox_roots.rs`
+（`#![cfg(windows)]`）漏改了调用点。Linux 上 `cargo test --workspace` 全绿——那个文件
+压根没被编译。`make check-platforms` 第一次跑就报了 `E0061`。
+
+这条命令替代不了 CI 的 macOS/Windows job（它们跑在真系统上，macOS 还会真跑测试），
+所以仍然要等 CI 绿。它挡不住的另一类：门控本身没编译错、但**运行时**才炸的东西——
+`debug_assert!`、`cfg` 分支里的逻辑。`windows-build` 只做 `cargo test --workspace
+--no-run`（编译测试但从不执行），所以 Windows 侧的 `windows_acl` 单测在 CI 里
+至今一条没跑过。改 Windows 运行时代码时，别把「CI 绿」当成「测过了」。
+
+改完 cfg 门控，也可以顺带把这些行过一遍，确认自己改的是不是真落在门控里：
 
 ```bash
 git diff <base>..HEAD -- '*.rs' | grep -E '^[+-].*cfg\(' | grep -v '^[+-][+-]'

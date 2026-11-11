@@ -61,6 +61,53 @@ jobs:
           cargo tree -e normal -p qcode-gui -i xim-ctext | tee /tmp/xim-tree.txt
           grep -q 'vendor/xim-ctext' /tmp/xim-tree.txt
 
+  cross-check:
+    # Type-check the platform-gated code from one Linux runner.
+    #
+    # This does not replace `test (macos-latest)` or `windows-build`; both still
+    # compile the real backends on the real OS. What it adds is *when* the
+    # failure shows up: the triples below are the ones `build-for-release`
+    # ships, and `cargo check` needs no linker, so a signature change that only
+    # breaks `#[cfg(windows)]` code fails here in seconds instead of after a
+    # Windows runner queues. Added after exactly that happened — a new parameter
+    # on `Sandbox::with_roots` broke `crates/qcode/tests/sandbox_roots.rs`
+    # (`#![cfg(windows)]`) and `cargo test --workspace` on Linux stayed green.
+    #
+    # There are no `cfg(target_env)` / `cfg(target_vendor)` gates in this
+    # workspace, which is why `windows-gnullvm` stands in for the msvc build
+    # without loss. If one is ever added, this job must grow the msvc triple.
+    #
+    # Windows only, on purpose. The darwin triples are in the script and in the
+    # Makefile target, but *not* here: checking them from Linux means compiling
+    # Apple-framework C shims that have never been tried from this runner, and a
+    # job added on a guess is a job that goes red for reasons unrelated to the
+    # change. `test (macos-latest)` already compiles the macOS backend on macOS,
+    # which is the real coverage; this job only adds speed for the Windows half.
+    name: cross-check (windows cfg gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnullvm, aarch64-pc-windows-gnullvm
+      - uses: Swatinem/rust-cache@v2
+      # Same pkg-config set as `test`: `--workspace` reaches qcode-gui, whose
+      # fontconfig build script is a *host* build script and still runs.
+      - name: linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+      - name: cargo check for the shipping triples
+        shell: bash
+        # The two triples installed above, named explicitly so the script's
+        # "not checked" line reports a genuinely missing target and not the
+        # darwin ones this job deliberately does not install.
+        run: |
+          bash scripts/ci-cross-check.sh \
+            x86_64-pc-windows-gnullvm aarch64-pc-windows-gnullvm
+
   windows-build:
     name: windows (build + smoke)
     runs-on: windows-latest
