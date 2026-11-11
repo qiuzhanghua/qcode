@@ -12,7 +12,7 @@
 //! into sandbox roots, so `qc doctor` can print exactly what a server gets.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -141,13 +141,36 @@ const MAX_SHEBANG_DEPTH: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GrantError {
-    #[error("MCP server '{server}' command {command:?} was not found")]
-    CommandNotFound { server: String, command: String },
+    /// A bare `command` (no `/`) that no directory on the search path holds.
+    ///
+    /// Names the path *source* as well as the name: "was not found" on its own
+    /// leaves the reader unable to tell "you typed it wrong" from "this GUI has
+    /// a different `PATH` than your terminal", and the second is the whole
+    /// reason this lookup consults the shell snapshot (ADR-0070).
+    #[error(
+        "MCP server '{server}' command {command:?} was not found on {searched}; \
+         use an absolute path if it lives elsewhere"
+    )]
+    CommandNotFound {
+        server: String,
+        command: String,
+        /// Not named `source`: `thiserror` would read it as the error source.
+        searched: &'static str,
+    },
     #[error(
         "MCP server '{server}' would need read access to {path}, which is {reason}; \
          add an explicit read_paths entry if that is really intended"
     )]
     DangerousRoot {
+        server: String,
+        path: PathBuf,
+        reason: &'static str,
+    },
+    #[error(
+        "MCP server '{server}' would need write access to {path}, which is {reason}; \
+         narrow `writable_paths` to a subdirectory"
+    )]
+    DangerousWriteRoot {
         server: String,
         path: PathBuf,
         reason: &'static str,
@@ -218,6 +241,10 @@ pub struct GrantInput<'a> {
     pub real_home: Option<&'a Path>,
     /// Whether the OS sandbox is applied to this server.
     pub confined: bool,
+    /// Where a bare `command` is looked up (ADR-0070). Callers that start the
+    /// process must hand the same value to the child as its `PATH`, or the
+    /// grant will describe a different file than the one that runs.
+    pub path: SearchPath<'a>,
 }
 
 impl GrantSet {
@@ -228,7 +255,16 @@ impl GrantSet {
             server_state,
             real_home,
             confined,
+            path,
         } = input;
+
+        // `dangerous()` compares a path that has been through `canonicalize()`
+        // against the home directory, so the home has to be canonical too: on
+        // macOS `/tmp` is a symlink to `/private/tmp`, and comparing against the
+        // uncanonicalized home would make "this is your home directory" fail
+        // open — the exact case the check exists for.
+        let real_home_canonical = real_home.and_then(|home| home.canonicalize().ok());
+        let real_home_for_check = real_home_canonical.as_deref().or(real_home);
 
         // `validate()` already rejects these fields on a remote server; this is
         // the second line so a caller that skipped validation gets an error
@@ -240,20 +276,19 @@ impl GrantSet {
         };
 
         let mut runtime = BTreeSet::new();
-        let program = resolve_program(&server.name, command)?;
-        collect_runtime(&server.name, &program, 0, &mut runtime)?;
+        let program = resolve_program(&server.name, command, path)?;
+        collect_runtime(&server.name, &program, 0, &mut runtime, path)?;
         for extra in &server.read_paths {
             if let Ok(path) = extra.canonicalize() {
                 runtime.insert(path);
             }
         }
 
-        // The danger check runs on what we derived, not on what the user wrote:
-        // `read_paths = ["/"]` stays allowed (it is auditable in the config
-        // file), while an automatic "grant all of $HOME because the binary
-        // happens to live there" is refused.
+        // The danger check runs on the whole runtime set: what `collect_runtime`
+        // derived *and* the user's `read_paths`, which are folded in above. So
+        // `read_paths = ["/"]` is refused while `["/opt/tool"]` passes.
         for path in &runtime {
-            if let Some(reason) = dangerous(path, workspace, real_home) {
+            if let Some(reason) = dangerous(path, workspace, real_home_for_check) {
                 return Err(GrantError::DangerousRoot {
                     server: server.name.clone(),
                     path: path.clone(),
@@ -276,9 +311,28 @@ impl GrantSet {
         let mut writable: Vec<PathBuf> = Vec::new();
         push_unique(&mut writable, workspace.to_path_buf());
         for extra in &server.writable_paths {
-            if let Ok(path) = extra.canonicalize() {
-                push_unique(&mut writable, path);
+            let Ok(path) = extra.canonicalize() else {
+                continue;
+            };
+            // The same danger check the read side runs, on the write side. It
+            // was missing, and `writable_paths = ["~/"]` — two characters once
+            // `~` is expanded — is exactly the shape that needs it: a server
+            // that can write anywhere in your home can plant a
+            // `.config/gh/hosts.yml`, a shell rc line or a `.gitconfig`
+            // `core.hooksPath`, none of which needs a second write to take
+            // effect.
+            //
+            // Only the entries the user wrote: the workspace and the private
+            // HOME are granted unconditionally, and running qcode from `$HOME`
+            // must not make every server unstartable.
+            if let Some(reason) = dangerous(&path, workspace, real_home_for_check) {
+                return Err(GrantError::DangerousWriteRoot {
+                    server: server.name.clone(),
+                    path: path.clone(),
+                    reason,
+                });
             }
+            push_unique(&mut writable, path);
         }
         push_unique(&mut writable, home.clone());
 
@@ -522,21 +576,80 @@ fn dangerous(path: &Path, workspace: &Path, real_home: Option<&Path>) -> Option<
     None
 }
 
+/// Which `PATH` a bare `command` is looked up in — and, because the two must
+/// agree, which `PATH` the server is started with.
+///
+/// ADR-0070. `command = "wordcraft-cli"` is the portable spelling: the version
+/// directory in `~/cot/lib/wordcraft_0.15.2_linux_amd64` changes on every
+/// upgrade, so an absolute path in the config is a liability. But qcode's own
+/// `PATH` is launchd's minimal one when `qc gui` starts from the Dock, while the
+/// user's shells have the toolchain hooks — so a lookup against the process
+/// `PATH` alone is exactly the case that fails.
+///
+/// The resolution has to use the same value the child gets: `Command::new` is
+/// handed the *bare name*, so the kernel resolves it again from the child's
+/// `PATH`. Resolve with one and spawn with the other and the grant describes a
+/// different file than the one that runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchPath<'a> {
+    /// The user's shell environment (ADR-0064), sampled once per session.
+    Snapshot(&'a OsStr),
+    /// qcode's own `PATH`. The pre-ADR-0070 behaviour, and the fallback when
+    /// sampling is off or the sample failed.
+    Process,
+}
+
+impl SearchPath<'_> {
+    /// The value to look in and to hand the child, and a name for error text.
+    fn resolved(self) -> (OsString, &'static str) {
+        match self {
+            Self::Snapshot(path) => (path.to_os_string(), "the shell environment's PATH"),
+            Self::Process => (
+                std::env::var_os("PATH").unwrap_or_default(),
+                "qcode's PATH (shell environment sampling is off or produced nothing)",
+            ),
+        }
+    }
+
+    /// The `PATH` a server started with this search path must see.
+    pub fn as_os_str(self) -> OsString {
+        self.resolved().0
+    }
+
+    /// Where this came from, for `qc doctor` and the startup log.
+    pub fn source(self) -> &'static str {
+        self.resolved().1
+    }
+}
+
+impl<'a> From<Option<&'a OsStr>> for SearchPath<'a> {
+    fn from(path: Option<&'a OsStr>) -> Self {
+        match path {
+            Some(path) => Self::Snapshot(path),
+            None => Self::Process,
+        }
+    }
+}
+
 /// Resolve `command` the way `execvp` would: a path if it has a separator,
-/// otherwise a `PATH` lookup. `$PATH` is qcode's, because the child's is built
-/// by us afterwards.
-fn resolve_program(server: &str, command: &str) -> Result<PathBuf, GrantError> {
+/// otherwise a lookup in `path`.
+fn resolve_program(
+    server: &str,
+    command: &str,
+    path: SearchPath<'_>,
+) -> Result<PathBuf, GrantError> {
     let has_separator = command.contains('/') || command.contains('\\');
     let candidate = if has_separator {
         PathBuf::from(command)
     } else {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        std::env::split_paths(&path)
+        let (dirs, source) = path.resolved();
+        std::env::split_paths(&dirs)
             .map(|dir| dir.join(command))
             .find(|candidate| candidate.is_file())
             .ok_or_else(|| GrantError::CommandNotFound {
                 server: server.to_string(),
                 command: command.to_string(),
+                searched: source,
             })?
     };
     candidate
@@ -544,6 +657,11 @@ fn resolve_program(server: &str, command: &str) -> Result<PathBuf, GrantError> {
         .map_err(|_| GrantError::CommandNotFound {
             server: server.to_string(),
             command: command.to_string(),
+            searched: if has_separator {
+                "the path as written"
+            } else {
+                path.source()
+            },
         })
 }
 
@@ -553,6 +671,7 @@ fn collect_runtime(
     program: &Path,
     depth: usize,
     roots: &mut BTreeSet<PathBuf>,
+    path: SearchPath<'_>,
 ) -> Result<(), GrantError> {
     if depth > MAX_SHEBANG_DEPTH {
         return Ok(());
@@ -560,14 +679,15 @@ fn collect_runtime(
     if let Some(root) = root_for(program) {
         roots.insert(root);
     }
-    if let Some(interpreter) = shebang_interpreter(program) {
+    if let Some(interpreter) = shebang_interpreter(program, path) {
         let resolved = interpreter
             .canonicalize()
             .map_err(|_| GrantError::CommandNotFound {
                 server: server.to_string(),
                 command: interpreter.display().to_string(),
+                searched: "the shebang of the command",
             })?;
-        collect_runtime(server, &resolved, depth + 1, roots)?;
+        collect_runtime(server, &resolved, depth + 1, roots, path)?;
     }
     Ok(())
 }
@@ -612,7 +732,7 @@ fn root_for(program: &Path) -> Option<PathBuf> {
 }
 
 /// Read `#!` from the first line of a text file, resolving `/usr/bin/env X`.
-fn shebang_interpreter(program: &Path) -> Option<PathBuf> {
+fn shebang_interpreter(program: &Path, path: SearchPath<'_>) -> Option<PathBuf> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(program).ok()?;
     let mut reader = BufReader::new(file);
@@ -622,16 +742,17 @@ fn shebang_interpreter(program: &Path) -> Option<PathBuf> {
     let mut parts = rest.split_whitespace();
     let mut interpreter = PathBuf::from(parts.next()?);
     if interpreter.file_name() == Some(OsStr::new("env")) {
-        // `#!/usr/bin/env node`, and the `env -S node --flag` form.
+        // `#!/usr/bin/env node`, and the `env -S node --flag` form. `env` is
+        // what does the lookup at run time, so it has to be the same `PATH`.
         let name = parts.find(|part| !part.starts_with('-'))?;
-        interpreter = resolve_relative(program, name)?;
+        interpreter = resolve_relative(program, name, path)?;
     } else if !interpreter.is_absolute() {
-        interpreter = resolve_relative(program, interpreter.as_os_str().to_str()?)?;
+        interpreter = resolve_relative(program, interpreter.as_os_str().to_str()?, path)?;
     }
     Some(interpreter)
 }
 
-fn resolve_relative(program: &Path, name: &str) -> Option<PathBuf> {
+fn resolve_relative(program: &Path, name: &str, path: SearchPath<'_>) -> Option<PathBuf> {
     let candidate = Path::new(name);
     if candidate.is_absolute() {
         return Some(candidate.to_path_buf());
@@ -643,8 +764,8 @@ fn resolve_relative(program: &Path, name: &str) -> Option<PathBuf> {
             return Some(joined);
         }
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
+    let (dirs, _) = path.resolved();
+    std::env::split_paths(&dirs)
         .map(|dir| dir.join(candidate))
         .find(|candidate| candidate.is_file())
 }
@@ -784,7 +905,14 @@ mod tests {
         let script = scripts.join("tool");
         fs::write(&script, b"#!/usr/bin/env sh\necho hi\n").unwrap();
         let mut roots = BTreeSet::new();
-        collect_runtime("t", &script.canonicalize().unwrap(), 0, &mut roots).unwrap();
+        collect_runtime(
+            "t",
+            &script.canonicalize().unwrap(),
+            0,
+            &mut roots,
+            SearchPath::Process,
+        )
+        .unwrap();
         assert!(
             roots.contains(&scripts.canonicalize().unwrap()),
             "{roots:?}"
@@ -844,11 +972,79 @@ mod tests {
             server_state: temp.path().join("state"),
             real_home: Some(&home),
             confined: true,
+            path: SearchPath::Process,
         })
         .unwrap_err();
         assert!(
             matches!(error, GrantError::DangerousRoot { reason, .. } if reason == "your home directory"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_writable_path_that_is_the_whole_home_directory_is_refused() {
+        // `writable_paths = ["~/"]` is two characters away from `["~/x"]` once
+        // `~` is expanded, and the failure it prevents is invisible: a server
+        // that can write anywhere in `$HOME` can drop a `.gitconfig`
+        // `core.hooksPath`, a shell rc line or `~/.config/gh/hosts.yml` and
+        // take effect on the next command, none of which needs a second write.
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        let workspace = temp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let binary = dist_binary(temp.path());
+
+        let mut config = server("greedy", &binary);
+        config.writable_paths = vec![home.clone()];
+        let error = GrantSet::derive(GrantInput {
+            server: &config,
+            workspace: &workspace,
+            server_state: temp.path().join("state"),
+            real_home: Some(&home),
+            confined: true,
+            path: SearchPath::Process,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(error, GrantError::DangerousWriteRoot { .. }),
+            "{error}"
+        );
+        // The message has to say *why* and point at the fix, or a user just
+        // reads it as "the feature is broken".
+        assert!(error.to_string().contains("your home directory"), "{error}");
+        assert!(error.to_string().contains("writable_paths"), "{error}");
+    }
+
+    #[test]
+    fn a_writable_path_inside_the_home_directory_is_what_to_write_instead() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let documents = home.join("Documents");
+        fs::create_dir_all(&documents).unwrap();
+        let home = home.canonicalize().unwrap();
+        let documents = documents.canonicalize().unwrap();
+        let workspace = temp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let binary = dist_binary(temp.path());
+
+        let mut config = server("wordcraft", &binary);
+        config.writable_paths = vec![documents.clone()];
+        let grant = GrantSet::derive(GrantInput {
+            server: &config,
+            workspace: &workspace,
+            server_state: temp.path().join("state"),
+            real_home: Some(&home),
+            confined: true,
+            path: SearchPath::Process,
+        })
+        .unwrap();
+        // A subdirectory is granted, canonicalized, and still on the write side.
+        assert!(
+            grant
+                .writable()
+                .contains(&documents.canonicalize().unwrap())
         );
     }
 
@@ -866,6 +1062,7 @@ mod tests {
             server_state: temp.path().join("state").join("wordcraft"),
             real_home: None,
             confined: true,
+            path: SearchPath::Process,
         })
         .unwrap();
 
@@ -901,6 +1098,7 @@ mod tests {
             server_state: temp.path().join("state"),
             real_home: None,
             confined: true,
+            path: SearchPath::Process,
         })
         .unwrap();
 
@@ -954,6 +1152,7 @@ mod tests {
             server_state: temp.path().join("state"),
             real_home: Some(&home),
             confined: true,
+            path: SearchPath::Process,
         })
         .unwrap();
 
@@ -981,6 +1180,7 @@ mod tests {
             server_state: temp.path().join("state"),
             real_home: None,
             confined: false,
+            path: SearchPath::Process,
         })
         .unwrap();
         assert!(!grant.is_confined());
@@ -1018,11 +1218,118 @@ mod tests {
             server_state: temp.path().join("state"),
             real_home: None,
             confined: true,
+            path: SearchPath::Process,
         })
         .unwrap_err();
         assert!(
             matches!(error, GrantError::CommandNotFound { ref server, .. } if server == "gone"),
             "{error}"
+        );
+    }
+
+    /// ADR-0070: a bare `command` is looked up in the `PATH` the caller names,
+    /// not in qcode's own. This is what makes `command = "wordcraft-cli"`
+    /// portable across a version upgrade.
+    #[test]
+    fn a_bare_command_is_resolved_in_the_given_path() {
+        let temp = tempfile::tempdir().unwrap();
+        // Two "installations", only the second on the search path. The name is
+        // the same, so a lookup that ignored the argument would still find
+        // *something* — and fail the assertion below.
+        let elsewhere = temp.path().join("elsewhere");
+        let installed = temp.path().join("installed/bin");
+        for dir in [&elsewhere, &installed] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("tool"), b"not really an elf").unwrap();
+        }
+        let workspace = temp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let search = std::ffi::OsString::from(installed.display().to_string());
+        let grant = GrantSet::derive(GrantInput {
+            server: &McpServerConfig {
+                name: "tool".to_string(),
+                command: Some("tool".to_string()),
+                ..Default::default()
+            },
+            workspace: &workspace,
+            server_state: temp.path().join("state"),
+            real_home: None,
+            confined: true,
+            path: SearchPath::Snapshot(&search),
+        })
+        .expect("the bare name is on the given PATH");
+
+        // The grant describes the file that would run: its directory became the
+        // runtime root, and the other installation did not.
+        assert!(
+            grant
+                .runtime()
+                .iter()
+                .any(|root| installed.canonicalize().unwrap().starts_with(root)),
+            "{:?}",
+            grant.runtime()
+        );
+        assert!(
+            !grant
+                .runtime()
+                .iter()
+                .any(|root| elsewhere.canonicalize().unwrap().starts_with(root)),
+            "{:?}",
+            grant.runtime()
+        );
+    }
+
+    /// The failure has to name the `PATH` it searched: "not found" alone cannot
+    /// distinguish a typo from "this GUI has a smaller `PATH` than your shell",
+    /// and the second is the case that brings people here.
+    #[test]
+    fn a_bare_command_that_is_missing_names_the_path_it_searched() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty = temp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let workspace = temp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let search = std::ffi::OsString::from(empty.display().to_string());
+        let error = GrantSet::derive(GrantInput {
+            server: &McpServerConfig {
+                name: "gone".to_string(),
+                command: Some("definitely-not-here".to_string()),
+                ..Default::default()
+            },
+            workspace: &workspace,
+            server_state: temp.path().join("state"),
+            real_home: None,
+            confined: true,
+            path: SearchPath::Snapshot(&search),
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("shell environment's PATH"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("definitely-not-here"), "{error}");
+    }
+
+    /// `SearchPath::from(None)` is the pre-ADR-0070 behaviour, and the fallback
+    /// when sampling is off or produced nothing.
+    #[test]
+    fn a_missing_snapshot_falls_back_to_the_process_path() {
+        assert_eq!(SearchPath::from(None), SearchPath::Process);
+        let snapshot = std::ffi::OsString::from("/snapshot/bin");
+        assert_eq!(
+            SearchPath::from(Some(snapshot.as_os_str())),
+            SearchPath::Snapshot(snapshot.as_os_str())
+        );
+        // What the child gets is exactly what the lookup used.
+        assert_eq!(
+            SearchPath::Snapshot(snapshot.as_os_str()).as_os_str(),
+            snapshot
+        );
+        assert_eq!(
+            SearchPath::Process.as_os_str(),
+            std::env::var_os("PATH").unwrap_or_default()
         );
     }
 }

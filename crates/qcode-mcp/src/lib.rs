@@ -46,7 +46,7 @@ pub use config::{
     CredentialPreset, McpConfig, McpConfigError, McpSandboxMode, McpServerConfig, Transport,
 };
 pub use extras::{Extra, McpExtra};
-pub use grant::{GrantError, GrantInput, GrantSet, real_home};
+pub use grant::{GrantError, GrantInput, GrantSet, SearchPath, real_home};
 pub use table::{ListChangedHandler, ToolTable};
 pub use tool::McpTool;
 
@@ -102,6 +102,14 @@ pub struct ConnectOptions<'a> {
     pub http: Option<&'a reqwest::Client>,
     /// The sandbox seam for `stdio` servers.
     pub confine: Option<&'a Confine>,
+    /// The `PATH` a bare `command` is resolved in and the server is started
+    /// with (ADR-0070). `None` means qcode's own `PATH`, which is what every
+    /// caller got before shell environment sampling reached the MCP side.
+    ///
+    /// A `&OsStr` rather than the sampler's own type: this crate must not
+    /// depend on `qcode-tools` (ADR-0066 §1), and the value is the whole of
+    /// what is needed anyway.
+    pub path: Option<&'a std::ffi::OsStr>,
 }
 
 impl<'a> ConnectOptions<'a> {
@@ -109,6 +117,7 @@ impl<'a> ConnectOptions<'a> {
         Self {
             http: Some(http),
             confine: None,
+            path: None,
         }
     }
 
@@ -116,7 +125,14 @@ impl<'a> ConnectOptions<'a> {
         Self {
             http: None,
             confine: Some(confine),
+            path: None,
         }
+    }
+
+    /// Resolve bare commands against `path` and start servers with it.
+    pub fn with_path(mut self, path: &'a std::ffi::OsStr) -> Self {
+        self.path = Some(path);
+        self
     }
 }
 
@@ -303,31 +319,28 @@ async fn connect_server(
             // the per-server setting is what applies here; `validate()` already
             // stopped a remote server from carrying one.
             let confined = server.sandbox.unwrap_or_default().is_confined();
-            connect_stdio(
-                server,
-                workspace,
-                data_dir,
-                log_dir,
-                env,
-                options.confine,
-                confined,
-            )
-            .await
+            connect_stdio(server, workspace, data_dir, log_dir, env, confined, options).await
         }
         Transport::StreamableHttp => connect_http(server, options.http).await,
     }
 }
 
-#[allow(clippy::result_large_err, clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 async fn connect_stdio(
     server: &McpServerConfig,
     workspace: &Path,
     data_dir: &Path,
     log_dir: &Path,
     env: &[(String, String)],
-    confine: Option<&Confine>,
     confined: bool,
+    options: ConnectOptions<'_>,
 ) -> Result<ServerHandle, McpError> {
+    let ConnectOptions { confine, path, .. } = options;
+    // ADR-0070: one value for both halves. `Command::new` gets the bare name
+    // below, so the child's `PATH` is what actually finds it; if the grant
+    // resolved with a different `PATH`, the sandbox would be built for a file
+    // other than the one that runs.
+    let path = SearchPath::from(path);
     let command_line = server.command.as_deref().unwrap_or_default();
     let grant = GrantSet::derive(GrantInput {
         server,
@@ -335,6 +348,7 @@ async fn connect_stdio(
         server_state: server.state_dir(data_dir),
         real_home: real_home().as_deref(),
         confined,
+        path,
     })?;
     tracing::info!(server = %server.name, grant = %grant.describe(), "mcp server grant");
     if !confined {
@@ -393,6 +407,18 @@ async fn connect_stdio(
     command.env_clear();
     for (key, value) in grant.base_env() {
         command.env(key, value);
+    }
+    // ADR-0070, and it has to sit here rather than inside `base_env`: this is
+    // the `PATH` the grant was derived with, while `base_env`'s copy is
+    // qcode's own. Replacing it after the whitelist but before `server.env`
+    // keeps a server that writes `PATH` itself in charge of its own.
+    //
+    // Guarded on purpose: `PATH=""` is not the same as an absent `PATH` — an
+    // empty value makes `execvp` find nothing at all, while an absent one lets
+    // it fall back to the system default.
+    let child_path = path.as_os_str();
+    if !child_path.is_empty() {
+        command.env("PATH", child_path);
     }
     for (key, value) in &server.env {
         let value = grant::expand_env(&server.name, key, value)?;

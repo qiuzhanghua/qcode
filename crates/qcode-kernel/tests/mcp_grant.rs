@@ -383,6 +383,7 @@ async fn a_directly_derived_grant_lists_read_only_runtime_and_writable_workspace
         server_state: home.join("state"),
         real_home: Some(&home),
         confined: true,
+        path: qcode_mcp::SearchPath::Process,
     })
     .unwrap();
 
@@ -408,4 +409,80 @@ async fn a_directly_derived_grant_lists_read_only_runtime_and_writable_workspace
         !roots.iter().any(|root| root.path == home),
         "the user's home must not be granted: {roots:?}"
     );
+}
+
+/// ADR-0070, end to end: a **bare** `command` resolved from a `PATH` the caller
+/// supplies.
+///
+/// This is the test that pins the two halves together. `Command::new` is handed
+/// `"probe"`, not a path, so the child can only be found through its own `PATH`;
+/// if `connect_stdio` resolved the grant with one `PATH` and started the child
+/// with another, this would fail with `NotFound` (or run a different binary).
+#[tokio::test]
+async fn a_bare_command_is_resolved_and_started_from_the_given_path() {
+    let home = outside_tmp("grant-home-bare");
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let Some(sandbox) = landlock(workspace.path()) else {
+        return;
+    };
+    let binary = install_under(&home);
+    let bin_dir = binary.parent().unwrap().to_path_buf();
+    let search = std::ffi::OsString::from(bin_dir.display().to_string());
+
+    let confine = qcode_kernel::mcp_confine(sandbox, workspace.path());
+    let tools = connect_all_with(
+        // The bare name: no `/`, so nothing but a `PATH` lookup can find it.
+        &mcp(McpServerConfig {
+            name: "probe".to_string(),
+            command: Some("probe".to_string()),
+            timeout_secs: 20,
+            ..Default::default()
+        }),
+        workspace.path(),
+        data.path(),
+        &[],
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()).with_path(search.as_os_str()),
+    )
+    .await;
+
+    assert_eq!(
+        tools.len(),
+        3,
+        "the bare command did not resolve or the child could not find it; tools: {:?}",
+        tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
+    );
+}
+
+/// And the negative half: the same config without the `PATH` fails, so the test
+/// above would not pass by accident.
+#[tokio::test]
+async fn a_bare_command_without_the_path_is_skipped_not_guessed() {
+    let home = outside_tmp("grant-home-bare-missing");
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let Some(sandbox) = landlock(workspace.path()) else {
+        return;
+    };
+    // Installed, but not on any `PATH` this test supplies.
+    install_under(&home);
+
+    let confine = qcode_kernel::mcp_confine(sandbox, workspace.path());
+    let tools = connect_all_with(
+        &mcp(McpServerConfig {
+            name: "probe".to_string(),
+            command: Some("qcode-test-not-on-path".to_string()),
+            timeout_secs: 20,
+            ..Default::default()
+        }),
+        workspace.path(),
+        data.path(),
+        &[],
+        qcode_mcp::ConnectOptions::with_confine(confine.as_ref()),
+    )
+    .await;
+
+    // `connect_all_with` reports and skips: one bad server must not take the
+    // session down (ADR-0066 §7).
+    assert!(tools.is_empty(), "{:?}", tools.len());
 }

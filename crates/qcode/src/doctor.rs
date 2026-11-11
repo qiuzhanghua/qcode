@@ -1,6 +1,6 @@
 //! `qc doctor`: answer "why doesn't it run?" in one command.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -98,7 +98,7 @@ impl Doctor {
     /// Prove the config directory accepts a new file: a policy can allow
     /// rewriting config.toml while denying new files beside it, which is exactly
     /// the failure the settings dialog hit.
-    fn write_probe(&mut self, path: &std::path::Path) {
+    fn write_probe(&mut self, path: &Path) {
         let Some(dir) = path.parent() else {
             self.fail("config writable", "config path has no parent directory");
             return;
@@ -497,6 +497,18 @@ impl Doctor {
             .ok()
             .and_then(|path| path.canonicalize().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        // Same two spellings as the MCP section, for the same reason: `~/cot`
+        // in the file has to be recognisable as `/home/q/cot` in the failure
+        // message that `extra_read` produces when the directory is gone.
+        let home = config::home_dir();
+        for (field, paths) in [
+            ("sandbox extra_read", &config.sandbox.extra_read),
+            ("sandbox extra_writable", &config.sandbox.extra_writable),
+        ] {
+            for path in paths {
+                self.ok(field, show_path(path, home.as_deref()));
+            }
+        }
         match sandbox::build(
             config.sandbox.mode,
             &workspace,
@@ -544,6 +556,11 @@ impl Doctor {
             .ok()
             .and_then(|path| path.canonicalize().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        // Sampling blocks, and this is an `async fn` — but `--probe` already
+        // awaits a real server handshake per server, so one shell startup is not
+        // the expensive part. Not doing it would make `--probe` disagree with a
+        // run about whether a bare `command` exists (ADR-0070).
+        let search_path = self.mcp_search_path(config);
 
         // The same two seams a run wires: a per-server sandbox from
         // `[sandbox] mode`, and the session egress proxy for remote servers
@@ -595,6 +612,9 @@ impl Doctor {
             qcode_mcp::ConnectOptions {
                 http: http.as_ref(),
                 confine: Some(confine.as_ref()),
+                // Same `PATH` the run would use (ADR-0070), or `--probe` would
+                // report "not found" for a server that starts fine.
+                path: search_path.as_deref(),
             },
         )
         .await;
@@ -766,6 +786,51 @@ impl Doctor {
         );
     }
 
+    /// The `PATH` the kernel will resolve bare `command`s in (ADR-0070).
+    ///
+    /// Mirrors `qcode_kernel::build_tools`: sample only when some enabled stdio
+    /// server has a bare name, because sampling costs a shell startup. The
+    /// sample is synchronous here — `qc doctor` is a one-shot diagnostic with no
+    /// executor to block — which is also why doctor gets its own cache instead
+    /// of the session's (`qc shell-env` does the same).
+    fn mcp_search_path(&mut self, config: &Config) -> Option<std::ffi::OsString> {
+        // Shared with the kernel on purpose: two copies of this predicate would
+        // drift into "doctor samples, a run does not".
+        if !qcode_kernel::mcp_needs_path_lookup(&config.mcp) {
+            return None;
+        }
+        let cache = qcode_tools::shell_env::ShellEnvCache::new(config.shell.clone());
+        let snapshot = cache.current();
+        match qcode_kernel::mcp_path_from_snapshot(snapshot.as_deref()) {
+            Some(path) => {
+                let program = snapshot
+                    .as_ref()
+                    .map(|env| env.program().display().to_string())
+                    .unwrap_or_default();
+                // Which `PATH` is in play is the whole answer when a bare name
+                // is not found, so it goes on its own line rather than being
+                // inferred from a `not found` message.
+                self.ok(
+                    "mcp path",
+                    format!(
+                        "{} (sampled with {program})",
+                        show_path_list(&path.to_string_lossy())
+                    ),
+                );
+                Some(path)
+            }
+            None => {
+                self.warn(
+                    "mcp path",
+                    "no shell environment snapshot, so a bare `command` is looked up in qcode's \
+                     own PATH only; under `qc gui` from the Dock that is launchd's minimal one — \
+                     use an absolute path, or check `qc shell-env`",
+                );
+                None
+            }
+        }
+    }
+
     /// MCP servers: one line per server with the grant it would get
     /// (ADR-0066), plus the silent no-ops that make a server "configured but
     /// useless" (ADR-0068 §2).
@@ -784,6 +849,11 @@ impl Doctor {
             .unwrap_or_else(|| PathBuf::from("."));
         let data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
         let real_home = qcode_mcp::real_home();
+        // ADR-0070: the same `PATH` the kernel will resolve bare commands in.
+        // Doctor has to *sample* rather than read a cache — it is a separate
+        // process, and the cache belongs to a session that does not exist yet.
+        // Only when a bare `command` exists, exactly like `build_tools`.
+        let search_path = self.mcp_search_path(config);
         // `[mcp] sandbox` is not the last word: the kernel builds MCP sandboxes
         // out of `[sandbox] mode`, and `none` there means nothing is confined
         // whatever the per-server setting says. Saying "sandbox confine" in
@@ -838,15 +908,23 @@ impl Doctor {
             // nothing behind them, which is correct (the server may create the
             // directory itself) but leaves the user with a server that fails
             // for no visible reason. Say it here.
+            //
+            // Every entry gets a line, existing or not, in `~/x → /abs` form:
+            // `~` is expanded at load time, so this is the only place the two
+            // spellings — the one in the config file, the one the grant uses —
+            // can be seen next to each other.
             for (field, paths) in [
                 ("read_paths", &server.read_paths),
                 ("writable_paths", &server.writable_paths),
             ] {
                 for path in paths {
-                    if !path.exists() {
+                    let shown = show_path(path, real_home.as_deref());
+                    if path.exists() {
+                        self.ok(&format!("{label} {field}"), shown);
+                    } else {
                         self.warn(
                             &format!("{label} {field}"),
-                            format!("{} does not exist; the grant skips it", path.display()),
+                            format!("{shown} does not exist; the grant skips it"),
                         );
                     }
                 }
@@ -891,6 +969,7 @@ impl Doctor {
                 server_state: server.state_dir(&data_dir),
                 real_home: real_home.as_deref(),
                 confined: global,
+                path: qcode_mcp::SearchPath::from(search_path.as_deref()),
             });
             match grant {
                 Ok(grant) => self.ok(&label, grant.describe()),
@@ -898,6 +977,55 @@ impl Doctor {
             }
         }
     }
+}
+
+/// A `PATH` value, shortened for a doctor line.
+///
+/// Directories under the real home print as `~/...`: a full `PATH` on this
+/// machine is 700+ characters of `~/cot/lib/...`, and a line nobody can read is
+/// a line nobody checks. Deliberately the *short* form only — unlike a
+/// configured path, a `PATH` entry has no "spelling in the file" to compare
+/// against, so the `~/x → /abs` form would be noise repeated twelve times.
+fn show_path_list(path: &str) -> String {
+    let home = config::home_dir();
+    let shown: Vec<String> = std::env::split_paths(path)
+        .map(|dir| shorten_path(&dir, home.as_deref()))
+        .collect();
+    if shown.len() <= 6 {
+        return shown.join(":");
+    }
+    let head = shown[..3].join(":");
+    let tail = shown[shown.len() - 2..].join(":");
+    format!("{head}:…({} more)…:{tail}", shown.len() - 5)
+}
+
+/// `~/Documents` for a path under the real home, otherwise the path as-is.
+fn shorten_path(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home
+        && let Ok(rest) = path.strip_prefix(home)
+        && !rest.as_os_str().is_empty()
+    {
+        return format!("~/{}", rest.display());
+    }
+    path.display().to_string()
+}
+
+/// A configured path in both spellings: `~/Documents → /home/q/Documents`.
+///
+/// Doctor only ever sees the expanded value — `~` is resolved at load time — so
+/// this re-derives the short form rather than remembering it. Both statements
+/// are true of the path regardless of how the file spells it, and putting them
+/// next to each other is what makes "did my `~` mean what I thought" a
+/// one-line check instead of an experiment.
+///
+/// The `~` form is only used under the real home; everything else is printed
+/// as-is, because `~` there would be a lie.
+fn show_path(path: &Path, home: Option<&Path>) -> String {
+    let short = shorten_path(path, home);
+    if short == path.display().to_string() {
+        return short;
+    }
+    format!("{short} → {}", path.display())
 }
 
 /// Does this variable name look like it holds a secret?
@@ -961,5 +1089,26 @@ mod tests {
         assert!(!is_env_reference("Bearer ${TOKEN}"));
         assert!(!is_env_reference("${}"));
         assert!(!is_env_reference("literal"));
+    }
+
+    #[test]
+    fn a_path_under_the_home_directory_is_shown_in_both_spellings() {
+        let home = Path::new("/home/q");
+        assert_eq!(
+            show_path(Path::new("/home/q/Documents"), Some(home)),
+            "~/Documents → /home/q/Documents"
+        );
+        // Outside the home there is no `~` form to offer, and inventing one
+        // would be the "docs say A, code does B" failure this section exists
+        // to avoid.
+        assert_eq!(show_path(Path::new("/opt/tool"), Some(home)), "/opt/tool");
+        // The home directory itself has no `/`-less suffix; `~/` would claim a
+        // subdirectory that is not there.
+        assert_eq!(show_path(home, Some(home)), "/home/q");
+        // No home known at all (`$HOME` unset): plain path.
+        assert_eq!(
+            show_path(Path::new("/home/q/Documents"), None),
+            "/home/q/Documents"
+        );
     }
 }

@@ -21,6 +21,32 @@
 - 反向的情况同样成立：`~/Documents` 在界面上被手工改成 `/home/q/Documents`（同机等价的
   两个拼法）后存盘仍写 `~/Documents`，因为界面分不清「想换拼法」和「只是保存了别的东西」。
 
+### MCP 的 `command` 可以写裸名字：按你 shell 的 PATH 解析（ADR-0070）
+
+`command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft-cli"` 每个版本都要
+改一次，而 `command = "wordcraft-cli"` 在终端里启动 qcode 能用、从 Dock 启动 GUI 就
+`not found` —— 因为 `qc` 进程自己的 `PATH` 是 launchd 给的最小集，工具链的 hook 只在你的
+shell rc 里。ADR-0064 已经为 `run_shell` 解决了这件事（采样一次 `zsh -lic 'env -0'`），
+但 MCP 侧从没接上。
+
+- **裸 `command`（不含 `/`）现在按 shell 快照的 `PATH` 解析**，与 `run_shell` 同一份采样。
+  绝对路径不再做任何查找，行为和以前完全一样。
+- **只在需要时才采样**：配置里全是绝对路径就不跑 shell，不为一次查找付启动代价。
+- **同一个 `PATH` 交给子进程**。`Command::new` 拿的是裸名字，真正由子进程的 `PATH` 找到它；
+  若推导 grant 用一份 `PATH`、启动用另一份，沙箱会为"另一个文件"建根。这一条有端到端测试
+  （真 Landlock + 真子进程）。
+- **`env_clear` 之后按位置覆盖**：白名单 → 我们的 `PATH` → `env` 表 → 出口代理，所以 server
+  自己写 `PATH` 仍然赢。`PATH=""` 与"没有 `PATH`"区分开（前者会让 `execvp` 什么也找不到）。
+- `CommandNotFound` 现在点名**查的是哪份 `PATH`**：`not found` 单看无法区分"拼错了"和
+  "这个 GUI 的 PATH 比你的终端小"，而后者正是来问的那批人。
+- `qc doctor` 用同一份 `PATH` 推导（`--probe` 也是），并单列一行 `mcp path: ...`；没有快照时
+  给 warn 说明只用 qcode 自己的 `PATH`、GUI 场景下会失败。裸路径判定与 PATH 读取抽成
+  `qcode_kernel::mcp_needs_path_lookup` / `mcp_path_from_snapshot`，doctor 与 kernel 共用一份，
+  不各写一遍。
+- `qcode-kernel` 因此直接依赖 `tokio`（只为 `spawn_blocking`）：`assemble` 在 GUI 的 UI
+  executor 上被 await，采样阻塞它会冻窗口。
+- `[shell] env_sampling = "off"` 时退回旧行为（qcode 自己的 `PATH`），并在 doctor 里明说。
+
 ### 配置里的路径支持 `~`，MCP 写授权补上危险根检查
 
 `[mcp.servers] read_paths` / `writable_paths` 原先强制绝对路径，而 `[sandbox] extra_read` /

@@ -171,6 +171,12 @@ pub async fn build_tools(
         network,
         shell_env,
     } = wiring;
+    // ADR-0070: a bare `command` (`wordcraft-cli`) is the portable spelling, but
+    // qcode's own `PATH` is launchd's minimal one when the GUI starts from the
+    // Dock. Ask the shell for its environment — the same snapshot `run_shell`
+    // uses — and resolve/start the servers with that. Sampled only when a
+    // server actually needs it; an absolute `command` costs nothing.
+    let search_path = mcp_search_path(mcp, &shell_env).await;
     let mut tools = builtin_registry_with_env(sandbox.clone(), shell_env);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
@@ -200,6 +206,7 @@ pub async fn build_tools(
         qcode_mcp::ConnectOptions {
             http: http.as_ref(),
             confine: Some(confine.as_ref()),
+            path: search_path.as_deref(),
         },
     )
     .await;
@@ -221,6 +228,80 @@ pub async fn build_tools(
     }
 
     tools
+}
+
+/// The `PATH` MCP servers are resolved in and started with (ADR-0070).
+///
+/// `None` keeps the pre-ADR-0070 behaviour: qcode's own `PATH`. That is the
+/// right answer in three cases — no server needs a lookup, sampling is off, or
+/// the sample produced nothing — and in all three there is nothing better to
+/// offer.
+///
+/// Sampling blocks for as long as the shell takes (bounded by `env_timeout_ms`),
+/// so it runs on a blocking thread rather than on the caller's runtime. It is
+/// also asked for only when [`needs_path_lookup`] says a bare `command` exists:
+/// a config full of absolute paths must not pay a shell startup per launch.
+async fn mcp_search_path(
+    mcp: &McpConfig,
+    shell_env: &std::sync::Arc<qcode_tools::shell_env::ShellEnvCache>,
+) -> Option<std::ffi::OsString> {
+    if !mcp_needs_path_lookup(mcp) {
+        return None;
+    }
+    let cache = shell_env.clone();
+    let snapshot = tokio::task::spawn_blocking(move || cache.current())
+        .await
+        .ok()
+        .flatten()?;
+    match mcp_path_from_snapshot(Some(snapshot.as_ref())) {
+        Some(path) => {
+            tracing::info!("resolving MCP server commands against the shell environment's PATH");
+            Some(path)
+        }
+        None => {
+            // The snapshot exists but has no `PATH` — a shell that unsets it.
+            // Falling back silently would leave "not found" unexplained.
+            tracing::warn!(
+                "the shell environment snapshot has no PATH; MCP server commands are resolved \
+                 against qcode's PATH"
+            );
+            None
+        }
+    }
+}
+
+/// Whether any enabled stdio server's `command` is a bare name.
+///
+/// A bare name (no `/`) is the only thing a `PATH` lookup helps: an absolute or
+/// relative path is resolved from the string itself. Remote servers have no
+/// process at all (ADR-0067 §7).
+///
+/// Public because `qc doctor` has to answer the same question before it can
+/// report *which* `PATH` it used, and two copies of this predicate would drift
+/// into "doctor samples, a run does not" without either side noticing.
+pub fn mcp_needs_path_lookup(mcp: &McpConfig) -> bool {
+    mcp.servers
+        .iter()
+        .filter(|server| server.enabled)
+        .any(|server| {
+            matches!(server.transport(), Some(qcode_mcp::Transport::Stdio))
+                && server.command.as_deref().is_some_and(|command| {
+                    !command.is_empty() && !command.contains('/') && !command.contains('\\')
+                })
+        })
+}
+
+/// The `PATH` out of a shell snapshot, or `None` when there is nothing usable.
+///
+/// Split out from [`mcp_search_path`] so the synchronous caller (`qc doctor`)
+/// shares the reading rules with the async one instead of restating them.
+pub fn mcp_path_from_snapshot(
+    snapshot: Option<&qcode_tools::shell_env::ShellEnv>,
+) -> Option<std::ffi::OsString> {
+    match snapshot.and_then(|env| env.vars().get("PATH")) {
+        Some(path) if !path.is_empty() => Some(path.into()),
+        _ => None,
+    }
 }
 
 /// The sandbox seam for MCP servers (ADR-0066): one sandbox per server, built
@@ -326,20 +407,19 @@ pub fn config_roots(
         .collect()
 }
 
+/// Expand one `[skills] roots` entry.
+///
+/// `~` handling is [`config::expand_tilde`], the same helper every other
+/// configured path goes through, so there is one answer to "what is `~`".
+/// Unlike those, a relative entry is allowed here and resolves against the
+/// workspace: a skill root is a *directory to scan*, not a grant, and
+/// `.qcode/skills` in a repository is a useful thing to write.
 pub fn expand_root(path: &Path, workspace: &Path, home: Option<&Path>) -> PathBuf {
-    if let Some(home) = home {
-        if path == Path::new("~") {
-            return home.to_path_buf();
-        }
-        if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix("~/")) {
-            return home.join(rest);
-        }
+    let expanded = config::expand_tilde(path, home);
+    if expanded != path || path.is_absolute() {
+        return expanded;
     }
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace.join(path)
-    }
+    workspace.join(path)
 }
 
 pub fn load_config(

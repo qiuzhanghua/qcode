@@ -397,6 +397,12 @@ cargo build -p qcode-eval
   的 cache 不用再手工授权）。**读**不到真实 `$HOME`——`~/.ssh`、`~/.aws`、
   `~/.config/gh` 默认全都看不见，要哪一个就写 `credentials = ["github"]` 这类预设
   （只给该子树，并在私有 `HOME` 里放符号链接指过去，只读）。
+  **`command` 可以写裸名字**（`wordcraft-cli`，不含 `/`），此时在两个地方查 PATH：
+  qcode 自己的，以及——优先——**你 shell 环境里那份**（ADR-0070，就是 `run_shell` 用的
+  同一份采样）。所以从 Dock 启动的 GUI 也找得到终端里才有的工具链，配置也不必随版本
+  升级改路径。`[shell] env_sampling = "off"` 时退回 qcode 自己的 PATH。同一个 PATH 也
+  交给子进程，否则"按 A 推导授权、按 B 启动进程"会指向两个不同的文件。
+  `qc doctor` 会用同一份 PATH 推导并在起不来时点名查过哪份 PATH。
   推导之外还需要什么就写 `read_paths` / `writable_paths`；`/`、`$HOME` 和 workspace 的
   父目录不会被自动授予——`writable_paths` 里写这三样会被 grant 直接拒绝（`~/` 展开后就是
   `$HOME`，两个字符的笔误不该把整个家目录交出去）。两个字段都认 `~/x`，在加载时展开成
@@ -634,6 +640,9 @@ sandbox = "confine"   # 默认；每个 server 都可以单独覆盖成 "off"
 
 [[mcp.servers]]
 name = "filesystem"
+# `command` 写裸名字（不含 `/`）时走 PATH 查找，用的是**你的 shell 环境**里那份
+# PATH（ADR-0070，与 run_shell 同一份采样），所以从 Dock 启动的 GUI 也找得到。
+# 绝对值路径则完全按字面解析，不做任何查找。
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 # 子进程不再继承你的环境（ADR-0068）：只有 PATH/LANG/TZ/LC_*/合成 HOME/出口代理会传下去。

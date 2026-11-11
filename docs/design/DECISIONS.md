@@ -6960,3 +6960,83 @@ ADR-0033 §3 的「试一次」由此被完全取代，它不再是 legacy 的�
   `unmatched_values_fall_back_to_the_absolute_form`。
 - 第一条在**关掉修复**时确实失败，报 `the tilde was frozen into an absolute path`——不是
   恒真断言。
+
+## ADR-0070：MCP 的 `command` 走 shell 环境快照的 PATH（2026-11-11）
+
+**状态**：已实现（2026-11-11）。
+
+**问题**
+
+`[[mcp.servers]] command` 要写绝对路径，而这个机器上的路径带版本号：
+`/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft-cli`。每次升级都要改配置，
+换台机器还要改用户名。裸名字 `wordcraft-cli` 本来是该写的东西，但它在两种启动方式下表现
+不同：
+
+- 终端里启动 `qc`：`PATH` 来自你的 shell，找得到；
+- 从 Dock 启动 `qc gui`：`PATH` 是 launchd 的最小集，找不到 → `CommandNotFound`。
+
+ADR-0064 已经为 `run_shell` 解决过一次（`{shell} -lic 'env -0'` 采样一次）。MCP 侧从来没
+接上：`GrantSet::derive` 与 `base_env()` 各读一次 `std::env::var_os("PATH")`，读的都是 qcode
+进程自己的那份。
+
+**决定**
+
+1. **裸 `command`（不含 `/`）按 shell 快照的 `PATH` 解析**；绝对/相对路径完全按字面，行为
+   不变。`GrantInput.path: SearchPath` 与 `ConnectOptions.path: Option<&OsStr>` 携带它。
+2. **推导与启动必须用同一个值**，这条是本 ADR 的核心约束。`Command::new` 拿的是**裸名字**
+   （见 `connect_stdio`），所以真正的查找发生在子进程里、由子进程的 `PATH` 完成。如果
+   `derive` 用快照 `PATH` 而子进程拿的是 qcode 的 `PATH`，沙箱会为"另一个文件"建根——要么
+   起不来，要么跑的不是被授权的那一个。因此 `connect_stdio` 在 `env_clear()` → 白名单之后
+   覆盖 `PATH`，位置在 `server.env` 之前（server 自己写 `PATH` 仍然赢）。
+3. **只在需要时采样**。`mcp_needs_path_lookup` 为假（没有任何启用中的 stdio server 用裸名字）
+   就不跑 shell。采样在 `spawn_blocking` 里做：`assemble` 被 await 在 GUI 的 UI executor 上，
+   阻塞它等于冻窗口。这次为此把 `tokio` 加进 `qcode-kernel` 的正式依赖（此前只在
+   dev-dependencies 里）。
+4. **拿不到快照就退回旧行为**（qcode 自己的 `PATH`），不报错：`env_sampling = "off"` 是用户
+   的显式选择，采样失败也只是少一次机会。`qc doctor` 会把这件事说明白。
+5. **`grep` 一份判定，不写两份**：`mcp_needs_path_lookup` / `mcp_path_from_snapshot` 放在
+   kernel，`qc doctor` 调它们。doctor 各自写一份的话，迟早变成「doctor 采样、实跑不采样」，
+   而两边都不会报错——ADR-0068 收拾过的正是这类"两处拼写漂移"。
+6. **失败文案点名查的是哪份 `PATH`**。`command "x" was not found` 单看无法区分"拼错了"和
+   "这个 GUI 的 PATH 比你的终端小"，后者恰恰是这个 ADR 存在的原因。
+
+**被否掉的方案**
+
+| 方案 | 否决理由 |
+|---|---|
+| 配置里支持 `$VAR` / `${VAR}` 展开 | `env` 里已有 `${NAME}` 表示"从 qcode 环境读"，再加一种内嵌展开就有两种变量语法；而且从 Dock 启动时 `WORDCRAFT_HOME` 同样不在环境里，展开只会把"找不到文件"换成"找不到变量"，一个都没解决。ADR-0068 §2 的"只认整值"也不该为了它松掉 |
+| 让用户自己写软链接 | 能用（`~/.local/bin/x -> ~/cot/lib/<版本>/bin/x`），但每个 server 一条，且软链接本身还是要维护；快照方案一次解决所有 server |
+| MCP 继承整个 shell 环境 | ADR-0068 §1 的 `env_clear()` + 白名单是刻意的（第三方进程不拿用户的密钥）。本 ADR 只借 `PATH` 一个变量——它不是密钥，而且正是"找不到程序"的唯一原因 |
+| 在 `resolve_program` 里静默合并两份 `PATH`（快照 + 进程） | 子进程只认一份。合并后 `derive` 可能命中只有 qcode `PATH` 里才有的目录，而子进程找不到 → 违反第 2 条 |
+
+**代价 / 已知边界**
+
+- **只有 `PATH` 过桥**。`command` 里写 `${VAR}` 仍然不被展开（`MissingEnv` 的语义只对 `env`
+  表生效）；从 Dock 启动时 `WORDCRAFT_HOME` 之类的变量依旧不在。要变量就等 dual-field
+  （文件原文 + 运行时展开值）那一轮。
+- **子进程的 `PATH` 变了**：从"qcode 的"变成"你的 shell 的"。这与 ADR-0064 对 `run_shell`
+  做的事一致，但对已有的 MCP 配置是一次行为变更——若 rc 文件里的 `node` 与 qcode 启动时的
+  `node` 不同版本，server 现在看到的是前者。这正是用户在自己终端里看到的世界。
+- **`PATH` 里的目录不会因此变成可写根**。只有解析出的那一个程序的上游目录进 `runtime`
+  （只读 + 执行），且仍过 `dangerous()`；`writable_paths` 与它无关。
+- Windows 上 `resolve_program` 仍不补 `PATHEXT`（`node` 不会自动试 `node.exe`）。这是既有
+  缺陷，本 ADR 不做也不加重。
+
+**验证**
+
+- 单元（`qcode-mcp`）：同一个名字在两处安装、只有给定 `PATH` 里那处在 `runtime` 里；
+  缺失时报错点名 `shell environment's PATH`；`SearchPath::from(None)` 回退到进程 `PATH`。
+- 端到端（真 Landlock + 真子进程，`crates/qcode-kernel/tests/mcp_grant.rs`）：
+  `command = "probe"` + `with_path(<bin 目录>)` 起得来（3 个工具）；同一配置不给 `PATH`
+  则被跳过。这两条合起来钉的是"推导与启动用同一份 `PATH`"——只改一半时它们会失败。
+- doctor 三条：假 `env_command = "printf 'PATH=...\0'"` → 打 `mcp path` 且 grant 落在该目录；
+  `env_sampling = "off"` → warn 且 `not found` 文案含 PATH；绝对 `command` + 一个必然失败的
+  `env_command = "exit 1"` → 完全不出 `mcp path` 行（证明没有采样）。
+
+**待定**
+
+- `[shell] env_include` 的 `COT_*` 等前缀要不要也过桥给 MCP。目前只过 `PATH`：那是"起不来"
+  的唯一原因，其余的属于"第三方进程该不该看见你的变量"，应留给 ADR-0068 的口子
+  （`env = { ... }` 与 `credentials`）。
+- `PATH` 过桥后，`qc doctor` 里"这个 server 的 runtime 根为什么是 `~/cot/lib/...`"已经能
+  看出来，但"哪一条 `PATH` 条目命中的"还没有单独打印。若有人提出，加一行即可。
