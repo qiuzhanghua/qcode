@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.6.1**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.8.2**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -430,10 +430,12 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.6.1 状态：Task/目录模型、GUI Task 管理、Settings 热重建、macOS 多目录 sandbox、
-三端系统托盘与 Queue/Steer、事件 schema v4 已落地；
-Linux `bwrap`/Landlock 与 Windows ACL 的多目录重建仍待补齐。分发产物（发布工作流、
-SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
+v0.8.2 状态：Task/目录模型（一个 Task 可挂多个目录，RO/RW 按目录授权）、
+三端系统托盘与 Queue/Steer、Settings 热重建、附件内容寻址存储、内建终端、
+可折叠侧栏、shell 环境采样、配置文件 schema 2、会话日志事件 schema 8 已落地。
+多根 sandbox 三端齐备：macOS `sandbox-exec`、Linux `bwrap` 与 Landlock、Windows ACL
+都按 Task 的 roots 逐目录建规则。逐版本明细见 [CHANGELOG.md](CHANGELOG.md)，
+分发产物（发布工作流、SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
 
 ## 配置
 
