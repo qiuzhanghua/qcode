@@ -16,13 +16,119 @@ pub(crate) enum ScheduleAction {
     Delete,
 }
 
-/// 手动创建定时任务的表单：每个字段一个输入框实体，提交时统一校验。
+/// 手动创建表单里「周期」的选择：每种规则一套自己的参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduleRuleKind {
+    Daily,
+    Weekly,
+    Interval,
+    Once,
+    Cron,
+}
+
+impl ScheduleRuleKind {
+    /// 菜单里的显示顺序。
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Daily,
+        Self::Weekly,
+        Self::Interval,
+        Self::Once,
+        Self::Cron,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Daily => "每天固定时刻",
+            Self::Weekly => "每周固定时刻",
+            Self::Interval => "每隔 N 秒",
+            Self::Once => "一次性",
+            Self::Cron => "自定义 Cron",
+        }
+    }
+
+    pub(crate) fn from_stored(value: &str) -> Self {
+        match value {
+            "weekly" => Self::Weekly,
+            "interval" => Self::Interval,
+            "once" => Self::Once,
+            "cron" => Self::Cron,
+            _ => Self::Daily,
+        }
+    }
+
+    pub(crate) fn as_stored(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Interval => "interval",
+            Self::Once => "once",
+            Self::Cron => "cron",
+        }
+    }
+}
+
+/// 手动创建表单里「目标」的选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduleTargetKind {
+    NewOnce,
+    New,
+    Session,
+}
+
+impl ScheduleTargetKind {
+    pub(crate) const ALL: [Self; 3] = [Self::NewOnce, Self::New, Self::Session];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::NewOnce => "新会话（首次投递创建并复用）",
+            Self::New => "新会话（每次投递都新建）",
+            Self::Session => "指定会话",
+        }
+    }
+
+    pub(crate) fn from_stored(value: &str) -> Self {
+        match value {
+            "new" => Self::New,
+            "session" => Self::Session,
+            _ => Self::NewOnce,
+        }
+    }
+
+    pub(crate) fn as_stored(self) -> &'static str {
+        match self {
+            Self::NewOnce => "new_once",
+            Self::New => "new",
+            Self::Session => "session",
+        }
+    }
+}
+
+/// 手动创建定时任务的表单：名称 / 内容 / 审批超时是输入框；周期与目标是
+/// 下拉菜单 + 各自的参数。提交时把结构化状态翻译回规范表达式统一校验。
 pub(crate) struct ScheduleFormState {
     pub(crate) title: Entity<InputState>,
     pub(crate) prompt: Entity<InputState>,
-    pub(crate) rule: Entity<InputState>,
-    pub(crate) target: Entity<InputState>,
     pub(crate) timeout_secs: Entity<InputState>,
+    // 周期：类型下拉 + 各类型自己的参数。
+    pub(crate) rule_kind: ScheduleRuleKind,
+    /// daily / weekly 的时刻（HH:MM）。
+    pub(crate) time: Entity<InputState>,
+    /// weekly 的星期（0=周日，同 crontab）。
+    pub(crate) weekday: u8,
+    /// interval 的秒数（≥ 60）。
+    pub(crate) interval_secs: Entity<InputState>,
+    /// once 的时刻（YYYY-MM-DD HH:MM）。
+    pub(crate) once_at: Entity<InputState>,
+    /// cron 的 5 字段表达式。
+    pub(crate) cron_expr: Entity<InputState>,
+    // 目标：类型下拉 + 会话选择。
+    pub(crate) target_kind: ScheduleTargetKind,
+    pub(crate) session_id: Option<String>,
+    // 各下拉菜单的开关。
+    pub(crate) rule_menu_open: bool,
+    pub(crate) weekday_menu_open: bool,
+    pub(crate) target_menu_open: bool,
+    pub(crate) session_menu_open: bool,
     pub(crate) _subscription: gpui_kit::Subscription,
 }
 
@@ -55,16 +161,28 @@ impl Shell {
     }
 
     /// 手动创建：弹出表单（字段：名称 / 内容 / 周期 / 目标 / 审批超时）。
+    ///
+    /// 周期与目标是下拉菜单：周期默认「每天 09:00」，目标默认「新会话（复用）」，
+    /// 用户先选类型再填该类型自己的参数，不用手写 `daily 09:00` 这类表达式。
     pub(crate) fn open_schedule_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.schedule_menu_open = false;
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("任务名称"));
         let prompt = cx.new(|cx| InputState::new(window, cx).placeholder("到点后投递给会话的内容"));
-        let rule = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("如 daily 09:00 / every 3600 / cron 0 9 * * *")
+        let time = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("HH:MM，如 09:00");
+            input.set_value("09:00", window, cx);
+            input
         });
-        let target = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("new_once（默认） / new / session:会话ID")
+        let interval_secs = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("秒数（≥ 60）");
+            input.set_value("3600", window, cx);
+            input
         });
+        let once_at = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("YYYY-MM-DD HH:MM，如 2026-01-01 10:00")
+        });
+        let cron_expr =
+            cx.new(|cx| InputState::new(window, cx).placeholder("5 字段，如 0 9 * * *"));
         let timeout_secs =
             cx.new(|cx| InputState::new(window, cx).placeholder("审批超时秒数（可留空）"));
         let _subscription = cx.subscribe(&title, |shell, _input, event: &InputEvent, cx| {
@@ -75,9 +193,19 @@ impl Shell {
         self.schedule_form = Some(ScheduleFormState {
             title,
             prompt,
-            rule,
-            target,
             timeout_secs,
+            rule_kind: ScheduleRuleKind::Daily,
+            time,
+            weekday: 1,
+            interval_secs,
+            once_at,
+            cron_expr,
+            target_kind: ScheduleTargetKind::NewOnce,
+            session_id: None,
+            rule_menu_open: false,
+            weekday_menu_open: false,
+            target_menu_open: false,
+            session_menu_open: false,
             _subscription,
         });
         let focus = self
@@ -109,8 +237,6 @@ impl Shell {
         }
         let title = form.title.read(cx).value().trim().to_string();
         let prompt = form.prompt.read(cx).value().trim().to_string();
-        let rule_text = form.rule.read(cx).value().trim().to_string();
-        let target_text = form.target.read(cx).value().trim().to_string();
         let timeout_text = form.timeout_secs.read(cx).value().trim().to_string();
         if title.is_empty() {
             return reject_form(self, form, cx, "请填写任务名称");
@@ -118,25 +244,37 @@ impl Shell {
         if prompt.is_empty() {
             return reject_form(self, form, cx, "请填写投递内容");
         }
+        // 把结构化周期翻译回规范表达式，复用 parse_rule 的校验与错误文案：
+        // 用户从菜单选类型、填参数，落盘仍是我们一直用的那种规则描述。
+        let rule_text = match form.rule_kind {
+            ScheduleRuleKind::Daily => format!("daily {}", form.time.read(cx).value().trim()),
+            ScheduleRuleKind::Weekly => format!(
+                "weekly {} {}",
+                form.weekday,
+                form.time.read(cx).value().trim()
+            ),
+            ScheduleRuleKind::Interval => {
+                format!("every {}", form.interval_secs.read(cx).value().trim())
+            }
+            ScheduleRuleKind::Once => format!("once {}", form.once_at.read(cx).value().trim()),
+            ScheduleRuleKind::Cron => format!("cron {}", form.cron_expr.read(cx).value().trim()),
+        };
         let rule = match parse_rule(&rule_text) {
             Ok(rule) => rule,
             Err(error) => {
-                return reject_form(
-                    self,
-                    form,
-                    cx,
-                    &format!("周期无效：{error}（如 daily 09:00 / every 3600）"),
-                );
+                return reject_form(self, form, cx, &format!("周期无效：{error}"));
             }
         };
-        let target = if target_text.is_empty() {
-            qcode_core::schedule::Target::NewOnce
-        } else if target_text == "new" {
-            qcode_core::schedule::Target::New
-        } else if let Some(id) = target_text.strip_prefix("session:") {
-            qcode_core::schedule::Target::Session { id: id.to_string() }
-        } else {
-            return reject_form(self, form, cx, "目标需为 new_once / new / session:<会话ID>");
+        let target = match form.target_kind {
+            ScheduleTargetKind::NewOnce => qcode_core::schedule::Target::NewOnce,
+            ScheduleTargetKind::New => qcode_core::schedule::Target::New,
+            // 用引用匹配：`_` 分支还要把 form 原样放回（reject_form）。
+            ScheduleTargetKind::Session => match &form.session_id {
+                Some(id) if !id.is_empty() => {
+                    qcode_core::schedule::Target::Session { id: id.clone() }
+                }
+                _ => return reject_form(self, form, cx, "请选择目标会话"),
+            },
         };
         let approval_timeout = if timeout_text.is_empty() {
             None
