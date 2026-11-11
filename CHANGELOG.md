@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.3 — 2026-11-11
+
+0.8.2 之后的事后检查：一个会让 `run_shell` 挂死的真 bug，加几处「门禁是绿的，
+但什么都没测」的收拾。
+
+- **后台进程组里 `run_shell` 会挂死，超时也救不回来**（0.8.2 引入的回归）。
+  ADR-0064 让 `run_shell` 跑在用户自己的 shell 里，环境采样器是 `$SHELL -lic env -0`。
+  `-i` 是必需的（`.zshrc` / `.bashrc` 里才有工具链 hook），但交互式 shell 会**直接
+  打开 `/dev/tty`**，不读 fd 0，所以 `Stdio::null()` 拦不住它。
+  - 触发条件是「`qc` 处于某个终端会话的后台进程组」：`make check &`、IDE 的 task
+    runner、管道化的运行、在终端里 `cmd &` 之后跑 `qc`。这时 `/dev/tty` 的读会把
+    `SIGTTIN` 发给采样器，采样器被 stop，**轮询它的父进程也被 stop**——`run_with_timeout`
+    的超时循环本身停了，于是 `env_timeout_ms` 永远不触发，整个进程挂到有人 `fg` 为止。
+  - 修法是 `pre_exec` 里 `setsid()`，让采样器进入独立会话、没有控制终端：`/dev/tty`
+    打开即 `ENXIO`，`-i` 退化成「no job control in this shell」，采样照常成功。
+    有意不用 `process_group(0)`——没有新会话的进程组长仍然握着旧会话的终端。
+  - 前台正常使用不受影响，CI 上也不复现（无 tty），所以 0.8.2 的发布没拦住它。
+
+- **`ci.yml` 的两个 sandbox 门禁是空转的**。过滤名少了 `tests::` 一段，而模块实际在
+  `sandbox::tests::{linux_tests, landlock_runtime}` 下，于是这两行匹配不到任何测试、
+  以 0 退出、一步绿灯——bubblewrap / Landlock 坏了也报不出来。现在匹配 3 + 2 个测试。
+
+- **GUI lib 的单元测试回到了 `cargo test --workspace`**。`[lib] test = false` 是
+  2026-10-21 加的，理由是「GPUI 的宏展开在 lib test harness 里撑爆 rustc」；实际是
+  `setup/models.rs` 的测试模块 `use super::*` 继承了 `gpui_kit::*` 里名为 `test` 的
+  proc-macro 属性，`#[test]` 因此无限自递归——一个导入 bug，不是宏展开的固有代价。
+  改具名导入即可，harness 正常，52 个测试（51 过 1 忽略）0.01s 跑完，不需要窗口。
+  workspace 通过数 848 → 899；这 51 个测试此前只有显式 `--lib` 才会跑。
+
+- **README 版本与状态段**：抬头停在 v0.6.1，状态段里「Linux bwrap/Landlock 与 Windows
+  ACL 的多目录重建仍待补齐」是照抄 ADR-0047 草案期的注记——三个平台的 `with_roots`
+  早在 2026-10-22 前后就已落地。改成陈述现状，并补上 0.7/0.8 落地的东西。
+
+- **定时任务测试的 beat 容差**：`gap_limit = 3 × beat`，而
+  `a_scheduled_window_fires_a_turn_on_the_task_it_names` 用 100ms tick，容差只有
+  300ms——共享 runner 上每个 beat 都够格算「进程离开过」，那个分支只重排期、不触发，
+  于是等满 20s 一个 `TurnStarted` 都没有。改成与相邻测试一致的 1s tick（容差 3s）。
+
 ## 0.8.2 — 2026-11-10
 
 两个 ADR 与一批「同一件事写在两处」的收口。
