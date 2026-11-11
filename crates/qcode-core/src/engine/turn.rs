@@ -161,6 +161,7 @@ where
     let mut compaction_disabled = false;
     let mut tool_context =
         ToolContext::for_roots(task.roots.clone()).with_cancel(options.cancel.clone());
+    tool_context = tool_context.with_session_id(options.session_id);
     if let Some(temp) = &turn_temp {
         tool_context = tool_context.with_temp_dir(temp.0.clone());
     }

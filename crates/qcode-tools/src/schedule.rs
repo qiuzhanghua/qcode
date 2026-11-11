@@ -165,7 +165,7 @@ impl Tool for ScheduleCreate {
                     },
                     "target": {
                         "type": "string",
-                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。"
+                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。"
                     },
                     "overlap": {
                         "type": "string",
@@ -217,9 +217,18 @@ impl Tool for ScheduleCreate {
             Some(target) => target,
             None => {
                 return Ok(ToolOutput::error(
-                    "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>".to_string(),
+                    "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>"
+                        .to_string(),
                 ));
             }
+        };
+        // 在会话内创建且选「每次复用会话」（new_once）时，复用当前对话——这样
+        // 任务从创建起就绑定到会话，详情页可立即跳转。
+        let target = match target {
+            Target::NewOnce if !ctx.session_id.is_empty() => Target::Session {
+                id: ctx.session_id.clone(),
+            },
+            other => other,
         };
         let overlap = if args.overlap.is_empty() {
             Overlap::Queue

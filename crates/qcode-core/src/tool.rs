@@ -43,6 +43,10 @@ pub struct ToolContext {
     /// engine per call; empty in tests and for legacy contexts. `ask_user`
     /// keys its question lifecycle on it.
     pub call_id: String,
+    /// The session this call belongs to. Set by the engine per turn; empty in
+    /// tests. `schedule_create` uses it to bind a task to the conversation it
+    /// was created in.
+    pub session_id: String,
 }
 
 impl ToolContext {
@@ -70,6 +74,7 @@ impl ToolContext {
             scheduler: None,
             questioner: None,
             call_id: String::new(),
+            session_id: String::new(),
         }
     }
 
@@ -108,6 +113,7 @@ impl ToolContext {
             scheduler: None,
             questioner: None,
             call_id: String::new(),
+            session_id: String::new(),
         }
     }
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
@@ -138,6 +144,12 @@ impl ToolContext {
     /// 标记当前正在执行的调用 id。引擎在每次 execute 前设置。
     pub fn with_call_id(mut self, call_id: &str) -> Self {
         self.call_id = call_id.to_string();
+        self
+    }
+
+    /// 标记当前调用所属的会话 id。引擎在 turn 开始时设置。
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        self.session_id = session_id.to_string();
         self
     }
 }
