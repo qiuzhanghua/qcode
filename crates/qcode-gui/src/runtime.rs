@@ -668,13 +668,18 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             task.earlier_records_pruned = true;
                                         }
                                         task.last_receipt = Some(receipt);
-                                        match advance_rule(&task.rule, now) {
-                                            Advance::Next(next) => {
-                                                task.next_fire_at = Some(next);
-                                            }
-                                            Advance::Ended => {
-                                                task.status = TaskStatus::Ended;
-                                                task.next_fire_at = None;
+                                        // 只有当下次触发点仍是「已触发」的时刻才推进
+                                        // 到下一个未来时刻。RunNow 已把下一次拨到未来，
+                                        // 这里再推会跳过一个周期。
+                                        if task.next_fire_at.is_none_or(|next| next <= now) {
+                                            match advance_rule(&task.rule, now) {
+                                                Advance::Next(next) => {
+                                                    task.next_fire_at = Some(next);
+                                                }
+                                                Advance::Ended => {
+                                                    task.status = TaskStatus::Ended;
+                                                    task.next_fire_at = None;
+                                                }
                                             }
                                         }
                                     })
@@ -1088,6 +1093,19 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                         }
                                                     }
                                                 }
+                                                // 立即把下次触发拨到最近的未来时刻，详情
+                                                // 页不用等落盘确认就显示正确的下次执行时间。
+                                                let _ = scheduler.update(&id, |task| {
+                                                    match advance_rule(&task.rule, now) {
+                                                        Advance::Next(next) => {
+                                                            task.next_fire_at = Some(next);
+                                                        }
+                                                        Advance::Ended => {
+                                                            task.status = TaskStatus::Ended;
+                                                            task.next_fire_at = None;
+                                                        }
+                                                    }
+                                                });
                                                 Ok(Some("已触发".to_string()))
                                             }
                                             Err(error) => Err(error.to_string()),

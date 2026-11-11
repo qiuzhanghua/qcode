@@ -599,3 +599,24 @@ fn target_status_and_overlap_round_trip_through_serde() {
     let decoded: ScheduledTask = serde_json::from_str(&encoded).expect("deserialize");
     assert_eq!(decoded, task);
 }
+
+#[test]
+fn local_offset_is_measured_not_hardcoded() {
+    // The old Windows bug: local_offset() returned UTC unconditionally, so on a
+    // +8 machine now_local() ran 8 hours behind and `daily 08:00` scheduled
+    // "today 08:00" long after it had passed. now_local() must agree with the
+    // wall clock at (UTC + local_offset), and the offset must sit within the
+    // valid timezone bounds.
+    let offset = local_offset();
+    let shifted = time::OffsetDateTime::now_utc().to_offset(offset);
+    let shifted_wall = time::PrimitiveDateTime::new(shifted.date(), shifted.time());
+    let drift = (now_local() - shifted_wall).whole_seconds();
+    assert!(
+        drift.abs() <= 60,
+        "now_local() drifts from local_offset(): {drift}s"
+    );
+    assert!(
+        (-86_400..=86_400).contains(&offset.whole_seconds()),
+        "local_offset() out of timezone bounds: {offset}"
+    );
+}
