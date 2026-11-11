@@ -140,6 +140,11 @@ where
             &mut on_event,
         )?;
     }
+    // Read before the shadowing below: the snapshot deliberately carries no
+    // sources (so a refresh cannot recurse), which means it also carries no
+    // `instructions`. Those come from the handshake and never change, so reading
+    // them once per turn from the live registry is both correct and cheap.
+    let mcp_prompts = ctx.tools.server_prompts();
     // Shadowing keeps the rest of the function reading the same way; the
     // snapshot lives as long as this borrow scope, which is the whole turn.
     let ctx = TurnContext {
@@ -404,12 +409,18 @@ where
             }
         }
 
+        // ADR-0068 §3: third-party `instructions` from the connected servers.
+        // Read from the registry rather than from `RunOptions` so every
+        // frontend and every sub-agent gets them without extra wiring.
         let mut system = system_prompt(
             options.agents_md.as_deref(),
             options.skills.as_deref(),
+            &mcp_prompts,
             todos.as_deref().unwrap_or(&[]),
         );
         system.push_str(&roots_prompt(&task.roots));
+        // Measured before the request takes ownership of the string.
+        let system_tokens = compact::estimate_text_tokens(&system);
         let request = CompletionRequest {
             model: options.model.to_string(),
             system,
@@ -423,8 +434,12 @@ where
         if let Some(window) = options.context_window
             && let Some(sink) = &options.on_delta
         {
+            // The system prompt counts too. ADR-0068 后果 flags this
+            // explicitly: `estimate_tokens` only walks `messages`, so without
+            // this the MCP `instructions` sections are a silent budget cost the
+            // status bar cannot show.
             sink.emit(Delta::Context {
-                tokens: compact::estimate_tokens(&messages),
+                tokens: compact::estimate_tokens(&messages) + system_tokens,
                 window,
             });
         }

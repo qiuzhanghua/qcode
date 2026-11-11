@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use qcode_core::tool::{ServerToolsChanged, Tool, ToolRefresh, ToolSource};
+use qcode_core::tool::{ServerPrompt, ServerToolsChanged, Tool, ToolRefresh, ToolSource};
 use rmcp::ServiceExt;
 use rmcp::model::ProtocolVersion;
 use rmcp::service::{ClientLifecycleMode, RunningService};
@@ -549,6 +549,9 @@ pub(crate) struct ServerHandle {
     /// round trips per server for a set that never moves.
     extras: Vec<Extra>,
     protocol_version: Option<String>,
+    /// The server's own `instructions`, from whichever handshake answered
+    /// (ADR-0068 §3). `None` when the server sent none.
+    instructions: Option<String>,
 }
 
 impl ServerHandle {
@@ -597,6 +600,21 @@ pub struct McpToolSource {
 
 #[async_trait]
 impl ToolSource for McpToolSource {
+    fn prompts(&self) -> Vec<ServerPrompt> {
+        self.servers
+            .iter()
+            .filter_map(|server| {
+                let text = server.instructions.as_deref()?.trim();
+                // An empty or whitespace-only string would produce an empty
+                // section, which is tokens spent on a heading and nothing else.
+                (!text.is_empty()).then(|| ServerPrompt {
+                    server: server.name.clone(),
+                    text: text.to_string(),
+                })
+            })
+            .collect()
+    }
+
     async fn refresh(&self) -> ToolRefresh {
         let mut tools = Vec::new();
         let mut changed = Vec::new();
@@ -695,9 +713,13 @@ async fn finish(
     service: RunningService<rmcp::RoleClient, ListChangedHandler>,
 ) -> Result<ServerHandle, McpError> {
     let timeout = server.request_timeout();
-    let protocol_version = service
-        .peer_info()
-        .map(|info| info.protocol_version.to_string());
+    // `peer_info` carries what the handshake settled on, and both lifecycles
+    // fill it: `InitializeResult` for legacy, `DiscoverResult` for 2026-07-28
+    // (rmcp converts both into `ServerPeerInfo`). Reading it after the
+    // handshake therefore covers either path without a second request.
+    let info = service.peer_info();
+    let protocol_version = info.as_ref().map(|info| info.protocol_version.to_string());
+    let instructions = info.as_ref().and_then(|info| info.instructions.clone());
     // Taken before the service is moved into an `Arc`: the flag is what the
     // notification handler writes.
     let dirty = service.service().handle();
@@ -737,6 +759,17 @@ async fn finish(
         ),
     }
 
+    if let Some(text) = instructions.as_deref().map(str::trim) {
+        // Name and size only: the text itself is third-party content and the
+        // log outlives the session (the same reasoning as ADR-0064's variable
+        // *names*).
+        tracing::info!(
+            server = %server.name,
+            bytes = text.len(),
+            "mcp server supplied instructions"
+        );
+    }
+
     Ok(ServerHandle {
         name: server.name.clone(),
         service,
@@ -744,6 +777,7 @@ async fn finish(
         timeout,
         extras,
         protocol_version,
+        instructions,
     })
 }
 

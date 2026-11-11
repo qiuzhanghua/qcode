@@ -387,6 +387,9 @@ cargo build -p qcode-eval
   `0`=每个 turn 重读，`n`=n 毫秒后下一个 turn 重读），`notifications/tools/list_changed`
   立即置脏。重读只发生在 turn 边界，换表会写一条 `McpToolsRefreshed` 事件；已经被删掉的
   工具被调用时得到 `tool no longer available` 而不是 `unknown tool`。
+  **server 的自述会进 system prompt**（ADR-0068）：握手里的 `instructions` 以
+  `# MCP: <server>` 小节注入，总数封顶 8 KiB，超出截断并注明。这段文字只是文本——它不改变
+  任何审批决定，显式 `deny` 规则照样 deny。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。

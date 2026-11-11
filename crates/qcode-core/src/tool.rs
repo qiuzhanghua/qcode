@@ -273,6 +273,21 @@ impl ServerToolsChanged {
     }
 }
 
+/// A server's own description of itself, for the system prompt (ADR-0068 §3).
+///
+/// Carried through the tool source rather than through `RunOptions` on purpose:
+/// the text belongs to the connected server, so every frontend (CLI, TUI, GUI,
+/// ACP) and every sub-agent gets it without threading a new field through each
+/// one. A `RunOptions` field would have to be filled in at 28 call sites, and
+/// the one that gets forgotten is silently wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPrompt {
+    /// Server name, used as the section heading.
+    pub server: String,
+    /// The server's `instructions` string, as received.
+    pub text: String,
+}
+
 /// The result of asking a source for its current tools.
 #[derive(Default)]
 pub struct ToolRefresh {
@@ -295,6 +310,15 @@ pub struct ToolRefresh {
 #[async_trait]
 pub trait ToolSource: Send + Sync {
     async fn refresh(&self) -> ToolRefresh;
+
+    /// Self-descriptions to inject into the system prompt.
+    ///
+    /// Provided so a source that has none does not have to say so. The text is
+    /// injected, never interpreted: it cannot change an approval decision
+    /// (ADR-0068 §3.2).
+    fn prompts(&self) -> Vec<ServerPrompt> {
+        Vec::new()
+    }
 }
 
 /// Tools this registry no longer has, and why.
@@ -399,6 +423,25 @@ impl ToolRegistry {
 
     pub fn has_sources(&self) -> bool {
         !self.sources.is_empty()
+    }
+
+    /// Every source's self-description, in registration order.
+    ///
+    /// Deduplicated by server name because one server may be reachable through
+    /// more than one source in a future with per-transport sources; two
+    /// identical sections would just be tokens spent twice.
+    pub fn server_prompts(&self) -> Vec<ServerPrompt> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut prompts = Vec::new();
+        for source in &self.sources {
+            for prompt in source.prompts() {
+                if !seen.insert(prompt.server.clone()) {
+                    continue;
+                }
+                prompts.push(prompt);
+            }
+        }
+        prompts
     }
 
     /// Why `name` is no longer available, if it used to be.

@@ -29,6 +29,16 @@ fn main() {
         .ok()
         .and_then(|value| value.parse().ok());
     let mutate = std::env::var_os("MCP_STUB_MUTATE").is_some();
+    // ADR-0068 §3 fixture: a server that describes itself in the handshake.
+    // `MCP_STUB_INSTRUCTIONS_BYTES=n` sends `n` bytes of prose, which is how a
+    // test reaches the 8 KiB budget without embedding a huge string.
+    let instructions = match std::env::var("MCP_STUB_INSTRUCTIONS_BYTES") {
+        Ok(bytes) => {
+            let bytes: usize = bytes.parse().expect("MCP_STUB_INSTRUCTIONS_BYTES");
+            Some(format!("{}{}", INSTRUCTIONS_PREFIX, "x".repeat(bytes)))
+        }
+        Err(_) => std::env::var("MCP_STUB_INSTRUCTIONS").ok(),
+    };
     // Which generation of the table the next `tools/list` reports.
     let mut generation = 1u32;
     let mut listed = 0u32;
@@ -56,15 +66,15 @@ fn main() {
                 if has("prompts") {
                     capabilities["prompts"] = json!({});
                 }
-                respond(
-                    &mut stdout,
-                    id,
-                    json!({
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": capabilities,
-                        "serverInfo": {"name": "mcp-stub", "version": "0.0.1"}
-                    }),
-                )
+                let mut result = json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": capabilities,
+                    "serverInfo": {"name": "mcp-stub", "version": "0.0.1"}
+                });
+                if let Some(instructions) = &instructions {
+                    result["instructions"] = json!(instructions);
+                }
+                respond(&mut stdout, id, result)
             }
             "notifications/initialized" => {}
             "tools/list" => {
@@ -172,6 +182,9 @@ fn main() {
 /// ADR-0067 keeps seeing the same list. `Some(n)` adds one generation-stamped
 /// tool, which lets a refresh be observed in both directions when the server
 /// moves from generation 1 to 2 (one added, one removed).
+/// Keeps the byte count in the test's control while the text stays readable.
+const INSTRUCTIONS_PREFIX: &str = "Use `echo` before `big`. ";
+
 fn tools(generation: Option<u32>) -> Value {
     let extra = generation.map(|generation| {
         json!([{

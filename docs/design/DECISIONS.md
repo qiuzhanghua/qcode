@@ -6406,7 +6406,8 @@ OAuth（Dynamic Client Registration / Client ID Metadata Documents）**不在本
 
 ## ADR-0068：MCP server 的环境白名单与自述注入（2026-11-11）
 
-**状态**：拟议。`[[mcp.servers]] env` 的语义收窄（新增 `${VAR}` 引用）；`instructions`
+**状态**：P1 / P2 / P3 已实现（2026-11-11），§4（modern 直接读 `capabilities`）待做。
+`[[mcp.servers]] env` 的语义收窄（新增 `${VAR}` 引用）；`instructions`
 从「丢弃」改为「注入 system prompt」。承接 ADR-0066 §5（授权集与环境同源）留的接口。
 
 **来源**：`derived`（实测泄漏、grep 证实零消费、ADR-0033 的探测逻辑已过时）；
@@ -6566,7 +6567,7 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
 | 期 | 内容 | 验收 |
 |---|---|---|
 | P1 | `env_clear()` + 白名单 + 顺序 + 可诊断报错 | dump 断言通过；`npx` 形态 server 仍可用 |
-| P2 | `instructions` 注入 + 8KiB 预算 + 权限无关性 | stub 自述进 prompt；放权单测通过 |
+| P2 ✅ | `instructions` 注入 + 8KiB 预算 + 权限无关性 | stub 自述进 prompt；放权单测通过 |
 | P3 | `env` 的 `${VAR}` 与 doctor warn | 字面量密钥配置被提示 |
 
 **备选方案（未采用）**
@@ -6579,13 +6580,13 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
 | `instructions` 与 skills 共用一个预算 | 两者可信度不同级，共池会让一个第三方 server 挤掉项目技能索引 |
 | `instructions` 注入同时解析成结构化提示词 | 那是执行 server 的指令，违反 §4.10 |
 
-**实现注记（2026-11-11，P1 + P3 已落地，P2 未做）**
+**实现注记（2026-11-11，P1 + P3 已落地；P2 见下一条）**
 
 - §1 与 §2 已实现：`env_clear()` 后按 白名单 → 合成 HOME → 凭据变量 → `[[mcp.servers]] env`
   → 出口代理 的顺序注入；`env` 值支持整值 `${NAME}`，缺变量时 spawn 失败并点名（实测在
   真机上用一个 `$HOME` 下安装的 server 验证：dump 出的变量集合只剩白名单那几项）。
-- §3 `instructions` 注入与 §4 的 modern 能力探测**没有做**，它们依赖 ADR-0067 的
-  `discover`/`capabilities`，留到那一步一起，避免为 legacy 分支写一遍再改一遍。
+- §3 `instructions` 注入与 §4 的 modern 能力探测当成一批做（它们依赖 ADR-0067 的
+  `discover`/`capabilities`）：§3 已完成，§4 **仍未做**，见下一条注记。
 - **白名单会连带清掉 `DISPLAY`。** 实测：这个开发机有 `DISPLAY=:1`，而 whitelist 只留
   `PATH`/`LANG`/`TZ`/`LC_*`，于是需要显示服务的 server（wordcraft 这类桌面应用）启动即死，
   报「neither WAYLAND_DISPLAY nor DISPLAY is set」。这不是缺陷，是 §1 的直接后果，解法
@@ -6596,10 +6597,39 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
   `GITHUB_TOKEN`、`API_KEY` 必须中，分段匹配两者都对。只在值是字面量时告警，
   `${VAR}` 形式正是解药，不报。这条 warn 同时是 §2「只 warn 不拒绝」的落点。
 
+**P2 实现注记（2026-11-11，`instructions` 注入 + 8KiB 预算）**
+
+- **注入走 `ToolSource::prompts()`，不走 `RunOptions`。** 实现表里写的是「kernel 把
+  `connect_all_with` 返回的 instructions 透传给 engine options」，实际选的是让 MCP 的
+  `ToolSource` 自己报（默认实现返回空）。理由：`RunOptions` 有 28 个构造点，CLI / TUI /
+  GUI / ACP / subagent 各一份，加字段意味着 28 次补写，而漏掉的那一处是**静默**的——
+  subagent 就会看不到任何 server 自述。挂在 registry 上则一处接通、所有前端与子 agent 同时
+  生效，且「instructions 属于已连接的 server」这个事实直接体现在类型上。
+- **一个真 bug，被测试当场抓到。** 第一版在 `run_turn` 里直接用 `ctx.tools.server_prompts()`，
+  而 `ctx.tools` 在 P2 里已被换成刷新快照，快照**故意不带 source**（防递归），于是
+  `server_prompts()` 恒为空、instructions 一条也进不了 prompt。现在在换快照之前读一次：
+  instructions 来自握手、整局不变，每个 turn 读一次既正确又便宜。
+- **预算按 §3.1 的全局 8 KiB**（`待定` 里那条「全局还是每 server」按全局落地）：一个 server
+  能吃掉全部预算，下一个就得到一整段「已截断」的提示。截断**注记也计入预算**——调用方能依赖
+  的不变量是「返回串不超过 8 KiB」，不是「正文不超过 8 KiB，注记白送」。截断落在字符边界上
+  （中文一个字符三字节，按字节切会切出半个字）。
+- **`# MCP: <server>` 的位置**：AGENTS.md → skills 索引 → MCP 自述 → todo，与 §3 一致。
+  空串与纯空白的 instructions 不产生小节：一个只有标题的小节纯属浪费 token。
+- **日志只记名字与字节数**，不记正文。理由同 ADR-0064 记变量名不记变量值：日志活得比会话长，
+  而这段文字是第三方内容。
+- **`compact::estimate_text_tokens`**：`Delta::Context` 之前只估 `messages`，system prompt
+  完全不计。ADR-0068 后果段点名要补，现在把 system 一起算进去，否则多挂几个 server 是无声的
+  预算消耗。
+- **§4 未做**：modern（`discover`）本该直接读 `capabilities` 而不再试 `resources/list` /
+  `prompts/list`，legacy 才试一次。现在两条路径都还试一次，两次失败的日志级别也仍是 `debug`
+  （§4 承诺把 legacy 那次提到 `info`）。这条留在 §4 一次性做，避免只为 legacy 分支写一遍。
+
 **待定**
 
 - `credentials` 预设之外，用户能否自己定义 preset（与 ADR-0066 的同一条待定合并处理）。
-- `instructions` 的 8KiB 是**全局**还是**每 server**（当前按全局写，多 server 时要复核）。
+- ~~`instructions` 的 8KiB 是**全局**还是**每 server**~~：P2 按全局落地（`mcp_prompt`），多
+  server 时先进先得、后来的被截断并在末尾注明。真要每 server 配额时再改，`ServerPrompt` 列表
+  是现成的切分点。
 - 是否把 `instructions` 的 hash 记进事件日志，便于 replay 时解释「当时模型看到的是哪一版自述」。
 - 白名单要不要加 `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` 的「按需透传」开关，
   还是坚持「要就写 `env`」。倾向后者：默认不传显示服务句柄更安全。
