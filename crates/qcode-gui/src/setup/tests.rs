@@ -684,6 +684,41 @@ fn the_mcp_grant_set_survives_a_save_and_reload() {
     assert_eq!(back.sandbox, server.sandbox);
 }
 
+/// A `~/x` path must come back out of a settings save as `~/x` (ADR-0066 §2
+/// 修订注记的补记).
+///
+/// The settings page loads `Config` — where `~` is already expanded — and
+/// writes the whole thing back. Serializing `PathBuf` verbatim therefore turned
+/// "the user saved the theme" into "the config no longer works on another
+/// machine", invisibly. `write_config` is the exact seam the save button uses,
+/// so this asserts at the level the bug lived at rather than at `ConfigEdit`'s.
+#[test]
+fn a_tilde_path_survives_the_settings_save() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "schema = 2\n\n[[mcp.servers]]\nname = \"wordcraft\"\ncommand = \"wordcraft-cli\"\n\
+         writable_paths = [\"~/Documents\"]\n",
+    )
+    .expect("seed");
+
+    // Exactly what the view holds after loading: expanded, with no memory of
+    // how the file spelled it.
+    let mut config = qcode_kernel::config::load(&path).expect("load");
+    assert!(config.mcp.servers[0].writable_paths[0].is_absolute());
+
+    // Saving anything at all is enough; the point is that it is *not* the path.
+    config.agent.max_turns = 5;
+    super::save::write_config(&path, &config).expect("write");
+
+    let text = std::fs::read_to_string(&path).expect("read");
+    assert!(
+        text.contains(r#"writable_paths = ["~/Documents"]"#),
+        "saving a setting froze the tilde into an absolute path:\n{text}"
+    );
+}
+
 /// The other half of the same invariant: `sandbox` is `Option`, and "no
 /// override" has to survive as `None` rather than being written out as an
 /// explicit `confine`. Otherwise a server pinned in the GUI would stop

@@ -6918,3 +6918,45 @@ ADR-0033 §3 的「试一次」由此被完全取代，它不再是 legacy 的�
 - `[sandbox]` 的 `extra_read` / `extra_writable` 仍然没有加载期校验（相对路径只在 landlock
   启动时以「不存在」失败）。为它们加「必须绝对」会在 `mode = "none"` 的用户身上把原本无害
   的配置变成加载失败，所以这轮只做展开，不动校验。
+
+**2026-11-11 补记：写回会固化 `~`**
+
+§2 的展开点是加载，所以内存里的 `Config` 只有绝对路径。而 `ConfigEdit::apply_config` （GUI
+设置页与首启向导保存时走的唯一路径）把 `Config` 序列化回 TOML——于是「保存任意一个设置」
+都会把 `writable_paths = ["~/Documents"]` 写成 `/home/q/Documents`。用户没改过那一条、界面上
+也看不出来，等把配置拷到另一台机器才发现它只对 `/home/q` 成立。§1 想要的「跨机器可移植的
+写法」因此活不过一次保存。
+
+**修法**：写侧不再取 `Config` 的拼法，而是**保留文件里已有的拼法**。`spell_paths` 拿新值
+（绝对）去和旧数组里的字面量逐个比，比的是 `expand_tilde(字面量) == 新值` 而不是字符串相等
+——两种拼法是同一个路径，而文件里那种才是更好的。匹配按值、按消费（一对一则移除），所以
+排序变化不会改拼法，重复项各留各的写法；没匹配上的回退到绝对形式（= 修复前的行为，绝不
+丢路径）。落点两处：`set_path_array`（`[sandbox]` 两条 + `[skills] roots`）与
+`existing_server_path_literals`（`[[mcp.servers]]` 的 `read_paths` / `writable_paths`，
+必须在 `set_array_of_tables` 整体替换之前读出来）。
+
+**没有采用的方案**
+
+| 方案 | 否决理由 |
+|---|---|
+| `Config` 存原文 + 展开值（dual-field） | 能一并解决将来的 `$VAR`，但要把「路径」从一个 `PathBuf` 变成一对值，改动面覆盖 `validate()`、grant 推导、doctor、GUI 每个读 `PathBuf` 的地方；而 bug 的范围只是「写回时别覆盖原文」。等真要做 `$VAR` 时再做，那时它才有第二个理由 |
+| GUI 显示 `~/x`（把 home 前缀缩写） | 只改显示不改内存，仍要在写侧做同一件事；而且让界面写回**未展开**的 `~/Documents`，会让 `self.config` 里出现非绝对路径——grant 推导对非绝对路径是**静默丢弃**（`canonicalize()` 失败即跳过），于是「界面上有、实际没授权」。比原来的 bug 更难查 |
+| 保存前重新读一遍文件、只写差异键 | `apply_config` 的语义就是「把内存态写成文件」，改成增量 diff 会让删除操作（清空 `extra_read`）无法表达 |
+
+**代价**
+
+- 用户在界面里把 `~/Documents` 手工改成 `/home/q/Documents`（同一台机器上语义完全相同的
+  两个拼法）后，存盘仍写 `~/Documents`。这是刻意的：界面无法区分「想换拼法」和「只是
+  保存了别的东西」，而 `~` 的形式在下一台机器上仍然正确。
+- 设置页的输入框显示的是**展开后**的绝对路径（`fields.rs` 取 `path.display()`），与文件里
+  的 `~/x` 不一致。纯显示问题：文件内容是对的，且界面里直接输入 `~/x` 也会被原样写入。
+  要一致就得让界面看得见原文，那是上面被否决的 dual-field。
+
+**验证**
+
+- `a_mcp_tilde_path_survives_a_save_that_did_not_touch_it`、`every_tilde_path_list_keeps_its_spelling`
+  （五处列表全覆盖）、`a_tilde_path_that_changed_is_rewritten`（改过的必须写全，否则修复就
+  退化成「永不重写」）、`reordered_paths_keep_their_own_spellings`、
+  `unmatched_values_fall_back_to_the_absolute_form`。
+- 第一条在**关掉修复**时确实失败，报 `the tilde was frozen into an absolute path`——不是
+  恒真断言。
