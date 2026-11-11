@@ -747,6 +747,19 @@ async fn stopping_one_task_leaves_the_other_running() {
 /// A schedule whose next window is a couple of seconds away, as the store would
 /// have recorded it after a previous run (ADR-0059 §1: run state lives in the
 /// store, not in the config file).
+///
+/// The margin has to survive the gap between this call and the engine's *first*
+/// beat. `backend.rs` snapshots `schedule_states` at startup, and that beat finds
+/// `last_beat == None`, so it takes the "the process was away" branch and runs
+/// `schedule::recover`. If the window has already passed by then, recover counts
+/// it as missed and re-schedules from the cron — which for `* * * * *` means the
+/// *next minute boundary*, up to 60s out, far past these deadlines.
+///
+/// A one-second margin was not enough: `cargo test` runs this binary's tests in
+/// parallel, and `a_flooding_terminal_does_not_starve_the_scheduler_beat` spins a
+/// `yes` on a PTY, so the first beat can land more than a second late. Three
+/// seconds keeps the window ahead of that while still coming round well inside
+/// every caller's deadline.
 fn upcoming(store: &SessionStore, name: &str, in_secs: u64) {
     let at = qcode_core::schedule::now_local() + time::Duration::seconds(in_secs as i64);
     store
@@ -788,11 +801,17 @@ async fn a_scheduled_window_fires_a_turn_on_the_task_it_names() {
     };
     let created = store.create_task(&meta).expect("task");
 
-    // A window one second away, as a previous run would have recorded it.
-    upcoming(&store, "nightly", 1);
+    // A window a few seconds away, as a previous run would have recorded it.
+    upcoming(&store, "nightly", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedules = vec![schedule("nightly", Some(&created.id), "review")];
-    engine.schedule_tick = Some(Duration::from_millis(100));
+    // One second, not 100ms, for the same reason the orphan tests below use it:
+    // a beat more than three ticks late counts as "the process was away"
+    // (`gap_limit`, runtime.rs) and that branch only re-schedules — it never
+    // fires. At 100ms the tolerance is 300ms, so on a loaded runner every beat
+    // qualifies as "away" and nothing ever fires inside the deadline. One second
+    // puts the tolerance at 3s.
+    engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
 
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -820,7 +839,7 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path().to_path_buf());
     let store_for_check = store.clone();
-    upcoming(&store, "orphan", 1);
+    upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
     // The scheduler treats a beat more than three beats late as "the process was
@@ -828,8 +847,8 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     // deciding anything, so the tolerance is three times this value. A 100ms tick
     // therefore tolerates 300ms, and on a loaded runner every beat can qualify as
     // "away", leaving the orphan undecided until the wait expires. One second puts
-    // the tolerance at 3s — more than scheduling jitter can spend — and the 1s
-    // window below still comes round inside the deadline.
+    // the tolerance at 3s — more than scheduling jitter can spend — and the 3s
+    // window above still comes round inside the deadline.
     engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
 
@@ -881,7 +900,7 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path().to_path_buf());
     let store_for_check = store.clone();
-    upcoming(&store, "orphan", 1);
+    upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
     engine.schedule_tick = Some(Duration::from_secs(1));
