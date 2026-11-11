@@ -130,6 +130,9 @@ impl Harness {
                 policy: &Policy::default(),
                 approver: &AutoApprove,
                 snapshots: None,
+                // These tests exercise the MCP tool table / instructions, not
+                // scheduling; the field exists for the runtime driver (ADR schedule).
+                scheduler: None,
             },
             RunOptions {
                 session_id: &self.session,

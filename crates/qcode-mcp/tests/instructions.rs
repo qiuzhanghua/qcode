@@ -120,6 +120,9 @@ async fn run_once(registry: &ToolRegistry, calls: bool, policy: Policy) -> Run {
             policy: &policy,
             approver: &AutoApprove,
             snapshots: None,
+            // These tests exercise the MCP tool table / instructions, not
+            // scheduling; the field exists for the runtime driver (ADR schedule).
+            scheduler: None,
         },
         RunOptions {
             session_id: &session,

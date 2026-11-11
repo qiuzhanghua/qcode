@@ -719,7 +719,7 @@ fn parse_hhmm(text: &str) -> Option<(u8, u8)> {
 fn parse_weekday(text: &str) -> Option<u8> {
     let lower = text.trim().to_ascii_lowercase();
     if let Ok(number) = lower.parse::<u8>() {
-        return (number <= 7).then(|| number % 7);
+        return (number <= 7).then_some(number % 7);
     }
     DAY_NAMES
         .iter()

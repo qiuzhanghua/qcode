@@ -362,6 +362,12 @@ pub struct ToolRegistry {
     sources: Vec<Arc<dyn ToolSource>>,
     /// Tools the registry used to hold, so a call to one explains itself.
     retired: RetiredTools,
+    /// Names removed by [`Self::without`], kept so a refresh cannot put them
+    /// back. Without this the filter would only hold until the first turn's
+    /// call to [`Self::refreshed`], which re-reads the sources and re-inserts
+    /// whatever they serve — and the registry returned by `without` is exactly
+    /// the one a sub-agent and the ACP service run their turns with.
+    excluded: Vec<String>,
 }
 
 impl ToolRegistry {
@@ -374,6 +380,7 @@ impl ToolRegistry {
             tools: map,
             sources: Vec::new(),
             retired: RetiredTools::default(),
+            excluded: Vec::new(),
         }
     }
 
@@ -394,6 +401,11 @@ impl ToolRegistry {
     ///
     /// 用于子代理 / 无头服务：定时任务管理工具只对带运行时驱动的会话开放，
     /// 子代理上下文拿不到 `SchedulerHandle`，直接从工具清单里去掉更干净。
+    ///
+    /// `sources` 保留下来（丢掉它们会让子代理与 ACP 的 MCP 工具表从启动起就冻结，
+    /// ADR-0067 §5 的每轮刷新形同虚设），因此被排除的名字必须记在 `excluded` 里，
+    /// 由 [`Self::refreshed`] 重新套用——否则第一轮刷新就会把它们插回来，
+    /// 「不含给定工具」这个承诺只成立到第一个 turn。
     pub fn without(&self, names: &[&str]) -> Self {
         let mut map = BTreeMap::new();
         for (name, tool) in &self.tools {
@@ -401,7 +413,18 @@ impl ToolRegistry {
                 map.insert(name.clone(), tool.clone());
             }
         }
-        Self { tools: map }
+        let mut excluded = self.excluded.clone();
+        for name in names {
+            if !excluded.iter().any(|seen| seen == name) {
+                excluded.push((*name).to_string());
+            }
+        }
+        Self {
+            tools: map,
+            sources: self.sources.clone(),
+            retired: self.retired.clone(),
+            excluded,
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -472,6 +495,7 @@ impl ToolRegistry {
             tools: self.tools.clone(),
             sources: Vec::new(),
             retired: self.retired.clone(),
+            excluded: self.excluded.clone(),
         };
         let mut changed = Vec::new();
         for source in &self.sources {
@@ -503,6 +527,11 @@ impl ToolRegistry {
                 }
                 changed.push(diff);
             }
+        }
+        // Re-apply `without`'s filter: a source may serve a name the caller
+        // excluded, and the snapshot is what the whole turn runs with.
+        for name in &self.excluded {
+            snapshot.tools.remove(name);
         }
         (snapshot, changed)
     }
