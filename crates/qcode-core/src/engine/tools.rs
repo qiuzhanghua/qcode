@@ -199,7 +199,13 @@ where
     }
 
     let Some(tool) = ctx.tools.get(&call.name) else {
-        let message = format!("unknown tool: {}", call.name);
+        // "unknown tool" and "that tool was dropped between turns" are
+        // different problems with different fixes, and the model can only pick
+        // the right one if it is told which happened (ADR-0067 §5).
+        let message = match ctx.tools.retired_reason(&call.name) {
+            Some(reason) => format!("tool no longer available: {reason}"),
+            None => format!("unknown tool: {}", call.name),
+        };
         return Ok(PlannedCall::terminal(
             call,
             None,

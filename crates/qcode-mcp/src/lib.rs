@@ -21,6 +21,7 @@
 mod config;
 mod extras;
 mod grant;
+mod table;
 mod tool;
 
 use std::collections::HashMap;
@@ -28,8 +29,10 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
-use qcode_core::tool::Tool;
+use async_trait::async_trait;
+use qcode_core::tool::{ServerToolsChanged, Tool, ToolRefresh, ToolSource};
 use rmcp::ServiceExt;
 use rmcp::model::ProtocolVersion;
 use rmcp::service::{ClientLifecycleMode, RunningService};
@@ -44,7 +47,12 @@ pub use config::{
 };
 pub use extras::{Extra, McpExtra};
 pub use grant::{GrantError, GrantInput, GrantSet, real_home};
+pub use table::{ListChangedHandler, ToolTable};
 pub use tool::McpTool;
+
+/// The connected-client type. Not `RunningService<RoleClient, ()>` any more:
+/// the handler has to see `notifications/tools/list_changed` (ADR-0067 §5).
+pub(crate) type Service = Arc<RunningService<rmcp::RoleClient, ListChangedHandler>>;
 
 /// How long a server gets to answer `initialize`. `tools/list` and `tools/call`
 /// use the per-server `timeout_secs` instead.
@@ -202,6 +210,32 @@ pub async fn connect_all_with(
     env: &[(String, String)],
     options: ConnectOptions<'_>,
 ) -> Vec<Arc<dyn Tool>> {
+    connect_detailed(mcp, workspace, data_dir, env, options)
+        .await
+        .tools
+}
+
+/// What a successful [`connect_detailed`] hands back.
+pub struct McpConnection {
+    /// The tools as of the moment of connection.
+    pub tools: Vec<Arc<dyn Tool>>,
+    /// The same servers as a refreshable source, for callers that want the tool
+    /// table to follow `ttlMs` / `list_changed` (ADR-0067 §5).
+    ///
+    /// `None` when no server connected: adding an empty source would just make
+    /// the engine do bookkeeping for nothing.
+    pub source: Option<Arc<McpToolSource>>,
+}
+
+/// `connect_all_with`, but keeping the servers around so their tool tables can
+/// be re-read later.
+pub async fn connect_detailed(
+    mcp: &McpConfig,
+    workspace: &Path,
+    data_dir: &Path,
+    env: &[(String, String)],
+    options: ConnectOptions<'_>,
+) -> McpConnection {
     let log_dir = data_dir.join("logs");
     if let Err(error) = std::fs::create_dir_all(&log_dir) {
         tracing::warn!(
@@ -212,6 +246,7 @@ pub async fn connect_all_with(
     }
 
     let mut tools = Vec::new();
+    let mut servers = Vec::new();
     for server in mcp.servers.iter().filter(|server| server.enabled) {
         // `validate()` rejects both of these, so reaching either means the
         // caller skipped validation. Say so instead of guessing a transport.
@@ -227,30 +262,24 @@ pub async fn connect_all_with(
         )
         .await
         {
-            Ok(mut found) => {
+            Ok(found) => {
                 tracing::info!(
                     server = %server.name,
                     transport = %transport,
                     protocol = found.protocol_version.as_deref().unwrap_or("-"),
-                    tools = found.tools.len(),
+                    tools = found.tools().len(),
                     "mcp server ready"
                 );
-                tools.append(&mut found.tools);
+                tools.extend(found.tools());
+                servers.push(found);
             }
             Err(error) => {
                 tracing::warn!(server = %server.name, %transport, %error, "skipping MCP server");
             }
         }
     }
-    tools
-}
-
-/// A connected server: its tools, and what the handshake settled on.
-struct Connected {
-    tools: Vec<Arc<dyn Tool>>,
-    /// Negotiated protocol version, for the log. `None` when the server reports
-    /// none, which only a non-conforming one does.
-    protocol_version: Option<String>,
+    let source = (!servers.is_empty()).then(|| Arc::new(McpToolSource { servers }));
+    McpConnection { tools, source }
 }
 
 /// Dispatch on the transport, then hand both arms to [`finish`].
@@ -267,7 +296,7 @@ async fn connect_server(
     log_dir: &Path,
     env: &[(String, String)],
     options: ConnectOptions<'_>,
-) -> Result<Connected, McpError> {
+) -> Result<ServerHandle, McpError> {
     match transport {
         Transport::Stdio => {
             // `[mcp] sandbox` is crate-wide and the caller passed no config, so
@@ -298,7 +327,7 @@ async fn connect_stdio(
     env: &[(String, String)],
     confine: Option<&Confine>,
     confined: bool,
-) -> Result<Connected, McpError> {
+) -> Result<ServerHandle, McpError> {
     let command_line = server.command.as_deref().unwrap_or_default();
     let grant = GrantSet::derive(GrantInput {
         server,
@@ -389,7 +418,7 @@ async fn connect_stdio(
         // one that stays silent costs the full 10s discover timeout on every
         // connection. `Initialize` is also exactly what the P1 acceptance for
         // wordcraft asks for.
-        ().serve(transport),
+        ListChangedHandler::new().serve(transport),
     )
     .await
     .map_err(|_| McpError::HandshakeTimeout {
@@ -414,7 +443,7 @@ async fn connect_stdio(
 async fn connect_http(
     server: &McpServerConfig,
     http: Option<&reqwest::Client>,
-) -> Result<Connected, McpError> {
+) -> Result<ServerHandle, McpError> {
     let Some(client) = http else {
         return Err(McpError::NoHttpClient {
             server: server.name.clone(),
@@ -482,7 +511,7 @@ async fn connect_http(
         // own 10s discover timeout. Transport errors and modern rejections do
         // not fall back: retrying the handshake would fail the same way.
         rmcp::service::serve_client_with_lifecycle(
-            (),
+            ListChangedHandler::new(),
             transport,
             ClientLifecycleMode::Auto {
                 preferred_versions: PREFERRED_VERSIONS.to_vec(),
@@ -503,53 +532,193 @@ async fn connect_http(
     finish(server, service).await
 }
 
+/// One connected server, kept alive so its tool table can be re-read at a turn
+/// boundary (ADR-0067 §5).
+///
+/// Holding the service and the table together is what makes the refresh
+/// possible: a bare `Vec<Arc<dyn Tool>>` would have to be thrown away and
+/// rebuilt by starting the server again.
+pub(crate) struct ServerHandle {
+    name: String,
+    service: Service,
+    /// The tool table and its freshness deadline.
+    table: ToolTable,
+    timeout: Duration,
+    /// Resource/prompt tools, decided once at connect time. The capabilities do
+    /// not change mid-session, and re-probing them every turn would cost two
+    /// round trips per server for a set that never moves.
+    extras: Vec<Extra>,
+    protocol_version: Option<String>,
+}
+
+impl ServerHandle {
+    /// The tools this server currently offers, namespaced for the model.
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = self
+            .table
+            .tools()
+            .into_iter()
+            .map(|definition| {
+                let name = config::tool_name(&self.name, &definition.name);
+                Arc::new(McpTool::new(
+                    name,
+                    self.name.clone(),
+                    definition,
+                    self.service.clone(),
+                    self.timeout,
+                )) as Arc<dyn Tool>
+            })
+            .collect();
+        for kind in &self.extras {
+            tools.push(Arc::new(McpExtra::new(
+                config::tool_name(&self.name, kind.suffix()),
+                self.name.clone(),
+                *kind,
+                self.service.clone(),
+                self.timeout,
+            )));
+        }
+        tools
+    }
+
+    /// Re-read `tools/list`. Returns the changed names (bare, server-side), or
+    /// `None` when the set is identical.
+    #[allow(clippy::result_large_err)]
+    async fn reload(&self) -> Result<Option<(Vec<String>, Vec<String>)>, McpError> {
+        let (tools, ttl) = fetch_tools(&self.name, &self.service, self.timeout).await?;
+        Ok(self.table.replace(tools, ttl))
+    }
+}
+
+/// Every connected server, exposed as one refreshable tool source.
+pub struct McpToolSource {
+    servers: Vec<ServerHandle>,
+}
+
+#[async_trait]
+impl ToolSource for McpToolSource {
+    async fn refresh(&self) -> ToolRefresh {
+        let mut tools = Vec::new();
+        let mut changed = Vec::new();
+        for server in &self.servers {
+            if server.table.is_stale() {
+                match server.reload().await {
+                    Ok(Some((added, removed))) => changed.push(ServerToolsChanged {
+                        server: server.name.clone(),
+                        added: added
+                            .iter()
+                            .map(|name| config::tool_name(&server.name, name))
+                            .collect(),
+                        removed: removed
+                            .iter()
+                            .map(|name| config::tool_name(&server.name, name))
+                            .collect(),
+                    }),
+                    Ok(None) => {}
+                    Err(error) => {
+                        // SEP-2549 permits serving the stale result when a
+                        // re-fetch fails, and losing every tool of a server
+                        // because the network blipped would be worse than a
+                        // table that is one turn old. `dirty` stays set, so the
+                        // next turn tries again.
+                        tracing::warn!(
+                            server = %server.name,
+                            %error,
+                            "tools/list refresh failed; keeping the previous table"
+                        );
+                    }
+                }
+            }
+            tools.extend(server.tools());
+        }
+        ToolRefresh { tools, changed }
+    }
+}
+
+/// `tools/list`, following `nextCursor`.
+///
+/// Written out rather than using `Peer::list_all_tools`, which returns
+/// `Vec<Tool>` and drops `ttl_ms` / `cache_scope` / `result_type` — the first of
+/// which is the entire point (ADR-0067 §5).
+#[allow(clippy::result_large_err)]
+async fn fetch_tools(
+    server: &str,
+    service: &Service,
+    timeout: Duration,
+) -> Result<table::Fetched, McpError> {
+    /// A server that keeps handing back new cursors would otherwise page until
+    /// the turn budget dies. 64 pages of a normal table is far past "this is a
+    /// real server".
+    const MAX_PAGES: usize = 64;
+    let mut accumulated: table::Fetched = (Vec::new(), None);
+    let mut cursor: Option<String> = None;
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..MAX_PAGES {
+        let result = tokio::time::timeout(
+            timeout,
+            service.list_tools(table::page_params(cursor.clone())),
+        )
+        .await
+        .map_err(|_| McpError::ListTimeout {
+            server: server.to_string(),
+            secs: timeout.as_secs(),
+        })?
+        .map_err(|source| McpError::ListTools {
+            server: server.to_string(),
+            source,
+        })?;
+        table::absorb_page(&mut accumulated, result.ttl_ms, result.tools);
+        let Some(next) = table::next_cursor(result.next_cursor) else {
+            return Ok(accumulated);
+        };
+        // A cursor we have already followed would loop forever.
+        if seen.contains(&next) {
+            tracing::warn!(server, cursor = %next, "tools/list repeated a cursor; stopping");
+            return Ok(accumulated);
+        }
+        seen.push(next.clone());
+        cursor = Some(next);
+    }
+    tracing::warn!(
+        server,
+        pages = MAX_PAGES,
+        "tools/list did not finish paging"
+    );
+    Ok(accumulated)
+}
+
 /// The transport-independent half: `tools/list`, then the optional resource and
 /// prompt capabilities.
 #[allow(clippy::result_large_err)]
 async fn finish(
     server: &McpServerConfig,
-    service: RunningService<rmcp::RoleClient, ()>,
-) -> Result<Connected, McpError> {
+    service: RunningService<rmcp::RoleClient, ListChangedHandler>,
+) -> Result<ServerHandle, McpError> {
     let timeout = server.request_timeout();
     let protocol_version = service
         .peer_info()
         .map(|info| info.protocol_version.to_string());
-
-    let listed = tokio::time::timeout(timeout, service.list_all_tools())
-        .await
-        .map_err(|_| McpError::ListTimeout {
-            server: server.name.clone(),
-            secs: server.timeout_secs,
-        })?
-        .map_err(|source| McpError::ListTools {
-            server: server.name.clone(),
-            source,
-        })?;
+    // Taken before the service is moved into an `Arc`: the flag is what the
+    // notification handler writes.
+    let dirty = service.service().handle();
 
     let service = Arc::new(service);
-    let mut tools: Vec<Arc<dyn Tool>> = listed
-        .into_iter()
-        .map(|definition| {
-            let name = server.tool_name(&definition.name);
-            Arc::new(McpTool::new(
-                name,
-                server.name.clone(),
-                definition,
-                service.clone(),
-                timeout,
-            )) as Arc<dyn Tool>
-        })
-        .collect();
+    let (listed, ttl) = fetch_tools(&server.name, &service, timeout).await?;
+    tracing::info!(
+        server = %server.name,
+        ttl_ms = ttl.map(|ttl| ttl.as_millis()).unwrap_or(0),
+        // ADR-0067 §5: `cacheScope` has no extra meaning here — qcode keeps no
+        // cross-process tool cache, so `public` and `private` behave the same.
+        "mcp tool table fetched"
+    );
+    let table = ToolTable::new(listed, ttl, dirty);
 
     // Resources and prompts are optional. Asking once is the detection: a
     // server that does not implement the capability answers with an error and
     // simply gets no extra tools.
+    let mut extras = Vec::new();
     match tokio::time::timeout(timeout, service.list_resources(None)).await {
-        Ok(Ok(_)) => {
-            for kind in [Extra::ListResources, Extra::ReadResource] {
-                tools.push(extra_tool(server, kind, &service, timeout));
-            }
-        }
+        Ok(Ok(_)) => extras.extend([Extra::ListResources, Extra::ReadResource]),
         Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no resources capability"),
         Err(_) => tracing::warn!(
             server = %server.name,
@@ -559,11 +728,7 @@ async fn finish(
     }
 
     match tokio::time::timeout(timeout, service.list_prompts(None)).await {
-        Ok(Ok(_)) => {
-            for kind in [Extra::ListPrompts, Extra::GetPrompt] {
-                tools.push(extra_tool(server, kind, &service, timeout));
-            }
-        }
+        Ok(Ok(_)) => extras.extend([Extra::ListPrompts, Extra::GetPrompt]),
         Ok(Err(error)) => tracing::debug!(server = %server.name, %error, "no prompts capability"),
         Err(_) => tracing::warn!(
             server = %server.name,
@@ -572,8 +737,12 @@ async fn finish(
         ),
     }
 
-    Ok(Connected {
-        tools,
+    Ok(ServerHandle {
+        name: server.name.clone(),
+        service,
+        table,
+        timeout,
+        extras,
         protocol_version,
     })
 }
@@ -613,21 +782,6 @@ fn spawn_error(server: &McpServerConfig, grant: &GrantSet, source: std::io::Erro
         source,
         hint,
     }
-}
-
-fn extra_tool(
-    server: &McpServerConfig,
-    kind: Extra,
-    service: &Arc<rmcp::service::RunningService<rmcp::RoleClient, ()>>,
-    timeout: std::time::Duration,
-) -> Arc<dyn Tool> {
-    Arc::new(McpExtra::new(
-        server.tool_name(kind.suffix()),
-        server.name.clone(),
-        kind,
-        service.clone(),
-        timeout,
-    ))
 }
 
 /// One log file per server, append-only. If it cannot be opened, inherit the

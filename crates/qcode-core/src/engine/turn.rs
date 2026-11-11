@@ -116,6 +116,36 @@ where
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
     writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
+
+    // ADR-0067 §5: the MCP tool table is re-read here, at the turn boundary, and
+    // whatever comes back is used for the whole turn. Two reasons it is a
+    // snapshot rather than a live view:
+    //
+    // * a table that moved between the request the model saw and the calls that
+    //   request produced would let it name a tool it was shown and have the call
+    //   arrive after the tool is gone;
+    // * `ttlMs = 0` is a server saying "assume this is stale" — acting on that
+    //   per round would mean a round trip before every model call.
+    //
+    // Sources that are still fresh answer from their own cache, so a session
+    // with a `ttlMs = 5000` server makes one extra call per turn at most.
+    let (tools, changed) = ctx.tools.refreshed().await;
+    for diff in changed {
+        writer.append(
+            EventKind::McpToolsRefreshed(crate::event::McpToolsRefreshed {
+                server: diff.server.clone(),
+                added: diff.added.clone(),
+                removed: diff.removed.clone(),
+            }),
+            &mut on_event,
+        )?;
+    }
+    // Shadowing keeps the rest of the function reading the same way; the
+    // snapshot lives as long as this borrow scope, which is the whole turn.
+    let ctx = TurnContext {
+        tools: &tools,
+        ..ctx
+    };
     events = ctx.store.load(options.session_id)?;
     let mut messages = history::messages_from_events_with(
         &events,

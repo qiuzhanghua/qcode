@@ -2,6 +2,28 @@
 
 ## 未发布
 
+### MCP 工具表有了寿命（ADR-0067 P2）
+
+2026-07-28 把 `tools/list` 变成可缓存结果：响应带 `ttlMs` 与 `cacheScope`，server 还能推
+`notifications/tools/list_changed`。工具表因此不再是常量，ADR-0002 的「启动时只列一次」
+正式作废。
+
+- **三条刷新规则**：`ttlMs` 缺失（legacy）→ 进程内不重取，行为与以前完全一致；
+  `ttlMs = 0` → 每个 turn 重取；`ttlMs = n` → `n` 毫秒后过期，在下一个 turn 边界重取。
+  `list_changed` 一到立即置脏，不等 TTL。
+- **只在 turn 边界换表**，而且是快照：`run_turn` 入口刷新一次，拿到的克隆用满整轮。
+  正在跑的 turn 里换表会让模型看到一套、执行时是另一套；`ttlMs = 0` 因此是「每个 turn」
+  而不是「每个 round」。
+- **换表写事件**：`McpToolsRefreshed { server, added, removed }` 进事件日志，CLI 打一行
+  `[mcp] <server> tools: +a -b`，GUI 显示一条 notice。
+- **已消失的工具被调用 → 明确错误**：`tool no longer available: tool 'x' no longer exists on
+  MCP server 'y' ...`，而不是 `unknown tool`。两者要修的东西不同，模型得知道是哪种。
+- **刷新失败保留旧表**（SEP-2549 允许 serve stale）：一次网络抖动不该让整个 server 的工具
+  消失，dirty 位留着下一轮再试。
+- **分页自己写**：`list_all_tools` 会把 `ttlMs` / `cacheScope` / `resultType` 丢掉，按
+  `nextCursor` 循环并只取第一页的 `ttlMs`；重复 cursor 或第 64 页即停。
+- `cacheScope` 明确不实现：qcode 没有跨进程工具缓存，`public` 与 `private` 行为相同。
+
 ### 远程 MCP server（ADR-0067 P1 / P3）
 
 上一批修的是「stdio server 装在本机却被沙箱杀掉」。这一批修的是更根本的一条：**qcode 装不上

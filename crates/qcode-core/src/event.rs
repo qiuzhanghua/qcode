@@ -73,6 +73,12 @@ pub enum EventKind {
     /// A one-off notice that the turn is approaching a budget. Persisted so a
     /// replay shows the same warning the live run did.
     BudgetHint(BudgetHint),
+    /// One MCP server's tool table changed between turns (ADR-0067 §5).
+    ///
+    /// Persisted, because the model's next call may name a tool this event
+    /// retired: a replay (and `qc` itself) has to be able to say why that call
+    /// is an error rather than leaving it unexplained.
+    McpToolsRefreshed(McpToolsRefreshed),
     /// What the shell environment sampling produced for this turn (ADR-0064).
     /// Names only: a value could be an API key, and the log outlives the turn.
     ShellEnvSampled(ShellEnvSampled),
@@ -411,6 +417,20 @@ pub struct BudgetHint {
     pub max_cost_usd: Option<f64>,
     #[serde(default = "first_window")]
     pub window: u32,
+}
+
+/// One MCP server's tool table changed (ADR-0067 §5).
+///
+/// The names here are the *bare* MCP names the server used, not the
+/// `mcp__<server>__<tool>` names the model sees: the event already carries the
+/// server, and a reader of the log can compose the public name from the two.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolsRefreshed {
+    pub server: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

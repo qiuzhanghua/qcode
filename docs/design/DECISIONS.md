@@ -6099,7 +6099,7 @@ sandbox = "off"        # warn + doctor partial
 
 ## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
 
-**状态**：P1 / P3 已实现（2026-11-11），P2（`ttlMs` / 动态工具表）待做。
+**状态**：已实现（2026-11-11），P1 / P2 / P3 全部完成。
 `[[mcp.servers]]` 的 `command` 由必填改为「与 `url` 恰好二选一」；老配置
 一行不改继续可用。协议版本一次对齐到 2026-07-28，但保留 `initialize` 回退——理由见 §3。
 
@@ -6328,7 +6328,7 @@ command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"   # 原�
 | 期 | 内容 | 验收 |
 |---|---|---|
 | P1 ✅ | `command`/`url` 校验 + `Network::client()` 接线 + `Auto` 生命周期 + doctor 打印 | probe server 直连可用；legacy server 回退成功；`network.jsonl` 有记录 |
-| P2 | `ttlMs`/`cacheScope`/`list_changed` + turn 边界刷新 + `McpToolsRefreshed` 事件 | 三条缓存断言通过 |
+| P2 ✅ | `ttlMs`/`cacheScope`/`list_changed` + turn 边界刷新 + `McpToolsRefreshed` 事件 | 三条缓存断言通过 |
 | P3 ✅ | `qc mcp add --url` 与新 flag | 写回的配置能被 `mcp list` / `doctor` 读回 |
 
 **P1 / P3 实现注记（2026-11-11）**
@@ -6345,6 +6345,29 @@ command = "/home/q/cot/lib/wordcraft_0.15.2_linux_amd64/bin/wordcraft"   # 原�
   （`mcp server ready protocol=2026-07-28`）。
 - **`qc mcp list` 的分行按 transport 分开写。** 原来一行打印 `command={:?}`，远程 server 会
   显示成 `command=None`，读起来像一个坏掉的 stdio server。
+
+**P2 实现注记（2026-11-11）**
+
+- **「turn 边界」被实现为 `run_turn` 的入口，并且是快照。** `ToolRegistry::refreshed()` 返回
+  一个**没有 source** 的克隆，整轮 turn 都用它；`ctx.tools` 仍是 `&ToolRegistry`，下一轮再问
+  一次。这样 mid-turn 换表在类型层面就不可能，不需要额外的守卫。首个模型请求发出前的那次
+  刷新就是边界本身。
+- **`list_changed` 需要自定义 `ClientHandler`。** `()` 的默认实现把通知丢掉，所以我们serve
+  时传 `ListChangedHandler`，它只做一件事：把一个 `Arc<AtomicBool>` 置脏。服务类型因此从
+  `RunningService<RoleClient, ()>` 变成 `…<ListChangedHandler>`，`McpTool` / `McpExtra`
+  改用统一的 `crate::Service` 别名。
+- **刷新失败保留旧表。** SEP-2549 允许在 re-fetch 失败时继续用过期结果；把整个 server 的
+  工具因为一次网络抖动清空，比表老一轮糟得多。dirty 位不清，下一轮再试。
+- **`cacheScope` 明确不实现。** qcode 没有跨进程工具缓存，`public` 与 `private` 行为相同。
+  这条写在 `finish()` 的日志注释里，避免下一个人以为漏了。
+- **`rmcp` 自己的 `tools/list` 响应缓存与我们的 TTL 对齐**（同一个 `ttlMs` 同时驱动两边的
+  `expires_at`），所以「我们判定过期 → 真的发出请求」之间不会出现假刷新。
+- **分页自己写。** `Peer::list_all_tools` 返回 `Vec<Tool>`，把 `ttl_ms` / `cache_scope` /
+  `result_type` 全丢了。现在按 `nextCursor` 循环，**只取第一页的 `ttlMs`**，并且遇到重复
+  cursor 或第 64 页就停（一个不停换 cursor 的 server 否则能把 turn 预算耗光）。
+- **stdio 侧的 `list_changed` 由 stub 触发**（`notifications/tools/list_changed` 走 stdin/stdout
+  的 JSON 行），HTTP 侧要发 SSE 事件，P2 没有为它单独造 fixture；两条路径共用同一个
+  `ClientHandler`，差别只在传输层。
 - **GUI 的 MCP 表格只有一列 `command`**，远程 session 共用它（`server.command.or(url)`）。
   保存时按上一行的形态决定写回哪个字段，所以在一个远程 server 的单元格里打字不会把它悄悄变成
   stdio。`bearer_token_env_var` / `headers` 从文件原样保留——表格没有这两列，而

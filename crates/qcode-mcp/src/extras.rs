@@ -5,15 +5,12 @@
 //! fetch. They are registered only when the server answered the corresponding
 //! `*/list` during the handshake.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
-use rmcp::RoleClient;
 use rmcp::model::{GetPromptRequestParams, ReadResourceRequestParams};
-use rmcp::service::RunningService;
 use serde_json::{Value, json};
 
 /// Same ceiling as the built-in tools: the model sees a truncated body.
@@ -54,7 +51,7 @@ pub struct McpExtra {
     name: String,
     server: String,
     kind: Extra,
-    service: Arc<RunningService<RoleClient, ()>>,
+    service: crate::Service,
     timeout: Duration,
 }
 
@@ -63,7 +60,7 @@ impl McpExtra {
         name: String,
         server: String,
         kind: Extra,
-        service: Arc<RunningService<RoleClient, ()>>,
+        service: crate::Service,
         timeout: Duration,
     ) -> Self {
         Self {

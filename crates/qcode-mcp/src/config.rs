@@ -95,6 +95,15 @@ pub struct McpServerConfig {
 }
 
 /// How a server is reached (ADR-0067 §1).
+/// Public tool name: `mcp__<server>__<tool>`.
+///
+/// Free function as well as a method because the refresh path (ADR-0067 §5)
+/// knows the server by name only, and composing the public name in two places
+/// is how the two spellings drift.
+pub fn tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// A child process over the standard MCP framing.
@@ -149,7 +158,7 @@ impl McpServerConfig {
     /// Public tool name: `mcp__<server>__<tool>`. The prefix keeps MCP tools
     /// from colliding with built-ins or with each other.
     pub fn tool_name(&self, tool: &str) -> String {
-        format!("mcp__{}__{}", self.name, tool)
+        tool_name(&self.name, tool)
     }
 
     /// Per-server state directory under `<data_dir>/mcp`.

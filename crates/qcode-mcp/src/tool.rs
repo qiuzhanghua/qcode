@@ -1,18 +1,15 @@
 //! One MCP tool, adapted to the engine's `Tool` contract.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::event::ToolMetadata;
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
-use rmcp::RoleClient;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ResourceContents,
     Tool as McpToolDefinition,
 };
-use rmcp::service::RunningService;
 use serde_json::{Map, Value};
 
 /// Same ceiling as the built-in tools: the model sees a head/tail preview.
@@ -23,7 +20,7 @@ pub struct McpTool {
     name: String,
     server: String,
     definition: McpToolDefinition,
-    service: Arc<RunningService<RoleClient, ()>>,
+    service: crate::Service,
     timeout: Duration,
 }
 
@@ -32,7 +29,7 @@ impl McpTool {
         name: String,
         server: String,
         definition: McpToolDefinition,
-        service: Arc<RunningService<RoleClient, ()>>,
+        service: crate::Service,
         timeout: Duration,
     ) -> Self {
         Self {

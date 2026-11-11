@@ -192,7 +192,7 @@ pub async fn build_tools(
     // streamable-http server may use, so its traffic is allowlisted, audited
     // and private-address-blocked like every other outbound request.
     let http = network.as_ref().map(|network| network.client());
-    let mcp_tools = qcode_mcp::connect_all_with(
+    let mcp = qcode_mcp::connect_detailed(
         mcp,
         workspace,
         data_dir,
@@ -203,10 +203,17 @@ pub async fn build_tools(
         },
     )
     .await;
-    if !mcp_tools.is_empty() {
-        tracing::info!(count = mcp_tools.len(), "registered MCP tools");
+    if !mcp.tools.is_empty() {
+        tracing::info!(count = mcp.tools.len(), "registered MCP tools");
     }
-    tools.extend(mcp_tools);
+    tools.extend(mcp.tools);
+    // The tool table follows the server's `ttlMs` and `list_changed`
+    // (ADR-0067 §5). Registering the source is what makes the engine re-read it
+    // once per turn; without it the list would stay whatever it was at startup,
+    // which is the pre-2026-07-28 behaviour.
+    if let Some(source) = mcp.source {
+        tools.add_source(source as std::sync::Arc<dyn qcode_core::tool::ToolSource>);
+    }
 
     if !skills.is_empty() {
         tracing::info!(count = skills.len(), "registered the skill tool");

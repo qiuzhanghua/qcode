@@ -241,6 +241,19 @@ pub(crate) fn progress(event: &Event) {
             };
             eprintln!("[approval] {decision}");
         }
+        EventKind::McpToolsRefreshed(refreshed) => {
+            // stderr, like the rest of the progress channel: stdout stays clean
+            // JSONL. Worth a line because the next call to a vanished tool would
+            // otherwise look like the model inventing names (ADR-0067 §5).
+            let mut parts = Vec::new();
+            if !refreshed.added.is_empty() {
+                parts.push(format!("+{}", refreshed.added.join(", ")));
+            }
+            if !refreshed.removed.is_empty() {
+                parts.push(format!("-{}", refreshed.removed.join(", ")));
+            }
+            eprintln!("[mcp] {} tools: {}", refreshed.server, parts.join(" "));
+        }
         EventKind::BudgetHint(hint) => {
             eprintln!(
                 "[budget] {}/{} turns used; one message away from pausing",

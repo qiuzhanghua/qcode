@@ -383,6 +383,10 @@ cargo build -p qcode-eval
   `network.jsonl` 审计与私网拦截；没进 allowlist 的 host 会被 403 且不产生任何工具——先在
   `[network] allow` 里加一行。token 只写 `bearer_token_env_var = "VAR"`（变量名），
   `headers` 里出现 authorization/cookie/token/key/secret/password 会被配置校验拒绝。
+  **工具表有寿命**：server 在 `tools/list` 里给的 `ttlMs` 决定多久重读一次（缺失=不重读，
+  `0`=每个 turn 重读，`n`=n 毫秒后下一个 turn 重读），`notifications/tools/list_changed`
+  立即置脏。重读只发生在 turn 边界，换表会写一条 `McpToolsRefreshed` 事件；已经被删掉的
+  工具被调用时得到 `tool no longer available` 而不是 `unknown tool`。
 - **并行只读工具**：同一批里相邻的只读调用最多 4 路并发；写、shell 与 MCP 调用保持原位
   串行，`tool_result` 始终按调用顺序落日志，不随完成顺序变化。
 - **apply_patch**：多文件 unified diff（create / delete / modify，支持 `\ No newline`）。
