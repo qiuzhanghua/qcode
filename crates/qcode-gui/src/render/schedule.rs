@@ -253,7 +253,12 @@ impl Shell {
                                     })
                             })
                             .when_some(
-                                task.target.session_id().map(str::to_owned),
+                                // 固定会话目标直接可跳；New/NewOnce 投递后落在
+                                // 预留会话里，同样可跳。
+                                task.target
+                                    .session_id()
+                                    .map(str::to_owned)
+                                    .or_else(|| task.reserved_session_id.clone()),
                                 |this, session| {
                                     this.child(
                                         Button::new("schedule-open-session")
