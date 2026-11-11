@@ -105,6 +105,41 @@ pub(crate) fn print_mcp(config: &McpConfig) {
             "  {} enabled={} timeout={}s command={:?} args={:?}",
             server.name, server.enabled, server.timeout_secs, server.command, server.args
         );
+        // The sandbox decision and its explicit extras (ADR-0066). The full
+        // grant is computed at startup; this is what the file asks for.
+        let sandbox = server.sandbox_mode(config.sandbox).label();
+        if sandbox != "confine"
+            || !server.read_paths.is_empty()
+            || !server.writable_paths.is_empty()
+            || !server.credentials.is_empty()
+        {
+            let paths = |paths: &[std::path::PathBuf]| {
+                if paths.is_empty() {
+                    "-".to_string()
+                } else {
+                    paths
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }
+            };
+            let credentials = if server.credentials.is_empty() {
+                "-".to_string()
+            } else {
+                server
+                    .credentials
+                    .iter()
+                    .map(|preset| preset.label())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            println!(
+                "    sandbox={sandbox} read_paths={} writable_paths={} credentials={credentials}",
+                paths(&server.read_paths),
+                paths(&server.writable_paths)
+            );
+        }
     }
 }
 

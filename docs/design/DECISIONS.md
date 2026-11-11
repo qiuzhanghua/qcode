@@ -6033,12 +6033,60 @@ sandbox = "off"        # warn + doctor partial
 | 逃逸阀只做 CLI flag、配置里不让写 | 用户明确要求保留在配置里：装新 server 的来回要能在版本化的项目配置里表达 |
 | 给每个 server 一份真实 `$HOME` 的 bind | 隔离归零，等于方案 1 |
 
+**实现注记（2026-11-11，P1 + P2 的一部分）**
+
+落地的是：`grant.rs`（推导 / 危险根 / 合成 HOME / 凭据链接）、`config.rs` 的四个新字段与
+`sandbox` 枚举、`lib.rs` 的 `env_clear` + 白名单 + 逐 server inline `GrantSet`、
+`qcode-kernel` 的 `mcp_confine` + `mcp_roots`、以及 `qc mcp add --read-path/--write-path/
+--credential/--sandbox`。五处与本文原文有偏差，都是实现时撞出来的：
+
+1. **授权以目录为单位，不是文件为单位。** §2 的推导表写着「`<target>/debug/<x>`
+   只给这一个文件」。`Sandbox::with_roots` 只吃 `Root`（目录），改它要动三个后端；而
+   `<target>/debug` 这一层已经足够窄，且二进制常要读同目录的 `.so`。所以统一按目录授权，
+   §2 那句按「只给该文件所在目录」理解。
+2. **Linux 后端本来就允许写 `/tmp` 与 `/var/tmp`。** `sandbox/linux.rs` 的 `install_rules`
+   无条件把这两个和 `writable_paths()`（`CARGO_HOME` 等）加成可写。所以本 ADR 说的
+   「写只给 workspace + 私有 HOME」准确说法是「workspace + 私有 HOME + `/tmp` + `/var/tmp`
+   + cargo 目录」。这是既有的、与 `run_shell` 共享的行为，本 ADR 没有收紧它；要收紧是另一件事。
+   它同时意味着**测试不能用 `tempfile` 目录冒充「workspace 之外」**——`/tmp` 本来就是可写的，
+   断言会假绿。集成测试因此改用 `CARGO_TARGET_TMPDIR`（仓库 `target/` 下）。
+3. **`Sandbox::command` 返回值依赖 sandbox 还活着。** `Landlock::command` 的 `pre_exec`
+   捕获 `ruleset_fd`，而 `Drop for Landlock` 会 `close` 它。原来的写法
+   `with_roots(..)?.command(..)` 一行表达式会在 `spawn()` 之前 drop 掉 sandbox，子进程
+   于是死在 `exec` 前，报 `EBADFD`（`os error 77`）——看起来像权限问题，其实不是。
+   `run_shell` 一直把 `with_roots` 的结果绑在局部变量上，所以没暴露。修法两处：给 trait 的
+   `command` 补上「sandbox 必须比 `spawn()` 活得久」的文档，以及让 `mcp_confine` 把每个
+   server 的 sandbox 停在 `Confine` 盒子里（生命周期覆盖 `connect_all_with` 的全部 spawn）。
+4. **`XDG_CONFIG_HOME` 必须与凭据链接的位置一致。** 第一版把 `XDG_CONFIG_HOME` 指向
+   `<home>/config`、把凭据链接放在 `<home>/.config/gh`，于是 `gh` 会去 `$XDG_CONFIG_HOME/gh`
+   找 token 而找不到——`credentials = ["github"]` 成了一个什么都不做的选项。现在三处统一用
+   XDG 的默认布局（`.config` / `.cache` / `.local/share`）。
+5. **私有 HOME 必须先 `canonicalize`。** `--data-dir ./data` 这种相对路径会让 `HOME` 变成
+   相对路径，server 起来后行为不可预期（实测就是握手直接失败）。`derive` 现在建目录并
+   canonicalize，失败即 `GrantError::HomeUnavailable`。
+
+另外两条不属于偏差但值得记：
+
+- **GUI 设置页会清空新字段，如果不管它。** `qcode-gui/src/setup/save.rs` 的
+  `apply_tables` 先 `servers.clear()` 再按表格重建，表格里没有授权集这几列。已按
+  `providers[..].headers` 的既有做法从 `self.config` 里按名字取回，否则用户每次在设置页
+  点保存都会静默丢掉 `read_paths`。
+- **真机验证的结果与预期不同。** 在 `/home/q/.local/lib/qc-probe/bin/probe`（一个真实的
+  `$HOME` 下安装位置）上，默认配置能启动并注册 3 个工具——这正是要修的失败类。
+  但 `wordcraft 0.15.2` 的 `bin/wordcraft` 是**桌面应用**（`--control PORT` 才是给 agent 用的
+  接口），不是 MCP server：给它 `DISPLAY`（经 `env = { DISPLAY = "${DISPLAY}" }`，白名单本来
+  就不传它）之后它自己起来了、日志里能看到启动横幅和走代理的更新检查，但永远不回
+  `initialize`。所以「wordcraft 原址 19 个工具」这条验收**在本机无法成立**，原因不在沙箱：
+  它根本没实现 MCP。
+
 **待定**
 
 - `credentials` 预设表要不要可扩展（用户自定义 preset），还是只做固定的这几条。
 - 合成 HOME 里的凭据符号链接在 macOS `sandbox-exec` 下是否需要显式放行 target（`file-read`
   按解析后路径匹配，预期够用，需实测）。
 - `writable_paths` 指向真实 `$HOME` 的某处（例如某个 server 的日志目录）时要不要 warn。
+- `qc doctor` 逐 server 打印授权集（P2 剩下的部分）：现在只有启动日志里的 `mcp server grant`
+  一行，和 `qc mcp list` 里的配置显式项；`doctor` 还没有 MCP 段。
 
 ## ADR-0067：MCP 远程传输与协议版本——Streamable HTTP，discover 优先并回退 initialize（2026-11-11）
 
@@ -6463,8 +6511,24 @@ ADR-0033 后果段「不把 prompts 自动塞进 system prompt」**不变**：`p
 | `instructions` 与 skills 共用一个预算 | 两者可信度不同级，共池会让一个第三方 server 挤掉项目技能索引 |
 | `instructions` 注入同时解析成结构化提示词 | 那是执行 server 的指令，违反 §4.10 |
 
+**实现注记（2026-11-11，P1 + P3 已落地，P2 未做）**
+
+- §1 与 §2 已实现：`env_clear()` 后按 白名单 → 合成 HOME → 凭据变量 → `[[mcp.servers]] env`
+  → 出口代理 的顺序注入；`env` 值支持整值 `${NAME}`，缺变量时 spawn 失败并点名（实测在
+  真机上用一个 `$HOME` 下安装的 server 验证：dump 出的变量集合只剩白名单那几项）。
+- §3 `instructions` 注入与 §4 的 modern 能力探测**没有做**，它们依赖 ADR-0067 的
+  `discover`/`capabilities`，留到那一步一起，避免为 legacy 分支写一遍再改一遍。
+- **白名单会连带清掉 `DISPLAY`。** 实测：这个开发机有 `DISPLAY=:1`，而 whitelist 只留
+  `PATH`/`LANG`/`TZ`/`LC_*`，于是需要显示服务的 server（wordcraft 这类桌面应用）启动即死，
+  报「neither WAYLAND_DISPLAY nor DISPLAY is set」。这不是缺陷，是 §1 的直接后果，解法
+  正是 §2 给的：`env = { DISPLAY = "${DISPLAY}" }`，实测有效。文档与报错要能指向这一点。
+- `qc doctor` 对「名字像密钥且是字面量」的 `env` 项给 warn（P3）**没有做**：它需要 doctor
+  先有 MCP 段（与 ADR-0066 的同一条待定合并）。
+
 **待定**
 
 - `credentials` 预设之外，用户能否自己定义 preset（与 ADR-0066 的同一条待定合并处理）。
 - `instructions` 的 8KiB 是**全局**还是**每 server**（当前按全局写，多 server 时要复核）。
 - 是否把 `instructions` 的 hash 记进事件日志，便于 replay 时解释「当时模型看到的是哪一版自述」。
+- 白名单要不要加 `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` 的「按需透传」开关，
+  还是坚持「要就写 `env`」。倾向后者：默认不传显示服务句柄更安全。

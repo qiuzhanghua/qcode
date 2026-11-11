@@ -8,9 +8,14 @@
 //! Resources and prompts are optional capabilities: the client asks for the
 //! matching list once during the handshake and registers list/read tools only
 //! when the server answers. Sampling and elicitation stay out.
+//!
+//! Each server gets its own [`GrantSet`] (ADR-0066): what it may read, what it
+//! may write, and a synthetic `$HOME`. The CLI turns the grant into sandbox
+//! roots through the [`Confine`] callback; this crate never names a backend.
 
 mod config;
 mod extras;
+mod grant;
 mod tool;
 
 use std::ffi::{OsStr, OsString};
@@ -23,29 +28,42 @@ use rmcp::ServiceExt;
 use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 
-pub use config::{McpConfig, McpConfigError, McpServerConfig};
+pub use config::{CredentialPreset, McpConfig, McpConfigError, McpSandboxMode, McpServerConfig};
 pub use extras::{Extra, McpExtra};
+pub use grant::{GrantError, GrantInput, GrantSet, real_home};
 pub use tool::McpTool;
 
 /// How long a server gets to answer `initialize`. `tools/list` and `tools/call`
 /// use the per-server `timeout_secs` instead.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 20;
 
-/// Builds the command that starts one server.
+/// Builds the command that starts one server under a sandbox.
 ///
-/// The CLI supplies this so a server runs under the same sandbox as
-/// `run_shell`; `None` starts it directly. Keeping it a callback (rather than a
+/// The CLI supplies this so a server runs inside a sandbox built from its own
+/// grant; `None` starts it directly. Keeping it a callback (rather than a
 /// dependency on the tools crate) keeps this crate to one job: speaking MCP.
-pub type Confine =
-    dyn Fn(&OsStr, &[OsString], &Path) -> Result<std::process::Command, String> + Send + Sync;
+pub type Confine = dyn Fn(&OsStr, &[OsString], &Path, &GrantSet) -> Result<std::process::Command, String>
+    + Send
+    + Sync;
+
+fn hint_text(hint: &Option<String>) -> String {
+    match hint {
+        Some(hint) => format!("\n  note: {hint}"),
+        None => String::new(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
-    #[error("server '{server}' failed to start: {source}")]
+    #[error("server '{server}' failed to start: {source}{}", hint_text(.hint))]
     Spawn {
         server: String,
         source: std::io::Error,
+        /// What to try next, when we can tell (ADR-0066 §7).
+        hint: Option<String>,
     },
+    #[error(transparent)]
+    Grant(#[from] GrantError),
     #[error("server '{server}' did not finish the handshake within {secs}s")]
     HandshakeTimeout { server: String, secs: u64 },
     #[error("server '{server}' handshake failed: {source}")]
@@ -68,23 +86,28 @@ pub enum McpError {
 /// Runtime failures are logged with `warn` (visible at the default log level)
 /// and skipped; the returned list may therefore be shorter than the config.
 pub async fn connect_all(
-    servers: &[McpServerConfig],
+    mcp: &McpConfig,
     workspace: &Path,
-    log_dir: &Path,
+    data_dir: &Path,
     env: &[(String, String)],
 ) -> Vec<Arc<dyn Tool>> {
-    connect_all_with(servers, workspace, log_dir, env, None).await
+    connect_all_with(mcp, workspace, data_dir, env, None).await
 }
 
 /// `connect_all` with a sandbox: every server is started through `confine`.
+///
+/// `data_dir` holds both the per-server logs (`logs/`) and the per-server
+/// synthetic HOME (`mcp/<name>/home`), which is why it is not called `log_dir`
+/// any more.
 pub async fn connect_all_with(
-    servers: &[McpServerConfig],
+    mcp: &McpConfig,
     workspace: &Path,
-    log_dir: &Path,
+    data_dir: &Path,
     env: &[(String, String)],
     confine: Option<&Confine>,
 ) -> Vec<Arc<dyn Tool>> {
-    if let Err(error) = std::fs::create_dir_all(log_dir) {
+    let log_dir = data_dir.join("logs");
+    if let Err(error) = std::fs::create_dir_all(&log_dir) {
         tracing::warn!(
             path = %log_dir.display(),
             %error,
@@ -92,9 +115,31 @@ pub async fn connect_all_with(
         );
     }
 
+    let home = real_home();
     let mut tools = Vec::new();
-    for server in servers.iter().filter(|server| server.enabled) {
-        match connect_server(server, workspace, log_dir, env, confine).await {
+    for server in mcp.servers.iter().filter(|server| server.enabled) {
+        let mode = server.sandbox_mode(mcp.sandbox);
+        let grant = match GrantSet::derive(GrantInput {
+            server,
+            workspace,
+            server_state: server.state_dir(data_dir),
+            real_home: home.as_deref(),
+            confined: mode.is_confined(),
+        }) {
+            Ok(grant) => grant,
+            Err(error) => {
+                tracing::warn!(server = %server.name, %error, "skipping MCP server");
+                continue;
+            }
+        };
+        tracing::info!(server = %server.name, grant = %grant.describe(), "mcp server grant");
+        if !mode.is_confined() {
+            tracing::warn!(
+                server = %server.name,
+                "sandbox = \"off\": this server runs without an OS sandbox"
+            );
+        }
+        match connect_server(server, &grant, workspace, &log_dir, env, confine).await {
             Ok(mut found) => {
                 tracing::info!(
                     server = %server.name,
@@ -114,6 +159,7 @@ pub async fn connect_all_with(
 #[allow(clippy::result_large_err)]
 async fn connect_server(
     server: &McpServerConfig,
+    grant: &GrantSet,
     workspace: &Path,
     log_dir: &Path,
     env: &[(String, String)],
@@ -126,34 +172,64 @@ async fn connect_server(
         "starting MCP server"
     );
 
+    // The synthetic HOME has to exist before the sandbox is built: the Windows
+    // backend canonicalizes every writable root and fails on a missing one.
+    grant.prepare_home().map_err(|source| McpError::Spawn {
+        server: server.name.clone(),
+        source,
+        hint: Some(format!(
+            "cannot create the private HOME at {}",
+            grant.home().display()
+        )),
+    })?;
+
     let program = OsStr::new(&server.command);
     let args: Vec<OsString> = server.args.iter().map(OsString::from).collect();
+    let base = || {
+        let mut command = std::process::Command::new(program);
+        command.args(&args).current_dir(workspace);
+        command
+    };
     let command = match confine {
-        Some(confine) => confine(program, &args, workspace).map_err(|detail| McpError::Spawn {
-            server: server.name.clone(),
-            source: std::io::Error::other(format!("sandbox refused to start it: {detail}")),
-        })?,
-        None => {
-            let mut command = std::process::Command::new(program);
-            command.args(&args).current_dir(workspace);
-            command
+        // `sandbox = "off"` is an explicit opt-out, not a fallback after an
+        // error: the closure is simply not consulted.
+        Some(confine) if grant.is_confined() => {
+            confine(program, &args, workspace, grant).map_err(|detail| McpError::Spawn {
+                server: server.name.clone(),
+                source: std::io::Error::other(format!("sandbox refused to start it: {detail}")),
+                hint: None,
+            })?
         }
+        Some(_) => {
+            tracing::warn!(
+                server = %server.name,
+                "sandbox = \"off\": starting without an OS sandbox"
+            );
+            base()
+        }
+        None => base(),
     };
     let mut command = Command::from(command);
-    command
-        // Config env first, then the egress variables: the proxy token must
-        // win over a server's own HTTP(S)_PROXY.
-        .envs(server.env.iter())
-        .envs(env.iter().map(|(key, value)| (key, value)))
-        .kill_on_drop(true);
+    // Order matters (ADR-0068 §1): the whitelist and the synthetic HOME first,
+    // the server's own `env` next, and the egress proxy last so a server cannot
+    // redirect its traffic past qcode's proxy.
+    command.env_clear();
+    for (key, value) in grant.base_env() {
+        command.env(key, value);
+    }
+    for (key, value) in &server.env {
+        let value = grant::expand_env(&server.name, key, value)?;
+        command.env(key, value);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.kill_on_drop(true);
 
     let transport = TokioChildProcess::builder(command)
         .stderr(stderr_log(server, log_dir))
         .spawn()
-        .map_err(|source| McpError::Spawn {
-            server: server.name.clone(),
-            source,
-        })?
+        .map_err(|source| spawn_error(server, grant, source))?
         .0;
 
     let timeout = server.request_timeout();
@@ -229,6 +305,43 @@ async fn connect_server(
     }
 
     Ok(tools)
+}
+
+/// A bare `Permission denied` was the hardest part of the original bug report
+/// (ADR-0066 §7). When the sandbox is on and the process failed to start, say
+/// which entry is most likely missing and how to add it.
+fn spawn_error(server: &McpServerConfig, grant: &GrantSet, source: std::io::Error) -> McpError {
+    let hint = match source.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+            if grant.is_confined() =>
+        {
+            let program = Path::new(&server.command);
+            let candidate = program
+                .canonicalize()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                .or_else(|| program.parent().map(Path::to_path_buf));
+            Some(match candidate {
+                Some(directory) => format!(
+                    "the OS sandbox may have denied {}; add read_paths = [\"{}\"] to this \
+                     server if that is intended",
+                    program.display(),
+                    directory.display()
+                ),
+                None => format!(
+                    "the OS sandbox may have denied {}; add a read_paths entry for it if that \
+                     is intended",
+                    program.display()
+                ),
+            })
+        }
+        _ => None,
+    };
+    McpError::Spawn {
+        server: server.name.clone(),
+        source,
+        hint,
+    }
 }
 
 fn extra_tool(

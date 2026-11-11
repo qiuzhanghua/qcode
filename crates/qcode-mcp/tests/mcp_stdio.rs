@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use qcode_core::event::ToolStatus;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext};
-use qcode_mcp::{McpServerConfig, connect_all};
+use qcode_mcp::{McpConfig, McpServerConfig, connect_all};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -17,10 +17,16 @@ fn config(name: &str) -> McpServerConfig {
     McpServerConfig {
         name: name.to_string(),
         command: STUB.to_string(),
-        args: Vec::new(),
-        env: std::collections::BTreeMap::new(),
-        enabled: true,
         timeout_secs: 10,
+        ..Default::default()
+    }
+}
+
+/// Wrap a list of servers the way the config file would.
+fn mcp(servers: Vec<McpServerConfig>) -> McpConfig {
+    McpConfig {
+        servers,
+        ..Default::default()
     }
 }
 
@@ -38,7 +44,7 @@ fn config_with_env(name: &str, env: &[(&str, &str)]) -> McpServerConfig {
 
 async fn connect(config: McpServerConfig) -> (TempDir, Vec<Arc<dyn Tool>>) {
     let dir = tempfile::tempdir().unwrap();
-    let tools = connect_all(&[config], dir.path(), &dir.path().join("logs"), &[]).await;
+    let tools = connect_all(&mcp(vec![config]), dir.path(), dir.path(), &[]).await;
     (dir, tools)
 }
 
@@ -175,19 +181,11 @@ async fn disabled_and_missing_servers_degrade_to_no_tools() {
     let missing = McpServerConfig {
         name: "missing".to_string(),
         command: dir.path().join("does-not-exist").display().to_string(),
-        args: Vec::new(),
-        env: Default::default(),
-        enabled: true,
         timeout_secs: 2,
+        ..Default::default()
     };
 
-    let tools = connect_all(
-        &[disabled, missing],
-        dir.path(),
-        &dir.path().join("logs"),
-        &[],
-    )
-    .await;
+    let tools = connect_all(&mcp(vec![disabled, missing]), dir.path(), dir.path(), &[]).await;
     assert!(tools.is_empty(), "got {:?}", names(&tools));
     assert!(Path::new(STUB).exists());
 }
@@ -197,7 +195,7 @@ async fn a_confine_decides_how_the_server_is_started() {
     let dir = tempfile::tempdir().unwrap();
     let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let recorder = seen.clone();
-    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
+    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd, _grant| {
         recorder.lock().unwrap().push(format!(
             "{} {:?} {}",
             program.to_string_lossy(),
@@ -209,9 +207,9 @@ async fn a_confine_decides_how_the_server_is_started() {
         Ok(command)
     });
     let tools = qcode_mcp::connect_all_with(
-        &[config("stub")],
+        &mcp(vec![config("stub")]),
         dir.path(),
-        &dir.path().join("logs"),
+        dir.path(),
         &[],
         Some(confine.as_ref()),
     )
@@ -226,11 +224,11 @@ async fn a_confine_decides_how_the_server_is_started() {
 #[tokio::test]
 async fn a_confine_that_refuses_the_server_skips_it() {
     let dir = tempfile::tempdir().unwrap();
-    let refuse: Box<qcode_mcp::Confine> = Box::new(|_, _, _| Err("no sandbox here".to_string()));
+    let refuse: Box<qcode_mcp::Confine> = Box::new(|_, _, _, _| Err("no sandbox here".to_string()));
     let tools = qcode_mcp::connect_all_with(
-        &[config("stub")],
+        &mcp(vec![config("stub")]),
         dir.path(),
-        &dir.path().join("logs"),
+        dir.path(),
         &[],
         Some(refuse.as_ref()),
     )

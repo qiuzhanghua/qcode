@@ -1,5 +1,34 @@
 # Changelog
 
+## 未发布
+
+MCP server 的三处安全与可用性缺口（ADR-0066 / ADR-0068 P1）。起因很具体：一个装在
+`/home/q/cot/lib/...` 的 server 报 `Permission denied`，拷到 `/tmp` 就能跑。
+
+- **`~/.local` 里的 server 不再被沙箱静默杀掉**（ADR-0066）。MCP server 原先直接套用
+  `run_shell` 的沙箱，而 Landlock 的只读白名单是 `/usr /bin /sbin /lib /lib64 /etc /opt
+  /sys /proc /run /dev`——**没有 `/home`**。于是 server 能不能跑取决于它装在哪：
+  `/usr/local` 能跑、`~/.local`（pipx / uv / npm 的默认位置）不能，而 §4.10 一直写着
+  「默认不套 FS 沙箱」，实现与文档各说各话。现在改成按 server 现算一份授权：运行时目录
+  （`command` 推导：venv、`node_modules`、`<dist>/bin`）只读+可执行，写只给 workspace 与
+  每个 server 私有的 `HOME`，读不到真实 `$HOME`；`read_paths` / `writable_paths` /
+  `credentials = ["github"]` 这类预设负责补授权，`/`、`$HOME`、workspace 父目录一律拒绝
+  自动授予。单个 server 仍可 `sandbox = "off"`，但启动会 warn。
+- **子进程不再继承你的 119 个环境变量**（ADR-0068 P1）。`run_shell` 早就 `env_clear()`
+  后按白名单注入，MCP 却是两句 `envs`——实测子进程里能数到 `GITHUB_TOKEN`、
+  `DEEPSEEK_API_KEY`、`SSH_AUTH_SOCK`。现在同样白名单：`PATH`/`LANG`/`TZ`/`LC_*`、合成
+  `HOME`、凭据预设点名的变量、server 自己的 `env`，最后才是出口代理四件套（顺序错一个
+  位，ADR-0023 的审计会静默失效）。`env` 的值可以写 `${NAME}`，密钥不必落盘。
+- **`qc mcp add` 认识新字段**：`--read-path`、`--write-path`、`--credential`、`--sandbox`。
+  `qc mcp list` 会打印 server 的沙箱模式与显式授权项。
+- **`Sandbox::command` 的文档补了一条真踩到的坑**：返回的 `Command` 依赖 sandbox 还活着
+  （Landlock 的 ruleset fd 在 `Drop` 里关）。`with_roots(..)?.command(..)` 一行写完会在
+  `spawn()` 前 drop 掉 sandbox，子进程报 `EBADFD`，看起来像权限问题，其实不是。
+- 修的顺带两处：GUI 设置页保存时不再清空新字段（`apply_tables` 会 `servers.clear()`）；
+  MCP 的私有 `HOME` 会先 canonicalize，`--data-dir ./data` 这种相对路径不再让 server 拿到
+  相对 `HOME`。
+
+
 ## 0.8.3 — 2026-11-11
 
 0.8.2 之后的事后检查：一个会让 `run_shell` 挂死的真 bug，加几处「门禁是绿的，

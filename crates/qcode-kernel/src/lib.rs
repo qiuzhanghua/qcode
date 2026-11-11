@@ -166,8 +166,7 @@ pub async fn build_tools(
         network_env,
         shell_env,
     } = wiring;
-    let confine_sandbox = sandbox.clone();
-    let mut tools = builtin_registry_with_env(sandbox, shell_env);
+    let mut tools = builtin_registry_with_env(sandbox.clone(), shell_env);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
         if settings.is_usable() {
@@ -180,18 +179,14 @@ pub async fn build_tools(
             );
         }
     }
-    // MCP servers get the same write boundary as `run_shell`. They are started
-    // through the sandbox's command builder instead of `Command::new`, so a
-    // server cannot write outside the workspace either.
-    let confine: Box<qcode_mcp::Confine> = Box::new(move |program, args, cwd| {
-        confine_sandbox
-            .command(program, args, cwd)
-            .map_err(|error| error.to_string())
-    });
+    // MCP servers run under a sandbox built from their own grant (ADR-0066),
+    // not `run_shell`'s: the runtime directory is readable and executable,
+    // writes are limited to the workspace plus a private HOME.
+    let confine = mcp_confine(sandbox.clone(), workspace);
     let mcp_tools = qcode_mcp::connect_all_with(
-        &mcp.servers,
+        mcp,
         workspace,
-        &data_dir.join("logs"),
+        data_dir,
         network_env.as_deref().unwrap_or(&[]),
         Some(confine.as_ref()),
     )
@@ -207,6 +202,62 @@ pub async fn build_tools(
     }
 
     tools
+}
+
+/// The sandbox seam for MCP servers (ADR-0066): one sandbox per server, built
+/// from that server's own grant.
+///
+/// Kept public so the integration test wires exactly what the kernel wires
+/// instead of copying the closure and drifting.
+pub fn mcp_confine(sandbox: Arc<dyn Sandbox>, workspace: &Path) -> Box<qcode_mcp::Confine> {
+    // `Box<dyn Fn>` has no lifetime bound, so the closure owns the path.
+    let workspace = workspace.to_path_buf();
+    // Every `Command` keeps a reference to the sandbox that built it (see
+    // `Sandbox::command`): dropping the sandbox before `spawn()` makes the
+    // child fail with EBADFD. `run_shell` keeps its per-task sandbox in a local
+    // for the same reason; here the locals die with this closure, so the
+    // per-server sandboxes are parked in a list that lives as long as the
+    // `Confine` box — which spans every spawn in `connect_all_with`.
+    let alive: Arc<std::sync::Mutex<Vec<Arc<dyn Sandbox>>>> = Arc::default();
+    Box::new(move |program, args, cwd, grant| {
+        let roots = mcp_roots(&workspace, grant);
+        let per_server = sandbox
+            .with_roots(&roots, None)
+            .map_err(|error| format!("{error} (grant: {})", grant.describe()))?;
+        let command = per_server
+            .command(program, args, cwd)
+            .map_err(|error| error.to_string())?;
+        alive
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(per_server);
+        Ok(command)
+    })
+}
+
+/// Turn one server's grant into task roots for `Sandbox::with_roots`.
+///
+/// The workspace is the primary root (it is also the server's cwd); everything
+/// else is either read-only runtime or a credential subtree. `with_roots`
+/// already understands `RootAccess::ReadOnly` on all three backends, so this
+/// needs no new sandbox API (ADR-0066 实现).
+pub fn mcp_roots(workspace: &Path, grant: &qcode_mcp::GrantSet) -> Vec<qcode_core::task::Root> {
+    grant
+        .roots()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (path, writable))| qcode_core::task::Root {
+            id: format!("mcp-{index}"),
+            label: format!("mcp-{index}"),
+            primary: path == workspace,
+            access: if writable {
+                qcode_core::task::RootAccess::ReadWrite
+            } else {
+                qcode_core::task::RootAccess::ReadOnly
+            },
+            path,
+        })
+        .collect()
 }
 
 /// Discover skills unless the config disables them. A missing `HOME` only

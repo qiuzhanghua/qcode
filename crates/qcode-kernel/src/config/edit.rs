@@ -1,15 +1,36 @@
 use super::load::{read_document, write_document};
 use super::*;
 
+/// One `qc mcp add` invocation. A struct because every field is a string or a
+/// list of strings, and six positional arguments is where the order starts
+/// being wrong silently.
+#[derive(Debug, Default)]
+pub struct NewMcpServer<'a> {
+    pub name: &'a str,
+    pub command: &'a str,
+    pub args: &'a [String],
+    pub enabled: bool,
+    pub timeout_secs: Option<u64>,
+    /// ADR-0066 grant extras.
+    pub read_paths: &'a [PathBuf],
+    pub writable_paths: &'a [PathBuf],
+    pub credentials: &'a [qcode_mcp::CredentialPreset],
+    pub sandbox: Option<qcode_mcp::McpSandboxMode>,
+}
+
 /// Append one `[[mcp.servers]]` entry to the config file.
-pub fn mcp_add(
-    path: &Path,
-    name: &str,
-    command: &str,
-    args: &[String],
-    enabled: bool,
-    timeout_secs: Option<u64>,
-) -> Result<(), ConfigError> {
+pub fn mcp_add(path: &Path, new: NewMcpServer<'_>) -> Result<(), ConfigError> {
+    let NewMcpServer {
+        name,
+        command,
+        args,
+        enabled,
+        timeout_secs,
+        read_paths,
+        writable_paths,
+        credentials,
+        sandbox,
+    } = new;
     let mut document = read_document(path)?;
     let root = document
         .as_table_mut()
@@ -55,6 +76,40 @@ pub fn mcp_add(
         server.insert(
             "timeout_secs".to_string(),
             toml::Value::Integer(seconds as i64),
+        );
+    }
+    for (key, paths) in [
+        ("read_paths", read_paths),
+        ("writable_paths", writable_paths),
+    ] {
+        if paths.is_empty() {
+            continue;
+        }
+        server.insert(
+            key.to_string(),
+            toml::Value::Array(
+                paths
+                    .iter()
+                    .map(|path| toml::Value::String(path.display().to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if !credentials.is_empty() {
+        server.insert(
+            "credentials".to_string(),
+            toml::Value::Array(
+                credentials
+                    .iter()
+                    .map(|preset| toml::Value::String(preset.label().to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(mode) = sandbox {
+        server.insert(
+            "sandbox".to_string(),
+            toml::Value::String(mode.label().to_string()),
         );
     }
     servers.push(toml::Value::Table(server));

@@ -71,6 +71,8 @@ cargo test --workspace
 ./target/debug/qc config edit
 ./target/debug/qc mcp list
 ./target/debug/qc mcp add filesystem --command npx --arg=-y --arg=@modelcontextprotocol/server-filesystem
+./target/debug/qc mcp add wordcraft --command ~/cot/lib/wordcraft/bin/wordcraft \
+    --read-path ~/cot/lib/wordcraft --credential github       # 授权集同款 flag
 ./target/debug/qc mcp remove filesystem
 
 # 真实 provider：可以读写文件、跑命令
@@ -312,18 +314,25 @@ cargo build -p qcode-eval
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。macOS `sandbox-exec` 已按
   Task 的 RO/RW 目录重建 profile；Linux/Windows 多目录重建仍待补齐。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 与 MCP stdio server 都
-  由对应工具包裹：默认 deny，
+  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
   （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
-  与命名管道不在覆盖范围，因此报 `partial`）。`windows-acl` 下子进程的 `TMP`/`TEMP`
-  指向本次运行的私有 temp；需要自己缓存目录的 MCP server（例如 `npx` 的 npm cache）
-  要把它加进 `extra_writable`。`windows-acl` 的授权是常驻 ACE：
-  `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
-  启用时先 preflight，失败则 `qc` 拒绝启动
+  与命名管道不在覆盖范围，因此报 `partial`）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
-  unprivileged userns）；默认 `none`，审批仍是主边界。
+  unprivileged userns）；默认 `none`，审批仍是主边界。`windows-acl` 的授权是常驻 ACE：
+  `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
+- **MCP server 的沙箱是另一份授权（ADR-0066）**：同一个后端，但边界按 server 现算，
+  而不是照抄 `run_shell` 的。运行时目录（由 `command` 推导：venv、`node_modules`、
+  `<dist>/bin` 之类）**只读 + 可执行**；**写**只给 workspace 与每个 server 私有的
+  `HOME`（`<data-dir>/mcp/<name>/home`，`XDG_*` 与 `TMPDIR` 也指向那里，所以 `npx`
+  的 cache 不用再手工授权）。**读**不到真实 `$HOME`——`~/.ssh`、`~/.aws`、
+  `~/.config/gh` 默认全都看不见，要哪一个就写 `credentials = ["github"]` 这类预设
+  （只给该子树，并在私有 `HOME` 里放符号链接指过去，只读）。
+  推导之外还需要什么就写 `read_paths` / `writable_paths`；`/`、`$HOME` 和 workspace 的
+  父目录不会被自动授予。任何一个 server 都可以 `sandbox = "off"` 单独关掉沙箱，届时
+  启动 warn、`qc doctor` 标出来。授权集在启动日志里以 `mcp server grant` 一行打印。
+  注意 `landlock` 后端本来就允许写 `/tmp` 与 `/var/tmp`。
 - **取消**：Ctrl-C 取消当前 turn（再按一次立即退出），流式响应立即停止，
   `run_shell` 对整组先 SIGTERM、2s 后 SIGKILL；已产生的输出保留并标记
   `cancelled`，事件日志以 `turn_ended(cancelled)` 收尾（退出码 130）。
@@ -506,16 +515,26 @@ tool = "write_file"
 path_glob = ".env*"
 action = "deny"
 
-# MCP：stdio server。enabled 默认 true，timeout_secs 默认 120；env 追加到子进程环境。
+# MCP：stdio server。enabled 默认 true，timeout_secs 默认 120。
 # 工具名自动加 mcp__<server>__ 前缀；审批规则按完整工具名精确匹配。
 # server 声明 resources / prompts 能力时，额外注册
 # mcp__<server>__list_resources / read_resource / list_prompts / get_prompt 四个工具。
+[mcp]
+sandbox = "confine"   # 默认；每个 server 都可以单独覆盖成 "off"
+
 [[mcp.servers]]
 name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
-env = { GITHUB_TOKEN = "..." }   # 可选；需要 token/缓存目录的 server 用它，不必写 wrapper 脚本
+# 子进程不再继承你的环境（ADR-0068）：只有 PATH/LANG/TZ/LC_*/合成 HOME/出口代理会传下去。
+# 值写成 ${NAME} 表示从 qcode 的环境读，密钥因此不进配置文件。
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 enabled = true
+# 沙箱授权（ADR-0066）：运行时目录由 command 推导，读不到真实 $HOME。
+read_paths = ["/opt/some-tool"]   # 可选，推导之外的只读+执行目录
+writable_paths = []               # 可选；默认 workspace + 私有 HOME 已可写
+credentials = ["github"]          # 可选：github / aws / ssh / npm / netrc / docker
+sandbox = "confine"               # 可选，覆盖 [mcp] sandbox
 
 # Skills：默认开启；enabled = false 可完全跳过发现。
 # 默认还会扫描 ~/.agents/skills（npx skills -g）、~/.config/agents/skills、

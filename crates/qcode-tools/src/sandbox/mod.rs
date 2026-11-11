@@ -143,6 +143,13 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
     ///
     /// Implementations may reject the call; callers must not fall back to an
     /// unconfined command on error.
+    ///
+    /// The returned `Command` keeps referring to this sandbox's state — the
+    /// Landlock ruleset fd, the Seatbelt profile, the ACL helper — so **the
+    /// sandbox must outlive `spawn()`**. Dropping it first (for example by
+    /// calling `with_roots(..)?.command(..)` in one expression) makes the child
+    /// die with `EBADFD` right before `exec`, which reads like a permissions
+    /// bug and is not one.
     fn command(
         &self,
         program: &OsStr,

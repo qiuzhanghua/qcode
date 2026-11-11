@@ -19,5 +19,12 @@ tracing.workspace = true
 toml.workspace = true
 toml_edit = "0.22"
 
+# Test-only stdio MCP server for the grant/sandbox tests (ADR-0066); the
+# integration test spawns it via CARGO_BIN_EXE_mcp-probe-stub.
+[[bin]]
+name = "mcp-probe-stub"
+path = "tests/support/mcp_probe_stub.rs"
+
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true

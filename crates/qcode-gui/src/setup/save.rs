@@ -322,6 +322,12 @@ impl SetupView {
                         if name.trim().is_empty() {
                             continue;
                         }
+                        let previous = self
+                            .config
+                            .mcp
+                            .servers
+                            .iter()
+                            .find(|old| old.name == name.trim());
                         config.mcp.servers.push(qcode_mcp::McpServerConfig {
                             name: name.trim().to_string(),
                             command: cell(row, "command", cx),
@@ -336,6 +342,21 @@ impl SetupView {
                                 .collect(),
                             enabled: row.bools.get("enabled").copied().unwrap_or(true),
                             timeout_secs: cell(row, "timeout_secs", cx).parse().unwrap_or(60),
+                            // Preserved from the file rather than edited here:
+                            // the grid has no columns for the grant fields yet
+                            // (ADR-0066 P2), and `servers.clear()` above means
+                            // forgetting them would silently delete a user's
+                            // read_paths on every save.
+                            read_paths: previous
+                                .map(|old| old.read_paths.clone())
+                                .unwrap_or_default(),
+                            writable_paths: previous
+                                .map(|old| old.writable_paths.clone())
+                                .unwrap_or_default(),
+                            credentials: previous
+                                .map(|old| old.credentials.clone())
+                                .unwrap_or_default(),
+                            sandbox: previous.and_then(|old| old.sandbox),
                         });
                     }
                     _ => {}

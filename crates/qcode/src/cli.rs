@@ -162,6 +162,22 @@ pub(crate) enum McpCommand {
         disabled: bool,
         #[arg(long)]
         timeout_secs: Option<u64>,
+        /// Extra read+execute root, beyond the ones derived from `command`
+        /// (ADR-0066). Repeatable.
+        #[arg(long = "read-path", value_name = "PATH")]
+        read_paths: Vec<PathBuf>,
+        /// Extra writable root, beyond the workspace and the server's private
+        /// HOME. Repeatable.
+        #[arg(long = "write-path", value_name = "PATH")]
+        writable_paths: Vec<PathBuf>,
+        /// Credential subtree under `$HOME` the server may read: `github`,
+        /// `aws`, `ssh`, `npm`, `netrc` or `docker`. Repeatable.
+        #[arg(long = "credential", value_name = "PRESET")]
+        credentials: Vec<String>,
+        /// `confine` (default) or `off`; `off` runs this server without an OS
+        /// sandbox and makes `qc doctor` mark it.
+        #[arg(long, value_name = "MODE")]
+        sandbox: Option<String>,
     },
     /// Remove a server by name.
     Remove { name: String },

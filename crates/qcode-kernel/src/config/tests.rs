@@ -653,13 +653,22 @@ fn mcp_add_and_remove_edit_the_config_file() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("config.toml");
 
+    let args = ["-y".to_string(), "server".to_string()];
+    let read_paths = [PathBuf::from("/opt/tool")];
+    let credentials = [qcode_mcp::CredentialPreset::Github];
     mcp_add(
         &path,
-        "filesystem",
-        "npx",
-        &["-y".to_string(), "server".to_string()],
-        false,
-        Some(30),
+        NewMcpServer {
+            name: "filesystem",
+            command: "npx",
+            args: &args,
+            enabled: false,
+            timeout_secs: Some(30),
+            read_paths: &read_paths,
+            writable_paths: &[],
+            credentials: &credentials,
+            sandbox: Some(qcode_mcp::McpSandboxMode::Confine),
+        },
     )
     .expect("add");
     let config = load(&path).expect("load");
@@ -669,9 +678,20 @@ fn mcp_add_and_remove_edit_the_config_file() {
     assert_eq!(server.args, vec!["-y", "server"]);
     assert!(!server.enabled);
     assert_eq!(server.timeout_secs, 30);
+    // The ADR-0066 extras survive the round trip through the file.
+    assert_eq!(server.read_paths, read_paths);
+    assert_eq!(server.credentials, credentials);
+    assert_eq!(server.sandbox, Some(qcode_mcp::McpSandboxMode::Confine));
 
     assert!(matches!(
-        mcp_add(&path, "filesystem", "npx", &[], true, None),
+        mcp_add(
+            &path,
+            NewMcpServer {
+                name: "filesystem",
+                command: "npx",
+                ..Default::default()
+            }
+        ),
         Err(ConfigError::McpExists(_))
     ));
 

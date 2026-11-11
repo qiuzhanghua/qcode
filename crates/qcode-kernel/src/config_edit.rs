@@ -912,6 +912,7 @@ mod tests {
             env: BTreeMap::from([("TOKEN".to_string(), "x".to_string())]),
             enabled: false,
             timeout_secs: 7,
+            ..Default::default()
         });
 
         let dir = temp();

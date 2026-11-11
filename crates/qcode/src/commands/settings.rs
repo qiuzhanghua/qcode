@@ -95,6 +95,32 @@ pub(crate) fn cmd_config(
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--credential` values. Accepts the preset names `credentials` takes in the
+/// config file, so the CLI and the file cannot drift.
+fn parse_credential(name: &str) -> Result<qcode_mcp::CredentialPreset, String> {
+    match name {
+        "aws" => Ok(qcode_mcp::CredentialPreset::Aws),
+        "docker" => Ok(qcode_mcp::CredentialPreset::Docker),
+        "github" => Ok(qcode_mcp::CredentialPreset::Github),
+        "netrc" => Ok(qcode_mcp::CredentialPreset::Netrc),
+        "npm" => Ok(qcode_mcp::CredentialPreset::Npm),
+        "ssh" => Ok(qcode_mcp::CredentialPreset::Ssh),
+        other => Err(format!(
+            "unknown credential preset {other:?}; use one of: aws, docker, github, netrc, npm, ssh"
+        )),
+    }
+}
+
+fn parse_sandbox(mode: &str) -> Result<qcode_mcp::McpSandboxMode, String> {
+    match mode {
+        "confine" => Ok(qcode_mcp::McpSandboxMode::Confine),
+        "off" => Ok(qcode_mcp::McpSandboxMode::Off),
+        other => Err(format!(
+            "unknown sandbox mode {other:?}; use \"confine\" or \"off\""
+        )),
+    }
+}
+
 pub(crate) fn cmd_mcp(
     args: McpArgs,
     config_path: Option<PathBuf>,
@@ -111,9 +137,31 @@ pub(crate) fn cmd_mcp(
             args,
             disabled,
             timeout_secs,
+            read_paths,
+            writable_paths,
+            credentials,
+            sandbox,
         } => {
+            let credentials = credentials
+                .iter()
+                .map(|name| parse_credential(name))
+                .collect::<Result<Vec<_>, _>>()?;
+            let sandbox = sandbox.as_deref().map(parse_sandbox).transpose()?;
             let path = config::edit_path(config_path)?;
-            config::mcp_add(&path, &name, &command, &args, !disabled, timeout_secs)?;
+            config::mcp_add(
+                &path,
+                config::NewMcpServer {
+                    name: &name,
+                    command: &command,
+                    args: &args,
+                    enabled: !disabled,
+                    timeout_secs,
+                    read_paths: &read_paths,
+                    writable_paths: &writable_paths,
+                    credentials: &credentials,
+                    sandbox,
+                },
+            )?;
             println!("added MCP server '{name}' to {}", path.display());
         }
         McpCommand::Remove { name } => {
