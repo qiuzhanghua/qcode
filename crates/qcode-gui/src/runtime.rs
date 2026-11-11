@@ -692,8 +692,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 confirmed.push(message_id.clone());
                             }
                         }
+                        // 投递落盘确认后通知 UI 刷新：立即执行的按钮脱离等待态。
+                        let landed = !confirmed.is_empty();
                         for message_id in confirmed {
                             pending_ack.remove(&message_id);
+                        }
+                        if landed {
+                            port.tagged(SessionTarget::Draft).send_schedule_changed();
                         }
 
                         // ② 扫描到期任务：跳过 in-flight 与 rearm 间隔内的。

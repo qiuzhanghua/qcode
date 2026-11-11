@@ -184,7 +184,12 @@ impl Shell {
         let op = match action {
             ScheduleAction::Pause => ScheduleOp::Pause { id: id.to_string() },
             ScheduleAction::Resume => ScheduleOp::Resume { id: id.to_string() },
-            ScheduleAction::RunNow => ScheduleOp::RunNow { id: id.to_string() },
+            ScheduleAction::RunNow => {
+                // 记录执行中状态，按钮立即进入等待态，直到投递落盘确认。
+                self.schedule_running
+                    .insert(id.to_string(), qcode_core::schedule::now_local());
+                ScheduleOp::RunNow { id: id.to_string() }
+            }
             ScheduleAction::Delete => ScheduleOp::Delete { id: id.to_string() },
         };
         self.backend.schedule_op(op);

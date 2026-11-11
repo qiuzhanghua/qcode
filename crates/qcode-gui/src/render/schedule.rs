@@ -215,8 +215,15 @@ impl Shell {
                             .gap_2()
                             .child(
                                 Button::new("schedule-run-now")
-                                    .label("立即执行")
-                                    .disabled(status != TaskStatus::Active)
+                                    .label(if self.schedule_running.contains_key(&task_id) {
+                                        "执行中…"
+                                    } else {
+                                        "立即执行"
+                                    })
+                                    .disabled(
+                                        status != TaskStatus::Active
+                                            || self.schedule_running.contains_key(&task_id),
+                                    )
                                     .tooltip("立即投递一次（不影响周期）")
                                     .on_click({
                                         let task_id = task_id.clone();

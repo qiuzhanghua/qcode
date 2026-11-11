@@ -105,6 +105,9 @@ pub(crate) struct Shell {
     pub(crate) schedule_rows: Vec<ScheduleRow>,
     /// 运行时定时任务缓存（`Backend::schedule_tasks()`）：侧栏列表与详情页共用。
     pub(crate) schedule_tasks: Vec<ScheduledTask>,
+    /// 点击「立即执行」后、投递落盘确认前处于执行中的任务：task id → 点击时刻。
+    /// 详情页据此把按钮置为「执行中…」并禁用，防止重复点击。
+    pub(crate) schedule_running: std::collections::HashMap<String, time::PrimitiveDateTime>,
     /// 侧栏「定时任务」段头 ⋮ 菜单是否展开。
     pub(crate) schedule_menu_open: bool,
     /// 定时任务详情页当前选中的任务 id（`None` = 空态）。
@@ -348,6 +351,7 @@ impl Shell {
             sidebar_section: SidebarSection::from_stored(&prefs.sidebar_section),
             schedule_rows: Vec::new(),
             schedule_tasks: Vec::new(),
+            schedule_running: std::collections::HashMap::new(),
             schedule_menu_open: false,
             schedule_detail: None,
             schedule_form: None,
