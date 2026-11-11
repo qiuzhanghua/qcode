@@ -530,6 +530,7 @@ fn delivery_log_is_pruned_to_the_retention_policy() {
                 delivered_at: at,
                 message_id: format!("m{day}"),
                 target_session_id: None,
+                prompt: format!("task {day}"),
             },
             now,
         );
@@ -547,6 +548,7 @@ fn delivery_log_is_pruned_to_the_retention_policy() {
                 delivered_at: now,
                 message_id: format!("m{index}"),
                 target_session_id: None,
+                prompt: format!("task {index}"),
             },
             now,
         );

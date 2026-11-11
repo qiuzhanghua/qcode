@@ -886,6 +886,9 @@ pub struct DeliveryReceipt {
     pub message_id: String,
     /// 实际投往的会话（`new` 目标在投递后才确定）。
     pub target_session_id: Option<String>,
+    /// 这次投递执行的任务内容（prompt）。旧记录没有该字段，显示时空缺。
+    #[serde(default)]
+    pub prompt: String,
 }
 
 /// 运行时定时任务。

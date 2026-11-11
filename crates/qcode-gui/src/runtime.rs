@@ -659,6 +659,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             delivered_at: now,
                                             message_id: message_id.clone(),
                                             target_session_id: Some(session.clone()),
+                                            prompt: task.prompt.clone(),
                                         };
                                         if append_delivery(
                                             &mut task.delivery_log,

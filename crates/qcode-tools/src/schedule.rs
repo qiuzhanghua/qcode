@@ -97,10 +97,11 @@ fn detail(task: &ScheduledTask) -> String {
     ));
     for receipt in task.delivery_log.iter().rev().take(5) {
         lines.push(format!(
-            "  - {o} 投递到 {target}（message {m}）",
+            "  - {o} 投递到 {target}（message {m}）：{p}",
             o = receipt.delivered_at,
             target = receipt.target_session_id.as_deref().unwrap_or("-"),
             m = receipt.message_id,
+            p = receipt.prompt,
         ));
     }
     if task.earlier_records_pruned {
@@ -729,6 +730,7 @@ mod tests {
             ),
             message_id: "m-1".to_string(),
             target_session_id: Some("s-1".to_string()),
+            prompt: "生成日报".to_string(),
         };
         let mut task = sample_task("t-1", "日报");
         task.last_receipt = Some(receipt.clone());

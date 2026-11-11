@@ -318,14 +318,18 @@ impl Shell {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(border)
-                            .child(
-                                div()
-                                    .text_size(sp(BODY_SIZE))
-                                    .child(format!("{}", receipt.occurrence_at)),
-                            )
+                            // 主内容 = 执行的任务（prompt）；旧记录没有则回退到发生时刻。
+                            .child(div().text_size(sp(BODY_SIZE)).child(
+                                if receipt.prompt.is_empty() {
+                                    format!("（旧记录：{}）", receipt.occurrence_at)
+                                } else {
+                                    receipt.prompt.clone()
+                                },
+                            ))
                             .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
                                 format!(
-                                    "投递到 {} · message {}",
+                                    "{} · 投递到 {} · message {}",
+                                    receipt.occurrence_at,
                                     receipt.target_session_id.as_deref().unwrap_or("-"),
                                     receipt.message_id,
                                 ),
