@@ -35,14 +35,10 @@ impl Shell {
     pub(crate) fn new_schedule_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.schedule_menu_open = false;
         self.new_session(window, cx);
-        // 预填创建提示：既创建任务，也要求模型在需求没给周期/时间时先向用户
-        // 确认，而不是擅自默认「每天某个时刻」。
+        // 预填提示保持简短；「未明确周期时先向用户确认」的引导在
+        // schedule_create 工具描述里（模型调用工具时读到），不占输入框。
         self.ui.input.update(cx, |input, cx| {
-            input.set_value(
-                "请根据需求创建一个定时任务；如果需求没有明确触发时间或周期，先向用户确认再创建。\n",
-                window,
-                cx,
-            );
+            input.set_value("请根据需求创建一个定时任务。\n", window, cx);
             cx.notify();
         });
     }
