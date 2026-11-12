@@ -13,3 +13,8 @@ path = "src/main.rs"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+# Scratch directories for the tests below; `TempDir` deletes on drop, which is
+# what keeps /tmp clean (see `temp_dir` in main.rs).
+tempfile.workspace = true

@@ -756,10 +756,19 @@ fn parse_args() -> Result<Options> {
 mod tests {
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(format!("qc-eval-test-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        dir
+    /// A scratch directory that removes itself when the test ends.
+    ///
+    /// This used to be a bare `env::temp_dir().join(..)` plus a `remove_dir_all`
+    /// *before* creating it, which made a repeat run idempotent but left the
+    /// directory behind every time. Four call sites across the suite leaked one
+    /// directory per test process, and 568 of them (8.9 MB) had accumulated in
+    /// /tmp over three days of development. `TempDir` deletes on drop, including
+    /// when the test panics.
+    fn temp_dir(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("qc-eval-test-{name}-"))
+            .tempdir()
+            .expect("create scratch directory")
     }
 
     #[test]
@@ -784,8 +793,8 @@ mod tests {
 
     #[test]
     fn metrics_count_engine_events() {
-        let dir = temp_dir("metrics");
-        fs::create_dir_all(&dir).unwrap();
+        let scratch = temp_dir("metrics");
+        let dir = scratch.path();
         let events = dir.join("events.jsonl");
         let lines = [
             r#"{"type":"turn_started","data":{"input":"hi"}}"#,
@@ -809,21 +818,27 @@ mod tests {
 
     #[test]
     fn copy_tree_skips_build_directories_and_overlays_files() {
-        let source = temp_dir("copy-src");
-        let target = temp_dir("copy-dst");
+        // Bound to locals so the directories outlive the test body: `TempDir`
+        // deletes on drop, and a temporary would be dropped at the end of the
+        // statement that created it.
+        let source_dir = temp_dir("copy-src");
+        let target_dir = temp_dir("copy-dst");
+        let source = source_dir.path();
+        let target = target_dir.path();
         fs::create_dir_all(source.join("crate/src")).unwrap();
         fs::create_dir_all(source.join("target")).unwrap();
         fs::write(source.join("crate/src/lib.rs"), "base").unwrap();
         fs::write(source.join("target/junk"), "junk").unwrap();
 
-        copy_tree(&source, &target).unwrap();
+        copy_tree(source, target).unwrap();
         assert!(target.join("crate/src/lib.rs").is_file());
         assert!(!target.join("target").exists());
 
-        let overlay = temp_dir("copy-overlay");
+        let overlay_dir = temp_dir("copy-overlay");
+        let overlay = overlay_dir.path();
         fs::create_dir_all(overlay.join("crate/src")).unwrap();
         fs::write(overlay.join("crate/src/lib.rs"), "planted").unwrap();
-        copy_tree(&overlay, &target).unwrap();
+        copy_tree(overlay, target).unwrap();
 
         assert_eq!(
             fs::read_to_string(target.join("crate/src/lib.rs")).unwrap(),
