@@ -127,6 +127,16 @@ pub struct SandboxPaths<'a> {
     /// agent could not read `/home/q/cot`, which is where the only Rust
     /// toolchain on that machine lives.
     pub readable: &'a [PathBuf],
+    /// `[sandbox] allow_pty`: may a confined process allocate a pseudo-terminal?
+    ///
+    /// Backend-dependent, and the asymmetry is the point rather than an
+    /// oversight: `bwrap` always can (its `--dev` mounts a **new** devpts, so
+    /// the pty is invisible to everything else and costs nothing), while
+    /// Landlock has no mount namespace and can only hand out the host's devpts,
+    /// where `/dev/pts/N` for the user's other terminal windows is writable by
+    /// the same uid. On that backend the grant is "may type into an unsandboxed
+    /// shell", so it is opt-in; on `bwrap` the flag changes nothing.
+    pub allow_pty: bool,
 }
 
 /// Build the configured sandbox. `SandboxExec` is preflighted here so a broken
@@ -137,7 +147,11 @@ pub fn build(
     network: SandboxNetwork,
     paths: SandboxPaths<'_>,
 ) -> Result<Arc<dyn Sandbox>, SandboxError> {
-    let SandboxPaths { writable, readable } = paths;
+    let SandboxPaths {
+        writable,
+        readable,
+        allow_pty,
+    } = paths;
     let extra_writable = writable;
     let extra_read = readable;
     if matches!(network, SandboxNetwork::ProxyOnly { .. }) && mode != SandboxMode::SandboxExec {
@@ -164,6 +178,10 @@ pub fn build(
         SandboxMode::Bwrap => {
             #[cfg(target_os = "linux")]
             {
+                // `allow_pty` needs no action here: `--dev` already mounts a
+                // new devpts, so a PTY allocated inside is private to the
+                // sandbox and granting it costs nothing.
+                let _ = allow_pty;
                 let sandbox = Bwrap::new(
                     primary_root,
                     matches!(network, SandboxNetwork::Allow),
@@ -175,7 +193,7 @@ pub fn build(
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (primary_root, network, extra_writable, extra_read);
+                let _ = (primary_root, network, extra_writable, extra_read, allow_pty);
                 Err(SandboxError::Unsupported("bwrap"))
             }
         }
@@ -183,13 +201,13 @@ pub fn build(
             #[cfg(target_os = "linux")]
             {
                 let _ = network;
-                let sandbox = Landlock::new(primary_root, extra_read, extra_writable)?;
+                let sandbox = Landlock::new(primary_root, extra_read, extra_writable, allow_pty)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (primary_root, network, extra_writable, extra_read);
+                let _ = (primary_root, network, extra_writable, extra_read, allow_pty);
                 Err(SandboxError::Unsupported("landlock"))
             }
         }

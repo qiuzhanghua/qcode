@@ -677,6 +677,27 @@ pub struct SandboxConfig {
     /// `~/.ssh` and `~/.aws` too.
     #[serde(default)]
     pub extra_read: Vec<PathBuf>,
+    /// May a confined `run_shell` allocate a pseudo-terminal? Default `false`.
+    ///
+    /// A PTY is how anything terminal-shaped starts: this repository's own
+    /// `qcode-terminal` integration suite spawns its child through `openpty`,
+    /// and inside a Landlocked `run_shell` all 23 of its tests failed with
+    /// `EACCES` on `/dev/ptmx` (the node is 0666 — Landlock was the refusal).
+    ///
+    /// `mode = "bwrap"` does not need this and ignores it: `--dev` mounts a
+    /// **new** devpts (`newinstance`), so the pty is private to the sandbox. The
+    /// flag exists for `landlock`, which has no mount namespace and therefore
+    /// can only share the host's devpts. That is a real widening and the reason
+    /// the default is off: `/dev/pts/N` for the user's other terminal windows is
+    /// writable by the same uid, so the grant is enough to type into an
+    /// unsandboxed shell — a way out of a sandbox whose whole point is "the
+    /// workspace and nothing else". Turn it on when the workload genuinely needs
+    /// a terminal, and prefer `mode = "bwrap"` if it is available.
+    ///
+    /// `mode = "none"` has nothing to gate; `windows-acl` restricts writes only,
+    /// so PTYs already work there.
+    #[serde(default)]
+    pub allow_pty: bool,
 }
 
 impl SandboxConfig {
@@ -765,6 +786,7 @@ impl Default for SandboxConfig {
             network: None,
             extra_writable: Vec::new(),
             extra_read: Vec::new(),
+            allow_pty: false,
         }
     }
 }

@@ -504,7 +504,13 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("skills", &["enabled", "roots"]),
     (
         "sandbox",
-        &["mode", "network", "extra_writable", "extra_read"],
+        &[
+            "mode",
+            "network",
+            "extra_writable",
+            "extra_read",
+            "allow_pty",
+        ],
     ),
     (
         "network",

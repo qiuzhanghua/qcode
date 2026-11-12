@@ -825,8 +825,9 @@ mod linux_tests {
             eprintln!("skipping the landlock half: landlock unavailable here");
             return;
         }
-        let landlock_missing = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing))
-            .expect_err("landlock must reject a missing extra_writable root");
+        let landlock_missing =
+            Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing), false)
+                .expect_err("landlock must reject a missing extra_writable root");
         assert!(landlock_missing.to_string().contains("extra_writable"));
     }
 
@@ -995,6 +996,30 @@ mod landlock_tests {
         }
     }
 
+    /// The two masks `allow_pty` installs, pinned without a kernel.
+    ///
+    /// The runtime half of the pty test cannot run inside a sandbox that is
+    /// itself stacked on top of ours (rulesets only tighten), so the arithmetic
+    /// gets a test of its own: a mask that quietly lost `WRITE_FILE` would make
+    /// `openpty` fail while everything still compiled and the "off" case still
+    /// passed for the wrong reason.
+    #[test]
+    fn the_pty_masks_carry_write_and_nothing_wider() {
+        let handled = landlock_handled(8);
+        // `/dev/ptmx` is a char device: file rights only, like the other nodes.
+        let ptmx = landlock_file_rights(handled);
+        assert_ne!(ptmx & LL_WRITE_FILE, 0, "ptmx must be writable");
+        assert_ne!(ptmx & LL_READ_FILE, 0, "ptmx must be readable");
+
+        // `/dev/pts` is a directory: the read bits plus `WRITE_FILE`, and none
+        // of REMOVE_*/MAKE_*/REFER — creating a pty node is not needed and
+        // devpts is root-owned anyway.
+        let pts = LL_EXECUTE | LL_READ_FILE | LL_READ_DIR | LL_WRITE_FILE;
+        for bit in [4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+            assert_eq!(pts & (1 << bit), 0, "bit {bit} leaked into the pts mask");
+        }
+    }
+
     #[test]
     fn file_rights_respect_what_the_abi_knows() {
         // TRUNCATE and IOCTL_DEV only exist from ABI 3 / 5 on; requesting them
@@ -1027,7 +1052,8 @@ mod landlock_runtime {
             eprintln!("skipping: landlock unavailable here: {err}");
             return None;
         }
-        let sandbox = Landlock::new(workspace, &[], &[]).expect("build the landlock ruleset");
+        let sandbox =
+            Landlock::new(workspace, &[], &[], false).expect("build the landlock ruleset");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -1101,7 +1127,7 @@ mod landlock_runtime {
         // makes every turn: a fix that only worked on the seed sandbox would
         // never reach a single tool.
         let build = |extra_read: &[PathBuf]| {
-            let seed = Landlock::new(workspace.path(), extra_read, &[]).expect("ruleset");
+            let seed = Landlock::new(workspace.path(), extra_read, &[], false).expect("ruleset");
             seed.with_roots(&roots, None, OutsideRoots::Nothing)
                 .expect("multi-root sandbox")
         };
@@ -1222,7 +1248,7 @@ mod landlock_runtime {
         }];
         // Through `with_roots`, which is the call `run_shell` makes every turn.
         let build = |extra_write: &[PathBuf]| {
-            let seed = Landlock::new(workspace.path(), &[], extra_write).expect("ruleset");
+            let seed = Landlock::new(workspace.path(), &[], extra_write, false).expect("ruleset");
             seed.with_roots(&roots, None, OutsideRoots::Nothing)
                 .expect("multi-root sandbox")
         };
@@ -1303,7 +1329,7 @@ mod landlock_runtime {
             return;
         }
         let missing = workspace.path().join("no-such-dir");
-        let error = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing))
+        let error = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing), false)
             .expect_err("a missing extra_writable root must be rejected");
         assert!(
             error.to_string().contains("extra_writable"),
@@ -1329,11 +1355,117 @@ mod landlock_runtime {
             eprintln!("skipping: landlock unavailable here");
             return;
         }
-        let error = Landlock::new(workspace.path(), &[], &[PathBuf::from("/")])
+        let error = Landlock::new(workspace.path(), &[], &[PathBuf::from("/")], false)
             .expect_err("granting / writable must be rejected");
         let text = error.to_string();
         assert!(text.contains("extra_writable"), "{text}");
         assert!(text.contains("filesystem root"), "{text}");
+    }
+
+    /// `[sandbox] allow_pty`: a confined process may allocate a terminal.
+    ///
+    /// Without it, `openpty` dies at `EACCES` on `/dev/ptmx` — measured on this
+    /// repository's own `qcode-terminal` suite, 23 of 23 tests, which is what
+    /// prompted the flag. The node is 0666, so Landlock is the only refusal;
+    /// that is why the "off" half of this test is a real assertion rather than
+    /// a formality.
+    ///
+    /// The other half of the trade-off is not testable in the same breath (it
+    /// would mean writing into the machine's real terminals) and is stated in
+    /// `install_rules` instead: on this backend the slaves belong to the
+    /// **host** devpts, so the same grant reaches the user's other windows.
+    #[test]
+    fn allow_pty_decides_whether_a_terminal_can_be_allocated() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+        // Landlock rulesets **stack**: a ruleset can only narrow what an outer
+        // one allows. This test therefore cannot prove anything when it is
+        // itself running inside a sandbox that already denies `/dev/ptmx`
+        // (`cargo test` under a Landlocked `run_shell` is exactly that, and it
+        // is how this was noticed). Probe without any of our rules first, so a
+        // skip names the environment instead of pretending the feature failed.
+        let probe = "import os,fcntl,termios,struct\n\
+                     fd = os.open('/dev/ptmx', os.O_RDWR | os.O_NOCTTY)\n\
+                     n = struct.unpack('i', fcntl.ioctl(fd, termios.TIOCGPTN, b'\\0' * 4))[0]\n\
+                     fcntl.ioctl(fd, termios.TIOCSPTLCK, b'\\0' * 4)\n\
+                     s = os.open(f'/dev/pts/{n}', os.O_RDWR | os.O_NOCTTY)\n\
+                     os.write(s, b'x')\n\
+                     print('pty ok', n)";
+        let unsandboxed = std::process::Command::new("python3")
+            .args(["-c", probe])
+            .output()
+            .expect("run the baseline probe");
+        if !unsandboxed.status.success() {
+            eprintln!(
+                "skipping: /dev/ptmx is already denied outside this ruleset \
+                 (an outer sandbox is stacking); {}",
+                String::from_utf8_lossy(&unsandboxed.stderr).trim()
+            );
+            return;
+        }
+
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        // Through `with_roots`, the call `run_shell` makes every turn.
+        let build = |allow_pty: bool| {
+            let seed = Landlock::new(workspace.path(), &[], &[], allow_pty).expect("ruleset");
+            seed.with_roots(&roots, None, OutsideRoots::Nothing)
+                .expect("multi-root sandbox")
+        };
+        let openpty = |sandbox: &dyn Sandbox| -> Result<(), String> {
+            let output = sandbox
+                .command(
+                    OsStr::new("python3"),
+                    &[OsString::from("-c"), OsString::from(probe)],
+                    workspace.path(),
+                )
+                .expect("command")
+                .output();
+            match output {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(format!(
+                    "exit {:?}: {}",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                // A denied `execve` surfaces here instead of as an exit status.
+                Err(err) => Err(err.to_string()),
+            }
+        };
+
+        let bare = build(false);
+        if let Err(err) = bare.check() {
+            eprintln!("skipping: landlock preflight failed here: {err}");
+            return;
+        }
+        assert!(
+            openpty(bare.as_ref()).is_err(),
+            "without allow_pty a pty must stay unreachable, or this proves nothing"
+        );
+        assert!(
+            !bare.describe().contains("pty"),
+            "doctor must not claim a pty grant that is off: {}",
+            bare.describe()
+        );
+
+        let granted = build(true);
+        // Reaching here at all also proves the `/dev/pts` mask is one the
+        // kernel accepts: a directory-only/file-only mismatch is EINVAL and
+        // `for_roots` would have failed instead of returning a ruleset.
+        openpty(granted.as_ref()).expect("allow_pty did not grant /dev/ptmx + /dev/pts");
+        assert!(
+            granted.describe().contains("pty"),
+            "doctor must be able to say it: {}",
+            granted.describe()
+        );
     }
 
     /// A read root that does not exist is a startup error that names itself,
@@ -1346,7 +1478,7 @@ mod landlock_runtime {
             return;
         }
         let missing = workspace.path().join("no-such-prefix");
-        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing), &[])
+        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing), &[], false)
             .expect_err("a missing extra_read root must be rejected");
         assert!(
             error.to_string().contains("extra_read"),

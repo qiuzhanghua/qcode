@@ -7157,6 +7157,65 @@ root，等于什么都不授予，而把它变成加载失败会让 `mode = "non
 测试从写下那天起就没真正跑过（在本机 HEAD 上确认失败）。现在把 spawn 期的 `PermissionDenied`
 也算作拒绝。
 
+## ADR-0066 §2 修订注记 2026-11-11 补记之二：伪终端（`[sandbox] allow_pty`）
+
+**问题**：Landlock 的设备白名单只有 `null`/`zero`/`full`/`random`/`urandom`/`tty`。`/dev/ptmx`
+不在里面，于是任何终端形状的程序在第一次 `openpty` 就 `EACCES`。规模是可以量的：本仓
+`qcode-terminal` 的集成测试全部用 `openpty` 起子进程，在 Landlocked `run_shell` 里 23 个全红。
+`/dev/ptmx` 自己 mode 0666（`crw-rw-rw- root:tty`），所以唯一拒绝者就是 Landlock——不是设备
+权限，也不是缺设备节点。
+
+**为什么不能像 `bwrap` 那样顺手 **：`bwrap --dev` 挂的是 `newinstance,ptmxmode=0666,mode=0620`
+的**私有** devpts，分配出来的 slave 只有该 mount 能看见，所以那边 PTY 一直可用且免费。
+Landlock 没有 mount namespace，能给的只有**宿主**的 devpts，而这不便宜：
+
+`/dev/pts/0..3`（写这份注记时这台机器上的实测数量）属于用户已有的终端窗口，owner 是该用户
+本身，unix 权限本来就允许写——现在被拒绝纯粹因为 Landlock。一旦授予写权限，受限进程就能往
+那 4 个终端里打字，也就是**往一个没有被沙箱约束的 shell 里输入命令**。那不是"多读一个目录"，
+是从沙箱里出去的完整通道，而沙箱的全部意义是"只有 workspace"。
+
+**决定**
+
+1. **`[sandbox] allow_pty`，默认 `false`。** 打开时给 `/dev/ptmx`（字符设备 → 文件权限位，与
+   其它设备同处理）和 `/dev/pts`（目录 → 读位 + `WRITE_FILE`）装规则。`MAKE_*`/`REMOVE_*`
+   故意不给：没有谁需要创建 pty 节点，而 devpts 是 root 所有。
+2. **`bwrap` 不看这个开关**，因为它已经做到了更好的版本（私有 devpts）。`mod.rs` 的分支里
+   写的是理由，不是 `let _ = allow_pty`——后者正是上一个补记里那个 bug 的形状。
+3. **`describe()` 打出 `pty: host devpts`**，`qc doctor` 能看到（ADR-0066 §1：打印的授权必须
+   等于执行的授权）。措辞带 `host`，因为这个差别就是全部风险所在。
+4. **`mode = "none"` / `windows-acl` 无事可做**：前者没有边界，后者只限制写，PTY 本来就可用。
+
+**规则叠加，以及它对验证的影响**
+
+Landlock 的 ruleset **只能收紧**：`restrict_self` 叠在外层之上，内层的授权无法放宽外层拒绝
+的东西。所以"在受限环境里跑 PTY 测试"有两层，而外层通常就是 qcode 自己的 `run_shell`。
+
+这一点踩过一次：新测试在 agent 会话里跑时明明给了 `allow_pty = true` 仍然 `EACCES`，第一反应
+会去怀疑掩码算错了——实际是外层沙箱没开。测试因此改成**先做一次无规则基线探测**：若
+`/dev/ptmx` 在没有本 ruleset 的情况下就已经打不开，跳过并**说明是外层沙箱**，而不是把自己的
+环境问题报成功能失败。
+
+**代价 / 已知边界**
+
+- 打开后，受限进程可以往同 uid 的**任意** pty 写，包括不属于它的终端。这是这个开关的全部
+  代价，也是它默认关的唯一原因。
+- 没有"只给本进程自己的 pty"这种粒度：Landlock 规则在 `restrict_self` 前静态装好，而 pty
+  编号要等 `openpty` 之后才知道。真要这个粒度就得学 `bwrap` 用 mount namespace——那是另一
+  件事，不是这个开关的延伸。
+- `extra_writable` 与本项互不影响：前者是文件路径，后者是设备。
+
+**验证**
+
+- `allow_pty_decides_whether_a_terminal_can_be_allocated`（真 Landlock + 真子进程，走
+  `with_roots`）：`false` 时 `openpty` 必须失败（否则测试没意义）、`describe()` 不含 `pty`；
+  `true` 时完整走 `open /dev/ptmx → TIOCGPTN → TIOCSPTLCK → open /dev/pts/N → write`，且
+  `describe()` 含 `pty`。能走到这一步本身还证明 `/dev/pts` 那个掩码是内核接受的——目录上用了
+  非目录专属位，若内核判 EINVAL，`for_roots` 会直接失败而不是返回 ruleset。
+- `allow_pty_is_off_unless_asked_for`（缺省 false / 显式 true）、`every_sandbox_key_is_known`
+  （新增键没漏进 `KNOWN_KEYS`——上一个补记记过这个错）。
+- **未验证**：从"沙箱内的沙箱"里无法证明 `true` 那一半。端到端确认需要在配置里打开它、重启
+  `qc`，然后跑 `cargo test -p qcode-terminal`——届时那 23 个应当转绿。
+
 ## ADR-0071：图片能力属于「路由」，不属于协议——修好 OpenAI 兼容路由永远看不到图（2026-11-11）
 
 **状态**：已实现（2026-11-11）。

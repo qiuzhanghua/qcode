@@ -19,6 +19,21 @@
 - **`describe()`** 增加 `extra write: [...]`，`qc doctor` 能看到实际授权。
 - **不存在的路径启动即报错**，不再静默跳过（`extra_read` 一直是这样）。
 
+### `[sandbox] allow_pty`：受限进程可以分配伪终端了（默认关）
+
+`qcode-terminal` 的 23 个集成测试在 Landlock 沙箱里全红，报 `EACCES` 于 `/dev/ptmx`——那个
+节点是 0666，唯一的拦截者就是 Landlock 的设备白名单（它只有 `null`/`zero`/`full`/`random`/
+`urandom`/`tty`）。任何终端形状的程序都在第一次 `openpty` 就死，不只是测试。
+
+- **`[sandbox] allow_pty = true`** 时给 `/dev/ptmx`（字符设备，取文件权限位）和 `/dev/pts`
+  （目录，只加 `WRITE_FILE` 到读位）装上规则；`describe()` 打出 `pty: host devpts`。
+- **默认 `false`，且这是安全结论而不是保守**：landlock 没有 mount namespace，只能共享宿主
+  的 devpts，而 `/dev/pts/N` 上用户其它终端窗口的节点属于同一 uid，所以这个授权等于"可以
+  往一个没有被沙箱约束的 shell 里输入"——从沙箱里出去的完整通道。`bwrap` 不需要它（`--dev`
+  挂 `newinstance` 私有 devpts），有条件应优先 `bwrap`。
+- **规则叠加**：landlock 的 ruleset 只能收紧不能放宽，所以外层沙箱若已经拒绝 `/dev/ptmx`，
+  内层授权无效。对应的测试先做一次无规则基线探测，跳过时报的是环境原因而不是假装功能失败。
+
 ### `[sandbox] extra_writable` 的加载期校验：危险根直接拒绝
 
 这一项是配置文件级的，没有按 task 收窄的余地，所以 `extra_writable = ["~/"]` 这种笔误对

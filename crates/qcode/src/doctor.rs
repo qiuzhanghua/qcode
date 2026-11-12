@@ -516,6 +516,7 @@ impl Doctor {
             sandbox::SandboxPaths {
                 writable: &config.sandbox.extra_writable,
                 readable: &config.sandbox.extra_read,
+                allow_pty: config.sandbox.allow_pty,
             },
         ) {
             Ok(sandbox) => {
@@ -577,6 +578,7 @@ impl Doctor {
             sandbox::SandboxPaths {
                 writable: &config.sandbox.extra_writable,
                 readable: &config.sandbox.extra_read,
+                allow_pty: config.sandbox.allow_pty,
             },
         ) {
             Ok(sandbox) => sandbox,

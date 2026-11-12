@@ -402,6 +402,21 @@ cargo build -p qcode-eval
   （`extra_writable` 是配置文件级的，没有按 task 收窄的余地）；`~/` 展开后就是 home 本身，
   同样会被拒。不存在的路径在启动时也会报错，而不是被静默跳过。
 
+  `allow_pty` 默认 `false`：受限进程不能分配伪终端（PTY）。要跑终端类程序——比如
+  `qcode-terminal` 的集成测试，它用 `openpty` 起子进程——在 `mode = "landlock"` 下必须显式
+  打开：
+
+  ```toml
+  [sandbox]
+  mode = "landlock"
+  allow_pty = true
+  ```
+
+  **打开它的代价**：landlock 没有 mount namespace，只能共享**宿主**的 devpts，而
+  `/dev/pts/N` 上你其它终端窗口的节点属于同一个 uid，所以这个授权等于"可以往未受限的
+  shell 里输入"——一条从沙箱里出去的完整通道。因此它是显式开关而不是默认。`bwrap` 不需要
+  它也不看它（`--dev` 挂的是 `newinstance` 私有 devpts）；有条件就用 `bwrap`。
+
 - **MCP server 的沙箱是另一份授权（ADR-0066）**：同一个后端，但边界按 server 现算，
   而不是照抄 `run_shell` 的。运行时目录（由 `command` 推导：venv、`node_modules`、
   `<dist>/bin` 之类）**只读 + 可执行**；**写**只给 workspace 与每个 server 私有的
@@ -703,6 +718,7 @@ audit = true
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
 extra_writable = []  # 所有后端：除 workspace 与私有 temp 外额外可写的根（整棵子树）
+allow_pty = false    # landlock：允许受限进程分配伪终端（默认关，见下）
 extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归。
                      # 这两项都认 `~/cot`，在加载时展开成真实 home。
                      # `/`、home 本身、`/home`、`/Users`、`/root` 不能写进 extra_writable

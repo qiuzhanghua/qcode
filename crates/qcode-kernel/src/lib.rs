@@ -577,6 +577,7 @@ pub async fn assemble(
         qcode_tools::sandbox::SandboxPaths {
             writable: &loaded.sandbox.extra_writable,
             readable: &loaded.sandbox.extra_read,
+            allow_pty: loaded.sandbox.allow_pty,
         },
     )?;
     let sandbox_name = sandbox.name().to_string();

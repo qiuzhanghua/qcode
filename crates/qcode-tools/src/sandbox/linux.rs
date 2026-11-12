@@ -372,6 +372,9 @@ impl Sandbox for Bwrap {
 pub(crate) const LL_EXECUTE: u64 = 1 << 0;
 
 #[cfg(target_os = "linux")]
+pub(crate) const LL_WRITE_FILE: u64 = 1 << 1;
+
+#[cfg(target_os = "linux")]
 pub(crate) const LL_READ_FILE: u64 = 1 << 2;
 
 #[cfg(target_os = "linux")]
@@ -470,6 +473,14 @@ pub struct Landlock {
     /// that this list is config-wide and invisible per task, which is why the
     /// dangerous shapes are refused at load time.
     extra_write: Vec<PathBuf>,
+    /// `[sandbox] allow_pty`: may the confined process allocate a terminal?
+    ///
+    /// Off by default. Landlock cannot give a private devpts the way `bwrap
+    /// --dev` does (`newinstance`), so the only thing available here is the
+    /// host's, and `/dev/pts/N` for the user's other terminal windows is owned
+    /// by the same uid — write access there means typing into an *unsandboxed*
+    /// shell. See `install_rules`.
+    allow_pty: bool,
     ruleset_fd: RawFd,
 }
 
@@ -479,12 +490,14 @@ impl Landlock {
         workspace: &Path,
         extra_read: &[PathBuf],
         extra_write: &[PathBuf],
+        allow_pty: bool,
     ) -> Result<Self, SandboxError> {
         Self::for_roots(
             vec![(workspace.to_path_buf(), true)],
             OutsideRoots::BuildCaches,
             extra_read.to_vec(),
             extra_write.to_vec(),
+            allow_pty,
         )
     }
 
@@ -496,6 +509,7 @@ impl Landlock {
         outside: OutsideRoots,
         extra_read: Vec<PathBuf>,
         extra_write: Vec<PathBuf>,
+        allow_pty: bool,
     ) -> Result<Self, SandboxError> {
         // A read root that does not exist is a configuration mistake the user
         // cannot see from the inside: Landlock would install no rule and the
@@ -531,6 +545,7 @@ impl Landlock {
             outside,
             extra_read,
             extra_write,
+            allow_pty,
             ruleset_fd,
         };
         // `Drop` closes the fd on error.
@@ -575,6 +590,39 @@ impl Landlock {
             let path = Path::new(path);
             if path.exists() {
                 add_path_rule(self.ruleset_fd, path, device_rights)?;
+            }
+        }
+
+        // Pseudo-terminals, only when the user opted in.
+        //
+        // A program that cannot allocate a PTY dies at its first `openpty`.
+        // Measured on this repository: the whole `qcode-terminal` integration
+        // suite spawns its child through `openpty`, and inside a Landlocked
+        // `run_shell` 23 of 23 failed with `EACCES` on `/dev/ptmx` — the device
+        // node itself is 0666, so Landlock was the only refusal.
+        //
+        // `bwrap` needs none of this: `--dev` mounts a *new* devpts
+        // (`newinstance,ptmxmode=0666,mode=0620`), so the slave it allocates is
+        // invisible to every other process. Landlock has no mount namespace, so
+        // the only thing on offer is the **host's** devpts — and that is not
+        // free. `/dev/pts/N` for the user's other terminal windows is owned by
+        // the same uid and writable by it, so this grant means "may type into an
+        // unsandboxed shell", i.e. a complete way out of a sandbox whose whole
+        // point is "the workspace and nothing else". Hence the flag.
+        if self.allow_pty {
+            let ptmx = Path::new("/dev/ptmx");
+            if ptmx.exists() {
+                add_path_rule(self.ruleset_fd, ptmx, device_rights)?;
+            }
+            // The slave half is a directory of char nodes the kernel creates on
+            // demand, so the rule is on the directory and only `WRITE_FILE` is
+            // added to the read bits — opening the slave read-write is the whole
+            // requirement. The MAKE_*/REMOVE_* family is left out on purpose:
+            // nothing needs to create a pty node, and devpts is root-owned, so
+            // granting it would be a wider claim than the feature needs.
+            let pts = Path::new("/dev/pts");
+            if pts.exists() {
+                add_path_rule(self.ruleset_fd, pts, read_only | LL_WRITE_FILE)?;
             }
         }
 
@@ -688,6 +736,7 @@ impl Sandbox for Landlock {
             outside,
             self.extra_read.clone(),
             self.extra_write.clone(),
+            self.allow_pty,
         )?))
     }
 
@@ -718,6 +767,9 @@ impl Sandbox for Landlock {
                 .map(|path| path.display().to_string())
                 .collect();
             text.push_str(&format!(", extra write: [{}]", list.join(", ")));
+        }
+        if self.allow_pty {
+            text.push_str(", pty: host devpts");
         }
         text
     }

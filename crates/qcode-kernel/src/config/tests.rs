@@ -164,6 +164,7 @@ fn every_sandbox_key_is_known() {
         network = false
         extra_writable = ["/tmp/w"]
         extra_read = ["/home/q/cot"]
+        allow_pty = true
     "#
     .parse()
     .expect("parse");
@@ -320,6 +321,27 @@ fn loading_a_config_with_a_home_wide_write_root_fails() {
         .expect("parse"),
     );
     super::load::validate_document(&ok).expect("`~/Documents` must keep loading");
+}
+
+/// `[sandbox] allow_pty` is off unless asked for.
+///
+/// The default is the whole safety argument: on `landlock` this grant reaches
+/// the **host** devpts, whose `/dev/pts/N` nodes belong to the user's other
+/// terminal windows. A sandbox that hands out a way to type into an unsandboxed
+/// shell is not a sandbox, so it must be a decision, not a default.
+#[test]
+fn allow_pty_is_off_unless_asked_for() {
+    let config: Config = toml::from_str("").expect("parse");
+    assert!(!config.sandbox.allow_pty);
+
+    let config: Config = toml::from_str(
+        r#"
+            [sandbox]
+            allow_pty = true
+        "#,
+    )
+    .expect("parse");
+    assert!(config.sandbox.allow_pty);
 }
 
 #[test]
