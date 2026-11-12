@@ -17,15 +17,21 @@
 //! and every line wrapped in `\x1b[33m`. A captured log looked like
 //! `[33m WARN[0m cannot open the MCP log file`.
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use tracing::{Event, Subscriber};
 use tracing_appender::rolling::{RollingFileAppender, RollingWriter, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer as _;
+use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::fmt::format::{Format, FormatEvent, FormatFields, Full, Writer};
+use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 /// The stable name inside the log directory: a symlink to the current day's file.
@@ -108,14 +114,12 @@ pub fn init(configured_level: Option<&str>) {
     let filter = filter_for(&level_spec(configured_level));
 
     let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(ANSI_STDERR)
-        .with_target(true)
+        .event_format(RedactedFormat::new(ANSI_STDERR))
         .with_writer(io::stderr)
         .with_filter(filter.clone());
 
     let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(ANSI_FILE)
-        .with_target(true)
+        .event_format(RedactedFormat::new(ANSI_FILE))
         .with_writer(LogFile)
         .with_filter(filter);
 
@@ -276,36 +280,54 @@ fn filter_for(spec: &str) -> EnvFilter {
     })
 }
 
-/// Masks known secret values in any string that is about to be logged or shown.
+/// Redacts the fully rendered line, then hands it to the real writer.
 ///
-/// This is defense in depth: the code never logs credentials on purpose, but
-/// provider errors and future debug output can carry arbitrary response bodies.
+/// Wrapping the *formatter* rather than the writer is the whole point: `fmt`
+/// emits a line in many small `write_str` calls, so a writer-level filter would
+/// see a secret split across two of them and miss it. Rendering into a buffer
+/// first makes the pattern matching see what the user would see.
 ///
-/// Still applied by hand at the two call sites that need it. Turning it into a
-/// `tracing` layer — so it cannot be forgotten — is ADR-0077's follow-up, kept
-/// separate because it is a security change rather than a plumbing one.
-#[derive(Debug, Clone, Default)]
-pub struct Redactor {
-    secrets: Vec<String>,
+/// A secret can also arrive through a field rather than the message — `?base_url`
+/// on a provider that embeds the key in the URL — which is why the whole line is
+/// scanned rather than just `message`.
+#[derive(Clone)]
+struct RedactedFormat {
+    inner: Format<Full, SystemTime>,
 }
 
-impl Redactor {
-    pub fn new(secrets: impl IntoIterator<Item = String>) -> Self {
-        let mut secrets: Vec<String> = secrets
-            .into_iter()
-            .filter(|secret| secret.len() >= 4)
-            .collect();
-        // Longest first so overlapping secrets are fully masked.
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-        Self { secrets }
-    }
-
-    pub fn redact(&self, input: &str) -> String {
-        let mut out = input.to_string();
-        for secret in &self.secrets {
-            out = out.replace(secret.as_str(), "<redacted>");
+impl RedactedFormat {
+    fn new(ansi: bool) -> Self {
+        Self {
+            // The layer's own `with_ansi`/`with_target` no longer apply once an
+            // event format is supplied, so they are set here. `with_ansi` also
+            // overrides the writer's idea of colour, which is what lets the file
+            // layer stay escape-free while stderr keeps its colours.
+            inner: Format::default().with_ansi(ansi).with_target(true),
         }
-        out
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for RedactedFormat
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let redactor = qcode_kernel::redact::current();
+        if redactor.is_empty() {
+            // Nothing to mask: stream straight through rather than formatting
+            // twice. This is the common case for a CLI run with no key resolved.
+            return self.inner.format_event(ctx, writer, event);
+        }
+        let mut line = String::new();
+        self.inner
+            .format_event(ctx, Writer::new(&mut line), event)?;
+        writer.write_str(&redactor.redact(&line))
     }
 }
 
@@ -376,31 +398,58 @@ mod tests {
 
     /// The reason the file layer exists: a captured log has to be greppable.
     ///
-    /// Two halves, because either alone would be a tautology: that [`init`] uses
-    /// [`ANSI_FILE`] for the file layer, and that a layer built with it really
-    /// emits no escape bytes. The bug this guards against is concrete — a
-    /// captured log read `[33m WARN[0m cannot open the MCP log file`.
+    /// The bug this guards against is concrete — a captured log read
+    /// `[33m WARN[0m cannot open the MCP log file`. The terminal half is not
+    /// decoration: without it a silently broken helper would make the file half
+    /// pass for the wrong reason.
     #[test]
     fn the_file_layer_emits_no_ansi_escapes() {
-        // Both sides render through the same helper, fed the very constants
-        // `init` passes. The terminal half is not decoration: without it a
-        // silently broken helper would make the file half pass for the wrong
-        // reason.
-        let terminal = rendered_line(ANSI_STDERR);
         assert!(
-            terminal.contains('\u{1b}'),
+            rendered(ANSI_STDERR, || tracing::warn!("boom")).contains('\u{1b}'),
             "stderr keeps colour, and this proves the helper can emit escapes at all"
         );
-
         assert!(
-            !rendered_line(ANSI_FILE).contains('\u{1b}'),
+            !rendered(ANSI_FILE, || tracing::warn!("boom")).contains('\u{1b}'),
             "ANSI_FILE must stay off: an escape byte in the log breaks grep"
+        );
+    }
+
+    /// The point of the whole exercise: a secret must not reach a log line, whether
+    /// it arrives in the message, in a `Display` field, or in a `Debug` field.
+    ///
+    /// The pure rules of masking live in `qcode_kernel::redact`; what is tested
+    /// here is the plumbing — that the formatter every layer uses actually consults
+    /// them. Only asserts absence of a secret this test installs itself, so it
+    /// cannot race with the others: the set only ever grows, and a set that is too
+    /// large redacts too much — never too little.
+    #[test]
+    fn secrets_never_reach_a_rendered_line() {
+        const KEY: &str = "sk-live-THIS-MUST-NEVER-APPEAR";
+        qcode_kernel::redact::install([KEY.to_string()]);
+
+        let line = rendered(ANSI_FILE, || {
+            // The same secret twice in one line: a partial mask (first occurrence
+            // only) would still leak the second.
+            tracing::warn!(api_key = %KEY, "provider rejected the request for {KEY}");
+            tracing::warn!(debug = ?Some(KEY), "with debug formatting");
+            // A secret inside a URL is the realistic shape: providers that put the
+            // key in the query string do exist, and `?base_url` is logged.
+            tracing::warn!(base_url = %format!("https://example.test/v1?key={KEY}"), "resolved");
+        });
+
+        assert!(!line.contains(KEY), "the key reached the log line: {line}");
+        assert!(
+            line.matches("<redacted>").count() >= 4,
+            "every occurrence should be masked, not just the first: {line}"
         );
     }
 
     /// Render one warning through a `fmt` layer configured like the real ones,
     /// into a buffer instead of a terminal or file.
-    fn rendered_line(ansi: bool) -> String {
+    ///
+    /// Uses [`RedactedFormat`] rather than a plain format, so every test above
+    /// exercises the code path `init` actually installs.
+    fn rendered(ansi: bool, emit: impl FnOnce()) -> String {
         #[derive(Clone)]
         struct Sink(Arc<Mutex<Vec<u8>>>);
 
@@ -425,13 +474,10 @@ mod tests {
 
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
-            .with_ansi(ansi)
-            .with_target(true)
+            .event_format(RedactedFormat::new(ansi))
             .with_writer(Sink(buffer.clone()))
             .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::warn!("boom");
-        });
+        tracing::subscriber::with_default(subscriber, emit);
         let bytes = buffer.lock().unwrap().clone();
         String::from_utf8_lossy(&bytes).into_owned()
     }

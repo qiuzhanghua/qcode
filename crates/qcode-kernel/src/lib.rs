@@ -6,6 +6,7 @@
 pub mod config;
 pub mod config_edit;
 pub mod provider_registry;
+pub mod redact;
 
 /// Kept here so configuration stops reaching into the binary crate.
 pub const DEFAULT_REPO: &str = "qiuzhanghua/qcode";
@@ -582,6 +583,11 @@ pub async fn assemble(
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
     let loaded = load_config(config_path, cwd)?;
     let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
+    // The one place every frontend passes through, and the moment the key becomes
+    // known. Installing here is what keeps `qc acp` — a long-lived headless server
+    // whose provider errors all go to the log — from being the one caller that
+    // forgets (ADR-0078).
+    redact::install(resolved.api_key.clone());
     let policy = build_policy(&loaded, approval_policy)?;
     let data_dir = resolve_data_dir(data_dir);
     // The egress proxy must exist before the sandbox in strict mode: the

@@ -271,7 +271,10 @@ pub(crate) async fn cmd_tui(
     let resolved = &kernel.resolved;
     let pricing = config::pricing_for(loaded, &resolved.model, None)?;
 
-    let redactor = logging::Redactor::new(resolved.api_key.clone());
+    // `assemble` already installed the key for every log line; this is the handle
+    // for the strings that bypass the logger — an error returned to `main`, which
+    // prints it with `eprintln!` (ADR-0078).
+    let redactor = qcode_kernel::redact::current();
     tracing::info!(
         provider = %resolved.name,
         model = %resolved.model,

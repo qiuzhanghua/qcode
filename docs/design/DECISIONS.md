@@ -8056,8 +8056,8 @@ qcode 是多进程的，这是本设计的硬约束：
    分类表（哪些是面向用户的产物、哪些是日志）。理由同 cot_cli 的教训：
    `output-streams.md` 审计了 68 处，其中 **23 处是该留在 stdout 的产物**——
    一律改成日志是错的。分类表见 `docs/design/LOGGING.md`。
-2. **`Redactor` 接成 `Layer`** 单独立项。它是安全项，与输出流归属是两件事，
-   混在一起会让两边的回归测试都变模糊。
+2. **`Redactor` 接成 `Layer`** 单独立项，已完成 —— 见 [ADR-0078](#adr-0078凭证脱敏接进日志格式化不再靠调用点记得2026-11-12)。
+   当时拆开是因为它是安全项，与输出流归属是两件事，混在一起会让两边的回归测试都变模糊。
 3. **`qc logs` 的 `--follow`** 不做，`tail -f` 已经够。
 
 **验证**
@@ -8067,3 +8067,139 @@ qcode 是多进程的，这是本设计的硬约束：
   **不含** `\x1b[`（ANSI 已关）而 stderr 层**含**。
 - 手工：`qc logs` 打印路径与最近若干行；`qc doctor` 一行日志不写 stdout。
 - 反证：把 `with_ansi(false)` 去掉，ANSI 断言必须红。
+
+## ADR-0078：凭证脱敏接进日志格式化——不再靠调用点记得（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+ADR-0077 让日志落盘并保留 7 天，`Redactor` 却仍然只在 **2 处** `map_err` 里手调：
+
+```rust
+.map_err(|err| redactor.redact(&err.to_string()))?;   // commands/gui.rs、commands/run.rs
+```
+
+它保护的是「返回给调用者、最终由 `main` 的 `eprintln!("error: …")` 打出来的字符串」，
+**完全不经 `tracing`**。也就是说：日志通道一点保护都没有。任何
+`tracing::warn!(%error, …)`、`?base_url`、`?Some(key)` 都会原样进文件，躺七天。
+
+这不是假想。实现本文时用一份 `base_url = "http://127.0.0.1:9/v1?key=sk-…"`
+的配置跑了一次必然失败的 turn，未脱敏版本的日志文件里有 **3 行明文**：
+
+```
+INFO qc::commands::run: provider resolved provider=e2e model=e2e-model base_url=Some("http://127.0.0.1:9/v1?key=sk-e2e-…")
+WARN qcode_core::engine::stream: provider failed before the first token; retrying attempt=1
+     error=network error: error sending request for url (http://127.0.0.1:9/v1?key=sk-e2e-…/chat/completions)
+```
+
+第二行是**引擎自己在重试**时打的，和 `run.rs` 那两处手调毫无关系——手调一处也挡不住它。
+这就是「靠调用点记得」的根本缺陷：漏一处就开了口子，而这类代码恰恰会随重构增多。
+
+**决定：在格式化阶段脱敏，包 `FormatEvent` 而不是包 writer**
+
+`tracing` 的 `Layer::on_event` 拿到的是**只读**事件，没法改写字段或消息。能改的是渲染
+结果，所以包的是 formatter：
+
+```rust
+impl<S, N> FormatEvent<S, N> for RedactedFormat {
+    fn format_event(&self, ctx, mut writer, event) -> fmt::Result {
+        let redactor = qcode_kernel::redact::current();
+        if redactor.is_empty() {
+            return self.inner.format_event(ctx, writer, event);  // 无 secret：直接透传
+        }
+        let mut line = String::new();
+        self.inner.format_event(ctx, Writer::new(&mut line), event)?;
+        writer.write_str(&redactor.redact(&line))
+    }
+}
+```
+
+三个设计点，每个都对应一种「换个写法就会漏」：
+
+1. **包 formatter，不包 writer。** `fmt` 是分多次 `write_str` 吐一行的（时间戳、级别、
+   模块、消息各一次）。writer 层的过滤器看到的是碎片，一个 secret 被切在两次写之间就
+   匹配不到。先渲染成整行再扫，看到的就是用户会看到的东西。
+2. **扫整行，不只扫 `message`。** key 走字段的场景是真实的：provider 把 key 放进
+   查询串，而 `?base_url` 就是这么被记录的（上面那行 INFO）。`Debug` 格式化同样能
+   带出 key（`?Some(key)`）。
+3. **真的先渲染一遍。** 代价是每条事件一次 `String` 分配。默认 `warn` 级别下这是
+   小数量级，而正确性不能省。没有 secret 时走提前返回，连分配都省掉——CLI 没解析到
+   key 的常见情况零开销。
+
+**决定：脱敏搬到 `qcode-kernel::redact`，在 `assemble` 里安装**
+
+原本 `Redactor` 在 `crates/qcode/src/logging.rs`（bin crate）。问题是**装不上**：
+`qcode-kernel` 不能依赖 bin crate，而 secret 是在 `config::resolve` 之后才知道的。
+
+更要紧的是**入口不止两个**。`qc acp` 是长驻无头服务，所有 provider 错误都进日志，
+却从来没有装过 secret——正是「靠记得」必然漏掉的那一个。逐个入口补调用点是治标的，
+下一个入口还会漏。
+
+所以搬到 `qcode_kernel::redact`，并在 `assemble` 里装：
+
+```rust
+let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
+redact::install(resolved.api_key.clone());
+```
+
+`assemble` 是 `run` / `tui` / `gui` / `acp` **唯一必经**的地方。装在这里，忘记是不可能
+的，这就是 `qcode-core::paths::log_dir` 那条理由的重演：跨 crate 的横切关注点要落在
+所有调用方都依赖的那一层。
+
+**决定：secret 集合只增不减**
+
+`install` 取并集而不是替换。`qc gui` 在设置页换 key 后重新解析（`gui_rebuild_hook`
+是原地换引擎，不是重启进程），此刻手里是新 key，但**几十毫秒前捕获的错误字符串里
+可能还是旧 key**。忘掉旧的正好把这条要堵的漏给重新打开。
+
+**两处手调保留，它们不是冗余**
+
+`error: {err}` 走的是 `main` 的 `eprintln!`（ADR-0077 把它归为 A 类），不经过
+`tracing`，formatter 层看不到。所以 `gui.rs` / `run.rs` 仍然需要拿一个 `Redactor`
+手动脱敏那条字符串——但改成 `redact::current()` 取**同一个**集合，不再各自
+`Redactor::new(...)` 一份副本。
+
+| 通道 | 谁保护 |
+|---|---|
+| `tracing` → stderr / 文件 | `RedactedFormat` |
+| 返回给 `main` 的错误 → `eprintln!` | 两处手调，用同一个集合 |
+| `print_event` 的 JSONL（stdout） | **不在本文范围**，见下 |
+
+**保留没被过滤掉的风险：`is_empty` 快路径**
+
+secret 集合为空时（CLI 没解析到 key、或 keyless provider）直接透传。这是性能选择，
+也意味着「集合还没装」的窗口里日志不脱敏。该窗口是 `init` 到 `assemble`
+之间——那时还没有任何代码持有 key，所以不构成泄漏路径。
+
+**不在本文范围**
+
+1. **stdout 的 JSONL 事件流不脱敏。** 它是给程序消费的产物，provider 返回的原始
+   body 可能就是消费者要的东西；擅自改写会让下游解析出错。要脱敏也该在事件构造处
+   而不是流层，这是另一个决定。
+2. **MCP 服务器的 token 不作为 secret。** 现在按环境变量**名**传递
+   （`bearer_token_env_var`），值从不进日志。但 `env: { K = "${TOKEN}" }` 的透传值
+   会随 `McpServerConfig` 的 `Debug` 暴露——目前没人 `tracing::debug!(?config)`。
+   等有泄漏路径了再决定，因为「按变量名像不像 token 来判断」是个需要单独评审的启发式。
+3. **`qc logs` 的回溯脱敏不做。** 文件在写入时已经干净。
+
+**验证**
+
+- 纯规则单测在 `qcode_kernel::redact`（最长优先、每处都替换、短 secret 不过滤、
+  重复 install 不丢旧值）；格式化路径的单测在 `logging`（`Display` 字段、`Debug`
+  字段、URL 内 key、同一行两次出现）。
+- **5 个变异全部被唯一对应的测试杀死**：不脱敏 → `secrets_never_reach_a_rendered_line`；
+  只替换第一处 → 同上；去掉最长优先排序 → `overlapping_secrets_are_masked_longest_first`；
+  `install` 改成替换 → `installing_again_keeps_the_earlier_secrets`；短 secret 不过滤 →
+  `secrets_too_short_to_be_real_are_ignored`。其中两个变异第一轮**存活**了（多事件各含一次绕过了「只替换
+  第一处」，输入恰好长在前掩盖了缺排序），测试因此被改写——留下的版本才真的钉住行为。
+- **集成测试 `crates/qcode/tests/log_redaction.rs` 跑真实二进制**：一份 key 写在
+  `base_url` 查询串里的配置 + 指向关闭端口，一次必然失败的 turn。断言三件事——日志里
+  真的出现了 `base_url=`（否则测试是空转）、出现了 `<redacted>`、且没有明文；stderr 的
+  `error:` 行同样没有明文。
+
+  这个测试是**事后补的**，起因是变异测试发现了一个真实缺口：把 `assemble` 里那行
+  `redact::install(...)` 删掉，六个单测**全部照过**——没有任何测试覆盖「两个部件是否
+  接上了」。而被删的正是整件事的核心接线。补上之后再删同一行，集成测试立刻在
+  `base_url` 断言处分红；去掉 `run.rs` 那处手调，则在同一测试的 stderr 断言处分红。
+  教训写在这里而不是只留在提交信息里：**单测覆盖零件，装配线要另外覆盖。**
