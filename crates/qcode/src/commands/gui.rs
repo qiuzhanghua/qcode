@@ -192,13 +192,18 @@ pub(crate) async fn cmd_gui(
         config::Overrides::default(),
     )
     .await?;
-    println!(
-        "gui: provider={} model={} sandbox={} tools={} skills={}",
-        kernel.resolved.name,
-        kernel.resolved.model,
-        kernel.sandbox,
-        kernel.tools.len(),
-        kernel.skills.len()
+    // Startup diagnostics, and the only record of them: a `.desktop` launch has
+    // no terminal to print to, so this goes to `logs/qc.log` (ADR-0077) like the
+    // `gui: config discovered` line above. It used to be a `println!`, which put
+    // narration on the stdout channel that ADR-0079 reserves for products — and
+    // nothing consumes stdout on this path.
+    tracing::info!(
+        provider = %kernel.resolved.name,
+        model = %kernel.resolved.model,
+        sandbox = %kernel.sandbox,
+        tools = kernel.tools.len(),
+        skills = kernel.skills.len(),
+        "gui: kernel resolved"
     );
     // Seed the projection with what the kernel resolved, then hand the window
     // the same App the TUI would render.

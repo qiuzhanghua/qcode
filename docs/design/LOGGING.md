@@ -189,6 +189,34 @@
 消费鼠标按下会影响焦点和事件冒泡，而这是无法用单测验证的 GUI 行为变更。删掉一行打印是
 安全的，删掉一个监听器不是。
 
+### 补记：这次迁移漏掉的类——stdout 上的叙述
+
+迁移的靶子是 `eprintln!`，因为分类表的假设是「stdout 上只有产物」。**那个假设没有人
+去验证**，于是漏掉了一处反方向的违规：`commands/gui.rs` 里有一句
+
+```rust
+println!("gui: provider={} model={} sandbox={} tools={} skills={}", …);
+```
+
+它是 `9d111dd feat(gui): add the qc gui subcommand` 的脚手架产物——那时的窗口还挂着
+placeholder kernel，这行是「我确实装配了内核」的开发期确认。kernel 接上之后这行留了下来。
+
+代价正是 ADR-0077 要解决的那件事：`.desktop` 启动 `Terminal=false`，stdout 被丢弃，
+**恰恰是用户想知道「内核解析成了哪个 provider、多少个工具」的时候看不到它**；而且它
+绕过 `Redactor` 与 `RUST_LOG`，还混进 stdout 让人误以为那是 `qc gui` 的输出。
+
+改成 `tracing::info!`，与同文件里 `starting TUI` 一行同形（结构化字段、落盘、可过滤）：
+
+```
+INFO qc::commands::gui: gui: kernel resolved provider=deepseek model=deepseek-flash
+    sandbox=landlock tools=35 skills=8
+```
+
+`crates/qcode/tests/gui_stdout_clean.rs` 用源码扫描守住这个不变式：`commands/gui.rs` 与
+`qcode-gui/src` 下不允许出现裸 `println!`（`eprintln!` 与注释不算）。用扫描而非运行，
+是因为这条路径要 `gui` feature 加显示器，而规则必须在人人都能跑的构建里成立；
+文件里另有一条自测，确认扫描器能看见它要找的东西，免得断言因为什么也没扫到而空过。
+
 ### 验证
 
 - `qc gui` 在本机 X（`:1`）上真跑起来，日志确实落进 `qc.log`：
