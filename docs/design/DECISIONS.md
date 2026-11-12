@@ -7502,3 +7502,303 @@ server 读到 EOF 就自己退出。实测复刻（`wordcraft-cli mcp`，管道 
 - GUI 的 5s 强退与工具 14s 最坏取消路径仍然不对称。现在无害（钩子保证进程组会
   死），但「最后一个回合正常落盘」这件事在慢命令上仍可能来不及——日志是权威源
   （ADR-0057），所以没有恢复问题。
+
+## ADR-0074：`kill -9` qcode 之后不泄漏进程——三平台各用各的内核原语（2026-11-12）
+
+**状态**：已实现。Linux 有自动化回归（`tests/procguard.rs`）；macOS 由同一份测试在
+CI 的 `macos-latest` 上覆盖，但**尚未在真机上观察到通过**；**Windows 仍然零运行时
+验证**，文末清单必做。
+
+**问题**
+
+ADR-0073 收掉了「正常退出」这条路：`on_app_quit` 里 `kill_all()` 同步 SIGKILL
+所有登记的进程组。但它解决不了**退出钩子根本不跑**的情况——崩溃、OOM、
+`kill -9`。数据流停在「至少有一个人得活着才能清理」，而那个前提恰好被打破。
+
+对比 ADR-0073 的结论，缺口在三平台上大小完全不同：
+
+下表的「缺口」是第一版的状态，保留下来是为了说明**为什么**落到这套方案上；最终
+形态见「决定」一节和后面的补记。
+
+| 平台 | 缺口 |
+|---|---|
+| Linux | 有 `PR_SET_PDEATHSIG`（仅组 leader，孙子仍逃）；退出钩子管正常退出 |
+| Windows | **什么都没有**。`signal_group` 是 `taskkill /T /F` 子进程，靠 qcode 活着才能跑 |
+| macOS | **什么都没有**。libc 连 `PR_SET_PDEATHSIG` 常量都不给 Apple 目标 |
+
+**一个先被否掉的方案：靠 systemd 兜底**
+
+排查时看起来最省事的一条：qc 本来就跑在 systemd 的 transient scope 里，
+`KillMode=control-group`，那 qc 死了 systemd 不该把 cgroup 里剩下的都收了吗？
+
+实测否掉。这台机器上确认属性确实是 `KillMode=control-group`、`Delegate=no`：
+
+```
+systemctl --user show app-ghostty-surface-transient-910552.scope
+  → Slice=app.slice  Delegate=no  KillMode=control-group
+```
+
+但 `systemd-run --user --scope` 起一个 `setsid sleep 602 &` 后再让 scope 主进程
+退出，实测 **t+1/2/3/5s 累积仍存活**，而 `/proc/<pid>/cgroup` 显示它仍挂在这个
+「已死」的 scope 里，是该 scope 唯一的成员。
+
+原因：**scope 的存活由 cgroup 是否为空决定，不是由主进程是否退出决定**。残留
+进程让 cgroup 一直非空，scope 就一直「活着」，`KillMode` 永远等不到触发的时机。
+`Type=simple` 的 service 才会在 main 退出时停止单元。桌面应用不这样启动，所以这
+只能算部署选项，不是修法。
+
+**决定**
+
+一句话：**让「该杀谁」的决定权落在 qcode 之外——优先给内核，其次给一个活过
+qcode 的进程。** 三平台各用各的原语，`child_groups` 仍是共同的登记来源。
+
+1. **Windows：每命令一个 job object + `KILL_ON_JOB_CLOSE`**
+   （`qcode-tools/src/win_job.rs`）。
+   - 句柄由 qcode 私有，不可继承（`CreateJobObjectW` 传 null 属性 + null 名字），
+     所以「最后一个句柄关闭」= 「qcode 进程结束」，无论怎么结束。内核动手，不看
+     qcode 是否还在跑代码。
+   - **每命令一个 job，不是一个全局 job**：`TerminateJobObject` 没有「只杀某个
+     进程」的形式，共享 job 会让取消一个回合时误杀同时在跑的其它命令，而
+     `run_shell` 明确允许并行（每回合一个调用）。每命令一个 job 还顺手解决了
+     ADR-0073 遗留的预算问题——原来 `kill_all` 每组要 fork 一个 `taskkill`，
+     200ms 预算下几个组就超；现在是一组一次系统调用。
+   - 注册点在 `spawn()` 之后（`LiveGroup::register_in_job`），因为 job 必须在
+     子进程能启动任何东西之前就存在。
+   - **正常结束时不关句柄**（`Drop` 里查 `ActiveProcesses`）：句柄一关就是
+     `KILL_ON_JOB_CLOSE`，等于杀掉该命令留在后台的东西，这与 Unix 现有行为不
+     一致。只有确认 job 已空（`Some(0)`）才关；查询失败按「可能还活着」处理。
+     留下的句柄由进程终止时内核关闭——正是要的保证。
+   - `taskkill /T /F` 保留为**兜底**：没有 job 的 pid（注册失败、或根本没注册）。
+
+2. **macOS：guard 进程**（`qcode-tools/src/procguard.rs`）。
+   - `qc` 用哨兵参数 `__qcode-procguard <qc_pid>` 重新 exec 自己（与
+     `windows_acl` 的 helper 同一套既有模式）。`main` 在 **tokio runtime 和 clap
+     之前**应答它——guard 是一个裸的 `kqueue`+`read` 循环，给它异步运行时既是
+     浪费也是它不该有的线程来源。
+   - guard 自己 `setsid()`：脱离 qc 的会话和进程组，所以针对 qc 的
+     `kill(-pgid)`/挂断都碰不到它。（因此 spawn 时**不能**设 `process_group(0)`，
+     否则它是组长，`setsid` 会 EPERM。）
+   - 两个死亡触发器，任一即可，都进同一个 `finish`：`kqueue` 的
+     `EVFILT_PROC`/`NOTE_EXIT`（内核事件，`kill -9` 也触发，不是轮询），以及
+     stdin 管道 EOF（qc 死则内核关fd；Rust 的 pipe 是 CLOEXEC，孙子不会误留写端）。
+   - **正确性的关键不是「能不能发现」，而是「发现时它知道的事全不全」**。
+     qc 登记完一个组然后死掉，如果 guard 只按已读到的表去杀，最后那次登记就被漏
+     掉——同一个 bug 换了个更小的窗口。所以 `finish` **先排空管道再杀**。这成立
+     是因为管道里已写入的字节在写端消失后仍在：对一个已经不存在的进程，不存在
+     「还在飞行中」的写。排空后不可能漏。
+   - 登记/注销由 `LiveGroup::register`/`Drop` 通过管道发 `+pgid` / `-pgid`；
+     文本行协议，半行只是被忽略，不会解同步。
+   - 惰性启动：`main` 调用 `procguard::enable()` 只置标志，首次登记才真的 spawn。
+     这同时让**测试二进制不会把自己当 guard 拉起来**（测试的 `current_exe` 是
+     harness，不认识哨兵参数）。
+   - 管道写失败 → 丢弃 channel（关写端 → 那个 guard 自己退），下次登记重启一个。
+     静默失去保护比重启糟。
+
+3. **Linux：`PR_SET_PDEATHSIG` + 同一个 guard**（2026-11-12 补记，见下）。
+   `PR_SET_PDEATHSIG` 不跨 `fork` 继承，只覆盖组 leader，所以单靠它 `kill -9` qc
+   之后孙子仍会逃。guard 在 `spawn()` 后登记整组，qc 一死就 `killpg` 打整组——孙子
+   在这里被覆盖。两层并存不是冗余：`PDEATHSIG` 不需要任何别的进程活着、也不等调度，
+   且 guard 被杀时它仍然有效。
+
+**一个顺带修好的、原本没人注意的洞**
+
+`kill_all` 只挂在 GUI（`qcode-gui/src/run.rs` 的 `on_app_quit`），CLI/TUI 侧
+**根本没有退出钩子**。之前这意味着 TUI 里正常退出也可能留下进程组。
+
+新机制把这条顺带补上了，因为它不依赖 qcode 的退出钩子：Windows 进程结束时内核关闭
+job 句柄，macOS/Linux 结束时管道 EOF（或 pidfd 可读）唤醒 guard——两者在**任何**退出
+路径上都生效，包括正常退出。补记之后 Linux 也在这一列里，所以三个平台的 CLI/TUI
+退出路径现在都不再依赖那个只挂在 GUI 上的钩子。
+
+**顺带修掉了一个既有测试泄漏**
+
+`tests/pdeathsig.rs` 的对照组（`without_the_signal_the_child_outlives_its_parent`）
+每次跑都会漏一个 `sleep 600`：它 SIGKILL 的是 shell 的 pid，而 shell **fork** 了
+`sleep`。一个关于「进程不泄漏」的测试自己泄漏，而且残留进程正好会出现在本 ADR
+回归清单用的那些 `ps` 判读里，所以改成让 helper 把子进程放进独立进程组、清理时
+`killpg`。**改前改后都验证过**：改前跑完 `pgrep -af 'sleep 600'` 有残留，改后为零，
+两条断言的结论（有信号必须死 / 无信号必须活）没有变。
+
+**补记 2026-11-12：Linux 从「不做」改成「做」，用同一份 guard**
+
+第一版里 Linux 是「保持原样 + 把话说清」，理由是要么上 PID namespace（重、改变子
+进程的 pid 视角、依赖 userns），要么再写一套。两个理由都不成立：
+
+- guard 的**主体与平台无关**——状态机、管道协议、spawn、排空后 `killpg`、退出码，
+  全是同一份代码。只有「告诉我这个 pid 什么时候死」这一个原语不同：macOS 是
+  `kqueue` + `EVFILT_PROC`/`NOTE_EXIT`，Linux 是 `pidfd_open`
+  （`syscall(SYS_pidfd_open)`，5.3+）加 `poll`，`poll` 同时盯 stdin。于是门从
+  `cfg(target_os = "macos")` 放宽成 `cfg(any(target_os = "macos", target_os = "linux"))`，
+  只在 `mod watch` 分叉。
+- 代价只是多一个常驻小进程（惰性启动，第一次登记才 spawn），与 macOS 相同。
+
+`pidfd_open` 不是 libc 的函数，只有 syscall 号（四个出货 Linux triple 都有：x86_64
+gnu/musl、aarch64 gnu/musl），所以走 `libc::syscall`。拿不到就退化成只看 stdin EOF——
+`poll` 会把 fd 为 -1 的条目忽略，不需要第二个分支。
+
+改完之后三条平台的差距只剩一处：**Unix 两个平台杀的是进程组，`setsid` 自己的孩子能
+逃**；Windows 的 job 不看进程组，逃不掉。收口要靠 cgroup v2 的 `cgroup.kill`，而它需要
+可写的 `cgroup.subtree_control`——实测这台机器上 qc 所在 scope 是 `Delegate=no`（见上文
+systemd 那一节），桌面应用不能指望这个前提。所以这是「已知且记录」的差异，不是待办。
+
+**验证的代价反过来了**
+
+有了 Linux 的运行时，就能**自动化**验证「`kill -9` qc 之后整组消失」——正是 ADR-0073
+当初列进「只能手工回归」的那一条。`tests/procguard.rs` 因此是 `harness = false` 的真
+二进制：guard 角色是「自己被重新 exec 成 `__qcode-procguard <pid>`」，而 libtest harness
+会把那个参数当成未知 flag，永远走不到分派。同一个文件 `cfg(unix)`，所以 CI 的
+`macos-latest` 现在会**真跑**一遍 macOS guard，不再只是编译它。
+
+**被否决 / 未采用的**
+
+- **systemd scope 兜底**：见上，实测不成立。
+- **共享一个全局 job**：`TerminateJobObject` 会误杀并发命令。
+- **Windows 上 `CREATE_SUSPENDED` + assign + resume** 来彻底消除「spawn 到
+  assign 之间」的窗口：`std::process::Command` 不暴露线程句柄，无法 resume。窗口
+  是两次系统调用之间（微秒）对着一个还没启动完的子进程，接受并记录为残余。
+- **macOS 用 `fork()` 而不是 exec 自己**：多线程进程 fork 后只能做
+  async-signal-safe 的事，要写成无分配、无 panic 的 C 风格代码，比多一个 exec 更
+  容易出 UB。
+- **让 guard 也跑 Linux**（用 pidfd 替代 kqueue）：能补上第 3 条的缺口，但本次按
+  约定不动 Linux。
+
+**验证**
+
+- `cargo test -p qcode-tools`：130 lib + 各集成测试全绿。
+- `procguard` 的 6 条纯逻辑用例（跨平台跑）：登记/注销往返、
+  **一行跨两次 read 不得提前生效**、写端中途死亡留下的半行必须被忽略（截断的
+  pid 可能正好是活的）、pgid 0 永不登记（`killpg(0,…)` 会打 guard 自己）、
+  垃圾行不改状态、注销不存在的组无害。
+- `tests/child_groups.rs` 3 条照旧（`kill_all` 端到端：leader 与孙子都必须消失）。
+- **macOS 代码在这台开发机上没有编译器**（无 rustup、无 Apple target），所以加了
+  `scripts/check-macos-guard.sh`：从源码里**逐字抽出**真实的 `mod guard` 函数体
+  （不手抄，无法漂移），配一份按 libc 0.2.191 `unix/bsd/apple` 签名复刻的 `libc`
+  垫片，`rustc --emit=metadata` 做类型检查。做过反向对照：把 shim 里
+  `kevent` 的 `eventlist` 改成 `*mut i32`，立刻 E0308。**它只证明类型对得上，
+  不证明常量值对、也不证明运行时行为。**
+  - 说清楚它的定位：CI 的 `test` job 矩阵里有 `macos-latest`，所以 macOS 侧**本来
+    就有真编译器覆盖**（`ci-clippy.sh` + `ci-test.sh`）。这个脚本不替代那件事，
+    它给的是 **Linux 上的即时反馈**和**对 `mod guard` 提取位置的自检**（模块结构
+    一变就红，而不是悄悄抽到一段不相干的代码）。已接进 CI 的 ubuntu job。
+- **`kill -9` 的端到端回归（`tests/procguard.rs`，`cfg(unix)`，`harness = false`）**：
+  三个角色同一份二进制——guard（被重新 exec 成 `__qcode-procguard <pid>`）、
+  inner（扮演 qc：`enable()`、起 `sh -c 'sleep 600 & echo $!; wait'` 于独立进程组、
+  登记、阻塞）、outer（`kill -9` inner 后断言）。两条：
+  - 有 guard → leader 与**孙子**都必须消失；
+  - **无 guard → 孙子必须存活**（对照组；它要是也死了，上一条就不能归因于 guard）。
+  - 变异验证过：把 `LiveGroup::register` 里的 `procguard::register(pid)` 去掉，
+    该测试立刻失败并报出「leader gone: false, grandchild gone: false」。所以它不是
+    一条会自己变绿的空断言。
+  - 跑完顺带查过：没有残留的 `sleep`，也没有残留的 guard 进程（guard 清理完自己退出，
+    否则每跑一次 qc 就多一个常驻进程，那是新 bug）。
+- Windows 侧仍然只有编译保证：`cargo clippy --target x86_64-pc-windows-gnullvm
+  -p qcode-tools --all-targets -- -D warnings` 干净（**改前是红的**，见 ADR-0075）。
+
+
+**手工回归清单**
+
+Windows（**必须做**，这是唯一没有任何运行时验证的一侧）：
+
+1. `qc gui`，让 AI 跑 `ping -n 100 127.0.0.1`。
+2. 任务管理器 → `qc.exe` → **结束任务**（不是关窗口）。
+3. `tasklist | findstr ping` 必须为空，`sh`/`pwsh` 也要为空。
+4. 重复一次但用 `kill -9` 等价的强杀，确认同样干净。
+5. **反向对照**（证明断言能分辨）：把 `win_job::Job::adopt` 里的
+   `AssignProcessToJobObject` 注释掉，重跑第 1–3 步，`ping` 必须残留。
+   不残留说明测的不是这条路径。
+6. **后台进程语义**：跑 `start /b timeout /t 60`，等命令正常结束，确认那个
+   `timeout` 仍在（`Drop` 里 `ActiveProcesses != 0` 时不关句柄）——这是与 Unix
+   保持一致的行为，被误改成「关句柄」的话这一步会红。
+7. **取消路径**：跑一条长命令，点取消，确认只有它死、并发的另一条命令还活着。
+
+Linux / macOS（`tests/procguard.rs` 已经覆盖了机器能验证的部分，包括 `kill -9`
+之后孙子必须死、无 guard 时必须活。下面这些是**测试够不到**的：真 GUI、真
+`run_shell`、真平台调度）：
+
+1. `qc gui`，让 AI 跑 `ping -c 100 1.1.1.1`，然后 `kill -9 <qc pid>`。
+2. `ps -eo pid,ppid,pgid,command | grep -E 'ping|sh -c'` 必须为空。
+   重点看**孙子**：这是 `PDEATHSIG` 漏掉的那一层，`killpg` 该补上。
+3. 确认 guard 自己也退出了：`ps -eo pid,command | grep __qcode-procguard` 为空。
+   （它应在 EOF / `NOTE_EXIT` / `pidfd` 可读之后自行退出，不该留下常驻进程。）
+4. **从托盘正常退出**（不是 `kill -9`）：确认 `kill_all` 仍然生效，且没有 guard 残留。
+5. **CLI/TUI 也要试**：`qc run` 起一条长命令，退出，确认进程组同样被收掉——
+   这条路径上**没有**退出钩子，全靠 guard，和 GUI 走的不是同一条代码。
+6. **`setsid` 逃逸（已知差异，不是回归）**：跑一条自己 `setsid` 的命令，确认它
+   **会**残留。这不是要修的 bug，是 `killpg` 的边界；记录下来是为了下次有人报
+   「还是泄漏」时能立刻分辨类型。
+7. macOS 额外记一笔：`tests/procguard.rs` 会在 CI 的 `macos-latest` 上跑，但**本次
+   还没有在任何 macOS 机器上观察到它通过**。CI 第一次跑它时要看结果；红了先怀疑
+   guard，不要怀疑测试。
+
+三平台通用：
+
+- `ps -eo pid,ppid,command | awk '$2==1'` 里不该出现 `sh -c`/`ping`/`cargo`。
+
+**残余风险（诚实清单）**
+
+- **Unix 两个平台的 guard 保证是用户态的**：guard 被杀（`kill -9` 两个 pid）就没了；
+  guard 自己崩溃则静默失去保护（管道写失败会重启，但崩溃与写失败不是一回事）。
+  Windows 的内核保证没有这个问题。
+- **Unix 上 `setsid` 能逃**：guard 杀的是进程组。Linux 的 `PDEATHSIG` 也一样只到
+  leader。Windows 的 job 不看进程组，是三者里唯一没有这个洞的。收口要 cgroup v2，
+  前提（可写 `cgroup.subtree_control`）桌面应用不能保证。
+- **Linux `PDEATHSIG` 与 guard 之间有先后**：`PDEATHSIG` 立即杀 leader，guard 稍后
+  杀整组。所以在极短窗口里 leader 已死、孙子仍在——最终都为 0，但「瞬间」不等于
+  「同时」。
+- **macOS / Linux pid 复用**：`Drop` 注销与进程真正退出之间有窗口，同一风险
+  ADR-0073 已记录在 `child_groups` 上，未新增。
+- **Windows spawn→assign 的微秒窗口**。
+- **Linux 无 `pidfd_open` 的内核（<5.3）**：退化成只看 stdin EOF。功能等价，但如果
+  某个子孙意外持有了写端（Rust 不会，别的语言写的沙箱包装可能会），就会退化成
+  「qc 死而不清理」。这条只能靠 EOF 之外的信号兜，没做。
+- **Windows 的运行时验证仍然是零**：这一侧的每一条都是我按文档推的，只有编译器
+  点头。上面清单里 Windows 那 7 步不是可选项。
+- 机器断电 / 内核 panic：三个机制都不承诺。
+
+## ADR-0075：`cfg` 门要落在**用者**和**被用者**同一侧——`mod linux` 的 `test` 让 macOS/Windows 的测试构建变红（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+`cargo clippy --target x86_64-pc-windows-gnullvm -p qcode-tools --all-targets`
+在 Windows 上报 17 个错误，全是 `cannot find value LL_EXECUTE` 一类，指向
+`sandbox/linux.rs` 和 `sandbox/tests.rs`。先确认不是自己带进来的：`git stash -u`
+掉全部改动复跑，报的是同一批错误。所以是既有缺陷，而且意味着 CI 的
+`windows-build` 里 `cargo test --workspace --no-run` 那条也红着。
+
+根因是**同一件事的两侧用了不同的门**：
+
+| 位置 | 门 | 后果 |
+|---|---|---|
+| `sandbox/mod.rs` | `#[cfg(any(target_os = "linux", test))] mod linux;` | **任何平台**的 `cfg(test)` 构建都编译整个模块 |
+| `landlock_pty_dir_rights` 等函数 | `#[cfg(any(target_os = "linux", test))]` | 同上，会被编译 |
+| `LL_EXECUTE` … `LL_READ_DIR` 五个常量 | `#[cfg(target_os = "linux")]` | **只有 Linux** 才存在 |
+
+于是非 Linux 的测试构建里，函数在、它引用的常量不在。错误报在**用者**身上
+（`landlock_pty_dir_rights` 的函数体），让人以为是那几行写错了，而不是门装错了。
+
+**决定**
+
+把五个常量放宽成 `#[cfg(any(target_os = "linux", test))]`，与用者对齐；**不是**
+把 `mod linux` 的 `test` 去掉。
+
+理由：那个 `test` 是有意的。Landlock 权限位的组合运算（`landlock_file_rights`、
+`landlock_handled`、pty 目录权限）是纯整数运算，跟内核无关，在任何机器上都值得断言；
+`landlock_pty_dir_rights` 的文档注释也写明了「抽取出来是为了让测试断言这个表达式本身，
+而不是手抄一份副本」——手抄副本正是当初 `IOCTL_DEV` 缺失能躲过测试的原因。去掉
+`test` 会让这些断言只剩下 Linux 上能跑，等于把既有覆盖砍掉。
+
+在 `sandbox/mod.rs` 和常量定义处都加了注释，说明「模块在非 Linux 的测试构建里也会
+编译，所以模块内任何只属于本平台的东西都必须自己带 `cfg`」——下一次有人在这里
+加 Linux 专属项时，坑就写在旁边。
+
+**验证**
+
+- 改前：Windows `--all-targets` 17 个错（`git stash` 证明与本次改动无关）。
+- 改后：`cargo clippy --target x86_64-pc-windows-gnullvm -p qcode-tools --all-targets
+  -- -D warnings` 干净。
+- 没有放宽任何运行时行为：`cargo clippy --workspace --all-targets` 与
+  `cargo test --workspace` 在 Linux 上照旧全绿（1156 passed）。
+- 这条缺陷是顺带发现的，与 ADR-0074 的进程清理没有因果关系；写在这里是因为它们
+  同一个提交，且都是「一个门装错地方导致另一个平台静默变红」这一类。

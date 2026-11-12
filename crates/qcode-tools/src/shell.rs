@@ -319,14 +319,19 @@ impl Tool for RunShell {
         //
         // **Linux only**, and not for lack of trying: `prctl` exists only under
         // libc's `linux_like`, so `PR_SET_PDEATHSIG` has no macOS spelling at
-        // all. macOS has no kernel-level equivalent (no cgroups, no
-        // `PDEATHSIG`); there the registry is the only containment, which is
-        // why it is the fix and this is the backstop.
+        // all — the constant is not defined for Apple targets. macOS gets a
+        // guard process instead (`procguard`), Windows a job object
+        // (`win_job`); both are attached elsewhere because neither is a
+        // per-child flag set before `exec`.
         //
         // Scope, so nobody is surprised later: `PR_SET_PDEATHSIG` is not
         // inherited across `fork`, so it reaches the group leader (the sandbox
         // wrapper, or `sh`) and stops there. A grandchild is reparented and
-        // survives.
+        // survives *this mechanism* — which is why Linux also registers the
+        // group with `procguard`, whose `killpg` does reach the grandchildren.
+        // The two layers are not redundant: this one needs no other process to
+        // be alive and fires without waiting, and it keeps working if the guard
+        // has been killed.
         #[cfg(target_os = "linux")]
         unsafe {
             command.pre_exec(|| {
@@ -387,7 +392,17 @@ impl Tool for RunShell {
         // Registered for the exit hook from here until the command is reaped:
         // if the process dies between this line and the drop, the group is still
         // in the registry and `kill_all` takes it out. See `child_groups`.
+        #[cfg(not(windows))]
         let _live_group = crate::child_groups::LiveGroup::register(pid);
+        // Windows registers a job object rather than a bare pid, and it has to
+        // happen here: the job is what the kernel kills when qcode dies, so it
+        // must exist before this child can start anything of its own.
+        //
+        // `raw_handle` rather than `AsRawHandle`: `tokio::process::Child` has no
+        // trait impl for it, only the inherent method, which also answers `None`
+        // once the child has exited (nothing left to contain, then).
+        #[cfg(windows)]
+        let _live_group = crate::child_groups::LiveGroup::register_in_job(pid, child.raw_handle());
 
         let stdout = child
             .stdout
@@ -543,11 +558,29 @@ pub(crate) fn signal_group(pid: u32, signal: i32) {
     }
 }
 
-/// Windows has no process groups; `taskkill /T` walks the child tree instead.
-/// This is a stopgap until the OS sandbox layer owns process containment.
+/// Windows has no process groups. The command's tree is its job object
+/// (`win_job`), so terminating the job is the whole-tree kill, and it is one
+/// syscall instead of spawning `taskkill` and waiting on it.
+///
+/// `taskkill /T /F` remains as the fallback for a `pid` that has no job: a
+/// registration that could not be set up, or a pid that was never registered. It
+/// walks the child tree by pid, which is worse — it races the tree changing shape
+/// and it costs a process — but it is the only thing left for that case.
+///
+/// The `signal` argument is ignored because a job has no gentle form. That was
+/// already true of `taskkill /F`, so the SIGTERM-then-SIGKILL escalation in the
+/// cancellation path behaves exactly as it did before: the second step is
+/// what actually lands.
 #[cfg(not(unix))]
 pub(crate) fn signal_group(pid: u32, _signal: i32) {
     if pid == 0 {
+        return;
+    }
+    // Gated to `windows` rather than left bare: this function is
+    // `cfg(not(unix))`, which is wider than the set of platforms that have job
+    // objects, and it has to keep compiling for any of them.
+    #[cfg(windows)]
+    if crate::child_groups::terminate_job(pid) {
         return;
     }
     let _ = std::process::Command::new("taskkill")

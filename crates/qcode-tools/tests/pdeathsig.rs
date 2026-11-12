@@ -21,6 +21,7 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead as _, BufReader};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -55,10 +56,16 @@ fn helper_spawns_one_child_and_blocks() {
         .arg("sleep 600")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        // Own process group, so the cleanup below can take the shell *and* the
+        // `sleep` down together. Without it the control case leaked a `sleep 600`
+        // on every run: SIGKILLing the shell's pid left the grandchild orphaned,
+        // and this file of all files must not be the thing that leaks a process
+        // — the leftover also shows up in exactly the `ps` checks the regression
+        // checklist uses.
+        .process_group(0);
     if role == SIGNAL {
         unsafe {
-            use std::os::unix::process::CommandExt as _;
             command.pre_exec(|| {
                 // SAFETY: async-signal-safe, and touches only this just-forked
                 // process. Nothing here allocates.
@@ -120,8 +127,10 @@ fn the_parent_death_signal_kills_the_child_when_qcode_is_killed() {
     }
     let clean = !alive(child);
     if !clean {
-        // SAFETY: the pid belongs to a process this test started.
-        unsafe { libc::kill(child as i32, libc::SIGKILL) };
+        // The whole group: the helper spawned the shell as a group leader, so
+        // this reaches the `sleep` as well.
+        // SAFETY: the group belongs to a process this test started.
+        unsafe { libc::killpg(child as i32, libc::SIGKILL) };
     }
     assert!(
         clean,
@@ -146,9 +155,10 @@ fn without_the_signal_the_child_outlives_its_parent() {
     let survived = alive(child);
 
     // Always clean up: this is the leak the whole change is about, and a test
-    // must not leave one behind.
-    // SAFETY: the pid belongs to a process this test started.
-    unsafe { libc::kill(child as i32, libc::SIGKILL) };
+    // must not leave one behind. The group, not the pid — the shell forked
+    // `sleep`, so only the group reaches both.
+    // SAFETY: the group belongs to a process this test started.
+    unsafe { libc::killpg(child as i32, libc::SIGKILL) };
     assert!(
         survived,
         "the control case died too, so the other test proves nothing"

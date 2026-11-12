@@ -287,6 +287,13 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::SandboxExec;
 
+/// Compiled under `test` on every platform, not just Linux: the Landlock
+/// right-combination helpers are pure arithmetic, and the pty-rights expression
+/// is asserted directly rather than through a hand-copied duplicate (see
+/// `landlock_pty_dir_rights`). Anything in here that is only about this platform
+/// must therefore carry its own `cfg` — a constant gated to Linux while a
+/// function that uses it is gated to `test` is how `cargo test` stopped building
+/// on macOS and Windows.
 #[cfg(any(target_os = "linux", test))]
 mod linux;
 #[cfg(target_os = "linux")]

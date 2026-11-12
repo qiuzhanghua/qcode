@@ -19,8 +19,26 @@ mod output;
 use cli::{Cli, Command};
 use commands::*;
 
+/// The real entry point: answer the macOS guard, then hand over to the runtime.
+///
+/// The guard is this same binary re-executed with a sentinel argument (see
+/// `qcode_tools::procguard`), and it has to be recognised **here**, before the
+/// tokio runtime and before clap: the guard is a bare loop of `kqueue` and
+/// `read` on purpose, and giving it an async runtime and a thread pool would be
+/// both waste and a source of threads it must not have.
+fn main() -> ExitCode {
+    if let Some(code) = qcode_tools::procguard::guard_main_if_requested() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
+    // Opt in to guard-backed cleanup before anything can spawn a shell. On
+    // Windows this is an empty call: the kernel already does this, through the
+    // job object every command is given.
+    qcode_tools::procguard::enable();
+    run()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn run() -> ExitCode {
     logging::init();
 
     let Cli {

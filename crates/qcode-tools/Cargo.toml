@@ -41,3 +41,12 @@ qcode-providers = { version = "0.8.3", path = "../qcode-providers" }
 tempfile.workspace = true
 time.workspace = true
 tokio-util.workspace = true
+
+# A real `main`, so the binary can be re-executed as the macOS/Linux guard
+# process (`__qcode-procguard <pid>`) the way `qc` itself is. A libtest harness
+# would treat that argument as an unknown flag and never reach the dispatch.
+# See ADR-0074 and the file's own docs.
+[[test]]
+name = "procguard"
+path = "tests/procguard.rs"
+harness = false

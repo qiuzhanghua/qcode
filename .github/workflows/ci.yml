@@ -32,6 +32,13 @@ jobs:
             libfontconfig-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
       - run: cargo fmt --all --check
+      - name: macOS guard type-check (apple libc shim)
+        # Cheap and Linux-only on purpose: `test (macos-latest)` is the real
+        # coverage, but a `#[cfg(target_os = "macos")]` module gets no compiler
+        # on the other runners, and this both checks the code and self-checks
+        # that the script still extracts the right slice of it. See ADR-0074.
+        if: runner.os == 'Linux'
+        run: bash scripts/check-macos-guard.sh
       - name: clippy
         shell: bash
         run: bash scripts/ci-clippy.sh

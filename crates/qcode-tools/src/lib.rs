@@ -8,6 +8,7 @@ pub mod fetch;
 pub mod fs;
 pub mod patch;
 pub mod path;
+pub mod procguard;
 pub mod sandbox;
 pub mod schedule;
 pub mod search;
@@ -17,6 +18,9 @@ pub mod skills;
 pub mod subagent;
 pub mod todo;
 pub mod web_search;
+/// Windows job objects: the containment the OS enforces once qcode is gone.
+#[cfg(windows)]
+mod win_job;
 #[cfg(windows)]
 pub mod windows_acl;
 

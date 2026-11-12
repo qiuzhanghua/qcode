@@ -368,23 +368,32 @@ impl Sandbox for Bwrap {
     }
 }
 
-#[cfg(target_os = "linux")]
+/// Landlock's filesystem rights, as bit values.
+///
+/// `cfg(any(target_os = "linux", test))` and not `cfg(target_os = "linux")`: the
+/// whole module is compiled on every platform under `test` (see
+/// `sandbox/mod.rs`), because the right-combination arithmetic below and the
+/// functions built on it are worth asserting anywhere. Gating only the constants
+/// to Linux is what kept `cargo test` from building on macOS and Windows: the
+/// functions were compiled, the constants they name were not, and the error
+/// pointed at the caller instead of at this gate.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const LL_EXECUTE: u64 = 1 << 0;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const LL_WRITE_FILE: u64 = 1 << 1;
 
 /// ABI 5's `IOCTL_DEV`: ioctl on a character/block device. Without it
 /// `TIOCSWINSZ` on the pty fails with `EACCES`, which is what a terminal resize
 /// is — measured with `strace` while every `qcode-terminal` test still failed
 /// after `/dev/ptmx` itself was granted.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const LL_IOCTL_DEV: u64 = 1 << 15;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const LL_READ_FILE: u64 = 1 << 2;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const LL_READ_DIR: u64 = 1 << 3;
 
 /// Rights `landlock_add_rule` accepts for a node that is not a directory.
