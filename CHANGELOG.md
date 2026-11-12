@@ -1,6 +1,113 @@
 # Changelog
 
-## 未发布
+## 0.8.6 — 2026-11-12
+
+0.8.3 之后的一轮：沙箱在两处「配了但没生效」上补齐（`extra_writable` 真的生效、新增
+`allow_pty`），`kill -9` 之后不再泄漏子进程，日志第一次能落盘并且默认脱敏，定时任务在
+GUI 里从「能建」变成「能用」，外加图片能力从协议常量改成按路由配置、GUI 依赖跟到
+`gpui-kit 0.9.1`。
+
+- 沙箱：`[sandbox] extra_writable` 在 bwrap / Landlock 上真的生效（此前被静默丢弃）；
+  新增 `[sandbox] allow_pty`（默认关，landlock 没有 mount namespace，授权等于给宿主
+  devpts 开口子）；`extra_read` / `extra_writable` 接受单个文件；`extra_writable` 的
+  危险根在加载期直接拒绝。
+- 进程：`kill -9 qc` 之后子进程跟着死——Windows 每命令一个 job object，macOS / Linux
+  一个活过 qc 的 guard 进程（ADR-0074），CLI / TUI 也一并覆盖。
+- 日志：GUI 与 CLI 共用 `logs/qc.log`（ADR-0077），凭证脱敏接进格式化器（ADR-0078），
+  38 处诊断从 `eprintln!` 归入 `tracing`（ADR-0079），`qc logs --follow`（ADR-0080）。
+- 配置：路径写侧不再把 `~` 展开成绝对路径，`[providers.*] images` 与 `protocol` 现在
+  能存下来了。
+- 接入：MCP `command` 写裸名字时按 shell 快照的 `PATH` 解析，`qc doctor` 用同一份。
+- GUI：定时任务列表过滤 / 详情页 / 卡片折叠 / 手动创建后跳转、NewOnce 首次投递绑定
+  会话、目标会话被删后的联动清理；对话内容可选择复制；侧栏分组独立折叠；Linux dock
+  图标改由 `.desktop` 提供（ADR-0076）。
+- 依赖：`gpui-kit` 0.9.0 → 0.9.1（`gpui-pre` 0.3.12 快照），vendor 的
+  `gpui-pre-windows` 同步并重贴 `IsWindow` 守卫。
+
+### `kill -9` 之后不再泄漏子进程：三平台各用各的内核原语（ADR-0074）
+
+ADR-0073 只在 `on_app_quit` 里同步 `SIGKILL` 登记的进程组，所以崩溃 / OOM / `kill -9`
+之后那些组全都活下来——而 `run_shell` 留下的常常是 dev server 与 file watcher。
+
+- **Windows：每命令一个 job object + `KILL_ON_JOB_CLOSE`**。句柄由 qcode 私有、不可继承，
+  「最后一个句柄关闭」就等于「qcode 结束」，内核动手，不看 qcode 还在不在跑代码。
+  每命令一个而不是一个全局 job：`TerminateJobObject` 没有「只杀某个进程」的形式，
+  共享 job 会让取消一个回合时误杀同时跑的其它命令。正常结束时不关句柄（`Drop` 里查
+  `ActiveProcesses`，job 已空才关），否则等于顺手杀掉命令留在后台的东西。
+  `taskkill /T /F` 保留作兜底。
+- **macOS / Linux：guard 进程**（`qcode-tools/src/procguard.rs`）。`qc` 用哨兵参数
+  `__qcode-procguard <qc_pid>` 重新 exec 自己，guard `setsid()` 脱离会话，用
+  `kqueue`/`EVFILT_PROC`（macOS）或 `pidfd_open` + `poll`（Linux）等 qc 死，也能从
+  stdin EOF 得知。**`finish` 先排空管道再 `killpg`**：登记完一个组就死的话，只按已读到的
+  表去杀会漏掉最后一次登记，而管道里已写入的字节在写端消失后仍在。
+- Linux 另叠一层 `PR_SET_PDEATHSIG`：它不需要任何别的进程活着，guard 自己被杀的兜底。
+  `PDEATHSIG` 不跨 `fork`、只覆盖组 leader，所以单靠它孙子会逃——guard 打的是整组。
+- 顺带补上 CLI / TUI 的退出路径：`kill_all` 原来只挂在 GUI，TUI 正常退出也可能留进程。
+- 已知差异（不是待办）：Unix 上 `setsid` 自己的孩子能逃出进程组；Windows 的 job 不看
+  进程组所以逃不掉。收口要 cgroup v2 的 `cgroup.kill`，而桌面应用所在的 systemd scope
+  是 `Delegate=no`（实测 `KillMode=control-group` 也不回收残留，scope 存亡看 cgroup
+  是否为空），不能指望。
+
+### 日志落盘、默认脱敏，`qc logs --follow`（ADR-0077 / 0078 / 0080）
+
+日志此前只往 stderr 走，`.desktop` 里 `Terminal=false` 启动时一行都看不到——而「点图标
+启动」正是报 bug 时最常见的场景。
+
+- **GUI 与 CLI 共用 `<data>/logs/qc.log`**，按天轮转、留 7 天。`qc gui` 是同进程调用
+  `qcode_gui::run`，所以 GUI 与 CLI 走同一个订阅器。`with_ansi` 关掉（重定向到文件时
+  颜色转义是 `grep`/`less` 的噪音），`with_target` / 时间戳打开。
+- **凭证脱敏接进 formatter**，不再靠调用点记得。此前 `Redactor` 只在 2 处 `map_err` 里
+  手调、根本不经 `tracing`：一份 `base_url` 带 `?key=sk-…` 的配置跑一次失败 turn，日志里
+  就有 3 行明文，其中一行是引擎自己重试时打的。
+- **`qc logs --follow`**：轮询 200ms 而不引 `notify`——日志里最需要看的场景（容器、网络
+  文件系统）恰好是 inotify 失效的地方，而 200ms 对人无感。轮转与「文件还没出现」都按
+  预期处理，不用先 `--path-only` 再手工喂给 `tail -f`。
+
+### `eprintln!` 迁移：38 处诊断归入 `tracing`（ADR-0079）
+
+ADR-0077 只分类不迁移（`docs/design/LOGGING.md`）。这次把 D 类全部迁掉，`qcode-gui`
+的生产代码优先——它的 `eprintln!` 全属 D 类，可见性最差。`qcode-gui` 原本连 `tracing`
+依赖都没有。剩 33 处全是 A 类（`stdout` = 产物、`stderr` = 叙述），D 类归零。
+
+### GNOME 的 dock 图标来自 `.desktop`，不是 `_NET_WM_ICON`（ADR-0076）
+
+在 `WindowOptions.icon` 里塞 PNG 能写出 `_NET_WM_ICON`，但 dock 里的齿轮图标不变：
+`libshell` 根本不读窗口图标属性，只认 `WM_CLASS`。改成 `WM_CLASS`、`.desktop` 文件名
+（`StartupWMClass`）与主题图标三处对齐，`scripts/install-linux-desktop.sh` 一并装好。
+
+### 相同工具调用的重复阈值 3 → 10 轮
+
+3 轮就把「同样的调用」判成打转，对「先失败、改一下再试」是有意的重试也被打断。
+放宽到 10 轮，`ProgressGuard` 的语义不变（不同调用即视为进展并重置计数）。
+
+### `[sandbox]`：单个文件的授权，与共享 temp 不再被删
+
+- `extra_read` / `extra_writable` 现在接受单个文件：配 `~/.gitconfig` 这种「只要一个
+  文件」的授权此前起不来。
+- `with_roots` 派生的沙箱不再删除共享 temp 目录：删掉之后下一次 `run_shell` 的 helper
+  canonicalize `--temp` 失败，直接 `exit 127`。
+
+### GUI：定时任务从「能建」到「能用」
+
+- 列表：状态过滤、倒序、段头样式与操作按钮收进「三点」菜单。
+- 详情：状态配色、手动创建后自动刷新列表并跳到新任务。
+- 对话流：定时任务卡片默认只显示 title 一行，点击展开/收缩。
+- 投递：「每次复用会话」的手动任务在**首次投递时**绑定当前对话，此前「立即执行」每次
+  新建会话；目标会话被删后有联动清理与兜底恢复。
+- 顺带：提问 / 权限问询 / 报错卡片统一 90% 宽居中。
+
+### GUI：对话内容可选择复制
+
+`Cmd+C` / `Cmd+A` 作用于对话区，代码块、单条回答、整轮各带复制按钮。此前只有输入框
+能选文本，报错信息只能靠截图。
+
+### 杂项
+
+- 侧栏「我的任务 / 定时任务」两组各自独立折叠。
+- 侧栏下拉菜单统一从触发按钮正下方弹出，定时任务投递时间修正。
+- `qcode-eval` 的测试不再往 `/tmp` 漏目录：用 `TempDir` 的 `Drop` 代替手工路径。
+- `PDEATHSIG` 的门写成 `target_os = "linux"` 而不是 `unix`：`PR_SET_PDEATHSIG` 是 Linux
+  专有的，`unix` 会让 macOS 编译失败（ADR-0075 的同一类错——门要落在用者与被用者同一侧）。
 
 ### `[sandbox] extra_writable` 在 Linux 上真的生效了（ADR-0066 §2 修订注记 2026-11-11 补记）
 
