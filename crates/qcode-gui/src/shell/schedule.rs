@@ -1,7 +1,7 @@
 //! 定时任务（Scheduled Tasks）的 Shell 侧动作：侧栏 ＋/⋮ 新建、详情页、
 //! 手动创建表单与动作下发。数据经 `Backend::schedule_tasks()` 读缓存、
-//! `Backend::schedule_op()` 发命令（结果经 `ScheduleChanged` / `ScheduleNotice`
-//! 事件回传，见 `shell::poll`）。
+//! `Backend::schedule_op()` 发命令（结果经 `ScheduleChanged` / `ScheduleCreated`
+//! / `ScheduleNotice` 事件回传，见 `shell::poll`）。
 
 use super::*;
 use qcode_core::schedule::{Overlap, TaskStatus, now_local, parse_rule};
@@ -157,6 +157,25 @@ impl Shell {
 
     pub(crate) fn toggle_schedule_menu(&mut self, cx: &mut Context<Self>) {
         self.schedule_menu_open = !self.schedule_menu_open;
+        self.schedule_filter_menu_open = false;
+        cx.notify();
+    }
+
+    /// 打开 / 收起定时任务列表的状态过滤菜单（与 ⋮ 菜单互斥）。
+    pub(crate) fn toggle_schedule_filter_menu(&mut self, cx: &mut Context<Self>) {
+        self.schedule_filter_menu_open = !self.schedule_filter_menu_open;
+        self.schedule_menu_open = false;
+        cx.notify();
+    }
+
+    /// 设置状态过滤条件（`None` = 全部）并关闭菜单。
+    pub(crate) fn set_schedule_filter(
+        &mut self,
+        filter: Option<TaskStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        self.schedule_filter = filter;
+        self.schedule_filter_menu_open = false;
         cx.notify();
     }
 

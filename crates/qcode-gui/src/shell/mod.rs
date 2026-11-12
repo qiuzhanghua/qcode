@@ -87,6 +87,10 @@ pub(crate) struct Shell {
     pub(crate) schedule_running: std::collections::HashMap<String, time::PrimitiveDateTime>,
     /// 侧栏「定时任务」段头 ⋮ 菜单是否展开。
     pub(crate) schedule_menu_open: bool,
+    /// 定时任务列表的状态过滤（`None` = 全部）。
+    pub(crate) schedule_filter: Option<qcode_core::schedule::TaskStatus>,
+    /// 侧栏「定时任务」段头的状态过滤菜单是否展开。
+    pub(crate) schedule_filter_menu_open: bool,
     /// 定时任务详情页当前选中的任务 id（`None` = 空态）。
     pub(crate) schedule_detail: Option<String>,
     /// 手动创建定时任务的表单（`Some` = 弹窗打开中）。
@@ -332,6 +336,8 @@ impl Shell {
             schedule_tasks: Vec::new(),
             schedule_running: std::collections::HashMap::new(),
             schedule_menu_open: false,
+            schedule_filter: None,
+            schedule_filter_menu_open: false,
             schedule_detail: None,
             schedule_form: None,
             minimize_on_close,
@@ -558,6 +564,17 @@ impl Shell {
             match &event {
                 UiEvent::ScheduleChanged => {
                     self.refresh_tasks();
+                    // 缓存刷新后必须请求重绘：只改数据不 notify 的话，列表会
+                    // 停在旧帧（手动创建 / 暂停 / 删除后看不到变化），直到别的
+                    // 事件碰巧触发重绘。
+                    repaint = true;
+                    continue;
+                }
+                UiEvent::ScheduleCreated { id } => {
+                    // 手动创建成功：刷新列表并自动跳到新任务的详情页。
+                    self.refresh_tasks();
+                    self.schedule_detail = Some(id.clone());
+                    repaint = true;
                     continue;
                 }
                 UiEvent::ScheduleNotice { message } => {

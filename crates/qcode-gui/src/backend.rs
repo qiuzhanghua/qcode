@@ -101,7 +101,8 @@ pub trait Backend {
         Vec::new()
     }
     /// 对定时任务的操作（创建 / 编辑 / 暂停 / 恢复 / 立即执行 / 删除）。
-    /// 结果经 `ScheduleChanged` / `ScheduleNotice` 事件回传，不在本方法里返回。
+    /// 结果经 `ScheduleChanged` / `ScheduleCreated` / `ScheduleNotice`
+    /// 事件回传，不在本方法里返回。
     fn schedule_op(&mut self, _op: ScheduleOp) {}
     /// First user message in a session, for the sidebar.
     fn title(&self, _id: &str) -> Option<String> {

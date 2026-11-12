@@ -16,6 +16,24 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// renaming it is this one string (ADR-0063 §2).
 const PRODUCT_NAME: &str = "AI 工具";
 
+/// 定时任务列表的状态过滤选项（`None` = 全部）。
+const SCHEDULE_FILTERS: [Option<qcode_core::schedule::TaskStatus>; 4] = [
+    None,
+    Some(qcode_core::schedule::TaskStatus::Active),
+    Some(qcode_core::schedule::TaskStatus::Paused),
+    Some(qcode_core::schedule::TaskStatus::Ended),
+];
+
+/// 过滤条件的中文标签。
+fn schedule_filter_label(filter: Option<qcode_core::schedule::TaskStatus>) -> &'static str {
+    match filter {
+        None => "全部",
+        Some(qcode_core::schedule::TaskStatus::Active) => "已开启",
+        Some(qcode_core::schedule::TaskStatus::Paused) => "已暂停",
+        Some(qcode_core::schedule::TaskStatus::Ended) => "已结束",
+    }
+}
+
 pub(crate) fn task_titles(
     tasks: &[TaskRow],
     backend: &dyn Backend,
@@ -319,7 +337,9 @@ impl Shell {
     /// One element per task row, plus the roots editor under the active one.
     fn render_task_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let row_hover = cx.theme().sidebar_accent.opacity(0.55);
-        let row_active = cx.theme().sidebar_accent;
+        // 选中行背景：比 hover 略深、但比原来的整块 sidebar_accent 浅一档。
+        // 定时任务列表的选中行沿用同一配色（见 `render_schedule_list`）。
+        let row_active = cx.theme().sidebar_accent.opacity(0.7);
         let mut rows: Vec<AnyElement> = Vec::new();
         for row in &self.tasks {
             let id = row.task.id.clone();
@@ -416,6 +436,52 @@ impl Shell {
                         })
                         .child(div().text_size(sp(13.0)).whitespace_nowrap().child(label)),
                 );
+            // 「任务操作」按钮；弹出菜单挂在按钮自己的 relative 容器上，与
+            // 定时任务段头按钮同款：基准点 = 紧跟按钮之后（按钮底部），
+            // 向下 4px 弹出。
+            let mut task_menu_wrapper = div().relative().child(
+                Button::new(format!("task-menu-{}", row.task.id))
+                    .compact()
+                    .label("…")
+                    .tooltip("任务操作")
+                    // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
+                    // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
+                    // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(rgb(0xffffff).into())
+                            .hover(rgb(0xffffff).into())
+                            .active(rgb(0xffffff).into())
+                            .foreground(rgb(0x1a1a1a).into()),
+                    )
+                    .bg(rgb(0xffffff))
+                    .text_color(rgb(0x1a1a1a))
+                    .on_click(cx.listener({
+                        let task_id = row.task.id.clone();
+                        move |this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.task_menu = if this.task_menu.as_deref() == Some(task_id.as_str())
+                            {
+                                None
+                            } else {
+                                Some(task_id.clone())
+                            };
+                            cx.notify();
+                        }
+                    })),
+            );
+            if menu_open {
+                task_menu_wrapper = task_menu_wrapper.child(
+                    deferred(
+                        anchored()
+                            .anchor(Anchor::TopLeft)
+                            .offset(point(px(0.0), px(4.0)))
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(self.render_task_menu(&row.task.id, &full_title, cx)),
+                    )
+                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
+                );
+            }
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
                 .absolute()
@@ -428,41 +494,7 @@ impl Shell {
                 .gap_1()
                 .invisible()
                 .when(show_actions, |this| this.visible())
-                .child(
-                    // 「任务操作」按钮；弹出菜单挂在 controls 容器上，锚定到
-                    // 其左下角（TopLeft + 行高 30px），即按钮正下方。
-                    div().relative().child(
-                        Button::new(format!("task-menu-{}", row.task.id))
-                            .compact()
-                            .label("…")
-                            .tooltip("任务操作")
-                            // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
-                            // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
-                            // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(rgb(0xffffff).into())
-                                    .hover(rgb(0xffffff).into())
-                                    .active(rgb(0xffffff).into())
-                                    .foreground(rgb(0x1a1a1a).into()),
-                            )
-                            .bg(rgb(0xffffff))
-                            .text_color(rgb(0x1a1a1a))
-                            .on_click(cx.listener({
-                                let task_id = row.task.id.clone();
-                                move |this, _, _window, cx| {
-                                    cx.stop_propagation();
-                                    this.task_menu =
-                                        if this.task_menu.as_deref() == Some(task_id.as_str()) {
-                                            None
-                                        } else {
-                                            Some(task_id.clone())
-                                        };
-                                    cx.notify();
-                                }
-                            })),
-                    ),
-                )
+                .child(task_menu_wrapper)
                 .child(
                     Button::new(format!("task-add-dir-{}", row.task.id))
                         .compact()
@@ -488,20 +520,6 @@ impl Shell {
                         })),
                 );
             task_row = task_row.child(controls);
-            if menu_open {
-                // 弹框挂回整行（锚点最稳），右对齐行右缘、顶部贴行底，
-                // 任务操作按钮也在行右侧，视觉上即按钮正下方。
-                task_row = task_row.child(
-                    deferred(
-                        anchored()
-                            .anchor(Anchor::TopRight)
-                            .offset(point(px(0.0), px(30.0)))
-                            .snap_to_window_with_margin(px(8.0))
-                            .child(self.render_task_menu(&row.task.id, &full_title, cx)),
-                    )
-                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
-                );
-            }
             rows.push(task_row.into_any_element());
             if active {
                 rows.push(self.render_task_roots(cx));
@@ -808,7 +826,57 @@ impl Shell {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let open = self.schedule_section_open;
-        let mut header = div()
+        // 过滤 / 操作按钮各自包一层 relative 容器：弹出菜单锚定到对应按钮的
+        // 正下方（BottomLeft），而不是整段段头的左上角（那会开到段头左侧）。
+        let mut filter_wrapper = div().relative().child(
+            Button::new("schedule-filter")
+                .compact()
+                .label(schedule_filter_label(self.schedule_filter))
+                .tooltip("按状态过滤定时任务")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_schedule_filter_menu(cx);
+                })),
+        );
+        if self.schedule_filter_menu_open {
+            filter_wrapper = filter_wrapper.child(
+                deferred(
+                    anchored()
+                        // 块级容器里 absolute 弹层的基准点 = 紧跟按钮之后（按钮
+                        // 底部），偏移只留 4px 间距即可，不再加整个按钮高。
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.0), px(4.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(self.render_schedule_filter_menu(cx)),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
+        }
+        let mut menu_wrapper = div().relative().child(
+            Button::new("schedule-menu")
+                .compact()
+                .label("⋯")
+                .tooltip("定时任务操作")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_schedule_menu(cx);
+                })),
+        );
+        if self.schedule_menu_open {
+            menu_wrapper = menu_wrapper.child(
+                deferred(
+                    anchored()
+                        // 块级容器里 absolute 弹层的基准点 = 紧跟按钮之后（按钮
+                        // 底部），偏移只留 4px 间距即可，不再加整个按钮高。
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.0), px(4.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(self.render_schedule_menu(cx)),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
+        }
+        div()
             .id(("sidebar-section", SidebarSection::Schedule as usize))
             .relative()
             .flex()
@@ -855,6 +923,8 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_0p5()
+                    .child(filter_wrapper)
+                    .child(menu_wrapper)
                     .child(
                         Button::new("new-schedule-task")
                             .compact()
@@ -864,34 +934,48 @@ impl Shell {
                                 cx.stop_propagation();
                                 this.new_schedule_draft(window, cx);
                             })),
-                    )
-                    .child(
-                        Button::new("schedule-menu")
-                            .compact()
-                            .label("⋮")
-                            .tooltip("定时任务操作")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_schedule_menu(cx);
-                            })),
                     ),
             )
             .on_click(cx.listener(move |this, _, _window, cx| {
                 this.toggle_sidebar_section(SidebarSection::Schedule, cx);
-            }));
-        if self.schedule_menu_open {
-            header = header.child(
-                deferred(
-                    anchored()
-                        .anchor(Anchor::TopLeft)
-                        .offset(point(px(0.0), px(28.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(self.render_schedule_menu(cx)),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY),
-            );
-        }
-        header.into_any_element()
+            }))
+            .into_any_element()
+    }
+
+    /// 定时任务段头的状态过滤菜单：全部 / 已开启 / 已暂停 / 已结束。
+    fn render_schedule_filter_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        div()
+            .id("schedule-filter-menu-popover")
+            .w(px(120.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(8.0))
+            .bg(theme.popover)
+            .border_1()
+            .border_color(theme.border)
+            .p_1()
+            .text_color(theme.popover_foreground)
+            .on_mouse_down_out(cx.listener(|this, _, _window, cx| {
+                this.schedule_filter_menu_open = false;
+                cx.notify();
+            }))
+            .children(SCHEDULE_FILTERS.iter().enumerate().map(|(index, filter)| {
+                let selected = *filter == self.schedule_filter;
+                let label = schedule_filter_label(*filter);
+                Button::new(("schedule-filter-option", index))
+                    .label(if selected {
+                        format!("{label} ✓")
+                    } else {
+                        label.to_string()
+                    })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        cx.stop_propagation();
+                        this.set_schedule_filter(*filter, cx);
+                    }))
+            }))
+            .into_any_element()
     }
 
     /// 定时任务段头「⋮」的弹出菜单：在对话中创建 / 手动创建。
@@ -942,6 +1026,13 @@ impl Shell {
     /// is the index, and clicking a line goes there.
     fn render_schedule_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let filter = self.schedule_filter;
+        // 按状态过滤后的任务行：`None`（全部）不过滤。
+        let matched = self
+            .schedule_tasks
+            .iter()
+            .filter(|task| filter.is_none_or(|status| task.status == status))
+            .collect::<Vec<_>>();
         div()
             .id("schedule-list")
             .flex_1()
@@ -962,17 +1053,42 @@ impl Shell {
                         .child("还没有定时任务——点「＋」在对话中创建，或用「⋮」手动创建"),
                 )
             })
-            .children(self.schedule_tasks.iter().map(|task| {
+            .when(
+                !self.schedule_tasks.is_empty() && matched.is_empty(),
+                |this| {
+                    this.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted)
+                            .child(format!(
+                                "没有「{}」状态的定时任务",
+                                schedule_filter_label(filter)
+                            )),
+                    )
+                },
+            )
+            .children(matched.iter().map(|task| {
                 let marker = match task.status {
                     qcode_core::schedule::TaskStatus::Active => "●",
-                    qcode_core::schedule::TaskStatus::Paused => "○",
+                    qcode_core::schedule::TaskStatus::Paused => "●",
                     qcode_core::schedule::TaskStatus::Ended => "■",
+                };
+                // 状态圆点配色：已开启=绿，已暂停=黄，已结束=深灰。
+                let dot = match task.status {
+                    qcode_core::schedule::TaskStatus::Active => rgb(0x16a34a),
+                    qcode_core::schedule::TaskStatus::Paused => rgb(0xca8a04),
+                    qcode_core::schedule::TaskStatus::Ended => rgb(0x6b7280),
                 };
                 let next = task
                     .next_fire_at
                     .map_or_else(String::new, |at| format!(" · {}", at.time()));
-                let label = format!("{marker} {}{next}", task.title);
                 let task_id = task.id.clone();
+                // 选中行背景与任务列表保持一致（浅灰，见 `render_task_rows`）。
+                let row_hover = cx.theme().sidebar_accent.opacity(0.55);
+                let row_active = cx.theme().sidebar_accent.opacity(0.7);
+                let selected = self.schedule_detail.as_deref() == Some(task.id.as_str());
                 div()
                     .flex()
                     .flex_row()
@@ -984,6 +1100,8 @@ impl Shell {
                     .rounded(px(6.0))
                     .id(format!("schedule-row-{}", task.id))
                     .cursor_pointer()
+                    .when(selected, |this| this.bg(row_active))
+                    .when(!selected, |this| this.hover(|style| style.bg(row_hover)))
                     .when(
                         task.status == qcode_core::schedule::TaskStatus::Ended,
                         |this| this.opacity(0.55),
@@ -994,8 +1112,17 @@ impl Shell {
                             .min_w(px(0.0))
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(sp(BODY_SIZE))
-                            .child(label),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(div().text_size(sp(BODY_SIZE)).text_color(dot).child(marker))
+                            .child(
+                                div()
+                                    .text_size(sp(BODY_SIZE))
+                                    .whitespace_nowrap()
+                                    .child(format!("{}{next}", task.title)),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.open_schedule_detail(&task_id, cx);

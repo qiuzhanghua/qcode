@@ -62,6 +62,8 @@ pub enum UiEvent {
     /// 定时任务（运行时任务）定义有变化：创建/编辑/启停/删除/投递推进。UI 应
     /// 刷新任务列表（host 级事件，与具体会话无关）。
     ScheduleChanged,
+    /// 手动创建定时任务成功：UI 应刷新列表并跳到新任务的详情页。
+    ScheduleCreated { id: String },
     /// 定时任务管理操作失败的提示信息。
     ScheduleNotice { message: String },
 }
@@ -575,6 +577,12 @@ impl TaggedPort {
     /// 定时任务定义有变化：UI 刷新任务列表（host 级，与具体会话无关）。
     pub fn send_schedule_changed(&self) {
         self.port.emit(&self.target, UiEvent::ScheduleChanged);
+    }
+
+    /// 手动创建定时任务成功：UI 刷新列表并跳到新任务的详情页。
+    pub fn send_schedule_created(&self, id: String) {
+        self.port
+            .emit(&self.target, UiEvent::ScheduleCreated { id });
     }
 
     /// 定时任务管理操作失败的提示。

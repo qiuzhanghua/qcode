@@ -157,7 +157,9 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
             applied.changed = true;
         }
         // 定时任务事件是 host 级的，不进会话视图。
-        UiEvent::ScheduleChanged | UiEvent::ScheduleNotice { .. } => {}
+        UiEvent::ScheduleChanged
+        | UiEvent::ScheduleCreated { .. }
+        | UiEvent::ScheduleNotice { .. } => {}
     }
     applied
 }

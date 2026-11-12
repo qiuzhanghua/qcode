@@ -10,9 +10,9 @@ impl Drop for TurnTemp {
 }
 
 /// How many consecutive rounds may repeat the exact same tool call before the
-/// turn is stopped. Three is enough to catch a loop while leaving room for a
-/// deliberate retry (`cargo test` twice).
-pub(crate) const MAX_IDENTICAL_ROUNDS: u32 = 3;
+/// turn is stopped. Ten is enough to catch a loop while leaving room for
+/// deliberate retries.
+pub(crate) const MAX_IDENTICAL_ROUNDS: u32 = 10;
 
 /// What the user's client sends when it continues a paused turn. The marker
 /// stays first so a log reader (and the model) can tell it from a real message;
@@ -45,7 +45,7 @@ pub(crate) const HAND_OFF_PROMPT: &str = "You are about to stop: you have no bud
 /// Guards against a model that keeps asking for the same call.
 ///
 /// Compares *consecutive rounds* by name+arguments: a retry with different
-/// arguments is progress, the same call three times is not.
+/// arguments is progress, the same call ten times is not.
 pub(crate) struct ProgressGuard {
     signature: Option<String>,
     repeats: u32,

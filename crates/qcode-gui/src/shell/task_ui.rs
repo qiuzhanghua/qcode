@@ -41,6 +41,8 @@ pub(crate) struct TaskUi {
     pub(crate) expanded_code: HashSet<String>,
     /// Per-turn execution-process container expansion.
     pub(crate) process_open_turns: std::collections::HashSet<usize>,
+    /// 对话流里已展开的定时任务卡片（默认折叠，点 title 框展开 / 收缩）。
+    pub(crate) scheduled_open: std::collections::HashSet<usize>,
     /// Hide every turn's process rows (Collapse all).
     pub(crate) collapse_all: bool,
     /// Force every reasoning/tool row to its one-line form (Collapse to list).
@@ -164,6 +166,7 @@ impl TaskUi {
             expanded_process: None,
             expanded_code: HashSet::new(),
             process_open_turns: std::collections::HashSet::new(),
+            scheduled_open: std::collections::HashSet::new(),
             collapse_all: false,
             collapse_to_list: false,
             inline_diffs: HashMap::new(),
@@ -234,6 +237,7 @@ impl Shell {
                 &mut self.ui.process_open_turns,
                 ui.process_open_turns,
             ),
+            scheduled_open: std::mem::replace(&mut self.ui.scheduled_open, ui.scheduled_open),
             collapse_all: std::mem::replace(&mut self.ui.collapse_all, ui.collapse_all),
             collapse_to_list: std::mem::replace(&mut self.ui.collapse_to_list, ui.collapse_to_list),
             inline_diffs: std::mem::replace(&mut self.ui.inline_diffs, ui.inline_diffs),

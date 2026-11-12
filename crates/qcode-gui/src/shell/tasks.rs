@@ -18,8 +18,11 @@ impl Shell {
             })
             .collect();
         // 运行时定时任务（含 config 迁移导入的条目）随同一轮刷新：侧栏列表、
-        // 详情页与页头时钟标记都读这份缓存。
-        self.schedule_tasks = self.backend.schedule_tasks();
+        // 详情页与页头时钟标记都读这份缓存。存储按创建先后排列（旧的在前），
+        // 倒序后列表越晚创建的越靠上。
+        let mut schedule_tasks = self.backend.schedule_tasks();
+        schedule_tasks.reverse();
+        self.schedule_tasks = schedule_tasks;
         // 解除「立即执行」的等待态：任务已有比点击时刻更新的投递回执 = 落盘完成。
         self.schedule_running.retain(|id, clicked| {
             !self.schedule_tasks.iter().any(|task| {
