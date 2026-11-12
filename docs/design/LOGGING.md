@@ -192,7 +192,9 @@
 ### 补记：这次迁移漏掉的类——stdout 上的叙述
 
 迁移的靶子是 `eprintln!`，因为分类表的假设是「stdout 上只有产物」。**那个假设没有人
-去验证**，于是漏掉了一处反方向的违规：`commands/gui.rs` 里有一句
+去验证**，于是漏掉了一类反方向的违规。复查整个 `qc` 主程序，共两处：
+
+**其一，`commands/gui.rs` 的启动摘要：**
 
 ```rust
 println!("gui: provider={} model={} sandbox={} tools={} skills={}", …);
@@ -212,10 +214,36 @@ INFO qc::commands::gui: gui: kernel resolved provider=deepseek model=deepseek-fl
     sandbox=landlock tools=35 skills=8
 ```
 
-`crates/qcode/tests/gui_stdout_clean.rs` 用源码扫描守住这个不变式：`commands/gui.rs` 与
-`qcode-gui/src` 下不允许出现裸 `println!`（`eprintln!` 与注释不算）。用扫描而非运行，
-是因为这条路径要 `gui` feature 加显示器，而规则必须在人人都能跑的构建里成立；
-文件里另有一条自测，确认扫描器能看见它要找的东西，免得断言因为什么也没扫到而空过。
+**其二，`update.rs` 的交互提示与下载进度：**
+
+```rust
+print!("install {} and restart? [y/N] ", release.version);
+std::io::stdout().flush()?;
+println!("downloading {}", asset.url);
+```
+
+提示写在 stdout，与 `approval.rs:100` 的 `eprint!("  allow? [y/N] ")` 形状相同、流不同。
+`qc update > out.log` 且 stdin 仍是终端时，问题进了文件、终端上什么都没有——命令干等着，
+看起来就是卡死。`downloading` 是进度，脚本解析 stdout 要的是结果（`installed …`）而不是
+每个字节区间的播报；`[update]` 的通知本来就走 `eprintln!`。两处均改为 stderr。
+
+`--check` 的 `update available` / `up to date` 留在 stdout：那是脚本读的产物，现有测试也在
+断言它们。
+
+`crates/qcode/tests/stdout_channels.rs` 守住这个不变式，三条规则：
+
+1. **提示必须走 stderr。** `print!`（不带换行）是「问人一句话」的形状，`qc` 主程序里不允许
+   出现在 stdout。`update.rs` 就是这样踩的：`qc update > out.log` 且 stdin 仍是终端时，
+   问题进了文件、终端上什么都没有，命令干等着——看起来就是卡死。对照 `approval.rs:100`
+   用的是 `eprint!`。
+2. **`println!` 只允许出现在白名单文件里**（`PRODUCT_FILES`），每条都注明谁消费这份输出。
+   不在名单上的文件要写 stdout 就得先做决定：改走 `tracing`/`eprintln!`，或者说明读者是谁。
+   顺带检查白名单没有过期条目，免得旧名字被新文件复用后悄悄获得 stdout 权限。
+3. **`qcode-gui/src` 一律不得写 stdout**——它的产物是那个窗口。
+
+用源码扫描而非运行，是因为这些路径要 `gui` feature、显示器或活的 release 服务器，而规则
+必须在人人都能跑的构建里成立；文件里另有一条自测，确认分类器能分清 `print!`/`println!`/
+`eprintln!`/注释，免得断言因为什么也没扫到而空过。测试模块不在范围内（那只是测试在自述）。
 
 ### 验证
 

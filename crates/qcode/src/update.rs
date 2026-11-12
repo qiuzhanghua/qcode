@@ -502,9 +502,13 @@ pub async fn run(
         if !std::io::stdin().is_terminal() {
             return Err("refusing to replace the running binary without --yes on a non-TTY".into());
         }
-        print!("install {} and restart? [y/N] ", release.version);
+        // A prompt is narration, and it must reach the person answering it.
+        // On stdout `qc update > out.log` would print the question into the file
+        // and sit waiting with nothing on screen, which reads as a hang; it is
+        // also how `approval.rs` asks (`eprint!`). ADR-0078.
+        eprint!("install {} and restart? [y/N] ", release.version);
         use std::io::Write;
-        std::io::stdout().flush()?;
+        std::io::stderr().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
@@ -512,7 +516,10 @@ pub async fn run(
         }
     }
 
-    println!("downloading {}", asset.url);
+    // Progress, not a result: a script parsing stdout wants the outcome
+    // (`installed …`), not a line per byte range. Same channel the `[update]`
+    // notices use.
+    eprintln!("downloading {}", asset.url);
     let bytes = download(&asset.url).await?;
     let expected = checksum_for(
         &String::from_utf8_lossy(&download(&checksums.url).await?),
