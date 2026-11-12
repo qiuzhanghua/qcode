@@ -886,6 +886,16 @@ impl Shell {
                             })),
                     )
                     .child(
+                        Button::new("schedule-menu")
+                            .compact()
+                            .label("⋯")
+                            .tooltip("定时任务操作")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_schedule_menu(cx);
+                            })),
+                    )
+                    .child(
                         Button::new("new-schedule-task")
                             .compact()
                             .label("+")
@@ -893,16 +903,6 @@ impl Shell {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.new_schedule_draft(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("schedule-menu")
-                            .compact()
-                            .label("⋮")
-                            .tooltip("定时任务操作")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_schedule_menu(cx);
                             })),
                     ),
             )
