@@ -1,20 +1,50 @@
 use super::*;
 
+/// Write a whole report, treating a closed pipe as "the reader has seen enough".
+///
+/// `qc sessions list | head -40` is an ordinary thing to type, and `println!`
+/// panics inside the stdlib when the pipe closes first — ADR-0080 fixed exactly
+/// this for `qc logs --follow`. Building the report first also means a command
+/// that fails halfway does not leave half a listing in the pipe.
+fn write_report(buffer: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut out = std::io::stdout().lock();
+    match write_all_report(&mut out, buffer) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The part of [`write_report`] that decides what a closed pipe means.
+///
+/// Split out with an injectable writer so the decision can be tested without a
+/// real `| head`: whether the pipe is already closed when we write is a race
+/// that a test cannot rely on.
+fn write_all_report(out: &mut dyn std::io::Write, buffer: &str) -> std::io::Result<()> {
+    match out.write_all(buffer.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        // The reader went away (`| head`). Not an error.
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn cmd_sessions(
     args: SessionsArgs,
     data_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let store = SessionStore::new(qcode_kernel::resolve_data_dir(data_dir));
+    let mut report = String::new();
 
     match args.command {
         SessionsCommand::List => {
+            use std::fmt::Write as _;
             let sessions = store.list()?;
             if sessions.is_empty() {
-                println!("no sessions");
-                return Ok(ExitCode::SUCCESS);
+                report.push_str("no sessions\n");
             }
             for session in sessions {
-                println!(
+                let _ = writeln!(
+                    report,
                     "{}  turns={}  cost=${:.4}  model={}  cwd={}",
                     session.id,
                     session.turns,
@@ -35,7 +65,8 @@ pub(crate) fn cmd_sessions(
                                 qcode_core::task::RootState::Ready => "",
                                 qcode_core::task::RootState::Missing => "  MISSING",
                             };
-                            println!(
+                            let _ = writeln!(
+                                report,
                                 "    @{} {} {}{}",
                                 root.label,
                                 access,
@@ -44,36 +75,46 @@ pub(crate) fn cmd_sessions(
                             );
                         }
                         if task.roots.is_empty() {
-                            println!("    (no roots)");
+                            report.push_str("    (no roots)\n");
                         }
                     }
-                    Err(_) => println!("    (no task record)"),
+                    Err(_) => report.push_str("    (no task record)\n"),
                 }
             }
         }
         SessionsCommand::Show { id } => {
+            // Write as we go: a 20 MB session's pretty JSON is far too big to
+            // buffer, and the point of `| head` is to not read all of it.
+            use std::fmt::Write as _;
             for event in store.load(&id)? {
-                println!("{}", serde_json::to_string_pretty(&event)?);
+                let _ = writeln!(report, "{}", serde_json::to_string_pretty(&event)?);
+                if report.len() >= REPORT_FLUSH_AT {
+                    write_report(&report)?;
+                    report.clear();
+                }
             }
         }
         SessionsCommand::Fork { id, at } => {
+            use std::fmt::Write as _;
             let forked = store.fork(&id, at)?;
-            println!("{forked}");
+            let _ = writeln!(report, "{forked}");
         }
         SessionsCommand::Gc {
             older_than_days,
             yes,
         } => {
+            use std::fmt::Write as _;
             let ids = store.gc(older_than_days, yes)?;
             if ids.is_empty() {
-                println!("nothing to clean");
+                report.push_str("nothing to clean\n");
             }
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
             let mut freed = 0u64;
             for id in &ids {
                 let size = snapshots.size(id).unwrap_or(0);
                 freed += size;
-                println!(
+                let _ = writeln!(
+                    report,
                     "{} {id} (snapshots: {:.1} MB)",
                     if yes { "removed" } else { "would remove" },
                     size as f64 / (1024.0 * 1024.0)
@@ -82,7 +123,7 @@ pub(crate) fn cmd_sessions(
             if yes {
                 for id in &ids {
                     if let Err(error) = snapshots.remove_session(id) {
-                        println!("cannot remove snapshots for {id}: {error}");
+                        let _ = writeln!(report, "cannot remove snapshots for {id}: {error}");
                     }
                 }
                 // Snapshot trees whose session is gone (deleted by hand, or by an
@@ -90,32 +131,36 @@ pub(crate) fn cmd_sessions(
                 let keep: Vec<String> = store.list()?.into_iter().map(|s| s.id).collect();
                 match snapshots.sweep(&keep) {
                     Ok(removed) if !removed.is_empty() => {
-                        println!("removed {} orphan snapshot tree(s)", removed.len());
+                        let _ =
+                            writeln!(report, "removed {} orphan snapshot tree(s)", removed.len());
                     }
                     Ok(_) => {}
-                    Err(error) => println!("cannot sweep snapshots: {error}"),
+                    Err(error) => {
+                        let _ = writeln!(report, "cannot sweep snapshots: {error}");
+                    }
                 }
-                println!("freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
+                let _ = writeln!(report, "freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
             } else {
-                println!("dry run; pass --yes to delete");
+                report.push_str("dry run; pass --yes to delete\n");
             }
         }
         SessionsCommand::Checkpoints { id } => {
+            use std::fmt::Write as _;
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
             let turns = snapshots.turns(&id)?;
             if turns.is_empty() {
-                println!("no checkpoints for {id}");
-                return Ok(ExitCode::SUCCESS);
+                let _ = writeln!(report, "no checkpoints for {id}");
             }
             for turn in turns {
                 let files = snapshots.files(&id, turn)?;
-                println!("turn {turn}: {} file(s)", files.len());
+                let _ = writeln!(report, "turn {turn}: {} file(s)", files.len());
                 for file in files {
-                    println!("  {file}");
+                    let _ = writeln!(report, "  {file}");
                 }
             }
         }
         SessionsCommand::Rollback { id, to, yes } => {
+            use std::fmt::Write as _;
             // The workspace being restored is the one the session recorded, not
             // the current directory: rolling back from another repo would
             // otherwise write files into the wrong tree.
@@ -129,31 +174,40 @@ pub(crate) fn cmd_sessions(
             let turns = snapshots.turns(&id)?;
             let affected: Vec<u32> = turns.into_iter().filter(|turn| *turn >= to).collect();
             if affected.is_empty() {
-                println!("nothing recorded at or after turn {to}; nothing to do");
+                write_report(&format!(
+                    "nothing recorded at or after turn {to}; nothing to do\n"
+                ))?;
                 return Ok(ExitCode::SUCCESS);
             }
-            println!(
+            let _ = writeln!(
+                report,
                 "would restore {} turn(s) into {}",
                 affected.len(),
                 workspace.display()
             );
             if !yes {
-                println!("dry run; pass --yes to restore");
+                report.push_str("dry run; pass --yes to restore\n");
+                write_report(&report)?;
                 return Ok(ExitCode::SUCCESS);
             }
-            let report = snapshots.restore(&id, to, &workspace)?;
-            println!(
+            let report_done = snapshots.restore(&id, to, &workspace)?;
+            let _ = writeln!(
+                report,
                 "restored {} file(s), removed {} created file(s) (turns {:?})",
-                report.restored, report.deleted, report.turns
+                report_done.restored, report_done.deleted, report_done.turns
             );
-            for refused in &report.refused {
-                println!("skipped {refused}");
+            for refused in &report_done.refused {
+                let _ = writeln!(report, "skipped {refused}");
             }
         }
     }
 
+    write_report(&report)?;
     Ok(ExitCode::SUCCESS)
 }
+
+/// Flush `show`'s output in chunks rather than buffering one enormous string.
+const REPORT_FLUSH_AT: usize = 1 << 16;
 
 /// Store an API key in the platform key store and tell the user what to paste.
 ///
@@ -269,4 +323,47 @@ pub(crate) fn store_key(
 
     let _ = provider;
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_all_report;
+    use std::io::{self, Write};
+
+    /// A writer that always fails the same way, standing in for stdout after the
+    /// reader of a pipe has gone away.
+    struct Failing(io::ErrorKind);
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `qc sessions list | head -40` must not panic. Before this, `println!`
+    /// died inside the stdlib on the closed pipe.
+    #[test]
+    fn a_closed_pipe_is_not_an_error() {
+        let mut closed = Failing(io::ErrorKind::BrokenPipe);
+        assert!(write_all_report(&mut closed, "some report\n").is_ok());
+    }
+
+    /// Every other write failure is still a failure: a full disk must not look
+    /// like a successful listing.
+    #[test]
+    fn other_write_failures_are_reported() {
+        let mut disk = Failing(io::ErrorKind::StorageFull);
+        let error = write_all_report(&mut disk, "some report\n").expect_err("must fail");
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+    }
+
+    #[test]
+    fn a_normal_write_succeeds() {
+        let mut buffer: Vec<u8> = Vec::new();
+        write_all_report(&mut buffer, "hello\n").expect("write");
+        assert_eq!(buffer, b"hello\n");
+    }
 }
