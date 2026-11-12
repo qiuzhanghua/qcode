@@ -82,7 +82,7 @@ pub(crate) async fn cmd_gui(
         "this build has no GUI support; rebuild with `cargo build -p qcode --features gui`, 
         or download the desktop build (qcode-desktop)"
     );
-    Ok(ExitCode::from(2))
+    Ok(exit_code(2))
 }
 
 #[cfg(feature = "gui")]

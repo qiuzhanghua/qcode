@@ -8482,3 +8482,96 @@ binary file; refusing to read as text
   `--image` 也答「红色」，见上）。
 - 单测：工具层 3 个（图片按内容识别、伪装扩展名双向、非图片二进制仍拒），
   history 2 个（图片重放成 user 消息、blob 丢失时只丢图不丢轮次）。
+
+## ADR-0082：首末两条会话日志、文件 `info` / 终端 `warn` 的默认级别、`qc logs` 显示本地时间（2026-11-13）
+
+**背景**
+
+ADR-0077 把日志落到 `logs/qc.log`，ADR-0079 把 38 处 `eprintln!` 归入 `tracing`。让文件可用
+之后，暴露出三件彼此独立、但都指向「这份日志还不够当记录用」的事：
+
+1. **无法判断一次运行有没有跑完。** 从 `.desktop` 启动时没有终端可回滚，ACP 客户端关闭时
+   也没有；拿到一份 `qc.log`，第一个问题总是「它到底起来过没有、怎么没的」。32 条 `info!`
+   里没有一条标出边界，`INFO acp server starting` 之后断掉，看不出是正常退出还是被杀。
+2. **默认 `warn` 让文件几乎为空。** 只留告警的日志回答不了「它做了什么」。而 `warn` 这个
+   默认值当初是为「GUI 启动不要有迁移噪音」定的（见本文件 8015 行一带），那个顾虑只在
+   **终端**上成立——桌面用户根本没有终端。
+3. **时间戳是 UTC。** 东八区的用户看自己十分钟前的日志，读到的是「昨天 15 点」。而且
+   日轮转也是 UTC 切的，两者若只改一个，文件名与内容会系统性错开 8 小时。
+
+**决定**
+
+### 1. 首末两条 `info!`，带 pid（`qc/src/lifecycle.rs`）
+
+`pid` + `version` + `command` + `data_dir` 起，`pid` + `exit` + `reason` + `uptime_ms` 止。
+`reason` 取值 `normal` / `sigint` / `sigterm` / `sighup` / `panic`。
+
+- **只有这两条带 pid**，其余行不带：GUI 正朝单实例走，逐行 pid 是噪音；需要配对的是边界。
+- **绝不记 argv**。`redact::install()` 在 provider key 解析之后才武装（`qcode-kernel/src/lib.rs`），
+  启动那一刻脱敏是空的，`qc run --api-key sk-…` 会原样落盘。只记子命令名。
+- **位置必须在 `attach_file()` 之后**。`FileTarget::Nowhere` 会丢弃 attach 之前的写入，把首条
+  放在 `init()` 后等于写了不落盘——需求会静默失效。
+- 覆盖：`main` 的单一漏斗（所有 `cmd_*` 的 `Result` 汇到这里）、`SIGTERM`/`SIGHUP`、panic hook、
+  连按两次 Ctrl-C 的 `exit(130)`。`SIGTERM` 那条是最主要的实际死法：ACP 被编辑器关掉。
+- **信号处理不在 handler 自己的栈上打日志**：`tracing` 写端要拿锁，handler 打断的正是持锁
+  线程就会死锁在退出路径上。异步信号走 tokio（在普通任务上投递），Windows 控制台回调是没有
+  替代方案的那个例外，已在代码里注明。
+- **`ExitCode` 没有取值接口**，所以在 4 处构造非零码的地方用一个 `note_exit_code` 小通道
+  把数字带出来，而不是改所有 `cmd_*` 的返回类型。
+
+### 2. 硬杀靠「下次启动补账」
+
+`SIGKILL`、`TerminateProcess`、OOM 不跑任何代码。`report_orphans` 在启动时扫当前日志尾部
+（256 KB），发现**有 start 没有 end** 的 pid 就补一条 `warn`。这比在退出路径上再聪明都值钱：
+缺失的 end 本身就是信号，而下次启动是唯一能报告它的地方。
+
+单实例 GUI 落地时要注意：**「已有实例在跑、本进程立刻退出」也必须走漏斗**，否则它写了 start
+不写 end，下次启动会误报异常结束。
+
+### 3. 默认级别 `info`，且文件与终端**分开**
+
+文件 `info`、终端 `warn`。判断依据是去向不同：文件是事后唯一的记录，终端是交互时的噪音源。
+
+- 显式设置（`RUST_LOG` 或 `[log] level`）**同时作用于两者**——写 `RUST_LOG=debug` 的人就是
+  要盯终端，把它按回 `warn` 会让这个逃生口失效。
+- 只有「谁都没说」的情况才分叉。为此 `[log] level` 的类型从 `String` 改成 `Option<String>`：
+  必须能区分「没写」与「写了 warn」。这是本次唯一改到配置类型的地方，缺省行为不变。
+- **两处默认值都要改**：`logging.rs` 的常量，和 `config` 的 `default_log_level`。只改前者
+  没有任何效果，因为 serde 总是把配置填满。
+
+### 4. 时间戳：存储 UTC，`qc logs` 显示本地
+
+选「显示时转换」而不是「存本地」：
+
+- `tracing-appender` 的 `now()` 在生产构建里写死 `OffsetDateTime::now_utc()`（`now` 字段只在
+  `#[cfg(test)]` 下存在，builder 没有接口可换），**日轮转边界改不了**。若只把内容改成当地时间，
+  东八区每天 00:00–08:00 会出现「文件名说今天、内容是昨天」。
+- 要两者一致就得自己接管日轮转 + 7 天清理 + 软链，为的只是文件名好看。
+
+代价照实说：文件里仍是 UTC，`cat`、粘贴给别人、`grep` 看到的都是 UTC；`qc logs` 的输出与原
+文件不再逐字节相同。
+
+实现用 `chrono::Local`（已在锁文件与缓存里，是 GUI 栈的传递依赖，**不新增下载**），
+**逐行查偏移**而不是启动时定一次——后者跨 DST 会错一小时。`time` 的 `local-offset` 特性没有
+选：它会拉 `num_threads`，且 `tracing-subscriber` 的 `LocalTime` 在取不到偏移时返回
+`fmt::Error`，会把整条日志吞掉。
+
+非时间戳开头的行原样输出；解析失败也原样输出——**宁可显示 UTC，也不丢行**。
+
+**验证**
+
+- 单测 12 个（`logs::tests`）+ 9 个（`lifecycle` + `logging`）：边界配对、补账只认最后一条未
+  完成、无关行不误判、end 只写一次、默认分叉、显式级别作用于两者、半个时区不取整。
+- 「没写死时区」这条做了变异测试：把 `chrono::Local` 换成 `FixedOffset::east(8h)`，在
+  `TZ=America/New_York` 下立即红。注意它在东八区本机会**通过**——所以这条的保护实际来自
+  CI 跑在 UTC。
+- 端到端：正常退出 `exit=0`、`qc gui` 无特性 `exit=2`、`SIGTERM` 得到 `exit=143 reason=sigterm`、
+  伪造「有 start 无 end」的日志后启动确实补出 `warn`、`TZ` 取五个值（含 `+05:30` 与负偏移）
+  各自正确、DST 冬夏各算各的。
+- 全量 1220 passed / 0 failed；fmt 干净；clippy `--workspace --all-targets -D warnings` 零诊断。
+
+**未覆盖**
+
+`qc logs` 自己仍然不 attach 文件（ADR-0077 的理由：读取时不该创建被读的文件），所以它的边界
+行只在终端。`qc-eval` 是另一个二进制，本次不动。两个 `qc acp` 并发写同一份日志时，中间行仍
+分不清归属——边界行能配上，逐行身份要等单实例或文件锁。

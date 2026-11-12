@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 use std::io;
 use std::io::{Seek as _, Write as _};
 
@@ -58,7 +59,7 @@ pub(crate) fn cmd_logs(
             .map_err(|error| format!("cannot read {}: {error}", current.display()))?;
         let skip = text.lines().count().saturating_sub(args.lines);
         for line in text.lines().skip(skip) {
-            println!("{line}");
+            println!("{}", local_time(line));
         }
         // Everything shown so far must not be shown again by the first poll.
         follower.skip_to_end();
@@ -90,7 +91,7 @@ fn follow_forever(follower: &mut Follower) -> Result<(), Box<dyn std::error::Err
                     }
                 }
                 if !update.text.is_empty() {
-                    if write!(out, "{}", update.text).is_err() {
+                    if write!(out, "{}", local_times(&update.text)).is_err() {
                         return Ok(());
                     }
                     // Flush per poll: the reader is a human or a pipe, not a
@@ -109,6 +110,65 @@ fn follow_forever(follower: &mut Follower) -> Result<(), Box<dyn std::error::Err
         }
         std::thread::sleep(FOLLOW_INTERVAL);
     }
+}
+
+/// Rewrite a log line's leading UTC timestamp into local time (ADR-0082).
+///
+/// The file stays UTC — the rotation boundary is UTC and cannot be moved without
+/// taking over the appender, so a file whose contents were local would have a name
+/// that disagreed with its contents for eight hours a day in CST. Converting at
+/// the moment of display keeps one source of truth and shows the reader a time
+/// they can compare with their own clock.
+///
+/// `+08:00` is deliberately part of the output: a local wall-clock time with no
+/// offset is ambiguous the moment the log is pasted into a bug report or crosses a
+/// DST change.
+///
+/// Anything that is not a leading RFC 3339 timestamp is returned untouched, so a
+/// separator line or a continuation stays readable — and a timestamp that fails to
+/// parse is never dropped, only left as it was.
+fn local_time(line: &str) -> Cow<'_, str> {
+    local_time_in(line, &chrono::Local)
+}
+
+/// [`local_time`] with the zone supplied.
+///
+/// Split out so the conversion can be tested against a zone the test picks, rather
+/// than whichever one the machine happens to run in. A test that asserts
+/// `+08:00` because the developer sits in CST proves nothing about the code and
+/// fails on CI; one that asserts against an explicit zone proves the offset comes
+/// from the argument and is not baked into the function.
+fn local_time_in<'a, Tz: chrono::TimeZone>(line: &'a str, tz: &Tz) -> Cow<'a, str>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some((stamp, rest)) = line.split_once(' ') else {
+        return Cow::Borrowed(line);
+    };
+    let Ok(utc) = chrono::DateTime::parse_from_rfc3339(stamp) else {
+        return Cow::Borrowed(line);
+    };
+    let local = utc
+        .with_timezone(tz)
+        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, false);
+    Cow::Owned(format!("{local} {rest}"))
+}
+
+/// [`local_time`] applied line by line, keeping the trailing newlines.
+///
+/// The follower hands over a ready-to-print block, so the newlines are part of the
+/// contract: dropping one would join two events on one line.
+fn local_times(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        out.push_str(&local_time(body));
+        out.push_str(newline);
+    }
+    out
 }
 
 /// What one [`Follower::poll`] found.
@@ -229,6 +289,108 @@ impl Follower {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The conversion has to preserve the instant and say which offset it used.
+    ///
+    /// Asserted against the parsed value, not against a fixed string, so the test
+    /// does not depend on which timezone runs it — the failure mode a host-clock
+    /// test would have.
+    #[test]
+    fn a_utc_timestamp_is_shown_in_local_time() {
+        let line = "2026-11-12T23:03:37.428189Z  INFO qc::lifecycle: boom";
+        let shown = local_time(line);
+        let (stamp, rest) = shown.split_once(' ').expect("timestamp and message");
+        let parsed = chrono::DateTime::parse_from_rfc3339(stamp).expect("still RFC 3339");
+        assert_eq!(
+            parsed.to_utc(),
+            "2026-11-12T23:03:37.428189Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap(),
+            "the instant must not move, only its presentation: {shown}"
+        );
+        // The invariant that makes the output portable: the offset shown is the
+        // one the system reports *for that instant*. A hardcoded `+08:00` fails
+        // this on any machine set to another zone.
+        use chrono::TimeZone as _;
+        assert_eq!(
+            parsed.offset(),
+            &chrono::Local.offset_from_utc_datetime(&parsed.to_utc().naive_utc()),
+            "the offset must come from the system clock, not from a constant: {shown}"
+        );
+        assert!(
+            stamp.contains('+') || stamp.contains("-0") || stamp.ends_with('Z'),
+            "the offset must be explicit so the line is unambiguous elsewhere: {shown}"
+        );
+        // Two spaces separate the timestamp from the level in the rendered line,
+        // so `rest` legitimately starts with one; what matters is that the message
+        // itself is byte-identical.
+        assert_eq!(
+            rest, " INFO qc::lifecycle: boom",
+            "message must survive untouched"
+        );
+    }
+
+    /// The offset must be looked up per line, not decided once at startup: a DST
+    /// zone shifts by an hour between two lines of the same file. This is why
+    /// `chrono::Local` is used at format time instead of a fixed offset captured
+    /// when the process began — and why `OffsetTime` was rejected for this job.
+    ///
+    /// A zone is supplied rather than assumed so the assertion holds on any host.
+    #[test]
+    fn the_offset_is_looked_up_per_line_not_fixed_at_startup() {
+        // `FixedOffset` cannot express DST, so the two offsets are given directly;
+        // what is under test is that the value comes from the supplied zone.
+        let est = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        let edt = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        let winter = local_time_in("2026-01-15T12:00:00.000000Z  INFO qc: winter", &est);
+        let summer = local_time_in("2026-07-15T12:00:00.000000Z  INFO qc: summer", &edt);
+        assert!(
+            winter.starts_with("2026-01-15T07:00:00-05:00"),
+            "winter: {winter}"
+        );
+        assert!(
+            summer.starts_with("2026-07-15T08:00:00-04:00"),
+            "summer: {summer}"
+        );
+    }
+
+    /// A non-whole-hour zone must not be rounded: `+05:30` is a real offset and a
+    /// `%:z`-less formatter would print it as `+05:00` and be wrong by 30 minutes.
+    #[test]
+    fn a_half_hour_offset_survives() {
+        let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        let shown = local_time_in("2026-11-12T23:03:37.428189Z  INFO qc: probe", &ist);
+        assert!(
+            shown.starts_with("2026-11-13T04:33:37.428189+05:30"),
+            "expected a 30-minute component: {shown}"
+        );
+    }
+
+    /// A line that is not a timestamped event is left exactly as it was —
+    /// separators and continuation lines must not be mangled.
+    #[test]
+    fn a_line_without_a_timestamp_is_untouched() {
+        for line in [
+            "--- rotated to qc.2026-11-13.log ---",
+            "",
+            "no leading time here",
+        ] {
+            assert_eq!(local_time(line), line);
+        }
+    }
+
+    /// Newlines are part of the contract with the follower: dropping one would
+    /// glue two events together on a single line.
+    #[test]
+    fn every_line_is_converted_and_newlines_are_kept() {
+        let text = "2026-11-12T23:03:37.428189Z  INFO a: one\n\
+                    2026-11-12T23:03:38.000000Z  WARN b: two\n";
+        let out = local_times(text);
+        assert_eq!(out.lines().count(), 2);
+        assert!(out.ends_with('\n'), "the trailing newline must survive");
+        assert!(out.contains("INFO a: one"));
+        assert!(out.contains("WARN b: two"));
+    }
 
     /// A data dir with one dated log, so `current_log` finds it without a symlink
     /// (which is how the tests stay platform-neutral — Windows refuses to make one).

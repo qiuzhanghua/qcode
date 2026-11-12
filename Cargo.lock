@@ -5340,6 +5340,7 @@ version = "0.8.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "clap",
  "embed-resource",
  "futures-util",

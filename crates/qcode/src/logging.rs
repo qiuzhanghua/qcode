@@ -43,8 +43,20 @@ pub const CURRENT_LOG: &str = "qc.log";
 /// Daily files to keep, current one included.
 const KEEP_FILES: usize = 7;
 
-/// Level when neither `RUST_LOG` nor `[log] level` says otherwise.
-const DEFAULT_LEVEL: &str = "warn";
+/// Level when nothing says otherwise, for the file.
+///
+/// `info` and not `warn`: the file is the only record of a run for a desktop
+/// launch (there is no terminal to scroll back), and a log that holds nothing but
+/// warnings cannot answer "what did it actually do". The cost is volume, bought
+/// back by the 7-day rotation. See ADR-0082.
+const DEFAULT_LEVEL_FILE: &str = "info";
+
+/// Level when nothing says otherwise, for the terminal.
+///
+/// `warn` while the file sits at `info` is the point of the split: an interactive
+/// `qc run` must not narrate every session it creates over the user's prompt, but
+/// the same run should still leave a usable record behind.
+const DEFAULT_LEVEL_STDERR: &str = "warn";
 
 /// ANSI for the terminal: on, because colour is what makes a log readable at a
 /// glance. Named so [`init`] and its test cannot disagree about the value.
@@ -111,17 +123,21 @@ impl<'a> MakeWriter<'a> for LogFile {
 /// Call this after `Cli::parse` (the level comes from the config file it names)
 /// and before anything that might want to log.
 pub fn init(configured_level: Option<&str>) {
-    let filter = filter_for(&level_spec(configured_level));
+    let (file_spec, stderr_spec) =
+        specs(std::env::var("RUST_LOG").ok().as_deref(), configured_level);
+
+    let stderr_filter = filter_for(&stderr_spec, DEFAULT_LEVEL_STDERR);
+    let file_filter = filter_for(&file_spec, DEFAULT_LEVEL_FILE);
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .event_format(RedactedFormat::new(ANSI_STDERR))
         .with_writer(io::stderr)
-        .with_filter(filter.clone());
+        .with_filter(stderr_filter);
 
     let file_layer = tracing_subscriber::fmt::layer()
         .event_format(RedactedFormat::new(ANSI_FILE))
         .with_writer(LogFile)
-        .with_filter(filter);
+        .with_filter(file_filter);
 
     // `try_init` and not `init`: a second call (a re-exec, a test harness that
     // already installed a subscriber) must not panic the application.
@@ -246,37 +262,46 @@ pub fn current_log(data_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| log_dir(data_dir).join(CURRENT_LOG))
 }
 
-/// `RUST_LOG` > `[log] level` > [`DEFAULT_LEVEL`].
-fn level_spec(configured_level: Option<&str>) -> String {
-    choose_level(std::env::var("RUST_LOG").ok().as_deref(), configured_level)
+/// `RUST_LOG` > `[log] level` > per-destination default.
+///
+/// Returns the two specs, file first. They are the same string whenever the user
+/// said anything explicit — an explicit level is an ask about *this process*, not
+/// about one destination, and `RUST_LOG=debug` must not leave the terminal quiet
+/// when the whole reason to type it was to watch the terminal. Only the absent
+/// case splits (ADR-0082).
+fn specs(rust_log: Option<&str>, configured_level: Option<&str>) -> (String, String) {
+    match explicit_level(rust_log, configured_level) {
+        Some(spec) => (spec.clone(), spec),
+        None => (
+            DEFAULT_LEVEL_FILE.to_string(),
+            DEFAULT_LEVEL_STDERR.to_string(),
+        ),
+    }
 }
 
-/// The precedence rule itself, with the environment passed in.
+/// The level the user actually asked for, if any.
 ///
 /// Split out so it can be tested without mutating `RUST_LOG`: the first version of
 /// these tests did, and the two that touched it raced each other under the
 /// default parallel harness — one would set the variable while the other was
 /// reading it, so a passing run proved nothing and a failing one was a coin flip.
-fn choose_level(rust_log: Option<&str>, configured_level: Option<&str>) -> String {
+fn explicit_level(rust_log: Option<&str>, configured_level: Option<&str>) -> Option<String> {
     if let Some(from_env) = rust_log.map(str::trim).filter(|v| !v.is_empty()) {
-        return from_env.to_string();
+        return Some(from_env.to_string());
     }
     configured_level
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_LEVEL)
-        .to_string()
+        .map(str::to_string)
 }
 
 /// Build the filter, reporting—but surviving—a malformed spec.
-fn filter_for(spec: &str) -> EnvFilter {
+fn filter_for(spec: &str, fallback: &str) -> EnvFilter {
     // A typo in the log level is not worth failing startup over, but it must not
     // pass silently either: say so, then use the default.
     EnvFilter::try_new(spec).unwrap_or_else(|error| {
-        eprintln!(
-            "qcode: [log] level {spec:?} is not a valid filter ({error}); using {DEFAULT_LEVEL}"
-        );
-        EnvFilter::new(DEFAULT_LEVEL)
+        eprintln!("qcode: [log] level {spec:?} is not a valid filter ({error}); using {fallback}");
+        EnvFilter::new(fallback)
     })
 }
 
@@ -340,19 +365,49 @@ mod tests {
     /// beat the config file, because that is the debugging escape hatch people
     /// reach for without editing config.
     ///
-    /// No environment variable is touched: see [`choose_level`].
+    /// No environment variable is touched: see [`explicit_level`].
     #[test]
     fn rust_log_outranks_the_config_file() {
-        assert_eq!(choose_level(Some("debug"), Some("error")), "debug");
-        assert_eq!(choose_level(None, Some("error")), "error");
-        assert_eq!(choose_level(Some("debug"), None), "debug");
+        assert_eq!(
+            explicit_level(Some("debug"), Some("error")).as_deref(),
+            Some("debug")
+        );
+        assert_eq!(
+            explicit_level(None, Some("error")).as_deref(),
+            Some("error")
+        );
+        assert_eq!(
+            explicit_level(Some("debug"), None).as_deref(),
+            Some("debug")
+        );
     }
 
     #[test]
-    fn an_empty_setting_falls_back_to_the_default() {
-        assert_eq!(choose_level(None, None), DEFAULT_LEVEL);
-        assert_eq!(choose_level(None, Some("   ")), DEFAULT_LEVEL);
-        assert_eq!(choose_level(Some(""), Some("")), DEFAULT_LEVEL);
+    fn an_empty_setting_counts_as_absent() {
+        assert_eq!(explicit_level(None, None), None);
+        assert_eq!(explicit_level(None, Some("   ")), None);
+        assert_eq!(explicit_level(Some(""), Some("")), None);
+    }
+
+    /// The defaults split, and that is the whole point of ADR-0082: the file has
+    /// to be a usable record, the terminal has to stay out of the prompt.
+    #[test]
+    fn absent_setting_splits_file_info_from_stderr_warn() {
+        let (file, stderr) = specs(None, None);
+        assert_eq!(file, "info");
+        assert_eq!(stderr, "warn");
+        assert_ne!(file, stderr, "an unsplit default defeats the purpose");
+    }
+
+    /// An explicit ask applies to both: `RUST_LOG=debug` exists to watch the
+    /// terminal, so clamping stderr to `warn` would make the escape hatch useless.
+    #[test]
+    fn an_explicit_level_applies_to_both_destinations() {
+        let (file, stderr) = specs(Some("debug"), None);
+        assert_eq!((file.as_str(), stderr.as_str()), ("debug", "debug"));
+
+        let (file, stderr) = specs(None, Some("error"));
+        assert_eq!((file.as_str(), stderr.as_str()), ("error", "error"));
     }
 
     /// A typo must not take the process down, and must not silently change the
@@ -361,8 +416,8 @@ mod tests {
     fn an_unparsable_level_falls_back_instead_of_panicking() {
         // `EnvFilter` accepts `foo` as a target-only directive, so use a string it
         // genuinely rejects rather than one that merely looks odd.
-        let filter = filter_for("warn=notalevel");
-        assert_eq!(filter.to_string(), DEFAULT_LEVEL);
+        let filter = filter_for("warn=notalevel", DEFAULT_LEVEL_FILE);
+        assert_eq!(filter.to_string(), DEFAULT_LEVEL_FILE);
     }
 
     /// The path `qc logs` prints and the path the appender writes have to be the

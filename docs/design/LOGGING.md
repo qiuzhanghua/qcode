@@ -253,5 +253,48 @@ println!("downloading {}", asset.url);
   就是「桌面用户看不到 stderr」。
 - 默认 `warn` 级别下 GUI 启动**不产生迁移带来的噪音**，文件里只有真实告警
   （含 `wgpu_hal` 的 Vulkan 驱动警告——那正是「窗口画不出来」时要看的东西，保留）。
+  **注：默认级别已于 ADR-0082 改为文件 `info` / 终端 `warn`。** 当时这条顾虑只在终端成立，
+  桌面用户没有终端；文件保持 `info` 才有记录价值。GUI 启动的那几条 `info` 从此会落进文件，
+  这正是它们存在的理由。
 - `cargo test --workspace` 110 个测试二进制通过；`cargo test -p qcode-gui --all-targets`
   通过；clippy（含 `-p qcode --features gui`、`-p qcode-gui`）与 fmt 干净。
+
+## 会话边界与级别分层（ADR-0082）
+
+`tracing` 接进来之后，日志文件才第一次**可用**；可用之后立刻显出三处不足，这一节记结论。
+
+### 两个去向，两个默认级别
+
+| 去向 | 默认 | 理由 |
+|---|---|---|
+| `logs/qc.log` | `info` | 桌面启动没有终端可回滚，文件是唯一的记录；只有告警的日志回答不了「它做了什么」 |
+| stderr | `warn` | 交互时不该把每条 `session created` 念到用户提示符上 |
+
+显式设置（`RUST_LOG` 或 `[log] level`）同时作用于两者：写 `RUST_LOG=debug` 的人就是要盯终端。
+只有「谁都没说」才分叉，所以 `[log] level` 的类型是 `Option<String>`——必须能区分「没写」与
+「写了 `warn`」。
+
+⚠️ 默认值有**两处**：`qcode/src/logging.rs` 的常量与 `qcode-kernel` 的 `default_log_level`。
+只改前者没有效果，serde 会把配置填满。
+
+### 边界行
+
+```
+INFO qc::lifecycle: qc session starting pid=313667 version="0.8.7" command=acp data_dir=/…
+INFO qc::lifecycle: qc session ending   pid=313667 exit=143 reason=sigterm uptime_ms=3994
+```
+
+- 只有这两条带 pid；`reason` ∈ `normal` / `sigint` / `sigterm` / `sighup` / `panic`。
+- **不记 argv**：启动时 `redact::install` 还没武装，`--api-key` 会原样落盘。只记子命令名。
+- 必须在 `attach_file()` 之后——之前写的会被 `FileTarget::Nowhere` 丢掉，等于写了不落盘。
+- `qc logs` 自己豁免（读取不该创建被读的文件），它的边界行只在终端。
+
+**硬杀（`SIGKILL`/`TerminateProcess`/OOM）不跑任何代码**，靠下次启动补账：扫日志尾部 256 KB，
+发现「有 start 无 end」就补一条 `warn`。
+
+### `qc logs` 显示本地时间
+
+文件保持 UTC（轮转边界是 UTC 硬编码，改不了），显示时转本地。逐行查偏移，不是启动时定一次
+——后者跨 DST 会错一小时。非时间戳行与解析失败的行原样输出：宁可显示 UTC，不丢行。
+
+代价：`cat`/`grep`/粘贴给别人的仍是 UTC，`qc logs` 的输出与原文件不逐字节相同。见 ADR-0082。

@@ -344,7 +344,7 @@ pub(crate) async fn cmd_run(
         {
             eprintln!("[update] {notice}");
         }
-        return Ok(ExitCode::from(EXIT_PAUSED));
+        return Ok(exit_code(EXIT_PAUSED));
     }
 
     if outcome.cancelled {
@@ -356,10 +356,10 @@ pub(crate) async fn cmd_run(
                 "[timeout] turn exceeded {}s; cancelled",
                 timeout.unwrap_or_default()
             );
-            return Ok(ExitCode::from(124));
+            return Ok(exit_code(124));
         }
         eprintln!("[cancelled] turn interrupted; the event log is intact");
-        return Ok(ExitCode::from(130));
+        return Ok(exit_code(130));
     }
 
     if !json {

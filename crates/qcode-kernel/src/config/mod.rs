@@ -147,27 +147,22 @@ pub struct Config {
 /// The file is not configurable on purpose. `logs/qc.log` is one stable path
 /// next to the data the user already has, and `qc logs` prints it; a knob here
 /// would only give users a way to lose track of their own logs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct LogConfig {
     /// Verbosity as an [`EnvFilter`] spec: `info`, `warn`, or per-module such as
     /// `qcode_gui=debug,warn`. `RUST_LOG` overrides this.
     ///
-    /// An unparsable value falls back to `warn` rather than failing startup: a
-    /// typo in the log level must never be the reason the agent cannot run.
-    #[serde(default = "default_log_level")]
-    pub level: String,
-}
-
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            level: default_log_level(),
-        }
-    }
-}
-
-fn default_log_level() -> String {
-    "warn".to_string()
+    /// `None` when the key is absent, and that difference is load-bearing: absent
+    /// means "use the per-destination defaults" (the file at `info`, so the log is
+    /// a usable record of a run; stderr at `warn`, so an interactive command stays
+    /// quiet). A value here is an explicit ask and applies to both destinations —
+    /// see ADR-0082.
+    ///
+    /// An unparsable value falls back to those same defaults rather than failing
+    /// startup: a typo in the log level must never be the reason the agent cannot
+    /// run.
+    #[serde(default)]
+    pub level: Option<String>,
 }
 
 /// `[terminal]`: how `qc gui` starts its shells (ADR-0062 §10).

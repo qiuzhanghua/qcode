@@ -1,5 +1,6 @@
 mod agents;
 mod doctor;
+mod lifecycle;
 mod logging;
 #[cfg(windows)]
 mod sandbox_probe;
@@ -57,7 +58,7 @@ async fn run() -> ExitCode {
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let log_level = qcode_kernel::load_config(config.clone(), &workspace)
         .ok()
-        .map(|loaded| loaded.log.level);
+        .and_then(|loaded| loaded.log.level);
     logging::init(log_level.as_deref());
 
     // The file lives in the data directory, so it has to wait for that path. The
@@ -69,8 +70,14 @@ async fn run() -> ExitCode {
     // `qc.<date>.log` and the `qc.log` symlink, so the reader would manufacture the
     // very file it is about to report as absent. Its own diagnostics are not worth
     // that — a command whose job is to show a file should not write to it.
-    if !matches!(command, Some(Command::Logs(_))) {
-        logging::attach_file(&qcode_kernel::data_dir_hint(data_dir.clone()));
+    //
+    // The same exemption covers the lifecycle lines: they are only worth writing
+    // if they persist, and for this command nothing persists.
+    let logs_command = matches!(command, Some(Command::Logs(_)));
+    if !logs_command {
+        let data_dir = qcode_kernel::data_dir_hint(data_dir.clone());
+        logging::attach_file(&data_dir);
+        lifecycle::start(command_name(&command), &data_dir);
     }
 
     let result = match command {
@@ -106,11 +113,49 @@ async fn run() -> ExitCode {
         None => cmd_tui(data_dir, config, approval_policy, None).await,
     };
 
-    match result {
+    let code = match result {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
             ExitCode::FAILURE
         }
+    };
+
+    // One funnel, so no ordinary return can skip the end line. The panic and
+    // signal paths write their own (see `lifecycle`), and the guard there keeps
+    // this from doubling it.
+    let exit = if code == ExitCode::SUCCESS { 0 } else { 1 };
+    lifecycle::finish(exit);
+    code
+}
+
+/// The subcommand's name, for the start line.
+///
+/// Deliberately a name and not `std::env::args()`: see the module docs — at this
+/// point the credential redactor is not armed yet, and argv is where an
+/// `--api-key` would be.
+fn command_name(command: &Option<Command>) -> &'static str {
+    match command {
+        Some(Command::Run(_)) => "run",
+        Some(Command::Resume(_)) => "resume",
+        Some(Command::Sessions(_)) => "sessions",
+        Some(Command::Skills(_)) => "skills",
+        Some(Command::Logs(_)) => "logs",
+        Some(Command::Config(_)) => "config",
+        Some(Command::Mcp(_)) => "mcp",
+        Some(Command::Doctor(_)) => "doctor",
+        Some(Command::ShellEnv(_)) => "shell-env",
+        Some(Command::Update(_)) => "update",
+        Some(Command::Acp) => "acp",
+        Some(Command::Gui) => "gui",
+        #[cfg(windows)]
+        Some(Command::SandboxProbe(_)) => "sandbox-probe",
+        #[cfg(windows)]
+        Some(Command::SandboxRun(_)) => "sandbox-run",
+        #[cfg(windows)]
+        Some(Command::Sandbox(_)) => "sandbox",
+        #[cfg(windows)]
+        Some(Command::Whoami) => "whoami",
+        None => "tui",
     }
 }

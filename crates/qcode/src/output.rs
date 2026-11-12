@@ -188,10 +188,24 @@ pub(crate) fn install_ctrl_c(cancel: CancellationToken) {
                 );
                 cancel.cancel();
             } else {
-                std::process::exit(130);
+                // Through `lifecycle` and not `process::exit`: the second Ctrl-C is
+                // the ordinary way an interactive run dies, and it must leave the
+                // end line behind like any other exit.
+                crate::lifecycle::exit_now(130, crate::lifecycle::Reason::SigInt);
             }
         }
     });
+}
+
+/// An [`std::process::ExitCode`] whose number is also remembered where the end
+/// line can read it.
+///
+/// `ExitCode` deliberately hides its value, so this is how a non-zero code
+/// reaches `lifecycle::finish` without changing every command's return type. Only
+/// the four places that build a non-zero code need it.
+pub(crate) fn exit_code(code: u8) -> std::process::ExitCode {
+    crate::lifecycle::note_exit_code(i32::from(code));
+    std::process::ExitCode::from(code)
 }
 
 /// Whole-turn deadline. It cancels through the same token as Ctrl-C, so a

@@ -36,6 +36,9 @@ futures-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+# `qc logs` shows timestamps in local time (ADR-0082). Not a new download: chrono
+# is already in the lock file and the cache through the GUI stack.
+chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
