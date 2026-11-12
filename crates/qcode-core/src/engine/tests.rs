@@ -5,17 +5,32 @@ fn identical_rounds_are_caught_but_different_ones_reset() {
     let mut guard = ProgressGuard::new();
     assert_eq!(guard.observe("a"), None);
     assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
+    assert_eq!(guard.observe("a"), None);
     assert_eq!(
         guard.observe("a"),
-        Some(3),
-        "the third identical round stops"
+        Some(10),
+        "the tenth identical round stops"
     );
 
     let mut guard = ProgressGuard::new();
     assert_eq!(guard.observe("a"), None);
     assert_eq!(guard.observe("b"), None, "a different call is progress");
     assert_eq!(guard.observe("b"), None);
-    assert_eq!(guard.observe("b"), Some(3));
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), None);
+    assert_eq!(guard.observe("b"), Some(10));
 }
 
 #[test]
