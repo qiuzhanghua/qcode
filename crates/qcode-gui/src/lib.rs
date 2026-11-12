@@ -10,6 +10,7 @@
 pub mod approvals;
 mod attachments;
 pub mod backend;
+pub mod copy_text;
 pub mod dormant;
 pub mod forms;
 pub mod gui_prefs;
@@ -254,6 +255,44 @@ pub fn is_send_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
         keystroke.modifiers.control
     };
     keystroke.key == "enter" && (keystroke.modifiers.platform || secondary)
+}
+
+/// Whether a keystroke is the copy shortcut (Cmd+C, Ctrl+C elsewhere).
+///
+/// No Shift and no Alt: `Ctrl+Shift+C` belongs to the terminal's own copy, and
+/// `Cmd+Alt+…` is the turn navigation. Accepting the modifiers loosely would
+/// make Cmd+Shift+C copy the transcript twice over.
+#[doc(hidden)]
+pub fn is_copy_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
+    is_plain_secondary(keystroke, "c")
+}
+
+/// Whether a keystroke is the select-all shortcut, same platform rule as
+/// [`is_copy_shortcut`].
+#[doc(hidden)]
+pub fn is_select_all_shortcut(keystroke: &gpui_kit::Keystroke) -> bool {
+    is_plain_secondary(keystroke, "a")
+}
+
+/// `Cmd+<key>` on macOS, `Ctrl+<key>` everywhere else, with nothing else held.
+fn is_plain_secondary(keystroke: &gpui_kit::Keystroke, key: &str) -> bool {
+    let (platform, control) = (keystroke.modifiers.platform, keystroke.modifiers.control);
+    let secondary = if cfg!(target_os = "macos") {
+        platform
+    } else {
+        control
+    };
+    secondary
+        && !keystroke.modifiers.shift
+        && !keystroke.modifiers.alt
+        // A macOS Ctrl+C (or a Linux Cmd+C on a keyboard that has one) is not
+        // this shortcut; only the platform's own modifier counts.
+        && !(if cfg!(target_os = "macos") {
+            control
+        } else {
+            platform
+        })
+        && keystroke.key == key
 }
 
 /// The font-zoom keystrokes for one platform.

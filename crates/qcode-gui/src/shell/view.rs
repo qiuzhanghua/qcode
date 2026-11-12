@@ -416,17 +416,17 @@ impl Shell {
         cx.notify();
     }
 
-    /// 记下刚被复制的命令，让按钮短暂显示「已复制」。过期由
+    /// 记下刚被点中的复制按钮，让它短暂显示「已复制」。过期由
     /// `copied_recently` 按时间判断，不需要额外的定时器。
-    pub(crate) fn mark_copied(&mut self, call_id: String, cx: &mut Context<Self>) {
-        self.copied_command = Some((call_id, std::time::Instant::now()));
+    pub(crate) fn mark_copied(&mut self, flash: String, cx: &mut Context<Self>) {
+        self.copied_flash = Some((flash, std::time::Instant::now()));
         cx.notify();
     }
 
-    /// 这条调用的命令刚被复制过吗（1.5 秒内）。
-    pub(crate) fn copied_recently(&self, call_id: &str) -> bool {
-        self.copied_command.as_ref().is_some_and(|(id, at)| {
-            id == call_id && at.elapsed() < std::time::Duration::from_millis(1500)
+    /// 这个复制按钮刚被点过吗（1.5 秒内）。
+    pub(crate) fn copied_recently(&self, flash: &str) -> bool {
+        self.copied_flash.as_ref().is_some_and(|(id, at)| {
+            id == flash && at.elapsed() < std::time::Duration::from_millis(1500)
         })
     }
 

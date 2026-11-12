@@ -168,9 +168,10 @@ pub(crate) struct Shell {
     /// 等宽字体族，从主题里取一次放在这里：渲染层拿不到 `cx`，命令卡片
     /// 要按 shell 脚本的样子排版。
     pub(crate) mono_font: SharedString,
-    /// 最近一次被复制的工具调用 id 与时间。命令卡片上的「复制」按钮点完之后
-    /// 短暂显示「已复制」，一秒的 ticker 会把它刷回原样。
-    pub(crate) copied_command: Option<(String, std::time::Instant)>,
+    /// 最近一次被点中的「复制」按钮的 id 与时间。所有复制按钮（命令、代码块、
+    /// 回答、整轮）共用这一个槽位：点完短暂显示「已复制」，渲染时的 ticker
+    /// 会把它刷回原样。
+    pub(crate) copied_flash: Option<(String, std::time::Instant)>,
     /// Index of the turn whose rail dot has an active hover popover.
     pub(crate) rail_popup: Option<usize>,
     /// Scheduled instant to close the rail popup once both the dot and the
@@ -365,7 +366,7 @@ impl Shell {
             task_menu: None,
             hovered_task: None,
             mono_font,
-            copied_command: None,
+            copied_flash: None,
             rail_popup: None,
             rail_popup_close_at: None,
             transcript_height: std::rc::Rc::new(std::cell::Cell::new(600.0)),

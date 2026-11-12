@@ -105,6 +105,13 @@ impl Render for Shell {
                         entity.update(cx, |shell, cx| {
                             shell.send_prompt(window, cx);
                         });
+                    } else if is_copy_shortcut(&event.keystroke) {
+                        copy_selection(window, cx);
+                    } else if is_select_all_shortcut(&event.keystroke) {
+                        // Only when there is text to select: the transcript is
+                        // the only selectable surface in this window, and the
+                        // composer's own Cmd+A never reaches here.
+                        gpui_kit::base::TextSelection::select_all(window, cx);
                     }
                 }
             })
@@ -218,4 +225,35 @@ impl Render for Shell {
             .child(self.render_schedule_form_dialog(cx))
             .child(self.render_quit_dialog(cx))
     }
+}
+
+/// `Cmd+C` over the transcript: whatever a drag selected, in plain text.
+///
+/// This is a key-down handler and not a [`KeyBinding`], and the reason is
+/// precedence: GPUI ranks bindings by context depth first and by registration
+/// order second, and a binding with no context predicate ties with every
+/// predicate that matches at full depth. The app registers its keys after the
+/// input components do, so a root `cmd-c` would outrank the composer's own
+/// `Copy` and silently break copying inside a text field. A key-down listener
+/// is only reached when no binding handled the keystroke, which is exactly the
+/// case this shortcut is for.
+///
+/// Nothing happens without a selection: the alternative — clearing the
+/// clipboard to "prove" the shortcut fired — destroys text the user copied a
+/// moment ago from somewhere else.
+fn copy_selection(window: &mut Window, cx: &mut gpui_kit::App) {
+    if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+        return;
+    }
+    let text = gpui_kit::base::TextSelection::selected_text(window, cx);
+    // The selection is the rendered text (`SelectionFormat::Plain`), so a drag
+    // over a folded code block copies the twelve visible lines, not the whole
+    // block. That is the price of "what you see is what you copy"; the code
+    // block's own 复制 button is the way to get the full text.
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+    cx.stop_propagation();
 }

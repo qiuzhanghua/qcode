@@ -758,11 +758,34 @@ fn copy_command_button(
     index: usize,
     shell: &Shell,
 ) -> AnyElement {
-    let copied = shell.copied_recently(call_id);
-    let call_id = call_id.to_string();
-    let command = command.to_string();
+    copy_chip(
+        SharedString::from(format!("copy-command-{index}")),
+        call_id.to_string(),
+        "复制",
+        command.to_string(),
+        shell.copied_recently(call_id),
+        entity.clone(),
+    )
+}
+
+/// One copy chip: the shape every「复制」button in the transcript shares, so a
+/// command, a code block, an answer and a whole turn all look and behave the
+/// same way.
+///
+/// `flash` is the id the shell remembers for a moment after a click; that is
+/// what flips the label to「已复制」. `text` is the finished clipboard payload —
+/// the chip never decides *what* to copy, so the choice stays visible at each
+/// call site (and in the pure functions of [`crate::copy_text`]).
+fn copy_chip(
+    element_id: SharedString,
+    flash: String,
+    label: &'static str,
+    text: String,
+    copied: bool,
+    entity: Entity<Shell>,
+) -> AnyElement {
     div()
-        .id(SharedString::from(format!("copy-command-{index}")))
+        .id(element_id)
         .cursor_pointer()
         .rounded(px(5.0))
         .px_2()
@@ -770,13 +793,10 @@ fn copy_command_button(
         .text_size(sp(CAPTION_SIZE))
         .text_color(if copied { rgb(0x4c9a68) } else { rgb(0x8a8a8a) })
         .hover(|style| style.bg(rgba(0x7f7f7f14)).text_color(rgb(0x333333)))
-        .child(if copied { "已复制" } else { "复制" })
-        .on_click({
-            let entity = entity.clone();
-            move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
-                entity.update(cx, |shell, cx| shell.mark_copied(call_id.clone(), cx));
-            }
+        .child(if copied { "已复制" } else { label })
+        .on_click(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            entity.update(cx, |shell, cx| shell.mark_copied(flash.clone(), cx));
         })
         .into_any_element()
 }
@@ -813,8 +833,20 @@ pub(crate) fn markdown_with_folds(
                 // fold toggle the code block loses its bottom corners so the
                 // toggle below reads as one piece with it.
                 let mut block = div().flex().flex_col().gap_0().my_1().pl_4();
+                let flash = format!("code-{key}");
                 let mut code = TextView::markdown(format!("assistant-code-{key}"), fence)
-                    .code_block_actions(|_, _, _| div().into_any_element())
+                    .code_block_actions(code_block_copy_actions(
+                        flash.clone(),
+                        language.clone(),
+                        // The whole block, not `visible`: the fold is a
+                        // reading aid, and a copy button that quietly hands
+                        // back twelve of forty lines would be a trap. (A
+                        // drag-selection is the opposite trade — it copies
+                        // what is on screen; see `copy_selection`.)
+                        body.clone(),
+                        shell.copied_recently(&flash),
+                        entity.clone(),
+                    ))
                     .text_size(sp(CAPTION_SIZE))
                     .line_height(sp(CODE_LINE));
                 if folded {
@@ -831,8 +863,154 @@ pub(crate) fn markdown_with_folds(
             }
         }
     }
+    column = column.child(answer_actions(index, text, shell, entity));
     column.into_any_element()
 }
+
+/// The copy affordances shown inline at a code block's top-right.
+///
+/// Upstream only suppresses its language label when this hook is set
+/// (`TextBlock` paints the language there otherwise), so the hook draws the
+/// language itself and puts the chip beside it.
+///
+/// `copied` is read here, at build time, and not inside the closure: the
+/// closure runs while the view tree is being laid out, and reading the shell's
+/// own entity then is exactly the borrow the render pass is holding.
+fn code_block_copy_actions(
+    flash: String,
+    language: String,
+    body: String,
+    copied: bool,
+    entity: Entity<Shell>,
+) -> impl Fn(&gpui_kit::base::text::CodeBlock, &mut Window, &mut gpui_kit::App) -> AnyElement
++ Send
++ Sync
++ 'static {
+    move |_, _, _| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .when(!language.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(rgb(0x999999))
+                        .child(language.clone()),
+                )
+            })
+            .child(copy_chip(
+                SharedString::from(format!("copy-{flash}")),
+                flash.clone(),
+                "复制",
+                body.clone(),
+                copied,
+                entity.clone(),
+            ))
+            .into_any_element()
+    }
+}
+
+/// The copy chips under an answer: plain text, the markdown source, and — when
+/// the answer belongs to a turn — the whole turn (question included).
+///
+/// The plain-text chip is the default because that is what survives a paste
+/// into a chat window or a document; `Markdown` is there for the other errand,
+/// pasting an answer back into something that reads markdown.
+fn answer_actions(index: usize, text: &str, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
+    if text.trim().is_empty() {
+        return div().into_any_element();
+    }
+    // Converted on every frame the row is rendered. The transcript is
+    // virtualized, so that is a handful of visible answers, not the whole
+    // session — and caching the conversion would have to be invalidated as the
+    // answer streams.
+    let plain = crate::copy_text::plain_text_from_markdown(text);
+    let source = text.trim();
+    let source_differs = plain != source;
+    let plain_flash = format!("answer-{index}");
+    let markdown_flash = format!("answer-md-{index}");
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_start()
+        .gap_1()
+        .mb_1();
+    if !plain.is_empty() {
+        row = row.child(copy_chip(
+            SharedString::from(format!("copy-{plain_flash}")),
+            plain_flash.clone(),
+            "复制",
+            plain,
+            shell.copied_recently(&plain_flash),
+            entity.clone(),
+        ));
+    }
+    // `Markdown` only when it differs from the plain text: an answer with no
+    // marks would otherwise offer two buttons that put the same string on the
+    // clipboard.
+    if source_differs {
+        row = row.child(copy_chip(
+            SharedString::from(format!("copy-{markdown_flash}")),
+            markdown_flash.clone(),
+            "Markdown",
+            source.to_string(),
+            shell.copied_recently(&markdown_flash),
+            entity.clone(),
+        ));
+    }
+    if let Some((turn_index, whole)) = turn_copy_text_for(shell, index) {
+        let flash = format!("turn-{turn_index}");
+        row = row.child(copy_chip(
+            SharedString::from(format!("copy-{flash}")),
+            flash.clone(),
+            "整轮",
+            whole,
+            shell.copied_recently(&flash),
+            entity.clone(),
+        ));
+    }
+    row.into_any_element()
+}
+
+/// The turn whose final answer is this block, plus the plain text of the whole
+/// turn (question then answer).
+///
+/// The answer's own block index is the only handle `block_row` has, so the turn
+/// is found by searching for the turn that claims it. That costs one linear
+/// scan per assistant block per frame, which is cheaper than threading a turn
+/// index through `block_row` and every one of its callers.
+fn turn_copy_text_for(shell: &Shell, answer_block: usize) -> Option<(usize, String)> {
+    let turn_index = shell
+        .ui
+        .app
+        .turns
+        .iter()
+        .position(|turn| turn.answer_block == Some(answer_block))?;
+    let turn = &shell.ui.app.turns[turn_index];
+    let question = turn
+        .input_block
+        .and_then(|block| shell.ui.app.blocks.get(block))
+        .and_then(|block| match block {
+            Block::User { text, .. } => Some(text.as_str()),
+            _ => None,
+        });
+    let answer = shell
+        .ui
+        .app
+        .blocks
+        .get(answer_block)
+        .and_then(|block| match block {
+            Block::Assistant(text) => Some(text.as_str()),
+            _ => None,
+        });
+    let whole = crate::copy_text::turn_copy_text(question, answer);
+    (!whole.is_empty()).then_some((turn_index, whole))
+}
+
 pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> AnyElement {
     if index >= shell.ui.app.blocks.len() {
         return div()
