@@ -511,7 +511,7 @@ impl SetupView {
         self.prefs.font_size = next;
         crate::FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
-            eprintln!("qcode-gui: cannot save gui.json: {error}");
+            tracing::warn!(%error, "cannot save gui.json");
         }
         self.prefs.apply(cx);
         // Keep the form's Font size field in sync so a later edit of another

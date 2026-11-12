@@ -1461,15 +1461,13 @@ impl Shell {
                 }
                 input_box
                     .on_key_down(move |event, window, cx| {
-                                        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-                                            eprintln!(
-                                                "qcode-gui key: key={} platform={} secondary={} shift={}",
-                                                event.keystroke.key,
-                                                event.keystroke.modifiers.platform,
-                                                event.keystroke.modifiers.secondary(cx),
-                                                event.keystroke.modifiers.shift,
-                                            );
-                                        }
+                                        tracing::debug!(
+                                            key = %event.keystroke.key,
+                                            platform = event.keystroke.modifiers.platform,
+                                            secondary = event.keystroke.modifiers.secondary(cx),
+                                            shift = event.keystroke.modifiers.shift,
+                                            "key"
+                                        );
                                         if is_send_shortcut(&event.keystroke) {
                                             entity.update(cx, |shell, cx| {
                                                 shell.send_prompt(window, cx);

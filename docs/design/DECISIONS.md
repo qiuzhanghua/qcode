@@ -8052,10 +8052,10 @@ qcode 是多进程的，这是本设计的硬约束：
 
 **不在本文范围内**
 
-1. **`eprintln!` 的 71 处不做迁移。** 本文只要求它们**最终**归一，并先产出
-   分类表（哪些是面向用户的产物、哪些是日志）。理由同 cot_cli 的教训：
-   `output-streams.md` 审计了 68 处，其中 **23 处是该留在 stdout 的产物**——
-   一律改成日志是错的。分类表见 `docs/design/LOGGING.md`。
+1. **`eprintln!` 的迁移**分两步做完：本文只产出分类表
+   （`docs/design/LOGGING.md`），理由是 cot_cli 的教训——`output-streams.md` 审计了
+   68 处，其中 **23 处是该留在 stdout 的产物**，一律改成日志是错的。分类之后的迁移见
+   [ADR-0079](#adr-0079eprintln-迁移d-类-38-处归入-tracing2026-11-12)。
 2. **`Redactor` 接成 `Layer`** 单独立项，已完成 —— 见 [ADR-0078](#adr-0078凭证脱敏接进日志格式化不再靠调用点记得2026-11-12)。
    当时拆开是因为它是安全项，与输出流归属是两件事，混在一起会让两边的回归测试都变模糊。
 3. **`qc logs` 的 `--follow`** 不做，`tail -f` 已经够。
@@ -8203,3 +8203,113 @@ secret 集合为空时（CLI 没解析到 key、或 keyless provider）直接透
   接上了」。而被删的正是整件事的核心接线。补上之后再删同一行，集成测试立刻在
   `base_url` 断言处分红；去掉 `run.rs` 那处手调，则在同一测试的 stderr 断言处分红。
   教训写在这里而不是只留在提交信息里：**单测覆盖零件，装配线要另外覆盖。**
+
+## ADR-0079：`eprintln!` 迁移——D 类 38 处归入 `tracing`（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+ADR-0077 立了规矩（`stdout` = 产物，`stderr` = 叙述），并把 74 处 `eprintln!` 分成
+A（保留）/ D（该迁）两类，产出分类表 `docs/design/LOGGING.md`。当时**只分类不迁移**，
+理由是「有一半的判断是这条消息到底该不该存在，那是产品判断」。
+
+现在做迁移。目标不是「把 `eprintln!` 换成 `tracing`」，而是让诊断类消息**能落盘**：
+桌面用户从 `.desktop` 启动时看不到 stderr，`qc.log` 是他们唯一的机会。
+
+**范围**
+
+`qcode-gui` 优先：它的生产代码 `eprintln!` 全属 D 类，可见性最差、歧义最小。顺带清掉
+`qcode` 的 `commands/gui.rs`（6 处）、`qcode-core/src/store.rs`（1 处），以及分类表
+「顺手记下的问题」里那几条。
+
+结果：**38 处迁移**，剩余 33 处全部为 A 类，D 类归零。明细见 LOGGING.md「迁移结果」。
+
+**`qcode-gui` 原本没有 `tracing` 依赖**
+
+一处都没有。加进 `Cargo.toml`，并确认 `qc gui` 是**同进程**调用 `qcode_gui::run`
+（不是 fork 一个子进程），所以 GUI 的事件和 CLI 走同一个订阅器、进同一个
+`logs/qc.log`。这决定了整件事是否成立，写在依赖旁边。
+
+**三个分类表没覆盖到的判断**
+
+**1. 用户输入校验失败不能用 `warn`。**
+
+分类表把 `setup/save.rs` 的 5 处都算 `warn`。但其中两处是表单/标量值"还不合法"，
+**每次防抖窗口都会触发**——用户把 URL 打到一半就报一次。而原因已经显示在设置页顶部。
+放 `warn` 会让真正的写盘失败淹没在输入噪音里。所以：
+
+| 位置 | 性质 | 级别 |
+|---|---|---|
+| `save.rs:484,533,580` | 写 `config.toml`/`gui.json` 失败 | `warn` |
+| `save.rs:494,516` | 用户输入还不合法 | **`debug`** |
+
+判据：**这是我们的失败还是用户的中间状态？** 前者 `warn`，后者 `debug`（且用户已经
+在界面上看到了）。
+
+**2. 撤掉 `QCODE_GUI_KEY_DEBUG`。**
+
+6 处调试探针包在这个环境变量里——它正是「没有级别机制」时的替代品。现在
+`[log] level`/`RUST_LOG` 就是那个机制，两个开关并存只会让下一个人不知道按哪个。
+全部改为 `debug!`，**变量删除**。
+
+这不是纯重构：`QCODE_GUI_KEY_DEBUG` 是 GUI 的一个私有后门，删掉它意味着少一个未
+文档化的开关。净收益——`RUST_LOG=qcode_gui=debug` 本来就能做到同样的事，而且能写进
+配置文件、能被 `qc logs` 之外的读者理解。
+
+**3. 一处探针在记录用户输入。**
+
+`send_prompt` 原本记 `value.chars().take(20)`：用户输入的前 20 个字符。ADR-0077 之前
+它一闪而过，之后它会**在文件里躺 7 天**。而它没有诊断价值——判断「prompt 没发出去」
+靠的是 `len` 和 `running`，不是用户打了什么字。改成只记长度和状态。
+
+这是迁移过程中唯一一次「顺手改掉行为」，理由是和 ADR-0078 同一个：落盘改变了泄漏的
+代价，原来无害的东西现在不是。
+
+**一处刻意不删**
+
+`render/mod.rs` 根节点的 `on_mouse_down` 里只有一个 `eprintln!("root mouse down")`，
+是标准的调试残留。日志删了，**注册保留**（空闭包 + 注释说明原因）。
+
+根节点是否消费鼠标按下会影响焦点与事件冒泡，而这是 GUI 行为，无法用单测验证，
+我也没有交互式证据。删一行打印是安全的，删一个监听器是没法验证的行为变更——不在这篇
+ADR 的业务范围内。
+
+**顺带修的（分类表「顺手记下的问题」）**
+
+- `commands/gui.rs` 的 `" WARN config directory …"` 手搓级别名（还带前导空格）→
+  `tracing::warn!`。`RUST_LOG` 现在能管它，`grep WARN` 也能找到它。
+- 同文件里 `config=` 路径**打印了两次**（一次带 source、一次裸的）→ 合并成一条带
+  `source` 字段的 `info!`。第二次本来就没告诉读者任何新东西。
+
+**验证（这次唯一有意义的验收是「GUI 真的写了日志」）**
+
+单测在这里帮不上忙——迁移的理由就是「桌面用户看不到 stderr」，所以必须真的跑起来看：
+
+```
+DISPLAY=:1 RUST_LOG='qcode_gui=debug,qc=info' qc --data-dir … gui
+→ 2026-11-12T06:03:17Z INFO  qc::commands::gui: gui: config discovered config=… source="flag"
+→ 2026-11-12T06:03:17Z INFO  qc::commands::gui: gui: config resolved exists=true provider=mock …
+→ 2026-11-12T06:03:18Z DEBUG qcode_gui::shell: window ready (focus fix + concurrent engine) pid=…
+```
+
+- 默认 `warn` 下 GUI 启动**没有迁移带来的噪音**，文件里只有真实告警（含 `wgpu_hal`
+  的 Vulkan 驱动警告——那正是「窗口画不出来」时要看的东西，保留）。
+- `cargo test --workspace` 110 个测试二进制通过；clippy 覆盖了
+  `-p qcode --features gui`（`gui` 不是默认 feature，只 check `-p qcode` 会漏掉
+  `commands/gui.rs` 里那段 `#[cfg(feature = "gui")]`）与 `-p qcode-gui`。
+
+**两条流程教训**
+
+1. **`gui` 不在默认 feature 里。** 我第一次 `cargo check -p qcode` 通过了，但那**没有
+   编译**被迁移的那段代码。改动落在 `#[cfg]` 后面时，`--features` 是必须的，不是可选的。
+2. **`cargo test --workspace` 会把 `target/debug/qc` 覆盖成不带 GUI 的构建。** 端到端
+   复验时 `qc gui` 直接输出 `this build has no GUI support` 并退出 2，日志文件是空的
+   ——看起来像「迁移没生效」，实际是二进制换了。跑 GUI 验收前必须重新
+   `cargo build -p qcode --features gui`。这类假阴性比真阴性更费时间：它指向错误的方向。
+
+**不在本文范围**
+
+- **A 类 33 处不动**，理由见 LOGGING.md：审批提示必须无条件出现（`RUST_LOG=off` 不能
+  吞掉「按 y 确认」），进度叙述加时间戳纯属噪声。
+- **测试代码 46 处不动**：测试自述用 `eprintln!` 是它们该有的形态。

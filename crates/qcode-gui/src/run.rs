@@ -20,7 +20,10 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             let quit_hook = cx.on_app_quit(|_| {
                 let killed = qcode_tools::child_groups::kill_all();
                 if killed > 0 {
-                    eprintln!("qcode-gui: killed {killed} leftover process group(s) on quit");
+                    // Safe to log at quit time: the file writer is synchronous, so
+                    // this lands before the process ends rather than being dropped
+                    // with an async queue.
+                    tracing::info!(killed, "killed leftover process groups on quit");
                 }
                 async {}
             });

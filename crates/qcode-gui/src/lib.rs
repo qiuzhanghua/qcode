@@ -184,7 +184,7 @@ pub fn zoom_font_global(delta: i32, data_dir: &Path, cx: &mut gpui_kit::App) {
     // Only the size: this path can run while the main window is persisting
     // geometry / last_session into the same file.
     if let Err(error) = GuiPreferences::update(data_dir, |saved| saved.font_size = next) {
-        eprintln!("qcode-gui: cannot save gui.json: {error}");
+        tracing::warn!(%error, "cannot save gui.json");
     }
     prefs.apply(cx);
     // Re-render every window (including the settings window) so the

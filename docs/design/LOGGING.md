@@ -1,7 +1,12 @@
 # 输出流归属：`eprintln!` 分类表
 
-配套 ADR-0077。**本文只分类，不改代码。** 迁移是一次单独的改动，因为它有一半的判断是
-「这条消息到底该不该存在」，那是产品判断，不是机械替换。
+配套 ADR-0077 / ADR-0079。**状态：已迁移完毕。**
+
+本文先只做分类（ADR-0077），再把 D 类迁走（ADR-0079）。分两步是因为有一半的判断是
+「这条消息到底该不该存在」，那是产品判断，不是机械替换——先把它写下来，迁移时才不用
+每处重新争论一遍。
+
+下面是分类时的判断（保留作依据）。**结果见文末「迁移结果」**。
 
 ## 为什么要先分类
 
@@ -81,7 +86,7 @@
 | 4 | `qcode-gui/src/shell/session.rs:24,97,251,383` | `debug` | `new_session handler blocks=…` — 明显是开发期探针 |
 | 2 | `qcode-gui/src/shell/view.rs:517,619` | `warn` | 设置/侧栏状态保存失败 |
 | 1 | `qcode-gui/src/shell/mod.rs:293` | `debug` | `window ready pid=…` |
-| 1 | `qcode-gui/src/render/terminal_view.rs:1119` | `debug` | `capture 100 frames: {:?}` — 基准测试残留 |
+| ~~1~~ | ~~`qcode-gui/src/render/terminal_view.rs:1119`~~ | — | **分类时判错了**：它落在 `#[test] #[ignore] fn capture_cost()` 里，是测试自述，属 A 类。见「迁移结果」 |
 | 1 | `qcode-gui/src/render/main.rs:1465` | `debug` | `key=… platform=…` — 按键探针 |
 | 1 | `qcode-gui/src/render/mod.rs:61` | `warn` | `cannot save window geometry` |
 | 1 | `qcode-gui/src/render/mod.rs:76` | — | `qcode-gui root mouse down` — 调试残留，**建议直接删，不迁移** |
@@ -122,10 +127,64 @@
 
 ## 不在本文范围
 
-- **实际迁移**：等这份表被认可后单独做，按 crate 分批。**先做 `qcode-gui`：它的 32 处
-  生产代码 `eprintln!` 全属 D 类**，而桌面用户对 stderr 的可见性最差——迁移收益最高、
-  歧义最小。
+- **实际迁移**：已完成，见文末「迁移结果」与 ADR-0079。
 - **`Redactor` 接成 `Layer`**：已完成，见 ADR-0078。**这件事改变了上面分类表的一条依据**：
   D 类的理由原本是「桌面用户唯一的可见机会就是落盘」，而落盘的代价是泄漏窗口从
   「stderr 一闪而过」变成「文件躺 7 天」。ADR-0078 补上脱敏之后，这个理由才真正成立。
 - **测试代码的 46 处**：不迁。测试自述用 `eprintln!` 是它们该有的形态。
+
+## 迁移结果（ADR-0079）
+
+### 数字
+
+| | 处数 |
+|---|---|
+| 分类时的「生产代码」grep 命中 | 74 |
+| 其中实为 `#[test]` 内的基准测试（`terminal_view.rs:1119`） | −1 |
+| **真实生产调用** | **73** |
+| ADR-0078 已迁（`logging.rs` 的两处启动失败改为 `debug!`） | −2 |
+| 本轮迁移（分类表的 D 类 39 处，减去上面那个误判） | **−38** |
+| **剩余生产调用** | **33** |
+
+33 处**全部是 A 类**：`output.rs` 8、`approval.rs` 8、`question.rs` 3、
+`commands/run.rs` 5、`qcode-eval` 2、`commands/gui.rs` 1、`commands/misc.rs` 1、
+`commands/settings.rs` 1、`logging.rs` 1、`main.rs` 1、`sandbox_probe.rs` 1、
+`windows_acl.rs` 1。
+
+**D 类剩余 0。** 测试代码 46 处不动。
+
+### 迁移中冒出来的三个判断（分类表没覆盖到的）
+
+**1. 用户输入校验失败不能用 `warn`。** 分类表把 `setup/save.rs` 的 5 处都算作
+`warn`，但其中两处是「表单值还不合法」和「标量值不合法」——**每次防抖窗口都会触发**，
+用户打一个 URL 打到一半就报一次。而它们的原因已经显示在设置页顶部了。放 `warn` 会让
+真正的写盘失败淹没在输入噪音里，所以这两处定为 **`debug`**；另外三处（写 `config.toml`
+/ `gui.json` 真失败）才是 `warn`。
+
+**2. `QCODE_GUI_KEY_DEBUG` 环境变量撤掉了。** 6 处调试探针包在它里面——那正是「没有
+级别机制」时的替代品。现在有 `[log] level`/`RUST_LOG` 了，两个开关并存只会让下一个
+人不知道按哪个。全部改为 `debug!`，变量删除。**GUI 因此少了一个私有开关**，这是
+净收益：`RUST_LOG=qcode_gui=debug` 本来就能做到，而且还能写进配置文件。
+
+**3. 一处探针顺手删掉了用户内容。** `send_prompt` 原本记 `value.chars().take(20)`，
+即用户输入的前 20 个字符。ADR-0077 让日志存活 7 天之后，这成了「把用户的话写进文件」，
+而它没有任何诊断价值——判断「prompt 没发出去」靠的是 `len` 和 `running`，不是用户打了
+什么字。改成只记长度。
+
+### 一处刻意**不**删的东西
+
+`render/mod.rs` 根节点的 `on_mouse_down`：它原本只有一个 `eprintln!("root mouse down")`，
+看起来是标准调试残留。日志删了，但**注册保留**（改成空闭包并注明原因）——根节点是否
+消费鼠标按下会影响焦点和事件冒泡，而这是无法用单测验证的 GUI 行为变更。删掉一行打印是
+安全的，删掉一个监听器不是。
+
+### 验证
+
+- `qc gui` 在本机 X（`:1`）上真跑起来，日志确实落进 `qc.log`：
+  `INFO qc::commands::gui: gui: config discovered …`、
+  `DEBUG qcode_gui::shell: window ready …`。这是这次迁移唯一有意义的验收——迁移的理由
+  就是「桌面用户看不到 stderr」。
+- 默认 `warn` 级别下 GUI 启动**不产生迁移带来的噪音**，文件里只有真实告警
+  （含 `wgpu_hal` 的 Vulkan 驱动警告——那正是「窗口画不出来」时要看的东西，保留）。
+- `cargo test --workspace` 110 个测试二进制通过；`cargo test -p qcode-gui --all-targets`
+  通过；clippy（含 `-p qcode --features gui`、`-p qcode-gui`）与 fmt 干净。

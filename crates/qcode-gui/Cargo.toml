@@ -25,6 +25,10 @@ qcode-image = { version = "0.8.3", path = "../qcode-image" }
 base64.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time", "net"] }
 tokio-util.workspace = true
+# Diagnostics only (ADR-0077 §D). `qc gui` runs in-process, so these events land in
+# the same `logs/qc.log` the CLI writes — which is the only way a desktop user ever
+# gets a diagnostic, since a `.desktop` launch shows them no terminal.
+tracing.workspace = true
 time.workspace = true
 serde_json.workspace = true
 serde.workspace = true

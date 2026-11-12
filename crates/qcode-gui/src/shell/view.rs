@@ -514,7 +514,7 @@ impl Shell {
                     self.settings_hwnd = settings_hwnd.get();
                 }
             }
-            Err(error) => eprintln!("qcode-gui: cannot open settings: {error}"),
+            Err(error) => tracing::warn!(%error, "cannot open settings"),
         }
     }
 
@@ -616,7 +616,7 @@ impl Shell {
         }) {
             // A failed write is not worth a dialog: the window still works, and
             // the next successful write catches up.
-            eprintln!("qcode-gui: cannot save sidebar state: {error}");
+            tracing::warn!(%error, "cannot save sidebar state");
         }
         let _ = cx;
     }

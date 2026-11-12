@@ -5460,6 +5460,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "tracing",
  "windows-sys 0.60.2",
 ]
 
