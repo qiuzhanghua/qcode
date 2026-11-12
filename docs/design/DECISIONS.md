@@ -7802,3 +7802,109 @@ Linux / macOS（`tests/procguard.rs` 已经覆盖了机器能验证的部分，�
   `cargo test --workspace` 在 Linux 上照旧全绿（1156 passed）。
 - 这条缺陷是顺带发现的，与 ADR-0074 的进程清理没有因果关系；写在这里是因为它们
   同一个提交，且都是「一个门装错地方导致另一个平台静默变红」这一类。
+
+## ADR-0076：GNOME 的 dock 图标来自 `.desktop`，不是 `_NET_WM_ICON`（2026-11-12）
+
+**状态**：已实现。代码（`window_icon.rs`）、桌面条目与安装脚本、发布归档都已落地；
+用户目视确认待做。
+
+**问题**
+
+Linux 上 qc 的窗口在左侧 dock 里显示的是主题兜底图标（一个齿轮），macOS 和
+Windows 都正常。README 里没有任何地方提过这件事，代码里也没有任何地方设置过图标。
+
+**先查清楚是谁在画**
+
+第一版的修法是给 `WindowOptions.icon` 塞一张 PNG——gpui 的 X11 后端只在拿到这个
+字段时才写 `_NET_WM_ICON`，而整个 crate 的 `WindowOptions` 都是从
+`..Default::default()` 构造的，`icon` 一直是 `None`。改完 `xprop` 确实能看到
+`_NET_WM_ICON(CARDINAL) = Icon (256 x 256)`，**但 dock 里的齿轮没变**。
+
+于是去查 GNOME 自己怎么选图标，而不是继续猜。`libshell-14.so`：
+
+| 符号 | 出现次数 |
+|---|---|
+| `application-x-executable` | 有（兜底图标名，就是那个齿轮） |
+| `fallback-app-icon` | 有 |
+| `_NET_WM_ICON` | **0** |
+| `meta_window_get_icon` | **0** |
+| `meta_window_get_wm_class` | 有 |
+
+`libshell` 是提供 `ShellApp` 的库。它**完全不读窗口图标属性**，只拿 `WM_CLASS`
+去解析 `.desktop` 文件，再画那个文件的 `Icon=`。`_NET_WM_ICON` 只有「任务栏自己
+画窗口图标」的桌面（KDE、Xfce、Cinnamon）才用。
+
+而我们两样都没有：`WM_CLASS` 从未设置过（`WindowOptions.app_id` 是 `None`，且
+X11 后端的创建路径根本不读它），系统里也没有 `qcode.desktop`。所以 shell 的图标主题
+查询落在 `application-x-executable` 上——齿轮。
+
+**决定**
+
+三件事一起做，因为少一件都是齿轮：
+
+| 层 | 做什么 | 谁读它 |
+|---|---|---|
+| `window.set_app_id("qcode")` | 写 `WM_CLASS`（`window_icon::identify`） | GNOME Shell 解析 `.desktop` 的入口 |
+| `res/linux/qcode.desktop` | `Icon=qcode`、`StartupWMClass=qcode`、`Exec=qc gui` | shell 画图标、点图标启动 |
+| `res/icons/linux/hicolor/*/apps/qcode.png` | 装进图标主题（8 个尺寸） | `Icon=` 的解析目标 |
+
+`_NET_WM_ICON`（`window_icon::attach`）保留：它修的是 KDE/Xfce 那条路径，代价只是
+一次 PNG 解码和 8 KiB 二进制体积。
+
+**为什么必须三处同名**
+
+`WM_CLASS` 的 class 段、`.desktop` 的 basename、`Icon=` 的值必须一致。改其中
+任何一个而没改其他两个，表现是静默的齿轮。所以：
+
+- `window_icon::APP_ID = "qcode"` 是唯一常量，`identify` 从它取值；
+- 一个单测解析**随包提交的** `qcode.desktop`，断言 `Icon=` 和 `StartupWMClass=`
+  都等于 `APP_ID`、`Exec=` 仍是 `qc gui`。变异（把 `StartupWMClass` 改成 `qc`）
+  会让它立刻红。
+
+**补记：装了条目还是齿轮，根因是 `TryExec`**
+
+第一次装上后 `--check` 全绿，但 dock 还是齿轮。取实际像素才确认：dock 里没有任何
+一块是品牌蓝 `#2F6BFF`（48×48 那个蓝块是 `#1A73E8`，别的应用）。
+
+继续查 GIO，而不是猜缓存：`g_desktop_app_info_new_from_filename` 对**装好的那份
+文件**返回 NULL——整条条目被判无效。二分出一行：
+
+| 变体 | GIO |
+|---|---|
+| `Exec=qc gui`（`qc` 不在 PATH） | NULL |
+| `Exec=/abs/path/qc gui` | 有效 |
+| `Exec=/abs/path/qc gui` + `TryExec=qc`（不在 PATH） | **NULL** |
+
+GLib 的规则是：`Exec` / `TryExec` 指向的程序**找不到就丢掉整条条目**（规范里
+`TryExec` 明写「找不到则条目视为无效」）。条目被丢掉，窗口就没有可归属的应用，
+shell 画兜底图标——**表现为「图标没装」，实际是条目无效**。
+
+而当时的安装脚本只重写了 `Exec=`，把 `TryExec=qc` 原样留着，`qc` 又不在 PATH 上
+（开发构建就是 `./target/release/qc`）。所以这个坑对**每一个从源码跑的人**都成立，
+对发行包（`qc` 在 PATH）不成立——这也是它在测试里不容易暴露的原因。
+
+修法：`TryExec` 与 `Exec` 永远一起重写（`try_exec=$exec_cmd`），并在 `--check` 里
+断言两个键都能解析；单测再加一条「`TryExec` 必须与 `Exec` 的程序同名」，变异
+（`TryExec=qc-gui`）即红。
+
+
+**为什么不在程序里自动安装**
+
+`qc` 自己能写 `~/.local/share`，但（a）以用户身份悄悄写用户的 home 是个产品决定，
+不该由修图标顺手做掉；(b) 装上之后发现名字不对，用户既不知道发生了什么也不知道删
+什么。改为 `scripts/install-linux-desktop.sh`：显式、可 `--uninstall`、可 `--check`
+自查，`--system` 支持打包场景。`--check` 会读**每个在跑的实例**的 `WM_CLASS`——
+只读第一个会读到旧二进制，把「没装好」误报成 OK。
+
+**验证**
+
+- 单测 4 条：PNG 解码/正方形/非空白、`attach` 真的写进字段、桌面条目三处同名。
+- `xprop -id <win> WM_CLASS` → `WM_CLASS(STRING) = "qcode", "qcode"`（新二进制）。
+- `desktop-file-validate` 通过；归档内容含 `qc` + `share/applications/qcode.desktop`
+  + `share/icons/hicolor/<8 个尺寸>/apps/qcode.png`。
+- Windows 两个 triple 经 `scripts/ci-cross-check.sh` 类型检查（`identify`/`attach`
+  在那两个平台是恒等函数）。
+- GIO 真值：`g_desktop_app_info_new_from_filename` 对装好的条目返回非 NULL
+  （这是「条目有效」的唯一可信判据，`--check` 的规则与它对齐）。
+- **未验证**：Wayland 会话下的表现（`attach` 被忽略，靠 `.desktop` + 图标主题，
+  理论上与 X11 同路径），以及真机 dock 的目视确认。

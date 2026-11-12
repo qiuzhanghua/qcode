@@ -470,7 +470,7 @@ impl Shell {
         // field is visible without maximizing. Height is 70% of the pre-2026-11
         // 680px so the dialog fits without losing its bottom; the whole window
         // is 10% larger (宽 × 高 = 880 × 476 → 968 × 524).
-        let options = WindowOptions {
+        let options = window_icon::attach(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(280.0), px(120.0)),
                 size(px(968.0), px(524.0)),
@@ -480,7 +480,7 @@ impl Shell {
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        });
         // 记录原生 HWND，供下次点「设置」时原生置顶。
         #[cfg(target_os = "windows")]
         let settings_hwnd: std::rc::Rc<std::cell::Cell<Option<isize>>> =
@@ -488,6 +488,7 @@ impl Shell {
         #[cfg(target_os = "windows")]
         let settings_hwnd_in_open = settings_hwnd.clone();
         let result = gpui_kit::open_window(options, cx, move |window, cx| {
+            window_icon::identify(window);
             window.activate_window();
             #[cfg(target_os = "windows")]
             if let Ok(handle) =

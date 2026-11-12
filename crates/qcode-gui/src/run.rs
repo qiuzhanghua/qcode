@@ -33,7 +33,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             std::mem::forget(quit_hook);
             let (tray, tray_rx) = tray::start();
             let minimize_on_close = tray.is_some();
-            let window_options = match prefs.window_geometry.as_ref() {
+            let window_options = window_icon::attach(match prefs.window_geometry.as_ref() {
                 Some(geometry) => WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(geometry.x), px(geometry.y)),
@@ -50,7 +50,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                     )),
                     ..Default::default()
                 },
-            };
+            });
             let zoom = zoom_keystrokes(cx.platform_info().is_mac());
             cx.bind_keys([
                 // Ctrl+V stays the composer's text paste; image paste is
@@ -125,6 +125,7 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             });
             let (window_handle, shell) =
                 gpui_kit::open_window(window_options, cx, move |window, cx| {
+                    window_icon::identify(window);
                     window.activate_window();
                     if minimize_on_close {
                         // 关闭按钮 = 隐藏到托盘（ADR-0052）；真正退出走托盘/菜单。

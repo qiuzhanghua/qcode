@@ -5426,6 +5426,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "gpui-kit",
+ "image",
  "ksni",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

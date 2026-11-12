@@ -26,6 +26,7 @@ mod shell;
 pub mod task_ops;
 mod terminal;
 pub mod tray;
+mod window_icon;
 pub use backend::{
     Backend, LocalBackend, RebuildFn, RebuildFuture, ScheduleRow, TaskRow, UnconfiguredBackend,
 };

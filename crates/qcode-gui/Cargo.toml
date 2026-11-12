@@ -59,5 +59,9 @@ qcode-terminal = { version = "0.8.3", path = "../qcode-terminal" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # StatusNotifierItem + dbusmenu for the Linux tray (ADR-0052).
 ksni = "0.3.7"
+# Decode the embedded window icon into the `RgbaImage` that gpui's X11 backend
+# turns into the `_NET_WM_ICON` property. Has to be this crate: gpui does not
+# re-export its `image`, and the type has to be the same one it declared.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Decode the embedded PNG tray icons into the ARGB32 IconPixmap payload.
 png = "0.18"
