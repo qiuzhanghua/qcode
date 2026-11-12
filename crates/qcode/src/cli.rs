@@ -352,6 +352,24 @@ pub(crate) enum SessionsCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Remove one or more sessions by id.
+    ///
+    /// `gc` can only drop by age, which does not help when a batch of runs
+    /// polluted the store and the real work is interleaved with it.
+    Delete {
+        /// Session ids to remove. With `--except`, the ids to keep.
+        #[arg(value_name = "ID", required = true, num_args = 1..)]
+        ids: Vec<String>,
+        /// Treat `ids` as the sessions to keep and delete every other one.
+        ///
+        /// Listing what to keep is the shorter and safer form when a few real
+        /// sessions are buried under a pile of test runs.
+        #[arg(long)]
+        except: bool,
+        /// Actually delete; without it, only print what would go.
+        #[arg(long)]
+        yes: bool,
+    },
     /// List the checkpoints (file pre-images) a session recorded.
     Checkpoints { id: String },
     /// Put the workspace back to the state before a turn.

@@ -144,6 +144,58 @@ pub(crate) fn cmd_sessions(
                 report.push_str("dry run; pass --yes to delete\n");
             }
         }
+        SessionsCommand::Delete { ids, except, yes } => {
+            use std::fmt::Write as _;
+            let all = store.list()?;
+            // Every named id must exist. With `--except` a mistyped id would
+            // otherwise mean "keep nothing", i.e. delete the session the user
+            // meant to protect — the exact failure this subcommand exists to
+            // avoid.
+            if let Some(missing) = ids.iter().find(|id| !all.iter().any(|s| &&s.id == id)) {
+                return Err(format!("no such session: {missing}").into());
+            }
+            let doomed: Vec<String> = if except {
+                all.iter()
+                    .filter(|session| !ids.contains(&session.id))
+                    .map(|session| session.id.clone())
+                    .collect()
+            } else {
+                ids.clone()
+            };
+            if doomed.is_empty() {
+                report.push_str("nothing to delete\n");
+            }
+            // Show what a session was, not just its id: the whole point is to
+            // recognise a test run before it goes.
+            for session in all.iter().filter(|s| doomed.contains(&s.id)) {
+                let _ = writeln!(
+                    report,
+                    "{}  turns={}  model={}  cwd={}",
+                    session.id, session.turns, session.started.model, session.started.cwd
+                );
+            }
+            if !yes {
+                let _ = writeln!(
+                    report,
+                    "{} session(s) would be deleted; pass --yes to delete",
+                    doomed.len()
+                );
+            } else {
+                let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
+                let mut removed = 0usize;
+                for id in &doomed {
+                    store.delete_session(id)?;
+                    // `delete_session` drops the log, the index row and any
+                    // task targeting the session; pre-images live in a separate
+                    // tree (`gc` cleans that one the same way).
+                    if let Err(error) = snapshots.remove_session(id) {
+                        let _ = writeln!(report, "cannot remove snapshots for {id}: {error}");
+                    }
+                    removed += 1;
+                }
+                let _ = writeln!(report, "deleted {removed} session(s)");
+            }
+        }
         SessionsCommand::Checkpoints { id } => {
             use std::fmt::Write as _;
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
