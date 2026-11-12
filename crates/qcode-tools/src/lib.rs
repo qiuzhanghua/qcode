@@ -2,6 +2,7 @@
 //! write is atomic (temp file + rename).
 
 pub mod ask;
+pub mod child_groups;
 pub mod diff;
 pub mod fetch;
 pub mod fs;

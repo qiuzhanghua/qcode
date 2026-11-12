@@ -7376,3 +7376,106 @@ data URL 返回 200 且正确描述图片；`POST https://api.deepseek.com/anthr
   光标模型，这次不做。
 - **表格的纯文本形式仍是管道表**。想变成对齐的列，需要按渲染宽度补空格，那是
   `plain_text_from_markdown` 目前故意不碰的东西。
+
+## ADR-0073：退出时杀掉 run_shell 的进程组——detached 线程让 `kill_on_drop` 永不执行（2026-11-12）
+
+**状态**：已实现（2026-11-12）。
+
+**问题**
+
+用户反馈：AI 查 GitHub 状态卡很久时退出 qc，相关进程没被杀死。
+
+查下来不是「取消没送到」——取消链路是好的（`signal_group` 打整个进程组，
+SIGTERM→SIGKILL）。真正的原因是**退出路径根本没有清理这一步**：
+
+1. 引擎跑在 detached 线程上（`runtime.rs:188`，`JoinHandle` 被丢弃、从不 join）。
+2. `cx.quit()` → `run()` 返回 → `main` 返回 `ExitCode` → 进程结束 → 该线程被
+   **直接终止，不展开栈**。
+3. 于是 `run_shell` 与 MCP 上的 `kill_on_drop(true)`（`shell.rs`、`mcp/lib.rs`）
+   **在退出场景里一次都不会跑**。
+4. 全仓没有任何退出钩子：`on_app_quit` / `on_window_closed` / `impl Drop for Shell`
+   全部 grep 为空。
+
+`run_shell` 的子进程因此必然活过 qc，两个条件缺一不可：
+
+- **stdin 是 `/dev/null`**（`shell.rs`）：等不到 EOF；
+- **不写输出**：不会撞上已关闭的管道拿到 EPIPE。
+
+正好是「卡在网络上」的形状。实测（父进程 `_exit` 跳过一切析构）：以 `run_shell`
+的确切方式（`stdin=DEVNULL`、管道、`process_group(0)`）起的
+`sh -c 'sleep 600'` **连同孙子一起存活**，被重挂到 init。
+
+**一个必须记下来的错误结论**
+
+排查时我先断定「MCP server 必然泄漏」，因为它是长驻连接、无进程组、无关闭、
+`kill_on_drop` 又跑不到。**这是错的。** 现场 `ps` 里 `wordcraft-cli mcp` 的父
+进程是一个**活着的** `qc gui`，属于正常状态；而再查上一次那对进程，两个都已消失
+——wordcraft 跟着 qc 死了。
+
+机制是 **stdin EOF**：MCP 的 stdin 是管道，qc 一死内核关掉 fd，守规矩的 MCP
+server 读到 EOF 就自己退出。实测复刻（`wordcraft-cli mcp`，管道 stdio，父进程
+跳过析构）：**t+1s 已退出**。所以这不是 `kill_on_drop` 的功劳，也不需要修。
+`run_shell` 之所以不同，正是因为它把 stdin 指向 `/dev/null`。
+
+**决定**
+
+1. **进程级登记表 + 同步 SIGKILL**（`qcode-tools/src/child_groups.rs`）。
+   `run_shell` 起进程后登记该进程组、命令被 reap 时由守卫注销；退出时
+   `kill_all()` 把还登记的组整组 SIGKILL。同步且微秒级，能塞进
+   `on_app_quit` 的预算（`gpui::SHUTDOWN_TIMEOUT` = **200ms**）——这个预算是
+   硬约束，所以优雅关闭（等 MCP 握手之类）在这里根本不可行。
+   - **SIGKILL 而非 SIGTERM**：整个回合的取消路径已经先发过 SIGTERM 并给了
+     2 秒；还留在这里的说明完全没走到那条路径，没有「以后再来升级」的人了。
+   - **pid==0 不入表**：`kill(0, …)` 打的是 qcode 自己的进程组，正好是这次要
+     避免的反面。
+   - 守卫的 `Drop` 负责注销，是为了**避免 pid 复用**：一个已结束的组若留在表
+     里，退出时可能 SIGKILL 掉一个无关的新进程。
+2. **挂 `on_app_quit`，一处覆盖所有退出路径**（`gui/run.rs`）。包括托盘退出、
+   设置窗口退出、平台自己发起的退出。返回的 `Subscription` **必须 `mem::forget`**
+   ——它是「观察者还注册着」的唯一凭据，落出作用域就等于立刻注销，清理会静默失效。
+3. **`PR_SET_PDEATHSIG` 作为兜底**（`shell.rs` 的 `pre_exec`）。覆盖退出钩子
+   跑不到的情况：崩溃、OOM、`kill -9`。
+   **诚实说明它的边界**：`PR_SET_PDEATHSIG` 不跨 `fork` 继承，只保直接子进程
+   （sandbox 包装器或 `sh`），孙子照样被重挂。所以它是兜底，**不是**修复本身。
+   真正完整覆盖异常退出的是 cgroup v2 的 `cgroup.kill`，但那要用户委托权限，
+   这次不做。
+
+**已验证的、和被否决的**
+
+- `DRAIN_GRACE`（5s×2）与 GUI 的 5s 强退预算不匹配，取消路径最坏 ~14s。**没有
+  改**：退出钩子已经无条件杀掉进程组，drain 随后立刻拿到 EOF，慢的那条腿不再
+  决定泄漏与否。
+- **没有让引擎线程可 join**：那才是最「正确」的修法（`kill_on_drop` 才真正生效），
+  但要动引擎启动方式，且 200ms 装不下优雅关闭。留作后续。
+- **MCP 不加进程组**：查清它靠 stdin EOF 自退后，这一项没有依据。为它加信号只是
+  在解决一个不存在的问题。
+- 窗口 ✕ / `Cmd+W` **不是退出**，是隐藏到托盘（ADR-0052）。那种情况下 qc 和工具
+  都还在跑，属于设计行为——排障时要先用 `ps` 确认 `qc gui` 还在不在。
+
+**验证**
+
+- `qcode-tools/tests/child_groups.rs`（3 条，独立测试二进制：`kill_all` 排空的是
+  **进程级**登记表，会和 `tools.rs` 里并发测试的子进程互相干扰）：
+  `kill_all_takes_down_the_whole_group_including_grandchildren`（shell 先 `echo $!`
+  报出孙子 pid，`kill_all` 后 leader 与孙子都必须消失——只杀 leader 的实现在这一
+  条上会红，已用变异验证：把 `kill(-pid)` 改成 `kill(pid)` 后该测试失败并指名
+  那个孙子）、`a_reaped_group_is_not_left_in_the_registry`、
+  `a_zero_pid_never_enters_the_registry`。
+- `qcode-tools/tests/pdeathsig.rs`（3 条）：测试二进制把自己 re-exec 成 helper 角色
+  （起一个子进程后阻塞），再由测试 `kill -9` 它，子进程的生死就是观测结果。
+  有 signal → 必须死；**无 signal → 必须活**（对照组，证明断言能分辨，否则前一条
+  是巧合）。`helper_spawns_one_child_and_blocks` 在正常跑测时是空操作。
+- `child_groups.rs` 内的两个纯逻辑用例：守卫登记/注销、pid 0 不入表。
+- **未验证的部分**：`pre_exec` 那一行的「接线」本身无法自动化——`PR_GET_PDEATHSIG`
+  只能由进程自己查询，外部无法读出。它只有编译期保证 + 上面那个机制测试。
+
+**待定**
+
+- **手工回归**（自动化够不着，窗口没有可用的 headless 测试）：
+  让 AI 跑一条卡住的命令（`ping -c 100 1.1.1.1` 即可），从托盘退出 qc，确认
+  `ps -eo pid,ppid,cmd | awk '$2==1'` 里没有残留的 `ping`/`sh`。
+- 异常退出（`kill -9` qc）后**孙子**仍会残留，这是第 3 条的已知边界。要真正收口
+  得上 cgroup v2。
+- GUI 的 5s 强退与工具 14s 最坏取消路径仍然不对称。现在无害（钩子保证进程组会
+  死），但「最后一个回合正常落盘」这件事在慢命令上仍可能来不及——日志是权威源
+  （ADR-0057），所以没有恢复问题。

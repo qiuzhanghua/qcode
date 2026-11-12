@@ -311,6 +311,31 @@ impl Tool for RunShell {
             // New process group led by this child. Negative pids in
             // `signal_group` then address the shell and everything it started.
             command.process_group(0);
+            // ...and if qcode itself dies without reaching its exit hook (a
+            // crash, an OOM kill, `kill -9`), the kernel takes this child down
+            // with it. The hook in `child_groups` covers the orderly way out;
+            // this covers the rest.
+            //
+            // Scope, so nobody is surprised later: `PR_SET_PDEATHSIG` is not
+            // inherited across `fork`, so it reaches the group leader (the
+            // sandbox wrapper, or `sh`) and stops there. A grandchild is
+            // reparented and survives — which is why this is a backstop and the
+            // registry, not this, is the fix.
+            //
+            // `tokio`'s `pre_exec` is the same hook `std` has, so it composes
+            // with the `process_group(0)` above rather than replacing it.
+            unsafe {
+                command.pre_exec(|| {
+                    // SAFETY: `prctl` is async-signal-safe and only affects the
+                    // calling (just forked) process. Nothing here allocates,
+                    // which is what makes it legal between fork and exec.
+                    //
+                    // A failure is not worth failing the command over: without
+                    // it qcode behaves exactly as it did before this line.
+                    libc::prctl(libc::PR_SET_PDEATHSIG, SIGKILL);
+                    Ok(())
+                });
+            }
         }
 
         command.env_clear();
@@ -356,6 +381,10 @@ impl Tool for RunShell {
 
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or(0);
+        // Registered for the exit hook from here until the command is reaped:
+        // if the process dies between this line and the drop, the group is still
+        // in the registry and `kill_all` takes it out. See `child_groups`.
+        let _live_group = crate::child_groups::LiveGroup::register(pid);
 
         let stdout = child
             .stdout
@@ -488,11 +517,11 @@ async fn drain(mut task: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
 #[cfg(unix)]
 const SIGTERM: i32 = libc::SIGTERM;
 #[cfg(unix)]
-const SIGKILL: i32 = libc::SIGKILL;
+pub(crate) const SIGKILL: i32 = libc::SIGKILL;
 #[cfg(not(unix))]
 const SIGTERM: i32 = 15;
 #[cfg(not(unix))]
-const SIGKILL: i32 = 9;
+pub(crate) const SIGKILL: i32 = 9;
 
 /// Signal the process group led by `pid`.
 ///
@@ -500,7 +529,7 @@ const SIGKILL: i32 = 9;
 /// spawned with `process_group(0)`. A bare pid would only reach `sh`, leaving
 /// `cargo`/`make`/`node` grandchildren running after the turn was cancelled.
 #[cfg(unix)]
-fn signal_group(pid: u32, signal: i32) {
+pub(crate) fn signal_group(pid: u32, signal: i32) {
     if pid == 0 {
         return;
     }
@@ -514,7 +543,7 @@ fn signal_group(pid: u32, signal: i32) {
 /// Windows has no process groups; `taskkill /T` walks the child tree instead.
 /// This is a stopgap until the OS sandbox layer owns process containment.
 #[cfg(not(unix))]
-fn signal_group(pid: u32, _signal: i32) {
+pub(crate) fn signal_group(pid: u32, _signal: i32) {
     if pid == 0 {
         return;
     }

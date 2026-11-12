@@ -9,6 +9,28 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             gpui_kit::init(cx);
             cx.activate(true);
             prefs.apply(cx);
+            // 退出前杀掉 run_shell 还挂着的进程组（ADR-0073）。
+            //
+            // 必须挂在这里、而且是同步的：`cx.quit()` 之后进程直接结束，引擎
+            // 那个 detached 线程不会展开栈，所以 `kill_on_drop` 一次都不会跑
+            // —— 一个卡在网络上、既不写输出也等不到 stdin EOF 的命令就会活过
+            // qcode。`on_app_quit` 覆盖所有退出路径（窗口 ✕ 不是退出，见
+            // ADR-0052；托盘退出、设置窗口退出都经过这里），而它的预算是
+            // `gpui::SHUTDOWN_TIMEOUT` = 200ms，一串 `kill(2)` 是微秒级。
+            let quit_hook = cx.on_app_quit(|_| {
+                let killed = qcode_tools::child_groups::kill_all();
+                if killed > 0 {
+                    eprintln!("qcode-gui: killed {killed} leftover process group(s) on quit");
+                }
+                async {}
+            });
+            // Deliberately never dropped: the returned `Subscription` is what
+            // keeps the observer registered, so letting it fall out of scope
+            // here would unregister the hook immediately and leave the cleanup
+            // silently dead. It is meant to live exactly as long as the process,
+            // which is what leaking it expresses; there is nothing to unbind it
+            // for.
+            std::mem::forget(quit_hook);
             let (tray, tray_rx) = tray::start();
             let minimize_on_close = tray.is_some();
             let window_options = match prefs.window_geometry.as_ref() {
