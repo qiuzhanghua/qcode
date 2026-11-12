@@ -141,6 +141,15 @@ impl Shell {
         cx.notify();
     }
 
+    /// 对话流里的定时任务卡片：默认折叠（只有 title 框），点 title 框
+    /// 展开正文，再点一次收缩。
+    pub(crate) fn toggle_scheduled_card(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.ui.scheduled_open.insert(index) {
+            self.ui.scheduled_open.remove(&index);
+        }
+        cx.notify();
+    }
+
     /// The pause card's "继续": same task, fresh budget window. The window is
     /// the engine's to number, so the UI never claims one from its own count
     /// (ADR-0060 §2.11).

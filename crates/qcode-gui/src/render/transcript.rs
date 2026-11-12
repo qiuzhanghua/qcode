@@ -1031,9 +1031,13 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
             scheduled,
         } => {
             // A scheduled-task delivery renders as its own card instead of a
-            // typed-message bubble: header strip with the wall-clock time, then
-            // the task title and prompt (ADR-0059).
+            // typed-message bubble (ADR-0059): a clickable title strip holding
+            // the wall-clock time and the task title, collapsing the prompt
+            // body by default — click the strip to expand / collapse it.
             if let Some(scheduled) = scheduled {
+                let open = shell.ui.scheduled_open.contains(&index);
+                let prompt = scheduled.prompt.clone();
+                let entity = entity.clone();
                 return div()
                     .flex()
                     .flex_col()
@@ -1050,47 +1054,70 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                             .overflow_hidden()
                             .flex()
                             .flex_col()
+                            // title 框：比原来调高（py_1 → py_2p5），字体
+                            // 放大一档；默认折叠时只有这一条，点它展开 /
+                            // 收缩正文。
                             .child(
                                 div()
+                                    .id(("scheduled-title", index))
+                                    .cursor_pointer()
                                     .bg(rgb(0xf1f5f9))
                                     .px_3()
-                                    .py_1()
+                                    .py_2p5()
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .gap_1()
+                                    .gap_2()
+                                    .on_click(move |_, _, cx| {
+                                        entity.update(cx, |shell, cx| {
+                                            shell.toggle_scheduled_card(index, cx);
+                                        });
+                                    })
                                     .child(
                                         div()
-                                            .text_size(sp(CAPTION_SIZE))
+                                            .text_size(sp(14.0))
+                                            .line_height(sp(22.0))
                                             .text_color(rgb(0x555555))
                                             .child(format!("⏱ 定时任务 · {}", scheduled.at)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .px_3()
-                                    .py_2()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
+                                    )
                                     .child(
                                         div()
-                                            .text_size(sp(BODY_SIZE))
-                                            .line_height(sp(BODY_LINE))
+                                            .text_size(sp(14.0))
+                                            .line_height(sp(22.0))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(rgb(0x1a1a1a))
                                             .child(scheduled.title.clone()),
                                     )
                                     .child(
-                                        TextView::markdown(
-                                            format!("scheduled-{index}"),
-                                            scheduled.prompt.clone(),
-                                        )
-                                        .code_block_actions(|_, _, _| div().into_any_element())
-                                        .text_size(sp(BODY_SIZE))
-                                        .line_height(sp(BODY_LINE)),
+                                        // 三角放大到 28px 但撑高 title 框：给它一个
+                                        // 固定行高容器，只撑宽不撑高，字形居中溢出
+                                        // 到两侧留白里，不参与布局高度。
+                                        div()
+                                            .flex_1()
+                                            .h(px(22.0))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .justify_end()
+                                            .child(
+                                                div()
+                                                    .text_size(sp(28.0))
+                                                    .line_height(sp(22.0))
+                                                    .text_color(rgb(0x888888))
+                                                    .child(if open { "▾" } else { "▸" }),
+                                            ),
                                     ),
-                            ),
+                            )
+                            .when(open, |this| {
+                                this.child(
+                                    div().px_3().py_2().flex().flex_col().child(
+                                        TextView::markdown(format!("scheduled-{index}"), prompt)
+                                            .code_block_actions(|_, _, _| div().into_any_element())
+                                            .text_size(sp(BODY_SIZE))
+                                            .line_height(sp(BODY_LINE)),
+                                    ),
+                                )
+                            }),
                     )
                     .into_any_element();
             }
