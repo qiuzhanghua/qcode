@@ -105,6 +105,12 @@ pub struct WindowsAcl {
     temp: PathBuf,
     extra: Vec<PathBuf>,
     helper: PathBuf,
+    /// Whether this instance created `temp` itself (via `private_temp`) and so
+    /// owns its deletion on drop. Instances from `with_roots` share the base
+    /// sandbox's private temp or use the turn temp — neither is theirs to
+    /// remove, and deleting either breaks the next command (the helper cannot
+    /// canonicalize a vanished `--temp`).
+    owns_temp: bool,
 }
 
 impl WindowsAcl {
@@ -139,6 +145,7 @@ impl WindowsAcl {
             temp,
             extra,
             helper,
+            owns_temp: true,
         })
     }
 
@@ -239,6 +246,7 @@ impl Sandbox for WindowsAcl {
             temp,
             extra,
             helper: self.helper.clone(),
+            owns_temp: false,
         }))
     }
     fn command(
@@ -286,8 +294,13 @@ impl Sandbox for WindowsAcl {
 
 impl Drop for WindowsAcl {
     fn drop(&mut self) {
-        // Best effort: the directory is a throwaway private temp.
-        let _ = std::fs::remove_dir_all(&self.temp);
+        // Best effort: the directory is a throwaway private temp. Only the
+        // instance that created it may remove it — a `with_roots` instance
+        // shares the base's temp or the turn temp, and deleting either would
+        // break later commands that still point at the path.
+        if self.owns_temp {
+            let _ = std::fs::remove_dir_all(&self.temp);
+        }
     }
 }
 
@@ -1469,5 +1482,47 @@ mod tests {
             WindowsAcl::write_scope(&read_only, None, temp.path()).expect("scope");
         assert_eq!(primary, temp.path());
         assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn only_the_creator_owns_its_private_temp() {
+        let workspace = tempfile::tempdir().unwrap();
+        let base = WindowsAcl::new(workspace.path(), &[]).expect("base sandbox");
+        let owned_temp = base.temp.clone();
+        assert!(owned_temp.is_dir(), "new() created its private temp");
+
+        let root = qcode_core::task::Root {
+            id: "r1".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        };
+
+        // A per-task sandbox shares the base's private temp (or the turn temp);
+        // dropping it must leave both alone, or the next command's helper cannot
+        // canonicalize `--temp` and exits 127.
+        let derived = base
+            .with_roots(std::slice::from_ref(&root), None, OutsideRoots::BuildCaches)
+            .expect("with_roots");
+        drop(derived);
+        assert!(
+            owned_temp.is_dir(),
+            "a with_roots sandbox must not delete the shared private temp"
+        );
+
+        let turn_temp = tempfile::tempdir().unwrap();
+        let derived = base
+            .with_roots(&[root], Some(turn_temp.path()), OutsideRoots::BuildCaches)
+            .expect("with_roots");
+        drop(derived);
+        assert!(
+            turn_temp.path().is_dir(),
+            "a with_roots sandbox must not delete the turn temp"
+        );
+
+        // The instance that created the temp still removes it.
+        drop(base);
+        assert!(!owned_temp.exists(), "the creator removes its own temp");
     }
 }
