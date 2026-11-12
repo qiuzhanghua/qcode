@@ -1043,6 +1043,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     ScheduleOp::List | ScheduleOp::Get { .. }
                                 );
                                 let now = qcode_core::schedule::now_local();
+                                // 手动创建的 ID 单独带走：成功后 UI 要自动跳到
+                                // 新任务的详情页（见 `ScheduleCreated` 事件）。
+                                let mut created_id: Option<String> = None;
                                 let result: Result<Option<String>, String> = match op {
                                     ScheduleOp::Create {
                                         title,
@@ -1066,6 +1069,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             now,
                                         )
                                         .map(|task| {
+                                            created_id = Some(task.id.clone());
                                             Some(format!(
                                                 "已创建定时任务 `{}`",
                                                 task.title
@@ -1169,9 +1173,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         .map_err(|error| error.to_string()),
                                 };
                                 match result {
-                                    Ok(_) if changed => port
-                                        .tagged(SessionTarget::Draft)
-                                        .send_schedule_changed(),
+                                    Ok(_) if changed => {
+                                        let port = port.tagged(SessionTarget::Draft);
+                                        match created_id {
+                                            Some(id) => port.send_schedule_created(id),
+                                            None => port.send_schedule_changed(),
+                                        }
+                                    }
                                     Err(message) => port
                                         .tagged(SessionTarget::Draft)
                                         .send_schedule_notice(message),

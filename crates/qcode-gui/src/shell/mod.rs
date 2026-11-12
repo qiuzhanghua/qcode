@@ -558,6 +558,17 @@ impl Shell {
             match &event {
                 UiEvent::ScheduleChanged => {
                     self.refresh_tasks();
+                    // 缓存刷新后必须请求重绘：只改数据不 notify 的话，列表会
+                    // 停在旧帧（手动创建 / 暂停 / 删除后看不到变化），直到别的
+                    // 事件碰巧触发重绘。
+                    repaint = true;
+                    continue;
+                }
+                UiEvent::ScheduleCreated { id } => {
+                    // 手动创建成功：刷新列表并自动跳到新任务的详情页。
+                    self.refresh_tasks();
+                    self.schedule_detail = Some(id.clone());
+                    repaint = true;
                     continue;
                 }
                 UiEvent::ScheduleNotice { message } => {

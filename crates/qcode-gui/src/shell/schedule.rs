@@ -1,7 +1,7 @@
 //! 定时任务（Scheduled Tasks）的 Shell 侧动作：侧栏 ＋/⋮ 新建、详情页、
 //! 手动创建表单与动作下发。数据经 `Backend::schedule_tasks()` 读缓存、
-//! `Backend::schedule_op()` 发命令（结果经 `ScheduleChanged` / `ScheduleNotice`
-//! 事件回传，见 `shell::poll`）。
+//! `Backend::schedule_op()` 发命令（结果经 `ScheduleChanged` / `ScheduleCreated`
+//! / `ScheduleNotice` 事件回传，见 `shell::poll`）。
 
 use super::*;
 use qcode_core::schedule::{Overlap, TaskStatus, now_local, parse_rule};
