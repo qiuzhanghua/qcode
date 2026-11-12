@@ -29,8 +29,13 @@ fn identical_rounds_are_caught_but_different_ones_reset() {
     assert_eq!(guard.observe("b"), None);
     assert_eq!(guard.observe("b"), None);
     assert_eq!(guard.observe("b"), None);
-    assert_eq!(guard.observe("b"), None);
-    assert_eq!(guard.observe("b"), Some(10));
+    // The switch to "b" is the first round of the new run, so ten rounds of "b"
+    // stop here — not eleven. (An eleventh `observe` would never be reached.)
+    assert_eq!(
+        guard.observe("b"),
+        Some(10),
+        "a different call resets the count, it does not skip a round"
+    );
 }
 
 #[test]
