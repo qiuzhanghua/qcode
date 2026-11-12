@@ -23,15 +23,17 @@ set -o pipefail
 # Shipping triples, from `build-for-release` (windows) and the release matrix
 # (darwin). Order matters only for readability.
 #
-# Arguments override this list, which is what CI uses: it installs only the two
-# Windows triples, so passing them explicitly keeps the "not checked" line
-# meaning "this one is missing here" instead of naming targets the caller never
-# intended to check.
+# Arguments override this list, which is for a developer machine that has the
+# cross compilers installed. CI does not run this script: covering the Windows
+# cfg gates means compiling the bundled C dependencies (`libsqlite3-sys`,
+# `aws-lc-sys`) for a foreign target, which needs the llvm-mingw toolchain, and
+# `windows-build` on a real Windows runner covers the same gates natively.
+# The per-target preflight below says which compiler is missing instead of
+# letting a build script panics about it.
+#
 # Note on the aarch64 triples: a C build script (`cc-rs`) needs the matching
 # cross compiler, e.g. `aarch64-w64-mingw32-clang` for windows-gnullvm. The
-# release environment has llvm-mingw (`build-for-release` requires it); a stock
-# CI runner does not, which is why the workflow names only
-# `x86_64-pc-windows-gnullvm` and this default list is for developer machines.
+# release environment has llvm-mingw (`build-for-release` requires it).
 SHIPPED=(
     x86_64-pc-windows-gnullvm
     aarch64-pc-windows-gnullvm
@@ -48,9 +50,31 @@ fi
 sysroot=$(rustc --print sysroot)
 native=$(rustc -vV | sed -n 's/^host: //p')
 
+# The C compiler a target's build scripts will ask `cc-rs` for, when it needs one
+# that the host's own compiler is not. Only the mingw triples have a name this
+# script can predict; anything else is left to fail on its own terms.
+#
+# Without this preflight, `cargo check` dies deep inside a build script:
+#
+#   thread 'main' panicked at aws-lc-sys-0.46.0/builder/cc_builder.rs:722:
+#   Failed to compile jitterentropy: ToolNotFound: failed to find tool
+#   "x86_64-w64-mingw32-clang": No such file or directory (os error 2)
+#
+# That message names one C library out of several and says nothing about the
+# toolchain being missing, which reads like a bug in this repository.
+cross_cc() {
+    case "$1" in
+        *-pc-windows-gnullvm) printf '%s-w64-mingw32-clang' "${1%%-*}" ;;
+        *) return 1 ;;
+    esac
+}
+
 status=0
 checked=0
-skipped=()
+# Two reasons to skip, kept apart because the fix differs: one needs
+# `rustup target add`, the other needs a compiler on PATH.
+missing_std=()
+missing_cc=()
 
 for target in "${TARGETS[@]}"; do
     if [[ $target == "$native" ]]; then
@@ -59,7 +83,14 @@ for target in "${TARGETS[@]}"; do
     # Without the target's std, cargo fails with a wall of text about
     # `can't find crate for core`. Detect it directly and say what to run.
     if [[ ! -d $sysroot/lib/rustlib/$target ]]; then
-        skipped+=("$target")
+        missing_std+=("$target")
+        continue
+    fi
+    # A target whose C build scripts need a cross compiler we do not have would
+    # fail on the first bundled C library — `libsqlite3-sys`, `aws-lc-sys` — in
+    # a message that does not mention the toolchain. Say it here instead.
+    if cc=$(cross_cc "$target") && ! command -v "$cc" >/dev/null 2>&1; then
+        missing_cc+=("$target (needs $cc)")
         continue
     fi
     echo "==> cargo check --target $target"
@@ -69,9 +100,16 @@ for target in "${TARGETS[@]}"; do
     checked=$((checked + 1))
 done
 
-if ((${#skipped[@]} > 0)); then
-    printf '\nnot checked (target std not installed): %s\n' "${skipped[*]}"
-    printf 'install with: rustup target add %s\n' "${skipped[*]}"
+if ((${#missing_std[@]} > 0)); then
+    printf '\nnot checked (target std not installed): %s\n' "${missing_std[*]}"
+    printf 'install with: rustup target add %s\n' "${missing_std[*]}"
+fi
+
+if ((${#missing_cc[@]} > 0)); then
+    printf '\nnot checked (no cross C compiler on PATH):\n'
+    printf '  %s\n' "${missing_cc[@]}"
+    printf 'install llvm-mingw and put its bin/ on PATH — the bundled C\n'
+    printf 'dependencies (`libsqlite3-sys`, `aws-lc-sys`) are compiled with it.\n'
 fi
 
 if ((checked == 0)); then
