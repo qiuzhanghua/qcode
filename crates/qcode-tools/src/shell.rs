@@ -311,31 +311,34 @@ impl Tool for RunShell {
             // New process group led by this child. Negative pids in
             // `signal_group` then address the shell and everything it started.
             command.process_group(0);
-            // ...and if qcode itself dies without reaching its exit hook (a
-            // crash, an OOM kill, `kill -9`), the kernel takes this child down
-            // with it. The hook in `child_groups` covers the orderly way out;
-            // this covers the rest.
-            //
-            // Scope, so nobody is surprised later: `PR_SET_PDEATHSIG` is not
-            // inherited across `fork`, so it reaches the group leader (the
-            // sandbox wrapper, or `sh`) and stops there. A grandchild is
-            // reparented and survives — which is why this is a backstop and the
-            // registry, not this, is the fix.
-            //
-            // `tokio`'s `pre_exec` is the same hook `std` has, so it composes
-            // with the `process_group(0)` above rather than replacing it.
-            unsafe {
-                command.pre_exec(|| {
-                    // SAFETY: `prctl` is async-signal-safe and only affects the
-                    // calling (just forked) process. Nothing here allocates,
-                    // which is what makes it legal between fork and exec.
-                    //
-                    // A failure is not worth failing the command over: without
-                    // it qcode behaves exactly as it did before this line.
-                    libc::prctl(libc::PR_SET_PDEATHSIG, SIGKILL);
-                    Ok(())
-                });
-            }
+        }
+        // ...and if qcode itself dies without reaching its exit hook (a crash,
+        // an OOM kill, `kill -9`), the kernel takes this child down with it. The
+        // hook in `child_groups` covers the orderly way out; this covers the
+        // rest.
+        //
+        // **Linux only**, and not for lack of trying: `prctl` exists only under
+        // libc's `linux_like`, so `PR_SET_PDEATHSIG` has no macOS spelling at
+        // all. macOS has no kernel-level equivalent (no cgroups, no
+        // `PDEATHSIG`); there the registry is the only containment, which is
+        // why it is the fix and this is the backstop.
+        //
+        // Scope, so nobody is surprised later: `PR_SET_PDEATHSIG` is not
+        // inherited across `fork`, so it reaches the group leader (the sandbox
+        // wrapper, or `sh`) and stops there. A grandchild is reparented and
+        // survives.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(|| {
+                // SAFETY: `prctl` is async-signal-safe and only affects the
+                // calling (just forked) process. Nothing here allocates, which
+                // is what makes it legal between fork and exec.
+                //
+                // A failure is not worth failing the command over: without it
+                // qcode behaves exactly as it did before this line.
+                libc::prctl(libc::PR_SET_PDEATHSIG, SIGKILL);
+                Ok(())
+            });
         }
 
         command.env_clear();

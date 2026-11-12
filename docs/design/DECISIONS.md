@@ -7433,12 +7433,35 @@ server 读到 EOF 就自己退出。实测复刻（`wordcraft-cli mcp`，管道 
 2. **挂 `on_app_quit`，一处覆盖所有退出路径**（`gui/run.rs`）。包括托盘退出、
    设置窗口退出、平台自己发起的退出。返回的 `Subscription` **必须 `mem::forget`**
    ——它是「观察者还注册着」的唯一凭据，落出作用域就等于立刻注销，清理会静默失效。
-3. **`PR_SET_PDEATHSIG` 作为兜底**（`shell.rs` 的 `pre_exec`）。覆盖退出钩子
-   跑不到的情况：崩溃、OOM、`kill -9`。
-   **诚实说明它的边界**：`PR_SET_PDEATHSIG` 不跨 `fork` 继承，只保直接子进程
-   （sandbox 包装器或 `sh`），孙子照样被重挂。所以它是兜底，**不是**修复本身。
-   真正完整覆盖异常退出的是 cgroup v2 的 `cgroup.kill`，但那要用户委托权限，
-   这次不做。
+3. **`PR_SET_PDEATHSIG` 作为兜底**（`shell.rs` 的 `pre_exec`），**仅 Linux**
+   （`#[cfg(target_os = "linux")]`）。覆盖退出钩子跑不到的情况：崩溃、OOM、
+   `kill -9`。
+   - 必须是 `target_os = "linux"` 而不是 `unix`：`libc::prctl` 只在 libc 的
+     `linux_like` 下定义，macOS 上根本没有 `PR_SET_PDEATHSIG` 这个常量。第一版
+     写成了 `unix`，macOS 会编译失败。
+   - **诚实说明它的边界**：`PR_SET_PDEATHSIG` 不跨 `fork` 继承，只保直接子进程
+     （sandbox 包装器或 `sh`），孙子照样被重挂。所以它是兜底，**不是**修复本身。
+   - 真正完整覆盖异常退出的是 cgroup v2 的 `cgroup.kill`，但**它是 Linux 内核
+     特性，非 Linux 上不存在**，且要用户委托权限，这次不做。
+
+**跨平台说明（cgroup v2 不是可移植方案）**
+
+| 平台 | 退出钩子（`kill_all`） | 异常退出的兜底 |
+| --- | --- | --- |
+| Linux | ✅ `kill(-pgid, SIGKILL)` | `PR_SET_PDEATHSIG`（只管直接子进程） |
+| macOS | ✅ `kill(-pgid, SIGKILL)` | **无**。没有 cgroup，也没有 PDEATHSIG。 |
+| Windows | ✅ `taskkill /PID <pid> /T /F` | **无**。见下 |
+
+所以两件事要分清：**修复本身（登记表 + 退出钩子）跨平台成立**，因为它只依赖
+「进程组 / 进程树」这种各平台都有的东西；**兜底只有 Linux 有**。
+
+- Windows 的正确兜底不是 cgroup，而是 **Job Object**：`CreateJobObject` +
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。最后一个句柄关闭（进程死掉）时内核杀掉
+  job 里所有进程，且**覆盖整棵子树**——比 PDEATHSIG 还强。目前没做，`taskkill`
+  是「取消」用的权宜之计（注释里也这么写着）。
+- macOS 没有等价物。可选的只有非内核方案：子进程侧 `kqueue` 监听父进程
+  `EVFILT_PROC`/`NOTE_EXIT`（要求子进程配合）、`launchd` 作业。都不够用，所以
+  macOS 上老老实实接受「qc 崩溃时 `run_shell` 的子进程可能残留」。
 
 **已验证的、和被否决的**
 
