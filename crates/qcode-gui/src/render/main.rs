@@ -1024,7 +1024,9 @@ impl Shell {
                                 dir = dir,
                             );
                             div()
-                                .w_full()
+                                // 与提问面板同宽：左右各收窄 5%，居中。
+                                .w(relative(0.9))
+                                .mx_auto()
                                 .rounded_t(px(10.0))
                                 .border_1()
                                 .border_color(border)
@@ -1133,26 +1135,16 @@ impl Shell {
                             let index = panel.index;
                             let is_last = index + 1 == count;
                             let continued = panel.continued;
-                            let countdown = panel.deadline.map(|deadline| {
-                                deadline
-                                    .saturating_duration_since(std::time::Instant::now())
-                                    .as_secs()
-                            });
-                            let status = if continued {
-                                "已继续 · 回答将以新消息送达".to_string()
-                            } else {
-                                match countdown {
-                                    Some(secs) => format!("等待回答 · {secs}s"),
-                                    None => "等待回答".to_string(),
-                                }
-                            };
                             let header_color = if continued {
                                 rgb(0x94a3b8)
                             } else {
-                                rgb(0x38bdf8)
+                                // title 的浅蓝：比原来的 0x38bdf8 调浅一档。
+                                rgb(0x7dd3fc)
                             };
                             div()
-                                .w_full()
+                                // 左右各收窄 5%，整体比满宽窄 1/10。
+                                .w(relative(0.9))
+                                .mx_auto()
                                 .rounded_t(px(10.0))
                                 .border_1()
                                 .border_color(border)
@@ -1176,17 +1168,6 @@ impl Shell {
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0x000000))
                                                 .child("提问"),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .child(
-                                                    div()
-                                                        .text_size(sp(12.0))
-                                                        .line_height(sp(20.0))
-                                                        .text_color(rgb(0x555555))
-                                                        .child(status),
-                                                ),
                                         ),
                                 )
                                 .child(
@@ -1290,7 +1271,9 @@ impl Shell {
                         // 报错提示：同款卡片，红色 title，单「关闭」按钮。
                         self.ui.error_banner.clone().map(|message| {
                             div()
-                                .w_full()
+                                // 与提问面板同宽：左右各收窄 5%，居中。
+                                .w(relative(0.9))
+                                .mx_auto()
                                 .rounded_t(px(10.0))
                                 .border_1()
                                 .border_color(border)
