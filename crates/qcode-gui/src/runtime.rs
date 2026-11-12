@@ -640,56 +640,79 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // ① 确认已投递：user/message 事件落盘 = 投递已确认
                         //（回执 ≠ 执行完成；以日志为事实源）。
                         let mut confirmed: Vec<String> = Vec::new();
+                        // 目标会话已删除的投递：永远无法确认，从 pending 剔除。
+                        let mut abandoned: Vec<(String, String)> = Vec::new();
                         for (message_id, pending) in pending_ack.iter() {
                             let mut all_landed = true;
                             for (task_id, session, prompt) in pending {
-                                let landed = engine
-                                    .store
-                                    .schedule_delivery_landed(session, prompt)
-                                    .unwrap_or(false);
-                                if !landed {
-                                    all_landed = false;
-                                    continue;
-                                }
-                                if scheduler
-                                    .update(task_id, |task| {
-                                        let receipt = DeliveryReceipt {
-                                            occurrence_at: task.next_fire_at.unwrap_or(now),
-                                            delivered_at: now,
-                                            message_id: message_id.clone(),
-                                            target_session_id: Some(session.clone()),
-                                            prompt: task.prompt.clone(),
-                                        };
-                                        if append_delivery(
-                                            &mut task.delivery_log,
-                                            receipt.clone(),
-                                            now,
-                                        ) {
-                                            task.earlier_records_pruned = true;
-                                        }
-                                        task.last_receipt = Some(receipt);
-                                        // 只有当下次触发点仍是「已触发」的时刻才推进
-                                        // 到下一个未来时刻。RunNow 已把下一次拨到未来，
-                                        // 这里再推会跳过一个周期。
-                                        if task.next_fire_at.is_none_or(|next| next <= now) {
-                                            match advance_rule(&task.rule, now) {
-                                                Advance::Next(next) => {
-                                                    task.next_fire_at = Some(next);
+                                match engine.store.schedule_delivery_landed(session, prompt) {
+                                    Ok(true) => {
+                                        if scheduler
+                                            .update(task_id, |task| {
+                                                let receipt = DeliveryReceipt {
+                                                    occurrence_at: task.next_fire_at.unwrap_or(now),
+                                                    delivered_at: now,
+                                                    message_id: message_id.clone(),
+                                                    target_session_id: Some(session.clone()),
+                                                    prompt: task.prompt.clone(),
+                                                };
+                                                if append_delivery(
+                                                    &mut task.delivery_log,
+                                                    receipt.clone(),
+                                                    now,
+                                                ) {
+                                                    task.earlier_records_pruned = true;
                                                 }
-                                                Advance::Ended => {
-                                                    task.status = TaskStatus::Ended;
-                                                    task.next_fire_at = None;
+                                                task.last_receipt = Some(receipt);
+                                                // 只有当下次触发点仍是「已触发」的时刻才推进
+                                                // 到下一个未来时刻。RunNow 已把下一次拨到未来，
+                                                // 这里再推会跳过一个周期。
+                                                if task.next_fire_at.is_none_or(|next| next <= now) {
+                                                    match advance_rule(&task.rule, now) {
+                                                        Advance::Next(next) => {
+                                                            task.next_fire_at = Some(next);
+                                                        }
+                                                        Advance::Ended => {
+                                                            task.status = TaskStatus::Ended;
+                                                            task.next_fire_at = None;
+                                                        }
+                                                    }
                                                 }
-                                            }
+                                            })
+                                            .is_ok()
+                                        {
+                                            inflight.remove(task_id);
                                         }
-                                    })
-                                    .is_ok()
-                                {
-                                    inflight.remove(task_id);
+                                    }
+                                    Ok(false) => {
+                                        // 还没落盘：继续等待。
+                                        all_landed = false;
+                                    }
+                                    Err(_) => {
+                                        // 目标会话已删除：这条投递永远无法落盘确认。
+                                        // 任务大概率已被 `delete_session` 联动删除
+                                        //（update 返回 NotFound 无害），释放槽位并从
+                                        // pending 剔除，避免永久卡在 in-flight。
+                                        inflight.remove(task_id);
+                                        abandoned.push((message_id.clone(), task_id.clone()));
+                                        all_landed = false;
+                                    }
                                 }
                             }
                             if all_landed {
                                 confirmed.push(message_id.clone());
+                            }
+                        }
+                        // 剔除已放弃的条目；某 message_id 的所有条目都被放弃时整体清理。
+                        for (message_id, task_id) in abandoned {
+                            let empty = if let Some(pending) = pending_ack.get_mut(&message_id) {
+                                pending.retain(|(id, _, _)| id != &task_id);
+                                pending.is_empty()
+                            } else {
+                                false
+                            };
+                            if empty {
+                                pending_ack.remove(&message_id);
                             }
                         }
                         // 投递落盘确认后通知 UI 刷新：立即执行的按钮脱离等待态。
@@ -741,6 +764,27 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             }
                                         }
                                     });
+                                }
+                                TaskTick::Orphaned => {
+                                    // 目标会话已不存在（兜底路径：正常删除已被
+                                    // `delete_session` 联动清理，这里只处理 race /
+                                    // 外部删除）。与 dsh 一致：跳过本轮、推进到下一次、
+                                    // 保持 Active，等待用户改 target 后继续执行——
+                                    // 不能像原来那样丢进 `_` 分支让任务永久停摆。
+                                    let _ = scheduler.update(&task.id, |task| {
+                                        match advance_rule(&task.rule, now) {
+                                            Advance::Next(next) => {
+                                                task.next_fire_at = Some(next);
+                                            }
+                                            Advance::Ended => {
+                                                task.status = TaskStatus::Ended;
+                                                task.next_fire_at = None;
+                                            }
+                                        }
+                                    });
+                                    port
+                                        .tagged(SessionTarget::Draft)
+                                        .send_schedule_changed();
                                 }
                                 _ => {}
                             }

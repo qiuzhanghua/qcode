@@ -109,6 +109,13 @@ impl Scheduler {
                 "a one-shot task must be scheduled in the future".to_string(),
             ));
         }
+        if let Target::Session { id } = &input.target
+            && self.store.task(id).is_err()
+        {
+            return Err(ScheduleError::Invalid(format!(
+                "target session `{id}` does not exist"
+            )));
+        }
         let id = ulid::Ulid::new().to_string();
         let next_fire_at = input.rule.next_after(now);
         let stakeholders = input
@@ -189,6 +196,13 @@ impl Scheduler {
                 }
             }
             if let Some(target) = patch.target {
+                if let Target::Session { id } = &target
+                    && self.store.task(id).is_err()
+                {
+                    return Err(ScheduleError::Invalid(format!(
+                        "target session `{id}` does not exist"
+                    )));
+                }
                 task.target = target.clone();
                 task.stakeholders = target.session_id().map(str::to_owned).into_iter().collect();
             }
@@ -380,7 +394,23 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Scheduler) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let scheduler = Scheduler::new(SessionStore::new(dir.path()));
+        let store = SessionStore::new(dir.path());
+        // 预置一个 id 为 `t1` 的会话：`Target::Session` 的创建/编辑校验要求
+        // 目标会话存在（与 dsh 的 validateTarget 一致）。
+        store
+            .append(&crate::event::Event::new(
+                1,
+                "t1",
+                0,
+                crate::event::EventKind::SessionStarted(crate::event::SessionStarted {
+                    model: "mock-1".to_string(),
+                    provider: "mock".to_string(),
+                    cwd: "/tmp".to_string(),
+                    version: "0.1.0".to_string(),
+                }),
+            ))
+            .expect("seed session t1");
+        let scheduler = Scheduler::new(store);
         (dir, scheduler)
     }
 
@@ -543,5 +573,37 @@ mod tests {
                 id: "t1".to_string()
             }
         );
+    }
+
+    #[test]
+    fn create_rejects_a_missing_target_session() {
+        let (_dir, scheduler) = store();
+        let mut bad = new_task();
+        bad.target = Target::Session {
+            id: "does-not-exist".to_string(),
+        };
+        assert!(matches!(
+            scheduler.create(bad, now()),
+            Err(ScheduleError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn edit_rejects_a_missing_target_session() {
+        let (_dir, scheduler) = store();
+        let created = scheduler.create(new_task(), now()).expect("create");
+        let result = scheduler.edit(
+            &created.id,
+            EditTask {
+                target: Some(Target::Session {
+                    id: "does-not-exist".to_string(),
+                }),
+                ..EditTask::default()
+            },
+            now(),
+        );
+        assert!(matches!(result, Err(ScheduleError::Invalid(_))));
+        // 拒绝后原任务保持不变，仍能正常查到。
+        assert!(scheduler.find(&created.id).is_some());
     }
 }
