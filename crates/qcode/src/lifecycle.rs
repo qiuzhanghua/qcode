@@ -63,6 +63,11 @@ pub enum Reason {
     /// `SIGTERM`: an ACP client closing, a service manager stopping us.
     SigTerm,
     /// `SIGHUP`: the terminal that launched us went away.
+    ///
+    /// Unix-only: Windows has no hangup concept. The `cfg` is load-bearing —
+    /// without it this is a variant that is never constructed there, and
+    /// `clippy -D warnings` fails the Windows build (how this was found).
+    #[cfg(unix)]
     SigHup,
     /// A panic was unwinding when the process ended.
     Panic,
@@ -74,6 +79,7 @@ impl Reason {
             Self::Normal => "normal",
             Self::SigInt => "sigint",
             Self::SigTerm => "sigterm",
+            #[cfg(unix)]
             Self::SigHup => "sighup",
             Self::Panic => "panic",
         }

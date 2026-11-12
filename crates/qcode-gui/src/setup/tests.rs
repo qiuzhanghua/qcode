@@ -525,13 +525,22 @@ fn macos_keychain_store_keeps_the_secret_out_of_argv() {
     );
     // Saving the same provider twice goes through the duplicate-item branch.
     keychain_store(&provider, secret).expect("rewrite the existing item");
-    let output = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("run the read command");
+    // Bounded, because an unbounded `.output()` here hangs the whole CI job: the
+    // item was created by *this* process, so its ACL trusts this process, but
+    // `security` is a different program and reading it may need a GUI prompt
+    // ("allow security to access the item"). A headless runner has no one to
+    // answer that prompt, so `security` never exits — it is not refused, it just
+    // waits. That is not an error the code below can inspect, which is why the
+    // timeout has to catch it first.
+    let Some(output) = run_bounded(&argv[0], &argv[1..], KEYCHAIN_READ_TIMEOUT) else {
+        let _ = macos::delete("qcode", &provider);
+        eprintln!(
+            "skipping: the keychain read did not finish within {}s; this session \
+             cannot show the approval prompt",
+            KEYCHAIN_READ_TIMEOUT.as_secs()
+        );
+        return;
+    };
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         // The item was created by *this* process, so its ACL trusts this
@@ -552,6 +561,79 @@ fn macos_keychain_store_keeps_the_secret_out_of_argv() {
     }
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), secret);
     macos::delete("qcode", &provider).expect("delete the probe item");
+}
+
+/// How long the keychain read gets before the test calls the session headless.
+///
+/// Generous next to a local run (`security -w` answers in milliseconds) and small
+/// next to the job's budget: the alternative is the whole macOS CI job hanging for
+/// hours, which is what happened between runs 298 and 307. Wide enough that a
+/// developer who has to click "Allow" in the approval dialog still gets through,
+/// because that click is the case that actually verifies the round trip.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Run a command to completion, or kill it at `timeout` and return `None`.
+///
+/// Used instead of `Command::output()` because `output()` waits forever, and the
+/// thing being waited on here waits on a human. Output is drained on separate
+/// threads so a child that fills the pipe buffer cannot deadlock against the
+/// poll — irrelevant for `security -w` and exactly the kind of assumption that
+/// breaks later.
+#[cfg(target_os = "macos")]
+fn run_bounded(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::io::Read as _;
+    use std::time::Instant;
+
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    let mut stdout = child.stdout.take()?;
+    let mut stderr = child.stderr.take()?;
+    let read_stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let read_stderr = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // The readers end on EOF once the pipes close.
+                    let _ = read_stdout.join();
+                    let _ = read_stderr.join();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    };
+
+    Some(std::process::Output {
+        status,
+        stdout: read_stdout.join().unwrap_or_default(),
+        stderr: read_stderr.join().unwrap_or_default(),
+    })
 }
 
 #[cfg(target_os = "macos")]

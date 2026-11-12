@@ -8,6 +8,13 @@ on:
 jobs:
   test:
     name: test (${{ matrix.os }})
+    # A step that hangs must fail, not sit there until someone notices. There was
+    # no timeout here until a macOS test blocked on a GUI approval prompt nobody
+    # could answer: the job ran for four hours, was cancelled by hand, and CI
+    # stayed red for two days because the run never *failed* — it never finished.
+    # Budgets are ~3-4x the slowest observed run (macos 7m, ubuntu 6m, windows 12m,
+    # msrv 1.2m, deny 0.9m).
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +77,8 @@ jobs:
 
   windows-build:
     name: windows (build + smoke)
+    # Same reasoning as the `test` job: see the note there.
+    timeout-minutes: 40
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +121,8 @@ jobs:
 
   msrv:
     name: msrv (1.95)
+    # Same reasoning as the `test` job: see the note there.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,6 +140,8 @@ jobs:
 
   deny:
     name: cargo-deny (licenses, advisories, sources)
+    # Same reasoning as the `test` job: see the note there.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
