@@ -525,25 +525,46 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open one sidebar section. Clicking the header of the open section is a
-    /// no-op: exactly one section is always open (ADR-0063 §3), and the header
-    /// shows its open state so the no-op does not read as a dead button.
+    /// Open one sidebar section: make sure it is expanded (a collapsed section
+    /// gets expanded, an open one stays open). The other section keeps its own
+    /// state — the two fold independently. Used by places that need a section
+    /// visible (新建任务、打开会话), not by the header's click.
     pub(crate) fn open_sidebar_section(
         &mut self,
         section: crate::shell::SidebarSection,
         cx: &mut Context<Self>,
     ) {
-        if self.sidebar_section == section {
-            return;
+        match section {
+            crate::shell::SidebarSection::Tasks => self.tasks_section_open = true,
+            crate::shell::SidebarSection::Schedule => self.schedule_section_open = true,
         }
-        self.sidebar_section = section;
         self.persist_sidebar(cx);
         cx.notify();
     }
 
-    /// What the rail's 任务 / 定时任务 icons do: switch the main view, and record
-    /// which section the next expand should land on — without touching the
-    /// sidebar's width. Icon semantics stay uniform (ADR-0063 §4, choice A2).
+    /// Toggle one sidebar section: expanded → collapsed, collapsed → expanded.
+    /// The header's click. The other section keeps its own state.
+    pub(crate) fn toggle_sidebar_section(
+        &mut self,
+        section: crate::shell::SidebarSection,
+        cx: &mut Context<Self>,
+    ) {
+        match section {
+            crate::shell::SidebarSection::Tasks => {
+                self.tasks_section_open = !self.tasks_section_open;
+            }
+            crate::shell::SidebarSection::Schedule => {
+                self.schedule_section_open = !self.schedule_section_open;
+            }
+        }
+        self.persist_sidebar(cx);
+        cx.notify();
+    }
+
+    /// What the rail's 任务 / 定时任务 icons do: switch the main view, and make
+    /// sure the corresponding sidebar section is expanded (a collapsed section
+    /// comes back) — without touching the sidebar's width. The other section
+    /// keeps its own state. Icon semantics stay uniform (ADR-0063 §4, choice A2).
     pub(crate) fn show_main_view(
         &mut self,
         view: crate::shell::MainView,
@@ -554,13 +575,24 @@ impl Shell {
         match view {
             crate::shell::MainView::Task => {
                 if let Some(section) = section {
-                    self.sidebar_section = section;
+                    // 展开对应段（另一段保持自己的状态）。
+                    match section {
+                        crate::shell::SidebarSection::Tasks => self.tasks_section_open = true,
+                        crate::shell::SidebarSection::Schedule => {
+                            self.schedule_section_open = true;
+                        }
+                    }
                 }
                 self.enter_task_view(cx);
             }
             crate::shell::MainView::Schedule => {
                 if let Some(section) = section {
-                    self.sidebar_section = section;
+                    match section {
+                        crate::shell::SidebarSection::Tasks => self.tasks_section_open = true,
+                        crate::shell::SidebarSection::Schedule => {
+                            self.schedule_section_open = true;
+                        }
+                    }
                 }
                 self.view = crate::shell::MainView::Schedule;
             }
@@ -574,10 +606,12 @@ impl Shell {
     /// act now, so starting expanded every launch would read as broken (§7).
     fn persist_sidebar(&self, cx: &mut Context<Self>) {
         let expanded = self.sidebar_expanded;
-        let section = self.sidebar_section.as_str().to_string();
+        let tasks_open = self.tasks_section_open;
+        let schedule_open = self.schedule_section_open;
         if let Err(error) = crate::GuiPreferences::update(&self.data_dir, |prefs| {
             prefs.sidebar_expanded = expanded;
-            prefs.sidebar_section = section;
+            prefs.tasks_section_open = tasks_open;
+            prefs.schedule_section_open = schedule_open;
         }) {
             // A failed write is not worth a dialog: the window still works, and
             // the next successful write catches up.

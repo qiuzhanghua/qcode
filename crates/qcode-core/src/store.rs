@@ -717,6 +717,17 @@ impl SessionStore {
         if let Ok(conn) = self.open_index() {
             let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]);
         }
+        // 联动清理投递到该会话的运行时定时任务（ADR-0063）：目标会话没了，任务
+        // 失去投递目标。放在 store 层保证所有删除入口（GUI、gc 过期清理）一致，
+        // 不留孤儿任务；保存失败只记日志，不阻断会话删除。
+        let mut tasks = self.load_schedule_tasks();
+        let before = tasks.len();
+        tasks.retain(|task| task.target.session_id() != Some(id));
+        if tasks.len() != before
+            && let Err(error) = self.save_schedule_tasks(&tasks)
+        {
+            eprintln!("qcode-core: cannot prune schedule tasks for deleted session {id}: {error}");
+        }
         Ok(())
     }
 
@@ -1303,5 +1314,53 @@ mod tests {
         .expect("insert");
         let states = store.schedule_states().expect("states");
         assert_eq!(states["hand-edited"].next_fire_at, None);
+    }
+
+    fn scheduled_task(id: &str, target: crate::schedule::Target) -> crate::schedule::ScheduledTask {
+        let stakeholders = target.session_id().map(str::to_owned).into_iter().collect();
+        crate::schedule::ScheduledTask {
+            id: id.to_string(),
+            title: id.to_string(),
+            prompt: "run the review".to_string(),
+            rule: crate::schedule::Rule::Daily { hour: 9, minute: 0 },
+            target,
+            overlap: crate::schedule::Overlap::Queue,
+            approval_timeout: None,
+            status: crate::schedule::TaskStatus::Active,
+            stakeholders,
+            last_receipt: None,
+            delivery_log: Vec::new(),
+            earlier_records_pruned: false,
+            reserved_session_id: None,
+            next_fire_at: None,
+            rearm_after: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn delete_session_prunes_tasks_that_deliver_to_it() {
+        let dir = tempfile::tempdir().expect("data dir");
+        let store = SessionStore::new(dir.path());
+        let doomed = seed(&store);
+        let kept = seed(&store);
+        let tasks = vec![
+            scheduled_task(
+                "t1",
+                crate::schedule::Target::Session { id: doomed.clone() },
+            ),
+            scheduled_task("t2", crate::schedule::Target::Session { id: kept.clone() }),
+            scheduled_task("t3", crate::schedule::Target::NewOnce),
+        ];
+        store.save_schedule_tasks(&tasks).expect("save tasks");
+
+        store.delete_session(&doomed).expect("delete session");
+
+        let remaining = store.load_schedule_tasks();
+        assert_eq!(remaining.len(), 2);
+        // 指向被删会话的任务被联动清理。
+        assert!(remaining.iter().all(|task| task.id != "t1"));
+        // 指向其他会话 / 新建目标的任务不受影响。
+        assert!(remaining.iter().any(|task| task.id == "t2"));
+        assert!(remaining.iter().any(|task| task.id == "t3"));
     }
 }

@@ -329,7 +329,10 @@ impl Shell {
                             .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
                                 format!(
                                     "{} · 投递到 {} · message {}",
-                                    receipt.occurrence_at,
+                                    // 投递时间用实际投递确认时刻（`delivered_at`）：
+                                    // 点击「立即执行」时记录的就是那次执行的时间，
+                                    // 而不是计划触发点（`occurrence_at`）。
+                                    receipt.delivered_at,
                                     receipt.target_session_id.as_deref().unwrap_or("-"),
                                     receipt.message_id,
                                 ),
