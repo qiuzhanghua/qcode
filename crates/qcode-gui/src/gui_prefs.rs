@@ -43,10 +43,10 @@ pub struct GuiPreferences {
     pub window_geometry: Option<WindowGeometry>,
     /// Whether the sidebar is expanded. `false` is the icon rail (ADR-0063 §1).
     pub sidebar_expanded: bool,
-    /// Which sidebar section the accordion has open: `tasks` or `schedule`
-    /// (ADR-0063 §3). A string, not an enum: an unknown value from a future
-    /// version normalises to `tasks` instead of failing the whole file.
-    pub sidebar_section: String,
+    /// 我的任务段是否展开（与定时任务段独立折叠）。
+    pub tasks_section_open: bool,
+    /// 定时任务段是否展开（与我的任务段独立折叠）。
+    pub schedule_section_open: bool,
 }
 
 impl Default for GuiPreferences {
@@ -63,7 +63,8 @@ impl Default for GuiPreferences {
             send_mode: "enter".to_string(),
             window_geometry: None,
             sidebar_expanded: true,
-            sidebar_section: "tasks".to_string(),
+            tasks_section_open: true,
+            schedule_section_open: true,
         }
     }
 }
@@ -155,11 +156,6 @@ impl GuiPreferences {
         }
         if !matches!(self.send_mode.as_str(), "enter" | "cmd_enter") {
             self.send_mode = "enter".to_string();
-        }
-        // ADR-0063 §3: exactly one sidebar section is always open, so an unknown
-        // value has a sensible home rather than being a reason to fail.
-        if !matches!(self.sidebar_section.as_str(), "tasks" | "schedule") {
-            self.sidebar_section = "tasks".to_string();
         }
         let mut seen = std::collections::BTreeSet::new();
         self.recent_workspaces

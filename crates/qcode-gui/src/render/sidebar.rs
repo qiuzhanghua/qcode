@@ -218,11 +218,13 @@ impl Shell {
         section.into_any_element()
     }
 
-    /// The expanded sidebar: header, two accordion sections, footer (ADR-0063).
+    /// The expanded sidebar: header, two independently folding sections, footer
+    /// (ADR-0063). Each section header toggles only its own section: both can be
+    /// open at once, both can be collapsed.
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
-        let tasks_open = self.sidebar_section == SidebarSection::Tasks;
+        let tasks_open = self.tasks_section_open;
 
         // Three fixed zones around one scrolling one: the header never moves, the
         // two section headers never move, and only the open section's list scrolls.
@@ -255,11 +257,12 @@ impl Shell {
             ))
             .when(tasks_open, |this| this.child(self.render_task_list(cx)))
             .child(self.render_schedule_section_header(cx))
-            .when(!tasks_open, |this| {
+            .when(self.schedule_section_open, |this| {
                 this.child(self.render_schedule_list(cx))
             })
             // Fixed at the bottom, separated from the list by a hairline: above is
-            // content, below is tools.
+            // content, below is tools. `mt_auto` pins it to the bottom even when
+            // both sections are collapsed and no `flex_1` list is there to push it.
             .child(
                 div()
                     .w_full()
@@ -269,6 +272,7 @@ impl Shell {
                     .px_2()
                     .pt_2()
                     .pb_2()
+                    .mt_auto()
                     .border_t_1()
                     .border_color(border)
                     .child(
@@ -590,9 +594,10 @@ impl Shell {
                     .gap_1()
                     .pl_1p5()
                     .child(
-                        // The open header must LOOK open: clicking it does nothing
-                        // (exactly one section is always open), and a no-op on an
-                        // unmarked row reads as a broken button (ADR-0063 §3).
+                        // The open header must LOOK open (chevron down +
+                        // highlighted): its click collapses the section, and a
+                        // click that folds the row without any visual cue reads
+                        // as broken.
                         Icon::new(if open {
                             IconName::ChevronDown
                         } else {
@@ -640,7 +645,7 @@ impl Shell {
                 )
             })
             .on_click(cx.listener(move |this, _, _window, cx| {
-                this.open_sidebar_section(section_for_click, cx);
+                this.toggle_sidebar_section(section_for_click, cx);
             }))
             .into_any_element()
     }
@@ -667,8 +672,8 @@ impl Shell {
     /// The collapsed sidebar: five icon slots (ADR-0063 §4).
     ///
     /// All four functional icons only switch the main view — none of them changes
-    /// the sidebar's width, so they stay uniform. Crossing 任务/定时任务 also records
-    /// which section the next expand lands on; that is remembered state, not layout.
+    /// the sidebar's width, so they stay uniform. Crossing 任务/定时任务 also expands
+    /// the corresponding section; the other section keeps its own state.
     pub(crate) fn render_sidebar_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         div()
@@ -802,7 +807,7 @@ impl Shell {
     fn render_schedule_section_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
-        let open = self.sidebar_section == SidebarSection::Schedule;
+        let open = self.schedule_section_open;
         let mut header = div()
             .id(("sidebar-section", SidebarSection::Schedule as usize))
             .relative()
@@ -872,7 +877,7 @@ impl Shell {
                     ),
             )
             .on_click(cx.listener(move |this, _, _window, cx| {
-                this.open_sidebar_section(SidebarSection::Schedule, cx);
+                this.toggle_sidebar_section(SidebarSection::Schedule, cx);
             }));
         if self.schedule_menu_open {
             header = header.child(

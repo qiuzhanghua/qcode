@@ -21,7 +21,8 @@ fn defaults_and_round_trip() {
             height: 800.0,
         }),
         sidebar_expanded: false,
-        sidebar_section: "schedule".to_string(),
+        tasks_section_open: true,
+        schedule_section_open: false,
     };
     prefs.save(dir.path()).expect("save");
     assert_eq!(GuiPreferences::load(dir.path()), prefs);
