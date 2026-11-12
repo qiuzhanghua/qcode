@@ -157,6 +157,25 @@ impl Shell {
 
     pub(crate) fn toggle_schedule_menu(&mut self, cx: &mut Context<Self>) {
         self.schedule_menu_open = !self.schedule_menu_open;
+        self.schedule_filter_menu_open = false;
+        cx.notify();
+    }
+
+    /// 打开 / 收起定时任务列表的状态过滤菜单（与 ⋮ 菜单互斥）。
+    pub(crate) fn toggle_schedule_filter_menu(&mut self, cx: &mut Context<Self>) {
+        self.schedule_filter_menu_open = !self.schedule_filter_menu_open;
+        self.schedule_menu_open = false;
+        cx.notify();
+    }
+
+    /// 设置状态过滤条件（`None` = 全部）并关闭菜单。
+    pub(crate) fn set_schedule_filter(
+        &mut self,
+        filter: Option<TaskStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        self.schedule_filter = filter;
+        self.schedule_filter_menu_open = false;
         cx.notify();
     }
 

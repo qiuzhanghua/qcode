@@ -46,7 +46,7 @@ fn format_next_fire(next: Option<time::PrimitiveDateTime>, now: time::PrimitiveD
 /// 任务状态的中文标签。
 fn status_label(status: TaskStatus) -> &'static str {
     match status {
-        TaskStatus::Active => "运行中",
+        TaskStatus::Active => "已开启",
         TaskStatus::Paused => "已暂停",
         TaskStatus::Ended => "已结束",
     }
@@ -138,7 +138,7 @@ impl Shell {
                     .child(
                         div()
                             .text_size(sp(CAPTION_SIZE))
-                            // 状态配色：运行中=绿，已暂停=黄，已结束=灰。
+                            // 状态配色：已开启=绿，已暂停=黄，已结束=灰。
                             .text_color(match status {
                                 TaskStatus::Active => rgb(0x16a34a),
                                 TaskStatus::Paused => rgb(0xca8a04),
