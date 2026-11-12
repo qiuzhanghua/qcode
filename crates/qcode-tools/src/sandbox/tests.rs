@@ -1245,6 +1245,78 @@ mod landlock_runtime {
         );
     }
 
+    /// `[sandbox] extra_read` accepts a **single file**, not just a subtree.
+    ///
+    /// `~/.gitconfig` is the case that made this worth pinning: it is one file
+    /// in `$HOME`, which is deliberately not bound, and the natural reading of
+    /// "extra_read" (a list of roots) leaves open whether a path that is not a
+    /// directory is even legal here. It is: Landlock's `path_beneath` rule on a
+    /// non-directory inode applies to that inode alone, and the `LL_READ_DIR`
+    /// bit in the shared read mask is simply not meaningful for it rather than
+    /// an error.
+    ///
+    /// Parent directory stays denied on purpose — the grant must be the file,
+    /// not the neighbourhood it sits in.
+    #[test]
+    fn extra_read_grants_a_single_file_without_its_directory() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let dir = tempfile::tempdir().expect("config dir");
+        let file = dir.path().join("gitconfig");
+        std::fs::write(&file, "[user]\n\tname = probe\n").expect("fixture");
+        let sibling = dir.path().join("other");
+        std::fs::write(&sibling, "secret\n").expect("sibling");
+
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        let build = |extra_read: &[PathBuf]| {
+            let seed = Landlock::new(workspace.path(), extra_read, &[], false).expect("ruleset");
+            seed.with_roots(&roots, None, OutsideRoots::Nothing)
+                .expect("multi-root sandbox")
+        };
+        let try_read = |sandbox: &dyn Sandbox, path: &Path| {
+            let mut command = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!("cat '{}' >/dev/null", path.display())),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command");
+            command.output().expect("run").status.success()
+        };
+
+        let bare = build(&[]);
+        if let Err(err) = bare.check() {
+            eprintln!("skipping: landlock preflight failed here: {err}");
+            return;
+        }
+        assert!(
+            !try_read(bare.as_ref(), &file),
+            "the fixture must be unreadable without extra_read, or this proves nothing"
+        );
+
+        let granted = build(std::slice::from_ref(&file));
+        assert!(
+            try_read(granted.as_ref(), &file),
+            "extra_read did not grant the single file {}",
+            file.display()
+        );
+        // The grant is the file, not the directory that holds it.
+        assert!(
+            !try_read(granted.as_ref(), &sibling),
+            "granting {} must not open its sibling {}",
+            file.display(),
+            sibling.display()
+        );
+    }
+
     /// `[sandbox] extra_writable`: a subtree outside the task roots becomes
     /// writable — the Landlock half of what `sandbox-exec` and `windows-acl`
     /// already did.

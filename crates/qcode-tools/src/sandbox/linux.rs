@@ -401,9 +401,43 @@ pub(crate) const LL_READ_DIR: u64 = 1 << 3;
 /// not know (TRUNCATE, IOCTL_DEV) stay out of the request.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn landlock_file_rights(handled: u64) -> u64 {
-    // EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV
-    const FILE_RIGHTS: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14) | (1 << 15);
     handled & FILE_RIGHTS
+}
+
+/// EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV.
+///
+/// The complement, within the filesystem rights, of what a non-directory inode
+/// rejects — see [`landlock_file_rights`].
+const FILE_RIGHTS: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14) | (1 << 15);
+
+/// Narrows `allowed_access` to what the inode at `fd` can actually accept.
+///
+/// A `[sandbox] extra_read` / `extra_writable` entry is written as a path, and
+/// a path may name a single file — `~/.gitconfig` is the one that surfaced this.
+/// The rule masks are built for subtrees (`LL_READ_DIR` sits in the read mask),
+/// and the kernel answers EINVAL when a directory-only right is asked of a file,
+/// which surfaces as `cannot add Landlock rule for …: Invalid argument` and a
+/// binary that will not start. Masking here keeps that true for every caller
+/// instead of each one remembering to pre-filter.
+///
+/// The type comes from `fstat` on the already-open `O_PATH` descriptor, not from
+/// a second `Path::is_dir()`: the descriptor is what the rule is attached to, so
+/// the two cannot disagree about what was authorized.
+#[cfg(target_os = "linux")]
+fn allowed_access_for(fd: RawFd, allowed_access: u64) -> u64 {
+    // SAFETY: `fstat` only writes into the struct it is given.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        // Let the rule syscall report the failure with its own errno rather than
+        // inventing one here; a narrowed mask would still be safe, but silently
+        // guessing would hide the real problem.
+        return allowed_access;
+    }
+    if (stat.st_mode & libc::S_IFMT) == libc::S_IFDIR {
+        allowed_access
+    } else {
+        allowed_access & FILE_RIGHTS
+    }
 }
 
 /// Rights `allow_pty` grants on the `/dev/pts` **directory**.
@@ -915,6 +949,8 @@ pub(crate) fn add_path_rule(
             std::io::Error::last_os_error()
         )));
     }
+
+    let allowed_access = allowed_access_for(parent_fd, allowed_access);
 
     let attr = LandlockPathBeneathAttr {
         allowed_access,
