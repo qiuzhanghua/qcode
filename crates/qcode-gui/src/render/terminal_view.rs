@@ -12,7 +12,8 @@
 //! owns it is being read.
 
 use crate::{
-    CloseTerminalShortcut, CopySelectionShortcut, NextTerminalShortcut, PrevTerminalShortcut,
+    CloseTerminalShortcut, CopySelectionShortcut, NextTerminalShortcut, PasteIntoTerminal,
+    PrevTerminalShortcut,
 };
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
@@ -156,6 +157,11 @@ impl Shell {
             .key_context("Terminal")
             .on_action(cx.listener(|this, _: &CopySelectionShortcut, _window, cx| {
                 this.copy_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &PasteIntoTerminal, _window, cx| {
+                // Bound here because the window also binds these strokes, to
+                // image paste, and a binding runs before `on_key_down`.
+                this.paste_into_terminal(cx);
             }))
             .on_action(cx.listener(|this, _: &CloseTerminalShortcut, window, cx| {
                 this.close_terminal(window, cx)

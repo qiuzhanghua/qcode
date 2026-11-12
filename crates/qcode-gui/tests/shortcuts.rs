@@ -1,4 +1,69 @@
-use qcode_gui::{is_copy_shortcut, is_select_all_shortcut, is_send_shortcut, zoom_keystrokes};
+use qcode_gui::{
+    image_paste_keystrokes, is_copy_shortcut, is_paste, is_select_all_shortcut, is_send_shortcut,
+    terminal_paste_keystrokes, zoom_keystrokes,
+};
+
+/// A key binding is dispatched before the terminal's `on_key_down` handler, so
+/// any stroke the window binds for itself never reaches the terminal's paste.
+/// Every stroke the window pastes images with must therefore be rebound inside
+/// the terminal — otherwise Ctrl+Shift+V in the terminal is an image paste, and
+/// off macOS (where plain Ctrl+V is deliberately the program's byte) the
+/// terminal has no paste key at all.
+#[test]
+fn the_terminal_rebinds_every_stroke_the_window_pastes_images_with() {
+    for key in image_paste_keystrokes() {
+        assert!(
+            terminal_paste_keystrokes().contains(key),
+            "{key} is bound to the window's image paste but not to the terminal's paste, \
+             so the terminal never sees it"
+        );
+    }
+}
+
+/// The bound strokes and the key-down recogniser have to agree on what a paste
+/// is: the binding handles them inside the terminal, and `is_paste` handles the
+/// one stroke no binding claims (`Cmd+V` on macOS). A key added to one list but
+/// not the other is a paste that works on one platform only.
+#[test]
+fn every_terminal_paste_binding_is_a_paste_stroke() {
+    for key in terminal_paste_keystrokes() {
+        let keystroke = gpui_kit::Keystroke::parse(key).expect(key);
+        assert!(is_paste(&keystroke), "{key}");
+    }
+}
+
+/// The strings go straight into `KeyBinding::new`, which `unwrap()`s the parse
+/// result — a typo panics when the window opens rather than failing a test.
+#[test]
+fn paste_keystrokes_parse() {
+    for key in image_paste_keystrokes()
+        .iter()
+        .chain(terminal_paste_keystrokes())
+    {
+        let keystroke = gpui_kit::Keystroke::parse(key).expect(key);
+        assert_eq!(keystroke.key, "v", "{key}");
+        assert!(keystroke.modifiers.shift, "{key}");
+        assert!(
+            keystroke.modifiers.control || keystroke.modifiers.platform,
+            "{key}"
+        );
+    }
+}
+
+/// Plain `Ctrl+V` must never become a binding: readline uses it to quote the
+/// next character, and stealing it would break that for anyone who relies on it.
+#[test]
+fn plain_ctrl_v_is_not_a_terminal_paste_stroke() {
+    for key in ["ctrl-v", "cmd-v"] {
+        let keystroke = gpui_kit::Keystroke::parse(key).expect(key);
+        assert!(!terminal_paste_keystrokes().contains(&key), "{key}");
+        // Cmd+V is handled by the key-down recogniser on macOS; Ctrl+V is the
+        // program's own byte and must not be recognised anywhere.
+        if key == "ctrl-v" {
+            assert!(!is_paste(&keystroke), "{key}");
+        }
+    }
+}
 
 #[test]
 fn command_enter_is_a_send_shortcut() {

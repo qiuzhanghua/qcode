@@ -55,15 +55,31 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                 },
             });
             let zoom = zoom_keystrokes(cx.platform_info().is_mac());
+            // Image paste is Ctrl+Shift+V (Cmd+Shift+V on a mac keyboard) rather
+            // than Ctrl+V so the two never collide. It is bound twice per stroke:
+            // context-free for the window, and "Input" because the focused
+            // Textarea owns that context, so the root binding never fires while
+            // typing.
+            //
+            // The terminal rebinds both strokes at its own context depth below —
+            // a binding is dispatched before the terminal's key-down handler, so
+            // without that the image paste would shadow the terminal's paste.
+            for key in image_paste_keystrokes() {
+                cx.bind_keys([
+                    KeyBinding::new(key, PasteImage, None),
+                    KeyBinding::new(key, PasteImage, Some("Input")),
+                ]);
+            }
+            // ...and the terminal takes them back at its own context depth. A
+            // binding is dispatched before `on_key_down`, so the terminal's
+            // key-down paste (`is_paste`) never sees a stroke the window binds:
+            // without this, Ctrl+Shift+V in the terminal is an image paste, and
+            // off macOS there is no paste key left at all (plain Ctrl+V is the
+            // program's byte). Deeper context wins. ADR-0062 §5.
+            for key in terminal_paste_keystrokes() {
+                cx.bind_keys([KeyBinding::new(key, PasteIntoTerminal, Some("Terminal"))]);
+            }
             cx.bind_keys([
-                // Ctrl+V stays the composer's text paste; image paste is
-                // Ctrl+Shift+V so the two never collide.
-                KeyBinding::new("ctrl-shift-v", PasteImage, None),
-                KeyBinding::new("cmd-shift-v", PasteImage, None),
-                // Same reason as Cmd+Enter below: the focused Textarea owns
-                // "Input", so the root binding never fires while typing.
-                KeyBinding::new("ctrl-shift-v", PasteImage, Some("Input")),
-                KeyBinding::new("cmd-shift-v", PasteImage, Some("Input")),
                 KeyBinding::new("y", ApproveOnce, Some("Approval")),
                 KeyBinding::new("a", ApproveSession, Some("Approval")),
                 KeyBinding::new("n", RejectApproval, Some("Approval")),

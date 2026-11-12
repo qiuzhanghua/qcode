@@ -329,20 +329,31 @@ impl crate::shell::Shell {
     }
 }
 
-/// Translate a GPUI key press into the terminal's own key type.
-///
-/// `key_char` is preferred for printable keys because the platform has already
-/// applied Shift and the layout (`Shift+1` is `!`, not `1`).
 /// Whether this press means "paste", as a terminal understands it.
-fn is_paste(keystroke: &gpui_kit::Keystroke) -> bool {
+///
+/// Handled in the terminal's key-down listener, which only fires when no key
+/// binding claimed the stroke first — so anything the window binds for itself
+/// has to be rebound at `Terminal` context depth (see
+/// [`crate::terminal_paste_keystrokes`]).
+#[doc(hidden)]
+pub fn is_paste(keystroke: &gpui_kit::Keystroke) -> bool {
     if !keystroke.key.eq_ignore_ascii_case("v") {
         return false;
     }
     let modifiers = keystroke.modifiers;
-    (modifiers.platform && !modifiers.shift && !modifiers.control && !modifiers.alt)
+    // Cmd+V, and also Cmd+Shift+V: a terminal has no rich text, so the "paste
+    // as plain text" spelling is just paste.
+    (modifiers.platform && !modifiers.control && !modifiers.alt)
+        // Ctrl+V must stay the program's byte — readline binds it to "quote the
+        // next character" — so on those platforms the terminal's paste is the
+        // shifted form.
         || (modifiers.control && modifiers.shift && !modifiers.platform && !modifiers.alt)
 }
 
+/// Translate a GPUI key press into the terminal's own key type.
+///
+/// `key_char` is preferred for printable keys because the platform has already
+/// applied Shift and the layout (`Shift+1` is `!`, not `1`).
 pub(crate) fn to_key_press(keystroke: &gpui_kit::Keystroke) -> Option<qcode_terminal::KeyPress> {
     use qcode_terminal::{Direction, Key, KeyPress};
 

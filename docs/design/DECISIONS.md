@@ -4754,7 +4754,20 @@ GUI 落地后这三条边界开始漏：
    | 除下列全部按键（含 `Ctrl+C`/`Ctrl+Z`/`Tab`/`Esc`/功能键） | 转发给 PTY |
    | `Ctrl+Shift+T` / `Ctrl+Shift+W` / `Ctrl+Tab` | 新建 / 关闭 / 切换 tab |
    | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号缩放（与全窗口一致） |
+   | `Cmd+C` / `Ctrl+Shift+C` | 复制选中文本 |
+   | `Cmd+V` / `Cmd+Shift+V` / `Ctrl+Shift+V` | 粘贴 |
    | 侧边栏点击 | 切视图 |
+
+   **`Ctrl+V` 不在上表，是故意的**：readline 把它绑成 quote-next，抢走就废了它。
+   所以非 macOS 平台的粘贴只能落在 `Ctrl+Shift+V` 上。
+
+   粘贴这条有个容易踩空的机制：**绑定先于 `on_key_down` 分发**。终端的粘贴本来写在
+   key-down 监听里（`is_paste`），而 key-down 只在没有任何绑定认领这个按键时才触发；
+   窗口又恰好把 `Ctrl+Shift+V` / `Cmd+Shift+V` 绑给了「粘贴图片」（`PasteImage`）。
+   结果是终端那条路径永远轮不到，非 macOS 上等于**没有粘贴键**（这个问题在 0062
+   落地后一直存在，靠 `tests/shortcuts.rs` 里「图片粘贴的每个按键都必须在 Terminal
+   上下文重新绑定」的断言守住）。**凡是窗口自己绑掉的按键，终端若想要，就必须在
+   `Terminal` 上下文深度上重新绑一次**——上下文更深的绑定优先。
 
    中文输入：组合器已经有 `vendor/xim-ctext` 补丁（ADR-0051）修正 XIM 预编辑，
    终端复用同一条输入路径；新增的是**预编辑文本在字符网格里怎么显示**（格子里画

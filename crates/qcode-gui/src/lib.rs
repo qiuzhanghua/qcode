@@ -25,6 +25,10 @@ pub mod setup;
 mod shell;
 pub mod task_ops;
 mod terminal;
+// The terminal's paste recogniser, so the integration tests can assert that
+// every stroke it accepts is either unclaimed by the window or rebound inside
+// the terminal (a key binding runs before the key-down handler).
+pub use terminal::is_paste;
 pub mod tray;
 mod window_icon;
 pub use backend::{
@@ -49,6 +53,7 @@ gpui_kit::actions!(
     qcode_gui,
     [
         PasteImage,
+        PasteIntoTerminal,
         ApproveOnce,
         ApproveSession,
         RejectApproval,
@@ -294,6 +299,31 @@ fn is_plain_secondary(keystroke: &gpui_kit::Keystroke, key: &str) -> bool {
             platform
         })
         && keystroke.key == key
+}
+
+/// The strokes the window pastes images with (`PasteImage`).
+#[doc(hidden)]
+pub const fn image_paste_keystrokes() -> &'static [&'static str] {
+    &["ctrl-shift-v", "cmd-shift-v"]
+}
+
+/// The strokes that paste text into the terminal.
+///
+/// These cannot be left to the terminal's own key-down handler
+/// (`is_paste`): key bindings are dispatched *before* `on_key_down`, so a
+/// binding for the same stroke anywhere on the dispatch path shadows that
+/// handler outright. `Ctrl+Shift+V` is the window's image paste, which is
+/// exactly that case — see [`image_paste_keystrokes`] and the test that keeps
+/// the two lists in step. Rebinding them at `Terminal` context depth wins,
+/// because bindings resolve by context depth first.
+///
+/// Both spellings on both platforms: `cmd-shift-v` is what a macOS terminal
+/// gets, and `ctrl-shift-v` is the only paste a Linux or Windows terminal can
+/// have at all — plain `Ctrl+V` stays the program's byte (readline binds it to
+/// "quote the next character"), ADR-0062 §5.
+#[doc(hidden)]
+pub const fn terminal_paste_keystrokes() -> &'static [&'static str] {
+    &["ctrl-shift-v", "cmd-shift-v"]
 }
 
 /// The font-zoom keystrokes for one platform.
