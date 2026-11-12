@@ -109,6 +109,16 @@ async fn harness(env: &[(&str, &str)]) -> Harness {
         })
         .expect("session");
 
+    // `MCP_STUB_MUTATE` makes the stub announce `list_changed` right after the
+    // connect-time `tools/list`. The transport reads and dispatches that
+    // notification on its own task, so the turn can start before the flag is
+    // set — and then the refresh lands in the *next* turn instead of this one,
+    // which is correct behaviour but makes an event-count assertion flap. Wait
+    // for the notification to have been delivered before the first turn.
+    if env.iter().any(|(key, _)| *key == "MCP_STUB_MUTATE") {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     Harness {
         store,
         session,
@@ -131,8 +141,10 @@ impl Harness {
                 approver: &AutoApprove,
                 snapshots: None,
                 // These tests exercise the MCP tool table / instructions, not
-                // scheduling; the field exists for the runtime driver (ADR schedule).
+                // scheduling or asking; both fields exist for the runtime drivers
+                // (ADR-0059, ask_user) and stay `None` here.
                 scheduler: None,
+                questioner: None,
             },
             RunOptions {
                 session_id: &self.session,
@@ -151,6 +163,7 @@ impl Harness {
                 attachments: Vec::new(),
                 inbox: None,
                 continuation: None,
+                scheduled: None,
             },
             |_| {},
         )

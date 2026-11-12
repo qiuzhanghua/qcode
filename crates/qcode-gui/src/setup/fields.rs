@@ -330,6 +330,20 @@ pub(crate) fn overridden_default_model<'a>(
     (!own.is_empty() && own != global).then_some(global)
 }
 
+/// The `images` override to write for one provider row (ADR-0071).
+///
+/// The switch has two states and the config has three (`Some(true)`,
+/// `Some(false)`, and "inherit the catalog"). Writing `Some(false)` for a route
+/// whose catalog says true would be right at that moment and wrong at the next
+/// catalog update, and every save would rewrite the file; so the row only
+/// becomes an override when the switch disagrees with what the route already
+/// inherits. A route the catalog does not ship inherits "no images", which is
+/// why the default is `false` and not `None`.
+pub(crate) fn images_override(name: &str, shown: bool) -> Option<bool> {
+    let inherited = qcode_kernel::config::catalog_entry(name.trim()).is_some_and(|e| e.images);
+    (shown != inherited).then_some(shown)
+}
+
 pub(crate) fn optional(
     row: &RowState,
     key: &'static str,

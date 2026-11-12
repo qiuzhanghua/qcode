@@ -43,6 +43,7 @@ pub struct App {
     /// Child groups whose nested blocks are folded.
     pub collapsed_children: HashSet<String>,
     pub approval: Option<ApprovalPrompt>,
+    pub question: Option<QuestionPrompt>,
     /// Ctrl-C has been pressed once; the next one quits.
     pub quit_armed: bool,
     /// Skills available to this session, for the `/skills` debug commands.
@@ -105,6 +106,7 @@ impl App {
             child_groups: Vec::new(),
             collapsed_children: HashSet::new(),
             approval: None,
+            question: None,
             quit_armed: false,
             skills: Vec::new(),
             restoring: false,

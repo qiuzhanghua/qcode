@@ -15,6 +15,7 @@ use qcode_core::inbox::QueuedMessage;
 use qcode_ui_bridge::UiEvent;
 
 use crate::approvals::ApprovalQueue;
+use crate::questions::QuestionQueue;
 
 /// What one event did, for the parts that live on `Shell`.
 #[derive(Default)]
@@ -58,6 +59,9 @@ pub struct Dormant {
     /// Approvals that arrived while the user was looking elsewhere, in arrival
     /// order. Merged into the view on the next `resume`.
     pub approvals: ApprovalQueue,
+    /// `ask_user` questions that arrived in the background, same shape. A
+    /// question also blocks the engine, so it must survive the trip too.
+    pub questions: QuestionQueue,
     /// Last queue snapshots, so the dock is right the moment the user switches
     /// in instead of one snapshot tick later.
     pub queue: Vec<QueuedMessage>,
@@ -74,6 +78,7 @@ impl Dormant {
     pub fn is_settled(&self) -> bool {
         !self.running
             && self.approvals.is_empty()
+            && self.questions.is_empty()
             && self.queue.is_empty()
             && self.steering.is_empty()
             && self.error_banner.is_none()
@@ -107,6 +112,14 @@ pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
         }
         UiEvent::ApprovalClosed { call_id } => {
             dormant.approvals.closed(&call_id);
+            applied = Applied::boundary();
+        }
+        UiEvent::Question(view) => {
+            dormant.questions.push(view);
+            applied = Applied::boundary();
+        }
+        UiEvent::QuestionClosed { call_id } => {
+            dormant.questions.closed(&call_id);
             applied = Applied::boundary();
         }
         UiEvent::TurnFailed { message } => {

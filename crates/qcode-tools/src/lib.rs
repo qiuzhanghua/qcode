@@ -1,6 +1,7 @@
 //! Built-in tools. Every path is resolved against the workspace and every
 //! write is atomic (temp file + rename).
 
+pub mod ask;
 pub mod diff;
 pub mod fetch;
 pub mod fs;
@@ -50,6 +51,7 @@ pub fn builtin_registry_with_env(
         Arc::new(fetch::WebFetch),
         Arc::new(shell::RunShell::with_env(sandbox, env)),
         Arc::new(todo::TodoWrite),
+        Arc::new(ask::AskUser),
         Arc::new(schedule::ScheduleCreate),
         Arc::new(schedule::ScheduleList),
         Arc::new(schedule::ScheduleView),

@@ -398,9 +398,19 @@ impl Shell {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_size(sp(13.0))
-                        .whitespace_nowrap()
-                        .child(label),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        // 定时任务投递过的任务：标题前加一个时钟标记（ADR-0059）。
+                        .when(row.has_scheduled, |this| {
+                            this.child(
+                                Icon::new(IconName::CalendarClock)
+                                    .with_size(Size::Small)
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                        })
+                        .child(div().text_size(sp(13.0)).whitespace_nowrap().child(label)),
                 );
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))

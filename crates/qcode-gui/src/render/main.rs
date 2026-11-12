@@ -1,9 +1,12 @@
 use super::*;
 use gpui_kit::base::actions::{Confirm, SelectDown, SelectUp};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::v_flex;
+
+use crate::questions::QuestionInputState;
 
 /// 按搜索词过滤模型分组：仅匹配模型名（大小写不敏感子串匹配），过滤后
 /// 为空的 Provider 组整组剔除；搜索词为空时返回全量分组。
@@ -672,6 +675,57 @@ impl Shell {
             self.ui.waiting_ticker = true;
             self.tick_waiting(cx);
         }
+        if self.ui.question.is_some() && !self.ui.question_ticker {
+            self.ui.question_ticker = true;
+            self.tick_question(cx);
+        }
+        // 无选项的自由文本提问需要输入框。实体按「面板 call_id + 题目序号」懒
+        // 创建，面板换题或关闭时丢弃重建（输入框跟着题目走，不串题）。
+        let input_need = self.ui.question.as_ref().map(|panel| {
+            (
+                panel.view.call_id.clone(),
+                panel.index,
+                panel.current().options.is_empty(),
+            )
+        });
+        if let Some((call_id, index, true)) = &input_need
+            && self
+                .ui
+                .question_input
+                .as_ref()
+                .map(|state| (&state.call_id, state.index))
+                != Some((call_id, *index))
+        {
+            let input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .auto_grow(2, 4)
+                    .placeholder("输入回答…")
+            });
+            let subscription = cx.subscribe(&input, |shell, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    if let Some(panel) = shell.ui.question.as_mut() {
+                        panel.set_custom(text);
+                    }
+                    cx.notify();
+                }
+            });
+            let focus = input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            self.ui.question_input = Some(QuestionInputState {
+                input,
+                call_id: call_id.clone(),
+                index: *index,
+                _subscription: subscription,
+            });
+        } else if self
+            .ui
+            .question
+            .as_ref()
+            .is_none_or(|panel| !panel.current().options.is_empty())
+        {
+            self.ui.question_input = None;
+        }
         if self.pending_send {
             self.pending_send = false;
             self.send_prompt(window, cx);
@@ -943,6 +997,7 @@ impl Shell {
                             // 拦截原因映射成中文，其余情况直接展示原文。
                             let reason_cn = match view.reason.as_str() {
                                 reason if reason.contains("process execution") => "进程执行策略",
+                                reason if reason.contains("sandbox escalation") => "沙箱提权策略",
                                 reason if reason.contains("write outside workspace") => {
                                     "工作区外写入策略"
                                 }
@@ -1019,6 +1074,21 @@ impl Shell {
                                                 .text_color(rgb(0x666666))
                                                 .child(format!("> {}", view.summary)),
                                         )
+                                        .children(view.requested_scope.as_ref().map(|scope| {
+                                            // 提权请求（SANDBOX-MODE.md）：把
+                                            // 模型申请的范围和理由直接摆给用户。
+                                            div()
+                                                .pl(px(20.0))
+                                                .text_size(sp(13.0))
+                                                .line_height(sp(22.0))
+                                                .text_color(rgb(0xb45309))
+                                                .child(format!(
+                                                    "请求提权到 {scope}：{}",
+                                                    view.justification
+                                                        .as_deref()
+                                                        .unwrap_or("（未说明理由）")
+                                                ))
+                                        }))
                                         .child(
                                             div()
                                                 .flex()
@@ -1049,6 +1119,169 @@ impl Shell {
                                                             },
                                                         )),
                                                 ),
+                                        ),
+                                )
+                        }),
+                    )
+                    .children(
+                        // 提问面板：模型在 ask_user 工具里向用户提问。一次一
+                        // 题、分页器切换；选项即按钮（单选=radio，多选=checkbox
+                        // 语义）；超时后翻为 continued，回答改走消息通道。
+                        self.ui.question.as_ref().map(|panel| {
+                            let question = panel.current();
+                            let count = panel.view.questions.len();
+                            let index = panel.index;
+                            let is_last = index + 1 == count;
+                            let continued = panel.continued;
+                            let countdown = panel.deadline.map(|deadline| {
+                                deadline
+                                    .saturating_duration_since(std::time::Instant::now())
+                                    .as_secs()
+                            });
+                            let status = if continued {
+                                "已继续 · 回答将以新消息送达".to_string()
+                            } else {
+                                match countdown {
+                                    Some(secs) => format!("等待回答 · {secs}s"),
+                                    None => "等待回答".to_string(),
+                                }
+                            };
+                            let header_color = if continued {
+                                rgb(0x94a3b8)
+                            } else {
+                                rgb(0x38bdf8)
+                            };
+                            div()
+                                .w_full()
+                                .rounded_t(px(10.0))
+                                .border_1()
+                                .border_color(border)
+                                .bg(rgb(0xffffff))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .rounded_tl(px(10.0))
+                                        .rounded_tr(px(10.0))
+                                        .bg(header_color)
+                                        .px_3()
+                                        .py_1()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_size(sp(16.0))
+                                                .line_height(sp(26.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(0x000000))
+                                                .child("提问"),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .child(
+                                                    div()
+                                                        .text_size(sp(12.0))
+                                                        .line_height(sp(20.0))
+                                                        .text_color(rgb(0x555555))
+                                                        .child(status),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px_3()
+                                        .pb_2()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(sp(12.0))
+                                                .line_height(sp(20.0))
+                                                .text_color(rgb(0x888888))
+                                                .child(format!("第 {index} 题，共 {count} 题")),
+                                        )
+                                        .children(question.header.clone().map(|header| {
+                                            div()
+                                                .text_size(sp(12.0))
+                                                .line_height(sp(20.0))
+                                                .text_color(rgb(0x888888))
+                                                .child(header)
+                                        }))
+                                        .child(
+                                            div()
+                                                .text_size(sp(15.0))
+                                                .line_height(sp(24.0))
+                                                .text_color(rgb(0x000000))
+                                                .child(question.question.clone()),
+                                        )
+                                        .children(question.detail.clone().map(|detail| {
+                                            div()
+                                                .text_size(sp(13.0))
+                                                .line_height(sp(22.0))
+                                                .text_color(rgb(0x666666))
+                                                .child(detail)
+                                        }))
+                                        .children(question.options.iter().enumerate().map(
+                                            |(i, option)| {
+                                                let selected = panel.is_selected(i);
+                                                let marker = if selected {
+                                                    if question.multi_select {
+                                                        "☑ "
+                                                    } else {
+                                                        "● "
+                                                    }
+                                                } else if question.multi_select {
+                                                    "☐ "
+                                                } else {
+                                                    "○ "
+                                                };
+                                                Button::new(format!("question-option-{i}"))
+                                                    .label(format!("{marker}{}", option.label))
+                                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                                        this.question_toggle(i, cx);
+                                                    }))
+                                            },
+                                        ))
+                                        .children(self.ui.question_input.as_ref().map(|state| {
+                                            div()
+                                                .w_full()
+                                                .child(Textarea::new(&state.input))
+                                        }))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .children((index > 0).then(|| {
+                                                    Button::new("question-back")
+                                                        .label("上一题")
+                                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                                            this.question_back(cx);
+                                                        }))
+                                                }))
+                                                .child(
+                                                    Button::new("question-skip")
+                                                        .label("跳过")
+                                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                                            this.question_skip(cx);
+                                                        })),
+                                                )
+                                                .child(if is_last {
+                                                    Button::new("question-submit")
+                                                        .label("提交")
+                                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                                            this.question_submit(cx);
+                                                        }))
+                                                } else {
+                                                    Button::new("question-next")
+                                                        .label("下一题")
+                                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                                            this.question_next(cx);
+                                                        }))
+                                                }),
                                         ),
                                 )
                         }),
@@ -1136,6 +1369,7 @@ impl Shell {
                         self.ui.approvals.current().is_none()
                             && self.ui.error_banner.is_none()
                             && self.ui.restoring.is_none()
+                            && self.ui.question.is_none()
                             && !round_hint_visible,
                         |this| {
                             this.child(

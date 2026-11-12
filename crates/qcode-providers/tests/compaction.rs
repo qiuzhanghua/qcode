@@ -59,6 +59,8 @@ fn seed_three_turns(store: &SessionStore) -> String {
                 attachments: Vec::new(),
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         );
         append(
@@ -125,6 +127,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,
@@ -144,6 +147,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -208,6 +212,7 @@ async fn a_roomy_window_skips_compaction() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,
@@ -227,6 +232,7 @@ async fn a_roomy_window_skips_compaction() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

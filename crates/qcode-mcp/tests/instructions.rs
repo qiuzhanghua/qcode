@@ -121,8 +121,10 @@ async fn run_once(registry: &ToolRegistry, calls: bool, policy: Policy) -> Run {
             approver: &AutoApprove,
             snapshots: None,
             // These tests exercise the MCP tool table / instructions, not
-            // scheduling; the field exists for the runtime driver (ADR schedule).
+            // scheduling or asking; both fields exist for the runtime drivers
+            // (ADR-0059, ask_user) and stay `None` here.
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,
@@ -141,6 +143,7 @@ async fn run_once(registry: &ToolRegistry, calls: bool, policy: Policy) -> Run {
             attachments: Vec::new(),
             inbox: None,
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

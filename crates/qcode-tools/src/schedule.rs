@@ -97,10 +97,11 @@ fn detail(task: &ScheduledTask) -> String {
     ));
     for receipt in task.delivery_log.iter().rev().take(5) {
         lines.push(format!(
-            "  - {o} 投递到 {target}（message {m}）",
+            "  - {o} 投递到 {target}（message {m}）：{p}",
             o = receipt.delivered_at,
             target = receipt.target_session_id.as_deref().unwrap_or("-"),
             m = receipt.message_id,
+            p = receipt.prompt,
         ));
     }
     if task.earlier_records_pruned {
@@ -143,7 +144,9 @@ impl Tool for ScheduleCreate {
                 "The task lives in the store and keeps running after this session closes. ",
                 "When the user did not specify when the task runs (rule) or where it ",
                 "delivers (target), ask the user to confirm those first — never invent a ",
-                "default schedule such as \"every day at 08:00\"."
+                "default schedule such as \"every day at 08:00\". For the delivery target ",
+                "the question is exactly two options: reuse one session for every delivery, ",
+                "or create a new session each time — do not offer vague alternatives."
             )
             .to_string(),
             parameters: json!({
@@ -163,7 +166,7 @@ impl Tool for ScheduleCreate {
                     },
                     "target": {
                         "type": "string",
-                        "description": "投递目标：new_once（默认，首次投递建会话并复用）、new（每次新建会话）、session:<会话ID>（投到指定会话）。"
+                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。"
                     },
                     "overlap": {
                         "type": "string",
@@ -215,9 +218,18 @@ impl Tool for ScheduleCreate {
             Some(target) => target,
             None => {
                 return Ok(ToolOutput::error(
-                    "target 需为 new_once / new / session:<会话ID>".to_string(),
+                    "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>"
+                        .to_string(),
                 ));
             }
+        };
+        // 在会话内创建且选「每次复用会话」（new_once）时，复用当前对话——这样
+        // 任务从创建起就绑定到会话，详情页可立即跳转。
+        let target = match target {
+            Target::NewOnce if !ctx.session_id.is_empty() => Target::Session {
+                id: ctx.session_id.clone(),
+            },
+            other => other,
         };
         let overlap = if args.overlap.is_empty() {
             Overlap::Queue
@@ -718,6 +730,7 @@ mod tests {
             ),
             message_id: "m-1".to_string(),
             target_session_id: Some("s-1".to_string()),
+            prompt: "生成日报".to_string(),
         };
         let mut task = sample_task("t-1", "日报");
         task.last_receipt = Some(receipt.clone());

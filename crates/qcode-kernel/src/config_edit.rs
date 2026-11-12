@@ -499,6 +499,18 @@ impl ConfigEdit {
                 table.insert("api_key_command", Item::Value(argv_value(argv)));
             }
             set_optional(&mut table, "default_model", provider.default_model.clone());
+            // `protocol` was never written here, so a route switched to the
+            // Anthropic endpoint in the settings table came back as OpenAI after
+            // the next save (the table is rebuilt, and an omitted key is the
+            // same as "inherit the catalog").
+            set_optional(
+                &mut table,
+                "protocol",
+                provider
+                    .protocol
+                    .map(|protocol| protocol.as_str().to_string()),
+            );
+            set_optional_bool(&mut table, "images", provider.images);
             table.insert(
                 "stream_usage",
                 Item::Value(Value::from(provider.stream_usage)),
@@ -817,6 +829,14 @@ fn set_scalar_value(edit: &mut ConfigEdit, keys: &[&str], value: &str) -> Result
 
 fn set_optional(table: &mut Table, key: &str, value: Option<String>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
+        table.insert(key, Item::Value(Value::from(value)));
+    }
+}
+
+/// A tri-state bool: `None` leaves the key out entirely, so an unset override
+/// keeps inheriting from the catalog instead of being frozen into the file.
+fn set_optional_bool(table: &mut Table, key: &str, value: Option<bool>) {
+    if let Some(value) = value {
         table.insert(key, Item::Value(Value::from(value)));
     }
 }
@@ -1158,7 +1178,11 @@ roots = ["~/skills"]
                 api_key_env: Some("DEEPSEEK_API_KEY".to_string()),
                 api_key_command: Some(vec!["echo".to_string(), "secret".to_string()]),
                 default_model: Some("deepseek-flash".to_string()),
-                protocol: None,
+                // Both are tri-states that the table used to drop: `protocol`
+                // was never written at all, so a route pointed at the Anthropic
+                // endpoint came back as OpenAI after the next settings save.
+                protocol: Some(crate::config::Protocol::Anthropic),
+                images: Some(false),
                 stream_usage: false,
                 extra_body: Default::default(),
                 headers: Default::default(),
@@ -1234,6 +1258,8 @@ roots = ["~/skills"]
         assert_eq!(loaded.providers.len(), 1);
         let provider = &loaded.providers["deepseek"];
         assert_eq!(provider.default_model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(provider.protocol, Some(crate::config::Protocol::Anthropic));
+        assert_eq!(provider.images, Some(false));
         assert!(!provider.stream_usage);
         assert_eq!(provider.models.len(), 1);
         assert_eq!(provider.models[0].id, "deepseek-flash");

@@ -44,6 +44,54 @@
 于是"执行应被拒绝"这条断言在它最该成立的环境里 panic。现在 spawn 期的
 `PermissionDenied` 也算作拒绝（在本机 HEAD 上先确认过它是红的）。
 
+### 依赖：`gpui-kit` 0.9.0 → 0.9.1，GPUI 快照跟到 `gpui-pre 0.3.12`
+
+上游是 patch release（backward compatible：没有删公共名字，也没有像 0.9.0 那样把主题结构体
+统一加 `#[non_exhaustive]`）。`crates/qcode-gui` 源码零改动即编译，`cargo test --workspace`、
+`make check`（fmt / clippy / test / cargo-deny）与 `make check-platforms` 的 3 个交叉目标全绿。
+
+- 依赖：`gpui-base` / `gpui-component` / `gpui-kit-assets` 全套 0.9.1；`gpui-pre`（连同
+  `-macros` / `-platform` / `-collections` / `-util` / `-scheduler`）0.3.11 → **0.3.12**，
+  zed 快照 `f816e1f` → `d2a4fb6`。
+- **`vendor/gpui-pre-windows` 重新同步到 0.3.12 并重贴 `IsWindow` 守卫**：上游仍然没有这个
+  修复（[longbridge/gpui-kit#3795](https://github.com/longbridge/gpui-kit/issues/3795)），
+  关窗时依旧会对已销毁的 HWND 调 `RedrawWindow`。0.3.12 与 0.3.11 的依赖集合完全一致，守卫
+  所在的 vsync 循环也没挪位置；真正变的只有 `build.rs` 少编一个 `color_text_raster.hlsl`
+  shader、`platform.rs` 撤掉了 DirectWrite 文本系统的 GPU-lost 挂钩。
+- 升级后照旧**必须**跑 `cargo update -p gpui-pre-windows`：vendor manifest 与 `gpui-pre` 的
+  `=0.3.12` 对不上时，cargo 只打一行 `patch … was not used in the crate graph`，然后静默用
+  registry 版——构建照绿，守卫没了。核对方式见
+  [vendor/gpui-pre-windows/README.qcode.md](vendor/gpui-pre-windows/README.qcode.md)：
+  `cargo tree --target x86_64-pc-windows-gnullvm -p qcode-gui -i gpui-pre-windows` 必须带
+  `(…/vendor/gpui-pre-windows)` 后缀，`Cargo.lock` 里那条不能有 `source`/`checksum`。
+- 行为变化落在 qcode 真用到的组件上：`Text` / `TextView`（Markdown 任务勾选框可点、块级
+  surface、跟随指针的链接 tooltip）、`Input` / Editor（光标移动上报平台、折叠行占位符、
+  软换行处的光标行）、`Table`（`ColumnFixed::Right` 右固定列）、`Menu`（尺寸改 rem）、
+  diff 解析（非法 hunk 前缀先校验再切 UTF-8）；另有 `WebView` 在 Linux 上被 drop 时的 X11
+  abort 修复。GPUI Fast 0.1.14 未启用。
+
+### OpenAI 兼容路由终于能发图了：`images` 从常量变成配置（ADR-0071）
+
+在 DeepSeek 路由下贴一张图，模型回「this session only accepts text input」——可它明明能
+看图。断点不在服务端也不在模型，而在 `openai_compat.rs` 里 `images: false` 这一行常量：
+引擎按 `capabilities().images` 决定发图还是发一行占位文本，所以图片在请求构造阶段就被换成
+`[image omitted: …]`，早就写好的 `image_url` 线格式代码永远走不到。Anthropic 适配器则是
+另一个方向的同一个错误（常量 `true`）。
+
+- **`images` 现在是 `[providers.<route>]` 的配置项**（`Option<bool>`），缺省继承内建目录：
+  openai / deepseek / anthropic 为真，ollama / minimax 为假；目录没收录的路由缺省为假。
+  适配器只转述这个值，不再自己判断协议「能不能」看图——能力是部署的属性，不是协议的。
+- **降级语义不变**（ADR-0061 §8）：关掉时仍发占位文本而不是报错，日志里仍是引用，换个
+  支持视觉的模型重放就能看到原图。
+- **设置页多一列 `images`**；布尔列表达不了「继承」，所以只有与目录答案**不一致**时才写这个
+  键——没动过开关不会把今天的目录冻结进配置文件。
+- **顺带修好 `protocol` 存不下来**：`ConfigEdit::apply_config` 重建 provider 表时从来不写
+  `protocol` 这个键，而设置页保存走的正是它——把 deepseek 切到 Anthropic 端点、保存、再打开，
+  协议列又变回目录默认值。两个三态字段（`protocol` / `images`）现在在同一处写入，`None` 表示
+  「继承目录」、不落键。
+- DeepSeek 两条端点（`/v1/chat/completions` 与 `/anthropic/v1/messages`）都能看图，
+  **不必再把协议改成 anthropic**；此前给出的那个改法现在只是可选路径。
+
 ### 保存设置不再把 `~` 固化成绝对路径
 
 `writable_paths = ["~/Documents"]` 是 ADR-0066 §2 修订注记想要的跨机器写法，但加载时它被

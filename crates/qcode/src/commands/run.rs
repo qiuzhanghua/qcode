@@ -214,6 +214,15 @@ pub(crate) async fn cmd_run(
         Arc::new(AutoDeny)
     };
 
+    // A question has no sensible auto-answer: `--yes` only auto-approves tool
+    // permissions. Headless runs answer interactively on the terminal; piped
+    // runs get `None`, so a blocking ask_user fails and a timed one expires.
+    let questioner: Option<Arc<dyn Questioner>> = if !yes && std::io::stdin().is_terminal() {
+        Some(Arc::new(InteractiveQuestioner))
+    } else {
+        None
+    };
+
     // Pre-images for rollback: every write the agent makes records what was
     // there first.
     let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(&data_dir)
@@ -221,11 +230,19 @@ pub(crate) async fn cmd_run(
 
     // The child registry excludes `subagent`, so nesting stops at depth one;
     // it also drops the schedule tools, whose runtime driver only exists on the
-    // GUI side (a sub-agent cannot create or manage scheduled tasks).
+    // GUI side (a sub-agent cannot create or manage scheduled tasks), and
+    // `ask_user`, because interaction belongs to the runtime root (a sub-agent
+    // reports its unanswered question to the parent model instead).
     let runner = subagent::build(
         &store,
         provider.clone(),
-        tools.without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
+        tools.without(
+            &[
+                qcode_tools::schedule::SCHEDULE_TOOL_NAMES.as_slice(),
+                qcode_tools::ask::ASK_USER_TOOL_NAMES.as_slice(),
+            ]
+            .concat(),
+        ),
         &policy,
         approver.clone(),
         &workspace,
@@ -262,6 +279,7 @@ pub(crate) async fn cmd_run(
             approver: approver.as_ref(),
             snapshots: Some(&snapshots),
             scheduler: None,
+            questioner,
         },
         RunOptions {
             session_id: &session_id,
@@ -280,6 +298,7 @@ pub(crate) async fn cmd_run(
             attachments,
             inbox: None,
             continuation,
+            scheduled: None,
         },
         |event| {
             if json {

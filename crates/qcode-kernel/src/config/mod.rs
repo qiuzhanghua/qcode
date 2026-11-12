@@ -808,6 +808,12 @@ pub struct ProviderConfig {
     /// OpenAI-compatible for a route the catalog does not ship).
     #[serde(default)]
     pub protocol: Option<Protocol>,
+    /// Whether the route's models accept image input. Absent means the catalog
+    /// route's answer (see [`super::CatalogEntry::images`]); set it for a
+    /// gateway that differs from the vendor it fronts, or for a model newer
+    /// than this build's catalog.
+    #[serde(default)]
+    pub images: Option<bool>,
     #[serde(default = "default_true")]
     pub stream_usage: bool,
     /// Deployment-level request headers (gateway auth, custom headers). Applied
@@ -830,6 +836,7 @@ impl Default for ProviderConfig {
             api_key_command: None,
             default_model: None,
             protocol: None,
+            images: None,
             stream_usage: true,
             extra_body: Default::default(),
             headers: Default::default(),

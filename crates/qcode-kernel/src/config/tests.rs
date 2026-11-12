@@ -1753,3 +1753,118 @@ fn skill_roots_keep_expanding_and_keep_resolving_against_the_workspace() {
         PathBuf::from("/opt/skills")
     );
 }
+
+/// Image input is a deployment property, not a protocol one.
+///
+/// Before this, `images` was a constant of the adapter (`false` for every
+/// OpenAI-compatible route, `true` for Anthropic), so DeepSeek — which answers
+/// images over both endpoints, verified 2026-11-11 — had every picture
+/// replaced with a "[image omitted]" line before the request was built.
+#[test]
+fn resolve_reports_whether_the_route_takes_images() {
+    let env = env_from(&[("DEEPSEEK_API_KEY", "sk-test")]);
+
+    // Catalog answer: DeepSeek and Anthropic see images, Ollama does not.
+    let config: Config = toml::from_str(
+        r#"
+            [providers.deepseek]
+            default_model = "deepseek-flash"
+            "#,
+    )
+    .expect("parse");
+    assert!(
+        resolve(&config, &Overrides::default(), &env)
+            .expect("resolves")
+            .images,
+        "deepseek's catalog entry takes images"
+    );
+
+    let ollama: Config = toml::from_str(
+        r#"
+            [providers.ollama]
+            base_url = "http://localhost:11434/v1"
+            api_key_env = ""
+            default_model = "llama3"
+            "#,
+    )
+    .expect("parse");
+    assert!(
+        !resolve(&ollama, &Overrides::default(), &env)
+            .expect("resolves")
+            .images,
+        "a catalog route without image support stays text-only"
+    );
+
+    // A route the catalog does not ship is text-only until told otherwise.
+    let gateway: Config = toml::from_str(
+        r#"
+            [providers.gateway]
+            base_url = "https://gateway.example.com/v1"
+            api_key_env = "DEEPSEEK_API_KEY"
+            default_model = "some-model"
+            "#,
+    )
+    .expect("parse");
+    assert!(
+        !resolve(&gateway, &Overrides::default(), &env)
+            .expect("resolves")
+            .images
+    );
+
+    // …and the config override wins in both directions.
+    let mut off = config.clone();
+    off.providers.get_mut("deepseek").expect("route").images = Some(false);
+    assert!(
+        !resolve(&off, &Overrides::default(), &env)
+            .expect("resolves")
+            .images,
+        "explicit false turns a catalog route text-only"
+    );
+
+    let mut on = gateway.clone();
+    on.providers.get_mut("gateway").expect("route").images = Some(true);
+    assert!(
+        resolve(&on, &Overrides::default(), &env)
+            .expect("resolves")
+            .images,
+        "explicit true lets a hand-declared gateway take images"
+    );
+}
+
+/// The engine keys its image handling off the capability, so the adapter has to
+/// report the configured value instead of a constant.
+#[test]
+fn the_built_provider_reports_the_resolved_image_capability() {
+    use crate::provider_registry::ProviderRegistry;
+    let env = env_from(&[("DEEPSEEK_API_KEY", "sk-test")]);
+    for (protocol, base_url, expected) in [
+        ("openai", "https://api.deepseek.com/v1", true),
+        ("anthropic", "https://api.deepseek.com/anthropic", true),
+    ] {
+        let text = format!(
+            r#"
+            [providers.deepseek]
+            base_url = "{base_url}"
+            protocol = "{protocol}"
+            api_key_env = "DEEPSEEK_API_KEY"
+            default_model = "deepseek-flash"
+            images = false
+            "#
+        );
+        let config: Config = toml::from_str(&text).expect("parse");
+        let resolved = resolve(&config, &Overrides::default(), &env).expect("resolves");
+        assert!(!resolved.images, "the file said false ({protocol})");
+        let provider = ProviderRegistry::new(None).build(&resolved).expect("build");
+        assert!(
+            !provider.capabilities().images,
+            "{protocol} adapter must report the config, not a constant"
+        );
+
+        // And with the override removed, both protocols take the catalog's yes.
+        let config: Config = toml::from_str(&text.replace("images = false", "")).expect("parse");
+        let resolved = resolve(&config, &Overrides::default(), &env).expect("resolves");
+        assert_eq!(resolved.images, expected, "{protocol}");
+        let provider = ProviderRegistry::new(None).build(&resolved).expect("build");
+        assert_eq!(provider.capabilities().images, expected, "{protocol}");
+    }
+}

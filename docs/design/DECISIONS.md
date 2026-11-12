@@ -1525,6 +1525,20 @@ cargo 只打一行 `patch … was not used in the crate graph` 警告并静默�
 行为变化集中在 `input/editor`（按行分隔符排版、可配置的 `CursorBlink`）、`MessageScroller`
 （padding 计入滚动范围，滚动条能到底）、`PopupMenu`（子菜单在窗口右缘向左翻转）。
 `metal 0.33` 已从依赖图移除（改用 `objc2-metal`），`block` 的 future-incompat 警告随之消失。
+**补充（2026-11-11，依赖刷新执行记录）**：`gpui-kit` 0.9.0 → 0.9.1（`gpui-base 0.9.1`、
+`gpui-component 0.9.1`、`gpui-kit-assets 0.9.1`、`gpui-pre =0.3.12`，zed 快照 `f816e1f` →
+`d2a4fb6`）。上游把它定位为 backward compatible patch：不删公共名字，也不再像 0.9.0 那样动
+theme 结构体的 `#[non_exhaustive]`，`crates/qcode-gui` 源码零改动即可编译运行（`gpui-base` /
+`gpui-component` 只新增 `GridLayout`、`ColumnFixed::Right`、`TransitionState`、
+`Text::on_task_toggle` 等）。`vendor/gpui-pre-windows` 同步到 0.3.12 并重贴 `IsWindow` 守卫
+（上游仍无此修复，`close_one_window` 依旧由 `WM_GPUI_CLOSE_ONE_WINDOW` 驱动延迟剪枝）；0.3.12
+的依赖集合与 0.3.11 完全一致，守卫的落点也没变，只是 `build.rs` 少编一个
+`color_text_raster.hlsl`、`platform.rs` 撤掉了 DirectWrite 文本系统的 GPU-lost 挂钩。升级后
+同样必须 `cargo update -p gpui-pre-windows`：vendor manifest 与 `gpui-pre` 的 `=0.3.12` 要求
+不一致时，cargo 只打一行 `patch … was not used in the crate graph` 警告并静默使用 registry
+版本，守卫随之消失。验证：`cargo test --workspace`、`make check`（fmt / clippy -D warnings /
+test / cargo-deny）、`make check-platforms`（3 个交叉目标，其中两个 Windows 三元组会真正
+type-check 这份 vendor 代码）。
 ### ADR-0037 spike 结论（2026-10-22）：GPUI Kit 通过
 
 **实测结果**
@@ -6013,6 +6027,10 @@ sandbox = "off"        # warn + doctor partial
   的文档注释就写着），Linux 下它根本不生效——这也是为什么「已经加了 `extra_writable`
   还是 `Permission denied`」。本 ADR 不扩展它的语义，MCP 的授权走 `read_paths` /
   `writable_paths`，`extra_writable` 保持只服务 `run_shell`。
+  **（已过时，见 §2 修订注记 2026-11-11 补记）** 最后半句是对的——它仍然只服务
+  `run_shell`，MCP 走自己的授权；但前半句把「Linux 后端丢弃这个列表」当成了设计，
+  而那是 `let _ = extra_writable` 的副作用。所谓「已经加了 `extra_writable` 还是
+  `Permission denied`」不是用户该预期的行为，是 bug。四个后端现在都认它。
 - 远程 MCP（Streamable HTTP，另篇）没有子进程，本 ADR 完全不适用；它的边界是出口代理。
 
 **验证**
@@ -7138,3 +7156,60 @@ root，等于什么都不授予，而把它变成加载失败会让 `mode = "non
 根本没起来，`output()` 返回 `EACCES`——于是"执行被拒绝"这条断言在它最该成立的环境里 panic，
 测试从写下那天起就没真正跑过（在本机 HEAD 上确认失败）。现在把 spawn 期的 `PermissionDenied`
 也算作拒绝。
+
+## ADR-0071：图片能力属于「路由」，不属于协议——修好 OpenAI 兼容路由永远看不到图（2026-11-11）
+
+**状态**：已实现（2026-11-11）。
+
+**问题**
+
+用户在 DeepSeek 路由下发一张图，模型回「this session only accepts text input」。可这条路由
+的模型**能看图**：`POST https://api.deepseek.com/v1/chat/completions` 带 `image_url` 的
+data URL 返回 200 且正确描述图片；`POST https://api.deepseek.com/anthropic/v1/messages`
+带 Anthropic `image` block 同样 200 且正确（2026-11-11 用真 key 各测三次）。
+
+真正的断点在适配器的一行常量：`OpenAiCompatConfig` 的 `capabilities()` 里
+`images: false` 是**硬编码**。引擎按 `capabilities().images` 决定「发图还是发占位」，
+于是每张图在请求构造阶段就被换成一行 `[image omitted: …]`，`openai_compat.rs` 里早就写好
+的 `image_url` 线格式代码永远走不到。Anthropic 适配器则是另一个硬编码 `true`——同一个
+错误的两个方向：协议被当成了能力的来源。
+
+**决定**
+
+1. **`images` 变成配置项，缺省继承目录。** `ProviderConfig.images: Option<bool>`，
+   `CatalogEntry.images: bool` 给内建路由一个默认答案（openai / deepseek / anthropic 为真，
+   ollama / minimax 为假），`Resolved.images` 是两者合一的结果。目录没收录的路由缺省**为假**
+   ——手写网关背后是什么模型，qcode 不知道。
+2. **适配器只转述配置，不再自己判。** `OpenAiCompatConfig.images` /
+   `AnthropicConfig.images` 来自 `Resolved.images`，`capabilities()` 原样返回。
+3. **降级语义不变（ADR-0061 §8）。** 为假时仍然发占位文本而不是报错；改的只是「谁说了算」。
+4. **设置页加一列 `images`。** 布尔列只有两态，表达不了「继承」，所以 `setup/save.rs` 只在
+   **与目录不一致时才写**这个键：没动过开关就不会把今天的目录答案冻结进配置文件。
+   `config_edit.rs` 的 `set_optional_bool` 同理（`None` 不落键）。
+5. **顺带修掉 `protocol` 根本不落盘。** `ConfigEdit::apply_config` 重建 provider 表时从来没写
+   `protocol`，而设置页的保存走的正是它——把路由切到 Anthropic 端点、保存、再打开，协议列
+   又是目录默认值。两个三态字段现在在同一处写入，`None` 都是「继承」。
+6. **DeepSeek 不需要换协议。** 此前给出的临时建议——把 deepseek 路由改成
+   `protocol = "anthropic"` + `base_url = .../anthropic`——现在只是可选路径，不再是看图的
+   前提：两条端点都能看图，Chat Completions 那条现在也真的把图发出去了。
+
+**验证**
+
+- `qcode-kernel`：`resolve_reports_whether_the_route_takes_images`（目录真/假、未收录路由
+  缺省假、`images = false` 关掉目录的真、`images = true` 打开未收录路由）；
+  `the_built_provider_reports_the_resolved_image_capability`（两种协议各构建一次 provider，
+  `capabilities().images` 跟随配置而不是常量）。
+- `qcode-providers`：`capabilities_carry_the_configured_image_support`；既有的
+  `an_image_turns_the_message_content_into_typed_parts` 钉住 `image_url` 的线格式。
+- 端到端（真 key，release 二进制，`--image` 一张 128×128 纯蓝方块 PNG）：
+  默认配置 → 「Deep blue colour.」；`images = false` → 「Cannot see image.」；
+  后再改回 `true` → 「The square is blue.」三条路径各自对应一个开关状态。
+
+**待定**
+
+- 目录里的 `images` 是按**厂商**填的（DeepSeek 全绿），但真实粒度是**模型**。
+  `SETTINGS-MODELS-V2.md` §4.4 已经要把能力挪到模型条目上；等模型级元数据落地，
+  这里的 `CatalogEntry.images` 应降级为「该路由是否需要用户显式声明」，不再是唯一来源。
+- `[providers.X.headers]` 里的 `authorization` 会与 `api_key_env` 派生出的 `x-api-key`
+  **同时发送**（注释声称的 replace 语义不成立）。这次没有改动：修它要决定「谁赢」，
+  且会改变已验证可用的配置行为。

@@ -850,7 +850,72 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
             text,
             images,
             files,
+            scheduled,
         } => {
+            // A scheduled-task delivery renders as its own card instead of a
+            // typed-message bubble: header strip with the wall-clock time, then
+            // the task title and prompt (ADR-0059).
+            if let Some(scheduled) = scheduled {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .px_6()
+                    .py_2()
+                    .child(
+                        div()
+                            .w_full()
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(rgba(0x7f7f7f20))
+                            .bg(rgb(0xffffff))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .bg(rgb(0xf1f5f9))
+                                    .px_3()
+                                    .py_1()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(sp(CAPTION_SIZE))
+                                            .text_color(rgb(0x555555))
+                                            .child(format!("⏱ 定时任务 · {}", scheduled.at)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_3()
+                                    .py_2()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(sp(BODY_SIZE))
+                                            .line_height(sp(BODY_LINE))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0x1a1a1a))
+                                            .child(scheduled.title.clone()),
+                                    )
+                                    .child(
+                                        TextView::markdown(
+                                            format!("scheduled-{index}"),
+                                            scheduled.prompt.clone(),
+                                        )
+                                        .code_block_actions(|_, _, _| div().into_any_element())
+                                        .text_size(sp(BODY_SIZE))
+                                        .line_height(sp(BODY_LINE)),
+                                    ),
+                            ),
+                    )
+                    .into_any_element();
+            }
             let mut column = div().flex().flex_col().items_end().gap_2();
             column = column.child(
                 div()

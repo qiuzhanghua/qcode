@@ -46,6 +46,7 @@ fn options<'a>(id: &'a str, cwd: &std::path::Path, files: Vec<FileRef>) -> RunOp
             .collect(),
         inbox: None,
         continuation: None,
+        scheduled: None,
     }
 }
 
@@ -73,6 +74,7 @@ async fn a_file_reaches_the_model_as_a_handle_and_survives_replay() {
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path(), vec![file.clone()]),
         |_| {},

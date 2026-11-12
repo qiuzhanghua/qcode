@@ -46,6 +46,7 @@ impl App {
                 } else {
                     self.push_input(Block::User {
                         text: message.text.clone(),
+                        scheduled: message.scheduled.clone(),
                         images: message
                             .attachments
                             .iter()

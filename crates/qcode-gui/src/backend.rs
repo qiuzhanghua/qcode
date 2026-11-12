@@ -6,6 +6,7 @@
 use crate::Engine;
 use crate::runtime;
 use qcode_core::event::{Event, EventKind};
+use qcode_core::question::AnswerItem;
 use qcode_core::schedule::ScheduledTask;
 use qcode_core::store::{SessionStore, SessionSummary};
 use qcode_core::task::{Root, Task};
@@ -19,6 +20,21 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 pub struct TaskRow {
     pub task: Task,
     pub summary: SessionSummary,
+    /// True when any message in the session log is a scheduled-task delivery
+    /// (ADR-0059): the sidebar shows a clock mark on such tasks.
+    pub has_scheduled: bool,
+}
+
+/// Whether the session log contains a scheduled-task delivery message.
+fn has_scheduled_message(store: &SessionStore, id: &str) -> bool {
+    store
+        .load(id)
+        .map(|events| {
+            events.iter().any(|event| {
+                matches!(&event.kind, EventKind::UserMessage(message) if message.scheduled.is_some())
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// One `[schedules.<name>]` entry as the sidebar needs it (ADR-0059 §1, §5).
@@ -119,6 +135,17 @@ pub trait Backend {
     /// running turn, move it, or drop it.
     fn queue_op(&mut self, _id: String, _op: QueueOp) {}
     fn answer(&mut self, call_id: String, allow: bool, session: bool);
+    /// Answer an `ask_user` question. `session` names the task (`None` = the
+    /// window's current one); `text` is the model-visible reply (the original
+    /// questions plus the answers).
+    fn answer_question(
+        &mut self,
+        _session: Option<String>,
+        _call_id: String,
+        _text: String,
+        _answers: Vec<AnswerItem>,
+    ) {
+    }
     /// Stop `session`'s turn (`None` = the draft the engine is on). A session
     /// that is not running is a no-op (ADR-0058 §6).
     fn cancel(&mut self, session: Option<&str>);
@@ -194,7 +221,11 @@ impl Backend for UnconfiguredBackend {
                     .task(&summary.id)
                     .or_else(|_| summary.legacy_task())
                     .ok()?;
-                Some(TaskRow { task, summary })
+                Some(TaskRow {
+                    task,
+                    has_scheduled: has_scheduled_message(&self.store, &summary.id),
+                    summary,
+                })
             })
             .collect())
     }
@@ -415,7 +446,11 @@ impl Backend for LocalBackend {
                     .task(&summary.id)
                     .or_else(|_| summary.legacy_task())
                     .ok()?;
-                Some(TaskRow { task, summary })
+                Some(TaskRow {
+                    task,
+                    has_scheduled: has_scheduled_message(&self.store, &summary.id),
+                    summary,
+                })
             })
             .collect();
         Ok(tasks)
@@ -500,6 +535,21 @@ impl Backend for LocalBackend {
             call_id,
             allow,
             session,
+        });
+    }
+
+    fn answer_question(
+        &mut self,
+        session: Option<String>,
+        call_id: String,
+        text: String,
+        answers: Vec<AnswerItem>,
+    ) {
+        self.send(UiCommand::AnswerQuestion {
+            session,
+            call_id,
+            text,
+            answers,
         });
     }
 

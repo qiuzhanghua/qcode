@@ -94,6 +94,7 @@ async fn truncated_output_is_written_to_disk() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -113,6 +114,7 @@ async fn truncated_output_is_written_to_disk() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

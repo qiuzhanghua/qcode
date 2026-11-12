@@ -64,6 +64,8 @@ fn app_with_transcript() -> App {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     );
     apply(
@@ -540,6 +542,8 @@ fn page_keys_scroll_the_transcript_window() {
                 attachments: Vec::new(),
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         );
     }
@@ -592,6 +596,8 @@ fn scrolled_view_shows_the_offset_in_the_status_bar() {
                 attachments: Vec::new(),
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         );
     }
@@ -683,6 +689,8 @@ fn renders_the_pause_card() {
             queued_id: None,
             starts_segment: false,
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     );
     apply(

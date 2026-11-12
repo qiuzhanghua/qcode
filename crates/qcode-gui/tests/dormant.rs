@@ -47,6 +47,8 @@ fn approval(call_id: &str) -> UiEvent {
         rule_id: None,
         argv: None,
         cwd: None,
+        requested_scope: None,
+        justification: None,
     })
 }
 
@@ -55,6 +57,8 @@ fn queued(id: &str) -> QueuedMessage {
         id: id.to_string(),
         text: format!("follow-up {id}"),
         attachments: Vec::new(),
+        question_reply: None,
+        scheduled: None,
     }
 }
 

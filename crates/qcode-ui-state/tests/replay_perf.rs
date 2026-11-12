@@ -58,6 +58,8 @@ fn session_events() -> Vec<Event> {
                 attachments: Vec::new(),
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         });
         seq += 1;

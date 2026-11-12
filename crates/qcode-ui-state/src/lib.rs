@@ -33,6 +33,9 @@ pub enum Block {
         images: Vec<ImageBlock>,
         /// Attached files, shown by name and size (ADR-0061 §7).
         files: Vec<FileBlock>,
+        /// Set when this message is a scheduled-task delivery (ADR-0059), so
+        /// the UI can render it as a distinct card instead of a typed message.
+        scheduled: Option<qcode_core::schedule::ScheduledMessage>,
     },
     Assistant(String),
     Tool(Box<ToolEntry>),
@@ -182,6 +185,17 @@ pub struct ApprovalPrompt {
     pub rule: Option<String>,
     pub argv: Option<String>,
     pub cwd: Option<String>,
+}
+
+/// An `ask_user` question on screen (display only; the answer travels through
+/// the frontend's own channel).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionPrompt {
+    pub call_id: String,
+    pub questions: Vec<qcode_core::question::QuestionItem>,
+    pub intent: qcode_core::question::QuestionIntent,
+    /// `None` = blocking, `-1` = wait forever, else seconds.
+    pub timeout_secs: Option<i64>,
 }
 
 /// What the composer is doing right now (ADR-0042 §1).

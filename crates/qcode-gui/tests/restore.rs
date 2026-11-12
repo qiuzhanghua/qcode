@@ -18,7 +18,11 @@ fn row(id: &str) -> TaskRow {
         cost_usd: 0.0,
     };
     let task = summary.legacy_task().expect("task");
-    TaskRow { task, summary }
+    TaskRow {
+        task,
+        summary,
+        has_scheduled: false,
+    }
 }
 
 #[test]

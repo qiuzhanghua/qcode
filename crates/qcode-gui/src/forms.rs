@@ -455,6 +455,11 @@ pub const TABLES: &[TableSpec] = &[
                 kind: FieldKind::OptionalText,
             },
             ColumnSpec {
+                key: "images",
+                label: "Accepts images",
+                kind: FieldKind::Bool,
+            },
+            ColumnSpec {
                 key: "api_key_command",
                 label: "Key command (one argv per line)",
                 kind: FieldKind::Lines,

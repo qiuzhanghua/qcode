@@ -215,8 +215,15 @@ impl Shell {
                             .gap_2()
                             .child(
                                 Button::new("schedule-run-now")
-                                    .label("立即执行")
-                                    .disabled(status != TaskStatus::Active)
+                                    .label(if self.schedule_running.contains_key(&task_id) {
+                                        "执行中…"
+                                    } else {
+                                        "立即执行"
+                                    })
+                                    .disabled(
+                                        status != TaskStatus::Active
+                                            || self.schedule_running.contains_key(&task_id),
+                                    )
                                     .tooltip("立即投递一次（不影响周期）")
                                     .on_click({
                                         let task_id = task_id.clone();
@@ -253,7 +260,12 @@ impl Shell {
                                     })
                             })
                             .when_some(
-                                task.target.session_id().map(str::to_owned),
+                                // 固定会话目标直接可跳；New/NewOnce 投递后落在
+                                // 预留会话里，同样可跳。
+                                task.target
+                                    .session_id()
+                                    .map(str::to_owned)
+                                    .or_else(|| task.reserved_session_id.clone()),
                                 |this, session| {
                                     this.child(
                                         Button::new("schedule-open-session")
@@ -306,14 +318,18 @@ impl Shell {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(border)
-                            .child(
-                                div()
-                                    .text_size(sp(BODY_SIZE))
-                                    .child(format!("{}", receipt.occurrence_at)),
-                            )
+                            // 主内容 = 执行的任务（prompt）；旧记录没有则回退到发生时刻。
+                            .child(div().text_size(sp(BODY_SIZE)).child(
+                                if receipt.prompt.is_empty() {
+                                    format!("（旧记录：{}）", receipt.occurrence_at)
+                                } else {
+                                    receipt.prompt.clone()
+                                },
+                            ))
                             .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
                                 format!(
-                                    "投递到 {} · message {}",
+                                    "{} · 投递到 {} · message {}",
+                                    receipt.occurrence_at,
                                     receipt.target_session_id.as_deref().unwrap_or("-"),
                                     receipt.message_id,
                                 ),

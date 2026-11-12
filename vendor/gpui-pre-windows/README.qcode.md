@@ -1,9 +1,9 @@
 # gpui-pre-windows (qcode fork)
 
-Upstream: [`gpui-pre-windows` 0.3.11](https://crates.io/crates/gpui-pre-windows/0.3.11)
-(Zed's `gpui_windows` backend, snapshot of `zed@f816e1f`), Apache-2.0. Sources
+Upstream: [`gpui-pre-windows` 0.3.12](https://crates.io/crates/gpui-pre-windows/0.3.12)
+(Zed's `gpui_windows` backend, snapshot of `zed@d2a4fb6`), Apache-2.0. Sources
 are the crate as published on crates.io; only `src/platform.rs` is modified.
-This version pairs with `gpui-kit 0.9.0` (`gpui-base 0.9.0`, `gpui-pre =0.3.11`).
+This version pairs with `gpui-kit 0.9.1` (`gpui-base 0.9.1`, `gpui-pre =0.3.12`).
 
 ## Why it is vendored
 
@@ -45,7 +45,7 @@ When gpui-kit / the GPUI pre-release crates are upgraded, re-sync this fork:
 3. Refresh the lockfile: `cargo update -p gpui-pre-windows`.
 
 Step 3 is easy to forget and fails silently: the vendored package version has
-to match the `=0.3.11` requirement of `gpui-pre`, otherwise cargo prints only
+to match the `=0.3.12` requirement of `gpui-pre`, otherwise cargo prints only
 
 ```
 warning: patch `gpui-pre-windows v0.3.10 (…/vendor/gpui-pre-windows)` was not used in the crate graph

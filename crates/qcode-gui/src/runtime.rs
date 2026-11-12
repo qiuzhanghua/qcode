@@ -305,11 +305,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         $text,
                         $attachments,
                         None,
+                        None,
                         engine.max_turns,
                         engine.max_cost_usd
                     )
                 }};
-                ($target:expr, $text:expr, $attachments:expr, $continuation:expr, $max_turns:expr, $max_cost:expr) => {{
+                ($target:expr, $text:expr, $attachments:expr, $continuation:expr, $scheduled:expr, $max_turns:expr, $max_cost:expr) => {{
                     let target: SessionTarget = $target;
                     let target = match target.id() {
                         Some(_) => target,
@@ -365,6 +366,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         Some(deadline) => sink.approver_with_deadline(deadline),
                         None => sink.approver(),
                     };
+                    let task_questioner = sink.questioner();
                     let task_target = target;
                     let done = done_tx.clone();
                     let guard = TurnGuard {
@@ -412,6 +414,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             attachments: $attachments,
                             inbox: Some(task_inbox),
                             continuation: $continuation,
+                            scheduled: $scheduled,
                         };
                         let result = run_turn(
                             TurnContext {
@@ -422,6 +425,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
                                 scheduler: Some(task_scheduler),
+                                questioner: Some(std::sync::Arc::new(task_questioner)),
                             },
                             options,
                             move |event| sink.send_event(event),
@@ -436,9 +440,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 }};
             }
 
-            // 投递一个到期的定时任务组：同一固定会话的多个任务合并为一条消息；
-            // `New`/`NewOnce` 目标的会话已由调用方建好。投递只是把消息放进收件箱
-            // （瞬态内存），落盘确认在 beat 扫描里按 messageId 查日志完成。
+            // 投递一个到期的定时任务组：同一固定会话的多个任务各自独立投递
+            // （干净 prompt + 结构化标记），UI 据此渲染成「定时执行」卡片；落盘
+            // 确认在 beat 扫描里按 messageId 查日志完成。投递只是把消息放进
+            // 收件箱（瞬态内存）。
             macro_rules! deliver_schedule_group {
                 ($session_id:expr, $tasks:expr) => {{
                     let session_id: String = $session_id;
@@ -446,40 +451,42 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let target = SessionTarget::Session(session_id.clone());
                     let busy = live.contains_key(&target);
                     let queue = host.queue(&target).unwrap_or_else(|| host.open(&target).1);
-                    // 批量合并：同一会话的多个任务合成一条消息（framing 带任务 id）。
-                    let framed: Vec<String> = tasks
-                        .iter()
-                        .map(|task| {
-                            format!(
-                                "[SCHEDULED TASK REMINDER] ({}) {}",
-                                task.id, task.prompt
-                            )
-                        })
-                        .collect();
-                    let message = queue.inbox().followup(framed.join("\n"), Vec::new());
                     for task in &tasks {
+                        let scheduled = qcode_core::schedule::ScheduledMessage {
+                            task_id: task.id.clone(),
+                            title: task.title.clone(),
+                            prompt: task.prompt.clone(),
+                            at: task
+                                .next_fire_at
+                                .map(|at| at.to_string())
+                                .unwrap_or_default(),
+                        };
+                        let message = queue
+                            .inbox()
+                            .followup_scheduled(task.prompt.clone(), scheduled);
                         inflight.insert(task.id.clone());
-                    }
-                    pending_ack
-                        .entry(message.id.clone())
-                        .or_default()
-                        .extend(tasks.iter().zip(&framed).map(|(task, prompt)| {
-                            (
-                                task.id.clone(),
-                                session_id.clone(),
-                                prompt.clone(),
-                            )
-                        }));
-                    // 空闲会话立刻开回合；忙碌会话消息留在队列，回合结束后由
-                    // `done_rx` 分支自动接管。
-                    if !busy {
-                        approval_deadline = tasks
-                            .iter()
-                            .find_map(|task| task.approval_timeout)
-                            .or(approval_deadline);
-                        if let Some(claimed) = queue.finish() {
-                            start_turn!(target.clone(), claimed.text, claimed.attachments);
+                        pending_ack
+                            .entry(message.id.clone())
+                            .or_default()
+                            .push((task.id.clone(), session_id.clone(), task.prompt.clone()));
+                        if !busy {
+                            approval_deadline = task.approval_timeout.or(approval_deadline);
                         }
+                    }
+                    // 空闲会话立刻开回合（一次一个，其余留在队列等回合结束）；
+                    // 忙碌会话消息留在队列，回合结束后由 `done_rx` 分支接管。
+                    if !busy
+                        && let Some(claimed) = queue.finish()
+                    {
+                        start_turn!(
+                            target.clone(),
+                            claimed.text,
+                            claimed.attachments,
+                            None,
+                            claimed.scheduled,
+                            engine.max_turns,
+                            engine.max_cost_usd
+                        );
                     }
                 }};
             }
@@ -651,6 +658,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             delivered_at: now,
                                             message_id: message_id.clone(),
                                             target_session_id: Some(session.clone()),
+                                            prompt: task.prompt.clone(),
                                         };
                                         if append_delivery(
                                             &mut task.delivery_log,
@@ -660,13 +668,18 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             task.earlier_records_pruned = true;
                                         }
                                         task.last_receipt = Some(receipt);
-                                        match advance_rule(&task.rule, now) {
-                                            Advance::Next(next) => {
-                                                task.next_fire_at = Some(next);
-                                            }
-                                            Advance::Ended => {
-                                                task.status = TaskStatus::Ended;
-                                                task.next_fire_at = None;
+                                        // 只有当下次触发点仍是「已触发」的时刻才推进
+                                        // 到下一个未来时刻。RunNow 已把下一次拨到未来，
+                                        // 这里再推会跳过一个周期。
+                                        if task.next_fire_at.is_none_or(|next| next <= now) {
+                                            match advance_rule(&task.rule, now) {
+                                                Advance::Next(next) => {
+                                                    task.next_fire_at = Some(next);
+                                                }
+                                                Advance::Ended => {
+                                                    task.status = TaskStatus::Ended;
+                                                    task.next_fire_at = None;
+                                                }
                                             }
                                         }
                                     })
@@ -679,8 +692,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 confirmed.push(message_id.clone());
                             }
                         }
+                        // 投递落盘确认后通知 UI 刷新：立即执行的按钮脱离等待态。
+                        let landed = !confirmed.is_empty();
                         for message_id in confirmed {
                             pending_ack.remove(&message_id);
+                        }
+                        if landed {
+                            port.tagged(SessionTarget::Draft).send_schedule_changed();
                         }
 
                         // ② 扫描到期任务：跳过 in-flight 与 rearm 间隔内的。
@@ -770,6 +788,28 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 allow,
                                 session: remember,
                             }),
+                            UiCommand::AnswerQuestion {
+                                session,
+                                call_id,
+                                text,
+                                answers,
+                            } => {
+                                // Fast path: the question is still open in the
+                                // bridge registry (the tool is waiting). A
+                                // timed-out question has no registry entry, so
+                                // the answer is steered in as a user message —
+                                // the running turn claims it at its next step
+                                // boundary, and an idle leftover becomes its own
+                                // follow-up turn.
+                                let target = session
+                                    .map(SessionTarget::Session)
+                                    .unwrap_or_else(|| current.clone());
+                                if !port.answer_question(&call_id, answers.clone())
+                                    && let Some(queue) = host.queue(&target)
+                                {
+                                    queue.steer_question_reply(call_id.clone(), answers, text);
+                                }
+                            }
                             UiCommand::Cancel { session } => {
                                 // Per-session stop (ADR-0058 §6): only that
                                 // session's token is tripped, so a stop raced from
@@ -906,6 +946,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         qcode_core::engine::CONTINUE_PROMPT.to_string(),
                                         Vec::new(),
                                         renewal,
+                                        None,
                                         turns,
                                         cost
                                     );
@@ -1025,10 +1066,56 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         .resume(&id, now)
                                         .map(|_| Some("已恢复".to_string()))
                                         .map_err(|error| error.to_string()),
-                                    ScheduleOp::RunNow { id } => scheduler
-                                        .run_now(&id, now)
-                                        .map(|_| Some("已触发".to_string()))
-                                        .map_err(|error| error.to_string()),
+                                    ScheduleOp::RunNow { id } => {
+                                        match scheduler.run_now(&id, now) {
+                                            Ok(()) => {
+                                                // 立即投递，不等下一个 beat：点击
+                                                // 即有反应（ADR-0059 §4）。投递放
+                                                // 在闭包之外：`start_turn!` 的失败
+                                                // 分支用 `continue`，只能在循环上下
+                                                // 文展开。
+                                                if let Some(task) = scheduler.find(&id) {
+                                                    match task.target.session_id() {
+                                                        Some(session) => {
+                                                            deliver_schedule_group!(
+                                                                session.to_string(),
+                                                                vec![task]
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Some(new_id) = create_task(
+                                                                engine,
+                                                                &provider_name,
+                                                                &port,
+                                                                &model,
+                                                                false,
+                                                            ) {
+                                                                deliver_schedule_group!(
+                                                                    new_id,
+                                                                    vec![task]
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                // 立即把下次触发拨到最近的未来时刻，详情
+                                                // 页不用等落盘确认就显示正确的下次执行时间。
+                                                let _ = scheduler.update(&id, |task| {
+                                                    match advance_rule(&task.rule, now) {
+                                                        Advance::Next(next) => {
+                                                            task.next_fire_at = Some(next);
+                                                        }
+                                                        Advance::Ended => {
+                                                            task.status = TaskStatus::Ended;
+                                                            task.next_fire_at = None;
+                                                        }
+                                                    }
+                                                });
+                                                Ok(Some("已触发".to_string()))
+                                            }
+                                            Err(error) => Err(error.to_string()),
+                                        }
+                                    }
                                     ScheduleOp::Delete { id } => scheduler
                                         .delete(&id)
                                         .map(|_| Some("已删除".to_string()))

@@ -43,6 +43,10 @@ pub struct AnthropicConfig {
     /// Applied before the mandatory headers, so reserved names can never be
     /// overridden.
     pub headers: BTreeMap<String, String>,
+    /// Whether this deployment's models accept image input. Anthropic's own
+    /// models do; a gateway fronting something else may not, which is why this
+    /// is configuration instead of a constant.
+    pub images: bool,
 }
 
 impl std::fmt::Debug for AnthropicConfig {
@@ -52,6 +56,7 @@ impl std::fmt::Debug for AnthropicConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("proxy_url", &self.proxy_url)
+            .field("images", &self.images)
             // Header *names* only: values may carry gateway secrets.
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .finish()
@@ -105,7 +110,7 @@ impl Provider for AnthropicProvider {
             streaming_tool_args: true,
             reasoning: true,
             prompt_cache: true,
-            images: true,
+            images: self.config.images,
             max_context: None,
             max_output: None,
         }
@@ -823,6 +828,7 @@ mod tests {
             api_key: None,
             proxy_url: None,
             headers: Default::default(),
+            images: true,
         };
         let provider = AnthropicProvider::new(config).expect("provider");
         assert_eq!(provider.endpoint(), "https://api.anthropic.com/v1/messages");
@@ -836,6 +842,7 @@ mod tests {
             api_key: Some("sk-ant-secret".to_string()),
             proxy_url: None,
             headers: Default::default(),
+            images: true,
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk-ant-secret"));

@@ -120,6 +120,7 @@ async fn executes_tool_and_continues() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -139,6 +140,7 @@ async fn executes_tool_and_continues() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -189,6 +191,7 @@ async fn denial_is_reported_to_the_model() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -208,6 +211,7 @@ async fn denial_is_reported_to_the_model() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -247,6 +251,7 @@ async fn asking_without_a_tty_denies() {
             approver: &AutoDeny,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -266,6 +271,7 @@ async fn asking_without_a_tty_denies() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -314,6 +320,7 @@ async fn max_turns_pauses_the_loop() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -332,6 +339,7 @@ async fn max_turns_pauses_the_loop() {
             attachments: Vec::new(),
             inbox: None,
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -392,6 +400,7 @@ async fn the_hand_off_call_never_asks_for_tools() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -410,6 +419,7 @@ async fn the_hand_off_call_never_asks_for_tools() {
             attachments: Vec::new(),
             inbox: None,
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )
@@ -458,6 +468,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
         attachments: Vec::new(),
         inbox: None,
         continuation,
+        scheduled: None,
     };
 
     // First window: one tool round then a pause. The window is recorded on the
@@ -473,6 +484,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options("go", None),
         |_| {},
@@ -491,6 +503,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options("继续", Some(Continuation::default())),
         |_| {},
@@ -596,6 +609,7 @@ async fn cancellation_stops_a_running_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -615,6 +629,7 @@ async fn cancellation_stops_a_running_tool() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     );
@@ -662,6 +677,7 @@ async fn cancellation_stops_a_hanging_stream() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &id,
@@ -681,6 +697,7 @@ async fn cancellation_stops_a_hanging_stream() {
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     );

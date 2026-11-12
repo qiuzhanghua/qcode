@@ -95,7 +95,18 @@ impl SetupView {
                 ),
                 ("__key", String::new()),
             ],
-            [("stream_usage", provider.stream_usage)],
+            [
+                ("stream_usage", provider.stream_usage),
+                // Absent means "whatever the catalog says"; show that answer so
+                // the switch reflects what the engine will actually do.
+                (
+                    "images",
+                    provider
+                        .images
+                        .or_else(|| config::catalog_entry(name).map(|entry| entry.images))
+                        .unwrap_or(false),
+                ),
+            ],
             // 协议默认值按 provider 区分：config 显式覆盖 > 目录内置协议 >
             // OpenAI 兼容兜底。这样展开配置时协议列总有选中项，而不是空。
             [(

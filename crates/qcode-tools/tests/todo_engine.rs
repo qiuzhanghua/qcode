@@ -43,6 +43,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path, input: &str) -> RunOptions
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 
@@ -93,6 +94,7 @@ async fn todo_state_is_injected_and_survives_resume() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path(), "plan the work"),
         |_| {},
@@ -135,6 +137,7 @@ async fn todo_state_is_injected_and_survives_resume() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path(), "continue"),
         |_| {},
@@ -191,6 +194,7 @@ async fn an_empty_write_clears_the_prompt_section() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path(), "clear it"),
         |_| {},

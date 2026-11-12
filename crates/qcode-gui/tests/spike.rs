@@ -22,6 +22,8 @@ fn synthetic_events(count: usize) -> Vec<Event> {
                     attachments: Vec::new(),
 
                     continuation: None,
+                    question_reply: None,
+                    scheduled: None,
                 })
             } else {
                 EventKind::AssistantMessage(AssistantMessage {

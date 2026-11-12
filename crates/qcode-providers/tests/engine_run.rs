@@ -44,6 +44,7 @@ fn options<'a>(session_id: &'a str, workspace: &Path) -> RunOptions<'a> {
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 
@@ -67,6 +68,7 @@ async fn mock_turn_persists_and_replays() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path()),
         |event| seen.push(event.clone()),
@@ -119,6 +121,7 @@ async fn torn_final_line_is_dropped_on_load() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -172,6 +175,7 @@ async fn stream_deltas_reach_the_frontend() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options,
         |_| {},
@@ -216,6 +220,7 @@ async fn context_usage_is_reported_to_the_frontend() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options,
         |_| {},
@@ -302,6 +307,7 @@ async fn steering_after_the_last_boundary_becomes_a_followup_turn() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options,
         |_| {},
@@ -352,6 +358,7 @@ async fn steering_lands_in_the_running_turn_request() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options,
         |_| {},

@@ -115,7 +115,13 @@ where
     let attachments = super::attachments::store_sources(&attachment_store, &options.attachments)?;
 
     let mut writer = SessionWriter::resume(ctx.store, options.session_id)?;
-    writer.begin_turn(&options.input, continuation, &attachments, &mut on_event)?;
+    writer.begin_turn(
+        &options.input,
+        continuation,
+        &attachments,
+        options.scheduled.clone(),
+        &mut on_event,
+    )?;
 
     // ADR-0067 §5: the MCP tool table is re-read here, at the turn boundary, and
     // whatever comes back is used for the whole turn. Two reasons it is a
@@ -190,6 +196,7 @@ where
     let mut compaction_disabled = false;
     let mut tool_context =
         ToolContext::for_roots(task.roots.clone()).with_cancel(options.cancel.clone());
+    tool_context = tool_context.with_session_id(options.session_id);
     if let Some(temp) = &turn_temp {
         tool_context = tool_context.with_temp_dir(temp.0.clone());
     }
@@ -198,6 +205,9 @@ where
     }
     if ctx.scheduler.is_some() {
         tool_context = tool_context.with_scheduler(ctx.scheduler.clone());
+    }
+    if ctx.questioner.is_some() {
+        tool_context = tool_context.with_questioner(ctx.questioner.clone());
     }
 
     let mut turns = 0;
@@ -389,6 +399,8 @@ where
                         attachments: refs.clone(),
                         // Steering is the user talking, not a continuation.
                         continuation: None,
+                        question_reply: message.question_reply.clone(),
+                        scheduled: None,
                     }),
                     &mut on_event,
                 )?;

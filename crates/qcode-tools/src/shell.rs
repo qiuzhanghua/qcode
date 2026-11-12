@@ -1,7 +1,9 @@
 //! run_shell: the only tool that executes arbitrary code.
 //!
 //! The environment is scrubbed down to a small allow-list so API keys in the
-//! parent process cannot be read by `env`. Approval is `Execute` by default.
+//! parent process cannot be read by `env`. Approval follows the write-scope
+//! ladder (SANDBOX-MODE.md): a call without `sandbox_permissions` runs at the
+//! session's scope without a prompt; only an escalation request asks.
 //!
 //! The child is spawned as the leader of a new process group, so cancellation
 //! and timeout can take down the whole tree (`sh`, `cargo`, `make`, workers)
@@ -16,6 +18,7 @@ use async_trait::async_trait;
 use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
+use qcode_core::write_scope::WriteScope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
@@ -167,6 +170,15 @@ struct ShellArgs {
     command: String,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    /// Escalation request (SANDBOX-MODE.md): ask to run at a wider write scope.
+    /// Only set when the command genuinely needs it — e.g. writes outside the
+    /// workspace, direct network, or system-level changes. Must carry a
+    /// `justification`; the user sees both before approving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sandbox_permissions: Option<String>,
+    /// The model's reason for escalating; required with `sandbox_permissions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    justification: Option<String>,
 }
 
 #[async_trait]
@@ -187,15 +199,35 @@ impl Tool for RunShell {
                 "properties": {
                     "command": {"type": "string"},
                     "cwd": {"type": "string", "description": "Working directory, defaults to the workspace root"},
-                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 600}
+                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 600},
+                    "sandbox_permissions": {
+                        "type": "string",
+                        "enum": ["read_only", "workspace_write", "full_access"],
+                        "description": "Ask to run at a wider write scope. Only set this when the command needs it (writes outside the workspace, direct network, system-level changes); you will be prompted for approval. Omit it for normal workspace commands."
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": "Required with sandbox_permissions: the reason the user will see before approving."
+                    }
                 },
                 "required": ["command"]
             }),
         }
     }
 
-    fn approval(&self, _ctx: &ToolContext, _args: &Value) -> ApprovalClass {
-        ApprovalClass::Execute
+    fn approval(&self, _ctx: &ToolContext, args: &Value) -> ApprovalClass {
+        // A call that asks to widen its write scope is the only one that
+        // prompts (SANDBOX-MODE.md); everything else runs at the session's
+        // scope without a per-command question.
+        if args
+            .get("sandbox_permissions")
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            ApprovalClass::Escalation
+        } else {
+            ApprovalClass::Shell
+        }
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
@@ -206,6 +238,24 @@ impl Tool for RunShell {
             return Err(ToolError::Invalid("command is empty".to_string()));
         }
 
+        // An escalation request must name a valid scope and say why. The scope
+        // itself is enforced by the approval flow (and, in a future step, by
+        // the sandbox backend mapping); here we only reject malformed calls.
+        if let Some(scope) = &args.sandbox_permissions {
+            let parsed = WriteScope::parse(scope).ok_or_else(|| {
+                ToolError::Invalid(format!("unknown sandbox_permissions: {scope}"))
+            })?;
+            if args
+                .justification
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty())
+            {
+                return Err(ToolError::Invalid(
+                    "sandbox_permissions requires a non-empty justification".to_string(),
+                ));
+            }
+            tracing::info!(scope = parsed.label(), "run_shell escalation approved");
+        }
         let cwd = match args.cwd.as_deref() {
             Some(cwd) if !cwd.is_empty() => path::resolve_ctx(ctx, cwd, Access::Read)?.path,
             _ => ctx.shell_cwd().ok_or_else(|| {
@@ -537,5 +587,55 @@ mod tests {
         );
         // An absolute path, because the child runs with a cleared environment.
         assert!(std::path::Path::new(&program).is_absolute(), "{name}");
+    }
+
+    #[test]
+    fn a_call_without_permissions_is_a_plain_shell_call() {
+        let ctx = ToolContext::for_test(".");
+        let args = json!({ "command": "ls" });
+        assert_eq!(
+            RunShell::unsandboxed().approval(&ctx, &args),
+            ApprovalClass::Shell
+        );
+    }
+
+    #[test]
+    fn an_escalation_request_is_classified_as_such() {
+        let ctx = ToolContext::for_test(".");
+        let args = json!({
+            "command": "sudo make install",
+            "sandbox_permissions": "full_access",
+            "justification": "installs a system package"
+        });
+        assert_eq!(
+            RunShell::unsandboxed().approval(&ctx, &args),
+            ApprovalClass::Escalation
+        );
+    }
+
+    #[tokio::test]
+    async fn escalation_requires_a_non_empty_justification() {
+        let ctx = ToolContext::for_test(".");
+        let args = json!({ "command": "echo hi", "sandbox_permissions": "full_access" });
+        let err = RunShell::unsandboxed()
+            .execute(&ctx, args)
+            .await
+            .expect_err("must fail");
+        assert!(err.to_string().contains("justification"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_scope_is_rejected_before_it_runs() {
+        let ctx = ToolContext::for_test(".");
+        let args = json!({
+            "command": "echo hi",
+            "sandbox_permissions": "sudo",
+            "justification": "nope"
+        });
+        let err = RunShell::unsandboxed()
+            .execute(&ctx, args)
+            .await
+            .expect_err("must fail");
+        assert!(err.to_string().contains("unknown sandbox_permissions"));
     }
 }

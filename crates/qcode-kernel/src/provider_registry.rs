@@ -70,6 +70,7 @@ impl ProviderRegistry {
                 api_key: resolved.api_key.clone(),
                 proxy_url: self.proxy_url.clone(),
                 headers: resolved.headers.clone(),
+                images: resolved.images,
             })?),
             Protocol::OpenAi => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
                 name: resolved.name.clone(),
@@ -82,6 +83,7 @@ impl ProviderRegistry {
                 proxy_url: self.proxy_url.clone(),
                 extra_body: resolved.extra_body.clone(),
                 headers: resolved.headers.clone(),
+                images: resolved.images,
             })?),
         })
     }
@@ -124,13 +126,21 @@ impl ProviderRegistry {
             // Offline rehearsal of the approval UI: one run_shell call (ask by
             // default) followed by a closing message. Deliberately tiny so the
             // manual M1-10 walkthrough stays readable.
+            // The scripts below feed the approval demos. `run_shell` only
+            // prompts when it asks to widen its write scope (SANDBOX-MODE.md),
+            // so the demo call carries an escalation request — a plain `echo`
+            // would run unprompted and the demos would have nothing to show.
             "mock-approval" => MockProvider::scripted(vec![
                 vec![
                     StreamEvent::Started,
                     StreamEvent::ToolCallDone {
                         call_id: "approval-1".to_string(),
                         name: "run_shell".to_string(),
-                        arguments: serde_json::json!({"command": "echo qcode-approval-demo"}),
+                        arguments: serde_json::json!({
+                            "command": "echo qcode-approval-demo",
+                            "sandbox_permissions": "full_access",
+                            "justification": "approval demo: the mock asks to widen its write scope"
+                        }),
                     },
                     StreamEvent::Ended {
                         stop_reason: StopReason::ToolUse,

@@ -21,6 +21,18 @@ use serde::{Deserialize, Serialize};
 use time::Duration as TimeSpan;
 use time::{Date, Month, Time, Weekday};
 
+/// A scheduled-task delivery, riding on the user message it turned into
+/// (ADR-0059). Lets the UI render it as a distinct "scheduled execution" card
+/// and keeps it from masquerading as a typed message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledMessage {
+    pub task_id: String,
+    pub title: String,
+    pub prompt: String,
+    /// The wall-clock occurrence this delivery represents (`YYYY-MM-DDTHH:MM:SS`).
+    pub at: String,
+}
+
 /// `time::serde::rfc3339` / `iso8601` 只支持带时区的 `OffsetDateTime`；墙钟时刻
 /// (`PrimitiveDateTime`) 用自定义字符串编解码：`YYYY-MM-DDTHH:MM:SS`。
 mod serde_wall_clock {
@@ -874,6 +886,9 @@ pub struct DeliveryReceipt {
     pub message_id: String,
     /// 实际投往的会话（`new` 目标在投递后才确定）。
     pub target_session_id: Option<String>,
+    /// 这次投递执行的任务内容（prompt）。旧记录没有该字段，显示时空缺。
+    #[serde(default)]
+    pub prompt: String,
 }
 
 /// 运行时定时任务。
@@ -1028,9 +1043,54 @@ pub fn local_offset() -> time::UtcOffset {
         .unwrap_or(time::UtcOffset::UTC)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub fn local_offset() -> time::UtcOffset {
-    time::UtcOffset::UTC
+    // The CRT (`localtime_r`) only exists on unix; on Windows the offset is
+    // measured directly: local wall clock minus UTC wall clock. The two
+    // `SystemTimeToFileTime` calls interpret both as "UTC" representations,
+    // so the difference is exactly the current UTC offset — DST included,
+    // no transition tables to keep in sync.
+    #[repr(C)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    unsafe extern "system" {
+        fn GetSystemTime(lpSystemTime: *mut SystemTime);
+        fn GetLocalTime(lpSystemTime: *mut SystemTime);
+        fn SystemTimeToFileTime(lpSystemTime: *const SystemTime, lpFileTime: *mut FileTime) -> i32;
+    }
+    let as_100ns = |time: &SystemTime| -> u64 {
+        let mut file: FileTime = unsafe { std::mem::zeroed() };
+        // SAFETY: both pointers are valid for one write; the function either
+        // fails (returns 0, file stays zero) or fills `file`.
+        let ok = unsafe { SystemTimeToFileTime(time, &mut file) };
+        if ok == 0 {
+            return 0;
+        }
+        (u64::from(file.high) << 32) | u64::from(file.low)
+    };
+    let mut utc: SystemTime = unsafe { std::mem::zeroed() };
+    let mut local: SystemTime = unsafe { std::mem::zeroed() };
+    // SAFETY: pointers are valid for one write; these never fail.
+    unsafe {
+        GetSystemTime(&mut utc);
+        GetLocalTime(&mut local);
+    }
+    let diff_seconds = (as_100ns(&local).wrapping_sub(as_100ns(&utc)) as i64) / 10_000_000;
+    time::UtcOffset::from_whole_seconds(diff_seconds.clamp(-86_400, 86_400) as i32)
+        .unwrap_or(time::UtcOffset::UTC)
 }
 
 /// A wall clock at minute resolution, for the tests and the host alike.

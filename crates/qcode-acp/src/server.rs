@@ -282,6 +282,7 @@ impl Agent {
                 approver: &approver,
                 snapshots: Some(&self.snapshots),
                 scheduler: None,
+                questioner: None,
             },
             RunOptions {
                 session_id: &session_id,
@@ -301,6 +302,7 @@ impl Agent {
                 inbox: None,
 
                 continuation: None,
+                scheduled: None,
             },
             notify,
         )

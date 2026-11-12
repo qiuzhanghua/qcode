@@ -16,6 +16,7 @@ pub mod paths;
 pub mod policy;
 pub mod progress;
 pub mod provider;
+pub mod question;
 pub mod schedule;
 pub mod scheduler;
 pub mod snapshot;
@@ -24,6 +25,7 @@ pub mod store;
 pub mod task;
 pub mod todo;
 pub mod tool;
+pub mod write_scope;
 
 pub use approval::{Answer, ApprovalRequest, Approver, AutoApprove, AutoDeny, InteractiveApprover};
 pub use cost::Pricing;
@@ -38,6 +40,11 @@ pub use paths::{dangerous_write_root, real_home};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;
+pub use question::{
+    AnswerItem, InteractiveQuestioner, QuestionAnswer, QuestionError, QuestionIntent, QuestionItem,
+    QuestionOption, QuestionReply, QuestionRequest, Questioner, answer_covers, pending_result,
+    reply_text, validate_request,
+};
 pub use schedule::{
     Advance, CronSpec, DeliveryReceipt, Overlap, Schedule, ScheduleState, ScheduleStatus,
     ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery,
@@ -49,3 +56,4 @@ pub use store::{SessionStore, SessionSummary, StoreError};
 pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
+pub use write_scope::{WriteScope, is_escalation, wider_scopes};

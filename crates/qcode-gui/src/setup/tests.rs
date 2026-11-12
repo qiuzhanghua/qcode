@@ -1,8 +1,9 @@
 use super::save::{CloseOutcome, decide_close, split_target};
 use super::save::{GrantCells, McpRowCells};
 use super::{
-    AutoSaveKind, credential_presets, extra_body_from_lines, is_lines_cell, lines_from,
-    overridden_default_model, parse_sandbox_mode, stale_model_default, sync_default_model,
+    AutoSaveKind, credential_presets, extra_body_from_lines, images_override, is_lines_cell,
+    lines_from, overridden_default_model, parse_sandbox_mode, stale_model_default,
+    sync_default_model,
 };
 use crate::forms::{self, FieldKind};
 use std::path::PathBuf;
@@ -203,6 +204,22 @@ fn the_default_picker_lists_each_providers_models_and_hides_mock() {
     assert_eq!(groups[0].1, vec!["deepseek-flash".to_string()]);
     // … and an explicit model list is used as-is.
     assert_eq!(groups[1].1, vec!["MiniMax-M3".to_string()]);
+}
+
+#[test]
+fn the_images_switch_only_becomes_an_override_when_it_disagrees() {
+    // deepseek's catalog entry takes images (ADR-0071), so an untouched switch
+    // says `true` and must not be written: freezing `images = true` into the
+    // file would outlive the catalog entry that justifies it.
+    assert_eq!(images_override("deepseek", true), None);
+    // Turning it off is a real decision, so it is written.
+    assert_eq!(images_override("deepseek", false), Some(false));
+
+    // A route the catalog does not ship inherits "text only", so the untouched
+    // switch says `false` and stays out of the file …
+    assert_eq!(images_override("my-gateway", false), None);
+    // … while turning it on is what the user came to say.
+    assert_eq!(images_override("my-gateway", true), Some(true));
 }
 
 /// 设置页写表格时会重写整份配置，`[default-model]` 也在里面；但它另有写者
@@ -512,10 +529,27 @@ fn macos_keychain_store_keeps_the_secret_out_of_argv() {
         .args(&argv[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()
         .expect("run the read command");
-    assert!(output.status.success(), "read command failed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        // The item was created by *this* process, so its ACL trusts this
+        // process; `security` is a different program and reading it can need an
+        // interaction ("allow security to access the item"). A headless or
+        // loaded session refuses that with errSecInteractionNotAllowed — an
+        // environment property, not a bug in the store path — so skip instead
+        // of reporting a failure the next machine would not reproduce.
+        let _ = macos::delete("qcode", &provider);
+        if stderr.contains("User interaction is not allowed")
+            || stderr.contains("-25308")
+            || stderr.contains("errSecInteractionNotAllowed")
+        {
+            eprintln!("skipping: keychain refused a non-interactive read ({stderr})");
+            return;
+        }
+        panic!("read command failed: {stderr}");
+    }
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), secret);
     macos::delete("qcode", &provider).expect("delete the probe item");
 }

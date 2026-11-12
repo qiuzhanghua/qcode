@@ -57,6 +57,14 @@ pub(crate) struct TaskUi {
 
     /// Pending approvals, shown one at a time in arrival order.
     pub(crate) approvals: ApprovalQueue,
+    /// Pending `ask_user` questions, one panel at a time in arrival order.
+    pub(crate) questions: QuestionQueue,
+    /// The panel state of the question currently on screen.
+    pub(crate) question: Option<QuestionPanel>,
+    /// The free-text input of the current question (lazy, see render).
+    pub(crate) question_input: Option<QuestionInputState>,
+    /// A countdown ticker is running for the question panel.
+    pub(crate) question_ticker: bool,
     /// Follow-up messages waiting for the running turn to end (FIFO).
     pub(crate) queue: Vec<QueuedMessage>,
     /// Steered messages the running turn has not claimed yet.
@@ -163,6 +171,10 @@ impl TaskUi {
             diff_view: None,
             diff_view_call: None,
             approvals: ApprovalQueue::default(),
+            questions: QuestionQueue::default(),
+            question: None,
+            question_input: None,
+            question_ticker: false,
             queue: Vec::new(),
             steering: Vec::new(),
             turn_in_flight: false,
@@ -229,6 +241,10 @@ impl Shell {
             diff_view: std::mem::replace(&mut self.ui.diff_view, ui.diff_view),
             diff_view_call: std::mem::replace(&mut self.ui.diff_view_call, ui.diff_view_call),
             approvals: std::mem::replace(&mut self.ui.approvals, ui.approvals),
+            questions: std::mem::replace(&mut self.ui.questions, ui.questions),
+            question: std::mem::replace(&mut self.ui.question, ui.question),
+            question_input: std::mem::replace(&mut self.ui.question_input, ui.question_input),
+            question_ticker: std::mem::replace(&mut self.ui.question_ticker, ui.question_ticker),
             queue: std::mem::replace(&mut self.ui.queue, ui.queue),
             steering: std::mem::replace(&mut self.ui.steering, ui.steering),
             turn_in_flight: std::mem::replace(&mut self.ui.turn_in_flight, ui.turn_in_flight),

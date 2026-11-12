@@ -36,6 +36,17 @@ pub struct ToolContext {
     /// 定时任务管理服务（GUI 引擎注入；`None` = 该环境没有定时任务引擎，
     /// schedule 工具返回错误而不是静默失败）。
     pub scheduler: Option<Arc<dyn SchedulerHandle>>,
+    /// 提问服务（`ask_user` 工具用）。`None` = 该环境无人可回答，工具按
+    /// 阻塞/计时语义返回错误或 pending。
+    pub questioner: Option<Arc<dyn crate::question::Questioner>>,
+    /// The provider's `tool_call_id` of the call being executed. Set by the
+    /// engine per call; empty in tests and for legacy contexts. `ask_user`
+    /// keys its question lifecycle on it.
+    pub call_id: String,
+    /// The session this call belongs to. Set by the engine per turn; empty in
+    /// tests. `schedule_create` uses it to bind a task to the conversation it
+    /// was created in.
+    pub session_id: String,
 }
 
 impl ToolContext {
@@ -61,6 +72,9 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             network: None,
             scheduler: None,
+            questioner: None,
+            call_id: String::new(),
+            session_id: String::new(),
         }
     }
 
@@ -97,6 +111,9 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             network: None,
             scheduler: None,
+            questioner: None,
+            call_id: String::new(),
+            session_id: String::new(),
         }
     }
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
@@ -112,6 +129,27 @@ impl ToolContext {
     /// 注入定时任务管理服务（`None` 可显式清除）。引擎在 turn 开始时设置它。
     pub fn with_scheduler(mut self, scheduler: Option<Arc<dyn SchedulerHandle>>) -> Self {
         self.scheduler = scheduler;
+        self
+    }
+
+    /// 注入提问服务（`None` 可显式清除）。`ask_user` 工具经此向用户提问。
+    pub fn with_questioner(
+        mut self,
+        questioner: Option<Arc<dyn crate::question::Questioner>>,
+    ) -> Self {
+        self.questioner = questioner;
+        self
+    }
+
+    /// 标记当前正在执行的调用 id。引擎在每次 execute 前设置。
+    pub fn with_call_id(mut self, call_id: &str) -> Self {
+        self.call_id = call_id.to_string();
+        self
+    }
+
+    /// 标记当前调用所属的会话 id。引擎在 turn 开始时设置。
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        self.session_id = session_id.to_string();
         self
     }
 }
@@ -132,6 +170,17 @@ pub enum ApprovalClass {
     /// A network read (`web_fetch`). Default ask; the network is outside the
     /// workspace boundary.
     Network,
+    /// The model asking the user (`ask_user`). The default policy always allows
+    /// it: the question *is* the interaction, gating it again would only add a
+    /// prompt nobody asked for.
+    Question,
+    /// A shell command at the session's write scope (`run_shell` without a
+    /// `sandbox_permissions` argument). Default allow: the sandbox — not a
+    /// per-command prompt — is the boundary (SANDBOX-MODE.md).
+    Shell,
+    /// A shell command asking to widen its write scope. Default ask: this is
+    /// the only point where a command prompts for permission.
+    Escalation,
 }
 
 #[derive(Debug, Clone)]

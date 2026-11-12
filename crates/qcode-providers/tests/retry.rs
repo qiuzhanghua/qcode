@@ -91,6 +91,7 @@ fn options<'a>(session: &'a str, workspace: &std::path::Path) -> RunOptions<'a> 
         inbox: None,
 
         continuation: None,
+        scheduled: None,
     }
 }
 
@@ -125,6 +126,7 @@ async fn retries_before_the_first_token() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -158,6 +160,7 @@ async fn does_not_retry_after_the_first_token() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path()),
         |_| {},
@@ -247,6 +250,7 @@ async fn parallel_reads_require_provider_capability() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         options(&id, dir.path()),
         |_| {},

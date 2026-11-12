@@ -194,6 +194,8 @@ mod tests {
                 attachments: vec![],
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         )
     }

@@ -149,6 +149,7 @@ async fn run(
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            questioner: None,
         },
         RunOptions {
             session_id: &session,
@@ -168,6 +169,7 @@ async fn run(
             inbox: None,
 
             continuation: None,
+            scheduled: None,
         },
         |_| {},
     )

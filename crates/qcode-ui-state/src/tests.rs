@@ -131,6 +131,8 @@ fn slash_skill_name_activates_it_as_a_user_message() {
         attachments: Vec::new(),
 
         continuation: None,
+        question_reply: None,
+        scheduled: None,
     })));
     assert!(matches!(
         app.blocks.last(),
@@ -164,6 +166,8 @@ fn an_image_attachment_rides_on_the_question_row() {
         text: "what is this?".to_string(),
         attachments: vec![AttachmentRef::Image(image)],
         continuation: None,
+        question_reply: None,
+        scheduled: None,
     })));
 
     let Some(Block::User { images, .. }) = app.blocks.last() else {
@@ -200,6 +204,8 @@ fn a_file_attachment_rides_on_the_question_row() {
         text: "read this".to_string(),
         attachments: vec![AttachmentRef::File(file)],
         continuation: None,
+        question_reply: None,
+        scheduled: None,
     })));
 
     let Some(Block::User { files, .. }) = app.blocks.last() else {
@@ -629,6 +635,8 @@ fn turns_track_input_process_answer_and_usage() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
     app.apply(&Event::new(
@@ -710,6 +718,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
     app.apply(&Event::new(
@@ -735,6 +745,8 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
     app.apply(&Event::new(
@@ -770,6 +782,7 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             text: "A".to_string(),
             images: Vec::new(),
             files: Vec::new(),
+            scheduled: None,
         }
     );
     assert_eq!(
@@ -778,6 +791,7 @@ fn steered_follow_up_message_becomes_its_own_turn() {
             text: "B".to_string(),
             images: Vec::new(),
             files: Vec::new(),
+            scheduled: None,
         }
     );
     assert_eq!(a.process.len(), 1, "A 的工具属于 A");
@@ -810,6 +824,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
     // v4 without the explicit marker: a second user message stays in the
@@ -825,6 +841,8 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
 
@@ -835,6 +853,7 @@ fn v4_plain_user_message_does_not_split_a_turn() {
             text: "A".to_string(),
             images: Vec::new(),
             files: Vec::new(),
+            scheduled: None,
         }
     );
 }
@@ -861,6 +880,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     ));
     let mut older = Event::new(
@@ -874,6 +895,8 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             attachments: Vec::new(),
 
             continuation: None,
+            question_reply: None,
+            scheduled: None,
         }),
     );
     older.v = 3;
@@ -886,6 +909,7 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
             text: "B".to_string(),
             images: Vec::new(),
             files: Vec::new(),
+            scheduled: None,
         }
     );
 }
@@ -913,6 +937,8 @@ fn turns_are_closed_and_indexed_independently() {
                 attachments: Vec::new(),
 
                 continuation: None,
+                question_reply: None,
+                scheduled: None,
             }),
         ));
         app.apply(&Event::new(
@@ -1472,6 +1498,8 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
         attachments: Vec::new(),
 
         continuation: None,
+        question_reply: None,
+        scheduled: None,
     })));
     assert_eq!(
         app.blocks,
@@ -1479,6 +1507,7 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
             text: "hi".to_string(),
             images: Vec::new(),
             files: Vec::new(),
+            scheduled: None,
         }]
     );
 }
@@ -1546,6 +1575,8 @@ fn paused_session() -> App {
         queued_id: None,
         starts_segment: false,
         continuation: None,
+        question_reply: None,
+        scheduled: None,
     })));
     app.apply(&event(EventKind::TurnEnded(qcode_core::event::TurnEnded {
         status: qcode_core::event::TurnStatus::Paused,
