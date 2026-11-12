@@ -119,6 +119,20 @@ pub(crate) fn create_task(
     }
 }
 
+/// 给首次投递的任务绑定刚创建的会话：`NewOnce` 从此复用该会话；
+/// `New` 保持每次新建，只记录本次投递的会话（详情页「打开会话」、
+/// 崩溃恢复用）。`update` 失败（任务刚被删）只影响展示，不阻断投递。
+fn bind_fresh_session(scheduler: &Scheduler, task_id: &str, session_id: &str) {
+    let _ = scheduler.update(task_id, |task| {
+        task.reserved_session_id = Some(session_id.to_string());
+        if matches!(task.target, Target::NewOnce) {
+            task.target = Target::Session {
+                id: session_id.to_string(),
+            };
+        }
+    });
+}
+
 /// What the UI was last told about the queues, so the ticker only publishes
 /// real changes (the engine claims steering from its own thread).
 #[derive(Default, PartialEq, Eq)]
@@ -813,10 +827,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             else {
                                 continue; // 建会话失败：下一个 beat 再试。
                             };
-                            let _ = scheduler.update(&task.id, |task| {
-                                task.reserved_session_id = Some(id.clone());
-                                task.target = Target::Session { id: id.clone() };
-                            });
+                            bind_fresh_session(&scheduler, &task.id, &id);
                             deliver_schedule_group!(id, vec![task]);
                         }
                         for (session_id, tasks) in groups {
@@ -1141,6 +1152,16 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                                 &model,
                                                                 false,
                                                             ) {
+                                                                // 与 beat 投递一致：NewOnce 绑定
+                                                                // 该会话（此后复用），New 只记录
+                                                                // 本次投递会话。不绑定的话每次
+                                                                // 「立即执行」都会新建一个会话，
+                                                                // 详情页也没有「打开会话」按钮。
+                                                                bind_fresh_session(
+                                                                    &scheduler,
+                                                                    &id,
+                                                                    &new_id,
+                                                                );
                                                                 deliver_schedule_group!(
                                                                     new_id,
                                                                     vec![task]
