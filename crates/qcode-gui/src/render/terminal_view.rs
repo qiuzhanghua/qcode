@@ -735,7 +735,7 @@ fn paint_frame(
         .unwrap_or(0)
         .min((bounds.size.width / metrics.advance).floor() as usize);
 
-    for row in 0..rows {
+    for (row, runs) in frame.rows.iter().enumerate().take(rows) {
         // Below the text: a selection has to look like a highlight behind the
         // glyphs, not a box drawn over them.
         if let Some(((start_row, start_column), (end_row, end_column))) = selection
@@ -781,7 +781,7 @@ fn paint_frame(
         // colour and script, so a coloured `ls` is a handful of shaped lines per row, not
         // one per character. `runs_tile_the_row_without_gaps` pins the merging down,
         // because if it ever regressed the frame would go from ~8 shapes a row to 80.
-        for run in &frame.rows[row] {
+        for run in runs {
             if run.column >= columns {
                 break;
             }

@@ -51,7 +51,10 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Threading",
 ] }
 
-[build-dependencies]
+# Only build.rs on Windows uses it, so it is gated to Windows too: cargo's
+# `unused_dependencies` lint reads a plain `[build-dependencies]` entry as dead
+# weight on Linux and macOS, where the `cfg` block in build.rs is compiled out.
+[target.'cfg(windows)'.build-dependencies]
 # Embeds res/icon.rc (the app icon) into the qc.exe on Windows.
 embed-resource = "3"
 
