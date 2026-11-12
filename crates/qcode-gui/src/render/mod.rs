@@ -58,7 +58,7 @@ impl Render for Shell {
             if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
                 prefs.window_geometry = Some(geometry);
             }) {
-                eprintln!("qcode-gui: cannot save window geometry: {error}");
+                tracing::warn!(%error, "cannot save window geometry");
             }
         }
         div()
@@ -71,11 +71,13 @@ impl Render for Shell {
             } else {
                 "Chat"
             })
-            .on_mouse_down(MouseButton::Left, |_event, _window, _cx| {
-                if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-                    eprintln!("qcode-gui root mouse down");
-                }
-            })
+            // A no-op listener, kept deliberately: it was a `QCODE_GUI_KEY_DEBUG`
+            // scaffold whose body only printed, and whether the root consumes
+            // mouse-down affects focus and event bubbling. Deleting the print is
+            // safe; deleting the registration is a behaviour change to input
+            // handling that nothing here can verify, so it is not this ADR's
+            // business.
+            .on_mouse_down(MouseButton::Left, |_event, _window, _cx| {})
             .on_key_down({
                 let entity = cx.entity();
                 move |event, window, cx| {

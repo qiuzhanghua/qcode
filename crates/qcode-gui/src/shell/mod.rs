@@ -290,9 +290,9 @@ impl Shell {
         );
         let input_focus = ui.input.read(cx).focus_handle(cx);
         window.focus(&input_focus, cx);
-        eprintln!(
-            "qcode-gui: window ready pid={} (focus fix + concurrent engine)",
-            std::process::id()
+        tracing::debug!(
+            pid = std::process::id(),
+            "window ready (focus fix + concurrent engine)"
         );
         Self {
             ui,

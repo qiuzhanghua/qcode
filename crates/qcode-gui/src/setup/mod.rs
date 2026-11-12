@@ -1,5 +1,6 @@
 use crate::forms::{self, FieldKind, FieldSpec, Page, TableSpec};
 use crate::gui_prefs::GuiPreferences;
+use crate::window_icon;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
@@ -292,7 +293,9 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
 pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        let options = window_icon::attach(WindowOptions::default());
+        gpui_kit::open_window(options, cx, |window, cx| {
+            window_icon::identify(window);
             window.activate_window();
             let view = cx.new(|cx| SetupView::new(path, data_dir, true, window, cx));
             wire_close_handler(window, &view, cx);
@@ -306,7 +309,9 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
 pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        let options = window_icon::attach(WindowOptions::default());
+        gpui_kit::open_window(options, cx, |window, cx| {
+            window_icon::identify(window);
             window.activate_window();
             let view = cx.new(|cx| SetupView::new(path, data_dir, false, window, cx));
             wire_close_handler(window, &view, cx);
@@ -506,7 +511,7 @@ impl SetupView {
         self.prefs.font_size = next;
         crate::FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
-            eprintln!("qcode-gui: cannot save gui.json: {error}");
+            tracing::warn!(%error, "cannot save gui.json");
         }
         self.prefs.apply(cx);
         // Keep the form's Font size field in sync so a later edit of another

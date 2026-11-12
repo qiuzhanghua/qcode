@@ -7,6 +7,7 @@ mod subagent;
 mod tui;
 mod update;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -39,14 +40,38 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn run() -> ExitCode {
-    logging::init();
-
     let Cli {
         data_dir,
         config,
         approval_policy,
         command,
     } = Cli::parse();
+
+    // Logging comes up before any command runs, because the first thing worth
+    // recording is often why the command could not (ADR-0077). It comes up after
+    // `parse` because the `[log]` level lives in the config file that names.
+    //
+    // Probing the config for its level can itself log; those lines are dropped
+    // here because no subscriber exists yet. The command loads the same file again
+    // and repeats any warning with the logger running, so nothing is lost overall.
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let log_level = qcode_kernel::load_config(config.clone(), &workspace)
+        .ok()
+        .map(|loaded| loaded.log.level);
+    logging::init(log_level.as_deref());
+
+    // The file lives in the data directory, so it has to wait for that path. The
+    // hint, not `resolve_data_dir`: that one probes and falls back, and a command
+    // that never touches the store (`qc skills list`) should not create one just
+    // because it might have logged.
+    //
+    // `qc logs` is exempt, and not for tidiness: attaching a file creates today's
+    // `qc.<date>.log` and the `qc.log` symlink, so the reader would manufacture the
+    // very file it is about to report as absent. Its own diagnostics are not worth
+    // that — a command whose job is to show a file should not write to it.
+    if !matches!(command, Some(Command::Logs(_))) {
+        logging::attach_file(&qcode_kernel::data_dir_hint(data_dir.clone()));
+    }
 
     let result = match command {
         Some(Command::Run(args)) => cmd_run(args, data_dir, config, approval_policy).await,
@@ -55,6 +80,7 @@ async fn run() -> ExitCode {
         }
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
         Some(Command::Skills(args)) => cmd_skills(args, config),
+        Some(Command::Logs(args)) => cmd_logs(args, data_dir),
         Some(Command::Config(args)) => cmd_config(args, config),
         Some(Command::Mcp(args)) => cmd_mcp(args, config),
         Some(Command::Doctor(args)) => cmd_doctor(data_dir, config, args.probe).await,

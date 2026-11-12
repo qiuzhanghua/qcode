@@ -117,24 +117,29 @@ pub(crate) async fn cmd_gui(
     });
     let found = config::discover(config_path.clone())?;
     let setup_path = found.path.clone();
-    eprintln!(
-        "gui: config={} (source: {})",
-        setup_path.display(),
-        found.source.label()
+    // Startup diagnostics, and the only record of them: a `.desktop` launch has no
+    // terminal to print to, so these go to `logs/qc.log` (ADR-0077). The path used
+    // to be printed twice — once with its source, once bare — which told the reader
+    // nothing the second time.
+    tracing::info!(
+        config = %setup_path.display(),
+        source = found.source.label(),
+        "gui: config discovered"
     );
     if let Some(dir) = setup_path.parent()
         && !config::dir_accepts_new_files(dir)
     {
-        eprintln!(
-            " WARN config directory {} denies new files: {}",
-            dir.display(),
-            config::CONFIG_DIR_HINT
+        // Was a hand-rolled `" WARN ..."` string, which `RUST_LOG` could not turn
+        // off and which no `grep` for a level name would find.
+        tracing::warn!(
+            dir = %dir.display(),
+            hint = config::CONFIG_DIR_HINT,
+            "config directory denies new files"
         );
     }
     // A missing file is the clearest signal: `load` treats it as an empty
     // document, and `resolve` can still succeed when the shell provides the key
     // through env vars, which would silently skip the unconfigured path.
-    eprintln!("gui: config={}", setup_path.display());
     let exists = setup_path.exists();
     let resolved = config::load(&setup_path).ok().and_then(|loaded| {
         config::resolve(&loaded, &config::Overrides::default(), &|key| {
@@ -143,18 +148,21 @@ pub(crate) async fn cmd_gui(
         .ok()
     });
     match &resolved {
-        Some(resolved) => eprintln!(
-            "gui: config exists={exists} provider={} model={} key={}",
-            resolved.name, resolved.model, resolved.api_key_source
+        Some(resolved) => tracing::info!(
+            exists,
+            provider = %resolved.name,
+            model = %resolved.model,
+            key = %resolved.api_key_source,
+            "gui: config resolved"
         ),
-        None => eprintln!("gui: config exists={exists}, but it does not resolve"),
+        None => tracing::info!(exists, "gui: config exists but does not resolve"),
     }
     // A missing file is the clearest signal. A file that resolves but has no
     // provider entry still counts as configured when the shell provides the
     // values (env keys), which is a supported setup.
     let needs_setup = resolved.is_none();
     if needs_setup {
-        eprintln!("gui: no usable config, opening the window without a kernel");
+        tracing::info!("gui: no usable config, opening the window without a kernel");
         // No config yet: open the window anyway. Settings stays reachable from
         // the sidebar, and the backend refuses prompts with an explanation
         // instead of the old behaviour of trapping the user in the wizard.
@@ -271,7 +279,10 @@ pub(crate) async fn cmd_tui(
     let resolved = &kernel.resolved;
     let pricing = config::pricing_for(loaded, &resolved.model, None)?;
 
-    let redactor = logging::Redactor::new(resolved.api_key.clone());
+    // `assemble` already installed the key for every log line; this is the handle
+    // for the strings that bypass the logger — an error returned to `main`, which
+    // prints it with `eprintln!` (ADR-0078).
+    let redactor = qcode_kernel::redact::current();
     tracing::info!(
         provider = %resolved.name,
         model = %resolved.model,

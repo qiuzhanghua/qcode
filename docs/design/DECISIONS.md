@@ -7802,3 +7802,608 @@ Linux / macOS（`tests/procguard.rs` 已经覆盖了机器能验证的部分，�
   `cargo test --workspace` 在 Linux 上照旧全绿（1156 passed）。
 - 这条缺陷是顺带发现的，与 ADR-0074 的进程清理没有因果关系；写在这里是因为它们
   同一个提交，且都是「一个门装错地方导致另一个平台静默变红」这一类。
+
+## ADR-0076：GNOME 的 dock 图标来自 `.desktop`，不是 `_NET_WM_ICON`（2026-11-12）
+
+**状态**：已实现。代码（`window_icon.rs`）、桌面条目与安装脚本、发布归档都已落地；
+用户目视确认待做。
+
+**问题**
+
+Linux 上 qc 的窗口在左侧 dock 里显示的是主题兜底图标（一个齿轮），macOS 和
+Windows 都正常。README 里没有任何地方提过这件事，代码里也没有任何地方设置过图标。
+
+**先查清楚是谁在画**
+
+第一版的修法是给 `WindowOptions.icon` 塞一张 PNG——gpui 的 X11 后端只在拿到这个
+字段时才写 `_NET_WM_ICON`，而整个 crate 的 `WindowOptions` 都是从
+`..Default::default()` 构造的，`icon` 一直是 `None`。改完 `xprop` 确实能看到
+`_NET_WM_ICON(CARDINAL) = Icon (256 x 256)`，**但 dock 里的齿轮没变**。
+
+于是去查 GNOME 自己怎么选图标，而不是继续猜。`libshell-14.so`：
+
+| 符号 | 出现次数 |
+|---|---|
+| `application-x-executable` | 有（兜底图标名，就是那个齿轮） |
+| `fallback-app-icon` | 有 |
+| `_NET_WM_ICON` | **0** |
+| `meta_window_get_icon` | **0** |
+| `meta_window_get_wm_class` | 有 |
+
+`libshell` 是提供 `ShellApp` 的库。它**完全不读窗口图标属性**，只拿 `WM_CLASS`
+去解析 `.desktop` 文件，再画那个文件的 `Icon=`。`_NET_WM_ICON` 只有「任务栏自己
+画窗口图标」的桌面（KDE、Xfce、Cinnamon）才用。
+
+而我们两样都没有：`WM_CLASS` 从未设置过（`WindowOptions.app_id` 是 `None`，且
+X11 后端的创建路径根本不读它），系统里也没有 `qcode.desktop`。所以 shell 的图标主题
+查询落在 `application-x-executable` 上——齿轮。
+
+**决定**
+
+三件事一起做，因为少一件都是齿轮：
+
+| 层 | 做什么 | 谁读它 |
+|---|---|---|
+| `window.set_app_id("qcode")` | 写 `WM_CLASS`（`window_icon::identify`） | GNOME Shell 解析 `.desktop` 的入口 |
+| `res/linux/qcode.desktop` | `Icon=qcode`、`StartupWMClass=qcode`、`Exec=qc gui` | shell 画图标、点图标启动 |
+| `res/icons/linux/hicolor/*/apps/qcode.png` | 装进图标主题（8 个尺寸） | `Icon=` 的解析目标 |
+
+`_NET_WM_ICON`（`window_icon::attach`）保留：它修的是 KDE/Xfce 那条路径，代价只是
+一次 PNG 解码和 8 KiB 二进制体积。
+
+**为什么必须三处同名**
+
+`WM_CLASS` 的 class 段、`.desktop` 的 basename、`Icon=` 的值必须一致。改其中
+任何一个而没改其他两个，表现是静默的齿轮。所以：
+
+- `window_icon::APP_ID = "qcode"` 是唯一常量，`identify` 从它取值；
+- 一个单测解析**随包提交的** `qcode.desktop`，断言 `Icon=` 和 `StartupWMClass=`
+  都等于 `APP_ID`、`Exec=` 仍是 `qc gui`。变异（把 `StartupWMClass` 改成 `qc`）
+  会让它立刻红。
+
+**补记：装了条目还是齿轮，根因是 `TryExec`**
+
+第一次装上后 `--check` 全绿，但 dock 还是齿轮。取实际像素才确认：dock 里没有任何
+一块是品牌蓝 `#2F6BFF`（48×48 那个蓝块是 `#1A73E8`，别的应用）。
+
+继续查 GIO，而不是猜缓存：`g_desktop_app_info_new_from_filename` 对**装好的那份
+文件**返回 NULL——整条条目被判无效。二分出一行：
+
+| 变体 | GIO |
+|---|---|
+| `Exec=qc gui`（`qc` 不在 PATH） | NULL |
+| `Exec=/abs/path/qc gui` | 有效 |
+| `Exec=/abs/path/qc gui` + `TryExec=qc`（不在 PATH） | **NULL** |
+
+GLib 的规则是：`Exec` / `TryExec` 指向的程序**找不到就丢掉整条条目**（规范里
+`TryExec` 明写「找不到则条目视为无效」）。条目被丢掉，窗口就没有可归属的应用，
+shell 画兜底图标——**表现为「图标没装」，实际是条目无效**。
+
+而当时的安装脚本只重写了 `Exec=`，把 `TryExec=qc` 原样留着，`qc` 又不在 PATH 上
+（开发构建就是 `./target/release/qc`）。所以这个坑对**每一个从源码跑的人**都成立，
+对发行包（`qc` 在 PATH）不成立——这也是它在测试里不容易暴露的原因。
+
+修法：`TryExec` 与 `Exec` 永远一起重写（`try_exec=$exec_cmd`），并在 `--check` 里
+断言两个键都能解析；单测再加一条「`TryExec` 必须与 `Exec` 的程序同名」，变异
+（`TryExec=qc-gui`）即红。
+
+
+**为什么不在程序里自动安装**
+
+`qc` 自己能写 `~/.local/share`，但（a）以用户身份悄悄写用户的 home 是个产品决定，
+不该由修图标顺手做掉；(b) 装上之后发现名字不对，用户既不知道发生了什么也不知道删
+什么。改为 `scripts/install-linux-desktop.sh`：显式、可 `--uninstall`、可 `--check`
+自查，`--system` 支持打包场景。`--check` 会读**每个在跑的实例**的 `WM_CLASS`——
+只读第一个会读到旧二进制，把「没装好」误报成 OK。
+
+**验证**
+
+- 单测 4 条：PNG 解码/正方形/非空白、`attach` 真的写进字段、桌面条目三处同名。
+- `xprop -id <win> WM_CLASS` → `WM_CLASS(STRING) = "qcode", "qcode"`（新二进制）。
+- `desktop-file-validate` 通过；归档内容含 `qc` + `share/applications/qcode.desktop`
+  + `share/icons/hicolor/<8 个尺寸>/apps/qcode.png`。
+- Windows 两个 triple 经 `scripts/ci-cross-check.sh` 类型检查（`identify`/`attach`
+  在那两个平台是恒等函数）。
+- GIO 真值：`g_desktop_app_info_new_from_filename` 对装好的条目返回非 NULL
+  （这是「条目有效」的唯一可信判据，`--check` 的规则与它对齐）。
+- **未验证**：Wayland 会话下的表现（`attach` 被忽略，靠 `.desktop` + 图标主题，
+  理论上与 X11 同路径），以及真机 dock 的目视确认。
+
+## ADR-0077：日志写文件——GUI 与 CLI 共用 `logs/qc.log`（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+日志只往 stderr 走，`logging.rs` 一共 13 行：
+
+```rust
+tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or("warn"))
+    .with_writer(std::io::stderr)
+    .with_target(false)    // 没有模块来源
+    .without_time()        // 没有时间戳
+```
+
+三个缺陷和一个更根本的缺口：
+
+1. **`.desktop` 启动时零日志。** 桌面条目是 `Exec=qc gui` + `Terminal=false`，
+   stderr 被 gnome-shell 继承，最好的情况是埋进 user journal（还得知道去翻
+   gnome-shell 的 unit），最坏情况直接丢弃。而用户报 bug 最常见的场景恰恰是
+   **点图标启动**——那个场景没有任何日志可看。这是本次要解决的核心问题，也是
+   促使 CLI 也一并写文件的原因：`qc run` 从编辑器/脚本里被调用时同样没有人看
+   stderr。
+2. **`.without_time()`**：写进文件后无法定位「什么时候出的错」。
+3. **`.with_target(false)`**：看不出是 GUI、kernel 还是 MCP 打的。
+4. **没设 `with_ansi`**：默认是开的，重定向到文件时把 `\x1b[33m WARN\x1b[0m`
+   原样写进去。实测抓到的日志里就是这个形状，`grep`/`less` 全是乱码。
+
+另外两件同源问题，本文一并定规矩（但不做迁移，见「不在本文范围内」）：
+
+- `eprintln!` **71 处**绕过订阅器：不受 `RUST_LOG` 管、不能过滤，`Redactor`
+  也不作用于它们。
+- `Redactor` 只在 2 个 `map_err` 里手调，**没有接成 `Layer`**，所以任何
+  `tracing::warn!(%error)` 都可能把 API key 写进日志。而 `logging.rs` 的模块
+  注释自己写着「defense in depth」。
+
+**参照：cot_cli 的 log4rs 用法**
+
+看了 `~/space/rust/cot_cli`（log4rs 1.4.0）。它的配置（`static/bin/log4rs.yml`，
+40 行）只有一个 console appender，`file:` / `rollingfile:` 全是**注释掉的模板**，
+用户 `~/.cot/log` 目录从未存在过——rolling 从未真正启用。它的亮点在规则而非规模：
+
+| 规则 | 做法 | 判断 |
+|---|---|---|
+| 显式 `target: stderr` | log4rs 的 ConsoleAppender **默认 stdout**，踩过 | **抄** |
+| appender 名字从 `stdout` 改成 `console` | 「名字叫 stdout 却写 stderr 只会误导下一个读配置的人」 | **抄** |
+| pattern 带 `{f}:{L}` + 模块 | 定位到文件行号 | **抄** |
+| 配置里 root=trace，实际级别由 `LOGGING_LEVEL` 定，默认 `off` | 配置定天花板，环境变量定实际 | **部分抄**（见下） |
+| 三层降级加载（CWD → exe 目录 → 内嵌） | 开发可改、装完可改 | **不抄** |
+| 升级不覆盖配置（`FORCE_COPY` 故意不含它） | 文件留给用户改 | **不抄**（我们没有这个文件） |
+
+**决定：不引入 log4rs，只加 `tracing-appender`**
+
+三个理由：
+
+1. **log4rs 建立在 `log` facade 上，没有 span。** qcode 是异步 agent 运行时
+   （turn → tool call → 子进程），现有 67 处 `tracing::*` 里跨度的父子上下文
+   是排查「卡在哪一步」的主力工具；换过去等于丢掉它或手搓。
+2. **换库要动 67 个调用点**，换来的「声明式配置 + 热重载」，`tracing-subscriber`
+   都能给，而 `log` facade 给不了 span。
+3. **配置重复**。qcode 已有 `config.toml` 和 GUI 设置页；再引一套 YAML +
+   `serde_yaml` + 文件发现逻辑，是重复建设。
+
+log4rs 真正多出来的只有 size-based 触发（`fixed_window` roller）。我们用
+`warn` 默认级别，日志量是小数量级；daily + 保留 7 个已把总量封死，不值得为此
+引入整套 roller。
+
+**装配**
+
+`logging::init(config_path)` 在 `Cli::parse()` 之后调用一次，装两层：
+
+| 层 | 目标 | ANSI | 时间 | 模块 | 过滤 |
+|---|---|---|---|---|---|
+| A | stderr | **开**（终端可读） | 开 | 开 | `EnvFilter` |
+| B | `logs/qc.log` | **关**（否则文件里永久带转义） | 开 | 开 | 同一个 `EnvFilter` |
+
+级别来源，优先级从高到低：
+
+1. `RUST_LOG`（保留现有逃生口，完整 `EnvFilter` 语法，含 `target=level`）
+2. `config.toml` 的 `[log] level`
+3. `warn`
+
+**为什么 `[log]` 进 `config.toml` 而不是单独一个 log4rs 式文件**：qcode 已经有
+配置系统和 GUI 设置页，级别应该能被那里管；多一个文件就多一套发现逻辑和一份
+「存在即不写」的升级规矩。
+
+**为什么默认写文件（不抄 `off`）**
+
+cot_cli 默认 `off` 对**纯 CLI** 成立：用户就在终端里，stderr 看得见。对 qcode
+**不成立**：GUI 用户没有终端可看。所以默认写文件，级别默认 `warn`。
+
+**多进程：共享一个文件为什么是安全的**
+
+qcode 是多进程的，这是本设计的硬约束：
+
+| 进程 | 写日志吗 |
+|---|---|
+| `qc run` / `qc list` … | 是（各自独立主进程） |
+| `qc gui`（workspace 切换会 re-exec） | 是 |
+| `__qcode-procguard` | **否**——`guard_main_if_requested()` 在 `logging::init()`
+  之前就 return，天然不写（既有设计，是对的） |
+| MCP 子进程（任意命令） | 不写 `qc.log`，有自己的 `logs/mcp-*.log` |
+| 终端里的 shell、`run_shell` 子进程 | 继承 stderr，不自己打日志 |
+
+`tracing_appender::rolling` 的轮转机制让这件事安全：它**按日期新建文件名**
+（`qc.2026-11-12.log`）而不是 rename 当前文件，用 `append(true).create(true)` 打开。
+所有进程当天追加的是同一个 inode，`O_APPEND` 保证每次写入原子；跨天时各进程各自
+算出新文件名，不需要协调。
+
+两个已知残留风险，接受：
+
+- **保留清理可能删到别人正开着的旧文件**。POSIX 上 unlink 后 fd 仍有效，无害；
+  Windows 上会失败，清理跳过即可。
+- **不用 `non_blocking`**。`tracing-appender` 的异步 writer 在进程被 `kill -9`
+  时可能来不及 flush，而「用户强杀 / 崩溃」恰恰是想看日志的场景。日志量本来就低，
+  用同步 writer 换「不丢」。
+
+**稳定路径**：`RollingFileAppender` 的 `latest_symlink("qc.log")` 让
+`logs/qc.log` 永远指向当天文件，`qc logs` 只认这一个路径，不用自己算日期。
+
+**`resolve_data_dir` 的警告与 init 顺序**
+
+`resolve_data_dir` 在数据目录不可写时会探测并**回落到工作区的 `.qcode-data`**。
+日志文件就住在数据目录里，鸡生蛋。解法两层：
+
+1. **用 `data_dir_hint` 而不是 `resolve_data_dir`**：前者只预测路径，不创建目录、
+   不探测、不回退。否则 `qc skills list` 这种从不碰存储的命令会因为「可能要写日志」
+   而在用户仓库里造出 `.qcode-data/`——沙箱里尤其难看。
+2. **惰性文件层**：`init` 先装好 stderr 层和一个空的文件层（`MakeWriter` 背后的
+   appender 是 `OnceLock`，未安装时写入丢弃），之后 `attach_file` 才建目录、装
+   appender。这样 `attach_file` 之前的日志（含 `resolve_data_dir` 的回落警告）
+   落在 stderr 上。它们落不进文件，因为文件的位置正是它要报告的东西——有意的取舍。
+
+`attach_file` 失败走 `tracing::debug!` 而不是 stderr：沙箱里 `qc skills list` 可能
+落到只读目录，一个从不写日志的命令不该为此报错。`qc logs` 会报告「没有日志文件」，
+那才是用户会去看的地方。
+
+`resolve_data_dir` 现在复用 `data_dir_hint` 的第一个候选，两者不会对「默认在哪」
+产生分歧。
+
+**不在本文范围内**
+
+1. **`eprintln!` 的迁移**分两步做完：本文只产出分类表
+   （`docs/design/LOGGING.md`），理由是 cot_cli 的教训——`output-streams.md` 审计了
+   68 处，其中 **23 处是该留在 stdout 的产物**，一律改成日志是错的。分类之后的迁移见
+   [ADR-0079](#adr-0079eprintln-迁移d-类-38-处归入-tracing2026-11-12)。
+2. **`Redactor` 接成 `Layer`** 单独立项，已完成 —— 见 [ADR-0078](#adr-0078凭证脱敏接进日志格式化不再靠调用点记得2026-11-12)。
+   当时拆开是因为它是安全项，与输出流归属是两件事，混在一起会让两边的回归测试都变模糊。
+3. **`qc logs` 的 `--follow`** —— 当时划在范围外，理由「`tail -f` 已经够」站不住：
+   那要先 `--path-only` 拿路径再喂给 `tail -f`，两个命令一次复制，而 `tail -f` 还不处理
+   轮转与「文件尚未出现」。已实现，见 [ADR-0080](#adr-0080qc-logs---follow2026-11-12)。
+
+**验证**
+
+- 单测：级别优先级（`RUST_LOG` > `[log] level` > 默认）、`[log] level` 的非法值
+  退回默认而不 panic、`log_path` 与 `attach_file` 返回同一路径、文件层写出的行
+  **不含** `\x1b[`（ANSI 已关）而 stderr 层**含**。
+- 手工：`qc logs` 打印路径与最近若干行；`qc doctor` 一行日志不写 stdout。
+- 反证：把 `with_ansi(false)` 去掉，ANSI 断言必须红。
+
+## ADR-0078：凭证脱敏接进日志格式化——不再靠调用点记得（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+ADR-0077 让日志落盘并保留 7 天，`Redactor` 却仍然只在 **2 处** `map_err` 里手调：
+
+```rust
+.map_err(|err| redactor.redact(&err.to_string()))?;   // commands/gui.rs、commands/run.rs
+```
+
+它保护的是「返回给调用者、最终由 `main` 的 `eprintln!("error: …")` 打出来的字符串」，
+**完全不经 `tracing`**。也就是说：日志通道一点保护都没有。任何
+`tracing::warn!(%error, …)`、`?base_url`、`?Some(key)` 都会原样进文件，躺七天。
+
+这不是假想。实现本文时用一份 `base_url = "http://127.0.0.1:9/v1?key=sk-…"`
+的配置跑了一次必然失败的 turn，未脱敏版本的日志文件里有 **3 行明文**：
+
+```
+INFO qc::commands::run: provider resolved provider=e2e model=e2e-model base_url=Some("http://127.0.0.1:9/v1?key=sk-e2e-…")
+WARN qcode_core::engine::stream: provider failed before the first token; retrying attempt=1
+     error=network error: error sending request for url (http://127.0.0.1:9/v1?key=sk-e2e-…/chat/completions)
+```
+
+第二行是**引擎自己在重试**时打的，和 `run.rs` 那两处手调毫无关系——手调一处也挡不住它。
+这就是「靠调用点记得」的根本缺陷：漏一处就开了口子，而这类代码恰恰会随重构增多。
+
+**决定：在格式化阶段脱敏，包 `FormatEvent` 而不是包 writer**
+
+`tracing` 的 `Layer::on_event` 拿到的是**只读**事件，没法改写字段或消息。能改的是渲染
+结果，所以包的是 formatter：
+
+```rust
+impl<S, N> FormatEvent<S, N> for RedactedFormat {
+    fn format_event(&self, ctx, mut writer, event) -> fmt::Result {
+        let redactor = qcode_kernel::redact::current();
+        if redactor.is_empty() {
+            return self.inner.format_event(ctx, writer, event);  // 无 secret：直接透传
+        }
+        let mut line = String::new();
+        self.inner.format_event(ctx, Writer::new(&mut line), event)?;
+        writer.write_str(&redactor.redact(&line))
+    }
+}
+```
+
+三个设计点，每个都对应一种「换个写法就会漏」：
+
+1. **包 formatter，不包 writer。** `fmt` 是分多次 `write_str` 吐一行的（时间戳、级别、
+   模块、消息各一次）。writer 层的过滤器看到的是碎片，一个 secret 被切在两次写之间就
+   匹配不到。先渲染成整行再扫，看到的就是用户会看到的东西。
+2. **扫整行，不只扫 `message`。** key 走字段的场景是真实的：provider 把 key 放进
+   查询串，而 `?base_url` 就是这么被记录的（上面那行 INFO）。`Debug` 格式化同样能
+   带出 key（`?Some(key)`）。
+3. **真的先渲染一遍。** 代价是每条事件一次 `String` 分配。默认 `warn` 级别下这是
+   小数量级，而正确性不能省。没有 secret 时走提前返回，连分配都省掉——CLI 没解析到
+   key 的常见情况零开销。
+
+**决定：脱敏搬到 `qcode-kernel::redact`，在 `assemble` 里安装**
+
+原本 `Redactor` 在 `crates/qcode/src/logging.rs`（bin crate）。问题是**装不上**：
+`qcode-kernel` 不能依赖 bin crate，而 secret 是在 `config::resolve` 之后才知道的。
+
+更要紧的是**入口不止两个**。`qc acp` 是长驻无头服务，所有 provider 错误都进日志，
+却从来没有装过 secret——正是「靠记得」必然漏掉的那一个。逐个入口补调用点是治标的，
+下一个入口还会漏。
+
+所以搬到 `qcode_kernel::redact`，并在 `assemble` 里装：
+
+```rust
+let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
+redact::install(resolved.api_key.clone());
+```
+
+`assemble` 是 `run` / `tui` / `gui` / `acp` **唯一必经**的地方。装在这里，忘记是不可能
+的，这就是 `qcode-core::paths::log_dir` 那条理由的重演：跨 crate 的横切关注点要落在
+所有调用方都依赖的那一层。
+
+**决定：secret 集合只增不减**
+
+`install` 取并集而不是替换。`qc gui` 在设置页换 key 后重新解析（`gui_rebuild_hook`
+是原地换引擎，不是重启进程），此刻手里是新 key，但**几十毫秒前捕获的错误字符串里
+可能还是旧 key**。忘掉旧的正好把这条要堵的漏给重新打开。
+
+**两处手调保留，它们不是冗余**
+
+`error: {err}` 走的是 `main` 的 `eprintln!`（ADR-0077 把它归为 A 类），不经过
+`tracing`，formatter 层看不到。所以 `gui.rs` / `run.rs` 仍然需要拿一个 `Redactor`
+手动脱敏那条字符串——但改成 `redact::current()` 取**同一个**集合，不再各自
+`Redactor::new(...)` 一份副本。
+
+| 通道 | 谁保护 |
+|---|---|
+| `tracing` → stderr / 文件 | `RedactedFormat` |
+| 返回给 `main` 的错误 → `eprintln!` | 两处手调，用同一个集合 |
+| `print_event` 的 JSONL（stdout） | **不在本文范围**，见下 |
+
+**保留没被过滤掉的风险：`is_empty` 快路径**
+
+secret 集合为空时（CLI 没解析到 key、或 keyless provider）直接透传。这是性能选择，
+也意味着「集合还没装」的窗口里日志不脱敏。该窗口是 `init` 到 `assemble`
+之间——那时还没有任何代码持有 key，所以不构成泄漏路径。
+
+**不在本文范围**
+
+1. **stdout 的 JSONL 事件流不脱敏。** 它是给程序消费的产物，provider 返回的原始
+   body 可能就是消费者要的东西；擅自改写会让下游解析出错。要脱敏也该在事件构造处
+   而不是流层，这是另一个决定。
+2. **MCP 服务器的 token 不作为 secret。** 现在按环境变量**名**传递
+   （`bearer_token_env_var`），值从不进日志。但 `env: { K = "${TOKEN}" }` 的透传值
+   会随 `McpServerConfig` 的 `Debug` 暴露——目前没人 `tracing::debug!(?config)`。
+   等有泄漏路径了再决定，因为「按变量名像不像 token 来判断」是个需要单独评审的启发式。
+3. **`qc logs` 的回溯脱敏不做。** 文件在写入时已经干净。
+
+**验证**
+
+- 纯规则单测在 `qcode_kernel::redact`（最长优先、每处都替换、短 secret 不过滤、
+  重复 install 不丢旧值）；格式化路径的单测在 `logging`（`Display` 字段、`Debug`
+  字段、URL 内 key、同一行两次出现）。
+- **5 个变异全部被唯一对应的测试杀死**：不脱敏 → `secrets_never_reach_a_rendered_line`；
+  只替换第一处 → 同上；去掉最长优先排序 → `overlapping_secrets_are_masked_longest_first`；
+  `install` 改成替换 → `installing_again_keeps_the_earlier_secrets`；短 secret 不过滤 →
+  `secrets_too_short_to_be_real_are_ignored`。其中两个变异第一轮**存活**了（多事件各含一次绕过了「只替换
+  第一处」，输入恰好长在前掩盖了缺排序），测试因此被改写——留下的版本才真的钉住行为。
+- **集成测试 `crates/qcode/tests/log_redaction.rs` 跑真实二进制**：一份 key 写在
+  `base_url` 查询串里的配置 + 指向关闭端口，一次必然失败的 turn。断言三件事——日志里
+  真的出现了 `base_url=`（否则测试是空转）、出现了 `<redacted>`、且没有明文；stderr 的
+  `error:` 行同样没有明文。
+
+  这个测试是**事后补的**，起因是变异测试发现了一个真实缺口：把 `assemble` 里那行
+  `redact::install(...)` 删掉，六个单测**全部照过**——没有任何测试覆盖「两个部件是否
+  接上了」。而被删的正是整件事的核心接线。补上之后再删同一行，集成测试立刻在
+  `base_url` 断言处分红；去掉 `run.rs` 那处手调，则在同一测试的 stderr 断言处分红。
+  教训写在这里而不是只留在提交信息里：**单测覆盖零件，装配线要另外覆盖。**
+
+## ADR-0079：`eprintln!` 迁移——D 类 38 处归入 `tracing`（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+ADR-0077 立了规矩（`stdout` = 产物，`stderr` = 叙述），并把 74 处 `eprintln!` 分成
+A（保留）/ D（该迁）两类，产出分类表 `docs/design/LOGGING.md`。当时**只分类不迁移**，
+理由是「有一半的判断是这条消息到底该不该存在，那是产品判断」。
+
+现在做迁移。目标不是「把 `eprintln!` 换成 `tracing`」，而是让诊断类消息**能落盘**：
+桌面用户从 `.desktop` 启动时看不到 stderr，`qc.log` 是他们唯一的机会。
+
+**范围**
+
+`qcode-gui` 优先：它的生产代码 `eprintln!` 全属 D 类，可见性最差、歧义最小。顺带清掉
+`qcode` 的 `commands/gui.rs`（6 处）、`qcode-core/src/store.rs`（1 处），以及分类表
+「顺手记下的问题」里那几条。
+
+结果：**38 处迁移**，剩余 33 处全部为 A 类，D 类归零。明细见 LOGGING.md「迁移结果」。
+
+**`qcode-gui` 原本没有 `tracing` 依赖**
+
+一处都没有。加进 `Cargo.toml`，并确认 `qc gui` 是**同进程**调用 `qcode_gui::run`
+（不是 fork 一个子进程），所以 GUI 的事件和 CLI 走同一个订阅器、进同一个
+`logs/qc.log`。这决定了整件事是否成立，写在依赖旁边。
+
+**三个分类表没覆盖到的判断**
+
+**1. 用户输入校验失败不能用 `warn`。**
+
+分类表把 `setup/save.rs` 的 5 处都算 `warn`。但其中两处是表单/标量值"还不合法"，
+**每次防抖窗口都会触发**——用户把 URL 打到一半就报一次。而原因已经显示在设置页顶部。
+放 `warn` 会让真正的写盘失败淹没在输入噪音里。所以：
+
+| 位置 | 性质 | 级别 |
+|---|---|---|
+| `save.rs:484,533,580` | 写 `config.toml`/`gui.json` 失败 | `warn` |
+| `save.rs:494,516` | 用户输入还不合法 | **`debug`** |
+
+判据：**这是我们的失败还是用户的中间状态？** 前者 `warn`，后者 `debug`（且用户已经
+在界面上看到了）。
+
+**2. 撤掉 `QCODE_GUI_KEY_DEBUG`。**
+
+6 处调试探针包在这个环境变量里——它正是「没有级别机制」时的替代品。现在
+`[log] level`/`RUST_LOG` 就是那个机制，两个开关并存只会让下一个人不知道按哪个。
+全部改为 `debug!`，**变量删除**。
+
+这不是纯重构：`QCODE_GUI_KEY_DEBUG` 是 GUI 的一个私有后门，删掉它意味着少一个未
+文档化的开关。净收益——`RUST_LOG=qcode_gui=debug` 本来就能做到同样的事，而且能写进
+配置文件、能被 `qc logs` 之外的读者理解。
+
+**3. 一处探针在记录用户输入。**
+
+`send_prompt` 原本记 `value.chars().take(20)`：用户输入的前 20 个字符。ADR-0077 之前
+它一闪而过，之后它会**在文件里躺 7 天**。而它没有诊断价值——判断「prompt 没发出去」
+靠的是 `len` 和 `running`，不是用户打了什么字。改成只记长度和状态。
+
+这是迁移过程中唯一一次「顺手改掉行为」，理由是和 ADR-0078 同一个：落盘改变了泄漏的
+代价，原来无害的东西现在不是。
+
+**一处刻意不删**
+
+`render/mod.rs` 根节点的 `on_mouse_down` 里只有一个 `eprintln!("root mouse down")`，
+是标准的调试残留。日志删了，**注册保留**（空闭包 + 注释说明原因）。
+
+根节点是否消费鼠标按下会影响焦点与事件冒泡，而这是 GUI 行为，无法用单测验证，
+我也没有交互式证据。删一行打印是安全的，删一个监听器是没法验证的行为变更——不在这篇
+ADR 的业务范围内。
+
+**顺带修的（分类表「顺手记下的问题」）**
+
+- `commands/gui.rs` 的 `" WARN config directory …"` 手搓级别名（还带前导空格）→
+  `tracing::warn!`。`RUST_LOG` 现在能管它，`grep WARN` 也能找到它。
+- 同文件里 `config=` 路径**打印了两次**（一次带 source、一次裸的）→ 合并成一条带
+  `source` 字段的 `info!`。第二次本来就没告诉读者任何新东西。
+
+**验证（这次唯一有意义的验收是「GUI 真的写了日志」）**
+
+单测在这里帮不上忙——迁移的理由就是「桌面用户看不到 stderr」，所以必须真的跑起来看：
+
+```
+DISPLAY=:1 RUST_LOG='qcode_gui=debug,qc=info' qc --data-dir … gui
+→ 2026-11-12T06:03:17Z INFO  qc::commands::gui: gui: config discovered config=… source="flag"
+→ 2026-11-12T06:03:17Z INFO  qc::commands::gui: gui: config resolved exists=true provider=mock …
+→ 2026-11-12T06:03:18Z DEBUG qcode_gui::shell: window ready (focus fix + concurrent engine) pid=…
+```
+
+- 默认 `warn` 下 GUI 启动**没有迁移带来的噪音**，文件里只有真实告警（含 `wgpu_hal`
+  的 Vulkan 驱动警告——那正是「窗口画不出来」时要看的东西，保留）。
+- `cargo test --workspace` 110 个测试二进制通过；clippy 覆盖了
+  `-p qcode --features gui`（`gui` 不是默认 feature，只 check `-p qcode` 会漏掉
+  `commands/gui.rs` 里那段 `#[cfg(feature = "gui")]`）与 `-p qcode-gui`。
+
+**两条流程教训**
+
+1. **`gui` 不在默认 feature 里。** 我第一次 `cargo check -p qcode` 通过了，但那**没有
+   编译**被迁移的那段代码。改动落在 `#[cfg]` 后面时，`--features` 是必须的，不是可选的。
+2. **`cargo test --workspace` 会把 `target/debug/qc` 覆盖成不带 GUI 的构建。** 端到端
+   复验时 `qc gui` 直接输出 `this build has no GUI support` 并退出 2，日志文件是空的
+   ——看起来像「迁移没生效」，实际是二进制换了。跑 GUI 验收前必须重新
+   `cargo build -p qcode --features gui`。这类假阴性比真阴性更费时间：它指向错误的方向。
+
+**不在本文范围**
+
+- **A 类 33 处不动**，理由见 LOGGING.md：审批提示必须无条件出现（`RUST_LOG=off` 不能
+  吞掉「按 y 确认」），进度叙述加时间戳纯属噪声。
+- **测试代码 46 处不动**：测试自述用 `eprintln!` 是它们该有的形态。
+
+## ADR-0080：`qc logs --follow`（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+ADR-0077 交付了 `qc logs`（打印路径 + tail），明确把 `--follow` 划在范围外，理由是
+「`tail -f` 已经够」。这个理由站不住，只是当时没空：
+
+`qc.log` 在数据目录里，路径是 `~/.local/share/qcode/logs/qc.log`（或 `--data-dir` 指定的
+地方）。用户为了看实时日志得先 `qc logs --path-only` 拿路径，再把这个路径喂给
+`tail -f`——两个命令、一次复制粘贴，而 `qc logs` 明明已经在那个文件上了。`tail -f`
+也不处理这里特有的两件事：**轮转**（每天换 `qc.<date>.log`，`tail -f` 会一直盯着旧的
+那一天）和**文件尚未出现**（先开 `qc gui`、再开 `qc logs` 是更自然的顺序，
+`tail -f` 直接报 `No such file`）。
+
+**决定：轮询 200ms，不引入 `notify`**
+
+`notify` 已经在 `Cargo.lock` 里（别的依赖带进来的），但用法上的账不划算：
+
+| | 轮询 | inotify |
+|---|---|---|
+| 网络文件系统 / bind mount | 正常 | 常失效（内核事件不跨主机） |
+| 依赖 | 0 | 新增直接依赖 + 平台差异 |
+| 延迟 | ≤200ms | 亚毫秒 |
+
+日志是给人看的，200ms 无感；而在容器和远程目录里恰好是**最需要看日志**的场景，
+那里 inotify 不工作。这也是 ADR-0077 一贯的取舍（同步 writer 而非 `non_blocking`）：
+宁可损失吞吐，也不要在异常路径上失灵。
+
+**`Follower` 单独成型，为了可单测**
+
+有意思的行为全在**两次读之间**：跨天了、文件变短了、文件还没出现。这些跑二进制都
+覆盖不到（要么等一天，要么不可能）。所以拆出一个 `Follower`，`poll()` 返回
+`(notice, text)`，七个单测直接对着它。
+
+三个必须处理的文件系统变化：
+
+| 变化 | 如何发现 | 处理 |
+|---|---|---|
+| 新文件出现（换天了） | 每次重新 `current_log()` 解析路径 | 从 0 读，打一行 `--- following qc.<date>.log ---` |
+| 同一路径文件变短 | `len < offset` | 从 0 读并**说明**「已替换（轮转或截断）」 |
+| 文件还不存在 | `metadata` 失败 | 静默等下一轮 |
+
+第二行是**只在有软链的平台上**才会走到：`qc.log` 这个软链在轮转后指向新文件，路径
+字符串不变，`len < offset` 是唯一线索。而 Windows 建不了软链（ADR-0077 已处理降级），
+那里是**路径变化**分支。两条路都要有。
+
+**只消费整行**
+
+先 `read_to_end`，再找最后一个 `\n`，只把到它为止的部分交给输出、偏移量也只前进到
+那里。理由有两个，第二个更硬：
+
+1. 一次写可能落在行中间，打印半行会产出**文件里不存在的行**。
+2. 多字节字符会被切断成两半，`from_utf8` 直接失败。CJK 日志是常态（本仓库的注释、
+   错误信息大量中文），所以有专门的单测：在 `连` 的 3 个字节中间切开，前半不得打印，
+   后半到达后整行完整输出。
+
+**`qc logs` 不再写日志**
+
+端到端测出来的 bug：`main` 对所有命令都调 `logging::attach_file`，于是 `qc logs`
+**先把今天的 `qc.<date>.log` 和 `qc.log` 软链创建出来**，然后报告「没有日志文件」——
+永远报不出来，`--follow` 的「等待第一行」也永远等不到。
+
+修法是 `Command::Logs` 跳过 `attach_file`。不只是修 bug，也是对的职责划分：一个
+**显示**文件的命令不该写它。代价是 `qc logs` 自身的诊断只到 stderr——它唯一的诊断是
+「读这个文件出错」，本来就该直接说给正在看的那个人。
+
+**`| head` 不能 panic**
+
+`follow_forever` 用 `writeln!`/`write!` 到 stdout 并检查错误，管道关闭时安静返回而不是
+让 `println!` 在 stdlib 里 panic。`qc logs -f | grep x` 是很自然的用法。
+
+**验证**
+
+- 7 个单测：追加只显示一次、半行等待、多字节不切断、轮转换文件、文件变短重来、
+  文件后出现、`skip_to_end` 不重复。**5 个变异各被唯一对应测试杀死**——其中「不做
+  整行切分」第一轮显示通过，一查是我的替换脚本没匹配上（静默空操作），重新施加后
+  两个测试同时红。这类假绿比假红更危险，之后所有变异都先断言替换确实生效。
+- 端到端（真实进程写日志）：另一个 `qc run` 写日志时 `-f` 看到新行；空数据目录下先起
+  `-f` 会打印等待提示并在文件出现后跟上；跟随中截断文件打印「已替换」；`| head -3`
+  安静退出。
+- `qc logs` 在空目录**不创建任何东西**（`ls` 为空），修好后 `no log files in …` 与
+  `waiting for the first line in …` 两条提示都能出现。
+
+**不在本文范围**
+
+- **`--since`/`--level` 过滤**：`grep` 够用，加过滤就要处理多行记录（本仓库的
+  `wgpu_hal` 输出就是一条事件两行）。
+- **多文件跟随**（`-F` 之于 `tail`）：一次只看当天。要看历史，`qc logs -n 2000` 或者
+  直接打开上一个 `qc.<date>.log`。

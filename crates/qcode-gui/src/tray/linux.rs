@@ -213,11 +213,13 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<LinuxTray> {
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => Some(LinuxTray { state_tx }),
         Ok(Err(error)) => {
-            eprintln!("qcode-gui: system tray unavailable: {error}");
+            // The window still opens without a tray; this is the only record of
+            // *why* the icon is missing, and it lands in `logs/qc.log`.
+            tracing::warn!(%error, "system tray unavailable");
             None
         }
         Err(_) => {
-            eprintln!("qcode-gui: system tray did not start in time");
+            tracing::warn!("system tray did not start in time");
             None
         }
     }

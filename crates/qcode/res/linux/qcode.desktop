@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=QCode
+GenericName=AI Coding Agent
+Comment=Coding agent with a desktop window, terminal and task list
+Exec=qc gui
+TryExec=qc
+Icon=qcode
+Terminal=false
+Categories=Development;
+Keywords=ai;agent;code;terminal;
+StartupNotify=true
+StartupWMClass=qcode

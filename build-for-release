@@ -487,6 +487,14 @@ pack_archive() {
     mkdir -p "$inner"
     # 包内是可执行文件名（qc / qc.exe），与产物名区分
     cp "$binary" "$inner/$BIN$(exe_suffix "$target")"
+    # Linux 的桌面条目和主题图标：GNOME/Qt 的 dock 按 WM_CLASS 找 .desktop，
+    # 再由它的 Icon= 找 hicolor 里的 PNG。只给裸二进制，装完还是齿轮。
+    # 放在包内 share/ 下，与 /usr 的布局一致，可以整个前缀拷过去。
+    if [ "$(target_os "$target")" = linux ]; then
+        mkdir -p "$inner/share/applications" "$inner/share/icons"
+        cp "$ROOT/crates/qcode/res/linux/qcode.desktop" "$inner/share/applications/"
+        cp -r "$ROOT/crates/qcode/res/icons/linux/hicolor" "$inner/share/icons/"
+    fi
     case "$(exe_suffix "$target")" in
     .exe)
         command -v zip >/dev/null 2>&1 || die "打 Windows 的 zip 需要 zip 命令"

@@ -481,7 +481,7 @@ impl SetupView {
                             Ok(())
                         }
                         Err(error) => {
-                            eprintln!("qcode-gui: auto-save failed: {error}");
+                            tracing::warn!(%error, "auto-save failed");
                             Err(format!("config.toml 没能写入：{error}"))
                         }
                     }
@@ -491,7 +491,11 @@ impl SetupView {
                 Err(error) => {
                     self.error = Some(error.clone());
                     cx.notify();
-                    eprintln!("qcode-gui: auto-save skipped (invalid form): {error}");
+                    // `debug`, not `warn`: this fires on every debounce while the
+                    // user is halfway through typing a valid value, and the reason
+                    // is already on screen. Logging it at `warn` would bury the
+                    // real failures above in validation noise.
+                    tracing::debug!(%error, "auto-save skipped: invalid form");
                     Err(format!("表单还有问题，改动没有写入：{error}"))
                 }
             },
@@ -513,7 +517,8 @@ impl SetupView {
         };
         let mut config = self.config.clone();
         if let Err(error) = apply_scalar(&mut config, path, &value) {
-            eprintln!("qcode-gui: auto-save skipped ({error})");
+            // Same reason as above: user input in progress, already shown in the UI.
+            tracing::debug!(%error, "auto-save skipped: invalid value");
             return Err(format!(
                 "{} 的值不合法，改动没有写入：{error}",
                 path.join(".")
@@ -530,7 +535,7 @@ impl SetupView {
                 Ok(())
             }
             Err(error) => {
-                eprintln!("qcode-gui: auto-save failed: {error}");
+                tracing::warn!(%error, "auto-save failed");
                 Err(format!("{} 没能写入：{error}", path.join(".")))
             }
         }
@@ -577,7 +582,7 @@ impl SetupView {
             _ => {}
         });
         if let Err(error) = saved {
-            eprintln!("qcode-gui: auto-save failed (gui.json): {error}");
+            tracing::warn!(%error, "auto-save failed for gui.json");
             return Err(format!("gui.json 没能写入：{error}"));
         }
         self.prefs = prefs;

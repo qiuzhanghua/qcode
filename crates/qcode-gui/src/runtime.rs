@@ -109,7 +109,9 @@ pub(crate) fn create_task(
             Some(created.id)
         }
         Err(error) => {
-            eprintln!("qcode-gui: cannot create task: {error}");
+            // The user sees this in the UI too (`send_turn_failed`); the log is
+            // for reading afterwards, which is the point of ADR-0077.
+            tracing::warn!(%error, "cannot create task");
             port.tagged(SessionTarget::Draft)
                 .send_turn_failed(error.to_string());
             None
@@ -150,7 +152,7 @@ fn save_schedule_state(
 ) {
     cache.insert(name.to_string(), state.clone());
     if let Err(error) = engine.store.save_schedule_state(name, state) {
-        eprintln!("qcode-gui: cannot save schedule state for {name}: {error}");
+        tracing::warn!(%error, name, "cannot save schedule state");
     }
 }
 
@@ -192,7 +194,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                eprintln!("qcode-gui: cannot start the runtime: {error}");
+                tracing::warn!(%error, "cannot start the runtime");
                 return;
             }
         };
@@ -255,7 +257,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 .map(|schedule| schedule.name.clone())
                 .collect();
             if let Err(error) = engine.store.prune_schedules(&declared) {
-                eprintln!("qcode-gui: cannot prune schedule state: {error}");
+                tracing::warn!(%error, "cannot prune schedule state");
             }
 
             // 运行时定时任务（Scheduled Tasks）：任务定义由 `Scheduler` 管理，
@@ -275,7 +277,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 qcode_core::schedule::now_local(),
             ) && added > 0
             {
-                eprintln!("qcode-gui: imported {added} [schedules] entries as tasks");
+                // Not a failure: the config gained scheduled turns and the runtime
+                // adopted them. Worth a line so a later "where did this task come
+                // from" has an answer.
+                tracing::info!(added, "imported [schedules] entries as tasks");
             }
 
             // Publish a session's queue rows, remembering what the UI was told so
@@ -323,7 +328,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             }) {
                                 Ok(created) => created,
                                 Err(error) => {
-                                    eprintln!("qcode-gui: cannot create a task: {error}");
+                                    tracing::warn!(%error, "cannot create a task");
                                     port.tagged(target).send_turn_failed(error.to_string());
                                     continue;
                                 }
@@ -921,9 +926,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             provider_name = next_provider;
                                         }
                                         Err(error) => {
-                                            eprintln!(
-                                                "qcode-gui: cannot switch provider: {error}"
-                                            );
+                                            tracing::warn!(%error, "cannot switch provider");
                                             port.tagged(current.clone()).send_turn_failed(format!(
                                                 "无法切换到 {next_provider}：{error}"
                                             ));
@@ -939,7 +942,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     Some(provider_name.as_str()),
                                     Some(model.as_str()),
                                 ) {
-                                    eprintln!("qcode-gui: cannot persist default model: {error}");
+                                    tracing::warn!(%error, "cannot persist default model");
                                 }
                             }
                             UiCommand::Prompt {
@@ -1183,7 +1186,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // wrong task's badge (P5).
                         live.remove(&target);
                         if let Err(error) = result {
-                            eprintln!("qcode-gui: turn failed: {error}");
+                            // Log before the move: `send_turn_failed` takes ownership.
+                            tracing::warn!(%error, "turn failed");
                             port.tagged(target.clone()).send_turn_failed(error);
                         }
                         host.end_turn(&target);

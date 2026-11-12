@@ -20,13 +20,14 @@ impl Shell {
     }
 
     pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            eprintln!(
-                "qcode-gui: new_session handler blocks={} running={}",
-                self.ui.app.blocks.len(),
-                self.ui.app.status.running
-            );
-        }
+        // `debug`, and the old `QCODE_GUI_KEY_DEBUG` switch is gone: it existed
+        // because there was no level mechanism, and now `[log] level`/`RUST_LOG` is
+        // that mechanism. One switch, not two.
+        tracing::debug!(
+            blocks = self.ui.app.blocks.len(),
+            running = self.ui.app.status.running,
+            "new_session handler"
+        );
         if self.backend.provider().is_none() {
             // 没有内核时 UnconfiguredBackend::new_session 是空实现：不拦一下的话
             // 点“+”什么都不会发生，看起来像按钮坏了。
@@ -93,13 +94,11 @@ impl Shell {
         self.hovered_task = None;
         self.refresh_tasks();
         self.ui.app.push_notice("new session");
-        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            eprintln!(
-                "qcode-gui: new_session applied blocks={} resetting={}",
-                self.ui.app.blocks.len(),
-                self.ui.resetting
-            );
-        }
+        tracing::debug!(
+            blocks = self.ui.app.blocks.len(),
+            resetting = self.ui.resetting,
+            "new_session applied"
+        );
         // 同上：新建任务之后要看到它，而不是留在终端上。
         self.enter_task_view(cx);
         self.focus_composer(window, cx);
@@ -246,15 +245,17 @@ impl Shell {
     }
 
     pub(crate) fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            let value = self.ui.input.read(cx).value();
-            eprintln!(
-                "qcode-gui: send_prompt handler len={} running={} value={:?}",
-                value.trim().len(),
-                self.ui.app.status.running,
-                value.chars().take(20).collect::<String>()
-            );
-        }
+        let value = self.ui.input.read(cx).value();
+        // Length and state only. The first 20 characters used to be logged as well,
+        // and since ADR-0077 that would put a fragment of what the user typed into a
+        // file that survives a week — for no diagnostic gain: what distinguishes
+        // "prompt never sent" from "sent with the wrong text" is whether it arrived,
+        // not which words it had.
+        tracing::debug!(
+            len = value.trim().len(),
+            running = self.ui.app.status.running,
+            "send_prompt handler"
+        );
         if self.ui.restoring.is_some() {
             return;
         }
@@ -379,12 +380,7 @@ impl Shell {
     }
 
     pub(crate) fn stop(&mut self) {
-        if std::env::var_os("QCODE_GUI_KEY_DEBUG").is_some() {
-            eprintln!(
-                "qcode-gui: stop handler running={}",
-                self.ui.app.status.running
-            );
-        }
+        tracing::debug!(running = self.ui.app.status.running, "stop handler");
         // Stop targets the task on screen (ADR-0058 §6); a background task is
         // stopped from its own ⋯ menu (`stop_task`).
         let session = self.active.clone();

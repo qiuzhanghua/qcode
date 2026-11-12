@@ -22,12 +22,14 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 mod gui;
+mod logs;
 mod misc;
 mod run;
 mod sessions;
 mod settings;
 
 pub(crate) use gui::{cmd_gui, cmd_tui};
+pub(crate) use logs::cmd_logs;
 #[cfg(windows)]
 pub(crate) use misc::cmd_sandbox;
 pub(crate) use misc::{cmd_acp, cmd_doctor, cmd_shell_env, cmd_skills, cmd_update};

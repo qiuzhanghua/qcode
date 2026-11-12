@@ -726,7 +726,7 @@ impl SessionStore {
         if tasks.len() != before
             && let Err(error) = self.save_schedule_tasks(&tasks)
         {
-            eprintln!("qcode-core: cannot prune schedule tasks for deleted session {id}: {error}");
+            tracing::warn!(%error, session = %id, "cannot prune schedule tasks for deleted session");
         }
         Ok(())
     }
