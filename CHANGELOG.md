@@ -1,6 +1,76 @@
 # Changelog
 
-## 未发布
+## 0.8.7 — 2026-11-13
+
+0.8.6 之后的清理与补齐：`read_file` 第一次能把磁盘上的图交给模型，`qc sessions` 有了
+按 id / 按标题删会话的能力，`stdout` 上最后的叙述被清干净并加了守卫测试，CI 里那个
+从来没绿过的交叉 check job 删掉了。
+
+### `read_file` 能读图：不再把图片拒成「二进制」（ADR-0081）
+
+`read_file` 遇到 PNG/JPEG/WebP/GIF 现在返回图像本身。此前只有用户贴进输入框的图能到
+模型，磁盘上的图不行——同一个模型，贴的图能看、`red.png` 不能看，而被拒时的
+`binary file; refusing to read as text` 读起来像「这个模型不支持图形」。按魔数识别、
+不看扩展名：存成 `.dat` 的截图仍是 PNG。
+
+### `qc sessions delete`：按 id 或按标题删会话，支持「只留这几条」
+
+`qc sessions gc` 只能按时间删，帮不上「一堆跑批污染了存储、真实工作夹在中间」。此前唯一
+的路是手动 `rm` jsonl，而那条路漏掉预镜像目录、锁文件和索引行，还会留下投递到该会话的
+孤儿定时任务。
+
+- `qc sessions delete <id>...`，或 `--except <id>...` 只留指定的几条；
+- `--keep-title 人工智能编程 日常工作`：侧栏显示的是任务名而不是 id，这条让「保留这三个」
+  可表达。标题取**最后一次**重命名（`rename_task` 是追加事件）；
+- `qc sessions list --titles` 显示侧栏用的名字，`--titles` 是 opt-in（标题要扫日志才得出，
+  默认列表仍只走索引）；
+- 默认只报告、`--yes` 才删；`--except` / `--keep-title` 里任何一个名字解析不到、或解析到
+  多条，**整体中止**。拼错一个名字在「删除其余」语义下等于「一条都不留」，会顺手删掉本来
+  要保护的那条。
+
+### `qc sessions list` 接管道不再 panic
+
+`qc sessions list | head -40` 会死在 stdlib 里（`failed printing to stdout: Broken pipe`）。
+ADR-0080 给 `qc logs --follow | head` 修过一次同类问题，但修法落在单个文件里、靠每个调用点
+自己记得。改成整份报告一次 `write_all`，BrokenPipe 视为正常结束；`show` 例外，按 64 KB
+分块刷（一个 20 MB 会话不能整份缓冲）。顺带的好处：命令中途失败不再往管道漏半份列表。
+
+### stdout 上不再有叙述，并用白名单守住
+
+ADR-0079 的迁移只查了「叙述有没有误用 stderr」，没查反方向的「stdout 上有没有躺着叙述」，
+因为「stdout 只放产物」被当成前提而没人验证。复查整个 `qc` 主程序找到两处：
+
+- `qc gui` 的启动摘要用 `println!`。`.desktop` 启动 `Terminal=false`，stdout 被丢弃——
+  恰好在用户想知道「内核解析成哪个 provider、多少个工具」时看不到它。改为 `tracing::info!`，
+  与同文件 `starting TUI` 同形，落盘。
+- `qc update` 的 `install …? [y/N]` 提示写在 stdout。`qc update > out.log` 而 stdin 仍是
+  终端时，问题进了文件、终端上什么都没有，命令静默等输入——看起来就是卡死。提示与
+  `downloading` 进度都改走 stderr。
+
+`crates/qcode/tests/stdout_channels.rs` 守住三条规则：`qc` 主程序不许有裸 `print!`
+（不等换行的打印就是「问人一句话」）；`println!` 只允许出现在注明了「谁消费这份输出」的
+白名单文件里；`qcode-gui/src` 一律不许写 stdout。另有自测证明分类器看得见要找的东西。
+
+### 终端能粘贴了（ADR-0062 §5）
+
+GUI 的终端此前没有粘贴键：`Ctrl+Shift+V` 被外层快捷键吃掉，`Cmd+V` 又被当成普通按键送进
+PTY。Terminal 上下文现在自己声明这两个键。
+
+### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
+
+交叉 check 自上线起就是红的，但红的原因跟任何一次改动都无关：
+`failed to find tool "x86_64-w64-mingw32-clang"`。上一个版本把它记成「aarch64 才有的
+问题，去掉 aarch64 就好了」，那个判断是错的——脚本的循环在失败后**继续**跑下一个 target，
+所以第一次真正跑的时候 x86_64 也是红的，只是最后一句是 aarch64 的错。本机实测（干净
+target 目录、把 llvm-mingw 从 PATH 摘掉）：`libsqlite3-sys` 与 `aws-lc-sys` 两个 C 依赖
+都缺编译器；配上 llvm-mingw 立刻转绿。
+
+覆盖本来就是重复的：`windows-build` 在真 Windows 上跑 `clippy --workspace --all-targets`
+加 `cargo test --workspace --no-run`，全部 21 个 `#[cfg(windows)]` 门控文件都编到，用的是
+MSVC 的真 C 工具链。按 ci.yml 自己写下的判断（"a job added on a guess is a job that goes
+red for reasons unrelated to the change"）删掉 job，保留 `scripts/ci-cross-check.sh` 与
+`make check-platforms` 给有 llvm-mingw 的开发机。脚本新增交叉 C 编译器预检：缺
+`<triple>-clang` 时直接说缺什么、装什么，而不是让 cargo 在第三方 build script 里 panic。
 
 ### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
 

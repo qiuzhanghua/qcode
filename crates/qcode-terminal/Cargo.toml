@@ -11,7 +11,7 @@ rust-version.workspace = true
 # Apache-2.0, already on the deny.toml allow list.
 alacritty_terminal = "=0.26.0"
 # Shell detection lives here so `run_shell` can pick the same shell (ADR-0064).
-qcode-shell = { version = "0.8.6", path = "../qcode-shell" }
+qcode-shell = { version = "0.8.7", path = "../qcode-shell" }
 
 [target.'cfg(unix)'.dependencies]
 # Signalling the whole process group on close; `alacritty_terminal` only HUP's
