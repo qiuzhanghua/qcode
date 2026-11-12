@@ -64,7 +64,14 @@ async fn run() -> ExitCode {
     // hint, not `resolve_data_dir`: that one probes and falls back, and a command
     // that never touches the store (`qc skills list`) should not create one just
     // because it might have logged.
-    logging::attach_file(&qcode_kernel::data_dir_hint(data_dir.clone()));
+    //
+    // `qc logs` is exempt, and not for tidiness: attaching a file creates today's
+    // `qc.<date>.log` and the `qc.log` symlink, so the reader would manufacture the
+    // very file it is about to report as absent. Its own diagnostics are not worth
+    // that — a command whose job is to show a file should not write to it.
+    if !matches!(command, Some(Command::Logs(_))) {
+        logging::attach_file(&qcode_kernel::data_dir_hint(data_dir.clone()));
+    }
 
     let result = match command {
         Some(Command::Run(args)) => cmd_run(args, data_dir, config, approval_policy).await,

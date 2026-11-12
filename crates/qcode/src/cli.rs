@@ -321,11 +321,14 @@ pub(crate) struct SessionsArgs {
 #[derive(Debug, Args)]
 pub(crate) struct LogsArgs {
     /// Print the path and the file listing, but no log lines.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "follow")]
     pub(crate) path_only: bool,
     /// How many trailing lines to show.
     #[arg(long, short = 'n', default_value_t = 40, value_name = "N")]
     pub(crate) lines: usize,
+    /// Keep printing new lines as they are written (Ctrl-C to stop).
+    #[arg(long, short = 'f')]
+    pub(crate) follow: bool,
 }
 
 #[derive(Debug, Subcommand)]
