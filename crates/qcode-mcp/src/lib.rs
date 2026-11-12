@@ -252,7 +252,7 @@ pub async fn connect_detailed(
     env: &[(String, String)],
     options: ConnectOptions<'_>,
 ) -> McpConnection {
-    let log_dir = data_dir.join("logs");
+    let log_dir = qcode_core::paths::log_dir(data_dir);
     if let Err(error) = std::fs::create_dir_all(&log_dir) {
         tracing::warn!(
             path = %log_dir.display(),
@@ -963,7 +963,7 @@ pub async fn probe_capabilities(
     env: &[(String, String)],
     options: ConnectOptions<'_>,
 ) -> Vec<CapabilityProbe> {
-    let log_dir = data_dir.join("logs");
+    let log_dir = qcode_core::paths::log_dir(data_dir);
     let mut reports = Vec::new();
     for server in mcp.servers.iter().filter(|server| server.enabled) {
         let Some(transport) = server.transport() else {

@@ -494,9 +494,11 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "search",
             "update",
             "terminal",
+            "log",
         ],
     ),
     ("approval", &["rules", "allow", "deny"]),
+    ("log", &["level"]),
     ("context", &["window_tokens"]),
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     // `sandbox` is the crate-wide default; each server may override it.

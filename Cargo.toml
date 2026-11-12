@@ -69,6 +69,10 @@ regex = "1"
 similar = "2.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Daily-rotated file logging with a stable `qc.log` symlink (ADR-0077). Chosen
+# over log4rs because it plugs into `tracing` rather than the `log` facade, so
+# spans survive; see the ADR for the full comparison.
+tracing-appender = "0.2"
 tempfile = "3"
 ratatui = "=0.29.0"
 # MCP SDK. Pinned to a major-minor we can read: the client API is still

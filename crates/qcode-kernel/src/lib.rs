@@ -76,7 +76,7 @@ pub async fn build_egress(
     let audit_path = loaded
         .network
         .audit
-        .then(|| data_dir.join("logs").join("network.jsonl"));
+        .then(|| qcode_core::paths::log_dir(data_dir).join("network.jsonl"));
     let egress = Egress::start(EgressOptions {
         allow,
         allow_private: loaded.network.allow_private,
@@ -443,7 +443,15 @@ pub fn load_config(
     }
 }
 
-pub fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
+/// Where the data directory *would* be, without touching the filesystem.
+///
+/// Logging needs a destination before anything else runs, and it must not be the
+/// reason a directory appears: `qc skills list` never touches the store, so
+/// resolving it eagerly would create `~/.local/share/qcode` — or, in a read-only
+/// sandbox, fall back to `.qcode-data` inside the user's repo — for a command that
+/// has nothing to store. Callers that need the real, writable answer use
+/// [`resolve_data_dir`]; this one only predicts it.
+pub fn data_dir_hint(explicit: Option<PathBuf>) -> PathBuf {
     if let Some(path) = explicit {
         return path;
     }
@@ -455,10 +463,22 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
     }
     // Windows has no `HOME` in pwsh; the config path already resolves
     // HOME-or-USERPROFILE, and the store must use the same home.
-    let preferred = match config::home_dir() {
+    match config::home_dir() {
         Some(home) => home.join(".local").join("share").join("qcode"),
         None => PathBuf::from(".local").join("share").join("qcode"),
-    };
+    }
+}
+
+pub fn resolve_data_dir(explicit: Option<PathBuf>) -> PathBuf {
+    // A `--data-dir` or env var is taken at its word, writable or not: the point
+    // of naming a directory is that the answer is not up for negotiation.
+    if explicit.is_some()
+        || std::env::var_os("QCODE_DATA_DIR").is_some()
+        || std::env::var_os("XDG_DATA_HOME").is_some()
+    {
+        return data_dir_hint(explicit);
+    }
+    let preferred = data_dir_hint(None);
     if writable_dir(&preferred) {
         return preferred;
     }

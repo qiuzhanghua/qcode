@@ -59,6 +59,22 @@ pub fn dangerous_write_root(path: &Path, real_home: Option<&Path>) -> Option<&'s
     None
 }
 
+/// The one place that decides what lives under the data directory's `logs/`
+/// (ADR-0077).
+///
+/// Three callers used to spell out `data_dir.join("logs")` themselves — the
+/// process log, the MCP server stderr files and the network audit trail — and
+/// they sit in three crates that cannot all import each other (`qcode-kernel`
+/// depends on `qcode-mcp`, so the reverse dependency would be a cycle). Sharing
+/// the *name* through the crate they do have in common is cheaper than a
+/// constant each copy redefines.
+///
+/// A layout function, unlike the predicates above: it names a directory. It goes
+/// here because `qcode-core` is the only crate all three callers depend on.
+pub fn log_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

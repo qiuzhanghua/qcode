@@ -137,6 +137,37 @@ pub struct Config {
     /// How `run_shell` learns the user's shell environment (ADR-0064).
     #[serde(default)]
     pub shell: qcode_tools::shell_env::ShellSettings,
+    /// Diagnostics: where the log goes and how loud it is (ADR-0077).
+    #[serde(default)]
+    pub log: LogConfig,
+}
+
+/// `[log]`: file logging for both frontends (ADR-0077).
+///
+/// The file is not configurable on purpose. `logs/qc.log` is one stable path
+/// next to the data the user already has, and `qc logs` prints it; a knob here
+/// would only give users a way to lose track of their own logs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogConfig {
+    /// Verbosity as an [`EnvFilter`] spec: `info`, `warn`, or per-module such as
+    /// `qcode_gui=debug,warn`. `RUST_LOG` overrides this.
+    ///
+    /// An unparsable value falls back to `warn` rather than failing startup: a
+    /// typo in the log level must never be the reason the agent cannot run.
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+        }
+    }
+}
+
+fn default_log_level() -> String {
+    "warn".to_string()
 }
 
 /// `[terminal]`: how `qc gui` starts its shells (ADR-0062 §10).
@@ -214,6 +245,7 @@ impl Default for Config {
             schedules: BTreeMap::new(),
             terminal: TerminalConfig::default(),
             shell: qcode_tools::shell_env::ShellSettings::default(),
+            log: LogConfig::default(),
         }
     }
 }

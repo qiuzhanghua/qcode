@@ -7908,3 +7908,162 @@ shell 画兜底图标——**表现为「图标没装」，实际是条目无效
   （这是「条目有效」的唯一可信判据，`--check` 的规则与它对齐）。
 - **未验证**：Wayland 会话下的表现（`attach` 被忽略，靠 `.desktop` + 图标主题，
   理论上与 X11 同路径），以及真机 dock 的目视确认。
+
+## ADR-0077：日志写文件——GUI 与 CLI 共用 `logs/qc.log`（2026-11-12）
+
+**状态**：已实现。
+
+**问题**
+
+日志只往 stderr 走，`logging.rs` 一共 13 行：
+
+```rust
+tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::try_from_default_env().unwrap_or("warn"))
+    .with_writer(std::io::stderr)
+    .with_target(false)    // 没有模块来源
+    .without_time()        // 没有时间戳
+```
+
+三个缺陷和一个更根本的缺口：
+
+1. **`.desktop` 启动时零日志。** 桌面条目是 `Exec=qc gui` + `Terminal=false`，
+   stderr 被 gnome-shell 继承，最好的情况是埋进 user journal（还得知道去翻
+   gnome-shell 的 unit），最坏情况直接丢弃。而用户报 bug 最常见的场景恰恰是
+   **点图标启动**——那个场景没有任何日志可看。这是本次要解决的核心问题，也是
+   促使 CLI 也一并写文件的原因：`qc run` 从编辑器/脚本里被调用时同样没有人看
+   stderr。
+2. **`.without_time()`**：写进文件后无法定位「什么时候出的错」。
+3. **`.with_target(false)`**：看不出是 GUI、kernel 还是 MCP 打的。
+4. **没设 `with_ansi`**：默认是开的，重定向到文件时把 `\x1b[33m WARN\x1b[0m`
+   原样写进去。实测抓到的日志里就是这个形状，`grep`/`less` 全是乱码。
+
+另外两件同源问题，本文一并定规矩（但不做迁移，见「不在本文范围内」）：
+
+- `eprintln!` **71 处**绕过订阅器：不受 `RUST_LOG` 管、不能过滤，`Redactor`
+  也不作用于它们。
+- `Redactor` 只在 2 个 `map_err` 里手调，**没有接成 `Layer`**，所以任何
+  `tracing::warn!(%error)` 都可能把 API key 写进日志。而 `logging.rs` 的模块
+  注释自己写着「defense in depth」。
+
+**参照：cot_cli 的 log4rs 用法**
+
+看了 `~/space/rust/cot_cli`（log4rs 1.4.0）。它的配置（`static/bin/log4rs.yml`，
+40 行）只有一个 console appender，`file:` / `rollingfile:` 全是**注释掉的模板**，
+用户 `~/.cot/log` 目录从未存在过——rolling 从未真正启用。它的亮点在规则而非规模：
+
+| 规则 | 做法 | 判断 |
+|---|---|---|
+| 显式 `target: stderr` | log4rs 的 ConsoleAppender **默认 stdout**，踩过 | **抄** |
+| appender 名字从 `stdout` 改成 `console` | 「名字叫 stdout 却写 stderr 只会误导下一个读配置的人」 | **抄** |
+| pattern 带 `{f}:{L}` + 模块 | 定位到文件行号 | **抄** |
+| 配置里 root=trace，实际级别由 `LOGGING_LEVEL` 定，默认 `off` | 配置定天花板，环境变量定实际 | **部分抄**（见下） |
+| 三层降级加载（CWD → exe 目录 → 内嵌） | 开发可改、装完可改 | **不抄** |
+| 升级不覆盖配置（`FORCE_COPY` 故意不含它） | 文件留给用户改 | **不抄**（我们没有这个文件） |
+
+**决定：不引入 log4rs，只加 `tracing-appender`**
+
+三个理由：
+
+1. **log4rs 建立在 `log` facade 上，没有 span。** qcode 是异步 agent 运行时
+   （turn → tool call → 子进程），现有 67 处 `tracing::*` 里跨度的父子上下文
+   是排查「卡在哪一步」的主力工具；换过去等于丢掉它或手搓。
+2. **换库要动 67 个调用点**，换来的「声明式配置 + 热重载」，`tracing-subscriber`
+   都能给，而 `log` facade 给不了 span。
+3. **配置重复**。qcode 已有 `config.toml` 和 GUI 设置页；再引一套 YAML +
+   `serde_yaml` + 文件发现逻辑，是重复建设。
+
+log4rs 真正多出来的只有 size-based 触发（`fixed_window` roller）。我们用
+`warn` 默认级别，日志量是小数量级；daily + 保留 7 个已把总量封死，不值得为此
+引入整套 roller。
+
+**装配**
+
+`logging::init(config_path)` 在 `Cli::parse()` 之后调用一次，装两层：
+
+| 层 | 目标 | ANSI | 时间 | 模块 | 过滤 |
+|---|---|---|---|---|---|
+| A | stderr | **开**（终端可读） | 开 | 开 | `EnvFilter` |
+| B | `logs/qc.log` | **关**（否则文件里永久带转义） | 开 | 开 | 同一个 `EnvFilter` |
+
+级别来源，优先级从高到低：
+
+1. `RUST_LOG`（保留现有逃生口，完整 `EnvFilter` 语法，含 `target=level`）
+2. `config.toml` 的 `[log] level`
+3. `warn`
+
+**为什么 `[log]` 进 `config.toml` 而不是单独一个 log4rs 式文件**：qcode 已经有
+配置系统和 GUI 设置页，级别应该能被那里管；多一个文件就多一套发现逻辑和一份
+「存在即不写」的升级规矩。
+
+**为什么默认写文件（不抄 `off`）**
+
+cot_cli 默认 `off` 对**纯 CLI** 成立：用户就在终端里，stderr 看得见。对 qcode
+**不成立**：GUI 用户没有终端可看。所以默认写文件，级别默认 `warn`。
+
+**多进程：共享一个文件为什么是安全的**
+
+qcode 是多进程的，这是本设计的硬约束：
+
+| 进程 | 写日志吗 |
+|---|---|
+| `qc run` / `qc list` … | 是（各自独立主进程） |
+| `qc gui`（workspace 切换会 re-exec） | 是 |
+| `__qcode-procguard` | **否**——`guard_main_if_requested()` 在 `logging::init()`
+  之前就 return，天然不写（既有设计，是对的） |
+| MCP 子进程（任意命令） | 不写 `qc.log`，有自己的 `logs/mcp-*.log` |
+| 终端里的 shell、`run_shell` 子进程 | 继承 stderr，不自己打日志 |
+
+`tracing_appender::rolling` 的轮转机制让这件事安全：它**按日期新建文件名**
+（`qc.2026-11-12.log`）而不是 rename 当前文件，用 `append(true).create(true)` 打开。
+所有进程当天追加的是同一个 inode，`O_APPEND` 保证每次写入原子；跨天时各进程各自
+算出新文件名，不需要协调。
+
+两个已知残留风险，接受：
+
+- **保留清理可能删到别人正开着的旧文件**。POSIX 上 unlink 后 fd 仍有效，无害；
+  Windows 上会失败，清理跳过即可。
+- **不用 `non_blocking`**。`tracing-appender` 的异步 writer 在进程被 `kill -9`
+  时可能来不及 flush，而「用户强杀 / 崩溃」恰恰是想看日志的场景。日志量本来就低，
+  用同步 writer 换「不丢」。
+
+**稳定路径**：`RollingFileAppender` 的 `latest_symlink("qc.log")` 让
+`logs/qc.log` 永远指向当天文件，`qc logs` 只认这一个路径，不用自己算日期。
+
+**`resolve_data_dir` 的警告与 init 顺序**
+
+`resolve_data_dir` 在数据目录不可写时会探测并**回落到工作区的 `.qcode-data`**。
+日志文件就住在数据目录里，鸡生蛋。解法两层：
+
+1. **用 `data_dir_hint` 而不是 `resolve_data_dir`**：前者只预测路径，不创建目录、
+   不探测、不回退。否则 `qc skills list` 这种从不碰存储的命令会因为「可能要写日志」
+   而在用户仓库里造出 `.qcode-data/`——沙箱里尤其难看。
+2. **惰性文件层**：`init` 先装好 stderr 层和一个空的文件层（`MakeWriter` 背后的
+   appender 是 `OnceLock`，未安装时写入丢弃），之后 `attach_file` 才建目录、装
+   appender。这样 `attach_file` 之前的日志（含 `resolve_data_dir` 的回落警告）
+   落在 stderr 上。它们落不进文件，因为文件的位置正是它要报告的东西——有意的取舍。
+
+`attach_file` 失败走 `tracing::debug!` 而不是 stderr：沙箱里 `qc skills list` 可能
+落到只读目录，一个从不写日志的命令不该为此报错。`qc logs` 会报告「没有日志文件」，
+那才是用户会去看的地方。
+
+`resolve_data_dir` 现在复用 `data_dir_hint` 的第一个候选，两者不会对「默认在哪」
+产生分歧。
+
+**不在本文范围内**
+
+1. **`eprintln!` 的 71 处不做迁移。** 本文只要求它们**最终**归一，并先产出
+   分类表（哪些是面向用户的产物、哪些是日志）。理由同 cot_cli 的教训：
+   `output-streams.md` 审计了 68 处，其中 **23 处是该留在 stdout 的产物**——
+   一律改成日志是错的。分类表见 `docs/design/LOGGING.md`。
+2. **`Redactor` 接成 `Layer`** 单独立项。它是安全项，与输出流归属是两件事，
+   混在一起会让两边的回归测试都变模糊。
+3. **`qc logs` 的 `--follow`** 不做，`tail -f` 已经够。
+
+**验证**
+
+- 单测：级别优先级（`RUST_LOG` > `[log] level` > 默认）、`[log] level` 的非法值
+  退回默认而不 panic、`log_path` 与 `attach_file` 返回同一路径、文件层写出的行
+  **不含** `\x1b[`（ANSI 已关）而 stderr 层**含**。
+- 手工：`qc logs` 打印路径与最近若干行；`qc doctor` 一行日志不写 stdout。
+- 反证：把 `with_ansi(false)` 去掉，ANSI 断言必须红。

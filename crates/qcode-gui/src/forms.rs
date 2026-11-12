@@ -427,6 +427,13 @@ pub const FIELDS: &[FieldSpec] = &[
         help: "Mirror or local test server",
     },
     FieldSpec {
+        path: &["log", "level"],
+        label: "Log level",
+        page: Page::Appearance,
+        kind: FieldKind::Text,
+        help: "warn, info, debug, or per-module like `qcode_gui=debug,warn`; RUST_LOG overrides it",
+    },
+    FieldSpec {
         path: &["mcp", "sandbox"],
         label: "MCP sandbox default",
         page: Page::Mcp,

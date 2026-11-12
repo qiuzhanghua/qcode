@@ -29,6 +29,8 @@ pub(crate) enum Command {
     Sessions(SessionsArgs),
     /// Inspect discovered Agent Skills.
     Skills(SkillsArgs),
+    /// Show where the log file is, and its most recent lines (ADR-0077).
+    Logs(LogsArgs),
     /// Show or edit the config file.
     Config(ConfigArgs),
     /// Manage configured MCP servers.
@@ -314,6 +316,16 @@ pub(crate) struct RunArgs {
 pub(crate) struct SessionsArgs {
     #[command(subcommand)]
     pub(crate) command: SessionsCommand,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LogsArgs {
+    /// Print the path and the file listing, but no log lines.
+    #[arg(long)]
+    pub(crate) path_only: bool,
+    /// How many trailing lines to show.
+    #[arg(long, short = 'n', default_value_t = 40, value_name = "N")]
+    pub(crate) lines: usize,
 }
 
 #[derive(Debug, Subcommand)]
