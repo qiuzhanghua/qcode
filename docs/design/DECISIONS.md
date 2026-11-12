@@ -7177,13 +7177,20 @@ Landlock 没有 mount namespace，能给的只有**宿主**的 devpts，而这�
 **决定**
 
 1. **`[sandbox] allow_pty`，默认 `false`。** 打开时给 `/dev/ptmx`（字符设备 → 文件权限位，与
-   其它设备同处理）和 `/dev/pts`（目录 → 读位 + `WRITE_FILE`）装规则。`MAKE_*`/`REMOVE_*`
-   故意不给：没有谁需要创建 pty 节点，而 devpts 是 root 所有。
-2. **`bwrap` 不看这个开关**，因为它已经做到了更好的版本（私有 devpts）。`mod.rs` 的分支里
+   其它设备同处理）和 `/dev/pts`（目录 → 读位 + `WRITE_FILE` + `IOCTL_DEV`）装规则。
+   `MAKE_*`/`REMOVE_*` 故意不给：没有谁需要创建 pty 节点，而 devpts 是 root 所有。
+2. **`IOCTL_DEV` 是这道题最容易漏的一位，而且漏了不会一眼看出来。** 终端用
+   `ioctl(TIOCSWINSZ)` 报告尺寸，ABI 5+ 把它纳入 handled 掩码。只给 `WRITE_FILE` 的结果是：
+   `open` 成功、`read`/`write` 成功、pty 起得来、**第一次 resize 才 `EACCES`**。第一版掩码
+   就是这样，`qcode-terminal` 的测试依旧全红但错误从"打不开 ptmx"变成了"spawn 失败"，
+   靠 `strace` 才定位到 `ioctl(4, TIOCSWINSZ) = -1 EACCES`。
+   掩码因此抽成 `landlock_pty_dir_rights()`，测试断言的是**这个函数**而不是测试里抄的一份
+   ——抄一份正是让这一位漏网的机制。
+3. **`bwrap` 不看这个开关**，因为它已经做到了更好的版本（私有 devpts）。`mod.rs` 的分支里
    写的是理由，不是 `let _ = allow_pty`——后者正是上一个补记里那个 bug 的形状。
-3. **`describe()` 打出 `pty: host devpts`**，`qc doctor` 能看到（ADR-0066 §1：打印的授权必须
+4. **`describe()` 打出 `pty: host devpts`**，`qc doctor` 能看到（ADR-0066 §1：打印的授权必须
    等于执行的授权）。措辞带 `host`，因为这个差别就是全部风险所在。
-4. **`mode = "none"` / `windows-acl` 无事可做**：前者没有边界，后者只限制写，PTY 本来就可用。
+5. **`mode = "none"` / `windows-acl` 无事可做**：前者没有边界，后者只限制写，PTY 本来就可用。
 
 **规则叠加，以及它对验证的影响**
 

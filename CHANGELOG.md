@@ -26,7 +26,10 @@
 `urandom`/`tty`）。任何终端形状的程序都在第一次 `openpty` 就死，不只是测试。
 
 - **`[sandbox] allow_pty = true`** 时给 `/dev/ptmx`（字符设备，取文件权限位）和 `/dev/pts`
-  （目录，只加 `WRITE_FILE` 到读位）装上规则；`describe()` 打出 `pty: host devpts`。
+  （目录，读位 + `WRITE_FILE` + `IOCTL_DEV`）装上规则；`describe()` 打出 `pty: host devpts`。
+- **`IOCTL_DEV`（ABI 5+）不是可有可无的**：终端靠 `ioctl(TIOCSWINSZ)` 报告尺寸，少了这一位
+  的表现极具误导性——`open`/`read`/`write` 全部正常，pty 起得来，然后在第一次 resize 时
+  `EACCES`。这个位是 `strace` 抓出来的，不是推理出来的。
 - **默认 `false`，且这是安全结论而不是保守**：landlock 没有 mount namespace，只能共享宿主
   的 devpts，而 `/dev/pts/N` 上用户其它终端窗口的节点属于同一 uid，所以这个授权等于"可以
   往一个没有被沙箱约束的 shell 里输入"——从沙箱里出去的完整通道。`bwrap` 不需要它（`--dev`

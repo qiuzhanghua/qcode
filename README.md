@@ -412,6 +412,9 @@ cargo build -p qcode-eval
   allow_pty = true
   ```
 
+  > 若你的程序会在 pty 上 `ioctl(TIOCSWINSZ)`（终端 resize、`vim`/`less` 这类全屏程序都会），
+  > 还需要 `IOCTL_DEV`——`allow_pty` 已经一并给了，不必额外配置。
+
   **打开它的代价**：landlock 没有 mount namespace，只能共享**宿主**的 devpts，而
   `/dev/pts/N` 上你其它终端窗口的节点属于同一个 uid，所以这个授权等于"可以往未受限的
   shell 里输入"——一条从沙箱里出去的完整通道。因此它是显式开关而不是默认。`bwrap` 不需要

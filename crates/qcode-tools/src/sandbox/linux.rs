@@ -374,6 +374,13 @@ pub(crate) const LL_EXECUTE: u64 = 1 << 0;
 #[cfg(target_os = "linux")]
 pub(crate) const LL_WRITE_FILE: u64 = 1 << 1;
 
+/// ABI 5's `IOCTL_DEV`: ioctl on a character/block device. Without it
+/// `TIOCSWINSZ` on the pty fails with `EACCES`, which is what a terminal resize
+/// is — measured with `strace` while every `qcode-terminal` test still failed
+/// after `/dev/ptmx` itself was granted.
+#[cfg(target_os = "linux")]
+pub(crate) const LL_IOCTL_DEV: u64 = 1 << 15;
+
 #[cfg(target_os = "linux")]
 pub(crate) const LL_READ_FILE: u64 = 1 << 2;
 
@@ -397,6 +404,33 @@ pub(crate) fn landlock_file_rights(handled: u64) -> u64 {
     // EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV
     const FILE_RIGHTS: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14) | (1 << 15);
     handled & FILE_RIGHTS
+}
+
+/// Rights `allow_pty` grants on the `/dev/pts` **directory**.
+///
+/// A terminal needs three things from its slave, and each has been a separate
+/// failure at some point:
+///
+/// * read and write the node — `READ_FILE`, `WRITE_FILE`;
+/// * `ioctl(TIOCSWINSZ)` to report its size — `IOCTL_DEV`, which ABI 5+ gates
+///   through the handled mask. Missing it gave a pty that opened, read and
+///   wrote fine and then returned `EACCES` on the first resize;
+/// * `TIOCSPTLCK`/`TIOCGPTN` are issued on the *master* (`/dev/ptmx`), which
+///   already carries the full file-rights mask.
+///
+/// `READ_DIR`/`EXECUTE` come along because this is a directory: without them the
+/// confined process cannot even look up the node it was just handed. The
+/// `MAKE_*`/`REMOVE_*`/`REFER` family stays out — nothing needs to create a pty
+/// node, and devpts is root-owned, so asking for it would claim more than the
+/// feature uses.
+///
+/// Extracted rather than inlined so the test asserts this expression and not a
+/// hand-copied duplicate of it: the copy is how the missing `IOCTL_DEV` stayed
+/// invisible.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn landlock_pty_dir_rights(handled: u64) -> u64 {
+    let read = LL_EXECUTE | LL_READ_FILE | LL_READ_DIR;
+    read | LL_WRITE_FILE | (handled & LL_IOCTL_DEV)
 }
 
 /// Access bits this kernel's Landlock ABI can handle.
@@ -615,14 +649,23 @@ impl Landlock {
                 add_path_rule(self.ruleset_fd, ptmx, device_rights)?;
             }
             // The slave half is a directory of char nodes the kernel creates on
-            // demand, so the rule is on the directory and only `WRITE_FILE` is
-            // added to the read bits — opening the slave read-write is the whole
-            // requirement. The MAKE_*/REMOVE_* family is left out on purpose:
-            // nothing needs to create a pty node, and devpts is root-owned, so
-            // granting it would be a wider claim than the feature needs.
+            // demand, so the rule is on the directory.
+            //
+            // `IOCTL_DEV` is not optional here even though it looks like a
+            // device-level nicety: a terminal *resizes* itself with
+            // `ioctl(TIOCSWINSZ)` on the slave, and ABI 5+ routes that through
+            // the handled mask. Leaving it out gave `EACCES` on the resize while
+            // `open`, `write` and `read` all succeeded — so the pty came up and
+            // then died on the first window-size change. The bit is filtered
+            // through `allowed` so an older ABI is never asked for something it
+            // does not know.
+            //
+            // The MAKE_*/REMOVE_* family is still left out: nothing needs to
+            // create a pty node, and devpts is root-owned, so granting it would
+            // be a wider claim than the feature needs.
             let pts = Path::new("/dev/pts");
             if pts.exists() {
-                add_path_rule(self.ruleset_fd, pts, read_only | LL_WRITE_FILE)?;
+                add_path_rule(self.ruleset_fd, pts, landlock_pty_dir_rights(allowed))?;
             }
         }
 

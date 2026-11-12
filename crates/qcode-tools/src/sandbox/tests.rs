@@ -1000,24 +1000,54 @@ mod landlock_tests {
     ///
     /// The runtime half of the pty test cannot run inside a sandbox that is
     /// itself stacked on top of ours (rulesets only tighten), so the arithmetic
-    /// gets a test of its own: a mask that quietly lost `WRITE_FILE` would make
-    /// `openpty` fail while everything still compiled and the "off" case still
-    /// passed for the wrong reason.
+    /// gets a test of its own — and it asserts the *shipped* expression, not a
+    /// copy of it. The copy is exactly how the missing `IOCTL_DEV` stayed
+    /// invisible: every assertion about the pts mask passed while
+    /// `ioctl(TIOCSWINSZ)` returned `EACCES`, because the pty opened, read and
+    /// wrote fine and only broke on the first resize.
     #[test]
-    fn the_pty_masks_carry_write_and_nothing_wider() {
+    fn the_pty_masks_carry_write_ioctl_and_nothing_wider() {
         let handled = landlock_handled(8);
+
         // `/dev/ptmx` is a char device: file rights only, like the other nodes.
         let ptmx = landlock_file_rights(handled);
         assert_ne!(ptmx & LL_WRITE_FILE, 0, "ptmx must be writable");
         assert_ne!(ptmx & LL_READ_FILE, 0, "ptmx must be readable");
 
-        // `/dev/pts` is a directory: the read bits plus `WRITE_FILE`, and none
-        // of REMOVE_*/MAKE_*/REFER — creating a pty node is not needed and
-        // devpts is root-owned anyway.
-        let pts = LL_EXECUTE | LL_READ_FILE | LL_READ_DIR | LL_WRITE_FILE;
+        // `/dev/pts` is a directory: read + execute + write + IOCTL_DEV.
+        let pts = landlock_pty_dir_rights(handled);
+        for bit in [
+            LL_EXECUTE,
+            LL_READ_FILE,
+            LL_READ_DIR,
+            LL_WRITE_FILE,
+            LL_IOCTL_DEV,
+        ] {
+            assert_ne!(pts & bit, 0, "bit {bit} is missing from the pts mask");
+        }
+        // Creating and removing pty nodes is never needed, and devpts is
+        // root-owned: MAKE_*/REMOVE_*/REFER must not be claimed.
         for bit in [4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
             assert_eq!(pts & (1 << bit), 0, "bit {bit} leaked into the pts mask");
         }
+    }
+
+    /// An ABI older than 5 has no `IOCTL_DEV` bit, and asking for one it does
+    /// not know makes `landlock_add_rule` fail — so the bit is filtered.
+    #[test]
+    fn the_pty_dir_mask_respects_what_the_abi_knows() {
+        assert_eq!(
+            landlock_pty_dir_rights(landlock_handled(1)) & LL_IOCTL_DEV,
+            0
+        );
+        assert_eq!(
+            landlock_pty_dir_rights(landlock_handled(3)) & LL_IOCTL_DEV,
+            0
+        );
+        assert_eq!(
+            landlock_pty_dir_rights(landlock_handled(5)) & LL_IOCTL_DEV,
+            LL_IOCTL_DEV
+        );
     }
 
     #[test]
