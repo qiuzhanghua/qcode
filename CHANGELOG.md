@@ -1,5 +1,45 @@
 # Changelog
 
+## 未发布
+
+### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
+
+交叉 check 自上线起就是红的，但红的原因跟任何一次改动都无关：
+
+```
+Failed to compile jitterentropy: ToolNotFound: failed to find tool
+"x86_64-w64-mingw32-clang": No such file or directory (os error 2)
+```
+
+这是 `aws-lc-sys` 的 C 构建脚本在找 llvm-mingw。上一个版本把它记成「aarch64 才有的
+问题，去掉 aarch64 就好了」，那个判断是错的——`scripts/ci-cross-check.sh` 的循环在
+失败后**继续**跑下一个 target，所以第一次真正跑的时候 x86_64 也是红的，只是最后一句
+是 aarch64 的错。本机实测（干净 target 目录、把 llvm-mingw 从 PATH 摘掉）：
+
+```
+error: failed to run custom build command for `libsqlite3-sys v0.39.1`
+error: failed to run custom build command for `aws-lc-sys v0.46.0`
+```
+
+两个 C 依赖都缺 `<triple>-clang`。配上 llvm-mingw（本机 cot 环境）立刻转绿，所以问题
+不在代码，在于 stock ubuntu runner 没有这个工具链，而它**只能**靠下载 618 MB 的
+llvm-mingw 补上。
+
+而这份覆盖本来就是重复的：`windows-build` 在真 Windows 上跑
+`cargo clippy --workspace --all-targets -D warnings`（类型检查每个 target）加
+`cargo test --workspace --no-run`（链接测试二进制），`#[cfg(windows)]` 的文件——
+包括当初促成这个 job 的 `crates/qcode/tests/sandbox_roots.rs`——在那里就编过，而且
+用的是 MSVC 的真 C 工具链。Linux 侧这个 job 只买到"早几分钟"。
+
+按 ci.yml 自己写下的判断（"a job added on a guess is a job that goes red for reasons
+unrelated to the change"），删掉 job，保留脚本：
+
+- CI 不再有 `cross-check`；`windows-build` 里留注释说明为什么删、覆盖在哪里；
+- `scripts/ci-cross-check.sh` 与 `make check-platforms` 照旧，给有 llvm-mingw 的开发机用；
+- 脚本新增**交叉 C 编译器预检**：缺 `<triple>-clang` 时直接说「这个 target 需要什么、
+  装什么」，而不是让 `cargo` 在某个第三方 build script 里 panic。缺 std 与缺编译器
+  分开报，因为修法不同（`rustup target add` / 装 llvm-mingw）。
+
 ## 0.8.6 — 2026-11-12
 
 0.8.3 之后的一轮：沙箱在两处「配了但没生效」上补齐（`extra_writable` 真的生效、新增
@@ -108,44 +148,6 @@ ADR-0077 只分类不迁移（`docs/design/LOGGING.md`）。这次把 D 类全�
 - `qcode-eval` 的测试不再往 `/tmp` 漏目录：用 `TempDir` 的 `Drop` 代替手工路径。
 - `PDEATHSIG` 的门写成 `target_os = "linux"` 而不是 `unix`：`PR_SET_PDEATHSIG` 是 Linux
   专有的，`unix` 会让 macOS 编译失败（ADR-0075 的同一类错——门要落在用者与被用者同一侧）。
-
-### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
-
-交叉 check 自上线起就是红的，但红的原因跟任何一次改动都无关：
-
-```
-Failed to compile jitterentropy: ToolNotFound: failed to find tool
-"x86_64-w64-mingw32-clang": No such file or directory (os error 2)
-```
-
-这是 `aws-lc-sys` 的 C 构建脚本在找 llvm-mingw。上一个版本把它记成「aarch64 才有的
-问题，去掉 aarch64 就好了」，那个判断是错的——`scripts/ci-cross-check.sh` 的循环在
-失败后**继续**跑下一个 target，所以第一次真正跑的时候 x86_64 也是红的，只是最后一句
-是 aarch64 的错。本机实测（干净 target 目录、把 llvm-mingw 从 PATH 摘掉）：
-
-```
-error: failed to run custom build command for `libsqlite3-sys v0.39.1`
-error: failed to run custom build command for `aws-lc-sys v0.46.0`
-```
-
-两个 C 依赖都缺 `<triple>-clang`。配上 llvm-mingw（本机 cot 环境）立刻转绿，所以问题
-不在代码，在于 stock ubuntu runner 没有这个工具链，而它**只能**靠下载 618 MB 的
-llvm-mingw 补上。
-
-而这份覆盖本来就是重复的：`windows-build` 在真 Windows 上跑
-`cargo clippy --workspace --all-targets -D warnings`（类型检查每个 target）加
-`cargo test --workspace --no-run`（链接测试二进制），`#[cfg(windows)]` 的文件——
-包括当初促成这个 job 的 `crates/qcode/tests/sandbox_roots.rs`——在那里就编过，而且
-用的是 MSVC 的真 C 工具链。Linux 侧这个 job 只买到"早几分钟"。
-
-按 ci.yml 自己写下的判断（"a job added on a guess is a job that goes red for reasons
-unrelated to the change"），删掉 job，保留脚本：
-
-- CI 不再有 `cross-check`；`windows-build` 里留注释说明为什么删、覆盖在哪里；
-- `scripts/ci-cross-check.sh` 与 `make check-platforms` 照旧，给有 llvm-mingw 的开发机用；
-- 脚本新增**交叉 C 编译器预检**：缺 `<triple>-clang` 时直接说「这个 target 需要什么、
-  装什么」，而不是让 `cargo` 在某个第三方 build script 里 panic。缺 std 与缺编译器
-  分开报，因为修法不同（`rustup target add` / 装 llvm-mingw）。
 
 ### `[sandbox] extra_writable` 在 Linux 上真的生效了（ADR-0066 §2 修订注记 2026-11-11 补记）
 
