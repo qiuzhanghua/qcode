@@ -2,6 +2,48 @@
 
 ## 未发布
 
+### `[sandbox] extra_writable` 在 Linux 上真的生效了（ADR-0066 §2 修订注记 2026-11-11 补记）
+
+`extra_writable = ["~/Documents"]` 一直在 Linux 上被**丢弃**：`sandbox/mod.rs` 的
+`bwrap` 与 `landlock` 分支各有一行 `let _ = extra_writable;`，而 `Landlock::new` 的签名里
+根本没有写列表。于是同一份配置里 `extra_read` 起作用、`extra_writable` 不起作用——读得到的
+文件就在同一个目录里，`touch` 却是 `Permission denied`。这读起来完全像"我的配置写得不对"，
+误导性比彻底报错更强。
+
+- **landlock**：`Landlock::new(workspace, extra_read, extra_write)`。每条按
+  `allowed`（与读写 task root 完全相同的一组权限位）装规则——手挑写入掩码不行，
+  `WRITE_FILE` 单独给出连新建文件都不够，`REFER` 还要两端都有才允许 rename。
+- **bwrap**：`extra_write` 走 `--bind`，且**不受 `OutsideRoots` 影响**（那个开关管
+  qcode 自己加的构建缓存，这里管用户要的），已是 task root 的不重复绑定，落在 `/tmp`
+  下时不挂私有 tmpfs。
+- **`describe()`** 增加 `extra write: [...]`，`qc doctor` 能看到实际授权。
+- **不存在的路径启动即报错**，不再静默跳过（`extra_read` 一直是这样）。
+
+### `[sandbox] extra_writable` 的加载期校验：危险根直接拒绝
+
+这一项是配置文件级的，没有按 task 收窄的余地，所以 `extra_writable = ["~/"]` 这种笔误对
+每个 task（含 `sandbox = "on"` 的 MCP server）都成立，而 home 里有 `~/.ssh`、`~/.aws`。
+
+- 拒绝 `/`、home 目录本身、`/home`、`/Users`、`/root`，报错点名原因和展开后的路径。
+- 三处加载路径都调（`load` / `merge_project_file` / `validate_document`），在 `~` 展开之后。
+- 判定与 MCP 的 `writable_paths` **共用一份**（`qcode_core::paths::dangerous_write_root`），
+  否则会漂移成"server grant 拒 `/`、沙箱给 `/`"，而两边各自自洽，没有测试会发现。
+- 仍**不**要求 `extra_writable` 必须绝对：相对路径在这里什么都授予不到，把它变成加载失败
+  会让今天能加载的配置明天报错。
+
+### `real_home()` 只留一份
+
+`kernel::home_dir`、`mcp::real_home` 与新增的沙箱检查曾是三份"`~` 指哪儿"的答案。现在都
+委托到 `qcode_core::real_home`。Windows 上统一 `USERPROFILE` 优先（kernel 原来是 `HOME`
+优先）：MSYS/git-bash 的 `HOME=/home/q` 是给 POSIX 层看的，原生进程拿它展开路径是错的。
+
+### 修掉一条从未真正跑过的测试
+
+`extra_read_grants_a_subtree_outside_the_system_allowlist` 用 `.expect("run")` 包
+`command.output()`，但 Landlock 拒绝 `execve` 时子进程没起来、`output()` 返回 `EACCES`，
+于是"执行应被拒绝"这条断言在它最该成立的环境里 panic。现在 spawn 期的
+`PermissionDenied` 也算作拒绝（在本机 HEAD 上先确认过它是红的）。
+
 ### 保存设置不再把 `~` 固化成绝对路径
 
 `writable_paths = ["~/Documents"]` 是 ADR-0066 §2 修订注记想要的跨机器写法，但加载时它被

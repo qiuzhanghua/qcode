@@ -556,19 +556,14 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 /// Why a derived root must not be granted automatically, if it must not.
+///
+/// The three workspace-independent shapes come from
+/// [`qcode_core::dangerous_write_root`] so `[sandbox] extra_writable` refuses
+/// exactly the same ones (ADR-0066 §2 修订注记 2026-11-11 补记). The fourth is
+/// MCP-specific: only this side knows the workspace.
 fn dangerous(path: &Path, workspace: &Path, real_home: Option<&Path>) -> Option<&'static str> {
-    if path == Path::new("/") {
-        return Some("the filesystem root");
-    }
-    if let Some(home) = real_home
-        && path == home
-    {
-        return Some("your home directory");
-    }
-    for name in ["/home", "/Users", "/root"] {
-        if path == Path::new(name) {
-            return Some("a directory that contains every user's home");
-        }
+    if let Some(reason) = qcode_core::dangerous_write_root(path, real_home) {
+        return Some(reason);
     }
     if workspace != path && workspace.starts_with(path) {
         return Some("a parent of the workspace");
@@ -788,19 +783,11 @@ pub fn expand_env(server: &str, key: &str, value: &str) -> Result<String, GrantE
     })
 }
 
-/// The real `$HOME`. `qcode-kernel` has its own resolver; this one exists so
-/// the crate keeps working without it (tests pass an explicit home instead).
+/// The real `$HOME`. Thin delegate to [`qcode_core::real_home`], which is now
+/// the single resolver in the workspace; the name stays because it is re-exported
+/// from this crate's root and `qc doctor` uses it.
 pub fn real_home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    qcode_core::real_home()
 }
 
 #[cfg(test)]

@@ -494,6 +494,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         assert!(
             args.windows(3).any(|window| window
@@ -527,6 +528,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
         assert!(
@@ -544,6 +546,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         assert!(denied.contains(&"--unshare-net".to_string()));
 
@@ -553,6 +556,7 @@ mod bwrap_tests {
             true,
             &[],
             OutsideRoots::BuildCaches,
+            &[],
             &[],
         ));
         assert!(!allowed.contains(&"--unshare-net".to_string()));
@@ -578,6 +582,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         assert!(
             args.windows(3)
@@ -601,12 +606,87 @@ mod bwrap_tests {
             std::slice::from_ref(&cargo),
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         let binds = args
             .windows(3)
             .filter(|window| window[0] == "--bind" && window[1] == cargo.to_string_lossy())
             .count();
         assert_eq!(binds, 1, "{args:?}");
+    }
+
+    /// `[sandbox] extra_writable` becomes an rw bind — and does so even when
+    /// the build-cache grant is off, because the two are different questions:
+    /// "what qcode adds on its own" versus "what the user asked for".
+    ///
+    /// The MCP-server shape is the one that matters here: those sandboxes run
+    /// with `OutsideRoots::Nothing`, and dropping the list there would have
+    /// reproduced the bug on the bwrap backend while Landlock was fixed.
+    #[test]
+    fn extra_writable_adds_rw_binds_even_without_build_caches() {
+        let docs = PathBuf::from("/home/qcode-bwrap-tests/Documents");
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::Nothing,
+            &[],
+            std::slice::from_ref(&docs),
+        ));
+        assert!(
+            args.windows(3)
+                .any(|window| window[0] == "--bind" && window[1] == docs.to_string_lossy()),
+            "extra_writable was not bound read-write: {args:?}"
+        );
+        assert!(
+            !args
+                .windows(3)
+                .any(|window| window[0] == "--ro-bind" && window[1] == docs.to_string_lossy()),
+            "extra_writable was bound read-only: {args:?}"
+        );
+    }
+
+    /// An `extra_writable` path that is already a task root is not bound twice:
+    /// bwrap errors out on a duplicate destination.
+    #[test]
+    fn extra_writable_skips_a_path_that_is_already_a_root() {
+        let workspace = workspace();
+        let args = strings(&bwrap_args(
+            &rw_roots(),
+            &cwd(),
+            false,
+            &[],
+            OutsideRoots::Nothing,
+            &[],
+            std::slice::from_ref(&workspace),
+        ));
+        let binds = args
+            .windows(3)
+            .filter(|window| window[0] == "--bind" && window[1] == workspace.to_string_lossy())
+            .count();
+        assert_eq!(binds, 1, "{args:?}");
+    }
+
+    /// A workspace under an `extra_writable` path must not get a private tmpfs
+    /// mounted over it, or the grant is invisible from inside.
+    #[test]
+    fn extra_writable_under_tmp_suppresses_the_tmpfs() {
+        let workspace = PathBuf::from("/home/qcode-bwrap-tests/workspace");
+        let roots = vec![BwrapRoot {
+            path: workspace.clone(),
+            writable: true,
+        }];
+        let args = strings(&bwrap_args(
+            &roots,
+            &workspace,
+            false,
+            &[],
+            OutsideRoots::Nothing,
+            &[],
+            &[PathBuf::from("/tmp/qcode-bwrap-tests/Documents")],
+        ));
+        assert!(!args.contains(&"--tmpfs".to_string()), "{args:?}");
     }
 
     /// `[sandbox] extra_read` becomes read-only binds, and a root that is
@@ -621,6 +701,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             std::slice::from_ref(&prefix),
+            &[],
         ));
         let binds = args
             .windows(3)
@@ -643,6 +724,7 @@ mod bwrap_tests {
             &[],
             OutsideRoots::BuildCaches,
             std::slice::from_ref(&workspace),
+            &[],
         ));
         let duplicate = args
             .windows(3)
@@ -666,6 +748,7 @@ mod bwrap_tests {
             false,
             std::slice::from_ref(&cargo),
             OutsideRoots::Nothing,
+            &[],
             &[],
         ));
         assert!(
@@ -699,6 +782,7 @@ mod bwrap_tests {
             std::slice::from_ref(&cargo),
             OutsideRoots::BuildCaches,
             &[],
+            &[],
         ));
         assert!(
             args.windows(2)
@@ -718,8 +802,36 @@ mod linux_tests {
     use crate::sandbox::linux::*;
     use crate::sandbox::*;
 
+    /// `extra_writable` is validated by both Linux backends, not only landlock.
+    ///
+    /// bwrap would otherwise surface a missing path as its own mount error and a
+    /// `/` grant as a working bind, so the two backends would disagree about the
+    /// same config while each looked self-consistent.
+    #[test]
+    fn both_linux_backends_refuse_a_dangerous_or_missing_extra_writable() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let missing = workspace.path().join("no-such-dir");
+
+        let bwrap_missing =
+            Bwrap::new(workspace.path(), false, &[], std::slice::from_ref(&missing))
+                .expect_err("bwrap must reject a missing extra_writable root");
+        assert!(bwrap_missing.to_string().contains("extra_writable"));
+
+        let bwrap_root = Bwrap::new(workspace.path(), false, &[], &[PathBuf::from("/")])
+            .expect_err("bwrap must reject / writable");
+        assert!(bwrap_root.to_string().contains("filesystem root"));
+
+        if landlock_abi().is_err() {
+            eprintln!("skipping the landlock half: landlock unavailable here");
+            return;
+        }
+        let landlock_missing = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing))
+            .expect_err("landlock must reject a missing extra_writable root");
+        assert!(landlock_missing.to_string().contains("extra_writable"));
+    }
+
     fn bwrap_or_skip(workspace: &Path) -> Option<Bwrap> {
-        let sandbox = Bwrap::new(workspace, false, &[]).expect("sandbox");
+        let sandbox = Bwrap::new(workspace, false, &[], &[]).expect("sandbox");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -915,7 +1027,7 @@ mod landlock_runtime {
             eprintln!("skipping: landlock unavailable here: {err}");
             return None;
         }
-        let sandbox = Landlock::new(workspace, &[]).expect("build the landlock ruleset");
+        let sandbox = Landlock::new(workspace, &[], &[]).expect("build the landlock ruleset");
         match sandbox.check() {
             Ok(()) => Some(sandbox),
             Err(err) => {
@@ -989,7 +1101,7 @@ mod landlock_runtime {
         // makes every turn: a fix that only worked on the seed sandbox would
         // never reach a single tool.
         let build = |extra_read: &[PathBuf]| {
-            let seed = Landlock::new(workspace.path(), extra_read).expect("ruleset");
+            let seed = Landlock::new(workspace.path(), extra_read, &[]).expect("ruleset");
             seed.with_roots(&roots, None, OutsideRoots::Nothing)
                 .expect("multi-root sandbox")
         };
@@ -1006,12 +1118,24 @@ mod landlock_runtime {
                 .expect("command");
             command.output().expect("run").status.success()
         };
-        let run_script = |sandbox: &dyn Sandbox| {
+        let run_script = |sandbox: &dyn Sandbox| -> Option<bool> {
             let mut command = sandbox
                 .command(OsStr::new(&script), &[], workspace.path())
                 .expect("command");
-            command.output().expect("run").status.success()
+            match command.output() {
+                Ok(output) => Some(output.status.success()),
+                // An `execve` Landlock denies fails *in the parent*: the child
+                // never starts, so there is no exit status to inspect and
+                // `output()` returns EACCES. `None` means "denied at spawn",
+                // which is a denial like any other — the previous version
+                // `.expect("run")`ed here and so panicked on every denial it
+                // was written to observe.
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => None,
+                Err(err) => panic!("cannot even attempt {}: {err}", script.display()),
+            }
         };
+        // Both shapes of denial count as denied.
+        let denied = |sandbox: &dyn Sandbox| !matches!(run_script(sandbox), Some(true));
 
         // Without it: unreachable. This is the failure that motivated the field.
         let bare = build(&[]);
@@ -1024,7 +1148,7 @@ mod landlock_runtime {
             "the fixture must be unreadable without extra_read, or this proves nothing"
         );
         assert!(
-            !run_script(bare.as_ref()),
+            denied(bare.as_ref()),
             "executing outside the allowlist must be denied too"
         );
 
@@ -1037,8 +1161,9 @@ mod landlock_runtime {
             tool.path().display()
         );
         assert!(
-            run_script(granted.as_ref()),
-            "extra_read must include execute, or a toolchain under it cannot run"
+            run_script(granted.as_ref()) == Some(true),
+            "extra_read must include execute, or a toolchain under it cannot run: {:?}",
+            run_script(granted.as_ref())
         );
         assert!(
             granted.describe().contains("extra read"),
@@ -1064,6 +1189,153 @@ mod landlock_runtime {
         );
     }
 
+    /// `[sandbox] extra_writable`: a subtree outside the task roots becomes
+    /// writable — the Landlock half of what `sandbox-exec` and `windows-acl`
+    /// already did.
+    ///
+    /// Before this, `Landlock::new` took no write list at all and `mod.rs` threw
+    /// it away with `let _ = extra_writable`, so `extra_writable =
+    /// ["~/Documents"]` produced a read-only directory and no error. Measured
+    /// with `touch ~/Documents/x`: `Permission denied`, while `cat` on a file in
+    /// the same directory worked — which is what a user reads as "my config is
+    /// being ignored", because it was.
+    ///
+    /// Three things have to hold, and only the first is the feature: the listed
+    /// subtree is writable, an unlisted sibling is not, and the grant reaches a
+    /// sandbox built by `with_roots` rather than only the seed.
+    #[test]
+    fn extra_write_grants_a_writable_subtree_outside_the_roots() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let listed = tempfile::tempdir().expect("listed dir");
+        let sibling = tempfile::tempdir().expect("unlisted dir");
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+
+        let roots = vec![Root {
+            id: "rw".to_string(),
+            label: "app".to_string(),
+            path: workspace.path().to_path_buf(),
+            access: qcode_core::task::RootAccess::ReadWrite,
+            primary: true,
+        }];
+        // Through `with_roots`, which is the call `run_shell` makes every turn.
+        let build = |extra_write: &[PathBuf]| {
+            let seed = Landlock::new(workspace.path(), &[], extra_write).expect("ruleset");
+            seed.with_roots(&roots, None, OutsideRoots::Nothing)
+                .expect("multi-root sandbox")
+        };
+        // `create` writes a new file and then renames it, so it needs MAKE_REG,
+        // WRITE_FILE and REFER together — the mask a hand-picked "just
+        // WRITE_FILE" would have failed.
+        let create = |sandbox: &dyn Sandbox, dir: &Path| {
+            let target = dir.join("created.txt");
+            let done = sandbox
+                .command(
+                    OsStr::new("/bin/sh"),
+                    &[
+                        OsString::from("-c"),
+                        OsString::from(format!(
+                            "printf x > '{d}/tmp' && mv '{d}/tmp' '{d}/created.txt'",
+                            d = dir.display()
+                        )),
+                    ],
+                    workspace.path(),
+                )
+                .expect("command")
+                .output()
+                .expect("run")
+                .status
+                .success();
+            let wrote = target.exists();
+            let _ = std::fs::remove_file(&target);
+            (done, wrote)
+        };
+
+        // Without it: denied. Asserted first, or the test proves nothing.
+        let bare = build(&[]);
+        if let Err(err) = bare.check() {
+            eprintln!("skipping: landlock preflight failed here: {err}");
+            return;
+        }
+        let (ok, wrote) = create(bare.as_ref(), listed.path());
+        assert!(
+            !wrote,
+            "the fixture dir must be unwritable without extra_write"
+        );
+        assert!(!ok, "the write must fail, not merely be dropped");
+
+        // With it: allowed, and reported.
+        let granted = build(&[listed.path().to_path_buf()]);
+        let (ok, wrote) = create(granted.as_ref(), listed.path());
+        assert!(
+            wrote && ok,
+            "extra_write did not grant {}: {ok} {wrote}",
+            listed.path().display()
+        );
+        assert!(
+            granted.describe().contains("extra write"),
+            "doctor must be able to say what was granted: {}",
+            granted.describe()
+        );
+
+        // The grant is the listed subtree only — a sibling under the same
+        // parent stays denied, which is the difference between this and
+        // "grant the parent".
+        let (ok, wrote) = create(granted.as_ref(), sibling.path());
+        assert!(
+            !wrote && !ok,
+            "extra_write leaked to an unlisted sibling: {ok} {wrote}"
+        );
+    }
+
+    /// A missing `extra_writable` root is named at startup, like `extra_read`.
+    ///
+    /// This one matters more than its read counterpart: a silently skipped
+    /// write root is indistinguishable from the setting being ignored, which is
+    /// the exact symptom this field spent a release having.
+    #[test]
+    fn extra_write_rejects_a_missing_root() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+        let missing = workspace.path().join("no-such-dir");
+        let error = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing))
+            .expect_err("a missing extra_writable root must be rejected");
+        assert!(
+            error.to_string().contains("extra_writable"),
+            "the message must name the field: {error}"
+        );
+        assert!(
+            error.to_string().contains("no-such-dir"),
+            "the message must name the path: {error}"
+        );
+    }
+
+    /// The dangerous shapes are refused at the backend too, not only by config
+    /// validation — `Sandbox::build` is public and a rule once installed cannot
+    /// be withdrawn.
+    ///
+    /// `/` is the probe because it needs no home lookup to be obvious; the
+    /// home-shaped cases are covered where `real_home` can be injected, in
+    /// `qcode_core::paths`.
+    #[test]
+    fn extra_write_rejects_the_filesystem_root() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        if landlock_abi().is_err() {
+            eprintln!("skipping: landlock unavailable here");
+            return;
+        }
+        let error = Landlock::new(workspace.path(), &[], &[PathBuf::from("/")])
+            .expect_err("granting / writable must be rejected");
+        let text = error.to_string();
+        assert!(text.contains("extra_writable"), "{text}");
+        assert!(text.contains("filesystem root"), "{text}");
+    }
+
     /// A read root that does not exist is a startup error that names itself,
     /// rather than a rule Landlock silently skips.
     #[test]
@@ -1074,7 +1346,7 @@ mod landlock_runtime {
             return;
         }
         let missing = workspace.path().join("no-such-prefix");
-        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing))
+        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing), &[])
             .expect_err("a missing extra_read root must be rejected");
         assert!(
             error.to_string().contains("extra_read"),

@@ -12,6 +12,7 @@ pub mod event;
 pub mod history;
 pub mod inbox;
 pub mod network;
+pub mod paths;
 pub mod policy;
 pub mod progress;
 pub mod provider;
@@ -33,6 +34,7 @@ pub use engine::{
 pub use event::*;
 pub use inbox::{Inbox, QueuedMessage};
 pub use network::{Network, SharedNetwork};
+pub use paths::{dangerous_write_root, real_home};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;

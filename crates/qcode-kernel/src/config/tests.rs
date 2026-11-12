@@ -195,14 +195,131 @@ fn sandbox_extra_read_is_a_list_of_directories() {
     .expect("parse");
     assert_eq!(
         config.sandbox.extra_read,
-        vec![
-            PathBuf::from("/home/q/cot"),
-            PathBuf::from("/opt/tools"),
-        ]
+        vec![PathBuf::from("/home/q/cot"), PathBuf::from("/opt/tools"),]
     );
     // The two lists must not be confused for one another: a config that sets
     // only `extra_read` grants no write access.
     assert!(config.sandbox.extra_writable.is_empty());
+}
+
+/// `[sandbox] extra_writable` refuses the shapes that are never what was meant.
+///
+/// The field is config-wide, so unlike an MCP server's derived grant there is
+/// no workspace narrowing it. `~/` is the typo this exists for: it reads like
+/// "my home" and hands a confined `run_shell` every file the user can write,
+/// including `~/.ssh` and `~/.aws`. `/` and `/home` are the copy-paste variants.
+#[test]
+fn extra_writable_refuses_the_filesystem_root() {
+    let config: Config = toml::from_str(
+        r#"
+            [sandbox]
+            extra_writable = ["/"]
+        "#,
+    )
+    .expect("parse");
+    let error = config
+        .sandbox
+        .validate()
+        .expect_err("`/` as a write root must be refused");
+    let text = error.to_string();
+    assert!(text.contains("extra_writable"), "{text}");
+    assert!(text.contains("filesystem root"), "{text}");
+}
+
+#[test]
+fn extra_writable_refuses_a_directory_holding_every_home() {
+    for path in ["/home", "/Users", "/root"] {
+        let config: Config = toml::from_str(&format!(
+            r#"
+            [sandbox]
+            extra_writable = ["{path}"]
+            "#
+        ))
+        .expect("parse");
+        let error = config
+            .sandbox
+            .validate()
+            .expect_err(&format!("{path} as a write root must be refused"));
+        assert!(
+            error.to_string().contains("every user's home"),
+            "{path}: {error}"
+        );
+    }
+}
+
+/// The home directory itself is refused, its subdirectories are not — that is
+/// the whole distinction the field lives on.
+#[test]
+fn extra_writable_refuses_the_home_directory_but_not_a_subdirectory() {
+    let Some(home) = super::load::home_dir() else {
+        eprintln!("skipping: HOME is not set");
+        return;
+    };
+    let refused: Config = toml::from_str(&format!(
+        r#"
+        [sandbox]
+        extra_writable = ["{}"]
+        "#,
+        home.display()
+    ))
+    .expect("parse");
+    assert!(
+        refused.sandbox.validate().is_err(),
+        "{} as a write root must be refused",
+        home.display()
+    );
+
+    let allowed: Config = toml::from_str(&format!(
+        r#"
+        [sandbox]
+        extra_writable = ["{}"]
+        "#,
+        home.join("Documents").display()
+    ))
+    .expect("parse");
+    assert!(
+        allowed.sandbox.validate().is_ok(),
+        "a subdirectory of the home is exactly what this field is for"
+    );
+}
+
+/// End to end through the loader, because the check is only useful if it runs
+/// on the path a real config takes — `~/` has to be expanded *first*, or it is
+/// the relative path `~/` and compares equal to nothing.
+#[test]
+fn loading_a_config_with_a_home_wide_write_root_fails() {
+    let Some(home) = super::load::home_dir() else {
+        eprintln!("skipping: HOME is not set");
+        return;
+    };
+    let document = toml::Value::Table(
+        r#"
+        [sandbox]
+        extra_writable = ["~/"]
+    "#
+        .parse::<toml::Table>()
+        .expect("parse"),
+    );
+    let error =
+        super::load::validate_document(&document).expect_err("`~/` must not survive validation");
+    let text = error.to_string();
+    assert!(text.contains("extra_writable"), "{text}");
+    assert!(
+        text.contains(&home.display().to_string()),
+        "the message must name the expanded path: {text}"
+    );
+
+    // And the shape people actually write keeps loading.
+    let ok = toml::Value::Table(
+        r#"
+        [sandbox]
+        extra_writable = ["~/Documents"]
+        extra_read = ["~/Documents"]
+    "#
+        .parse::<toml::Table>()
+        .expect("parse"),
+    );
+    super::load::validate_document(&ok).expect("`~/Documents` must keep loading");
 }
 
 #[test]

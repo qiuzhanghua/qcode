@@ -365,8 +365,8 @@ cargo build -p qcode-eval
   `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
-  （workspace + 每次运行私有的 temp 目录 + `extra_writable`，读与网络不受限，硬链接
-  与命名管道不在覆盖范围，因此报 `partial`）。启用时先 preflight，失败则 `qc` 拒绝启动
+  （读与网络不受限，硬链接与命名管道不在覆盖范围，因此报 `partial`）。四个后端都认
+  `extra_writable`（除 workspace 与私有 temp 外额外可写的子树）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
   unprivileged userns）；默认 `none`，审批仍是主边界。`windows-acl` 的授权是常驻 ACE：
   `qc sandbox grant <路径>` 可提前铺好，`qc sandbox revoke <路径>` 逐对象撤掉。
@@ -387,8 +387,20 @@ cargo build -p qcode-eval
   **它是 `[sandbox]` 级设置，因此也作用于 MCP server 的沙箱**（MCP 沙箱由同一个后端派生），
   也就是说这些前缀对第三方 server 同样可读。ADR-0066 §1 的「读集 = 推导出的运行时 +
   凭据子树」因此被放宽；如果只想让 `run_shell` 拿到它，就把它写窄到工具链目录本身。
-  注意 `extra_writable` 一直只对 `windows-acl` 与 macOS 生效，Linux 后端忽略它——这是
-  既有行为，`extra_read` 则四个后端都认（Windows 不限制读，所以那里是空操作）。
+  `extra_writable` 与 `extra_read` 一样由四个后端都认（Windows 不限制读，所以那里的
+  `extra_read` 是空操作）。`extra_writable` 在 landlock 上拿到的是和读写 root 完全相同的
+  权限集，所以「列进去 = 那个目录归 agent 用」，请写到子目录而不是 `~` 或 `/home`：
+
+  ```toml
+  [sandbox]
+  mode = "landlock"
+  extra_read = ["~/Documents"]      # 读
+  extra_writable = ["~/Documents"]  # 同一个目录，写
+  ```
+
+  `/`、`/home`、`/Users`、`/root` 和 home 目录本身会在**加载期**被拒绝并点名原因
+  （`extra_writable` 是配置文件级的，没有按 task 收窄的余地）；`~/` 展开后就是 home 本身，
+  同样会被拒。不存在的路径在启动时也会报错，而不是被静默跳过。
 
 - **MCP server 的沙箱是另一份授权（ADR-0066）**：同一个后端，但边界按 server 现算，
   而不是照抄 `run_shell` 的。运行时目录（由 `command` 推导：venv、`node_modules`、
@@ -690,9 +702,10 @@ audit = true
 [sandbox]
 mode = "none"        # none | sandbox-exec | bwrap | landlock | windows-acl
 network = false      # proxy 模式下放网开关；strict 时忽略，只允许代理端口
-extra_writable = []  # windows-acl：除 workspace 与私有 temp 外额外可写的根
+extra_writable = []  # 所有后端：除 workspace 与私有 temp 外额外可写的根（整棵子树）
 extra_read = []      # 所有后端：额外只读（含可执行）的根，整棵子树递归。
-                     # 这两项都认 `~/cot`，在加载时展开成真实 home
+                     # 这两项都认 `~/cot`，在加载时展开成真实 home。
+                     # `/`、home 本身、`/home`、`/Users`、`/root` 不能写进 extra_writable
 
 # 自动更新（v2）。enabled 默认 true；check = false 时只手动 update --check。
 # check_days 是启动时查询新版本的最小间隔（结果缓存进 data-dir）；repo / base_url

@@ -29,6 +29,7 @@ pub(crate) fn bwrap_args(
     writable: &[PathBuf],
     outside: OutsideRoots,
     extra_read: &[PathBuf],
+    extra_write: &[PathBuf],
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
@@ -80,7 +81,8 @@ pub(crate) fn bwrap_args(
     // host's /tmp, so an MCP server writing `/tmp/x` writes into a directory
     // that vanishes with the process and that nothing else can see. Denying it
     // outright would break runtimes that ignore TMPDIR for no security gain.
-    let touches_tmp = roots.iter().any(|root| root.path.starts_with("/tmp"));
+    let touches_tmp = roots.iter().any(|root| root.path.starts_with("/tmp"))
+        || extra_write.iter().any(|path| path.starts_with("/tmp"));
     if !touches_tmp {
         args.push("--tmpfs".into());
         args.push("/tmp".into());
@@ -113,10 +115,58 @@ pub(crate) fn bwrap_args(
             args.push(path.into());
         }
     }
+    // `[sandbox] extra_writable`: shared rw binds, not gated on the build-cache
+    // switch — that switch is about what qcode adds on its own, while these are
+    // what the user asked for (ADR-0066 §2 修订注记 2026-11-11 补记). A path
+    // that is already a task root is skipped so one directory is not bound
+    // twice.
+    for path in extra_write {
+        if roots.iter().any(|root| &root.path == path) {
+            continue;
+        }
+        args.push("--bind".into());
+        args.push(path.into());
+        args.push(path.into());
+    }
 
     args.push("--chdir".into());
     args.push(cwd.into());
     args
+}
+
+/// Validate `[sandbox] extra_writable` for a Linux backend.
+///
+/// Shared by `Bwrap` and `Landlock` rather than written twice: the two would
+/// drift into "bubblewrap refuses `/` but landlock grants it", and neither copy
+/// would look wrong on its own (ADR-0068's lesson).
+///
+/// Two failures, both of which the user cannot diagnose from inside a sandbox:
+///
+/// * A path that does not exist. `Landlock` would install no rule and stay
+///   denied; `bubblewrap` would fail with its own message about a mount. Either
+///   way it reads as "the setting is ignored", which is the exact symptom
+///   `extra_writable` already spent a release having.
+/// * A dangerous shape. `SandboxConfig::validate` refuses these at load time;
+///   this second check covers `Sandbox::build`'s direct callers, because a rule
+///   installed here cannot be taken back.
+#[cfg(target_os = "linux")]
+fn check_extra_write(extra_write: &[PathBuf]) -> Result<(), SandboxError> {
+    if let Some(missing) = extra_write.iter().find(|path| !path.exists()) {
+        return Err(SandboxError::Setup(format!(
+            "[sandbox] extra_writable: {} does not exist",
+            missing.display()
+        )));
+    }
+    let home = qcode_core::real_home();
+    for path in extra_write {
+        if let Some(reason) = qcode_core::dangerous_write_root(path, home.as_deref()) {
+            return Err(SandboxError::Setup(format!(
+                "[sandbox] extra_writable: {} is {reason}; narrow it to a subdirectory",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Cargo/Rustup homes are build caches: bind them read-write, like the macOS
@@ -155,16 +205,24 @@ pub struct Bwrap {
     outside: OutsideRoots,
     /// `[sandbox] extra_read`, carried so `with_roots` keeps it.
     extra_read: Vec<PathBuf>,
+    /// `[sandbox] extra_writable`, carried so `with_roots` keeps it.
+    extra_write: Vec<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
 impl Bwrap {
-    pub fn new(workspace: &Path, network: bool, extra_read: &[PathBuf]) -> Result<Self, SandboxError> {
+    pub fn new(
+        workspace: &Path,
+        network: bool,
+        extra_read: &[PathBuf],
+        extra_write: &[PathBuf],
+    ) -> Result<Self, SandboxError> {
         if workspace == Path::new("/") {
             return Err(SandboxError::Setup(
                 "refusing to sandbox the filesystem root as the workspace".to_string(),
             ));
         }
+        check_extra_write(extra_write)?;
         Ok(Self {
             roots: vec![BwrapRoot {
                 path: workspace.to_path_buf(),
@@ -175,6 +233,7 @@ impl Bwrap {
             // command comes from `with_roots`, which states this for itself.
             outside: OutsideRoots::BuildCaches,
             extra_read: extra_read.to_vec(),
+            extra_write: extra_write.to_vec(),
         })
     }
 
@@ -187,6 +246,7 @@ impl Bwrap {
             &writable_paths(),
             self.outside,
             &self.extra_read,
+            &self.extra_write,
         ));
         command.arg(program).args(args);
         command
@@ -230,6 +290,7 @@ impl Sandbox for Bwrap {
             network: self.network,
             outside,
             extra_read: self.extra_read.clone(),
+            extra_write: self.extra_write.clone(),
         }))
     }
 
@@ -254,6 +315,14 @@ impl Sandbox for Bwrap {
                 .map(|path| path.display().to_string())
                 .collect();
             text.push_str(&format!(", extra read: [{}]", list.join(", ")));
+        }
+        if !self.extra_write.is_empty() {
+            let list: Vec<String> = self
+                .extra_write
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            text.push_str(&format!(", extra write: [{}]", list.join(", ")));
         }
         text
     }
@@ -392,16 +461,30 @@ pub struct Landlock {
     /// (not re-read at install time) so `with_roots` keeps them and
     /// `describe()` can show them.
     extra_read: Vec<PathBuf>,
+    /// `[sandbox] extra_writable`: roots granted the full right set, exactly as
+    /// a read-write task root is (ADR-0066 §2 修订注记 2026-11-11 补记).
+    ///
+    /// Landlock unions overlapping rules and the more permissive one wins, so an
+    /// entry here also covers any read-only task root underneath it. That is
+    /// the same behaviour two nested task roots already had; the difference is
+    /// that this list is config-wide and invisible per task, which is why the
+    /// dangerous shapes are refused at load time.
+    extra_write: Vec<PathBuf>,
     ruleset_fd: RawFd,
 }
 
 #[cfg(target_os = "linux")]
 impl Landlock {
-    pub fn new(workspace: &Path, extra_read: &[PathBuf]) -> Result<Self, SandboxError> {
+    pub fn new(
+        workspace: &Path,
+        extra_read: &[PathBuf],
+        extra_write: &[PathBuf],
+    ) -> Result<Self, SandboxError> {
         Self::for_roots(
             vec![(workspace.to_path_buf(), true)],
             OutsideRoots::BuildCaches,
             extra_read.to_vec(),
+            extra_write.to_vec(),
         )
     }
 
@@ -412,6 +495,7 @@ impl Landlock {
         roots: Vec<(PathBuf, bool)>,
         outside: OutsideRoots,
         extra_read: Vec<PathBuf>,
+        extra_write: Vec<PathBuf>,
     ) -> Result<Self, SandboxError> {
         // A read root that does not exist is a configuration mistake the user
         // cannot see from the inside: Landlock would install no rule and the
@@ -424,6 +508,9 @@ impl Landlock {
                 missing.display()
             )));
         }
+        // Same reasoning for the write side, and it matters more — see
+        // `check_extra_write`.
+        check_extra_write(&extra_write)?;
         if let Some((path, _)) = roots.iter().find(|(path, _)| path == Path::new("/")) {
             return Err(SandboxError::Setup(format!(
                 "refusing to sandbox the filesystem root as a root: {}",
@@ -443,6 +530,7 @@ impl Landlock {
             cwd,
             outside,
             extra_read,
+            extra_write,
             ruleset_fd,
         };
         // `Drop` closes the fd on error.
@@ -497,6 +585,15 @@ impl Landlock {
                 let access = if *writable { allowed } else { read_only };
                 add_path_rule(self.ruleset_fd, path, access)?;
             }
+        }
+
+        // `[sandbox] extra_writable`: the full set, identical to a read-write
+        // task root. `allowed` rather than a hand-picked write mask on purpose —
+        // anything narrower breaks the ordinary use (write a file, rename it
+        // inside the tree, mkdir, delete), and REFER in particular has to be on
+        // both parents for a rename to succeed.
+        for path in &self.extra_write {
+            add_path_rule(self.ruleset_fd, path, allowed)?;
         }
 
         // Only when the caller asked for them. Landlock has no "private tmpfs"
@@ -590,6 +687,7 @@ impl Sandbox for Landlock {
             mapped,
             outside,
             self.extra_read.clone(),
+            self.extra_write.clone(),
         )?))
     }
 
@@ -612,6 +710,14 @@ impl Sandbox for Landlock {
                 .map(|path| path.display().to_string())
                 .collect();
             text.push_str(&format!(", extra read: [{}]", list.join(", ")));
+        }
+        if !self.extra_write.is_empty() {
+            let list: Vec<String> = self
+                .extra_write
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            text.push_str(&format!(", extra write: [{}]", list.join(", ")));
         }
         text
     }

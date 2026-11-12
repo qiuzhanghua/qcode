@@ -21,6 +21,9 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     expand_paths(&mut config);
     // Fail before spawning anything if the MCP section is malformed.
     config.mcp.validate()?;
+    // And before a sandbox is built if it asks for a write root that is never
+    // what was meant; see `SandboxConfig::validate`.
+    config.sandbox.validate()?;
     // Same for approval rules: a rule whose glob does not parse never matches,
     // so a mistyped `deny` silently stops denying.
     validate_rules(path, &config.approval.rules)?;
@@ -135,6 +138,7 @@ fn merge_project_file(base: &mut Config, workspace: &Path) -> Result<(), ConfigE
     // pass over `base` covers both files.
     expand_paths(base);
     base.mcp.validate()?;
+    base.sandbox.validate()?;
     Ok(())
 }
 
@@ -224,9 +228,7 @@ fn validate_rules(path: &Path, rules: &[Rule]) -> Result<(), ConfigError> {
 
 /// Home directory across platforms. Windows has no `HOME` by default.
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    qcode_core::real_home()
 }
 
 /// Expand a leading `~` against `home` — and nothing else.
@@ -467,6 +469,7 @@ pub(crate) fn validate_document(document: &toml::Value) -> Result<(), ConfigErro
     // sees what the grant will see.
     expand_paths(&mut config);
     config.mcp.validate()?;
+    config.sandbox.validate()?;
     Ok(())
 }
 
@@ -499,7 +502,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // `sandbox` is the crate-wide default; each server may override it.
     ("mcp", &["servers", "sandbox"]),
     ("skills", &["enabled", "roots"]),
-    ("sandbox", &["mode", "network", "extra_writable", "extra_read"]),
+    (
+        "sandbox",
+        &["mode", "network", "extra_writable", "extra_read"],
+    ),
     (
         "network",
         &[

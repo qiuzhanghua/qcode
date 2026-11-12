@@ -629,8 +629,31 @@ pub struct SandboxConfig {
         deserialize_with = "network_mode_from_any"
     )]
     pub network: Option<SandboxNetworkMode>,
-    /// Extra roots the `windows-acl` backend grants write access to, besides the
-    /// workspace and its private temp directory. `~/x` is expanded at load time.
+    /// Extra roots every backend grants **write** access to, besides the task
+    /// roots and (for an MCP server) its private temp directory. `~/x` is
+    /// expanded at load time.
+    ///
+    /// Honoured by `sandbox-exec`, `windows-acl`, `bwrap` and `landlock`. The
+    /// two Linux backends used to drop this list on the floor — `landlock`
+    /// because the backend had no write list at all — so a user who set it got
+    /// a read-only directory, no error, and no way to tell whether the config
+    /// or the code was wrong. Measured: `touch ~/Documents/x` gave `Permission
+    /// denied` while `cat` on a file in the same directory worked, which is
+    /// exactly "the setting is ignored".
+    ///
+    /// The entry gets the same rights as a read-write task root, which makes
+    /// "listing a directory here = the agent owns it" true; recursive, so
+    /// `~/Documents` and not `~/Documents/a/b`. The shapes that are never meant
+    /// are refused at load time by [`SandboxConfig::validate`]: `/`, the home
+    /// directory itself, and `/home` / `/Users` / `/root`. There is no
+    /// workspace to narrow them to — this section is config-wide, so an
+    /// `extra_writable = ["~/"]` typo applies to every task including an MCP
+    /// server under `sandbox = "on"`.
+    ///
+    /// Note the Landlock caveat: it unions rules, so an entry here also covers
+    /// any read-only task root underneath it. That is not new (two nested task
+    /// roots already behaved that way), but this list is invisible per task,
+    /// which is the other reason the dangerous shapes are refused.
     #[serde(default)]
     pub extra_writable: Vec<PathBuf>,
     /// Extra roots every backend grants **read** (and execute) access to,
@@ -657,6 +680,33 @@ pub struct SandboxConfig {
 }
 
 impl SandboxConfig {
+    /// Refuse write roots that are never what the user meant.
+    ///
+    /// `[sandbox] extra_writable` is config-wide: it applies to every task, so
+    /// unlike an MCP server's derived grant there is no workspace to narrow it
+    /// to. `~/Documents` is the shape people actually want; `~/` and `/home`
+    /// arrive by typo or by a copy-pasted example, and both quietly hand a
+    /// confined `run_shell` every file the user can write.
+    ///
+    /// Called from every load path, after `~` expansion — before expansion a
+    /// `~/` entry is the relative path `~/`, which compares equal to nothing.
+    /// Only these three shapes are refused, not "must be absolute": a relative
+    /// entry grants nothing (it never matches a resolved root) and turning it
+    /// into a load failure would reject configs that load fine today.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let home = home_dir();
+        for path in &self.extra_writable {
+            if let Some(reason) = qcode_core::dangerous_write_root(path, home.as_deref()) {
+                return Err(ConfigError::InvalidDocument(format!(
+                    "[sandbox] extra_writable: {} is {reason}; \
+                     list a subdirectory such as \"~/Documents\" instead",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The mode this file asks for, folding the pre-ADR-0065 keys in.
     ///
     /// Precedence, most specific first: `[sandbox] network`, then

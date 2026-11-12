@@ -7040,3 +7040,101 @@ ADR-0064 已经为 `run_shell` 解决过一次（`{shell} -lic 'env -0'` 采样�
   （`env = { ... }` 与 `credentials`）。
 - `PATH` 过桥后，`qc doctor` 里"这个 server 的 runtime 根为什么是 `~/cot/lib/...`"已经能
   看出来，但"哪一条 `PATH` 条目命中的"还没有单独打印。若有人提出，加一行即可。
+
+---
+
+## ADR-0066 §2 修订注记 2026-11-11 补记：`extra_writable` 在 Linux 上是真的没生效
+
+**发现方式**：用户按上一轮注记把
+
+```toml
+[sandbox]
+extra_read = ["~/Documents"]
+extra_writable = ["~/Documents"]
+```
+
+写进配置，然后得到「读成功、写 `Permission denied`」。这个组合正是"配置写错了"和"代码没接上"
+最难分辨的形状——只写 `extra_read` 的那一半起了作用，读得到的文件就在同一个目录里。
+
+**根因**：不是配置问题，是 `crates/qcode-tools/src/sandbox/mod.rs` 把参数扔了。
+
+```rust
+SandboxMode::Landlock => {
+    let _ = extra_writable;                       // ← 丢弃
+    let sandbox = Landlock::new(primary_root, extra_read)?;   // 签名里没有写列表
+}
+SandboxMode::Bwrap => {
+    let _ = extra_writable;                       // ← 同样
+}
+```
+
+`extra_writable` 从来只服务 `sandbox-exec` 与 `windows-acl`。`let _ =` 让编译器闭嘴，于是没有
+任何警告；`Landlock::new` 的签名里也没有它，于是这条链上没有任何一处会提醒你。上一轮注记把
+这个状态写成了"既有行为"——那不是判断，是当时没查 `mod.rs` 就下的结论。
+
+**改法**
+
+1. **`Landlock::new(workspace, extra_read, extra_write)`**：`extra_write` 的每一条都按
+   `allowed`（= `landlock_handled(abi)`，与读写 task root 完全相同）装规则。不用手挑写入掩码：
+   `WRITE_FILE` 单独给出去连"写一个新文件"都不够，而 `REFER` 必须两端都在才允许 rename。
+2. **`Bwrap` 同形**：`extra_write` 走 `--bind`，并且**不受 `OutsideRoots` 开关影响**——
+   那个开关管的是"qcode 自己加的构建缓存"，这里管的是"用户要的"。已经作为 task root 绑过的
+   路径跳过（bwrap 对重复目的地报错）；`extra_write` 落在 `/tmp` 下时也不再挂私有 tmpfs，
+   否则授权会被遮住。
+3. **`describe()` 打出 `extra write: [...]`**，与 `extra read` 对称。ADR-0066 §1 要的是
+   "打印出来的授权 = 实际执行的授权"，`qc doctor` 只能看这一行。
+4. **加载期拒绝危险根**（见下）。
+
+**危险根的检查放在加载期，三条形状**
+
+`[sandbox] extra_writable` 是**配置文件级**的，没有按 task 收窄的余地，所以 `extra_writable
+= ["~/"]` 这个笔误对每一个 task（包括 `sandbox = "on"` 的 MCP server）都成立。`~/` 展开后
+就是 home 本身，而 home 里有 `~/.ssh` 与 `~/.aws`。
+
+拒绝 `/`、home 目录本身、`/home` / `/Users` / `/root`，`SandboxConfig::validate()` 在
+`load` / `merge_project_file` / `validate_document` 三处都调，位置与 `mcp.validate()` 相同
+（展开之后——展开前 `~/` 是相对路径 `~/`，和谁都不相等）。
+
+**判定只有一份**：抽到 `qcode_core::paths::dangerous_write_root`，`qcode-mcp` 的
+`dangerous()` 改成调它并只保留自己那条"MCP 才知道 workspace 的 parent"判断。两边各写一份的
+话，会漂移成"server grant 拒 `/`、沙箱给 `/`"，而两边都自洽，没有测试会发现。
+
+**没收的**：仍然**不要求 `extra_writable` 必须绝对**。相对路径在这里不会命中任何已解析的
+root，等于什么都不授予，而把它变成加载失败会让 `mode = "none"` 的用户今天能加载的配置明天
+报错。这正是上一轮"待定"里那条顾虑，这里只回答了其中的安全问题，没有回答拼写问题。
+
+**顺带收的**：`real_home()` 三份（kernel 的 `home_dir`、mcp 的 `real_home`、以及现在这份）
+合成 `qcode_core::real_home`，另外两个变成薄委托。`~/` 现在出现在三个 section 里，三份解析器
+就是三个"`~` 到底指哪儿"的答案。Windows 上统一取 `USERPROFILE` 优先（kernel 原来 `HOME`
+优先）：在 MSYS/git-bash 里 `HOME=/home/q` 是给 POSIX 层看的，原生进程把它当路径展开是错的。
+
+**代价 / 已知边界**
+
+- **Landlock 会合并规则，宽的那条赢**。`extra_writable = ["~/Documents"]` 加上
+  `~/Documents/proj` 作为只读 task root，`proj` 实际可写。这不是新行为（两个嵌套 task root
+  一直如此），差别在于 `[sandbox]` 这份列表对单个 task 不可见——也是危险根必须在加载期拒绝
+  的第二个理由。
+- **写入是整棵子树递归的**，没有"只写这一个文件"。要更细就得等按 task 的目录授权。
+- **`windows-acl` 与 `sandbox-exec` 行为不变**，这一轮只是把 Linux 补上，外加三者的危险根
+  判定统一。
+- `extra_writable` 里不存在的路径现在**启动报错**，而不是像以前那样被静默跳过（`extra_read`
+  一直是报错的）。静默跳过读起来就是"这个设置被忽略了",而这正是本次要修的症状。
+
+**验证**
+
+- `extra_write_grants_a_writable_subtree_outside_the_roots`（真 Landlock + 真子进程，
+  走 `with_roots`，因为 `run_shell` 每轮走的是那条路）：不列则拒绝、列了则能 `printf` +
+  `mv`（一条同时需要 MAKE_REG / WRITE_FILE / REFER）、**同父目录下未列的兄弟目录仍然拒绝**、
+  `describe()` 含 `extra write`。
+- `extra_write_rejects_a_missing_root`、`extra_write_rejects_the_filesystem_root`。
+- bwrap 三条：`extra_write` 在 `OutsideRoots::Nothing` 下仍然是 `--bind`（MCP server 的形状）、
+  已是 task root 时不重复绑定、落在 `/tmp` 下时不挂私有 tmpfs。
+- 配置四条：`/` 被拒、`/home`|`/Users`|`/root` 被拒、home 本身被拒而子目录通过、端到端
+  `validate_document` 让 `~/` 失败且报错文案点名展开后的路径。
+- `qcode_core::paths` 四条：root、home、home 的父目录、没有 home 时只退化掉 home 那一条。
+
+**顺带修掉的既有测试缺陷**：`extra_read_grants_a_subtree_outside_the_system_allowlist` 里
+`run_script` 用 `.expect("run")` 包 `command.output()`，而 Landlock 拒绝 `execve` 时子进程
+根本没起来，`output()` 返回 `EACCES`——于是"执行被拒绝"这条断言在它最该成立的环境里 panic，
+测试从写下那天起就没真正跑过（在本机 HEAD 上确认失败）。现在把 spawn 期的 `PermissionDenied`
+也算作拒绝。

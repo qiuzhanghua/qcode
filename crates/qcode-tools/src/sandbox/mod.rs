@@ -104,9 +104,15 @@ pub enum SandboxNetwork {
 ///
 /// * `readable` is honoured by **every** backend. On Windows reads are not
 ///   restricted at all, so it is a no-op there rather than a promise.
-/// * `writable` is honoured by `sandbox-exec` and `windows-acl`. The Linux
-///   backends ignore it — long-standing behaviour, documented in
-///   `[sandbox] extra_writable`'s own doc comment and left alone here.
+/// * `writable` is honoured by **every** backend too, since ADR-0066 §2 修订
+///   注记 2026-11-11: `sandbox-exec` and `windows-acl` had it first, and the two
+///   Linux backends dropped the list on the floor (`let _ = extra_writable`)
+///   until a user setting `extra_writable = ["~/Documents"]` found it read-only
+///   with no way to tell whether the config or the code was wrong.
+///
+/// Both lists are recursive and both are refused for the same dangerous shapes
+/// ([`qcode_core::dangerous_write_root`]): a config-wide grant has no per-task
+/// audience, so `~/` or `/home` here is never what was meant.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SandboxPaths<'a> {
     /// Extra roots granted read-write.
@@ -158,11 +164,11 @@ pub fn build(
         SandboxMode::Bwrap => {
             #[cfg(target_os = "linux")]
             {
-                let _ = extra_writable;
                 let sandbox = Bwrap::new(
                     primary_root,
                     matches!(network, SandboxNetwork::Allow),
                     extra_read,
+                    extra_writable,
                 )?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
@@ -176,9 +182,8 @@ pub fn build(
         SandboxMode::Landlock => {
             #[cfg(target_os = "linux")]
             {
-                let _ = extra_writable;
                 let _ = network;
-                let sandbox = Landlock::new(primary_root, extra_read)?;
+                let sandbox = Landlock::new(primary_root, extra_read, extra_writable)?;
                 sandbox.check()?;
                 Ok(Arc::new(sandbox))
             }
