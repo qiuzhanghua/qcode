@@ -334,7 +334,14 @@ pub(crate) struct LogsArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum SessionsCommand {
     /// List stored sessions, newest first.
-    List,
+    List {
+        /// Also print the title the sidebar shows for each session.
+        ///
+        /// Reading a title means scanning the session log (the last rename
+        /// wins), so this is opt-in: a plain listing stays index-only.
+        #[arg(long)]
+        titles: bool,
+    },
     /// Replay one session as JSON.
     Show { id: String },
     /// Copy a conversation prefix into a new session.
@@ -358,7 +365,7 @@ pub(crate) enum SessionsCommand {
     /// polluted the store and the real work is interleaved with it.
     Delete {
         /// Session ids to remove. With `--except`, the ids to keep.
-        #[arg(value_name = "ID", required = true, num_args = 1..)]
+        #[arg(value_name = "ID", num_args = 1.., required_unless_present = "keep_title")]
         ids: Vec<String>,
         /// Treat `ids` as the sessions to keep and delete every other one.
         ///
@@ -366,6 +373,12 @@ pub(crate) enum SessionsCommand {
         /// sessions are buried under a pile of test runs.
         #[arg(long)]
         except: bool,
+        /// Keep the sessions shown under these titles in the sidebar.
+        ///
+        /// The sidebar shows names, not ids, so this is what a user can copy.
+        /// A title that matches no session, or more than one, is an error.
+        #[arg(long, value_name = "TITLE", num_args = 1..)]
+        keep_title: Vec<String>,
         /// Actually delete; without it, only print what would go.
         #[arg(long)]
         yes: bool,

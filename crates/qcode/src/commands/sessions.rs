@@ -28,6 +28,48 @@ fn write_all_report(out: &mut dyn std::io::Write, buffer: &str) -> std::io::Resu
     }
 }
 
+/// The name the sidebar shows for a session.
+///
+/// An explicit rename wins over the first user message, and the last rename wins
+/// over earlier ones, so the whole log decides — that is what the sidebar
+/// renders (`Backend::title` only knows the fallback). `None` when the session
+/// never got a name at all.
+fn task_title(store: &SessionStore, id: &str) -> Option<String> {
+    match store.load(id) {
+        Ok(events) => task_title_from_events(&events),
+        // A log that cannot be read is a naming problem, not a listing problem.
+        Err(error) => {
+            tracing::debug!(%error, session = %id, "cannot read session while resolving a title");
+            None
+        }
+    }
+}
+
+fn task_title_from_events(events: &[qcode_core::event::Event]) -> Option<String> {
+    use qcode_core::event::EventKind;
+
+    let mut renamed: Option<String> = None;
+    let mut first_message: Option<String> = None;
+    for event in events {
+        match &event.kind {
+            EventKind::TaskRenamed(event) => {
+                let title = event.title.trim();
+                if !title.is_empty() {
+                    renamed = Some(title.to_string());
+                }
+            }
+            EventKind::UserMessage(message) if first_message.is_none() => {
+                let text = message.text.trim().replace('\n', " ");
+                if !text.is_empty() {
+                    first_message = Some(text.chars().take(48).collect());
+                }
+            }
+            _ => {}
+        }
+    }
+    renamed.or(first_message)
+}
+
 pub(crate) fn cmd_sessions(
     args: SessionsArgs,
     data_dir: Option<PathBuf>,
@@ -36,14 +78,14 @@ pub(crate) fn cmd_sessions(
     let mut report = String::new();
 
     match args.command {
-        SessionsCommand::List => {
+        SessionsCommand::List { titles } => {
             use std::fmt::Write as _;
             let sessions = store.list()?;
             if sessions.is_empty() {
                 report.push_str("no sessions\n");
             }
             for session in sessions {
-                let _ = writeln!(
+                let _ = write!(
                     report,
                     "{}  turns={}  cost=${:.4}  model={}  cwd={}",
                     session.id,
@@ -52,6 +94,10 @@ pub(crate) fn cmd_sessions(
                     session.started.model,
                     session.started.cwd
                 );
+                if titles && let Some(title) = task_title(&store, &session.id) {
+                    let _ = write!(report, "  title={title:?}");
+                }
+                report.push('\n');
                 // Roots decide what a task can touch, and a missing one is the
                 // difference between "works" and "every file tool fails".
                 match store.task(&session.id) {
@@ -144,23 +190,71 @@ pub(crate) fn cmd_sessions(
                 report.push_str("dry run; pass --yes to delete\n");
             }
         }
-        SessionsCommand::Delete { ids, except, yes } => {
+        SessionsCommand::Delete {
+            ids,
+            except,
+            keep_title,
+            yes,
+        } => {
             use std::fmt::Write as _;
             let all = store.list()?;
-            // Every named id must exist. With `--except` a mistyped id would
-            // otherwise mean "keep nothing", i.e. delete the session the user
-            // meant to protect — the exact failure this subcommand exists to
-            // avoid.
-            if let Some(missing) = ids.iter().find(|id| !all.iter().any(|s| &&s.id == id)) {
-                return Err(format!("no such session: {missing}").into());
-            }
-            let doomed: Vec<String> = if except {
+            let doomed: Vec<String> = if keep_title.is_empty() {
+                // Every named id must exist. With `--except` a mistyped id would
+                // otherwise mean "keep nothing", i.e. delete the session the user
+                // meant to protect — the exact failure this subcommand exists to
+                // avoid.
+                if let Some(missing) = ids.iter().find(|id| !all.iter().any(|s| &&s.id == id)) {
+                    return Err(format!("no such session: {missing}").into());
+                }
+                if except {
+                    all.iter()
+                        .filter(|session| !ids.contains(&session.id))
+                        .map(|session| session.id.clone())
+                        .collect()
+                } else {
+                    ids.clone()
+                }
+            } else {
+                if !ids.is_empty() || except {
+                    return Err("give ids, or --keep-title, not both".into());
+                }
+                // Picking by the name the sidebar shows, because that is what the
+                // user can actually read off the screen. A title that resolves to
+                // nothing (typo, stale name) or to several sessions would, under
+                // "delete every other one", silently drop a task that was meant
+                // to be kept — so both abort.
+                let mut keep: Vec<String> = Vec::with_capacity(keep_title.len());
+                for wanted in &keep_title {
+                    let wanted = wanted.trim();
+                    let matches: Vec<&str> = all
+                        .iter()
+                        .filter(|session| {
+                            task_title(&store, &session.id).as_deref() == Some(wanted)
+                        })
+                        .map(|session| session.id.as_str())
+                        .collect();
+                    match matches.as_slice() {
+                        [] => {
+                            return Err(format!(
+                                "no session titled {wanted:?}; \
+                                 `qc sessions list --titles` shows the names"
+                            )
+                            .into());
+                        }
+                        [only] => keep.push((*only).to_string()),
+                        many => {
+                            return Err(format!(
+                                "{} sessions are titled {wanted:?}; pass the id instead",
+                                many.len()
+                            )
+                            .into());
+                        }
+                    }
+                }
                 all.iter()
-                    .filter(|session| !ids.contains(&session.id))
+                    .filter(|session| !keep.contains(&session.id))
                     .map(|session| session.id.clone())
                     .collect()
-            } else {
-                ids.clone()
             };
             if doomed.is_empty() {
                 report.push_str("nothing to delete\n");
@@ -168,11 +262,15 @@ pub(crate) fn cmd_sessions(
             // Show what a session was, not just its id: the whole point is to
             // recognise a test run before it goes.
             for session in all.iter().filter(|s| doomed.contains(&s.id)) {
-                let _ = writeln!(
+                let _ = write!(
                     report,
                     "{}  turns={}  model={}  cwd={}",
                     session.id, session.turns, session.started.model, session.started.cwd
                 );
+                if let Some(title) = task_title(&store, &session.id) {
+                    let _ = write!(report, "  title={title:?}");
+                }
+                report.push('\n');
             }
             if !yes {
                 let _ = writeln!(
@@ -379,8 +477,86 @@ pub(crate) fn store_key(
 
 #[cfg(test)]
 mod tests {
-    use super::write_all_report;
+    use super::{task_title_from_events, write_all_report};
+    use qcode_core::event::Event;
     use std::io::{self, Write};
+
+    /// Build an event the way the log stores it, so the tests exercise the same
+    /// shape a real session file has instead of a hand-built struct that could
+    /// drift from the schema.
+    fn event(seq: u64, json_kind: &str) -> Event {
+        let line = format!(
+            r#"{{"v":1,"seq":{seq},"ts":"2026-11-12T08:00:00.000000Z","session":"s","turn":1,{json_kind}}}"#
+        );
+        serde_json::from_str(&line).expect("event")
+    }
+
+    fn user(seq: u64, text: &str) -> Event {
+        event(
+            seq,
+            &format!(
+                r#""type":"user_message","data":{{"text":{}}}"#,
+                json_str(text)
+            ),
+        )
+    }
+
+    fn renamed(seq: u64, title: &str) -> Event {
+        event(
+            seq,
+            &format!(
+                r#""type":"task_renamed","data":{{"title":{}}}"#,
+                json_str(title)
+            ),
+        )
+    }
+
+    fn json_str(value: &str) -> String {
+        serde_json::to_string(value).expect("string")
+    }
+
+    /// The sidebar shows an explicit name when there is one, and the first user
+    /// message otherwise — the same fallback `Backend::title` uses.
+    #[test]
+    fn an_explicit_title_wins_over_the_first_message() {
+        let events = [user(1, "帮我看看这个 bug"), renamed(2, "日常工作")];
+        assert_eq!(task_title_from_events(&events).as_deref(), Some("日常工作"));
+    }
+
+    #[test]
+    fn an_unnamed_session_falls_back_to_its_first_message() {
+        let events = [user(1, "帮我看看这个 bug"), user(2, "another")];
+        assert_eq!(
+            task_title_from_events(&events).as_deref(),
+            Some("帮我看看这个 bug")
+        );
+    }
+
+    /// A rename appends; the sidebar shows the last one, so the last one must
+    /// decide. Taking the first would bring an old name back to life.
+    #[test]
+    fn the_last_rename_wins() {
+        let events = [
+            renamed(1, "old name"),
+            renamed(2, "中学数理化"),
+            user(3, "message"),
+        ];
+        assert_eq!(
+            task_title_from_events(&events).as_deref(),
+            Some("中学数理化")
+        );
+    }
+
+    /// A session with no message and no rename has no name. Inventing one would
+    /// let `--keep-title` match the wrong session.
+    #[test]
+    fn a_session_without_a_name_has_no_title() {
+        let events = [event(
+            1,
+            r#""type":"assistant_message","data":{"blocks":[],"provider_raw":null}"#,
+        )];
+        assert_eq!(task_title_from_events(&events), None);
+    }
 
     /// A writer that always fails the same way, standing in for stdout after the
     /// reader of a pipe has gone away.
