@@ -436,6 +436,52 @@ impl Shell {
                         })
                         .child(div().text_size(sp(13.0)).whitespace_nowrap().child(label)),
                 );
+            // 「任务操作」按钮；弹出菜单挂在按钮自己的 relative 容器上，与
+            // 定时任务段头按钮同款：基准点 = 紧跟按钮之后（按钮底部），
+            // 向下 4px 弹出。
+            let mut task_menu_wrapper = div().relative().child(
+                Button::new(format!("task-menu-{}", row.task.id))
+                    .compact()
+                    .label("…")
+                    .tooltip("任务操作")
+                    // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
+                    // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
+                    // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(rgb(0xffffff).into())
+                            .hover(rgb(0xffffff).into())
+                            .active(rgb(0xffffff).into())
+                            .foreground(rgb(0x1a1a1a).into()),
+                    )
+                    .bg(rgb(0xffffff))
+                    .text_color(rgb(0x1a1a1a))
+                    .on_click(cx.listener({
+                        let task_id = row.task.id.clone();
+                        move |this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.task_menu = if this.task_menu.as_deref() == Some(task_id.as_str())
+                            {
+                                None
+                            } else {
+                                Some(task_id.clone())
+                            };
+                            cx.notify();
+                        }
+                    })),
+            );
+            if menu_open {
+                task_menu_wrapper = task_menu_wrapper.child(
+                    deferred(
+                        anchored()
+                            .anchor(Anchor::TopLeft)
+                            .offset(point(px(0.0), px(4.0)))
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(self.render_task_menu(&row.task.id, &full_title, cx)),
+                    )
+                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
+                );
+            }
             let controls = div()
                 .id(format!("task-actions-{}", row.task.id))
                 .absolute()
@@ -448,41 +494,7 @@ impl Shell {
                 .gap_1()
                 .invisible()
                 .when(show_actions, |this| this.visible())
-                .child(
-                    // 「任务操作」按钮；弹出菜单挂在 controls 容器上，锚定到
-                    // 其左下角（TopLeft + 行高 30px），即按钮正下方。
-                    div().relative().child(
-                        Button::new(format!("task-menu-{}", row.task.id))
-                            .compact()
-                            .label("…")
-                            .tooltip("任务操作")
-                            // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
-                            // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
-                            // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(rgb(0xffffff).into())
-                                    .hover(rgb(0xffffff).into())
-                                    .active(rgb(0xffffff).into())
-                                    .foreground(rgb(0x1a1a1a).into()),
-                            )
-                            .bg(rgb(0xffffff))
-                            .text_color(rgb(0x1a1a1a))
-                            .on_click(cx.listener({
-                                let task_id = row.task.id.clone();
-                                move |this, _, _window, cx| {
-                                    cx.stop_propagation();
-                                    this.task_menu =
-                                        if this.task_menu.as_deref() == Some(task_id.as_str()) {
-                                            None
-                                        } else {
-                                            Some(task_id.clone())
-                                        };
-                                    cx.notify();
-                                }
-                            })),
-                    ),
-                )
+                .child(task_menu_wrapper)
                 .child(
                     Button::new(format!("task-add-dir-{}", row.task.id))
                         .compact()
@@ -508,20 +520,6 @@ impl Shell {
                         })),
                 );
             task_row = task_row.child(controls);
-            if menu_open {
-                // 弹框挂回整行（锚点最稳），右对齐行右缘、顶部贴行底，
-                // 任务操作按钮也在行右侧，视觉上即按钮正下方。
-                task_row = task_row.child(
-                    deferred(
-                        anchored()
-                            .anchor(Anchor::TopRight)
-                            .offset(point(px(0.0), px(30.0)))
-                            .snap_to_window_with_margin(px(8.0))
-                            .child(self.render_task_menu(&row.task.id, &full_title, cx)),
-                    )
-                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
-                );
-            }
             rows.push(task_row.into_any_element());
             if active {
                 rows.push(self.render_task_roots(cx));
@@ -828,7 +826,57 @@ impl Shell {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let open = self.schedule_section_open;
-        let mut header = div()
+        // 过滤 / 操作按钮各自包一层 relative 容器：弹出菜单锚定到对应按钮的
+        // 正下方（BottomLeft），而不是整段段头的左上角（那会开到段头左侧）。
+        let mut filter_wrapper = div().relative().child(
+            Button::new("schedule-filter")
+                .compact()
+                .label(schedule_filter_label(self.schedule_filter))
+                .tooltip("按状态过滤定时任务")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_schedule_filter_menu(cx);
+                })),
+        );
+        if self.schedule_filter_menu_open {
+            filter_wrapper = filter_wrapper.child(
+                deferred(
+                    anchored()
+                        // 块级容器里 absolute 弹层的基准点 = 紧跟按钮之后（按钮
+                        // 底部），偏移只留 4px 间距即可，不再加整个按钮高。
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.0), px(4.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(self.render_schedule_filter_menu(cx)),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
+        }
+        let mut menu_wrapper = div().relative().child(
+            Button::new("schedule-menu")
+                .compact()
+                .label("⋯")
+                .tooltip("定时任务操作")
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_schedule_menu(cx);
+                })),
+        );
+        if self.schedule_menu_open {
+            menu_wrapper = menu_wrapper.child(
+                deferred(
+                    anchored()
+                        // 块级容器里 absolute 弹层的基准点 = 紧跟按钮之后（按钮
+                        // 底部），偏移只留 4px 间距即可，不再加整个按钮高。
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.0), px(4.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(self.render_schedule_menu(cx)),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY),
+            );
+        }
+        div()
             .id(("sidebar-section", SidebarSection::Schedule as usize))
             .relative()
             .flex()
@@ -875,26 +923,8 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_0p5()
-                    .child(
-                        Button::new("schedule-filter")
-                            .compact()
-                            .label(schedule_filter_label(self.schedule_filter))
-                            .tooltip("按状态过滤定时任务")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_schedule_filter_menu(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("schedule-menu")
-                            .compact()
-                            .label("⋯")
-                            .tooltip("定时任务操作")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_schedule_menu(cx);
-                            })),
-                    )
+                    .child(filter_wrapper)
+                    .child(menu_wrapper)
                     .child(
                         Button::new("new-schedule-task")
                             .compact()
@@ -908,32 +938,8 @@ impl Shell {
             )
             .on_click(cx.listener(move |this, _, _window, cx| {
                 this.toggle_sidebar_section(SidebarSection::Schedule, cx);
-            }));
-        if self.schedule_menu_open {
-            header = header.child(
-                deferred(
-                    anchored()
-                        .anchor(Anchor::TopLeft)
-                        .offset(point(px(0.0), px(28.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(self.render_schedule_menu(cx)),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY),
-            );
-        }
-        if self.schedule_filter_menu_open {
-            header = header.child(
-                deferred(
-                    anchored()
-                        .anchor(Anchor::TopLeft)
-                        .offset(point(px(0.0), px(28.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(self.render_schedule_filter_menu(cx)),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY),
-            );
-        }
-        header.into_any_element()
+            }))
+            .into_any_element()
     }
 
     /// 定时任务段头的状态过滤菜单：全部 / 已开启 / 已暂停 / 已结束。
