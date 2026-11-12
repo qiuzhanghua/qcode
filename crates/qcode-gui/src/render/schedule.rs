@@ -138,10 +138,11 @@ impl Shell {
                     .child(
                         div()
                             .text_size(sp(CAPTION_SIZE))
-                            .text_color(if status == TaskStatus::Active {
-                                theme.info
-                            } else {
-                                muted
+                            // 状态配色：运行中=绿，已暂停=黄，已结束=灰。
+                            .text_color(match status {
+                                TaskStatus::Active => rgb(0x16a34a),
+                                TaskStatus::Paused => rgb(0xca8a04),
+                                TaskStatus::Ended => muted.into(),
                             })
                             .child(status_label(status)),
                     ),
