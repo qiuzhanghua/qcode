@@ -277,7 +277,7 @@ pub const FIELDS: &[FieldSpec] = &[
         label: "Extra writable roots",
         page: Page::NetworkSandbox,
         kind: FieldKind::Lines,
-        help: "One path per line; windows-acl and macOS only",
+        help: "One path per line, whole subtree; every backend. Not `/`, `~`, `/home`",
     },
     FieldSpec {
         path: &["sandbox", "extra_read"],
@@ -285,6 +285,13 @@ pub const FIELDS: &[FieldSpec] = &[
         page: Page::NetworkSandbox,
         kind: FieldKind::Lines,
         help: "One path per line, whole subtree; read + execute, every backend",
+    },
+    FieldSpec {
+        path: &["sandbox", "allow_pty"],
+        label: "Allow pseudo-terminals",
+        page: Page::NetworkSandbox,
+        kind: FieldKind::Bool,
+        help: "landlock: lets a confined process open a PTY. The only devpts available is the host's, so this also reaches your other terminals' shells — off by default; prefer mode = bwrap",
     },
     FieldSpec {
         path: &["network", "mode"],
