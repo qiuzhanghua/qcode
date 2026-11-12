@@ -214,6 +214,7 @@ mod tests {
                 status: ToolStatus::Ok,
                 output: "ok".to_string(),
                 metadata: Default::default(),
+                images: Vec::new(),
                 diff: Some(ToolDiff {
                     patch: String::new(),
                     files: vec![qcode_core::event::DiffFileStat {
@@ -235,6 +236,7 @@ mod tests {
                 call_id: "c2".to_string(),
                 status: ToolStatus::Ok,
                 output: "ok".to_string(),
+                images: Vec::new(),
                 metadata: Default::default(),
                 diff: Some(ToolDiff {
                     patch: String::new(),
@@ -259,6 +261,7 @@ mod tests {
                 output: "error[E0308]: mismatched types\nmore".to_string(),
                 metadata: Default::default(),
                 diff: None,
+                images: Vec::new(),
             }),
             EventKind::TurnEnded(TurnEnded {
                 status: TurnStatus::Paused,

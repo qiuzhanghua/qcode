@@ -248,6 +248,7 @@ mod tests {
                 output: "done".to_string(),
                 metadata: Default::default(),
                 diff: None,
+                images: Vec::new(),
             }),
         )
     }

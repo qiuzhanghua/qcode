@@ -302,6 +302,7 @@ fn tool_result_snapshot_keeps_default_metadata() {
                 ..ToolMetadata::default()
             },
             diff: None,
+            images: Vec::new(),
         }),
         json!({
             "type": "tool_result",
@@ -327,6 +328,7 @@ fn tool_result_snapshot_carries_the_diff() {
             status: ToolStatus::Ok,
             output: "replaced 1 occurrence(s) in @workspace/notes.md".into(),
             metadata: ToolMetadata::default(),
+            images: Vec::new(),
             diff: Some(qcode_core::event::ToolDiff {
                 patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".into(),
                 files: vec![qcode_core::event::DiffFileStat {

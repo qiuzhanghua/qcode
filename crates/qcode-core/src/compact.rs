@@ -324,6 +324,7 @@ mod tests {
                     output: huge.clone(),
                     metadata: ToolMetadata::default(),
                     diff: None,
+                    images: Vec::new(),
                 }),
             ),
             event(

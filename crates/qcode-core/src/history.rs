@@ -111,18 +111,85 @@ where
                 blocks: message.blocks.clone(),
                 tool_call_id: None,
             }),
-            EventKind::ToolResult(result) => messages.push(Message {
-                role: Role::Tool,
-                blocks: vec![ContentBlock::Text {
-                    text: result.output.clone(),
-                }],
-                tool_call_id: Some(result.call_id.clone()),
-            }),
+            EventKind::ToolResult(result) => {
+                messages.push(Message {
+                    role: Role::Tool,
+                    blocks: vec![ContentBlock::Text {
+                        text: result.output.clone(),
+                    }],
+                    tool_call_id: Some(result.call_id.clone()),
+                });
+                // Pictures from a tool (ADR-0081) cannot ride on the tool
+                // message: every wire format we speak allows text only there.
+                // They go in a user message right behind it, which is the one
+                // role all of them accept images in.
+                if let Some(blocks) = tool_image_blocks(result, &mut load) {
+                    messages.push(Message {
+                        role: Role::User,
+                        blocks,
+                        tool_call_id: None,
+                    });
+                }
+            }
             _ => {}
         }
     }
 
     messages
+}
+
+/// Assemble the follow-up user message for pictures a tool produced: one
+/// caption naming them, then the image blocks (ADR-0081).
+///
+/// Shared by the two places that need it — replaying the log, and the turn that
+/// just ran the tool — because the caption and the block order are the part
+/// that must not drift between them. `images` is `(mime, base64, label)`.
+pub(crate) fn image_followup(images: Vec<(String, String, String)>) -> Option<Vec<ContentBlock>> {
+    if images.is_empty() {
+        return None;
+    }
+    let mut names = Vec::with_capacity(images.len());
+    let mut blocks = Vec::with_capacity(images.len() + 1);
+    for (mime_type, data_base64, label) in images {
+        names.push(label);
+        blocks.push(ContentBlock::Image {
+            mime_type,
+            data_base64,
+        });
+    }
+    let mut with_caption = vec![ContentBlock::Text {
+        text: format!(
+            "Image(s) read by the tool call above: {}.",
+            names.join(", ")
+        ),
+    }];
+    with_caption.extend(blocks);
+    Some(with_caption)
+}
+
+/// The image blocks for one tool result, or `None` when it returned no
+/// pictures (or none of them load any more).
+fn tool_image_blocks<F>(
+    result: &crate::event::ToolResult,
+    load: &mut F,
+) -> Option<Vec<ContentBlock>>
+where
+    F: FnMut(&ImageRef) -> Option<Vec<u8>>,
+{
+    let mut images = Vec::with_capacity(result.images.len());
+    for image in &result.images {
+        // A missing blob (cleaned data dir) costs the picture, not the turn:
+        // the tool's text output already said a picture was read.
+        let Some(bytes) = load(image) else {
+            continue;
+        };
+        images.push((
+            image.mime.as_str().to_string(),
+            BASE64.encode(bytes),
+            image.name.clone().unwrap_or_else(|| "image".to_string()),
+        ));
+    }
+    image_followup(images)
 }
 
 /// Prefix makes the summary unmistakable to the model and to anyone reading
@@ -328,6 +395,7 @@ mod tests {
                     output: "contents".into(),
                     metadata: Default::default(),
                     diff: None,
+                    images: Vec::new(),
                 }),
             ),
         ];
@@ -339,5 +407,91 @@ mod tests {
         assert_eq!(messages[2].role, Role::Tool);
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(messages[2].blocks.len(), 1);
+    }
+
+    /// A picture a tool read (ADR-0081) cannot ride on the tool message — every
+    /// wire format allows text only there — so it comes back as a user message
+    /// right behind it, caption first.
+    #[test]
+    fn a_tools_picture_replays_as_a_user_message_after_the_result() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = qcode_attachments::AttachmentStore::open(dir.path()).expect("store");
+        let image = store
+            .put_image(qcode_attachments::NewImage {
+                bytes: &png_bytes(),
+                mime: qcode_attachments::ImageMime::Png,
+                name: Some("shot.png"),
+            })
+            .expect("put image");
+
+        // No `ToolCall` event here on purpose: a call rides inside the
+        // assistant message's blocks, so a tool result replays straight after
+        // the message that asked for it.
+        let events = vec![event(
+            2,
+            EventKind::ToolResult(ToolResult {
+                call_id: "c1".into(),
+                status: ToolStatus::Ok,
+                output: "shot.png: image/png, 70 bytes — returned as an image".into(),
+                metadata: Default::default(),
+                diff: None,
+                images: vec![image],
+            }),
+        )];
+
+        let messages = messages_from_events_with(
+            &events,
+            |image| store.read_image(image).ok(),
+            |_| String::new(),
+        );
+
+        assert_eq!(messages.len(), 2, "the result, then the picture");
+        assert_eq!(messages[0].role, Role::Tool);
+        assert_eq!(messages[1].role, Role::User);
+        assert!(messages[1].tool_call_id.is_none());
+        let blocks = &messages[1].blocks;
+        assert_eq!(blocks.len(), 2, "caption plus the picture");
+        let ContentBlock::Text { text } = &blocks[0] else {
+            panic!("the first block has to name the picture: {blocks:?}");
+        };
+        assert!(text.contains("shot.png"), "{text}");
+        let ContentBlock::Image {
+            mime_type,
+            data_base64,
+        } = &blocks[1]
+        else {
+            panic!("the picture has to reach the model: {blocks:?}");
+        };
+        assert_eq!(mime_type, "image/png");
+        assert!(!data_base64.is_empty());
+    }
+
+    /// A cleaned data dir loses the blob but must not lose the turn: the tool's
+    /// text already said what it read.
+    #[test]
+    fn a_missing_tool_image_blob_degrades_to_no_message() {
+        let events = vec![event(
+            1,
+            EventKind::ToolResult(ToolResult {
+                call_id: "c1".into(),
+                status: ToolStatus::Ok,
+                output: "shot.png: image/png, 70 bytes".into(),
+                metadata: Default::default(),
+                diff: None,
+                images: vec![qcode_attachments::ImageRef {
+                    id: qcode_attachments::AttachmentId::from_bytes([0; 32]),
+                    mime: qcode_attachments::ImageMime::Png,
+                    bytes: 70,
+                    width: 1,
+                    height: 1,
+                    origin: None,
+                    name: Some("shot.png".into()),
+                }],
+            }),
+        )];
+
+        let messages = messages_from_events_with(&events, |_| None, |_| String::new());
+        assert_eq!(messages.len(), 1, "only the tool result, no empty caption");
+        assert_eq!(messages[0].role, Role::Tool);
     }
 }

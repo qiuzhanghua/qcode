@@ -509,6 +509,7 @@ impl Tool for RunShell {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            images: Vec::new(),
             diff: None,
         })
     }

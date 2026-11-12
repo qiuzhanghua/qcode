@@ -183,11 +183,34 @@ pub enum ApprovalClass {
     Escalation,
 }
 
+/// A picture a tool is handing back to the model (ADR-0081).
+///
+/// The bytes live here, in the tool's own output, and not in the session log:
+/// the engine stores them in the attachment store and records a reference, the
+/// same way a user's attachment works (ADR-0061 §4). That keeps a tool free of
+/// any knowledge of where the store is, and keeps the log small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolImage {
+    /// `image/png`, `image/jpeg`, …
+    pub mime_type: String,
+    pub data: Vec<u8>,
+    /// What to call it when the picture is described in text — usually the
+    /// path the tool read it from.
+    pub label: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub status: ToolStatus,
     pub output: String,
     pub metadata: ToolMetadata,
+    /// Pictures this call produced. Empty for text-only tools.
+    ///
+    /// The engine appends them to the turn as image blocks (or, for a model
+    /// that takes text only, replaces them with a line saying what was
+    /// attached). `output` should still describe them: the text is what a
+    /// text-only model sees, and what a human reads in the transcript.
+    pub images: Vec<ToolImage>,
     /// Tokens consumed by work the tool performed on the engine's behalf (a
     /// sub-agent). The engine merges this into the parent turn's usage.
     pub usage: Usage,
@@ -214,6 +237,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            images: Vec::new(),
             diff: None,
         }
     }
@@ -230,6 +254,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            images: Vec::new(),
             diff: None,
         }
     }
@@ -267,6 +292,7 @@ impl ToolOutput {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: None,
+            images: Vec::new(),
             diff: None,
         }
     }

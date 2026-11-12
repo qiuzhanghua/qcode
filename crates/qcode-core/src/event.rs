@@ -34,7 +34,13 @@ use crate::task::Root;
 ///
 /// v10 adds `UserMessage::scheduled` (ADR-0059), an additive optional field for
 /// a scheduled-task delivery: an old reader replays it as a plain user message.
-pub const EVENT_SCHEMA_VERSION: u32 = 10;
+///
+/// v11 adds `ToolResult::images` (ADR-0081): a tool can hand pictures back to
+/// the model, and they are references into the same attachment store user
+/// attachments use. Additive — a v10 reader replays the log with the images
+/// missing, which costs the model the picture but not the text summary the tool
+/// wrote about it.
+pub const EVENT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -296,6 +302,17 @@ pub struct ToolResult {
     /// failed call, or a log written before schema v5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<ToolDiff>,
+    /// Pictures the call produced (ADR-0081): references into the attachment
+    /// store, like a user message's attachments — the bytes never enter the
+    /// log. Empty for every tool that only returns text, and for a log written
+    /// before schema v11.
+    ///
+    /// Kept on the result rather than folded into `output` because the wire
+    /// formats disagree about where an image may go: a tool *result* message
+    /// carries text only, so the engine replays these as a user message right
+    /// after it. See `history::messages_from_events_with`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<qcode_attachments::ImageRef>,
 }
 
 /// The change one write-ish tool call made, as a unified diff plus per-file

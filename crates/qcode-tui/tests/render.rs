@@ -97,6 +97,7 @@ fn app_with_transcript() -> App {
             output: "test result: ok. 86 passed".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     );
     app
@@ -200,6 +201,7 @@ fn child_agent_progress_is_rendered_nested() {
             output: "contents".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     ));
 
@@ -301,6 +303,7 @@ fn apply_patch_output_uses_red_and_green() {
             output: "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     );
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
@@ -346,6 +349,7 @@ fn a_recorded_diff_shows_its_counts() {
             call_id: "c1".to_string(),
             status: ToolStatus::Ok,
             output: "replaced 1 occurrence(s)".to_string(),
+            images: Vec::new(),
             metadata: Default::default(),
             diff: Some(ToolDiff {
                 patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".to_string(),
@@ -416,6 +420,7 @@ fn todo_block_shows_progress_and_items() {
             output: "Todo list (1/3 done):".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     );
 
@@ -709,6 +714,7 @@ fn renders_the_pause_card() {
             call_id: "c1".to_string(),
             status: ToolStatus::Ok,
             output: "ok".to_string(),
+            images: Vec::new(),
             metadata: Default::default(),
             diff: Some(ToolDiff {
                 patch: String::new(),
@@ -741,6 +747,7 @@ fn renders_the_pause_card() {
             output: "error[E0308]: mismatched types".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     );
     apply(

@@ -480,6 +480,7 @@ fn tool_result_updates_the_matching_row() {
         output: "ok".to_string(),
         metadata: Default::default(),
         diff: None,
+        images: Vec::new(),
     })));
 
     match app.blocks.last() {
@@ -513,6 +514,7 @@ fn todo_write_result_becomes_a_todo_block() {
         output: "Todo list (1/3 done):".to_string(),
         metadata: Default::default(),
         diff: None,
+        images: Vec::new(),
     })));
 
     match app.blocks.last() {
@@ -539,6 +541,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         output: "Todo list (0/1 done):".to_string(),
         metadata: Default::default(),
         diff: None,
+        images: Vec::new(),
     })));
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c2".to_string(),
@@ -551,6 +554,7 @@ fn failed_todo_write_does_not_replace_the_list() {
         output: "item 1 has empty `content`".to_string(),
         metadata: Default::default(),
         diff: None,
+        images: Vec::new(),
     })));
 
     assert_eq!(
@@ -578,6 +582,7 @@ fn empty_todo_write_clears_the_list_with_a_notice() {
         output: "todo list cleared".to_string(),
         metadata: Default::default(),
         diff: None,
+        images: Vec::new(),
     })));
 
     assert!(matches!(
@@ -1102,6 +1107,7 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             output: "contents".to_string(),
             metadata: Default::default(),
             diff: None,
+            images: Vec::new(),
         }),
     ));
     app.apply_child(&child(
@@ -1432,6 +1438,7 @@ fn diff_command_lists_changes_and_prints_a_patch() {
         call_id: "c1".to_string(),
         status: ToolStatus::Ok,
         output: "replaced 1 occurrence(s) in @workspace/notes.md".to_string(),
+        images: Vec::new(),
         metadata: Default::default(),
         diff: Some(ToolDiff {
             patch: "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-one\n+1\n".to_string(),

@@ -656,3 +656,82 @@ async fn the_real_shell_environment_reaches_the_command() {
         output.output
     );
 }
+
+/// A real 1x1 PNG, byte for byte.
+fn png_bytes() -> Vec<u8> {
+    vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 252, 207, 192, 80,
+        15, 0, 4, 133, 1, 128, 132, 169, 140, 33, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ]
+}
+
+/// A picture is something the model can look at, so `read_file` hands it over
+/// as an image instead of refusing it as "binary" (ADR-0081).
+#[tokio::test]
+async fn read_file_returns_a_picture_as_an_image() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
+    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+
+    let output = ReadFile
+        .execute(&ctx, json!({"path": "shot.png"}))
+        .await
+        .unwrap();
+
+    assert_eq!(output.status, ToolStatus::Ok);
+    assert_eq!(
+        output.images.len(),
+        1,
+        "the picture has to reach the engine"
+    );
+    let image = &output.images[0];
+    assert_eq!(image.mime_type, "image/png");
+    assert_eq!(image.data, png_bytes());
+    assert!(image.label.ends_with("shot.png"), "{}", image.label);
+    // The text is what a text-only model sees, and what a human reads in the
+    // transcript, so it has to say what happened.
+    assert!(output.output.contains("image/png"), "{}", output.output);
+    assert!(output.output.contains("bytes"), "{}", output.output);
+}
+
+/// Detection is by content, not by name: the tool must not trust an extension
+/// it never verified, in either direction.
+#[tokio::test]
+async fn read_file_detects_images_by_content_not_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("disguised.dat"), png_bytes()).unwrap();
+    std::fs::write(dir.path().join("lying.png"), "just text\n").unwrap();
+    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+
+    let picture = ReadFile
+        .execute(&ctx, json!({"path": "disguised.dat"}))
+        .await
+        .unwrap();
+    assert_eq!(picture.images.len(), 1, "a PNG named .dat is still a PNG");
+
+    let text = ReadFile
+        .execute(&ctx, json!({"path": "lying.png"}))
+        .await
+        .unwrap();
+    assert!(text.images.is_empty(), "text named .png is still text");
+    assert!(text.output.contains("just text"), "{}", text.output);
+}
+
+/// Other binaries keep the old answer: the model must not be handed a JPEG of
+/// garbage pretending to be a picture, and an .exe still says why it is refused.
+#[tokio::test]
+async fn read_file_still_refuses_non_image_binaries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3, 0, 5]).unwrap();
+    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+
+    let output = ReadFile
+        .execute(&ctx, json!({"path": "blob.bin"}))
+        .await
+        .unwrap();
+
+    assert!(output.images.is_empty());
+    assert_eq!(output.status, ToolStatus::Error);
+    assert!(output.output.contains("binary"), "{}", output.output);
+}

@@ -5,7 +5,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use qcode_core::event::{ToolMetadata, ToolStatus, Usage};
 use qcode_core::provider::ToolSpec;
-use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
+use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolImage, ToolOutput};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -65,6 +65,25 @@ fn atomic_write(path: &Path, contents: &str) -> Result<(), ToolError> {
 // read_file
 // ---------------------------------------------------------------------------
 
+/// Detect an image by its magic bytes (ADR-0081).
+///
+/// Not by extension: a screenshot saved as `.dat` is still a PNG, and a `.png`
+/// holding text is still text. The store accepts exactly these four formats, so
+/// recognising a fifth here would only move the failure one layer down.
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 pub struct ReadFile;
 
 #[derive(Deserialize)]
@@ -83,8 +102,9 @@ impl Tool for ReadFile {
     fn spec(&self) -> ToolSpec {
         spec(
             "read_file",
-            "Read a UTF-8 text file inside the workspace. Returns numbered lines. \
-             Use offset/limit for large files.",
+            "Read a file inside the workspace. Text files return numbered lines (use \
+             offset/limit for large ones). A PNG/JPEG/WebP/GIF comes back as the picture \
+             itself, which a model that accepts images can look at.",
             json!({
                 "type": "object",
                 "properties": {
@@ -106,6 +126,24 @@ impl Tool for ReadFile {
         let resolved = path::resolve_ctx(ctx, &args.path, Access::Read)?;
         let target = resolved.path.clone();
         let bytes = blocking(move || std::fs::read(target).map_err(ToolError::from)).await?;
+
+        // A picture is a legitimate thing to read (ADR-0081): hand the model
+        // the image instead of refusing it as "binary". Detected by magic
+        // bytes, not by extension — a screenshot saved as `.dat` is still a
+        // PNG, and a `.png` that is really text is still text.
+        if let Some(mime) = image_mime(&bytes) {
+            let size = bytes.len();
+            let label = resolved.path.display().to_string();
+            let mut output = ToolOutput::ok(format!(
+                "{label}: {mime}, {size} bytes — returned as an image, not as text."
+            ));
+            output.images.push(ToolImage {
+                mime_type: mime.to_string(),
+                data: bytes,
+                label,
+            });
+            return Ok(output);
+        }
 
         if bytes.iter().take(8192).any(|byte| *byte == 0) {
             return Ok(ToolOutput::error("binary file; refusing to read as text"));
@@ -137,6 +175,7 @@ impl Tool for ReadFile {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            images: Vec::new(),
             diff: None,
         })
     }
@@ -385,6 +424,7 @@ impl Tool for ListDir {
             usage: Usage::default(),
             cost_usd: 0.0,
             full_output: truncated.then(|| raw.clone()),
+            images: Vec::new(),
             diff: None,
         })
     }

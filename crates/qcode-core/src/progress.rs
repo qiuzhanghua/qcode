@@ -226,6 +226,7 @@ mod tests {
                 output: output.to_string(),
                 metadata: ToolMetadata::default(),
                 diff: None,
+                images: Vec::new(),
             }),
         )
     }

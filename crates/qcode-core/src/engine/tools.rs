@@ -1,4 +1,6 @@
 use super::*;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 
 /// Adjacent read-only calls in one provider batch run together. Writes, shell
 /// and MCP calls keep their original position and run alone, so a read never
@@ -171,6 +173,30 @@ where
             }],
             tool_call_id: Some(planned.call.call_id),
         });
+        // The pictures this call produced go in a user message right behind the
+        // result: a tool-role message may only carry text in every wire format
+        // we speak (ADR-0081). Built from the bytes in hand rather than read
+        // back from the store — the blobs were just written.
+        if !output.images.is_empty() {
+            let images = output
+                .images
+                .iter()
+                .map(|image| {
+                    (
+                        image.mime_type.clone(),
+                        BASE64.encode(&image.data),
+                        image.label.clone(),
+                    )
+                })
+                .collect();
+            if let Some(blocks) = super::history::image_followup(images) {
+                messages.push(Message {
+                    role: Role::User,
+                    blocks,
+                    tool_call_id: None,
+                });
+            }
+        }
     }
 
     Ok(finished)
@@ -358,6 +384,41 @@ where
         }
     }
 
+    // Pictures the tool handed back (ADR-0081): store the bytes, record a
+    // reference. This is the same split a user attachment uses — the log never
+    // carries image bytes (ADR-0061 §4) — and it is why `ToolImage` carries
+    // bytes rather than a path: the tool does not know where the store is.
+    let mut images = Vec::with_capacity(output.images.len());
+    if !output.images.is_empty() {
+        match qcode_attachments::AttachmentStore::open(writer.store.root()) {
+            Ok(store) => {
+                for image in &output.images {
+                    let Some(mime) = qcode_attachments::ImageMime::from_mime_str(&image.mime_type)
+                    else {
+                        tracing::warn!(
+                            call_id,
+                            mime = %image.mime_type,
+                            "tool returned an image in a format the store does not take"
+                        );
+                        continue;
+                    };
+                    let stored = store.put_image(qcode_attachments::NewImage {
+                        bytes: &image.data,
+                        mime,
+                        name: Some(&image.label),
+                    });
+                    match stored {
+                        Ok(reference) => images.push(reference),
+                        Err(err) => {
+                            tracing::warn!(%err, call_id, "failed to store a tool's image")
+                        }
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(%err, call_id, "failed to open the attachment store"),
+        }
+    }
+
     writer.append(
         EventKind::ToolResult(ToolResult {
             call_id: call_id.to_string(),
@@ -365,6 +426,7 @@ where
             output: output.output.clone(),
             metadata,
             diff: output.diff.clone(),
+            images,
         }),
         on_event,
     )?;
