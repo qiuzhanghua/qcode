@@ -37,6 +37,11 @@ jobs:
           - os: windows-latest
             targets: windows-amd64 windows-arm64
     runs-on: ${{ matrix.os }}
+    # 与 ci.yml 同理：卡住必须变成失败。v0.8.7 那次 Windows job 跑了 21 分钟后
+    # 被取消，publish 跟着取消，GitHub Release 一个产物都没有——而「取消」不发送
+    # 失败通知，所以从外面看只是「还没发出来」。按 v0.8.6 的实际耗时（linux 8m /
+    # macos 8m / windows 15m）取 2.5 倍余量。
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +76,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # 与 ci.yml 同理：卡住必须变成失败。v0.8.7 那次 Windows job 跑了 21 分钟后
+    # 被取消，publish 跟着取消，GitHub Release 一个产物都没有——而「取消」不发送
+    # 失败通知，所以从外面看只是「还没发出来」。按 v0.8.6 的实际耗时（linux 8m /
+    # macos 8m / windows 15m）取 2.5 倍余量。
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

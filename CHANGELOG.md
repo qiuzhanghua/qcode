@@ -1,10 +1,14 @@
 # Changelog
 
-## 0.8.7 — 2026-11-13
+## 0.8.8 — 2026-11-13
+
+> v0.8.7 打了 tag 但没发成：`release` 的 Windows job 在 21 分钟后被取消，`publish`
+> 随之取消，GitHub Release 一个产物都没有。而那个 tag 指向的提交比本节内容少
+> （logging 与 CI 修复都在 tag 之后），所以 0.8.7 直接跳过，这一段随 0.8.8 一起发出。
 
 0.8.6 之后的清理与补齐：`read_file` 第一次能把磁盘上的图交给模型，`qc sessions` 有了
-按 id / 按标题删会话的能力，`stdout` 上最后的叙述被清干净并加了守卫测试，CI 里那个
-从来没绿过的交叉 check job 删掉了。
+按 id / 按标题删会话的能力，`stdout` 上最后的叙述被清干净并加了守卫测试，日志第一次
+能回答「这次跑到底怎么结束的」，CI 里那个从来没绿过的交叉 check job 删掉了。
 
 ### `read_file` 能读图：不再把图片拒成「二进制」（ADR-0081）
 
@@ -51,26 +55,50 @@ ADR-0079 的迁移只查了「叙述有没有误用 stderr」，没查反方向�
 （不等换行的打印就是「问人一句话」）；`println!` 只允许出现在注明了「谁消费这份输出」的
 白名单文件里；`qcode-gui/src` 一律不许写 stdout。另有自测证明分类器看得见要找的东西。
 
+### 日志能回答「这次跑怎么结束的」（ADR-0082）
+
+此前日志能落盘、能脱敏，但缺一件事：一次运行结束后，文件里没有任何一行能说明它是
+正常退出、被 Ctrl-C、被 `SIGTERM`、还是 panic 掉的。`qc` 不写「开始」也不写「结束」，
+所以「昨天那次跑完没跑完」只能靠时间戳猜。
+
+- 每次运行写两条：开头一条（版本、pid、子命令、cwd），结尾一条（`reason` + 出口码 + 时长）；
+  `reason` 取 `normal` / `sigint` / `sigterm` / `sighup` / `panic`；
+- pid 只在首末两条里出现，中间行不带——`grep` 找一次运行靠它，但不必让每行都背着它；
+- `SIGTERM` / `SIGHUP` 装处理器（ACP 客户端断开、服务管理器停止、终端关窗都会发），
+  panic 走 hook，`output.rs` 那个 `exit(130)` 也补一条；
+- `kill -9` 无法捕获，所以下次启动时按「最后一次已知运行没有收尾」补账，而不是假装它没发生；
+- 默认级别拆成两个 filter：文件 `info`、终端 `warn`。文件要全，终端不该被自己的日志淹掉；
+- `qc logs` 把行首的 UTC 时间戳就地换成本地时间显示（逐行查偏移，夏令时前后各按各的算）；
+- `docs/design/LOGGING.md` 记下这套约定。
+
+### CI：一个死变体、一个永远挂起的测试，以及「挂住不算失败」
+
+发布前 CI 红了整整两天，是三件事叠在一起：
+
+- Windows 上 `Reason::SigHup` 从不被构造（那个分支走 `SigTerm`），`clippy -D warnings`
+  直接把 workspace 判死。加 `#[cfg(unix)]` 让它只在有 SIGHUP 的平台存在。
+- macOS 的 keychain 往返测试用 `Command::output()` 读回刚写入的条目：写入走 Security
+  框架、ACL 信任本进程，读回走 `security` CLI 是另一个程序，会弹「允许访问」对话框；
+  无头 runner 上没人能点，`security` 不报错，**一直等**。测试里那段检查
+  `errSecInteractionNotAllowed` 的分支因此永远执行不到——处理了「被拒绝」，没处理
+  「不返回」。改成 30 秒上限，超时按「本会话弹不出审批框」跳过并清理探针条目。
+- 四个 job 补 `timeout-minutes`。真正的伤害不是测试挂住，是挂住之后 CI **不算失败**：
+  两天里没人收到失败通知，因为运行从来没结束过。
+- `scripts/ci-cross-check.sh` 在 git 里是 `100644`，而 `Makefile` 用
+  `./scripts/ci-cross-check.sh` 直接调它——干净检出后 `make check-platforms` 报
+  Permission denied，而这个目标在 DECISIONS 与 CHANGELOG 里被反复当作验证手段引用。
+  改成可执行；发布工作流同样补 `timeout-minutes`。
+- 新增 `scripts/install-rust-std.sh`：这台开发机用的是 cot 的纯解包工具链（没有
+  rustup），所以 `make check-platforms` 一直跳过两个 Darwin 三元组——它要的 std 装不
+  进去。脚本负责把 `rust-std-<ver>-<triple>.tar.xz` 解到 `rustc --print sysroot` 的
+  `lib/rustlib/<triple>/`，并在装完后用一次真实的 `--emit=metadata` 编译验收（这一步
+  同时校验三元组与编译器版本）。有 rustup 时仍走 `rustup target add`。`check-platforms`
+  的缺 std 提示现在也会指向它。
+
 ### 终端能粘贴了（ADR-0062 §5）
 
 GUI 的终端此前没有粘贴键：`Ctrl+Shift+V` 被外层快捷键吃掉，`Cmd+V` 又被当成普通按键送进
 PTY。Terminal 上下文现在自己声明这两个键。
-
-### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
-
-交叉 check 自上线起就是红的，但红的原因跟任何一次改动都无关：
-`failed to find tool "x86_64-w64-mingw32-clang"`。上一个版本把它记成「aarch64 才有的
-问题，去掉 aarch64 就好了」，那个判断是错的——脚本的循环在失败后**继续**跑下一个 target，
-所以第一次真正跑的时候 x86_64 也是红的，只是最后一句是 aarch64 的错。本机实测（干净
-target 目录、把 llvm-mingw 从 PATH 摘掉）：`libsqlite3-sys` 与 `aws-lc-sys` 两个 C 依赖
-都缺编译器；配上 llvm-mingw 立刻转绿。
-
-覆盖本来就是重复的：`windows-build` 在真 Windows 上跑 `clippy --workspace --all-targets`
-加 `cargo test --workspace --no-run`，全部 21 个 `#[cfg(windows)]` 门控文件都编到，用的是
-MSVC 的真 C 工具链。按 ci.yml 自己写下的判断（"a job added on a guess is a job that goes
-red for reasons unrelated to the change"）删掉 job，保留 `scripts/ci-cross-check.sh` 与
-`make check-platforms` 给有 llvm-mingw 的开发机。脚本新增交叉 C 编译器预检：缺
-`<triple>-clang` 时直接说缺什么、装什么，而不是让 cargo 在第三方 build script 里 panic。
 
 ### 删掉 CI 的 `cross-check` job：它从来没绿过，覆盖也不缺
 

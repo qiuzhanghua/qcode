@@ -103,6 +103,13 @@ done
 if ((${#missing_std[@]} > 0)); then
     printf '\nnot checked (target std not installed): %s\n' "${missing_std[*]}"
     printf 'install with: rustup target add %s\n' "${missing_std[*]}"
+    # No rustup here is not an accident to report: the development machines use
+    # a plain distribution (cot), where the std has to be unpacked into the
+    # sysroot by hand. Point at the script that does it instead of leaving the
+    # `rustup` line above as the only answer.
+    if ! command -v rustup >/dev/null 2>&1; then
+        printf 'this machine has no rustup; use scripts/install-rust-std.sh <triple> <rust-std-*.tar.xz>\n'
+    fi
 fi
 
 if ((${#missing_cc[@]} > 0)); then
