@@ -424,9 +424,7 @@ impl Shell {
                 .px_2()
                 .rounded(px(6.0))
                 .cursor_pointer()
-                .when(active, |this| {
-                    this.bg(row_active).font_weight(FontWeight::SEMIBOLD)
-                })
+                .when(active, |this| this.bg(row_active))
                 .when(!active, |this| this.hover(|style| style.bg(row_hover)))
                 .when(!rows.is_empty(), |this| this.mt_2())
                 .id(format!("task-row-{}", row.task.id))
@@ -454,7 +452,17 @@ impl Shell {
                         .items_center()
                         .gap_1()
                         // 状态圆点在前，定时任务时钟在后，之后是标题（ADR-0059）。
-                        .child(div().text_size(sp(13.0)).whitespace_nowrap().child(marker))
+                        // 运行中的 ▶ 字形偏大，字号略调小；其余标记保持标题字号。
+                        .child(
+                            div()
+                                .text_size(if state == TaskState::Running && !active {
+                                    sp(11.5)
+                                } else {
+                                    sp(13.0)
+                                })
+                                .whitespace_nowrap()
+                                .child(marker),
+                        )
                         .when(row.has_scheduled, |this| {
                             this.child(
                                 Icon::new(IconName::CalendarClock)
