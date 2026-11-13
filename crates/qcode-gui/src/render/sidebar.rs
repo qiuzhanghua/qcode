@@ -409,7 +409,7 @@ impl Shell {
             } else {
                 String::new()
             };
-            let label = format!("{marker} {title}{wonky}");
+            let label = format!("{title}{wonky}");
             let menu_open = self.task_menu.as_deref() == Some(id.as_str());
             let show_actions = self.hovered_task.as_deref() == Some(id.as_str()) || menu_open;
             let hover_id = id.clone();
@@ -453,7 +453,8 @@ impl Shell {
                         .flex_row()
                         .items_center()
                         .gap_1()
-                        // 定时任务投递过的任务：标题前加一个时钟标记（ADR-0059）。
+                        // 状态圆点在前，定时任务时钟在后，之后是标题（ADR-0059）。
+                        .child(div().text_size(sp(13.0)).whitespace_nowrap().child(marker))
                         .when(row.has_scheduled, |this| {
                             this.child(
                                 Icon::new(IconName::CalendarClock)
@@ -599,9 +600,19 @@ impl Shell {
             )
             .child(
                 Button::new("collapse-sidebar")
-                    .icon(IconName::ChevronLeft)
+                    // 与 dsh 的「收起侧边栏」同款：带边框的面板图标（PanelLeft
+                    // 轮廓，16px）；背景与「新建任务」按钮一致——常态无色、
+                    // 悬浮/按下灰色底。
+                    .icon(IconName::PanelLeft)
                     .tooltip("折叠侧栏")
                     .accessibility_label("折叠侧栏")
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().button_foreground),
+                    )
                     .on_click(cx.listener(|this, _, _window, cx| this.toggle_sidebar(cx))),
             )
     }

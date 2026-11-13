@@ -1089,9 +1089,8 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                                             .child(scheduled.title.clone()),
                                     )
                                     .child(
-                                        // 三角放大到 28px 但撑高 title 框：给它一个
-                                        // 固定行高容器，只撑宽不撑高，字形居中溢出
-                                        // 到两侧留白里，不参与布局高度。
+                                        // 展开箭头：与折叠行的 chevron 同款，
+                                        // 靠右对齐。
                                         div()
                                             .flex_1()
                                             .h(px(22.0))
@@ -1099,13 +1098,11 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                                             .flex_row()
                                             .items_center()
                                             .justify_end()
-                                            .child(
-                                                div()
-                                                    .text_size(sp(28.0))
-                                                    .line_height(sp(22.0))
-                                                    .text_color(rgb(0x888888))
-                                                    .child(if open { "▾" } else { "▸" }),
-                                            ),
+                                            .child(conversation_icon(if open {
+                                                IconName::ChevronDown
+                                            } else {
+                                                IconName::ChevronRight
+                                            })),
                                     ),
                             )
                             .when(open, |this| {
