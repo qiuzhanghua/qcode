@@ -33,7 +33,15 @@ pub(crate) fn cmd_logs(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let files = logging::log_files(&data_dir);
+    let files = match logging::log_files(&data_dir) {
+        Ok(files) => files,
+        // Not "no log files": the directory could not be listed, and saying it is
+        // empty sends the reader looking for a logging bug that is not there. An
+        // unreadable directory is its own answer, and it is a failure.
+        Err(error) => {
+            return Err(format!("cannot read {}: {error}", dir.display()).into());
+        }
+    };
     let mut follower = Follower::new(data_dir.clone());
 
     if files.is_empty() {

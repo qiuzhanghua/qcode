@@ -226,11 +226,13 @@ pub fn attach_file(data_dir: &Path) -> PathBuf {
 /// Sorted by modification time rather than by parsed date: the appender's date
 /// format is its business, and a file written at 23:59:59 belongs to yesterday
 /// even though it is still the most recent one.
-pub fn log_files(data_dir: &Path) -> Vec<PathBuf> {
+pub fn log_files(data_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let dir = log_dir(data_dir);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
+    // The error is handed back rather than flattened to "no files": a directory
+    // that cannot be read is not an empty one, and `qc logs` said "no log files in
+    // …" for a directory holding 13 KB of them. A user reading that concludes
+    // logging is off, which is the one diagnosis that is certainly wrong.
+    let entries = std::fs::read_dir(&dir)?;
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -244,7 +246,7 @@ pub fn log_files(data_dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
     files.sort();
-    files.into_iter().map(|(_, path)| path).collect()
+    Ok(files.into_iter().map(|(_, path)| path).collect())
 }
 
 /// The file `qc logs` should show when it is not told otherwise.
@@ -258,7 +260,8 @@ pub fn current_log(data_dir: &Path) -> PathBuf {
         return link;
     }
     log_files(data_dir)
-        .pop()
+        .ok()
+        .and_then(|mut files| files.pop())
         .unwrap_or_else(|| log_dir(data_dir).join(CURRENT_LOG))
 }
 
@@ -435,7 +438,10 @@ mod tests {
         std::fs::write(&newer, "b").unwrap();
         // No symlink here, so the newest dated file is the answer.
         assert_eq!(current_log(data), newer);
-        assert_eq!(log_files(data), vec![older, newer]);
+        assert_eq!(
+            log_files(data).expect("list the log files"),
+            vec![older, newer]
+        );
     }
 
     /// Files that are not ours must not be picked up: the same directory holds
@@ -448,7 +454,46 @@ mod tests {
         std::fs::write(logs.join("mcp-wordcraft.log"), "x").unwrap();
         std::fs::write(logs.join("network.jsonl"), "x").unwrap();
         std::fs::write(logs.join("qc.2026-01-01.log"), "x").unwrap();
-        assert_eq!(log_files(dir.path()).len(), 1);
+        assert_eq!(log_files(dir.path()).expect("list the log files").len(), 1);
+    }
+
+    /// An unreadable log directory is an error, not an empty one.
+    ///
+    /// The bug this guards against: `log_files` flattened the `read_dir` failure
+    /// into `Vec::new()`, so `qc logs` printed "no log files in <dir>" for a
+    /// directory holding 13 KB of them. That is the one message that sends a user
+    /// looking for a logging bug — "logging is off" — when the truth is "you
+    /// cannot read this".
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_log_directory_is_reported_not_emptied() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let logs = log_dir(dir.path());
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("qc.2026-01-01.log"), "x").unwrap();
+
+        // Restored before the tempdir is dropped, or cleanup fails on some systems.
+        let original = std::fs::metadata(&logs).unwrap().permissions();
+        std::fs::set_permissions(&logs, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let listed = log_files(dir.path());
+        // Asked while it is still unreadable, which is the state `qc logs` is in
+        // when it prints the path.
+        let named = current_log(dir.path());
+        std::fs::set_permissions(&logs, original).unwrap();
+
+        match listed {
+            Ok(files) => panic!("an unreadable directory was listed as {files:?}"),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "the error has to name the real cause: {error}"
+            ),
+        }
+        // `current_log` still names a path: `qc logs` prints it before reading, and
+        // a directory it cannot list must not leave the message with no file name.
+        assert_eq!(named, logs.join(CURRENT_LOG));
     }
 
     /// The reason the file layer exists: a captured log has to be greppable.
