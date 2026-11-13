@@ -140,15 +140,35 @@ pub(crate) struct ScheduleFormState {
 impl Shell {
     /// 侧栏「定时任务」＋ / ⋮·在对话中创建：新建会话并预填创建提示。
     ///
+    /// 任务列表里已经有一个「新任务」（尚无标题 / 内容的空任务）时，直接
+    /// 跳过去复用，不再新建——避免点一次就堆一个空的「新任务」行。其余情况
     /// 复用「我的任务」的 `new_session`（含草稿保护）：复用了当前空会话时
     /// 预填依然成立；被草稿保护拦下时，预填同样写进用户正在编辑的会话——
     /// 他点的是「创建定时任务」，这个预填正是他要的。
     pub(crate) fn new_schedule_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.schedule_menu_open = false;
-        self.new_session(window, cx);
+        // 任务列表里已存在的空任务（`titles` 里没有条目 = 尚无标题 = 「新任务」）。
+        let existing_new = self
+            .tasks
+            .iter()
+            .find(|row| !self.titles.contains_key(&row.task.id))
+            .map(|row| row.task.id.clone());
+        match existing_new {
+            Some(id) if self.active.as_deref() != Some(id.as_str()) => {
+                self.resume(id, window, cx);
+            }
+            _ => {
+                self.new_session(window, cx);
+                // 从定时任务详情页点进来时，`new_session` 可能因「复用空任务 /
+                // 草稿保护」提前返回（不切视图），这里必须切回任务视图，
+                // 预填才看得到。
+                self.enter_task_view(cx);
+            }
+        }
         // 预填提示保持简短；「未明确周期时先向用户确认」的引导在
         // schedule_create 工具描述里（模型调用工具时读到），不占输入框。
         // 注意：title 生成会剥掉这个前缀（见 `qcode_core::task::SCHEDULE_DRAFT_PREFILL`）。
+        // set_value 直接覆盖：输入框原本有内容也一并清掉。
         let prefill = format!("{}\n", qcode_core::task::SCHEDULE_DRAFT_PREFILL);
         self.ui.input.update(cx, |input, cx| {
             input.set_value(prefill, window, cx);
