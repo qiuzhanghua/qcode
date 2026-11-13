@@ -337,7 +337,7 @@ fn task_with(
 }
 
 #[test]
-fn parse_rule_recognizes_all_five_kinds() {
+fn parse_rule_recognizes_all_six_kinds() {
     assert_eq!(
         parse_rule("cron 0 3 * * *"),
         Ok(Rule::Cron {
@@ -364,7 +364,8 @@ fn parse_rule_recognizes_all_five_kinds() {
     assert_eq!(
         parse_rule("weekly mon 09:30"),
         Ok(Rule::Weekly {
-            weekday: 1,
+            weekdays: vec![1],
+            weekday: None,
             hour: 9,
             minute: 30
         })
@@ -372,11 +373,39 @@ fn parse_rule_recognizes_all_five_kinds() {
     assert_eq!(
         parse_rule("weekly 7 09:30"),
         Ok(Rule::Weekly {
-            weekday: 0,
+            weekdays: vec![0],
+            weekday: None,
             hour: 9,
             minute: 30
         }),
         "7 folds onto Sunday (0)"
+    );
+    // 多选：逗号或空格分隔均可。
+    assert_eq!(
+        parse_rule("weekly 1,3,5 09:30"),
+        Ok(Rule::Weekly {
+            weekdays: vec![1, 3, 5],
+            weekday: None,
+            hour: 9,
+            minute: 30
+        })
+    );
+    assert_eq!(
+        parse_rule("weekly mon wed fri 09:30"),
+        Ok(Rule::Weekly {
+            weekdays: vec![1, 3, 5],
+            weekday: None,
+            hour: 9,
+            minute: 30
+        })
+    );
+    assert_eq!(
+        parse_rule("monthly 15 09:30"),
+        Ok(Rule::Monthly {
+            day: 15,
+            hour: 9,
+            minute: 30
+        })
     );
     assert!(matches!(
         parse_rule("once 2026-11-10 09:30"),
@@ -393,6 +422,21 @@ fn parse_rule_rejects_bad_input() {
     assert!(matches!(
         parse_rule("daily 25:00"),
         Err(RuleError::Invalid { .. })
+    ));
+    assert!(matches!(
+        parse_rule("weekly 09:30"),
+        Err(RuleError::Invalid { .. }),
+        "a weekly rule needs at least one weekday"
+    ));
+    assert!(matches!(
+        parse_rule("monthly 0 09:30"),
+        Err(RuleError::Invalid { .. }),
+        "monthly day must be 1-31"
+    ));
+    assert!(matches!(
+        parse_rule("monthly 32 09:30"),
+        Err(RuleError::Invalid { .. }),
+        "monthly day must be 1-31"
     ));
     assert!(matches!(
         parse_rule("cron 60 3 * * *"),
@@ -432,7 +476,8 @@ fn interval_daily_and_weekly_compute_the_next_occurrence() {
     // Weekly Monday 09:30 passed → next Monday.
     assert_eq!(
         Rule::Weekly {
-            weekday: 1,
+            weekdays: vec![1],
+            weekday: None,
             hour: 9,
             minute: 30
         }
@@ -441,12 +486,65 @@ fn interval_daily_and_weekly_compute_the_next_occurrence() {
     );
     assert_eq!(
         Rule::Weekly {
-            weekday: 1,
+            weekdays: vec![1],
+            weekday: None,
             hour: 12,
             minute: 0
         }
         .next_after(now),
         Some(at(2026, June, 1, 12, 0))
+    );
+    // 多选：周一周三。周一 09:30 已过 → 本周三（06-03）。
+    assert_eq!(
+        Rule::Weekly {
+            weekdays: vec![1, 3],
+            weekday: None,
+            hour: 9,
+            minute: 30
+        }
+        .next_after(now),
+        Some(at(2026, June, 3, 9, 30))
+    );
+    // 旧单值 `weekday` 字段兜底。
+    assert_eq!(
+        Rule::Weekly {
+            weekdays: vec![],
+            weekday: Some(1),
+            hour: 9,
+            minute: 30
+        }
+        .next_after(now),
+        Some(at(2026, June, 8, 9, 30))
+    );
+    // Monthly 15 号 09:30：本月 15 号（06-15）已过 → 下月 15 号（07-15）。
+    assert_eq!(
+        Rule::Monthly {
+            day: 15,
+            hour: 9,
+            minute: 30
+        }
+        .next_after(now),
+        Some(at(2026, July, 15, 9, 30))
+    );
+    // 2026-06-01 是周一；当月 1 号 12:00 未到 → 今天。
+    assert_eq!(
+        Rule::Monthly {
+            day: 1,
+            hour: 12,
+            minute: 0
+        }
+        .next_after(now),
+        Some(at(2026, June, 1, 12, 0))
+    );
+    // 31 号：2 月没有 31 号 → 顺延到 3 月 31 号。
+    assert_eq!(
+        Rule::Monthly {
+            day: 31,
+            hour: 9,
+            minute: 30
+        }
+        .next_after(at(2026, February, 1, 10, 0)),
+        Some(at(2026, March, 31, 9, 30))
     );
     // A cron rule reuses CronSpec's own calendar.
     assert_eq!(
@@ -600,6 +698,29 @@ fn target_status_and_overlap_round_trip_through_serde() {
     let encoded = serde_json::to_string(&task).expect("serialize");
     let decoded: ScheduledTask = serde_json::from_str(&encoded).expect("deserialize");
     assert_eq!(decoded, task);
+}
+
+#[test]
+fn a_legacy_single_weekday_rule_still_loads() {
+    // 旧数据的 weekly 只有一个 `weekday` 字段（0=周日）。新格式为 `weekdays`
+    // 列表；旧字段必须能兜底读回，否则升级后既有任务加载即失败。
+    let rule: Rule = serde_json::from_str(r#"{"kind":"weekly","weekday":1,"hour":9,"minute":30}"#)
+        .expect("legacy weekly loads");
+    let Rule::Weekly {
+        weekdays,
+        weekday,
+        hour,
+        minute,
+    } = &rule
+    else {
+        panic!("expected a weekly rule");
+    };
+    assert_eq!(Rule::effective_weekdays(weekdays, *weekday), vec![1]);
+    assert_eq!((*hour, *minute), (9, 30));
+    // 新格式序列化只写 `weekdays`，不再带旧 `weekday`。
+    let encoded = serde_json::to_string(&rule).expect("serialize");
+    assert!(encoded.contains("weekdays"), "{encoded}");
+    assert!(!encoded.contains("\"weekday\""), "{encoded}");
 }
 
 #[test]

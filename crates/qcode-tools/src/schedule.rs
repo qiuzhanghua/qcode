@@ -140,7 +140,9 @@ impl Tool for ScheduleCreate {
                 "as a message into a conversation (the target), then the task runs again ",
                 "per its rule. Rules: `cron <expr>` (5 fields, local time), ",
                 "`once YYYY-MM-DD HH:MM`, `every <seconds>` (>= 60), `daily HH:MM`, ",
-                "`weekly <weekday> HH:MM` (0 or sun = Sunday, 1..7 or mon..sat). ",
+                "`weekly <weekdays> HH:MM` (weekdays may repeat: 0 or sun = Sunday, ",
+                "1..7 or mon..sat; comma- or space-separated, e.g. `1,3,5`), ",
+                "`monthly <day> HH:MM` (day 1-31). ",
                 "The task lives in the store and keeps running after this session closes. ",
                 "When the user did not specify when the task runs (rule) or where it ",
                 "delivers (target), ask the user to confirm those first — never invent a ",
@@ -162,7 +164,7 @@ impl Tool for ScheduleCreate {
                     },
                     "rule": {
                         "type": "string",
-                        "description": "触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <weekday> HH:MM。"
+                        "description": "触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <星期列表> HH:MM（可多选，逗号分隔，如 1,3,5；0或sun=周日）/ monthly <日> HH:MM（日 1-31）。"
                     },
                     "target": {
                         "type": "string",

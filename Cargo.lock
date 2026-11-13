@@ -5437,6 +5437,7 @@ version = "0.8.8"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "gpui-kit",
  "image",
  "ksni",

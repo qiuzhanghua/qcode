@@ -30,6 +30,8 @@ tokio-util.workspace = true
 # gets a diagnostic, since a `.desktop` launch shows them no terminal.
 tracing.workspace = true
 time.workspace = true
+# DatePicker / TimeField 组件的值类型（chrono::NaiveDate / NaiveTime）。
+chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 # Close-to-tray: grab the native window handle to hide/restore the window.

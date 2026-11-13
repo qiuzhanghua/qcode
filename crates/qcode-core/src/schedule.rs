@@ -569,7 +569,7 @@ pub fn advance(
 // 创建，支持 5 种规则，投递语义为"投递器"——回执只证明投递成功，不等于执行完成。
 // 全部是纯数据 + 纯函数，wall clock 作参数，延续本模块的可测风格。
 
-/// 定时规则：5 种。`Cron` 保存表达式文本（解析复用 [`CronSpec`]），其余为纯数据。
+/// 定时规则：6 种。`Cron` 保存表达式文本（解析复用 [`CronSpec`]），其余为纯数据。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Rule {
@@ -584,14 +584,26 @@ pub enum Rule {
     Interval { seconds: u64 },
     /// 每天 HH:MM。
     Daily { hour: u8, minute: u8 },
-    /// 每周某天 HH:MM（`weekday`：0=周日，同 crontab；7 折算为 0）。
-    Weekly { weekday: u8, hour: u8, minute: u8 },
+    /// 每周若干天 HH:MM（`weekdays`：0=周日，同 crontab；7 折算为 0）。
+    ///
+    /// `weekday` 是旧单值形态的兼容字段：旧数据只有 `weekday` 时兜底读取，
+    /// 新数据只写 `weekdays`。消费方统一走 [`Rule::effective_weekdays`]。
+    Weekly {
+        #[serde(default)]
+        weekdays: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weekday: Option<u8>,
+        hour: u8,
+        minute: u8,
+    },
+    /// 每月某日 HH:MM（`day`：1-31；所在月份没有该天则跳过当月）。
+    Monthly { day: u8, hour: u8, minute: u8 },
 }
 
 /// 规则描述解析失败的原因。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuleError {
-    #[error("rule `{text}`: unknown kind; use cron / once / every / daily / weekly")]
+    #[error("rule `{text}`: unknown kind; use cron / once / every / daily / weekly / monthly")]
     UnknownKind { text: String },
     #[error("rule `{text}`: {source}")]
     Cron {
@@ -610,7 +622,9 @@ pub enum RuleError {
 /// - `once <YYYY-MM-DD HH:MM>`（本地墙钟）
 /// - `every <秒>`（≥ 60）
 /// - `daily <HH:MM>`
-/// - `weekly <weekday> <HH:MM>`（weekday：`sun`/`mon`/… 或 0..7，0=周日）
+/// - `weekly <weekday-list> <HH:MM>`（weekday：`sun`/`mon`/… 或 0..7，0=周日；
+///   可多选，逗号或空格分隔）
+/// - `monthly <day> <HH:MM>`（day 1-31）
 pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
     let text = text.trim();
     let parts: Vec<&str> = text.split_whitespace().collect();
@@ -664,25 +678,61 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
             Ok(Rule::Daily { hour, minute })
         }
         Some("weekly") => {
-            let weekday = parts
-                .get(1)
-                .and_then(|part| parse_weekday(part))
-                .ok_or_else(|| RuleError::Invalid {
+            // `weekly <weekday-list> HH:MM`：weekday-list 支持逗号分隔（`1,3,5`）
+            // 或空格分隔多个（`mon wed fri`），至少一个；最后一个 token 是时刻。
+            let parts = &parts[1..];
+            if parts.len() < 2 {
+                return Err(RuleError::Invalid {
                     text: text.to_string(),
                     reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                });
+            }
+            let (rest, hhmm) = parts.split_at(parts.len() - 1);
+            let mut weekdays: Vec<u8> = Vec::new();
+            for token in rest {
+                for piece in token.split(',') {
+                    weekdays.push(
+                        parse_weekday(piece).ok_or_else(|| RuleError::Invalid {
+                            text: text.to_string(),
+                            reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                        })? % 7,
+                    );
+                }
+            }
+            if weekdays.is_empty() {
+                return Err(RuleError::Invalid {
+                    text: text.to_string(),
+                    reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                });
+            }
+            let (hour, minute) = parse_hhmm(hhmm[0]).ok_or_else(|| RuleError::Invalid {
+                text: text.to_string(),
+                reason: "expected `weekly <weekday> HH:MM`".to_string(),
+            })?;
+            Ok(Rule::Weekly {
+                weekdays,
+                weekday: None,
+                hour,
+                minute,
+            })
+        }
+        Some("monthly") => {
+            let day: u8 = parts
+                .get(1)
+                .and_then(|part| part.parse().ok())
+                .filter(|day| (1..=31).contains(day))
+                .ok_or_else(|| RuleError::Invalid {
+                    text: text.to_string(),
+                    reason: "expected `monthly <day> HH:MM` (day 1-31)".to_string(),
                 })?;
             let (hour, minute) =
                 parse_hhmm(parts.get(2).copied().unwrap_or("")).ok_or_else(|| {
                     RuleError::Invalid {
                         text: text.to_string(),
-                        reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                        reason: "expected `monthly <day> HH:MM` (day 1-31)".to_string(),
                     }
                 })?;
-            Ok(Rule::Weekly {
-                weekday,
-                hour,
-                minute,
-            })
+            Ok(Rule::Monthly { day, hour, minute })
         }
         // 裸表达式：当 cron 解析。
         Some(_) if parts.len() == 5 => {
@@ -759,6 +809,7 @@ impl Rule {
                 }
             }
             Rule::Weekly {
+                weekdays,
                 weekday,
                 hour,
                 minute,
@@ -766,17 +817,60 @@ impl Rule {
                 let time = Time::from_hms(*hour, *minute, 0).ok()?;
                 let today = now.date();
                 let today_ix = weekday_of(today.weekday()) as u8; // 0=周日
-                let target = weekday % 7;
-                let delta = (target + 7 - today_ix) % 7;
-                let days = if delta == 0 {
-                    // 今天：时刻还没到 → 今天；已过 → 下周。
-                    if time > now.time() { 0 } else { 7 }
-                } else {
-                    i64::from(delta)
-                };
-                Some(PrimitiveDateTime::new(today + TimeSpan::days(days), time))
+                // 归一化后的多选星期；空列表（旧数据两个字段都缺）按没有规则处理。
+                let targets = Self::effective_weekdays(weekdays, *weekday);
+                if targets.is_empty() {
+                    return None;
+                }
+                let mut best: Option<PrimitiveDateTime> = None;
+                for target in targets {
+                    let delta = (target + 7 - today_ix) % 7;
+                    let days = if delta == 0 {
+                        // 今天：时刻还没到 → 今天；已过 → 下周。
+                        if time > now.time() { 0 } else { 7 }
+                    } else {
+                        i64::from(delta)
+                    };
+                    let candidate = PrimitiveDateTime::new(today + TimeSpan::days(days), time);
+                    best = Some(best.map_or(candidate, |b| b.min(candidate)));
+                }
+                best
+            }
+            Rule::Monthly { day, hour, minute } => {
+                let time = Time::from_hms(*hour, *minute, 0).ok()?;
+                let today = now.date();
+                // 从当月起扫描最多 12 个月：当月没有该日（如 31 号落在 2 月）则
+                // 跳过；`day` 当天时刻已过也会顺延到下月。
+                let mut month_index = today.year() * 12 + today.month() as i32 - 1;
+                for _ in 0..12 {
+                    let year = month_index.div_euclid(12);
+                    let month = month_index.rem_euclid(12) + 1;
+                    let month_enum = Month::try_from(month as u8).ok()?;
+                    if *day <= month_enum.length(year) {
+                        let date = Date::from_calendar_date(year, month_enum, *day).ok()?;
+                        let candidate = PrimitiveDateTime::new(date, time);
+                        if candidate > now {
+                            return Some(candidate);
+                        }
+                    }
+                    month_index += 1;
+                }
+                None
             }
         }
+    }
+
+    /// 归一化的星期集合（0=周日，去重、升序）。兼容旧单值 `weekday` 字段：
+    /// 新数据用 `weekdays` 列表，旧数据只有 `weekday` 时兜底。
+    pub fn effective_weekdays(weekdays: &[u8], legacy: Option<u8>) -> Vec<u8> {
+        let mut days: Vec<u8> = if weekdays.is_empty() {
+            legacy.map(|day| day % 7).into_iter().collect()
+        } else {
+            weekdays.iter().map(|day| day % 7).collect()
+        };
+        days.sort_unstable();
+        days.dedup();
+        days
     }
 
     /// 规则的紧凑描述（列表 / 详情展示用）。
@@ -787,13 +881,22 @@ impl Rule {
             Rule::Interval { seconds } => format!("every {seconds}s"),
             Rule::Daily { hour, minute } => format!("daily {:02}:{:02}", hour, minute),
             Rule::Weekly {
+                weekdays,
                 weekday,
                 hour,
                 minute,
             } => {
-                let day = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-                    [(*weekday % 7) as usize];
-                format!("weekly {day} {:02}:{:02}", hour, minute)
+                let names: Vec<String> = Self::effective_weekdays(weekdays, *weekday)
+                    .into_iter()
+                    .map(|day| {
+                        ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][day as usize]
+                            .to_string()
+                    })
+                    .collect();
+                format!("weekly {} {:02}:{:02}", names.join("、"), hour, minute)
+            }
+            Rule::Monthly { day, hour, minute } => {
+                format!("monthly {day}日 {:02}:{:02}", hour, minute)
             }
         }
     }

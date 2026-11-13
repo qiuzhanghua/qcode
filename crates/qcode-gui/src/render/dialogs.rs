@@ -1,5 +1,7 @@
 use super::*;
 use crate::shell::schedule::{ScheduleRuleKind, ScheduleTargetKind};
+use gpui_kit::component::date_picker::DatePicker;
+use gpui_kit::component::time_field::TimeField;
 
 impl Shell {
     pub(crate) fn render_task_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -127,18 +129,16 @@ impl Shell {
         let popover = cx.theme().popover;
         let border = cx.theme().border;
         let popover_foreground = cx.theme().popover_foreground;
+        let accent = cx.theme().tokens.accent;
+        let accent_foreground = cx.theme().accent_foreground;
 
         // 周期：类型下拉的菜单项与选中项。
         let rule_items: Vec<(String, String)> = ScheduleRuleKind::ALL
             .iter()
             .map(|kind| (kind.as_stored().to_string(), kind.label().to_string()))
             .collect();
-        // 星期下拉：0=周日，同 crontab。
+        // 星期：0=周日，同 crontab。多选 pill 组按周一起始排列。
         const WEEKDAY_LABELS: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-        let weekday_items: Vec<(String, String)> = (0u8..7)
-            .map(|day| (day.to_string(), WEEKDAY_LABELS[day as usize].to_string()))
-            .collect();
-        let weekday_label = WEEKDAY_LABELS[state.weekday as usize].to_string();
         // 目标：类型下拉。
         let target_items: Vec<(String, String)> = ScheduleTargetKind::ALL
             .iter()
@@ -168,49 +168,125 @@ impl Shell {
         };
         // 周期类型对应的参数行。
         let param_field: AnyElement = match state.rule_kind {
-            ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly => self
-                .form_field(cx, "时刻（HH:MM）", &state.time)
+            ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(cx.theme().muted_foreground)
+                        .child("时刻（HH:MM）"),
+                )
+                .child(TimeField::new(&state.time).w_full())
                 .into_any_element(),
+            ScheduleRuleKind::Monthly => {
+                let day = state.monthly_day.clone();
+                let time = state.time.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(self.form_field(cx, "每月日期（1-31）", &day))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("时刻（HH:MM）"),
+                            )
+                            .child(TimeField::new(&time).w_full()),
+                    )
+                    .into_any_element()
+            }
             ScheduleRuleKind::Interval => self
                 .form_field(cx, "间隔秒数（≥ 60）", &state.interval_secs)
                 .into_any_element(),
-            ScheduleRuleKind::Once => self
-                .form_field(cx, "触发时刻（YYYY-MM-DD HH:MM）", &state.once_at)
-                .into_any_element(),
+            ScheduleRuleKind::Once => {
+                let picker = state.once_picker.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("触发时刻（日期 + 时间）"),
+                    )
+                    .child(DatePicker::new(&picker).w_full())
+                    .into_any_element()
+            }
             ScheduleRuleKind::Cron => self
                 .form_field(cx, "Cron 表达式（5 字段）", &state.cron_expr)
                 .into_any_element(),
         };
-        // 只有「每周」才出现的星期下拉、只有「指定会话」才出现的会话下拉。
-        let weekday_field = (state.rule_kind == ScheduleRuleKind::Weekly).then(|| {
-            self.form_select(
-                cx,
-                "星期",
-                "schedule-weekday",
-                weekday_label,
-                state.weekday_menu_open,
-                weekday_items,
-                state.weekday.to_string(),
-                |shell| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        form.weekday_menu_open = !form.weekday_menu_open;
-                    }
-                },
-                |shell| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        form.weekday_menu_open = false;
-                    }
-                },
-                |shell, value| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        if let Ok(day) = value.parse::<u8>() {
-                            form.weekday = day % 7;
-                        }
-                        form.weekday_menu_open = false;
-                    }
-                },
-            )
-            .into_any_element()
+        // 只有「每周」才出现的星期多选（pill 组）；只有「指定会话」才出现的
+        // 会话下拉。
+        let weekday_pills = (state.rule_kind == ScheduleRuleKind::Weekly).then(|| {
+            let weekdays = state.weekdays.clone();
+            let shell = cx.entity().downgrade();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(cx.theme().muted_foreground)
+                        .child("星期（可多选）"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .children(
+                            // 显示顺序：周一..周日（1..7，0=周日）。
+                            [1u8, 2, 3, 4, 5, 6, 0].into_iter().map({
+                                let shell = shell.clone();
+                                let weekdays = weekdays.clone();
+                                move |day| {
+                                    let selected = weekdays.contains(&day);
+                                    let shell = shell.clone();
+                                    div()
+                                        .id(format!("schedule-weekday-pill-{day}"))
+                                        .flex_1()
+                                        .h(px(30.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(6.0))
+                                        .text_size(sp(13.0))
+                                        .when(selected, |this| {
+                                            this.bg(accent).text_color(accent_foreground)
+                                        })
+                                        .on_click(move |_event, _window, cx| {
+                                            if let Some(shell) = shell.upgrade() {
+                                                shell.update(cx, |shell, cx| {
+                                                    if let Some(form) = shell.schedule_form.as_mut()
+                                                    {
+                                                        if form.weekdays.contains(&day) {
+                                                            form.weekdays.retain(|d| d != &day);
+                                                        } else {
+                                                            form.weekdays.push(day);
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }
+                                        })
+                                        .child(WEEKDAY_LABELS[day as usize].to_string())
+                                }
+                            }),
+                        )
+                        .into_any_element(),
+                )
+                .into_any_element()
         });
         let session_field = (state.target_kind == ScheduleTargetKind::Session).then(|| {
             self.form_select(
@@ -310,8 +386,8 @@ impl Shell {
                             }
                         },
                     ))
+                    .when_some(weekday_pills, |this, field| this.child(field))
                     .child(param_field)
-                    .when_some(weekday_field, |this, field| this.child(field))
                     .child(self.form_select(
                         cx,
                         "目标",
@@ -487,7 +563,7 @@ impl Shell {
                                                 .child(
                                                     div()
                                                         .flex_1()
-                                                        .text_size(sp(13.0))
+                                                        .text_size(sp(12.0))
                                                         .child(item_label),
                                                 )
                                                 .when(selected, |this| {

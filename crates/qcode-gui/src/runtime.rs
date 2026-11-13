@@ -8,8 +8,8 @@ use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::schedule::{
-    Advance, DeliveryReceipt, Schedule, ScheduleState, ScheduleStatus, ScheduledTask, Target,
-    TaskStatus, TaskTick, Tick, advance_rule, append_delivery, task_tick,
+    Advance, DeliveryReceipt, Schedule, ScheduleState, ScheduleStatus, ScheduledMessage,
+    ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery, task_tick,
 };
 use qcode_core::scheduler::{EditTask, NewTask, Scheduler};
 use qcode_core::store::SessionStore;
@@ -179,8 +179,17 @@ fn save_schedule_state(
 /// and new sessions keep being refused. Dropping the guard on unwind turns
 /// that into the same `TurnFailed` a returned `Err` produces (ADR-0058 §9 P0).
 struct TurnGuard {
-    done: tokio::sync::mpsc::UnboundedSender<(SessionTarget, Result<(), String>)>,
+    done: tokio::sync::mpsc::UnboundedSender<(
+        SessionTarget,
+        Option<ScheduledMessage>,
+        Result<(), String>,
+    )>,
     target: SessionTarget,
+    /// The scheduled-task delivery this turn belongs to, if any. Carried to the
+    /// finish branch so its result can be logged against the task that fired it
+    /// (a panicking turn still reports via [`Drop`], which is why this lives
+    /// here rather than in the send inside `start_turn!`).
+    scheduled: Option<ScheduledMessage>,
     armed: bool,
 }
 
@@ -189,6 +198,7 @@ impl Drop for TurnGuard {
         if self.armed {
             let _ = self.done.send((
                 self.target.clone(),
+                self.scheduled.clone(),
                 Err("the turn task panicked; the engine is idle again, see the logs".to_string()),
             ));
         }
@@ -235,8 +245,11 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             let mut pricing = engine.pricing;
             // Finishing turns report the session they belong to: with more than
             // one live, "the turn finished" is not enough to route the clean-up.
-            let (done_tx, mut done_rx) =
-                tokio::sync::mpsc::unbounded_channel::<(SessionTarget, Result<(), String>)>();
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<(
+                SessionTarget,
+                Option<ScheduledMessage>,
+                Result<(), String>,
+            )>();
             let mut ticker = tokio::time::interval(Duration::from_millis(250));
             // One clock for the whole window, not one per session (ADR-0059):
             // a minute is the resolution of a cron expression, and 30s leaves
@@ -330,6 +343,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     )
                 }};
                 ($target:expr, $text:expr, $attachments:expr, $continuation:expr, $scheduled:expr, $max_turns:expr, $max_cost:expr) => {{
+                    // 求值一次，供 options / guard / done 三处复用；`$scheduled`
+                    // 在调用点通常是会移动的字段，直接写多次会 use-after-move。
+                    let task_scheduled = $scheduled;
                     let target: SessionTarget = $target;
                     let target = match target.id() {
                         Some(_) => target,
@@ -391,6 +407,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let guard = TurnGuard {
                         done: done.clone(),
                         target: task_target.clone(),
+                        scheduled: task_scheduled.clone(),
                         armed: true,
                     };
                     let cancel = token.clone();
@@ -400,6 +417,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // A panic anywhere below unwinds this task without
                         // reaching `done.send`; `guard` covers that path.
                         let mut guard = guard;
+                        // 回合结果要能关联回触发它的定时任务：在 `task_scheduled`
+                        // 被 options 消费前留一份给 `done.send`。
+                        let scheduled_for_done = task_scheduled.clone();
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
@@ -433,7 +453,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             attachments: $attachments,
                             inbox: Some(task_inbox),
                             continuation: $continuation,
-                            scheduled: $scheduled,
+                            scheduled: task_scheduled,
                         };
                         let result = run_turn(
                             TurnContext {
@@ -453,6 +473,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         guard.armed = false;
                         let _ = done.send((
                             task_target,
+                            scheduled_for_done,
                             result.map(|_| ()).map_err(|error| error.to_string()),
                         ));
                     });
@@ -471,6 +492,17 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let busy = live.contains_key(&target);
                     let queue = host.queue(&target).unwrap_or_else(|| host.open(&target).1);
                     for task in &tasks {
+                        // 投递即定时任务「开始执行」：开始时间（发生点）、执行内容
+                        // （标题 + prompt）与目标会话一并落日志；执行结果在回合
+                        // 结束时记（见 `done_rx` 分支）。
+                        tracing::info!(
+                            task_id = %task.id,
+                            title = %task.title,
+                            session_id = %session_id,
+                            at = %task.next_fire_at.map(|at| at.to_string()).unwrap_or_default(),
+                            prompt = %task.prompt,
+                            "scheduled task fired",
+                        );
                         let scheduled = qcode_core::schedule::ScheduledMessage {
                             task_id: task.id.clone(),
                             title: task.title.clone(),
@@ -1209,11 +1241,30 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             }
                         }
                     }
-                    Some((target, result)) = done_rx.recv() => {
+                    Some((target, scheduled, result)) = done_rx.recv() => {
                         // The finished session is the *one that finished*: with
                         // several live, cleaning up `current` would clear the
                         // wrong task's badge (P5).
                         live.remove(&target);
+                        // 定时任务的执行结果：投递时已记开始时间与执行内容，这里
+                        // 补上成败。成功记 info（落盘），失败记 warn（两端可见）。
+                        if let Some(scheduled) = &scheduled {
+                            match &result {
+                                Ok(()) => tracing::info!(
+                                    task_id = %scheduled.task_id,
+                                    title = %scheduled.title,
+                                    session_id = ?target.id(),
+                                    "scheduled task finished",
+                                ),
+                                Err(error) => tracing::warn!(
+                                    task_id = %scheduled.task_id,
+                                    title = %scheduled.title,
+                                    session_id = ?target.id(),
+                                    %error,
+                                    "scheduled task failed",
+                                ),
+                            }
+                        }
                         if let Err(error) = result {
                             // Log before the move: `send_turn_failed` takes ownership.
                             tracing::warn!(%error, "turn failed");
@@ -1228,7 +1279,17 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         if let Some(queue) = host.queue(&target)
                             && let Some(message) = queue.finish()
                         {
-                            start_turn!(target.clone(), message.text, message.attachments);
+                            // 队列续跑的定时任务消息同样带 `scheduled` 标记，否则
+                            // 其执行结果会与触发它的任务失去关联。
+                            start_turn!(
+                                target.clone(),
+                                message.text,
+                                message.attachments,
+                                None,
+                                message.scheduled,
+                                engine.max_turns,
+                                engine.max_cost_usd
+                            );
                         }
                         publish_to!(target);
                     }

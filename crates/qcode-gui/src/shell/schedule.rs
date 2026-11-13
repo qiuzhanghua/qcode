@@ -4,6 +4,8 @@
 //! / `ScheduleNotice` 事件回传，见 `shell::poll`）。
 
 use super::*;
+use gpui_kit::component::date_picker::DatePickerState;
+use gpui_kit::component::time_field::{HourCycle, TimeFieldState, TimePrecision};
 use qcode_core::schedule::{Overlap, TaskStatus, now_local, parse_rule};
 use qcode_ui_bridge::ScheduleOp;
 
@@ -23,14 +25,16 @@ pub(crate) enum ScheduleRuleKind {
     Weekly,
     Interval,
     Once,
+    Monthly,
     Cron,
 }
 
 impl ScheduleRuleKind {
     /// 菜单里的显示顺序。
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Daily,
         Self::Weekly,
+        Self::Monthly,
         Self::Interval,
         Self::Once,
         Self::Cron,
@@ -42,6 +46,7 @@ impl ScheduleRuleKind {
             Self::Weekly => "每周固定时刻",
             Self::Interval => "每隔 N 秒",
             Self::Once => "一次性",
+            Self::Monthly => "每月固定时刻",
             Self::Cron => "自定义 Cron",
         }
     }
@@ -51,6 +56,7 @@ impl ScheduleRuleKind {
             "weekly" => Self::Weekly,
             "interval" => Self::Interval,
             "once" => Self::Once,
+            "monthly" => Self::Monthly,
             "cron" => Self::Cron,
             _ => Self::Daily,
         }
@@ -62,6 +68,7 @@ impl ScheduleRuleKind {
             Self::Weekly => "weekly",
             Self::Interval => "interval",
             Self::Once => "once",
+            Self::Monthly => "monthly",
             Self::Cron => "cron",
         }
     }
@@ -111,14 +118,17 @@ pub(crate) struct ScheduleFormState {
     pub(crate) timeout_secs: Entity<InputState>,
     // 周期：类型下拉 + 各类型自己的参数。
     pub(crate) rule_kind: ScheduleRuleKind,
-    /// daily / weekly 的时刻（HH:MM）。
-    pub(crate) time: Entity<InputState>,
-    /// weekly 的星期（0=周日，同 crontab）。
-    pub(crate) weekday: u8,
+    /// daily / weekly / monthly 的时刻：数字时间字段（HH:MM，不含日期）。
+    pub(crate) time: Entity<TimeFieldState>,
+    /// weekly 的星期多选（0=周日，同 crontab；去重后至少一个）。
+    pub(crate) weekdays: Vec<u8>,
+    /// monthly 的日期（1-31）。
+    pub(crate) monthly_day: Entity<InputState>,
     /// interval 的秒数（≥ 60）。
     pub(crate) interval_secs: Entity<InputState>,
-    /// once 的时刻（YYYY-MM-DD HH:MM）。
-    pub(crate) once_at: Entity<InputState>,
+    /// once 的日期与时刻：官方 DatePicker 一条龙（日历选日期 + 数字时间字段，
+    /// 参考 a.html 的 `input[type=time]` 样式）。提交时读其 `date_time()`。
+    pub(crate) once_picker: Entity<DatePickerState>,
     /// cron 的 5 字段表达式。
     pub(crate) cron_expr: Entity<InputState>,
     // 目标：类型下拉 + 会话选择。
@@ -126,7 +136,6 @@ pub(crate) struct ScheduleFormState {
     pub(crate) session_id: Option<String>,
     // 各下拉菜单的开关。
     pub(crate) rule_menu_open: bool,
-    pub(crate) weekday_menu_open: bool,
     pub(crate) target_menu_open: bool,
     pub(crate) session_menu_open: bool,
     pub(crate) _subscription: gpui_kit::Subscription,
@@ -188,17 +197,43 @@ impl Shell {
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("任务名称"));
         let prompt = cx.new(|cx| InputState::new(window, cx).placeholder("到点后投递给会话的内容"));
         let time = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("HH:MM，如 09:00");
-            input.set_value("09:00", window, cx);
-            input
+            let mut state = TimeFieldState::new(window, cx)
+                .precision(TimePrecision::Minute)
+                .hour_cycle(HourCycle::H23);
+            state.set_time(
+                chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("09:00"),
+                window,
+                cx,
+            );
+            state
         });
         let interval_secs = cx.new(|cx| {
             let mut input = InputState::new(window, cx).placeholder("秒数（≥ 60）");
             input.set_value("3600", window, cx);
             input
         });
-        let once_at = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("YYYY-MM-DD HH:MM，如 2026-01-01 10:00")
+        let monthly_day = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("日（1-31）");
+            input.set_value("15", window, cx);
+            input
+        });
+        // 一次性默认「明天 09:00」：once 要求未来时刻，默认值保证选完周期即可
+        // 提交；用户仍可在日历里改日期、在数字时间字段里改时刻。
+        let once_picker = cx.new(|cx| {
+            let mut state = DatePickerState::new(window, cx)
+                .date_format("%Y-%m-%d %H:%M")
+                .time_precision(TimePrecision::Minute)
+                .hour_cycle(HourCycle::H23)
+                .default_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("09:00"));
+            let tomorrow = now_local().date().saturating_add(time::Duration::days(1));
+            let naive = chrono::NaiveDate::from_ymd_opt(
+                tomorrow.year(),
+                tomorrow.month() as u32,
+                tomorrow.day() as u32,
+            )
+            .expect("tomorrow is a real date");
+            state.set_date_time(naive.and_hms_opt(9, 0, 0).expect("09:00"), window, cx);
+            state
         });
         let cron_expr =
             cx.new(|cx| InputState::new(window, cx).placeholder("5 字段，如 0 9 * * *"));
@@ -215,14 +250,14 @@ impl Shell {
             timeout_secs,
             rule_kind: ScheduleRuleKind::Daily,
             time,
-            weekday: 1,
+            weekdays: vec![1],
+            monthly_day,
             interval_secs,
-            once_at,
+            once_picker,
             cron_expr,
             target_kind: ScheduleTargetKind::NewOnce,
             session_id: None,
             rule_menu_open: false,
-            weekday_menu_open: false,
             target_menu_open: false,
             session_menu_open: false,
             _subscription,
@@ -266,16 +301,48 @@ impl Shell {
         // 把结构化周期翻译回规范表达式，复用 parse_rule 的校验与错误文案：
         // 用户从菜单选类型、填参数，落盘仍是我们一直用的那种规则描述。
         let rule_text = match form.rule_kind {
-            ScheduleRuleKind::Daily => format!("daily {}", form.time.read(cx).value().trim()),
-            ScheduleRuleKind::Weekly => format!(
-                "weekly {} {}",
-                form.weekday,
-                form.time.read(cx).value().trim()
-            ),
+            ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly | ScheduleRuleKind::Monthly => {
+                // 时间字段读出即格式化，避免在 match 里借用 form（reject_form
+                // 之后要接管它）。
+                let clock = form.time.read(cx).time().format("%H:%M");
+                match form.rule_kind {
+                    ScheduleRuleKind::Daily => format!("daily {clock}"),
+                    ScheduleRuleKind::Weekly => {
+                        let mut weekdays = form.weekdays.clone();
+                        weekdays.sort_unstable();
+                        weekdays.dedup();
+                        if weekdays.is_empty() {
+                            return reject_form(self, form, cx, "请至少选择一个星期");
+                        }
+                        format!(
+                            "weekly {} {clock}",
+                            weekdays
+                                .iter()
+                                .map(|day| day.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    }
+                    _ => {
+                        let day = form.monthly_day.read(cx).value().trim().to_string();
+                        if day.is_empty() {
+                            return reject_form(self, form, cx, "请填写每月日期");
+                        }
+                        format!("monthly {day} {clock}")
+                    }
+                }
+            }
             ScheduleRuleKind::Interval => {
                 format!("every {}", form.interval_secs.read(cx).value().trim())
             }
-            ScheduleRuleKind::Once => format!("once {}", form.once_at.read(cx).value().trim()),
+            ScheduleRuleKind::Once => {
+                // 读一次即结束借用：`reject_form` 要接管 form。
+                let picked = form.once_picker.read(cx).date_time().start();
+                let Some(naive) = picked else {
+                    return reject_form(self, form, cx, "请选择日期");
+                };
+                format!("once {}", naive.format("%Y-%m-%d %H:%M"))
+            }
             ScheduleRuleKind::Cron => format!("cron {}", form.cron_expr.read(cx).value().trim()),
         };
         let rule = match parse_rule(&rule_text) {
