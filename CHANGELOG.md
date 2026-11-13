@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.8.9 — 2026-11-13
+
+补丁版。0.8.8 之后主要是定时任务那一块补齐，外加三个「用户能感觉到但没人报」的修复：
+内建终端里的 `gh` 仍在崩、日志的退出末行在 macOS 上从来没写过、`qc logs` 把权限错误说成
+「没有日志」。没有新 ADR——定时任务的设计仍是 ADR-0059，本次是把它该有的规则与护栏补齐。
+
+### 定时任务：每周多选、每月固定、时刻用真控件
+
+规则层与创建表单一起改，旧任务不必迁移：
+
+- `Weekly` 支持多星期（`weekdays` 数组，旧的单值 `weekday` 仍然读得懂）；
+- 新增 `Monthly`：`day` 取 1–31，**所在月份没有这天就跳过**（31 号不会在 2 月被悄悄挪到
+  3 月 3 日，也不会让 2 月整月不响——两种做法都比跳过一次更坏）；
+- 一次性任务改日历 + 数字时间字段，daily / weekly / monthly 的时刻改 `TimeField`；
+  每周是星期多选 pill，每月是日期输入框；
+- 定时任务的**开始时间、投递内容、执行结果**都落 `tracing`（进 `qc.log`）。此前「这次到底
+  跑了没、跑了什么」只有界面上一个状态点，关掉窗口就没了。
+
+### 定时任务有工作目录了，缺省时主动问
+
+任务级 `cwd`：落盘，投递那一回合把它当工作目录，缺省回落到会话默认目录。
+
+- 手动创建表单加「工作目录」行（系统目录选择对话框 + 清除）；
+- 对话创建时模型没给 `cwd`，工具**主动用 questioner 问**——问题面板支持选目录或手输
+  （`QuestionItem.pick_directory`）。不指望模型自觉调 `ask_user`：工具描述里的引导会被
+  模型忽略，而工作目录猜错了要等任务真跑偏才发现；
+- 目标下拉去掉「指定会话」（选了也没兑现）；会话标题剥离定时任务预填的前缀。
+
+### 崩溃恢复改成按 `scheduled(task_id+at)` 对账（对齐 dsh）
+
+原来的恢复只看「有个未完成的投递」，重启后容易重复投。现在按会话日志里的
+`scheduled(task_id+at)` 记录匹配，重启补确认——同一次触发在日志里出现过就不再投第二次。
+
+护栏也换了：删掉 per-task 的 `rearm_after`，改成全局 60 s 最小投递间隔（dsh 的
+`MIN_DELIVERY_INTERVAL`）。per-task 的窗口在「多个任务同时到点」时等于没有护栏。
+
+顺带两个界面修复：详情页「下次触发」的相对时间改用**本地墙钟**（此前按 UTC 算，东八区
+差 8 小时）；详情页新增「修改」按钮，编辑弹窗自动预填原任务内容。
+
+### 对话里创建定时任务：有空的「新任务」就复用
+
+任务列表里已有空的「新任务」时直接跳过去复用，不再叠一个新的空任务。预填现在**覆盖**
+输入框原有内容（此前只填进空框）。修掉从定时任务详情页触发时停在详情页、预填看不见的
+问题——补了 `enter_task_view`。
+
+### macOS 退出时补写会话末行（ADR-0082 修订注记）
+
+0.8.8 加的首末两条边界行，在 macOS 的 `qc gui` 上**从未写出过末行**：
+`-[NSApplication terminate:]` 发完 `applicationWillTerminate:` 就由 AppKit 调 `exit()`，
+`Platform::run` 不返回，`main` 的漏斗是死代码。结果是每次正常退出都留一条有 start 无 end
+的日志，下次启动把它报成「killed, crashed, or the machine went down」——一个正常的
+Cmd-Q 被说成崩溃。
+
+末行改挂 `on_app_quit` 观察者（就是 ADR-0073 杀进程组用的那个钩子），新增
+`qcode-gui/src/quit.rs`。注册点不做 `cfg(target_os)`：`lifecycle::finish` 幂等，
+Linux / Windows 上只是提早一瞬写同一行，按平台分叉反而会让两边的日志形状不同。
+
+### `qc logs` 不再把「读不到目录」说成「没有日志文件」
+
+`log_files` 把 `read_dir` 的失败 `else { return Vec::new() }` 吞掉了，于是目录权限不对时
+`qc logs` 打印 `no log files in …/logs`，而那个目录里躺着 13 KB 的日志。这条消息把人引向
+「日志没开」——恰好是唯一确定错误的那个诊断。现在读不到就报读不到（带 errno、非零退出
+码），真正的空目录仍然不是错误；列不出目录时 `current_log` 退回「下次写入会创建的那个
+路径」，错误消息里仍有文件名可看。
+
+### GUI 细节
+
+- 侧栏操作按钮统一无边框，新建 / 定时任务按钮改图标；弹出菜单的过滤项移入定时任务菜单；
+- 折叠侧栏按钮改面板图标，定时卡片的箭头替换三角；
+- 选中任务行不再加粗（只留高亮背景），运行中的 ▶ 标记 13 → 11.5 px，
+  对话页头标题加粗。
+
+### 内部：`make check` 重新变绿
+
+`e192d22` 带进来 8 处 clippy 报错（分 4 个文件：`explicit_counter_loop` 1、
+`collapsible_if` 2、`single_match` 2、`needless_borrows_for_generic_args` 3），
+`make check` 在那之后一直是红的。都是机械改写，行为不变。
+
+`deny.toml` 里 lru 的两条 `RUSTSEC-2026-0253` / `RUSTSEC-2026-0002` 豁免删了：cargo-deny
+已不再对这条依赖路径匹配它们（删掉后 `advisories` 仍 ok），留着只是每次门禁打两条
+`advisory-not-detected`。可达性判断留成了注释，以防哪天重新变红。
+
 ## 0.8.8 — 2026-11-13
 
 > v0.8.7 打了 tag 但没发成：`release` 的 Windows job 在 21 分钟后被取消，`publish`
@@ -71,10 +153,6 @@ ADR-0079 的迁移只查了「叙述有没有误用 stderr」，没查反方向�
 - 默认级别拆成两个 filter：文件 `info`、终端 `warn`。文件要全，终端不该被自己的日志淹掉；
 - `qc logs` 把行首的 UTC 时间戳就地换成本地时间显示（逐行查偏移，夏令时前后各按各的算）；
 - `docs/design/LOGGING.md` 记下这套约定。
-
-macOS 的 `qc gui` 起初**一条末行都没写**：`-[NSApplication terminate:]` 会由 AppKit 调
-`exit()`，`Platform::run` 不返回，`main` 的漏斗是死代码，于是每次正常退出都被下一次启动报成
-「killed, crashed」。末行改为挂在 `on_app_quit`（`qcode-gui/src/quit.rs`，ADR-0082 修订注记）。
 
 ### 终端里的 `gh` 不再崩在 `unexpected escape sequence`（ADR-0062 §9 修正）
 

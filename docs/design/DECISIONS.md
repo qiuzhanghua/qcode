@@ -4897,7 +4897,7 @@ GUI 落地后这三条边界开始漏：
    的调色板查询按索引取），格式化函数由 `alacritty_terminal` 提供；`PtyWrite` 的字节
    原样写回 PTY。
 
-   **答复的时机是这段接线里最容易写错的一点，而且它一开始就写错了**（v0.8.8 修正）。
+   **答复的时机是这段接线里最容易写错的一点，而且它一开始就写错了**（v0.8.9 修正）。
    原做法是：crate 只把请求记录下来，GUI 的 ticker 每帧调 `answer_colours(前景, 背景)`
    统一答复。这样有两条后果：
 
@@ -8650,7 +8650,7 @@ macOS 的 `Platform::quit` 把工作派到主队列再调 `-[NSApplication termi
 
 - 单测：`quit::tests` 一条（两件事写在同一个测试里，因为注册表是进程级 `OnceLock`，拆开写会
   互相竞争）：第一次注册生效、第二次被忽略、触发两次调用两次。
-- 端到端（macOS 本机，托盘 → 退出）：
+- 端到端（macOS 本机，托盘 → 退出；日志里的 `0.8.8` 是当时还没 bump 版本号的构建）：
 
 ```
 INFO qc::lifecycle: qc session starting pid=31372 version="0.8.8" command=gui
