@@ -98,9 +98,14 @@ could not prompt: unexpected escape sequence from terminal: ['\x1b' ']']
   `a_colour_reply_travels_the_write_path_to_the_child`（测试自己不触发答复）。把答复
   退回调用方时前两条会红——已实测。
 
-### CI：一个死变体、一个永远挂起的测试，以及「挂住不算失败」
+### 日志：`qc logs` 不再把「读不到」说成「没有」
 
-发布前 CI 红了整整两天，是三件事叠在一起：
+`log_files` 把 `read_dir` 的失败吞成了空列表，于是目录**读不了**时 `qc logs` 打印
+`no log files in <dir>` —— 而那个目录里躺着 13 KB 日志。这条消息会把人引向「日志没开」
+这个唯一确定错误的诊断。现在读不到就报读不到（带 errno，退出码非零），真正的空目录仍然
+是「还没有日志文件」而不是错误。
+
+### CI：一个死变体、一个永远挂起的测试，以及「挂住不算失败」发布前 CI 红了整整两天，是三件事叠在一起：
 
 - Windows 上 `Reason::SigHup` 从不被构造（那个分支走 `SigTerm`），`clippy -D warnings`
   直接把 workspace 判死。加 `#[cfg(unix)]` 让它只在有 SIGHUP 的平台存在。
