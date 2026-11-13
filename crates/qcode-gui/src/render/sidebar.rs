@@ -442,20 +442,19 @@ impl Shell {
             let mut task_menu_wrapper = div().relative().child(
                 Button::new(format!("task-menu-{}", row.task.id))
                     .compact()
-                    .label("…")
+                    .icon(IconName::Ellipsis)
                     .tooltip("任务操作")
-                    // 常态/悬浮/按下背景都保持纯白不变色：Custom 常态
-                    // 背景会被组件混入 0.2 透明度，这里再用调用层 bg
-                    // 覆盖回纯白；文字固定深色以保证在白色上的可读性。
+                    // 透明背景：常态字体灰，悬浮/按下变黑。Custom 变体的
+                    // foreground 决定悬浮文字色，调用层 text_color 只是
+                    // 常态底色（悬浮时被覆盖）。
                     .custom(
                         ButtonCustomVariant::new(cx)
-                            .color(rgb(0xffffff).into())
-                            .hover(rgb(0xffffff).into())
-                            .active(rgb(0xffffff).into())
-                            .foreground(rgb(0x1a1a1a).into()),
+                            .color(cx.theme().transparent)
+                            .hover(cx.theme().transparent)
+                            .active(cx.theme().transparent)
+                            .foreground(cx.theme().foreground),
                     )
-                    .bg(rgb(0xffffff))
-                    .text_color(rgb(0x1a1a1a))
+                    .text_color(cx.theme().muted_foreground)
                     .on_click(cx.listener({
                         let task_id = row.task.id.clone();
                         move |this, _, _window, cx| {
@@ -498,18 +497,17 @@ impl Shell {
                 .child(
                     Button::new(format!("task-add-dir-{}", row.task.id))
                         .compact()
-                        .label("+")
+                        .icon(IconName::FolderPlus)
                         .tooltip("添加目录")
-                        // 与「任务操作」按钮一致：三态背景纯白、文字深色、hover 不变色。
+                        // 与「任务操作」按钮一致：透明背景，常态灰色、悬浮黑色。
                         .custom(
                             ButtonCustomVariant::new(cx)
-                                .color(rgb(0xffffff).into())
-                                .hover(rgb(0xffffff).into())
-                                .active(rgb(0xffffff).into())
-                                .foreground(rgb(0x1a1a1a).into()),
+                                .color(cx.theme().transparent)
+                                .hover(cx.theme().transparent)
+                                .active(cx.theme().transparent)
+                                .foreground(cx.theme().foreground),
                         )
-                        .bg(rgb(0xffffff))
-                        .text_color(rgb(0x1a1a1a))
+                        .text_color(cx.theme().muted_foreground)
                         .on_click(cx.listener({
                             let task_id = row.task.id.clone();
                             move |this, _, _window, cx| {
@@ -641,12 +639,21 @@ impl Shell {
                             .child(label),
                     ),
             )
-            .when_some(action, |this, (id, label, tooltip, kind)| {
+            .when_some(action, |this, (id, _label, tooltip, kind)| {
                 let kind_for_click = kind;
                 this.child(
                     Button::new(id)
-                        .label(label)
+                        .icon(IconName::CirclePlus)
                         .tooltip(tooltip)
+                        // 无边框圆钮：常态透明，悬浮/按下加深灰色底（自定义变体
+                        // 不画边框，见 gpui-component button.rs）。
+                        .custom(
+                            ButtonCustomVariant::new(cx)
+                                .color(cx.theme().transparent)
+                                .hover(rgb(0x888888).opacity(0.2).into())
+                                .active(rgb(0x888888).opacity(0.45).into())
+                                .foreground(cx.theme().button_foreground),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             // The `+` sits inside a clickable header; without this
                             // the row would also toggle the section.
@@ -833,6 +840,15 @@ impl Shell {
                 .compact()
                 .label(schedule_filter_label(self.schedule_filter))
                 .tooltip("按状态过滤定时任务")
+                // 无边框透明：常态无底，悬浮/按下灰色（与「在对话中创建
+                // 定时任务」按钮一致）。
+                .custom(
+                    ButtonCustomVariant::new(cx)
+                        .color(cx.theme().transparent)
+                        .hover(rgb(0x888888).opacity(0.2).into())
+                        .active(rgb(0x888888).opacity(0.45).into())
+                        .foreground(cx.theme().button_foreground),
+                )
                 .on_click(cx.listener(|this, _, _window, cx| {
                     cx.stop_propagation();
                     this.toggle_schedule_filter_menu(cx);
@@ -857,6 +873,15 @@ impl Shell {
                 .compact()
                 .label("⋯")
                 .tooltip("定时任务操作")
+                // 无边框透明：常态无底，悬浮/按下灰色（与「在对话中创建
+                // 定时任务」按钮一致）。
+                .custom(
+                    ButtonCustomVariant::new(cx)
+                        .color(cx.theme().transparent)
+                        .hover(rgb(0x888888).opacity(0.2).into())
+                        .active(rgb(0x888888).opacity(0.45).into())
+                        .foreground(cx.theme().button_foreground),
+                )
                 .on_click(cx.listener(|this, _, _window, cx| {
                     cx.stop_propagation();
                     this.toggle_schedule_menu(cx);
@@ -927,9 +952,17 @@ impl Shell {
                     .child(menu_wrapper)
                     .child(
                         Button::new("new-schedule-task")
-                            .compact()
-                            .label("+")
+                            .icon(IconName::CirclePlus)
                             .tooltip("在对话中创建定时任务")
+                            // 与「我的任务」段头「新建任务」按钮同款：无边框、
+                            // 常态透明，悬浮/按下加深灰色底。
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().transparent)
+                                    .hover(rgb(0x888888).opacity(0.2).into())
+                                    .active(rgb(0x888888).opacity(0.45).into())
+                                    .foreground(cx.theme().button_foreground),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.new_schedule_draft(window, cx);

@@ -203,7 +203,7 @@ const TURN_RAIL_WIDTH: f32 = 34.0;
 const PROMPT_INSET: f32 = 20.0;
 /// Width bounds of the resizable sidebar, in pixels. Dragging the divider
 /// between the sidebar and the conversation clamps to these.
-const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+const SIDEBAR_MIN_WIDTH: f32 = 200.0;
 const SIDEBAR_MAX_WIDTH: f32 = 560.0;
 /// Width of the collapsed sidebar — the icon rail (ADR-0063 §1).
 ///
