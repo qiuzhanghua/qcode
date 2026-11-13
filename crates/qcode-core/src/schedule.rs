@@ -841,8 +841,8 @@ impl Rule {
                 let today = now.date();
                 // 从当月起扫描最多 12 个月：当月没有该日（如 31 号落在 2 月）则
                 // 跳过；`day` 当天时刻已过也会顺延到下月。
-                let mut month_index = today.year() * 12 + today.month() as i32 - 1;
-                for _ in 0..12 {
+                let first = today.year() * 12 + today.month() as i32 - 1;
+                for month_index in (first..).take(12) {
                     let year = month_index.div_euclid(12);
                     let month = month_index.rem_euclid(12) + 1;
                     let month_enum = Month::try_from(month as u8).ok()?;
@@ -853,7 +853,6 @@ impl Rule {
                             return Some(candidate);
                         }
                     }
-                    month_index += 1;
                 }
                 None
             }

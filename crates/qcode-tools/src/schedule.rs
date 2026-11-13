@@ -258,39 +258,36 @@ impl Tool for ScheduleCreate {
         // 工作目录：模型没给时工具主动询问用户（可跳过，用会话默认目录）。
         // 不依赖模型自觉调用 ask_user——描述里的引导可能被模型忽略。
         let mut cwd = args.cwd;
-        if cwd.is_none() {
-            if let Some(questioner) = &ctx.questioner {
-                let request = QuestionRequest {
-                    call_id: ctx.call_id.clone(),
-                    questions: vec![QuestionItem {
-                        id: "cwd".to_string(),
-                        header: None,
-                        question:
-                            "请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）"
-                                .to_string(),
-                        detail: None,
-                        options: Vec::new(),
-                        multi_select: false,
-                        pick_directory: true,
-                    }],
-                    intent: QuestionIntent::Confirm,
-                    timeout: None,
-                };
-                match questioner.ask(&request, ctx.cancel.clone()).await {
-                    QuestionAnswer::Answered(answers) => {
-                        if let Some(item) = answers.first().filter(|item| !item.is_skipped())
-                            && let Some(text) = item
-                                .custom
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|text| !text.is_empty())
-                        {
-                            cwd = Some(text.to_string());
-                        }
-                    }
-                    // 超时 / 取消：不追问，用默认目录创建。
-                    _ => {}
-                }
+        if cwd.is_none()
+            && let Some(questioner) = &ctx.questioner
+        {
+            let request = QuestionRequest {
+                call_id: ctx.call_id.clone(),
+                questions: vec![QuestionItem {
+                    id: "cwd".to_string(),
+                    header: None,
+                    question: "请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）"
+                        .to_string(),
+                    detail: None,
+                    options: Vec::new(),
+                    multi_select: false,
+                    pick_directory: true,
+                }],
+                intent: QuestionIntent::Confirm,
+                timeout: None,
+            };
+            // 超时 / 取消：不追问，用默认目录创建——所以只认 `Answered`，
+            // 其余分支本来也什么都不做。
+            if let QuestionAnswer::Answered(answers) =
+                questioner.ask(&request, ctx.cancel.clone()).await
+                && let Some(item) = answers.first().filter(|item| !item.is_skipped())
+                && let Some(text) = item
+                    .custom
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+            {
+                cwd = Some(text.to_string());
             }
         }
 

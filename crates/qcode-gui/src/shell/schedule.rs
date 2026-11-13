@@ -307,7 +307,7 @@ impl Shell {
             });
             timeout_secs.update(cx, |input, cx| {
                 if let Some(timeout) = task.approval_timeout {
-                    input.set_value(&timeout.as_secs().to_string(), window, cx);
+                    input.set_value(timeout.as_secs().to_string(), window, cx);
                 }
             });
             match &task.rule {
@@ -328,7 +328,7 @@ impl Shell {
                 Rule::Interval { seconds } => {
                     rule_kind = ScheduleRuleKind::Interval;
                     interval_secs.update(cx, |input, cx| {
-                        input.set_value(&seconds.to_string(), window, cx);
+                        input.set_value(seconds.to_string(), window, cx);
                     });
                 }
                 Rule::Once { at } => {
@@ -347,7 +347,7 @@ impl Shell {
                 Rule::Monthly { day, hour, minute } => {
                     rule_kind = ScheduleRuleKind::Monthly;
                     monthly_day.update(cx, |input, cx| {
-                        input.set_value(&day.to_string(), window, cx);
+                        input.set_value(day.to_string(), window, cx);
                     });
                     set_time(&time, *hour, *minute, window, cx);
                 }

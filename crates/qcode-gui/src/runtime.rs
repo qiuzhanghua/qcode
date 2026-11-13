@@ -168,40 +168,37 @@ fn recover_schedule_deliveries(
             continue;
         };
         let at = next.to_string();
-        match engine
+        // `Ok(false)`（这次投递早就落过账）与 `Err`（读不出来）都只跳过本次，
+        // 所以只认 `Ok(true)`。
+        if let Ok(true) = engine
             .store
             .schedule_delivery_landed(session, &task.id, &at)
+            && scheduler
+                .update(&task.id, |task| {
+                    let receipt = DeliveryReceipt {
+                        occurrence_at: task.next_fire_at.unwrap_or(now),
+                        delivered_at: now,
+                        message_id: format!("recovered:{}:{}", task.id, at),
+                        target_session_id: Some(session.to_string()),
+                        prompt: task.prompt.clone(),
+                    };
+                    if append_delivery(&mut task.delivery_log, receipt.clone(), now) {
+                        task.earlier_records_pruned = true;
+                    }
+                    task.last_receipt = Some(receipt);
+                    match advance_rule(&task.rule, now) {
+                        Advance::Next(next) => {
+                            task.next_fire_at = Some(next);
+                        }
+                        Advance::Ended => {
+                            task.status = TaskStatus::Ended;
+                            task.next_fire_at = None;
+                        }
+                    }
+                })
+                .is_ok()
         {
-            Ok(true) => {
-                if scheduler
-                    .update(&task.id, |task| {
-                        let receipt = DeliveryReceipt {
-                            occurrence_at: task.next_fire_at.unwrap_or(now),
-                            delivered_at: now,
-                            message_id: format!("recovered:{}:{}", task.id, at),
-                            target_session_id: Some(session.to_string()),
-                            prompt: task.prompt.clone(),
-                        };
-                        if append_delivery(&mut task.delivery_log, receipt.clone(), now) {
-                            task.earlier_records_pruned = true;
-                        }
-                        task.last_receipt = Some(receipt);
-                        match advance_rule(&task.rule, now) {
-                            Advance::Next(next) => {
-                                task.next_fire_at = Some(next);
-                            }
-                            Advance::Ended => {
-                                task.status = TaskStatus::Ended;
-                                task.next_fire_at = None;
-                            }
-                        }
-                    })
-                    .is_ok()
-                {
-                    recovered += 1;
-                }
-            }
-            Ok(false) | Err(_) => {}
+            recovered += 1;
         }
     }
     recovered
