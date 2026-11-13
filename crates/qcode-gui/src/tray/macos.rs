@@ -46,11 +46,6 @@ define_class!(
             send(TrayCommand::ShowWindow);
         }
 
-        #[unsafe(method(newTaskAction:))]
-        fn new_task(&self, _: Sel) {
-            send(TrayCommand::NewTask);
-        }
-
         #[unsafe(method(stopAction:))]
         fn stop(&self, _: Sel) {
             send(TrayCommand::StopCurrent);
@@ -140,7 +135,6 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<MacTray> {
         entry
     };
     let show = mk_item("显示主窗口", sel!(showAction:));
-    let new_task = mk_item("新建任务", sel!(newTaskAction:));
     let stop = mk_item("停止当前任务", sel!(stopAction:));
     stop.setEnabled(false);
     let quit = mk_item("退出", sel!(quitAction:));
@@ -150,7 +144,7 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<MacTray> {
     for entry in [&status, &NSMenuItem::separatorItem(mtm)] {
         menu.addItem(entry);
     }
-    for entry in [&show, &new_task, &stop] {
+    for entry in [&show, &stop] {
         menu.addItem(entry);
     }
     menu.addItem(&NSMenuItem::separatorItem(mtm));

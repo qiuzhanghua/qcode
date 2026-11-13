@@ -149,7 +149,6 @@ impl Tray for QcodeTray {
             }),
             MenuItem::Separator,
             self.item("显示主窗口", true, TrayCommand::ShowWindow),
-            self.item("新建任务", true, TrayCommand::NewTask),
             self.item(
                 "停止当前任务",
                 self.snapshot.can_stop(),

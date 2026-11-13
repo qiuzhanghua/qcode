@@ -193,14 +193,13 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                                         tray::show_window_later(window, cx);
                                     });
                                 }
-                                tray::TrayCommand::NewTask => {
-                                    // 不能走 dispatch_action：窗口最小化时没有焦点，
-                                    // 动作派发不到根节点。
-                                    let _ = window_handle.update(cx, |_view, window, cx| {
-                                        shell.update(cx, |shell, cx| shell.new_session(window, cx))
-                                    });
-                                }
                                 tray::TrayCommand::StopCurrent => {
+                                    // 托盘不再有「新建任务」：关窗 = 真隐藏
+                                    // （`tray::hide_window_later`），隐藏时没有键盘
+                                    // 焦点，`cmd-n` / 段头 `+` 都按不到，所以那一路
+                                    // 只剩「显示主窗口」这一个前提。停止留着——它是
+                                    // 窗口不可见时唯一的刹车，删掉等于把托盘降级成
+                                    // 纯状态显示。
                                     let _ = window_handle.update(cx, |_view, _window, cx| {
                                         shell.update(cx, |shell, cx| {
                                             shell.stop();

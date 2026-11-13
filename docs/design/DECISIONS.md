@@ -3139,14 +3139,16 @@ GPUI（`gpui-pre 0.3.9`）的能力边界决定了实现方式：
    （需把 `app`/`backend` 从 `Shell` 里抽出来共享，且窗口级 UI 状态会重置），要么给
    gpui-kit 补 hide/show（Wayland 上也只能退化成最小化）。等 P2 有明确诉求再升级。
 3. **菜单只放与任务相关的东西**，照 v2rayN 的分组语义：
-   状态行（disabled）/ 显示主窗口 / 新建任务 / 停止当前任务（仅运行中可用）/
+   状态行（disabled）/ 显示主窗口 / 停止当前任务（仅运行中可用）/
    分隔线 / 退出。不做代理、订阅、开机自启这类与本产品无关的项。
+   （原方案这里还有「新建任务」，2026-11-13 删掉，理由见本节末尾的修订注记。）
 4. **状态来自 `qcode-ui-state`**：运行中 turn 数、pending approval 数、最近一次失败。
    图标三态（空闲 / 运行中 / 待审批），tooltip 显示活动任务标题；状态变化节流 300ms
    再 `Handle::update`，避免高频重绘。
 5. **线程与命令通路**：ksni 跑在自己的线程（tokio）；菜单点击发 `TrayCommand`
-   （`ShowWindow` / `NewTask` / `StopCurrent` / `Quit`）经 `mpsc` 交给 GPUI 的
-   foreground task，复用现有 action（`cmd-n`、`cmd-.`）。
+   （`ShowWindow` / `StopCurrent` / `Quit`）经 `mpsc` 交给 GPUI 的
+   foreground task，直接调 `Shell::stop()` 这类方法——**不走 `dispatch_action`**：
+   窗口隐藏时没有键盘焦点，动作派发不到根节点（见修订注记）。
 6. **退出只有一个真正的入口**：托盘"退出"（以及菜单里的退出 / `cmd-q`）才 `cx.quit()`；
    有任务在跑时先确认。审批仍然 fail-closed，托盘只提示"等待审批（N）"，不代答。
 7. **托盘注册失败必须降级**：没有 `org.kde.StatusNotifierWatcher` 时（headless、精简
@@ -3210,14 +3212,37 @@ P1 只落地 Linux，但两端的能力差异会影响接口设计，先把选�
 **P2 实现更新（2026-10-28）**
 
 - macOS（`NSStatusItem`）与 Windows（`Shell_NotifyIcon`）后端按本 ADR 的菜单模型补齐，
-  三端共用 `TraySnapshot` / `TrayCommand`：状态行 / 显示主窗口 / 新建任务 /
-  停止当前任务（仅运行中可用）/ 分隔线 / 退出。命令仍经 `mpsc` 交给 GPUI。
+  三端共用 `TraySnapshot` / `TrayCommand`：状态行 / 显示主窗口 / 停止当前任务（仅运行中
+  可用）/ 分隔线 / 退出。命令仍经 `mpsc` 交给 GPUI。
 - 关窗语义保持“最小化而不是退出”；`ShowWindow` 增加了平台原生还原
   （macOS `deminiaturize:`、Windows `SW_RESTORE`），因为 GPUI 的
   `activate_window()` 不会还原最小化窗口。
 - 图标改为三端统一的 QC 标记（macOS 模板 PDF、Windows 托盘 ICO、Linux
   `IconPixmap`，见 `crates/qcode/res/icons/`）。三态不再靠图标区分，改由菜单状态行
   与 tooltip 表达；若之后要恢复“图标三态”，需要为标记再做运行中/待审批两个变体。
+
+**修订注记：删掉「新建任务」（2026-11-13）**
+
+§3 原本在「显示主窗口」后面还有一项「新建任务」。删了，托盘菜单只剩
+状态行 / 显示主窗口 / 停止当前任务 / 分隔线 / 退出。
+
+理由是重复：窗口里「我的任务」段头的 `+`（ADR-0063 §1、§4）与 `cmd-n` 都能新建会话，
+而托盘这一项与它们没有区别——不需要窗口上下文，也不需要参数，多一个入口只是多一条
+要维护的 `TrayCommand` 分支（`run.rs` 里那段 `shell.new_session` 调用）。
+
+**「停止当前任务」留着，这不是疏忽。** 关窗 = 真隐藏（`tray::hide_window_later`：
+macOS `orderOut:`、Windows `SW_HIDE`，不是最小化），隐藏时没有键盘焦点，`cmd-.`、输入框
+红点、任务行 ⋯ 全都按不到。这时托盘菜单是唯一的界面，而状态行还会显示「运行中」或
+「等待审批（N）」——如果把这个状态**连同唯一的刹车一起**藏起来，用户面对一个跑着的
+turn 只能「显示主窗口」再动手。
+
+所以取舍是：**能靠「先看见窗口」补救的入口删掉，不能补救的（停止）留下。** 两者不对称
+是故意的。若将来要让托盘也删掉停止，前提是先有一个不依赖窗口的停止入口（比如托盘项
+变成「停止并退出」那样自带窗口语义的动作）。
+
+同时纠正 §5 的一处过期描述：原文写托盘「复用现有 action（`cmd-n`、`cmd-.`）」，实现从来
+没这么做过——`run.rs` 直接调 `Shell` 的方法。原因就是上面那条：窗口隐藏时
+`dispatch_action` 派发不到根节点（`crates/qcode-gui/src/run.rs` 里那段注释记着这次踩坑）。
 
 ## ADR-0053：会话投递与 turn 边界——Queue / Steer 的 P1 落地（2026-10-30）
 

@@ -29,9 +29,8 @@ use super::state::{TrayCommand, TraySnapshot};
 const TRAY_MSG: u32 = WM_APP + 0x100;
 const TRAY_REFRESH: u32 = WM_APP + 0x101;
 const MENU_SHOW: usize = 1001;
-const MENU_NEW_TASK: usize = 1002;
-const MENU_STOP: usize = 1003;
-const MENU_QUIT: usize = 1004;
+const MENU_STOP: usize = 1002;
+const MENU_QUIT: usize = 1003;
 const TRAY_ID: usize = 1;
 
 /// NOTIFYICONDATAW 里是裸 HWND/HICON 指针；包一层让 static 成立。
@@ -234,7 +233,6 @@ unsafe extern "system" fn tray_wnd_proc(
     } else if msg == WM_COMMAND {
         match wparam & 0xffff {
             MENU_SHOW => send(TrayCommand::ShowWindow),
-            MENU_NEW_TASK => send(TrayCommand::NewTask),
             MENU_STOP => send(TrayCommand::StopCurrent),
             MENU_QUIT => send(TrayCommand::Quit),
             _ => {}
@@ -266,8 +264,6 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
 
         let show = utf16("显示主窗口");
         AppendMenuW(menu, MF_STRING, MENU_SHOW, show.as_ptr());
-        let new_task = utf16("新建任务");
-        AppendMenuW(menu, MF_STRING, MENU_NEW_TASK, new_task.as_ptr());
         let stop = utf16("停止当前任务");
         let stop_flags = if snapshot.can_stop() {
             MF_STRING
