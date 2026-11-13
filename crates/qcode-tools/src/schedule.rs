@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::provider::ToolSpec;
+use qcode_core::question::{QuestionAnswer, QuestionIntent, QuestionItem, QuestionRequest};
 use qcode_core::schedule::{Overlap, ScheduledTask, Target, now_local, parse_rule};
 use qcode_core::scheduler::{EditTask, NewTask, SchedulerHandle};
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
@@ -80,6 +81,9 @@ fn detail(task: &ScheduledTask) -> String {
     if let Some(timeout) = task.approval_timeout {
         lines.push(format!("审批超时：{}s", timeout.as_secs()));
     }
+    if let Some(cwd) = &task.cwd {
+        lines.push(format!("工作目录：`{cwd}`"));
+    }
     if let Some(session) = &task.reserved_session_id {
         lines.push(format!("预留会话：`{session}`"));
     }
@@ -124,6 +128,8 @@ struct CreateArgs {
     overlap: String,
     approval_timeout_secs: Option<u64>,
     rearm_after_secs: Option<u64>,
+    /// 投递回合的工作目录（绝对路径）。`None` = 用会话 / 引擎默认。
+    cwd: Option<String>,
 }
 
 #[async_trait]
@@ -148,7 +154,10 @@ impl Tool for ScheduleCreate {
                 "delivers (target), ask the user to confirm those first — never invent a ",
                 "default schedule such as \"every day at 08:00\". For the delivery target ",
                 "the question is exactly two options: reuse one session for every delivery, ",
-                "or create a new session each time — do not offer vague alternatives."
+                "or create a new session each time — do not offer vague alternatives. ",
+                "The working directory (`cwd`) is where the delivered turn runs: use an ",
+                "absolute path the user named; when the model cannot tell it from the ",
+                "conversation, omit `cwd` and the tool asks the user for it itself."
             )
             .to_string(),
             parameters: json!({
@@ -184,6 +193,10 @@ impl Tool for ScheduleCreate {
                         "type": "integer",
                         "minimum": 0,
                         "description": "最小投递间隔秒数（默认 300）：即使会话空闲，距上次投递不足这么久也不再投。"
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "投递回合的工作目录（绝对路径）。用户明确给了就用；拿不准就省略，工具会主动向用户询问（用户可跳过用默认目录）。"
                     }
                 },
                 "required": ["title", "prompt", "rule"],
@@ -244,6 +257,45 @@ impl Tool for ScheduleCreate {
         let approval_timeout = args.approval_timeout_secs.map(Duration::from_secs);
         let rearm_after = Duration::from_secs(args.rearm_after_secs.unwrap_or(300));
 
+        // 工作目录：模型没给时工具主动询问用户（可跳过，用会话默认目录）。
+        // 不依赖模型自觉调用 ask_user——描述里的引导可能被模型忽略。
+        let mut cwd = args.cwd;
+        if cwd.is_none() {
+            if let Some(questioner) = &ctx.questioner {
+                let request = QuestionRequest {
+                    call_id: ctx.call_id.clone(),
+                    questions: vec![QuestionItem {
+                        id: "cwd".to_string(),
+                        header: None,
+                        question:
+                            "请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）"
+                                .to_string(),
+                        detail: None,
+                        options: Vec::new(),
+                        multi_select: false,
+                        pick_directory: true,
+                    }],
+                    intent: QuestionIntent::Confirm,
+                    timeout: None,
+                };
+                match questioner.ask(&request, ctx.cancel.clone()).await {
+                    QuestionAnswer::Answered(answers) => {
+                        if let Some(item) = answers.first().filter(|item| !item.is_skipped())
+                            && let Some(text) = item
+                                .custom
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|text| !text.is_empty())
+                        {
+                            cwd = Some(text.to_string());
+                        }
+                    }
+                    // 超时 / 取消：不追问，用默认目录创建。
+                    _ => {}
+                }
+            }
+        }
+
         let task = scheduler
             .create(
                 NewTask {
@@ -254,6 +306,7 @@ impl Tool for ScheduleCreate {
                     overlap,
                     approval_timeout,
                     rearm_after,
+                    cwd,
                 },
                 now_local(),
             )
@@ -540,6 +593,7 @@ mod tests {
             reserved_session_id: None,
             next_fire_at: None,
             rearm_after: Duration::from_secs(300),
+            cwd: None,
         }
     }
 
@@ -794,7 +848,8 @@ mod tests {
         assert_eq!(
             patch.rule,
             Some(Rule::Weekly {
-                weekday: 1,
+                weekdays: vec![1],
+                weekday: None,
                 hour: 10,
                 minute: 0
             })

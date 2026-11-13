@@ -420,6 +420,14 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // 回合结果要能关联回触发它的定时任务：在 `task_scheduled`
                         // 被 options 消费前留一份给 `done.send`。
                         let scheduled_for_done = task_scheduled.clone();
+                        // 定时任务可指定工作目录：投递回合用任务的 cwd，缺省回落
+                        // 到引擎工作目录。
+                        let cwd = task_scheduled
+                            .as_ref()
+                            .and_then(|scheduled| task_scheduler.find(&scheduled.task_id))
+                            .and_then(|task| task.cwd)
+                            .map(PathBuf::from)
+                            .unwrap_or(workspace);
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
@@ -438,7 +446,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             session_id: &task_session,
                             model: &task_model,
                             input: $text,
-                            cwd: workspace,
+                            cwd,
                             max_turns,
                             cancel,
                             pricing,
@@ -1098,6 +1106,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         overlap,
                                         approval_timeout,
                                         rearm_after,
+                                        cwd,
                                     } => scheduler
                                         .create(
                                             NewTask {
@@ -1108,6 +1117,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 overlap,
                                                 approval_timeout,
                                                 rearm_after,
+                                                cwd,
                                             },
                                             now,
                                         )

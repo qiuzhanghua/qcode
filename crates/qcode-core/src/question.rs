@@ -28,6 +28,15 @@ pub struct QuestionItem {
     pub options: Vec<QuestionOption>,
     #[serde(default)]
     pub multi_select: bool,
+    /// 前端渲染时在自由文本输入框旁提供「选择目录」按钮（挑中的路径填入回答）。
+    /// 用于「工作目录」这类既想弹框又想手工输入的提问。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pick_directory: bool,
+}
+
+/// `bool` 没有 `is_false`，给 serde 的 `skip_serializing_if` 用。
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// One selectable option. `label` is what the user sees *and* the value the
@@ -320,6 +329,7 @@ mod tests {
                 })
                 .collect(),
             multi_select: false,
+            pick_directory: false,
         }
     }
 

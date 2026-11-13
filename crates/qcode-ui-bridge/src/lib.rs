@@ -302,6 +302,8 @@ pub enum ScheduleOp {
         overlap: qcode_core::schedule::Overlap,
         approval_timeout: Option<Duration>,
         rearm_after: Duration,
+        /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
+        cwd: Option<String>,
     },
     List,
     Get {
@@ -1152,6 +1154,7 @@ mod tests {
                     },
                 ],
                 multi_select: false,
+                pick_directory: false,
             }],
             intent: QuestionIntent::Confirm,
             timeout: None,

@@ -39,6 +39,8 @@ pub struct NewTask {
     pub approval_timeout: Option<Duration>,
     /// 最小投递间隔：空闲后也要等这么久才能再投。
     pub rearm_after: Duration,
+    /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
+    pub cwd: Option<String>,
 }
 
 /// 编辑任务的增量补丁（`None` = 不修改该字段）。
@@ -140,6 +142,7 @@ impl Scheduler {
             reserved_session_id: None,
             next_fire_at,
             rearm_after: input.rearm_after,
+            cwd: input.cwd,
         };
         let mut tasks = self.store.load_schedule_tasks();
         tasks.push(task.clone());
@@ -431,6 +434,7 @@ mod tests {
             overlap: Overlap::Queue,
             approval_timeout: None,
             rearm_after: Duration::ZERO,
+            cwd: None,
         }
     }
 

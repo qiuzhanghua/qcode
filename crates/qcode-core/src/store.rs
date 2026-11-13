@@ -1335,6 +1335,7 @@ mod tests {
             reserved_session_id: None,
             next_fire_at: None,
             rearm_after: std::time::Duration::ZERO,
+            cwd: None,
         }
     }
 

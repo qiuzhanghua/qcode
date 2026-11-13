@@ -79,24 +79,21 @@ impl ScheduleRuleKind {
 pub(crate) enum ScheduleTargetKind {
     NewOnce,
     New,
-    Session,
 }
 
 impl ScheduleTargetKind {
-    pub(crate) const ALL: [Self; 3] = [Self::NewOnce, Self::New, Self::Session];
+    pub(crate) const ALL: [Self; 2] = [Self::NewOnce, Self::New];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::NewOnce => "新会话（首次投递创建并复用）",
             Self::New => "新会话（每次投递都新建）",
-            Self::Session => "指定会话",
         }
     }
 
     pub(crate) fn from_stored(value: &str) -> Self {
         match value {
             "new" => Self::New,
-            "session" => Self::Session,
             _ => Self::NewOnce,
         }
     }
@@ -105,7 +102,6 @@ impl ScheduleTargetKind {
         match self {
             Self::NewOnce => "new_once",
             Self::New => "new",
-            Self::Session => "session",
         }
     }
 }
@@ -131,13 +127,13 @@ pub(crate) struct ScheduleFormState {
     pub(crate) once_picker: Entity<DatePickerState>,
     /// cron 的 5 字段表达式。
     pub(crate) cron_expr: Entity<InputState>,
-    // 目标：类型下拉 + 会话选择。
+    // 目标：类型下拉。
     pub(crate) target_kind: ScheduleTargetKind,
-    pub(crate) session_id: Option<String>,
+    /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
+    pub(crate) cwd: Option<String>,
     // 各下拉菜单的开关。
     pub(crate) rule_menu_open: bool,
     pub(crate) target_menu_open: bool,
-    pub(crate) session_menu_open: bool,
     pub(crate) _subscription: gpui_kit::Subscription,
 }
 
@@ -152,9 +148,10 @@ impl Shell {
         self.new_session(window, cx);
         // 预填提示保持简短；「未明确周期时先向用户确认」的引导在
         // schedule_create 工具描述里（模型调用工具时读到），不占输入框。
-        const PREFILL: &str = "请根据需求创建一个定时任务。\n";
+        // 注意：title 生成会剥掉这个前缀（见 `qcode_core::task::SCHEDULE_DRAFT_PREFILL`）。
+        let prefill = format!("{}\n", qcode_core::task::SCHEDULE_DRAFT_PREFILL);
         self.ui.input.update(cx, |input, cx| {
-            input.set_value(PREFILL, window, cx);
+            input.set_value(prefill, window, cx);
             // 合成器是多行文本域：set_value 会把选择清到 0..0（开头），
             // 光标落在第一行而不是预填句子的下一行。把光标移到文本末尾，
             // 用户直接在下行输入需求。
@@ -256,10 +253,9 @@ impl Shell {
             once_picker,
             cron_expr,
             target_kind: ScheduleTargetKind::NewOnce,
-            session_id: None,
+            cwd: None,
             rule_menu_open: false,
             target_menu_open: false,
-            session_menu_open: false,
             _subscription,
         });
         let focus = self
@@ -354,13 +350,6 @@ impl Shell {
         let target = match form.target_kind {
             ScheduleTargetKind::NewOnce => qcode_core::schedule::Target::NewOnce,
             ScheduleTargetKind::New => qcode_core::schedule::Target::New,
-            // 用引用匹配：`_` 分支还要把 form 原样放回（reject_form）。
-            ScheduleTargetKind::Session => match &form.session_id {
-                Some(id) if !id.is_empty() => {
-                    qcode_core::schedule::Target::Session { id: id.clone() }
-                }
-                _ => return reject_form(self, form, cx, "请选择目标会话"),
-            },
         };
         let approval_timeout = if timeout_text.is_empty() {
             None
@@ -378,6 +367,7 @@ impl Shell {
             overlap: Overlap::Queue,
             approval_timeout,
             rearm_after: std::time::Duration::from_secs(300),
+            cwd: form.cwd,
         });
         self.view = MainView::Schedule;
         self.schedule_detail = None;

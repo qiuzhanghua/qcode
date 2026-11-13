@@ -333,6 +333,7 @@ fn task_with(
         reserved_session_id: None,
         next_fire_at: next,
         rearm_after: Duration::ZERO,
+        cwd: None,
     }
 }
 
@@ -423,21 +424,24 @@ fn parse_rule_rejects_bad_input() {
         parse_rule("daily 25:00"),
         Err(RuleError::Invalid { .. })
     ));
-    assert!(matches!(
-        parse_rule("weekly 09:30"),
-        Err(RuleError::Invalid { .. }),
+    assert!(
+        matches!(parse_rule("weekly 09:30"), Err(RuleError::Invalid { .. })),
         "a weekly rule needs at least one weekday"
-    ));
-    assert!(matches!(
-        parse_rule("monthly 0 09:30"),
-        Err(RuleError::Invalid { .. }),
+    );
+    assert!(
+        matches!(
+            parse_rule("monthly 0 09:30"),
+            Err(RuleError::Invalid { .. })
+        ),
         "monthly day must be 1-31"
-    ));
-    assert!(matches!(
-        parse_rule("monthly 32 09:30"),
-        Err(RuleError::Invalid { .. }),
+    );
+    assert!(
+        matches!(
+            parse_rule("monthly 32 09:30"),
+            Err(RuleError::Invalid { .. })
+        ),
         "monthly day must be 1-31"
-    ));
+    );
     assert!(matches!(
         parse_rule("cron 60 3 * * *"),
         Err(RuleError::Cron { .. })
@@ -516,7 +520,7 @@ fn interval_daily_and_weekly_compute_the_next_occurrence() {
         .next_after(now),
         Some(at(2026, June, 8, 9, 30))
     );
-    // Monthly 15 号 09:30：本月 15 号（06-15）已过 → 下月 15 号（07-15）。
+    // Monthly 15 号 09:30：now 是 06-01，本月 15 号（06-15）尚未到 → 当天。
     assert_eq!(
         Rule::Monthly {
             day: 15,
@@ -524,7 +528,7 @@ fn interval_daily_and_weekly_compute_the_next_occurrence() {
             minute: 30
         }
         .next_after(now),
-        Some(at(2026, July, 15, 9, 30))
+        Some(at(2026, June, 15, 9, 30))
     );
     // 2026-06-01 是周一；当月 1 号 12:00 未到 → 今天。
     assert_eq!(
@@ -717,10 +721,23 @@ fn a_legacy_single_weekday_rule_still_loads() {
     };
     assert_eq!(Rule::effective_weekdays(weekdays, *weekday), vec![1]);
     assert_eq!((*hour, *minute), (9, 30));
-    // 新格式序列化只写 `weekdays`，不再带旧 `weekday`。
+    // 序列化后 round-trip 语义不变（新任务不带旧 `weekday`，这里旧数据迁移
+    // 后可能保留，读回仍归一化到同一个星期集合）。
     let encoded = serde_json::to_string(&rule).expect("serialize");
     assert!(encoded.contains("weekdays"), "{encoded}");
-    assert!(!encoded.contains("\"weekday\""), "{encoded}");
+    let decoded: Rule = serde_json::from_str(&encoded).expect("reload");
+    let Rule::Weekly {
+        weekdays: reloaded_days,
+        weekday: reloaded_legacy,
+        ..
+    } = &decoded
+    else {
+        panic!("expected a weekly rule");
+    };
+    assert_eq!(
+        Rule::effective_weekdays(reloaded_days, *reloaded_legacy),
+        vec![1]
+    );
 }
 
 #[test]

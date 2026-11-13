@@ -12,6 +12,18 @@ use serde::{Deserialize, Serialize};
 /// Maximum roots per task. Keeps sandbox profiles and the UI bounded.
 pub const MAX_ROOTS: usize = 16;
 
+/// 侧栏「在对话中创建定时任务」预填到输入框的引导文字。生成会话标题时要剥掉
+/// 它，否则每条对话创建的会话 title 都以它开头（title 取第一条用户消息）。
+pub const SCHEDULE_DRAFT_PREFILL: &str = "请根据需求创建一个定时任务。";
+
+/// 去掉第一条用户消息里的引导前缀，供会话标题使用（见 [`SCHEDULE_DRAFT_PREFILL`]）。
+pub fn strip_schedule_prefill(text: &str) -> &str {
+    text.trim()
+        .strip_prefix(SCHEDULE_DRAFT_PREFILL)
+        .map(str::trim)
+        .unwrap_or(text.trim())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RootAccess {

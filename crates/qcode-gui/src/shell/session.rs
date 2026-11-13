@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::pick_directory;
 
 impl Shell {
     /// 当前是否正停在一个“没有任何对话内容”的新任务/草稿上。
@@ -449,6 +450,32 @@ impl Shell {
             panel.advance();
         }
         cx.notify();
+    }
+
+    /// 把系统目录选择器挑中的路径填入当前自由文本提问（「工作目录」类问题，
+    /// 面板上有「选择目录」按钮；挑中后路径进输入框，仍可手工修改）。
+    pub(crate) fn question_pick_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match pick_directory() {
+            Ok(Some(path)) => {
+                let text = path.display().to_string();
+                if let Some(panel) = self.ui.question.as_mut() {
+                    panel.set_custom(text.clone());
+                }
+                if let Some(state) = self.ui.question_input.as_ref() {
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(text, window, cx);
+                        cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            // 对话框里取消了：不动输入。
+            Ok(None) => {}
+            Err(error) => {
+                self.ui.app.push_notice(error);
+                cx.notify();
+            }
+        }
     }
 
     pub(crate) fn question_back(&mut self, cx: &mut Context<Self>) {

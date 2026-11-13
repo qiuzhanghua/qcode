@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::pick_directory;
 use crate::shell::schedule::{ScheduleRuleKind, ScheduleTargetKind};
 use gpui_kit::component::date_picker::DatePicker;
 use gpui_kit::component::time_field::TimeField;
@@ -144,28 +145,6 @@ impl Shell {
             .iter()
             .map(|kind| (kind.as_stored().to_string(), kind.label().to_string()))
             .collect();
-        // 目标=指定会话时，会话下拉列出已有任务。
-        let session_items: Vec<(String, String)> = self
-            .tasks
-            .iter()
-            .map(|row| {
-                let id = row.task.id.clone();
-                let label = self
-                    .titles
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("会话 {id}"));
-                (id, label)
-            })
-            .collect();
-        let session_label = match state.session_id.as_deref() {
-            Some(id) => self
-                .titles
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("会话 {id}")),
-            None => "选择会话…".to_string(),
-        };
         // 周期类型对应的参数行。
         let param_field: AnyElement = match state.rule_kind {
             ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly => div()
@@ -261,7 +240,7 @@ impl Shell {
                                         .items_center()
                                         .justify_center()
                                         .rounded(px(6.0))
-                                        .text_size(sp(13.0))
+                                        .text_size(sp(12.0))
                                         .when(selected, |this| {
                                             this.bg(accent).text_color(accent_foreground)
                                         })
@@ -287,34 +266,6 @@ impl Shell {
                         .into_any_element(),
                 )
                 .into_any_element()
-        });
-        let session_field = (state.target_kind == ScheduleTargetKind::Session).then(|| {
-            self.form_select(
-                cx,
-                "目标会话",
-                "schedule-session",
-                session_label,
-                state.session_menu_open,
-                session_items,
-                state.session_id.clone().unwrap_or_default(),
-                |shell| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        form.session_menu_open = !form.session_menu_open;
-                    }
-                },
-                |shell| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        form.session_menu_open = false;
-                    }
-                },
-                |shell, value| {
-                    if let Some(form) = shell.schedule_form.as_mut() {
-                        form.session_id = Some(value);
-                        form.session_menu_open = false;
-                    }
-                },
-            )
-            .into_any_element()
         });
 
         div()
@@ -361,6 +312,7 @@ impl Shell {
                     )
                     .child(self.form_field(cx, "名称", &state.title))
                     .child(self.form_field(cx, "内容", &state.prompt))
+                    .child(self.workdir_field(cx))
                     .child(self.form_select(
                         cx,
                         "周期",
@@ -413,7 +365,6 @@ impl Shell {
                             }
                         },
                     ))
-                    .when_some(session_field, |this, field| this.child(field))
                     .child(self.form_field(cx, "审批超时(秒)", &state.timeout_secs))
                     .child(
                         div()
@@ -597,6 +548,97 @@ impl Shell {
                     .child(label.to_string()),
             )
             .child(Input::new(input).w_full())
+    }
+
+    /// 定时任务表单的工作目录行：显示当前值（或「未指定」）+「选择目录」按钮，
+    /// 点击弹出系统目录选择对话框（`pick_directory`）；已选时多一个「清除」。
+    fn workdir_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let popover = theme.popover;
+        let border = theme.border;
+        let muted_foreground = theme.muted_foreground;
+        let shell = cx.entity().downgrade();
+        let Some(state) = self.schedule_form.as_ref() else {
+            return div();
+        };
+        let cwd = state.cwd.clone();
+        let cwd_label = cwd
+            .clone()
+            .unwrap_or_else(|| "未指定（用会话 / 引擎默认目录）".to_string());
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(muted_foreground)
+                    .child("工作目录"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(30.0))
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .rounded(px(6.0))
+                            .bg(popover)
+                            .border_1()
+                            .border_color(border)
+                            .text_size(sp(12.0))
+                            .child(cwd_label),
+                    )
+                    .child(
+                        Button::new("schedule-choose-cwd")
+                            .label("选择目录")
+                            .on_click({
+                                let shell = shell.clone();
+                                move |_event, _window, cx| match pick_directory() {
+                                    Ok(Some(path)) => {
+                                        if let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                if let Some(form) = shell.schedule_form.as_mut() {
+                                                    form.cwd = Some(path.display().to_string());
+                                                }
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                    // 用户在对话框里取消了：什么都不改。
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        if let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                shell.ui.app.push_notice(error);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                }
+                            }),
+                    )
+                    .when(cwd.is_some(), |this| {
+                        this.child(Button::new("schedule-clear-cwd").label("清除").on_click({
+                            let shell = shell.clone();
+                            move |_event, _window, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, cx| {
+                                        if let Some(form) = shell.schedule_form.as_mut() {
+                                            form.cwd = None;
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        }))
+                    }),
+            )
     }
     pub(crate) fn render_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some((task_id, label, path)) = self.pending_root_delete.clone() else {

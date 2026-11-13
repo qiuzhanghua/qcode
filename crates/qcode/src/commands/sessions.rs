@@ -59,7 +59,10 @@ fn task_title_from_events(events: &[qcode_core::event::Event]) -> Option<String>
                 }
             }
             EventKind::UserMessage(message) if first_message.is_none() => {
-                let text = message.text.trim().replace('\n', " ");
+                let text = qcode_core::task::strip_schedule_prefill(&message.text)
+                    .replace('\n', " ")
+                    .trim()
+                    .to_string();
                 if !text.is_empty() {
                     first_message = Some(text.chars().take(48).collect());
                 }

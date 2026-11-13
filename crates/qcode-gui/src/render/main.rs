@@ -1229,6 +1229,33 @@ impl Shell {
                                         .children(self.ui.question_input.as_ref().map(|state| {
                                             div()
                                                 .w_full()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_1()
+                                                // 工作目录类提问：输入框上方放
+                                                // 「选择目录」按钮，弹系统对话框。
+                                                .when(question.pick_directory, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .justify_start()
+                                                            .child(
+                                                                Button::new("question-pick-dir")
+                                                                    .label("选择目录")
+                                                                    .on_click(cx.listener(
+                                                                        |this,
+                                                                         _event,
+                                                                         window,
+                                                                         cx| {
+                                                                            this.question_pick_directory(
+                                                                                window, cx,
+                                                                            );
+                                                                        },
+                                                                    )),
+                                                            ),
+                                                    )
+                                                })
                                                 .child(Textarea::new(&state.input))
                                         }))
                                         .child(

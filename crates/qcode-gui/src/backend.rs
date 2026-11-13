@@ -235,7 +235,10 @@ impl Backend for UnconfiguredBackend {
         let events = self.store.load(id).ok()?;
         events.iter().find_map(|event| match &event.kind {
             EventKind::UserMessage(message) => {
-                let text = message.text.trim().replace('\n', " ");
+                let text = qcode_core::task::strip_schedule_prefill(&message.text)
+                    .replace('\n', " ")
+                    .trim()
+                    .to_string();
                 (!text.is_empty()).then(|| text.chars().take(48).collect())
             }
             _ => None,
@@ -461,7 +464,10 @@ impl Backend for LocalBackend {
         let events = self.store.load(id).ok()?;
         events.iter().find_map(|event| match &event.kind {
             EventKind::UserMessage(message) => {
-                let text = message.text.trim().replace('\n', " ");
+                let text = qcode_core::task::strip_schedule_prefill(&message.text)
+                    .replace('\n', " ")
+                    .trim()
+                    .to_string();
                 (!text.is_empty()).then(|| text.chars().take(48).collect())
             }
             _ => None,

@@ -1018,6 +1018,9 @@ pub struct ScheduledTask {
     pub next_fire_at: Option<PrimitiveDateTime>,
     /// 最小投递间隔：空闲后也要等这么久才能再投。
     pub rearm_after: Duration,
+    /// 投递回合的工作目录（绝对路径）。`None` = 用会话 / 引擎默认工作目录。
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 /// 投递历史保留策略：最多保留最近 30 天 / 200 条。
@@ -1109,6 +1112,7 @@ pub fn import_config_schedule(
         reserved_session_id: None,
         next_fire_at,
         rearm_after: Duration::ZERO,
+        cwd: None,
     }
 }
 
