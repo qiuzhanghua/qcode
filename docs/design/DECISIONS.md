@@ -4895,12 +4895,34 @@ GUI 落地后这三条边界开始漏：
 
    接线要求：`ColorRequest` 的回复要用**主题的**前景/背景色（索引 256/257，`OSC 4`
    的调色板查询按索引取），格式化函数由 `alacritty_terminal` 提供；`PtyWrite` 的字节
-   原样写回 PTY。core crate 不持有主题，所以它只把请求记录下来并提供
-   `answer_colours()`，由 GUI 侧传入主题色。
+   原样写回 PTY。
 
-   `OSC 52` 同理：crate 记录 `ClipboardStore` 的文本与 `ClipboardLoad` 的格式化闭包，
-   提供 `take_clipboard_stores()` / `answer_clipboard(Option<&str>)`，GUI 的 ticker 用
-   真剪贴板回答。**`Osc52` 从 alacritty 的 `OnlyCopy` 改成 `CopyPaste`**：只开拷贝时
+   **答复的时机是这段接线里最容易写错的一点，而且它一开始就写错了**（v0.8.8 修正）。
+   原做法是：crate 只把请求记录下来，GUI 的 ticker 每帧调 `answer_colours(前景, 背景)`
+   统一答复。这样有两条后果：
+
+   - **迟到**：ticker 间隔是 16/33/150 ms（取决于可见视图与是否有 turn），而且答复排在
+     同一轮 `poll()` 之后的最后，再经写线程跳一次。真实终端是在读取回调里当场答复的。
+     提问者（shell prompt 的 starship/oh-my-posh、vim、tmux）通常只等几百毫秒，放弃之后
+     答复仍会写进 PTY，**留给了下一个程序**——`gh run watch` 就是这么死的：
+     `could not prompt: unexpected escape sequence from terminal: ['\x1b' ']']`，因为对
+     交互选择器来说一个游离的 `ESC ]` 不是按键。
+   - **重复**：`answer_colours` 把答复既写进 PTY 又记进 `pty_writes`，而 GUI 随后还会把
+     `take_pty_writes()` 转发一次，于是每次查询收到两份答复。
+
+   现在的约定：答复在**解析它的那一趟里**完成。调色板随 `SessionConfig.palette` 传进来
+   （`Palette`，默认取窗口画布的 `TERMINAL_FOREGROUND`/`BACKGROUND`），`EventListener`
+   收到 `ColorRequest` 就按它格式化并压入 `pty_writes`；读取线程在 `advance` 之后立刻
+   `take_pty_writes()` 并经写线程通道写回 PTY（同一条通道，所以与用户输入保持顺序）。没有
+   队列，因此没有「过期答复」可留。`PtyWrite` 走同一条路。不变量由三条测试钉住：
+   `a_colour_query_is_answered_before_advance_returns`、
+   `each_query_gets_exactly_one_answer`、
+   `a_colour_reply_travels_the_write_path_to_the_child`（端到端，测试本身不触发答复）。
+
+   `OSC 52` 之所以仍留在 GUI 侧，是因为它需要**真剪贴板**，那只有 app 拥有：crate 记录
+   `ClipboardStore` 的文本与 `ClipboardLoad` 的格式化闭包，提供
+   `take_clipboard_stores()` / `answer_clipboard(Option<&str>)`，GUI 的 ticker 用真剪贴板
+   回答。**`Osc52` 从 alacritty 的 `OnlyCopy` 改成 `CopyPaste`**：只开拷贝时
    `tmux`/`ssh` 用不了系统剪贴板，而这正是 OSC 52 存在的理由；代价是 pty 上的程序
    能把剪贴板读走，本 ADR 认为这是用户选择内建终端的合理代价，记在这里供以后收窄
    （比如只对可信会话开、或首次询问）。

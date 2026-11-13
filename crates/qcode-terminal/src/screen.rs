@@ -60,13 +60,8 @@ struct Recorded {
     /// Everything the terminal wrote back to the "application". The live session
     /// forwards these to the PTY; a test asserts on them.
     pty_writes: Vec<String>,
-    /// Colour queries (`OSC 10/11/12 … ?`) waiting for an answer.
-    ///
-    /// These cannot be answered inside the listener: the reply is the *theme's*
-    /// colour, and this crate has no theme. A program that asks — vim does, on
-    /// startup — blocks until it gets an answer or gives up, so the pending
-    /// request is recorded here for [`Events::answer_colours`] to form the reply.
-    colour_requests: Vec<ColourRequest>,
+    /// What a colour query (`OSC 10/11/12 … ?`) is answered with.
+    palette: Palette,
     /// How the child exited, once the OS says so.
     exit: Option<i32>,
     /// Whether the child has exited at all — a signalled child has no code.
@@ -85,16 +80,42 @@ struct Recorded {
     clipboard_loads: Vec<ClipboardFormat>,
 }
 
+/// The two colours a colour query can be answered with.
+///
+/// A program asks "what is your foreground / background?" (`OSC 11;?` — the shell
+/// prompt, vim and tmux all do) and blocks until it hears back or gives up. The
+/// answer belongs to the *window*, so the caller supplies it; what this type has to
+/// get right is that the answer exists before the querying program stops reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub foreground: Rgb,
+    pub background: Rgb,
+}
+
+impl Default for Palette {
+    /// The app's terminal canvas (`TERMINAL_FOREGROUND` / `TERMINAL_BACKGROUND`), so
+    /// a headless [`Screen`] and a test answer the way the window would.
+    fn default() -> Self {
+        Self {
+            foreground: Rgb {
+                r: 0xd6,
+                g: 0xd6,
+                b: 0xd6,
+            },
+            background: Rgb {
+                r: 0x1c,
+                g: 0x1c,
+                b: 0x21,
+            },
+        }
+    }
+}
+
 /// How a program asked us to format a clipboard read (`OSC 52 ; ?`).
 ///
 /// The terminal library hands over the encoder so the reply is byte-identical to
 /// what the application expects; this crate only supplies the text.
 pub type ClipboardFormat = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync + 'static>;
-
-struct ColourRequest {
-    index: usize,
-    format: Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>,
-}
 
 impl Events {
     pub fn title(&self) -> String {
@@ -148,49 +169,28 @@ impl Events {
     /// Cheap enough to ask every tick: the lock guards a handful of vectors and is
     /// never held across a write. The point is to skip the *session* lock for the
     /// terminals that have nothing to say.
+    ///
+    /// Colour queries are not here: the listener answers them as they arrive (see
+    /// `Event::ColorRequest`), so there is never a pending one to notice.
     pub fn has_pending(&self) -> bool {
         let recorded = self.lock();
-        !recorded.colour_requests.is_empty()
-            || !recorded.clipboard_stores.is_empty()
+        !recorded.clipboard_stores.is_empty()
             || !recorded.clipboard_loads.is_empty()
             || !recorded.pty_writes.is_empty()
     }
 
-    /// Palette indices a program asked about, in order (`256` is the foreground,
-    /// `257` the background, `258` the cursor — see `NamedColor`).
-    pub fn colour_requests(&self) -> Vec<usize> {
-        self.lock()
-            .colour_requests
-            .iter()
-            .map(|request| request.index)
-            .collect()
+    /// Set what colour queries are answered with.
+    ///
+    /// Only matters before the child's first byte: the listener answers each query
+    /// as it parses it, so a palette set later would only reach queries that have
+    /// not arrived yet — which is exactly what a live theme change needs.
+    pub fn set_palette(&self, palette: Palette) {
+        self.lock().palette = palette;
     }
 
-    /// Build the reply for the recorded colour queries and queue it as PTY
-    /// output, returning it.
-    ///
-    /// Only the foreground and background can be answered from theme colours;
-    /// any other index is left for a caller that owns a full palette. A program
-    /// that asks for one of those simply falls back to its own defaults, which
-    /// is what it would do without a terminal at all.
-    ///
-    /// The terminator is the program's own — vim ends its queries with BEL, tmux
-    /// with ST — because a program only recognises the answer it asked for.
-    pub fn answer_colours(&self, foreground: Rgb, background: Rgb) -> String {
-        let mut recorded = self.lock();
-        let mut reply = String::new();
-        for request in std::mem::take(&mut recorded.colour_requests) {
-            let colour = match request.index {
-                index if index == NamedColor::Foreground as usize => foreground,
-                index if index == NamedColor::Background as usize => background,
-                _ => continue,
-            };
-            reply.push_str(&(request.format)(colour));
-        }
-        if !reply.is_empty() {
-            recorded.pty_writes.push(reply.clone());
-        }
-        reply
+    /// What colour queries are currently answered with.
+    pub fn palette(&self) -> Palette {
+        self.lock().palette
     }
 
     /// The child's exit code, once it has exited.
@@ -265,9 +265,30 @@ impl EventListener for Events {
             match event {
                 Event::Title(title) => recorded.title = title,
                 Event::PtyWrite(text) => recorded.pty_writes.push(text),
-                Event::ColorRequest(index, format) => recorded
-                    .colour_requests
-                    .push(ColourRequest { index, format }),
+                // Answered *here*, not by the caller later. The querying program is
+                // blocked reading its answer, and one that gives up before the
+                // reply arrives leaves those bytes in the pty for the *next*
+                // program to read — `gh` dies on it ("unexpected escape sequence
+                // from terminal: ['\x1b' ']']") because a stray `ESC ]` is not a
+                // keypress. A real terminal answers inside its read callback; the
+                // only way to match that is to answer before the parse returns.
+                Event::ColorRequest(index, format) => {
+                    let colour = match index {
+                        index if index == NamedColor::Foreground as usize => {
+                            Some(recorded.palette.foreground)
+                        }
+                        index if index == NamedColor::Background as usize => {
+                            Some(recorded.palette.background)
+                        }
+                        // No full palette in this crate: a program asking for the
+                        // cursor colour or an ANSI slot falls back to its own
+                        // default, as it would without a terminal at all.
+                        _ => None,
+                    };
+                    if let Some(colour) = colour {
+                        recorded.pty_writes.push((format)(colour));
+                    }
+                }
                 // `OSC 52`: the program either puts text on our clipboard or asks
                 // for what is on it. Both are answered by the app, which owns the
                 // real clipboard; the headless path leaves them unanswered.
@@ -315,7 +336,18 @@ impl Screen {
     /// `scrollback` is in lines and is *history only*: `screen_lines` is what is
     /// visible.
     pub fn new(columns: usize, screen_lines: usize, scrollback: usize) -> Self {
+        Self::with_palette(columns, screen_lines, scrollback, Palette::default())
+    }
+
+    /// As [`Screen::new`], answering colour queries with `palette`.
+    pub fn with_palette(
+        columns: usize,
+        screen_lines: usize,
+        scrollback: usize,
+        palette: Palette,
+    ) -> Self {
         let events = Events::default();
+        events.set_palette(palette);
         let config = Config {
             scrolling_history: scrollback,
             // Both directions of `OSC 52`. Alacritty's default is copy-only because

@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use qcode_terminal::{Session, SessionConfig};
+use qcode_terminal::alacritty_terminal::vte::ansi::Rgb;
+use qcode_terminal::{Palette, Session, SessionConfig};
 
 /// How long to wait before calling a slow machine broken. Every wait in this
 /// file is a poll rather than a sleep, so this only bounds a genuine hang.
@@ -41,6 +42,13 @@ fn pid_alive(pid: u32) -> bool {
 
 fn run(program: &str, args: &[&str]) -> Session {
     let config = SessionConfig::command(program, args.iter().map(|arg| arg.to_string()));
+    Session::spawn(config).expect("spawn a child on a PTY")
+}
+
+/// As [`run`], with the colours the child's queries are answered with.
+fn run_with_palette(program: &str, args: &[&str], palette: Palette) -> Session {
+    let mut config = SessionConfig::command(program, args.iter().map(|arg| arg.to_string()));
+    config.palette = palette;
     Session::spawn(config).expect("spawn a child on a PTY")
 }
 
@@ -330,7 +338,12 @@ fn a_killed_child_is_reported_as_exited_without_a_code() {
 fn a_colour_reply_travels_the_write_path_to_the_child() {
     // The reply has to travel the write path, not just be recorded: this spawns a
     // child that asks for the background colour and echoes whatever comes back.
-    let session = run(
+    //
+    // Nobody answers it from the test. The session's reader thread does, inside the
+    // pass that parses the query — that is the property being checked. If answering
+    // were a caller's job (it used to be the GUI ticker's), this would hang: the
+    // child's terminal never echoes the reply, so `saw_reply` stays false.
+    let session = run_with_palette(
         "/bin/sh",
         &[
             "-c",
@@ -339,26 +352,20 @@ fn a_colour_reply_travels_the_write_path_to_the_child() {
             // looks for: it can only be there if the bytes reached the slave.
             "printf '\\033]11;?\\033\\\\'; sleep 30",
         ],
-    );
-
-    let answered = wait_until(|| !session.events().colour_requests().is_empty());
-    assert!(answered, "the child's colour query never reached us");
-
-    session.answer_colours(
-        qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
-            r: 0x1d,
-            g: 0x1f,
-            b: 0x21,
-        },
-        qcode_terminal::alacritty_terminal::vte::ansi::Rgb {
-            r: 0xfa,
-            g: 0xfa,
-            b: 0xfa,
+        Palette {
+            foreground: Rgb {
+                r: 0x1d,
+                g: 0x1f,
+                b: 0x21,
+            },
+            background: Rgb {
+                r: 0xfa,
+                g: 0xfa,
+                b: 0xfa,
+            },
         },
     );
 
-    // The reply is echoed by the child's terminal, which is proof it travelled the
-    // write path and not just the recorder inside `Events`.
     let saw_reply =
         wait_until(|| session.with_view(|view| view.text().contains("rgb:fafa/fafa/fafa")));
     assert!(
@@ -546,6 +553,7 @@ fn the_window_config_start_shape_gets_output() {
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
         ],
+        ..SessionConfig::default()
     };
     let session = Session::spawn(config).expect("spawn");
     let saw = wait_until(|| {

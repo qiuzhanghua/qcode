@@ -8,7 +8,8 @@
 
 0.8.6 之后的清理与补齐：`read_file` 第一次能把磁盘上的图交给模型，`qc sessions` 有了
 按 id / 按标题删会话的能力，`stdout` 上最后的叙述被清干净并加了守卫测试，日志第一次
-能回答「这次跑到底怎么结束的」，CI 里那个从来没绿过的交叉 check job 删掉了。
+能回答「这次跑到底怎么结束的」，内建终端不再把查询答复迟到下一个程序手里，CI 里那个
+从来没绿过的交叉 check job 删掉了。
 
 ### `read_file` 能读图：不再把图片拒成「二进制」（ADR-0081）
 
@@ -70,6 +71,32 @@ ADR-0079 的迁移只查了「叙述有没有误用 stderr」，没查反方向�
 - 默认级别拆成两个 filter：文件 `info`、终端 `warn`。文件要全，终端不该被自己的日志淹掉；
 - `qc logs` 把行首的 UTC 时间戳就地换成本地时间显示（逐行查偏移，夏令时前后各按各的算）；
 - `docs/design/LOGGING.md` 记下这套约定。
+
+### 终端里的 `gh` 不再崩在 `unexpected escape sequence`（ADR-0062 §9 修正）
+
+内建终端会回答程序的「反向查询」，但答复是 GUI ticker 每帧统一发出的。问题在时机：
+ticker 间隔 16/33/150 ms（看当前视图与是否有 turn），答复又排在 `poll()` 之后、
+再经写线程跳一次。shell prompt（starship / oh-my-posh 之类）每次画提示符都会问
+`OSC 11;?`「你背景色是什么」，只等几百毫秒就放弃；答复随后写进 PTY，**留给了下一个
+程序**。于是回车后紧接着 `gh auth login` / `gh run watch` 就会看到：
+
+```
+could not prompt: unexpected escape sequence from terminal: ['\x1b' ']']
+```
+
+对 gh 的交互选择器来说，一个游离的 `ESC ]` 不是按键。真实终端是在读取回调里当场答复的。
+
+- 答复改在**解析它的那一趟**里完成：调色板随 `SessionConfig.palette` 传入（`Palette`，
+  默认取窗口画布色），`EventListener` 收到 `ColorRequest` 就地格式化；读取线程
+  `advance` 之后立刻经写线程通道写回 PTY，与用户输入共用同一条通道因此保持顺序。
+  `PtyWrite`（`DSR 6n`、`DA`）走同一条路，不再等 ticker。
+- 顺带修掉一个重复答复：`answer_colours` 既写 PTY 又记进 `pty_writes`，GUI 随后还把
+  `take_pty_writes()` 转发一次，于是每次查询收到两份。
+- `OSC 52` 仍留在 GUI 侧——它要的是真剪贴板，那只有 app 有。
+- 测试钉住不变量：`a_colour_query_is_answered_before_advance_returns`、
+  `each_query_gets_exactly_one_answer`、端到端
+  `a_colour_reply_travels_the_write_path_to_the_child`（测试自己不触发答复）。把答复
+  退回调用方时前两条会红——已实测。
 
 ### CI：一个死变体、一个永远挂起的测试，以及「挂住不算失败」
 

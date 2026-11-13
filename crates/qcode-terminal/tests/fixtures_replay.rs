@@ -11,9 +11,9 @@
 //! screen: a program that enters the alternate screen and restores it on quit
 //! ends up exactly where it started, so only the final state would prove nothing.
 
-use qcode_terminal::Screen;
 use qcode_terminal::alacritty_terminal::term::TermMode;
 use qcode_terminal::alacritty_terminal::vte::ansi::Rgb;
+use qcode_terminal::{Palette, Screen};
 
 const COLUMNS: usize = 80;
 const LINES: usize = 24;
@@ -27,7 +27,8 @@ struct Replayed {
     final_mode: TermMode,
     final_cursor: (usize, usize),
     /// Palette indices the program asked the terminal about.
-    colour_requests: Vec<usize>,
+    /// Bytes the terminal wrote back to the program during the replay.
+    pty_writes: String,
 }
 
 /// Replay one byte at a time, remembering what was on screen along the way.
@@ -53,7 +54,7 @@ fn replay(bytes: &[u8]) -> Replayed {
         app_cursor,
         final_mode: term.mode(),
         final_cursor: term.cursor(),
-        colour_requests: term.events().colour_requests(),
+        pty_writes: term.events().take_pty_writes(),
     }
 }
 
@@ -88,8 +89,9 @@ fn vim_full_screen_session_round_trips() {
         seen.final_cursor
     );
     assert!(
-        !seen.colour_requests.is_empty(),
-        "vim queries the theme colours on startup; the replay should have caught it"
+        seen.pty_writes.contains("\x1b]1"),
+        "vim queries the theme colours on startup and gets an OSC 10/11 answer: {:?}",
+        seen.pty_writes
     );
 }
 
@@ -184,81 +186,40 @@ fn a_colour_query_is_answered_with_the_terminator_the_program_used() {
     // vim terminates its OSC queries with BEL, tmux with ST (`ESC \`). The reply
     // has to use the terminator the program chose, or it will not recognise its
     // own answer and the query times out anyway.
+    //
+    // The answer must already be there when `advance` returns: the querying program
+    // is blocked on it. A caller-driven answer is what this test used to assert, and
+    // that is exactly how the bug got in — see `a_colour_query_is_answered_before_advance_returns`.
     for (name, expected_terminator) in [("vim", "\x07"), ("tmux", "\x1b\\")] {
         let bytes = fixture(name);
-        let mut term = Screen::new(COLUMNS, LINES, 2000);
+        let mut term = Screen::with_palette(COLUMNS, LINES, 2000, PALETTE);
         term.advance(&bytes);
 
-        let asked = term.events().colour_requests();
-        let background =
-            qcode_terminal::alacritty_terminal::vte::ansi::NamedColor::Background as usize;
+        let writes = term.events().take_pty_writes();
         assert!(
-            asked.contains(&background),
-            "{name} should ask for the background colour, asked for {asked:?}"
-        );
-
-        let reply = term.events().answer_colours(
-            Rgb {
-                r: 0x1d,
-                g: 0x1f,
-                b: 0x21,
-            },
-            Rgb {
-                r: 0xfa,
-                g: 0xfa,
-                b: 0xfa,
-            },
-        );
-        assert!(
-            reply.contains(&format!("\x1b]11;rgb:fafa/fafa/fafa{expected_terminator}")),
-            "{name} terminates with {expected_terminator:?}, so the reply must too: {reply:?}"
+            writes.contains(&format!("\x1b]11;rgb:fafa/fafa/fafa{expected_terminator}")),
+            "{name} terminates with {expected_terminator:?}, so the reply must too: {writes:?}"
         );
     }
 }
 
 #[test]
-fn vim_asks_for_the_theme_colours_and_gives_up_without_an_answer() {
+fn vim_gets_the_theme_colours_in_the_pass_that_parses_the_query() {
     // vim opens with `OSC 10 ; ?` and `OSC 11 ; ?` — "what is your foreground and
-    // background?" — and waits. A terminal that stays silent leaves vim guessing
-    // what it can draw, so the listener has to form a reply from the theme.
+    // background?" — and blocks on the answer. It has to be in the write-back by the
+    // time `advance` returns; anything later is a program that already gave up.
     let bytes = fixture("vim");
-    let mut term = Screen::new(COLUMNS, LINES, 2000);
+    let mut term = Screen::with_palette(COLUMNS, LINES, 2000, PALETTE);
     term.advance(&bytes);
 
-    let asked = term.events().colour_requests();
-    let foreground = qcode_terminal::alacritty_terminal::vte::ansi::NamedColor::Foreground as usize;
-    let background = qcode_terminal::alacritty_terminal::vte::ansi::NamedColor::Background as usize;
-    assert!(
-        asked.contains(&foreground) && asked.contains(&background),
-        "vim should ask for the foreground and background, asked for {asked:?}"
-    );
-
-    let reply = term.events().answer_colours(
-        Rgb {
-            r: 0x1d,
-            g: 0x1f,
-            b: 0x21,
-        },
-        Rgb {
-            r: 0xfa,
-            g: 0xfa,
-            b: 0xfa,
-        },
-    );
-    assert!(
-        reply.contains("\x1b]10;rgb:1d1d/1f1f/2121"),
-        "the foreground reply is an OSC 10 with the theme colour: {reply:?}"
-    );
-    assert!(
-        reply.contains("\x1b]11;rgb:fafa/fafa/fafa"),
-        "the background reply is an OSC 11: {reply:?}"
-    );
-
-    // Answering queues the bytes for the PTY; nothing else would send them.
     let writes = term.events().take_pty_writes();
     assert!(
-        writes.ends_with(&reply),
-        "the colour reply has to reach the PTY: {writes:?}"
+        writes.contains("\x1b]10;rgb:1d1d/1f1f/2121"),
+        "the foreground reply is an OSC 10 with the palette colour: {writes:?}"
+    );
+    assert!(
+        writes.contains("\x1b]11;rgb:fafa/fafa/fafa"),
+        "the background reply is an OSC 11: {writes:?}"
     );
     // vim also asks for the cursor position (`DSR 6`) and device attributes
     // (`DA`), and those answers travel the same channel. A terminal that drops
@@ -272,6 +233,20 @@ fn vim_asks_for_the_theme_colours_and_gives_up_without_an_answer() {
         "vim's device-attributes query was not answered: {writes:?}"
     );
 }
+
+/// The palette the reply assertions above expect.
+const PALETTE: Palette = Palette {
+    foreground: Rgb {
+        r: 0x1d,
+        g: 0x1f,
+        b: 0x21,
+    },
+    background: Rgb {
+        r: 0xfa,
+        g: 0xfa,
+        b: 0xfa,
+    },
+};
 
 #[test]
 fn vim_stream_is_indifferent_to_read_boundaries() {
@@ -311,4 +286,74 @@ fn every_replayed_screen_keeps_its_rows_within_the_width() {
             );
         }
     }
+}
+
+/// A colour query is answered before `advance` returns — the regression that let a
+/// stray `ESC ]` reach the *next* program on the pty.
+///
+/// The bug this pins down: answering was a caller's job (`Events::answer_colours`),
+/// driven by the GUI's ticker up to a frame and a half later. A program that asks and
+/// gives up in the meantime (a shell prompt drawing itself, then `gh` starting) leaves
+/// that reply in the pty, and the next reader parses `ESC ]` as a keypress:
+///
+///     could not prompt: unexpected escape sequence from terminal: ['\x1b' ']']
+///
+/// A real terminal answers inside its read callback. So: after the query is parsed,
+/// the answer is already on its way out, with nobody asking for it.
+#[test]
+fn a_colour_query_is_answered_before_advance_returns() {
+    let mut term = Screen::with_palette(COLUMNS, LINES, 2000, PALETTE);
+    // Exactly what a prompt prints: "what is your background?", BEL-terminated.
+    term.advance(b"\x1b]11;?\x07");
+
+    assert_eq!(
+        term.events().take_pty_writes(),
+        "\x1b]11;rgb:fafa/fafa/fafa\x07",
+        "the answer has to exist when advance returns, not after a caller forms it"
+    );
+}
+
+/// The same for the questions that travel as `PtyWrite` (cursor position, device
+/// attributes): also answered in the parsing pass.
+#[test]
+fn a_cursor_position_query_is_answered_before_advance_returns() {
+    let mut term = Screen::with_palette(COLUMNS, LINES, 2000, PALETTE);
+    // `DSR 6` — report the cursor position.
+    term.advance(b"\x1b[6n");
+
+    let writes = term.events().take_pty_writes();
+    assert!(
+        writes.starts_with("\x1b["),
+        "the cursor position report has to be queued by the time advance returns: {writes:?}"
+    );
+}
+
+/// Exactly one answer per query, and nothing left behind.
+///
+/// The duplicate is the second half of the same bug: the GUI used to answer and then
+/// also forward the recorded write-back, so every colour query got its reply twice.
+/// The second copy is as dangerous as a late one — it lands after the program that
+/// asked has moved on.
+#[test]
+fn each_query_gets_exactly_one_answer() {
+    let mut term = Screen::with_palette(COLUMNS, LINES, 2000, PALETTE);
+    term.advance(b"\x1b]10;?\x07\x1b]11;?\x07");
+
+    let writes = term.events().take_pty_writes();
+    assert_eq!(
+        writes.matches("\x1b]10;").count(),
+        1,
+        "the foreground query was answered more than once: {writes:?}"
+    );
+    assert_eq!(
+        writes.matches("\x1b]11;").count(),
+        1,
+        "the background query was answered more than once: {writes:?}"
+    );
+    // Nothing left pending: there is no queue for a ticker to find later.
+    assert!(
+        !term.events().has_pending(),
+        "a query outlived its parse: {:?}",
+        term.events().pty_writes()
+    );
 }

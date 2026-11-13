@@ -65,9 +65,9 @@ use alacritty_terminal::tty::{self, EventedPty, Options, Shell};
 // does not compile for Windows.
 #[cfg(windows)]
 use alacritty_terminal::tty::EventedReadWrite;
-use alacritty_terminal::vte::ansi::{Processor, Rgb};
+use alacritty_terminal::vte::ansi::Processor;
 
-use crate::screen::{Events, Size, View};
+use crate::screen::{Events, Palette, Size, View};
 
 /// How much a single `read` takes from the pty.
 const READ_BUFFER: usize = 8 * 1024;
@@ -95,6 +95,8 @@ pub struct SessionConfig {
     pub cwd: Option<PathBuf>,
     /// Extra environment variables, on top of the inherited ones.
     pub env: Vec<(String, String)>,
+    /// What the child's colour queries (`OSC 11;?`) are answered with.
+    pub palette: Palette,
 }
 
 impl Default for SessionConfig {
@@ -106,6 +108,7 @@ impl Default for SessionConfig {
             shell: None,
             cwd: None,
             env: Vec::new(),
+            palette: Palette::default(),
         }
     }
 }
@@ -355,6 +358,9 @@ impl Session {
         let screen_lines = config.screen_lines;
 
         let events = Events::default();
+        // Before the reader starts: the listener answers a query as it parses it, so
+        // the palette has to be there before the child's first byte.
+        events.set_palette(config.palette);
         let term = Arc::new(FairMutex::new(Term::new(
             Config {
                 scrolling_history: config.scrollback,
@@ -431,10 +437,15 @@ impl Session {
             let term = term.clone();
             let events = events.clone();
             let stopped = stopped.clone();
+            // The reader answers the child's queries, so it needs a way to write.
+            // A clone of the sender is enough: the writer thread already owns the
+            // pty end, and going through the same channel keeps the reply ordered
+            // against everything the user types.
+            let writer = writer.clone();
             std::thread::Builder::new()
                 .name(format!("pty-read-{pid}"))
                 .spawn(move || {
-                    read_loop(&mut reader_end, &term, &events, &stopped);
+                    read_loop(&mut reader_end, &term, &events, &writer, &stopped);
                 })?
         };
 
@@ -522,19 +533,6 @@ impl Session {
     fn with_term<R>(&self, change: impl FnOnce(&mut Term<Events>) -> R) -> R {
         let mut term = self.term.lock();
         change(&mut term)
-    }
-
-    /// Answer the colour queries the child asked, and send the reply.
-    ///
-    /// Returns the bytes written, empty when nothing was asked. A program that queries
-    /// the palette on startup (vim, tmux) waits for this; staying silent makes it
-    /// guess a colour scheme that will not match the window.
-    pub fn answer_colours(&self, foreground: Rgb, background: Rgb) -> String {
-        let reply = self.events.answer_colours(foreground, background);
-        if !reply.is_empty() {
-            self.write(reply.as_bytes());
-        }
-        reply
     }
 
     /// Scroll the view back through history. Negative moves towards the live screen.
@@ -723,6 +721,7 @@ fn read_loop(
     end: &mut ReaderEnd,
     term: &Arc<FairMutex<Term<Events>>>,
     events: &Events,
+    writer: &Sender<WriterMessage>,
     stopped: &AtomicBool,
 ) {
     let mut parser = Processor::new();
@@ -737,9 +736,9 @@ fn read_loop(
             // instead of just breaking.
             let deadline = Instant::now() + SHUTDOWN_GRACE;
             loop {
-                pump(end, &mut parser, term, events, &mut buffer, stopped);
+                pump(end, &mut parser, term, events, writer, &mut buffer, stopped);
                 if let Some(status) = child_exited(end) {
-                    pump(end, &mut parser, term, events, &mut buffer, stopped);
+                    pump(end, &mut parser, term, events, writer, &mut buffer, stopped);
                     term.lock().exit();
                     events.send_event(alacritty_terminal::event::Event::ChildExit(status));
                     return;
@@ -756,13 +755,13 @@ fn read_loop(
         // that preceded it.
         let exit_status = child_exited(end);
 
-        let read_anything = pump(end, &mut parser, term, events, &mut buffer, stopped);
+        let read_anything = pump(end, &mut parser, term, events, writer, &mut buffer, stopped);
 
         match exit_status {
             Some(status) => {
                 // One more pass: the child's last write and its exit can be seen in
                 // either order, and losing that tail is exactly the bug above.
-                pump(end, &mut parser, term, events, &mut buffer, stopped);
+                pump(end, &mut parser, term, events, writer, &mut buffer, stopped);
                 term.lock().exit();
                 events.send_event(alacritty_terminal::event::Event::ChildExit(status));
                 break;
@@ -790,6 +789,7 @@ fn pump(
     parser: &mut Processor,
     term: &Arc<FairMutex<Term<Events>>>,
     events: &Events,
+    writer: &Sender<WriterMessage>,
     buffer: &mut [u8],
     stopped: &AtomicBool,
 ) -> bool {
@@ -812,6 +812,25 @@ fn pump(
                 let mut terminal = term.lock();
                 parser.advance(&mut *terminal, &buffer[..count]);
                 drop(terminal);
+
+                // What the child asked for goes back now, in the same pass that
+                // parsed the question. A colour query (`OSC 11;?`, asked by the
+                // shell prompt, vim and tmux on startup) is answered directly by
+                // the listener; `PtyWrite` — cursor-position reports, device
+                // attributes — lands here too. Both used to wait for the GUI's
+                // ticker, up to a frame and a half and after whatever `poll()` had
+                // queued, by which time the asking program may have given up: the
+                // reply then stays in the pty for the *next* program to read, which
+                // is how `gh` came to die on "unexpected escape sequence from
+                // terminal: ['\x1b' ']']".
+                //
+                // No lock is held here (`pty_writes` takes the events lock inside),
+                // so this cannot deadlock against the parse above.
+                let replies = events.take_pty_writes();
+                if !replies.is_empty() {
+                    let _ = writer.send(WriterMessage::Bytes(replies.into_bytes()));
+                }
+
                 // Per read, so a flood is visible frame by frame instead of never.
                 events.send_event(alacritty_terminal::event::Event::Wakeup);
             }

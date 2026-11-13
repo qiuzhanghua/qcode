@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use gpui_kit::{Context, Window};
 
 use qcode_kernel::config::TerminalConfig;
-use qcode_terminal::{Session, SessionConfig, shell};
+use qcode_terminal::{Palette, Session, SessionConfig, shell};
 
 /// One open terminal.
 pub(crate) struct Tab {
@@ -175,6 +175,12 @@ fn spawn(
             // the 256-colour approximations.
             ("COLORTERM".to_string(), "truecolor".to_string()),
         ],
+        // The canvas this tab is painted on. The session answers the child's colour
+        // queries from it as they arrive, so it has to be right at spawn.
+        palette: Palette {
+            foreground: to_term_rgb(crate::render::terminal_view::TERMINAL_FOREGROUND),
+            background: to_term_rgb(crate::render::terminal_view::TERMINAL_BACKGROUND),
+        },
     })
     .map_err(|error| format!("终端启动失败（{}）：{error}", choice.program.display()))?;
 
@@ -285,26 +291,21 @@ impl crate::shell::Shell {
 
     /// Answer what the child asked for since the last tick.
     ///
-    /// A program that queries the palette (`vim`, `tmux`) blocks until it hears
-    /// back, and one that opens the clipboard through the terminal (`OSC 52`) gets
-    /// nowhere if nothing answers. Both are non-blocking pty writes, so they belong
-    /// on the ticker rather than in the paint (ADR-0062 §9).
-    /// Answer whatever the terminals are waiting on, visible or not.
+    /// Only the clipboard is left here. Colour queries and `PtyWrite` are answered
+    /// by the session's own reader thread, in the pass that parses them: a program
+    /// blocks waiting for that answer and gives up after a few hundred milliseconds,
+    /// so a ticker — up to 150 ms away, and behind whatever `poll()` had queued — was
+    /// both too late (the reply stayed in the pty for the next program to read, which
+    /// is how `gh` died on a stray `ESC ]`) and, once the reader answers too, a
+    /// second write of the same bytes.
     ///
-    /// A program that asks for the palette or for `PtyWrite` blocks until it gets
-    /// an answer, and a tab can be in the background while it starts up (`vim` asks
-    /// on open). The check is `Events::has_pending`, which only takes the events
-    /// lock: terminals with nothing to say never touch the grid lock.
+    /// The clipboard cannot move there: it belongs to the app, which owns the real
+    /// clipboard and the UI thread that reads it.
     pub(crate) fn service_terminal(&mut self, cx: &mut Context<Self>) {
-        // The terminal's own canvas, not the app's: see `TERMINAL_BACKGROUND`.
-        let foreground = to_term_rgb(crate::render::terminal_view::TERMINAL_FOREGROUND);
-        let background = to_term_rgb(crate::render::terminal_view::TERMINAL_BACKGROUND);
         for tab in &mut self.terminals.tabs {
             if !tab.session.events().has_pending() {
                 continue;
             }
-            tab.session.answer_colours(foreground, background);
-
             // `OSC 52`: a program on the pty either put text on our clipboard or
             // asked for it. Both go through the real clipboard, which only the app
             // owns.
@@ -319,11 +320,6 @@ impl crate::shell::Shell {
                 if !reply.is_empty() {
                     tab.session.write(reply.as_bytes());
                 }
-            }
-
-            let pending = tab.session.events().take_pty_writes();
-            if !pending.is_empty() {
-                tab.session.write(pending.as_bytes());
             }
         }
     }

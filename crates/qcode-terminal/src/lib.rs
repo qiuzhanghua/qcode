@@ -14,7 +14,7 @@ pub mod session;
 pub mod shell;
 
 pub use key::{Direction, Key, KeyPress, Modifiers};
-pub use screen::{CellView, Events, Screen, View};
+pub use screen::{CellView, Events, Palette, Screen, View};
 pub use session::{Session, SessionConfig};
 pub use shell::{Choice, Probe, ProcessRow, ProcessSource, Source};
 
