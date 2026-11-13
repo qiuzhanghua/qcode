@@ -65,7 +65,7 @@ impl Shell {
         let task_id_for_close = task_id.to_string();
         div()
             .id(format!("task-menu-popover-{task_id}"))
-            .w(px(160.0))
+            .w(px(120.0))
             .flex()
             .flex_col()
             .gap_1()
@@ -95,6 +95,15 @@ impl Shell {
                     } else {
                         "这个任务没有在跑"
                     })
+                    // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规。
+                    .font_weight(FontWeight::NORMAL)
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().popover_foreground),
+                    )
                     .on_click(cx.listener({
                         let task_id = task_id.to_string();
                         move |this, _, _window, cx| {
@@ -112,6 +121,15 @@ impl Shell {
                     } else {
                         "重命名任务"
                     })
+                    // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规。
+                    .font_weight(FontWeight::NORMAL)
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().popover_foreground),
+                    )
                     .on_click(cx.listener({
                         let task_id = task_id.to_string();
                         move |this, _, window, cx| {
@@ -123,13 +141,22 @@ impl Shell {
             .child(
                 Button::new(format!("task-delete-{task_id}"))
                     .label("删除任务")
-                    .danger()
                     .disabled(running)
                     .tooltip(if running {
                         "结束当前 Turn 后可删除"
                     } else {
                         "删除任务"
                     })
+                    // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规，
+                    // 文字用危险红。
+                    .font_weight(FontWeight::NORMAL)
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().danger),
+                    )
                     .on_click(cx.listener({
                         let task_id = task_id.to_string();
                         let title = title.to_string();
@@ -828,50 +855,15 @@ impl Shell {
 
     /// 定时任务段的段头：左侧与其它段头同构（chevron + 图标 + 名称），右侧
     /// 是两个动作按钮——「＋」新建（跳新对话预填创建提示）与「⋮」菜单
-    /// （在对话中创建 / 手动创建）。
+    /// （在对话中创建 / 手动创建 / 按状态过滤）。
     fn render_schedule_section_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let open = self.schedule_section_open;
-        // 过滤 / 操作按钮各自包一层 relative 容器：弹出菜单锚定到对应按钮的
-        // 正下方（BottomLeft），而不是整段段头的左上角（那会开到段头左侧）。
-        let mut filter_wrapper = div().relative().child(
-            Button::new("schedule-filter")
-                .compact()
-                .label(schedule_filter_label(self.schedule_filter))
-                .tooltip("按状态过滤定时任务")
-                // 无边框透明：常态无底，悬浮/按下灰色（与「在对话中创建
-                // 定时任务」按钮一致）。
-                .custom(
-                    ButtonCustomVariant::new(cx)
-                        .color(cx.theme().transparent)
-                        .hover(rgb(0x888888).opacity(0.2).into())
-                        .active(rgb(0x888888).opacity(0.45).into())
-                        .foreground(cx.theme().button_foreground),
-                )
-                .on_click(cx.listener(|this, _, _window, cx| {
-                    cx.stop_propagation();
-                    this.toggle_schedule_filter_menu(cx);
-                })),
-        );
-        if self.schedule_filter_menu_open {
-            filter_wrapper = filter_wrapper.child(
-                deferred(
-                    anchored()
-                        // 块级容器里 absolute 弹层的基准点 = 紧跟按钮之后（按钮
-                        // 底部），偏移只留 4px 间距即可，不再加整个按钮高。
-                        .anchor(Anchor::TopLeft)
-                        .offset(point(px(0.0), px(4.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(self.render_schedule_filter_menu(cx)),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY),
-            );
-        }
         let mut menu_wrapper = div().relative().child(
             Button::new("schedule-menu")
                 .compact()
-                .label("⋯")
+                .icon(IconName::Ellipsis)
                 .tooltip("定时任务操作")
                 // 无边框透明：常态无底，悬浮/按下灰色（与「在对话中创建
                 // 定时任务」按钮一致）。
@@ -948,7 +940,6 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_0p5()
-                    .child(filter_wrapper)
                     .child(menu_wrapper)
                     .child(
                         Button::new("new-schedule-task")
@@ -975,43 +966,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// 定时任务段头的状态过滤菜单：全部 / 已开启 / 已暂停 / 已结束。
-    fn render_schedule_filter_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        div()
-            .id("schedule-filter-menu-popover")
-            .w(px(120.0))
-            .flex()
-            .flex_col()
-            .gap_1()
-            .rounded(px(8.0))
-            .bg(theme.popover)
-            .border_1()
-            .border_color(theme.border)
-            .p_1()
-            .text_color(theme.popover_foreground)
-            .on_mouse_down_out(cx.listener(|this, _, _window, cx| {
-                this.schedule_filter_menu_open = false;
-                cx.notify();
-            }))
-            .children(SCHEDULE_FILTERS.iter().enumerate().map(|(index, filter)| {
-                let selected = *filter == self.schedule_filter;
-                let label = schedule_filter_label(*filter);
-                Button::new(("schedule-filter-option", index))
-                    .label(if selected {
-                        format!("{label} ✓")
-                    } else {
-                        label.to_string()
-                    })
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        cx.stop_propagation();
-                        this.set_schedule_filter(*filter, cx);
-                    }))
-            }))
-            .into_any_element()
-    }
-
-    /// 定时任务段头「⋮」的弹出菜单：在对话中创建 / 手动创建。
+    /// 定时任务段头「⋮」的弹出菜单：在对话中创建 / 手动创建，以及
+    /// 按状态过滤（全部 / 已开启 / 已暂停 / 已结束）。
     fn render_schedule_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         div()
@@ -1034,6 +990,14 @@ impl Shell {
                 Button::new("schedule-create-in-chat")
                     .label("在对话中创建")
                     .tooltip("新建会话，让模型按你的描述创建定时任务")
+                    // 菜单项无边框：常态透明，悬浮/按下灰色底。
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().popover_foreground),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.new_schedule_draft(window, cx);
@@ -1043,9 +1007,57 @@ impl Shell {
                 Button::new("schedule-manual-create")
                     .label("手动创建")
                     .tooltip("填写名称 / 内容 / 周期等，直接创建")
+                    // 菜单项无边框：常态透明，悬浮/按下灰色底。
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(cx.theme().transparent)
+                            .hover(rgb(0x888888).opacity(0.2).into())
+                            .active(rgb(0x888888).opacity(0.45).into())
+                            .foreground(cx.theme().popover_foreground),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.open_schedule_form(window, cx);
+                    })),
+            )
+            .child(
+                // 按状态过滤：原段头的过滤按钮移到这里，功能保持不变。
+                div()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .mt_1()
+                    .pt_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(theme.muted_foreground)
+                            .px_1()
+                            .child("按状态过滤"),
+                    )
+                    .children(SCHEDULE_FILTERS.iter().enumerate().map(|(index, filter)| {
+                        let selected = *filter == self.schedule_filter;
+                        let label = schedule_filter_label(*filter);
+                        Button::new(("schedule-filter-option", index))
+                            .label(if selected {
+                                format!("{label} ✓")
+                            } else {
+                                label.to_string()
+                            })
+                            // 菜单项无边框：常态透明，悬浮/按下灰色底。
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().transparent)
+                                    .hover(rgb(0x888888).opacity(0.2).into())
+                                    .active(rgb(0x888888).opacity(0.45).into())
+                                    .foreground(cx.theme().popover_foreground),
+                            )
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.set_schedule_filter(*filter, cx);
+                            }))
                     })),
             )
             .into_any_element()

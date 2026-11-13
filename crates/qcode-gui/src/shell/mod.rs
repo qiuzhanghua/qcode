@@ -89,8 +89,6 @@ pub(crate) struct Shell {
     pub(crate) schedule_menu_open: bool,
     /// 定时任务列表的状态过滤（`None` = 全部）。
     pub(crate) schedule_filter: Option<qcode_core::schedule::TaskStatus>,
-    /// 侧栏「定时任务」段头的状态过滤菜单是否展开。
-    pub(crate) schedule_filter_menu_open: bool,
     /// 定时任务详情页当前选中的任务 id（`None` = 空态）。
     pub(crate) schedule_detail: Option<String>,
     /// 手动创建定时任务的表单（`Some` = 弹窗打开中）。
@@ -337,7 +335,6 @@ impl Shell {
             schedule_running: std::collections::HashMap::new(),
             schedule_menu_open: false,
             schedule_filter: None,
-            schedule_filter_menu_open: false,
             schedule_detail: None,
             schedule_form: None,
             minimize_on_close,
