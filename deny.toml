@@ -25,19 +25,15 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant
     "RUSTSEC-2026-0371", # zbus_names
     "RUSTSEC-2026-0372", # zvariant_derive
-    # lru 0.12.5 的两条 unsound 告警，**不可达**，且升不上去：
-    # `lru` 只经 TUI 的 `ratatui 0.29` 进来，而 `ratatui` 的版本被 `tui-textarea`
-    # 钉住——0.7.0（当前最新）要求 `ratatui ^0.29.0`，所以 `ratatui` 到 `0.30`
-    # 要么等 `tui-textarea` 发版，要么自己替掉那个输入控件（TUI 重构，不是升级）。
     #
-    # 可达性查过了：ratatui 把 `LruCache` 只当布局缓存用
-    # （`src/layout/layout.rs:39`），全 crate 对它的调用只有 `get_or_insert`
-    # 与 `resize`。两条告警分别在 `LruCache::pop()` 的 panic 安全性
-    # 和 `IterMut` 的 Stacked Borrows 上，两个方法 ratatui 都没调。
-    #
-    # 一旦 `tui-textarea` 放出支持 ratatui 0.30 的版本，这两条要删掉。
-    "RUSTSEC-2026-0253", # lru: LruCache::pop() 的 panic 安全性
-    "RUSTSEC-2026-0002", # lru: IterMut 违反 Stacked Borrows
+    # 曾经的 lru 豁免（RUSTSEC-2026-0253 `LruCache::pop()` 的 panic 安全性、
+    # RUSTSEC-2026-0002 `IterMut` 违反 Stacked Borrows）于 2026-11-13 清掉：
+    # cargo-deny 已不再对 `lru 0.12.5`（只经 TUI 的 `ratatui 0.29` 进来）匹配这两条，
+    # 删掉后 `advisories` 仍 ok，留着只是每次门禁打两条 `advisory-not-detected`。
+    # 若哪天重新变红：两条分别落在 `pop()` 与 `IterMut` 上，而 ratatui 只把
+    # `LruCache` 当布局缓存用（`src/layout/layout.rs:39`，只调 `get_or_insert` /
+    # `resize`），两个方法都没碰。ratatui 为何停在 0.29 见 docs/design/DECISIONS.md
+    # ADR-0001 的 M2 记录（要与 `tui-textarea 0.7` 的 `^0.29` 配套）。
 ]
 
 [licenses]
