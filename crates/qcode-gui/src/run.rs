@@ -25,6 +25,11 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                     // with an async queue.
                     tracing::info!(killed, "killed leftover process groups on quit");
                 }
+                // The caller's exit bookkeeping. On macOS this is the *only*
+                // chance: `-[NSApplication terminate:]` calls `exit()` from AppKit
+                // after this observer runs, so `main` never resumes and anything
+                // written from its return path is lost (see the `quit` module).
+                crate::quit::fire();
                 async {}
             });
             // Deliberately never dropped: the returned `Subscription` is what

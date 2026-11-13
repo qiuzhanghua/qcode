@@ -91,6 +91,20 @@ pub(crate) async fn cmd_gui(
     config_path: Option<PathBuf>,
     approval_policy: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    // The end-of-session log line normally comes from `main`'s one funnel, which
+    // works because `Platform::run` returns on Linux and Windows. On macOS it does
+    // not: quitting goes through `-[NSApplication terminate:]`, AppKit runs the
+    // quit observers and then calls `exit()` itself, so `main` never resumes and
+    // the funnel never runs. The result was a `qc session starting` line with no
+    // matching end, and the next launch warning that the previous session "was
+    // killed, crashed, or the machine went down" — on every clean quit.
+    //
+    // Registered unconditionally rather than `cfg(target_os = "macos")`: the
+    // callback is idempotent (`lifecycle::end_once` writes once and ignores the
+    // rest), so on Linux and Windows it just writes the same line a moment earlier.
+    // Gating it would make the two platforms diverge in a way only the log sees.
+    qcode_gui::on_quit(Box::new(|| crate::lifecycle::finish(0)));
+
     let workspace = std::env::current_dir()?.canonicalize()?;
     // Workspace switching re-execs qc with current_dir set to the new
     // workspace; relative --config/--data-dir values must be anchored first.

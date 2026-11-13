@@ -8597,3 +8597,71 @@ ADR-0077 把日志落到 `logs/qc.log`，ADR-0079 把 38 处 `eprintln!` 归入 
 `qc logs` 自己仍然不 attach 文件（ADR-0077 的理由：读取时不该创建被读的文件），所以它的边界
 行只在终端。`qc-eval` 是另一个二进制，本次不动。两个 `qc acp` 并发写同一份日志时，中间行仍
 分不清归属——边界行能配上，逐行身份要等单实例或文件锁。
+
+## ADR-0082 修订注记：macOS 上 `Platform::run` 不返回（2026-11-13）
+
+**状态**：已实现。
+
+**问题**
+
+上面 §1 把末行挂在 `main` 的单一漏斗上，并声称「正常退出 `exit=0`」验证过。那个验证在 Linux
+（以及 `qc run` / `qc acp`）上成立，**在 macOS 的 `qc gui` 上不成立**——末行一次都没写出来。
+
+现场是用户自己的日志：一天四条 `qc session starting`，**零条 `qc session ending`**，于是每次
+启动都对着上一次报
+
+```
+WARN qc::lifecycle: the previous qc session never finished; it was killed, crashed, or the machine went down
+```
+
+一个正常的 Cmd-Q 被说成崩溃。`report_orphans` 本身没错——它准确报告了「有 start 无 end」，
+错的是那个 end 从来没被写出来。
+
+**原因：AppKit 在 `terminate:` 里自己 `exit()`**
+
+三个平台的 `Platform::run` 结局不同：
+
+| 平台 | 结局 | `main` 是否恢复 |
+|---|---|---|
+| Linux（`gpui_pre_linux::linux::platform::run`） | 事件循环结束 → `on_quit` → 返回 | 是 |
+| Windows（`vendor/gpui-pre-windows/src/platform.rs`） | `GetMessageW` 循环结束 → quit 回调 → 返回 | 是 |
+| macOS（`gpui_pre_macos::platform::run`） | `msg_send![app, run]` **永不返回** | **否** |
+
+macOS 的 `Platform::quit` 把工作派到主队列再调 `-[NSApplication terminate:]`；后者发完
+`applicationWillTerminate:` 就由 AppKit 调 `exit()`。`exit()` 在 Objective-C 里，`grep` 不到，
+所以只会表现为「漏斗是死代码」。这不是 gpui 的 bug，是 AppKit 的既定行为。
+
+**决定：退出钩子与漏斗共用同一条末行**
+
+`applicationWillTerminate:` 触发的是 `on_app_quit` 观察者——也就是 ADR-0073 已经在用的那个
+钩子（`qcode-gui/src/run.rs`，杀进程组的地方）。它是 macOS 退出前**唯一确定会执行的 Rust
+代码**，末行挂在那里。
+
+- `crates/qcode-gui/src/quit.rs`：`on_quit(hook)` 注册 + `fire()` 触发。`Fn` 而不是 `FnOnce`
+  ——退出可以被取消（有 turn 在跑，ADR-0052），观察者会再触发一次；幂等是回调自己的责任，
+  **不在这里吞掉第二次调用**，否则一个不幂等的钩子会看不出问题。
+- `qcode-gui` 只提供钩子，不认识 `lifecycle`：`lifecycle` 在 bin crate 里，`qcode-gui` 够不着，
+  也不该为了一条日志去依赖它。
+- 注册点无条件（不是 `cfg(target_os = "macos")`）：`lifecycle::finish` 已经把「只写一次」做成了
+  幂等（内部 `end_once`，有 `the_end_line_is_written_once` 钉着），所以 Linux/Windows 上只是
+  提早一瞬写同一行。按平台分叉会让两个平台的日志形状不同，而日志正是要被比较的东西。
+
+**验证**
+
+- 单测：`quit::tests` 一条（两件事写在同一个测试里，因为注册表是进程级 `OnceLock`，拆开写会
+  互相竞争）：第一次注册生效、第二次被忽略、触发两次调用两次。
+- 端到端（macOS 本机，托盘 → 退出）：
+
+```
+INFO qc::lifecycle: qc session starting pid=31372 version="0.8.8" command=gui
+INFO qc::lifecycle: qc session ending   pid=31372 exit=0 reason=normal uptime_ms=92443
+```
+
+  紧接着的下一次启动**没有** `never finished` 告警。修复前同一份日志里 4 条 start、0 条 end。
+- `cargo test -p qcode-gui -p qcode --features gui` 全绿；`cargo fmt --all --check` 干净。
+
+**留下的东西**
+
+`request_quit` → `cx.quit()` → `NSApp terminate:` 这条链上，实测从点「退出」到末行落盘有数秒
+延迟。`on_app_quit` 的预算是 `SHUTDOWN_TIMEOUT` = 200ms，超出部分在 gpui 侧，不在本注记范围内，
+但值得记一笔：**别把有超时预算的工作放进这个钩子。**

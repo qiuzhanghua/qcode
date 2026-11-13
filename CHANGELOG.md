@@ -72,6 +72,10 @@ ADR-0079 的迁移只查了「叙述有没有误用 stderr」，没查反方向�
 - `qc logs` 把行首的 UTC 时间戳就地换成本地时间显示（逐行查偏移，夏令时前后各按各的算）；
 - `docs/design/LOGGING.md` 记下这套约定。
 
+macOS 的 `qc gui` 起初**一条末行都没写**：`-[NSApplication terminate:]` 会由 AppKit 调
+`exit()`，`Platform::run` 不返回，`main` 的漏斗是死代码，于是每次正常退出都被下一次启动报成
+「killed, crashed」。末行改为挂在 `on_app_quit`（`qcode-gui/src/quit.rs`，ADR-0082 修订注记）。
+
 ### 终端里的 `gh` 不再崩在 `unexpected escape sequence`（ADR-0062 §9 修正）
 
 内建终端会回答程序的「反向查询」，但答复是 GUI ticker 每帧统一发出的。问题在时机：

@@ -17,6 +17,7 @@ pub mod gui_prefs;
 pub mod host;
 pub mod platform;
 pub mod questions;
+pub mod quit;
 mod render;
 pub mod restore;
 mod run;
@@ -34,6 +35,7 @@ mod window_icon;
 pub use backend::{
     Backend, LocalBackend, RebuildFn, RebuildFuture, ScheduleRow, TaskRow, UnconfiguredBackend,
 };
+pub use quit::on_quit;
 pub use run::run;
 pub use runtime::Engine;
 pub use setup::{run_settings, run_setup};
