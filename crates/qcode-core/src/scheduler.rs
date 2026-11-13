@@ -37,8 +37,6 @@ pub struct NewTask {
     pub target: Target,
     pub overlap: crate::schedule::Overlap,
     pub approval_timeout: Option<Duration>,
-    /// 最小投递间隔：空闲后也要等这么久才能再投。
-    pub rearm_after: Duration,
     /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
     pub cwd: Option<String>,
 }
@@ -53,7 +51,6 @@ pub struct EditTask {
     pub overlap: Option<crate::schedule::Overlap>,
     /// `Some(None)` = 清除审批超时。
     pub approval_timeout: Option<Option<Duration>>,
-    pub rearm_after: Option<Duration>,
 }
 
 /// 定时任务管理服务。多个调用面（模型工具 / GUI）共用同一个实例。
@@ -141,7 +138,6 @@ impl Scheduler {
             earlier_records_pruned: false,
             reserved_session_id: None,
             next_fire_at,
-            rearm_after: input.rearm_after,
             cwd: input.cwd,
         };
         let mut tasks = self.store.load_schedule_tasks();
@@ -214,9 +210,6 @@ impl Scheduler {
             }
             if let Some(approval_timeout) = patch.approval_timeout {
                 task.approval_timeout = approval_timeout;
-            }
-            if let Some(rearm_after) = patch.rearm_after {
-                task.rearm_after = rearm_after;
             }
             task.clone()
         };
@@ -433,7 +426,6 @@ mod tests {
             },
             overlap: Overlap::Queue,
             approval_timeout: None,
-            rearm_after: Duration::ZERO,
             cwd: None,
         }
     }

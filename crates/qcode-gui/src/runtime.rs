@@ -133,6 +133,80 @@ fn bind_fresh_session(scheduler: &Scheduler, task_id: &str, session_id: &str) {
     });
 }
 
+/// 崩溃恢复：补确认"上次投递已落盘但 `next_fire_at` 未推进"的任务。
+///
+/// 重启后 `pending_ack` / `inflight` 是内存态、已清零，正常的投递确认路径
+/// 走不到；这里以会话日志里的 `scheduled` 事件（`task_id` + 发生点 `at`）为
+/// 事实源，命中则补记回执并推进到下一次触发点，避免到期任务被重复投递——
+/// 等价于 dsh `recoverOutstandingExecution` 的去重语义。未命中的任务
+/// （投递从未落盘，或目标会话已删除）交给到期扫描正常补投 / Orphaned 处理。
+/// 返回补确认的任务数。
+fn recover_schedule_deliveries(
+    engine: &Engine,
+    scheduler: &Scheduler,
+    inflight: &HashSet<String>,
+    now: time::PrimitiveDateTime,
+) -> usize {
+    let mut recovered = 0;
+    for task in scheduler.list() {
+        if task.status != TaskStatus::Active || inflight.contains(&task.id) {
+            continue;
+        }
+        let Some(next) = task.next_fire_at else {
+            continue;
+        };
+        if next > now {
+            continue;
+        }
+        // 目标会话：既有绑定，或 `New` 目标投递时预定的会话。都没有说明
+        // 投递从未发生（fresh 目标首次投递前崩溃）→ 交给正常补投。
+        let Some(session) = task
+            .target
+            .session_id()
+            .or(task.reserved_session_id.as_deref())
+        else {
+            continue;
+        };
+        let at = next.to_string();
+        match engine
+            .store
+            .schedule_delivery_landed(session, &task.id, &at)
+        {
+            Ok(true) => {
+                if scheduler
+                    .update(&task.id, |task| {
+                        let receipt = DeliveryReceipt {
+                            occurrence_at: task.next_fire_at.unwrap_or(now),
+                            delivered_at: now,
+                            message_id: format!("recovered:{}:{}", task.id, at),
+                            target_session_id: Some(session.to_string()),
+                            prompt: task.prompt.clone(),
+                        };
+                        if append_delivery(&mut task.delivery_log, receipt.clone(), now) {
+                            task.earlier_records_pruned = true;
+                        }
+                        task.last_receipt = Some(receipt);
+                        match advance_rule(&task.rule, now) {
+                            Advance::Next(next) => {
+                                task.next_fire_at = Some(next);
+                            }
+                            Advance::Ended => {
+                                task.status = TaskStatus::Ended;
+                                task.next_fire_at = None;
+                            }
+                        }
+                    })
+                    .is_ok()
+                {
+                    recovered += 1;
+                }
+            }
+            Ok(false) | Err(_) => {}
+        }
+    }
+    recovered
+}
+
 /// What the UI was last told about the queues, so the ticker only publishes
 /// real changes (the engine claims steering from its own thread).
 #[derive(Default, PartialEq, Eq)]
@@ -511,14 +585,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             prompt = %task.prompt,
                             "scheduled task fired",
                         );
+                        let at = task
+                            .next_fire_at
+                            .map(|at| at.to_string())
+                            .unwrap_or_default();
                         let scheduled = qcode_core::schedule::ScheduledMessage {
                             task_id: task.id.clone(),
                             title: task.title.clone(),
                             prompt: task.prompt.clone(),
-                            at: task
-                                .next_fire_at
-                                .map(|at| at.to_string())
-                                .unwrap_or_default(),
+                            at: at.clone(),
                         };
                         let message = queue
                             .inbox()
@@ -527,7 +602,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         pending_ack
                             .entry(message.id.clone())
                             .or_default()
-                            .push((task.id.clone(), session_id.clone(), task.prompt.clone()));
+                            .push((task.id.clone(), session_id.clone(), at));
                         if !busy {
                             approval_deadline = task.approval_timeout.or(approval_deadline);
                         }
@@ -703,8 +778,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         let mut abandoned: Vec<(String, String)> = Vec::new();
                         for (message_id, pending) in pending_ack.iter() {
                             let mut all_landed = true;
-                            for (task_id, session, prompt) in pending {
-                                match engine.store.schedule_delivery_landed(session, prompt) {
+                            for (task_id, session, at) in pending {
+                                match engine.store.schedule_delivery_landed(session, task_id, at) {
                                     Ok(true) => {
                                         if scheduler
                                             .update(task_id, |task| {
@@ -783,17 +858,21 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             port.tagged(SessionTarget::Draft).send_schedule_changed();
                         }
 
-                        // ② 扫描到期任务：跳过 in-flight 与 rearm 间隔内的。
+                        // ②' 崩溃恢复：重启后 `pending_ack` / `inflight` 已清零，
+                        // 上次"已落盘未推进"的投递在这里补确认，避免到期重投。
+                        if recover_schedule_deliveries(engine, &scheduler, &inflight, now) > 0 {
+                            port.tagged(SessionTarget::Draft).send_schedule_changed();
+                        }
+
+                        // ② 扫描到期任务：跳过 in-flight 与全局最小投递间隔内的
+                        //（dsh `MIN_DELIVERY_INTERVAL` 护栏，60s）。
                         let mut due: Vec<ScheduledTask> = Vec::new();
                         for task in scheduler.list() {
                             if task.status != TaskStatus::Active || inflight.contains(&task.id) {
                                 continue;
                             }
-                            if let Some(last) = &task.last_receipt
-                                && now - last.delivered_at
-                                    < time::Duration::seconds(
-                                        task.rearm_after.as_secs() as i64,
-                                    )
+                            if qcode_core::schedule::delivery_floor_end(&task)
+                                .is_some_and(|floor| now < floor)
                             {
                                 continue;
                             }
@@ -1105,7 +1184,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         target,
                                         overlap,
                                         approval_timeout,
-                                        rearm_after,
                                         cwd,
                                     } => scheduler
                                         .create(
@@ -1116,7 +1194,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 target,
                                                 overlap,
                                                 approval_timeout,
-                                                rearm_after,
                                                 cwd,
                                             },
                                             now,
@@ -1145,7 +1222,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         target,
                                         overlap,
                                         approval_timeout,
-                                        rearm_after,
                                     } => scheduler
                                         .edit(
                                             &id,
@@ -1156,7 +1232,6 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 target,
                                                 overlap,
                                                 approval_timeout,
-                                                rearm_after,
                                             },
                                             now,
                                         )

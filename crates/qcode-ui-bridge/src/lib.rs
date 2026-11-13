@@ -301,7 +301,6 @@ pub enum ScheduleOp {
         target: qcode_core::schedule::Target,
         overlap: qcode_core::schedule::Overlap,
         approval_timeout: Option<Duration>,
-        rearm_after: Duration,
         /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
         cwd: Option<String>,
     },
@@ -317,7 +316,6 @@ pub enum ScheduleOp {
         target: Option<qcode_core::schedule::Target>,
         overlap: Option<qcode_core::schedule::Overlap>,
         approval_timeout: Option<Option<Duration>>,
-        rearm_after: Option<Duration>,
     },
     Pause {
         id: String,

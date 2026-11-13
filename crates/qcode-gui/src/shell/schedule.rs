@@ -6,7 +6,9 @@
 use super::*;
 use gpui_kit::component::date_picker::DatePickerState;
 use gpui_kit::component::time_field::{HourCycle, TimeFieldState, TimePrecision};
-use qcode_core::schedule::{Overlap, TaskStatus, now_local, parse_rule};
+use qcode_core::schedule::{
+    Overlap, Rule, ScheduledTask, Target, TaskStatus, now_local, parse_rule,
+};
 use qcode_ui_bridge::ScheduleOp;
 
 /// 详情页 / 侧栏对单个任务可做的动作。
@@ -131,6 +133,8 @@ pub(crate) struct ScheduleFormState {
     pub(crate) target_kind: ScheduleTargetKind,
     /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
     pub(crate) cwd: Option<String>,
+    /// 编辑模式：要修改的任务 id；`None` = 手动创建。
+    pub(crate) editing: Option<String>,
     // 各下拉菜单的开关。
     pub(crate) rule_menu_open: bool,
     pub(crate) target_menu_open: bool,
@@ -203,6 +207,37 @@ impl Shell {
     /// 用户先选类型再填该类型自己的参数，不用手写 `daily 09:00` 这类表达式。
     pub(crate) fn open_schedule_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.schedule_menu_open = false;
+        self.schedule_form_with(None, window, cx);
+    }
+
+    /// 详情页「修改」：打开编辑表单并预填原任务内容。
+    pub(crate) fn open_schedule_edit(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(task) = self
+            .schedule_tasks
+            .iter()
+            .find(|task| task.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        self.schedule_form_with(Some(&task), window, cx);
+    }
+
+    /// 构造手动创建 / 编辑定时任务的表单。
+    ///
+    /// 实体先按创建默认值构造，`prefill`（编辑模式）随后把原任务的字段写回
+    /// 对应输入框 / 参数。周期与目标下拉默认值同 `open_schedule_form`。
+    fn schedule_form_with(
+        &mut self,
+        prefill: Option<&ScheduledTask>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("任务名称"));
         let prompt = cx.new(|cx| InputState::new(window, cx).placeholder("到点后投递给会话的内容"));
         let time = cx.new(|cx| {
@@ -253,19 +288,98 @@ impl Shell {
                 shell.submit_schedule_form(cx);
             }
         });
+
+        // 创建默认值；编辑模式随后用原任务字段覆盖。
+        let mut rule_kind = ScheduleRuleKind::Daily;
+        let mut weekdays = vec![1];
+        let mut target_kind = ScheduleTargetKind::NewOnce;
+        let mut cwd = None;
+        let mut editing = None;
+
+        if let Some(task) = prefill {
+            editing = Some(task.id.clone());
+            cwd = task.cwd.clone();
+            title.update(cx, |input, cx| {
+                input.set_value(&task.title, window, cx);
+            });
+            prompt.update(cx, |input, cx| {
+                input.set_value(&task.prompt, window, cx);
+            });
+            timeout_secs.update(cx, |input, cx| {
+                if let Some(timeout) = task.approval_timeout {
+                    input.set_value(&timeout.as_secs().to_string(), window, cx);
+                }
+            });
+            match &task.rule {
+                Rule::Daily { hour, minute } => {
+                    rule_kind = ScheduleRuleKind::Daily;
+                    set_time(&time, *hour, *minute, window, cx);
+                }
+                Rule::Weekly {
+                    weekdays: days,
+                    weekday,
+                    hour,
+                    minute,
+                } => {
+                    rule_kind = ScheduleRuleKind::Weekly;
+                    weekdays = Rule::effective_weekdays(days, *weekday);
+                    set_time(&time, *hour, *minute, window, cx);
+                }
+                Rule::Interval { seconds } => {
+                    rule_kind = ScheduleRuleKind::Interval;
+                    interval_secs.update(cx, |input, cx| {
+                        input.set_value(&seconds.to_string(), window, cx);
+                    });
+                }
+                Rule::Once { at } => {
+                    rule_kind = ScheduleRuleKind::Once;
+                    let naive = chrono::NaiveDate::from_ymd_opt(
+                        at.year(),
+                        at.month() as u32,
+                        at.day() as u32,
+                    )
+                    .and_then(|date| date.and_hms_opt(at.hour() as u32, at.minute() as u32, 0))
+                    .expect("once occurrence is a real date");
+                    once_picker.update(cx, |picker, cx| {
+                        picker.set_date_time(naive, window, cx);
+                    });
+                }
+                Rule::Monthly { day, hour, minute } => {
+                    rule_kind = ScheduleRuleKind::Monthly;
+                    monthly_day.update(cx, |input, cx| {
+                        input.set_value(&day.to_string(), window, cx);
+                    });
+                    set_time(&time, *hour, *minute, window, cx);
+                }
+                Rule::Cron { expr } => {
+                    rule_kind = ScheduleRuleKind::Cron;
+                    cron_expr.update(cx, |input, cx| {
+                        input.set_value(expr, window, cx);
+                    });
+                }
+            }
+            // 固定会话目标（session:<id>）表单无法表达：编辑时保持原目标不变
+            //（提交走 `target: None`），下拉仅作占位显示。
+            target_kind = match task.target {
+                Target::New => ScheduleTargetKind::New,
+                _ => ScheduleTargetKind::NewOnce,
+            };
+        }
+
         self.schedule_form = Some(ScheduleFormState {
             title,
             prompt,
             timeout_secs,
-            rule_kind: ScheduleRuleKind::Daily,
+            rule_kind,
             time,
-            weekdays: vec![1],
+            weekdays,
             monthly_day,
             interval_secs,
             once_picker,
             cron_expr,
-            target_kind: ScheduleTargetKind::NewOnce,
-            cwd: None,
+            target_kind,
+            cwd,
+            editing,
             rule_menu_open: false,
             target_menu_open: false,
             _subscription,
@@ -363,6 +477,7 @@ impl Shell {
             ScheduleTargetKind::NewOnce => qcode_core::schedule::Target::NewOnce,
             ScheduleTargetKind::New => qcode_core::schedule::Target::New,
         };
+        let editing = form.editing.clone();
         let approval_timeout = if timeout_text.is_empty() {
             None
         } else {
@@ -371,16 +486,32 @@ impl Shell {
                 _ => return reject_form(self, form, cx, "审批超时需为正整数秒"),
             }
         };
-        self.backend.schedule_op(ScheduleOp::Create {
-            title,
-            prompt,
-            rule,
-            target,
-            overlap: Overlap::Queue,
-            approval_timeout,
-            rearm_after: std::time::Duration::from_secs(300),
-            cwd: form.cwd,
-        });
+        match editing {
+            Some(id) => {
+                // 编辑：target / overlap 不可改（固定会话目标表单无法表达），
+                // 传 None 保持原值；审批超时留空 = 清除。
+                self.backend.schedule_op(ScheduleOp::Edit {
+                    id,
+                    title: Some(title),
+                    prompt: Some(prompt),
+                    rule: Some(rule),
+                    target: None,
+                    overlap: None,
+                    approval_timeout: Some(approval_timeout),
+                });
+            }
+            None => {
+                self.backend.schedule_op(ScheduleOp::Create {
+                    title,
+                    prompt,
+                    rule,
+                    target,
+                    overlap: Overlap::Queue,
+                    approval_timeout,
+                    cwd: form.cwd,
+                });
+            }
+        }
         self.view = MainView::Schedule;
         self.schedule_detail = None;
         cx.notify();
@@ -444,4 +575,21 @@ fn reject_form(this: &mut Shell, form: ScheduleFormState, cx: &mut Context<Shell
     this.schedule_form = Some(form);
     this.ui.app.push_notice(message.to_string());
     cx.notify();
+}
+
+/// 把 HH:MM 写进表单的时间字段（daily / weekly / monthly 预填共用）。
+fn set_time(
+    field: &Entity<TimeFieldState>,
+    hour: u8,
+    minute: u8,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) {
+    field.update(cx, |state, cx| {
+        state.set_time(
+            chrono::NaiveTime::from_hms_opt(hour as u32, minute as u32, 0).expect("HH:MM"),
+            window,
+            cx,
+        );
+    });
 }

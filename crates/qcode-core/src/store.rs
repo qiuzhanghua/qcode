@@ -850,22 +850,24 @@ impl SessionStore {
         Ok(())
     }
 
-    /// 目标会话日志里是否已经出现某条投递文案对应的 `user/message` 事件。
+    /// 目标会话日志里是否已经出现某次定时投递对应的 `user/message` 事件。
     ///
-    /// 崩溃恢复 / 投递确认用它区分"投过没投过"。主消息（follow-up）落盘时
-    /// `queued_id` 为 `None`（只有 steering 消息才带 id），所以按文案匹配：
-    /// 定时投递的 framing 文案（`[SCHEDULED TASK REMINDER] (id) …`）是任务
-    /// 独有的，与用户输入撞车的概率可以忽略。
+    /// 崩溃恢复 / 投递确认用它区分"投过没投过"。投递消息落盘时带
+    /// `scheduled` 标记（[`crate::schedule::ScheduledMessage`]，含 `task_id`
+    /// 与发生点 `at`），因此按任务 + 发生点匹配：`at` 精确到触发时刻，
+    /// 能唯一标识"本次投递"，比文案匹配更可靠（用户输入不会撞车）。
     pub fn schedule_delivery_landed(
         &self,
         session_id: &str,
-        prompt: &str,
+        task_id: &str,
+        at: &str,
     ) -> Result<bool, StoreError> {
         let events = self.load(session_id)?;
         Ok(events.iter().any(|event| {
             matches!(
                 &event.kind,
-                EventKind::UserMessage(message) if message.text == prompt
+                EventKind::UserMessage(message)
+                    if message.scheduled.as_ref().is_some_and(|s| s.task_id == task_id && s.at == at)
             )
         }))
     }
@@ -1334,7 +1336,6 @@ mod tests {
             earlier_records_pruned: false,
             reserved_session_id: None,
             next_fire_at: None,
-            rearm_after: std::time::Duration::ZERO,
             cwd: None,
         }
     }
@@ -1364,5 +1365,55 @@ mod tests {
         // 指向其他会话 / 新建目标的任务不受影响。
         assert!(remaining.iter().any(|task| task.id == "t2"));
         assert!(remaining.iter().any(|task| task.id == "t3"));
+    }
+
+    #[test]
+    fn schedule_delivery_landed_matches_task_id_and_occurrence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let id = seed(&store);
+        let at = "2026-11-13T09:00:00";
+        let scheduled = crate::schedule::ScheduledMessage {
+            task_id: "task-1".to_string(),
+            title: "morning".to_string(),
+            prompt: "run the review".to_string(),
+            at: at.to_string(),
+        };
+        store
+            .append(&Event::new(
+                5,
+                &id,
+                1,
+                EventKind::UserMessage(UserMessage {
+                    starts_segment: false,
+                    queued_id: None,
+                    text: scheduled.prompt.clone(),
+                    attachments: Vec::new(),
+
+                    continuation: None,
+                    question_reply: None,
+                    scheduled: Some(scheduled),
+                }),
+            ))
+            .expect("scheduled delivery");
+
+        // 任务 + 发生点都命中才算"投过"。
+        assert!(
+            store
+                .schedule_delivery_landed(&id, "task-1", at)
+                .expect("landed")
+        );
+        // 同任务、不同发生点（下一次触发）不算。
+        assert!(
+            !store
+                .schedule_delivery_landed(&id, "task-1", "2026-11-14T09:00:00")
+                .expect("next occurrence not landed")
+        );
+        // 其他任务不算（批量投递的同会话任务互不干扰）。
+        assert!(
+            !store
+                .schedule_delivery_landed(&id, "task-2", at)
+                .expect("other task not landed")
+        );
     }
 }

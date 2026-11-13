@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::shell::schedule::ScheduleAction;
-use qcode_core::schedule::{ScheduledTask, TaskStatus};
+use qcode_core::schedule::{ScheduledTask, TaskStatus, now_local};
 
 /// Relative "when will this fire", computed at render time.
 ///
@@ -99,10 +99,9 @@ impl Shell {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let border = theme.border;
-        let now = {
-            let utc = time::OffsetDateTime::from(std::time::SystemTime::now());
-            time::PrimitiveDateTime::new(utc.date(), utc.time())
-        };
+        // 相对差值必须用本地墙钟（`next_fire_at` 是本地墙钟）：取 UTC 会
+        // 让非零时区的"下次触发"凭空多出时区偏移（如 UTC+8 显示成 8 小时后）。
+        let now = now_local();
         let status = task.status;
         let task_id = task.id.clone();
 
@@ -182,8 +181,11 @@ impl Shell {
                             ))
                             .child(self.detail_line(
                                 cx,
-                                "投递间隔",
-                                &format!("{}s", task.rearm_after.as_secs()),
+                                "最小投递间隔",
+                                &format!(
+                                    "{}s（全局护栏，防止轰炸）",
+                                    qcode_core::schedule::MIN_DELIVERY_INTERVAL.whole_seconds()
+                                ),
                             ))
                             .when_some(task.approval_timeout, |this, timeout| {
                                 this.child(self.detail_line(
@@ -282,6 +284,17 @@ impl Shell {
                                             }),
                                     )
                                 },
+                            )
+                            .child(
+                                Button::new("schedule-edit")
+                                    .label("修改")
+                                    .tooltip("编辑任务内容与周期")
+                                    .on_click({
+                                        let task_id = task_id.clone();
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.open_schedule_edit(&task_id, window, cx);
+                                        })
+                                    }),
                             )
                             .child(
                                 Button::new("schedule-delete")

@@ -11,7 +11,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use qcode_core::provider::ToolSpec;
 use qcode_core::question::{QuestionAnswer, QuestionIntent, QuestionItem, QuestionRequest};
-use qcode_core::schedule::{Overlap, ScheduledTask, Target, now_local, parse_rule};
+use qcode_core::schedule::{
+    MIN_DELIVERY_INTERVAL, Overlap, ScheduledTask, Target, now_local, parse_rule,
+};
 use qcode_core::scheduler::{EditTask, NewTask, SchedulerHandle};
 use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde::Deserialize;
@@ -76,7 +78,10 @@ fn detail(task: &ScheduledTask) -> String {
         format!("规则：{}", task.rule.describe()),
         format!("目标：{}", task.target.describe()),
         format!("下次触发：{}", fire_display(task)),
-        format!("投递间隔：{}s", task.rearm_after.as_secs()),
+        format!(
+            "最小投递间隔：{}s（全局护栏，防止轰炸）",
+            MIN_DELIVERY_INTERVAL.whole_seconds()
+        ),
     ];
     if let Some(timeout) = task.approval_timeout {
         lines.push(format!("审批超时：{}s", timeout.as_secs()));
@@ -127,7 +132,6 @@ struct CreateArgs {
     #[serde(default)]
     overlap: String,
     approval_timeout_secs: Option<u64>,
-    rearm_after_secs: Option<u64>,
     /// 投递回合的工作目录（绝对路径）。`None` = 用会话 / 引擎默认。
     cwd: Option<String>,
 }
@@ -188,11 +192,6 @@ impl Tool for ScheduleCreate {
                         "type": "integer",
                         "minimum": 1,
                         "description": "投递回合的审批超时秒数；不传则一直等人工审批。"
-                    },
-                    "rearm_after_secs": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "最小投递间隔秒数（默认 300）：即使会话空闲，距上次投递不足这么久也不再投。"
                     },
                     "cwd": {
                         "type": "string",
@@ -255,7 +254,6 @@ impl Tool for ScheduleCreate {
             }
         };
         let approval_timeout = args.approval_timeout_secs.map(Duration::from_secs);
-        let rearm_after = Duration::from_secs(args.rearm_after_secs.unwrap_or(300));
 
         // 工作目录：模型没给时工具主动询问用户（可跳过，用会话默认目录）。
         // 不依赖模型自觉调用 ask_user——描述里的引导可能被模型忽略。
@@ -305,7 +303,6 @@ impl Tool for ScheduleCreate {
                     target,
                     overlap,
                     approval_timeout,
-                    rearm_after,
                     cwd,
                 },
                 now_local(),
@@ -445,7 +442,6 @@ struct EditArgs {
     /// `null` = 清除审批超时。
     #[serde(default, deserialize_with = "deserialize_clearable")]
     approval_timeout_secs: Option<Option<u64>>,
-    rearm_after_secs: Option<u64>,
 }
 
 #[async_trait]
@@ -476,8 +472,7 @@ impl Tool for ScheduleEdit {
                     "rule": {"type": "string", "description": "新规则，格式同 schedule_create 的 rule。"},
                     "target": {"type": "string"},
                     "overlap": {"type": "string", "enum": ["queue", "skip"]},
-                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": "传 null 清除审批超时。"},
-                    "rearm_after_secs": {"type": "integer", "minimum": 0}
+                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": "传 null 清除审批超时。"}
                 },
                 "required": ["id"],
                 "additionalProperties": false
@@ -532,7 +527,6 @@ impl Tool for ScheduleEdit {
                     approval_timeout: args
                         .approval_timeout_secs
                         .map(|secs| secs.map(Duration::from_secs)),
-                    rearm_after: args.rearm_after_secs.map(Duration::from_secs),
                 };
                 let task = scheduler
                     .edit(&args.id, patch, now)
@@ -592,7 +586,6 @@ mod tests {
             earlier_records_pruned: false,
             reserved_session_id: None,
             next_fire_at: None,
-            rearm_after: Duration::from_secs(300),
             cwd: None,
         }
     }
@@ -709,7 +702,6 @@ mod tests {
         );
         assert_eq!(input.target, Target::New);
         assert_eq!(input.approval_timeout, Some(Duration::from_secs(60)));
-        assert_eq!(input.rearm_after, Duration::from_secs(300));
     }
 
     #[tokio::test]

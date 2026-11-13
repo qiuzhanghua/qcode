@@ -308,7 +308,11 @@ impl Shell {
                         div()
                             .text_size(sp(16.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("手动创建定时任务"),
+                            .child(if state.editing.is_some() {
+                                "编辑定时任务"
+                            } else {
+                                "手动创建定时任务"
+                            }),
                     )
                     .child(self.form_field(cx, "名称", &state.title))
                     .child(self.form_field(cx, "内容", &state.prompt))
@@ -380,7 +384,11 @@ impl Shell {
                             ))
                             .child(
                                 Button::new("confirm-schedule-form")
-                                    .label("创建")
+                                    .label(if state.editing.is_some() {
+                                        "保存"
+                                    } else {
+                                        "创建"
+                                    })
                                     .primary()
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.submit_schedule_form(cx);

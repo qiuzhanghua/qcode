@@ -332,9 +332,56 @@ fn task_with(
         earlier_records_pruned: false,
         reserved_session_id: None,
         next_fire_at: next,
-        rearm_after: Duration::ZERO,
         cwd: None,
     }
+}
+
+#[test]
+fn delivery_floor_end_anchors_like_dsh() {
+    let at9 = at(2026, June, 1, 9, 0);
+    let receipt = DeliveryReceipt {
+        occurrence_at: at9,
+        delivered_at: at9,
+        message_id: "m1".to_string(),
+        target_session_id: None,
+        prompt: "p".to_string(),
+    };
+    // 没有回执：从未投递过，不受护栏限制。
+    let fresh = task_with(
+        Rule::Interval { seconds: 120 },
+        Target::NewOnce,
+        TaskStatus::Active,
+        Some(at9 + TimeSpan::minutes(2)),
+    );
+    assert_eq!(delivery_floor_end(&fresh), None);
+
+    // 任务自身频率 ≥ 最小间隔（下一发生点距上一发生点 ≥ 60s）：锚定到发生点，
+    // 护栏不压制（floor = 9:01 远早于下一发生点 9:02）。
+    let slow = ScheduledTask {
+        last_receipt: Some(receipt.clone()),
+        next_fire_at: Some(at9 + TimeSpan::minutes(2)),
+        ..task_with(
+            Rule::Interval { seconds: 120 },
+            Target::NewOnce,
+            TaskStatus::Active,
+            None,
+        )
+    };
+    assert_eq!(delivery_floor_end(&slow), Some(at9 + TimeSpan::seconds(60)));
+
+    // 任务自身频率 < 最小间隔（确认延迟场景）：锚定到投递确认时刻，
+    // 保证两次投递至少隔 60s。
+    let fast = ScheduledTask {
+        last_receipt: Some(receipt),
+        next_fire_at: Some(at9 + TimeSpan::seconds(30)),
+        ..task_with(
+            Rule::Interval { seconds: 60 },
+            Target::NewOnce,
+            TaskStatus::Active,
+            None,
+        )
+    };
+    assert_eq!(delivery_floor_end(&fast), Some(at9 + TimeSpan::seconds(60)));
 }
 
 #[test]

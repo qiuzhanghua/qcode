@@ -1016,8 +1016,6 @@ pub struct ScheduledTask {
     pub reserved_session_id: Option<String>,
     #[serde(with = "serde_wall_clock::option")]
     pub next_fire_at: Option<PrimitiveDateTime>,
-    /// 最小投递间隔：空闲后也要等这么久才能再投。
-    pub rearm_after: Duration,
     /// 投递回合的工作目录（绝对路径）。`None` = 用会话 / 引擎默认工作目录。
     #[serde(default)]
     pub cwd: Option<String>,
@@ -1043,6 +1041,30 @@ pub fn append_delivery(
     } else {
         false
     }
+}
+
+/// 最小投递间隔：上次投递后至少间隔这么久才允许再次投递，防止确认延迟 /
+/// 高频规则把目标会话刷成轰炸。全局固定 60 秒，不随任务走（对齐 dsh
+/// `MIN_DELIVERY_INTERVAL_MS`）。
+pub const MIN_DELIVERY_INTERVAL: TimeSpan = TimeSpan::seconds(60);
+
+/// 本次投递最早可再次发生的时刻（对齐 dsh `nextAdmissionAt`）。
+///
+/// 锚定规则与 dsh 一致：任务自身频率 ≥ 最小间隔时锚定到发生点（确认延迟
+/// 不累积、不往后拖）；否则锚定到投递确认时刻（保证两次投递至少隔 60s）。
+/// 没有回执（从未投递过）返回 `None`，表示不受护栏限制。
+pub fn delivery_floor_end(task: &ScheduledTask) -> Option<PrimitiveDateTime> {
+    let receipt = task.last_receipt.as_ref()?;
+    let occurrence = receipt.occurrence_at;
+    let anchor = if task
+        .next_fire_at
+        .is_some_and(|next| next - occurrence >= MIN_DELIVERY_INTERVAL)
+    {
+        occurrence
+    } else {
+        receipt.delivered_at
+    };
+    Some(anchor + MIN_DELIVERY_INTERVAL)
 }
 
 /// 一个运行时任务的到期判定。
@@ -1111,7 +1133,6 @@ pub fn import_config_schedule(
         earlier_records_pruned: false,
         reserved_session_id: None,
         next_fire_at,
-        rearm_after: Duration::ZERO,
         cwd: None,
     }
 }

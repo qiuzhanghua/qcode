@@ -905,7 +905,6 @@ async fn a_runtime_task_fires_delivers_and_advances() {
             earlier_records_pruned: false,
             reserved_session_id: None,
             next_fire_at: Some(at),
-            rearm_after: Duration::ZERO,
             cwd: None,
         }])
         .expect("tasks");
