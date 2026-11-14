@@ -9013,14 +9013,39 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
 
 `cwd` 是真实存在的目录时原样使用——那是用户的选择，改写它等于偷偷换掉他正在处理的项目。
 
-### 4. `.app` 启动器里那句 `cd` 保留，不是重复
+### 4. 只有 Rust 这一道（原第 4 条的前提已在 ADR-0086 里失效）
 
-`scripts/build-macos-app.sh` 生成的启动器早就 `cd "${QCODE_APP_WORKSPACE:-$HOME}"` 了，
-所以双击那条路本来就没坏。保留它的理由：它同时提供了 `QCODE_APP_WORKSPACE` 这个覆盖口，
-而且让 `.app` 在**进程创建时**就带着一个合理 cwd（`/` 这种 cwd 还会波及别的东西，例如
-以相对路径解析的任何子进程）。Rust 这边是同一套规则的第二道——不依赖启动器也能成立，
-因为 Linux 的 `.desktop`、Windows 的快捷方式都可能给出一个不可用的 cwd（`Start in` 为空
-时是 `C:\Windows\System32`），而那些启动器不归我们写。
+原文写的是「`.app` 启动器里那句 `cd` 保留，不是重复」：`scripts/build-macos-app.sh` 生成的
+启动器 `cd "${QCODE_APP_WORKSPACE:-$HOME}"`，Rust 这边是同一套规则的第二道。
+
+**ADR-0086 把启动器整个删了**（`.app` 里只剩一份 `qc`，`CFBundleExecutable` 直接指向它），
+于是这条成了唯一的规则——而这恰好是原文预言的用法：「不依赖启动器也能成立」。真实代价是
+**`.app` 的 cwd 现在是 LaunchServices 给的 `/`**，每一次双击都走回退分支。实测确认：
+
+```
+$ open dist/QCode.app && lsof -a -p <pid> -d cwd
+QCode  59343  q  cwd  DIR  1,15  736  2 /        ← 没有启动器了，就是 /
+
+日志：gui: launched with a filesystem root as cwd; using the home directory as the workspace
+      workspace=/Users/q                                  ← 回退接住了
+```
+
+`QCODE_APP_WORKSPACE` 这个覆盖口**没有丢**，只是搬家了：从前由启动器的 `cd` 兑现，现在由
+`gui_workspace()` 自己读，于是它三端统一（Linux 的 `.desktop`、Windows 的 `.lnk` 也能用），
+而且能从登录 shell 的 profile 里 export —— ADR-0086 §3 的环境补救正好跑在 `gui_workspace`
+之前，所以双击启动也能看见它。指向不存在的目录时当没设（退回默认规则），因为「一个坏路径
+让人开不了窗」这种失败用户完全看不出原因。
+
+实测（`open` + `--env`）：
+
+| 启动 | cwd | workspace | 日志 |
+|---|---|---|---|
+| 不设覆盖口 | `/` | `/Users/q` | `launched with a filesystem root ... workspace=/Users/q` |
+| `QCODE_APP_WORKSPACE=/tmp/ov-e2e/ws` | `/` | `/private/tmp/ov-e2e/ws` | `QCODE_APP_WORKSPACE overrides the workspace` |
+
+单测两条钉住覆盖口：`the_workspace_override_wins_over_the_root_fallback`（覆盖口赢过根回退，
+这条在写的时候自己错了一次——先删目录再 canonicalize，`/tmp` 是 `/private/tmp` 的符号链接）、
+`a_broken_override_is_ignored_instead_of_failing`（坏路径不拦启动）。
 
 **代价**
 
@@ -9035,8 +9060,8 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
 
 - `commands::gui::tests` 三条：真实目录原样保留、`/` 退到家目录并报告回退过、没有家目录
   时仍能启动。
-- 真机：`open -a` 起 `.app` 之后 cwd 是 `/`（改造前），`qc gui` 的 workspace 取自
-  `choose_workspace`，`/` 输入得到家目录。
+- 真机：`open dist/QCode.app` 起 `.app` 之后 cwd 是 `/`，workspace 取自 `choose_workspace`，
+  `/` 输入得到家目录（见上面 §4 的实测表；启动器删除后这条每次双击都会走到）。
 
 ## ADR-0086：启动形态决定前端——`qc` 不再有 `gui` 子命令（2026-11-14）
 
@@ -9136,12 +9161,15 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
 
 `crates/qcode-gui` 是**纯库**（没有 `main.rs`、没有 `[[bin]]`）。那个 `qc-gui` 就是
 `qc` 改了名的副本，启动器那句 `exec "$DIR/qc-gui" gui "$@"` 只是为了让进程名与子命令
-对上。所以「一个产物」**今天就已经成立**，只剩三层壳要拆：
+对上。所以「一个产物」**今天就已经成立**，只剩三层壳要拆（三层都已拆掉，见下）：
 
-1. `.app` 里的两份文件（`qc` + 启动器脚本）→ 一份 `qc`，`CFBundleExecutable` 指向它；
-2. 启动器脚本里的 `cd` + `exec ... gui` → 由 `qc` 自己判形态（§1、§2）并从根目录退回
-   家目录（ADR-0085 已实现）；
-3. `qc gui` 子命令 → 去掉（§5）。
+1. ✅ `.app` 里的两份文件（`qc` + 启动器脚本）→ 一份 `qc`，`CFBundleExecutable` 指向它；
+2. ✅ 启动器脚本里的 `cd` + `exec ... gui` → 由 `qc` 自己判形态（§1、§2）并从根目录退回
+   家目录（ADR-0085）。**拆掉之后才看清的一件事**：那个 `cd` 不只是兜底，它还是
+   `QCODE_APP_WORKSPACE` 的唯一兑现处——删了启动器，覆盖口就没了。已搬进
+   `gui_workspace()`（顺带三端可用、能被登录 shell 的 profile export），ADR-0085 §4
+   记了来龙去脉与实测；
+3. ✅ `qc gui` 子命令 → 去掉（§5）。
 
 Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
 ——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的

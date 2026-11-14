@@ -17,13 +17,35 @@ use super::*;
 /// the sandbox write scope, and the place `.agents/skills` is looked up. With
 /// `/` as the workspace, `workspace_write` silently means "write anywhere on the
 /// disk" — a sandbox downgrade that no UI would show.
+/// 图形启动的 cwd 是 launchd 给的 `/`（ADR-0085），所以这条规则是**唯一**一道——
+/// `.app` 里那个负责 `cd $HOME` 的启动器已经在 ADR-0086 里删掉了（一份二进制，
+/// 没有脚本可改）。实测确认这条路仍然成立：`open dist/QCode.app` 之后进程 cwd 是
+/// `/`，这里退回 `/Users/q`。
 ///
-/// The `.app` launcher (`scripts/build-macos-app.sh`) already `cd`s to `$HOME`
-/// before exec, so the double-click path was covered. This is the same rule
-/// applied where it cannot be bypassed: any launcher on any platform that
-/// hands us a filesystem root gets the home directory instead. A *terminal*
-/// launch is untouched — there the cwd is a real choice.
+/// 覆盖口是 `QCODE_APP_WORKSPACE`：从前它由启动器的 `cd` 兑现，现在由这里兑现，
+/// 于是三端统一（Linux 的 `.desktop`、Windows 的 `.lnk` 同样能用它指定工作区），
+/// 而且能从登录 shell 的 profile 里 export——环境补救正好跑在这之前。
+///
+/// 终端启动的 cwd 不动：那是用户真站在哪儿。
 fn gui_workspace() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(over) = std::env::var_os("QCODE_APP_WORKSPACE").filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(over);
+        // 指了个不存在的目录就当没设：宁可退回默认规则，也不要因为一个坏路径
+        // 拒绝开窗——那种失败用户完全看不出原因。
+        match path.canonicalize() {
+            Ok(path) if path.is_dir() => {
+                tracing::info!(
+                    workspace = %path.display(),
+                    "gui: QCODE_APP_WORKSPACE overrides the workspace"
+                );
+                return Ok(path);
+            }
+            _ => tracing::warn!(
+                value = %path.display(),
+                "gui: QCODE_APP_WORKSPACE is not an existing directory; ignoring it"
+            ),
+        }
+    }
     let cwd = std::env::current_dir()?.canonicalize()?;
     let home = qcode_kernel::config::home_dir().map(|home| home.canonicalize().unwrap_or(home));
     let (workspace, fell_back) = choose_workspace(cwd, home);
@@ -195,10 +217,7 @@ pub(crate) async fn cmd_gui(
     /// 非 macOS 平台空转：Linux 的 `.desktop` 与 Windows 的 `.lnk` 本来就把环境/
     /// 工作目录带进来了，没有这个洞。
     #[cfg(target_os = "macos")]
-    fn restore_launch_environment(
-        config_path: Option<&std::path::Path>,
-        workspace: &std::path::Path,
-    ) {
+    fn restore_launch_environment(config_path: Option<&std::path::Path>) {
         let settings = config_path
             .and_then(|path| qcode_kernel::config::load(path).ok())
             .map(|loaded| loaded.shell)
@@ -212,7 +231,6 @@ pub(crate) async fn cmd_gui(
             // 采不到不是致命错误：界面照旧能开，只是上下文相关的功能会缺东西。
             // 说清楚缺什么，比让它悄悄半残好。
             tracing::warn!(
-                workspace = %workspace.display(),
                 "gui: could not sample the login shell; PATH and env-based API keys stay at the launchd baseline"
             );
             return;
@@ -236,21 +254,22 @@ pub(crate) async fn cmd_gui(
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn restore_launch_environment(
-        _config_path: Option<&std::path::Path>,
-        _workspace: &std::path::Path,
-    ) {
-    }
+    fn restore_launch_environment(_config_path: Option<&std::path::Path>) {}
 
-    let workspace = gui_workspace()?;
-    // 环境补救要在**读配置之前**做：配置解析本身会查 `env` 里的 API key，而图形
-    // 启动时那些变量一个都不在（ADR-0086 §3）。用还没被 workspace 锚定的
-    // config 路径采样设置——采不到也无妨，那里会退回默认设置。
-    // 没给 `--config` 时交给 `discover` 去找——那才是这次真正会读的文件。
+    // 顺序有讲究：**先**补环境，**再**算 workspace。
+    //
+    // 环境补救要在读配置之前（配置解析本身会查 `env` 里的 API key，而图形启动时
+    // 那些变量一个都不在，ADR-0086 §3），也要在 workspace 之前——`QCODE_APP_WORKSPACE`
+    // 是可以从登录 shell 里 export 的，而那正是我们才刚补进来的东西（ADR-0085 §4）。
+    //
+    // 这里用的 config 路径还没被 workspace 锚定：相对的 `--config` 可能解析不到，
+    // 那就退回默认采样设置——采不到的后果只是少补几个变量，不是失败。
     let env_config = config_path
         .clone()
         .or_else(|| config::discover(None).ok().map(|found| found.path));
-    restore_launch_environment(env_config.as_deref(), &workspace);
+    restore_launch_environment(env_config.as_deref());
+
+    let workspace = gui_workspace()?;
     // Relative --config/--data-dir values are anchored at the workspace so they
     // mean the same thing whether or not the process was started from a shell.
     let config_path = config_path.map(|path| {
@@ -517,5 +536,38 @@ mod tests {
         let (workspace, fell_back) = choose_workspace(PathBuf::from("/"), None);
         assert_eq!(workspace, PathBuf::from("/"));
         assert!(!fell_back);
+    }
+
+    /// `QCODE_APP_WORKSPACE` 是覆盖口，从前由 `.app` 启动器的 `cd` 兑现，
+    /// 启动器删掉后（ADR-0086）由 `gui_workspace` 兑现（ADR-0085 §4）。
+    ///
+    /// 真机验过（`open dist/QCode.app`）：
+    ///   不设 → cwd 是 `/` → 退到 `/Users/q`，日志说 workspace=/Users/q
+    ///   设了 → 直接用，不再退
+    #[test]
+    fn the_workspace_override_wins_over_the_root_fallback() {
+        let dir = std::env::temp_dir().join(format!("qc-ws-override-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let expected = dir.canonicalize().expect("canonical temp dir");
+        // SAFETY: 单测进程里只有这一条在用这个变量名。
+        unsafe { std::env::set_var("QCODE_APP_WORKSPACE", &dir) };
+        let workspace = gui_workspace();
+        unsafe { std::env::remove_var("QCODE_APP_WORKSPACE") };
+        let _ = std::fs::remove_dir_all(&dir);
+        // macOS 的 /tmp 是 /private/tmp 的符号链接，两边都先 canonicalize 再比；
+        // 而且要在删目录**之前**比完（`choose_workspace` 返回的已经是规范路径）。
+        assert_eq!(workspace.expect("override should resolve"), expected);
+    }
+
+    /// 指了个不存在的目录就当没设：宁可退回默认规则，也不要因为一个坏路径拒绝开窗。
+    #[test]
+    fn a_broken_override_is_ignored_instead_of_failing() {
+        // SAFETY: 同上。
+        unsafe { std::env::set_var("QCODE_APP_WORKSPACE", "/nonexistent/qc-nowhere") };
+        let workspace = gui_workspace();
+        unsafe { std::env::remove_var("QCODE_APP_WORKSPACE") };
+        let workspace = workspace.expect("a broken override must not stop the window");
+        assert_ne!(workspace, PathBuf::from("/nonexistent/qc-nowhere"));
+        assert!(workspace.is_dir());
     }
 }

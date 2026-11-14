@@ -89,7 +89,17 @@ pub fn strip_launch_marker(args: impl IntoIterator<Item = String>) -> (Vec<Strin
 /// 平台信号是推断。
 pub fn detect(marked: bool) -> Decision {
     // 环境变量那条与命令行标记等价：都来自我们自己的入口。
-    if marked || std::env::var_os(GUI_MARKER_ENV).is_some() {
+    let env_marker = std::env::var_os(GUI_MARKER_ENV).is_some();
+    detect_with(marked, env_marker)
+}
+
+/// 判定主体，**不读环境**。
+///
+/// 环境读取留在这里之外，是为了能测：`std::env` 是进程级的，而 `cargo test` 的用例
+/// 是并发线程。第一版直接在这样的函数里读环境变量，于是「设定标记」和「清除标记」
+/// 两条用例互相看到对方的值，随机红——这条注释就是那次失败的墓志铭。
+fn detect_with(marked: bool, env_marker: bool) -> Decision {
+    if marked || env_marker {
         return Decision {
             frontend: Frontend::Gui,
             reason: "launch-marker",
@@ -319,7 +329,15 @@ mod tests {
     #[test]
     fn the_marker_wins_over_everything() {
         // 标记是事实，平台信号是推断：带了标记就不过第 2 层。
-        let decision = detect(true);
+        let decision = detect_with(true, false);
+        assert_eq!(decision.frontend, Frontend::Gui);
+        assert_eq!(decision.reason, "launch-marker");
+    }
+
+    /// `Info.plist` 的 `LSEnvironment` 那条（macOS 的 `.app` 用），与命令行标记等价。
+    #[test]
+    fn the_plist_marker_selects_the_window() {
+        let decision = detect_with(false, true);
         assert_eq!(decision.frontend, Frontend::Gui);
         assert_eq!(decision.reason, "launch-marker");
     }
@@ -329,33 +347,17 @@ mod tests {
     /// 这条在 mac / linux 上都成立；Windows 上 `cargo test` 挂着控制台，同样成立。
     /// 它同时也是「判定没有副作用、不会拖慢启动」的最低保证——真连一次 X server
     /// 或枚举进程表之外的任何东西，这里会明显变慢。
+    ///
+    /// 走 `detect_with` 而不是 `detect`：后者读环境，而环境是进程级的，会被并发的
+    /// 用例干扰。
     #[test]
     fn the_test_harness_itself_is_not_a_gui_session() {
-        unsafe { std::env::remove_var(GUI_MARKER_ENV) };
-        let decision = detect(false);
+        let decision = detect_with(false, false);
         assert_eq!(
             decision.frontend,
             Frontend::Tui,
             "测试进程被判成 GUI 会话了：{}",
             decision.reason
         );
-    }
-}
-
-/// 环境变量那条路（macOS 的 `.app` 用）。
-///
-/// 单独一个测试二进制：`set_var` 是进程级的，和上面几条挤在一起会互相污染。
-#[cfg(test)]
-mod env_marker_tests {
-    use super::*;
-
-    #[test]
-    fn the_plist_marker_selects_the_window() {
-        // 放在一个独立测试里，因为改的是本进程的环境。
-        unsafe { std::env::set_var(GUI_MARKER_ENV, "1") };
-        let decision = detect(false);
-        unsafe { std::env::remove_var(GUI_MARKER_ENV) };
-        assert_eq!(decision.frontend, Frontend::Gui);
-        assert_eq!(decision.reason, "launch-marker");
     }
 }
