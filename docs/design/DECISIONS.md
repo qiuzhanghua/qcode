@@ -8690,3 +8690,235 @@ INFO qc::lifecycle: qc session ending   pid=31372 exit=0 reason=normal uptime_ms
 `request_quit` → `cx.quit()` → `NSApp terminate:` 这条链上，实测从点「退出」到末行落盘有数秒
 延迟。`on_app_quit` 的预算是 `SHUTDOWN_TIMEOUT` = 200ms，超出部分在 gpui 侧，不在本注记范围内，
 但值得记一笔：**别把有超时预算的工作放进这个钩子。**
+
+## ADR-0083：GUI 单实例——一把文件锁，作用域是「数据目录 + 显示会话」（2026-11-14）
+
+**背景**
+
+GUI 从 ADR-0052 起就是常驻的：关窗 = 隐藏到托盘，进程继续跑。但**没有任何东西拦着开第二个**。
+实测（本机，`dist/QCode.app` 的内层二进制 `qc-gui` 由终端直接 exec 两次）：
+
+```
+$ pgrep -fl qc-gui
+2385 ./qc-gui gui --data-dir /tmp/qc-si-test
+2514 ./qc-gui gui --data-dir /tmp/qc-si-test2
+$ lsappinfo find bundleID=com.qcode.desktop   # 两个都在
+NSRunningApplication.runningApplications("com.qcode.desktop") -> count = 2
+```
+
+两个实例各自完整跑起来，互不知情。代价不只是「托盘里多一个图标」：
+
+- **同一个 store 被两个进程写**。默认 data dir 是 `~/.local/share/qcode`，`index.sqlite`、
+  `sessions/`、`tasks/` 全在一处。sqlite 自己会用锁兜住单条语句，但两个进程各自持有
+  一份内存投影，写回时的「后写者赢」会静默丢掉另一个窗口里的改动。
+- **定时任务会被投递两次**。`schedule_tick` 与 `recover_schedule_deliveries` 都住在 GUI
+  进程里（ADR-0059：计时住在会话宿主上）。两个宿主 = 同一个 `at` 有两条投递记录，
+  而 ADR-0082 §2 那套「按 `scheduled(task_id+at)` 对账」的护栏是**按会话日志**认账的，
+  两个进程写同一份日志反而互相认不出对方——它防的是崩溃重投，防不了并发双开。
+- **托盘出现两个同名图标**，用户无从判断点哪个。
+
+用户的要求是「每台机器每个用户最多一个 GUI」。
+
+**决定**
+
+### 1. 锁是 OS 级文件锁，不是 pid 文件
+
+锁文件 `<data_dir>/locks/gui.lock`，`flock(LOCK_EX|LOCK_NB)` / Windows `LockFileEx`。
+**不写 pid，不做「退出时删锁」。**
+
+理由直接来自 ADR-0082 那次发现：macOS 的 `-[NSApplication terminate:]` 由 AppKit 调
+`exit()`，**析构不跑、atexit 之外的清理不跑**。任何「退出时主动解锁 / 删锁文件」的逻辑
+在这一端都不可靠，而 OS 级锁在进程消失（含 `kill -9`、崩溃、断电重启）时自动释放，
+是唯一三端语义一致的答案。
+
+pid 文件在此外还多一个 PID 复用问题：读到一个 pid 无法证明它就是当初写下的那个进程。
+
+### 2. 作用域 = `canonical(data_dir)` × 显示会话
+
+不是单纯的 per-user 或 per-process 全局。
+
+- **data dir 决定「哪一份状态」**。两个不同 data dir 的 GUI 写两份互不相干的 store，
+  合成一个语义是错的。而默认 data dir 就是 `~/.local/share/qcode`，所以**默认行为恰好
+  等于「每机每用户一个」**，用户要的那条自然成立；`--data-dir` 才允许多开，而那是显式要的
+  （调试、CI、以及本人开发时用 `/tmp/qc-si-test` 验证日志——per-user 的锁会把这种用法挡死）。
+- **显示会话决定「激活能不能成」**。ADR-0084 的激活是「把那个窗口拿到前台」，
+  第一个实例在另一个 X server / 另一个 Windows 登录会话上时，这件事物理上做不到。
+  同一用户在 Windows 上「本地登录 + RDP」就是两份桌面。
+- 键的构成：`<canonical data_dir>` + `DISPLAY`/`WAYLAND_DISPLAY`（Linux）/ `SESSIONNAME`
+  或窗口站（Windows）/ 无独立标识（macOS，一个用户一个图形会话）。
+
+### 3. 拿锁的位置：`cmd_gui` 函数体最前，`main` 不碰
+
+需求「GUI 启动时从命令行跑别的程序不受影响」靠位置天然满足：`qc run` / `qc acp` /
+`qc logs` / `qc doctor` 都不经过 `cmd_gui`。`procguard`（`main.rs:31`）在 clap 解析之前
+就 `return` 了，也走不到。
+
+### 4. 失败要分三种，且绝不「接管」启动第二个
+
+| 情况 | 行为 |
+|---|---|
+| 锁抢到 | 正常启动 GUI |
+| 锁被占 + 激活成功（ADR-0084） | `exit 0`，静默。脚本里 `qc gui` 不该报错 |
+| 锁被占 + 激活失败（超时/通道坏） | `exit` 非零 + 人话。**绝不接管启动第二个**——那会把不变式破掉，而用户下次只会看到两个窗口 |
+| 锁机制本身坏（NFS、权限、目录不可写） | 逃生口 `QC_GUI_SINGLE_INSTANCE=0` 跳过互斥，正常启动 |
+
+逃生口是必需的，不是留后门：一个坏掉的锁文件能把用户彻底锁在 GUI 外面，而 GUI 正是
+他用来排查问题的地方。与 gpm-go `internal/proc` 那条「查不出来的时候不拦」是同一个
+价值判断——**不确定的时候，让人能干活**——但落点相反：那边是「不拦」，这边是
+「拦不住就明确告诉人并给开关」，因为这里的「不拦」等于静默破坏数据。
+
+### 5. 第二实例也必须走日志漏斗，`reason` 新增 `handed_over`
+
+ADR-0082 §2 早就写了这条：「已有实例在跑、本进程立刻退出也必须走漏斗，否则它写了
+start 不写 end，下次启动会误报异常结束」。本次兑现它，并新增 `Reason::HandedOver`
+——让日志能区分「正常退出」和「让位给已有实例」。用 `normal` 记这件事等于说假话。
+
+**代价**
+
+- `flock` 在 **NFS** 上不可靠（POSIX 未强制跨主机语义）。放 data dir 在网络盘上的用户
+  会遇到互斥失效——这是逃生口存在的第二个理由。
+- `handed_over` 是日志 schema 的新取值。旧读者见到未知 `reason` 只应原样显示，不能拒行
+  （`qc logs` 目前是原样输出，没有白名单，所以安全）。
+- Windows 的 `LockFileEx` 与 `flock` 语义有细微差别（前者按字节区间、且同一进程内可重入），
+  需要单测钉住「同进程二次加锁失败」，否则两个 GUI 线程会各自以为抢到了。
+
+**放弃的方案**
+
+- **`NSRunningApplication.runningApplications(withBundleIdentifier:)` 当互斥判定**：实测
+  两个直接 exec 的实例**都被登记**成 `com.qcode.desktop`（count = 2）。它能告诉你
+  「有几个」，不能告诉你「该不该启动」；而且 Linux / Windows 没有这个 API。
+- **扫进程（gpm-go `internal/proc` 那条路）**：它查的是「某个已装应用在不在跑」，
+  并且**明确接受漏判**（「查不出来的时候不拦」）。互斥不能漏判，且「扫到没有」与
+  「我可以启动」之间的 TOCTOU 窗口足以让两个实例同时起来。
+- **Windows named mutex `Local\…`**：语义比文件锁更贴平台，但会让三端分叉成两套判定。
+  先统一用文件锁；若实测 `LockFileEx` 不够用再单独加强（记在这里，不是否定它）。
+
+**验证**
+
+- 待实现。已定下的测点：同 data dir 第二次启动必须失败并唤起第一个；不同 `--data-dir`
+  必须都成功；`QC_GUI_SINGLE_INSTANCE=0` 必须都成功；`kill -9` 第一个之后第二个必须能起来
+  （锁自动释放，而不是被残留文件卡死）。
+
+## ADR-0084：跨进程激活——自建通道是唯一能把窗口找回来的路（2026-11-14）
+
+**背景**
+
+ADR-0083 拦下了第二个进程，接下来它要做的是一件听起来更简单的事：把已经在跑的那个窗口
+**拿到用户眼前**。
+
+动手前先怀疑一件事：macOS 上是不是白送？gpm-go 的实测（`docs/DESIGN.md` 的 C1 / R13）
+说 `open '<X>.app'` 走 LaunchServices，**等价双击、能激活已经运行的实例**；代价是
+「`open --env` 四种写法全不生效」，所以它为了注入工具链环境改成直接 exec 内层二进制，
+于是「丢掉单实例激活、从终端启动可能开出第二个实例」。
+
+qcode 和它的处境有一处关键不同：**qcode 有真 `.app`**（`build-macos-app.sh` 生成，
+`CFBundleIdentifier = com.qcode.desktop`），不需要合成外壳。所以 gpm-go 卡在 R8 的那一半
+不欠。但「直接 exec 之后还认不认得出身份」没人验证过。**本次四项实测（macOS 26，本机）：**
+
+| # | 问题 | 结果 |
+|---|---|---|
+| A | `.app/Contents/MacOS/qc-gui` 由终端直接 exec，LaunchServices 认得出它吗 | **认得出**。`lsappinfo`：`bundleID="com.qcode.desktop"`、`bundle path=…/QCode.app`、`type="Foreground"`、`fileType="APPL"`、`Version="0.9.0"`。对照：裸二进制 `target/release/qc gui` 是 `bundleID=[ NULL ]` |
+| B | 已有直接 exec 实例时，`open QCode.app` 是开第二个还是激活 | **激活，不开第二个**。`open` 原话：`Application … was already running and so the additional environment variables could not be set.`；进程数不变（正是 gpm-go C1 的反面证据） |
+| C | 一个独立进程能否用 `NSRunningApplication` 找到并激活它 | **能**。`runningApplications(withBundleIdentifier:)` → count=1、pid 正确；`activate(options:.activateAllWindows)` → `true`；随后 `NSWorkspace.frontmost` 就是它 |
+| D | 两个直接 exec 实例能否共存 | **能**。两个都登记成 `com.qcode.desktop`（count=2）。直接 exec 完全绕开 LaunchServices 的实例管理——这正是 ADR-0083 必须自建互斥的原因 |
+| E | 关窗（`orderOut:`）之后，B 和 C 还能把窗口拿回来吗 | **都不能**。窗口数保持 0；但 `isActive=true`、`NSWorkspace.frontmost` 仍报是它 |
+
+E 是这四项里唯一改变设计的一条，也是**最容易踩的**。qcode 的「关窗」不是 `hide`（Cmd-H），
+是 `tray::hide_window_later` → `orderOut:`（ADR-0052）。此时：
+
+```
+窗口数 = 0                 ← 屏幕上什么都没有
+进程活着 pid=2385
+isHidden = false           ← NSApplication hide 的位，orderOut 不动它
+isActive = true            ← 谎话
+NSWorkspace.frontmost → 它  ← 也是谎话
+```
+
+于是 `open` 和 `NSRunningApplication::activate` 都会「成功返回、什么也不发生」。用户双击图标，
+屏幕上毫无反应——比直接报错更糟。
+
+只有**进程内**那条路有效：实测 E 用托盘「显示主窗口」，窗口数 0 → 1。它走的是
+`tray::show_window_later` → `macos::show_native` → `makeKeyAndOrderFront:`（+ 必要时
+`deminiaturize:`）。
+
+结论：**激活必须由第一个进程自己执行，因此必须有跨进程通道。** 这不是「为了跨平台而
+自建」，是 macOS 单平台就已必需。
+
+**决定**
+
+### 1. 通道：锁旁边放一个 socket
+
+- Unix：`<data_dir>/locks/gui.sock`（文件路径 UDS，不用 abstract——macOS 不支持）。
+- Windows：`\\.\pipe\qcode-gui-<data_dir 的哈希>`。
+
+### 2. 启动顺序：**先连后退**，顺序本身消除大部分竞态
+
+```
+1. 连 socket ──连上──→ 发 activate，等回复 → 写 lifecycle end(handed_over) → exit 0
+      │
+    连不上
+      ↓
+2. 抢文件锁 ──抢到──→ unlink 残留 socket → listen → 正常起 GUI
+      │
+    抢不到
+      ↓
+3. 回到 1，退避重试（10 × 100ms）→ 仍失败则 exit 非零 + 人话（ADR-0083 第 4 条）
+```
+
+先连后退的原因：**「socket 能连上」是「有活实例」的确证**，信息量比「锁被占」强——锁被占
+可能只是第一个进程刚拿锁、还没来得及 `listen`。第 3 步的重试就是为了盖住这个窗口。
+
+残留 socket 文件不需要额外判断：**只有持有锁之后才 `listen`**，所以能 `listen` 时就一定
+没有活实例，`unlink` 后重建安全。
+
+### 3. 协议：一行 JSON，只做一件事
+
+请求 `{"activate":true}\n`，回复 `{"ok":true}\n`。不传工作目录、不传参数、不传会话 id。
+
+收到之后第一进程调**已有的** `tray::show_window_later` —— 与托盘「显示主窗口」完全同一条
+路径，不写第二份「把窗口弄出来」的代码。这条路径已经处理了 macOS/Windows 要推迟到
+foreground executor 的坑（窗口隐藏时同步 `orderFront` 会二次借用 `App`）。
+
+### 4. 语义：只浮窗，不切 workspace
+
+第二实例的 cwd 与第一实例不同时，**只把窗口拿到前台**，不改第一实例的工作目录。
+理由：切 workspace 会打断正在跑的 turn，而 GUI 里根本没有这个功能（`gui.rs:109` 那句
+「Workspace switching re-execs qc」是过期注释，见 §代价）。
+
+### 5. `NSRunningApplication` 不做权威，最多当兜底
+
+实测 C 证明它**能**找到并激活，但实测 E 证明它在 qcode 的隐藏态下**无效**。
+所以：不作为机制的一部分。若将来需要「把窗口提到最前但不 orderOut」（例如多显示器场景），
+可以把它当成通道成功之后的一步补强——不是现在。
+
+**代价**
+
+- 三端两套传输（UDS / named pipe），比「只用 NSRunningApplication」多一份代码。
+  但那份代码在 macOS 上是必需的（实测 E），在另两端是不可省（没有等价 API）。
+- socket 文件落在 data dir 的 `locks/` 下，与既有 `locks/*.lock`（会话级）混在一起。
+  可接受——同一类东西放同一处，且都靠 `data_dir` 定位。
+- Windows 前台权限：`SetForegroundWindow` 有「只有当前前台进程才能抢前台」的限制。
+  通道走的是「让第一实例自己调 `activate_window`」，它是被用户程序调用的，通常持有权限；
+  若实测被系统拒，退路是 `AllowSetForegroundWindow(第一个进程 pid)`，写在这里备查。
+- **顺带发现的过期注释**：`crates/qcode/src/commands/gui.rs:109` 写「Workspace switching
+  re-execs qc with current_dir set to the new workspace」，但这个 re-exec 已经不存在了
+  （Settings 保存走 `gui_rebuild_hook` 原地换 engine，注释自己都说 `instead of re-execing`；
+  GUI 里也没有 workspace 切换 UI）。ADR-0083 落地时顺手改掉，否则「子进程撞父进程的锁」
+  这种不存在的隐患会被后人当真查一遍。
+
+**放弃的方案**
+
+- **只靠 `open`（macOS）**：实测 B 它确实不开第二个，但实测 E 它拿不回被 `orderOut` 的窗口。
+  而且 Linux / Windows 没有等价物。
+- **只靠 `NSRunningApplication`**：同上，且实测 D 表明它连「有几个实例」都不足以判定。
+- **`open --args` 传参当激活信号**：`open` 在「已运行」时明确不启动新进程
+  （实测 B 的原话），所以 args 根本送不到已运行实例手里。
+- **D-Bus（Linux）**：比 UDS 更「Linux 正统」，但只覆盖一端，不如三端统一一个极简协议。
+
+**验证**
+
+- 待实现。已定的测点：隐藏态下第二个进程启动 → 窗口数 0 → 1 且在前台；最小化态下
+  同样；第一实例跑 turn 时第二个进程启动 → 只浮窗、turn 不被打断；第一实例正在退出
+  （锁已放、socket 未关）时第二个进程启动 → 不悬挂、重试后接管。
+- 单测：协议解析（正常/残缺/超时）、socket 路径按 data dir 生成、残留文件在拿到锁后
+  被重建。
