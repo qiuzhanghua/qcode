@@ -9190,6 +9190,17 @@ QCode  59343  q  cwd  DIR  1,15  736  2 /        ← 没有启动器了，就是
    记了来龙去脉与实测；
 3. ✅ `qc gui` 子命令 → 去掉（§5）。
 
+**`.app` 的体积只取决于 profile，与代码无关**：`dist/QCode.app` 曾一度是 **197 MB**，
+查下来是某次 `--debug` 把 dev profile 的二进制装进了**同名** bundle——里面没有 `__DWARF`
+段，但 `__TEXT` 86 MB、`__LINKEDIT` 116 MB（符号表 + 调试信息），带 3793 条 `OSO` 记录；
+同一份代码在 release profile（thin LTO + 1 CGU + `strip = "symbols"`）下是 **35 MB**，
+`OSO` 记录为 0。也就是说那 160 MB 差值买的是「能调试」，不是功能。
+
+改了两处，都在 `scripts/build-macos-app.sh` 里：`--debug` 现在落
+`dist/QCode-debug.app`，不再覆盖 release 包；组装完报出体积，release 超过 100 MB **直接
+报错退出**（说明 `[profile.release]` 的 strip/LTO 没生效，属于打包错了），debug 只报数
+不拦。`release.yml` 发的是 tar.gz 里的裸二进制、不经这个脚本，所以这条只影响本地包。
+
 Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
 ——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的
 `Path`（工作目录，否则是 `System32`，见 ADR-0085 的代价段）。

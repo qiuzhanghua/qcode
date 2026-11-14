@@ -9,12 +9,20 @@
 #
 # Usage:
 #   ./scripts/build-macos-app.sh            # release build -> dist/QCode.app
-#   ./scripts/build-macos-app.sh --debug    # debug build (faster)
+#   ./scripts/build-macos-app.sh --debug    # debug build (faster) -> dist/QCode-debug.app
 #   QCODE_APP_NAME=QCode ./scripts/build-macos-app.sh
 #
+# 两个 profile 落到**两个不同的 bundle**，因为体积差 5 倍：release 走 Cargo.toml 的
+# `[profile.release]`（thin LTO + 1 CGU + strip = "symbols"），本地实测约 36M；dev
+# profile 不优化、留着调试信息与符号表，同一份代码约 200M（__TEXT 86M + __LINKEDIT
+# 116M）。早先 `--debug` 也写 dist/QCode.app，于是「跑一次 debug 包」会把手里能用的
+# release 包静默换成 200M 的那份，双击起来又慢又不像成品。现在按 profile 分名，
+# 谁也不覆盖谁。
+#
 # Output:
-#   dist/QCode.app
-#   dist/QCode.app/Contents/MacOS/QCode      (the binary itself; ADR-0086)
+#   dist/QCode.app           (release)
+#   dist/QCode-debug.app     (--debug)
+#   <bundle>/Contents/MacOS/QCode      (the binary itself; ADR-0086)
 
 set -euo pipefail
 
@@ -69,7 +77,15 @@ if [[ -z "$CARGO_BIN" ]]; then
     exit 1
 fi
 
-APP_NAME="${QCODE_APP_NAME:-QCode}"
+# release 与 debug 各占一个 bundle 名，免得 200M 的 debug 包顶掉 36M 的 release 包。
+# 显式给了 QCODE_APP_NAME 就完全听调用方的。
+if [[ -n "${QCODE_APP_NAME:-}" ]]; then
+    APP_NAME="$QCODE_APP_NAME"
+elif [[ "$PROFILE" == debug ]]; then
+    APP_NAME="QCode-debug"
+else
+    APP_NAME="QCode"
+fi
 APP="$ROOT/dist/$APP_NAME.app"
 BIN="$ROOT/target/$PROFILE/qc"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -107,6 +123,19 @@ cp "$ROOT/crates/qcode/res/icons/macos/qcode.icns" "$APP/Contents/Resources/qcod
 # 名字仍用 $APP_NAME（QCode），这样 Dock 里显示的是产品名而不是命令名。
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
+
+# 体积守卫。release 该 strip 过（[profile.release] strip = "symbols"），正常 36M
+# 上下；突然上百兆说明 cargo 没按那个 profile 走，属于打包错了，不该悄悄产出。
+# debug 侧不拦、只报数——200M 是调试的正常代价，但得让人看见。
+BUNDLE_MB=$(( $(du -sk "$APP" | cut -f1) / 1024 ))
+if [[ "$PROFILE" == release ]] && (( BUNDLE_MB > 100 )); then
+    echo "error: release bundle is ${BUNDLE_MB}M; expected ~36M." >&2
+    echo "       strip/LTO 没生效？检查 Cargo.toml 的 [profile.release]。" >&2
+    exit 1
+fi
+if [[ "$PROFILE" == debug ]]; then
+    echo "note:  debug bundle is ${BUNDLE_MB}M (unstripped, includes debug info)."
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -146,5 +175,6 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 
 echo
 echo "built: $APP"
+echo "size:  ${BUNDLE_MB}M"
 echo "run:   open \"$APP\""
 echo "note:  unsigned local build; distribution would require Developer ID + notarization."
