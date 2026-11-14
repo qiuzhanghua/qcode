@@ -369,6 +369,17 @@ find_mingw_clang() {
 }
 
 # 输出为空表示就绪；否则输出原因。--list 与 `all` 都靠它决定跳过谁。
+# 非 Linux 宿主上的 Linux 目标不在这里判——它们由 needs_container 送去容器。
+needs_container() {
+    local target=$1
+    # 只覆盖 gnu：容器镜像里没有 musl 交叉 gcc，CI 的发布矩阵也只发 gnu 两个目标。
+    case "$target" in *-linux-gnu) ;; *) return 1 ;; esac
+    [ "$HOST_OS" = linux ] && return 1
+    command -v podman >/dev/null 2>&1 || return 1
+    [ -x "$ROOT/scripts/build-linux-in-container.sh" ] || return 1
+    return 0
+}
+
 not_ready_reason() {
     local target=$1 os
     os=$(target_os "$target")
@@ -376,6 +387,20 @@ not_ready_reason() {
     darwin)
         if [ "$HOST_OS" != darwin ]; then
             echo "只能在 macOS 上构建（需要 Apple SDK）"
+            return
+        fi
+        ;;
+    linux)
+        case "$target" in
+        *-linux-musl)
+            echo "容器路径只覆盖 gnu（镜像里没有 musl 交叉 gcc）；musl 请上 Linux 或补工具链"
+            return
+            ;;
+        esac
+        # 非 Linux 宿主上的 gnu 目标走容器（needs_container）；到这里的只有
+        # 「既不是 Linux 宿主、也没有 podman」这一种，说清楚两条路。
+        if [ "$HOST_OS" != linux ]; then
+            echo "需要 Linux 桌面库（gpui 硬链接 xcb/xkbcommon）：装 podman 走容器，或在 Linux 上构建"
             return
         fi
         ;;
@@ -475,6 +500,28 @@ prepare_target() {
         fi
         ;;
     esac
+
+    # fontconfig 是交叉编 Linux 时唯一没有退路的系统库。
+    #
+    # `yeslogic-fontconfig-sys` 的 build.rs 用 pkg-config 找 `fontconfig`；而
+    # `.pc` 文件是发行版 `-dev` 包的产物，macOS / Windows 上没有「目标平台」的那一套。
+    # ADR-0086 把窗口变成默认 feature 之后，每个 Linux 产物都要链 gpui，于是从 macOS
+    # 跑 `make release` 会在 build script 里直接 panic：
+    #
+    #   pkg-config has not been configured to support cross-compilation
+    #
+    # 这个 crate 只留了一个出口：设 RUST_FONTCONFIG_DLOPEN 就跳过 pkg-config，改成
+    # 运行期 `dlopen("libfontconfig.so.1")`。同一棵树里另外三个依赖不需要它——
+    # x11rb 是纯 Rust，wayland-sys 已经启用 dlopen，freetype-sys 在 pkg-config 失败时
+    # 退回编自带的 C++ 源码。
+    #
+    # 只在**宿主不是 Linux** 时补（即交叉编），原生 Linux 构建照旧硬链接：CI 发的
+    # linux-amd64 / linux-arm64 都是原生跑的，产物与今天就一致，不必重验。代价写在
+    # ADR-0086 里——交叉产物与发布件的 fontconfig 链接方式不同，本地交叉件只用于冒烟。
+    if [ "$(target_os "$target")" = linux ] && [ "$HOST_OS" != linux ] &&
+        [ -z "${RUST_FONTCONFIG_DLOPEN:-}" ]; then
+        export RUST_FONTCONFIG_DLOPEN=1
+    fi
 }
 
 # ---------------------------------------------------------------- 输出
@@ -651,6 +698,17 @@ done
 if [ "$LIST" = 1 ]; then
     printf '%-32s %-34s %s\n' TARGET ARTIFACT STATUS
     for target in "${TARGETS[@]}"; do
+        if needs_container "$target"; then
+            # 非 Linux 宿主上的 gnu 目标：能不能产出取决于 podman 那套，这里如实写。
+            status="skip: 走容器（${target}）"
+            if ! podman image exists "${QCODE_LINUX_IMAGE:-qcode-linux-builder:bookworm}" 2>/dev/null; then
+                status="ready（首次会建镜像）"
+            else
+                status="ready（容器）"
+            fi
+            printf '%-32s %-34s %s\n' "$target" "$(artifact_name "$target")" "$status"
+            continue
+        fi
         reason=$(not_ready_reason "$target")
         if [ -z "$reason" ]; then
             status="ready"
@@ -669,12 +727,38 @@ fi
 
 built=0
 skipped=0
+DEFERRED=()
 
 # 相对路径的 -o 先转绝对：pack_archive 里会 cd 进临时目录，相对路径会指错地方。
 mkdir -p "$OUT_DIR"
 OUT_DIR=$(cd "$OUT_DIR" && pwd)
 
+# 先分派：Linux 目标（非 Linux 宿主）走容器，其余在本机编。
+HOST_TARGETS=()
 for target in "${TARGETS[@]}"; do
+    if needs_container "$target"; then
+        DEFERRED+=("$target")
+    else
+        HOST_TARGETS+=("$target")
+    fi
+done
+
+# 非 Linux 宿主上的 Linux 目标：交给容器（scripts/build-linux-in-container.sh），一次
+# 调完，别每个目标都跑一遍镜像检查。**放在本机目标之前**：ALL_TARGETS 的顺序是
+# linux 在前，而且本机某个目标失败（比如 Windows 交叉）不该把已经能产出的 Linux 产物
+# 一起吞掉——2026-11-14 实测 `--archive all` 就是死在 gpui-pre-windows 的 shaders，
+# Linux 一个都没轮上。
+if [ ${#DEFERRED[@]} -gt 0 ]; then
+    echo "==> ${#DEFERRED[@]} 个 Linux 目标改走容器（宿主是 ${HOST_OS}）"
+    PASS_FLAGS=()
+    [ "$ARCHIVE" = 1 ] && PASS_FLAGS+=(--archive)
+    [ "$RELEASE" = 1 ] && PASS_FLAGS+=(--release)
+    "$ROOT/scripts/build-linux-in-container.sh" "${PASS_FLAGS[@]}" "${DEFERRED[@]}" || die "容器构建失败"
+    built=$((built + ${#DEFERRED[@]}))
+    echo
+fi
+
+for target in "${HOST_TARGETS[@]}"; do
     reason=$(not_ready_reason "$target")
     if [ -n "$reason" ]; then
         # 显式点名的目标不给就过：说清楚缺什么，比悄悄产出个空目录强。

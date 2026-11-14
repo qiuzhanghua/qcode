@@ -1,0 +1,61 @@
+# Linux 构建镜像：在 macOS 上编 Linux 产物用（见 scripts/build-linux-in-container.sh）。
+#
+# 为什么需要它：ADR-0086 之后每个 Linux 产物都要链 gpui，而 gpui 在 Linux 上硬链接
+# `-lxcb -lxkbcommon -lxkbcommon-x11`，fontconfig 走 pkg-config。这些 `.pc` / `.so`
+# 是发行版开发包的产物，macOS 上没有「目标平台」的那一套，于是交叉链接必然失败：
+#
+#   error: unable to find dynamic system library "xkbcommon-x11"
+#
+# 容器里这些库都在，代价是镜像与一层搬进搬出。
+#
+# 两个架构都要，且**不靠模拟**：
+#   * arm64 是容器自身的架构，直接编（native）。
+#   * amd64 走 multiarch 交叉：`dpkg --add-architecture amd64` 装一套 `:amd64` 的
+#     dev 包，配 `x86_64-linux-gnu-gcc`。rustc 交叉编译是原生速度，C 代码也由
+#     x86_64-linux-gnu-gcc 在 arm64 上跑——全程没有 qemu 模拟，比在 podman 里跑
+#     x86_64 镜像快一个数量级（后者连 cargo 自己都要模拟执行）。
+#
+# 依赖清单与 .github/workflows/ci.yml 的 `linux system dependencies` 保持一致，
+# 多出来的只有 multiarch 那半套。
+FROM docker.io/library/rust:1.100-slim-bookworm
+
+# apt 源可换。官方源在部分网络下几乎拉不动（实测 macOS 上 `apt-get update` 卡在
+# 下载 Packages 索引，十分钟零进展；同一条命令换 aliyun / ustc 秒过）。默认仍是官方
+# 源，别把某个地区的镜像写死进仓库；网络慢时这样传：
+#
+#   QCODE_APT_MIRROR=mirrors.aliyun.com ./scripts/build-linux-in-container.sh
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
+# multiarch：让 apt 之后能装 `pkg:amd64`
+RUN dpkg --add-architecture amd64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config \
+        libfontconfig-dev libfreetype-dev \
+        libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+        gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
+        libfontconfig-dev:amd64 libfreetype-dev:amd64 \
+        libxkbcommon-dev:amd64 libxkbcommon-x11-dev:amd64 libxcb1-dev:amd64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 两个目标都要 std。rust 官方镜像自带 rustup，加目标只是拷 sysroot。
+#
+# RUSTUP_DIST_SERVER 可换：`static.rust-lang.org` 在部分网络下拿不到，报的是
+#   error downloading file: ... tunnel error: unsuccessful
+# 那其实是宿主代理（127.0.0.1:xxxx）被透传进 build 容器——VM 里没有那个端口。
+# 换镜像源最快（实测 rsproxy 13 秒，官方源几十秒没动）：
+#
+#   QCODE_RUSTUP_DIST_SERVER=https://rsproxy.cn ./scripts/build-linux-in-container.sh
+ARG RUSTUP_DIST_SERVER=""
+ARG RUSTUP_UPDATE_ROOT=""
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
+RUN rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+
+# 自检：镜像坏了要在这里就红，而不是等十分钟后的链接阶段。
+RUN pkg-config --modversion fontconfig \
+    && PKG_CONFIG_LIBDIR=/usr/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion xkbcommon \
+    && x86_64-linux-gnu-gcc --version >/dev/null

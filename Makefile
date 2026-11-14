@@ -8,6 +8,7 @@
 #   make release         # 门禁 + 全平台归档
 #   make linux-musl-amd64 windows-arm64
 #   make archive         # 全部平台 + tar.gz/zip
+#   make linux-container # 非 Linux 宿主上用 podman 编 linux-amd64 + linux-arm64
 #
 # Windows 上用 build-for-release.ps1（见脚本头部）。
 
@@ -20,7 +21,7 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check check-platforms perf release archive clean gui app app-debug $(PLATFORMS)
+.PHONY: all native list check check-platforms perf release archive clean gui app app-debug linux-container linux-container-archive $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -70,3 +71,12 @@ app:
 
 app-debug:
 	./scripts/build-macos-app.sh --debug
+
+# 非 Linux 宿主上编 Linux 产物：走 podman 容器（scripts/Containerfile.linux-builder）。
+# `make all` / `make release` 里的 Linux 目标会自动委派到这里，这两个目标只是给
+# 「只想编 Linux」的场景一个短入口。
+linux-container:
+	./scripts/build-linux-in-container.sh
+
+linux-container-archive:
+	./scripts/build-linux-in-container.sh --archive

@@ -9201,6 +9201,32 @@ QCode  59343  q  cwd  DIR  1,15  736  2 /        ← 没有启动器了，就是
 报错退出**（说明 `[profile.release]` 的 strip/LTO 没生效，属于打包错了），debug 只报数
 不拦。`release.yml` 发的是 tar.gz 里的裸二进制、不经这个脚本，所以这条只影响本地包。
 
+**在非 Linux 宿主上编 Linux 产物，只能走容器**。ADR-0086 把窗口变成默认 feature 之后，
+每个 Linux 产物都要链 gpui，而 gpui 在 Linux 上硬链接 `-lxcb -lxkbcommon
+-lxkbcommon-x11`、fontconfig 走 pkg-config。这些 `.so` / `.pc` 来自发行版 `-dev` 包，
+macOS 上没有目标平台的那一套。实测两次失败：
+
+```
+pkg-config has not been configured to support cross-compilation   ← yeslogic-fontconfig-sys/build.rs
+error: unable to find dynamic system library "xkbcommon-x11"      ← 链接阶段
+```
+
+前者的出口是 `RUST_FONTCONFIG_DLOPEN`（跳过 pkg-config，运行期 dlopen；同一棵树里
+x11rb 是纯 Rust、wayland-sys 已开 dlopen、freetype-sys 会退回编自带 C++，所以
+fontconfig 是唯一没有退路的那个）。但后者没有出口——`-lxcb` 是硬链接，只能真的具备
+目标平台的库。因此 `scripts/build-linux-in-container.sh` + `Containerfile.linux-builder`
+是**唯一**可行的本地路径，`build-for-release` 在非 Linux 宿主上自动把 `gnu` 目标委派给
+容器（musl 不给：镜像没有 musl 交叉 gcc，`release.yml` 也只发 gnu 两个目标）。
+
+两个架构都不靠模拟：arm64 原生，amd64 走 multiarch 交叉（`dpkg --add-architecture amd64`
++ `x86_64-linux-gnu-gcc`），rustc 交叉编译本身是原生速度。实测产物与 CI 原生产物链接
+方式一致（动态链接 fontconfig / xcb），amd64 那份在 arm64 VM 里用 `qemu-x86_64-static`
+跑出 `qc 0.10.2` 自证可执行。
+
+委派**排在本机目标之前**：矩阵里 linux 在前，而且本机某个目标失败不该吞掉已经能产出的
+Linux 产物（实测 `--archive all` 死在 `gpui-pre-windows` 的 shaders 生成上，Linux 一个
+都没轮上）。
+
 Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
 ——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的
 `Path`（工作目录，否则是 `System32`，见 ADR-0085 的代价段）。

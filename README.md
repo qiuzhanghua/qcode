@@ -292,6 +292,46 @@ open dist/QCode.app
 Developer ID 签名，也没有 notarize，`spctl` 会拒绝。分发给别人时需要 Apple Developer
 Program 的 Developer ID 证书与 notarization。
 
+### 在 macOS 上编 Linux 产物：走容器
+
+ADR-0086 之后每个 Linux 产物都要链 gpui，而 gpui 在 Linux 上**硬链接**
+`-lxcb -lxkbcommon -lxkbcommon-x11`、fontconfig 走 pkg-config。这些 `.so` / `.pc` 是
+发行版 `-dev` 包的产物，macOS 上没有「目标平台」的那一套——直接在 mac 上跑
+`make release` 会在构建中途死掉，两次报错分别是：
+
+```
+pkg-config has not been configured to support cross-compilation     ← fontconfig 的 build.rs
+error: unable to find dynamic system library "xkbcommon-x11"        ← 链接阶段
+```
+
+所以非 Linux 宿主上的 `gnu` 目标**自动交给容器**（`make all` / `make release` 里也一样，
+`make list` 会写 `ready（容器）`）：
+
+```bash
+brew install podman
+podman machine init && podman machine start
+
+make linux-container            # linux-amd64 + linux-arm64
+make linux-container-archive    # 再加 tar.gz
+```
+
+镜像定义在 `scripts/Containerfile.linux-builder`。两个架构都**不靠模拟**：arm64 是原生，
+amd64 走 multiarch 交叉（`dpkg --add-architecture amd64` 装一套 `:amd64` 的 dev 包 +
+`x86_64-linux-gnu-gcc`），rustc 交叉编译是原生速度。
+
+几个实测的坑，脚本已经处理：
+
+- **apt 源**：`deb.debian.org` 在部分网络下卡在下载索引（十分钟零进展）。换源：
+  `QCODE_APT_MIRROR=mirrors.aliyun.com make linux-container`
+- **rustup 的 std**：`static.rust-lang.org` 拉不动时报 `tunnel error`，那是宿主代理
+  （`127.0.0.1:xxxx`）被透传进 build 容器，VM 里没有那个端口。脚本检测到 loopback
+  代理会自动关掉透传；也可以换镜像：
+  `QCODE_RUSTUP_DIST_SERVER=https://rsproxy.cn make linux-container`
+- **musl 目标不在容器里**：镜像没有 musl 交叉 gcc，CI 的发布矩阵也只发 gnu 两个目标。
+
+容器产物与 CI 原生构建的产物**链接方式相同**（都是动态链接 fontconfig / xcb），所以运行期
+依赖一致；但它是本地冒烟用的，正式发布仍以 `release.yml` 的原生构建为准。
+
 | 目标 | rust target | 前置条件 |
 |---|---|---|
 | `linux-amd64` | `x86_64-unknown-linux-gnu` | x86_64 的 cc |
