@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.10.2 — 2026-11-14
+
+只有一处：让 Linux 上那条 MCP grant 测试**说出原因**，并消掉它唯一的跨测试共享状态。
+0.10.1 的二进制不受影响（见下），这个版本是为了让「红」和「绿」都可解释。
+
+### 一次无法归因的失败，先修可诊断性
+
+`the_build_caches_are_not_in_a_servers_write_grant` 在 Linux 上红过一次，报的是
+`missing tool mcp__probe__probe`——而这条信息**不可能**指向原因：
+
+`connect_detailed` 把每个 server 的启动失败都写进 `tracing::warn!`
+（`skipping MCP server`），然后返回空工具表。测试进程没有 subscriber，那条 warn 直接
+丢掉，于是「grant 拒绝写」「二进制没找到」「沙箱拒绝 spawn」三种完全不同的故障在测试里
+长得一模一样。
+
+现在这个测试文件装了一个只保留 warn 的 sink，把捕获到的日志放进 panic 消息。sink 本身
+也有自测（`the_server_log_sink_captures_warnings`）：一个在失败时保持沉默的诊断机制必须
+有测试证明它会说话。
+
+### 消掉唯一的跨测试共享状态
+
+同一个测试是唯一会改**进程环境**的：它把 `CARGO_HOME` 指向自己的临时目录。而 `cargo test`
+在同一二进制里并行跑用例，于是别的用例构建沙箱时，`writable_paths()` 读到的是一个「不是
+用户那个」的 `CARGO_HOME`。
+
+现在这几个用例显式轮流跑（一个静态 mutex）。代价是零——每个用例只有几毫秒的进程启动——
+换来的是：这里再红，说明 grant 错了，而不是时钟碰巧对上了。
+
+**没有证据说这就是那次失败的原因**：它只出现一次，重跑即绿（run #320 Linux 全绿，
+含 `linux sandbox tests`），没能复现。所以这里做的是「把唯一已知的共享状态拿走」，
+而不是假装已经定位。
+
 ## 0.10.1 — 2026-11-14
 
 **0.10.0 一个产物都没发出来**：Linux job 在第四分钟就红了，`publish` 因此没有运行。

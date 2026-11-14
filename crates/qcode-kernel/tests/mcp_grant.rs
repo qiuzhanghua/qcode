@@ -59,6 +59,28 @@ fn mcp(server: McpServerConfig) -> McpConfig {
     }
 }
 
+/// Tests in one binary share a process, so they share its environment.
+///
+/// [`the_build_caches_are_not_in_a_servers_write_grant`] has to point `CARGO_HOME`
+/// at a directory it owns — `writable_paths()` reads that variable — and every
+/// other test in this file builds a sandbox while that override is live. That is
+/// a real cross-test hazard (a sandbox built mid-override sees a `CARGO_HOME`
+/// that is not the user's), so the tests here take turns instead of racing.
+///
+/// The cost is nil: each test is a few milliseconds of process spawning. What it
+/// buys is that a failure here means the grant is wrong, not that the clock
+/// happened to line up. (The intermittent Linux failure this file saw was
+/// diagnosed down to "the server never started" and never reproduced; this
+/// removes the one shared-state candidate rather than pretending to know.)
+/// Async-aware on purpose: these tests hold it across `await` (each one spawns a
+/// server and waits for it), and a `std::sync::Mutex` guard held across an await
+/// point is exactly what clippy rejects — the lock would park a thread that the
+/// runtime might need.
+async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
 /// `None` when this machine cannot run the sandbox at all.
 fn landlock(workspace: &Path) -> Option<Arc<dyn Sandbox>> {
     match build(
@@ -178,6 +200,7 @@ async fn call(tools: &[Arc<dyn Tool>], name: &str, arguments: serde_json::Value)
 
 #[tokio::test]
 async fn a_server_installed_under_the_home_directory_runs_under_its_grant() {
+    let _serial = exclusive().await;
     let home = outside_tmp("grant-home-run");
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -208,6 +231,7 @@ async fn a_server_installed_under_the_home_directory_runs_under_its_grant() {
 
 #[tokio::test]
 async fn without_the_grant_the_same_server_is_refused() {
+    let _serial = exclusive().await;
     // The pre-ADR-0066 wiring: one sandbox, built for the workspace only. This
     // is the "Permission denied" from the bug report, kept as a regression
     // test so the cause stays obvious.
@@ -259,6 +283,7 @@ async fn without_the_grant_the_same_server_is_refused() {
 
 #[tokio::test]
 async fn writes_and_reads_stop_at_the_grant() {
+    let _serial = exclusive().await;
     let home = outside_tmp("grant-home-write");
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -360,6 +385,7 @@ async fn writes_and_reads_stop_at_the_grant() {
 /// code execution the next time anyone builds anything in that HOME.
 #[tokio::test]
 async fn the_build_caches_are_not_in_a_servers_write_grant() {
+    let _serial = exclusive().await;
     let home = outside_tmp("grant-home-cargo");
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -408,6 +434,7 @@ async fn the_build_caches_are_not_in_a_servers_write_grant() {
 
 #[tokio::test]
 async fn the_server_sees_a_private_home_and_no_inherited_secrets() {
+    let _serial = exclusive().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let Some(sandbox) = landlock(workspace.path()) else {
@@ -461,6 +488,7 @@ async fn the_server_sees_a_private_home_and_no_inherited_secrets() {
 
 #[tokio::test]
 async fn a_directly_derived_grant_lists_read_only_runtime_and_writable_workspace() {
+    let _serial = exclusive().await;
     // No sandbox here: this pins the shape `mcp_roots` consumes, on any host.
     let home = outside_tmp("grant-home-derive");
     let workspace = tempfile::tempdir().unwrap();
@@ -509,6 +537,7 @@ async fn a_directly_derived_grant_lists_read_only_runtime_and_writable_workspace
 /// with another, this would fail with `NotFound` (or run a different binary).
 #[tokio::test]
 async fn a_bare_command_is_resolved_and_started_from_the_given_path() {
+    let _serial = exclusive().await;
     let home = outside_tmp("grant-home-bare");
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -547,6 +576,7 @@ async fn a_bare_command_is_resolved_and_started_from_the_given_path() {
 /// above would not pass by accident.
 #[tokio::test]
 async fn a_bare_command_without_the_path_is_skipped_not_guessed() {
+    let _serial = exclusive().await;
     let home = outside_tmp("grant-home-bare-missing");
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
