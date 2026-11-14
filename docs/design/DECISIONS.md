@@ -457,6 +457,9 @@ unix socket），但当前开发机是 macOS，无法本机运行 bwrap。
   `qc doctor` 会直接报出 preflight 的错误。
 - 只读根不含 `/` 与用户 home：读取范围比 macOS profile 更窄；需要额外路径时再扩参数。
 - 仍未实现 Landlock；`qc sandbox exec` 不对外提供。
+  **（后续：Landlock 已由 ADR-0012 实现，见 `qcode-tools/src/sandbox/linux.rs`
+  的 `Landlock` 与 syscall 444/445/446 + `PR_SET_NO_NEW_PRIVS`。`qc sandbox exec`
+  仍不对外提供 —— 那半句仍然成立。）**
 
 ## ADR-0012：Linux Landlock 后端（2026-10-19）
 
@@ -562,7 +565,12 @@ torn-line 丢弃，`interrupted` 状态从未写入。
 **后果**
 
 - 仍未实现 `index.sqlite`，`sessions list` 依旧全量扫描；大数量下会慢。
+  **（后续：已实现。`index.sqlite` 现在存在，有 `sessions` / `schedules` 两张表，
+  `list()` 优先走 `list_indexed()`，扫目录只作兜底 —— 见 `qcode-core/src/store.rs`。
+  原句保留，因为「当时确实没做」这件事本身是决策记录的一部分。）**
 - 仍未生成 `outputs/<call_id>.txt`，`ToolMetadata.full_output_path` 保持为空。
+  **（后续：已实现。截断的工具输出会写进 `sessions/<id>/outputs/<call_id>.txt` 并回填
+  `full_output_path` —— 见 `qcode-core/src/engine/tools.rs` 的 `write_output` 调用。）**
 - 锁是进程级 advisory lock；NFS 等文件系统上的行为取决于底层 flock 支持。
 - repair 假设 `tool_call` 事件自身是执行记录；如果崩溃发生在 assistant_message 与
   tool_call 之间，还没有可补的结果。

@@ -1,14 +1,17 @@
 # Changelog
 
-## 未发布
+## 0.10.0 — 2026-11-14
 
-**这一段带三处破坏性变更，按 semver 不能当 patch 发**（同类先例见 0.9.0 那条：删
-`TrayCommand::NewTask` 也走过同样的判断）：
+**这一段带三处破坏性变更**，所以走 minor 而不是 patch（同类先例见 0.9.0 那条：删
+`TrayCommand::NewTask` 也走过同样的判断）。0.x 阶段的 minor 即 breaking：
 
 - **`qc gui` 子命令被删除**（ADR-0086）。敲 `qc gui` 现在会被 clap 当成未知命令。
 - `qcode_gui::tray::start()` 的返回值从 `(Option<TrayHandle>, Receiver<TrayCommand>)`
   变成三元组，多出 `Sender<TrayCommand>`；
 - `qcode_gui::run()` 多一个 `Option<SingleInstance>` 参数。
+
+  这两处都是为了单实例激活：激活请求必须送进**托盘那条命令队列**，而队列在 `run`
+  里才建出来，所以得从 `start()` 反向交给调用方。
 
 ### `qc` 只有一个，前端由启动形态决定（ADR-0086）
 
@@ -35,13 +38,6 @@
 `TDP_HOME` 的工具链注入全都靠环境。现在图形启动时用 ADR-0064 那套「问登录 shell 要环境」
 把缺的变量补回来（实测：空环境启动 → `added=103 sampled=105 shell=/bin/zsh`）。
 只补当前缺失的，不覆盖已有的。
-
-- `qcode_gui::tray::start()` 的返回值从 `(Option<TrayHandle>, Receiver<TrayCommand>)`
-  变成三元组，多出 `Sender<TrayCommand>`；
-- `qcode_gui::run()` 多一个 `Option<SingleInstance>` 参数。
-
-两处都是为了单实例激活：请求必须送进**托盘那条命令队列**，而队列在 `run` 里才建出来。
-版本号留给发布流程定（0.10.0 更合适）。
 
 ### GUI 每机每用户只跑一个（ADR-0083），双击图标能把已经关掉的窗口叫回来（ADR-0084）
 
@@ -70,6 +66,14 @@
 
 真机验收（最关键的一条）：把窗口用 AX 点掉（= 用户点 ✕，`orderOut` 真隐藏，屏幕 0 个
 窗口）→ 起第二个实例 → 窗口数 0 → 1、实例数仍是 1。
+
+### `QCODE_APP_WORKSPACE` 搬到 `qc` 自己身上（ADR-0085 §4）
+
+这个覆盖口以前由 `.app` 启动器里那句 `cd "${QCODE_APP_WORKSPACE:-$HOME}"` 兑现，启动器
+删掉（见上）之后由 `qc` 自己读。好处不止是没丢：现在三端统一（Linux 的 `.desktop`、
+Windows 的 `.lnk` 也能用），而且能从登录 shell 的 profile 里 export —— 图形启动时的
+环境补救正好跑在读它之前。指向不存在的目录时当没设，因为「一个坏路径让人开不了窗」
+这种失败用户完全看不出原因。
 
 ### 双击启动不再把整个磁盘当成工作区（ADR-0085）
 
