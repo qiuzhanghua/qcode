@@ -9037,3 +9037,136 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
   时仍能启动。
 - 真机：`open -a` 起 `.app` 之后 cwd 是 `/`（改造前），`qc gui` 的 workspace 取自
   `choose_workspace`，`/` 输入得到家目录。
+
+## ADR-0086：启动形态决定前端——`qc` 不再有 `gui` 子命令（2026-11-14）
+
+**背景**
+
+现在的入口是 `qc gui`：终端里敲它开窗。这带来一个说不清的分裂——**同一个二进制，两种
+身份**。用户在终端里敲 `qc` 得到 TUI，敲 `qc gui` 得到窗口；而双击图标那条路根本不经过
+子命令（`.app` 启动器写死了 `qc-gui gui`），所以「怎么进来的」这件事只能从**启动形态**
+推出来，却被一个子命令硬编码掉了。
+
+用户的要求是把这个分裂去掉：
+
+1. 终端里运行 **不**启动 GUI——即去掉 `gui` 子命令；
+2. 从 GUI 点击可执行文件、或点操作系统里打包部署好的图标，只要能确认 GUI 环境存在，
+   就走 ADR-0083/0084 的流程（只启动一个实例，或切换到已存在的那个）；
+3. 跨 OS 都要成立。
+
+**这是设计，未实现。** 代码仍在 `qc gui`。
+
+### 1. 判定依据：**显式标记优先，平台信号兜底，判定不出来一律 TUI**
+
+三层，越靠前越可信：
+
+| 层 | 依据 | 为什么可信 |
+|---|---|---|
+| 1 | 入口自己传一个**内部标记**（`--launched-from-gui`，用户不可见、不进 `--help`） | 事实，不是推断。`.app` 启动器、`.desktop` 的 `Exec=`、`.lnk` 的 target 都是我们生成的，加得上 |
+| 2 | 平台的「被 GUI 会话拉起」信号（下表） | 只能证伪「终端」，不能证明「图形」；作为兜底 |
+| 3 | 都没有 | TUI |
+
+**为什么要有第 1 层**：只靠第 2 层会在真实场景里判错——Windows 资源管理器里双击
+`qc.exe` 没有启动器可以加标记，macOS 上 `open -a` 从终端敲进来又带着终端的环境。
+把「我们自己的入口显式说一声」变成首选，能判定的场合就完全不依赖推断。
+
+**判错的方向是有讲究的**：两层都是「只有正面证据才走 GUI」。理由是两边都糟但不对称——
+终端用户被弹出窗口会毁掉脚本和管道（`qc | jq` 立刻不可用），而图形用户误得 TUI 则是
+「点了没反应」。所以第 2 层要求**同时**满足两个独立信号（下表），宁可漏判。
+
+### 2. 三端的信号（macOS 部分为本机实测）
+
+实测方法：一个只自 dump 环境与父进程的最小 `.app`，从终端直接 exec 与 `env -i open -a`
+各跑一次（`env -i` 用来去掉「终端把它自己的环境传进来」这个干扰）。
+
+| 端 | 终端启动 | GUI 启动（双击 / `env -i open`） |
+|---|---|---|
+| **macOS** | 父进程 `/bin/zsh`；`__CFBundleIdentifier` = **终端自己的**（实测 `com.mitchellh.ghostty`） | 父进程 **`launchd`（pid 1）**；`__CFBundleIdentifier` = **我们自己的**；cwd = `/`（ADR-0085） |
+| **Linux** | `isatty(stdin)` 为真；`TERM` 有值 | `.desktop` 的 `Terminal=false` ⇒ 无 tty；`XDG_SESSION_TYPE` 有值 |
+| **Windows** | `isatty` 为真；父进程是 `cmd.exe` / `pwsh` / Windows Terminal | 父进程是 `explorer.exe`；或 `GetConsoleWindow` 为空 |
+
+`TERM` **不能**单独当判据：从终端 `open -a` 起的 GUI 进程会拿到终端的 `TERM`（实测），
+而从 Finder 起的一次连 `PATH` 都没有（下面）。Linux 上同理——`TERM` 只说明「有终端」，
+不说明「是谁」。
+
+### 3. macOS 的硬问题：图形启动**拿不到环境**
+
+实测（`env -i open -a`，即 Finder 那条路）：GUI 进程只拿到 **5 个**变量——
+`__CFBundleIdentifier`、`__CF_USER_TEXT_ENCODING`、`XPC_FLAGS`、`XPC_SERVICE_NAME`、
+`SSH_AUTH_SOCK`。**没有 `PATH`，没有 `TERM`，什么都没有。**
+
+这与 gpm-go 的 C1 实测一致（`open` 起来的进程只有 launchd 基线，
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin`，`open --env K=V` 四种写法全不生效）。
+
+对 qcode 是实打实的损失，三处都在用：
+
+| 丢掉的 | 现在谁在用 |
+|---|---|
+| shell 的 `PATH` | `qc doctor` 的 MCP 可执行文件查找（`doctor.rs:828` 已注明「Dock 启动时是 launchd 的最小 PATH」） |
+| `ANTHROPIC_*`（及同类）API key | `config::resolve` 的 `env` 来源 |
+| `COT_HOME` / `TDP_HOME` | 工具链注入 |
+
+**解法：复用 ADR-0064，不新造。** 仓库里已经有「问用户的登录 shell 要环境」的整套机制
+（`qcode-tools/src/shell_env.rs`：`{shell} -lic 'env -0'`、缓存、rc 变化失效、日志只记
+变量名不记值）。GUI 启动时把「进程环境」换成「采样到的 shell 环境」，`PATH` 与 API key
+就都回来了。
+
+`Info.plist` 的 `LSEnvironment` 是更便宜的一条（一次声明、双击直接生效），但**本次没能
+在本机验成**：实验中途 `open` 开始对任何未签名 bundle 报 `-54`（连几分钟前还能用的那个），
+属 LaunchServices 的环境状态，与实验内容无关，重启 `lsd` 亦未复位。实现前必须单独验证
+这一项——验成了优先用它（无子进程、无延迟），验不成走 ADR-0064 采样。
+
+### 4. 打包形态要跟着变，这一步比判定更重
+
+现在 `build-macos-app.sh` 产出两个可执行文件：`Contents/MacOS/QCode`（启动器脚本）与
+`qc-gui`（后端）。`Info.plist` 的 `CFBundleExecutable` 指向**启动器**。
+
+方案 2 要求「双击的那个可执行文件 = `qc`」。后果：
+
+- `qc` 是带 `gui` feature 的**全量**二进制（kernel + TUI + tools）。今天 `qc-gui` 只
+  链接 GUI 需要的那一半。让 `.app` 指向 `qc` 等于把 TUI 也装进 GUI 产物——**包体积与
+  构建矩阵都变**，这不是改 ADR 能带走的事，必须先量一次体积再决定。
+- 备选（更省）：`.app` 仍放两份（`qc` + 启动器脚本），启动器按判定结果带内部标记 exec
+  其中一个。代价是「双击的是脚本不是二进制」，与方案 2 的字面表述有出入。
+- Linux 的 `.desktop` 只需 `Exec=qc` + `Terminal=false`；Windows 的 `.lnk` 需要正确的
+  `Path`（工作目录，否则又是 `System32`，见 ADR-0085 的代价段）。
+
+### 5. 去掉 `gui` 子命令的连带影响
+
+- `main.rs` 的 `None => cmd_tui(...)` 变成 `None => 按启动形态分派`。这是**默认行为的
+  变更**，不是重构：今天敲 `qc` 一定得 TUI，之后在 GUI 会话里可能得窗口。CHANGELOG 要
+  当 breaking 记。
+- 无 `gui` feature 的构建里，GUI 分支要退化成一句人话（沿用现在 `cmd_gui` 的 lean 分支
+  文案），不能变成「静默开了 TUI」或者「静默什么都不做」。
+- 开发态怎么验：`cargo run` 永远是终端形态（第 2 层判不出来），所以**测试 GUI 分支必须
+  用打包产物**。这一点要提前告诉实现者，否则会有人用 `cargo run` 试半天以为功能没写。
+
+**代价**
+
+- 判定是启发式，永远有边界情形（SSH 进图形会话、tmux、`setsid` 起的进程、Windows 上
+  `explorer` 之外的文件管理器）。第 1 层能覆盖我们自己发出去的全部入口，覆盖不到的是
+  「别人写的启动器指向我们的二进制」——那种情况退化成第 2 层。
+- macOS 图形启动要花一次登录 shell 采样（首次几十到上百毫秒，之后走 ADR-0064 的缓存）。
+  这就是今天终端用户已经在付的成本，只是图形用户新加一次。
+- 「一个二进制两种身份」的复杂度没消失，只是从「用户记一个子命令」挪到了「代码里判一次
+  形态」。判错了比子命令错了更难解释——子命令错了用户看得见，形态判错了是静默换了前端。
+
+**放弃的方案**
+
+- **只靠 `isatty`**：Windows 的 GUI 子系统进程本来就没有控制台（`isatty` 恒假），而
+  `qc` 现在是控制台子系统——两种形态下 `isatty` 的取值完全不同，单靠它三端语义不一。
+- **只靠父进程名**：`open -a` 从终端敲进去时父进程仍是 `launchd`（实测），但 `setsid`、
+  systemd user unit、各类 launcher 都会造出「父进程不是 shell 却是终端场景」的进程。
+- **保留 `gui` 子命令、只加自动判定**：两套入口并存，等于把今天的分裂固化。
+- **gpm-go 的做法（按清单分流：`requires` 非空就 exec 内层二进制，否则 `open`）**：
+  那是在「环境注入」与「LaunchServices 语义」之间二选一，代价记在 gpm-go 的 R13；
+  qcode 不需要二选一——自己判形态 + 自己补环境，两条都能要。
+
+**验证（实现时）**
+
+- 三端各测：终端 exec → TUI；GUI 入口 → 窗口；GUI 入口重复点击 → ADR-0083/0084 的让位
+  或浮窗。
+- macOS 额外测：图形启动后 `PATH` 非 launchd 基线、API key 可用、`qc doctor` 的 MCP
+  查找成功。
+- 判定为 GUI 但无 `gui` feature：给一句人话而不是静默。
+- 回归：`qc | jq`、`qc run ...` 在 GUI 会话里从终端跑仍然只产出 stdout 那一份。
