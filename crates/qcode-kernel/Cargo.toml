@@ -39,3 +39,6 @@ path = "tests/support/http_probe_server.rs"
 
 [dev-dependencies]
 tempfile.workspace = true
+# Captures the `skipping MCP server` warnings the grant tests would otherwise
+# drop (no subscriber in a test process), so a failed spawn says why.
+tracing-subscriber.workspace = true

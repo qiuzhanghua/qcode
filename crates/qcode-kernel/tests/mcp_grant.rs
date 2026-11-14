@@ -75,11 +75,100 @@ fn landlock(workspace: &Path) -> Option<Arc<dyn Sandbox>> {
     }
 }
 
+/// Why a server did not come up, kept instead of dropped.
+///
+/// `connect_detailed` reports every failure as `tracing::warn!` and returns an
+/// empty tool list. A test process installs no subscriber, so the reason went
+/// nowhere: the symptom was `missing tool mcp__probe__probe` with no cause, and
+/// that is indistinguishable from "the grant is wrong", "the binary is missing"
+/// and "the sandbox refused to spawn".
+///
+/// This captures those warnings and puts them in the panic message. It is a
+/// test-only sink on purpose: making the production path return errors would
+/// change an API that four front-ends already depend on.
+mod server_log {
+    use std::io::Write;
+    use std::sync::{Mutex, Once, OnceLock};
+
+    static ONCE: Once = Once::new();
+    /// Kept small: this exists to explain one panic, not to be a log file.
+    const KEEP: usize = 8000;
+
+    fn sink() -> &'static Mutex<String> {
+        static LOG: OnceLock<Mutex<String>> = OnceLock::new();
+        LOG.get_or_init(|| Mutex::new(String::new()))
+    }
+
+    struct Writer;
+
+    impl Write for Writer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Ok(mut log) = sink().lock() {
+                log.push_str(&String::from_utf8_lossy(buf));
+                // Trim from the front so a long run cannot grow without bound.
+                // `chars()` first: slicing a byte index inside a multi-byte
+                // character would panic, and these lines carry paths.
+                let excess = log.chars().count().saturating_sub(KEEP);
+                if excess > 0 {
+                    let kept: String = log.chars().skip(excess).collect();
+                    *log = kept;
+                }
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Install once per process. Every test calls it; only the first wins.
+    pub(super) fn install() {
+        ONCE.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_ansi(false)
+                .with_writer(|| Writer)
+                .try_init();
+        });
+    }
+
+    /// What the server layer said, for a panic message.
+    pub(super) fn tail() -> String {
+        let Ok(log) = sink().lock() else {
+            return String::from("(the server log mutex is poisoned)");
+        };
+        if log.trim().is_empty() {
+            return String::from(
+                "(the server layer logged nothing; it never got as far as a warning)",
+            );
+        }
+        format!("server log:\n{log}")
+    }
+}
+
+/// The sink has to actually receive what the server layer says, or the panic
+/// message above is decoration. This is the only test of the mechanism itself.
+#[test]
+fn the_server_log_sink_captures_warnings() {
+    server_log::install();
+    tracing::warn!(
+        marker = "sink-self-test",
+        "if you can read this, the sink works"
+    );
+    let tail = server_log::tail();
+    assert!(
+        tail.contains("sink-self-test"),
+        "the sink dropped the warning, so a failed spawn would still be unexplained:\n{tail}"
+    );
+}
+
 async fn call(tools: &[Arc<dyn Tool>], name: &str, arguments: serde_json::Value) -> String {
+    server_log::install();
     let tool = tools
         .iter()
         .find(|tool| tool.name() == name)
-        .unwrap_or_else(|| panic!("missing tool {name}"));
+        .unwrap_or_else(|| panic!("missing tool {name}\n{}", server_log::tail()));
     let context = ToolContext::for_test(std::env::temp_dir());
     tool.execute(&context, arguments)
         .await
