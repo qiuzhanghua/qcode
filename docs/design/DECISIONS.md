@@ -8793,11 +8793,41 @@ start 不写 end，下次启动会误报异常结束」。本次兑现它，并�
 - **Windows named mutex `Local\…`**：语义比文件锁更贴平台，但会让三端分叉成两套判定。
   先统一用文件锁；若实测 `LockFileEx` 不够用再单独加强（记在这里，不是否定它）。
 
-**验证**
+**验证（已实现，2026-11-14）**
 
-- 待实现。已定下的测点：同 data dir 第二次启动必须失败并唤起第一个；不同 `--data-dir`
-  必须都成功；`QC_GUI_SINGLE_INSTANCE=0` 必须都成功；`kill -9` 第一个之后第二个必须能起来
-  （锁自动释放，而不是被残留文件卡死）。
+实现落在 `crates/qcode-gui/src/single_instance/`（`mod.rs` 共用，`unix.rs` / `windows.rs`
+两端，`fallback.rs` 兜底），接入点只有两处：`cmd_gui` 函数体最前拿锁，`qcode_gui::run`
+把请求塞进托盘那条队列。
+
+自动化用例 `crates/qcode-gui/tests/single_instance.rs`（10 条，含真起子进程）：
+
+| 测点 | 结果 |
+|---|---|
+| 同 data dir 第二次启动让位 | `a_second_instance_hands_over_instead_of_starting` |
+| 不同 `--data-dir` 都能起 | `different_data_dirs_both_start` |
+| `QC_GUI_SINGLE_INSTANCE=0` 跳过互斥 | `the_escape_hatch_skips_the_check` |
+| `kill -9` 之后锁自动释放 | `a_killed_instance_releases_the_lock` |
+| 残留 socket 被重建 | `a_stale_socket_is_replaced` |
+| **锁被占 + 没人应答 → 报错、绝不接管** | `a_silent_holder_makes_us_fail_instead_of_taking_over`（并断言报错里带逃生口名字、耗时 ≥900ms） |
+| 同进程二次加锁必须失败（§代价点名的那条） | `single_instance::tests::second_claim_in_the_same_process_fails` |
+
+在旧行为上验过红：把「通道连上」那一支关掉后，两条 HandedOver 用例立刻失败。
+
+真机端到端（debug 二进制，`QCODE_DATA_DIR=/tmp/…`）：
+
+```
+实例1 起 → pgrep=1、locks/{gui.lock,gui.sock} 都在
+实例2 起 → 退出码 0、耗时 0.03s、pgrep 仍是 1
+日志     → session ending pid=… exit=0 reason=handed_over uptime_ms=0
+kill -9 实例1 → 锁文件仍在磁盘上，新实例照常起来
+```
+
+**顺手修掉一个假警报**：`lifecycle` 的孤儿检测只看日志文本，从不问那个 pid 还在不在，
+于是第二个 GUI 一启动就把第一个实例**正在跑**的会话报成「killed, crashed, or the machine
+went down」。以前双开是罕见事故，现在它成了每次「双击已运行的图标」的常态——诊断日志里
+最不该有的就是这种假警报。新增 `pid_still_alive`（Unix `kill(pid,0)` / Windows
+`OpenProcess`+`GetExitCodeProcess`），判「在」就降到 `debug`。测这条时又踩出一个真 bug：
+`kill(-1, 0)` 是「发给所有进程」、返回 0，会被误判成「活着」，所以 `pid <= 0` 必须一律拒绝。
 
 ## ADR-0084：跨进程激活——自建通道是唯一能把窗口找回来的路（2026-11-14）
 
@@ -8915,10 +8945,95 @@ foreground executor 的坑（窗口隐藏时同步 `orderFront` 会二次借用 
   （实测 B 的原话），所以 args 根本送不到已运行实例手里。
 - **D-Bus（Linux）**：比 UDS 更「Linux 正统」，但只覆盖一端，不如三端统一一个极简协议。
 
+**验证（已实现，2026-11-14）**
+
+**最关键的那条已在真机上跑通**（这次没有再靠推演）：
+
+```
+起实例1                        → CGWindowList: onscreen=1
+用 AX API 按下窗口关闭按钮      → onscreen=0   ← 关窗=orderOut，正是实测 E 的状态
+                                 （进程仍在，isActive 仍会谎报 true）
+起实例2（同 data dir）          → 退出码 0
+2 秒后再查                     → onscreen=1   ← 窗口回来了
+实例数                          → 仍是 1
+```
+
+这条正是实测 E 判定 `open` 与 `NSRunningApplication::activate` **都做不到**的那件事：
+它们「成功返回、什么也不发生」，而自建通道让它真的发生。隐藏态由 AX 的
+`kAXCloseButtonAttribute` 触发，与被用户点 ✕ 走同一条 `hide_window_later`。
+
+其余测点：
+
+| 测点 | 结果 |
+|---|---|
+| 协议解析（正常/残缺/多余空白） | `is_activate_request` 单测，宽进但只认 `{"activate":true}` |
+| 请求 → `TrayCommand::ShowWindow` | `an_activate_request_becomes_a_show_window_command`——这条映射成立，激活就自动继承托盘那条路已经处理好的三端细节 |
+| 乱码/别的命令不许把窗口翻出来 | `stray_traffic_does_not_raise_the_window` |
+| socket 路径按 data dir 生成 | `paths_are_under_the_data_dir` |
+| 残留文件在拿到锁后被重建 | `a_stale_socket_is_replaced` |
+| 第一实例正在退出（锁已放、socket 未关）时第二个启动不悬挂 | 靠 §2 的退避重试盖住：连不上就抢锁，抢到就 `unlink` 残留重建 |
+| 「跑 turn 时只浮窗、turn 不被打断」 | 结构上成立：激活路径只发 `ShowWindow`，与 `StopCurrent` 是两个命令，没有任何代码碰 turn。**没有**为它写 e2e（要构造「正在跑的 turn」，成本高于收益），记在这里而不是假装验过 |
+
+## ADR-0085：GUI 的 workspace 不许是文件系统根，退到家目录（2026-11-14）
+
+**背景**
+
+`cmd_gui` 一直写 `let workspace = std::env::current_dir()?.canonicalize()?;`。对终端启动
+这是对的——cwd 就是用户站的那个目录。但图形界面启动时 cwd 从哪来没人查过，而
+`workspace` 不是装饰品：它是 **MCP 的主根**（`kernel::mcp_roots` 里 `primary: path ==
+workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起点。
+
+实测（本机，一个只把 `getcwd()` 写进文件的最小 `.app`）：
+
+| 启动方式 | cwd |
+|---|---|
+| 终端直接 exec | `/Users/q/space/opentj/qcode`（shell 的 cwd） |
+| `open -a`（= 双击 = Dock，经 LaunchServices） | **`/`** |
+
+所以双击图标启动的 GUI，workspace 是 `/`。后果不是「界面显示得难看」：`workspace_write`
+模式下写范围是「工作区内的路径」，工作区是 `/` 时它等于**整个磁盘可写**，而这是沙箱的
+默认级别——一次静默的权限降级，界面上一个字都不会提。
+
+**决定**
+
+### 1. 判据是「这个 cwd 有没有父目录」，不分平台
+
+根目录没有父目录：Unix 是 `/`，Windows 是 `C:\`。一条规则同时覆盖两端，不需要维护
+「哪些目录算坏目录」的名单（那种名单必然漏）。
+
+### 2. 退到家目录，并且**写一行 warn**
+
+用 `qcode_kernel::config::home_dir()`（`HOME` / `USERPROFILE`，与 data dir 用的是同一个
+家）。回退要留痕：否则用户只会看到 workspace 莫名其妙不是自己站的地方，而这种「看起来
+正常、其实被改过」的状态最难查。
+
+家目录也拿不到时**保持原样**：宁可拿 `/` 开窗，也不要因为「路径不理想」拒绝启动。
+
+### 3. 终端启动一律不动
+
+`cwd` 是真实存在的目录时原样使用——那是用户的选择，改写它等于偷偷换掉他正在处理的项目。
+
+### 4. `.app` 启动器里那句 `cd` 保留，不是重复
+
+`scripts/build-macos-app.sh` 生成的启动器早就 `cd "${QCODE_APP_WORKSPACE:-$HOME}"` 了，
+所以双击那条路本来就没坏。保留它的理由：它同时提供了 `QCODE_APP_WORKSPACE` 这个覆盖口，
+而且让 `.app` 在**进程创建时**就带着一个合理 cwd（`/` 这种 cwd 还会波及别的东西，例如
+以相对路径解析的任何子进程）。Rust 这边是同一套规则的第二道——不依赖启动器也能成立，
+因为 Linux 的 `.desktop`、Windows 的快捷方式都可能给出一个不可用的 cwd（`Start in` 为空
+时是 `C:\Windows\System32`），而那些启动器不归我们写。
+
+**代价**
+
+- Windows 上 `C:\Windows\System32` 这类「不是根、但显然也不是工作区」的 cwd **没有**
+  被这条规则覆盖。要覆盖它就得列黑名单（系统目录、驱动器根），而黑名单会随 Windows
+  版本变化。当前判断：`System32` 至少是个能写的真实目录，危害等级远低于 `/`，不值得
+  为此引入一份需要维护的名单。记在这里，不是没想过。
+- 判据只看「有没有父目录」，所以人为 `cd /` 后再启动 `qc gui` 也会被改成家目录。这是
+  有意的取舍：真要在根目录工作的人极少，而把 `/` 当工作区的人多半是**没意识到**。
+
 **验证**
 
-- 待实现。已定的测点：隐藏态下第二个进程启动 → 窗口数 0 → 1 且在前台；最小化态下
-  同样；第一实例跑 turn 时第二个进程启动 → 只浮窗、turn 不被打断；第一实例正在退出
-  （锁已放、socket 未关）时第二个进程启动 → 不悬挂、重试后接管。
-- 单测：协议解析（正常/残缺/超时）、socket 路径按 data dir 生成、残留文件在拿到锁后
-  被重建。
+- `commands::gui::tests` 三条：真实目录原样保留、`/` 退到家目录并报告回退过、没有家目录
+  时仍能启动。
+- 真机：`open -a` 起 `.app` 之后 cwd 是 `/`（改造前），`qc gui` 的 workspace 取自
+  `choose_workspace`，`/` 输入得到家目录。

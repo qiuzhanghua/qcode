@@ -40,6 +40,10 @@ tracing-appender.workspace = true
 # is already in the lock file and the cache through the GUI stack.
 chrono = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+# `kill(pid, 0)` —— 一个唯一用途是回答「那个进程还在吗」（lifecycle 的孤儿判定）。
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",

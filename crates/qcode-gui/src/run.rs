@@ -1,7 +1,17 @@
 use crate::*;
 
 /// Open the window and drive it until the user closes it.
-pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: PathBuf) {
+///
+/// `single` 是本进程抢到的那把单实例锁（ADR-0083）。它必须一路传到这里：
+/// 激活通道要把请求送进托盘的命令队列，而那条队列在窗口建好之后才存在。
+/// `None` 表示互斥被关掉了（`QC_GUI_SINGLE_INSTANCE=0` 或锁机制不可用）。
+pub fn run(
+    app: App,
+    backend: Box<dyn Backend>,
+    config_path: PathBuf,
+    data_dir: PathBuf,
+    single: Option<crate::single_instance::Primary>,
+) {
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
@@ -39,8 +49,15 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             // which is what leaking it expresses; there is nothing to unbind it
             // for.
             std::mem::forget(quit_hook);
-            let (tray, tray_rx) = tray::start();
+            let (tray, tray_rx, tray_tx) = tray::start();
             let minimize_on_close = tray.is_some();
+            // 托管激活通道。放在这里而不是 `cmd_gui`：它是把请求塞进托盘队列
+            // 的那一端，没有队列可塞就没有意义。`serve` 会把锁句柄移进监听
+            // 线程，于是锁活到进程结束（ADR-0083 §1：不做「退出时解锁」）。
+            let activated = single.is_some();
+            if let Some(single) = single {
+                single.serve(tray_tx);
+            }
             let window_options = window_icon::attach(match prefs.window_geometry.as_ref() {
                 Some(geometry) => WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -179,7 +196,11 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
             // because a minimized window never reaches a render.
             shell.update(cx, |shell, cx| shell.start_poll_ticker(cx));
 
-            if let Some(tray) = tray {
+            // 没有托盘时这条循环本来不必存在（关窗即退出，`minimize_on_close`
+            // 为假）。但单实例激活（ADR-0084）要有人把请求变成「把窗口拿到
+            // 前台」，而那是同一条队列——所以只要有 `single` 就得跑。没有托盘
+            // 的那一支只是跳过 `update`，行为与从前一致。
+            if tray.is_some() || activated {
                 let tray_rx = tray_rx;
                 cx.spawn(async move |cx| {
                     let mut last: Option<tray::TraySnapshot> = None;
@@ -214,10 +235,12 @@ pub fn run(app: App, backend: Box<dyn Backend>, config_path: PathBuf, data_dir: 
                                 }
                             }
                         }
-                        let snapshot = cx.update(|cx| shell.read(cx).tray_snapshot());
-                        if last.as_ref() != Some(&snapshot) {
-                            tray.update(snapshot.clone());
-                            last = Some(snapshot);
+                        if let Some(tray) = &tray {
+                            let snapshot = cx.update(|cx| shell.read(cx).tray_snapshot());
+                            if last.as_ref() != Some(&snapshot) {
+                                tray.update(snapshot.clone());
+                                last = Some(snapshot);
+                            }
                         }
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(200))

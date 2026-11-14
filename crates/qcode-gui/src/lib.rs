@@ -24,6 +24,7 @@ mod run;
 pub mod runtime;
 pub mod setup;
 mod shell;
+pub mod single_instance;
 pub mod task_ops;
 mod terminal;
 // The terminal's paste recogniser, so the integration tests can assert that
@@ -40,6 +41,7 @@ pub use run::run;
 pub use runtime::Engine;
 pub use setup::{run_settings, run_setup};
 pub(crate) use shell::Shell;
+pub use single_instance::{Outcome as SingleInstanceOutcome, Primary as SingleInstance};
 // Public so the integration tests can pin the accordion's invariants without a
 // window: "exactly one section is open" is a type-level promise (ADR-0063 §3),
 // and a test is the only place it can be asserted as one.

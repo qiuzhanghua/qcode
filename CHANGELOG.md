@@ -1,5 +1,64 @@
 # Changelog
 
+## 未发布
+
+**这一段带两处公开 API 变更，按 semver 不能当 patch 发**（同类先例见 0.9.0 那条：删
+`TrayCommand::NewTask` 也走过同样的判断）：
+
+- `qcode_gui::tray::start()` 的返回值从 `(Option<TrayHandle>, Receiver<TrayCommand>)`
+  变成三元组，多出 `Sender<TrayCommand>`；
+- `qcode_gui::run()` 多一个 `Option<SingleInstance>` 参数。
+
+两处都是为了单实例激活：请求必须送进**托盘那条命令队列**，而队列在 `run` 里才建出来。
+版本号留给发布流程定（0.10.0 更合适）。
+
+### GUI 每机每用户只跑一个（ADR-0083），双击图标能把已经关掉的窗口叫回来（ADR-0084）
+
+之前没有任何东西拦着开第二个 GUI。实测（本机，两个 `qc-gui` 都由终端直接 exec）：
+`lsappinfo` 把它们**都**登记成 `com.qcode.desktop`，`runningApplications` 数到 2 个，
+两个各自完整跑起来。代价不只是托盘多一个图标：同一个 store 被两个进程写（后写者静默
+覆盖）、定时任务被投递两次、托盘出现两个同名图标。
+
+- **互斥是一把 OS 级文件锁**（`<data_dir>/locks/gui.lock`，`flock` / `LockFileEx`），
+  不写 pid、不做「退出时删锁」。理由直接来自 ADR-0082：macOS 的 `-[NSApplication
+  terminate:]` 由 AppKit 调 `exit()`，析构不跑，任何「退出时解锁」的逻辑在这一端都不可靠；
+  OS 级锁在进程消失时由内核自动释放。`kill -9` 之后新实例照常起来（测过）。
+- **作用域是 `data_dir` × 显示会话**。默认 data dir 只有一个，所以默认行为恰好就是
+  「每机每用户一个」；`--data-dir` 才允许多开，而那是显式要的。
+- **第二条路是自建通道**（`<data_dir>/locks/gui.sock`，Windows 是命名管道），一行
+  JSON：`{"activate":true}` → `{"ok":true}`。收到之后第一个实例调**已有的**
+  `tray::show_window_later`，于是「第二个进程启动」与「用户点托盘的显示主窗口」是同一段代码。
+  这不是为了跨平台才自建：macOS 上 `open` 与 `NSRunningApplication::activate` 在
+  **关窗（`orderOut:`）之后都会「成功返回、什么也不发生」**（实测：窗口数 0 而
+  `isActive` 仍报 true），只有进程内的 `makeKeyAndOrderFront:` 能把窗口拿回来。
+- **启动顺序是先连后退**：连上通道就让位（`exit 0`，日志记 `reason=handed_over`），
+  连不上再抢锁，抢不到再退避重试 10×100ms。顺序本身盖住了「第一个刚拿锁、还没 listen」
+  那个窗口。**锁被占却没人应答时报错、绝不接管**——接管看起来体面，但它把「每机每用户
+  一个」破了，而用户下次只会看到两个窗口。`QC_GUI_SINGLE_INSTANCE=0` 是逃生口：一个
+  坏掉的锁能把人彻底锁在 GUI 外面，而 GUI 正是他用来排查问题的地方。
+
+真机验收（最关键的一条）：把窗口用 AX 点掉（= 用户点 ✕，`orderOut` 真隐藏，屏幕 0 个
+窗口）→ 起第二个实例 → 窗口数 0 → 1、实例数仍是 1。
+
+### 双击启动不再把整个磁盘当成工作区（ADR-0085）
+
+`workspace` 是 MCP 的主根、sandbox 的写范围、`.agents/skills` 的扫描起点。实测
+（最小 `.app` 打印 `getcwd()`）：终端 exec 给出 shell 的 cwd，而 `open -a`（= 双击 =
+Dock）给出 **`/`**。于是双击启动的 GUI 在默认的 `workspace_write` 下等于**整个磁盘可写**，
+而界面上一个字都不提。
+
+现在 cwd 是文件系统根时退到家目录并写一行 warn；终端启动一律不动（那是用户的选择）。
+
+### 修掉一条每次双开都会喊的假警报
+
+`lifecycle` 的孤儿检测只看日志文本，从不问那个 pid 还在不在，于是第二个 GUI 一启动就把
+第一个实例**正在跑**的会话报成「killed, crashed, or the machine went down」。以前双开是
+罕见事故，单实例落地后它成了每次「双击已运行的图标」的常态。现在判活（Unix
+`kill(pid,0)` / Windows `OpenProcess`+`GetExitCodeProcess`），活着就降到 `debug`。
+
+测这条时踩出一个真 bug：`kill(-1, 0)` 是「发给所有进程」并且返回 0，会被误判成「那个
+pid 活着」——所以 `pid <= 0` 一律不是 pid。
+
 ## 0.9.0 — 2026-11-13
 
 删掉托盘菜单的「新建任务」。改动很小，版本号走 minor 是因为它动了公开 API：

@@ -71,6 +71,15 @@ pub enum Reason {
     SigHup,
     /// A panic was unwinding when the process ended.
     Panic,
+    /// Another GUI already owned this data dir, so this process only raised its
+    /// window and left (ADR-0083). Not `Normal`: the two look identical in a
+    /// log, and this one means "the user got their window, from elsewhere".
+    ///
+    /// Gated like [`Self::SigHup`]: a build without the `gui` feature never
+    /// takes the lock, so this variant would be never-constructed there and
+    /// `clippy -D warnings` fails the lean build.
+    #[cfg(feature = "gui")]
+    HandedOver,
 }
 
 impl Reason {
@@ -82,6 +91,8 @@ impl Reason {
             #[cfg(unix)]
             Self::SigHup => "sighup",
             Self::Panic => "panic",
+            #[cfg(feature = "gui")]
+            Self::HandedOver => "handed_over",
         }
     }
 }
@@ -172,13 +183,75 @@ fn report_orphans(data_dir: &Path) {
     let Some(tail) = read_tail(&path) else {
         return;
     };
-    if let Some(pid) = orphan_pid(&tail) {
-        tracing::warn!(
-            pid = %pid,
-            path = %path.display(),
-            "the previous qc session never finished; it was killed, crashed, or the machine went down"
-        );
+    let Some(pid) = orphan_pid(&tail) else {
+        return;
+    };
+    // 一个**还在跑**的会话不是孤儿。这句话原先漏了，直到单实例（ADR-0083）
+    // 把它变成常态：第二个 GUI 一启动就会看到第一个实例的 start 行还没有配对
+    // 的 end 行，于是每次双开都报一次「它被杀了/崩了/机器断电了」，而被点名
+    // 的那个进程就活在这儿。诊断日志里最不该有的就是这种假警报——它会让真
+    // 的那一次也被当成噪声略过。
+    if pid_still_alive(&pid) {
+        tracing::debug!(pid = %pid, "another qc session is still running; not an orphan");
+        return;
     }
+    tracing::warn!(
+        pid = %pid,
+        path = %path.display(),
+        "the previous qc session never finished; it was killed, crashed, or the machine went down"
+    );
+}
+
+/// 那个 pid 现在还在吗。
+///
+/// 判「在」比判「不在」安全：pid 被复用时会误判成「还在」，代价是一次本该
+/// 出现的警告没出现；反过来则会在别人正常工作时喊崩溃——而 ADR-0082 的整个
+/// 意义就是让这条日志可信。
+#[cfg(unix)]
+fn pid_still_alive(pid: &str) -> bool {
+    let Ok(pid) = pid.trim().parse::<i32>() else {
+        return false;
+    };
+    // `kill(0, …)` 是「本进程组」，`kill(-1, …)` 是「除自己以外的所有进程」——
+    // 两者都会返回 0，于是被误判成「那个 pid 活着」。所以非正数一律不是 pid。
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: `kill` 对任意整数参数都是安全的；这里只借它做存在性探测。
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM = 进程在，但不是我们能发的：仍然算「在」。
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn pid_still_alive(pid: &str) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let Ok(pid) = pid.trim().parse::<u32>() else {
+        return false;
+    };
+    // SAFETY: `OpenProcess` 只读句柄；失败（进程不在）时返回 0，我们据此
+    // 判定「不在」。成功时句柄必须由我们关掉。
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut code = 0u32;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+    unsafe { CloseHandle(handle) };
+    ok != 0 && code == STILL_ACTIVE as u32
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_still_alive(_pid: &str) -> bool {
+    // 没法判断就别喊：宁可漏一条警告，也不要报一个假的崩溃。
+    true
 }
 
 /// The last [`TAIL_BYTES`] of `path`, lossily decoded.
@@ -394,5 +467,33 @@ mod tests {
         // Leave the global as it was found, so the order tests happen to run in
         // cannot matter.
         ENDED.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    /// 本进程当然活着——这是「判在」这一支唯一的正例。
+    #[test]
+    fn the_current_process_is_alive() {
+        assert!(pid_still_alive(&std::process::id().to_string()));
+    }
+
+    /// 一个几乎不可能存在的 pid 必须是「不在」，否则孤儿警告会因为判不出来
+    /// 而永远沉默。
+    #[cfg(unix)]
+    #[test]
+    fn a_nonexistent_pid_is_not_alive() {
+        // 远大于 Linux 默认 pid_max(4194304) 与 macOS 的实际取值。
+        assert!(!pid_still_alive("2147483000"));
+    }
+
+    /// 日志里的 pid 字段被写坏了：当成「不在」处理，别 panic。
+    #[test]
+    fn a_non_numeric_pid_is_not_alive() {
+        assert!(!pid_still_alive(""));
+        assert!(!pid_still_alive("not-a-pid"));
+        assert!(!pid_still_alive("-1"));
     }
 }

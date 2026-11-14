@@ -40,22 +40,28 @@ impl TrayHandle {
 }
 
 /// 启动托盘；平台不支持或注册失败时返回 `None`，调用方退回“关窗即退”。
-pub fn start() -> (Option<TrayHandle>, std::sync::mpsc::Receiver<TrayCommand>) {
+///
+/// 第三个返回值是**同一条通道的发送端**。单实例激活（ADR-0084 §3）要往它里
+/// 塞一条 [`TrayCommand::ShowWindow`]，这样「第二个进程启动」与「用户点托盘
+/// 的显示主窗口」走的是完全同一段代码——那条路已经处理了三端各自「原生调用
+/// 必须推迟到 executor」的坑，另抄一份只会有第二份平台细节。
+pub fn start() -> (
+    Option<TrayHandle>,
+    std::sync::mpsc::Receiver<TrayCommand>,
+    std::sync::mpsc::Sender<TrayCommand>,
+) {
     let (tx, rx) = std::sync::mpsc::channel();
 
     #[cfg(target_os = "linux")]
-    let handle = linux::start(tx).map(|inner| TrayHandle { inner });
+    let handle = linux::start(tx.clone()).map(|inner| TrayHandle { inner });
     #[cfg(target_os = "macos")]
-    let handle = macos::start(tx).map(|inner| TrayHandle { inner });
+    let handle = macos::start(tx.clone()).map(|inner| TrayHandle { inner });
     #[cfg(target_os = "windows")]
-    let handle = windows::start(tx).map(|inner| TrayHandle { inner });
+    let handle = windows::start(tx.clone()).map(|inner| TrayHandle { inner });
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    let handle = {
-        let _ = tx;
-        None
-    };
+    let handle = None;
 
-    (handle, rx)
+    (handle, rx, tx)
 }
 
 /// 把主窗口从最小化恢复到前台。

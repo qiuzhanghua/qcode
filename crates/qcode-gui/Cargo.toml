@@ -38,7 +38,8 @@ serde.workspace = true
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Shell_NotifyIcon + ShowWindow for the tray and window hiding.
+# Shell_NotifyIcon + ShowWindow for the tray and window hiding, plus LockFileEx
+# and named pipes for single instance (ADR-0083 / ADR-0084).
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -46,7 +47,15 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_LibraryLoader",
     # WNDCLASSEXW / RegisterClassExW are gated behind the Gdi feature.
     "Win32_Graphics_Gdi",
+    # LockFileEx (gui.lock) and the named-pipe channel (gui activation).
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+# `flock` 是 ADR-0083 §1 选定的互斥原语：进程怎么死的都由内核自动释放。
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # NSStatusItem for the tray icon and NSWindow for hiding/restoring.
