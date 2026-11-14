@@ -22,9 +22,7 @@ c
 # TUI 上的工具循环演练
 QCODE_PROVIDER=mock-tools ./target/debug/qc
 
-# 依赖缓存放 workspace 内（文件沙箱限制，非全局安装）
-export CARGO_HOME="$PWD/.cargo-home"
-
+# 用你自己的 CARGO_HOME 就行，不必指向仓库内（见下）
 cargo build --workspace
 cargo test --workspace
 
@@ -406,9 +404,12 @@ DXIL）。所以：
   先过门禁再打全平台归档。cargo-deny 装在 `$CARGO_HOME/bin`，脚本会把它补进 PATH。
   advisory-db 默认从 GitHub 拉，连不上时会卡到超时：本地已有库则自动 `cargo deny --offline check`，
   更新库用 `cargo deny fetch`（给 git 配代理）；完全没有本地库时才需要一次在线拉取。
-- 如果 cot 的 `CARGO_HOME`（`~/cot/repo/cargo`）与 `~/.cargo/config.toml` 里的换源定义
-  冲突，或该目录不可写（沙箱），先 `export CARGO_HOME="$PWD/.cargo-home"` 再跑 ——
-  这与上面「快速开始」里的做法一致。
+- `CARGO_HOME` 用你自己的那份即可（cot 的默认是 `~/cot/repo/cargo`，里面通常已经配好
+  换源镜像）。**不要**为了「沙箱可写」把它指到仓库内的 `.cargo-home`：`run_shell` 已经
+  通过 `OutsideRoots::BuildCaches` 授予了 `CARGO_HOME` 的写权限（见
+  `crates/qcode-tools/src/sandbox/macos.rs`），这个绕法不再需要。而且那份目录通常没有
+  `config.toml`，没有换源配置，在拉不动 crates.io 的网络下 `cargo build` 会直接失败——
+  曾经写在这里的那条 `export CARGO_HOME="$PWD/.cargo-home"` 就是这么坏的。
 
 ## 评测
 

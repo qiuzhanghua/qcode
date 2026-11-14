@@ -60,9 +60,13 @@ for arg in "$@"; do
     esac
 done
 
-if [[ -z "${CARGO_HOME:-}" && -d "$ROOT/.cargo-home" ]]; then
-    export CARGO_HOME="$ROOT/.cargo-home"
-fi
+# 不碰 CARGO_HOME：用调用者环境里那份。
+#
+# 这里原来是「未设置就回退到仓库内的 $ROOT/.cargo-home」。那个回退是坏的——仓库里的
+# .cargo-home 通常没有 config.toml（没有换源镜像），在拉不动 crates.io 的网络下
+# cargo 会直接 `unable to update registry crates-io`。而且这个回退本来是为了绕开
+# 「文件沙箱只允许写工作区」，而 run_shell 现在已通过 OutsideRoots::BuildCaches 直接
+# 授予 CARGO_HOME 写权限（crates/qcode-tools/src/sandbox/macos.rs），绕法不再需要。
 
 # Login shells in this repo often get cargo from `c`; non-interactive callers
 # may not have it on PATH.

@@ -61,8 +61,12 @@ $(PLATFORMS):
 # 曾是「编一份带 gui 的、拷成 qc-gui」的目标。ADR-0086 之后默认构建就是带窗口的
 # `qc`，没有「瘦身版」可以对照，也没有 `qc-gui` 这个文件，所以它退化成了一次普通
 # 构建——保留名字只是为了让习惯敲 `make gui` 的人不撞空，输出会说明这一点。
+#
+# 这里曾经无条件 `CARGO_HOME=$(CURDIR)/.cargo-home`，会覆盖调用者已经设好的那份。
+# 那既是全仓唯一一处「无条件覆盖」（其余脚本都是「未设置才回退」），也踩中了同一个坑：
+# 仓库内的 .cargo-home 通常没有 config.toml 的换源配置。现在什么都不指定，交给环境。
 gui:
-	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode
+	cargo build -p qcode
 	@echo "one binary now (ADR-0086): ./target/debug/qc — TUI in a terminal, window from an icon"
 
 # Unsigned local macOS app (ad-hoc signed, no Apple account required).

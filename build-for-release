@@ -617,8 +617,9 @@ build_one() {
 # 发布门禁，与 .github/workflows/ci.yml 对齐：fmt / clippy / test / cargo-deny。
 #
 # cargo 只在 PATH 上找子命令，而 `cargo install` 的产物落在 $CARGO_HOME/bin，
-# 这个目录不会自动进 PATH（cot 的 rust 插件用的是 ${TDP_HOME}/repo/cargo/bin，
-# 但 README 又建议把 CARGO_HOME 指到仓库内的 .cargo-home），所以几个候选都补上，
+# 这个目录不会自动进 PATH（cot 的 rust 插件用的是 ${TDP_HOME}/repo/cargo/bin；
+# README 早先还建议把 CARGO_HOME 指到仓库内的 .cargo-home，那条建议已删——见
+# README 的故障排查段），所以几个候选都补上，
 # 免得「装了 cargo-deny，却 cargo deny: no such command」。
 preflight() {
     local dir
