@@ -17,7 +17,7 @@ name = "http-probe-server"
 path = "tests/support/http_probe_server.rs"
 
 [dependencies]
-qcode-core = { version = "0.10.2", path = "../qcode-core" }
+qcode-core = { version = "0.10.3", path = "../qcode-core" }
 async-trait.workspace = true
 # Header types for the HTTP transport's `custom_headers`, and the same `http`
 # rmcp itself depends on (one version in the graph, so the types unify).
@@ -33,7 +33,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-qcode-providers = { version = "0.10.2", path = "../qcode-providers" }
+qcode-providers = { version = "0.10.3", path = "../qcode-providers" }
 # `blocking` is for the one non-async test that pokes the probe directly.
 reqwest = { workspace = true, features = ["blocking"] }
 tempfile.workspace = true

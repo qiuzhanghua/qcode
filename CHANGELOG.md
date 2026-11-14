@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.10.3 — 2026-11-14
+
+**`qc` 的行为一处没变**——这五个提交全在构建侧：mac、Linux、Windows 三条交叉路径各自
+补上「为什么编不出来」，以及两个被默默浪费掉的东西（160M 的假 `.app`、一个没人用的依赖）。
+没有 API 变更，没有配置变更，升级不需要迁移。
+
+### 交叉编 Linux：在 macOS 上直接跑不通，改走容器
+
+ADR-0086 之后每个 Linux 产物都要链 gpui，而 gpui 在 Linux 上**硬链接**
+`-lxcb -lxkbcommon -lxkbcommon-x11`、fontconfig 走 pkg-config。这些 `.so` / `.pc` 来自
+发行版的 `-dev` 包，macOS 上没有目标平台的那一套。在 mac 上 `make release` 会连撞两道：
+
+```
+pkg-config has not been configured to support cross-compilation   ← fontconfig 的 build.rs
+error: unable to find dynamic system library "xkbcommon-x11"      ← 链接阶段
+```
+
+第一道有出口（`RUST_FONTCONFIG_DLOPEN=1` 跳过 pkg-config，改运行期 dlopen），第二道
+没有——`-lxcb` 是硬链接，只能真的具备目标平台的库。所以：
+
+- `scripts/Containerfile.linux-builder` + `scripts/build-linux-in-container.sh`：容器里
+  依赖齐全，arm64 原生、amd64 走 multiarch 交叉（`x86_64-linux-gnu-gcc`），**都不靠
+  qemu 模拟**；
+- `build-for-release` 在非 Linux 宿主上把 `gnu` 目标自动委派给容器，`make list` 如实
+  写 `ready（容器）`；委派排在本机目标之前，一个本机目标失败不该吞掉已能产出的 Linux
+  产物；
+- `make linux-container` / `make linux-container-archive` 是短入口。
+
+实测产出 `qcode_0.10.2_linux_arm64_gnu`（53M）与 `_amd64_gnu`（60M），前者在容器里跑出
+`qc --version`，后者用 `qemu-x86_64-static` 跑出同样结果。
+
+### 交叉编 Windows：不是缺依赖，是缺一个不存在的程序
+
+`gpui-pre-windows` 的 `build.rs` 把门控写成了 `#[cfg(target_os = "windows")]`——build
+script 用**宿主**编译器编、在宿主机上跑，所以那说的其实是 macOS。于是交叉编 release 时
+`compile_shaders()` 一次都没跑，`shaders_bytes.rs` 不存在，而 `directx_renderer.rs` 的
+`include!` 恰好只在 `not(debug_assertions)` 下生效，报的是
+
+```
+error: couldn't find file `.../out/shaders_bytes.rs`
+```
+
+——一个字都没提到 fxc.exe。改成读 `CARGO_CFG_TARGET_OS` / `CARGO_CFG_DEBUG_ASSERTIONS`
+（cargo 为**目标**设的）之后，结论变得明确：release 版 Windows 产物需要 `fxc.exe`
+（Windows SDK 的 DXBC / SM 4.1 编译器），它没有 macOS / Linux 原生版本，也没有开源替代
+能出 SM 4.1（`dxc` 只出 SM 6+ 的 DXIL）。所以这条路在非 Windows 宿主上**走不通**，不是
+装个包就能补：
+
+- 拿不到 fxc 时给出 `cargo::error=`，写清三条路（Windows 上编 / dev profile /
+  `GPUI_FXC_PATH`），不再是 `panic!` 或沉默的 include 错误；
+- `build-for-release` 跳过这两个目标并写明原因，`make all` 不再编到一半才死；
+- 本机验证 Windows 分支用 **dev profile**——debug 下着色器在运行期由 `D3DCompile` 编。
+
+### 那个 197M 的 `.app` 是 debug 包顶掉了 release 包
+
+`dist/QCode.app` 一度是 197M。不是多打了文件，是某次 `--debug` 把 dev profile 的二进制
+装进了**同名** bundle：没有 `__DWARF` 段，但 `__TEXT` 86M、`__LINKEDIT` 116M（符号表与
+调试信息），3793 条 `OSO` 记录；同一份代码在 release profile（thin LTO + 1 CGU +
+`strip = "symbols"`）下是 35M，`OSO` 为 0。差的 160M 买的是「能调试」，不是功能。
+
+`--debug` 现在落 `dist/QCode-debug.app`，谁也不覆盖谁；组装完报体积，release 超 100M
+直接报错退出（说明 strip/LTO 没生效），debug 只报数不拦。
+
+### 删掉死依赖 `tui-textarea`
+
+cargo 1.100 的 `unused_dependencies` lint 报出来的：`qcode-tui` 声明了它，但整个仓库零处
+使用。composer 早已搬到 `qcode-ui-state` 的前端中立实现（原件把输入投影绑在终端工具包上，
+GUI 得去模拟 crossterm 键事件并继承它的 IME 与光标行为）。`Cargo.lock` 少 12 行，
+`ratatui` 的钉版与 `paste` 的 RUSTSEC 豁免都保留——前者理由收敛为「一进程一个 ratatui」，
+后者是因为 `paste` 仍经 `ratatui` 在依赖图里。
+
+### 文档
+
+推送顺序记进 README：**gitee 先、GitHub 后**。GitHub 那一端才触发 `ci.yml` /
+`release.yml`，先推 gitee 再推 GitHub，两端失败才各自可归因。顺带记下 `gitee` 这个远端名
+配了两个 pushurl，所以 `git push gitee` 会真的推两端——顺序有保证但隐式，一个 url 失败
+git 仍会试下一个，「gitee 失败、GitHub 成功」不会让命令报错。发布这类不可回滚的动作一律
+写显式地址。
+
 ## 0.10.2 — 2026-11-14
 
 只有一处：让 Linux 上那条 MCP grant 测试**说出原因**，并消掉它唯一的跨测试共享状态。

@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.10.2", path = "../qcode-core" }
-qcode-ui-state = { version = "0.10.2", path = "../qcode-ui-state" }
+qcode-core = { version = "0.10.3", path = "../qcode-core" }
+qcode-ui-state = { version = "0.10.3", path = "../qcode-ui-state" }
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
 time.workspace = true

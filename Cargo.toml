@@ -39,7 +39,7 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
