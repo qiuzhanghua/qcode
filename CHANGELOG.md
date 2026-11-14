@@ -25,6 +25,22 @@ arm64 hosted runner 直接省掉这一切，并且产物能在本机跑起来自
 一个「关掉就编不过」的开关不是开关，是陷阱。整个 feature 删掉，`qcode-gui` 变硬依赖；
 `Makefile` 的 `gui` 目标、`scripts/build-macos-app.sh` 里的 `--features gui` 一并清理。
 
+### 一条 Linux-only 断言把 CI 判红了（v0.10.1 的 tag 上）
+
+`crates/qcode-gui` 的 `window_icon::probes` 是 `#[cfg(all(test, target_os = "linux"))]`，
+里面硬写「`.desktop` 的 `Exec=` 第二个词等于 `gui`」。ADR-0086 把 `Exec=` 改成
+`qc --launched-from-gui` 之后，**本机 macOS 全绿、CI 才红**——那个模块在本机上根本
+不编译。
+
+修法不是改那个字面量，而是把断言搬到拥有常量的 crate：`qcode::boot` 现在直接
+`include_str!` 那份 `.desktop`，比对 `LAUNCHED_FROM_GUI`，三端都跑；顺带也钉住
+`install-linux-desktop.sh` 用的是同一个标记（否则装出来的条目会退回 TUI）。
+`qcode-gui` 那边只保留它能知道的事（Icon / StartupWMClass / Type / TryExec 与 `Exec`
+的第一个词），并留注释指向新位置。
+
+**这个修复只动测试代码**，`cargo build --release` 不编译 `#[cfg(test)]`，所以
+v0.10.1 的二进制与此无关；tag 不动。
+
 ### CI 那条断言反转了
 
 `default build carries no GPU stack` → `default build carries the window`。ADR-0038 那会儿

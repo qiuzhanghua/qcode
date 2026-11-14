@@ -360,4 +360,51 @@ mod tests {
             decision.reason
         );
     }
+
+    /// `.desktop` 的 `Exec=` 必须通过**内部标记**要窗口，而不是某个子命令。
+    ///
+    /// 这条断言原来在 `qcode-gui` 的 `window_icon::probes` 里，写死「`Exec` 第二个词
+    /// 等于 `gui`」；那个模块是 `#[cfg(all(test, target_os = "linux"))]`，所以 ADR-0086
+    /// 把 `Exec=` 改掉之后本机全绿、CI 才红。搬到这里的理由有两个：常量在这个 crate
+    /// 里，断言可以直接引用它（不重复字面量，也就不会各自漂移）；而且这里三端都跑。
+    #[test]
+    fn the_desktop_entry_launches_the_window_with_the_marker() {
+        let entry = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/res/linux/qcode.desktop"
+        ));
+        let exec = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("Exec="))
+            .expect("the desktop entry must have an Exec=")
+            .trim();
+        let mut words = exec.split_whitespace();
+        assert_eq!(
+            words.next(),
+            Some("qc"),
+            "the installer rewrites the path, not the program"
+        );
+        assert_eq!(
+            words.next(),
+            Some(LAUNCHED_FROM_GUI),
+            "the entry has to open the window through the launch marker, not a subcommand"
+        );
+    }
+
+    /// `install-linux-desktop.sh` 重写 `Exec=` 时必须写同一个标记。
+    ///
+    /// 它和 `.desktop` 是两份东西：装到 `~/.local/share/applications` 的那份由脚本
+    /// 用 `sed` 重写。两边漂了，装出来的条目就退回 TUI——而「点了没反应」是最难查的
+    /// 那种报告。
+    #[test]
+    fn the_linux_installer_writes_the_same_marker() {
+        let script = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/install-linux-desktop.sh"
+        ));
+        assert!(
+            script.contains(&format!("Exec=$exec_cmd {LAUNCHED_FROM_GUI}")),
+            "install-linux-desktop.sh must rewrite Exec= with {LAUNCHED_FROM_GUI}"
+        );
+    }
 }

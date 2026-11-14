@@ -188,13 +188,16 @@ mod probes {
         assert_eq!(
             key("Exec").split_whitespace().next(),
             Some("qc"),
-            "the installer rewrites the path but not the subcommand"
+            "the installer rewrites the path but not the program"
         );
-        assert_eq!(
-            key("Exec").split_whitespace().nth(1),
-            Some("gui"),
-            "the entry has to open the GUI, not the TUI"
-        );
+        // 「Exec= 要打开窗口，不是 TUI」那条断言**不在这里**（ADR-0086）：现在的做法是
+        // 传 `--launched-from-gui`，而那个标记的常量在 `qcode` crate 的 `boot` 里，
+        // 这个 crate 看不到它。
+        //
+        // 原先这里硬写 `nth(1) == "gui"`，于是改掉 `Exec=` 之后**本机全绿、CI 才红**
+        // ——整个 `probes` 模块是 `#[cfg(all(test, target_os = "linux"))]`。
+        // 断言已搬到 `qcode::boot::tests::the_desktop_entry_launches_the_window`，
+        // 那里能直接引用常量，而且三端都会跑。
         // Neither key may name a program that might not exist, or GLib drops the
         // whole file — and a dropped file shows up as the fallback icon, not as a
         // launch error. The installer rewrites both together for that reason; this
