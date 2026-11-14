@@ -43,8 +43,6 @@ pub(crate) enum Command {
     Update(update::UpdateArgs),
     /// Serve the Agent Client Protocol over stdio (for editors).
     Acp,
-    /// Open the desktop window (GPUI Kit; needs a gui build).
-    Gui,
     /// Probe the Windows ACL sandbox (experiment, hidden).
     #[cfg(windows)]
     #[command(hide = true)]

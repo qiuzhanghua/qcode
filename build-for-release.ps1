@@ -175,19 +175,10 @@ if ($Release) {
     Publish-ReleaseAsset $Target $Dest
 }
 
-# 桌面版：同一份代码 + gui 特性。单独命名，避免有人下了 47 MB 才发现只有 CLI。
-$DesktopName = "qcode-desktop-${Version}-windows-$(Get-ReleaseArch $Target).exe"
-cargo build --locked --release --target $Target -p $Pkg --features gui
-if ($LASTEXITCODE -ne 0) { Fail "cargo build --features gui 失败（$LASTEXITCODE）" }
-$DesktopBinary = "target\$Target\release\$Bin.exe"
-if (-not (Test-Path $DesktopBinary)) { Fail "没有构建出 $DesktopBinary（gui 特性）" }
-$DesktopDest = Join-Path $OutDir $DesktopName
-Copy-Item -LiteralPath $DesktopBinary -Destination $DesktopDest -Force
-$DesktopSize = [math]::Round((Get-Item $DesktopDest).Length / 1MB, 1)
-Write-Host "  dist: $DesktopDest ($DesktopSize MB, with gui)"
-if ($Release) {
-    Publish-ReleaseAsset $Target $DesktopDest
-}
+# 一个产物（ADR-0086）：`gui` 现在是默认 feature，上面那条 `cargo build` 出来的
+# 就是带窗口的 `qc.exe`。从前这里再编一次 `--features gui` 并另发一份
+# `qcode-desktop-*.exe`，用两份产物换一次瘦身；现在换回来（实测 34.8 MB vs
+# 16.2 MB，见 ADR-0086 §4）。
 
 if ($Archive) {
     $Stage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())

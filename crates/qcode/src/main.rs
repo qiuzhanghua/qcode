@@ -1,4 +1,5 @@
 mod agents;
+mod boot;
 mod doctor;
 mod lifecycle;
 mod logging;
@@ -41,12 +42,17 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn run() -> ExitCode {
+    // 启动形态（ADR-0086）必须在 clap 之前定下来：内部标记不是给用户看的选项，
+    // 让 clap 收下它等于允许它出现在 `--help` 与补全里。
+    let (argv, marked_from_gui) = boot::strip_launch_marker(std::env::args());
+    let launch = boot::detect(marked_from_gui);
+
     let Cli {
         data_dir,
         config,
         approval_policy,
         command,
-    } = Cli::parse();
+    } = Cli::parse_from(argv);
 
     // Logging comes up before any command runs, because the first thing worth
     // recording is often why the command could not (ADR-0077). It comes up after
@@ -77,7 +83,7 @@ async fn run() -> ExitCode {
     if !logs_command {
         let data_dir = qcode_kernel::data_dir_hint(data_dir.clone());
         logging::attach_file(&data_dir);
-        lifecycle::start(command_name(&command), &data_dir);
+        lifecycle::start(command_name(&command, launch.frontend), &data_dir);
     }
 
     let result = match command {
@@ -94,7 +100,6 @@ async fn run() -> ExitCode {
         Some(Command::ShellEnv(args)) => cmd_shell_env(args, config),
         Some(Command::Update(args)) => cmd_update(args, data_dir, config).await,
         Some(Command::Acp) => cmd_acp(data_dir, config, approval_policy).await,
-        Some(Command::Gui) => cmd_gui(data_dir, config, approval_policy).await,
         #[cfg(windows)]
         Some(Command::SandboxProbe(args)) => sandbox_probe::run(&args),
         #[cfg(windows)]
@@ -110,7 +115,12 @@ async fn run() -> ExitCode {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => cmd_tui(data_dir, config, approval_policy, None).await,
+        // 没有子命令：由启动形态决定（ADR-0086）。这一支是唯一会「看情况开窗口」
+        // 的地方——显式给了子命令就照子命令办，判定不参与。
+        None => match launch.frontend {
+            boot::Frontend::Gui => cmd_gui(data_dir, config, approval_policy).await,
+            boot::Frontend::Tui => cmd_tui(data_dir, config, approval_policy, None).await,
+        },
     };
 
     let code = match result {
@@ -134,7 +144,7 @@ async fn run() -> ExitCode {
 /// Deliberately a name and not `std::env::args()`: see the module docs — at this
 /// point the credential redactor is not armed yet, and argv is where an
 /// `--api-key` would be.
-fn command_name(command: &Option<Command>) -> &'static str {
+fn command_name(command: &Option<Command>, launch: boot::Frontend) -> &'static str {
     match command {
         Some(Command::Run(_)) => "run",
         Some(Command::Resume(_)) => "resume",
@@ -147,7 +157,6 @@ fn command_name(command: &Option<Command>) -> &'static str {
         Some(Command::ShellEnv(_)) => "shell-env",
         Some(Command::Update(_)) => "update",
         Some(Command::Acp) => "acp",
-        Some(Command::Gui) => "gui",
         #[cfg(windows)]
         Some(Command::SandboxProbe(_)) => "sandbox-probe",
         #[cfg(windows)]
@@ -156,6 +165,6 @@ fn command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Sandbox(_)) => "sandbox",
         #[cfg(windows)]
         Some(Command::Whoami) => "whoami",
-        None => "tui",
+        None => launch.as_str(),
     }
 }

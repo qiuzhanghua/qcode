@@ -22,7 +22,7 @@
 #   ./scripts/install-linux-desktop.sh --exec /path/to/qc
 #
 # `Exec=` names whatever `qc` is on PATH. When it is not there — a checkout you
-# run as `./target/release/qc gui`, say — pass `--exec` so the entry still starts
+# run as `./target/release/qc --launched-from-gui`, say — pass `--exec` so the entry still starts
 # the thing it points at instead of a stale or missing one.
 #
 # A user install goes under XDG_DATA_HOME, which is on the shell's search path by
@@ -205,7 +205,7 @@ case "$mode" in
         # Rewrite Exec= and TryExec=; every other key stays exactly as it ships, so
         # the committed file remains the source of truth for what the app looks like
         # on the desktop.
-        sed -e "s|^Exec=.*|Exec=$exec_cmd gui|" \
+        sed -e "s|^Exec=.*|Exec=$exec_cmd --launched-from-gui|" \
             -e "s|^TryExec=.*|TryExec=$try_exec|" \
             "$DESKTOP_SRC" > "$desktop_dir/$APP_ID.desktop"
         chmod 644 "$desktop_dir/$APP_ID.desktop"
@@ -228,7 +228,7 @@ case "$mode" in
             fi
         done
         echo "installed $APP_ID into $data_dir"
-        echo "  Exec=$exec_cmd gui"
+        echo "  Exec=$exec_cmd --launched-from-gui"
         check
         ;;
 esac

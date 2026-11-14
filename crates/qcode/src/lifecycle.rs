@@ -75,10 +75,6 @@ pub enum Reason {
     /// window and left (ADR-0083). Not `Normal`: the two look identical in a
     /// log, and this one means "the user got their window, from elsewhere".
     ///
-    /// Gated like [`Self::SigHup`]: a build without the `gui` feature never
-    /// takes the lock, so this variant would be never-constructed there and
-    /// `clippy -D warnings` fails the lean build.
-    #[cfg(feature = "gui")]
     HandedOver,
 }
 
@@ -91,7 +87,6 @@ impl Reason {
             #[cfg(unix)]
             Self::SigHup => "sighup",
             Self::Panic => "panic",
-            #[cfg(feature = "gui")]
             Self::HandedOver => "handed_over",
         }
     }

@@ -9054,7 +9054,9 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
    就走 ADR-0083/0084 的流程（只启动一个实例，或切换到已存在的那个）；
 3. 跨 OS 都要成立。
 
-**这是设计，未实现。** 代码仍在 `qc gui`。
+**已实现（2026-11-14）。** 实现落在 `crates/qcode/src/boot.rs`（判定层）与
+`main.rs` 的分派；`qc gui` 子命令已删除；`gui` feature 改为默认开启。实测结果见文末
+「验证」。
 
 ### 1. 判定依据：**显式标记优先，平台信号兜底，判定不出来一律 TUI**
 
@@ -9210,6 +9212,38 @@ Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单
 - **gpm-go 的做法（按清单分流：`requires` 非空就 exec 内层二进制，否则 `open`）**：
   那是在「环境注入」与「LaunchServices 语义」之间二选一，代价记在 gpm-go 的 R13；
   qcode 不需要二选一——自己判形态 + 自己补环境，两条都能要。
+
+**验证（已实现，2026-11-14）**
+
+实现后逐条跑过，不是「编译通过就算」：
+
+| 测点 | 结果 |
+|---|---|
+| 终端敲 `qc` | **TUI**。无 tty 时报 `TUI needs a terminal`，没有开窗 |
+| 显式子命令（`qc logs --help`） | 照子命令办，判定不参与 |
+| `qc --launched-from-gui` | **开窗**，`onscreen=1`，日志 `command=gui` |
+| 内部标记不进 `--help`、不被 clap 当未知参数 | `qc --launched-from-gui --help` 正常打出用法 |
+| `.app` 重建后只有一个可执行文件 | `Contents/MacOS/` 里只有 `QCode`，`CFBundleExecutable=QCode` |
+| `open dist/QCode.app`（= 双击） | **开窗**，`onscreen=1`，日志 `command=gui` |
+| 再点一次图标 | 进程数仍是 1，窗口仍在前台 |
+| **`env -i` 启动（零环境，模拟 Finder）** | 窗口打开；日志 `restored environment from the login shell ... added=103 sampled=105 shell=/bin/zsh`，0 次采样失败 |
+| `cargo test --workspace` | 113 个目标全绿 |
+| `cargo clippy --workspace --all-targets` | 干净（只剩既有的 `tui-textarea` 未使用依赖警告） |
+| `cargo check/clippy --target x86_64-pc-windows-gnullvm` | 干净（Windows 那段 ToolHelp/GetConsoleWindow 只能靠编译验证，本机无 Windows） |
+
+Linux 的 `.desktop`、`install-linux-desktop.sh`、`build-for-release`（sh/ps1）、
+`scripts/build-macos-app.sh`、`README`、`release.yml` 都已跟着改；**没有真机跑过
+Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
+
+### 两处实现时才发现的事
+
+1. **`LSEnvironment` 在可执行文件路径与命令行标记之间需要一条桥**：plist 设的环境变量
+   当然是给进程的，但 `boot::detect` 只认命令行标记，于是双击那条路会「有环境变量、没
+   标记」。现在的做法是两条都认（`GUI_MARKER_ENV` 与 `LAUNCHED_FROM_GUI`），因为它们
+   来自同一类东西——我们自己的入口。
+2. **`windows_sys` 少一个 feature**：`Win32_System_Diagnostics_ToolHelp` 不在原有列表里，
+   交叉编译直接报 `could not find Diagnostics in System`。补上了；这类错误只有真的跑一次
+   交叉 `cargo check` 才会现形。
 
 **验证（实现时）**
 

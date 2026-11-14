@@ -12,11 +12,12 @@ GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 # 工具链入口（cot）
 c
 
-# 桌面 GUI：左侧“我的任务”，每个 Task 可挂多个目录
-./target/debug/qc gui
-
-# TUI（无子命令；真实 provider 由 config/env 选择）
+# TUI（无子命令、终端里敲；真实 provider 由 config/env 选择）
 ./target/debug/qc
+
+# 桌面 GUI：左侧“我的任务”，每个 Task 可挂多个目录
+# 没有 gui 子命令（ADR-0086）——前端由启动形态决定，这个标记模拟「点图标」
+./target/debug/qc --launched-from-gui
 
 # TUI 上的工具循环演练
 QCODE_PROVIDER=mock-tools ./target/debug/qc
@@ -248,10 +249,10 @@ make release         # 门禁通过后打全部平台归档
 ```
 
 `--release`（PowerShell 版 `-Release`）在归档之外再产出自更新器消费的裸二进制
-`dist/qc-<version>-<os>-<arch>[.exe]`（精简版，20 MB）、
-`dist/qcode-desktop-<version>-windows-<arch>.exe`（带 GUI 特性，约 47 MB）与 `dist/SHA256SUMS`。
-发布矩阵里的桌面安装包目前只出 Windows；macOS 本地可以生成 unsigned `.app`，见下文。
-`qc gui` 在精简版里会提示下载桌面版（ADR-0038）。打 tag（`v*`）由
+`dist/qc-<version>-<os>-<arch>[.exe]` 与 `dist/SHA256SUMS`。
+**只有一个产物**（ADR-0086）：`qc` 既能在终端里当 TUI 用，也能双击开窗口，前端由启动
+形态决定。发布矩阵里的桌面安装包目前只出 Windows；macOS 本地可以生成 unsigned `.app`，
+见下文。打 tag（`v*`）由
 `.github/workflows/release.yml` 跑完整矩阵、重算校验和、渲染安装清单并发布：
 Homebrew formula / Scoop / winget 三件套由 `packaging/render.sh` 从 `dist/` 里
 **实际归档的字节**生成（模板在 `packaging/`，成品只存在于 release 与各仓库 PR 里）。
@@ -520,11 +521,12 @@ cargo build -p qcode-eval
   `qc sessions checkpoints <id>` 看记录，
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
-- **GUI**：`qc gui` 打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048）：与 `qc run` / `qc acp` /
+- **GUI**：点图标/双击打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048；`qc` 没有 `gui` 子命令，
+  见 ADR-0086——终端里敲 `qc` 永远是 TUI）：与 `qc run` / `qc acp` /
   `qc tui` 使用同一个 `qcode_kernel::assemble`。左侧是“我的任务”，Task 可配置多个目录；
   支持 Task 新建/重命名/删除、目录增删/Relink/RO-RW/主目录、Turn 边界 pending Roots、
   审批浮层、图片粘贴、diff 视图、中断与 Settings 热重建。Composer 为 `Enter` 发送、
-  `Shift+Enter` 换行。release 同时提供精简 CLI 与 Windows 桌面包。
+  `Shift+Enter` 换行。release 只提供一个 `qc`（ADR-0086）。
 - **图片输入**：`qc run --image shot.png "看看这个"`（可重复，PNG/JPEG/WebP/GIF，单张 ≤8 MB）
   把图片作为多模态消息发给 provider；provider 的 `Capabilities.images` 为 false 时直接报
   `this provider does not accept image input`，不会先发再让服务端 400。

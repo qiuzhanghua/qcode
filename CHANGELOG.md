@@ -2,8 +2,39 @@
 
 ## 未发布
 
-**这一段带两处公开 API 变更，按 semver 不能当 patch 发**（同类先例见 0.9.0 那条：删
+**这一段带三处破坏性变更，按 semver 不能当 patch 发**（同类先例见 0.9.0 那条：删
 `TrayCommand::NewTask` 也走过同样的判断）：
+
+- **`qc gui` 子命令被删除**（ADR-0086）。敲 `qc gui` 现在会被 clap 当成未知命令。
+- `qcode_gui::tray::start()` 的返回值从 `(Option<TrayHandle>, Receiver<TrayCommand>)`
+  变成三元组，多出 `Sender<TrayCommand>`；
+- `qcode_gui::run()` 多一个 `Option<SingleInstance>` 参数。
+
+### `qc` 只有一个，前端由启动形态决定（ADR-0086）
+
+以前是 `qc`（TUI）+ `qc gui`（窗口），而双击图标那条路根本不经过子命令——「怎么进来的」
+只能从启动形态推出来，却被一个子命令硬编码掉了。现在：
+
+- **终端里敲 `qc` = TUI**，和以前一样，脚本与管道不受影响；
+- **点图标 / 双击 = 窗口**，并且走单实例（ADR-0083/0084）：已有实例就把它的窗口拿到前台；
+- 判定分三层：入口传的内部标记（`.app` 的 `LSEnvironment`、`.desktop` 的 `Exec=`、
+  `.lnk` 的 target）> 平台信号（macOS 父进程 `launchd` + 自己的 bundle id；Linux 无 tty +
+  图形会话；Windows 无控制台 + 父进程 `explorer`）> TUI。只在拿到正面证据时才开窗：
+  终端用户被弹窗会毁掉脚本，图形用户误得 TUI 只是「点了没反应」。
+- `--launched-from-gui` 是内部标记，不进 `--help`，但可以在终端里手动用它调试窗口。
+
+**打包只剩一个产物。** `gui` feature 改为默认开启，`build-for-release`(sh/ps1) 不再另出
+`qcode-desktop-*.exe`，`.app` 里也不再是「启动器脚本 + qc-gui」两份而是 `qc` 一份
+（`CFBundleExecutable` 直接指向它）。代价实测：带 `gui` 34.8 MB、不带 16.2 MB，每个用户
+多下 18.5 MB，换来一个包、一套构建矩阵、没有「哪份产物能用」的支持问题。
+
+### macOS 图形启动不再丢环境
+
+实测（`env -i open -a`，即 Finder 那条路）：GUI 进程只拿到 5 个变量，**没有 `PATH`、
+没有 `TERM`**。而 `qc doctor` 的 MCP 查找、`config` 的 `env` API key 来源、`COT_HOME` /
+`TDP_HOME` 的工具链注入全都靠环境。现在图形启动时用 ADR-0064 那套「问登录 shell 要环境」
+把缺的变量补回来（实测：空环境启动 → `added=103 sampled=105 shell=/bin/zsh`）。
+只补当前缺失的，不覆盖已有的。
 
 - `qcode_gui::tray::start()` 的返回值从 `(Option<TrayHandle>, Receiver<TrayCommand>)`
   变成三元组，多出 `Sender<TrayCommand>`；

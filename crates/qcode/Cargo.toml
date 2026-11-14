@@ -52,6 +52,8 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_DataExchange",
+  # ADR-0086：判定层要读父进程的映像名（ToolHelp 快照）。
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Memory",
   "Win32_System_SystemServices",
@@ -68,6 +70,11 @@ embed-resource = "3"
 [dev-dependencies]
 tempfile.workspace = true
 [features]
-# Off by default: CLI, TUI and ACP stay lean; the GPU stack only ships in
-# the desktop build.
+# 默认开启（ADR-0086）：发行物只有一个 —— 带窗口的 `qc`。从前默认关着是为了让
+# CLI/TUI/ACP 保持瘦身、GPU 栈只进桌面版；代价是同一份代码出两个产物，而「哪份
+# 能用」变成支持问题。实测体积：带 gui 34.8 MB、不带 16.2 MB，每个用户多下
+# 18.5 MB，换来一个包、一套构建矩阵。
+#
+# 关掉仍然可以（`--no-default-features`），但那是开发期裁剪，不是发行形态。
+default = ["gui"]
 gui = ["dep:qcode-gui"]

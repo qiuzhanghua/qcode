@@ -519,6 +519,9 @@ build_one() {
 
     echo "==> $target"
     prepare_target "$target"
+    # 一个产物（ADR-0086）：`gui` 现在是默认 feature，所以这条就是带窗口的那个
+    # `qc`。从前默认关着、另出一份 `qcode-desktop-*`，用两份产物换一次瘦身；
+    # 现在换回来了（实测 34.8 MB vs 16.2 MB，见 ADR-0086 §4）。
     cargo build --locked --release --target "$target" -p "$PKG"
     [ -f "$binary" ] || die "没有构建出 $binary"
 

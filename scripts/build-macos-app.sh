@@ -14,8 +14,7 @@
 #
 # Output:
 #   dist/QCode.app
-#   dist/QCode.app/Contents/MacOS/QCode      (launcher)
-#   dist/QCode.app/Contents/MacOS/qc-gui     (backend binary)
+#   dist/QCode.app/Contents/MacOS/QCode      (the binary itself; ADR-0086)
 
 set -euo pipefail
 
@@ -94,18 +93,19 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Dock / Finder icon (the menu-bar template is embedded in the binary).
 cp "$ROOT/crates/qcode/res/icons/macos/qcode.icns" "$APP/Contents/Resources/qcode.icns"
 
-# The GUI binary still uses the `qc gui` subcommand. Finder launches the
-# executable with cwd `/`, so anchor the workspace at $HOME; the in-app
-# workspace picker can switch to a repository afterwards.
-cp "$BIN" "$APP/Contents/MacOS/qc-gui"
-cat > "$APP/Contents/MacOS/$APP_NAME" <<'LAUNCHER'
-#!/bin/sh
-set -e
-DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cd "${QCODE_APP_WORKSPACE:-$HOME}" 2>/dev/null || cd /
-exec "$DIR/qc-gui" gui "$@"
-LAUNCHER
-chmod +x "$APP/Contents/MacOS/$APP_NAME" "$APP/Contents/MacOS/qc-gui"
+# 一份可执行文件（ADR-0086）。以前这里放两份：`qc-gui`（其实就是 `qc` 的副本，
+# 只是改了名）加一个启动器脚本，脚本负责 `cd $HOME` 再 `exec ... gui`。现在两件事
+# 都由 `qc` 自己做：
+#
+#   - **cwd 兜底**：Finder 启动时 cwd 是 `/`，`qc` 判出来会退到家目录（ADR-0085；
+#     实测 `open -a` 给的就是 `/`）。
+#   - **前端选择**：`CFBundleExecutable` 指向 `qc`，`Info.plist` 的
+#     `LSEnvironment` 传内部标记，于是「双击」这件事本身就是判据（ADR-0086）。
+#     没有启动器脚本可改、可绕过，也就没有「脚本与二进制谁说了算」的问题。
+#
+# 名字仍用 $APP_NAME（QCode），这样 Dock 里显示的是产品名而不是命令名。
+cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -120,6 +120,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>qcode.icns</string>
+  <!-- ADR-0086：双击/点图标这条路上，唯一的入口就是我们自己生成的 plist，
+       所以这里挂内部标记。它比任何平台信号都硬——判定不必猜。 -->
+  <key>LSEnvironment</key>
+  <dict>
+    <key>QCODE_LAUNCHED_FROM_GUI</key><string>1</string>
+  </dict>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>

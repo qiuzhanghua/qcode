@@ -23,7 +23,6 @@ use super::*;
 /// applied where it cannot be bypassed: any launcher on any platform that
 /// hands us a filesystem root gets the home directory instead. A *terminal*
 /// launch is untouched — there the cwd is a real choice.
-#[cfg(feature = "gui")]
 fn gui_workspace() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?.canonicalize()?;
     let home = qcode_kernel::config::home_dir().map(|home| home.canonicalize().unwrap_or(home));
@@ -40,7 +39,6 @@ fn gui_workspace() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// The decision itself, split out because [`gui_workspace`] reads the real
 /// `current_dir()` and would therefore be untestable. Returns
 /// `(workspace, used_the_home_fallback)`.
-#[cfg(feature = "gui")]
 fn choose_workspace(cwd: PathBuf, home: Option<PathBuf>) -> (PathBuf, bool) {
     // A root has no parent: `/` on Unix, `C:\` on Windows. One rule for both,
     // rather than a per-platform list of "bad" directories to keep in sync
@@ -60,7 +58,6 @@ fn choose_workspace(cwd: PathBuf, home: Option<PathBuf>) -> (PathBuf, bool) {
 ///
 /// The shell calls it when the config file changes, so saving Settings swaps the
 /// engine in place instead of re-execing the process (no window flash).
-#[cfg(feature = "gui")]
 pub(crate) fn gui_rebuild_hook(
     config_path: PathBuf,
     workspace: PathBuf,
@@ -126,22 +123,6 @@ pub(crate) fn gui_rebuild_hook(
 /// The window itself lives in the `qcode-gui` binary for now; this subcommand
 /// assembles the kernel first so the GUI can be handed the same pieces as the
 /// other frontends.
-/// The lean build keeps the subcommand so the error explains what to download
-/// instead of letting clap call it an unknown command.
-#[cfg(not(feature = "gui"))]
-pub(crate) async fn cmd_gui(
-    _data_dir: Option<PathBuf>,
-    _config_path: Option<PathBuf>,
-    _approval_policy: Option<PathBuf>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    eprintln!(
-        "this build has no GUI support; rebuild with `cargo build -p qcode --features gui`, 
-        or download the desktop build (qcode-desktop)"
-    );
-    Ok(exit_code(2))
-}
-
-#[cfg(feature = "gui")]
 pub(crate) async fn cmd_gui(
     data_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
@@ -191,7 +172,85 @@ pub(crate) async fn cmd_gui(
         Err(error) => return Err(error.into()),
     };
 
+    /// 图形启动时把进程环境补回来（ADR-0086 §3）。
+    ///
+    /// macOS 上经 LaunchServices 启动（双击 / Dock）**拿不到环境**：实测只给 5 个
+    /// 变量——`__CFBundleIdentifier`、`__CF_USER_TEXT_ENCODING`、`XPC_FLAGS`、
+    /// `XPC_SERVICE_NAME`、`SSH_AUTH_SOCK`。**没有 `PATH`，没有 `TERM`，什么都没有。**
+    ///
+    /// 这与 gpm-go 那次 C1 实测一致（`open` 起来的进程只有 launchd 基线，
+    /// `open --env K=V` 四种写法全不生效）。
+    ///
+    /// 对 qcode 是实打实的损失，三处都在用：`qc doctor` 的 MCP 可执行文件查找
+    /// （`doctor.rs` 已注明「Dock 启动时是 launchd 的最小 PATH」）、`config::resolve`
+    /// 的 `env` API key 来源、`COT_HOME` / `TDP_HOME` 工具链注入。
+    ///
+    /// 解法不新造：复用 ADR-0064 那套「问用户的登录 shell 要环境」
+    /// （`{shell} -lic 'env -0'`，带缓存与脱敏）。这里只做一件事——在采样**之前**
+    /// 把缺的变量补进本进程，于是后续所有读 `std::env` 的代码（含采样本身）都看得到。
+    ///
+    /// 只补**当前缺失**的变量：显式传进来的 `--config` 之类不在这里，而用户真在
+    /// 环境里设过的值（终端启动时通常全都有）不会被文件里的值盖掉。
+    ///
+    /// 非 macOS 平台空转：Linux 的 `.desktop` 与 Windows 的 `.lnk` 本来就把环境/
+    /// 工作目录带进来了，没有这个洞。
+    #[cfg(target_os = "macos")]
+    fn restore_launch_environment(
+        config_path: Option<&std::path::Path>,
+        workspace: &std::path::Path,
+    ) {
+        let settings = config_path
+            .and_then(|path| qcode_kernel::config::load(path).ok())
+            .map(|loaded| loaded.shell)
+            .unwrap_or_default();
+        if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
+            tracing::info!("gui: env sampling is off; graphical launch keeps the launchd baseline");
+            return;
+        }
+        let cache = qcode_tools::shell_env::ShellEnvCache::new(settings);
+        let Some(sampled) = cache.current_with(None) else {
+            // 采不到不是致命错误：界面照旧能开，只是上下文相关的功能会缺东西。
+            // 说清楚缺什么，比让它悄悄半残好。
+            tracing::warn!(
+                workspace = %workspace.display(),
+                "gui: could not sample the login shell; PATH and env-based API keys stay at the launchd baseline"
+            );
+            return;
+        };
+        let mut added = 0usize;
+        for (name, value) in sampled.vars() {
+            if std::env::var_os(name).is_none() {
+                // SAFETY: 单线程在这里从不成立，但 `set_var` 的 `unsafe` 是 Rust 2024
+                // 对「改环境会影响别的线程」的提示。这个调用发生在窗口、引擎、任何
+                // 工作线程存在**之前**（`run` 还没被调用），是能保证的唯一位置。
+                unsafe { std::env::set_var(name, value) };
+                added += 1;
+            }
+        }
+        tracing::info!(
+            added,
+            sampled = sampled.len(),
+            shell = %sampled.program().display(),
+            "gui: restored environment from the login shell for a graphical launch"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn restore_launch_environment(
+        _config_path: Option<&std::path::Path>,
+        _workspace: &std::path::Path,
+    ) {
+    }
+
     let workspace = gui_workspace()?;
+    // 环境补救要在**读配置之前**做：配置解析本身会查 `env` 里的 API key，而图形
+    // 启动时那些变量一个都不在（ADR-0086 §3）。用还没被 workspace 锚定的
+    // config 路径采样设置——采不到也无妨，那里会退回默认设置。
+    // 没给 `--config` 时交给 `discover` 去找——那才是这次真正会读的文件。
+    let env_config = config_path
+        .clone()
+        .or_else(|| config::discover(None).ok().map(|found| found.path));
+    restore_launch_environment(env_config.as_deref(), &workspace);
     // Relative --config/--data-dir values are anchored at the workspace so they
     // mean the same thing whether or not the process was started from a shell.
     let config_path = config_path.map(|path| {
@@ -430,7 +489,7 @@ pub(crate) async fn cmd_tui(
     Ok(ExitCode::SUCCESS)
 }
 
-#[cfg(all(test, feature = "gui"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
