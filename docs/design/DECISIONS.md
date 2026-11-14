@@ -9227,6 +9227,28 @@ fontconfig 是唯一没有退路的那个）。但后者没有出口——`-lxcb
 Linux 产物（实测 `--archive all` 死在 `gpui-pre-windows` 的 shaders 生成上，Linux 一个
 都没轮上）。
 
+**Windows 方向是唯一「非 Windows 宿主做不了」的**，因为它缺的不是能装上的库，是一个不
+存在的程序。release 版要把 HLSL 预编译成 DXBC：`gpui-pre-windows` 的 `build.rs` 调
+`fxc.exe` 产出 `shaders_bytes.rs`，`directx_renderer.rs` 的 `include!` 只在
+`not(debug_assertions)` 下吃它。而 `fxc.exe` 是 Windows SDK 的工具，没有 macOS / Linux
+原生版本，也没有开源替代能出 SM 4.1 DXBC（`dxc` 只出 SM 6+ 的 DXIL）。
+
+上游 `build.rs` 把这件事写错了门：`#[cfg(target_os = "windows")]` 在 build script 里
+指的是**宿主**（build script 用宿主编译器编、在宿主机上跑），于是从 macOS 交叉编 release
+时 `compile_shaders()` 一次都没跑，`shaders_bytes.rs` 不存在，而 `include!` 恰好生效，
+报的是
+
+```
+error: couldn't find file `.../out/shaders_bytes.rs`
+```
+
+——一个字都没提到 fxc.exe。这与上一段 Linux 那两个报错是同一类：**ADR-0086 之后
+「每个产物都带窗口」把平台工具链的假设暴露到了构建系统**，只不过 Linux 缺的是可以装上的
+库，Windows 缺的是跨不过去的宿主。处理方式因此不同：Linux 走容器补库，Windows 明确记为
+不可在非 Windows 宿主产出（`build-for-release` 跳过并写明原因），本机验证用 dev profile
+——debug 下着色器在运行期由 `D3DCompile` 编，不需要 `fxc`。两处都已实测：dev 交叉
+`cargo check` 通过，release 交叉给出人话报错。
+
 Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
 ——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的
 `Path`（工作目录，否则是 `System32`，见 ADR-0085 的代价段）。

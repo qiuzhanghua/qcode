@@ -404,6 +404,21 @@ not_ready_reason() {
             return
         fi
         ;;
+    windows)
+        # release 版 Windows 产物要预编译 HLSL：`gpui-pre-windows` 的 build script 调
+        # fxc.exe（Windows SDK 的 DXBC/SM 4.1 编译器）生成 shaders_bytes.rs，再由
+        # directx_renderer.rs 的 include! 吃进去（只在 `not(debug_assertions)` 下）。
+        #
+        # fxc.exe 没有 macOS / Linux 原生版本，也没有开源替代能出 SM 4.1（dxc 只出
+        # SM 6+ 的 DXIL），所以这条路在非 Windows 宿主上根本走不通——不是缺个依赖包
+        # 就能补上的。CI 用 windows-latest 原生编，不经过这里。
+        #
+        # 留 GPUI_FXC_PATH 作为出口：wine 包装或别的可用 fxc 都能接上。
+        if [ "$HOST_OS" != windows ] && [ -z "${GPUI_FXC_PATH:-}" ]; then
+            echo "release 版需要 fxc.exe（Windows SDK 的 HLSL 编译器），宿主不是 Windows；在 Windows 上编，或用 GPUI_FXC_PATH 指定"
+            return
+        fi
+        ;;
     esac
     if [ ! -d "$SYSROOT/lib/rustlib/$target/lib" ]; then
         echo "sysroot 里没有该目标的 std（重新装 cot 的 rust 插件）"

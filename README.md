@@ -338,9 +338,23 @@ amd64 走 multiarch 交叉（`dpkg --add-architecture amd64` 装一套 `:amd64` 
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | `aarch64-linux-gnu-gcc`，或 zig（自动用 zig cc） |
 | `linux-musl-amd64` | `x86_64-unknown-linux-musl` | sysroot 里的 `rust-lld`（静态链接，不依赖 glibc） |
 | `linux-musl-arm64` | `aarch64-unknown-linux-musl` | 同上，另需 `aarch64-linux-musl-gcc`，或 zig（同上） |
-| `windows-amd64` | `x86_64-pc-windows-gnullvm` | cot 的 llvm-mingw 插件（`x86_64-w64-mingw32-clang`） |
+| `windows-amd64` | `x86_64-pc-windows-gnullvm` | cot 的 llvm-mingw 插件（`x86_64-w64-mingw32-clang`）**+ Windows 宿主**（release 要 `fxc.exe`） |
 | `windows-arm64` | `aarch64-pc-windows-gnullvm` | 同上（`aarch64-w64-mingw32-clang`） |
 | `darwin-amd64` / `darwin-arm64` | `*-apple-darwin` | 只能在 macOS 上构建（需要 Apple SDK） |
+
+**Windows 目标是唯一「非 Windows 宿主做不了」的方向**，而且和 Linux 那边不一样：
+它缺的不是能装上的库，是一个不存在的程序。release 版要把 HLSL 预编译成 DXBC
+（`gpui-pre-windows` 的 `build.rs` 调 `fxc.exe`，产物由 `directx_renderer.rs` 的
+`include!` 在 `not(debug_assertions)` 下吃进去），而 `fxc.exe` 是 Windows SDK 里的
+工具，没有 macOS / Linux 原生版本；也没有开源替代能出 SM 4.1（`dxc` 只出 SM 6+ 的
+DXIL）。所以：
+
+- `make all` / `make release` 在非 Windows 宿主上会**跳过**这两个目标并写明原因，
+  不再编到一半才死在 `couldn't find file .../shaders_bytes.rs`；
+- 本机想验证 Windows 分支用 **dev profile** 交叉编——debug 下着色器在运行期由
+  `D3DCompile` 编译，不需要 `fxc`；
+- 真要出 Windows 产物，在 Windows 上编或交给 `release.yml` 的 `windows-latest`；
+  若你有一份能跑的 `fxc.exe`（例如 wine 包装），`GPUI_FXC_PATH` 指过去即可。
 
 几个容易踩的点：
 

@@ -1,17 +1,35 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 fn main() {
-    #[cfg(not(all(target_os = "windows", not(debug_assertions))))]
     println!("cargo:rerun-if-changed=build.rs");
-    #[cfg(target_os = "windows")]
-    {
-        // Compile HLSL shaders
-        #[cfg(not(debug_assertions))]
-        compile_shaders();
+
+    // 这个 build script 是被**宿主**编译器编、在宿主机上跑的，所以 `cfg(target_os = ...)`
+    // 与 `cfg(debug_assertions)` 在这里说的都是宿主，不是目标。qcode 的补丁：上游正是按
+    // 宿主写的，于是从 macOS（或 Linux）交叉编 Windows 的 release 版时，compile_shaders()
+    // 一次都没跑，shaders_bytes.rs 不存在；而 directx_renderer.rs 里的 include! 恰好只在
+    // `not(debug_assertions)` 下生效——它生效了、文件却没有，编译以
+    //
+    //   error: couldn't find file `.../out/shaders_bytes.rs`
+    //
+    // 结束。那句话一个字都没提到 fxc.exe，看不出真正缺的是什么。
+    //
+    // 目标的 os 与 profile 要用 cargo 给**目标**设的 CARGO_CFG_*，与宿主无关。
+    let target_is_windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    // cargo 的布尔 cfg 是「变量存在即真」，值是空串——实测：dev profile 下
+    // `CARGO_CFG_DEBUG_ASSERTIONS=`（存在、为空），release 下这个变量根本不存在。
+    // 所以这里判 is_some()，写成 `== Ok("true")` 会把 dev 也当成 release，然后把
+    // 「本机能跑的 debug 交叉构建」也一起拦掉。
+    let target_debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+
+    if !target_is_windows || target_debug_assertions {
+        // debug 构建在运行期用 D3DCompile 从 HLSL 源码编 shader（见 directx_renderer.rs 的
+        // `#[cfg(debug_assertions)]` 分支），不需要预编译产物。
+        return;
     }
+
+    shader_compilation::compile_shaders();
 }
 
-#[cfg(all(target_os = "windows", not(debug_assertions)))]
 mod shader_compilation {
     use std::{
         fs,
@@ -59,6 +77,7 @@ mod shader_compilation {
     }
 
     /// Locate `binary` in the newest installed Windows SDK.
+    #[cfg(windows)]
     pub fn find_latest_windows_sdk_binary(
         binary: &str,
     ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
@@ -101,6 +120,15 @@ mod shader_compilation {
         Ok(None)
     }
 
+    /// 非 Windows 宿主上没有 `windows-registry`（它是 host-cfg 的 build-dependency），
+    /// 也就无从在 Windows SDK 里找 fxc.exe。返回 None，让调用方给出那条人话报错。
+    #[cfg(not(windows))]
+    pub fn find_latest_windows_sdk_binary(
+        _binary: &str,
+    ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+        Ok(None)
+    }
+
     /// You can set the `GPUI_FXC_PATH` environment variable to specify the path to the fxc.exe compiler.
     fn find_fxc_compiler() -> String {
         // Check environment variable
@@ -125,7 +153,22 @@ mod shader_compilation {
             return path.to_string_lossy().into_owned();
         }
 
-        panic!("Failed to find fxc.exe");
+        // 原来是 panic!。在宿主不是 Windows 的交叉构建里，需要的不是「某个内部断言挂了」，
+        // 而是「这条路走不通、为什么、怎么办」：
+        //
+        // fxc.exe 是 Windows SDK 里的 DirectX 着色器编译器（DXBC / SM 4.1），没有 macOS
+        // 或 Linux 的原生版本，也没有开源替代能产出 SM 4.1（dxc 只出 SM 6+ 的 DXIL）。
+        // 所以 release 版 Windows 产物必须在 Windows 上编：CI 的 release.yml 用
+        // windows-latest 原生编；本机想交叉编就用 dev profile（着色器在运行期编）。
+        println!(
+            "cargo::error=release 版 Windows 目标需要 fxc.exe（Windows SDK 的 HLSL 编译器），\
+             而当前宿主是 {}，它没有原生版本。\n\
+             \x20 * 正式产物：在 Windows 上构建，或交给 release.yml 的 windows-latest\n\
+             \x20 * 本机调试：用 dev profile 交叉编（着色器在运行期由 D3DCompile 编译）\n\
+             \x20 * 若你有一份能跑的 fxc.exe（比如 wine 包装），用 GPUI_FXC_PATH 指过去",
+            std::env::var("HOST").unwrap_or_else(|_| "非 Windows".into())
+        );
+        process::exit(1);
     }
 
     fn compile_shader_for_module(
@@ -227,6 +270,3 @@ mod shader_compilation {
             .expect("Failed to write Rust binding file");
     }
 }
-
-#[cfg(all(target_os = "windows", not(debug_assertions)))]
-use shader_compilation::compile_shaders;
