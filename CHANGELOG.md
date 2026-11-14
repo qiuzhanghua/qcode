@@ -2,9 +2,10 @@
 
 ## 0.10.3 — 2026-11-14
 
-**`qc` 的行为一处没变**——这五个提交全在构建侧：mac、Linux、Windows 三条交叉路径各自
-补上「为什么编不出来」，以及两个被默默浪费掉的东西（160M 的假 `.app`、一个没人用的依赖）。
-没有 API 变更，没有配置变更，升级不需要迁移。
+**`qc` 的行为一处没变**——这些提交全在构建侧与打包形态：mac、Linux、Windows 三条交叉
+路径各自补上「为什么编不出来」，两个被默默浪费掉的东西（160M 的假 `.app`、一个没人用的
+依赖），以及 `.app` 里的可执行文件名三端统一。没有 API 变更，没有配置变更，升级不需要
+迁移。
 
 ### 交叉编 Linux：在 macOS 上直接跑不通，改走容器
 
@@ -70,6 +71,17 @@ cargo 1.100 的 `unused_dependencies` lint 报出来的：`qcode-tui` 声明了�
 GUI 得去模拟 crossterm 键事件并继承它的 IME 与光标行为）。`Cargo.lock` 少 12 行，
 `ratatui` 的钉版与 `paste` 的 RUSTSEC 豁免都保留——前者理由收敛为「一进程一个 ratatui」，
 后者是因为 `paste` 仍经 `ratatui` 在依赖图里。
+
+### `.app` 里的可执行文件改名 `QCode` → `qc`
+
+原先 `dist/QCode.app/Contents/MacOS/` 里那份叫 `QCode`（跟着 bundle 名走），于是同一个
+程序在 mac 上叫 `QCode`、Linux 上是 `qc`、Windows 上是 `qc.exe`——终端里敲 `qc` 的习惯
+到 mac 上就断了。现在统一叫 `qc`，`CFBundleExecutable` 同步指向它（两者必须一致，否则
+LaunchServices 找不到可执行文件，双击直接失败）。
+
+Dock / Finder 显示的名字不受影响：它来自 `Info.plist` 的 `CFBundleDisplayName`（一直是
+`qcode`），与文件名无关。另外两端本来就是 `qc` / `qc.exe`（`.desktop` 的 `Exec=qc`、
+scoop 的 `bin: qc.exe`），只有 mac 需要改。
 
 ### 文档
 
