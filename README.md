@@ -223,6 +223,22 @@ foreground executor 把原生激活推迟到本次 update 之后），Linux 分�
 另外，**只推一个远端等于没跑 CI**。`gh` 与 `gitee` 是两个独立仓库，GitHub 上
 不存在那个 commit 就不会触发 workflow。`31ca808` 那段「运行中排队与插话」
 （`inbox.rs`，12 个单测）只推了 gitee，带着 fmt 与 clippy 错误存活了 7 天。
+
+**顺序是 gitee 先、GitHub 后**，不要反过来。GitHub 是触发 `ci.yml` / `release.yml`
+的那一端：先推 gitee，等它接受了，再推 GitHub，两端的失败才各自可归因；反过来的话，
+GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于是「CI 绿了」与「两端一致」
+变成两件要分别确认的事。
+
+`gitee` 这个远端名**配了两个 pushurl**（gitee 在前、GitHub 在后），所以 `git push gitee`
+会真的推两端——顺序由配置保证，但那是隐式的：一个 url 失败之后 git 仍会去试下一个，
+于是「gitee 失败、GitHub 成功」这种情况不会让命令报错。发布这种不可回滚的动作一律显式
+写地址，别依赖那个配置：
+
+```bash
+git push git@gitee.com:opentj/qcode.git main v0.10.2   # 1. gitee，失败即停
+git push gh main v0.10.2                               # 2. GitHub，触发 CI / 发布
+```
+
 推完两端用 `git ls-remote` 确认指向同一个 commit：
 
 ```bash
