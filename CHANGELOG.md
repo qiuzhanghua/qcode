@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.10.1 — 2026-11-14
+
+**0.10.0 一个产物都没发出来**：Linux job 在第四分钟就红了，`publish` 因此没有运行。
+这个版本补上，代码之外的改动如下。
+
+### 发布矩阵：linux-arm64 改成原生编译
+
+`release.yml` 的 Linux 步骤只装了 `gcc-aarch64-linux-gnu`，而 0.10.0 之后默认构建带窗口，
+gpui 在 Linux 上经 `yeslogic-fontconfig-sys` 走 pkg-config 找 fontconfig —— 缺开发包，
+build script 直接 panic。`ci.yml` 早就装了那五个包，`release.yml` 没跟上。
+
+修的时候没有只补 amd64 的包：从 amd64 runner 交叉编 aarch64 还需要一整套 aarch64 sysroot
+（`dpkg --add-architecture arm64` + ports 源 + `:arm64` 的 `.pc`/`.so`），而公共仓库的
+arm64 hosted runner 直接省掉这一切，并且产物能在本机跑起来自报版本。矩阵因此拆成
+`ubuntu-latest`（amd64）与 `ubuntu-24.04-arm`（arm64）两个 job。
+
+### `gui` feature 被删除（原计划是「改为默认开启」）
+
+0.10.0 那个 tag 是在「`gui` 默认开启」的状态下打的。事后发现 `--no-default-features`
+已经编不过——判定层那次清理把 `cfg(feature = "gui")` 门全拿掉了，一关 feature 就是 14 个
+`cannot find module qcode_gui`，而 `Cargo.toml` 的注释还承诺「关掉仍然可以」。
+
+一个「关掉就编不过」的开关不是开关，是陷阱。整个 feature 删掉，`qcode-gui` 变硬依赖；
+`Makefile` 的 `gui` 目标、`scripts/build-macos-app.sh` 里的 `--features gui` 一并清理。
+
+### CI 那条断言反转了
+
+`default build carries no GPU stack` → `default build carries the window`。ADR-0038 那会儿
+默认构建必须不含 gpui（瘦身 CLI，窗口另出 qcode-desktop）；ADR-0086 合成一个产物后正好相反。
+不反转，每次 CI 都会报一个假的违规；反转之后它变成「有人把窗口又拆出去」的探针。
+
 ## 0.10.0 — 2026-11-14
 
 **这一段带三处破坏性变更**，所以走 minor 而不是 patch（同类先例见 0.9.0 那条：删

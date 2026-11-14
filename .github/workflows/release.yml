@@ -26,7 +26,18 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            targets: linux-amd64 linux-arm64
+            targets: linux-amd64
+          # linux-arm64 **原生**编译，不交叉。ADR-0086 之后每个产物都带窗口，而 gpui
+          # 在 Linux 上要 fontconfig / freetype / xkbcommon / xcb 的 `.pc` 与 `.so`；
+          # 从 amd64 runner 交叉编 aarch64 就得自备一整套 aarch64 sysroot
+          # （`dpkg --add-architecture arm64` + ports 源 + `:arm64` 包 + 让 pkg-config
+          # 找到它们）。公共仓库的 arm64 hosted runner 把这些都省了，而且产物能当场
+          # 跑起来自报版本（`build-for-release` 的本机校验因此对 arm64 也生效）。
+          #
+          # 这条是 v0.10.0 的教训：那次只装了 `gcc-aarch64-linux-gnu`，而默认构建
+          # 需要 fontconfig 开发包，Linux job 四分钟就红了，一个产物都没发出去。
+          - os: ubuntu-24.04-arm
+            targets: linux-arm64
           # GitHub 于 2026-11-02 退役了 macOS 14 镜像（actions/runner-images#15226），
           # 旧的 `macos-14` 标签现在直接解析不出 runner，job 在 0 步被 cancelled，
           # 报 "The configuration 'macos-14-arm64-us-default' is not supported"。
@@ -45,12 +56,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: rust targets (linux)
+      - name: build (linux)
         if: runner.os == 'Linux'
         run: |
-          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+          # 与 ci.yml 的 `linux system dependencies` 保持同一份清单：缺了 fontconfig
+          # 的开发包，`yeslogic-fontconfig-sys` 的 build script 会直接 panic。
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y \
+            libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
           ./build-for-release --archive --release ${{ matrix.targets }}
 
       - name: rust targets (macos)
