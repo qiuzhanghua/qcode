@@ -22,7 +22,10 @@
 # Output:
 #   dist/QCode.app           (release)
 #   dist/QCode-debug.app     (--debug)
-#   <bundle>/Contents/MacOS/QCode      (the binary itself; ADR-0086)
+#   <bundle>/Contents/MacOS/qc         (the binary itself; ADR-0086)
+#
+# 可执行文件名是 `qc`（不是 bundle 名），与 Linux 的 `qc`、Windows 的 `qc.exe` 对齐；
+# Dock 显示名来自 Info.plist 的 CFBundleDisplayName，不受影响。
 
 set -euo pipefail
 
@@ -47,7 +50,7 @@ for arg in "$@"; do
             PROFILE_FLAG=--release
             ;;
         -h|--help)
-            sed -n '2,25p' "$0"
+            sed -n '2,29p' "$0"
             exit 0
             ;;
         *)
@@ -86,6 +89,22 @@ elif [[ "$PROFILE" == debug ]]; then
 else
     APP_NAME="QCode"
 fi
+# bundle 里的可执行文件名，与 bundle 名分开：
+#
+#   dist/QCode.app/Contents/MacOS/qc
+#
+# Dock / Finder 显示的名字来自 Info.plist 的 CFBundleDisplayName，跟这个文件名无关，
+# 所以叫 `qc` 不会让图标底下写出命令名。这样安排是为了**三端一致**——终端里想敲哪个
+# 名字，三端都是同一个答案：
+#
+#   macOS    dist/QCode.app/Contents/MacOS/qc
+#   Linux    <tar.gz>/qc            （.desktop 里 Exec=qc / TryExec=qc）
+#   Windows  <zip>/qc.exe           （scoop bin: qc.exe，winget 指向同一个）
+#
+# 以前这里用的是 bundle 名（`QCode`），于是同一个程序在 mac 上叫 `QCode`、在另外两
+# 端叫 `qc`/`qc.exe`，终端里敲 `qc` 的习惯到 mac 上就断了。
+EXEC_NAME="${QCODE_EXEC_NAME:-qc}"
+
 APP="$ROOT/dist/$APP_NAME.app"
 BIN="$ROOT/target/$PROFILE/qc"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -120,9 +139,8 @@ cp "$ROOT/crates/qcode/res/icons/macos/qcode.icns" "$APP/Contents/Resources/qcod
 #     `LSEnvironment` 传内部标记，于是「双击」这件事本身就是判据（ADR-0086）。
 #     没有启动器脚本可改、可绕过，也就没有「脚本与二进制谁说了算」的问题。
 #
-# 名字仍用 $APP_NAME（QCode），这样 Dock 里显示的是产品名而不是命令名。
-cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
-chmod +x "$APP/Contents/MacOS/$APP_NAME"
+cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
+chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
 
 # 体积守卫。release 该 strip 过（[profile.release] strip = "symbols"），正常 36M
 # 上下；突然上百兆说明 cargo 没按那个 profile 走，属于打包错了，不该悄悄产出。
@@ -148,7 +166,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>$APP_NAME</string>
+  <!-- 必须与实际文件名一致，否则 LaunchServices 找不到可执行文件（双击直接失败）。 -->
+  <key>CFBundleExecutable</key><string>$EXEC_NAME</string>
   <key>CFBundleIconFile</key><string>qcode.icns</string>
   <!-- ADR-0086：双击/点图标这条路上，唯一的入口就是我们自己生成的 plist，
        所以这里挂内部标记。它比任何平台信号都硬——判定不必猜。 -->

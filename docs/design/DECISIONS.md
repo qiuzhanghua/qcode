@@ -9257,7 +9257,22 @@ error: couldn't find file `.../out/shaders_bytes.rs`
 `cargo check` 通过，release 交叉给出人话报错。
 
 Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
-——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的
+——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。
+
+**可执行文件名三端统一为 `qc`（2026-11-14）**。原先 `.app` 里那份叫 `QCode`（跟
+`CFBundleExecutable` 走 bundle 名），于是同一个程序在 mac 上叫 `QCode`、在 Linux 上是
+`qc`、在 Windows 上是 `qc.exe`——终端里敲 `qc` 的习惯到 mac 上就断了。现在
+`Contents/MacOS/qc`，`CFBundleExecutable` 同步改成 `qc`（两者必须一致，否则
+LaunchServices 找不到可执行文件，双击直接失败）。
+
+Dock / Finder 底下显示的名字不受影响：它来自 `Info.plist` 的 `CFBundleDisplayName`
+（一直是 `qcode`），与文件名无关。原来脚本里「名字用 bundle 名，这样 Dock 显示产品名」
+那条注释的前提本来就不成立。
+
+实测（改名的唯一风险是 LaunchServices 找不到新名字）：
+`lsregister -dump` 里该 bundle 的 `executable` 已是 `Contents/MacOS/qc`；`open
+dist/QCode.app` 之后日志出现 `qc session starting ... command=gui`，随后
+`exit=0 reason=handed_over`——启动、判定、单实例移交都正常。`.lnk` 若由安装器创建则需要正确的
 `Path`（工作目录，否则是 `System32`，见 ADR-0085 的代价段）。
 
 **单一产物带来的真实代价——已经先查过依赖链，结论比预想的轻**：
@@ -9336,7 +9351,7 @@ Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单
 | 显式子命令（`qc logs --help`） | 照子命令办，判定不参与 |
 | `qc --launched-from-gui` | **开窗**，`onscreen=1`，日志 `command=gui` |
 | 内部标记不进 `--help`、不被 clap 当未知参数 | `qc --launched-from-gui --help` 正常打出用法 |
-| `.app` 重建后只有一个可执行文件 | `Contents/MacOS/` 里只有 `QCode`，`CFBundleExecutable=QCode` |
+| `.app` 重建后只有一个可执行文件 | `Contents/MacOS/` 里只有 `qc`，`CFBundleExecutable=qc`（2026-11-14 起与 Linux/Windows 对齐，见下） |
 | `open dist/QCode.app`（= 双击） | **开窗**，`onscreen=1`，日志 `command=gui` |
 | 再点一次图标 | 进程数仍是 1，窗口仍在前台 |
 | **`env -i` 启动（零环境，模拟 Finder）** | 窗口打开；日志 `restored environment from the login shell ... added=103 sampled=105 shell=/bin/zsh`，0 次采样失败 |

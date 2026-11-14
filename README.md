@@ -284,13 +284,32 @@ macOS 本地 unsigned app（不需要 Apple 账号）：
 
 ```bash
 make app          # release -> dist/QCode.app
-make app-debug    # debug，构建更快
+make app-debug    # debug，构建更快 -> dist/QCode-debug.app
 open dist/QCode.app
 ```
 
 `make app` 用 ad-hoc identity（`codesign --sign -`）签名，只用于本机 P0 验收；它不是
 Developer ID 签名，也没有 notarize，`spctl` 会拒绝。分发给别人时需要 Apple Developer
 Program 的 Developer ID 证书与 notarization。
+
+**bundle 里的可执行文件叫 `qc`**，三端同名：
+
+| | 路径 |
+|---|---|
+| macOS | `dist/QCode.app/Contents/MacOS/qc` |
+| Linux | `<tar.gz>/qc`（`.desktop` 里 `Exec=qc`） |
+| Windows | `<zip>/qc.exe`（scoop `bin: qc.exe`） |
+
+所以想从终端用 `.app` 里那份，直接敲这个路径就行；Dock 里显示的仍是 `qcode`
+（来自 `Info.plist` 的 `CFBundleDisplayName`，与文件名无关）：
+
+```bash
+dist/QCode.app/Contents/MacOS/qc --version
+```
+
+注意：`.app` 启动过的会话里，环境变量 `QCODE_LAUNCHED_FROM_GUI=1` 会传给子 shell，
+此时直接敲 `qc` 会**开窗口**而不是 TUI。强制 TUI 用
+`env -u QCODE_LAUNCHED_FROM_GUI ...`。
 
 ### 在 macOS 上编 Linux 产物：走容器
 
