@@ -107,14 +107,19 @@ jobs:
       # survives in `scripts/ci-cross-check.sh` / `make check-platforms`, for
       # machines that do have the llvm-mingw toolchain.
       - run: cargo test --workspace --no-run
-      - name: default build carries no GPU stack
+      # 这条断言曾经是反的：ADR-0038 那会儿默认构建必须**不含** GPU 栈（瘦身版 CLI，
+      # 窗口另出一个 qcode-desktop）。ADR-0086 把两个产物合成一个之后，默认构建
+      # **应该**带 gpui——于是这条断言必须反过来查，否则每次 CI 都会报一个假的
+      # “违规”。留着它（而不是删掉）的价值在于：它现在是「有人把窗口又拆出去」
+      # 的探针，而那种回退正是 ADR-0086 要防的。
+      - name: default build carries the window (ADR-0086)
         shell: pwsh
         run: |
           $tree = cargo tree -p qcode --offline
-          if ($tree | Select-String -Pattern 'gpui') {
-            throw "the default qc build must not pull gpui (ADR-0038)"
+          if (-not ($tree | Select-String -Pattern 'gpui')) {
+            throw "the default qc build must carry gpui — one binary, window included (ADR-0086)"
           }
-          Write-Host "ok: no gpui in the default tree"
+          Write-Host "ok: gpui is in the default tree (one binary, ADR-0086)"
 
       - name: mock smoke
         run: cargo run -p qcode -- run "hi" --provider mock --json --data-dir .tmp/windows-data

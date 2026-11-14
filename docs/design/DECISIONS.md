@@ -9088,8 +9088,19 @@ QCode  59343  q  cwd  DIR  1,15  736  2 /        ← 没有启动器了，就是
 3. 跨 OS 都要成立。
 
 **已实现（2026-11-14）。** 实现落在 `crates/qcode/src/boot.rs`（判定层）与
-`main.rs` 的分派；`qc gui` 子命令已删除；`gui` feature 改为默认开启。实测结果见文末
-「验证」。
+`main.rs` 的分派；`qc gui` 子命令已删除；`gui` feature 改为默认开启，随后**整个删掉**
+（见下）。实测结果见文末「验证」。
+
+**收尾时才发现 feature 该删而不是该默认开。** 先把 `gui` 设成默认，然后有人问「本地能不能
+交叉编 aarch64-unknown-linux-gnu」——顺手试 `--no-default-features` 才发现它已经编不过：
+判定层那次清理把 `gui.rs` 里的 `#[cfg(feature = "gui")]` 门全拿掉了，于是一关 feature 就是
+14 个 `cannot find module qcode_gui`。而 Cargo.toml 的注释还写着「关掉仍然可以」。
+
+这暴露的是**默认开启并不能让这个 feature 变得合理**：一个「关掉就编不过」的开关不是开关，
+是陷阱。所以整段删掉（`qcode-gui` 变硬依赖），连带改掉仍在传 `--features gui` 的三处
+（`Makefile` 的 `gui` 目标、`scripts/build-macos-app.sh`），并把 `ci.yml` 里那条 ADR-0038
+时代的断言反过来——它原来查「默认构建不许含 gpui」，现在查「必须含」，否则每次 CI 都会
+报一个假的违规，而它作为「有人把窗口又拆出去」的探针反而更有用。
 
 ### 1. 判定依据：**显式标记优先，平台信号兜底，判定不出来一律 TUI**
 

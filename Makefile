@@ -57,15 +57,12 @@ clean:
 $(PLATFORMS):
 	./build-for-release $@
 
-# Build a GUI-enabled qc without letting the next plain `cargo build` /
-# `make check` overwrite it. The normal target/debug/qc is the lean binary.
+# 曾是「编一份带 gui 的、拷成 qc-gui」的目标。ADR-0086 之后默认构建就是带窗口的
+# `qc`，没有「瘦身版」可以对照，也没有 `qc-gui` 这个文件，所以它退化成了一次普通
+# 构建——保留名字只是为了让习惯敲 `make gui` 的人不撞空，输出会说明这一点。
 gui:
-	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode --features gui
-	cp target/debug/qc target/debug/qc-gui
-	@if [ "$$(uname)" = Darwin ]; then \
-		codesign --force --sign - target/debug/qc-gui >/dev/null; \
-	fi
-	@echo "GUI binary: ./target/debug/qc-gui gui"
+	CARGO_HOME=$(CURDIR)/.cargo-home cargo build -p qcode
+	@echo "one binary now (ADR-0086): ./target/debug/qc — TUI in a terminal, window from an icon"
 
 # Unsigned local macOS app (ad-hoc signed, no Apple account required).
 app:

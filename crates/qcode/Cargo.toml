@@ -20,7 +20,7 @@ qcode-tui = { version = "0.10.0", path = "../qcode-tui" }
 qcode-acp = { version = "0.10.0", path = "../qcode-acp" }
 qcode-image = { version = "0.10.0", path = "../qcode-image" }
 qcode-kernel = { version = "0.10.0", path = "../qcode-kernel" }
-qcode-gui = { version = "0.10.0", path = "../qcode-gui", optional = true }
+qcode-gui = { version = "0.10.0", path = "../qcode-gui" }
 async-trait.workspace = true
 base64.workspace = true
 ratatui.workspace = true
@@ -69,12 +69,10 @@ embed-resource = "3"
 
 [dev-dependencies]
 tempfile.workspace = true
-[features]
-# 默认开启（ADR-0086）：发行物只有一个 —— 带窗口的 `qc`。从前默认关着是为了让
-# CLI/TUI/ACP 保持瘦身、GPU 栈只进桌面版；代价是同一份代码出两个产物，而「哪份
-# 能用」变成支持问题。实测体积：带 gui 34.8 MB、不带 16.2 MB，每个用户多下
-# 18.5 MB，换来一个包、一套构建矩阵。
+# 曾经有过 `gui` feature（默认关，另出一份 `qcode-desktop`）。ADR-0086 把它删了：
+# 发行物只有一个 `qc`，窗口是它的固有部分，不是可选插件。留着一个「一关就编不过」
+# 的空 feature 只会误导人——`--no-default-features` 现在是无操作，照常编出带窗口的
+# `qc`。
 #
-# 关掉仍然可以（`--no-default-features`），但那是开发期裁剪，不是发行形态。
-default = ["gui"]
-gui = ["dep:qcode-gui"]
+# 裁掉 GPU 栈的办法是**在具体的 crate 上工作**（`-p qcode-kernel` / `-p qcode-tools`
+# / `-p qcode-tui`），而不是给整个二进制关开关：那些 crate 本来就不依赖 gpui。

@@ -176,7 +176,7 @@ if ($Release) {
 }
 
 # 一个产物（ADR-0086）：`gui` 现在是默认 feature，上面那条 `cargo build` 出来的
-# 就是带窗口的 `qc.exe`。从前这里再编一次 `--features gui` 并另发一份
+# 就是带窗口的 `qc.exe`。从前这里再编一次（用当年的 `--features gui`）并另发一份
 # `qcode-desktop-*.exe`，用两份产物换一次瘦身；现在换回来（实测 34.8 MB vs
 # 16.2 MB，见 ADR-0086 §4）。
 

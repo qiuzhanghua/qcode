@@ -78,8 +78,9 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-echo "==> building qcode with the gui feature ($PROFILE)"
-"$CARGO_BIN" build ${PROFILE_FLAG:+"$PROFILE_FLAG"} -p qcode --features gui
+# 没有 `--features gui` 了（ADR-0086）：窗口是这个二进制的固有部分，不是可选项。
+echo "==> building qcode ($PROFILE)"
+"$CARGO_BIN" build ${PROFILE_FLAG:+"$PROFILE_FLAG"} -p qcode
 
 if [[ ! -x "$BIN" ]]; then
     echo "error: built binary not found: $BIN" >&2

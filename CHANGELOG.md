@@ -26,7 +26,7 @@
   终端用户被弹窗会毁掉脚本，图形用户误得 TUI 只是「点了没反应」。
 - `--launched-from-gui` 是内部标记，不进 `--help`，但可以在终端里手动用它调试窗口。
 
-**打包只剩一个产物。** `gui` feature 改为默认开启，`build-for-release`(sh/ps1) 不再另出
+**打包只剩一个产物。** `gui` feature 干脆删掉了（窗口是固有部分，不是可选项），`build-for-release`(sh/ps1) 不再另出
 `qcode-desktop-*.exe`，`.app` 里也不再是「启动器脚本 + qc-gui」两份而是 `qc` 一份
 （`CFBundleExecutable` 直接指向它）。代价实测：带 `gui` 34.8 MB、不带 16.2 MB，每个用户
 多下 18.5 MB，换来一个包、一套构建矩阵、没有「哪份产物能用」的支持问题。
