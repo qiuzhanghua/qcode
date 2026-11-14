@@ -227,15 +227,22 @@ spec 中所有路径、环境变量前缀、crate 名抽成常量，便于整体
 2. 长 transcript 必须虚拟化，只渲染可见行。
 3. 默认不捕获鼠标，保留终端原生的选择/复制。
 4. 输入用 `tui-textarea`；CJK 宽度、IME、粘贴、多行光标必须有测试。
+   （2026-11-14 注：这一条已被取代——输入层是 `qcode-ui-state` 的前端中立
+   composer，前端只负责把自己的按键映射成 `InputEvent`。见上面「后果」的末条。）
 5. ratatui 的用法限制在 `qcode-tui` 内，版本 pin 死；升级当独立任务。
 
 **后果**
 
 - M2 增加“transcript 虚拟化”和“CJK / IME 测试”两项任务。
 - M2 开始前不引入 ratatui 依赖，`qcode-tui` 保持空壳。
-- 2026-10-18：M2 开工，pin `ratatui = "=0.29.0"`（与 `tui-textarea 0.7` 的 `^0.29`
-  配套，避免同进程两个 ratatui）；ratatui 0.29 仍依赖的 `paste` 已被标记 unmaintained，
-  在 `deny.toml` 记录豁免，升级到 0.30 + 新版 tui-textarea 时一并撤销。
+- 2026-10-18：M2 开工，pin `ratatui = "=0.29.0"`；ratatui 0.29 仍依赖的 `paste` 已被
+  标记 unmaintained，在 `deny.toml` 记录豁免。
+- 2026-11-14：`tui-textarea` 依赖删除。它当初是 pin 的**理由之一**（`tui-textarea 0.7`
+  要求 `ratatui ^0.29`，不 pin 会在同进程里装两个 ratatui），但 composer 已经搬到
+  `qcode-ui-state`（见 `composer.rs` 的文件头：原件把投影绑在终端工具包上，GUI 得去
+  模拟 crossterm 键事件），`qcode-tui` 里再没有一处用到它。cargo 1.100 的
+  `unused_dependencies` lint 把它报了出来。删掉之后 pin 仍然成立——理由收敛成单纯的
+  「同进程只要一个 ratatui」——`paste` 仍在图里（经 ratatui），豁免照旧保留。
 
 ## ADR-0002：MCP 客户端（2026-10-19）
 

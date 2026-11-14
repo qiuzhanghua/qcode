@@ -11,9 +11,10 @@ version = 2
 # A yanked release can disappear from the registry at any time; do not ship it.
 yanked = "deny"
 ignore = [
-    # ratatui 0.29 (pinned to match tui-textarea 0.7) still pulls the
-    # unmaintained `paste` proc macro. Compile-time only, no known
-    # vulnerability; revisit when ratatui/tui-textarea both move to 0.30.
+    # ratatui 0.29 (still pinned) pulls the unmaintained `paste` proc macro.
+    # Compile-time only, no known vulnerability; revisit when ratatui moves to
+    # 0.30. The pin no longer exists to match tui-textarea (that dependency was
+    # removed 2026-11-14) — it is just "one ratatui per process" now.
     "RUSTSEC-2024-0436",
     # GUI/accesskit transitive graph (2026-10): no fixed release exists yet.
     # None are used on a request path outside the desktop dependency tree.
@@ -33,7 +34,7 @@ ignore = [
     # 若哪天重新变红：两条分别落在 `pop()` 与 `IterMut` 上，而 ratatui 只把
     # `LruCache` 当布局缓存用（`src/layout/layout.rs:39`，只调 `get_or_insert` /
     # `resize`），两个方法都没碰。ratatui 为何停在 0.29 见 docs/design/DECISIONS.md
-    # ADR-0001 的 M2 记录（要与 `tui-textarea 0.7` 的 `^0.29` 配套）。
+    # ADR-0001 的 M2 记录。
 ]
 
 [licenses]
