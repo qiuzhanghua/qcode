@@ -9121,28 +9121,77 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
 现在 `build-macos-app.sh` 产出两个可执行文件：`Contents/MacOS/QCode`（启动器脚本）与
 `qc-gui`（后端）。`Info.plist` 的 `CFBundleExecutable` 指向**启动器**。
 
-方案 2 要求「双击的那个可执行文件 = `qc`」。后果：
+**用户裁决（2026-11-14）：以后只打一个包，不再分出一个只支持 TUI 的版本。**
 
-- `qc` 是带 `gui` feature 的**全量**二进制（kernel + TUI + tools）。今天 `qc-gui` 只
-  链接 GUI 需要的那一半。让 `.app` 指向 `qc` 等于把 TUI 也装进 GUI 产物——**包体积与
-  构建矩阵都变**，这不是改 ADR 能带走的事，必须先量一次体积再决定。
-- 备选（更省）：`.app` 仍放两份（`qc` + 启动器脚本），启动器按判定结果带内部标记 exec
-  其中一个。代价是「双击的是脚本不是二进制」，与方案 2 的字面表述有出入。
-- Linux 的 `.desktop` 只需 `Exec=qc` + `Terminal=false`；Windows 的 `.lnk` 需要正确的
-  `Path`（工作目录，否则又是 `System32`，见 ADR-0085 的代价段）。
+这条把上面的分歧定了，而且比原先估计的便宜得多——**先纠正本 ADR 初稿里一句错话**：初稿写
+「`qc-gui` 只链接 GUI 需要的那一半，让 `.app` 指向 `qc` 会把 TUI 也装进去、体积与构建
+矩阵都变」。实测不成立：
+
+```
+-rwxr-xr-x  35M  target/release/qc                       ← build-macos-app.sh --features gui 的产物
+-rwxr-xr-x  35M  dist/QCode.app/Contents/MacOS/qc-gui    ← cp 自它，只改了名字
+```
+
+`crates/qcode-gui` 是**纯库**（没有 `main.rs`、没有 `[[bin]]`）。那个 `qc-gui` 就是
+`qc` 改了名的副本，启动器那句 `exec "$DIR/qc-gui" gui "$@"` 只是为了让进程名与子命令
+对上。所以「一个产物」**今天就已经成立**，只剩三层壳要拆：
+
+1. `.app` 里的两份文件（`qc` + 启动器脚本）→ 一份 `qc`，`CFBundleExecutable` 指向它；
+2. 启动器脚本里的 `cd` + `exec ... gui` → 由 `qc` 自己判形态（§1、§2）并从根目录退回
+   家目录（ADR-0085 已实现）；
+3. `qc gui` 子命令 → 去掉（§5）。
+
+Linux 的 `.desktop` 现在就是 `Exec=` 指向 `qc`，Windows 的 scoop 清单就是 `bin: qc.exe`
+——这两端**没有要拆的壳**，方案 2 在三端是同一个形状。`.lnk` 若由安装器创建则需要正确的
+`Path`（工作目录，否则是 `System32`，见 ADR-0085 的代价段）。
+
+**单一产物带来的真实代价——已经先查过依赖链，结论比预想的轻**：
+
+带 `gui` feature 的 `qc` 在 Linux 上要看两处链接（`cargo tree -p qcode-gui
+--target x86_64-unknown-linux-gnu`）：
+
+| 依赖 | 形态 | 无头服务器上会怎样 |
+|---|---|---|
+| `x11rb 0.13` | **纯 Rust** 实现，自己走 X 协议，不链 `libX11` | 无影响 |
+| `wayland-sys 0.31` | 依赖树里 **`dlopen` feature 已启用** | 运行时才 `dlopen`，没有就不加载 |
+
+所以「没有图形栈的服务器连 `qc run` 都起不来」这个担心**在当前依赖下不成立**——两条
+路径都不要求链接期存在图形库。
+
+但**包体积是要付的**：同一个 release 配置下，带 `gui` 是 **34.8 MB**，不带 `gui` 是
+**16.2 MB**（本机实测，`cargo build -p qcode --release` 两种配置各一次）。也就是说这条
+裁决让每个用户多下 **18.5 MB**——包括只想要 TUI 的人。这是它的真实代价，写在这里而不是
+含糊过去；`Cargo.toml` 里那句 "the GPU stack only ships in the desktop build" 描述的
+正是这个体积，而现在 desktop 与 TUI 是同一个包，那句话就不成立了。
+
+仍需在实现时验一次的是**运行期行为**：无 `DISPLAY` / `WAYLAND_DISPLAY` 时判定层不许
+把进程判成「GUI 形态」，也不许因为探测会话类型而拖慢 `qc run`（探测必须是几次环境变量
+读取，不是连 X server）。`ldd target/release/qc` 在 Linux 发布件上过一次，确认没有意外的
+硬链接——这一条留作发布检查项，而不是现在假设它没问题。
 
 ### 5. 去掉 `gui` 子命令的连带影响
 
 - `main.rs` 的 `None => cmd_tui(...)` 变成 `None => 按启动形态分派`。这是**默认行为的
   变更**，不是重构：今天敲 `qc` 一定得 TUI，之后在 GUI 会话里可能得窗口。CHANGELOG 要
   当 breaking 记。
-- 无 `gui` feature 的构建里，GUI 分支要退化成一句人话（沿用现在 `cmd_gui` 的 lean 分支
-  文案），不能变成「静默开了 TUI」或者「静默什么都不做」。
+- 只打一个包之后，「无 `gui` feature 的构建」**不再是发行形态**。`Cargo.toml` 的
+  `gui` feature 保留（它是编译期开关，不是产品变体），但代码里那些
+  `#[cfg(not(feature = "gui"))]` 的人话分支（`cmd_gui` 的 lean 分支、以及为过
+  `clippy -D warnings` 而加的 `#[cfg(feature = "gui")]` 门）要实现时一并收掉——
+  它们的存在前提是「lean 是发行形态」。
+- CI 里所有 `--features gui` 的调用点要清理成默认（否则「默认构建」与「发行构建」又会
+  分叉，而那正是这条裁决要消灭的东西）。
 - 开发态怎么验：`cargo run` 永远是终端形态（第 2 层判不出来），所以**测试 GUI 分支必须
   用打包产物**。这一点要提前告诉实现者，否则会有人用 `cargo run` 试半天以为功能没写。
 
 **代价**
 
+- **每个用户多下 18.5 MB**（34.8 vs 16.2 MB，实测），包括只想要 TUI 的人。这是「只打
+  一个包」换来的简单性：不再有「哪份产物能用」的支持问题，也不再有两套构建矩阵。
+- 「只打一个包」意味着**没有退路**：一旦某台机器上 GUI 库缺失或版本不兼容，用户手上就
+  没有一个只支持 TUI 的版本可换。依赖链已经查过（见 §4：`x11rb` 纯 Rust、`wayland-sys`
+  走 `dlopen`），风险比预想的小；但发行说明仍要写清最低运行时依赖，并在发布检查里跑一次
+  `ldd`。
 - 判定是启发式，永远有边界情形（SSH 进图形会话、tmux、`setsid` 起的进程、Windows 上
   `explorer` 之外的文件管理器）。第 1 层能覆盖我们自己发出去的全部入口，覆盖不到的是
   「别人写的启动器指向我们的二进制」——那种情况退化成第 2 层。
@@ -9166,6 +9215,10 @@ workspace`）、**sandbox 的写范围**，以及 `.agents/skills` 的扫描起�
 
 - 三端各测：终端 exec → TUI；GUI 入口 → 窗口；GUI 入口重复点击 → ADR-0083/0084 的让位
   或浮窗。
+- **单一产物的运行期行为**：在没有 `DISPLAY` / `WAYLAND_DISPLAY` 的环境里（Linux 容器、
+  无头服务器），`qc run`、`qc acp`、`qc logs` 照常工作，且判定层不会把这种环境判成 GUI
+  形态。发布件上跑一次 `ldd` 确认没有意外的硬链接图形库（依赖链已查：`x11rb` 纯 Rust、
+  `wayland-sys` 用 `dlopen`，理论上不会有）。
 - macOS 额外测：图形启动后 `PATH` 非 launchd 基线、API key 可用、`qc doctor` 的 MCP
   查找成功。
 - 判定为 GUI 但无 `gui` feature：给一句人话而不是静默。
