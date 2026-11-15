@@ -798,6 +798,11 @@ impl Shell {
             .child({
                 let rail = self.render_turn_rail(window, cx);
                 let measured = self.transcript_height.clone();
+                // The measurement is the *transcript* height; while the command
+                // output panel replaces it, that number must stay at its last
+                // real value or the rail popover and the panel budget would
+                // start sizing themselves against each other.
+                let measuring_transcript = self.ui.command_output.is_none();
                 div()
                     .relative()
                     .flex()
@@ -808,31 +813,130 @@ impl Shell {
                     // the window: "half the main area" must exclude the composer
                     // and the status bar. First child is the scroll column.
                     .on_children_prepainted(move |bounds, _window, _cx| {
+                        if !measuring_transcript {
+                            return;
+                        }
                         if let Some(scroll) = bounds.first() {
                             measured.set(scroll.size.height.as_f32());
                         }
                     })
                     .child(
-                        div()
-                            .id("transcript-scroll")
-                            .flex()
-                            .flex_col()
-                            .flex_grow(1.0)
-                            .min_h_0()
-                            .pl(px(TRANSCRIPT_PAD_L))
-                            .pr(px(TRANSCRIPT_PAD_R))
-                            .pt(px(8.0))
-                            .pb(px(32.0))
-                            // GPUI keeps a text selection live until the mouse
-                            // button-up arrives, and a wheel scroll then
-                            // drags/extends it along the pointer — so a
-                            // phantom button state (or a lost mouse-up) makes
-                            // mere scrolling select text. Cancel the selection
-                            // on scroll, the way browsers do.
-                            .on_scroll(|_, window, cx| {
-                                gpui_kit::base::TextSelection::clear(window, cx);
-                            })
-                            .child(list),
+                        // 斜杠命令的输出（ADR-0087）。它**替换**会话区而不是挤在
+                        // 输入框上方：`/diff` 无参数会列出本会话每一次带 patch 的
+                        // 写入（实测 158 行），卡片式的高度上限要么小到读不了，
+                        // 要么把 composer 顶出视口。既然是「现在要读的东西」，
+                        // 就让它占满消息区、自己滚动，关掉（关闭按钮或 Esc）再回到
+                        // 对话——会话本身没有丢，transcript 只是没在画。
+                        match self.ui.command_output.clone() {
+                            Some(text) => div()
+                                .id("command-output-panel")
+                                .flex()
+                                .flex_col()
+                                .flex_grow(1.0)
+                                .min_h_0()
+                                .min_w_0()
+                                .rounded(px(10.0))
+                                .border_1()
+                                .border_color(border)
+                                .bg(rgb(0xffffff))
+                                .overflow_hidden()
+                                // Holds focus while open so Esc arrives here and
+                                // not at the composer behind it (see
+                                // `Shell::output_focus`).
+                                .track_focus(&self.output_focus)
+                                .key_context("CommandOutput")
+                                .on_key_down(cx.listener(
+                                    |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                                        if event.keystroke.key == "escape" {
+                                            this.close_command_output(window, cx);
+                                        }
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_4()
+                                        .py_1()
+                                        .border_b_1()
+                                        .border_color(border)
+                                        .bg(rgb(0x2f6f4f))
+                                        .child(
+                                            div()
+                                                .text_size(sp(16.0))
+                                                .line_height(sp(26.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(0xffffff))
+                                                .child("命令输出"),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap_3()
+                                                .child(
+                                                    div()
+                                                        .text_size(sp(13.0))
+                                                        .line_height(sp(22.0))
+                                                        .text_color(rgb(0xffffff))
+                                                        .opacity(0.85)
+                                                        .child("Esc 关闭"),
+                                                )
+                                                .child(
+                                                    Button::new("dismiss-command-output")
+                                                        .label("关闭")
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.close_command_output(
+                                                                    window, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("command-output-scroll")
+                                        .flex_grow(1.0)
+                                        .min_h_0()
+                                        .overflow_y_scroll()
+                                        .px_4()
+                                        .py_2()
+                                        .child(
+                                            div()
+                                                .text_size(sp(14.0))
+                                                .line_height(sp(24.0))
+                                                .text_color(rgb(0x000000))
+                                                .child(text),
+                                        ),
+                                )
+                                .into_any_element(),
+                            None => div()
+                                .id("transcript-scroll")
+                                .flex()
+                                .flex_col()
+                                .flex_grow(1.0)
+                                .min_h_0()
+                                .pl(px(TRANSCRIPT_PAD_L))
+                                .pr(px(TRANSCRIPT_PAD_R))
+                                .pt(px(8.0))
+                                .pb(px(32.0))
+                                // GPUI keeps a text selection live until the mouse
+                                // button-up arrives, and a wheel scroll then
+                                // drags/extends it along the pointer — so a
+                                // phantom button state (or a lost mouse-up) makes
+                                // mere scrolling select text. Cancel the selection
+                                // on scroll, the way browsers do.
+                                .on_scroll(|_, window, cx| {
+                                    gpui_kit::base::TextSelection::clear(window, cx);
+                                })
+                                .child(list)
+                                .into_any_element(),
+                        },
                     )
                     .child(rail)
                     .child(self.render_floating_actions(cx))
@@ -1363,65 +1467,6 @@ impl Shell {
                                 )
                         }),
                     )
-                    // 斜杠命令的输出（ADR-0087）：`/diff N` 的补丁、`/skills` 的正文
-                    // 都是多行，状态栏一行放不下，这里给一张与报错卡同形的中性卡片。
-                    .children(self.ui.command_output.clone().map(|text| {
-                        div()
-                            .w(relative(0.9))
-                            .mx_auto()
-                            .rounded_t(px(10.0))
-                            .border_1()
-                            .border_color(border)
-                            .bg(rgb(0xffffff))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .rounded_tl(px(10.0))
-                                    .rounded_tr(px(10.0))
-                                    .bg(rgb(0x2f6f4f))
-                                    .px_3()
-                                    .py_1()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_size(sp(16.0))
-                                            .line_height(sp(26.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(0xffffff))
-                                            .child("命令输出"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .px_3()
-                                    .pb_2()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_size(sp(15.0))
-                                            .line_height(sp(24.0))
-                                            .text_color(rgb(0x000000))
-                                            .child(text),
-                                    )
-                                    .child(
-                                        div().flex().flex_row().gap_2().child(
-                                            Button::new("dismiss-command-output")
-                                                .label("关闭")
-                                                .on_click(cx.listener(
-                                                    |this, _, _window, cx| {
-                                                        this.ui.command_output = None;
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        ),
-                                    ),
-                            )
-                    }))
                     .children(self.ui.restoring.as_ref().map(|_| {
                         div()
                             .w_full()

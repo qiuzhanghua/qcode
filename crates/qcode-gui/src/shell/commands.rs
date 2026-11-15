@@ -40,6 +40,11 @@ impl Shell {
         let action = self.ui.app.command(&line);
         self.collect_notices(before);
         self.execute(action, window, cx);
+        // The panel replaces the transcript while it is open, so it takes focus
+        // the moment it appears (see `Shell::output_focus`).
+        if self.ui.command_output.is_some() {
+            window.focus(&self.output_focus, cx);
+        }
         cx.notify();
     }
 
@@ -72,8 +77,20 @@ impl Shell {
     }
 
     /// Show command output. Replaces whatever the previous command printed.
+    ///
+    /// Focus is taken by [`Shell::run_command`] once, after the command has
+    /// finished: the panel covers the transcript, so Esc has to land on it
+    /// rather than on the composer behind it.
     fn report(&mut self, text: impl Into<String>) {
         self.ui.command_output = Some(text.into());
+    }
+
+    /// Close the output panel and hand focus back to the composer, so the next
+    /// keystroke is typing rather than a dead key.
+    pub(crate) fn close_command_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ui.command_output = None;
+        self.focus_composer(window, cx);
+        cx.notify();
     }
 
     /// Carry out what `App::command` decided.

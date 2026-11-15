@@ -9448,9 +9448,35 @@ steer/remove），斜杠命令只是把同一批 backend 调用再暴露一遍�
 ——transcript 明确跳过它（注释写着「状态栏内容」），而状态栏读的是 `ui.notice`，那个字段只由
 `set_notice` 写。也就是说 `app.push_notice(...)` 在 TUI 里是正常输出、在 GUI 里石沉大海。
 `/diff`、`/skills`、`/checkpoint` 全都靠 notice 报告结果，直接接上去等于没接。修法是给 GUI
-一张自己的出口：`ui.command_output` 卡片（与报错卡同形、中性配色、可关闭），并把
-`qcode-ui-state` 内部命令（`/diff` `/skills` `/subagents`，它们的格式化逻辑本来就在共享层）
-刚刚追加的 notice **收集**进这张卡片 `collect_notices`，而不是在 GUI 里复制一遍格式化代码。
+自己的出口：`ui.command_output`，并把 `qcode-ui-state` 内部命令（`/diff` `/skills`
+`/subagents`，它们的格式化逻辑本来就在共享层）刚刚追加的 notice **收集**进它
+（`collect_notices`），而不是在 GUI 里复制一遍格式化代码。
+
+**这个出口的形态被实测推翻过一次，值得记下来。** 第一版把它做成一张与报错卡同形的卡片，
+挂在 composer 上方：绿色标题条 + 正文 + 关闭按钮。真机敲 `/diff` 的结果是——**全屏只剩那张
+卡片，158 行直接铺开，composer 和状态栏被顶出视口，Esc 也没反应**。三个错误各有原因：
+
+1. **没有高度上限**。报错卡可以没上限（它通常两三行），命令输出不行：`/diff` 无参数会列出
+   本会话**每一次**带 patch 的写入。第一版补的是「预算 = transcript 的一半」，仍然错——
+   300px 读 diff 太小，而这 300px 又是从对话流里抢出来的，两头不落好。
+2. **它是覆盖物，却按内联卡片做**。这层空间是从 transcript 身上扣的，卡片越高对话越少，
+   于是「占满屏幕」和「读不到东西」同时成立。
+3. **Esc 到不了**。焦点在 composer 的 `Textarea` 里，根节点的 `on_key_down` 收不到那个
+   按键；而卡片本身不可聚焦，事件也不会往上冒到它。
+
+**现在的形态**：输出面板**替换**会话区（`command_output.is_some()` 时渲染面板而不是
+transcript），`flex_grow(1) + min_h_0 + overflow_y_scroll()`——和终端视图同一套已知可用的
+全高滚动写法，有多大地方用多大地方。关掉它有三条路：面板上的「关闭」、**Esc**、以及
+发送新消息（`send_prompt` 先清掉它——报告是「看一眼」的东西，回复必须落在被它盖住的
+transcript 里）。为了 Esc 可靠，面板出现时**取走焦点**（`Shell::output_focus`，
+`track_focus` + `key_context("CommandOutput")` + 面板自己的 `on_key_down`），关闭时把焦点
+交还 composer；根的 Esc 保留作为兜底，两条路都走 `close_command_output`。
+
+代价要说清楚：面板开着时焦点不在输入框，想直接打字得先点一下 composer 或按 Esc。
+这比「敲键盘毫无反应且无法退出」好，但仍然是行为选择，不是免费的。
+
+顺带把 `diff_view`（工具 diff 的整幅面板）也接进同一条 Esc 路径——它原来只关得掉「关闭」
+按钮。
 
 **顺带修掉的两个洞。** 接 `/skills` 时才发现 GUI 根本没把 skills 递给模型：`cmd_gui`
 里**没有** `cmd_tui` 那几行（`skills.prompt_section()`、`agents::load()`），而
@@ -9523,7 +9549,13 @@ steer/remove），斜杠命令只是把同一批 backend 调用再暴露一遍�
 - GUI 侧走 `LocalBackend` 集成测试（不需要窗口）：父回合结束时子事件从
   `UiEvent::Child` 到达、子会话在磁盘上有 `parent`、`backend.tasks()` 只返回父任务一行
   （新增测试 `a_subagent_tool_call_runs_a_child_session_and_stays_out_of_the_sidebar`）。
-- 已知未覆盖：`command_output` 卡片与斜杠命令的**实际点击/渲染**只做了类型检查与状态层
-  测试，没在真实窗口里目视确认。`/continue` `/wrap` `/steer N` `/drop N` 在 GUI 里本就
-  有按钮，斜杠命令只是同一条 backend 调用的另一个入口。
+- 已知未覆盖，而且**已被实测打回过一次**：`command_output` 面板的**实际渲染**没有在本机
+  目视确认过——这台机器的 `screencapture` 缺「屏幕录制」授权、`osascript` 缺「辅助功能」
+  授权，两者都返回权限错误，所以布局只能靠结构性论证（`flex_grow(1) + min_h_0 +
+  overflow_y_scroll`，与终端视图/transcript 同一套写法）加上「进程起得来、日志无 panic」。
+  第一版正是因此把「卡片」交了出去，被用户当场看到「158 行铺满、Esc 无反应」。**结论：
+  这一处的验收必须由能看见窗口的人做一次**（敲 `/diff`、翻滚动、按 Esc、确认 composer
+  回来）。
+- `/continue` `/wrap` `/steer N` `/drop N` 在 GUI 里本就有按钮，斜杠命令只是同一条 backend
+  调用的另一个入口。
 

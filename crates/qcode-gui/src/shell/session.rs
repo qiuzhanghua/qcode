@@ -267,6 +267,9 @@ impl Shell {
             self.run_command(window, cx);
             return;
         }
+        // Sending closes any command report: it was a look-at-this panel, and the
+        // reply the user is about to get belongs in the transcript it covers.
+        self.ui.command_output = None;
         if !self.backend.is_configured() {
             self.ui.app.push_notice(
                 "not configured yet: open Settings, fill in the provider and key, then restart qc gui",

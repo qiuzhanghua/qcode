@@ -110,6 +110,10 @@ pub(crate) struct Shell {
     pub(crate) terminal_size: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
     /// Focus target for typing into the active terminal.
     pub(crate) terminal_focus: gpui_kit::FocusHandle,
+    /// Focus target for the slash-command output panel (ADR-0087). The panel
+    /// replaces the transcript while it is open, so it must hold focus: Esc has
+    /// to reach it, and the composer behind it is not the thing being read.
+    pub(crate) output_focus: gpui_kit::FocusHandle,
     /// Set by a terminal's reader thread when there is output to draw.
     pub(crate) terminal_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Where the grid was last drawn, so mouse positions map back to cells.
@@ -318,6 +322,7 @@ impl Shell {
             terminals: crate::terminal::Terminals::default(),
             terminal_size: std::rc::Rc::new(std::cell::Cell::new(None)),
             terminal_focus: cx.focus_handle(),
+            output_focus: cx.focus_handle(),
             terminal_dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             terminal_geometry: std::rc::Rc::new(std::cell::Cell::new(None)),
             terminal_selection: None,

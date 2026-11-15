@@ -83,6 +83,13 @@ impl Render for Shell {
                 move |event, window, cx| {
                     if event.keystroke.key == "escape" {
                         entity.update(cx, |shell, cx| {
+                            // The command-output panel owns Esc while it is open:
+                            // it covers the transcript, and closing it has to put
+                            // focus back in the composer (ADR-0087).
+                            if shell.ui.command_output.is_some() {
+                                shell.close_command_output(window, cx);
+                                return;
+                            }
                             let open = shell.rename_task.is_some()
                                 || shell.pending_root_delete.is_some()
                                 || shell.pending_task_delete.is_some()
@@ -90,7 +97,8 @@ impl Render for Shell {
                                 || shell.schedule_menu_open
                                 || shell.schedule_form.is_some()
                                 || shell.pending_quit
-                                || shell.pending_terminal_paste.is_some();
+                                || shell.pending_terminal_paste.is_some()
+                                || shell.ui.diff_view.is_some();
                             if open {
                                 shell.rename_task = None;
                                 shell.pending_root_delete = None;
@@ -100,6 +108,7 @@ impl Render for Shell {
                                 shell.schedule_form = None;
                                 shell.pending_quit = false;
                                 shell.pending_terminal_paste = None;
+                                shell.close_diff_view(cx);
                                 cx.notify();
                             }
                         });
