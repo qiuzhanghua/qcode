@@ -3,8 +3,8 @@ Type=Application
 Name=QCode
 GenericName=AI Coding Agent
 Comment=Coding agent with a desktop window, terminal and task list
-# 没有 `gui` 子命令（ADR-0086）：双击这个条目时由内部标记说明「是 GUI 拉起的」，
-# 终端里敲 `qc` 不受影响——那一条路 `Exec=` 不参与。
+# 没有 `gui` 子命令（ADR-0086）：双击这个条目时由内部标记说明「是 GUI 拉起的」。
+# 终端里敲 `qc` 不经过这一行——那一条路打印用法，进 TUI 要 `qc tui`（ADR-0089）。
 Exec=qc --launched-from-gui
 TryExec=qc
 Icon=qcode

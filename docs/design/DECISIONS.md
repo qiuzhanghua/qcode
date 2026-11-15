@@ -9367,6 +9367,10 @@ Linux 的 `.desktop`、`install-linux-desktop.sh`、`build-for-release`（sh/ps1
 `scripts/build-macos-app.sh`、`README`、`release.yml` 都已跟着改；**没有真机跑过
 Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
 
+> **2026-11-15 起本表第一行已不成立**（ADR-0089）：终端里裸 `qc` 现在**打印用法**而不是
+> 进 TUI。判定层（本节 §1–§2 的三层与三端信号）一个字没动，改的只是 `None` 分支的动作；
+> 表内其余各行——显式子命令、标记开窗、双击单实例、`.app` 单可执行文件——仍然逐条有效。
+
 ### 两处实现时才发现的事
 
 1. **`LSEnvironment` 在可执行文件路径与命令行标记之间需要一条桥**：plist 设的环境变量
