@@ -1,5 +1,5 @@
 #[derive(Debug, Parser)]
-#[command(name = "qc", version, about = "qcode — terminal coding agent")]
+#[command(name = "qc", version, about = "qc - coding agent")]
 pub(crate) struct Cli {
     /// Data directory. Defaults to the XDG data home.
     #[arg(long, global = true)]
