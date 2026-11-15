@@ -115,3 +115,40 @@ fn the_launch_marker_is_still_invisible_to_clap() {
         "the internal marker must not appear in --help:\n{stdout}"
     );
 }
+
+/// ADR-0089 §5：标记不许经由 qc 的子进程环境继续流下去。
+///
+/// 实测过的泄漏路径：qc 拿标记启动 → 采样用户 shell 时**继承**了它 → 快照里
+/// 带着它 → `run_shell` 的 shell 里也带着它。于是在 GUI 拉起的 shell 里敲 `qc`
+/// 会再开一个窗口。`qc shell-env` 显示的就是那份快照，所以直接看它。
+#[test]
+fn the_launch_marker_does_not_leak_into_the_shell_environment() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+        .args(["shell-env", "--data-dir"])
+        .arg(dir.path())
+        // 标记设上：判定层仍然要把它当成 GUI 启动（那是它的本职），但快照里
+        // 不该再有它——`boot::consume_env_marker()` 在启动时就把它删了。
+        .env("QCODE_LAUNCHED_FROM_GUI", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run qc shell-env");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "qc shell-env failed: {stderr}\nstdout:\n{stdout}"
+    );
+    // 空输出会「恰好」通过下面那条断言，所以先确认它真的采样到了东西。
+    assert!(
+        stdout.contains("PATH"),
+        "the report is empty, so the absence below proves nothing:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("QCODE_LAUNCHED_FROM_GUI"),
+        "the internal launch marker reached the user's shell environment:\n{stdout}"
+    );
+}

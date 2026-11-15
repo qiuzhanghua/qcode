@@ -11,6 +11,7 @@ pub mod engine;
 pub mod event;
 pub mod history;
 pub mod inbox;
+pub mod launch;
 pub mod network;
 pub mod paths;
 pub mod policy;

@@ -26,7 +26,10 @@
 ///
 /// 用户看不见（不进 `--help`），但可以在终端手动用它强迫走 GUI 分支——调试窗口时
 /// 这是唯一不必先打包的路。
-pub const LAUNCHED_FROM_GUI: &str = "--launched-from-gui";
+///
+/// 定义在 `qcode_core::launch`：`run_shell` 也要按名字把这个标记从子进程环境里
+/// 剔掉（见 [`consume_env_marker`] 的说明）。
+pub const LAUNCHED_FROM_GUI: &str = qcode_core::launch::MARKER_ARG;
 
 /// `Info.plist` 的 `LSEnvironment` 挂进来的标记（ADR-0086 §4）。
 ///
@@ -34,7 +37,32 @@ pub const LAUNCHED_FROM_GUI: &str = "--launched-from-gui";
 /// `Exec=`、`.lnk` 的 target、开发者手敲）。macOS 的 `.app` 没有命令行可改——
 /// 双击时系统按 `Info.plist` 直接 exec `CFBundleExecutable`——所以那一条路上
 /// 挂的是这个环境变量。两条路都是「我们自己的入口显式说一声」，强度一样。
-pub const GUI_MARKER_ENV: &str = "QCODE_LAUNCHED_FROM_GUI";
+pub const GUI_MARKER_ENV: &str = qcode_core::launch::GUI_MARKER_ENV;
+
+/// 读走环境里的启动标记，并**立刻从本进程环境里删掉**（ADR-0089 §5）。
+///
+/// 为什么必须删：环境变量会被子进程继承，而 qc 会启动很多子进程——`run_shell`
+/// 的 shell、GUI 的内建终端、环境采样的 login shell。它们都是**用户的**终端，
+/// 在那种 shell 里敲 `qc` 本该打印用法，却会因为继承了这个标记而再开一个窗口
+/// （实测：标记还会经由采样进入 `qc shell-env` 看到的那份快照）。
+///
+/// 为什么在这里删而不是逐个在子进程处剔除：GUI 的内建终端走的是 alacritty 的
+/// `Options.env`，它只能**追加**、不能删；从本进程环境里去掉是唯一能覆盖它的
+/// 做法。子进程边界处的显式剔除仍然保留（`run_shell`），那是防用户 rc 文件
+/// 或 `env_include` 把它又带回来。
+///
+/// **只能在单线程阶段调用**：`std::env::remove_var` 在 edition 2024 是 `unsafe`，
+/// 因为它改的是进程级 `environ`。`main()` 里调用点位于 tokio 运行时创建之前、
+/// `procguard::enable()` 之后（那个函数只置一个标志，不起线程）。
+pub fn consume_env_marker() -> bool {
+    let present = std::env::var_os(GUI_MARKER_ENV).is_some();
+    if present {
+        // SAFETY: 调用点在 tokio 运行时与任何线程创建之前（见函数文档），
+        // 此刻没有第二个线程能并发读 `environ`。
+        unsafe { std::env::remove_var(GUI_MARKER_ENV) };
+    }
+    present
+}
 
 /// 这次该开哪种前端。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,11 +114,10 @@ pub fn strip_launch_marker(args: impl IntoIterator<Item = String>) -> (Vec<Strin
 
 /// 三层判定。
 ///
-/// `marked` 来自 [`strip_launch_marker`]。第 2 层只在没标记时才有意义——标记是事实，
-/// 平台信号是推断。
-pub fn detect(marked: bool) -> Decision {
-    // 环境变量那条与命令行标记等价：都来自我们自己的入口。
-    let env_marker = std::env::var_os(GUI_MARKER_ENV).is_some();
+/// `marked` 来自 [`strip_launch_marker`]，`env_marker` 来自 [`consume_env_marker`]
+/// ——**两者都由调用方在单线程阶段读好**：`consume_env_marker` 会顺手把环境变量
+/// 删掉（ADR-0089 §5），所以本函数不能再自己去读，否则读到的是已经删过的环境。
+pub fn detect(marked: bool, env_marker: bool) -> Decision {
     detect_with(marked, env_marker)
 }
 

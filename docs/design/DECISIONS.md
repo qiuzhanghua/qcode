@@ -9858,6 +9858,45 @@ ADR-0086 定的第三层是「判定不出来一律 TUI」：终端里敲 `qc` �
 `qc tui` 的 doc 排在第一行（clap 按声明顺序列），描述写成「Start the interactive
 terminal UI」。裸 `qc` 打出来的就是这张表，所以用户不查文档也能看见下一步。
 
+### 5. 标记不许外泄：读走即删 + 边界剔除
+
+标记是**进程的出身**，不是用户会话的状态。但环境变量会被子进程继承，而 qc 会启动
+大量子进程：`run_shell` 的 shell、GUI 的内建终端、环境采样用的 login shell。于是
+「双击图标 → 在 agent 的 shell 里敲 `qc`」会再开一个窗口，而不是打印用法。用户是
+**站在终端里**要一个终端程序，却得到第二个窗口。
+
+实测的泄漏链（本机，`QCODE_LAUNCHED_FROM_GUI=1 qc shell-env`）：qc 带标记启动 →
+采样用户 shell 时**继承**了它 → 快照里带着它 → `run_shell` 的 shell 里也带着它。
+`qc shell-env` 打出来的 133 个变量里就有这一行。
+
+修法两处，**不是重复，是各自覆盖不同的路径**：
+
+1. **读走即删**（`boot::consume_env_marker`，在 `main()` 里、tokio 运行时创建之前）。
+   这是唯一能覆盖 GUI 内建终端的办法：它走 alacritty 的 `Options.env`，那个结构只能
+   **追加**变量、不能删。从本进程环境里去掉，所有子进程自然都干净。
+   调用点必须在单线程阶段：`std::env::remove_var` 在 edition 2024 是 `unsafe`，
+   它改的是进程级 `environ`。`main()` 里、`#[tokio::main]` 之前是唯一干净的窗口
+   （`procguard::enable()` 只置一个标志，不起线程）。
+2. **边界剔除**（`RunShell` 构造 command 的最后一步 `env_remove`）。防标记**绕回来**：
+   用户 rc 里自己 export 过、`env_include` 配了 `QCODE_*`、或一份采样于本次改动之前的
+   旧快照。三步都在「构造用户环境」那里，所以那一处才是它的归属地。
+
+**常量的位置也跟着挪了**：`QCODE_LAUNCHED_FROM_GUI` 从 `qc::boot` 移到
+`qcode_core::launch`（`boot` 保留同名别名）。理由就是 2 需要它——两个 crate 各写一份
+字符串，是那种改名时只会静默失效的重复。
+
+**没动的**：`QCODE_APP_WORKSPACE`（ADR-0085）故意不删。它是**用户面对的覆盖口**
+（文档里写着），不是内部标记；子进程继承它，等于子进程也用同一个工作目录，语义一致。
+
+**验证**（都验过「改回去就失败」）：
+
+- `crates/qcode/tests/bare_invocation.rs::the_launch_marker_does_not_leak_into_the_shell_environment`
+  —— 带标记跑 `qc shell-env`，报告里不许出现它；先断言报告非空，否则「没出现」
+  可能只是「什么都没采样到」。
+- `crates/qcode-tools/src/shell.rs::the_launch_marker_never_reaches_the_shell`
+  —— 配 `env_include = ["QCODE_*"]` 让标记重新进入 command，断言 shell 里读不到。
+- 去掉任一处修复，对应的那条立刻变红（实测）。
+
 **否决的方案**
 
 | 方案 | 否决理由 |
@@ -9893,3 +9932,4 @@ terminal UI」。裸 `qc` 打出来的就是这张表，所以用户不查文档
 - **踩到的一个坑记在这里**：第一次验证时裸 `qc` 什么都不打印、退出 0——因为**这个 shell
   就跑在 GUI 进程树里**，继承了 `QCODE_LAUNCHED_FROM_GUI=1`，于是走了开窗分支。
   写集成测试必须显式 `env_remove` 这些标记，否则测试在 GUI 里跑和在 CI 里跑是两回事。
+  **这个坑本身就是 §5 的起因**：同一个继承关系让「GUI 拉起的 shell 里敲 `qc`」也会开窗。

@@ -384,9 +384,11 @@ Program 的 Developer ID 证书与 notarization。
 dist/QCode.app/Contents/MacOS/qc --version
 ```
 
-注意：`.app` 启动过的会话里，环境变量 `QCODE_LAUNCHED_FROM_GUI=1` 会传给子 shell，
-此时直接敲 `qc` 会**开窗口**而不是 TUI。强制 TUI 用
-`env -u QCODE_LAUNCHED_FROM_GUI ...`。
+注意：`.app` 启动过的会话里，环境变量 `QCODE_LAUNCHED_FROM_GUI=1` 会传给子 shell。
+ADR-0089 之后这个标记**不再外泄**（启动时读走即删，`run_shell` 边界再挡一次），
+所以那种 shell 里敲 `qc` 是正常行为。若你从**改动前**就已经开着的旧 shell 里遇到
+`qc` 开窗而不是打印用法，那是继承来的旧变量，`env -u QCODE_LAUNCHED_FROM_GUI qc`
+即可。
 
 ### 在 macOS 上编 Linux 产物：走容器
 

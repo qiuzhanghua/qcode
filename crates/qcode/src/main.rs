@@ -36,15 +36,20 @@ fn main() -> ExitCode {
     // Windows this is an empty call: the kernel already does this, through the
     // job object every command is given.
     qcode_tools::procguard::enable();
-    run()
+    // 读走启动标记并从本进程环境里删掉（ADR-0089 §5）。必须在这里：`remove_var`
+    // 改的是进程级 `environ`，此刻还没有 tokio 运行时、也没有别的线程。
+    // 放晚一步，`run_shell` / 内建终端 / 环境采样的子进程就会继承它，
+    // 而「在 GUI 拉起的 shell 里敲 qc」就会再开一个窗口。
+    let env_marked_from_gui = boot::consume_env_marker();
+    run(env_marked_from_gui)
 }
 
 #[tokio::main]
-async fn run() -> ExitCode {
+async fn run(env_marked_from_gui: bool) -> ExitCode {
     // 启动形态（ADR-0086）必须在 clap 之前定下来：内部标记不是给用户看的选项，
     // 让 clap 收下它等于允许它出现在 `--help` 与补全里。
     let (argv, marked_from_gui) = boot::strip_launch_marker(std::env::args());
-    let launch = boot::detect(marked_from_gui);
+    let launch = boot::detect(marked_from_gui, env_marked_from_gui);
 
     let Cli {
         data_dir,

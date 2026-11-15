@@ -386,6 +386,13 @@ impl Tool for RunShell {
                 command.env(key, value);
             }
         }
+        // 启动标记不许传给用户的 shell（ADR-0089 §5）。
+        //
+        // 它上面的三步都可能把它带回来：用户 rc 里自己 export 过、`env_include`
+        // 配了 `QCODE_*`、或者一份在本次改动之前采样的旧快照。正常路径上
+        // `boot::consume_env_marker()` 已经在启动时把它删了，这一行是边界处的
+        // 明确表态——「这里是构造**用户**环境的地方，我们的内部标记到此为止」。
+        command.env_remove(qcode_core::launch::GUI_MARKER_ENV);
 
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or(0);
@@ -703,5 +710,56 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(err.to_string().contains("unknown sandbox_permissions"));
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    /// ADR-0089 §5：启动标记不许出现在 `run_shell` 的子进程里。
+    ///
+    /// 这一条防的不是「我们自己忘了删」——`boot::consume_env_marker()` 在正常
+    /// 启动路径上已经删了。它防的是标记**绕回来**：用户的 rc 里自己 export 过、
+    /// `env_include` 配了 `QCODE_*`、或一份采样于改动之前的旧快照。三者都在
+    /// 构造用户环境的那三步里，所以边界处必须无条件剔掉。
+    #[tokio::test]
+    async fn the_launch_marker_never_reaches_the_shell() {
+        // 故意把它放进本进程环境，模拟「绕回来」的情形。`cargo test` 的用例是
+        // 并发线程，写进程级环境不安全，所以只在没有别的用例读它时用 unsafe；
+        // 这里通过 `env_include` 更干净地复现同一条路径——见下。
+        let marker = qcode_core::launch::GUI_MARKER_ENV;
+        let root = tempfile::tempdir().expect("root");
+
+        // `env_include` 是「从本进程环境挑变量传给 shell」那一步：让 `QCODE_*`
+        // 命中，标记就会在**边界的那三步之末**被加进 command。这正是要测的路径。
+        let settings = crate::shell_env::ShellSettings {
+            env_sampling: crate::shell_env::EnvSampling::Off,
+            env_include: vec!["QCODE_*".to_string()],
+            ..Default::default()
+        };
+        let env_cache = std::sync::Arc::new(crate::shell_env::ShellEnvCache::new(settings));
+        {
+            // SAFETY: 只有本模块的用例读这个变量；置值-运行-清除都在同一个
+            // 串行块里，且 `run_shell` 的 `env_remove` 会让结果与并发无关。
+            unsafe { std::env::set_var(marker, "1") };
+        }
+        let shell = RunShell::with_env(Arc::new(NoSandbox), env_cache);
+        let ctx = qcode_core::tool::ToolContext::for_test(root.path());
+        let command = format!("printf '%s' \"${{{marker}-unset}}\"");
+        let output = shell
+            .execute(&ctx, serde_json::json!({ "command": command }))
+            .await
+            .expect("execute");
+        {
+            // SAFETY: 同上。
+            unsafe { std::env::remove_var(marker) };
+        }
+
+        let text = output.output;
+        assert!(
+            text.contains("unset"),
+            "the shell inherited our launch marker: {text}"
+        );
     }
 }
