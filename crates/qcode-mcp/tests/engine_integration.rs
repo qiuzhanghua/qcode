@@ -74,6 +74,7 @@ async fn engine_asks_then_calls_the_mcp_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

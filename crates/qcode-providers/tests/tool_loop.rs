@@ -121,6 +121,7 @@ async fn executes_tool_and_continues() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -192,6 +193,7 @@ async fn denial_is_reported_to_the_model() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -252,6 +254,7 @@ async fn asking_without_a_tty_denies() {
             approver: &AutoDeny,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -321,6 +324,7 @@ async fn max_turns_pauses_the_loop() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -401,6 +405,7 @@ async fn the_hand_off_call_never_asks_for_tools() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -485,6 +490,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         options("go", None),
@@ -504,6 +510,7 @@ async fn continuing_a_paused_turn_opens_the_next_budget_window() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         options("继续", Some(Continuation::default())),
@@ -610,6 +617,7 @@ async fn cancellation_stops_a_running_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -678,6 +686,7 @@ async fn cancellation_stops_a_hanging_stream() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

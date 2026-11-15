@@ -20,8 +20,37 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// 没有运行时驱动的会话：定时任务工具不可用。
-const UNAVAILABLE: &str =
-    "定时任务服务不可用：当前会话没有接入定时任务引擎（请在带定时任务的界面中创建）。";
+///
+/// ADR-0088 之后这条只覆盖「连 store 都没有」的上下文（近乎不存在）：
+/// 能不能**登记**看 store，能不能**触发**看 [`qcode_core::scheduler::DriverStatus`]，
+/// 两件事不再由同一个 Option 回答。
+const UNAVAILABLE: &str = "定时任务服务不可用：当前会话没有接入任务存储（无法登记定时任务）。";
+
+/// 驱动不在跑时，跟随结果的说明（ADR-0088 §2）。
+///
+/// 措辞刻意写死三件事，缺一件这条提示就会误导人：
+/// 1. 谁在触发（持有调度时钟的进程，当前只有 GUI）；
+/// 2. 关窗不等于停下（托盘常驻，**退出进程**才停）；
+/// 3. 不在跑的时候不是「稍后补跑」，而是「记为错过」。
+fn driver_footer(driver: qcode_core::scheduler::DriverStatus) -> String {
+    use qcode_core::scheduler::DriverStatus;
+    match driver {
+        DriverStatus::Running { .. } => {
+            "驱动：在跑（到点会正常投递）。".to_string()
+        }
+        DriverStatus::Stale { at } => format!(
+            "**驱动不在跑**（上次心跳 {at}，已过期）：该任务需要有一个持有调度时钟的进程在运行时才会触发\
+             （当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，**退出进程才停**。\
+             它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+        ),
+        DriverStatus::Unknown => {
+            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有一个持有调度时钟的\
+             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
+             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+                .to_string()
+        }
+    }
+}
 
 /// 四个定时任务工具的名字，供子代理注册表剔除。
 pub const SCHEDULE_TOOL_NAMES: [&str; 4] = [
@@ -101,6 +130,12 @@ fn detail(task: &ScheduledTask) -> String {
         ));
     }
     let count = task.delivery_log.len();
+    if task.missed_windows > 0 {
+        lines.push(format!(
+            "错过：{} 次（宿主不在运行时到点不算，不补跑）",
+            task.missed_windows
+        ));
+    }
     lines.push(format!(
         "运行记录：共 {count} 条（保留最近 30 天 / 200 条）"
     ));
@@ -306,10 +341,11 @@ impl Tool for ScheduleCreate {
             )
             .map_err(|error| ToolError::Invalid(error.to_string()))?;
         Ok(ToolOutput::ok(format!(
-            "已创建定时任务 `{}`（id: {}）\n{}",
+            "已创建定时任务 `{}`（id: {}）\n{}\n\n{}",
             task.title,
             task.id,
             detail(&task),
+            driver_footer(ctx.driver),
         )))
     }
 }
@@ -348,10 +384,14 @@ impl Tool for ScheduleList {
             return Ok(ToolOutput::error(UNAVAILABLE));
         };
         let tasks = scheduler.list();
+        // 驱动状态放在最前面：它是「这些任务会不会真的跑」的答案，用户读到
+        // 第一行就该知道，而不是翻到底部（ADR-0088 §3）。
+        let mut lines = vec![format!("驱动：{}", ctx.driver.describe())];
         if tasks.is_empty() {
-            return Ok(ToolOutput::ok("当前没有定时任务。"));
+            lines.push("当前没有定时任务。".to_string());
+            return Ok(ToolOutput::ok(lines.join("\n")));
         }
-        let mut lines = vec![format!("共 {} 个定时任务：", tasks.len())];
+        lines.push(format!("共 {} 个定时任务：", tasks.len()));
         for task in &tasks {
             lines.push(row(task));
         }
@@ -403,7 +443,11 @@ impl Tool for ScheduleView {
         let args: ViewArgs =
             serde_json::from_value(args).map_err(|err| ToolError::Invalid(err.to_string()))?;
         match scheduler.find(&args.id) {
-            Some(task) => Ok(ToolOutput::ok(detail(&task))),
+            Some(task) => Ok(ToolOutput::ok(format!(
+                "{}\n\n{}",
+                detail(&task),
+                driver_footer(ctx.driver),
+            ))),
             None => Ok(ToolOutput::error(format!("定时任务 `{}` 不存在", args.id))),
         }
     }
@@ -541,7 +585,11 @@ impl Tool for ScheduleEdit {
                 )));
             }
         };
-        Ok(ToolOutput::ok(result?))
+        Ok(ToolOutput::ok(format!(
+            "{}\n\n{}",
+            result?,
+            driver_footer(ctx.driver),
+        )))
     }
 }
 
@@ -581,6 +629,7 @@ mod tests {
             last_receipt: None,
             delivery_log: Vec::new(),
             earlier_records_pruned: false,
+            missed_windows: 0,
             reserved_session_id: None,
             next_fire_at: None,
             cwd: None,
@@ -668,6 +717,17 @@ mod tests {
         ToolContext::for_test(".").with_scheduler(handle)
     }
 
+    /// 与 [`context_with`] 同形，但显式给出「谁在推动时钟」。ADR-0088 之后这两个
+    /// 问题是分开的：有 handle 只说明能登记，能不能触发由 `driver` 回答。
+    fn context_with_driver(
+        handle: Option<Arc<dyn SchedulerHandle>>,
+        driver: qcode_core::scheduler::DriverStatus,
+    ) -> ToolContext {
+        let mut ctx = context_with(handle);
+        ctx.driver = driver;
+        ctx
+    }
+
     #[tokio::test]
     async fn create_parses_rule_and_target() {
         let fake = Arc::new(FakeHandle::default());
@@ -726,6 +786,78 @@ mod tests {
             .expect("execute");
         assert_eq!(output.status, ToolStatus::Error);
         assert!(output.output.contains("标题不能为空"));
+    }
+
+    /// 这是 ADR-0088 的核心行为变化：handle 在、驱动不在 = **登记成功**，
+    /// 而不是「服务不可用」。旧行为让用户读成"这里不支持"，其实只是没人在催时钟。
+    #[tokio::test]
+    async fn create_succeeds_without_a_driver_but_says_so() {
+        use qcode_core::scheduler::DriverStatus;
+        let fake = Arc::new(FakeHandle::default());
+        let ctx = context_with_driver(
+            Some(fake.clone() as Arc<dyn SchedulerHandle>),
+            DriverStatus::Stale {
+                at: qcode_core::schedule::at(2026, time::Month::June, 1, 9, 0),
+            },
+        );
+        let output = ScheduleCreate
+            .execute(
+                &ctx,
+                json!({"title": "daily report", "prompt": "写日报", "rule": "daily 09:30"}),
+            )
+            .await
+            .expect("execute");
+        assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
+        assert!(output.output.contains("已创建定时任务"));
+        // 三件事必须都说清楚，否则这条成功提示会误导人。
+        assert!(output.output.contains("驱动不在跑"), "{}", output.output);
+        assert!(output.output.contains("退出进程才停"), "{}", output.output);
+        assert!(output.output.contains("不补跑"), "{}", output.output);
+    }
+
+    /// 驱动在跑时也要明说，用户才知道"这条真的会跑"。
+    #[tokio::test]
+    async fn create_reports_a_running_driver() {
+        use qcode_core::scheduler::DriverStatus;
+        let fake = Arc::new(FakeHandle::default());
+        let at = qcode_core::schedule::at(2026, time::Month::June, 1, 9, 0);
+        let ctx = context_with_driver(
+            Some(fake.clone() as Arc<dyn SchedulerHandle>),
+            DriverStatus::Running { at },
+        );
+        let output = ScheduleCreate
+            .execute(
+                &ctx,
+                json!({"title": "x", "prompt": "y", "rule": "daily 09:30"}),
+            )
+            .await
+            .expect("execute");
+        assert_eq!(output.status, ToolStatus::Ok);
+        assert!(output.output.contains("驱动：在跑"), "{}", output.output);
+        assert!(!output.output.contains("驱动不在跑"), "{}", output.output);
+    }
+
+    /// `schedule_list` 把驱动状态放在第一行：它是"这些任务会不会真的跑"的答案。
+    #[tokio::test]
+    async fn list_leads_with_the_driver_status() {
+        use qcode_core::scheduler::DriverStatus;
+        let fake = Arc::new(FakeHandle::default());
+        let ctx = context_with_driver(
+            Some(fake.clone() as Arc<dyn SchedulerHandle>),
+            DriverStatus::Unknown,
+        );
+        let output = ScheduleList
+            .execute(&ctx, json!({}))
+            .await
+            .expect("execute");
+        assert_eq!(output.status, ToolStatus::Ok);
+        let first = output.output.lines().next().expect("first line");
+        assert!(first.starts_with("驱动："), "{first}");
+        assert!(
+            output.output.contains("当前没有定时任务"),
+            "{}",
+            output.output
+        );
     }
 
     #[tokio::test]

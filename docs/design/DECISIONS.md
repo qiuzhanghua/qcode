@@ -9564,8 +9564,9 @@ transcript 里）。为了 Esc 可靠，面板出现时**取走焦点**（`Shell
 
 ## ADR-0088：定时任务的注册与驱动分离——TUI/CLI 可以登记，驱动仍然只有 GUI（2026-11-15）
 
-**状态**：Proposed（2026-11-15，**未实现**）。依赖 ADR-0059（调度语义）、ADR-0083（GUI
-单实例）。由 ADR-0087 的三端对照表里 `schedule_*` 那两行「工具在但必失败」引出。
+**状态**：Accepted（2026-11-15）。**已实现**（2026-11-15）。依赖 ADR-0059（调度语义）、
+ADR-0083（GUI 单实例）。由 ADR-0087 的三端对照表里 `schedule_*` 那两行「工具在但必失败」
+引出。**实现规格见 [SCHEDULE-REGISTRATION.md](./SCHEDULE-REGISTRATION.md)**。
 
 **背景**
 
@@ -9665,14 +9666,23 @@ ADR-0059 §3 定了「错过不补跑，记 `schedule_missed`」。**配置路�
 写全表」（`qcode-core/src/scheduler.rs:143-145`、`:274-284`）。**一旦允许 TUI 写，就有
 两个进程同时读改写 → 后写者整表覆盖前者**，窗口毫秒级，但它是静默丢数据。
 
-两条路，本 ADR 倾向第二条：
+两条路：给 `tasks.json` 加 OS 级文件锁，或把运行时任务搬进已有的 `index.sqlite`
+（`schedules` 表在里面，sqlite 自带 `busy_timeout` 与事务）。
 
-1. 给 `tasks.json` 加 ADR-0083 那套 OS 级 flock；
-2. **把运行时任务搬进已有的 `index.sqlite`**（`schedules` 表已经在里面，sqlite 自带
-   `busy_timeout` 与事务，`store.rs:421-428`）。
+**落地时改判走前者（加锁）**，见 [SCHEDULE-REGISTRATION.md](./SCHEDULE-REGISTRATION.md) §0.1：
 
-选 2 的理由：JSON 表是历史遗留，而锁要自己写、要跨三平台、还要处理 ADR-0082 那种
-「析构不跑」的退出路径。既然事务引擎就在手边，不再造一把锁。
+- 锁的骨架已经在仓库里（`store.rs:309` 的按会话 `flock`、`single_instance` 的三平台先例），
+  而 sqlite 迁移要动 `scheduler.rs` 里 8 处读写点加迁移与回退路径；
+- 加锁只包住「读 → 改 → 写」一小段，语义不变，风险面小。
+
+但有两处**不能照抄现有代码**：
+
+1. `SessionStore::lock` 的 Windows 分支是**空的**（`store.rs:337-341` 返回
+   `SessionLock {}`，不锁）。要照 `single_instance/windows.rs` 补 `LockFileEx`。
+2. **不能沿用 `LOCK_NB`**。现有 `lock()` 非阻塞、抢不到返回 `Locked`，那是给「同一会话不许
+   两个 turn」用的，抢不到是正确行为；任务表写是毫秒级临界区，抢不到应该**等**。
+
+sqlite 迁移作为独立技术债保留，不在本 ADR 范围内。
 
 ### 6. 不做 daemon
 
@@ -9729,7 +9739,10 @@ GUI/TUI/CLI 都变成它的客户端。真正的边界是**审批与事件出口
   （`runtime.rs:932-934`），当另一进程正拿着那个会话时 GUI 看不到 → `overlap=queue`
   会退化成两端各起一个 turn，最后靠**按会话的 flock**（ADR-0058）挡住。这是已知风险，
   记录在案，不在本次范围内收口。
-- **任务表搬 sqlite（§5 选 2）是一次迁移**：要读旧 `tasks.json`、导入、留一次性回退路径。
+- **Windows 上这把锁要从零补**（见 §5 第 1 条）：`store.rs` 现有的 `#[cfg(not(unix))]`
+  分支是空实现，照抄等于在 Windows 上什么都没做。
+- **sqlite 迁移（§5 的另一条路）作为独立技术债保留**：要动 8 处读写点、读旧
+  `tasks.json`、留一次性回退路径。
 
 **验证（怎么判这一步成功，不写代码）**
 
@@ -9741,5 +9754,36 @@ GUI/TUI/CLI 都变成它的客户端。真正的边界是**审批与事件出口
 5. 反向：无驱动的上下文中，`schedule_*` **要么成功登记并说明驱动，要么干脆不注册**——
    不许再出现「注册着但必然返回不可用」。
 
-> **过渡期注意**：本 ADR 未实现，README 的三端对照表仍是现状（`schedule_*` 在 `qc run`
-> 与 TUI 里 ❌）。落地时那两行要一并改成「✅ 登记 / 驱动仅 GUI」。
+**实现注记（2026-11-15）**
+
+按 [SCHEDULE-REGISTRATION.md](./SCHEDULE-REGISTRATION.md) 的六步落地，落点与偏离：
+
+- **§1 拆分**：`ToolContext` / `TurnContext` 现在有并列的 `scheduler`（能不能登记）与
+  `driver`（能不能触发）两个字段。三端都注入 `Scheduler::new(store)`，子代理仍为 `None`。
+- **§3 heartbeat**：新表 `runtime_status`（`key` 主键）。GUI 在已有的 clock beat 里写，
+  不新增定时器；`DriverStatus::read` 的阈值 `DRIVER_HEARTBEAT_BUDGET`（90s）与调度器的
+  `gap_limit`（3 拍）同一口径，避免两处魔数各说各话。
+- **§4 过期语义**：新增 `recover_task()`，与配置路径的 `recover()` 同族；`ScheduledTask`
+  加 `missed_windows`（`#[serde(default)]`，旧 `tasks.json` 照读）。
+- **§5 锁**：落地时**改判走加锁而非 sqlite 迁移**（理由见 §5 与规格 §0.1）。新增
+  `SessionStore::lock_file_blocking`（阻塞语义，与 `lock()` 的非阻塞刻意分开），
+  Windows 分支用 `LockFileEx` 补上 `store.rs` 原本的空实现。`Scheduler` 的 8 处读-改-写
+  全部持锁。
+- **§5 第 5 条**：ACP 从「剔除四个工具」改为「保留并注入 driver」——按 §1 的逻辑它也能
+  登记。子代理的剔除保留，但理由改写为「子代理不该有会话外的持久副作用」。
+- **CLI 的 `new_once`**：按规格 §0.2 保持绑当前会话，不加限制。
+- README 三端对照表已同步（`schedule_*` 两行改为「✅ 登记（驱动仅 GUI）」），
+  「三类差异」扩为四类，`schedule_*` 从「刻意不给」挪到「做了一半的」。
+
+**验证**
+
+- `cargo test -p qcode-core`：`recover_task` 两条（补投被拒/累计与封顶）、
+  `runtime_status` 往返、`DriverStatus` 三态、`file_lock_blocks_a_second_holder_until_released`、
+  `concurrent_creates_do_not_overwrite_each_other`（12 线程并发登记，全部落盘）。
+- `cargo test -p qcode-tools`：`create_succeeds_without_a_driver_but_says_so`（核心行为
+  变化：有 handle、无驱动 = 成功 + 说明）、`create_reports_a_running_driver`、
+  `list_leads_with_the_driver_status`。
+- `build-for-release --check`（fmt / `clippy -D warnings` / `test` / `cargo-deny`）全绿。
+- **未在真机验证**：跨进程的锁（两个真进程同时登记）只做了同进程双线程验证——POSIX 下
+  同一进程的不同 fd 之间 `flock` 仍互斥，所以那条测试覆盖了「阻塞而非放行」，但没能覆盖
+  「两个真进程」。GUI 的心跳写入同样只做了单测级别的验证。

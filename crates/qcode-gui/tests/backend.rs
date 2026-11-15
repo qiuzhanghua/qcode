@@ -907,6 +907,7 @@ async fn a_runtime_task_fires_delivers_and_advances() {
             last_receipt: None,
             delivery_log: Vec::new(),
             earlier_records_pruned: false,
+            missed_windows: 0,
             reserved_session_id: None,
             next_fire_at: Some(at),
             cwd: None,

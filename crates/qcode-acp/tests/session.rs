@@ -196,6 +196,8 @@ fn fixture_with(provider: MockProvider, tools: ToolRegistry, calls: Arc<AtomicUs
         skills: None,
         network: None,
         snapshot_shell: true,
+        scheduler: None,
+        driver: qcode_core::scheduler::DriverStatus::Unknown,
     };
 
     Fixture {

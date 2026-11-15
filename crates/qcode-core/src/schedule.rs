@@ -916,6 +916,53 @@ pub fn advance_rule(rule: &Rule, now: PrimitiveDateTime) -> Advance {
     }
 }
 
+/// 宿主不在之后，一条运行时任务的恢复结果（与 [`Recovery`] 同形，按 `Rule` 计窗）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskRecovery {
+    /// 累计错过的窗口数（含任务上已记的）。
+    pub missed: u32,
+    /// 恢复后的下一次发生点；`None` = 一次性规则已经过去，该收尾了。
+    pub next_fire_at: Option<PrimitiveDateTime>,
+}
+
+/// 宿主「不在」超过一个拍间隔后，把运行时任务推进到未来，**不补投**。
+///
+/// 与配置路径的 [`recover`] 是同一件事、同一套语义（ADR-0059 §3「错过不补跑」），
+/// 差别只在计窗的依据是 [`Rule`] 而不是 `CronSpec`。存在的理由是这个语义最初只落
+/// 在配置路径上，运行时任务路径漏了——于是宿主关三天再开，所有过期任务会在开机后
+/// 一拍内一起触发一轮（ADR-0088 §4）。
+pub fn recover_task(task: &ScheduledTask, now: PrimitiveDateTime) -> TaskRecovery {
+    let Some(next) = task.next_fire_at else {
+        return TaskRecovery {
+            missed: 0,
+            next_fire_at: None,
+        };
+    };
+    if next > now {
+        return TaskRecovery {
+            missed: 0,
+            next_fire_at: Some(next),
+        };
+    }
+    // 同 `recover`：时钟倒退十年不该变成一个百万步的循环。
+    const MAX_MISSED: u32 = 1_000;
+    let mut missed = 0;
+    let mut at = next;
+    while at <= now && missed < MAX_MISSED {
+        missed += 1;
+        match task.rule.next_after(at) {
+            // `following > at` 是死循环护栏：某条规则若把「下一次」算成同一时刻，
+            // 循环必须停下而不是转满 MAX_MISSED 圈。
+            Some(following) if following > at => at = following,
+            _ => break,
+        }
+    }
+    TaskRecovery {
+        missed: task.missed_windows.saturating_add(missed),
+        next_fire_at: task.rule.next_after(now),
+    }
+}
+
 /// 投递目标。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1011,6 +1058,13 @@ pub struct ScheduledTask {
     /// 投递历史，按保留策略裁剪（见 [`append_delivery`]）。
     pub delivery_log: Vec<DeliveryReceipt>,
     pub earlier_records_pruned: bool,
+    /// 宿主不在运行期间错过的触发次数（ADR-0059 §3「错过不补跑」的记账）。
+    ///
+    /// `[schedules]` 配置条目把同一件事记在 store 的 `schedules.missed_windows`；
+    /// 运行时任务的定义本身就在 `tasks.json` 里，所以记在任务上。
+    /// `#[serde(default)]`：老的 `tasks.json` 没有这个键也能读。
+    #[serde(default)]
+    pub missed_windows: u32,
     /// `new` 目标：投递前先落盘预定会话 id，崩溃后复用同一会话。
     pub reserved_session_id: Option<String>,
     #[serde(with = "serde_wall_clock::option")]
@@ -1130,6 +1184,7 @@ pub fn import_config_schedule(
         last_receipt: None,
         delivery_log: Vec::new(),
         earlier_records_pruned: false,
+        missed_windows: 0,
         reserved_session_id: None,
         next_fire_at,
         cwd: None,

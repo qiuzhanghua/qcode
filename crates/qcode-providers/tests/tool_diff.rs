@@ -66,6 +66,7 @@ async fn a_write_tool_records_its_diff_in_the_session_log() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

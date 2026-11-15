@@ -154,6 +154,9 @@ impl SubagentRunner for EngineSubagent {
                 approver: self.approver.as_ref(),
                 snapshots: self.snapshots.as_ref(),
                 scheduler: None,
+                // 子代理不登记定时任务（注册表已剔除该组工具），
+                // 驱动状态同样无从谈起。
+                driver: qcode_core::scheduler::DriverStatus::Unknown,
                 questioner: None,
             },
             options,

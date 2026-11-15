@@ -330,6 +330,7 @@ fn task_with(
         last_receipt: None,
         delivery_log: Vec::new(),
         earlier_records_pruned: false,
+        missed_windows: 0,
         reserved_session_id: None,
         next_fire_at: next,
         cwd: None,
@@ -806,4 +807,63 @@ fn local_offset_is_measured_not_hardcoded() {
         (-86_400..=86_400).contains(&offset.whole_seconds()),
         "local_offset() out of timezone bounds: {offset}"
     );
+}
+
+#[test]
+fn recover_task_skips_a_missed_backlog_and_advances() {
+    // 宿主关了一整天：一条 daily 09:00 的任务在 08:00 就该触发，进程直到
+    // 次日 10:00 才回来。ADR-0059 §3「错过不补跑」要求推进到下一次、记错过，
+    // 而不是把积压的触发一次性放出来（ADR-0088 §4 修的就是这条原本只在
+    // config 路径上实现的语义）。
+    let task = task_with(
+        Rule::Daily { hour: 9, minute: 0 },
+        Target::Session {
+            id: "s1".to_string(),
+        },
+        TaskStatus::Active,
+        Some(at(2026, June, 1, 9, 0)),
+    );
+    let recovery = recover_task(&task, at(2026, June, 2, 10, 0));
+    assert_eq!(recovery.missed, 2, "6/1 09:00 与 6/2 09:00 都过去了");
+    assert_eq!(recovery.next_fire_at, Some(at(2026, June, 3, 9, 0)));
+
+    // 没到期：什么都不记，next 原样保留。
+    let early = recover_task(&task, at(2026, June, 1, 8, 0));
+    assert_eq!(early.missed, 0);
+    assert_eq!(early.next_fire_at, Some(at(2026, June, 1, 9, 0)));
+
+    // 一次性规则已经过去：没有下一次，调用方据此把它收尾。
+    let once = task_with(
+        Rule::Once {
+            at: at(2026, June, 1, 9, 0),
+        },
+        Target::New,
+        TaskStatus::Active,
+        Some(at(2026, June, 1, 9, 0)),
+    );
+    let recovery = recover_task(&once, at(2026, June, 2, 10, 0));
+    assert_eq!(recovery.missed, 1);
+    assert_eq!(recovery.next_fire_at, None);
+}
+
+#[test]
+fn recover_task_accumulates_and_caps_runaway_clocks() {
+    // 错过次数是累计的：任务上已有的记账不能因为一次恢复被清零。
+    let mut task = task_with(
+        Rule::Interval { seconds: 60 },
+        Target::New,
+        TaskStatus::Active,
+        Some(at(2026, June, 1, 9, 0)),
+    );
+    task.missed_windows = 7;
+    let recovery = recover_task(&task, at(2026, June, 1, 9, 3));
+    // 9:00 / 9:01 / 9:02 / 9:03 四个窗口都「已经到点」（`at <= now`，含当前这一拍，
+    // 与配置路径的 `recover` 同一口径）。
+    assert_eq!(recovery.missed, 7 + 4);
+
+    // 时钟倒退十年不该变成百万步循环：MAX_MISSED 封顶，且仍然给出未来的 next。
+    let now = at(2026, June, 1, 9, 0) + time::Duration::days(3650);
+    let recovery = recover_task(&task, now);
+    assert_eq!(recovery.missed, 7 + 1_000);
+    assert!(recovery.next_fire_at.is_some_and(|next| next > now));
 }

@@ -33,9 +33,18 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     /// Egress proxy for tools that make network calls.
     pub network: Option<Arc<dyn Network>>,
-    /// 定时任务管理服务（GUI 引擎注入；`None` = 该环境没有定时任务引擎，
-    /// schedule 工具返回错误而不是静默失败）。
+    /// 定时任务管理服务（三端都注入；`None` 只出现在没有 store 的上下文里，
+    /// 那时 schedule 工具返回错误而不是静默失败）。
+    ///
+    /// **它只回答「能不能登记」，不回答「能不能触发」**——见 [`ToolContext::driver`]。
+    /// 这两件事被同一个字段回答了太久，是 ADR-0088 的起点。
     pub scheduler: Option<Arc<dyn SchedulerHandle>>,
+    /// 「谁在推动调度时钟」的答案（ADR-0088 §3）。
+    ///
+    /// 登记只需要一个 store，任何前端都有；让任务真的到点触发需要一个持有
+    /// 调度时钟的进程，今天只有 GUI。schedule 工具把这条写进结果里，用户才
+    /// 不会以为「登记成功」等于「一定会跑」。
+    pub driver: crate::scheduler::DriverStatus,
     /// 提问服务（`ask_user` 工具用）。`None` = 该环境无人可回答，工具按
     /// 阻塞/计时语义返回错误或 pending。
     pub questioner: Option<Arc<dyn crate::question::Questioner>>,
@@ -72,6 +81,8 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             network: None,
             scheduler: None,
+            // 没有 store 的上下文同样不知道谁在推动时钟。
+            driver: crate::scheduler::DriverStatus::Unknown,
             questioner: None,
             call_id: String::new(),
             session_id: String::new(),
@@ -111,6 +122,8 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             network: None,
             scheduler: None,
+            // 没有 store 的上下文同样不知道谁在推动时钟。
+            driver: crate::scheduler::DriverStatus::Unknown,
             questioner: None,
             call_id: String::new(),
             session_id: String::new(),

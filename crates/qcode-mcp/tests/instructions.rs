@@ -125,6 +125,7 @@ async fn run_once(registry: &ToolRegistry, calls: bool, policy: Policy) -> Run {
             // scheduling or asking; both fields exist for the runtime drivers
             // (ADR-0059, ask_user) and stay `None` here.
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

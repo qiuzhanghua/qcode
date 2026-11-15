@@ -246,9 +246,13 @@ pub struct TurnContext<'a> {
     /// Pre-images of files the agent is about to write, so a later rollback can
     /// put the workspace back. `None` disables checkpointing for this turn.
     pub snapshots: Option<&'a crate::snapshot::SnapshotStore>,
-    /// 定时任务管理服务。GUI 引擎注入运行时 `Scheduler`；其余前端（CLI / ACP /
-    /// 子代理 / 测试）为 `None`，schedule 工具返回"服务不可用"。
+    /// 定时任务管理服务。三端都注入（任务定义是 store 里的纯数据）；只有连
+    /// store 都没有的上下文（子代理 / 测试）为 `None`。
+    ///
+    /// 它回答「能不能登记」，**不回答「能不能触发」**——见 [`TurnContext::driver`]。
     pub scheduler: Option<std::sync::Arc<dyn crate::scheduler::SchedulerHandle>>,
+    /// 「谁在推动调度时钟」（ADR-0088 §3）。登记不需要它，触发需要。
+    pub driver: crate::scheduler::DriverStatus,
     /// 提问服务（`ask_user` 工具用）。GUI / TUI / CLI 注入各自回答方；子代理
     /// 与测试为 `None`，`ask_user` 按阻塞/计时语义报错或返回 pending。
     pub questioner: Option<std::sync::Arc<dyn crate::question::Questioner>>,

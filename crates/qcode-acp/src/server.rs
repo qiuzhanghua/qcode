@@ -45,6 +45,11 @@ pub struct Deps {
     pub network: Option<qcode_core::network::SharedNetwork>,
     /// Snapshot the workspace before run_shell (shell can write anywhere).
     pub snapshot_shell: bool,
+    /// 定时任务管理服务（ADR-0088 §1）：任务定义是 store 里的纯数据，ACP 一样
+    /// 能登记；**触发**要有一个持有调度时钟的进程，那不在编辑器里。
+    pub scheduler: Option<std::sync::Arc<dyn qcode_core::scheduler::SchedulerHandle>>,
+    /// 「谁在推动时钟」，随登记结果一起报给用户（ADR-0088 §3）。
+    pub driver: qcode_core::scheduler::DriverStatus,
 }
 
 /// The only way the agent talks to its peer outside a response.
@@ -282,7 +287,8 @@ impl Agent {
                 policy: &deps.policy,
                 approver: &approver,
                 snapshots: Some(&self.snapshots),
-                scheduler: None,
+                scheduler: deps.scheduler.clone(),
+                driver: deps.driver,
                 questioner: None,
             },
             RunOptions {

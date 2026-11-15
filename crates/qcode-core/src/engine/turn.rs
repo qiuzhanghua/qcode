@@ -206,6 +206,9 @@ where
     if ctx.scheduler.is_some() {
         tool_context = tool_context.with_scheduler(ctx.scheduler.clone());
     }
+    // 与 `scheduler` 分开传：能不能登记（上面那个 Option）和能不能触发（这里）
+    // 是两件事，工具要把后者写进结果里（ADR-0088 §1/§3）。
+    tool_context.driver = ctx.driver;
     if ctx.questioner.is_some() {
         tool_context = tool_context.with_questioner(ctx.questioner.clone());
     }

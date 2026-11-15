@@ -57,8 +57,106 @@ pub enum StoreError {
 /// Exclusive writer lock for one session, held for the duration of a turn.
 #[derive(Debug)]
 pub struct SessionLock {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     _file: fs::File,
+}
+
+/// Held while rewriting a shared JSON file read-modify-write style.
+///
+/// Unlike [`SessionLock`] this one **waits** instead of failing: the critical
+/// section is "read a small JSON array, change it, write it back", which is
+/// milliseconds. Refusing to wait there would turn two frontends touching the
+/// same data directory into a `Locked` error the user has to retry by hand,
+/// and the whole point of ADR-0088 §5 is that they must both succeed.
+#[derive(Debug)]
+pub struct FileLock {
+    #[cfg(any(unix, windows))]
+    _file: fs::File,
+}
+
+/// Take an exclusive lock on `file`, waiting for whoever holds it.
+#[cfg(unix)]
+fn lock_exclusive_blocking(file: &fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `file` is alive for the whole call, so the fd is valid.
+    // No `LOCK_NB`: we *want* to wait (see [`FileLock`]).
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error())
+}
+
+/// Same, through `LockFileEx` — and again **without**
+/// `LOCKFILE_FAIL_IMMEDIATELY`, which is the whole difference from the GUI's
+/// single-instance lock (ADR-0083).
+#[cfg(windows)]
+fn lock_exclusive_blocking(file: &fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx};
+
+    // SAFETY: `overlapped` is a valid stack OVERLAPPED; in synchronous use the
+    // kernel only reads its offset (all zero = from byte 0). One byte is enough
+    // to express "exclusive".
+    let mut overlapped = unsafe { std::mem::zeroed() };
+    let handle: HANDLE = file.as_raw_handle() as HANDLE;
+    let rc = unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut overlapped) };
+    if rc != 0 {
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error())
+}
+
+#[cfg(not(unix))]
+fn lock_exclusive_blocking(_file: &fs::File) -> std::io::Result<()> {
+    // No advisory-lock primitive we know of: the honest answer is to say so
+    // rather than silently pretend the file is protected.
+    Err(std::io::Error::other(
+        "no cross-process file lock on this platform",
+    ))
+}
+
+/// Non-blocking flavour: the session single-writer lock, where "someone else
+/// already has it" is an answer rather than a reason to wait.
+#[cfg(windows)]
+fn take_immediate(file: fs::File) -> std::io::Result<SessionLock> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, GetLastError, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+
+    // SAFETY: as in `lock_exclusive_blocking`.
+    let mut overlapped = unsafe { std::mem::zeroed() };
+    let handle: HANDLE = file.as_raw_handle() as HANDLE;
+    let rc = unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if rc != 0 {
+        return Ok(SessionLock { _file: file });
+    }
+    let code = unsafe { GetLastError() };
+    if code == ERROR_LOCK_VIOLATION {
+        return Err(std::io::Error::from(
+            std::io::ErrorKind::WouldBlock,
+            "locked",
+        ));
+    }
+    Err(std::io::Error::from_raw_os_error(code as i32))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn take_immediate(_file: fs::File) -> std::io::Result<SessionLock> {
+    Ok(SessionLock {})
 }
 
 #[derive(Debug, Clone)]
@@ -336,11 +434,30 @@ impl SessionStore {
 
         #[cfg(not(unix))]
         let lock = {
-            let _ = file;
-            SessionLock {}
+            let _ = id;
+            take_immediate(file)?
         };
 
         Ok(lock)
+    }
+
+    /// Take an exclusive cross-process lock on a shared file, **waiting** for it.
+    ///
+    /// Used by the schedule task store, whose writes are read-modify-write of a
+    /// JSON array: two frontends (GUI driving, TUI registering) may touch it at
+    /// once, and a lost update there is silent data loss (ADR-0088 §5).
+    pub fn lock_file_blocking(&self, name: &str) -> Result<FileLock, StoreError> {
+        let dir = self.root.join("locks");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        lock_exclusive_blocking(&file)?;
+        Ok(FileLock { _file: file })
     }
 
     /// Append `interrupted` results for tool calls whose result never landed
@@ -490,6 +607,19 @@ impl SessionStore {
                 next_fire_at TEXT,
                 last_status TEXT,
                 missed_windows INTEGER NOT NULL DEFAULT 0
+            );",
+        )?;
+        // Cross-process facts about the *process*, not about one task
+        // (ADR-0088 §3). The scheduler's clock lives in the GUI today, so
+        // "who is driving" has to be visible to a frontend that has no clock
+        // of its own — otherwise "registered" is a promise nobody can check.
+        // It must not go into `schedules`: that table is keyed by task name and
+        // a heartbeat is a singleton, so it would need a reserved row name.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS runtime_status (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );",
         )?;
         Ok(conn)
@@ -823,6 +953,49 @@ impl SessionStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Remember a cross-process fact about the running process (ADR-0088 §3).
+    ///
+    /// Used for the scheduler's heartbeat: the clock lives in the GUI, and a
+    /// frontend without one has to be able to tell "nobody is driving" from
+    /// "driving, just quiet". Overwrites: one row per key.
+    pub fn set_runtime_status(
+        &self,
+        key: &str,
+        value: &str,
+        at: time::PrimitiveDateTime,
+    ) -> Result<(), StoreError> {
+        let conn = self.open_index()?;
+        conn.execute(
+            "INSERT INTO runtime_status (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at",
+            params![key, value, format_wall_clock(at)],
+        )?;
+        Ok(())
+    }
+
+    /// Read a [`SessionStore::set_runtime_status`] row back.
+    pub fn runtime_status(
+        &self,
+        key: &str,
+    ) -> Result<Option<(String, time::PrimitiveDateTime)>, StoreError> {
+        let conn = self.open_index()?;
+        let mut stmt =
+            conn.prepare("SELECT value, updated_at FROM runtime_status WHERE key = ?1")?;
+        let mut rows = stmt.query_map(params![key], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let Some(row) = rows.next() else {
+            return Ok(None);
+        };
+        let (value, at) = row?;
+        // An unparseable timestamp is the same as never written: the caller's
+        // only question is "was a driver here recently", and a value we cannot
+        // place in time cannot answer it.
+        Ok(parse_wall_clock(&at).map(|at| (value, at)))
     }
 
     /// Forget the rows of schedules that are no longer in the config. Returns
@@ -1358,6 +1531,7 @@ mod tests {
             last_receipt: None,
             delivery_log: Vec::new(),
             earlier_records_pruned: false,
+            missed_windows: 0,
             reserved_session_id: None,
             next_fire_at: None,
             cwd: None,
@@ -1440,4 +1614,115 @@ mod tests {
                 .expect("other task not landed")
         );
     }
+}
+
+/// ADR-0088 §5 的锁必须是**跨进程**的，而同进程内 `flock` 对同一个 fd
+/// 的重复获取是成功的（锁属于进程，不是 fd），所以单进程测试根本测不到
+/// 互斥。这里开两个真线程 + 两次独立 `open`：POSIX 下同一进程的不同 fd
+/// 之间 `flock` 仍会互斥，足以证明「谁先拿到、另一个等」。
+///
+/// 更贴切的验证是 `tests/` 下的双进程用例，但那要 spawn 二进制；这一条
+/// 覆盖的是「锁确实阻塞、而不是静默放行」。
+#[test]
+fn file_lock_blocks_a_second_holder_until_released() {
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    let first = store.lock_file_blocking("schedule-tasks").expect("first");
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let writer = {
+        let store = store.clone();
+        let order = order.clone();
+        std::thread::spawn(move || {
+            let _second = store
+                .lock_file_blocking("schedule-tasks")
+                .expect("second acquires once released");
+            order.lock().expect("order").push("writer");
+        })
+    };
+
+    // 给 writer 一点时间去撞锁；它必须还没进去。
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert!(
+        order.lock().expect("order").is_empty(),
+        "the second holder got in while the first still held the lock"
+    );
+    order.lock().expect("order").push("main-drops");
+    drop(first);
+    writer.join().expect("writer");
+    assert_eq!(
+        *order.lock().expect("order"),
+        ["main-drops", "writer"],
+        "the writer must only proceed after the guard is dropped"
+    );
+}
+
+#[test]
+fn runtime_status_round_trips_and_overwrites() {
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    assert_eq!(
+        store.runtime_status("driver.heartbeat").expect("read"),
+        None
+    );
+
+    let first = crate::schedule::at(2026, time::Month::June, 1, 9, 0);
+    store
+        .set_runtime_status("driver.heartbeat", "gui:1", first)
+        .expect("write");
+    let (value, at) = store
+        .runtime_status("driver.heartbeat")
+        .expect("read")
+        .expect("row");
+    assert_eq!(value, "gui:1");
+    assert_eq!(at, first);
+
+    // 心跳是覆盖写，不是追加：一个键只有一行。
+    let second = crate::schedule::at(2026, time::Month::June, 1, 9, 1);
+    store
+        .set_runtime_status("driver.heartbeat", "gui:1", second)
+        .expect("overwrite");
+    let (_, at) = store
+        .runtime_status("driver.heartbeat")
+        .expect("read")
+        .expect("row");
+    assert_eq!(at, second);
+}
+
+#[test]
+fn driver_status_distinguishes_running_stale_and_unknown() {
+    use crate::scheduler::{DRIVER_HEARTBEAT_BUDGET, DRIVER_HEARTBEAT_KEY, DriverStatus};
+
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    let now = crate::schedule::at(2026, time::Month::June, 1, 9, 0);
+
+    // 从没写过：Unknown，而不是「不在跑」——这两件事对用户是不同的
+    // （一个还没配好，一个曾经会跑但停了）。
+    assert_eq!(DriverStatus::read(&store, now), DriverStatus::Unknown);
+
+    // 刚写过：在跑。
+    store
+        .set_runtime_status(DRIVER_HEARTBEAT_KEY, "gui:1", now)
+        .expect("write");
+    assert_eq!(
+        DriverStatus::read(&store, now),
+        DriverStatus::Running { at: now }
+    );
+    assert!(DriverStatus::read(&store, now).is_running());
+
+    // 超过预算没更新：Stale。保留 `at` 是为了能告诉用户「上次是几点」。
+    let later = now + DRIVER_HEARTBEAT_BUDGET + time::Duration::seconds(1);
+    assert_eq!(
+        DriverStatus::read(&store, later),
+        DriverStatus::Stale { at: now }
+    );
+    assert!(!DriverStatus::read(&store, later).is_running());
+
+    // 边界：正好等于预算仍算在跑（避免 90s 整那一刻闪一下「不在跑」）。
+    let boundary = now + DRIVER_HEARTBEAT_BUDGET;
+    assert_eq!(
+        DriverStatus::read(&store, boundary),
+        DriverStatus::Running { at: now }
+    );
 }

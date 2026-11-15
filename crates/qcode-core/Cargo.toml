@@ -30,3 +30,13 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# `LockFileEx` for the schedule-task write lock (ADR-0088 §5). The same API
+# guards the GUI's single-instance lock (ADR-0083), so this is not a new
+# platform surface — just the first user of it inside qcode-core.
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }

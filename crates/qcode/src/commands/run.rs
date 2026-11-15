@@ -233,10 +233,13 @@ pub(crate) async fn cmd_run(
         .with_shell(loaded.agent.snapshot_shell);
 
     // The child registry excludes `subagent`, so nesting stops at depth one;
-    // it also drops the schedule tools, whose runtime driver only exists on the
-    // GUI side (a sub-agent cannot create or manage scheduled tasks), and
-    // `ask_user`, because interaction belongs to the runtime root (a sub-agent
-    // reports its unanswered question to the parent model instead).
+    // it also drops the schedule tools and `ask_user`.
+    //
+    // 这两条的理由在 ADR-0088 之后变了，值得写准：定时任务已经不是「只有 GUI
+    // 支持」（登记三端都有），**剔除的理由换成了「子代理不该有会话之外的持久
+    // 副作用」**——它是一次可丢弃的委派，留下的 cron 条目会在父会话早已结束后
+    // 继续烧钱。`ask_user` 同理属于运行时根：子代理把没答上来的问题报给父模型，
+    // 而不是自己弹窗。
     let runner = qcode_kernel::subagent::build(
         &store,
         provider.clone(),
@@ -274,6 +277,13 @@ pub(crate) async fn cmd_run(
         );
     }
 
+    // 定时任务：`qc run` 能**登记**（任务定义是 store 里的纯数据），但不会**触发**
+    // ——驱动（时钟 + 会话宿主）不在这个进程里（ADR-0088 §1）。工具结果会说明这条，
+    // 所以这里注入的是「能登记 + 驱动状态」而不是干脆不给。
+    let scheduler = std::sync::Arc::new(qcode_core::scheduler::Scheduler::new(store.clone()));
+    let driver =
+        qcode_core::scheduler::DriverStatus::read(&store, qcode_core::schedule::now_local());
+
     let outcome = run_turn(
         TurnContext {
             store: &store,
@@ -282,7 +292,9 @@ pub(crate) async fn cmd_run(
             policy: &policy,
             approver: approver.as_ref(),
             snapshots: Some(&snapshots),
-            scheduler: None,
+            scheduler: Some(scheduler),
+            // `qc run` 本身不驱动定时任务；心跳里有没有人，读出来才知道。
+            driver,
             questioner,
         },
         RunOptions {

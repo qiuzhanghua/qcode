@@ -78,6 +78,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

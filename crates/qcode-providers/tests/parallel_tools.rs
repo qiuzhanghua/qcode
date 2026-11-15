@@ -150,6 +150,7 @@ async fn run(
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

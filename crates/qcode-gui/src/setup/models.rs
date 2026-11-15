@@ -196,7 +196,13 @@ pub(super) fn default_model_candidates(config: &Config) -> Vec<(String, Vec<Stri
         // mock 路由不是真 provider，不该被选成默认。
         if matches!(
             name.as_str(),
-            "mock" | "mock-tools" | "mock-approval" | "mock-todo" | "mock-subagent" | "mock-ask"
+            "mock"
+                | "mock-tools"
+                | "mock-approval"
+                | "mock-todo"
+                | "mock-subagent"
+                | "mock-ask"
+                | "mock-schedule"
         ) {
             continue;
         }

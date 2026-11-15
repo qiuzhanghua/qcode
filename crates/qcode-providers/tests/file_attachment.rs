@@ -75,6 +75,7 @@ async fn a_file_reaches_the_model_as_a_handle_and_survives_replay() {
             approver: &qcode_core::approval::AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         options(&id, dir.path(), vec![file.clone()]),

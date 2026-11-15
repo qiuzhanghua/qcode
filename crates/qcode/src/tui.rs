@@ -311,6 +311,13 @@ fn handle_question_key(pending: &mut Option<PendingQuestion>, key: &KeyEvent) ->
 }
 
 pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    // 定时任务：TUI 能**登记**（任务定义是 store 里的纯数据），但没有调度时钟
+    // ——驱动在 GUI 那边（ADR-0088 §1）。所以这里是「给 handle + 报心跳状态」，
+    // 而不是从前那样干脆不给 handle、让工具报"服务不可用"。
+    let tui_scheduler =
+        std::sync::Arc::new(qcode_core::scheduler::Scheduler::new(options.store.clone()));
+    let tui_driver =
+        qcode_core::scheduler::DriverStatus::read(options.store, qcode_core::schedule::now_local());
     // Validate the session before touching the terminal.
     let history = options
         .resume
@@ -448,7 +455,10 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     policy: options.policy,
                     approver: approver.as_ref(),
                     snapshots: Some(&snapshots),
-                    scheduler: None,
+                    scheduler: Some(tui_scheduler.clone()),
+                    // TUI 没有调度时钟：登记由 `tui_scheduler` 完成，触发要
+                    // 看心跳里有没有 GUI 在跑（ADR-0088 §2）。
+                    driver: tui_driver,
                     questioner: Some(questioner.clone()),
                 },
                 RunOptions {

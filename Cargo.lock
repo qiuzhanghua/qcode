@@ -5362,6 +5362,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
@@ -5420,6 +5421,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

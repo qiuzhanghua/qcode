@@ -231,6 +231,35 @@ impl ProviderRegistry {
                     },
                 ],
             ]),
+            // 一次 `schedule_create` + 收尾文本。存在的理由和 `mock-todo` 一样：
+            // 端到端判定「工具真的接上了、结果真的回到模型」，而不是只测工具本体
+            // （ADR-0088 的验收要求：`qc run` / TUI 里登记必须成功并说明驱动）。
+            "mock-schedule" => MockProvider::scripted(vec![
+                vec![
+                    StreamEvent::Started,
+                    StreamEvent::ToolCallDone {
+                        call_id: "sched-1".to_string(),
+                        name: "schedule_create".to_string(),
+                        arguments: serde_json::json!({
+                            "title": "daily-report",
+                            "prompt": "写日报",
+                            "rule": "daily 09:00",
+                            "target": "new",
+                            "cwd": "/tmp"
+                        }),
+                    },
+                    StreamEvent::Ended {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ],
+                vec![
+                    StreamEvent::Started,
+                    StreamEvent::TextDelta("定时任务已登记。".to_string()),
+                    StreamEvent::Ended {
+                        stop_reason: StopReason::EndTurn,
+                    },
+                ],
+            ]),
             "mock-subagent" => MockProvider::scripted(vec![
                 vec![
                     StreamEvent::Started,

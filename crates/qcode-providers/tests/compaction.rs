@@ -128,6 +128,7 @@ async fn old_turns_are_summarized_and_replay_uses_the_summary() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {
@@ -213,6 +214,7 @@ async fn a_roomy_window_skips_compaction() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

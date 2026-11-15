@@ -61,13 +61,17 @@ pub(crate) async fn cmd_acp(
         model = %kernel.resolved.model,
         "acp server starting"
     );
+    // 定时任务：ACP 能**登记**（任务定义是 store 里的纯数据），但编辑器里没有调度
+    // 时钟——触发要 GUI 在跑。以前这里把四个工具整体剔除，等于连登记也不给
+    // （ADR-0088 §1/§5）。
+    let scheduler =
+        std::sync::Arc::new(qcode_core::scheduler::Scheduler::new(kernel.store.clone()));
+    let driver =
+        qcode_core::scheduler::DriverStatus::read(&kernel.store, qcode_core::schedule::now_local());
     let deps = qcode_acp::Deps {
         store: kernel.store,
         provider: kernel.provider.into(),
-        // ACP 是无头服务：定时任务工具依赖 GUI 引擎的运行时驱动，这里剔除。
-        tools: kernel
-            .tools
-            .without(&qcode_tools::schedule::SCHEDULE_TOOL_NAMES),
+        tools: kernel.tools,
         policy: kernel.policy,
         workspace,
         model: kernel.resolved.model.clone(),
@@ -79,6 +83,8 @@ pub(crate) async fn cmd_acp(
         agents_md,
         skills: skills_prompt,
         network: kernel.network,
+        scheduler: Some(scheduler),
+        driver,
     };
     qcode_acp::stdio::run(Arc::new(deps)).await?;
     Ok(ExitCode::SUCCESS)

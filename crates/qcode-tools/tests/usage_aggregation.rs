@@ -100,6 +100,7 @@ async fn tool_usage_and_cost_reach_the_parent_turn() {
             approver: &AutoApprove,
             snapshots: None,
             scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
             questioner: None,
         },
         RunOptions {

@@ -69,6 +69,7 @@ embed-resource = "3"
 
 [dev-dependencies]
 tempfile.workspace = true
+time.workspace = true
 # 曾经有过 `gui` feature（默认关，另出一份 `qcode-desktop`）。ADR-0086 把它删了：
 # 发行物只有一个 `qc`，窗口是它的固有部分，不是可选插件。留着一个「一关就编不过」
 # 的空 feature 只会误导人——`--no-default-features` 现在是无操作，照常编出带窗口的

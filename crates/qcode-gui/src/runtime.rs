@@ -348,6 +348,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             // scheduler that missed nothing, and a clock corrected backwards
             // would look like one that owes a turn.
             let mut last_beat: Option<std::time::Instant> = None;
+            // 谁在开车：写进心跳，供没有时钟的前端（TUI / CLI）判定「驱动在跑」。
+            // 用进程启动时刻而不是 pid：pid 会被复用，读到一个 pid 无法证明它就是
+            // 当初写下的那个进程（ADR-0083 对 pid 文件的否定同理）。
+            let driver_instance = format!(
+                "gui:{}",
+                qcode_core::schedule::now_local()
+                    .to_string()
+                    .replace(' ', "T")
+            );
             let mut published: HashMap<SessionTarget, Published> = HashMap::new();
 
             // An approval prompt from a scheduled turn expires (ADR-0059 §4):
@@ -519,8 +528,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // ADR-0087: the GUI registers `subagent` too. The child
                         // registry is this turn's registry minus the tools a
                         // child must not have — nesting stops at depth one, and
-                        // interaction (`ask_user`) and scheduling belong to the
-                        // runtime root, exactly as in `qc run` and the TUI.
+                        // `ask_user` belongs to the runtime root. Scheduling is
+                        // dropped for a different reason since ADR-0088: it is
+                        // no longer "GUI only" (every frontend can register),
+                        // but a child's cron entry outlives the parent turn it
+                        // was created in — a delegatable job must not leave
+                        // persistent side effects behind, exactly as in
+                        // `qc run` and the TUI.
                         let mut tools = tools;
                         {
                             let child_port = sink.clone();
@@ -595,6 +609,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 approver: &task_approver,
                                 snapshots: snapshots.as_ref(),
                                 scheduler: Some(task_scheduler),
+                                // 时钟就在这个进程里（下面那个 `clock` 分支），
+                                // 所以"谁在触发"的答案是「我自己」——不需要去读
+                                // 心跳，也不必让一个刚起来、还没到第一拍的用户
+                                // 看到"驱动未知"（ADR-0088 §3）。
+                                driver: qcode_core::scheduler::DriverStatus::Running {
+                                    at: qcode_core::schedule::now_local(),
+                                },
                                 questioner: Some(std::sync::Arc::new(task_questioner)),
                             },
                             options,
@@ -697,6 +718,17 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // through exactly the same path as a typed one.
                     _ = clock.tick() => {
                         let beat = std::time::Instant::now();
+                        // 先留心跳（ADR-0088 §3）：别的进程要能看出「这个数据目录
+                        // 有人在推动时间」。写在 away 判定之前——挂起期间心跳本来
+                        // 就该停在旧值上，那正是「不在跑」的证据。
+                        let heartbeat_at = qcode_core::schedule::now_local();
+                        if let Err(error) = engine.store.set_runtime_status(
+                            qcode_core::scheduler::DRIVER_HEARTBEAT_KEY,
+                            &driver_instance,
+                            heartbeat_at,
+                        ) {
+                            tracing::warn!(%error, "cannot write driver heartbeat");
+                        }
                         // A gap means the process was away: count the windows
                         // that passed and schedule the next one, without
                         // replaying them (a night's sleep must not release
@@ -819,6 +851,43 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // 迁移导入后的任务由这里接管投递。与 config 条目共用同一
                         // 时钟 beat：cron 分钟级、interval ≥60s，30s beat 精度足够。
                         let now = qcode_core::schedule::now_local();
+
+                        // 宿主不在（睡了一夜、关了一整天）时，运行时任务也要「推进而
+                        // 不补投」——ADR-0059 §3 的语义原先只落在 config 路径上，
+                        // 这里漏了，于是关三天再开会让所有过期任务在开机后一拍内一起
+                        // 触发一轮（ADR-0088 §4）。与 config 分支同一个 `away` 判定。
+                        if away {
+                            let mut recorded = 0;
+                            for task in scheduler.list() {
+                                if task.status != TaskStatus::Active || task.next_fire_at.is_none()
+                                {
+                                    continue;
+                                }
+                                let recovery = qcode_core::schedule::recover_task(&task, now);
+                                let grew = recovery.missed > task.missed_windows;
+                                let _ = scheduler.update(&task.id, |fresh| {
+                                    fresh.next_fire_at = recovery.next_fire_at;
+                                    fresh.missed_windows = recovery.missed;
+                                    // 一次性规则已经过去：没有下一次了，收尾而不是
+                                    // 留一条永远 Active、next 为 None 的僵尸。
+                                    if recovery.next_fire_at.is_none() {
+                                        fresh.status = TaskStatus::Ended;
+                                    }
+                                });
+                                if grew {
+                                    recorded += 1;
+                                }
+                            }
+                            if recorded > 0 {
+                                tracing::info!(
+                                    tasks = recorded,
+                                    "scheduler was away; missed windows recorded, not replayed"
+                                );
+                                port.tagged(SessionTarget::Draft).send_schedule_changed();
+                            }
+                            // 这一拍不投递任何运行时任务：它们刚被推进到未来。
+                            continue;
+                        }
 
                         // ① 确认已投递：user/message 事件落盘 = 投递已确认
                         //（回执 ≠ 执行完成；以日志为事实源）。

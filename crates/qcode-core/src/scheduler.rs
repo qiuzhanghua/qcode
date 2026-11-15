@@ -28,6 +28,62 @@ pub enum ScheduleError {
     Rule(#[from] crate::schedule::RuleError),
 }
 
+/// 「谁在推动时间」的答案（ADR-0088 §3）。
+///
+/// 任务定义是纯数据，任何前端都能登记；但**让任务真的到点触发**需要有一个持有
+/// 调度时钟的进程（ADR-0059 §1：一个时钟，不是 N 个）。今天那个进程是 GUI。
+/// 三端共用这个读面，才不会各自编一套「需要 GUI 在跑」的措辞。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverStatus {
+    /// 有驱动在跑，最近一次心跳在 `at`。
+    Running { at: PrimitiveDateTime },
+    /// 有心跳记录，但已经太久没更新：进程大概已经退出了。
+    Stale { at: PrimitiveDateTime },
+    /// 从没有驱动写过心跳（这个数据目录没跑过会驱动的前端）。
+    Unknown,
+}
+
+/// 心跳多久不更新就算「不在跑」。
+///
+/// 与调度器判断「进程不在」用的 `gap_limit`（三个 beat）是**同一个口径**：
+/// 两处若各自定阈值，会出现「驱动认为自己在跑、任务认为已经错过」的错位。
+/// 默认 beat 是 30s，所以 90s 是默认值（`qcode-gui::runtime` 的 `beat`）。
+pub const DRIVER_HEARTBEAT_BUDGET: time::Duration = time::Duration::seconds(90);
+
+impl DriverStatus {
+    /// 读 store 里那条心跳，按 `now` 判定新鲜度。
+    pub fn read(store: &SessionStore, now: PrimitiveDateTime) -> Self {
+        match store.runtime_status(DRIVER_HEARTBEAT_KEY) {
+            Ok(Some((_, at))) => {
+                if now - at > DRIVER_HEARTBEAT_BUDGET {
+                    Self::Stale { at }
+                } else {
+                    Self::Running { at }
+                }
+            }
+            // 读不出来与从没写过，对调用方是同一件事：没有人能证明驱动在跑。
+            Ok(None) | Err(_) => Self::Unknown,
+        }
+    }
+
+    /// 是否有人正在推动时间。
+    pub fn is_running(self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
+    /// 一句话说清「能不能触发」，供工具结果与界面共用。
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Running { .. } => "驱动在跑（定时任务会正常触发）",
+            Self::Stale { .. } => "驱动不在跑（上次心跳已过期；到点不会触发，记为错过）",
+            Self::Unknown => "未知（这个数据目录还没有会驱动定时任务的前端跑过）",
+        }
+    }
+}
+
+/// 心跳在 `runtime_status` 表里的键。
+pub const DRIVER_HEARTBEAT_KEY: &str = "driver.heartbeat";
+
 /// 新建任务的输入（`rule` 已解析为冻结规则，见 `schedule::parse_rule`）。
 #[derive(Debug, Clone)]
 pub struct NewTask {
@@ -58,6 +114,13 @@ pub struct EditTask {
 pub struct Scheduler {
     store: SessionStore,
 }
+
+/// 任务表写锁的名字（文件 `<root>/locks/schedule-tasks.lock`）。
+///
+/// 任务表是「读全表 → 改 → 写全表」，而 ADR-0088 之后 **TUI/CLI 也能写**：
+/// 两个前端同时登记时，后来者若拿自己那份旧快照写回，就会把前者整表覆盖。
+/// 锁只在读改写这一段持有（毫秒级），不包住任何会等人的操作。
+const SCHEDULE_TASKS_LOCK: &str = "schedule-tasks";
 
 impl Scheduler {
     pub fn new(store: SessionStore) -> Self {
@@ -136,16 +199,19 @@ impl Scheduler {
             last_receipt: None,
             delivery_log: Vec::new(),
             earlier_records_pruned: false,
+            missed_windows: 0,
             reserved_session_id: None,
             next_fire_at,
             cwd: input.cwd,
         };
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         tasks.push(task.clone());
         self.store.save_schedule_tasks(&tasks)?;
         Ok(task)
     }
-
     /// 编辑任务。改规则时从 `now` 重算下一次触发点。
     pub fn edit(
         &self,
@@ -153,6 +219,9 @@ impl Scheduler {
         patch: EditTask,
         now: PrimitiveDateTime,
     ) -> Result<ScheduledTask, ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let updated = {
             let task = tasks
@@ -218,6 +287,9 @@ impl Scheduler {
     }
 
     pub fn pause(&self, id: &str) -> Result<(), ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let task = tasks
             .iter_mut()
@@ -229,6 +301,9 @@ impl Scheduler {
     }
 
     pub fn resume(&self, id: &str, now: PrimitiveDateTime) -> Result<(), ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let task = tasks
             .iter_mut()
@@ -244,6 +319,9 @@ impl Scheduler {
 
     /// 立即执行一次：把下一次触发点拨到 `now`，驱动扫描即视为到期。
     pub fn run_now(&self, id: &str, now: PrimitiveDateTime) -> Result<(), ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let task = tasks
             .iter_mut()
@@ -260,6 +338,9 @@ impl Scheduler {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let before = tasks.len();
         tasks.retain(|task| task.id != id);
@@ -276,6 +357,9 @@ impl Scheduler {
         id: &str,
         f: impl FnOnce(&mut ScheduledTask),
     ) -> Result<(), ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
             return Err(ScheduleError::NotFound(id.to_string()));
@@ -293,6 +377,9 @@ impl Scheduler {
         states: &BTreeMap<String, ScheduleState>,
         now: PrimitiveDateTime,
     ) -> Result<usize, ScheduleError> {
+        // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
+        // 自己那份旧快照写回，会把前者整表覆盖。
+        let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
         let mut existing: HashSet<String> = tasks.iter().map(|task| task.id.clone()).collect();
         let mut added = 0;
@@ -429,6 +516,39 @@ mod tests {
             approval_timeout: None,
             cwd: None,
         }
+    }
+
+    /// ADR-0088 §5：两个「前端」（这里是两个线程、两个 Scheduler 实例，
+    /// 与两个进程对同一 tasks.json 的关系等价）同时登记，两条任务都要在。
+    ///
+    /// 没有那把锁时，两边各自读到同一份快照、各自 push 一条再写回，后写者
+    /// 会用自己那份旧快照把前者覆盖掉——静默丢数据，而且只在高并发时出现。
+    #[test]
+    fn concurrent_creates_do_not_overwrite_each_other() {
+        let (dir, scheduler) = store();
+        let mut handles = Vec::new();
+        for index in 0..12 {
+            let scheduler = scheduler.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut input = new_task();
+                input.title = format!("task-{index}");
+                scheduler.create(input, now()).expect("create")
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("thread");
+        }
+        // 从磁盘重读，而不是问内存：覆盖是写回时的错。
+        let stored = SessionStore::new(dir.path()).load_schedule_tasks();
+        assert_eq!(stored.len(), 12, "a write lost a peer's task");
+        let mut titles: Vec<&str> = stored.iter().map(|task| task.title.as_str()).collect();
+        titles.sort_unstable();
+        let mut expected: Vec<String> = (0..12).map(|index| format!("task-{index}")).collect();
+        expected.sort_unstable();
+        assert_eq!(
+            titles,
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
     }
 
     #[test]
