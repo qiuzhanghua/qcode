@@ -97,6 +97,34 @@ GUI 的基本模型：
 `--yes` 自动批准策略为 ask 的调用。没有它时：终端里逐次确认，非 TTY 环境默认拒绝。
 取消：Ctrl-C 一次取消当前 turn，再按一次立即退出。
 
+### `qc run` 在管道里会「默默拒绝」，不是「等你审批」
+
+`run` 是无人值守的，没法弹窗，所以审批者按 stdin 是不是终端三选一
+（`crates/qcode/src/commands/run.rs`）：
+
+| 调用方式 | 审批者 | 遇到 ask 策略的工具时 |
+|---|---|---|
+| `qc run "..."`（终端里） | `InteractiveApprover` | 逐次问你 y/n |
+| `qc run "..." --yes` | `AutoApprove` | 直接放行 |
+| `qc run "..." < /dev/null` / `| tee` / 脚本里调 | `AutoDeny` | **直接拒绝，不询问** |
+
+最后一行是最容易误判的一种：在管道或重定向里跑，agent 改不了文件、跑不了命令，
+而现象看起来像「模型不会用工具」或「工具坏了」——其实是被静默拒了。要让它真正动手，
+显式加 `--yes`。
+
+同一张表还适用于另一个工具：`ask_user`（模型反问你）——**只在**「不带 `--yes` 且
+stdin 是终端」时才可用；其余情况提问直接失败（阻塞式）或超时（带 timeout 的）。
+`--yes` 只自动批准**工具权限**，不会被当成对提问的自动回答，这是有意的：没有人能替
+你回答「这段代码你想要什么行为」。
+
+```bash
+# 想在脚本里让 agent 真的改文件：显式给 --yes
+qc run "把 src/lib.rs 里的 todo 补完" --yes --provider deepseek
+
+# 只是收集输出、不打算让它动手：保持默认（AutoDeny）更安全
+qc run "看一下 src/lib.rs 并总结" | tee report.txt
+```
+
 TUI 键位：Enter 发送、**Ctrl-N 换行**（支持 Kitty 键盘协议的终端里 Shift+Enter 也可）、
 Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
 Ctrl-B 折叠/展开最近一次子 agent 组、Ctrl-T 切换 ctx 显示（自动 / 百分比 / token 绝对值）、
