@@ -9947,6 +9947,7 @@ terminal UI」。裸 `qc` 打出来的就是这张表，所以用户不查文档
 
 **状态**：Accepted（2026-11-15）。**未实现**。依赖 ADR-0088（注册与驱动分离）、
 ADR-0059（调度语义）、ADR-0085（GUI 的 workspace 不是根）。不改变 ADR-0088 的任何决定。
+**实现规格见 [SCHEDULE-CLI.md](./SCHEDULE-CLI.md)**。
 
 **背景**
 
@@ -9995,32 +9996,71 @@ store、同一个 `Scheduler` 上，成本几乎相同；先做 create 而不做
 （`qcode-core/src/scheduler.rs:347-349`），删一个不存在的 id 本来就会报错；软删会给
 `tasks.json` 引入一个「墓碑」状态，而它是纯数据文件、没有回收站语义。
 
-### 2. `cwd` 必须落成绝对路径，默认取 pwd，并在输出里回显
+### 2. `cwd` 的缺省规则：`~`，除非从 CLI 启动——一条规则，三处共用
 
-**这是本 ADR 最重要的一条，它修的是一处静默错误。**
+**这是本 ADR 最重要的一条。**
 
-`cwd: None` 在驱动侧会回落到**GUI 当刻的 workspace**（`gui/runtime.rs:522-526`），而
-macOS 上那个默认是家目录（ADR-0085）。于是「在仓库里建的每日任务，实际在家目录里跑」
-——没有任何提示，第一次发现是任务跑出来的结果不对。
+先把规则说全，因为它是**整机的**，不是本命令自己发明的：
 
-工具路径有一道保护：`cwd` 缺失时**主动问用户**（`qcode-tools/src/schedule.rs:293-299`，
-`QuestionRequest` + `pick_directory`），不依赖模型自觉。但**这道保护在 headless 下不存在**
-——`qc run` 里 `questioner` 仅在「非 `--yes` 且有 tty」时才装（`qcode/src/commands/run.rs:224-228`），
-其余情况是 `None`，于是 `cwd` 留在 `None`，到点仍回落到 GUI 的 workspace。
+> **缺省 workspace 是家目录 `~`。从 CLI 启动时用当前目录（pwd）。pwd 是文件系统根时，
+> 仍然回落 `~`。**
 
-也就是说：**这处静默错误今天就已经存在**，只是走 `qc run` 的人少、或者没注意。CLI 每日
-可用，会让它变得常见，所以：
+这不是新规矩，是三处既有行为的一致化：
 
-- `--cwd` 缺省 = `std::env::current_dir()`，**绝对化后存盘**；
+| 启动方式 | 既有行为 | 依据 |
+|---|---|---|
+| GUI 从 Dock / 图标 | cwd 是 `/`（launchd 给的），回落 `~` | ADR-0085，`gui_workspace()` 实测 |
+| GUI 从终端 / `.desktop` 带路径 | cwd 就是终端那个目录 | 同上 |
+| **CLI / `qc run` / `qc tui`** | cwd 就是 pwd | 实测（`session_started.cwd` / `task_configured.roots`） |
+| **`qc schedule create`（本 ADR）** | **要跟 CLI 那条一致：pwd** | 本条 |
+| **任务到点投递时 cwd 为 `None`** | 回落到驱动进程的 workspace，即上面几行的结果 | `gui/runtime.rs:522-526` |
+
+**“和沙箱一致”是真的，而且不是巧合**：workspace 会被包成那条 task 的 primary root
+（实测 `task_configured.roots[0].path == session_started.cwd`），沙箱的读写范围就是这些
+root。所以「缺省 cwd」与「缺省沙箱根」是同一个值——改一个就改两个。
+
+**所以 `qc schedule create` 的 `--cwd` 缺省必须是 pwd，且必须做根检查。** 理由不是风格，
+而是一处实测出来的失败：
+
+```
+$ cd / && qc run "hi" --config <sandbox mode>            # 沙箱开启
+error: sandbox setup failed: refusing to sandbox the filesystem root as a root
+```
+
+今天它是**响亮的**失败（当场退出）。但定时任务把这件事**推迟**了：`qc schedule create`
+在 `/` 下跑，`cwd="/"` 顺利存盘（创建过程不碰沙箱），**几天后** GUI 投递那一回合才撞上
+同一句错误——那时用户已经忘了自己当时站在哪里，而失败发生在后台。
+
+也就是说：**同一个缺省值，同步命令里是响亮失败，延迟执行里是静默失败。** 这一条就是为了
+把后者变回前者。
+
+具体：
+
+- `--cwd` 缺省 = `std::env::current_dir()`，绝对化后存盘；
+- **若该目录的 `parent()` 为 `None`（即文件系统根），回落 `~`**——复用
+  `choose_workspace`（`qcode/src/commands/gui.rs:64-77`）那条规则，一行不改。Windows 的
+  `C:\` 同样 `parent()` 为 `None`，所以一条规则管三端，不用维护「哪些目录不好」的清单。
+- `~` 也拿不到（环境没给 `HOME`）时，用 pwd 并 `warn`：**有个目录胜过没有**——与
+  `choose_workspace` 的既有取舍相同（它的注释写着「the cwd we have beats failing to open
+  a window at all」）。
+- `--cwd` 显式给相对路径时同样绝对化（相对当时的 pwd）；给不存在的路径**直接报错**，
+  不静默接受——一个注定失败的 cwd 比没有 cwd 更糟。
 - 输出里明确写出「下次在 `/x/y` 里跑」。用户看得到，才有机会发现不对。
 
-`--cwd` 显式给相对路径时同样绝对化（相对当时的 pwd）；给不存在的路径直接报错，不静默
-接受——一个注定失败的 cwd 比没有 cwd 更糟。
+**`choose_workspace` 要搬去 `qcode-core`。** 它现在住在 `qc` 二进制的 `commands/gui.rs`
+里，而这次三条路都要用它（CLI 的缺省、`schedule_create` 的兜底、GUI 的既有行为）。
+搬家的理由与 §10 一样：让纯策略函数不绑在某个前端 crate 里。`qcode-tools` 已经依赖
+`qcode-core`，`real_home()` 也在那里（`qcode_kernel::config::home_dir()` 只是转发到它）。
 
-（`qc run` 侧的同一处亏空**不在本 ADR 范围内**收口，但记在这里：修法是让它把当时的
-workspace 落成绝对路径写进任务，与 CLI 同一条规则。见「后果」。）
+**一处不要“顺手修”的不对称**：`dangerous_write_root`（`qcode-core/src/paths.rs:45-61`）
+把家目录列为**危险的写根**，于是 `[sandbox] extra_writable = ["~"]` 会被拒绝
+（`config/mod.rs:745-754`）。但家目录**可以**作为 workspace root 而读写——GUI 从 Dock
+启动时就是这样，一切正常。这两件事不矛盾：`extra_writable` 是**配置级的全局加宽**（一次
+授权、每个 task 都吃到），workspace root 是**当前这个 task 的范围**（用户看得见、切得
+掉）。谁要「统一」它们，就会把 Dock 启动的 GUI 锁死。
 
 ### 3. `prompt` 必填，不合成、不给默认值
+
 
 工具路径里模型会把「提醒我看 CI」润色成一句完整的话；CLI 里**用户写什么就投递什么**，
 它到点会作为一条 user message 原样进会话。给默认值只会造出「每天八点：remind me」
@@ -10064,8 +10104,18 @@ workspace 落成绝对路径写进任务，与 CLI 同一条规则。见「后�
 ADR 里把话说死：**文本输出不承诺稳定**（可以为了可读性改措辞、对齐、加行），
 **`--json` 的字段才是稳定面**。不这么写，以后改一次缩进就会有人靠它做解析然后崩。
 
-`--json` 的字段至少：`id` / `title` / `rule` / `target` / `overlap` / `cwd` /
-`next_fire_at` / `status` / `driver`（`running|stale|unknown` + `at`）。
+`--json` 的字段：**`ScheduledTask` 原样序列化**（它已经是 `Serialize`，见
+`qcode-core/src/schedule.rs:1043-1044`），外面再包一层驱动状态。**不手抄字段清单**：
+手抄的清单会与结构体脱钩，而脱钩是静默的。
+
+```json
+{ "driver": {"state": "unknown|running|stale", "at": "2026-11-15T15:00:00"},
+  "tasks": [ { ...ScheduledTask... } ] }
+```
+
+`list --json` 一个对象、`tasks` 是数组（不是顶层数组）：以后要加 `count` / `data_dir`
+这类元信息时，不必破坏 `.[0]` 这种取法。`create --json` 返回 `{ "driver": ..., "task": {...} }`。
+
 `delete` 只有一行确认，不需要 `--json`。
 
 ### 7. 不加审批、不加交互确认
@@ -10098,6 +10148,34 @@ CLI 走 `Scheduler::create/delete/list`，与工具、与 GUI 设置页**同一�
 `driver_footer()` 可以复用，但 CLI 不 import `qcode-tools` 的渲染逻辑去反拼 UI——若复用
 成本高于重写，就重写，并保证三处说的是同一件事（§5 的文案一致性靠测试盯，见验证 6）。
 
+### 11. `qc run` 侧的同一处 `cwd` 亏空，本次一并收口
+
+§2 查明：`cwd: None` 会回落到驱动进程的 workspace，而 headless 下工具那道「问用户」的
+保护不存在。CLI 只堵住自己那一半，**Agent 建的每日任务仍然可能在家目录里跑**——留下
+半个修复比不修更容易让人误以为已经安全。
+
+所以这条进**本次范围**，兜底值就是 §2 那条规则的产物：
+
+- `schedule_create` 在 `cwd` 最终仍为 `None` 时，**把当时的会话工作目录绝对化后写入**。
+  取法：`ToolContext::shell_cwd()`（`qcode-core/src/tool.rs:109-116`，主 root 优先，
+  否则第一个 root，否则 temp）。
+- **这个目录本来就等于 §2 的答案**：CLI 启动时它是 pwd，Dock 启动的 GUI 里它是 `~`
+  （ADR-0085 的回落已经发生在 `gui_workspace()`）。所以这里不是另立一条规则，而是把
+  「已经生效的缺省」写成任务上的显式值。**不需要在这里再判一次根目录**——能走到这一步
+  说明 workspace 已经是合法的了（沙箱不接受 `/` 作为 root，`/` 根本跑不到 tool 这一步）。
+- 优先级不变：用户/模型显式给的 `cwd` > 询问得到的 > **本回合工作目录**。也就是说，
+  新增的只是「最后兜底从 `None` 变成绝对路径」，不改任何既有分支。
+- 若 `shell_cwd()` 返回 `None`（没有 roots 也没有 temp），**保持 `None` 并记一条
+  `tracing::warn`**，不因为兜底失败而拒绝建任务——「建成了但 cwd 未知」比「建不成」好。
+- GUI 设置页建任务走的是 `Target::NewOnce` + 显式 cwd 那条路，不受影响；但**同一条兜底
+  规则应当对它成立**：GUI 建任务时 `cwd` 为空就用 `engine.workspace` 填上——那正是它到点
+  会用的目录，于是「存了什么」与「实际跑在哪」一致，而且以后从别的目录启动 GUI 也不会
+  改变这条任务的落点。
+
+**为什么放在这个 ADR 而不是另开一个**：它是 §2 的同一条规则在另一条路径上的落地，两处
+分开写，将来必然一处改、一处忘。选择范围是「规则」而不是「命令」——规则的边界比命令的
+边界更稳定。
+
 **否决的方案**
 
 | 方案 | 否决理由 |
@@ -10117,11 +10195,12 @@ CLI 走 `Scheduler::create/delete/list`，与工具、与 GUI 设置页**同一�
 - **同一份数据有两个界面**（GUI 设置页 / CLI），字段增删要同步。缓解：CLI 只读 store、
   不缓存、不落第二份状态；字段增删时两边各自渲染同一结构体，编译器会拦住漏改。
 - **`cwd` 默认取 pwd 会让人意外**：在 `/` 或家目录里跑 `qc schedule create`，任务就在那
-  里跑。缓解是 §2 的回显——**必须做，不做则这条默认值不该存在**。
-- **`qc run` 侧的同一处静默回落不在本次收口**：headless（非 tty 或 `--yes`）没有
-  `questioner`，`cwd` 留在 `None`，到点用 GUI 的 workspace。修法与 CLI 相同（把当时的
-  workspace 绝对化写进任务），但它是另一条路径、要另一组测试，所以单列。**这条不修，
-  「Agent 建的每日任务在家目录里跑」就仍然可能发生**——CLI 只堵住了自己那一半。
+  里跑。缓解是 §2 的回显——**必须做，不做则这条默认值不该存在**。（`/` 那个情形已经由
+  §2 的根检查挡掉了：它会存成 `~`。家目录那个留着——用户就站在那儿，改它就是猜。）
+- **`qc run` 侧也改了**（§11）：`schedule_create` 的兜底从 `None` 变成「本回合工作目录
+  的绝对路径」。代价是 `tasks.json` 里从此不再出现 `cwd: null` 的新任务——如果将来有人
+  依赖「`null` = 跟随引擎」，那个信号就没有了。这条按 §2 的判断接受：**静默跟随一个
+  用户看不见的目录**比失去一个没人读的信号更糟。
 - **文本格式被脚本依赖的风险**。§6 已经声明不承诺稳定，但声明拦不住人。所以 `--json`
   必须**首发就有**，不能「以后再加」。
 - **CLI 没有「忙」的概念**：`overlap=queue` 的「等回合结束」由驱动侧判定，CLI 建的
@@ -10141,6 +10220,13 @@ CLI 走 `Scheduler::create/delete/list`，与工具、与 GUI 设置页**同一�
 7. 规则写错（`daily 25:00`、`weekly 9 08:00`）报错可读，**且不留下半条任务**——错误
    发生在写盘之前。
 8. `delete` 一个不存在的 id：报错、退出非 0、不动其他任务。
-9. **README 三端对照表要同步**：`定时任务 schedule_*` 那行现在写的是「✅ 登记（驱动仅
-   GUI）」。CLI 有了直接入口之后，这一行的意思变成「CLI/TUI 里既能通过 agent 登记，
+9. **在 `/` 里 `qc schedule create` 也能建**，且存下来的是 `~` 而不是 `/`（§2 的根检查）。
+   反向对照：`cd / && qc run "..."` 在沙箱开启时**当场**报
+   「refusing to sandbox the filesystem root as a root」——同一个值在同步命令里响亮失败，
+   在任务里必须不留下这个坑。
+10. **`qc run` 走同一条规则**（§11）：在 `/tmp/x` 里跑一条会调 `schedule_create` 的
+    headless 回合，`tasks.json` 里该任务的 `cwd` 是 `/tmp/x`（绝对路径），**不是 `null`**。
+    再在另一个目录跑一次，两条的 `cwd` 不同。
+11. **README 三端对照表要同步**：`定时任务 schedule_*` 那行现在写的是「✅ 登记（驱动仅
+    GUI）」。CLI 有了直接入口之后，这一行的意思变成「CLI/TUI 里既能通过 agent 登记，
    也能直接 `qc schedule create`」，措辞要跟着改——否则表说的是旧的唯一路径。
