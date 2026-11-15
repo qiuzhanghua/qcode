@@ -77,7 +77,7 @@ pub fn pricing_for(
 fn is_mock_name(name: &str) -> bool {
     matches!(
         name,
-        "mock" | "mock-tools" | "mock-approval" | "mock-todo" | "mock-subagent"
+        "mock" | "mock-tools" | "mock-approval" | "mock-todo" | "mock-subagent" | "mock-ask"
     )
 }
 

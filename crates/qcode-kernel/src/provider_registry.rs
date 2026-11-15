@@ -154,6 +154,37 @@ impl ProviderRegistry {
                     },
                 ],
             ]),
+            // Points the tool loop at `ask_user`. Exists so the headless wiring
+            // in `qcode run` can be tested end to end: with no TTY the runner
+            // wires no questioner at all, and the tool has to say so instead of
+            // hanging (crates/qcode/tests/ask_headless.rs). `--yes` must not
+            // change that — it auto-approves tool *permissions*, and there is
+            // no sensible way to auto-answer a question aimed at a human.
+            "mock-ask" => MockProvider::scripted(vec![
+                vec![
+                    StreamEvent::Started,
+                    StreamEvent::ToolCallDone {
+                        call_id: "ask-1".to_string(),
+                        name: "ask_user".to_string(),
+                        arguments: serde_json::json!({
+                            "questions": [{
+                                "id": "q1",
+                                "question": "这段代码你想要什么行为？"
+                            }]
+                        }),
+                    },
+                    StreamEvent::Ended {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ],
+                vec![
+                    StreamEvent::Started,
+                    StreamEvent::TextDelta("提问没能送达，我按默认行为继续。".to_string()),
+                    StreamEvent::Ended {
+                        stop_reason: StopReason::EndTurn,
+                    },
+                ],
+            ]),
             "mock-tools" => MockProvider::scripted(vec![
                 vec![
                     StreamEvent::Started,
