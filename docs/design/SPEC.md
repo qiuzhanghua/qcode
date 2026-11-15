@@ -239,7 +239,8 @@ shell 环境清洗：只传 `PATH HOME USER SHELL LANG LC_* TERM TMPDIR` 与用�
 
 | 命令 | 说明 |
 |---|---|
-| `qcode` | 启动 TUI（新会话） |
+| `qc` | 打印用法（ADR-0089；曾经是「启动 TUI」） |
+| `qc tui` | 启动 TUI（新会话） |
 | `qc run "prompt"` | headless；prompt 也可从 stdin 读 |
 | `qcode resume <id>` | 恢复会话（TUI） |
 | `qc sessions list/show` | 会话管理 |

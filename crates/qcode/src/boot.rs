@@ -39,7 +39,8 @@ pub const GUI_MARKER_ENV: &str = "QCODE_LAUNCHED_FROM_GUI";
 /// 这次该开哪种前端。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frontend {
-    /// 终端界面（默认）。
+    /// 终端界面。**不是「默认动作」**：裸 `qc` 落到这一层时打印用法，
+    /// 要进 TUI 得敲 `qc tui`（ADR-0089）。
     Tui,
     /// 桌面窗口。
     Gui,
@@ -297,7 +298,8 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 mod platform {
-    /// 三端之外的兜底：没有信号，一律 TUI。
+    /// 三端之外的兜底：没有信号，一律当作终端启动（ADR-0089 之后这意味着
+    /// 「裸 `qc` 打印用法」，而不是「进 TUI」）。
     pub(super) fn graphical_session() -> Option<&'static str> {
         None
     }

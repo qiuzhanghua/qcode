@@ -10,7 +10,7 @@ pub(crate) struct Cli {
     /// Approval policy file ([[rules]]). Replaces the config's approval rules.
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) approval_policy: Option<PathBuf>,
-    /// Without a subcommand, qc starts the TUI.
+    /// Without a subcommand, qc prints its usage. Use `qc tui` for the TUI.
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -21,6 +21,13 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Start the interactive terminal UI.
+    ///
+    /// ADR-0089: this used to be what bare `qc` did. It is a subcommand now
+    /// because typing `qc` by accident must not take over the terminal — and
+    /// because "which frontend" is a choice the user makes, not one inferred
+    /// from the fact that a terminal exists.
+    Tui,
     /// Run a single headless turn.
     Run(RunArgs),
     /// Resume a stored session in the TUI.

@@ -86,6 +86,7 @@ async fn run() -> ExitCode {
     }
 
     let result = match command {
+        Some(Command::Tui) => cmd_tui(data_dir, config, approval_policy, None).await,
         Some(Command::Run(args)) => cmd_run(args, data_dir, config, approval_policy).await,
         Some(Command::Resume(args)) => {
             cmd_tui(data_dir, config, approval_policy, Some(args.id)).await
@@ -114,11 +115,18 @@ async fn run() -> ExitCode {
             }
             Ok(ExitCode::SUCCESS)
         }
-        // 没有子命令：由启动形态决定（ADR-0086）。这一支是唯一会「看情况开窗口」
-        // 的地方——显式给了子命令就照子命令办，判定不参与。
+        // 没有子命令：只可能是「被 GUI 入口拉起」这一种情况还需要开窗
+        // （ADR-0086 §1 的标记层），其余一律打用法（ADR-0089）。
+        //
+        // 这里刻意**不**再退到 TUI：`qc` 敲错、脚本里写错一个变量，都会变成
+        // 一个占住终端的全屏程序，而退出它的办法（Ctrl-C 两次）不在任何人的
+        // 手指记忆里。「终端存在」不等于「用户想进入终端界面」。
         None => match launch.frontend {
             boot::Frontend::Gui => cmd_gui(data_dir, config, approval_policy).await,
-            boot::Frontend::Tui => cmd_tui(data_dir, config, approval_policy, None).await,
+            boot::Frontend::Tui => {
+                print_usage();
+                Ok(ExitCode::SUCCESS)
+            }
         },
     };
 
@@ -145,6 +153,7 @@ async fn run() -> ExitCode {
 /// `--api-key` would be.
 fn command_name(command: &Option<Command>, launch: boot::Frontend) -> &'static str {
     match command {
+        Some(Command::Tui) => "tui",
         Some(Command::Run(_)) => "run",
         Some(Command::Resume(_)) => "resume",
         Some(Command::Sessions(_)) => "sessions",
@@ -166,4 +175,22 @@ fn command_name(command: &Option<Command>, launch: boot::Frontend) -> &'static s
         Some(Command::Whoami) => "whoami",
         None => launch.as_str(),
     }
+}
+
+/// Bare `qc` prints usage instead of taking over the terminal (ADR-0089).
+///
+/// Goes to stdout and exits 0, exactly like `qc --help`: a typo or a script that
+/// expanded to nothing should leave a readable answer behind, not a full-screen
+/// program whose only exit is Ctrl-C twice.
+fn print_usage() {
+    // `render_help` into a string rather than `print_help` into clap's own
+    // handle: the text is what the integration test asserts on, and a `String`
+    // is the only shape that can be checked without capturing stdout.
+    use std::io::Write;
+    let text = <Cli as clap::CommandFactory>::command()
+        .render_help()
+        .to_string();
+    let mut out = std::io::stdout();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
 }

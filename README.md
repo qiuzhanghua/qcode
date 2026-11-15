@@ -12,7 +12,11 @@ GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 # 工具链入口（cot）
 c
 
-# TUI（无子命令、终端里敲；真实 provider 由 config/env 选择）
+# TUI（ADR-0089：裸 qc 只打用法，进 TUI 要显式敲 tui）
+# 真实 provider 由 config/env 选择
+./target/debug/qc tui
+
+# 裸 `qc` 打印用法并退出（曾经是进 TUI —— 敲错不该占满终端）
 ./target/debug/qc
 
 # 桌面 GUI：左侧“我的任务”，每个 Task 可挂多个目录
@@ -20,7 +24,7 @@ c
 ./target/debug/qc --launched-from-gui
 
 # TUI 上的工具循环演练
-QCODE_PROVIDER=mock-tools ./target/debug/qc
+QCODE_PROVIDER=mock-tools ./target/debug/qc tui
 
 # 用你自己的 CARGO_HOME 就行，不必指向仓库内（见下）
 cargo build --workspace
@@ -687,7 +691,7 @@ cargo build -p qcode-eval
   `qc sessions rollback <id> --to <turn> --yes` 或 TUI 里 `/rollback <turn>` 还原；
   `qc sessions gc --yes` 会顺带清理已删会话的快照与孤儿树（详见 ADR-0034）。
 - **GUI**：点图标/双击打开 GPUI Kit 桌面窗口（ADR-0037/0047/0048；`qc` 没有 `gui` 子命令，
-  见 ADR-0086——终端里敲 `qc` 永远是 TUI）：与 `qc run` / `qc acp` /
+  见 ADR-0086——GUI 由启动形态决定，不靠子命令）：与 `qc run` / `qc acp` /
   `qc tui` 使用同一个 `qcode_kernel::assemble`。左侧是“我的任务”，Task 可配置多个目录；
   支持 Task 新建/重命名/删除、目录增删/Relink/RO-RW/主目录、Turn 边界 pending Roots、
   审批浮层、图片粘贴、diff 视图、中断与 Settings 热重建。Composer 为 `Enter` 发送、

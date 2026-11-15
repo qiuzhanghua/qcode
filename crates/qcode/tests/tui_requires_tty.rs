@@ -1,5 +1,11 @@
 //! The TUI must refuse to start without a terminal instead of corrupting the
 //! output of a pipeline or a CI job.
+//!
+//! ADR-0089 moved the TUI behind `qc tui`, so this asks for it explicitly —
+//! bare `qc` no longer reaches the TUI at all (that is
+//! `bare_invocation.rs`'s job). Keeping the two apart matters: if bare `qc` ever
+//! stopped printing usage, this test would still pass, and the refusal that no
+//! longer protects anything would look like coverage.
 
 use std::process::{Command, Stdio};
 
@@ -18,6 +24,7 @@ fn tui_refuses_without_a_tty() {
         .env_remove("QCODE_LAUNCHED_FROM_GUI")
         .env_remove("__CFBundleIdentifier")
         .args([
+            "tui",
             "--data-dir",
             dir.path().join("data").to_str().expect("utf-8 path"),
         ])
