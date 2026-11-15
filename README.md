@@ -137,7 +137,7 @@ MCP 与 web_search、同样的事件日志与快照。**能读写文件、能跑
 | 审批 | 终端逐次问；管道 AutoDeny；`--yes` 全放 | 浮层里 `y`/`n`，`a` 本会话放行 | 浮层队列 |
 | `ask_user` | 仅「终端 + 不带 `--yes`」 | ✅ | ✅ |
 | 子代理 `subagent` | ✅（子代理不再嵌套，深度为 1） | ✅ 同左 | ✅ 同左 |
-| 斜杠命令 | ❌ | ✅ 全部 | ✅ 全部（输出在输入框上方的「命令输出」卡） |
+| 斜杠命令 | ❌ | ✅ 全部 | ✅ 全部（输出占据会话区，可滚动，Esc/关闭按钮退出） |
 | `/checkpoint` `/rollback` `/diff` | ❌ | ✅ | ✅ |
 | `/skills`、`/<skill-name>` 激活 | 通过 `--skill` 参数 | ✅ | ✅ |
 | 定时任务 `schedule_*` | ❌ 工具在但必失败（见下） | ❌ 同左 | ✅ |
@@ -161,8 +161,9 @@ MCP 与 web_search、同样的事件日志与快照。**能读写文件、能跑
    GUI 那两行现在是 ✅。
 
 斜杠命令的入口是**同一张表**：识别与格式化留在 `qcode-ui-state`，各前端只负责执行
-返回的动作。差别只在输出往哪写——TUI 写进 transcript 的方式是 notice 行，GUI 的 notice
-不渲染，所以命令输出落在输入框上方的「命令输出」卡里。`/continue` `/wrap` `/steer N`
+返回的动作。差别只在输出往哪写——TUI 写进 transcript 的方式是 notice 行；GUI 的 notice
+不渲染，所以命令输出**替换会话区**：一个占满消息区、自己滚动的整幅面板（ADR-0087 记了
+这里从「小卡片」被实测打回的经过），关掉后回到对话。`/continue` `/wrap` `/steer N`
 `/drop N` 在 GUI 里本来就有按钮（pause card 与队列 dock），斜杠命令只是同一条 backend
 调用的键盘入口。
 
