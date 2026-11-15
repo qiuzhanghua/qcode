@@ -5425,6 +5425,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-driver"
+version = "0.12.1"
+dependencies = [
+ "qcode-core",
+ "tempfile",
+ "time",
+]
+
+[[package]]
 name = "qcode-eval"
 version = "0.12.1"
 dependencies = [
