@@ -313,6 +313,40 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             // act on it; it is *not* the engine's idea of the live turn, because
             // there can be several (ADR-0058 §7, P5).
             let mut current = SessionTarget::Draft;
+            // 谁在开车：先抢驱动锁（ADR-0091）。抢到才是这个数据目录的时钟；
+            // 抢不到（另一个前端已经在推）就**不驱动**——窗口照常，只是不推动时间。
+            //
+            // 在此之前这里没有任何互斥，靠的是「GUI 单实例」这个隐含前提（ADR-0083），
+            // 而那条规则的作用域是显示会话，不是数据目录。ADR-0092 的 daemon 一旦落地，
+            // 两个驱动会同时在扫同一份任务表。
+            let driver_lock = match engine.store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
+                Ok(Some(lock)) => Some(lock),
+                Ok(None) => {
+                    tracing::info!(
+                        "another process holds the driver lock; this window will not schedule"
+                    );
+                    // 告诉用户，而不是安静地少做一件事：换个「没有驱动」的窗口来
+                    // 建任务，用户会以为任务会跑。走 notice 通道是因为它已经是
+                    // 「说一句给用户看」的现成机制，不必为此新加一套界面状态。
+                    port.tagged(SessionTarget::Draft).send_schedule_notice(
+                        "定时任务由另一个进程驱动（它持有驱动锁），这个窗口不重复触发。\
+                         要确认谁在跑，用 `qc schedule list`。"
+                            .to_string(),
+                    );
+                    None
+                }
+                Err(error) => {
+                    // 拿不到锁就退化成「不驱动」而不是「假装在驱动」：后者会让两个
+                    // 进程都认为自己在推时间，而重复投递是没有提示的那种错。
+                    tracing::warn!(%error, "cannot take the driver lock; not scheduling");
+                    port.tagged(SessionTarget::Draft).send_schedule_notice(
+                        "拿不到驱动锁，这个窗口不会触发定时任务（详见日志 qc logs）。"
+                            .to_string(),
+                    );
+                    None
+                }
+            };
+
             // One entry per live turn, keyed by the session it belongs to. This
             // is the loop's authority for "is this session running"; the host
             // mirrors it so the approval path can see the same thing.
@@ -717,6 +751,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // prompt into a session's queue, so a scheduled turn runs
                     // through exactly the same path as a typed one.
                     _ = clock.tick() => {
+                        // 不是驱动就不写心跳、不扫描（ADR-0091 §4）。跳过整段而不是
+                        // 只跳过投递：away 判定与 config 窗口推进也属于「推动时间」，
+                        // 让两个进程各推一次就是把「错过」算两遍。
+                        if driver_lock.is_none() {
+                            continue;
+                        }
                         let beat = std::time::Instant::now();
                         // 先留心跳（ADR-0088 §3）：别的进程要能看出「这个数据目录
                         // 有人在推动时间」。写在 away 判定之前——挂起期间心跳本来

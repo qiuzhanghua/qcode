@@ -56,16 +56,11 @@ pub(crate) fn cmd_schedule(
     }
 }
 
-/// The driver state, **without creating the data directory** (ADR-0090 §8).
+/// 驱动状态（ADR-0091）。
 ///
-/// `DriverStatus::read` opens `index.sqlite`, and opening it does
-/// `create_dir_all` plus the whole schema — so asking "is a driver running"
-/// would manufacture the very files whose absence is part of the answer. No
-/// index means nothing has ever run here, which is exactly `Unknown`.
+/// 门都在 `DriverStatus::read` 里面了：探锁看 `locks/` 在不在，读心跳看
+/// `index.sqlite` 在不在，两者都**不建目录**。这里只负责转达。
 fn driver_now(store: &SessionStore) -> DriverStatus {
-    if !store.root().join("index.sqlite").exists() {
-        return DriverStatus::Unknown;
-    }
     DriverStatus::read(store, qcode_core::schedule::now_local())
 }
 
@@ -261,15 +256,21 @@ fn resolve_cwd(requested: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error
     Ok(workspace)
 }
 
+/// `--json` 里的驱动状态（ADR-0090 §6 的稳定面，四态见 ADR-0091 §2）。
+///
+/// `state` 四值：`running`（在跑且醒着）/ `held`（在跑但心跳过期）/ `gone`
+/// （来过又走了）/ `unknown`（从没来过）。多出 `held` 是刻意的：把它并进
+/// `running` 会掩盖「可能已卡住」，并进 `gone` 则会谎称「不补跑」。
 fn driver_json(driver: DriverStatus) -> serde_json::Value {
     let state = match driver {
         DriverStatus::Running { .. } => "running",
-        DriverStatus::Stale { .. } => "stale",
+        DriverStatus::Held { .. } => "held",
+        DriverStatus::Gone { .. } => "gone",
         DriverStatus::Unknown => "unknown",
     };
     let at = match driver {
-        DriverStatus::Running { at } | DriverStatus::Stale { at } => Some(at.to_string()),
-        DriverStatus::Unknown => None,
+        DriverStatus::Running { at } | DriverStatus::Held { at: Some(at) } => Some(at.to_string()),
+        DriverStatus::Held { at: None } | DriverStatus::Gone { .. } | DriverStatus::Unknown => None,
     };
     serde_json::json!({ "state": state, "at": at })
 }

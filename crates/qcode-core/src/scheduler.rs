@@ -28,65 +28,153 @@ pub enum ScheduleError {
     Rule(#[from] crate::schedule::RuleError),
 }
 
-/// 「谁在推动时间」的答案（ADR-0088 §3）。
+/// 「谁在推动时间」的答案（ADR-0088 §3，四态见 ADR-0091）。
 ///
 /// 任务定义是纯数据，任何前端都能登记；但**让任务真的到点触发**需要有一个持有
-/// 调度时钟的进程（ADR-0059 §1：一个时钟，不是 N 个）。今天那个进程是 GUI。
-/// 三端共用这个读面，才不会各自编一套「需要 GUI 在跑」的措辞。
+/// 调度时钟的进程（ADR-0059 §1：一个时钟，不是 N 个）。
+///
+/// 判据分两层，缺一层就会说谎（ADR-0091 §2）：
+///
+/// - **锁**回答「有没有」：`locks/driver.lock` 由内核在进程死亡时收走，所以
+///   持锁就是活着的证明，不靠心跳、不靠 pid 文件。
+/// - **心跳**回答「多久没动了」：它只说明醒没醒着，不说明在不在。
+///
+/// 早先只有心跳一个判据，于是「进程被挂起」和「进程不存在」被合并成同一句话，
+/// 而这两件事的后果相反：前者醒来会继续，后者永远不会。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverStatus {
-    /// 有驱动在跑，最近一次心跳在 `at`。
+    /// 锁在手，心跳新鲜：在跑，而且醒着。
     Running { at: PrimitiveDateTime },
-    /// 有心跳记录，但已经太久没更新：进程大概已经退出了。
-    Stale { at: PrimitiveDateTime },
-    /// 从没有驱动写过心跳（这个数据目录没跑过会驱动的前端）。
+    /// 锁在手，但心跳老旧或者还没有：在跑，可能被挂起或者卡住。
+    ///
+    /// 合盖的笔记本正是这个形状——**它仍然是在跑**，醒来会继续，所以不能报
+    /// 「不补跑」。
+    Held { at: Option<PrimitiveDateTime> },
+    /// 没有锁，但有心跳：来过又走了（进程死了，锁被内核收走）。
+    Gone { at: PrimitiveDateTime },
+    /// 没有锁，也没有心跳：这个数据目录没跑过会驱动的前端。
     Unknown,
 }
 
-/// 心跳多久不更新就算「不在跑」。
+/// 心跳多久不更新就算「没醒着」。
 ///
 /// 与调度器判断「进程不在」用的 `gap_limit`（三个 beat）是**同一个口径**：
 /// 两处若各自定阈值，会出现「驱动认为自己在跑、任务认为已经错过」的错位。
 /// 默认 beat 是 30s，所以 90s 是默认值（`qcode-gui::runtime` 的 `beat`）。
 pub const DRIVER_HEARTBEAT_BUDGET: time::Duration = time::Duration::seconds(90);
 
+/// 一次探锁的结果。
+enum Probe {
+    /// 试拿成功并立刻放开：没有人在推时钟。
+    Free,
+    /// 有人拿着。
+    Held,
+    /// 这台机器/这个存储上没有可用的文件锁（或者锁文件建不出来）。
+    Unavailable,
+}
+
+/// 试拿一次驱动锁，**立刻放开**（ADR-0091 §4）。
+///
+/// 观察者（`qc schedule list`、TUI）只能这样问「有人在吗」。必须立刻放开：
+/// 一次只读的查询不该把真正的驱动挡在门外。
+///
+/// `locks/` 不存在就直接判 `Free`，不建目录——问一句「有没有人在跑」不该在磁盘上
+/// 留下痕迹（ADR-0090 §8 的同一条理由）。
+fn probe_driver_lock(store: &SessionStore) -> Probe {
+    if !store.root().join("locks").exists() {
+        return Probe::Free;
+    }
+    match store.try_lock_file(DRIVER_LOCK) {
+        Ok(Some(lock)) => {
+            // 立刻放开。
+            drop(lock);
+            Probe::Free
+        }
+        // 同一个进程再 open 一次同一个文件，flock 仍会互斥（按打开的文件描述算），
+        // 所以驱动自己不该走这条路——它用 `held_by_me`。
+        Ok(None) => Probe::Held,
+        Err(_) => Probe::Unavailable,
+    }
+}
+
 impl DriverStatus {
-    /// 读 store 里那条心跳，按 `now` 判定新鲜度。
+    /// 观察者的判定：探锁 + 读心跳。
     pub fn read(store: &SessionStore, now: PrimitiveDateTime) -> Self {
-        match store.runtime_status(DRIVER_HEARTBEAT_KEY) {
-            Ok(Some((_, at))) => {
-                if now - at > DRIVER_HEARTBEAT_BUDGET {
-                    Self::Stale { at }
-                } else {
-                    Self::Running { at }
-                }
-            }
-            // 读不出来与从没写过，对调用方是同一件事：没有人能证明驱动在跑。
-            Ok(None) | Err(_) => Self::Unknown,
+        let heartbeat = heartbeat_of(store);
+        match probe_driver_lock(store) {
+            Probe::Held => match heartbeat {
+                Some(at) if now - at <= DRIVER_HEARTBEAT_BUDGET => Self::Running { at },
+                other => Self::Held { at: other },
+            },
+            Probe::Free => match heartbeat {
+                Some(at) => Self::Gone { at },
+                None => Self::Unknown,
+            },
+            // 没有可用的锁就只剩心跳一个判据——那是这套机制之前的行为。宁可
+            // 退回老答案，也不要假装「探测过」。
+            Probe::Unavailable => match heartbeat {
+                Some(at) if now - at <= DRIVER_HEARTBEAT_BUDGET => Self::Running { at },
+                Some(at) => Self::Gone { at },
+                None => Self::Unknown,
+            },
         }
     }
 
-    /// 是否有人正在推动时间。
+    /// **驱动自己**的判定：它知道锁在手，因此不能去探（同进程重入也会互斥）。
+    pub fn held_by_me(store: &SessionStore, now: PrimitiveDateTime) -> Self {
+        match heartbeat_of(store) {
+            Some(at) if now - at <= DRIVER_HEARTBEAT_BUDGET => Self::Running { at },
+            other => Self::Held { at: other },
+        }
+    }
+
+    /// 是否有一个进程在负责推动时间（在跑，哪怕它暂时睡着）。
     pub fn is_running(self) -> bool {
-        matches!(self, Self::Running { .. })
+        matches!(self, Self::Running { .. } | Self::Held { .. })
     }
 
     /// 一句话说清「能不能触发」，供工具结果与界面共用。
     pub fn describe(self) -> &'static str {
         match self {
             Self::Running { .. } => "驱动在跑（定时任务会正常触发）",
-            Self::Stale { .. } => "驱动不在跑（上次心跳已过期；到点不会触发，记为错过）",
+            Self::Held { .. } => "驱动在跑，但心跳已过期（可能被挂起或者卡住；醒来会继续）",
+            Self::Gone { .. } => "驱动不在跑（上次退出了；到点不会触发，记为错过）",
             Self::Unknown => "未知（这个数据目录还没有会驱动定时任务的前端跑过）",
         }
     }
 }
 
+fn heartbeat_of(store: &SessionStore) -> Option<PrimitiveDateTime> {
+    // 没有索引文件就是从来没跑过任何前端，也就从来没有心跳——**而且不去建它**：
+    // 打开索引的副作用是 `create_dir_all` 加建全部表，问一句「有没有人在跑」不该
+    // 在磁盘上留下痕迹（ADR-0090 §8 的同一条理由）。
+    //
+    // 这道门只管心跳，不管锁：锁文件在 `locks/` 里，跟索引无关。所以「有个进程
+    // 持着锁但这个数据目录还没有索引」是能判定成 Held 的，不该被这条门吃掉。
+    if !store.root().join("index.sqlite").exists() {
+        return None;
+    }
+    // 读不出来与从没写过，对调用方是同一件事：没有人能证明有人醒着。
+    store
+        .runtime_status(DRIVER_HEARTBEAT_KEY)
+        .ok()
+        .flatten()
+        .map(|(_, at)| at)
+}
+
 /// 心跳在 `runtime_status` 表里的键。
 pub const DRIVER_HEARTBEAT_KEY: &str = "driver.heartbeat";
 
-/// 驱动不在跑时，跟随结果的说明（ADR-0088 §2）。
+/// 驱动锁的名字（`locks/driver.lock`，ADR-0091）。
 ///
-/// 措辞刻意写死三件事，缺一件这条提示就会误导人：
+/// 与任务表的 `schedule-tasks` 是**两把锁，两个问题**：这把回答「谁是时钟」并且
+/// 持有整个进程生命周期；那把回答「谁在改任务表」并且只持有毫秒级。
+pub const DRIVER_LOCK: &str = "driver";
+
+/// 驱动状态跟随结果的说明（ADR-0088 §2，四态见 ADR-0091 §2）。
+///
+/// 「不在跑」那两条分支（`Gone` / `Unknown`）的措辞刻意写死三件事，缺一件这条提示就会
+/// 误导人：
 /// 1. 谁在触发（持有调度时钟的进程，当前只有 GUI）；
 /// 2. 关窗不等于停下（托盘常驻，**退出进程**才停）；
 /// 3. 不在跑的时候不是「稍后补跑」，而是「记为错过」。
@@ -94,13 +182,24 @@ pub const DRIVER_HEARTBEAT_KEY: &str = "driver.heartbeat";
 /// 住在这里而不是工具 crate 里（ADR-0090 §0.2）：CLI 也要说同一件事，而它是
 /// `qcode-core` 的又一个消费者。三处各写一份的后果不是「措辞不一致」这么轻——这三条
 /// 是用户判断「我现在到底会不会收到提醒」的全部依据，任缺一条都会把人引到错的行为上。
+///
+/// `Held` 单独一支，而且**不**照抄「不补跑」那句：锁在手意味着进程还在，挂起之后醒来
+/// 会继续。把「被挂起」说成「不在跑」，就是劝人去重建一条本来没事的任务。
 pub fn driver_footer(driver: DriverStatus) -> String {
     match driver {
         DriverStatus::Running { .. } => "驱动：在跑（到点会正常投递）。".to_string(),
-        DriverStatus::Stale { at } => format!(
-            "**驱动不在跑**（上次心跳 {at}，已过期）：该任务需要有一个持有调度时钟的进程在运行时才会触发\
-             （当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，**退出进程才停**。\
-             它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+        DriverStatus::Held { at } => {
+            let when = at.map_or_else(|| "还没有心跳".to_string(), |at| format!("上次心跳 {at}"));
+            format!(
+                "**驱动在跑，但心跳已过期**（{when}）：持有调度时钟的进程还在（锁在它手上），\
+                 任务没有丢，但它可能被挂起或者卡住了。唤醒后会继续按规则触发——\
+                 这段里错过的窗口仍然记为错过，不补跑。"
+            )
+        }
+        DriverStatus::Gone { at } => format!(
+            "**驱动不在跑**（上次心跳 {at}，进程已退出）：该任务需要有一个持有调度时钟的\
+             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
+             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
         ),
         DriverStatus::Unknown => {
             "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有一个持有调度时钟的\

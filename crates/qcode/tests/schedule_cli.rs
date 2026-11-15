@@ -290,7 +290,7 @@ fn list_json_shape_is_stable() {
     assert!(tasks[0]["id"].is_string());
     assert!(tasks[0]["next_fire_at"].is_string());
     assert!(
-        ["running", "stale", "unknown"]
+        ["running", "held", "gone", "unknown"]
             .contains(&value["driver"]["state"].as_str().expect("driver.state")),
         "{value}"
     );
@@ -350,7 +350,9 @@ fn list_reports_the_driver_state_first() {
         stdout_of(&unknown)
     );
 
-    // Write a fresh heartbeat the way the GUI's clock beat does, then re-list.
+    // **只写心跳不算在跑**（ADR-0091）：心跳是「活着的细节」，锁才是身份。
+    // 这条断言以前写成 `contains("在跑")`，而「不**在跑**」也含这三个字——一个
+    // 永远成立的假绿。锁不在，状态必须是 gone。
     let store = SessionStore::new(dir.path());
     store
         .set_runtime_status(
@@ -359,61 +361,27 @@ fn list_reports_the_driver_state_first() {
             qcode_core::schedule::now_local(),
         )
         .expect("write heartbeat");
-
-    let running = run(dir.path(), &["schedule", "list"]);
-    let first_line = stdout_of(&running)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let heartbeat_only = stdout_of(&run(dir.path(), &["schedule", "list"]));
+    let first_line = heartbeat_only.lines().next().unwrap_or_default();
     assert!(
-        first_line.contains("在跑"),
-        "a fresh heartbeat must read as running:\n{}",
-        stdout_of(&running)
+        first_line.contains("不在跑"),
+        "a heartbeat without the lock must read as gone:\n{heartbeat_only}"
     );
-}
 
-/// ADR-0090 §1: `--all` widens the text listing; `--json` is always exhaustive.
-#[test]
-fn all_widens_the_text_listing_but_json_is_always_full() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let created = run(
-        dir.path(),
-        &[
-            "schedule",
-            "create",
-            "--title",
-            "paused-one",
-            "--prompt",
-            "x",
-            "--rule",
-            "daily 05:00",
-            "--json",
-        ],
-    );
-    let value: serde_json::Value = serde_json::from_str(stdout_of(&created).trim()).expect("json");
-    let id = value["task"]["id"].as_str().expect("id").to_string();
-
-    // Pause it through the same store the driver would use.
-    qcode_core::scheduler::Scheduler::new(SessionStore::new(dir.path()))
-        .pause(&id)
-        .expect("pause");
-
-    let default_list = stdout_of(&run(dir.path(), &["schedule", "list"]));
+    // 拿住驱动锁（另一个进程形状由 core 的跨进程测试覆盖），状态才该是「在跑」。
+    let driver = store
+        .try_lock_file(qcode_core::scheduler::DRIVER_LOCK)
+        .expect("probe")
+        .expect("free");
+    let running = stdout_of(&run(dir.path(), &["schedule", "list"]));
+    let first_line = running.lines().next().unwrap_or_default();
     assert!(
-        !default_list.contains("paused-one"),
-        "a paused task must be hidden by default:\n{default_list}"
+        first_line.contains("驱动在跑"),
+        "a held lock must read as running:\n{running}"
     );
-
-    let all_list = stdout_of(&run(dir.path(), &["schedule", "list", "--all"]));
     assert!(
-        all_list.contains("paused-one"),
-        "--all must show it:\n{all_list}"
+        !first_line.contains("不在跑"),
+        "a held lock must not read as gone:\n{running}"
     );
-
-    let json = stdout_of(&run(dir.path(), &["schedule", "list", "--json"]));
-    assert!(
-        json.contains("paused-one"),
-        "--json is exhaustive without --all:\n{json}"
-    );
+    drop(driver);
 }

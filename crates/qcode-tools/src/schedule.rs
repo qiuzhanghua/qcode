@@ -26,32 +26,6 @@ use serde_json::{Value, json};
 /// 两件事不再由同一个 Option 回答。
 const UNAVAILABLE: &str = "定时任务服务不可用：当前会话没有接入任务存储（无法登记定时任务）。";
 
-/// 驱动不在跑时，跟随结果的说明（ADR-0088 §2）。
-///
-/// 措辞刻意写死三件事，缺一件这条提示就会误导人：
-/// 1. 谁在触发（持有调度时钟的进程，当前只有 GUI）；
-/// 2. 关窗不等于停下（托盘常驻，**退出进程**才停）；
-/// 3. 不在跑的时候不是「稍后补跑」，而是「记为错过」。
-fn driver_footer(driver: qcode_core::scheduler::DriverStatus) -> String {
-    use qcode_core::scheduler::DriverStatus;
-    match driver {
-        DriverStatus::Running { .. } => {
-            "驱动：在跑（到点会正常投递）。".to_string()
-        }
-        DriverStatus::Stale { at } => format!(
-            "**驱动不在跑**（上次心跳 {at}，已过期）：该任务需要有一个持有调度时钟的进程在运行时才会触发\
-             （当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，**退出进程才停**。\
-             它没在跑的时候，到点不会发生，并记为错过——不补跑。"
-        ),
-        DriverStatus::Unknown => {
-            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有一个持有调度时钟的\
-             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
-             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
-                .to_string()
-        }
-    }
-}
-
 /// 四个定时任务工具的名字，供子代理注册表剔除。
 pub const SCHEDULE_TOOL_NAMES: [&str; 4] = [
     "schedule_create",
@@ -368,7 +342,7 @@ impl Tool for ScheduleCreate {
             task.title,
             task.id,
             detail(&task),
-            driver_footer(ctx.driver),
+            qcode_core::scheduler::driver_footer(ctx.driver),
         )))
     }
 }
@@ -469,7 +443,7 @@ impl Tool for ScheduleView {
             Some(task) => Ok(ToolOutput::ok(format!(
                 "{}\n\n{}",
                 detail(&task),
-                driver_footer(ctx.driver),
+                qcode_core::scheduler::driver_footer(ctx.driver),
             ))),
             None => Ok(ToolOutput::error(format!("定时任务 `{}` 不存在", args.id))),
         }
@@ -611,7 +585,7 @@ impl Tool for ScheduleEdit {
         Ok(ToolOutput::ok(format!(
             "{}\n\n{}",
             result?,
-            driver_footer(ctx.driver),
+            qcode_core::scheduler::driver_footer(ctx.driver),
         )))
     }
 }
@@ -819,7 +793,9 @@ mod tests {
         let fake = Arc::new(FakeHandle::default());
         let ctx = context_with_driver(
             Some(fake.clone() as Arc<dyn SchedulerHandle>),
-            DriverStatus::Stale {
+            // `Gone`：没有锁、有心跳（ADR-0091 的「来过又走了」）。这是「登记成功
+            // 但驱动不在」的典型形状。
+            DriverStatus::Gone {
                 at: qcode_core::schedule::at(2026, time::Month::June, 1, 9, 0),
             },
         );

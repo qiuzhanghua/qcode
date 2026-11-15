@@ -118,6 +118,66 @@ fn lock_exclusive_blocking(_file: &fs::File) -> std::io::Result<()> {
     ))
 }
 
+/// Try to take the same lock **without waiting**. `Ok(false)` means someone else
+/// holds it — an answer, not an error (ADR-0091).
+#[cfg(unix)]
+fn lock_exclusive_immediate(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `file` is alive for the whole call, so the fd is valid.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Ok(false);
+    }
+    Err(error)
+}
+
+#[cfg(windows)]
+fn lock_exclusive_immediate(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, GetLastError, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+
+    // SAFETY: as in `lock_exclusive_blocking`.
+    let mut overlapped = unsafe { std::mem::zeroed() };
+    let handle: HANDLE = file.as_raw_handle() as HANDLE;
+    let rc = unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if rc != 0 {
+        return Ok(true);
+    }
+    // `Error::new`, not `From<ErrorKind>`: the latter takes no message.
+    let code = unsafe { GetLastError() };
+    if code == ERROR_LOCK_VIOLATION {
+        return Ok(false);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("LockFileEx failed with {code}"),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_exclusive_immediate(_file: &fs::File) -> std::io::Result<bool> {
+    Err(std::io::Error::other(
+        "no cross-process file lock on this platform",
+    ))
+}
+
 /// Non-blocking flavour: the session single-writer lock, where "someone else
 /// already has it" is an answer rather than a reason to wait.
 #[cfg(windows)]
@@ -460,6 +520,30 @@ impl SessionStore {
             .open(&path)?;
         lock_exclusive_blocking(&file)?;
         Ok(FileLock { _file: file })
+    }
+
+    /// Try to take `locks/<name>.lock` **without waiting**.
+    ///
+    /// `Ok(None)` means another process holds it. That is an answer rather than
+    /// a failure, which is why this returns an `Option` instead of an error —
+    /// the caller asks "am I the one?" and both replies are normal (ADR-0091).
+    ///
+    /// The lock is released by the kernel when the holder dies, so holding it is
+    /// proof of life; no cleanup code and no pid file.
+    pub fn try_lock_file(&self, name: &str) -> Result<Option<FileLock>, StoreError> {
+        let dir = self.root.join("locks");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        if lock_exclusive_immediate(&file)? {
+            return Ok(Some(FileLock { _file: file }));
+        }
+        Ok(None)
     }
 
     /// Append `interrupted` results for tool calls whose result never landed
@@ -1697,39 +1781,64 @@ fn runtime_status_round_trips_and_overwrites() {
 }
 
 #[test]
-fn driver_status_distinguishes_running_stale_and_unknown() {
-    use crate::scheduler::{DRIVER_HEARTBEAT_BUDGET, DRIVER_HEARTBEAT_KEY, DriverStatus};
+fn driver_status_needs_the_lock_not_just_a_heartbeat() {
+    use crate::scheduler::{
+        DRIVER_HEARTBEAT_BUDGET, DRIVER_HEARTBEAT_KEY, DRIVER_LOCK, DriverStatus,
+    };
 
     let dir = tempfile::tempdir().expect("data dir");
     let store = SessionStore::new(dir.path());
     let now = crate::schedule::at(2026, time::Month::June, 1, 9, 0);
 
-    // 从没写过：Unknown，而不是「不在跑」——这两件事对用户是不同的
+    // 都没有：Unknown，而不是「不在跑」——这两件事对用户是不同的
     // （一个还没配好，一个曾经会跑但停了）。
     assert_eq!(DriverStatus::read(&store, now), DriverStatus::Unknown);
 
-    // 刚写过：在跑。
+    // **只写心跳、不持锁：Gone。** 这是 ADR-0091 的核心断言——心跳不再是权威，
+    // 它是「活着的细节」。旧实现会在这里报 Running，于是「进程死了但心跳还新」
+    // 会被说成「在跑」。
     store
         .set_runtime_status(DRIVER_HEARTBEAT_KEY, "gui:1", now)
         .expect("write");
     assert_eq!(
         DriverStatus::read(&store, now),
+        DriverStatus::Gone { at: now }
+    );
+    assert!(!DriverStatus::read(&store, now).is_running());
+
+    // 锁在手 + 心跳新鲜：在跑。
+    let lock = store
+        .try_lock_file(DRIVER_LOCK)
+        .expect("lock")
+        .expect("free");
+    assert_eq!(
+        DriverStatus::read(&store, now),
         DriverStatus::Running { at: now }
     );
-    assert!(DriverStatus::read(&store, now).is_running());
 
-    // 超过预算没更新：Stale。保留 `at` 是为了能告诉用户「上次是几点」。
+    // 锁在手 + 心跳过期：Held。**仍然算在跑**——进程还在，醒来会继续。
+    // 把它说成「不在跑」会劝人去重建一条本来没事的任务。
     let later = now + DRIVER_HEARTBEAT_BUDGET + time::Duration::seconds(1);
     assert_eq!(
         DriverStatus::read(&store, later),
-        DriverStatus::Stale { at: now }
+        DriverStatus::Held { at: Some(now) }
     );
-    assert!(!DriverStatus::read(&store, later).is_running());
+    assert!(DriverStatus::read(&store, later).is_running());
 
-    // 边界：正好等于预算仍算在跑（避免 90s 整那一刻闪一下「不在跑」）。
+    // 边界：正好等于预算仍算在跑（避免 90s 整那一刻闪一下）。
     let boundary = now + DRIVER_HEARTBEAT_BUDGET;
     assert_eq!(
         DriverStatus::read(&store, boundary),
         DriverStatus::Running { at: now }
+    );
+
+    // 驱动自己不去探锁（同进程重入也会互斥），它用 held_by_me。
+    assert!(DriverStatus::held_by_me(&store, now).is_running());
+
+    // 放开之后又回到 Gone：锁是唯一的身份，进程一走就没了。
+    drop(lock);
+    assert_eq!(
+        DriverStatus::read(&store, now),
+        DriverStatus::Gone { at: now }
     );
 }
