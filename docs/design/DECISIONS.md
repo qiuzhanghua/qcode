@@ -9771,6 +9771,15 @@ GUI/TUI/CLI 都变成它的客户端。真正的边界是**审批与事件出口
 
 按 [SCHEDULE-REGISTRATION.md](./SCHEDULE-REGISTRATION.md) 的六步落地，落点与偏离：
 
+- **§5 锁的 Windows 分支**（补记，同日）：`store.rs` 里 `lock_exclusive_blocking` 的
+  「不支持」兜底写成了 `#[cfg(not(unix))]`，而同文件已有一个 `#[cfg(windows)]` 的实现
+  ——`not(unix)` **包含** Windows，于是那条兜底与它重复定义，任何 Windows 构建都过不去。
+  同一处还有 `std::io::Error::from(kind, "locked")`（该用 `Error::new`）。两者都只在
+  Windows 分支，所以 macOS/Linux 的 fmt/clippy/test/deny 四道全绿，v0.11.0 的 Windows
+  job 一挂，`publish`（依赖 `build`）被跳过——**整版没有产出任何发布物**。
+  兜底改成 `#[cfg(not(any(unix, windows)))]`；`build-for-release --check` 现在会调
+  `scripts/ci-cross-check.sh`，工具链缺失时明说「Windows 分支没被检查过」而不是静默跳过。
+
 - **§1 拆分**：`ToolContext` / `TurnContext` 现在有并列的 `scheduler`（能不能登记）与
   `driver`（能不能触发）两个字段。三端都注入 `Scheduler::new(store)`，子代理仍为 `None`。
 - **§3 heartbeat**：新表 `runtime_status`（`key` 主键）。GUI 在已有的 clock beat 里写，

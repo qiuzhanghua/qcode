@@ -1,5 +1,119 @@
 # Changelog
 
+## 0.12.0 — 2026-11-15
+
+**一个新特性，没有破坏性变更。** 但先说一件要紧的事：**v0.11.0 没发布成功**
+（Windows 构建是坏的，见下），所以本版同时包含 0.11.0 的全部改动，也是第一个能正常
+发布的版本。
+
+定时任务现在可以不经模型、直接从 shell 建：
+
+```bash
+qc schedule create --title "晨间 CI" --prompt "看一遍 CI 最新状态" --rule "daily 08:00"
+qc schedule list        # 第一行是驱动状态
+qc schedule delete <id>
+```
+
+升级不需要迁移。旧的 `tasks.json` 照读；`qc run` 与 TUI 里通过对话建任务的路径不变。
+
+### 修复：v0.11.0 在 Windows 上编不过
+
+**先说影响**：v0.11.0 的 Windows 构建是坏的，任何 `cargo build` 都过不去——
+`publish` job 依赖 `build`，而 Windows 那个 matrix job 一挂，整条发布链就断了。
+所以 **v0.11.0 没有产出任何发布物**（tag 在，Release 不在）。这版修好它，
+`v0.12.0` 是第一个能正常发布的版本；0.11.0 的所有改动都在这里。
+
+两处都在 `crates/qcode-core/src/store.rs` 的锁实现里，都由 ADR-0088 引入：
+
+- **重复定义**：`lock_exclusive_blocking` 同时有 `#[cfg(windows)]`（走 `LockFileEx`）
+  和 `#[cfg(not(unix))]`（走「不支持」的兜底）两个定义，而 `not(unix)` **包含**
+  Windows，于是 Windows 上同一个函数定义了两遍。兜底那支改成
+  `#[cfg(not(any(unix, windows)))]`。
+- **双参数误用**：`std::io::Error::from(kind, "locked")` —— `From<ErrorKind>` 不接
+  消息，接消息的是 `Error::new`。改成 `new`。
+
+两者都只在 Windows 分支里，于是 macOS / Linux 上 fmt、clippy、test、deny 四道全绿。
+
+**门槛补在哪。** 仓库里本来就有 `scripts/ci-cross-check.sh`（交叉类型检查
+`#[cfg(windows)]` 的门），但 `build-for-release --check` 没调它，CI 也说明了为什么不调
+（Linux runner 缺 llvm-mingw）。现在 `--check` 会跑它，**工具链不在时会明说「Windows
+分支这次没被检查过」而不是静默跳过**——静默跳过正是这次事故的形状。
+
+已双向验证：把两处 bug 改回去，`--check` 在 `跨端类型检查` 那一步红，并指出上面的
+`error` 是目标平台才会碰到的代码。
+
+### `qc schedule list/create/delete`（ADR-0090）
+
+「每天八点提醒我」这句话本身不需要模型理解，但此前建定时任务只有一条路：进会话让
+agent 调 `schedule_create`——要开会话、要配 provider、要花一次模型调用。三个真实用例
+都不该走模型：
+
+- **脚本 / CI 里登记**：部署完就建一条巡检。以前做不到，因为没有子命令。
+- **换机重建**：`tasks.json` 是纯数据、跟着 data dir 走，但没有命令行入口时只能开 GUI
+  一条条点。
+- **排查「任务为什么没跑」**：要的是驱动状态，而它住在一个**必须先把驱动打开**才能看
+  的界面里。
+
+ADR-0088 早就论证过「登记只需要一个 store」。这条命令该有多薄，正是那次拆分的检验：
+它只调 `Scheduler::create/delete/list`，没有自己的读-改-写，也没有自己的锁——CLI 是
+那把锁的**第九个调用者，不是第九处锁**。
+
+三条命令都遵守同一条诚实要求：**「建了 ≠ 会跑」**。`create` 与 `delete` 的结果末尾会
+跟一段驱动说明（在跑 / 不在跑 / 未知），`list` 把它放在第一行——敲命令的人可能从没开
+过 GUI，甚至不知道有 GUI。
+
+### 缺省 cwd 统一成一条规则：`~`，除非从 CLI 启动
+
+这次顺手统一了一处此前**已经在静默出错**的地方。
+
+规则本身不新，是既有行为的一致化：**缺省 workspace 是家目录；从 CLI 启动时用当前目录；
+当前目录是文件系统根时仍然回落 `~`。** GUI 从 Dock 启动给的 cwd 是 `/`，`gui_workspace`
+早就回落家目录（ADR-0085）；CLI 启动用的就是 pwd。
+
+**「缺省 cwd」与「缺省沙箱根」是同一个值**——实测同一次运行里
+`session_started.cwd == task_configured.roots[0].path`。所以这条规则同时是沙箱的规则，
+漏掉根检查的后果也实测过：
+
+```
+$ cd / && qc run "hi"          # 沙箱开启
+error: sandbox setup failed: refusing to sandbox the filesystem root as a root
+```
+
+同步命令里这是**响亮**的失败。但定时任务会把它**推迟**：在 `/` 下 `qc schedule create`
+会把 `cwd="/"` 顺利存盘（创建过程不碰沙箱），几天后 GUI 投递那一回合才撞上同一句错误
+——那时用户早忘了自己当时站在哪里。**同一个缺省值，一个失败在眼前，一个失败在没人看
+的地方。** 所以：
+
+- `qc schedule create` 的 `--cwd` 缺省走 `choose_workspace`，根目录回落 `~`，并在
+  **stderr** 说一句（stdout 留给 `--json`）；
+- `schedule_create` 工具在 `cwd` 仍为 `None` 时写入本回合的工作目录。这条路径此前**没有
+  任何保护**：`qc run` 只在「非 `--yes` 且有 tty」时才装 `questioner`，headless 下那道
+  「问用户」根本不存在，任务到点回落到驱动进程的 workspace；
+- GUI 设置页建任务时表单留空就用 `engine.workspace` 填实，让「存了什么」与「将来在哪
+  跑」是同一个答案。
+
+`choose_workspace` 因此从 `qc` 二进制搬到 `qcode-core`（三条既有测试一起搬）：GUI、
+CLI、工具三处都要用它，各抄一份等于「缺省 workspace」有三份实现，而它们必须永远一致。
+
+### 一处比既有约定更严的地方
+
+`qc schedule list` **不创建 data dir**，为此专门绕开了 `index.sqlite` 的创建：
+`DriverStatus::read` 会打开索引，而 `open_index` 的副作用是 `create_dir_all` 加建全部表
+——于是「问一句有没有驱动在跑」会把答案之一（目录不存在）抹掉。
+
+做法是先看索引文件在不在，不在就直接判 `Unknown`（没有人在这里跑过，这**就是**答案）。
+对照：`qc sessions list` 至今仍会建索引，`schedule list` 没跟着学坏。
+
+### 其它
+
+- `--json` 是唯一稳定面，`list` 与 `create` 都有：`{"driver": {state, at}, "tasks": [...]}`
+  / `{"driver": …, "task": …}`。**文本输出不承诺稳定**（可以改措辞、对齐、加行）。
+- `list` 默认只列 `active`，`--all` 才带上暂停 / 已结束；`--json` 永远全量（脚本不该
+  因为忘了 `--all` 而静默漏掉任务）。
+- 测试 13 条新增，其中 4 条验过「改回去就变红」：去掉根检查、去掉 `--all` 过滤、去掉
+  索引保护、把兜底改成无条件覆盖显式值。
+- 文档：ADR-0090 新增并转已实现，`.desktop` 注释与 ADR-0086 验证表里的旧说法一并修正
+  （那两处还写着「裸 `qc` 进 TUI」）。
 ## 0.11.0 — 2026-11-15
 
 **一段破坏性变更 + 两处新能力**，所以走 minor 而不是 patch（0.x 阶段的 minor 即

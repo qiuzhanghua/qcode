@@ -654,6 +654,30 @@ preflight() {
     else
         cargo deny check
     fi
+
+    # 跨端类型检查：**别的平台的 `#[cfg]` 门在这台机器上根本不会被编到**。
+    #
+    # 2026-11-15 的教训：`store.rs` 里一个 `#[cfg(not(unix))]` 与
+    # `#[cfg(windows)]` 重复定义了同一个函数，外加一处 `Error::from(kind, msg)`
+    # 的双参数误用。两者都只在 Windows 分支，于是 macOS 上 fmt / clippy / test /
+    # deny 四道全绿，Windows CI 全红，v0.11.0 因此没能产出任何发布物（`publish`
+    # 依赖 `build`，Windows job 一挂整条发布链就断了）。
+    #
+    # 只在工具链齐全时跑：交叉类型检查要为目标平台编捆绑的 C 依赖
+    # （`libsqlite3-sys` / `aws-lc-sys`），需要 `<triple>-clang`。没有就**说出来**，
+    # 别静默跳过——静默跳过正是上面那次事故的形状。
+    echo "==> 跨端类型检查（scripts/ci-cross-check.sh）"
+    if [ "$HOST_OS" = windows ]; then
+        echo "    跳过：Windows 宿主上直接编就是目标平台，CI 的 windows job 覆盖同一批门"
+    elif command -v x86_64-w64-mingw32-clang >/dev/null 2>&1 &&
+        rustup target list --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnullvm$'; then
+        "$ROOT/scripts/ci-cross-check.sh" x86_64-pc-windows-gnullvm || die "跨端类型检查失败（上面的 error 是目标平台才会碰到的代码）"
+    else
+        echo "    跳过：没有 llvm-mingw 或 x86_64-pc-windows-gnullvm 目标。"
+        echo "    **Windows 分支的代码这次没被检查过**——要么 cargo install 前先"
+        echo "    rustup target add x86_64-pc-windows-gnullvm 并装 llvm-mingw，"
+        echo "    要么等 CI 的 windows job。"
+    fi
 }
 
 # ---------------------------------------------------------------- 参数

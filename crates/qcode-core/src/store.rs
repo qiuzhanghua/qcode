@@ -109,7 +109,7 @@ fn lock_exclusive_blocking(file: &fs::File) -> std::io::Result<()> {
     Err(std::io::Error::last_os_error())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn lock_exclusive_blocking(_file: &fs::File) -> std::io::Result<()> {
     // No advisory-lock primitive we know of: the honest answer is to say so
     // rather than silently pretend the file is protected.
@@ -146,7 +146,9 @@ fn take_immediate(file: fs::File) -> std::io::Result<SessionLock> {
     }
     let code = unsafe { GetLastError() };
     if code == ERROR_LOCK_VIOLATION {
-        return Err(std::io::Error::from(
+        // `Error::new`, not `From<ErrorKind>`: the latter takes no message, and
+        // passing one is a type error that only the Windows build ever sees.
+        return Err(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
             "locked",
         ));

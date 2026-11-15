@@ -1,7 +1,7 @@
 # CLI 直接管理定时任务（ADR-0090 实现规格）
 
-> 状态：**未实现**（规划，2026-11-15）。上游决策见 [DECISIONS.md](./DECISIONS.md) ADR-0090。
-> 本文只写「怎么落」，不重复「为什么」；理由去 ADR 查。
+> 状态：**已实现**（2026-11-15，v0.12.0）。上游决策见 [DECISIONS.md](./DECISIONS.md) ADR-0090。
+> 本文只写「怎么落」，不重复「为什么」；理由去 ADR 查。落点偏离记在 ADR 的实现注记里。
 > 兄弟文档：[SCHEDULE-REGISTRATION.md](./SCHEDULE-REGISTRATION.md)（ADR-0088，已实现）。
 
 ## 规划速览
