@@ -11,6 +11,7 @@ fn row(id: &str) -> TaskRow {
             provider: "mock".to_string(),
             cwd: "/w".to_string(),
             version: "0".to_string(),
+            parent: None,
         },
         started_at: "2026-01-01T00:00:00Z".to_string(),
         turns: 1,

@@ -193,6 +193,7 @@ pub(crate) struct Shell {
     pub(crate) prefs: GuiPreferences,
 }
 
+mod commands;
 mod routing;
 pub(crate) mod schedule;
 mod session;

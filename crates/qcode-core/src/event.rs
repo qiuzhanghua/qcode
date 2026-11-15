@@ -104,6 +104,15 @@ pub struct SessionStarted {
     pub provider: String,
     pub cwd: String,
     pub version: String,
+    /// The session whose `subagent` call created this one (ADR-0087).
+    ///
+    /// A child session is a real session — same log, same tool loop — so
+    /// without this it is indistinguishable from a task the user made. The GUI
+    /// sidebar is the surface where that matters: it would list every sub-agent
+    /// as a top-level task. `None` on every session a user starts, and on logs
+    /// written before this field existed (`serde(default)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

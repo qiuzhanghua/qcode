@@ -179,6 +179,7 @@ impl Agent {
                 provider: self.deps.provider.name().to_string(),
                 cwd: cwd.display().to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                parent: None,
             })
             .map_err(|err| RpcError::internal(err.to_string()))?;
         let session_id = created.id;

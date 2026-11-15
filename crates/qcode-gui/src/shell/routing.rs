@@ -26,7 +26,7 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
         ui.resetting = false;
     }
     match event {
-        UiEvent::Event(event) | UiEvent::Child(event) => {
+        UiEvent::Event(event) => {
             // Highest log sequence this view has been shown. A parked view
             // older than its log must be replayed, not restored.
             ui.seen_seq = ui.seen_seq.max(event.seq);
@@ -82,6 +82,17 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
                 applied.turn_ended = true;
                 applied.repaint = true;
             }
+        }
+        // A child agent's events only append nested transcript rows: they must
+        // not move the parent status machine, and `seen_seq` is the parent's
+        // replay watermark — a child's sequence number would corrupt it.
+        // (This arm was folded into the one above until ADR-0087, so a
+        // sub-agent's tool calls landed in the parent turn as if the parent had
+        // made them.)
+        UiEvent::Child(event) => {
+            ui.app.apply_child(&event);
+            applied.changed = true;
+            applied.repaint = true;
         }
         UiEvent::Delta(delta) => {
             ui.app.apply_delta(&delta);

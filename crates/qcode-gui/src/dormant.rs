@@ -89,7 +89,7 @@ impl Dormant {
 pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
     let mut applied = Applied::default();
     match event {
-        UiEvent::Event(event) | UiEvent::Child(event) => {
+        UiEvent::Event(event) => {
             if matches!(event.kind, EventKind::TurnStarted(_)) {
                 dormant.running = true;
                 applied = Applied::boundary();
@@ -102,6 +102,10 @@ pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
                 dormant.error_banner = Some(format!("{}: {}", error.kind, error.message));
             }
         }
+        // A child agent's turn boundaries and errors are not this session's
+        // (ADR-0087): a sleeping window must stay "running" while its sub-agent
+        // works, and the sub-agent's failure is reported inside the parent turn.
+        UiEvent::Child(_) => {}
         // Deltas are not persisted, so there is nothing to keep: the session is
         // replayed from the log when it is opened, and that replay ends with the
         // same text. Keeping a partial stream here would only cost memory.

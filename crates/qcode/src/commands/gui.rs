@@ -104,6 +104,10 @@ pub(crate) fn gui_rebuild_hook(
             .map_err(|error| error.to_string())?;
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
                 .with_shell(kernel.config.agent.snapshot_shell);
+            // ADR-0087: same two strings `qc run` and the TUI inject, so the
+            // model sees `AGENTS.md` and the skills index here too.
+            let skills_prompt = kernel.skills.prompt_section();
+            let agents_md = agents::load(&workspace).ok().flatten();
             let engine = qcode_gui::Engine {
                 store: kernel.store,
                 provider: kernel.provider.into(),
@@ -126,6 +130,8 @@ pub(crate) fn gui_rebuild_hook(
                 context_window: Some(kernel.config.context.window_tokens),
                 network: kernel.network,
                 snapshots: Some(snapshots),
+                skills_prompt,
+                agents_md,
                 shell_env: kernel.shell_env.clone(),
                 schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
                 schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
@@ -387,6 +393,10 @@ pub(crate) async fn cmd_gui(
     let mut app = qcode_tui::App::new(kernel.resolved.name.clone(), kernel.resolved.model.clone());
     app.sandbox = kernel.sandbox.clone();
     app.context_window = Some(kernel.config.context.window_tokens);
+    // `/skills` and `/<skill-name>` read this list (ADR-0087). The TUI has
+    // always set it; the GUI did not, so both commands would have reported an
+    // unknown command.
+    app.skills = skill_views(&kernel.skills);
     app.push_notice(format!(
         "kernel: sandbox={} tools={} skills={}",
         kernel.sandbox,
@@ -419,6 +429,9 @@ pub(crate) async fn cmd_gui(
         context_window: Some(kernel.config.context.window_tokens),
         network: kernel.network,
         snapshots: Some(snapshots),
+        // ADR-0087: same two strings `qc run` and the TUI inject.
+        skills_prompt: kernel.skills.prompt_section(),
+        agents_md: agents::load(&workspace)?,
         shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
         schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)

@@ -228,6 +228,7 @@ mod tests {
                     provider: "p".into(),
                     cwd: "/".into(),
                     version: "0".into(),
+                    parent: None,
                 }),
             ),
             event(

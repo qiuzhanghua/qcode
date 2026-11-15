@@ -444,6 +444,10 @@ impl Backend for LocalBackend {
         let summaries = self.store.list().map_err(|error| error.to_string())?;
         let tasks = summaries
             .into_iter()
+            // A sub-agent's session is a real session, but not a task the user
+            // started (ADR-0087). It belongs to its parent's transcript, so the
+            // sidebar must not list it as a peer.
+            .filter(|summary| summary.started.parent.is_none())
             .filter_map(|summary| {
                 let task = self
                     .store

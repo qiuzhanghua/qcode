@@ -125,6 +125,47 @@ qc run "把 src/lib.rs 里的 todo 补完" --yes --provider deepseek
 qc run "看一下 src/lib.rs 并总结" | tee report.txt
 ```
 
+### 三种前端：能力差异一览
+
+三个前端共用同一个内核（`qcode_kernel::assemble`）：同样的工具集、同样的沙箱、同样的
+MCP 与 web_search、同样的事件日志与快照。**能读写文件、能跑命令、能连 MCP 这件事三端
+没有差别**。差别只在「谁能把某个能力递到用户手上」。
+
+| 能力 | `qc run` | TUI | GUI |
+|---|---|---|---|
+| 15 个内置工具 / MCP / web_search / 沙箱 | ✅ | ✅ | ✅ |
+| 审批 | 终端逐次问；管道 AutoDeny；`--yes` 全放 | 浮层里 `y`/`n`，`a` 本会话放行 | 浮层队列 |
+| `ask_user` | 仅「终端 + 不带 `--yes`」 | ✅ | ✅ |
+| 子代理 `subagent` | ✅（子代理不再嵌套，深度为 1） | ✅ 同左 | ✅ 同左 |
+| 斜杠命令 | ❌ | ✅ 全部 | ✅ 全部（输出在输入框上方的「命令输出」卡） |
+| `/checkpoint` `/rollback` `/diff` | ❌ | ✅ | ✅ |
+| `/skills`、`/<skill-name>` 激活 | 通过 `--skill` 参数 | ✅ | ✅ |
+| 定时任务 `schedule_*` | ❌ 工具在但必失败（见下） | ❌ 同左 | ✅ |
+| 图片附件 | `--image <file>` | ❌ | ✅ 粘贴 / 拖拽 |
+| 多 Task 切换 | ❌ 一次一会话 | ❌ | ✅ 侧栏（子代理的会话不进侧栏） |
+| 终端面板 / Settings / 托盘 | ❌ | ❌ | ✅ |
+| `--json` 事件流、退出码 75（预算中断） | ✅ | ❌ | ❌ |
+| `--max-turns` `--timeout` `--budget` 护栏 | ✅ | ❌ | ❌ |
+
+三类差异要分清，它们不是同一回事：
+
+1. **前端形态决定的**：`--json` 与退出码是给脚本的，GUI 里没有对应的东西；侧栏、终端
+   面板、Settings 是窗口才有的。这类差异**不会也不需要收口**。
+2. **刻意不给的**：`schedule_*` 四个工具在 `qc run` 与 TUI 里**注册着但一定失败**，返回
+   「定时任务服务不可用」。原因是调度驱动只存在于 GUI（ADR-0059），而工具清单是共享的。
+   副作用是模型看得见工具、会去试、然后撞墙——如果你在 TUI 里让它「每天八点跑一次」，
+   看到的是「agent 试了但失败」，不是「这里不支持」。
+3. **原本是漏的，已经补上**：斜杠命令与子代理这两个能力，逻辑早就写在共享的
+   `qcode-ui-state` 与 `qcode-tools` 里，只是 GUI 没接线——GUI 甚至把 skills 索引用
+   `skills: None` / `agents_md: None` 硬编码掉了。ADR-0087 把这几处补齐，所以上表里
+   GUI 那两行现在是 ✅。
+
+斜杠命令的入口是**同一张表**：识别与格式化留在 `qcode-ui-state`，各前端只负责执行
+返回的动作。差别只在输出往哪写——TUI 写进 transcript 的方式是 notice 行，GUI 的 notice
+不渲染，所以命令输出落在输入框上方的「命令输出」卡里。`/continue` `/wrap` `/steer N`
+`/drop N` 在 GUI 里本来就有按钮（pause card 与队列 dock），斜杠命令只是同一条 backend
+调用的键盘入口。
+
 TUI 键位：Enter 发送、**Ctrl-N 换行**（支持 Kitty 键盘协议的终端里 Shift+Enter 也可）、
 Esc 取消当前 turn、Ctrl-C 两次退出、Ctrl-O 展开/折叠最近一次工具输出、
 Ctrl-B 折叠/展开最近一次子 agent 组、Ctrl-T 切换 ctx 显示（自动 / 百分比 / token 绝对值）、

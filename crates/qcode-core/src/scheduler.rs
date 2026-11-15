@@ -403,6 +403,7 @@ mod tests {
                     provider: "mock".to_string(),
                     cwd: "/tmp".to_string(),
                     version: "0.1.0".to_string(),
+                    parent: None,
                 }),
             ))
             .expect("seed session t1");

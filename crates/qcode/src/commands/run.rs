@@ -198,6 +198,7 @@ pub(crate) async fn cmd_run(
                 provider: resolved.name.clone(),
                 cwd,
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                parent: None,
             })?;
             tracing::info!(session = %created.id, "session created");
             (created.id, vec![created.started, created.configured])
@@ -236,7 +237,7 @@ pub(crate) async fn cmd_run(
     // GUI side (a sub-agent cannot create or manage scheduled tasks), and
     // `ask_user`, because interaction belongs to the runtime root (a sub-agent
     // reports its unanswered question to the parent model instead).
-    let runner = subagent::build(
+    let runner = qcode_kernel::subagent::build(
         &store,
         provider.clone(),
         tools.without(

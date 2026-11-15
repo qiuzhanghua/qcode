@@ -45,6 +45,8 @@ fn engine_with_provider(
         context_window: Some(128_000),
         network: None,
         snapshots: None,
+        skills_prompt: None,
+        agents_md: None,
         shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
         schedule_errors: Vec::new(),
@@ -798,6 +800,7 @@ async fn a_scheduled_window_fires_a_turn_on_the_task_it_names() {
         provider: "mock".to_string(),
         cwd: workspace.path().display().to_string(),
         version: "0.0.0".to_string(),
+        parent: None,
     };
     let created = store.create_task(&meta).expect("task");
 
@@ -883,6 +886,7 @@ async fn a_runtime_task_fires_delivers_and_advances() {
         provider: "mock".to_string(),
         cwd: workspace.path().display().to_string(),
         version: "0.0.0".to_string(),
+        parent: None,
     };
     let created = store.create_task(&meta).expect("task");
 
@@ -1026,4 +1030,125 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
 
     let _ = backend.try_recv();
     flood.close();
+}
+
+/// ADR-0087: the GUI registers `subagent` like the other two frontends. The
+/// child runs in its own session, its events arrive as `UiEvent::Child` (so they
+/// nest instead of landing in the parent turn), and the sidebar keeps listing
+/// one task — the parent's.
+#[tokio::test]
+async fn a_subagent_tool_call_runs_a_child_session_and_stays_out_of_the_sidebar() {
+    use qcode_core::event::Usage;
+    use qcode_core::provider::{StopReason, StreamEvent};
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let data = tempfile::tempdir().expect("data");
+    let store = SessionStore::new(data.path());
+    let provider = MockProvider::scripted(vec![
+        vec![
+            StreamEvent::Started,
+            StreamEvent::ToolCallDone {
+                call_id: "sub-1".to_string(),
+                name: "subagent".to_string(),
+                arguments: json!({ "task": "summarize the repo", "max_turns": 3 }),
+            },
+            StreamEvent::Ended {
+                stop_reason: StopReason::ToolUse,
+            },
+        ],
+        vec![
+            StreamEvent::Started,
+            StreamEvent::TextDelta("child found three crates".to_string()),
+            StreamEvent::Usage(Usage {
+                input_tokens: Some(12),
+                output_tokens: Some(6),
+                ..Usage::default()
+            }),
+            StreamEvent::Ended {
+                stop_reason: StopReason::EndTurn,
+            },
+        ],
+        vec![
+            StreamEvent::Started,
+            StreamEvent::TextDelta("parent got the summary".to_string()),
+            StreamEvent::Ended {
+                stop_reason: StopReason::EndTurn,
+            },
+        ],
+    ]);
+    let mut backend = LocalBackend::new(engine_with(workspace.path(), store.clone(), provider));
+
+    backend.prompt(None, "delegate it".to_string(), Vec::new());
+
+    // Drain until the parent turn ends, keeping child events separate: those are
+    // the ones the GUI routes to `apply_child` instead of `apply`.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut child_events = Vec::new();
+    let mut parent_events = Vec::new();
+    while Instant::now() < deadline {
+        while let Some(event) = backend.try_recv() {
+            match event.event {
+                UiEvent::Child(event) => child_events.push(event),
+                // `subagent` is an ask-class tool, so the turn parks on the
+                // approval prompt until someone answers (same as a real user).
+                UiEvent::Approval(view) => backend.answer(view.call_id, true, false),
+                UiEvent::Event(event) => {
+                    let ended = matches!(event.kind, EventKind::TurnEnded(_));
+                    parent_events.push(event);
+                    if ended {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if parent_events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TurnEnded(_)))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        parent_events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TurnEnded(_))),
+        "parent turn should finish"
+    );
+
+    // The child was a real session, and its events came through the child channel.
+    let child_id = child_events
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::SessionStarted(_)))
+        .map(|event| event.session.clone())
+        .expect("child session_started should be forwarded as a Child event");
+    assert_ne!(
+        child_id, parent_events[0].session,
+        "child is its own session"
+    );
+    assert!(
+        child_events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ToolCall(_))
+                || matches!(event.kind, EventKind::AssistantMessage(_))),
+        "child progress should reach the UI"
+    );
+
+    // The parent transcript recorded the tool result; the child's own log holds
+    // its answer. One task in the sidebar: the parent.
+    let tasks = backend.tasks().expect("tasks");
+    assert_eq!(tasks.len(), 1, "the child must not be a sidebar task");
+    assert!(tasks[0].summary.started.parent.is_none());
+
+    let child_summary = store
+        .list()
+        .expect("sessions")
+        .into_iter()
+        .find(|summary| summary.id == child_id)
+        .expect("child session on disk");
+    assert_eq!(
+        child_summary.started.parent.as_deref(),
+        Some(parent_events[0].session.as_str())
+    );
 }

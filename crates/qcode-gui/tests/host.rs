@@ -27,6 +27,8 @@ fn engine(dir: &std::path::Path) -> Engine {
         context_window: Some(128_000),
         network: None,
         snapshots: None,
+        skills_prompt: None,
+        agents_md: None,
         shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
         schedule_errors: Vec::new(),

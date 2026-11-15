@@ -44,6 +44,7 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
             provider: "mock".to_string(),
             cwd: workspace.path().display().to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         })
         .unwrap();
 

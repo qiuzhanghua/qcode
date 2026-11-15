@@ -1363,6 +1363,65 @@ impl Shell {
                                 )
                         }),
                     )
+                    // 斜杠命令的输出（ADR-0087）：`/diff N` 的补丁、`/skills` 的正文
+                    // 都是多行，状态栏一行放不下，这里给一张与报错卡同形的中性卡片。
+                    .children(self.ui.command_output.clone().map(|text| {
+                        div()
+                            .w(relative(0.9))
+                            .mx_auto()
+                            .rounded_t(px(10.0))
+                            .border_1()
+                            .border_color(border)
+                            .bg(rgb(0xffffff))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .rounded_tl(px(10.0))
+                                    .rounded_tr(px(10.0))
+                                    .bg(rgb(0x2f6f4f))
+                                    .px_3()
+                                    .py_1()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_size(sp(16.0))
+                                            .line_height(sp(26.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0xffffff))
+                                            .child("命令输出"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_3()
+                                    .pb_2()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_size(sp(15.0))
+                                            .line_height(sp(24.0))
+                                            .text_color(rgb(0x000000))
+                                            .child(text),
+                                    )
+                                    .child(
+                                        div().flex().flex_row().gap_2().child(
+                                            Button::new("dismiss-command-output")
+                                                .label("关闭")
+                                                .on_click(cx.listener(
+                                                    |this, _, _window, cx| {
+                                                        this.ui.command_output = None;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                    ),
+                            )
+                    }))
                     .children(self.ui.restoring.as_ref().map(|_| {
                         div()
                             .w_full()

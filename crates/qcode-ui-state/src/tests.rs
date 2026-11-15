@@ -1078,6 +1078,7 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     ));
     app.apply_child(&child(
@@ -1192,6 +1193,7 @@ fn ctrl_b_folds_the_newest_child_group() {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     ));
     assert_eq!(app.child_groups, vec!["child-1"]);
@@ -1220,6 +1222,7 @@ fn subagents_command_lists_and_toggles_groups() {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     ));
 
@@ -1639,4 +1642,42 @@ fn continue_is_refused_while_a_turn_runs() {
         app.blocks.last(),
         Some(Block::Notice(text)) if text.contains("already running")
     ));
+}
+
+/// The GUI owns its own text field and hands the raw line to `App::command`
+/// instead of going through `submit` (ADR-0087). Both must agree: the command
+/// table has exactly one implementation, so the only difference is who reads
+/// the composer.
+#[test]
+fn command_entry_point_matches_submit_for_the_same_line() {
+    let mut app = App::new("mock", "mock-1");
+    app.skills = vec![demo_skill()];
+
+    // A local action: the frontend is told what to do, the model sees nothing.
+    assert_eq!(app.command("/checkpoint"), Some(UiAction::Checkpoints));
+    assert_eq!(app.command("  /rollback 7  "), Some(UiAction::Rollback(7)));
+    assert_eq!(app.command("/exit"), Some(UiAction::Quit));
+
+    // Fully local: it reports through a notice and returns nothing to execute.
+    assert_eq!(app.command("/diff"), None);
+    assert!(
+        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("file changes")),
+        "a bare /diff should explain itself"
+    );
+
+    // Skill activation is a `Submit`: the composed instructions are the message.
+    match app.command("/demo tidy the imports") {
+        Some(UiAction::Submit(text)) => {
+            assert!(text.starts_with("[skill:demo]"));
+            assert!(text.contains("Follow the steps."));
+            assert!(text.ends_with("tidy the imports"));
+        }
+        other => panic!("expected a Submit, got {other:?}"),
+    }
+
+    // An unknown name must not be swallowed into a prompt.
+    assert_eq!(app.command("/nope"), None);
+    assert!(
+        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("unknown command")),
+    );
 }

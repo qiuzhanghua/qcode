@@ -59,6 +59,7 @@ async fn truncated_output_is_written_to_disk() {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         })
         .expect("create");
 

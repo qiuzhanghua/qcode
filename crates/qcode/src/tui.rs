@@ -327,6 +327,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     provider: options.provider_name.to_string(),
                     cwd: options.workspace.display().to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
+                    parent: None,
                 })?
                 .id
         }
@@ -346,13 +347,13 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     // reports its unanswered question to the parent model instead).
     let mut tools = options.tools.clone();
     let child_sender = tx.clone();
-    let on_child: crate::subagent::ChildEventSink = Arc::new(move |event: &Event| {
+    let on_child: qcode_kernel::subagent::ChildEventSink = Arc::new(move |event: &Event| {
         let _ = child_sender.send(TuiMsg::Child(event.clone()));
     });
     // Pre-images for `/rollback`: same data dir as the session log.
     let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(options.store.root())
         .with_shell(options.snapshot_shell);
-    let runner = crate::subagent::build(
+    let runner = qcode_kernel::subagent::build(
         options.store,
         options.provider.clone(),
         tools.without(

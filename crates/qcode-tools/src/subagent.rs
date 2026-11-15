@@ -44,8 +44,14 @@ pub struct SubagentOutcome {
 /// parent's provider, policy and approver.
 #[async_trait]
 pub trait SubagentRunner: Send + Sync {
+    /// `parent` is the calling tool's context. It is what makes the child work
+    /// in the *same* place as its parent: the runner builds the child session
+    /// from `parent.roots` instead of guessing a directory. Without it a GUI
+    /// task's configured roots (several of them, maybe read-only, with `@label`
+    /// aliases) would be replaced by one global path.
     async fn run(
         &self,
+        parent: &ToolContext,
         request: SubagentRequest,
         cancel: CancellationToken,
     ) -> Result<SubagentOutcome, String>;
@@ -125,6 +131,7 @@ impl Tool for SubagentTool {
         let outcome = match self
             .runner
             .run(
+                ctx,
                 SubagentRequest {
                     task: task.to_string(),
                     max_turns,
@@ -187,6 +194,7 @@ mod tests {
     impl SubagentRunner for FakeRunner {
         async fn run(
             &self,
+            _parent: &ToolContext,
             request: SubagentRequest,
             cancel: CancellationToken,
         ) -> Result<SubagentOutcome, String> {

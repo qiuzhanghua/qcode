@@ -9385,3 +9385,145 @@ Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
   查找成功。
 - 判定为 GUI 但无 `gui` feature：给一句人话而不是静默。
 - 回归：`qc | jq`、`qc run ...` 在 GUI 会话里从终端跑仍然只产出 stdout 那一份。
+
+## ADR-0087：三端能力收口——斜杠命令与子代理进入 GUI（2026-11-15）
+
+**背景**
+
+有人问「`qc run`、TUI、GUI 三种模式功能差多少」。逐行读装配代码得到的答案是：**工具层
+一模一样，差的是「谁把能力递到用户手上」**。三端的工具集都来自
+`qcode_kernel::assemble`（同一个 `builtin_registry_with_env`，同一份 MCP、同一个
+`web_search` 注册条件、同一个沙箱），所以「能不能改文件、能不能跑命令、能不能连 MCP」
+没有差别。差异全部在装配层之上。
+
+把差异按成因分成三类：
+
+| 成因 | 例子 | 该不该收口 |
+|---|---|---|
+| 前端形态决定 | `qc run` 的 `--json` 与退出码 75；GUI 的侧栏 / 终端面板 / Settings | 不该，收口只会把两个界面都做得更差 |
+| 刻意不给 | `qc run` 的管道 AutoDeny；TUI/GUI 里子代理不注册 `subagent` 与 `ask_user` | 不该 |
+| **本该有却没有** | **GUI 的斜杠命令、GUI 的 `subagent`** | **该，本 ADR 的主题** |
+
+**漏在哪，为什么能漏**
+
+两处漏的共同点：**能力已经写完了、测试也有、只是没接到 GUI 上**。
+
+- **斜杠命令**全部实现在共享的 `qcode-ui-state/src/actions.rs` 里（`/checkpoint`
+  `/rollback` `/diff` `/continue` `/wrap` `/queue` `/steer` `/drop` `/steering`
+  `/unsteer` `/subagents` `/skills` `/exit` 与 `/<skill-name>` 激活）。唯一的分发点
+  `App::submit` 是 `pub(crate)`，而 `AppAction::Submit` 只由 `qcode-tui/src/keys.rs`
+  产生。GUI 有自己的输入框（`ui.input`），`send_prompt` 直接读它并发给后端，**从不检查
+  `/` 前缀**。
+- **子代理**：`SubagentTool` 在 `qcode-tools`，runner 在 `crates/qcode/src/subagent.rs`，
+  但 `subagent::build` 的调用点只有 `run.rs` 与 `tui.rs` 两处。GUI **渲染侧反而是齐的**
+  ——`render/transcript.rs` 把 `subagent`/`task` 映射成「子代理」块和机器人图标，
+  `TaggedPort::send_child` 也在。渲染先于能力存在。
+
+两个漏的后果不对称，这是定优先级的依据：GUI 里敲 `/rollback 3`，那串东西会被当成一条
+发给模型的**自然语言消息**（模型收到一个以 `/` 开头的句子），而回滚/检查点在 GUI 里**没有
+任何别的入口**——搜遍 `crates/qcode-gui/src` 没有 `rollback`/`checkpoint`。这属于数据安全
+相关的功能够不到，比「少一个便利命令」严重。
+
+### 1. 斜杠命令：命令表留在 ui-state，前端只负责执行
+
+命令的**识别**必须留在 `qcode-ui-state`，不能给 GUI 复制一份——否则 `/diff` 的输出格式、
+`/steer N` 的序号语义、`<skill-name>` 的匹配规则会有两份实现，迟早不一致。
+
+所以只开一个口子：`App::command(&mut self, line) -> Option<UiAction>`，是
+`run_command` 的公开薄封装。**前端的职责变成「拿到 `UiAction` 之后去执行」**，而执行本来
+就是各前端自己的事（TUI 用 `snapshots.restore` + `push_notice`，GUI 用同样的
+`SnapshotStore` + `push_notice`）。
+
+`None` 的语义是「这条命令完全在本地处理完了，模型什么都看不到」——`/diff`、`/skills`
+这类打通知的命令走这条路。
+
+**GUI 的执行侧**：`/checkpoint` `/rollback` 直接在 shell 里构造
+`SnapshotStore::at_data_dir(&self.data_dir)`。这与引擎录制快照用的是同一个目录
+（`gui.rs` 里 `SnapshotStore::at_data_dir(kernel.store.root())`，而 shell 的 `data_dir`
+就是 store root），所以读到的就是本会话写下的前像。`/continue` `/wrap` `/steer N`
+`/drop N` 在 GUI 里**本来就有按钮**（pause card 的「继续」/「收尾」、队列 dock 的
+steer/remove），斜杠命令只是把同一批 backend 调用再暴露一遍，不新增能力。
+
+**还有第三个洞：GUI 的 `push_notice` 是看不见的。** `Block::Notice` 在 GUI 里**一处都不渲染**
+——transcript 明确跳过它（注释写着「状态栏内容」），而状态栏读的是 `ui.notice`，那个字段只由
+`set_notice` 写。也就是说 `app.push_notice(...)` 在 TUI 里是正常输出、在 GUI 里石沉大海。
+`/diff`、`/skills`、`/checkpoint` 全都靠 notice 报告结果，直接接上去等于没接。修法是给 GUI
+一张自己的出口：`ui.command_output` 卡片（与报错卡同形、中性配色、可关闭），并把
+`qcode-ui-state` 内部命令（`/diff` `/skills` `/subagents`，它们的格式化逻辑本来就在共享层）
+刚刚追加的 notice **收集**进这张卡片 `collect_notices`，而不是在 GUI 里复制一遍格式化代码。
+
+**顺带修掉的两个洞。** 接 `/skills` 时才发现 GUI 根本没把 skills 递给模型：`cmd_gui`
+里**没有** `cmd_tui` 那几行（`skills.prompt_section()`、`agents::load()`），而
+`runtime.rs` 的 `RunOptions` 硬编码 `agents_md: None` / `skills: None`。也就是说
+**GUI 的模型既看不到 `AGENTS.md` 也看不到 skills 索引**，`/skills` 就算接上也是空列表。
+这两项随本次一起补进 `Engine`，与 TUI 对齐。
+
+### 2. 子代理：runner 下沉到 `qcode-kernel`，roots 按父回合继承
+
+`EngineSubagent` 现在住在 `crates/qcode/src/subagent.rs`，而 `qcode` 依赖 `qcode-gui`
+——GUI **无法**反过来用二进制 crate 里的类型。所以第一件事是把
+`subagent.rs` 整体挪到 `qcode-kernel`（它要的 `qcode-core`/`qcode-tools` 那边都有），
+`qcode` 与 `qcode-gui` 一起用 `qcode_kernel::subagent::build`。
+
+第二件事是 **roots**。子代理建会话用的是 `store.create_task(&SessionStarted{cwd, ..})`，
+它经 `Task::from_legacy_session` 把 `cwd` 当成唯一 root。在 `qc run`/TUI 里这恰好等于
+工作目录，所以一直没暴露；但 GUI 的 Task 有一组**用户显式配置的 roots**（可能多个、可能
+有只读的、带 `@label` 别名），而 `engine.workspace` 只是启动时的全局目录。直接搬过去，
+子代理会拿到错的 root——轻则文件工具够不到父回合能碰的目录，重则写到不该写的地方。
+
+所以 `SubagentRunner::run` 增加一个 `&ToolContext` 参数（工具执行时手上就有），runner 用
+`ctx.roots` 经 `create_task_with_roots` 建子会话。语义因此变成明确的一句：
+**子代理在父回合的同一组 roots 里工作**，而不是「在某个全局目录里工作」。`qc run`/TUI
+的父回合 roots 本来就是从 cwd 推出来的，行为不变。
+
+子代理的进度经 `TaggedPort::send_child` 回传——GUI 侧渲染已经就绪，这一步只是把管线接上。
+
+**「渲染已经就绪」这句只说对了一半。** 接上管线才发现 GUI 的路由把 `UiEvent::Child`
+和 `UiEvent::Event` 合在一支里，两者都走 `App::apply`。也就是说子会话的工具调用会被当成
+**父回合自己的**事件写进 transcript。`qcode-ui-state` 里早有 `apply_child`（子事件只追加
+嵌套行、不动父状态机、`seen_seq` 也不碰），但只有 TUI 调它。所以这一步同时把
+`shell/routing.rs`、`dormant.rs`、`task_ops.rs` 三处拆开：子事件走 `apply_child`、
+不参与 `seen_seq` 水位、不翻 `running`、不把任务标记成未读。
+
+**子会话会挤进 GUI 侧栏，所以补了父子标记。** 子会话是货真价实的 session（同样的日志、
+同样的工具循环），而侧栏列出的是「所有 session」——每调一次子代理就多一行任务。修法是
+给 `SessionStarted` 加 `parent: Option<String>`（`serde(default)`，旧日志读回 `None`），
+由 runner 用 `parent.session_id` 填上，`LocalBackend::tasks` 过滤掉有 `parent` 的行。
+
+这个字段**必须同步进索引**：`store.list()` 优先走 `index.sqlite`，索引表原来没有这一列，
+`SessionSummary.started.parent` 会被重建成 `None`，过滤就永远不生效。而索引是「行数对不上
+就从日志重建」的，所以 `open_index` 的 DDL、`ALTER TABLE` 迁移、`index_event` 的写入、
+`list_indexed` 的读取、`rebuild_index` 的批量写五处都得带上，漏一处就退化成「有时能过滤、
+有时不能」——这正是实现时踩到的坑（先只改了读取，测试仍然列出两个任务）。
+
+**仍然不注册 `subagent` 的地方**：子代理自己（深度停在 1），这一点不变；`ask_user` 与
+`schedule_*` 也不进子代理注册表，理由见 `run.rs` 那段注释（交互属于运行时根、调度驱动
+只在 GUI）。
+
+### 3. `schedule_*` 在 TUI/`qc run` 里「存在但必败」，本次不动
+
+四个定时任务工具靠 `ToolContext.scheduler` 判断可用性，而 `scheduler` 只有 GUI 装配
+（`qcode-gui/src/runtime.rs` 构造 `Scheduler`；`run.rs` 与 `tui.rs` 都是 `None`）。所以
+它们在另外两端**注册着、模型看得见、一调用就返回**「定时任务服务不可用」。
+
+这是**已知且刻意**的状态（缺失的是驱动，不是权限），本次不改，但把它写进 README 的对照
+表，因为「agent 试了但失败」和「agent 说这里不支持」是两种不同的用户认知，值得说清楚。
+真要改，方向是「无调度驱动时这几个工具不进注册表」，与子代理剔除 `schedule_*` 的做法
+一致——那是另一件事。
+
+**验证（实现时）**
+
+- `build-for-release --check`（fmt / `clippy -D warnings` / `test` / `cargo-deny`）全绿；
+  `scripts/ci-cross-check.sh` 三个 target 类型检查通过。
+- `App::command` 与 `App::submit` 对同一行的行为一致（新增测试
+  `command_entry_point_matches_submit_for_the_same_line`）：本地动作返回 `UiAction`，
+  纯本地命令返回 `None` 且留下 notice，`/<skill-name>` 返回 `Submit`，未知名不吞进 prompt。
+- `qc run "..." --provider mock-subagent`：子会话 JSONL 独立落盘，`session_started` 带
+  `parent`，`task_configured` 的 root 与父会话是同一条路径、但 id 归到子会话名下。
+- GUI 侧走 `LocalBackend` 集成测试（不需要窗口）：父回合结束时子事件从
+  `UiEvent::Child` 到达、子会话在磁盘上有 `parent`、`backend.tasks()` 只返回父任务一行
+  （新增测试 `a_subagent_tool_call_runs_a_child_session_and_stays_out_of_the_sidebar`）。
+- 已知未覆盖：`command_output` 卡片与斜杠命令的**实际点击/渲染**只做了类型检查与状态层
+  测试，没在真实窗口里目视确认。`/continue` `/wrap` `/steer N` `/drop N` 在 GUI 里本就
+  有按钮，斜杠命令只是同一条 backend 调用的另一个入口。
+

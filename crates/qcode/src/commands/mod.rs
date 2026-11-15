@@ -1,6 +1,6 @@
 use crate::cli::*;
 use crate::output::*;
-use crate::{agents, doctor, logging, subagent, tui, update};
+use crate::{agents, doctor, logging, tui, update};
 use qcode_core::approval::{Approver, AutoApprove, AutoDeny, InteractiveApprover};
 use qcode_core::engine::{RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;

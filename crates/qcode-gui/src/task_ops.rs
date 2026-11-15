@@ -113,7 +113,10 @@ pub fn park_slot(active: Option<&str>, has_unsent_content: bool) -> Option<Sessi
 /// 权威消息取代）。`TurnFailed` 也算：任务是失败了，不是没话说。
 pub fn marks_unread(event: &UiEvent) -> bool {
     match event {
-        UiEvent::Event(event) | UiEvent::Child(event) => {
+        // A child agent's message is not new information about *this* task
+        // (ADR-0087): the parent turn's own end already marks it unread.
+        UiEvent::Child(_) => false,
+        UiEvent::Event(event) => {
             matches!(
                 event.kind,
                 EventKind::TurnEnded(_) | EventKind::AssistantMessage(_)

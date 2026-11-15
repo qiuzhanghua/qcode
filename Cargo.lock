@@ -5482,6 +5482,7 @@ dependencies = [
 name = "qcode-kernel"
 version = "0.10.3"
 dependencies = [
+ "async-trait",
  "qcode-core",
  "qcode-mcp",
  "qcode-net",
@@ -5493,6 +5494,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.22.27",
  "tracing",

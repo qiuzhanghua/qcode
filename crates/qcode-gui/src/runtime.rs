@@ -49,6 +49,14 @@ pub struct Engine {
     pub context_window: Option<u64>,
     pub network: Option<qcode_core::network::SharedNetwork>,
     pub snapshots: Option<qcode_core::snapshot::SnapshotStore>,
+    /// Rendered `# Skills` index, injected into every turn's system prompt.
+    /// Same string `qc run` and the TUI pass (ADR-0087): without it the model
+    /// cannot see the skills at all, so `/skills` would list what it may not
+    /// use.
+    pub skills_prompt: Option<String>,
+    /// The workspace `AGENTS.md`, injected into the system prompt. The GUI used
+    /// to hardcode `None` here while the other two frontends loaded it.
+    pub agents_md: Option<String>,
     /// The environment `run_shell` injects (ADR-0064); the turn samples it
     /// first and records what the agent sees.
     pub shell_env: std::sync::Arc<qcode_tools::shell_env::ShellEnvCache>,
@@ -93,6 +101,7 @@ pub(crate) fn create_task(
         provider: provider_name.to_string(),
         cwd: engine.workspace.display().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        parent: None,
     };
     match engine.store.create_task_with_roots(&meta, Vec::new()) {
         Ok(created) => {
@@ -426,6 +435,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 provider: provider_name.clone(),
                                 cwd: engine.workspace.display().to_string(),
                                 version: env!("CARGO_PKG_VERSION").to_string(),
+                                parent: None,
                             }) {
                                 Ok(created) => created,
                                 Err(error) => {
@@ -460,6 +470,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let snapshots = engine.snapshots.clone();
                     let network = engine.network.clone();
                     let workspace = engine.workspace.clone();
+                    // ADR-0087: the GUI used to leave both of these `None`, so
+                    // the model never saw `AGENTS.md` or the skills index.
+                    let turn_skills = engine.skills_prompt.clone();
+                    let turn_agents_md = engine.agents_md.clone();
                     // 定时任务服务随回合注入：工具经 `ToolContext.scheduler`
                     // 拿到运行时 `Scheduler`（模型可创建 / 管理定时任务）。
                     let task_scheduler = scheduler.clone();
@@ -498,10 +512,48 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             .and_then(|scheduled| task_scheduler.find(&scheduled.task_id))
                             .and_then(|task| task.cwd)
                             .map(PathBuf::from)
-                            .unwrap_or(workspace);
+                            .unwrap_or_else(|| workspace.clone());
                         // 把引擎的流式 Delta（含上下文 token 估算）转发给 UI，
                         // 驱动打字机效果与 ctx% 进度。
                         let delta_port = sink.clone();
+                        // ADR-0087: the GUI registers `subagent` too. The child
+                        // registry is this turn's registry minus the tools a
+                        // child must not have — nesting stops at depth one, and
+                        // interaction (`ask_user`) and scheduling belong to the
+                        // runtime root, exactly as in `qc run` and the TUI.
+                        let mut tools = tools;
+                        {
+                            let child_port = sink.clone();
+                            let child_tools = tools.without(
+                                &[
+                                    qcode_tools::schedule::SCHEDULE_TOOL_NAMES.as_slice(),
+                                    qcode_tools::ask::ASK_USER_TOOL_NAMES.as_slice(),
+                                ]
+                                .concat(),
+                            );
+                            let on_child: qcode_kernel::subagent::ChildEventSink =
+                                std::sync::Arc::new(move |event: &qcode_core::event::Event| {
+                                    child_port.send_child(event);
+                                });
+                            let runner = qcode_kernel::subagent::build(
+                                &store,
+                                provider.clone(),
+                                child_tools,
+                                &policy,
+                                std::sync::Arc::new(task_approver.clone()),
+                                &workspace,
+                                &task_model,
+                                context_window,
+                                pricing,
+                                network.clone(),
+                                snapshots.clone(),
+                                Some(on_child),
+                            );
+                            tools.extend([std::sync::Arc::new(
+                                qcode_tools::subagent::SubagentTool::new(runner),
+                            )
+                                as std::sync::Arc<dyn qcode_core::tool::Tool>]);
+                        }
                         // ADR-0064: sample once (or when an rc file moved),
                         // then write what the agent will actually see. This
                         // runs on the turn's task, not the UI thread.
@@ -526,8 +578,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 delta_port.send_delta(delta)
                             })),
                             context_window,
-                            agents_md: None,
-                            skills: None,
+                            agents_md: turn_agents_md.clone(),
+                            skills: turn_skills.clone(),
                             network,
                             attachments: $attachments,
                             inbox: Some(task_inbox),

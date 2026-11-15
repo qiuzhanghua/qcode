@@ -30,6 +30,7 @@ fn session_started_snapshot() {
             provider: "deepseek".into(),
             cwd: "/work/repo".into(),
             version: "0.1.0".into(),
+            parent: None,
         }),
         json!({
             "type": "session_started",
@@ -41,6 +42,52 @@ fn session_started_snapshot() {
             }
         }),
     );
+}
+
+/// ADR-0087: only a sub-agent's session names a parent. Keeping the field off
+/// the wire when it is `None` is what makes this backwards compatible — a log
+/// written before the field existed is byte-identical to one this build writes
+/// for a user-started session.
+#[test]
+fn a_child_session_snapshot_names_its_parent() {
+    assert_snapshot(
+        EventKind::SessionStarted(SessionStarted {
+            model: "deepseek-flash".into(),
+            provider: "deepseek".into(),
+            cwd: "/work/repo".into(),
+            version: "0.1.0".into(),
+            parent: Some("01JD7PARENT".into()),
+        }),
+        json!({
+            "type": "session_started",
+            "data": {
+                "model": "deepseek-flash",
+                "provider": "deepseek",
+                "cwd": "/work/repo",
+                "version": "0.1.0",
+                "parent": "01JD7PARENT"
+            }
+        }),
+    );
+}
+
+/// An older log has no `parent` key at all; it must still decode.
+#[test]
+fn a_log_without_parent_still_decodes() {
+    let kind: EventKind = serde_json::from_value(json!({
+        "type": "session_started",
+        "data": {
+            "model": "deepseek-flash",
+            "provider": "deepseek",
+            "cwd": "/work/repo",
+            "version": "0.1.0"
+        }
+    }))
+    .expect("pre-ADR-0087 log decodes");
+    match kind {
+        EventKind::SessionStarted(started) => assert!(started.parent.is_none()),
+        other => panic!("expected session_started, got {other:?}"),
+    }
 }
 
 fn root() -> Root {

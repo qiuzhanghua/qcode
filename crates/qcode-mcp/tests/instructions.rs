@@ -78,6 +78,7 @@ async fn run_once(registry: &ToolRegistry, calls: bool, policy: Policy) -> Run {
             provider: "mock".to_string(),
             cwd: workspace.path().display().to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         })
         .expect("session");
 

@@ -108,6 +108,7 @@ mod shell_audit_tests {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.0.0".to_string(),
+            parent: None,
         };
         store.create_task(&meta).expect("create task").id
     }

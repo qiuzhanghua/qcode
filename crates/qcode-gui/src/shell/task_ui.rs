@@ -88,6 +88,10 @@ pub(crate) struct TaskUi {
 
     /// 最近一次失败的完整信息，显示在输入框上方（Dismiss 或下次发送时清掉）。
     pub(crate) error_banner: Option<String>,
+    /// 斜杠命令的输出（ADR-0087）：`/diff N` 的补丁、`/skills` 的正文、`/checkpoint`
+    /// 的清单都可能有多行，状态栏只有一行装不下。卡片与 `error_banner` 同形，中性配色，
+    /// 关闭或下一次命令时替换。
+    pub(crate) command_output: Option<String>,
     /// A one-line state the status bar always shows.
     pub(crate) notice: Option<String>,
 
@@ -187,6 +191,7 @@ impl TaskUi {
             dismissed_pause: None,
             waiting_ticker: false,
             error_banner: None,
+            command_output: None,
             notice: None,
             input,
             attachments: Vec::new(),
@@ -258,6 +263,7 @@ impl Shell {
             dismissed_pause: std::mem::replace(&mut self.ui.dismissed_pause, ui.dismissed_pause),
             waiting_ticker: std::mem::replace(&mut self.ui.waiting_ticker, ui.waiting_ticker),
             error_banner: std::mem::replace(&mut self.ui.error_banner, ui.error_banner),
+            command_output: std::mem::replace(&mut self.ui.command_output, ui.command_output),
             notice: std::mem::replace(&mut self.ui.notice, ui.notice),
             input: std::mem::replace(&mut self.ui.input, ui.input),
             attachments: std::mem::replace(&mut self.ui.attachments, ui.attachments),

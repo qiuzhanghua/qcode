@@ -29,6 +29,7 @@ fn session_events(id: &str) -> Vec<Event> {
             provider: "deepseek".to_string(),
             cwd: "/tmp/perf-workspace".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     });
 

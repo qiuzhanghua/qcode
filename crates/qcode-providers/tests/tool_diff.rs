@@ -20,6 +20,7 @@ fn meta(cwd: &std::path::Path) -> SessionStarted {
         provider: "mock".to_string(),
         cwd: cwd.display().to_string(),
         version: "0.1.0".to_string(),
+        parent: None,
     }
 }
 

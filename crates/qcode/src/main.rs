@@ -5,7 +5,6 @@ mod lifecycle;
 mod logging;
 #[cfg(windows)]
 mod sandbox_probe;
-mod subagent;
 mod tui;
 mod update;
 

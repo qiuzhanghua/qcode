@@ -22,6 +22,10 @@ toml_edit = "0.22"
 # awaited on the GUI's UI executor, so blocking that thread for a shell startup
 # would freeze the window; the sample has to go to a blocking thread.
 tokio.workspace = true
+# The `subagent` runner moved here from the binary (ADR-0087) so every frontend
+# can build it; these two come with it.
+async-trait.workspace = true
+tokio-util.workspace = true
 
 # Test-only stdio MCP server for the grant/sandbox tests (ADR-0066); the
 # integration test spawns it via CARGO_BIN_EXE_mcp-probe-stub.

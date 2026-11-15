@@ -18,7 +18,7 @@ use qcode_core::policy::Policy;
 use qcode_core::provider::Provider;
 use qcode_core::snapshot::SnapshotStore;
 use qcode_core::store::SessionStore;
-use qcode_core::tool::ToolRegistry;
+use qcode_core::tool::{ToolContext, ToolRegistry};
 use qcode_tools::subagent::{SubagentOutcome, SubagentRequest, SubagentRunner};
 use tokio_util::sync::CancellationToken;
 
@@ -79,18 +79,36 @@ pub fn build(
 impl SubagentRunner for EngineSubagent {
     async fn run(
         &self,
+        parent: &ToolContext,
         request: SubagentRequest,
         cancel: CancellationToken,
     ) -> Result<SubagentOutcome, String> {
-        let created = self
-            .store
-            .create_task(&SessionStarted {
-                model: self.model.clone(),
-                provider: self.provider.name().to_string(),
-                cwd: self.workspace.display().to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            })
-            .map_err(|err| format!("cannot create subagent session: {err}"))?;
+        // The child inherits the parent's root set verbatim (ADR-0087): same
+        // directories, same labels, same read-only flags. `create_task` would
+        // have derived a single root from `self.workspace`, which is right only
+        // when the parent's root *is* its working directory — true for `qc run`
+        // and the TUI, wrong for a GUI task with several configured roots.
+        let roots = parent.roots.clone();
+        // Which session spawned this one. Empty when the call came from outside
+        // a turn (a test), which is not worth recording.
+        let parent_id = (!parent.session_id.is_empty()).then(|| parent.session_id.clone());
+        // A turn with no roots (a GUI draft) still has one: the engine hands it
+        // a private turn temp dir. The child gets the same treatment implicitly
+        // by inheriting the empty set, so keep `create_task`'s cwd-derived root
+        // only when the parent genuinely has none.
+        let meta = SessionStarted {
+            model: self.model.clone(),
+            provider: self.provider.name().to_string(),
+            cwd: self.workspace.display().to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            parent: parent_id,
+        };
+        let created = if roots.is_empty() {
+            self.store.create_task(&meta)
+        } else {
+            self.store.create_task_with_roots(&meta, roots)
+        }
+        .map_err(|err| format!("cannot create subagent session: {err}"))?;
         let session_id = created.id;
         // Forward the task open events too so the parent sees the child id and
         // its initial root configuration before the first tool call.
@@ -222,6 +240,7 @@ mod tests {
 
         let outcome = runner
             .run(
+                &ToolContext::for_roots(Vec::new()),
                 SubagentRequest {
                     task: "investigate the bug".to_string(),
                     max_turns: 4,
@@ -266,5 +285,101 @@ mod tests {
                     qcode_core::event::ContentBlock::Text { text } if text == "child answer"
                 ))
         )));
+
+        // ADR-0087: a child session names its parent, so the GUI can keep it out
+        // of the task sidebar instead of listing every sub-agent as a peer.
+        match &events[0].kind {
+            EventKind::SessionStarted(started) => assert!(started.parent.is_none()),
+            _ => panic!("first event should open the session"),
+        }
+    }
+
+    /// A child works in the *parent turn's* roots, and those roots are re-keyed
+    /// to the child: a root id always names the session that owns it.
+    #[tokio::test]
+    async fn a_child_inherits_the_parent_roots_under_its_own_ids() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let workspace = tempfile::tempdir().expect("workspace");
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider::text("child answer"));
+        let runner = build(
+            &store,
+            provider,
+            ToolRegistry::default(),
+            &Policy::default(),
+            Arc::new(AutoApprove),
+            workspace.path(),
+            "mock-1",
+            Some(128_000),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let parent = store
+            .create_task(&SessionStarted {
+                model: "mock-1".to_string(),
+                provider: "mock".to_string(),
+                cwd: workspace.path().display().to_string(),
+                version: "0.0.0".to_string(),
+                parent: None,
+            })
+            .expect("parent session");
+        let second = qcode_core::task::Root {
+            id: format!("{}-docs", parent.id),
+            label: "docs".to_string(),
+            path: workspace.path().join("docs"),
+            access: qcode_core::task::RootAccess::ReadOnly,
+            primary: false,
+        };
+        let mut parent_roots = store.task(&parent.id).expect("parent task").roots;
+        parent_roots.push(second);
+        let mut ctx = ToolContext::for_roots(parent_roots.clone());
+        ctx = ctx.with_session_id(&parent.id);
+
+        let outcome = runner
+            .run(
+                &ctx,
+                SubagentRequest {
+                    task: "look at the docs".to_string(),
+                    max_turns: 4,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("subagent run");
+
+        let child = store.task(&outcome.session_id).expect("child task");
+        // Same directories, same labels, same access; the child's own ids.
+        let shape = |roots: &[qcode_core::task::Root]| {
+            roots
+                .iter()
+                .map(|root| {
+                    (
+                        root.label.clone(),
+                        root.path.clone(),
+                        root.access,
+                        root.primary,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&child.roots), shape(&parent_roots));
+        for root in &child.roots {
+            assert!(
+                root.id.starts_with(&format!("{}-", outcome.session_id)),
+                "root id {} should belong to the child session",
+                root.id
+            );
+        }
+
+        let events = store.load(&outcome.session_id).expect("child log");
+        match &events[0].kind {
+            EventKind::SessionStarted(started) => {
+                assert_eq!(started.parent.as_deref(), Some(parent.id.as_str()));
+            }
+            _ => panic!("first event should open the session"),
+        }
     }
 }

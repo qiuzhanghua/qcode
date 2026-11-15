@@ -260,6 +260,13 @@ impl Shell {
         if self.ui.restoring.is_some() {
             return;
         }
+        // Slash commands are local: they never reach the model, and they stay
+        // usable mid-turn (ADR-0087). Without this branch the text went out as
+        // an ordinary message and `/rollback 3` became a sentence for the model.
+        if Self::is_command(&value) {
+            self.run_command(window, cx);
+            return;
+        }
         if !self.backend.is_configured() {
             self.ui.app.push_notice(
                 "not configured yet: open Settings, fill in the provider and key, then restart qc gui",

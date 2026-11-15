@@ -62,6 +62,19 @@ impl App {
         self.composer = Composer::new();
     }
 
+    /// Frontends that own their own text field hand the raw line here.
+    ///
+    /// The command table lives in this crate on purpose: `/diff`'s output
+    /// shape, `/steer N`'s numbering and `/<skill-name>` matching must have
+    /// exactly one implementation, or two frontends will drift apart. The
+    /// frontend's job is to *execute* the returned action.
+    ///
+    /// `None` means the command was handled locally (a notice was pushed) and
+    /// the model saw nothing.
+    pub fn command(&mut self, line: &str) -> Option<UiAction> {
+        self.run_command(line.trim())
+    }
+
     /// Slash commands are local UI actions; the model never sees them.
     /// `/skills` inspects, `/<skill-name>` activates a skill by submitting a
     /// user message that contains its instructions.

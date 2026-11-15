@@ -106,6 +106,7 @@ async fn harness(env: &[(&str, &str)]) -> Harness {
             provider: "mock".to_string(),
             cwd: workspace.path().display().to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         })
         .expect("session");
 

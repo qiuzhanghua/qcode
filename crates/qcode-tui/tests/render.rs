@@ -45,6 +45,7 @@ fn app_with_transcript() -> App {
             provider: "mock".to_string(),
             cwd: "/work/repo".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     );
     apply(
@@ -173,6 +174,7 @@ fn child_agent_progress_is_rendered_nested() {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }),
     ));
     app.apply_child(&child(

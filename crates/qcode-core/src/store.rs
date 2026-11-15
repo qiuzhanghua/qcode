@@ -166,12 +166,27 @@ impl SessionStore {
     }
 
     /// Create a task with an explicit root set, including the empty set.
+    ///
+    /// Root ids are re-keyed to `{this id}-{label}`, which is the convention
+    /// every other writer follows. Callers that build a root set by *borrowing*
+    /// another session's (a sub-agent inheriting its parent's roots, ADR-0087)
+    /// would otherwise leave ids that name a session the root no longer belongs
+    /// to — harmless today (ids are only unique-within-a-task) but exactly the
+    /// kind of shared identity that turns into a cross-task collision the first
+    /// time someone caches by root id.
     pub fn create_task_with_roots(
         &self,
         meta: &SessionStarted,
         roots: Vec<Root>,
     ) -> Result<CreatedTask, StoreError> {
         let id = ulid::Ulid::new().to_string();
+        let roots = roots
+            .into_iter()
+            .map(|root| Root {
+                id: format!("{id}-{}", root.label),
+                ..root
+            })
+            .collect();
         let task = Task::new(id.clone(), roots)?;
         fs::create_dir_all(self.sessions_dir())?;
         let started = Event::new(1, &id, 0, EventKind::SessionStarted(meta.clone()));
@@ -452,7 +467,8 @@ impl SessionStore {
                 version TEXT NOT NULL,
                 turns INTEGER NOT NULL,
                 last_seq INTEGER NOT NULL,
-                cost_usd REAL NOT NULL DEFAULT 0
+                cost_usd REAL NOT NULL DEFAULT 0,
+                parent TEXT
             );",
         )?;
         // Add the cost column to indexes created before it existed.
@@ -460,6 +476,10 @@ impl SessionStore {
             "ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0",
             [],
         );
+        // Same for the parent link (ADR-0087). An index written before it
+        // existed has no parent for any row, which reads back as `None` — the
+        // same thing those logs say, so the two agree until the next rebuild.
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN parent TEXT", []);
         // Scheduler run state (ADR-0059 §1). It lives here, never in the config
         // file: the config is watched by mtime, so writing it on every fire
         // would rebuild the engine each time and race with the Settings window.
@@ -481,8 +501,8 @@ impl SessionStore {
                 let conn = self.open_index()?;
                 conn.execute(
                     "INSERT OR REPLACE INTO sessions
-                     (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                     (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd, parent)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
                     params![
                         event.session,
                         event.ts.to_string(),
@@ -492,6 +512,7 @@ impl SessionStore {
                         meta.version,
                         event.turn,
                         event.seq,
+                        meta.parent,
                     ],
                 )?;
             }
@@ -537,7 +558,7 @@ impl SessionStore {
         let conn = Connection::open(self.index_path())?;
         conn.busy_timeout(std::time::Duration::from_millis(500))?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd
+            "SELECT id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd, parent
              FROM sessions ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -548,6 +569,7 @@ impl SessionStore {
                     provider: row.get(3)?,
                     cwd: row.get(4)?,
                     version: row.get(5)?,
+                    parent: row.get(9)?,
                 },
                 started_at: row.get(1)?,
                 turns: row.get(6)?,
@@ -620,8 +642,8 @@ impl SessionStore {
         for summary in summaries {
             tx.execute(
                 "INSERT OR REPLACE INTO sessions
-                 (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (id, started_at, model, provider, cwd, version, turns, last_seq, cost_usd, parent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     summary.id,
                     summary.started_at,
@@ -632,6 +654,7 @@ impl SessionStore {
                     summary.turns,
                     summary.last_seq,
                     summary.cost_usd,
+                    summary.started.parent,
                 ],
             )?;
         }
@@ -914,6 +937,7 @@ mod tests {
             provider: "mock".to_string(),
             cwd: "/tmp".to_string(),
             version: "0.1.0".to_string(),
+            parent: None,
         }
     }
 
