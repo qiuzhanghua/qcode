@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.11.0 — 2026-11-15
+
+**一段破坏性变更 + 两处新能力**，所以走 minor 而不是 patch（0.x 阶段的 minor 即
+breaking，先例见 0.10.0）。升级要读的只有一条：
+
+> **裸 `qc` 不再进入 TUI，改为打印用法。进 TUI 请敲 `qc tui`。**
+>
+> 如果你的 shell 里有 `alias qc=...`、脚本里靠「裸 `qc`」进交互界面、或文档里写着
+> 「运行 `qc` 开始对话」，请改成 `qc tui`。桌面图标/双击那条路**不受影响**。
+
+其它内容：定时任务在 TUI/CLI 里可以登记了（驱动仍然只有 GUI），GUI 补上斜杠命令与
+子代理，`/diff` 的输出换成一块能读完、能关掉的面板。
+
+### 裸 `qc` 打印用法，TUI 需要 `qc tui`（ADR-0089）
+
+GUI 已经好用、TUI 只是偶尔需要，于是「裸 `qc`」的默认动作不再中性：
+
+- **敲错、或脚本里变量展开为空**（`$QC_CMD`、拼错的路径）会变成一个**占住整个终端**的
+  全屏程序，退出它的办法是 Ctrl-C 两次——不在任何人的手指记忆里。
+- **「敲 `qc` 看看有什么功能」**是最自然的探索动作，而这个动作等于进入一个需要配好
+  provider 才有意义、且很难退出的界面。
+
+第三层「兜底」被当成了「默认」，而兜底只该在没有更好答案时触发。现在：
+
+- **`qc tui` 是唯一的 TUI 入口**，与 `qc resume <id>` 走同一个函数；
+- **裸 `qc` 打印用法、退出 0**，输出与 `qc --help` **同一份**文本。这是「你想干什么？」
+  的回答，不是错误——脚本里 `$CMD` 为空不该被当成失败；
+- **GUI 判定一个字没动**（ADR-0086）：双击图标、`.desktop`、`open -a` 照旧开窗。
+  `.lnk`/`.desktop`/`.app` 三个入口都不传子命令、只传标记，所以前端判定必须留着承担
+  这件事，否则就会出现「双击图标打开一张帮助」。
+
+代价明写：每天都用 TUI 的人**多敲四个字符**。那个人的肌肉记忆一周内会更新，而误入 TUI
+的人每次都要现场查怎么退。旧脚本静默变成「打帮助」是**故意的**：不产生副作用、不改状态、
+退出 0，是安全的失败方向；反过来（本想 headless、结果进了 TUI）才是危险的那个。
+
+**顺带修掉一个继承泄漏。** 标记是「这个进程是怎么被拉起的」，但它是环境变量，会被子进程
+继承——而 qc 会启动大量子进程（`run_shell` 的 shell、GUI 内建终端、环境采样的 login
+shell）。实测：`QCODE_LAUNCHED_FROM_GUI=1 qc shell-env` 打出来的 133 个变量里就有它。
+于是「双击图标 → 在 agent 的 shell 里敲 `qc`」会**再开一个窗口**，而用户明明站在终端里
+要一个终端程序。两处修：启动时**读走即删**（GUI 内建终端走 alacritty 的 `Options.env`，
+只能追加不能删，从本进程环境去掉是唯一能覆盖它的办法；调用点在 tokio 运行时之前——
+`env::remove_var` 在 edition 2024 是 `unsafe`），以及在 `run_shell` 构造 command 的最后
+一步再剔一次（防用户的 rc 或 `env_include` 把它带回来）。`QCODE_APP_WORKSPACE` 不动：
+它是用户面对的覆盖口，子进程继承它语义一致。
+
+`--help` 首行也改了：`qcode — terminal coding agent` → `qc - coding agent`。
+
+### 定时任务：TUI/CLI 可以登记，驱动仍然只有 GUI（ADR-0088）
+
+以前 `schedule_*` 四个工具在 TUI 里是「存在但必失败」，用户说「每天八点提醒我」看到的是
+agent 试了、失败、然后开始道歉。**这是不可见的失败，不是明确的边界。**
+
+根因不是「TUI 缺调度」，而是**两个能力被一个字段焊在一起**：管理任务**定义**只需要一个
+`SessionStore`（三端都有），让任务**触发**才需要 `SessionHost` + 时钟 + 审批出口（今天
+只有 GUI）。而 `SchedulerHandle` 只有 CRUD、没有任何计时能力，工具却拿它当「能不能注册」
+的判据——门验错了对象。
+
+- **拆判据**：`ToolContext`/`TurnContext` 新增 `driver` 字段，与 `scheduler` 并列。现在
+  「能登记」和「有人在触发」分开问，三端各自注入并有对应文案（谁在触发、关窗只是托盘、
+  不补跑）。
+- **驱动状态可观测**：新表 `runtime_status` + `DriverStatus{Running, Stale, Unknown}`，
+  GUI 在**已有**的 clock beat 里写，不新增定时器；阈值与调度器的 `gap_limit` 同一口径，
+  避免两处魔数各说各话。
+- **过期语义补齐**：新增 `recover_task()`（与 config 路径的 `recover()` 同族）。原先
+  「错过不补跑」只在 config 路径实现，runtime 任务块在 away 分支之外无条件执行——宿主
+  关三天再开，会让所有过期任务在开机后一拍内**一起触发一轮**。
+- **跨进程锁**：`SessionStore::lock_file_blocking`（阻塞语义，与 session 的非阻塞
+  `lock()` 刻意分开），Scheduler 的 8 处读-改-写全部持锁；顺带补上 `store.lock()` 在
+  Windows 上缺的 `LockFileEx` 分支。
+
+因为没有新机制，GUI **每拍重读**任务表这件事本来就保证「TUI 登记的任务，GUI 起来后一拍内
+（≤30s）接住」。锁的正确性用**真双进程**验过（子进程握锁时本进程 400ms 内抢不到，`kill`
+后内核释放、随即拿到；两进程各登记 12 条，磁盘必须 24 条）。测试还揪出一个真 bug：临时
+文件名原固定 `tasks.json.tmp`、所有写者共用，A 写完 B 覆盖、A rename 成功、B rename 撞
+`ENOENT`——改成按进程唯一的临时名。
+
+### GUI：斜杠命令、子代理，以及一块能读完的 `/diff` 面板
+
+三端能力对照时发现两处「能力写完了、只有 GUI 没接线」（ADR-0087）：
+
+- **斜杠命令**：`ui-state` 开一个公开入口 `App::command(&mut self, line)`，命令表仍然
+  只有一份，前端只负责执行返回的 `UiAction`。GUI 的 `send_prompt` 先过 `is_command`
+  ——在那之前 `/rollback 3` 会被当成一条自然语言消息发给模型，而回滚/检查点在 GUI 里
+  没有别的入口。命令输出落在新卡片 `ui.command_output` 里：`Block::Notice` 在 GUI 里
+  一处都不渲染，`push_notice` 只往 blocks 里追加，命令接了也是石沉大海。
+- **子代理**：`EngineSubagent` 从二进制 crate 移到 `qcode-kernel`（`qcode` 依赖
+  `qcode-gui`，GUI 没法反过来用二进制里的类型）；`SubagentRunner::run` 增加
+  `&ToolContext`，语义从「在某个全局目录里工作」变成「在父回合的同一组 roots 里工作」。
+
+**`/diff` 的输出第一版做错了，这次改对。** 第一版是 composer 上方的一张卡片，实测反馈：
+**全屏只剩那张卡片，158 行铺开顶掉 composer 和状态栏，Esc 也不起作用**。三个错误各自
+独立——没有高度上限；它是覆盖物却按内联卡片做（空间从 transcript 身上扣）；Esc 到不了
+（焦点在 composer 的 Textarea 里，根节点收不到，卡片本身又不可聚焦）。现在输出面板
+**替换**会话区，`flex_grow(1) + min_h_0 + overflow_y_scroll`，三条关闭路径（面板按钮、
+Esc、发送新消息），面板出现时取走焦点、关闭时交还 composer。
+
+**一个诚实的限制**：本机 `screencapture`/`osascript` 都没有权限，渲染效果无法在发版机
+上目视验证，面板的验收要由能看见窗口的人做一次（ADR-0087 记下了这次反复）。
+
+### 其它
+
+- `qc run` 在非 TTY 下的行为写清了：是 `AutoDeny` 而不是等待审批（`--yes` 只自动批准
+  工具**权限**，不代答面向人的问题）；补了端到端测试。
+- 删掉 `.cargo-home` 这套过时的沙箱绕法。
+
 ## 0.10.3 — 2026-11-14
 
 **`qc` 的行为一处没变**——这些提交全在构建侧与打包形态：mac、Linux、Windows 三条交叉
