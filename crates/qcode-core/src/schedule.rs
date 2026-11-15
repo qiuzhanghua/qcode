@@ -991,6 +991,28 @@ impl Target {
             Target::New => "新会话（每次投递都新建）".to_string(),
         }
     }
+
+    /// 解析 `target` 参数的文本形式（ADR-0090 §0.2）。
+    ///
+    /// 空串按 `new_once` 处理：那是工具与 CLI 的默认值，两处都不该各自写一遍。
+    /// `new-once` 这个连字符别名是对外的既有输入，别趁搬家删掉。
+    ///
+    /// 与 `Overlap::parse`、`TaskStatus::parse` 同族，都住在这里——解析散在两个 crate
+    /// 里时，`Target` 是唯一一个不一致的。
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        if text.is_empty() || text == "new_once" || text == "new-once" {
+            return Some(Target::NewOnce);
+        }
+        if text == "new" {
+            return Some(Target::New);
+        }
+        if let Some(id) = text.strip_prefix("session:") {
+            let id = id.trim();
+            return (!id.is_empty()).then(|| Target::Session { id: id.to_string() });
+        }
+        None
+    }
 }
 
 /// 任务生命周期状态。

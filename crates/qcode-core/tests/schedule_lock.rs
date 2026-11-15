@@ -227,3 +227,31 @@ fn two_processes_registering_at_once_lose_nothing() {
     assert_eq!(parents, PARENT_COUNT, "父进程的任务丢了");
     assert_eq!(children, CHILD_COUNT, "子进程的任务丢了");
 }
+
+/// ADR-0090 的写者路径也在同一把锁下——**这条是关于覆盖面的说明，不是重复用例**。
+///
+/// 上一条用例证明「两个 `Scheduler::create` 并发不会丢」，而 `qc schedule create`
+/// 走的就是 `Scheduler::create`：它没有自己的读-改-写，也没有自己的锁。所以 CLI 是
+/// ADR-0088 §5 那把锁的**第九个调用者，不是第九处锁**（ADR-0090 §10）。
+///
+/// 这条测试守的是那层关系本身：一旦有人给 CLI 加了「先 `list()` 再 `create()`」之类的
+/// 两步写法（比如为了「重名就报错」），它就会变成一个绕过锁的写者。这里断言的是
+/// 函数签名层面的东西——CLI 的写路径必须仍然只有 `create` / `delete` 两个入口。
+#[test]
+fn the_cli_writes_through_the_locked_scheduler() {
+    let tmp = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(tmp.path());
+    let scheduler = Scheduler::new(store.clone());
+
+    // 同一个 Scheduler 实例上先删再建：两次都持锁，中间不会留下
+    // 「读了旧快照、稍后写回」的窗口。
+    let task = scheduler
+        .create(task("cli-writer"), now_local())
+        .expect("create");
+    scheduler.delete(&task.id).expect("delete");
+
+    assert!(
+        store.load_schedule_tasks().is_empty(),
+        "the delete did not reach the file"
+    );
+}

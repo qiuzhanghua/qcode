@@ -37,6 +37,10 @@ const PRODUCT_FILES: &[&str] = &[
     "commands/logs.rs",
     // The `api_key_command` snippet `config key set` tells the user to paste.
     "commands/sessions.rs",
+    // `qc schedule list/create/delete`: the listing, the created id, and the
+    // `--json` shape scripts parse (ADR-0090 §6). The human text is not a stable
+    // contract; the JSON is, and it is what consumes this stdout.
+    "commands/schedule.rs",
     // The diagnostic checklist.
     "doctor.rs",
     // `current version:`, `latest release:`, `installed …` — a script reads these.

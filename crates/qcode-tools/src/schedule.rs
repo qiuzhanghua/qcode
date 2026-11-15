@@ -326,6 +326,29 @@ impl Tool for ScheduleCreate {
             }
         }
 
+        // 兜底成这个回合的工作目录（ADR-0090 §11）。
+        //
+        // 上面那道「问用户」在 headless 下不存在：`qc run` 只在「非 --yes 且有 tty」
+        // 时才装 questioner，其余情况是 `None`（`commands/run.rs:224-228`）。于是
+        // `cwd` 留在 `None`，任务到点回落到驱动进程的 workspace——一个用户看不见的
+        // 目录。「在仓库里建的每日任务实际在家目录里跑」就是这么来的。
+        //
+        // 不另立规则：`shell_cwd()` 给出的正是本回合的 workspace，也就是 ADR-0090
+        // §2 那条「CLI 用 pwd / GUI 用启动目录」的答案。这里只是把它从「隐式回落」
+        // 变成「写进任务」。也不必再判一次文件系统根：沙箱拒绝 `/` 作为 root，
+        // `/` 根本走不到 tool 这一步。
+        let cwd = cwd.or_else(|| {
+            let resolved = ctx
+                .shell_cwd()
+                .and_then(|path| std::path::absolute(&path).ok());
+            if resolved.is_none() {
+                tracing::warn!(
+                    "schedule_create: no working directory to fall back on; leaving cwd unset"
+                );
+            }
+            resolved.map(|path| path.display().to_string())
+        });
+
         let task = scheduler
             .create(
                 NewTask {
@@ -977,5 +1000,88 @@ mod tests {
         );
         assert_eq!(patch.target, Some(Target::Session { id: "s-9".into() }));
         assert_eq!(patch.approval_timeout, Some(None));
+    }
+}
+
+#[cfg(test)]
+mod cwd_fallback_tests {
+    use super::*;
+
+    /// ADR-0090 §11：headless 下没有 `questioner`，`cwd` 留在 `None` 的任务到点会
+    /// 回落到驱动进程的 workspace——一个用户看不见的目录。兜底把它写成这个回合的
+    /// 工作目录，于是「存了什么」与「将来在哪跑」是同一个答案。
+    #[tokio::test]
+    async fn create_falls_back_to_the_turn_working_directory() {
+        let data = tempfile::tempdir().expect("data dir");
+        let root = tempfile::tempdir().expect("workspace");
+        let store = qcode_core::store::SessionStore::new(data.path());
+        let scheduler = std::sync::Arc::new(qcode_core::scheduler::Scheduler::new(store.clone()));
+
+        // `for_test` builds a context with one primary root and **no questioner**,
+        // which is exactly the headless shape.
+        let ctx =
+            qcode_core::tool::ToolContext::for_test(root.path()).with_scheduler(Some(scheduler));
+        let output = ScheduleCreate
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "title": "no-cwd",
+                    "prompt": "x",
+                    "rule": "daily 09:00"
+                }),
+            )
+            .await
+            .expect("execute");
+        assert!(
+            !output.output.contains("不可用"),
+            "the tool refused instead of registering: {}",
+            output.output
+        );
+
+        let tasks = store.load_schedule_tasks();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        let cwd = tasks[0]
+            .cwd
+            .clone()
+            .expect("cwd must be written, not left null");
+        let stored = std::path::PathBuf::from(&cwd)
+            .canonicalize()
+            .expect("canonical");
+        assert_eq!(
+            stored,
+            root.path().canonicalize().expect("canonical"),
+            "the fallback should be this turn's workspace"
+        );
+    }
+
+    /// 显式给的 cwd 不许被兜底覆盖——新增的只是「最后剩下 None」那一种情况。
+    #[tokio::test]
+    async fn an_explicit_cwd_is_kept() {
+        let data = tempfile::tempdir().expect("data dir");
+        let root = tempfile::tempdir().expect("workspace");
+        let explicit = tempfile::tempdir().expect("explicit");
+        let store = qcode_core::store::SessionStore::new(data.path());
+        let scheduler = std::sync::Arc::new(qcode_core::scheduler::Scheduler::new(store.clone()));
+
+        let ctx =
+            qcode_core::tool::ToolContext::for_test(root.path()).with_scheduler(Some(scheduler));
+        ScheduleCreate
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "title": "explicit",
+                    "prompt": "x",
+                    "rule": "daily 09:00",
+                    "cwd": explicit.path().display().to_string()
+                }),
+            )
+            .await
+            .expect("execute");
+
+        let tasks = store.load_schedule_tasks();
+        assert_eq!(
+            tasks[0].cwd.as_deref(),
+            Some(explicit.path().display().to_string().as_str())
+        );
     }
 }

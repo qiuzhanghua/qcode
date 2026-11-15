@@ -37,7 +37,7 @@ pub use engine::{
 pub use event::*;
 pub use inbox::{Inbox, QueuedMessage};
 pub use network::{Network, SharedNetwork};
-pub use paths::{dangerous_write_root, real_home};
+pub use paths::{choose_workspace, dangerous_write_root, real_home};
 pub use policy::{Action, Decision, Policy, Rule};
 pub use progress::{CommandLine, FailureNote, ProgressReport};
 pub use provider::*;

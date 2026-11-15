@@ -18,6 +18,37 @@
 
 use std::path::{Path, PathBuf};
 
+/// The workspace a frontend starts in when the user did not name one.
+///
+/// **One rule for every entry point** (ADR-0090 §2): the current directory,
+/// except that a filesystem root is not a usable answer — it falls back to the
+/// home directory. `/` is what `launchd` hands a Dock-launched GUI (ADR-0085),
+/// and it is also what `cd / && qc ...` would otherwise hand a scheduled task.
+///
+/// The second return value says whether the fallback happened. Every caller
+/// needs to know: the GUI logs it, the CLI prints it. A silent substitution of
+/// the directory the user was standing in is the failure this rule exists to
+/// prevent.
+///
+/// Lives here, not in the binary, because three call sites need the *same*
+/// answer (ADR-0090 §0.3): the GUI's `gui_workspace`, `qc schedule create`'s
+/// default, and `schedule_create`'s fallback for a delivery turn. Copies would
+/// drift, and the drift would be silent — each copy is self-consistent.
+pub fn choose_workspace(cwd: PathBuf, home: Option<PathBuf>) -> (PathBuf, bool) {
+    // A root has no parent: `/` on Unix, `C:\` on Windows. One rule for both,
+    // rather than a per-platform list of "bad" directories to keep in sync
+    // (and deliberately not a guess at what Windows shortcut defaults are).
+    if cwd.parent().is_some() {
+        return (cwd, false);
+    }
+    match home {
+        Some(home) => (home, true),
+        // No home to fall back to: the cwd we have beats failing to start at
+        // all.
+        None => (cwd, false),
+    }
+}
+
 /// The current user's home directory, or `None` when the environment does not
 /// say.
 ///
@@ -119,5 +150,31 @@ mod tests {
     fn no_known_home_skips_only_the_home_comparison() {
         assert_eq!(dangerous_write_root(Path::new("/srv/data"), None), None);
         assert!(dangerous_write_root(Path::new("/"), None).is_some());
+    }
+
+    #[test]
+    fn a_real_directory_is_kept_as_the_workspace() {
+        let cwd = PathBuf::from("/Users/someone/project");
+        let (workspace, fell_back) =
+            choose_workspace(cwd.clone(), Some(PathBuf::from("/Users/someone")));
+        assert_eq!(workspace, cwd, "终端启动的 cwd 是用户的选择，不许改写");
+        assert!(!fell_back);
+    }
+
+    #[test]
+    fn the_filesystem_root_falls_back_to_home() {
+        // 实测：Finder / Dock 启动给的就是这个（`open -a` 打出来的 cwd 是 `/`）。
+        let (workspace, fell_back) =
+            choose_workspace(PathBuf::from("/"), Some(PathBuf::from("/Users/someone")));
+        assert_eq!(workspace, PathBuf::from("/Users/someone"));
+        assert!(fell_back, "应当报告回退过，好让日志 / CLI 里留下一条");
+    }
+
+    #[test]
+    fn a_root_without_a_home_is_still_usable() {
+        // 没有家目录可退时，宁可拿 `/` 干活，也不要因为「路径不理想」拒绝启动。
+        let (workspace, fell_back) = choose_workspace(PathBuf::from("/"), None);
+        assert_eq!(workspace, PathBuf::from("/"));
+        assert!(!fell_back);
     }
 }

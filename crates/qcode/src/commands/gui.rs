@@ -48,7 +48,7 @@ fn gui_workspace() -> Result<PathBuf, Box<dyn std::error::Error>> {
     }
     let cwd = std::env::current_dir()?.canonicalize()?;
     let home = qcode_kernel::config::home_dir().map(|home| home.canonicalize().unwrap_or(home));
-    let (workspace, fell_back) = choose_workspace(cwd, home);
+    let (workspace, fell_back) = qcode_core::choose_workspace(cwd, home);
     if fell_back {
         tracing::warn!(
             workspace = %workspace.display(),
@@ -56,24 +56,6 @@ fn gui_workspace() -> Result<PathBuf, Box<dyn std::error::Error>> {
         );
     }
     Ok(workspace)
-}
-
-/// The decision itself, split out because [`gui_workspace`] reads the real
-/// `current_dir()` and would therefore be untestable. Returns
-/// `(workspace, used_the_home_fallback)`.
-fn choose_workspace(cwd: PathBuf, home: Option<PathBuf>) -> (PathBuf, bool) {
-    // A root has no parent: `/` on Unix, `C:\` on Windows. One rule for both,
-    // rather than a per-platform list of "bad" directories to keep in sync
-    // (and deliberately not a guess at what Windows shortcut defaults are).
-    if cwd.parent().is_some() {
-        return (cwd, false);
-    }
-    match home {
-        Some(home) => (home, true),
-        // No home to fall back to: the cwd we have beats failing to open a
-        // window at all.
-        None => (cwd, false),
-    }
 }
 
 /// Build the closure that turns the current config into a fresh backend.
@@ -524,32 +506,6 @@ pub(crate) async fn cmd_tui(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_real_directory_is_kept_as_the_workspace() {
-        let cwd = PathBuf::from("/Users/someone/project");
-        let (workspace, fell_back) =
-            choose_workspace(cwd.clone(), Some(PathBuf::from("/Users/someone")));
-        assert_eq!(workspace, cwd, "终端启动的 cwd 是用户的选择，不许改写");
-        assert!(!fell_back);
-    }
-
-    #[test]
-    fn the_filesystem_root_falls_back_to_home() {
-        // 实测：Finder / Dock 启动给的就是这个（`open -a` 打出来的 cwd 是 `/`）。
-        let (workspace, fell_back) =
-            choose_workspace(PathBuf::from("/"), Some(PathBuf::from("/Users/someone")));
-        assert_eq!(workspace, PathBuf::from("/Users/someone"));
-        assert!(fell_back, "应当报告回退过，好让日志里留下一条");
-    }
-
-    #[test]
-    fn a_root_without_a_home_is_still_usable() {
-        // 没有家目录可退时，宁可拿 `/` 开窗，也不要因为「路径不理想」拒绝启动。
-        let (workspace, fell_back) = choose_workspace(PathBuf::from("/"), None);
-        assert_eq!(workspace, PathBuf::from("/"));
-        assert!(!fell_back);
-    }
 
     /// `QCODE_APP_WORKSPACE` 是覆盖口，从前由 `.app` 启动器的 `cd` 兑现，
     /// 启动器删掉后（ADR-0086）由 `gui_workspace` 兑现（ADR-0085 §4）。

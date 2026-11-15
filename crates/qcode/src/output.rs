@@ -8,6 +8,34 @@ use qcode_mcp::McpConfig;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+/// Write a whole report, treating a closed pipe as "the reader has seen enough".
+///
+/// `qc sessions list | head -40` is an ordinary thing to type, and `println!`
+/// panics inside the stdlib when the pipe closes first — ADR-0080 fixed exactly
+/// this for `qc logs --follow`. Building the report first also means a command
+/// that fails halfway does not leave half a listing in the pipe.
+pub(crate) fn write_report(buffer: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut out = std::io::stdout().lock();
+    match write_all_report(&mut out, buffer) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The part of [`write_report`] that decides what a closed pipe means.
+///
+/// Split out with an injectable writer so the decision can be tested without a
+/// real `| head`: whether the pipe is already closed when we write is a race
+/// that a test cannot rely on.
+pub(crate) fn write_all_report(out: &mut dyn std::io::Write, buffer: &str) -> std::io::Result<()> {
+    match out.write_all(buffer.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        // The reader went away (`| head`). Not an error.
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// JSONL on stdout. `provider_raw` is diagnostic noise for most consumers, so
 /// it is hidden unless `--include-raw` is passed (the log on disk keeps it).
 pub(crate) fn print_event(event: &Event, include_raw: bool) {

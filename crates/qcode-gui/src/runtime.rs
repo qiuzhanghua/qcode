@@ -1312,7 +1312,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 target,
                                                 overlap,
                                                 approval_timeout,
-                                                cwd,
+                                                // 表单留空时把 workspace 写实（ADR-0090 §11）。
+                                                // 到点回落本来就落到 `engine.workspace`
+                                                // （见下面投递那段），所以这里不是改变
+                                                // 行为，而是让任务上存的地址与将来实际跑的
+                                                // 那一个**是同一个**：将来从别的目录启动
+                                                // GUI 也不会把这条任务的落点挪走。
+                                                cwd: Some(cwd.unwrap_or_else(|| {
+                                                    engine.workspace.display().to_string()
+                                                })),
                                             },
                                             now,
                                         )

@@ -34,6 +34,8 @@ pub(crate) enum Command {
     Resume(ResumeArgs),
     /// Inspect persisted sessions.
     Sessions(SessionsArgs),
+    /// Manage scheduled tasks (ADR-0090).
+    Schedule(ScheduleArgs),
     /// Inspect discovered Agent Skills.
     Skills(SkillsArgs),
     /// Show where the log file is, and its most recent lines (ADR-0077).
@@ -321,6 +323,64 @@ pub(crate) struct RunArgs {
 pub(crate) struct SessionsArgs {
     #[command(subcommand)]
     pub(crate) command: SessionsCommand,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ScheduleArgs {
+    #[command(subcommand)]
+    pub(crate) command: ScheduleCommand,
+}
+
+/// Managing scheduled tasks from the shell (ADR-0090).
+///
+/// Registering needs only a store; **triggering** needs a process holding the
+/// scheduler's clock, which today is the GUI. Every result says which of the two
+/// happened —「建了 ≠ 会跑」is the one thing this command can mislead about.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ScheduleCommand {
+    /// List scheduled tasks.
+    List {
+        /// Include paused and ended tasks. `--json` is always exhaustive.
+        #[arg(long)]
+        all: bool,
+        /// Machine-readable output. This shape is the stable contract; the text
+        /// form is not.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a scheduled task.
+    Create {
+        /// Short, distinguishable name.
+        #[arg(long)]
+        title: String,
+        /// What gets delivered when it fires — sent verbatim as a user message.
+        #[arg(long)]
+        prompt: String,
+        /// cron <expr> | once YYYY-MM-DD HH:MM | every <secs> (>=60) |
+        /// daily HH:MM | weekly <days> HH:MM | monthly <day> HH:MM
+        #[arg(long, value_name = "RULE")]
+        rule: String,
+        /// new_once (default) | new | session:<id>
+        #[arg(long, value_name = "TARGET")]
+        target: Option<String>,
+        /// Where the delivered turn runs. Defaults to the current directory,
+        /// stored absolute — a filesystem root falls back to your home
+        /// directory, because `/` cannot be a sandbox root.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<PathBuf>,
+        /// queue (default) | skip
+        #[arg(long, value_name = "POLICY")]
+        overlap: Option<String>,
+        /// Deny the delivered turn's approvals after this many seconds; omit to
+        /// wait for a human.
+        #[arg(long, value_name = "SECS")]
+        approval_timeout_secs: Option<u64>,
+        /// Machine-readable output: the created task plus the driver state.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a scheduled task by id.
+    Delete { id: String },
 }
 
 #[derive(Debug, Args)]

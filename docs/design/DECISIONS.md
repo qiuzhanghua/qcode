@@ -9945,7 +9945,7 @@ terminal UI」。裸 `qc` 打出来的就是这张表，所以用户不查文档
 
 ## ADR-0090：CLI 直接管理定时任务——`qc schedule list/create/delete`（2026-11-15）
 
-**状态**：Accepted（2026-11-15）。**未实现**。依赖 ADR-0088（注册与驱动分离）、
+**状态**：Accepted（2026-11-15）。**已实现**（2026-11-15）。依赖 ADR-0088（注册与驱动分离）、
 ADR-0059（调度语义）、ADR-0085（GUI 的 workspace 不是根）。不改变 ADR-0088 的任何决定。
 **实现规格见 [SCHEDULE-CLI.md](./SCHEDULE-CLI.md)**。
 
@@ -10230,3 +10230,33 @@ CLI 走 `Scheduler::create/delete/list`，与工具、与 GUI 设置页**同一�
 11. **README 三端对照表要同步**：`定时任务 schedule_*` 那行现在写的是「✅ 登记（驱动仅
     GUI）」。CLI 有了直接入口之后，这一行的意思变成「CLI/TUI 里既能通过 agent 登记，
    也能直接 `qc schedule create`」，措辞要跟着改——否则表说的是旧的唯一路径。
+
+**实现注记（2026-11-15）**
+
+按 [SCHEDULE-CLI.md](./SCHEDULE-CLI.md) 的取舍与步骤落地，落点与两处偏离：
+
+- **命令**：`qc schedule list|create|delete` 在 `crates/qcode/src/commands/schedule.rs`，
+  分派在 `main.rs`，参数面在 `cli.rs` 的 `ScheduleCommand`。文本输出走 `write_report`
+  （从 `commands/sessions.rs` 挪到 `output.rs` 成为共享 helper，`| head` 照旧不算错）。
+- **§2 cwd**：`choose_workspace` 从 `qc` 二进制搬到 `qcode-core::paths`（`pub`，三条测试
+  一起搬），GUI 的 `gui_workspace` 改成调它。CLI 的缺省路径是 `current_dir()` →
+  `choose_workspace`，回落时**在 stderr 打一行 note**（stdout 留给 `--json`）。
+- **§11 工具兜底**：`ScheduleCreate::execute` 在 `cwd` 仍为 `None` 时取
+  `ctx.shell_cwd()` 绝对化后写入；拿不到就保持 `None` 并 `warn`。GUI 设置页
+  （`runtime.rs` 的 `ScheduleOp::Create`）在表单 `cwd` 为空时填 `engine.workspace`。
+- **§0.2 上移**：`driver_footer` 搬到 `qcode-core::scheduler`；`parse_target` 变成
+  `Target::parse`（与 `Overlap::parse` / `TaskStatus::parse` 同族），`new-once` 别名保留。
+- **偏离 1：`--json` 的形状。** 规格 §0.1 说「原样序列化 `ScheduledTask`」，落地后确认
+  可行（它已 derive `Serialize`），于是外层 `{driver, tasks}` / `{driver, task}` 直接包住
+  它，没有手写字段映射。
+- **偏离 2：`list` 的「不制造 store」比既有约定更严。** `DriverStatus::read` 会打开
+  `index.sqlite`，而 `open_index` 的副作用是 `create_dir_all` + 建全部表——于是「问一句
+  有没有驱动在跑」会把答案之一（目录不存在）抹掉。现在先看 `index.sqlite` 在不在，不在
+  就直接判 `Unknown`。对照：`qc sessions list` 至今仍会建索引，`schedule list` 不再跟着
+  学坏了。
+- **验证**：`crates/qcode/tests/schedule_cli.rs` 十条（含「在 `/` 里建任务存的是 `~`」
+  与「`--json` 不随 `--all` 变」），`qcode-tools/src/schedule.rs` 两条 cwd 兜底单测，
+  `qcode-core/tests/schedule_lock.rs` 补一条「CLI 走的是持锁的 `create`/`delete`」。
+  其中四条验过「改回去就变红」：去掉根检查、去掉 `--all` 过滤、去掉 `index.sqlite`
+  保护、把兜底改成无条件覆盖显式值。
+- **README** 三端对照表那一行与「做了一半的」那段已同步。

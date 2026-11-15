@@ -25,6 +25,7 @@ mod gui;
 mod logs;
 mod misc;
 mod run;
+mod schedule;
 mod sessions;
 mod settings;
 
@@ -34,6 +35,7 @@ pub(crate) use logs::cmd_logs;
 pub(crate) use misc::cmd_sandbox;
 pub(crate) use misc::{cmd_acp, cmd_doctor, cmd_shell_env, cmd_skills, cmd_update};
 pub(crate) use run::cmd_run;
+pub(crate) use schedule::cmd_schedule;
 pub(crate) use sessions::{cmd_sessions, store_key};
 pub(crate) use settings::{cmd_config, cmd_mcp};
 

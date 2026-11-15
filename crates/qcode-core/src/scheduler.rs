@@ -84,6 +84,33 @@ impl DriverStatus {
 /// 心跳在 `runtime_status` 表里的键。
 pub const DRIVER_HEARTBEAT_KEY: &str = "driver.heartbeat";
 
+/// 驱动不在跑时，跟随结果的说明（ADR-0088 §2）。
+///
+/// 措辞刻意写死三件事，缺一件这条提示就会误导人：
+/// 1. 谁在触发（持有调度时钟的进程，当前只有 GUI）；
+/// 2. 关窗不等于停下（托盘常驻，**退出进程**才停）；
+/// 3. 不在跑的时候不是「稍后补跑」，而是「记为错过」。
+///
+/// 住在这里而不是工具 crate 里（ADR-0090 §0.2）：CLI 也要说同一件事，而它是
+/// `qcode-core` 的又一个消费者。三处各写一份的后果不是「措辞不一致」这么轻——这三条
+/// 是用户判断「我现在到底会不会收到提醒」的全部依据，任缺一条都会把人引到错的行为上。
+pub fn driver_footer(driver: DriverStatus) -> String {
+    match driver {
+        DriverStatus::Running { .. } => "驱动：在跑（到点会正常投递）。".to_string(),
+        DriverStatus::Stale { at } => format!(
+            "**驱动不在跑**（上次心跳 {at}，已过期）：该任务需要有一个持有调度时钟的进程在运行时才会触发\
+             （当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，**退出进程才停**。\
+             它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+        ),
+        DriverStatus::Unknown => {
+            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有一个持有调度时钟的\
+             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
+             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+                .to_string()
+        }
+    }
+}
+
 /// 新建任务的输入（`rule` 已解析为冻结规则，见 `schedule::parse_rule`）。
 #[derive(Debug, Clone)]
 pub struct NewTask {

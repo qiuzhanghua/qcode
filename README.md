@@ -74,6 +74,13 @@ cargo test --workspace
 ./target/debug/qc sessions fork <session-id> --at 42   # 打印新 session id
 ./target/debug/qc sessions gc --older-than-days 30     # dry run；加 --yes 才删除
 
+# 定时任务：直接建，不必开会话（ADR-0090）
+./target/debug/qc schedule create --title "晨间 CI" \
+    --prompt "看一遍 CI 最新状态" --rule "daily 08:00"
+./target/debug/qc schedule list              # 第一行是驱动状态：建了 ≠ 会跑
+./target/debug/qc schedule list --json       # 稳定契约；文本输出不承诺稳定
+./target/debug/qc schedule delete <id>
+
 # 配置与 MCP 管理
 ./target/debug/qc config show
 ./target/debug/qc config edit
@@ -144,7 +151,7 @@ MCP 与 web_search、同样的事件日志与快照。**能读写文件、能跑
 | 斜杠命令 | ❌ | ✅ 全部 | ✅ 全部（输出占据会话区，可滚动，Esc/关闭按钮退出） |
 | `/checkpoint` `/rollback` `/diff` | ❌ | ✅ | ✅ |
 | `/skills`、`/<skill-name>` 激活 | 通过 `--skill` 参数 | ✅ | ✅ |
-| 定时任务 `schedule_*` | ✅ 登记（驱动仅 GUI） | ✅ 登记（驱动仅 GUI） | ✅ 登记 + 驱动 |
+| 定时任务 `schedule_*` | ✅ 登记：`qc schedule create` 或对话 | ✅ 登记（对话） | ✅ 登记 + 驱动 |
 | 图片附件 | `--image <file>` | ❌ | ✅ 粘贴 / 拖拽 |
 | 多 Task 切换 | ❌ 一次一会话 | ❌ | ✅ 侧栏（子代理的会话不进侧栏） |
 | 终端面板 / Settings / 托盘 | ❌ | ❌ | ✅ |
@@ -163,7 +170,9 @@ MCP 与 web_search、同样的事件日志与快照。**能读写文件、能跑
    跑一次」，看到的是「agent 试了但失败」，不是「这里不支持」。**ADR-0088 把它拆成了两件
    事**：登记只需要一个 store（三端都有），触发需要一个持有调度时钟的进程（当前只有
    GUI）。现在三端都能登记，结果里会说清谁来触发、以及「关窗只是隐藏到托盘，退出进程才
-   停」——所以上表那一行从左边的 ❌ 变成了「✅ 登记（驱动仅 GUI）」。
+   停」——所以上表那一行从左边的 ❌ 变成了「✅ 登记」。ADR-0090 又给它加了一个**不经
+   模型**的入口：`qc schedule list / create / delete`，因为「每天八点提醒我」这句话本身
+   不需要模型理解，而脚本、换机重建、排查「为什么没跑」这三件事都不该开一次会话。
 4. **原本是漏的，已经补上**：斜杠命令与子代理这两个能力，逻辑早就写在共享的
    `qcode-ui-state` 与 `qcode-tools` 里，只是 GUI 没接线——GUI 甚至把 skills 索引用
    `skills: None` / `agents_md: None` 硬编码掉了。ADR-0087 把这几处补齐，所以上表里
