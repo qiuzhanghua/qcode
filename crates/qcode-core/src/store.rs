@@ -1040,7 +1040,12 @@ impl SessionStore {
             fs::create_dir_all(dir)?;
         }
         let text = serde_json::to_string_pretty(tasks)?;
-        let tmp = path.with_extension("json.tmp");
+        // 临时文件名必须**每个写者不同**。原来固定用 `tasks.json.tmp`，两个进程
+        // 同时写时（ADR-0088 之后 TUI 与 GUI 都可能写）：A 写完、B 覆盖它、A
+        // rename 走、B 的 rename 撞 ENOENT——B 那次登记直接失败。`Scheduler` 的锁
+        // 让这条路径今天不该发生，但把一个「并发下必然报错」的写法换成「并发下
+        // 最后写者胜」，成本是一个 pid，收益是失败模式从报错变成可对账的覆盖。
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
         fs::write(&tmp, text)?;
         fs::rename(&tmp, &path)?;
         Ok(())

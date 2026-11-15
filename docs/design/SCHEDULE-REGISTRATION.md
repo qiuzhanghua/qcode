@@ -10,7 +10,7 @@
 |---|---|---|
 | 1 过期语义 | `schedule::recover_task` + `ScheduledTask::missed_windows` + runtime 的 `away` 分支 | ✅ |
 | 2 heartbeat | `runtime_status` 表 + `scheduler::DriverStatus` + GUI clock beat 写入 | ✅ |
-| 3a 跨进程锁 | `SessionStore::lock_file_blocking`（阻塞，含 Windows `LockFileEx`）+ 8 处读改写 | ✅ |
+| 3a 跨进程锁 | `SessionStore::lock_file_blocking`（阻塞，含 Windows `LockFileEx`）+ 8 处读改写，真双进程验证 | ✅ |
 | 4 拆分判据 | `ToolContext` / `TurnContext` 的 `driver` 字段 + 三端注入 + 文案 | ✅ |
 | 5 剔除复核 | ACP 改为保留；子代理保留剔除但改写理由 | ✅ |
 | 6 收尾 | README 对照表与四类差异、ADR 状态 Accepted | ✅ |
@@ -124,6 +124,11 @@ ADR-0088 §5 原本倾向「把运行时任务搬进 `index.sqlite`」，理由�
 **命名**：锁文件 `<root>/locks/schedule-tasks.lock`，与 `locks/<session>.lock` 同目录。
 
 **验收**：两个进程同时 `schedule_create`，两条任务都在，没有一条被整表覆盖。
+已落为 `crates/qcode-core/tests/schedule_lock.rs`（真双进程，且验过「去掉锁就失败」）。
+
+**顺带修掉的**：`save_schedule_tasks` 的临时文件名原本固定 `tasks.json.tmp`，被所有
+写者共用——A 写完、B 覆盖、A rename 成功、B rename 撞 `ENOENT`，B 那次登记直接失败。
+改成按 pid 命名。
 
 ## 4. 步骤 4：拆开登记/驱动判据 + 三端注入
 

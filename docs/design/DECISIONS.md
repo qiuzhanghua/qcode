@@ -9784,6 +9784,18 @@ GUI/TUI/CLI 都变成它的客户端。真正的边界是**审批与事件出口
   变化：有 handle、无驱动 = 成功 + 说明）、`create_reports_a_running_driver`、
   `list_leads_with_the_driver_status`。
 - `build-for-release --check`（fmt / `clippy -D warnings` / `test` / `cargo-deny`）全绿。
-- **未在真机验证**：跨进程的锁（两个真进程同时登记）只做了同进程双线程验证——POSIX 下
-  同一进程的不同 fd 之间 `flock` 仍互斥，所以那条测试覆盖了「阻塞而非放行」，但没能覆盖
-  「两个真进程」。GUI 的心跳写入同样只做了单测级别的验证。
+- **跨进程用真双进程验证过了**（`crates/qcode-core/tests/schedule_lock.rs`）：
+  - `the_tasks_lock_is_held_across_processes`：子进程握锁期间本进程必须**阻塞**
+    （400ms 内抢不到），子进程被 kill 后内核释放、本进程随即拿到。这同时验了
+    「抢不到要等而不是报错」这条与 `SessionStore::lock()` 的刻意区别。
+  - `two_processes_registering_at_once_lose_nothing`：两个进程各登记 12 条，
+    磁盘上必须 24 条。
+  - **两条都验过「去掉锁就失败」**：把 `lock_file_blocking` 改成空操作后，前者报
+    「子进程还握着锁，本进程却抢到了」，后者报 19 条而非 24 条（7 条 parent 被整表
+    覆盖）。所以它们不是空转的。
+- **顺带修掉一个真 bug**：`save_schedule_tasks` 的临时文件名原本固定为
+  `tasks.json.tmp`，所有写者共用一个。两个进程同时写时 A 写完、B 覆盖它、A 的
+  rename 成功、B 的 rename 撞 `ENOENT`——B 那次登记直接失败。改成按 pid 命名。
+  锁让这条路径今天不该被走到，但失败模式从「必然报错」变成「最后写者胜」更可对账。
+- **仍未验证**：GUI 的心跳写入只有单测级别，没有真开窗口确认 `runtime_status`
+  每 30s 被更新一次。这一处要人工开一次 GUI、隔一分钟读表确认。
