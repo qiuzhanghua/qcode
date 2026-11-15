@@ -160,15 +160,16 @@ fn lock_exclusive_immediate(file: &fs::File) -> std::io::Result<bool> {
     if rc != 0 {
         return Ok(true);
     }
-    // `Error::new`, not `From<ErrorKind>`: the latter takes no message.
+    // `Error::other`, not `Error::new(ErrorKind::Other, ..)`: clippy's
+    // `io_other_error` lint flags the long form, and it only fires on the
+    // Windows build — which is exactly the shape that shipped a broken v0.11.0.
     let code = unsafe { GetLastError() };
     if code == ERROR_LOCK_VIOLATION {
         return Ok(false);
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("LockFileEx failed with {code}"),
-    ))
+    Err(std::io::Error::other(format!(
+        "LockFileEx failed with {code}"
+    )))
 }
 
 #[cfg(not(any(unix, windows)))]

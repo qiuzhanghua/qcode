@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.12.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.12.1**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -321,8 +321,8 @@ GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于�
 写地址，别依赖那个配置：
 
 ```bash
-git push git@gitee.com:opentj/qcode.git main v0.12.0   # 1. gitee，失败即停
-git push gh main v0.12.0                               # 2. GitHub，触发 CI / 发布
+git push git@gitee.com:opentj/qcode.git main v0.12.1   # 1. gitee，失败即停
+git push gh main v0.12.1                               # 2. GitHub，触发 CI / 发布
 ```
 
 推完两端用 `git ls-remote` 确认指向同一个 commit：
@@ -766,7 +766,7 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.12.0 状态：一个 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
+v0.12.1 状态：一个 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
 定时任务可在 TUI/CLI 里登记，也能 `qc schedule create` 直接建（驱动仍在 GUI，
 ADR-0088/0090）、Task/目录模型
 （一个 Task 可挂多个目录，RO/RW 按目录授权）、

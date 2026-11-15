@@ -96,6 +96,19 @@ for target in "${TARGETS[@]}"; do
     echo "==> cargo check --target $target"
     if ! cargo check --workspace --all-targets --target "$target"; then
         status=1
+        # A type error makes clippy pointless; skip it for this target.
+        checked=$((checked + 1))
+        continue
+    fi
+    # `check` only catches type errors. **Lints are per-crate and per-cfg too**, and
+    # a lint that only fires on the foreign target is just as invisible locally as
+    # a type error: `std::io::Error::new(ErrorKind::Other, ..)` is
+    # `io_other_error` on every platform, but the branch it lived in was
+    # `#[cfg(windows)]`, so macOS clippy never saw it and Windows CI went red
+    # twice (v0.11.0 for real type errors, then again for this lint).
+    echo "==> cargo clippy --target $target"
+    if ! cargo clippy --workspace --all-targets --target "$target" -- -D warnings; then
+        status=1
     fi
     checked=$((checked + 1))
 done
