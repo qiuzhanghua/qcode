@@ -872,30 +872,13 @@ impl Shell {
                                                 .child("命令输出"),
                                         )
                                         .child(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .gap_3()
-                                                .child(
-                                                    div()
-                                                        .text_size(sp(13.0))
-                                                        .line_height(sp(22.0))
-                                                        .text_color(rgb(0xffffff))
-                                                        .opacity(0.85)
-                                                        .child("Esc 关闭"),
-                                                )
-                                                .child(
-                                                    Button::new("dismiss-command-output")
-                                                        .label("关闭")
-                                                        .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                this.close_command_output(
-                                                                    window, cx,
-                                                                );
-                                                            },
-                                                        )),
-                                                ),
+                                            Button::new("dismiss-command-output")
+                                                .label("关闭")
+                                                .on_click(cx.listener(
+                                                    |this, _, window, cx| {
+                                                        this.close_command_output(window, cx);
+                                                    },
+                                                )),
                                         ),
                                 )
                                 .child(

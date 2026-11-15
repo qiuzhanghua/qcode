@@ -9470,7 +9470,9 @@ transcript），`flex_grow(1) + min_h_0 + overflow_y_scroll()`——和终端视
 发送新消息（`send_prompt` 先清掉它——报告是「看一眼」的东西，回复必须落在被它盖住的
 transcript 里）。为了 Esc 可靠，面板出现时**取走焦点**（`Shell::output_focus`，
 `track_focus` + `key_context("CommandOutput")` + 面板自己的 `on_key_down`），关闭时把焦点
-交还 composer；根的 Esc 保留作为兜底，两条路都走 `close_command_output`。
+交还 composer；根的 Esc 保留作为兜底，两条路都走 `close_command_output`。标题条**只放
+「关闭」按钮，不写「Esc 关闭」**——Esc 照旧生效，但面板是一次性读的东西，按钮足够说明
+怎么关，多一行字反而是噪音。
 
 代价要说清楚：面板开着时焦点不在输入框，想直接打字得先点一下 composer 或按 Esc。
 这比「敲键盘毫无反应且无法退出」好，但仍然是行为选择，不是免费的。
