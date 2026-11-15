@@ -5460,6 +5460,7 @@ dependencies = [
  "png 0.18.1",
  "qcode-attachments",
  "qcode-core",
+ "qcode-driver",
  "qcode-image",
  "qcode-kernel",
  "qcode-mcp",

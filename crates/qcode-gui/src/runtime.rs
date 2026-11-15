@@ -8,8 +8,8 @@ use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
 use qcode_core::schedule::{
-    Advance, DeliveryReceipt, Schedule, ScheduleState, ScheduleStatus, ScheduledMessage,
-    ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery, task_tick,
+    DeliveryReceipt, Schedule, ScheduleState, ScheduleStatus, ScheduledMessage, ScheduledTask,
+    Target, TaskStatus, Tick, append_delivery,
 };
 use qcode_core::scheduler::{EditTask, NewTask, Scheduler};
 use qcode_core::store::SessionStore;
@@ -142,6 +142,38 @@ fn bind_fresh_session(scheduler: &Scheduler, task_id: &str, session_id: &str) {
     });
 }
 
+/// GUI 对 [`qcode_driver::Probe`] 的回答。
+///
+/// 两个问题只有前端知道：**谁的会话正在跑 turn**（`live` 是本进程的权威），
+/// **谁的会话还在**（store 的权威）。`qcode-driver` 自己两样都读不到，所以由这里喂。
+struct GuiProbe<'a> {
+    store: &'a qcode_core::store::SessionStore,
+    live: &'a HashMap<SessionTarget, CancellationToken>,
+}
+
+impl qcode_driver::Probe for GuiProbe<'_> {
+    fn is_busy(&self, task: &ScheduledTask) -> bool {
+        let target = task
+            .target
+            .session_id()
+            .map(|id| SessionTarget::Session(id.to_string()));
+        target
+            .as_ref()
+            .is_some_and(|target| self.live.contains_key(target))
+    }
+
+    fn exists(&self, task: &ScheduledTask) -> bool {
+        let target = task
+            .target
+            .session_id()
+            .map(|id| SessionTarget::Session(id.to_string()));
+        target
+            .as_ref()
+            .and_then(|target| target.id())
+            .is_none_or(|id| self.store.task(id).is_ok())
+    }
+}
+
 /// 崩溃恢复：补确认"上次投递已落盘但 `next_fire_at` 未推进"的任务。
 ///
 /// 重启后 `pending_ack` / `inflight` 是内存态、已清零，正常的投递确认路径
@@ -150,67 +182,55 @@ fn bind_fresh_session(scheduler: &Scheduler, task_id: &str, session_id: &str) {
 /// 等价于 dsh `recoverOutstandingExecution` 的去重语义。未命中的任务
 /// （投递从未落盘，或目标会话已删除）交给到期扫描正常补投 / Orphaned 处理。
 /// 返回补确认的任务数。
+///
+/// **认哪条算恢复**由 [`qcode_driver::plan_recovery`] 决定（纯逻辑、可假时钟测）；
+/// 这里只提供它需要的事实（"这次投递落盘了吗"）并落地补记。
 fn recover_schedule_deliveries(
     engine: &Engine,
     scheduler: &Scheduler,
     inflight: &HashSet<String>,
     now: time::PrimitiveDateTime,
 ) -> usize {
-    let mut recovered = 0;
-    for task in scheduler.list() {
-        if task.status != TaskStatus::Active || inflight.contains(&task.id) {
-            continue;
-        }
-        let Some(next) = task.next_fire_at else {
-            continue;
-        };
-        if next > now {
-            continue;
-        }
-        // 目标会话：既有绑定，或 `New` 目标投递时预定的会话。都没有说明
-        // 投递从未发生（fresh 目标首次投递前崩溃）→ 交给正常补投。
-        let Some(session) = task
-            .target
-            .session_id()
-            .or(task.reserved_session_id.as_deref())
-        else {
-            continue;
-        };
-        let at = next.to_string();
+    let tasks = scheduler.list();
+    let landed = |task_id: &str, session: &str, occurrence: &str| {
         // `Ok(false)`（这次投递早就落过账）与 `Err`（读不出来）都只跳过本次，
         // 所以只认 `Ok(true)`。
-        if let Ok(true) = engine
-            .store
-            .schedule_delivery_landed(session, &task.id, &at)
-            && scheduler
-                .update(&task.id, |task| {
-                    let receipt = DeliveryReceipt {
-                        occurrence_at: task.next_fire_at.unwrap_or(now),
-                        delivered_at: now,
-                        message_id: format!("recovered:{}:{}", task.id, at),
-                        target_session_id: Some(session.to_string()),
-                        prompt: task.prompt.clone(),
-                    };
-                    if append_delivery(&mut task.delivery_log, receipt.clone(), now) {
-                        task.earlier_records_pruned = true;
-                    }
-                    task.last_receipt = Some(receipt);
-                    match advance_rule(&task.rule, now) {
-                        Advance::Next(next) => {
-                            task.next_fire_at = Some(next);
-                        }
-                        Advance::Ended => {
-                            task.status = TaskStatus::Ended;
-                            task.next_fire_at = None;
-                        }
-                    }
-                })
-                .is_ok()
-        {
-            recovered += 1;
-        }
+        matches!(
+            engine
+                .store
+                .schedule_delivery_landed(session, task_id, occurrence),
+            Ok(true)
+        )
+    };
+    let recovered = qcode_driver::plan_recovery(&tasks, now, inflight, &landed);
+
+    for task_id in &recovered {
+        let Some(task) = scheduler.find(task_id) else {
+            continue;
+        };
+        let Some(session) = qcode_driver::delivery_session(&task).map(str::to_string) else {
+            continue;
+        };
+        let at = task
+            .next_fire_at
+            .map(|next| next.to_string())
+            .unwrap_or_default();
+        let _ = scheduler.update(task_id, |task| {
+            let receipt = DeliveryReceipt {
+                occurrence_at: task.next_fire_at.unwrap_or(now),
+                delivered_at: now,
+                message_id: format!("recovered:{task_id}:{at}"),
+                target_session_id: Some(session.clone()),
+                prompt: task.prompt.clone(),
+            };
+            if append_delivery(&mut task.delivery_log, receipt.clone(), now) {
+                task.earlier_records_pruned = true;
+            }
+            task.last_receipt = Some(receipt);
+            qcode_driver::advance_past(task, now);
+        });
     }
-    recovered
+    recovered.len()
 }
 
 /// What the UI was last told about the queues, so the ticker only publishes
@@ -960,15 +980,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 // 到下一个未来时刻。RunNow 已把下一次拨到未来，
                                                 // 这里再推会跳过一个周期。
                                                 if task.next_fire_at.is_none_or(|next| next <= now) {
-                                                    match advance_rule(&task.rule, now) {
-                                                        Advance::Next(next) => {
-                                                            task.next_fire_at = Some(next);
-                                                        }
-                                                        Advance::Ended => {
-                                                            task.status = TaskStatus::Ended;
-                                                            task.next_fire_at = None;
-                                                        }
-                                                    }
+                                                    qcode_driver::advance_past(task, now);
                                                 }
                                             })
                                             .is_ok()
@@ -1022,67 +1034,53 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             port.tagged(SessionTarget::Draft).send_schedule_changed();
                         }
 
-                        // ② 扫描到期任务：跳过 in-flight 与全局最小投递间隔内的
-                        //（dsh `MIN_DELIVERY_INTERVAL` 护栏，60s）。
+                        // ② 扫描到期任务。闸门与分支在 `qcode_driver::plan_tick` 里
+                        // ——GUI 与（未来的）daemon 共用同一份，包括那几个容易被漏掉
+                        // 的闸门（inflight / 最小投递间隔 / 到期 / 忙 / 目标已删）。
+                        //
+                        // 这里只负责**回答** plan_tick 需要的两个外部事实（谁的会话活着、
+                        // 谁的会话还在）并**落地**它给出的动作。
+                        //
+                        // ADR-0092 §6：这段以前是内联的 match task_tick，第二个实现
+                        // （daemon）很容易只抄到其中两条闸门。
+                        let probe = GuiProbe {
+                            store: &engine.store,
+                            live: &live,
+                        };
+                        let plan = qcode_driver::plan_tick(
+                            &scheduler.list(),
+                            now,
+                            &inflight,
+                            &probe,
+                        );
                         let mut due: Vec<ScheduledTask> = Vec::new();
-                        for task in scheduler.list() {
-                            if task.status != TaskStatus::Active || inflight.contains(&task.id) {
-                                continue;
-                            }
-                            if qcode_core::schedule::delivery_floor_end(&task)
-                                .is_some_and(|floor| now < floor)
-                            {
-                                continue;
-                            }
-                            let target = task
-                                .target
-                                .session_id()
-                                .map(|id| SessionTarget::Session(id.to_string()));
-                            let busy = target
-                                .as_ref()
-                                .is_some_and(|target| live.contains_key(target));
-                            let exists = target
-                                .as_ref()
-                                .and_then(|target| target.id())
-                                .is_none_or(|id| engine.store.task(id).is_ok());
-                            match task_tick(&task, now, busy, exists) {
-                                TaskTick::Fire => due.push(task),
-                                TaskTick::SkipBusy => {
-                                    // 与 config 的 skip 一致：跳过本次并推进。
-                                    let _ = scheduler.update(&task.id, |task| {
-                                        match advance_rule(&task.rule, now) {
-                                            Advance::Next(next) => {
-                                                task.next_fire_at = Some(next);
-                                            }
-                                            Advance::Ended => {
-                                                task.status = TaskStatus::Ended;
-                                                task.next_fire_at = None;
-                                            }
-                                        }
-                                    });
+                        for action in plan.into_actions() {
+                            match action {
+                                qcode_driver::Action::Fire { task_id } => {
+                                    if let Some(task) = scheduler.find(&task_id) {
+                                        due.push(task);
+                                    }
                                 }
-                                TaskTick::Orphaned => {
-                                    // 目标会话已不存在（兜底路径：正常删除已被
-                                    // `delete_session` 联动清理，这里只处理 race /
-                                    // 外部删除）。与 dsh 一致：跳过本轮、推进到下一次、
-                                    // 保持 Active，等待用户改 target 后继续执行——
-                                    // 不能像原来那样丢进 `_` 分支让任务永久停摆。
-                                    let _ = scheduler.update(&task.id, |task| {
-                                        match advance_rule(&task.rule, now) {
-                                            Advance::Next(next) => {
-                                                task.next_fire_at = Some(next);
-                                            }
-                                            Advance::Ended => {
-                                                task.status = TaskStatus::Ended;
-                                                task.next_fire_at = None;
-                                            }
-                                        }
+                                // 跳过这一轮并推进：与 config 的 skip 一致。
+                                qcode_driver::Action::SkipBusy { task_id } => {
+                                    let _ = scheduler.update(&task_id, |task| {
+                                        qcode_driver::advance_past(task, now)
                                     });
                                     port
                                         .tagged(SessionTarget::Draft)
                                         .send_schedule_changed();
                                 }
-                                _ => {}
+                                // 目标会话已不存在：跳过本轮、推进、**保持 Active**，
+                                // 等用户改 target 后继续。不能丢进「什么都不做」——
+                                // 那会让任务永久停摆，而用户看不出来。
+                                qcode_driver::Action::Orphaned { task_id } => {
+                                    let _ = scheduler.update(&task_id, |task| {
+                                        qcode_driver::advance_past(task, now)
+                                    });
+                                    port
+                                        .tagged(SessionTarget::Draft)
+                                        .send_schedule_changed();
+                                }
                             }
                         }
 
@@ -1455,17 +1453,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 }
                                                 // 立即把下次触发拨到最近的未来时刻，详情
                                                 // 页不用等落盘确认就显示正确的下次执行时间。
-                                                let _ = scheduler.update(&id, |task| {
-                                                    match advance_rule(&task.rule, now) {
-                                                        Advance::Next(next) => {
-                                                            task.next_fire_at = Some(next);
-                                                        }
-                                                        Advance::Ended => {
-                                                            task.status = TaskStatus::Ended;
-                                                            task.next_fire_at = None;
-                                                        }
-                                                    }
-                                                });
+                                                let _ = scheduler
+                                                    .update(&id, |task| qcode_driver::advance_past(task, now));
                                                 Ok(Some("已触发".to_string()))
                                             }
                                             Err(error) => Err(error.to_string()),
@@ -1548,4 +1537,84 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             }
         });
     });
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use qcode_core::schedule::{Overlap, Rule, ScheduledTask, Target};
+    // 被测的是 trait 的两个方法，得显式引入才在作用域里。
+    use qcode_driver::Probe as _;
+
+    /// GUI 对 `Probe` 的两个回答是 `qcode_driver::plan_tick` 唯一的外部输入。
+    ///
+    /// 这条测试守的是**翻译层**：驱动逻辑本身在 `qcode-driver` 里用假时钟测了，
+    /// 但如果 GUI 把「谁忙」译错（比如把 `New` 目标当成绑定会话），那 7 条测试全绿
+    /// 而 GUI 仍然会误判。所以这一层也要有人看着。
+    fn task_with(target: Target) -> ScheduledTask {
+        ScheduledTask {
+            id: "01T".to_string(),
+            title: "t".to_string(),
+            prompt: "p".to_string(),
+            rule: Rule::Daily { hour: 9, minute: 0 },
+            target,
+            overlap: Overlap::Queue,
+            approval_timeout: None,
+            status: qcode_core::schedule::TaskStatus::Active,
+            stakeholders: Vec::new(),
+            last_receipt: None,
+            delivery_log: Vec::new(),
+            earlier_records_pruned: false,
+            missed_windows: 0,
+            reserved_session_id: None,
+            next_fire_at: None,
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn the_probe_reads_live_and_store_correctly() {
+        let dir = tempfile::tempdir().expect("data dir");
+        let store = qcode_core::store::SessionStore::new(dir.path());
+
+        let bound = task_with(Target::Session {
+            id: "01MISSING".to_string(),
+        });
+        // 一个**不存在**的会话：store 说不存在，live 里当然也没有。
+        let live: HashMap<SessionTarget, CancellationToken> = HashMap::new();
+        let probe = GuiProbe {
+            store: &store,
+            live: &live,
+        };
+        assert!(
+            !probe.exists(&bound),
+            "a session that was never created must not read as existing"
+        );
+        assert!(!probe.is_busy(&bound));
+    }
+
+    /// `New` / `NewOnce` 目标没有绑定会话：`exists` 必须为真（它每次自己建会话），
+    /// 否则一条「每天新建会话」的任务会被永久判成 `Orphaned`。
+    #[test]
+    fn unbound_targets_always_exist() {
+        let dir = tempfile::tempdir().expect("data dir");
+        let store = qcode_core::store::SessionStore::new(dir.path());
+        let live: HashMap<SessionTarget, CancellationToken> = HashMap::new();
+        let probe = GuiProbe {
+            store: &store,
+            live: &live,
+        };
+
+        for target in [Target::New, Target::NewOnce] {
+            let task = task_with(target);
+            assert!(
+                probe.exists(&task),
+                "a fresh target creates its own session and must count as existing"
+            );
+            assert!(
+                !probe.is_busy(&task),
+                "a fresh target has no session to be busy"
+            );
+        }
+    }
 }

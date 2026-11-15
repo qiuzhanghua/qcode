@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 qcode-attachments = { version = "0.12.1", path = "../qcode-attachments" }
 qcode-core = { version = "0.12.1", path = "../qcode-core" }
+qcode-driver = { version = "0.12.1", path = "../qcode-driver" }
 qcode-providers = { version = "0.12.1", path = "../qcode-providers" }
 qcode-ui-state = { version = "0.12.1", path = "../qcode-ui-state" }
 qcode-ui-bridge = { version = "0.12.1", path = "../qcode-ui-bridge" }
