@@ -22,6 +22,7 @@
 //! 于是「一条 1 分钟后触发的任务到点跑完了」能在几毫秒内验完，而不是真等一分钟
 //! （ADR-0092 验证 1 要求它进 CI）。
 
+pub mod detach;
 pub mod host;
 
 use std::collections::HashSet;

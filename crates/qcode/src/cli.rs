@@ -36,6 +36,8 @@ pub(crate) enum Command {
     Sessions(SessionsArgs),
     /// Manage scheduled tasks (ADR-0090).
     Schedule(ScheduleArgs),
+    /// Start, stop or inspect the scheduled-task daemon (ADR-0092).
+    Daemon(DaemonArgs),
     /// Inspect discovered Agent Skills.
     Skills(SkillsArgs),
     /// Show where the log file is, and its most recent lines (ADR-0077).
@@ -329,6 +331,34 @@ pub(crate) struct SessionsArgs {
 pub(crate) struct ScheduleArgs {
     #[command(subcommand)]
     pub(crate) command: ScheduleCommand,
+}
+
+/// `qc daemon start|stop|status`（ADR-0092 §11 阶段 3）。
+///
+/// **只做「拉起 + 问话」**，自己不驱动。daemon 是一个独立二进制 `qcd`
+/// （ADR-0092 §2：它不该链 GPU 栈），这个子命令是它的客户端。
+#[derive(Debug, Args)]
+pub(crate) struct DaemonArgs {
+    #[command(subcommand)]
+    pub(crate) command: DaemonCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonCommand {
+    /// Start the daemon in the background.
+    Start {
+        /// Clock beat in seconds (default 30).
+        #[arg(long, value_name = "SECS")]
+        beat: Option<u64>,
+    },
+    /// Stop the running daemon.
+    Stop,
+    /// Report whether a daemon is running, and for which data directory.
+    Status {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Managing scheduled tasks from the shell (ADR-0090).

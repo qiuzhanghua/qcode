@@ -105,10 +105,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let machine_dir = qcode_kernel::data_dir_hint(None);
     // 拿 `Option` 是因为 `Disabled` 分支没有锁可持有。`Some` 的 `Primary` 必须活到
     // 进程结束——掉了它就等于放锁（`Primary` 的文档就是这么要求的）。
-    let _machine_lock = match qcode_core::single_instance::acquire_in(Scope::QCD, &machine_dir)
+    // `serve_primary` 把锁**移进监听线程**：不 `serve` 的话锁只是「占着」而通道
+    // 没人应答，于是 `qc daemon status` 会看到「有锁但连不上」——那被正确地报成
+    // 「无法判断」。daemon 必须应答，否则它对自己的存在只能给出一句含糊的话。
+    // 抢到的 `Primary` 全部交给 `serve`（锁随监听线程活到进程结束），所以这里
+    // 不需要再保存它。`Disabled` 分支没有锁可交，行为一样。
+    match qcode_core::single_instance::acquire_in(Scope::QCD, &machine_dir)
         .map_err(|error| format!("cannot take the machine-wide lock: {error}"))?
     {
-        Outcome::Primary(primary) => Some(primary),
+        Outcome::Primary(primary) => {
+            // 应答通道：`qc daemon status` 靠它确认「有活实例」。回调返回 `true`
+            // 表示继续接活——daemon 没有前台可「切到」，所以对任何激活请求都只是
+            // 记一句日志。
+            primary.serve(|| {
+                tracing::debug!("activation request received; qcd has no window to raise");
+                true
+            });
+        }
         Outcome::HandedOver => {
             // 明确失败，不假装成功（ADR-0092 §11）：一个说「已启动」但其实没启动的
             // 进程，比没有这个能力更糟。
@@ -122,7 +135,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 锁机制不可用时**继续跑**：单实例是「防重复」而不是「防启动」，而定时
             // 任务不跑是更坏的后果。说一句，别静默。
             eprintln!("qcd: single-instance check skipped ({why}); two daemons could overlap");
-            None
         }
     };
 

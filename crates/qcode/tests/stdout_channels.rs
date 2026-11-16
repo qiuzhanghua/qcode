@@ -41,6 +41,9 @@ const PRODUCT_FILES: &[&str] = &[
     // `--json` shape scripts parse (ADR-0090 §6). The human text is not a stable
     // contract; the JSON is, and it is what consumes this stdout.
     "commands/schedule.rs",
+    // `qc daemon start|stop|status` (ADR-0092 §11). Same reasoning: `status --json`
+    // is what a script reads, and `start` confirms the pid it really spawned.
+    "commands/daemon.rs",
     // The diagnostic checklist.
     "doctor.rs",
     // `current version:`, `latest release:`, `installed …` — a script reads these.

@@ -25,6 +25,17 @@ tokio-util.workspace = true
 tracing.workspace = true
 time.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# `setsid`：让孩子成为新会话的首进程（ADR-0092 §11 阶段 3）。
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# `DETACHED_PROCESS` / `CREATE_NEW_PROCESS_GROUP`（ADR-0092 §11 阶段 3）。
+# 与 `qcode-core` 用同一个大版本，避免同一 crate 编两遍。
+windows-sys = { version = "0.60", features = [
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 qcode-providers = { version = "0.13.0", path = "../qcode-providers" }
 tempfile.workspace = true

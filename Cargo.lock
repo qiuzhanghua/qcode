@@ -5339,6 +5339,7 @@ name = "qcd"
 version = "0.13.0"
 dependencies = [
  "async-trait",
+ "libc",
  "qcode-core",
  "qcode-driver",
  "qcode-kernel",
@@ -5349,6 +5350,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5362,6 +5364,7 @@ dependencies = [
  "embed-resource",
  "futures-util",
  "libc",
+ "qcd",
  "qcode-acp",
  "qcode-attachments",
  "qcode-core",

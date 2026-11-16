@@ -99,6 +99,7 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
         }
         Some(Command::Sessions(args)) => cmd_sessions(args, data_dir),
         Some(Command::Schedule(args)) => cmd_schedule(args, data_dir),
+        Some(Command::Daemon(args)) => cmd_daemon(args, data_dir),
         Some(Command::Skills(args)) => cmd_skills(args, config),
         Some(Command::Logs(args)) => cmd_logs(args, data_dir),
         Some(Command::Config(args)) => cmd_config(args, config),
@@ -165,6 +166,7 @@ fn command_name(command: &Option<Command>, launch: boot::Frontend) -> &'static s
         Some(Command::Resume(_)) => "resume",
         Some(Command::Sessions(_)) => "sessions",
         Some(Command::Schedule(_)) => "schedule",
+        Some(Command::Daemon(_)) => "daemon",
         Some(Command::Skills(_)) => "skills",
         Some(Command::Logs(_)) => "logs",
         Some(Command::Config(_)) => "config",

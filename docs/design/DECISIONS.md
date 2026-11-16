@@ -10645,8 +10645,8 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 | `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
 | `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
-| `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有（阶段 3） |
-| `qcd`（新 package + bin） | **前台可跑**（阶段 2） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：分离进程、`qc daemon` 客户端、让路等待 |
+| `qc`（bin） | **客户端**（阶段 3） | `commands/daemon.rs`：`start` / `stop` / `status [--json]`。只做拉起 + 问话：spawn `qcd`、等它真拿到锁、`status` 探机器级锁 + 报数据目录级驱动四态。**找不到 `qcd` 时退出码 1 且说明它是独立二进制**（`tests/daemon_cli.rs` 3 条）。`stop` 阶段 3 **不能**真的停——见下 |
+| `qcd`（新 package + bin） | **可分离启动**（阶段 2+3） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环、`detach.rs`（`setsid` / `DETACHED_PROCESS`+`CREATE_NEW_PROCESS_GROUP`、`find_qcd`）。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：让路等待、能回答「我服务哪个数据目录」 |
 
 四条留给后续实现的话：
 
@@ -10668,6 +10668,22 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
    拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
    时断言退出码非 0 且 stderr 说实话。
+
+**阶段 3 已落地（2026-11-16）**，三件：
+
+- **分离进程三平台各一段**（`qcd/src/detach.rs`）：unix 用 `setsid`（成为新会话首进程，
+  没有控制终端），Windows 用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`。stdin 接空
+  设备、stdout/stderr 丢弃——**不能继承**，否则 `qc daemon start` 会一直等孩子关句柄。
+  实机验过：`qc daemon start --data-dir /tmp/dm` 之后那个后台进程自己把到点的任务跑完了
+  （`turns=1`），而 `qc daemon status` 报「在跑」。
+- **`start` 不靠 `spawn` 成功就说成功。** 起进程只证明 fork 成功，那个进程可能立刻因为
+  驱动锁被占、配置坏了而退出。所以 spawn 之后**等它真拿到机器级锁**（3 秒上限），拿不到
+  就说「起来了但没活下来」并指向日志。§11 那句「一个说已启动但其实没启动的 `daemon
+  start` 比没有这个子命令更糟」在这里落成代码。
+- **`stop` 如实承认做不到。** pid 不在锁里（ADR-0083：锁就是身份，pid 会被复用），所以
+  `stop` 只能说「有一个在跑，但停它需要 pid，请去它被启动的地方停」。假装修好了是更坏的
+  失败——用户会以为停了。这是阶段 3 唯一主动留下的缺口，补它需要一条控制通道
+  （发一条 `{"stop":true}` 而不是信号），那是又一轮设计。
 
 **阶段 2 已落地（2026-11-16）**，四件值得记的事：
 

@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+mod daemon;
 mod gui;
 mod logs;
 mod misc;
@@ -29,6 +30,7 @@ mod schedule;
 mod sessions;
 mod settings;
 
+pub(crate) use daemon::cmd_daemon;
 pub(crate) use gui::{cmd_gui, cmd_tui};
 pub(crate) use logs::cmd_logs;
 #[cfg(windows)]

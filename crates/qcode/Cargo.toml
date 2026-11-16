@@ -21,6 +21,9 @@ qcode-acp = { version = "0.13.0", path = "../qcode-acp" }
 qcode-image = { version = "0.13.0", path = "../qcode-image" }
 qcode-kernel = { version = "0.13.0", path = "../qcode-kernel" }
 qcode-gui = { version = "0.13.0", path = "../qcode-gui" }
+# `qc daemon` 的客户端要「分离启动 qcd」与「在 PATH 里找它」（ADR-0092 §11）。
+# 只用到 `detach` 模块，不碰驱动逻辑——那是 daemon 自己的事。
+qcd = { version = "0.13.0", path = "../qcd" }
 async-trait.workspace = true
 base64.workspace = true
 ratatui.workspace = true
