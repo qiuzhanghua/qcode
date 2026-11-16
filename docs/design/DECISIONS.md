@@ -10634,6 +10634,35 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 「建了 ≠ 会跑」的诚实要延续到这里——一个说「已启动」但其实没启动的 `daemon start`，
 比没有这个子命令更糟。
 
+**进度**（2026-11-16 对照代码。上表是**目标形态**，不是现状；本 ADR 仍未完成）
+
+| 单元 | 现状 | 判据 |
+|---|---|---|
+| `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs:172` 的 `DRIVER_LOCK` 在；但 `inflight`、`pending_ack` 是 GUI 的局部状态——`qcode-driver` 只把它当参数收进来，`qcode-core` 里 0 次 |
+| `qcode-driver` | **部分**：只有「决策」 | `src/lib.rs` 197 行，导出 `plan_tick` / `plan_recovery` / `advance_past` / `delivery_session`；`tests/plan.rs` 7 个假时钟用例；首次落地 `a630cd6` |
+| `qcode-daemon` | ❌ 不存在 | 无此 crate |
+| `qcode-gui` | **部分**：决策已改用它，循环本体还在 | `runtime.rs` 共 1620 行；时钟分支 `runtime.rs:910`–`1111`（约 198 行非空）仍在 GUI，`create_task`、`bind_fresh_session`、`deliver_schedule_group!` 也都还在这里 |
+| `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有 |
+| `qcd`（新 bin） | ❌ 不存在 | 同上；但前提已验，见下 |
+
+四条留给后续实现的话：
+
+1. **`qcode-driver` 的范围要按代码读，别按上表读。** 「时钟 beat、扫描、投递、心跳、事件
+   出口」里，实际只落地了「扫描/判到期」这一项：beat 在 `runtime.rs:395`，投递在 GUI 的
+   `deliver_schedule_group!`，记账在 GUI 的 `inflight`，心跳在 core 的 `scheduler.rs`，事件
+   出口还不存在。照上表字面估会以为「只剩一层进程壳」，实际是先搬那 198 行加三处 helper
+   与记账。crate 自己的头注释已经把边界写对了（「读时钟、占锁、写会话、跑 turn、投递消息
+   属于调用方」），以它为准。
+2. **进度要记在这里，不要只留在 commit message 里。** `a630cd6` 之前，任何人读本 ADR 都
+   会得到「§11 一样都还没做」的印象，然后重复这次对照。
+3. **§1 与 §11 的拆分方向已验证可行。** `qcd` = daemon + kernel 且不链 GPU 栈，这条现在
+   就能验：`cargo tree -p qcode-kernel` 里 `wgpu`/`winit`/`wry`/`tao`/`glow`/`blade`/
+   `softbuffer` 计数为 0，而 providers、tools、mcp、net 全在——「完整引擎」与「不链 GPU
+   栈」可以同时满足。
+4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
+   拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
+   时断言退出码非 0 且 stderr 说实话。
+
 ### 12. 非目标（本期）
 
 - 登录自启（launchd / systemd user unit / 计划任务）
