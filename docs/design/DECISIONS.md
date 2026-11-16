@@ -11426,7 +11426,7 @@ TUI 今天**没有**定时任务界面。为了让「TUI 能启动 / 停止 / �
   解法是把「发布物」写成一个脚本可读的清单文件，让所有打包路径都从那里取；现阶段
   `every_packaging_path_ships_the_daemon` 是它的替身。
 
-**已知缺陷（本次发现，未修）**：`locks/qcd.sock` 的路径一超长，互斥就静默失效。
+**已修（ADR-0099）**：`locks/qcd.sock` 的路径一超长，互斥就静默失效。
 
 `Paths::for_scope` 会 `canonicalize` 数据目录。macOS 上 `/var` 是 `/private/var` 的符号
 链接，于是临时 HOME（`$TMPDIR` = `/var/folders/...`）会被撑长 8 字节，把
@@ -11445,12 +11445,12 @@ canonical socket 路径长度 105 / 上限 104 → bind: AF_UNIX path too long
 
 影响面：真实用户在 `/Users/q` 下（42 字节）不受影响；长家目录、家目录在符号链接卷上、
 以及**所有用临时 HOME 的测试**都落在坑里。后者正是这个 bug 一直没被发现的伪装——它让
-测试「全绿」，因为测试从没真正测到锁（`daemon_cli.rs` 现在用短路径 HOME 绕开它，绕开
-的地方有注释）。
+测试「全绿」，因为测试从没真正测到锁（当时 `daemon_cli.rs` 用短路径 HOME 绕开了它）。
 
-修法需要一个决定：`for_scope` 要么不 canonicalize（但那样两个进程可能对同一个目录给出
-不同身份——原设计正是为了防这个），要么在路径过长时改用哈希过的短名落在临时目录。两条
-都够写一个 ADR，所以不在这次改动里顺手改。
+**修法与取舍见 [ADR-0099](#adr-0099身份与地址分开canonicalize-留给身份socket-长度按需回退2026-11-16)**：
+身份一律 canonical，socket 地址按需搬到每用户私有的短目录；`Disabled` 的原因进日志。
+修好之后 `daemon_cli.rs` 不再绕行（改回普通临时 HOME，那段路径长度恰好是当初失败的现场，
+于是那几条测试同时成了回退生效的端到端证据）。
 - 三端会**同时**是 daemon 的客户端，于是 `stop` 的语义第一次有了真实的并发场景：GUI 正在跑
   回合、CLI 敲了 `stop`。今天 `stop` 收到确认就 `break` 主循环，**在跑的回合会被打断**，
   下一次启动靠 `repair_interrupted` 补一条。本期不改这个行为，但按钮必须显示「正在停止…」
@@ -11482,3 +11482,160 @@ canonical socket 路径长度 105 / 上限 104 → bind: AF_UNIX path too long
     再 `daemon start` → 报 `not found`（兄弟分支找不到就是真的找不到）。
 12. 锁机制不可用（`QC_QCD_SINGLE_INSTANCE=0`）时 `daemon start` 说「无法验证」，**不**说
     「probably exited」——实测那两种情况下进程都还活着，后者是一句假话。
+
+## ADR-0099：身份与地址分开——canonicalize 留给身份，socket 长度按需回退（2026-11-16）
+
+**状态**：Accepted（2026-11-16）。裁决 [ADR-0098](#adr-0098daemon-的三端入口按钮只管本目录灰而不禁用2026-11-16)
+「已知缺陷」那一节；修订 ADR-0083 §2（作用域 = canonical data dir）的**落实方式**，不改其结论。
+依赖 ADR-0083（OS 级锁）、ADR-0092（每用户一个 daemon）。
+
+**背景**
+
+ADR-0098 收尾时发现：`locks/qcd.sock` 一超长，互斥就**静默失效**。定位过程把一个更大的
+问题暴露出来——`Paths::for_scope` 同时产出一个**身份**和一个**地址**，而这两件事需要的东西
+正好相反。
+
+| | 回答什么 | 需要 |
+|---|---|---|
+| 身份 identity | 这是哪个 data dir | 字符串相等：两种写法必须得到同一个值 |
+| 地址 address | socket 落在哪儿 | 长度受限、能 bind、够得着 |
+
+长度问题只在地址上；canonicalize 服务的是身份。共用一个值，于是给身份做的规范化直接花掉了
+地址的预算。
+
+### 四条实测（2026-11-16，本机 macOS 15 / Rust 1.9x）
+
+**A. `flock` 按 inode，不按路径名。**
+
+```
+flock(/tmp/si/real/x.lock) → flock(/tmp/si/link/x.lock) 被拒    # real 与 link 是同一目录的两种拼法
+```
+
+两个拼法互斥。**在 Unix 上，canonicalize 对互斥的正确性一点作用都没有。**
+
+**B. `bind` / `connect` 都穿过软链。**
+
+```
+bind(/tmp/si/link/z.sock) + listen → connect(/tmp/si/real/z.sock) 成功
+```
+
+两个拼法指向同一个 socket 文件。**canonicalize 对可达性也不起作用。**（这一点第一次测时
+读错了：先 `bind` 后立刻 `close` 再 `connect`，得到 `ECONNREFUSED`——那是「文件在、没人听」，
+不是「连不上」，正是 `is_absent` 要当「没有实例」处理的状态。加上 `listen` 才是正确的实验。）
+
+**C. `std::fs::canonicalize` 对还不存在的目录直接失败。**
+
+```
+canonicalize("/tmp/si/does-not-exist") → No such file or directory (os error 2)
+```
+
+于是 `for_scope` 走 `unwrap_or_else(|_| data_dir.to_path_buf())`，**静默**用原样路径。而
+`acquire_in` 是先 `for_scope`、后 `create_dir_all(locks)` —— 所以「目录还不存在的第一次调用」
+与「之后的调用」拿到两个不同的身份。Unix 上无害（A：inode），**Windows 上致命**（E）。
+
+**D. 同进程第二个 fd 的 `flock` 会被拒。**
+
+```
+open(w.lock) → flock → open(w.lock) → flock → BlockingIOError
+```
+
+`claim_in_process` 那张登记表在本地文件系统上只是**加固**，OS 已经拦住了。代码里那句注释
+（「POSIX 的 flock 对同一进程的第二个 fd 会成功」）描述的是 `fcntl` **记录锁**的语义，不是
+`flock(2)`。登记表唯一真正有用的场合是 flock 退化到 fcntl 的网络文件系统——**这一条未验证**，
+标注在此以免被当成已验证的事实。
+
+**E. Windows 的管道名是 data dir 字符串的哈希。**
+
+```rust
+format!(r"\\.\pipe\qcode-{}-{:016x}", scope, hash(&data_dir))
+// hash = DefaultHasher::new() over to_lowercase()
+```
+
+`DefaultHasher` 的算法标准库**不承诺跨版本稳定**。身份依赖一个「不承诺不变」的函数：换个
+Rust 版本，同一个 data dir 可能得到不同的管道名。
+
+**这才是 canonicalize 在 Unix 上真正的服务对象**：不是互斥（A），不是可达性（B），而是 E
+那个字符串哈希，外加 `data_dir` 的显示一致性。
+
+### 悬崖有多陡
+
+`sockaddr_un.sun_path` 上限 macOS 104、Linux 108（含结尾 NUL）。尾部 `/locks/qcd.sock`
+15 字节，于是 canonical data dir 的预算是 **macOS 88 / Linux 92 字节**。
+
+| 场景 | 长度 | 结论 |
+|---|---|---|
+| `/Users/q` + 默认 data dir | 42 | 宽裕 |
+| 47 字符的长家目录 | 62 | 宽裕 |
+| 工作区回落 `.qcode-data` | 54 | 宽裕 |
+| 深层 `--data-dir` | 74 | 勉强 |
+
+真实用户基本安全。**但真正的问题不是「深」，是「随机」**：`HOME` 指向 `$TMPDIR` 时
+（CI、沙箱、agent runner、本仓库自己的测试），canonical 后正好 **105**（超 2 字节），
+不 canonical 是 **98**（够）。而临时目录名长度是随机的——**同一台机器，这次能跑，下次不能**。
+
+这比确定性失败更坏：它训练人「重跑一次就好了」。
+
+**决定**
+
+### 1. 身份：canonicalize 保留，改成 `realpath -m` 语义
+
+解析**已存在的**最长前缀，把不存在的尾部原样拼回去。目录创建前后身份一致——修掉 C 那类不稳定。
+
+保留 canonicalize 的理由只有 E：Windows 的管道名是身份的哈希，两种拼法必须得到同一个名字，
+否则 `qc daemon stop` 会往一个没人听的管道名发请求，**安静地失败**。这不是「两个 daemon」
+（锁文件仍然是同一个），所以连「两个窗口」那种显眼症状都不会有。
+
+### 2. 地址：放得进 `<data_dir>/locks/` 就用它，放不下才回退
+
+- 能放下 → 用 `<canonical data_dir>/locks/<scope>.sock`。**绝大多数真实用户走这条**，并且保住
+  升级窗口里新旧二进制互通、`ls` 能看见、无临时目录清理风险。
+- 放不下 → 落到每用户私有的短目录，名字 `<scope>-<稳定哈希 16 位>.sock`，并把原因记进日志。
+
+**锁文件永远不搬家。** `flock` 没有长度限制，而 `DriverStatus` 的探测拿「`locks/` 在不在」当
+捷径（`schedule.rs` 与两条测试都写着）。把锁搬走会让那条捷径失效，于是「这个目录有没有驱动」
+会变。地址问题只需要解决地址。
+
+**回退目录必须是私有的（0700）**：它收 `Stop` 请求。放在共享的 `/tmp` 顶层，别的本地用户可以
+抢先 `bind` 这个路径然后选择不理你——DoS，甚至能看到你的请求。所以回退目录名带 uid，创建时
+`0700`，复用时**校验属主与权限位**，不符就拒绝使用并如实报错，而不是「凑合着用」。
+
+### 3. Windows：换掉 `DefaultHasher`
+
+用显式的 FNV-1a 64。身份不能依赖标准库不承诺的算法——那是「只在升级时才出现」的故障。
+
+### 4. `Disabled` 的原因必须进日志
+
+现状是 `eprintln!`，而 detached 进程的 stderr 是 `/dev/null`。`qcd` 里那句注释写着
+「说一句，别静默」，实际上就是静默。改为 `tracing::warn!`（`qcd` 的日志在
+`<data-dir>/logs/qc.log`），并保留 `eprintln!` 给前台跑的人。
+
+`probe_in`（每秒被 GUI 调一次）用 `debug` 而不是 `warn`：一个每秒重复的警告会淹没日志，而
+「一直无法判断」这件事本身由界面显示，不需要靠日志刷屏来提醒。
+
+**后果**
+
+- 两种布局成为新的隐藏变量。它必须是**纯函数**：只依赖 canonical 路径长度，任何进程在任何
+  时刻算出同一答案。有一条测试专门钉住（同一个 data dir，走两条布局必须给出同一个地址）。
+- **回退布局有清理风险**：macOS 会按老化清理 `$TMPDIR` 里的文件，长跑的 daemon 的 socket 可能
+  被删。后果被限制住——锁还在，`presence` 仍然说 `Running`；丢的只是 `Stop`/`Activate` 的通路，
+  于是 `qc daemon stop` 会失败而 `kill` 仍然有效。**这次不做看门狗**（周期性确认 socket 还在、
+  不在就重绑）：触发回退的恰好是深路径与临时 HOME（CI、测试），不是长跑的桌面 daemon，为一个
+  边缘场景加一个后台线程不划算。写在这里，等它真的咬人再加。
+- `daemon status` 打印的是 canonical 路径，用户敲 `/var/...` 却看到 `/private/var/...`。算「更
+  准确」而不是「更困惑」——但如果以后要两全，得同时保留 given 与 canonical 两个值。
+- 地址回退是**本 ADR 唯一新增的分支**，它引入一个「同一个实例有两种地址形状」的可能性，所以
+  §2 的「纯函数」要求是硬约束，不是风格建议。
+
+**验证**
+
+1. 目录还不存在时算出的身份，与创建之后算出的身份**相等**（`/tmp/a/b/c` 的两种时机）。
+2. 同一个目录经软链与经真实路径访问：锁路径与通道地址都**相等**。
+3. 构造一个超过 `sun_path` 上限的 data dir：`acquire_in` 返回 `Primary`（**不是** `Disabled`）——
+   这条就是 ADR-0098「已知缺陷」那一节描述的失败，修复前必然红。
+4. 同一个超长 data dir 连算两次，通道地址**相同**（回退名是稳定哈希，不是随机）。
+5. 超长情形下 `lock` 仍在 `<data_dir>/locks/`（地址问题不搬锁）。
+6. 回退目录的权限是 `0700` 且属主是自己；把它的**每个**候选位置都换成同名文件时，
+   `acquire_in` 退回 `Disabled` 并说明「造不出短目录」，而不是绑一条没人能连的通道
+   （只污染一个位置时应当**接着试下一个**——单点故障不该让整条路断掉）。
+7. Windows 哈希是固定值（同一个输入跨版本给出同一个数）。
+8. `qcd` 在 `Disabled` 分支把原因写进 `<data-dir>/logs/qc.log`，`qc daemon status` 同时能显示它。

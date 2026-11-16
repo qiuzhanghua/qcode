@@ -42,27 +42,19 @@ fn qc_as(home: &std::path::Path) -> Command {
     command
 }
 
-/// 一个**短路径**的临时 HOME。
+/// 临时 HOME。
 ///
-/// 不用 `tempfile::tempdir()`：它在 macOS 上给出 `$TMPDIR` = `/var/folders/...`，
-/// 而 `Paths::for_scope` 会对数据目录 `canonicalize`，把 `/var` 变成 `/private/var`
-/// （+8 字符）。于是 `<home>/.local/share/qcode/locks/qcd.sock` 冲到 105 字节，
-/// 超过 `sockaddr_un.sun_path` 的 104 → `bind` 报 `AF_UNIX path too long` →
-/// `acquire_in` 返回 `Disabled` → **qcd 照常跑，只是不带锁**。
+/// 以前这里刻意用**短路径**（`/tmp` 而不是 `$TMPDIR`）：`$TMPDIR` 在 macOS 上是
+/// `/var/folders/...`，而 `Paths::for_scope` 会对数据目录 `canonicalize`，把 `/var`
+/// 变成 `/private/var`（+8 字节），把 `<home>/.local/share/qcode/locks/qcd.sock`
+/// 推到 105 字节——超过 `sockaddr_un.sun_path` 的 104，于是 `bind` 失败、
+/// `acquire_in` 退回 `Disabled`：**daemon 照常跑，只是没有互斥**。
 ///
-/// 那样测试全绿，却一次也没测到锁；而 `start` 会等 3 秒然后误报「probably exited」。
-/// 2026-11-16 就是这么发现问题、并留下几条残留 daemon 进程的。`/tmp` 在 macOS 上
-/// 也是符号链接（→ `/private/tmp`），但短得多，canonicalize 之后仍远低于上限。
-fn short_home() -> tempfile::TempDir {
-    let base = if std::path::Path::new("/tmp").is_dir() {
-        std::path::PathBuf::from("/tmp")
-    } else {
-        std::env::temp_dir()
-    };
-    tempfile::Builder::new()
-        .prefix("qchome")
-        .tempdir_in(base)
-        .expect("short-path temp home")
+/// ADR-0099 修掉了它（通道按需搬到私有短目录），所以这里用 `tempdir()` 就够——
+/// 而且**必须**用普通的那个：它恰好复现当初失败的路径长度，于是这几条测试顺带成了
+/// 「回退真的生效」的端到端证据。绕开它等于把那个场景从测试里删掉。
+fn temp_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("temp home")
 }
 
 fn run(home: &std::path::Path, args: &[&str], path: &str) -> Output {
@@ -84,7 +76,7 @@ fn stderr_of(output: &Output) -> String {
 /// **出口判据**：`PATH` 里没有 `qcd` 时，`qc daemon start` 退出码非 0 且说实话。
 #[test]
 fn starting_without_qcd_on_path_fails_and_says_so() {
-    let home = short_home();
+    let home = temp_home();
     let data = tempfile::tempdir().expect("data dir");
     // 一个空目录当 PATH：连 `sh` 都找不到，所以只可能**不**找到 `qcd`。
     //
@@ -162,7 +154,7 @@ fn the_not_installed_message_is_actionable() {
 /// `daemon status` 在没有 daemon 时**明确说没有**，不假装（ADR-0092 验证 6）。
 #[test]
 fn status_without_a_daemon_says_stopped() {
-    let home = short_home();
+    let home = temp_home();
     let data = tempfile::tempdir().expect("data dir");
     let output = qc_as(home.path())
         .args([
@@ -198,7 +190,7 @@ fn status_without_a_daemon_says_stopped() {
 /// 只是意图已经满足。脚本里 `qc daemon stop` 该能无条件跑。
 #[test]
 fn stopping_a_stopped_daemon_succeeds() {
-    let home = short_home();
+    let home = temp_home();
     let data = tempfile::tempdir().expect("data dir");
     let output = qc_as(home.path())
         .args([
@@ -228,7 +220,7 @@ fn stopping_a_stopped_daemon_succeeds() {
 /// 两个子命令对同一状态的**说法一致性**：状态是「没有」时，两边都不能说「在跑」。
 #[test]
 fn stop_and_status_agree_about_the_same_state() {
-    let home = short_home();
+    let home = temp_home();
     let data = tempfile::tempdir().expect("data dir");
     let dir = data.path().display().to_string();
 

@@ -33,11 +33,13 @@ const ERROR_LOCK_VIOLATION: u32 = 33;
 
 /// 哈希只要求「同机稳定、不同目录不同」，不要求抗攻击：名字泄露也没什么可
 /// 攻击的——真正的互斥是那把锁。忽略大小写，因为 Windows 路径不分大小写。
+///
+/// **用显式的 FNV-1a，不用 `DefaultHasher`**（ADR-0099 §3）。`DefaultHasher` 的
+/// 算法标准库不承诺跨版本稳定，而这里算出来的是**身份**：换个 Rust 版本就换一套
+/// 管道名，于是升级之后的 `qc daemon stop` 往一个没人听的名字发请求——安静地
+/// 失败，连「两个窗口」那种显眼症状都不会有。这类故障只在升级时出现。
 fn hash(path: &Path) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.to_string_lossy().to_lowercase().hash(&mut hasher);
-    hasher.finish()
+    super::stable_hash(&path.to_string_lossy().to_lowercase())
 }
 
 pub(super) fn channel_address(paths: &super::Paths) -> String {
@@ -46,6 +48,17 @@ pub(super) fn channel_address(paths: &super::Paths) -> String {
         paths.scope().prefix(),
         hash(&paths.data_dir)
     )
+}
+
+/// Windows 的通道是命名管道名，不是文件路径。
+///
+/// 没有 `sun_path` 那种长度墙（管道名上限 256 字符，而我们的名字固定在 40 上下），
+/// 所以**永远不搬**：`paths.channel` 只是给日志与 `Paths` 一个稳定的落脚点。
+pub(super) fn channel_path(
+    scope: super::Scope,
+    data_dir: &Path,
+) -> (std::path::PathBuf, Option<String>) {
+    (super::channel_in_data_dir(scope, data_dir), None)
 }
 
 fn wide(text: &str) -> Vec<u16> {

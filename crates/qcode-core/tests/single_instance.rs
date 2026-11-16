@@ -436,3 +436,203 @@ fn stopping_nothing_reports_false() {
     .expect("no listener is not an io error");
     assert!(!stopped, "nobody was listening, so nothing was stopped");
 }
+
+// ── 地址回退（ADR-0099 §2）────────────────────────────────────────────────
+//
+// 这一组守的是一个**静默失效**：`sun_path` 一超长，`bind` 报
+// `AF_UNIX path too long`，于是 `acquire_in` 退回 `Disabled`——daemon 照常跑，只是
+// 完全没有互斥，而警告写进了 detached 进程已经丢弃的 stderr。修复前这几条必然红。
+//
+// 造法：`tempfile` 在 macOS 上给出 `$TMPDIR`（`/var/folders/...`，约 49 字节），
+// 再拼一段 120 字符的目录名，canonical 之后稳稳超过上限。
+
+#[cfg(unix)]
+fn too_long_data_dir(tmp: &Path) -> PathBuf {
+    let deep = tmp.join("d".repeat(120));
+    std::fs::create_dir_all(&deep).expect("mkdir deep");
+    deep
+}
+
+/// 收掉一条（可能搬家过的）通道，连同它的私有 slot 目录。
+///
+/// 只有测试需要这个：真进程要么 `serve`（`accept_loop` 退出时自己收摊），要么被
+/// `kill -9`（残留下一次 `listen` 会清）。而测试里「拿了 `Primary` 却不 `serve`」
+/// 是常态，不收拾的话每跑一次就在 `/tmp` 里留一条 socket。
+#[cfg(unix)]
+fn tidy(paths: &single_instance::Paths) {
+    let _ = std::fs::remove_file(&paths.channel);
+    if let Some(dir) = paths.channel.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// 太长的 data dir 仍然必须**真的**抢到锁，而不是退回 `Disabled`。
+#[cfg(unix)]
+#[test]
+fn a_too_long_data_dir_still_takes_the_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = too_long_data_dir(tmp.path());
+
+    let paths = single_instance::Paths::for_data_dir(&deep);
+    assert!(
+        paths.channel_is_displaced().is_some(),
+        "这条测试的前提是通道搬家；实际没搬（路径 {} 字节）",
+        paths.channel.as_os_str().len()
+    );
+    // 锁**不**搬家：`locks/` 是「这个目录有没有驱动」的捷径。
+    assert_eq!(paths.lock, paths.data_dir.join("locks").join("gui.lock"));
+
+    let outcome = single_instance::acquire(&deep).expect("搬家不该报错");
+    let text = describe(&outcome);
+    tidy(&paths);
+    assert!(
+        matches!(outcome, SingleInstanceOutcome::Primary(_)),
+        "太长的 data dir 必须照常互斥，实际是 {text}"
+    );
+}
+
+/// 搬家之后的通道必须**真的能应答**——只验「拿到了锁」不够。
+///
+/// 第二个实例走的是「先连通道」那一步（ADR-0084 §2）：它能让位，就证明回退地址上
+/// 有一个活的监听者。修复前这里会拿到 `Disabled`（`bind` 失败），而 `Disabled` 与
+/// 「没人在跑」在用户眼里是同一件事。
+#[cfg(unix)]
+#[test]
+fn a_displaced_channel_really_answers() {
+    use qcode_core::single_instance::{Request, Scope, ack, request_stop};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = too_long_data_dir(tmp.path());
+
+    let primary = match single_instance::acquire(&deep).expect("acquire") {
+        SingleInstanceOutcome::Primary(primary) => primary,
+        other => panic!("expected Primary, got {}", describe(&other)),
+    };
+    primary.serve(|request, reply| {
+        let _ = ack(request, reply);
+        request != Request::Stop
+    });
+
+    // 第二个实例让位 ⇒ 回退地址上有活监听者。
+    let second = single_instance::acquire(&deep).expect("第二次");
+    assert!(
+        matches!(second, SingleInstanceOutcome::HandedOver),
+        "第二个实例应当让位，实际是 {}",
+        describe(&second)
+    );
+
+    // `Stop` 也走得通：这正是「够不着」会毁掉的那件事。
+    let stopped = request_stop(Scope::GUI, &deep).expect("the reply must arrive");
+    tidy(&single_instance::Paths::for_data_dir(&deep));
+    assert!(stopped, "回退通道上的 Stop 没有被确认");
+}
+
+/// 回退目录必须是私有的：它收 `Stop` 请求。
+///
+/// 共享 `TMPDIR` 顶层放一条谁都能 `bind` 的 socket，别的本地用户就可以抢先占住
+/// 这条路然后选择不理你（DoS），而且他能看见你的请求（ADR-0099 §2）。
+#[cfg(unix)]
+#[test]
+fn the_fallback_directory_is_private() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = too_long_data_dir(tmp.path());
+    let paths = single_instance::Paths::for_data_dir(&deep);
+    let dir = paths.channel.parent().expect("channel has a parent");
+
+    // 先让目录被建出来（`acquire` 会建；这里直接建，免得依赖时序）。
+    std::fs::create_dir_all(dir).unwrap();
+    let meta = std::fs::metadata(dir).unwrap();
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o700,
+        "回退目录必须是 0700，实际 {:o}（{}）",
+        meta.mode() & 0o777,
+        dir.display()
+    );
+    // SAFETY: `getuid` 无参数、无副作用。
+    assert_eq!(
+        meta.uid(),
+        unsafe { libc::getuid() },
+        "回退目录必须属于自己"
+    );
+    tidy(&paths);
+}
+
+/// 回退目录被占位时**拒绝使用**，而不是凑合着绑一条没人能连的通道。
+///
+/// 属主不对（别人拥有的同名目录）走的是同一条拒绝路径，但造不出那种环境，所以这条
+/// 用「名字在、类型不对」来覆盖那个守卫。
+///
+/// 占位的是**本测试独有**的那一层（`<root>/qcode-<uid>/<该 data dir 的指纹>`），
+/// 不是共享的 `qcode-<uid>`：后者会被并发跑的其它用例同时创建/删除，于是这条测试
+/// 会变成一条随机红的测试（第一版就是这么红的——`write` 撞上别人刚建的同名目录）。
+/// 用独有的路径既能污染**每一个**候选根目录，又不会碰到别人。
+#[cfg(unix)]
+#[test]
+fn a_poisoned_fallback_directory_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = too_long_data_dir(tmp.path());
+    let paths = single_instance::Paths::for_data_dir(&deep);
+    let slot = paths.channel.parent().expect("channel has a parent");
+
+    // 同一个指纹在**每个**候选根下都占位：回退是「按顺序试」，一个坏了还有下一个，
+    // 只有全都不可用时才该退回 `Disabled`——那才是这条要验的状态。
+    // SAFETY: `getuid` 无参数、无副作用。
+    let ours = format!("qcode-{}", unsafe { libc::getuid() });
+    let mut roots = vec![PathBuf::from("/tmp")];
+    let tmp_root = std::env::temp_dir();
+    if tmp_root.as_path() != Path::new("/tmp") {
+        roots.push(tmp_root);
+    }
+    let slots: Vec<PathBuf> = roots
+        .iter()
+        .map(|root| root.join(&ours).join(slot.file_name().expect("slot name")))
+        .collect();
+    for each in &slots {
+        let _ = std::fs::remove_dir_all(each);
+        let parent = each.parent().expect("parent");
+        // 上一次失败的运行可能把父目录也换成了文件（这条测试验的就是「类型不对」，
+        // 所以它自己也得能收拾自己留下的那种状态）。
+        if parent.is_file() {
+            let _ = std::fs::remove_file(parent);
+        }
+        std::fs::create_dir_all(parent).expect("mkdir ours");
+        std::fs::write(each, b"not a directory").expect("plant a file where the slot should be");
+    }
+
+    // 先取一次拿到指纹名，污染之后再取一次——搬家的原因要看**污染之后**的那次
+    // 计算，否则断言的是旧结论。
+    let displaced = single_instance::Paths::for_data_dir(&deep)
+        .channel_is_displaced()
+        .unwrap_or_default()
+        .to_string();
+    let outcome = single_instance::acquire(&deep).expect("不该 panic");
+    let outcome_text = describe(&outcome);
+
+    for each in &slots {
+        let _ = std::fs::remove_file(each);
+        // 收掉自己造的 slot 目录：它本来是「本测试独有」的一层，留着就是往用户的
+        // /tmp 里扔垃圾。`remove_dir` 只在空的时候成功，所以不会误删别人的。
+        if let Some(parent) = each.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
+    assert!(
+        matches!(outcome, SingleInstanceOutcome::Disabled(_)),
+        "全部回退目录被占位时必须让互斥失败，而不是绑一条假通道；实际是 {outcome_text}"
+    );
+    // 失败的原因分两层，两层都要在：`for_scope` 那一层说「造不出短目录」，`listen`
+    // 那一层说「路径太长」。用户看日志先看到前者（`acquire_in` 的 warn），而
+    // `Disabled` 里带的是后者。
+    assert!(
+        displaced.contains("cannot prepare"),
+        "搬家的原因必须说清是回退目录不可用：{displaced}"
+    );
+    assert!(
+        outcome_text.contains("shorter than SUN_LEN") || outcome_text.contains("too long"),
+        "Disabled 必须带真实的 bind 失败原因：{outcome_text}"
+    );
+}

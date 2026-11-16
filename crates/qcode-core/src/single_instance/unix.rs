@@ -23,6 +23,150 @@ pub(super) fn channel_address(paths: &super::Paths) -> String {
     paths.channel.display().to_string()
 }
 
+/// `sockaddr_un.sun_path` 的容量，**含结尾 NUL**（ADR-0099）。
+///
+/// 超了就是 `bind` 报 `AF_UNIX path too long`——而这个错误发生在 `listen` 里，于
+/// 是 `acquire_in` 退回 `Disabled`：daemon 照常跑，只是完全没有互斥。那正是
+/// ADR-0098「已知缺陷」记录的那次。
+#[cfg(target_os = "linux")]
+const SUN_PATH: usize = 108;
+#[cfg(not(target_os = "linux"))]
+const SUN_PATH: usize = 104;
+
+/// 这条路径装得进 `sun_path` 吗（按字节，因为 `sun_path` 是字节数组）。
+///
+/// 上限**含**结尾 NUL，所以字符串本身要比 `SUN_PATH` 少一个字节：`< SUN_PATH`
+/// 就是「加上 NUL 仍装得下」。
+fn fits(path: &Path) -> bool {
+    path.as_os_str().len() < SUN_PATH
+}
+
+/// 通道落在哪儿——装得进 data dir 就用它，装不进才换地方（ADR-0099 §2）。
+pub(super) fn channel_path(scope: super::Scope, data_dir: &Path) -> (PathBuf, Option<String>) {
+    let inside = super::channel_in_data_dir(scope, data_dir);
+    if fits(&inside) {
+        return (inside, None);
+    }
+    match private_socket(scope, data_dir) {
+        Ok(path) => {
+            let why = format!(
+                "{} is {} bytes but the platform limit is {} — channel moved to {}",
+                inside.display(),
+                inside.as_os_str().len(),
+                SUN_PATH - 1,
+                path.display()
+            );
+            (path, Some(why))
+        }
+        // 造不出短目录就退回原路径：`listen` 会失败，于是调用方得到一句带真实原因的
+        // `Disabled`。这里**不**假装成功——假装成功的后果是「有个没人能连的通道」。
+        Err(error) => {
+            let why = format!(
+                "cannot prepare a short socket directory ({error}); {} does not fit in {} bytes",
+                inside.display(),
+                SUN_PATH - 1
+            );
+            (inside, Some(why))
+        }
+    }
+}
+
+/// 回退目录必须**每用户私有**：它收 `Stop` 请求。
+///
+/// 放在共享 `TMPDIR` 的顶层，别的本地用户可以先 `bind` 这条路然后选择不理你——
+/// 那是 DoS，而且他能看见你的请求。所以目录名带 uid、权限 `0700`、复用时校验。
+///
+/// # 为什么还要再按身份分一层
+///
+/// 只用一个 `/tmp/qcode-<uid>/` 的话，**同一个用户的全部 data dir 共用一个目录**：
+/// 任何东西把它占住（一个同名文件、一个被删了又重建的目录），所有「路径太长」的实例
+/// 一起失去互斥。按身份再分一层，坏掉的只是那一个。
+///
+/// 这一点是测试先撞出来的：几条并发跑的用例共用一个目录，其中一条把目录删掉换成
+/// 文件，另一条立刻 `bind` 失败。**共享的可变全局状态在测试里会互相破坏，在生产里
+/// 也一样**——生产里的「另一个东西」是别的 data dir。
+fn private_socket(scope: super::Scope, data_dir: &Path) -> io::Result<PathBuf> {
+    let fingerprint = super::stable_hash(&data_dir.to_string_lossy());
+    let mut last: Option<io::Error> = None;
+    for base in short_bases() {
+        // 两层都要私有：外层是「我的」，内层是「我这个 data dir 的」。
+        let ours = base.join(format!("qcode-{}", uid()));
+        let slot = ours.join(format!("{fingerprint:016x}"));
+        let path = slot.join(format!("{}.sock", scope.prefix()));
+        // 回退目录本身也可能太长（`$TMPDIR` 在某些管家里很深）。装不下就试下一个。
+        if !fits(&path) {
+            continue;
+        }
+        match ensure_private(&ours).and_then(|()| ensure_private(&slot)) {
+            Ok(()) => return Ok(path),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("no directory short enough for a unix socket ({SUN_PATH} bytes)"),
+        )
+    }))
+}
+
+/// 候选根目录，**顺序即优先级**。
+///
+/// `/tmp` 排第一不是为了短，而是为了**确定性**：`$TMPDIR` 是环境变量，从 Finder
+/// 启动的 GUI 与从终端启动的 `qc` 可能拿到不同的值。地址一旦依赖它，「同一个
+/// 实例」就会有两个地址，而症状是 `daemon stop` 安静地够不着对面。
+fn short_bases() -> Vec<PathBuf> {
+    let mut bases = vec![PathBuf::from("/tmp")];
+    let tmp = std::env::temp_dir();
+    if tmp.as_path() != Path::new("/tmp") {
+        bases.push(tmp);
+    }
+    bases
+}
+
+fn uid() -> u32 {
+    // SAFETY: `getuid` 无参数、无副作用，永远成功。
+    unsafe { libc::getuid() }
+}
+
+/// 建出（或复用）一个只有自己能进的目录。
+///
+/// 复用时的三条校验：是目录、属主是自己、权限位不含 group/other。前两条不符就
+/// **拒绝**——那不是我们建的东西，用它等于把自己的控制通道交出去。第三条可以
+/// 自己修（收紧是我们能做的、且不改变属主语义）。
+fn ensure_private(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    // `symlink_metadata`：一个指向别处的软链不该被当成「我们的目录」。
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} exists but is not a directory", dir.display()),
+        ));
+    }
+    if meta.uid() != uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} belongs to uid {}, not {} — refusing to put a control socket there",
+                dir.display(),
+                meta.uid(),
+                uid()
+            ),
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// 持有的锁。**drop 就是放锁**——这正是我们要的语义：进程怎么死的都行
 /// （`exit()`、`kill -9`、崩溃），内核在 fd 关闭时自动释放。
 pub(super) struct LockGuard {
@@ -160,5 +304,14 @@ impl Listener {
         // 免得下一次启动先撞一次 ECONNREFUSED —— 那虽然会被正确当成「没
         // 人在听」，但多一层无谓的路径。
         let _ = std::fs::remove_file(&self.path);
+        // 回退目录（ADR-0099）也收掉：`remove_dir` 只在**空**的时候成功，所以
+        // 它天然地「只在没有别人共用时」生效。不清理的话，每个用过的长 data dir
+        // 会在 /tmp 里留下一个空目录，越攒越多。
+        //
+        // `kill -9` 时这一段不会跑，残留就留着——那与锁文件同一个道理：标记，不是
+        // 状态，不需要为一个「下次会覆盖」的东西写清理器。
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 }

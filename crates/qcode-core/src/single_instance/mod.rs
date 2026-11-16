@@ -249,7 +249,73 @@ pub struct Paths {
     /// 通道的落脚点。Unix 上就是 socket 路径本身；Windows 上只是一条占位
     /// 路径（真正的地址是命名管道名，见 [`Paths::channel_address`]）。
     pub channel: PathBuf,
+    /// 通道搬家的原因（ADR-0099 §2）。`None` = 就在 `locks/` 里。
+    displaced: Option<String>,
     scope: Scope,
+}
+
+/// 通道在 data dir 里的「自然」位置。三个后端共用一个定义，免得三处各拼一次。
+pub(crate) fn channel_in_data_dir(scope: Scope, data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("locks")
+        .join(format!("{}.{}", scope.prefix(), backend::CHANNEL_EXT))
+}
+
+/// 一个目录的**身份**：`realpath -m` 的语义。
+///
+/// 解析**已存在的**最长前缀（里面的软链、`..`、`. ` 都按真实情况处理），把不存在的
+/// 尾部原样拼回去。
+///
+/// # 为什么不是 `std::fs::canonicalize`
+///
+/// 它对不存在的路径**直接失败**（实测 `No such file or directory`），于是
+/// 「目录还不存在的第一次调用」与「之后的调用」会拿到两个不同的身份。Unix 上无害
+/// （`flock` 按 inode），Windows 上致命：管道名是身份的哈希，两个名字意味着两个
+/// 互不知情的实例。
+///
+/// `acquire_in` 的顺序恰好是这个雷的引信——它先 `for_scope`、后 `create_dir_all`。
+pub(crate) fn canonical_identity(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = absolute.as_path();
+    loop {
+        if let Ok(mut resolved) = std::fs::canonicalize(cursor) {
+            for part in tail.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        match (cursor.parent(), cursor.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                cursor = parent;
+            }
+            // 连根都不存在（盘符没了、`/proc` 被卸了）：原样返回，让调用方去撞真实的
+            // 错误，而不是在这里编一个路径。
+            _ => return absolute,
+        }
+    }
+}
+
+/// FNV-1a 64：**跨进程、跨版本**稳定的哈希（ADR-0099 §3）。
+///
+/// 用它算出来的是身份的一部分（Windows 的管道名、unix 回退 socket 的文件名），
+/// 所以不能用 `DefaultHasher`——标准库明确不承诺它的算法跨版本不变。这里自己写
+/// 十二行，换来「换个 Rust 版本不会改变两台进程认不认得彼此」。
+pub(crate) fn stable_hash(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 impl Paths {
@@ -260,15 +326,36 @@ impl Paths {
     }
 
     /// 指定作用域。名字全从 `scope` 推出，三端一致。
+    ///
+    /// # 身份与地址是两件事（ADR-0099）
+    ///
+    /// `data_dir` 是**身份**：它必须让「同一个目录的两种写法」算出同一个值，因为
+    /// Windows 的管道名就是它的哈希（两种写法 → 两个管道名 → `stop` 安静地够不着）。
+    ///
+    /// `lock` 与 `channel` 是**地址**：`flock` 不在乎路径多长（它按 inode 认），但
+    /// unix socket 有 `sun_path` 的硬墙（macOS 104 / Linux 108 字节）。超了就只有
+    /// 通道搬家，锁不动——搬锁会让 `locks/` 这条「有没有驱动」的捷径失效。
+    ///
+    /// 所以：**身份一律 canonical，地址按需回退**。混在一起（canonicalize 之后直接
+    /// 拿去 bind）就是 ADR-0098 记下的那次静默失效。
     pub fn for_scope(scope: Scope, data_dir: &Path) -> Self {
-        let base = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
-        let locks = base.join("locks");
+        let base = canonical_identity(data_dir);
+        let (channel, displaced) = backend::channel_path(scope, &base);
         Self {
-            lock: locks.join(format!("{}.lock", scope.prefix())),
-            channel: locks.join(format!("{}.{}", scope.prefix(), backend::CHANNEL_EXT)),
+            lock: base.join("locks").join(format!("{}.lock", scope.prefix())),
+            channel,
+            displaced,
             data_dir: base,
             scope,
         }
+    }
+
+    /// 通道为什么不在 data dir 里；没搬家就是 `None`。
+    ///
+    /// 存在的原因是「静默搬家」比「不搬家」更坏：用户 `ls` data dir 看到只有锁文件，
+    /// 而日志里得有一句话解释它去哪了。
+    pub fn channel_is_displaced(&self) -> Option<&str> {
+        self.displaced.as_deref()
     }
 
     /// 通向另一个实例的那条通道地址。Unix 上就是 `channel` 路径本身；
@@ -302,6 +389,22 @@ fn disabled_by_env(scope: Scope) -> bool {
     )
 }
 
+/// 造一个 `Disabled`，**并把它写进日志**（ADR-0099 §4）。
+///
+/// 光 `eprintln!` 不够：`qcd` 是 detached 进程，stderr 是 `/dev/null`，于是「说一句，
+/// 别静默」事实上就是静默。`qcd` 的日志在 `<data-dir>/logs/qc.log`，所以要经
+/// `tracing`。`eprintln!` 保留在调用方——前台跑的时候有人看得见。
+///
+/// 用 `warn` 而不是 `info`：这意味着**互斥没起作用**，两个实例可能同时写一份 store。
+fn disabled(scope: Scope, why: String) -> Outcome {
+    tracing::warn!(
+        scope = scope.prefix(),
+        %why,
+        "single-instance check skipped — two instances could overlap"
+    );
+    Outcome::Disabled(why)
+}
+
 /// GUI 作用域拿锁 / 让位。语义见 [`acquire_in`]。
 pub fn acquire(data_dir: &Path) -> io::Result<Outcome> {
     acquire_in(Scope::GUI, data_dir)
@@ -326,19 +429,27 @@ pub fn acquire(data_dir: &Path) -> io::Result<Outcome> {
 /// 下次只会看到两个窗口，根本想不到是启动时的一次超时。
 pub fn acquire_in(scope: Scope, data_dir: &Path) -> io::Result<Outcome> {
     if disabled_by_env(scope) {
-        return Ok(Outcome::Disabled(format!("{}=0", scope.env_var())));
+        return Ok(disabled(scope, format!("{}=0", scope.env_var())));
     }
     let paths = Paths::for_scope(scope, data_dir);
+    // 搬了家就说一句。**静默搬家比不搬家更坏**：用户 `ls` data dir 只看到锁文件，
+    // 而没有任何地方解释通道去哪了（ADR-0099 §2）。
+    if let Some(why) = paths.channel_is_displaced() {
+        tracing::warn!(%why, "single-instance: control channel is outside the data dir");
+    }
     if let Some(dir) = paths.lock.parent() {
         // 建不出来不是错误：锁会自己报出来，而「目录不可写」正是要退回
         // Disabled 的那一类。
         let _ = std::fs::create_dir_all(dir);
     }
 
-    // 同一进程内第二次 acquire：POSIX 的 flock 对同一进程的第二个 fd 会
-    // **成功**（锁属于进程，不是 fd），Windows 的 LockFileEx 同理。ADR-0083
-    // 把这一条列为必须钉住的坑——两个实例各自以为抢到了锁，正是因为
-    // OS 不拦。这里用进程内的登记表补上。
+    // 同一进程内第二次 acquire：flock 的锁**属于文件描述（在 Linux 上）或打开文件
+    // 描述（BSD/macOS）**，而这里每次 `lock` 都会新开一个 fd，所以第二个 fd 的
+    // `flock` 实测**会被拒**。也就是说这张登记表在本地文件系统上只是加固。
+    //
+    // 留着它是因为 flock 在网络文件系统上会退化成 fcntl 记录锁，而记录锁属于**进程**：
+    // 那时同一进程的第二个 fd 会成功，两个实例各自以为抢到了锁。那条路径未在本机
+    // 验证（ADR-0099 §D），所以这是防御，不是已证明的必需。
     if !claim_in_process(&paths.lock) {
         return Ok(Outcome::HandedOver);
     }
@@ -365,10 +476,10 @@ pub fn acquire_in(scope: Scope, data_dir: &Path) -> io::Result<Outcome> {
                     Ok(listener) => listener,
                     Err(error) => {
                         release_in_process(&paths.lock);
-                        return Ok(Outcome::Disabled(format!(
-                            "cannot listen on {}: {error}",
-                            paths.channel_address()
-                        )));
+                        return Ok(disabled(
+                            scope,
+                            format!("cannot listen on {}: {error}", paths.channel_address()),
+                        ));
                     }
                 };
                 return Ok(Outcome::Primary(Primary {
@@ -380,10 +491,10 @@ pub fn acquire_in(scope: Scope, data_dir: &Path) -> io::Result<Outcome> {
             Err(error) => {
                 // 锁机制本身坏了（NFS、权限）：别把用户锁在门外。
                 release_in_process(&paths.lock);
-                return Ok(Outcome::Disabled(format!(
-                    "cannot lock {}: {error}",
-                    paths.lock.display()
-                )));
+                return Ok(disabled(
+                    scope,
+                    format!("cannot lock {}: {error}", paths.lock.display()),
+                ));
             }
         }
 
@@ -488,7 +599,17 @@ pub fn probe_in(scope: Scope, data_dir: &Path) -> Ownership {
             Ownership::Free
         }
         Ok(None) => Ownership::Held,
-        Err(error) => Ownership::Unavailable(error.to_string()),
+        Err(error) => {
+            // **`debug` 而不是 `warn`**：这个函数每秒被 GUI 调一次，一个每秒重复的
+            // 警告会淹没日志（ADR-0099 §4）。「一直无法判断」这件事由界面显示，
+            // 不需要日志刷屏——真正的 `warn` 在 `acquire_in` 那边，只在启动时说一次。
+            tracing::debug!(
+                scope = scope.prefix(),
+                %error,
+                "single-instance: cannot probe the lock"
+            );
+            Ownership::Unavailable(error.to_string())
+        }
     }
 }
 
@@ -601,7 +722,136 @@ mod tests {
     fn paths_are_under_the_data_dir() {
         let dir = std::path::PathBuf::from("/tmp/qc-si-paths");
         let paths = Paths::for_data_dir(&dir);
-        assert_eq!(paths.lock, dir.join("locks").join("gui.lock"));
+        // 断言相对 `data_dir` 而不是相对入参：身份会解析**已存在的前缀**，而
+        // macOS 的 `/tmp` 是 `/private/tmp` 的软链（ADR-0099 §1）。这正是要的行为
+        // ——同一目录的两种拼法必须给出同一个身份。
+        assert_eq!(paths.lock, paths.data_dir.join("locks").join("gui.lock"));
+    }
+
+    /// 身份必须在**目录存在与否**两种时机给出同一个值（ADR-0099 §1）。
+    ///
+    /// `std::fs::canonicalize` 对不存在的路径直接报错，而 `acquire_in` 的顺序是
+    /// 「先 `for_scope`、后 `create_dir_all`」——于是创建前的第一次调用与之后的每
+    /// 一次会拿到两个不同的身份。Unix 上只是难看，Windows 上等于两个实例互相看不见
+    /// （管道名是身份的哈希）。
+    #[test]
+    fn identity_does_not_depend_on_whether_the_directory_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let deep = tmp.path().join("a").join("b").join("c");
+
+        let before = canonical_identity(&deep);
+        std::fs::create_dir_all(&deep).expect("mkdir");
+        let after = canonical_identity(&deep);
+
+        assert_eq!(before, after, "创建目录改变了身份");
+        assert_eq!(after, std::fs::canonicalize(&deep).expect("canonical"));
+    }
+
+    /// 软链的两种拼法必须是同一个身份（ADR-0099 §1 的理由：Windows 的管道名）。
+    #[cfg(unix)]
+    #[test]
+    fn two_spellings_of_one_directory_share_an_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("link");
+        std::fs::create_dir_all(real.join("sub")).expect("mkdir");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let via_real = Paths::for_scope(Scope::GUI, &real.join("sub"));
+        let via_link = Paths::for_scope(Scope::GUI, &link.join("sub"));
+
+        assert_eq!(via_real.data_dir, via_link.data_dir, "身份必须相同");
+        assert_eq!(via_real.lock, via_link.lock, "锁必须落在同一个文件上");
+        assert_eq!(via_real.channel, via_link.channel, "通道必须是同一个地址");
+    }
+
+    /// `stable_hash` 是身份的一部分，所以它必须**跨版本固定**（ADR-0099 §3）。
+    ///
+    /// 这条用 FNV-1a 的公开测试向量钉住。它不是「随手写个期望值」：如果有一天有人
+    /// 把它换成 `DefaultHasher` 或者改了算法，Windows 上的管道名会整体漂移一次，
+    /// 而症状是升级后 `qc daemon stop` 安静地够不着。
+    #[test]
+    fn the_stable_hash_matches_the_fnv1a_vectors() {
+        // offset basis 本身（空串）。
+        assert_eq!(stable_hash(""), 0xcbf2_9ce4_8422_2325);
+        // FNV-1a 规范里的两条经典向量。
+        assert_eq!(stable_hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(stable_hash("foobar"), 0x8594_4171_f739_67e8);
+        // 大小写不同 ⇒ 不同哈希（Windows 那边先 `to_lowercase` 再算，这是它的约定）。
+        assert_ne!(stable_hash("Qcode"), stable_hash("qcode"));
+    }
+
+    /// 太长就**只搬通道，不搬锁**（ADR-0099 §2）。
+    ///
+    /// 搬锁会让 `locks/` 这条「这个目录有没有驱动」的捷径失效，而 `flock` 本身没
+    /// 有长度限制——地址问题只该用地址的办法解决。
+    #[cfg(unix)]
+    #[test]
+    fn a_too_long_data_dir_moves_the_channel_but_not_the_lock() {
+        // 造一条必然超过 `sun_path` 的路径（不需要真的建出来：身份是前缀解析）。
+        let deep =
+            std::path::PathBuf::from("/tmp").join("qcode-si-".to_string() + &"x".repeat(120));
+        let paths = Paths::for_scope(Scope::QCD, &deep);
+
+        assert_eq!(
+            paths.lock,
+            paths.data_dir.join("locks").join("qcd.lock"),
+            "锁必须还在 data dir 里"
+        );
+        assert!(
+            paths.channel_is_displaced().is_some(),
+            "通道应当搬家，实际仍在 {}",
+            paths.channel.display()
+        );
+        assert!(
+            !paths.channel.starts_with(&paths.data_dir),
+            "搬家之后不该还在 data dir 里：{}",
+            paths.channel.display()
+        );
+        assert!(
+            paths.channel.as_os_str().len() < 104,
+            "搬家之后必须装得进 sun_path：{} 字节",
+            paths.channel.as_os_str().len()
+        );
+    }
+
+    /// 搬家后的地址必须是**纯函数**：同一个 data dir 每次算出同一个地址。
+    ///
+    /// 这是 ADR-0099 §2 的硬约束。用随机名的话，`qc` 与 `qcd` 会各自绑一条 socket，
+    /// 于是 `daemon stop` 连的是空气——而那看起来和「daemon 没在跑」一模一样。
+    #[cfg(unix)]
+    #[test]
+    fn the_displaced_address_is_the_same_every_time() {
+        let deep =
+            std::path::PathBuf::from("/tmp").join("qcode-si-".to_string() + &"y".repeat(120));
+        let first = Paths::for_scope(Scope::QCD, &deep).channel;
+        let second = Paths::for_scope(Scope::QCD, &deep).channel;
+        assert_eq!(first, second, "回退地址必须确定");
+
+        // 另一个 data dir 必须得到另一个地址，否则「两个数据目录」会共用一条通道。
+        let other =
+            std::path::PathBuf::from("/tmp").join("qcode-si-".to_string() + &"z".repeat(120));
+        assert_ne!(first, Paths::for_scope(Scope::QCD, &other).channel);
+        // 不同作用域也不能撞（daemon 与 GUI 是两种进程形态）。
+        assert_ne!(
+            first,
+            Paths::for_scope(Scope::GUI, &deep).channel,
+            "两个作用域不能共用一条通道"
+        );
+    }
+
+    /// 短路径不搬家：绝大多数真实用户走这条，且它保住升级窗口里的互通。
+    #[cfg(unix)]
+    #[test]
+    fn a_short_data_dir_keeps_the_channel_inside_it() {
+        let dir = std::path::PathBuf::from("/tmp/qc-si-short");
+        let paths = Paths::for_scope(Scope::QCD, &dir);
+        assert!(
+            paths.channel_is_displaced().is_none(),
+            "短路径不该搬家：{:?}",
+            paths.channel_is_displaced()
+        );
+        assert_eq!(paths.channel, paths.data_dir.join("locks").join("qcd.sock"));
     }
 
     #[test]

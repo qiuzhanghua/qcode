@@ -20,6 +20,14 @@ pub(super) fn channel_address(paths: &super::Paths) -> String {
     paths.channel.display().to_string()
 }
 
+/// 这个平台没有限制，通道永远落在 data dir 里（与 Windows 同）。
+pub(super) fn channel_path(
+    scope: super::Scope,
+    data_dir: &Path,
+) -> (std::path::PathBuf, Option<String>) {
+    (super::channel_in_data_dir(scope, data_dir), None)
+}
+
 pub(super) fn lock(_path: &Path) -> io::Result<Option<LockGuard>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

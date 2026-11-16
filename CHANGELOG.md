@@ -2,6 +2,31 @@
 
 ## 未发布
 
+### 修掉一个静默失效：数据目录路径太长时互斥会「假装成功」
+
+`locks/qcd.sock` 超过 `sockaddr_un.sun_path`（macOS 104 / Linux 108 字节）时，`bind` 失败
+而 `acquire_in` 退回 `Disabled`——**`qcd` 照常运行并驱动定时任务，只是完全没有互斥**，两个
+实例可以同时写一份 store。警告写在 detached 进程的 stderr 上，而那是 `/dev/null`。
+
+触发条件不是「路径深」，是「路径随机」：`HOME` 指向 `$TMPDIR` 时（CI、沙箱、agent）canonical
+之后正好 105 字节，超 2 字节。同一台机器这次能跑、下次不能。
+
+修法（ADR-0099）：把**身份**与**地址**分开。
+
+- 身份（`for_scope` 的 `data_dir`）仍然 canonical，但改成 `realpath -m` 语义（解析已存在的
+  前缀、尾部原样），于是「目录还不存在」与「存在」给出同一个身份。
+- 地址（socket）放得进 `<data-dir>/locks/` 就用它；放不进才搬到一个每用户私有（`0700`）的
+  短目录，名字是身份的稳定哈希。**锁永远不搬**——`flock` 不在乎长度，而 `locks/` 是「这个
+  目录有没有驱动」的捷径。
+- Windows 的管道名换掉 `DefaultHasher`（标准库不承诺跨版本稳定），用显式的 FNV-1a。
+- `Disabled` 的原因现在进 `<data-dir>/logs/qc.log`，`qc daemon status` 同时能看到。
+
+实测：当年 105 字节那个场景，`daemon start` 立刻起、`status` 报在跑、日志写明通道搬到了哪、
+`stop` 走回退通道成功。三条新测试验过会红（拆掉回退立即失败）。
+
+**代价**：回退布局是新的隐藏变量，它必须是纯函数（已由测试钉住）；回退目录有临时目录清理
+风险（锁还在，只丢 `Stop` 通路）——写进 ADR 的「后果」，这次不做看门狗。
+
 ### 定时任务可以后台跑了：`qcd` + `qc daemon start|stop|status`
 
 **这是本版最大的变化**：定时任务不再要求你开着一个 GUI 窗口。
