@@ -19,6 +19,7 @@
 #   ./scripts/install-linux-desktop.sh --system     # /usr/local, needs root
 #   ./scripts/install-linux-desktop.sh --uninstall  # remove the user install
 #   ./scripts/install-linux-desktop.sh --check      # report what is installed
+#   ./scripts/install-linux-desktop.sh --launch     # start it the way the menu does
 #   ./scripts/install-linux-desktop.sh --exec /path/to/qc
 #
 # `Exec=` names whatever `qc` is on PATH. When it is not there — a checkout you
@@ -29,6 +30,12 @@
 # default, so no `update-desktop-database` and no logout are needed: both the
 # .desktop directories and the icon theme are monitored at runtime. `--check`
 # tells you whether the running shell can see it, rather than assuming.
+#
+# `--launch` exists because "I clicked the icon and nothing happened" is the one
+# failure this script could not otherwise diagnose: the menu runs the entry
+# without a terminal, so whatever `qc` writes to stderr — the usage text, a
+# startup error — is discarded. `gtk-launch` performs the same libgio lookup the
+# menu performs and leaves those messages on the terminal.
 
 set -euo pipefail
 
@@ -36,6 +43,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 APP_ID=qcode
+# ADR-0086 §1: the argv marker the entry must pass. One definition, used both by
+# the rewrite below and by the check, so the two cannot drift apart.
+MARKER_ARG=--launched-from-gui
 DESKTOP_SRC=crates/qcode/res/linux/qcode.desktop
 ICON_SRC=crates/qcode/res/icons/linux/hicolor
 SIZES=(16 22 24 32 48 64 128 256)
@@ -47,30 +57,42 @@ while [[ $# -gt 0 ]]; do
         --system) mode=system ;;
         --uninstall) mode=uninstall ;;
         --check) mode=check ;;
+        --launch) mode=launch ;;
         --exec)
             [[ $# -ge 2 ]] || { echo "--exec needs a path" >&2; exit 2; }
             exec_bin=$2
             shift
             ;;
-        *) echo "usage: $0 [--system|--uninstall|--check] [--exec /path/to/qc]" >&2; exit 2 ;;
+        *) echo "usage: $0 [--system|--uninstall|--check|--launch] [--exec /path/to/qc]" >&2; exit 2 ;;
     esac
     shift
 done
 
 # Whatever the entry should launch: the override, or `qc` if the shell can find it.
-if [[ -n "$exec_bin" ]]; then
-    [[ -x "$exec_bin" ]] || { echo "not executable: $exec_bin" >&2; exit 2; }
-    # Absolute, because the entry is run by the shell from an arbitrary cwd.
-    exec_cmd=$(cd "$(dirname "$exec_bin")" && printf '%s/%s' "$PWD" "$(basename "$exec_bin")")
-elif command -v qc >/dev/null 2>&1; then
-    exec_cmd=qc
-else
-    echo "warning: qc is not on PATH; the entry will not start anything." >&2
-    echo "         re-run with --exec /path/to/qc to point it at a build." >&2
-    echo "         note the entry will also be *ignored*, not just fail to start:" >&2
-    echo "         an unresolvable Exec= invalidates the whole desktop file, so the" >&2
-    echo "         window falls back to the default icon." >&2
-    exec_cmd=qc
+#
+# Only an install writes these, so `--check` / `--launch` / `--uninstall` skip it:
+# they read the installed file, and warning at *them* about a PATH problem reports
+# on work they are not doing — the noise also makes the real message harder to see.
+# `--check` reports an unresolvable Exec= from the file itself, which is the
+# question that matters there.
+exec_cmd=
+if [[ "$mode" == user || "$mode" == system ]]; then
+    if [[ -n "$exec_bin" ]]; then
+        [[ -x "$exec_bin" ]] || { echo "not executable: $exec_bin" >&2; exit 2; }
+        # Absolute, because the entry is run by the shell from an arbitrary cwd.
+        exec_cmd=$(cd "$(dirname "$exec_bin")" && printf '%s/%s' "$PWD" "$(basename "$exec_bin")")
+    elif command -v qc >/dev/null 2>&1; then
+        exec_cmd=qc
+    else
+        echo "warning: qc is not on PATH; the entry will not start anything." >&2
+        echo "         re-run with --exec /path/to/qc to point it at a build." >&2
+        echo "         note the entry will also be *ignored*, not just fail to start:" >&2
+        echo "         an unresolvable Exec= invalidates the whole desktop file, so the" >&2
+        echo "         window falls back to the default icon." >&2
+        exec_cmd=qc
+    fi
+elif [[ -n "$exec_bin" ]]; then
+    echo "note: --exec applies to an install; $mode reads what is already there" >&2
 fi
 
 # `TryExec` must resolve too, and for a different reason than `Exec`: GLib drops a
@@ -140,7 +162,14 @@ check() {
         local key value program
         for key in Exec TryExec; do
             value=$(sed -n "s/^$key=//p" "$desktop_dir/$APP_ID.desktop" | head -1)
-            [[ -n "$value" ]] || continue
+            # A missing key used to `continue`, which reported a file with no Exec
+            # at all as healthy — the one state a menu can never start. It is a
+            # failure, and the message says which of the two ways it failed.
+            if [[ -z "$value" ]]; then
+                echo "  $key: MISSING — there is nothing to start"
+                failures=$((failures + 1))
+                continue
+            fi
             program=${value%% *}
             if [[ "$program" == /* ]]; then
                 if [[ -x "$program" ]]; then
@@ -157,6 +186,20 @@ check() {
                 failures=$((failures + 1))
             fi
         done
+
+        # The marker is the whole reason the entry exists (ADR-0086 §1). Without
+        # it `qc` has no subcommand and no launch marker, so it prints usage and
+        # exits 0 — from a menu, where that output goes nowhere, which is
+        # indistinguishable from a dead icon. Checked, not assumed.
+        local exec_line
+        exec_line=$(sed -n 's/^Exec=//p' "$desktop_dir/$APP_ID.desktop" | head -1)
+        if [[ "$exec_line" == *"$MARKER_ARG"* ]]; then
+            echo "  launch marker: $MARKER_ARG  (ok)"
+        else
+            echo "  launch marker: MISSING from Exec= — the menu starts it in terminal mode,"
+            echo "    which prints usage and exits; re-install to restore it"
+            failures=$((failures + 1))
+        fi
     fi
 
     if command -v xprop >/dev/null 2>&1; then
@@ -189,9 +232,52 @@ check() {
     fi
 }
 
+# Start the entry the way the application menu does.
+#
+# `gtk-launch` resolves the app id through libgio — the same lookup the shell
+# performs — so it fails exactly when the icon would, but with stderr attached.
+# The menu has no terminal, which is why "nothing happened" usually arrives with
+# no evidence at all: `qc` too often answers by printing usage and exiting 0.
+launch() {
+    if command -v gtk-launch >/dev/null 2>&1; then
+        local status=0
+        # `|| status=$?` because `set -e` would otherwise turn a diagnosable
+        # failure into a bare exit.
+        gtk-launch "$APP_ID" || status=$?
+        case "$status" in
+            0)
+                echo "dispatch ok. if no window appeared, ask the app what it did:"
+                echo "  qc logs --since 10m -n 40"
+                ;;
+            2)
+                echo "gtk-launch could not resolve '$APP_ID': the menu cannot either." >&2
+                echo "  ./scripts/install-linux-desktop.sh --check" >&2
+                echo "  (a dropped file usually means Exec=/TryExec= names a program that" >&2
+                echo "   is not there; re-install with --exec /path/to/qc)" >&2
+                return 1
+                ;;
+            *)
+                echo "gtk-launch exited $status" >&2
+                return 1
+                ;;
+        esac
+        return 0
+    fi
+    if command -v gio >/dev/null 2>&1; then
+        gio launch "$desktop_dir/$APP_ID.desktop"
+        return
+    fi
+    echo "neither gtk-launch nor gio is available; the entry starts:" >&2
+    sed -n 's/^Exec=//p' "$desktop_dir/$APP_ID.desktop" | head -1 >&2
+    return 1
+}
+
 case "$mode" in
     check)
         check
+        ;;
+    launch)
+        launch
         ;;
     uninstall)
         rm -f "$desktop_dir/$APP_ID.desktop"
@@ -205,7 +291,7 @@ case "$mode" in
         # Rewrite Exec= and TryExec=; every other key stays exactly as it ships, so
         # the committed file remains the source of truth for what the app looks like
         # on the desktop.
-        sed -e "s|^Exec=.*|Exec=$exec_cmd --launched-from-gui|" \
+        sed -e "s|^Exec=.*|Exec=$exec_cmd $MARKER_ARG|" \
             -e "s|^TryExec=.*|TryExec=$try_exec|" \
             "$DESKTOP_SRC" > "$desktop_dir/$APP_ID.desktop"
         chmod 644 "$desktop_dir/$APP_ID.desktop"

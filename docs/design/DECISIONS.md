@@ -9385,6 +9385,12 @@ Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
 > 进 TUI。判定层（本节 §1–§2 的三层与三端信号）一个字没动，改的只是 `None` 分支的动作；
 > 表内其余各行——显式子命令、标记开窗、双击单实例、`.app` 单可执行文件——仍然逐条有效。
 
+> **2026-11-16：上段那句「没有真机跑过 Linux」，代价来了**（ADR-0094）。Linux `.desktop`
+> 启动与终端启动的进程环境不是同一份东西——前者是桌面会话环境，不含 shell rc 的 `export`
+> ——所以「凭证只从 `api_key_env` 来」的 provider 从菜单启动时被判成没有凭证，模型消失；
+> 而 §3 里 `restore_launch_environment` 的注释当时写的是「非 macOS 平台空转……没有这个洞」。
+> 那个函数的 `cfg` 现已放宽到 Linux，Windows 仍空转但**改记为已知缺口**。
+
 ### 两处实现时才发现的事
 
 1. **`LSEnvironment` 在可执行文件路径与命令行标记之间需要一条桥**：plist 设的环境变量
@@ -10763,3 +10769,98 @@ INFO qc::lifecycle: qc session starting pid=14275 …
   再谈，现在没有数据。
 - 没有动 stderr 的默认（`warn` 对终端仍是对的）。
 - 老日志里的噪音不会消失：7 天轮转自然淘汰。
+
+## ADR-0094：Linux 的 `.desktop` 也要从登录 shell 补环境（2026-11-16）
+
+**状态**：Accepted（2026-11-16），已实现。
+**更正** ADR-0086 §3 里 `restore_launch_environment` 的注释「非 macOS 平台空转：Linux 的
+`.desktop` 与 Windows 的 `.lnk` 本来就把环境/工作目录带进来了，没有这个洞」——**那句在
+Linux 上是错的**。ADR-0086 自己的验证表末尾也留着「**没有真机跑过** Linux 与 Windows 的启动
+路径，只到编译与语法检查为止」。这次就是那句备注里的洞。
+
+**背景**
+
+`make linux-desktop` 装好菜单入口后，从菜单启动**模型配置消失**，而同一个二进制从终端敲
+`./target/release/qc --launched-from-gui` 一切正常。两侧的差别只有一个：环境。
+
+配置里 provider 的凭证是 `api_key_env = "DEEPSEEK_API_KEY"`，而 `config::resolve` 的规则是
+「env 里没有 key、也没有 `api_key_command` → 这个 provider 不算可用」（`config/resolve.rs`）。
+于是「模型列表为空」不是配置没读到，是那个 provider 被判成没有凭证。
+
+两种启动方式的进程环境**不是同一份东西**：
+
+| 启动方式 | 环境来源 | 含 `~/.zshrc` 的 `export`？ |
+|---|---|---|
+| 终端里跑 `qc` / `qc --launched-from-gui` | 那个交互式 shell | 是 |
+| 点 `.desktop` | 桌面会话（`systemd --user` / gnome-shell 派生） | **否** |
+
+`.desktop` 不经过 shell，所以 shell rc 里的 `export` 一个都进不来。macOS 经 LaunchServices
+启动更彻底（只给 5 个变量），ADR-0086 §3 就是为它写的，但当时把 Linux 判成「没有这个洞」。
+
+**决定**
+
+`restore_launch_environment` 的 `cfg` 从 `target_os = "macos"` 放宽到
+`any(target_os = "macos", target_os = "linux")`。行为不变：**只补当前缺失的变量**
+（`std::env::var_os(..).is_none()`），所以终端启动、以及用户真在环境里设过的值都不受影响；
+`[shell] env_sampling = "off"` 时不补；采样失败只 `warn`，界面照旧能开。
+
+Windows 仍空转，但这回**如实记成已知缺口**而不是「没有洞」：`.lnk` 由 explorer 拉起，拿到的
+同样是登录会话环境，逻辑上有同一个洞。没修的理由是本仓没有 Windows 真机可验证 pwsh 采样，
+而多数人把 key 设成「用户环境变量」（那会被继承）——照 macOS 的样子声称修好，比不修更坏。
+
+**实测（Linux，2026-11-16）**
+
+| 测点 | 结果 |
+|---|---|
+| `strings target/debug/qc \| grep -c 'restored environment from the login shell'` | `1` —— Linux 二进制现在**含**这段逻辑（空转版本不会带上这个字符串） |
+| 临时 `HOME`，rc 里 `export QCODE_TEST_KEY=abc123`，`env -i HOME=… qc shell-env` | 采到 `QCODE_TEST_KEY` —— rc 的 `export` 确实能被子进程拿到 |
+| 真机点图标启动后的日志 | `added=49 sampled=100 shell=/usr/bin/zsh`，紧接着 `config resolved exists=true provider=deepseek model=deepseek-flash key=env DEEPSEEK_API_KEY` |
+| `cargo test -p qcode --bin qc` | 90 通过 |
+| `cargo clippy -p qcode --bin qc --all-targets` | 干净 |
+
+第三行才是判据：`key=env DEEPSEEK_API_KEY` 是 `api_key_source`，而 `config/resolve.rs` 只在
+`env(..)` 返回**非空值**时才产生这个字符串——所以 key 是真取到了，不是「配置读到了但没凭证」。
+
+> **一条被推翻的中间结论，留在这里当教训。** 修复前我用同一条采样命令做对照，得到
+> `env -i HOME=/home/q zsh -lic 'env -0'` 只有 4–8 个变量、且没有 `DEEPSEEK_API_KEY`，
+> 于是写下「key 不在任何 rc 文件里，只在 shell 的继承链上，采样永远补不上」。**这是错的**：
+> 那次探测跑在一个读不到 `~/.zshrc` 的沙箱里（`head ~/.zshrc` → `权限不够`），rc 根本没执行，
+> 采样自然退化。真实环境同一命令拿到 100 个变量。
+>
+> 探测环境的权限与被探测进程的环境不是同一份——这和本 ADR 正题（两种启动方式的环境不是同一份）
+> 是同一个错误的两种写法。**「探针跑在哪」本身就是被测条件的一部分**，对照实验尤其如此。
+
+守卫是一条对着源码的检查（`gui.rs::tests::the_launch_environment_is_restored_on_linux_too`），
+因为「空转」在功能上是隐形的：`restore_launch_environment(..) {}` 编译得过、测试全绿，只在
+用户的桌面上失败。**它的第一版也是自证的**——写成 `source.contains(r#"#[cfg(any(…))]"#)`，
+而那个字面量本身就在同一个文件里，于是把两处 `cfg` 一起改回 macOS-only 依然绿。现在改成
+锚定位置：只看 `fn restore_launch_environment(…)` 之前最近的那一个 `#[cfg(..)]`，并要求另一条
+臂是精确补集。改完用变异验过两种回退：只改一处 → 编译期 `E0425`（函数不存在）；两处一起改
+→ 该测试红（`left: #[cfg(target_os = "macos")]`）。
+
+**边界**
+
+本次修复对「key 由 shell rc `export`」这一类已经够用，无需配置改动。仍然存在、且与启动方式
+无关的另一条路是 `api_key_command`——它给的是「key 由一个命令提供」的情形（keyring、
+`pass`、公司内部的凭据工具）：
+
+```toml
+[providers.deepseek]
+api_key_command = ["secret-tool", "lookup", "service", "deepseek"]
+```
+
+`api_key_command` 是一个 argv（不是 shell 串），qc 直接 exec 它、读 stdout 第一行，`stdin`
+是 `null`。key 从此不依赖任何 shell 环境。
+
+没有做、也不打算做的：
+
+- 不去读桌面会话的「secret service」或自动 import 用户 shell 的完整环境到 GUI 进程——那等于
+  把 shell 里所有 `export`（含无关的敏感变量）都灌进一个长命进程，代价远大于收益。
+- 不为 Windows 写一套未经验证的 pwsh 采样。
+- 不在 `qc doctor` 里新增「你的 key 来自哪里」的诊断节：`resolve` 已经在 `api_key_source`
+  字段里记了 `env DEEPSEEK_API_KEY` / `command …` / `keyless`，缺的是把它显示出来，那是另一件事。
+
+**顺带**：同一轮修了「点了没反应」这个报告缺证据的问题（`install-linux-desktop.sh`）——
+`--check` 原来在缺 `Exec=` 时 `continue`（等于放行），也从不验证启动标记；现在两者都算失败。
+新增 `--launch` 走 `gtk-launch`，也就是菜单用的同一条 libgio 查找，但把 stderr 留在终端：
+菜单没有终端，`qc` 又常常「打印用法然后 exit 0」，所以那个症状原本拿不到任何证据。

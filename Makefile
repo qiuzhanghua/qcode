@@ -24,7 +24,7 @@ PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
 .PHONY: all native list check check-platforms perf release archive clean gui app app-debug \
-        linux-desktop linux-desktop-check linux-desktop-uninstall \
+        linux-desktop linux-desktop-check linux-desktop-launch linux-desktop-uninstall \
         linux-container linux-container-archive $(PLATFORMS)
 
 all:
@@ -101,10 +101,15 @@ linux-desktop:
 	@echo "foreground process group, and a GUI that gets one exits (the log records"
 	@echo "reason=sighup). setsid puts it in a new session, which the hangup misses."
 	@echo
-	@echo "inspect or remove: ./scripts/install-linux-desktop.sh --check|--uninstall"
+	@echo "inspect, start or remove: ./scripts/install-linux-desktop.sh --check|--launch|--uninstall"
 
 linux-desktop-check:
 	./scripts/install-linux-desktop.sh --check
+
+# The menu runs the entry without a terminal, so a startup failure there leaves no
+# evidence. This is the same lookup with stderr attached.
+linux-desktop-launch:
+	./scripts/install-linux-desktop.sh --launch
 
 linux-desktop-uninstall:
 	./scripts/install-linux-desktop.sh --uninstall
