@@ -2,6 +2,16 @@
 
 ## 未发布
 
+### 内部：启动形态的判定变成可测的（判断与采集分开）
+
+三端的「终端还是窗口」判定原先与 `isatty` / `getppid` / 环境变量混在一起，唯一的测试
+`the_test_harness_itself_is_not_a_gui_session` 让测试进程自己的环境参与断言，于是在**没有
+tty 的桌面会话**里（沙箱、IDE runner、`docker exec` 不带 `-t`）必然红，而判定代码一行没错。
+
+现在规则搬进不带平台 `cfg` 的 `signals` 模块（`MacFacts` / `LinuxFacts` /
+`WindowsFacts`），`detect_with_signal` 允许测试注入平台信号。**行为零变化**，但 Linux 的 CI
+从此能测 macOS 与 Windows 的判定表——补了 19 格用例。见 ADR-0086 末节。
+
 ### 日志文件默认级别收紧：我们的 crate `info`，其余 `warn`
 
 一次 GUI 启动约一百行 `gpui_wgpu` / `zed_xim` / `gpui_linux` 的 `info`，两条 lifecycle 行

@@ -127,13 +127,31 @@ pub fn detect(marked: bool, env_marker: bool) -> Decision {
 /// 是并发线程。第一版直接在这样的函数里读环境变量，于是「设定标记」和「清除标记」
 /// 两条用例互相看到对方的值，随机红——这条注释就是那次失败的墓志铭。
 fn detect_with(marked: bool, env_marker: bool) -> Decision {
+    detect_with_signal(marked, env_marker, platform::graphical_session)
+}
+
+/// [`detect_with`], but with the platform signal supplied by the caller.
+///
+/// This layer exists because the test that used to sit here was fooling itself.
+/// `the_test_harness_itself_is_not_a_gui_session` went through `detect_with`, whose
+/// own comment claimed it does not read the environment — while its second layer is
+/// `platform::graphical_session()`, which reads `std::env` and `isatty(stdin)`. So the
+/// test asserted "this machine does not look like a graphical session right now",
+/// which is false on a desktop host whose stdin is not a tty (a sandbox, an IDE
+/// runner, `docker exec` without `-t`), and it failed while the decision code was
+/// perfectly correct. A test cannot check a decision it cannot replace.
+fn detect_with_signal(
+    marked: bool,
+    env_marker: bool,
+    signal: impl FnOnce() -> Option<&'static str>,
+) -> Decision {
     if marked || env_marker {
         return Decision {
             frontend: Frontend::Gui,
             reason: "launch-marker",
         };
     }
-    match platform::graphical_session() {
+    match signal() {
         Some(signal) => Decision {
             frontend: Frontend::Gui,
             reason: signal,
@@ -145,9 +163,37 @@ fn detect_with(marked: bool, env_marker: bool) -> Decision {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod platform {
-    /// GUI 会话的两个独立信号，**必须同时成立**。
+/// 三端判定的**纯逻辑**，与采集分开。
+///
+/// 采集（`isatty`、`getppid`、`GetConsoleWindow`、`std::env::var`）每次只有几行，而
+/// 历史上出错的一直是**判断**：把「没有 tty」当成「不是 GUI」、漏掉 `DISPLAY` 的必要性、
+/// 把裸词当成级别名（同一个星期里在 `logging` 那边刚犯过一次）。判断因此搬到能测的地方。
+///
+/// 三个 `*Facts` 都**不按平台 `cfg`**：CI 只在宿主那一端跑测试，而 macOS 的规则恰恰最
+/// 难在手上验证。放在这里，Linux 上也能测 macOS 与 Windows 的判定表。
+mod signals {
+    // 非宿主平台的规则在**非测试构建**里没有调用者——那正是它们存在的理由：让 Linux
+    // 也能测 macOS 的判定表。`cfg_attr(not(test), …)` 而不是无条件 `allow`：在测试构建里
+    // 如果没人用（比如测试被删掉），仍然会报。
+    #![cfg_attr(not(test), allow(dead_code))]
+
+    use std::ffi::OsStr;
+
+    /// macOS 判定所需的事实。
+    pub(super) struct MacFacts<'a> {
+        /// `TERM` 存在——**不能**用作「在终端里」的证据：`open` 会把调用者的环境带进来，
+        /// 实测从终端 `open -a` 起的进程带着 `TERM=xterm-ghostty`。它只能反过来用：
+        /// 有就一定是终端启动。
+        pub(super) term: Option<&'a OsStr>,
+        /// 同上，`TERM_PROGRAM`。
+        pub(super) term_program: Option<&'a OsStr>,
+        /// 有终端设备就说明是终端里启动的：比父进程名可靠（父进程可能是任何东西）。
+        pub(super) stdin_is_tty: bool,
+        pub(super) parent_is_launchd: bool,
+        pub(super) bundle_id: Option<&'a str>,
+    }
+
+    /// macOS：GUI 会话的两个独立信号，**必须同时成立**。
     ///
     /// 实测（本机，一个只自 dump 环境与父进程的最小 `.app`）：
     ///
@@ -156,26 +202,87 @@ mod platform {
     /// | 终端直接 exec | `/bin/zsh` | 终端自己的（`com.mitchellh.ghostty`） |
     /// | `env -i open -a`（= 双击） | `launchd`（pid 1） | 我们自己的 |
     ///
-    /// 单独看任意一个都会误判：`setsid` 起的进程父进程也不是 shell，
-    /// 而从终端 `open -a` 时 `__CFBundleIdentifier` 已经是我们自己了（父进程也是
-    /// `launchd`）——那种情况**确实**是图形启动，判成 GUI 是对的。
-    pub(super) fn graphical_session() -> Option<&'static str> {
-        // `TERM` 完全不可用于此：`open` 会把调用者的环境传进来，实测从终端
-        // `open -a` 起的进程带着 `TERM=xterm-ghostty`。
-        if std::env::var_os("TERM").is_some() {
+    /// 单独看任意一个都会误判：`setsid` 起的进程父进程也不是 shell，而从终端
+    /// `open -a` 时 `__CFBundleIdentifier` 已经是我们自己了（父进程也是 `launchd`）
+    /// ——那种情况**确实**是图形启动，判成 GUI 是对的。
+    pub(super) fn macos(facts: &MacFacts<'_>) -> Option<&'static str> {
+        if facts.term.is_some() || facts.term_program.is_some() {
             return None;
         }
-        if std::env::var_os("TERM_PROGRAM").is_some() {
+        if facts.stdin_is_tty {
             return None;
         }
-        // 有终端设备就说明是终端里启动的：这条比父进程名可靠（父进程可能是任何东西）。
-        if stdin_is_tty() {
-            return None;
-        }
-        if parent_is_launchd() && bundle_identifier_is_ours() {
+        let bundle_is_ours = facts
+            .bundle_id
+            .is_some_and(|id| id.starts_with("com.qcode."));
+        if facts.parent_is_launchd && bundle_is_ours {
             return Some("coder-macos-launchd");
         }
         None
+    }
+
+    /// Linux 判定所需的事实。
+    pub(super) struct LinuxFacts<'a> {
+        pub(super) stdin_is_tty: bool,
+        pub(super) session_type: &'a str,
+        pub(super) wayland_display: Option<&'a OsStr>,
+        pub(super) display: Option<&'a OsStr>,
+    }
+
+    /// Linux 上的两个独立信号：没有终端设备，且处在图形会话里。
+    pub(super) fn linux(facts: &LinuxFacts<'_>) -> Option<&'static str> {
+        if facts.stdin_is_tty {
+            return None;
+        }
+        // `.desktop` 里我们写 `Terminal=false`，于是那条进程没有控制终端。但「没有 tty」
+        // 也可能是 systemd unit / cron / CI，所以还要图形会话的证据。
+        if !matches!(facts.session_type, "wayland" | "x11" | "mir") {
+            return None;
+        }
+        // 没有 DISPLAY / WAYLAND_DISPLAY 就打不开窗口，别把人送进一条必然失败的路——
+        // 那比留他在 TUI 里更糟。
+        if facts.wayland_display.is_none() && facts.display.is_none() {
+            return None;
+        }
+        Some("coder-linux-desktop")
+    }
+
+    /// Windows 判定所需的事实。
+    pub(super) struct WindowsFacts<'a> {
+        pub(super) has_console: bool,
+        pub(super) parent_image: Option<&'a str>,
+    }
+
+    /// Windows 上的两个独立信号：没有控制台窗口，且父进程是资源管理器。
+    ///
+    /// `qc` 是控制台子系统程序，从 `cmd.exe` / `pwsh` / Windows Terminal 启动时一定
+    /// 挂着控制台；双击时 Windows 会给它新建一个**自己的**控制台，那种情形要靠父进程
+    /// 区分。父进程名拿不到时按终端处理：判不出来就当终端，与三层判定的方向一致。
+    pub(super) fn windows(facts: &WindowsFacts<'_>) -> Option<&'static str> {
+        if facts.has_console {
+            return None;
+        }
+        let parent_is_explorer = facts
+            .parent_image
+            .is_some_and(|name| name.eq_ignore_ascii_case("explorer.exe"));
+        if parent_is_explorer {
+            return Some("coder-windows-explorer");
+        }
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+/// macOS：采集事实，判断在 [`signals::macos`]。
+mod platform {
+    pub(super) fn graphical_session() -> Option<&'static str> {
+        super::signals::macos(&super::signals::MacFacts {
+            term: std::env::var_os("TERM").as_deref(),
+            term_program: std::env::var_os("TERM_PROGRAM").as_deref(),
+            stdin_is_tty: stdin_is_tty(),
+            parent_is_launchd: parent_is_launchd(),
+            bundle_id: std::env::var("__CFBundleIdentifier").ok().as_deref(),
+        })
     }
 
     fn stdin_is_tty() -> bool {
@@ -191,40 +298,21 @@ mod platform {
         // SAFETY: `getppid` 无参数、无副作用。
         unsafe { libc::getppid() == 1 }
     }
-
-    /// `__CFBundleIdentifier` 是不是我们自己的。
-    ///
-    /// 终端继承来的那个会是终端 app 的 id。我们只在**同时**是 launchd 子进程时
-    /// 才看这个，所以这里只需要排除「明显不是我们」的情形。
-    fn bundle_identifier_is_ours() -> bool {
-        match std::env::var("__CFBundleIdentifier") {
-            Ok(id) => id.starts_with("com.qcode."),
-            // 没有这个变量（裸二进制直接 exec，不经 .app）：不是图形会话的证据。
-            Err(_) => false,
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
+/// Linux：采集事实，判断在 [`signals::linux`]。
 mod platform {
-    /// Linux 上的两个独立信号：没有终端设备，且处在图形会话里。
     pub(super) fn graphical_session() -> Option<&'static str> {
-        if stdin_is_tty() {
-            return None;
-        }
-        // `.desktop` 里我们写 `Terminal=false`，于是这条进程没有控制终端。
-        // 但「没有 tty」也可能是 systemd unit / cron / CI，所以还要图形会话的证据。
-        let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-        let graphical = matches!(session.as_str(), "wayland" | "x11" | "mir");
-        if !graphical {
-            return None;
-        }
-        // 没有 DISPLAY / WAYLAND_DISPLAY 就打不开窗口，别把人送进一条必然失败的
-        // 路——那比留他在 TUI 里更糟。
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
-            return None;
-        }
-        Some("coder-linux-desktop")
+        let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        let wayland_display = std::env::var_os("WAYLAND_DISPLAY");
+        let display = std::env::var_os("DISPLAY");
+        super::signals::linux(&super::signals::LinuxFacts {
+            stdin_is_tty: stdin_is_tty(),
+            session_type: &session_type,
+            wayland_display: wayland_display.as_deref(),
+            display: display.as_deref(),
+        })
     }
 
     fn stdin_is_tty() -> bool {
@@ -234,35 +322,23 @@ mod platform {
 }
 
 #[cfg(windows)]
+/// Windows：采集事实，判断在 [`signals::windows`]。
 mod platform {
-    /// Windows 上的两个独立信号：没有控制台窗口，且父进程是资源管理器。
     pub(super) fn graphical_session() -> Option<&'static str> {
-        if has_console() {
-            return None;
-        }
-        if parent_is_explorer() {
-            return Some("coder-windows-explorer");
-        }
-        None
+        let parent_image = parent_image_name();
+        super::signals::windows(&super::signals::WindowsFacts {
+            has_console: has_console(),
+            parent_image: parent_image.as_deref(),
+        })
     }
 
     /// 有没有控制台。`qc` 是控制台子系统程序，从 `cmd.exe` / `pwsh` / Windows
     /// Terminal 启动时一定挂着控制台；双击时 Windows 会给它新建一个**自己的**
-    /// 控制台——那种情形要靠父进程区分（下面）。
+    /// 控制台——那种情形要靠父进程区分。
     fn has_console() -> bool {
         use windows_sys::Win32::System::Console::GetConsoleWindow;
         // SAFETY: 无参数、无副作用；返回 0 表示没有控制台。
         !unsafe { GetConsoleWindow() }.is_null()
-    }
-
-    /// 父进程的映像名是不是 `explorer.exe`。
-    ///
-    /// 双击、开始菜单、桌面快捷方式都经 `explorer.exe`。从终端敲进来的父进程是
-    /// `cmd.exe` / `pwsh.exe` / `WindowsTerminal.exe`，不会是它。
-    fn parent_is_explorer() -> bool {
-        parent_image_name()
-            .map(|name| name.eq_ignore_ascii_case("explorer.exe"))
-            .unwrap_or(false)
     }
 
     /// 父进程的映像名。
@@ -371,22 +447,202 @@ mod tests {
         assert_eq!(decision.reason, "launch-marker");
     }
 
-    /// 测试进程跑在终端或 CI 里，两种情形都不该被判成 GUI 会话。
+    /// 没有标记、平台也没给信号时必须落到终端。
     ///
-    /// 这条在 mac / linux 上都成立；Windows 上 `cargo test` 挂着控制台，同样成立。
-    /// 它同时也是「判定没有副作用、不会拖慢启动」的最低保证——真连一次 X server
-    /// 或枚举进程表之外的任何东西，这里会明显变慢。
-    ///
-    /// 走 `detect_with` 而不是 `detect`：后者读环境，而环境是进程级的，会被并发的
-    /// 用例干扰。
+    /// 走 [`detect_with_signal`] 并**显式传 `None`**：这条要断言的是「没有正面证据就
+    /// 不弹窗」这条规则，而不是「本机此刻看起来不像图形会话」。原来的版本让测试进程
+    /// 自己的环境参与判定，于是在没有 tty 的桌面会话里（沙箱、IDE runner、`docker exec`
+    /// 不带 `-t`）必然红，而判定代码一行没错。
     #[test]
-    fn the_test_harness_itself_is_not_a_gui_session() {
-        let decision = detect_with(false, false);
+    fn no_marker_and_no_signal_is_the_terminal() {
+        let decision = detect_with_signal(false, false, || None);
+        assert_eq!(decision.frontend, Frontend::Tui);
+        assert_eq!(decision.reason, "no-gui-signal");
+    }
+
+    /// 平台给出信号才走窗口，且信号原样进日志——`reason` 是排查「点了图标没反应」时
+    /// 唯一能 grep 的线索。
+    #[test]
+    fn a_platform_signal_selects_the_window() {
+        let decision = detect_with_signal(false, false, || Some("coder-linux-desktop"));
+        assert_eq!(decision.frontend, Frontend::Gui);
+        assert_eq!(decision.reason, "coder-linux-desktop");
+    }
+
+    /// 标记优先于平台信号：带了标记就**不去问**平台。
+    ///
+    /// 断言用的是「一被调用就 panic」的闭包，所以它同时证明那次探测根本没发生——
+    /// 否则又是一条「看起来测了顺序」的测试。
+    #[test]
+    fn the_marker_short_circuits_the_platform_probe() {
+        let decision = detect_with_signal(true, false, || {
+            panic!("the platform must not be probed when the marker is present")
+        });
+        assert_eq!(decision.frontend, Frontend::Gui);
+        assert_eq!(decision.reason, "launch-marker");
+    }
+
+    /// macOS 的判定表，**在 Linux 上也要跑**（`signals` 不带平台 cfg）。
+    ///
+    /// 这张表是本机最难验证的东西：手上没有 mac、CI 的 mac job 只跑自己那一端。把判断
+    /// 与采集分开之后，它就成了普通函数。
+    #[test]
+    fn the_macos_rules() {
+        /// 双击：launchd 的子进程，我们自己的 bundle，没有终端。
+        const DOUBLE_CLICK: signals::MacFacts<'_> = signals::MacFacts {
+            term: None,
+            term_program: None,
+            stdin_is_tty: false,
+            parent_is_launchd: true,
+            bundle_id: Some("com.qcode.app"),
+        };
+
+        assert_eq!(signals::macos(&DOUBLE_CLICK), Some("coder-macos-launchd"));
+
+        // 终端里启动：`TERM` 就是证据（`open` 会把调用者的环境带进来，所以这个变量
+        // 只能用来证伪，不能用来证明）。
+        let term_some = std::ffi::OsStr::new("xterm-ghostty");
         assert_eq!(
-            decision.frontend,
-            Frontend::Tui,
-            "测试进程被判成 GUI 会话了：{}",
-            decision.reason
+            signals::macos(&signals::MacFacts {
+                term: Some(term_some),
+                ..DOUBLE_CLICK
+            }),
+            None
+        );
+        assert_eq!(
+            signals::macos(&signals::MacFacts {
+                term_program: Some(std::ffi::OsStr::new("ghostty")),
+                ..DOUBLE_CLICK
+            }),
+            None
+        );
+        assert_eq!(
+            signals::macos(&signals::MacFacts {
+                stdin_is_tty: true,
+                ..DOUBLE_CLICK
+            }),
+            None,
+            "a tty is decisive: it beats the parent-process and bundle evidence"
+        );
+        // 两个信号缺一不可：漏掉 bundle 判定会把 `setsid` 起的进程弹成窗口。
+        assert_eq!(
+            signals::macos(&signals::MacFacts {
+                parent_is_launchd: false,
+                ..DOUBLE_CLICK
+            }),
+            None
+        );
+        assert_eq!(
+            signals::macos(&signals::MacFacts {
+                bundle_id: None,
+                ..DOUBLE_CLICK
+            }),
+            None
+        );
+        // 从终端 `open -a` 起的进程带着终端的 bundle id：不是我们的。
+        assert_eq!(
+            signals::macos(&signals::MacFacts {
+                bundle_id: Some("com.mitchellh.ghostty"),
+                ..DOUBLE_CLICK
+            }),
+            None
+        );
+    }
+
+    /// Linux 的判定表。`DISPLAY` 那一格是真实事故的形状：没有它窗口打不开，那时宁可
+    /// 留在 TUI，也不要送用户进一条必然失败的路。
+    #[test]
+    fn the_linux_rules() {
+        let display = std::ffi::OsStr::new(":1");
+        let desktop = signals::LinuxFacts {
+            stdin_is_tty: false,
+            session_type: "x11",
+            wayland_display: None,
+            display: Some(display),
+        };
+        assert_eq!(signals::linux(&desktop), Some("coder-linux-desktop"));
+
+        assert_eq!(
+            signals::linux(&signals::LinuxFacts {
+                wayland_display: Some(std::ffi::OsStr::new("wayland-0")),
+                display: None,
+                ..desktop
+            }),
+            Some("coder-linux-desktop"),
+            "wayland is a display too"
+        );
+        assert_eq!(
+            signals::linux(&signals::LinuxFacts {
+                stdin_is_tty: true,
+                ..desktop
+            }),
+            None
+        );
+        // 没有 tty 但也没有图形会话：systemd unit / cron / CI，全都该留在终端。
+        for session in ["", "tty", "cron"] {
+            assert_eq!(
+                signals::linux(&signals::LinuxFacts {
+                    session_type: session,
+                    ..desktop
+                }),
+                None,
+                "session_type {session:?}"
+            );
+        }
+        assert_eq!(
+            signals::linux(&signals::LinuxFacts {
+                wayland_display: None,
+                display: None,
+                ..desktop
+            }),
+            None,
+            "a graphical session with nowhere to draw is still a bad guess"
+        );
+    }
+
+    /// Windows 的判定表。
+    #[test]
+    fn the_windows_rules() {
+        // 双击：没有控制台，父进程是 explorer.exe（大小写不敏感——实测两种都出现过）。
+        assert_eq!(
+            signals::windows(&signals::WindowsFacts {
+                has_console: false,
+                parent_image: Some("explorer.exe"),
+            }),
+            Some("coder-windows-explorer")
+        );
+        assert_eq!(
+            signals::windows(&signals::WindowsFacts {
+                has_console: false,
+                parent_image: Some("EXPLORER.EXE"),
+            }),
+            Some("coder-windows-explorer")
+        );
+        // 从终端启动：一定挂着自己的控制台。
+        assert_eq!(
+            signals::windows(&signals::WindowsFacts {
+                has_console: true,
+                parent_image: Some("explorer.exe"),
+            }),
+            None
+        );
+        for parent in ["cmd.exe", "pwsh.exe", "WindowsTerminal.exe", ""] {
+            assert_eq!(
+                signals::windows(&signals::WindowsFacts {
+                    has_console: false,
+                    parent_image: Some(parent),
+                }),
+                None,
+                "parent {parent:?}"
+            );
+        }
+        // 拿不到父进程名：判不出来就当终端（三层判定的方向）。
+        assert_eq!(
+            signals::windows(&signals::WindowsFacts {
+                has_console: false,
+                parent_image: None,
+            }),
+            None
         );
     }
 

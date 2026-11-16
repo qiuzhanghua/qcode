@@ -9394,6 +9394,36 @@ Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
 - 判定为 GUI 但无 `gui` feature：给一句人话而不是静默。
 - 回归：`qc | jq`、`qc run ...` 在 GUI 会话里从终端跑仍然只产出 stdout 那一份。
 
+### 判定的测试形态：判断与采集分开（2026-11-16）
+
+上面那张表里，三端的**信号判定**一直没有真正的测试。唯一沾边的是
+`the_test_harness_itself_is_not_a_gui_session`，而它其实是自欺：它走 `detect_with`，注释
+还写着「不读环境」，可第二层就是 `platform::graphical_session()`，照样读 `std::env` 和
+`isatty(stdin)`。于是它断言的是「这台机器此刻看起来不像图形会话」——在**没有 tty 的桌面
+会话**里（沙箱、IDE runner、`docker exec` 不带 `-t`、`ssh` 不带 `-t`）必然红，而判定代码
+一行没错。GitHub 托管 runner 之所以一直绿，是因为那里 `XDG_SESSION_TYPE` 没设，属于运气。
+
+现在拆成两层：
+
+| 层 | 内容 | 在哪 |
+|---|---|---|
+| 采集 | `isatty`、`getppid`、`GetConsoleWindow`、`std::env::var`，每端几行 | `platform::graphical_session` |
+| 判断 | 三端的规则，输入是 `MacFacts` / `LinuxFacts` / `WindowsFacts` | `signals`，**不带平台 `cfg`** |
+| 注入 | `detect_with_signal(.., impl FnOnce() -> Option<&'static str>)` | 测试传闭包 |
+
+关键收益不是「更干净」，是**净增覆盖**：`signals` 不按平台 cfg，所以 Linux 的 CI 能测 macOS
+与 Windows 的判定表——而这两端恰恰是本机最难验的（手上没有 mac，CI 的 mac job 只跑自己那一
+端）。补的用例：macOS 六格（双击 / 有 `TERM` / 有 `TERM_PROGRAM` / 有 tty / 非 launchd /
+bundle 不是我们的）、Linux 七格（`x11` / `wayland` / 有 tty / `""`、`tty`、`cron` 三种非图形
+会话 / 有会话但无处可画）、Windows 六格（`explorer.exe` 大小写两种 / 有控制台 / 四种终端父
+进程 / 拿不到父进程名）。
+
+「改回去就失败」逐个验过：删掉 Linux 的 `DISPLAY` 检查 → `the_linux_rules` 红；删掉 macOS 的
+`isatty` 检查 → `the_macos_rules` 红。
+
+**没做**：采集本身仍然测不到（`isatty` 的成功与失败两态需要 pty 或注入假 check）。判断是历史
+上出错的地方——采集是一行一个事实——所以只把判断搬到可测的位置，代价写明在这里。
+
 ## ADR-0087：三端能力收口——斜杠命令与子代理进入 GUI（2026-11-15）
 
 **背景**
