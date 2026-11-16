@@ -10644,7 +10644,7 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 | `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在。`inflight` / `pending_ack` 不是**持久**记账，而是 `qcode-driver` 的 `ScheduleDriver` 内存态（重启即清零，靠会话日志补确认）——`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
 | `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
-| `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布）、`[schedules]` 配置旧路径 |
+| `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
 | `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有 |
 | `qcd`（新 bin） | ❌ 不存在 | 同上；但前提已验，见下 |
 
@@ -10656,6 +10656,7 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
    key）。**前端循环不在这里**，而且不该在这里——见 DAEMON-TASKS 阶段 1 那一节里
    「与原计划不同的一处」。事件出口只有 `Host::changed()` 这个「任务表变了」的信号，
    §8 说的可跟随流还不存在。
+   `[schedules]` 配置条目也已并进任务表（ADR-0096），所以 daemon 不必再实现一份配置驱动。
 2. **进度要记在这里，不要只留在 commit message 里。** `a630cd6` 之前，任何人读本 ADR 都
    会得到「§11 一样都还没做」的印象，然后重复这次对照。
 3. **§1 与 §11 的拆分方向已验证可行。** `qcd` = daemon + kernel 且不链 GPU 栈，这条现在
@@ -11034,3 +11035,114 @@ error: failed to run custom build command for `libsqlite3-sys v0.39.1`
 未验证项：这条 CI 步骤在真 runner 上还没跑过（本机无法访问 GitHub Actions 的执行环境）。
 首次运行时最可能出问题的地方是 zig tarball 的下载与 `python3` 解析 index（ubuntu-latest
 两者都有），以及冷缓存下 darwin 两个 triple 的 sqlite / aws-lc 编译耗时。
+
+---
+
+## ADR-0096：`[schedules]` 与任务表合一——一个条目只投一次（2026-11-16）
+
+**状态**：Accepted（2026-11-16）。**已实现**（2026-11-16）。依赖 ADR-0059（调度语义）、
+ADR-0088（注册与驱动分离）、ADR-0092 §11（阶段 1）。
+**取代**：ADR-0059 的「运行状态存 sqlite `schedules` 表」与「配置路径自己投递」；
+ADR-0088 的「导入一次，同名跳过」。
+
+**背景**
+
+ADR-0059 把定时任务做成「配置声明 + sqlite 里记运行状态」，由 GUI 的时钟 beat 自己投递。
+ADR-0088 加了运行时任务（`tasks.json`，多种规则，`followup_scheduled` 带结构标记），并把
+`[schedules]` 条目**导入**成运行时任务——但导入是「同名就跳过」，而且**配置路径继续投递**。
+
+于是同一个条目被两条路径各投一次。真机实测（`[schedules.tick] cron = "* * * * *"`，
+GUI 跑 150 秒）：
+
+```
+15:36:05  01M7HMHPXZ  user_message:1  scheduled:yes   ← 运行时路径
+15:36:05  01M7HMHPY4  user_message:1  scheduled:no    ← 配置路径
+15:37:05  01M7HMKHGY  user_message:1  scheduled:yes
+15:37:05  01M7HMKHH3  user_message:1  scheduled:no
+```
+
+一分钟一次的任务，150 秒里建了 **4 个会话、4 个回合**。配置路径那份还不带 `scheduled`
+标记，所以转录里既看不出「这是定时执行」，也无法归属到任务。
+
+第二个问题：**两套账本必然漂移**。把 cron 从 `* * * * *` 改成 `*/5 * * * *` 再重启：
+
+```
+sqlite  schedules 表 : next_fire_at = 15:40:00   ← 新 cron
+tasks.json          : rule = cron "* * * * *"    ← 旧 cron
+```
+
+`import_config` 按名字判重、从不 reconcile，所以改配置只改了一半：配置路径按新 cron 走，
+导入的任务按旧 cron 走。用户改了配置却只有一半生效，而没有任何界面能看出这件事。
+
+这两条在 ADR-0092 之前不可见，因为驱动只有 GUI 一个、而 GUI 的行为「看起来是对的」——
+没人会数同一分钟里建了几个会话。它们是阶段 1 把投递搬进 `qcode-driver`、可以按拍观察
+之后才暴露的。
+
+**决定**
+
+1. **一套模型**：`tasks.json` 是唯一定时任务表。`[schedules.<name>]` 是**另一个入口**，
+   不是另一套机制——启动时经 `Scheduler::reconcile_config` 变成任务，此后与用户建的任务
+   走**同一条**投递路径。
+2. **加 `Origin`**（`User` / `Config`，serde 默认 `User`）。合并之后「谁说了算」不能靠猜：
+   配置声明的条目改 `config.toml`，用户建的任务改 GUI/CLI。
+3. **配置来源的任务拒绝本地改动**：`pause` / `resume` / `edit` / `delete` 一律报
+   `ScheduleError::ConfigOwned`，并说出去哪儿改（`[schedules.<name>]`）。`run_now` 是运行
+   命令不是改声明，照旧允许。
+4. **删掉配置路径与它的状态**：GUI 的配置驱动循环（105 行）、sqlite `schedules` 表的读写
+   （`schedule_states` / `save_schedule_state` / `prune_schedules`）、以及只为它存在的
+   `ScheduleState` / `ScheduleStatus` / `Tick` / `Recovery` / `tick()` / `recover()` /
+   `advance()`。老的 `schedules` 表**不 DROP**：留着不花什么，回退时还在。
+
+### reconcile 的三条规则
+
+| 配置侧 | 任务表 | 说明 |
+|---|---|---|
+| 有 | 没有 | 建，`origin = config`，`id = 条目名` |
+| 有 | 有 | 声明字段跟着改；**运行事实不动** |
+| 没有了 | 有且 `origin = config` | 删 |
+| 没有了 | 有且 `origin = user` | 不动（用户的东西不该被一份配置的缺失带走）|
+
+「声明字段」= rule / prompt / target / overlap / approval_timeout / 启用状态。
+「运行事实」= 投递历史 / 回执 / 错过计数 / 预定会话 / `Ended` 状态。后者是**发生过什么**，
+覆盖它等于每次启动都清空审计记录。
+
+`enabled = false` 映射成 `Paused` 而不是删除：用户重新启用时状态与历史都接得回来。
+
+### 为什么 `declared` 与 `resolved` 是两个参数
+
+`resolve_schedules` 会把坏条目（cron 写错、prompt 空）挑进 `schedule_errors`，不出现在
+resolved 列表里。如果按 resolved 列表判断「这条还在不在」，**一个 cron 拼写错误就会把任务
+连投递历史一起删掉**——用户改回来时已经晚了。所以：
+
+- 「还在不在」按 `config.toml` 里的**键**（`declared`，来自 `Config.schedules` 的 key 集合）；
+- 「该是什么样」才按 resolved 的声明。
+
+真机验证过：把 `0 3 * * *` 写成 `0 3 * *`，重启后任务还在、规则仍是旧的，`schedule_errors`
+里多一条——用户看得见错在哪，而不是发现任务没了。
+
+### 一个任务被 reconcile 改名/改规则时，`next_fire_at` 怎么处理
+
+**规则变了才重算**。只改 prompt 时保留原窗口：每次都按 `now` 重算会把一个即将到点的任务
+推到下一个窗口，表现为「晚一拍」甚至「跳过一整轮」。回归测试
+`a_prompt_only_edit_keeps_the_pending_window`。
+
+**后果**
+
+- 双投消失：同一份配置，150 秒内从 4 个会话降到 2 个（每分钟一个），且都带 `scheduled`
+  标记。
+- 改配置现在真的生效（cron / prompt / target / overlap / approval_timeout / enabled），
+  删除条目会删任务。
+- 旧库的 `schedules` 表数据**不再读**，所以升级后第一次启动时：`next_fire_at` 按
+  `cron.next_after(now)` 重算、`missed_windows` 归零一次。这两项都是「下一次该什么时候
+  触发」的等价答案（重启后第一拍本来就是 `away`，只推进不补投），代价是错过计数从零开始。
+- `qc schedule delete/pause` 对配置条目会失败并指出配置文件。这是**有意的**：允许它「成功」
+  然后下次启动又被 reconcile 造回来，是更糟的失败形态（ADR-0090 §5）。
+- daemon（ADR-0092 阶段 2）不需要再实现一份配置驱动——配置条目在它眼里就是普通任务。
+
+**验证**
+
+- `scheduler.rs` 7 条 reconcile 用例：建立 / 跟随编辑且保留运行事实 / 只改 prompt 不动窗口 /
+  只 prune 自己建的 / 坏条目保留 / `enabled=false` 转 Paused / `ConfigOwned` 四连拒。
+- 真机四条：双投消失（上面那组会话数）、cron 改动传播且保留投递历史、`enabled=false` →
+  `paused`、删条目 → 任务表清空、坏 cron 保留任务。
+- `cargo test --workspace` 1347 通过；clippy / fmt / Windows 跨端类型检查全绿。

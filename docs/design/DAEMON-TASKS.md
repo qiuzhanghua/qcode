@@ -2,6 +2,7 @@
 
 > 设计依据：[ADR-0092](./DECISIONS.md#adr-0092常驻-daemondriving-不再绑在窗口上2026-11-15)。
 > 状态截至 2026-11-16。**阶段 0、阶段 1 已完成**；阶段 2–5 未开始。
+> 阶段 1 的收尾（配置条目并入任务表）单独成篇：[ADR-0096](./DECISIONS.md#adr-0096schedules-与任务表合一一个条目只投一次2026-11-16)。
 
 这份清单只写**怎么落地**，不重述为什么——理由在 ADR-0092。与 ADR 的关系是：ADR 的
 §11 是目标形态，这里是到达它的顺序，每一步带一个**能被证伪的出口判据**。
@@ -141,8 +142,11 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
    - `unattended_delivery_carries_the_default_deadline` /
      `attended_delivery_keeps_waiting_for_a_human`
    - `a_beat_reads_the_task_table_a_constant_number_of_times`（性能护栏，见下）
-2. ✅ 调度段从 211 行非空降到 162 行，其中 28 行是 `[schedules]` 配置旧路径（**故意
-   没搬**，见「没做的」）。`deliver_schedule_group!`、`bind_fresh_session`、
+2. ✅ 调度段从 211 行非空降到 **约 50 行**（`runtime.rs` 本身 1643 → 1563）：`deliver_schedule_group!`、
+   `bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe`、
+   确认与恢复两段、以及 `[schedules]` 配置驱动循环（ADR-0096 连同它的 sqlite 状态一起删）
+   全部消失。**新增**的是 `GuiHost`（约 130 行）——那一层不是重复逻辑，是「窗口把驱动的话
+   译成对收件箱的动作」。`deliver_schedule_group!`、`bind_fresh_session`、
    `inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe`、确认与恢复两段
    全部消失或搬走。**新增**的是 `GuiHost`（约 130 行）——那一层不是重复逻辑，是
    「窗口把驱动的话译成对收件箱的动作」。
@@ -188,14 +192,9 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
 
 ### 没做的（诚实清单）
 
-- **`[schedules]` 配置路径没搬**（`runtime.rs` 里那 28 行）。它是 ADR-0059 的旧入口，
-  已被 `import_config` 迁移成运行时任务；两个路径的 `recover` / `tick` 是另一套语义
-  （`CronSpec` 而不是 `Rule`）。搬它要连带改「配置窗口推进」那套记账，与本阶段的
-  「让投递可测」不是一件事。**它仍然只在 GUI 里，daemon 不会驱动配置条目**——阶段 2
-  之前必须决定：迁移干净，还是让 daemon 也实现它。
-- **执行顺序变了**：原实现先跑配置路径再跑运行时任务，现在是驱动先跑（它拥有时钟），
-  配置路径随后。只有「配置条目与运行时任务靶同一个会话」时才看得出区别，而那种状态
-  本身是迁移的中间态。
+- ~~**`[schedules]` 配置路径没搬**~~ —— **已解决**（ADR-0096）：配置条目经
+  `reconcile_config` 变成任务，配置路径与它的 sqlite 状态表一起删掉。现在只有一条投递
+  路径，daemon 不需要再实现第二份。真机实测同一个配置 150 秒内从 4 个会话降到 2 个。
 - 事件出口（ADR-0092 §8）只留了 `changed()`，没有做成可跟随的流；§8 说的缝还在。
 
 ---

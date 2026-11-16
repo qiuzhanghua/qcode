@@ -31,6 +31,7 @@ fn engine(dir: &std::path::Path) -> Engine {
         agents_md: None,
         shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
+        schedule_declared: Vec::new(),
         schedule_errors: Vec::new(),
         schedule_tick: None,
     }

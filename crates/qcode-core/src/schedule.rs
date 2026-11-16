@@ -402,172 +402,20 @@ impl fmt::Display for Schedule {
     }
 }
 
-/// What the store remembers between process runs (ADR-0059 §1).
-///
-/// Never written back to the config file: the config is watched by mtime, so a
-/// scheduler that wrote there would rebuild the engine on every fire and fight
-/// with the Settings window.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScheduleState {
-    /// Wall clock of the last window that produced a decision.
-    pub last_fired_at: Option<PrimitiveDateTime>,
-    /// Wall clock of the next window. `< now` means the process was away.
-    pub next_fire_at: Option<PrimitiveDateTime>,
-    pub last_status: Option<ScheduleStatus>,
-    /// Windows that passed while the process was not running. Recorded, never
-    /// replayed (ADR-0059 §3).
-    pub missed_windows: u32,
-}
+// `[schedules]` 的旧运行状态（`ScheduleState` / `ScheduleStatus` / `tick` /
+// `recover` / `advance`）已删除：ADR-0093 把配置条目并进任务表，进度记在
+// `ScheduledTask` 上（`next_fire_at` / `missed_windows` / `last_receipt`）。
+// 留着那套纯函数只会让第二个执行者以为还有第二条投递路径。
 
-/// Why the last window did or did not run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScheduleStatus {
-    /// The turn was submitted.
-    Fired,
-    /// The session was busy and `overlap = "skip"`.
-    Skipped,
-    /// The task the entry points at no longer exists.
-    Orphaned,
-    /// Windows that passed while nothing was running.
-    Missed(u32),
-    /// The prompt could not be submitted (no session, store error, …).
-    Failed(String),
-}
-
-impl ScheduleStatus {
-    pub fn as_str(&self) -> String {
-        match self {
-            Self::Fired => "fired".to_string(),
-            Self::Skipped => "skipped".to_string(),
-            Self::Orphaned => "orphaned".to_string(),
-            Self::Missed(windows) => format!("missed:{windows}"),
-            Self::Failed(reason) => format!("failed:{reason}"),
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "fired" => Some(Self::Fired),
-            "skipped" => Some(Self::Skipped),
-            "orphaned" => Some(Self::Orphaned),
-            other => match other.split_once(':') {
-                Some(("missed", count)) => count.parse().ok().map(Self::Missed),
-                Some(("failed", reason)) => Some(Self::Failed(reason.to_string())),
-                _ => None,
-            },
-        }
-    }
-}
-
-/// What the host should do with an entry right now.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Tick {
-    /// Its window has not come yet.
-    NotYet,
-    /// Submit `prompt` to `task` (or to a new task).
-    Fire,
-    /// The window came and the session was already busy: `overlap = "skip"`.
-    SkipBusy,
-    /// `task` names a session that is gone; disable the entry (ADR-0059 §2).
-    Orphaned,
-}
-
-/// Decide one entry's next action.
-///
-/// `now` is wall clock; `busy` is the session's live phase from the host. An
-/// entry with no `next_fire_at` is being seen for the first time and only gets
-/// one scheduled (it must not fire immediately just because the process
-/// started).
-pub fn tick(
-    schedule: &Schedule,
-    state: &ScheduleState,
-    now: PrimitiveDateTime,
-    busy: bool,
-    task_exists: bool,
-) -> Tick {
-    if !schedule.enabled {
-        return Tick::NotYet;
-    }
-    let Some(next) = state.next_fire_at else {
-        return Tick::NotYet;
-    };
-    if now < next {
-        return Tick::NotYet;
-    }
-    if schedule.task.is_some() && !task_exists {
-        return Tick::Orphaned;
-    }
-    if busy && schedule.overlap == Overlap::Skip {
-        return Tick::SkipBusy;
-    }
-    Tick::Fire
-}
-
-/// What [`recover`] found when an entry was loaded (or after a long tick gap).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recovery {
-    /// Windows that came and went while nothing was running.
-    pub missed: u32,
-    /// The next window to wait for.
-    pub next_fire_at: Option<PrimitiveDateTime>,
-}
-
-/// Catch up with the calendar **without** running anything (ADR-0059 §3).
-///
-/// A laptop that was asleep for a night has one entry with eleven windows
-/// behind it; firing eleven turns at 9am would burn tokens and fight over the
-/// session lock. So the windows are counted, recorded as `missed`, and the next
-/// one is scheduled from `now`.
-pub fn recover(schedule: &Schedule, state: &ScheduleState, now: PrimitiveDateTime) -> Recovery {
-    let Some(next) = state.next_fire_at else {
-        return Recovery {
-            missed: 0,
-            next_fire_at: schedule.cron.next_after(now),
-        };
-    };
-    if next > now {
-        return Recovery {
-            missed: 0,
-            next_fire_at: Some(next),
-        };
-    }
-    // Count the windows that passed. `MAX_MISSED` keeps a clock that jumped a
-    // decade back from turning into a million-step loop.
-    const MAX_MISSED: u32 = 1_000;
-    let mut missed = 0;
-    let mut at = next;
-    while at <= now && missed < MAX_MISSED {
-        missed += 1;
-        match schedule.cron.next_after(at) {
-            Some(following) => at = following,
-            None => break,
-        }
-    }
-    Recovery {
-        missed: state.missed_windows.saturating_add(missed),
-        next_fire_at: schedule.cron.next_after(now),
-    }
-}
-
-/// The window to record after a decision: the one we just handled is behind us.
-pub fn advance(
-    schedule: &Schedule,
-    now: PrimitiveDateTime,
-    status: ScheduleStatus,
-) -> ScheduleState {
-    ScheduleState {
-        last_fired_at: Some(now.replace_second(0).unwrap_or(now)),
-        next_fire_at: schedule.cron.next_after(now),
-        last_status: Some(status),
-        missed_windows: 0,
-    }
-}
-
-// ===== 运行时定时任务（Scheduled Tasks）====
+// ===== 定时任务 =====
 //
-// `[schedules]` 之上（只读 config 声明，ADR-0063）的运行时任务：由模型工具 / GUI
-// 创建，支持 5 种规则，投递语义为"投递器"——回执只证明投递成功，不等于执行完成。
-// 全部是纯数据 + 纯函数，wall clock 作参数，延续本模块的可测风格。
+// 唯一的一套定时任务模型。来源有两个：用户在 GUI / CLI / 模型工具里创建
+// （`Origin::User`），或由 `[schedules.<name>]` 声明、经 `reconcile_config`
+// 投影出来（`Origin::Config`）。两者在投递上**没有任何区别**——这正是 ADR-0093
+// 的目的：曾经的配置路径自己投递，与运行时任务各投一次。
+//
+// 投递语义为"投递器"：回执只证明投递成功，不等于执行完成。全部是纯数据 +
+// 纯函数，wall clock 作参数，延续本模块的可测风格。
 
 /// 定时规则：6 种。`Cron` 保存表达式文本（解析复用 [`CronSpec`]），其余为纯数据。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1062,6 +910,26 @@ pub struct DeliveryReceipt {
     pub prompt: String,
 }
 
+/// 这条任务是谁声明的（ADR-0092 §11 / ADR-0093）。
+///
+/// 引入它是因为 `[schedules]` 配置条目与运行时任务必须合并成一套，而合并之后
+/// 「谁说了算」不能靠猜：配置声明的条目，改它的地方是 `config.toml`；用户自己
+/// 建的任务，改它的地方是 GUI / CLI。混起来就会出现「在 GUI 里删掉、重启又回来」
+/// 这种没人能解释的行为。
+///
+/// `#[serde(default)]`：老的 `tasks.json` 没有这个键，读成 [`Origin::User`] ——
+/// 那是安全的默认值（不会被 reconcile 改动，也不会被 prune 删掉）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// GUI / CLI / 模型工具建的。用户是唯一的所有者。
+    #[default]
+    User,
+    /// `[schedules.<name>]` 声明、启动时 reconcile 出来的。`config.toml` 是
+    /// 唯一的所有者，任务表只是它在运行时的投影。
+    Config,
+}
+
 /// 运行时定时任务。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTask {
@@ -1074,6 +942,9 @@ pub struct ScheduledTask {
     /// 定时回合的审批超时：超时自动拒绝（`None` 一直等人工）。
     pub approval_timeout: Option<Duration>,
     pub status: TaskStatus,
+    /// 谁声明的（见 [`Origin`]）。
+    #[serde(default)]
+    pub origin: Origin,
     /// 牵涉会话（只增不减），用于变更通知路由。
     pub stakeholders: Vec<String>,
     pub last_receipt: Option<DeliveryReceipt>,
@@ -1082,8 +953,10 @@ pub struct ScheduledTask {
     pub earlier_records_pruned: bool,
     /// 宿主不在运行期间错过的触发次数（ADR-0059 §3「错过不补跑」的记账）。
     ///
-    /// `[schedules]` 配置条目把同一件事记在 store 的 `schedules.missed_windows`；
-    /// 运行时任务的定义本身就在 `tasks.json` 里，所以记在任务上。
+    /// 只增不减：`recover` 的语义是「错过了几个窗口」，而窗口一旦错过就不会
+    /// 变少。旧实现里配置路径每次 fire 都把它归零（`advance` 重建整个
+    /// `ScheduleState`），于是「错过 3 次」这个事实会在下一次触发时消失——那是
+    /// 两套账本合并前的遗留，合并后统一按只增处理。
     /// `#[serde(default)]`：老的 `tasks.json` 没有这个键也能读。
     #[serde(default)]
     pub missed_windows: u32,
@@ -1188,44 +1061,6 @@ pub fn task_tick(
         return TaskTick::SkipBusy;
     }
     TaskTick::Fire
-}
-
-/// 把 config 声明的 `[schedules.<name>]` 条目导入为运行时任务（ADR-0059 迁移）。
-///
-/// `state` 保留 store 里已有的触发进度（`next_fire_at`）；没有则按 `now` 计算。
-/// 迁移是幂等的：同一名字的任务已存在时不重复导入（由调用方判重）。
-pub fn import_config_schedule(
-    schedule: &Schedule,
-    state: Option<&ScheduleState>,
-    now: PrimitiveDateTime,
-) -> ScheduledTask {
-    let next_fire_at = state
-        .and_then(|s| s.next_fire_at)
-        .or_else(|| schedule.cron.next_after(now));
-    let (target, stakeholders) = match &schedule.task {
-        Some(id) => (Target::Session { id: id.clone() }, vec![id.clone()]),
-        None => (Target::New, Vec::new()),
-    };
-    ScheduledTask {
-        id: schedule.name.clone(),
-        title: schedule.name.clone(),
-        prompt: schedule.prompt.clone(),
-        rule: Rule::Cron {
-            expr: schedule.cron_text.clone(),
-        },
-        target,
-        overlap: schedule.overlap,
-        approval_timeout: schedule.approval_timeout,
-        status: TaskStatus::Active,
-        stakeholders,
-        last_receipt: None,
-        delivery_log: Vec::new(),
-        earlier_records_pruned: false,
-        missed_windows: 0,
-        reserved_session_id: None,
-        next_fire_at,
-        cwd: None,
-    }
 }
 
 /// The wall clock the user writes `0 3 * * *` against: local time.

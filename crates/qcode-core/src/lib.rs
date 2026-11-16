@@ -48,12 +48,13 @@ pub use question::{
     reply_text, validate_request,
 };
 pub use schedule::{
-    Advance, CronSpec, DeliveryReceipt, Overlap, Schedule, ScheduleState, ScheduleStatus,
-    ScheduledTask, Target, TaskStatus, TaskTick, Tick, UNATTENDED_APPROVAL_TIMEOUT, advance_rule,
-    append_delivery, import_config_schedule, now_local, parse_rule, task_tick,
+    Advance, CronSpec, DeliveryReceipt, Origin, Overlap, Schedule, ScheduledTask, Target,
+    TaskStatus, TaskTick, UNATTENDED_APPROVAL_TIMEOUT, advance_rule, append_delivery, now_local,
+    parse_rule, task_tick,
 };
 pub use scheduler::{
-    EditTask, NewTask, ScheduleError, Scheduler, SchedulerHandle, approval_footer, driver_footer,
+    EditTask, NewTask, ReconcileReport, ScheduleError, Scheduler, SchedulerHandle, approval_footer,
+    driver_footer,
 };
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};

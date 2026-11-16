@@ -60,26 +60,74 @@ pub struct ScheduleRow {
     /// the board shows them instead of hiding them (ADR-0063 §5).
     pub enabled: bool,
     pub next_fire_at: Option<qcode_core::schedule::PrimitiveDateTime>,
-    pub status: Option<qcode_core::schedule::ScheduleStatus>,
+    /// 目标会话已经不在了（投递会一直 `Orphaned`）。
+    pub orphaned: bool,
     pub missed_windows: u32,
     /// The entry could not be resolved at all (bad cron, no target, …).
     pub broken: Option<String>,
 }
 
 impl ScheduleRow {
+    /// 从任务表里的一条任务投影出来（ADR-0093）。
+    ///
+    /// 只取「声明 + 运行事实」里**面板要看**的那几项。投递回执不在这里——那是
+    /// 详情页的事，侧栏只需要「有没有事要说」。
+    pub fn from_task(task: &qcode_core::schedule::ScheduledTask) -> Self {
+        use qcode_core::schedule::{Overlap, Rule, Target, TaskStatus};
+        let task_id = match &task.target {
+            Target::Session { id } => Some(id.clone()),
+            Target::NewOnce | Target::New => None,
+        };
+        Self {
+            name: task.id.clone(),
+            // 原文而不是解析后的规范形：`*/15` 与 `0,15,30,45` 解析成同一个 spec，
+            // 显示成后者会让用户觉得「程序改了我的配置」（ADR-0063 §5）。
+            cron: match &task.rule {
+                Rule::Cron { expr } => expr.clone(),
+                other => other.describe(),
+            },
+            task: task_id,
+            new_task: matches!(task.target, Target::NewOnce | Target::New),
+            overlap: Some(
+                match task.overlap {
+                    Overlap::Queue => "queue",
+                    Overlap::Skip => "skip",
+                }
+                .to_string(),
+            ),
+            approval_timeout: task.approval_timeout.map(describe_timeout),
+            enabled: task.status == TaskStatus::Active,
+            next_fire_at: task.next_fire_at,
+            orphaned: false,
+            missed_windows: task.missed_windows,
+            broken: None,
+        }
+    }
+
     /// What the task row says about this schedule, or `None` when there is
     /// nothing worth a reader's attention.
     pub fn hint(&self) -> Option<String> {
-        use qcode_core::schedule::ScheduleStatus;
         if let Some(reason) = &self.broken {
             return Some(format!("定时配置有误: {reason}"));
         }
-        match &self.status {
-            Some(ScheduleStatus::Orphaned) => Some("定时已失效（任务已删除）".to_string()),
-            Some(ScheduleStatus::Missed(windows)) => Some(format!("定时错过 {windows} 次")),
-            Some(ScheduleStatus::Failed(reason)) => Some(format!("定时失败: {reason}")),
-            _ => None,
+        if self.orphaned {
+            return Some("定时已失效（目标会话已删除）".to_string());
         }
+        if self.missed_windows > 0 {
+            return Some(format!("定时错过 {} 次", self.missed_windows));
+        }
+        None
+    }
+}
+
+/// `300s` → `5m`。只为人读，不参与判定。
+fn describe_timeout(timeout: std::time::Duration) -> String {
+    let seconds = timeout.as_secs();
+    match seconds {
+        0 => "0".to_string(),
+        s if s.is_multiple_of(3600) => format!("{}h", s / 3600),
+        s if s.is_multiple_of(60) => format!("{}m", s / 60),
+        s => format!("{s}s"),
     }
 }
 
@@ -91,8 +139,9 @@ pub trait Backend {
     /// Where new sessions record their cwd; not an ownership boundary.
     fn cwd(&self) -> &Path;
     fn tasks(&self) -> Result<Vec<TaskRow>, String>;
-    /// Declared schedules and their stored run state; empty when the feature is
-    /// unused, so the sidebar needs no special case.
+    /// Rows for the sidebar badge and the per-task hints, **derived from the task
+    /// table** (ADR-0093). Empty when nothing is declared, so the sidebar needs no
+    /// special case.
     fn schedules(&self) -> Vec<ScheduleRow> {
         Vec::new()
     }
@@ -323,10 +372,6 @@ pub struct LocalBackend {
     model: String,
     provider: String,
     store: SessionStore,
-    /// `[schedules]` as the config declared it (ADR-0059 §1). The run state is
-    /// read from the store on demand, so the sidebar sees the truth after a
-    /// restart without the window holding a copy.
-    schedules: Vec<qcode_core::schedule::Schedule>,
     /// Entries that could not be resolved, so a typo is visible rather than
     /// looking like "no schedules configured".
     schedule_errors: Vec<(String, String)>,
@@ -341,7 +386,6 @@ impl LocalBackend {
         let model = engine.model.clone();
         let provider = engine.provider_name.clone();
         let store = engine.store.clone();
-        let schedules = engine.schedules.clone();
         let schedule_errors = engine.schedule_errors.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
@@ -351,7 +395,6 @@ impl LocalBackend {
             model,
             provider,
             store,
-            schedules,
             schedule_errors,
             commands: ui.commands,
             events: ui.events,
@@ -375,41 +418,26 @@ impl Backend for LocalBackend {
         &self.cwd
     }
 
+    /// Rows for the sidebar badge and the per-task hints, **derived from the task
+    /// table** (ADR-0093).
+    ///
+    /// 以前这里读 sqlite 的 `schedules` 表（配置路径自己的运行状态）。现在
+    /// `[schedules]` 只是任务表的来源之一、进度记在任务上，所以那张表不该再被读：
+    /// 两套账本正是「同一个条目投两遍」的原因。
     fn schedules(&self) -> Vec<ScheduleRow> {
-        let states = self.store.schedule_states().unwrap_or_default();
         let mut rows: Vec<ScheduleRow> = self
-            .schedules
-            .iter()
-            .map(|schedule| {
-                let state = states.get(&schedule.name);
-                ScheduleRow {
-                    name: schedule.name.clone(),
-                    // Verbatim, not the parsed spec: see `Schedule::cron_text`.
-                    cron: schedule.cron_text.clone(),
-                    task: schedule.task.clone(),
-                    new_task: schedule.creates_task(),
-                    overlap: Some(match schedule.overlap {
-                        qcode_core::Overlap::Queue => "queue".to_string(),
-                        qcode_core::Overlap::Skip => "skip".to_string(),
-                    }),
-                    approval_timeout: schedule.approval_timeout.map(|timeout| {
-                        let seconds = timeout.as_secs();
-                        if seconds == 0 {
-                            "0".to_string()
-                        } else if seconds % 3600 == 0 {
-                            format!("{}h", seconds / 3600)
-                        } else if seconds % 60 == 0 {
-                            format!("{}m", seconds / 60)
-                        } else {
-                            format!("{seconds}s")
-                        }
-                    }),
-                    enabled: schedule.enabled,
-                    next_fire_at: state.and_then(|state| state.next_fire_at),
-                    status: state.and_then(|state| state.last_status.clone()),
-                    missed_windows: state.map(|state| state.missed_windows).unwrap_or(0),
-                    broken: None,
-                }
+            .store
+            .load_schedule_tasks()
+            .into_iter()
+            .filter(|task| task.origin == qcode_core::schedule::Origin::Config)
+            .map(|task| {
+                let mut row = ScheduleRow::from_task(&task);
+                // 「目标会话还在不在」要读 store，而投影本身是纯函数。
+                row.orphaned = row
+                    .task
+                    .as_ref()
+                    .is_some_and(|id| self.store.task(id).is_err());
+                row
             })
             .collect();
         for (name, reason) in &self.schedule_errors {
@@ -424,7 +452,7 @@ impl Backend for LocalBackend {
                 approval_timeout: None,
                 enabled: false,
                 next_fire_at: None,
-                status: None,
+                orphaned: false,
                 missed_windows: 0,
                 broken: Some(reason.clone()),
             });

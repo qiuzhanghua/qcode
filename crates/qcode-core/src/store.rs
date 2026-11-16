@@ -3,7 +3,7 @@
 //! One file per session under `<root>/sessions/<id>.jsonl`. Writes are appends;
 //! a torn final line is discarded on load, which is the crash-recovery contract.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use crate::event::{
     Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, TaskRenamed, ToolResult,
     ToolStatus,
 };
-use crate::schedule::{ScheduleState, ScheduleStatus, ScheduledTask};
+use crate::schedule::ScheduledTask;
 use crate::task::{Root, Task, TaskError};
 
 /// Wall clock in the store, at minute resolution. The scheduler only needs
@@ -684,24 +684,16 @@ impl SessionStore {
         // existed has no parent for any row, which reads back as `None` — the
         // same thing those logs say, so the two agree until the next rebuild.
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN parent TEXT", []);
-        // Scheduler run state (ADR-0059 §1). It lives here, never in the config
-        // file: the config is watched by mtime, so writing it on every fire
-        // would rebuild the engine each time and race with the Settings window.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schedules (
-                name TEXT PRIMARY KEY,
-                last_fired_at TEXT,
-                next_fire_at TEXT,
-                last_status TEXT,
-                missed_windows INTEGER NOT NULL DEFAULT 0
-            );",
-        )?;
+        // 旧 schema 里的 `schedules` 表（ADR-0059 的配置路径运行状态）已经不再
+        // 使用：`[schedules]` 条目现在靠 `reconcile_config` 变成任务，状态记在
+        // `tasks.json` 的任务上（ADR-0093）。老库里那张表留着不动，**不必也不
+        // 该 DROP**：删掉用户的旧数据没有任何收益，而万一要回退，它还在。
         // Cross-process facts about the *process*, not about one task
         // (ADR-0088 §3). The scheduler's clock lives in the GUI today, so
         // "who is driving" has to be visible to a frontend that has no clock
         // of its own — otherwise "registered" is a promise nobody can check.
-        // It must not go into `schedules`: that table is keyed by task name and
-        // a heartbeat is a singleton, so it would need a reserved row name.
+        // 它是**进程**的事实、不是某个任务的事实，所以独立一张表：老 `schedules`
+        // 表以任务名为主键，心跳塞进去得用一个保留名。
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS runtime_status (
                 key TEXT PRIMARY KEY,
@@ -985,63 +977,6 @@ impl SessionStore {
         Ok(ids)
     }
 
-    /// Every schedule's stored run state, keyed by schedule name.
-    ///
-    /// An entry that is no longer declared in the config is simply not looked
-    /// up; [`SessionStore::prune_schedules`] drops those rows.
-    pub fn schedule_states(&self) -> Result<BTreeMap<String, ScheduleState>, StoreError> {
-        let conn = self.open_index()?;
-        let mut stmt = conn.prepare(
-            "SELECT name, last_fired_at, next_fire_at, last_status, missed_windows
-             FROM schedules ORDER BY name",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
-        let mut states = BTreeMap::new();
-        for row in rows {
-            let (name, last_fired_at, next_fire_at, last_status, missed_windows) = row?;
-            states.insert(
-                name,
-                ScheduleState {
-                    last_fired_at: last_fired_at.as_deref().and_then(parse_wall_clock),
-                    next_fire_at: next_fire_at.as_deref().and_then(parse_wall_clock),
-                    last_status: last_status.as_deref().and_then(ScheduleStatus::parse),
-                    missed_windows: missed_windows.clamp(0, u32::MAX as i64) as u32,
-                },
-            );
-        }
-        Ok(states)
-    }
-
-    /// Write one schedule's run state, replacing whatever the row held.
-    pub fn save_schedule_state(&self, name: &str, state: &ScheduleState) -> Result<(), StoreError> {
-        let conn = self.open_index()?;
-        conn.execute(
-            "INSERT INTO schedules (name, last_fired_at, next_fire_at, last_status, missed_windows)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(name) DO UPDATE SET
-                last_fired_at = excluded.last_fired_at,
-                next_fire_at = excluded.next_fire_at,
-                last_status = excluded.last_status,
-                missed_windows = excluded.missed_windows",
-            params![
-                name,
-                state.last_fired_at.map(format_wall_clock),
-                state.next_fire_at.map(format_wall_clock),
-                state.last_status.as_ref().map(ScheduleStatus::as_str),
-                i64::from(state.missed_windows),
-            ],
-        )?;
-        Ok(())
-    }
-
     /// Remember a cross-process fact about the running process (ADR-0088 §3).
     ///
     /// Used for the scheduler's heartbeat: the clock lives in the GUI, and a
@@ -1083,24 +1018,6 @@ impl SessionStore {
         // only question is "was a driver here recently", and a value we cannot
         // place in time cannot answer it.
         Ok(parse_wall_clock(&at).map(|at| (value, at)))
-    }
-
-    /// Forget the rows of schedules that are no longer in the config. Returns
-    /// how many went away.
-    pub fn prune_schedules(&self, declared: &[String]) -> Result<usize, StoreError> {
-        let conn = self.open_index()?;
-        let mut stmt = conn.prepare("SELECT name FROM schedules")?;
-        let stored: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<_, _>>()?;
-        let mut removed = 0;
-        for name in stored {
-            if !declared.contains(&name) {
-                conn.execute("DELETE FROM schedules WHERE name = ?1", params![name])?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
     }
 
     // ==== 运行时定时任务（Scheduled Tasks）存储 ====
@@ -1500,114 +1417,6 @@ mod tests {
         assert!(store.list().expect("after delete").is_empty());
     }
 
-    #[test]
-    fn a_schedule_state_round_trips_through_the_index() {
-        let dir = tempfile::tempdir().expect("data dir");
-        let store = SessionStore::new(dir.path());
-        let at = crate::schedule::at(2026, time::Month::June, 2, 3, 0);
-        let state = ScheduleState {
-            last_fired_at: Some(at),
-            next_fire_at: Some(at + Duration::days(1)),
-            last_status: Some(ScheduleStatus::Fired),
-            missed_windows: 2,
-        };
-        store
-            .save_schedule_state("nightly", &state)
-            .expect("save state");
-
-        let loaded = store.schedule_states().expect("states");
-        assert_eq!(loaded["nightly"], state);
-        assert_eq!(loaded["nightly"].missed_windows, 2);
-    }
-
-    #[test]
-    fn saving_twice_replaces_the_row_instead_of_duplicating_it() {
-        let dir = tempfile::tempdir().expect("data dir");
-        let store = SessionStore::new(dir.path());
-        let at = crate::schedule::at(2026, time::Month::June, 2, 3, 0);
-        store
-            .save_schedule_state(
-                "nightly",
-                &ScheduleState {
-                    next_fire_at: Some(at),
-                    ..ScheduleState::default()
-                },
-            )
-            .expect("first");
-        store
-            .save_schedule_state(
-                "nightly",
-                &ScheduleState {
-                    next_fire_at: Some(at),
-                    last_status: Some(ScheduleStatus::Skipped),
-                    ..ScheduleState::default()
-                },
-            )
-            .expect("second");
-
-        let loaded = store.schedule_states().expect("states");
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded["nightly"].last_status, Some(ScheduleStatus::Skipped));
-    }
-
-    #[test]
-    fn a_status_with_a_payload_survives_the_text_column() {
-        let dir = tempfile::tempdir().expect("data dir");
-        let store = SessionStore::new(dir.path());
-        for status in [
-            ScheduleStatus::Missed(7),
-            ScheduleStatus::Failed("no session".to_string()),
-            ScheduleStatus::Orphaned,
-        ] {
-            store
-                .save_schedule_state(
-                    "nightly",
-                    &ScheduleState {
-                        last_status: Some(status.clone()),
-                        ..ScheduleState::default()
-                    },
-                )
-                .expect("save");
-            assert_eq!(
-                store.schedule_states().expect("states")["nightly"].last_status,
-                Some(status)
-            );
-        }
-    }
-
-    #[test]
-    fn pruning_drops_only_schedules_that_left_the_config() {
-        let dir = tempfile::tempdir().expect("data dir");
-        let store = SessionStore::new(dir.path());
-        for name in ["kept", "gone"] {
-            store
-                .save_schedule_state(name, &ScheduleState::default())
-                .expect("save");
-        }
-        let removed = store.prune_schedules(&["kept".to_string()]).expect("prune");
-        assert_eq!(removed, 1);
-        let names: Vec<String> = store
-            .schedule_states()
-            .expect("states")
-            .into_keys()
-            .collect();
-        assert_eq!(names, vec!["kept".to_string()]);
-    }
-
-    #[test]
-    fn an_unreadable_stored_time_is_dropped_rather_than_fatal() {
-        let dir = tempfile::tempdir().expect("data dir");
-        let store = SessionStore::new(dir.path());
-        let conn = store.open_index().expect("index");
-        conn.execute(
-            "INSERT INTO schedules (name, next_fire_at, missed_windows) VALUES (?1, ?2, 0)",
-            params!["hand-edited", "not a timestamp"],
-        )
-        .expect("insert");
-        let states = store.schedule_states().expect("states");
-        assert_eq!(states["hand-edited"].next_fire_at, None);
-    }
-
     fn scheduled_task(id: &str, target: crate::schedule::Target) -> crate::schedule::ScheduledTask {
         let stakeholders = target.session_id().map(str::to_owned).into_iter().collect();
         crate::schedule::ScheduledTask {
@@ -1619,6 +1428,7 @@ mod tests {
             overlap: crate::schedule::Overlap::Queue,
             approval_timeout: None,
             status: crate::schedule::TaskStatus::Active,
+            origin: crate::schedule::Origin::User,
             stakeholders,
             last_receipt: None,
             delivery_log: Vec::new(),

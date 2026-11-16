@@ -2,6 +2,43 @@
 
 ## 未发布
 
+### 修复：`[schedules]` 配置条目被投递两次
+
+`[schedules.<name>]` 声明会被导入成运行时任务，而配置路径**继续自己投递**，于是同一个条目
+一次到期投两遍。真机实测（`cron = "* * * * *"`，GUI 跑 150 秒）：**4 个会话、4 个回合**，
+每次触发双份 token。配置路径那份还不带 `scheduled` 标记，转录里既看不出是定时执行、也无法
+归属到任务。
+
+顺带暴露第二个问题：两套账本必然漂移。把 cron 从 `* * * * *` 改成 `*/5 * * * *` 再重启，
+sqlite 的 `schedules` 表按新 cron 走、导入的任务按旧 cron 走——改配置只改了一半。
+
+- `[schedules]` 与任务表**合一**：启动时 `reconcile_config` 建 / 改 / 删都传播，此后只有
+  一条投递路径（ADR-0096）。修复后同一份配置 150 秒内 2 个会话（每分钟一个），都带标记。
+- 新增 `ScheduledTask.origin`（`user` / `config`）：配置来源的任务拒绝在 GUI/CLI 侧
+  `pause` / `resume` / `edit` / `delete`，报错并指出改 `config.toml` 的哪一段；`run_now`
+  照旧。`enabled = false` 映射成 `Paused`（不是删除），重新启用时历史接得回来。
+- 删掉配置路径专用的状态：sqlite `schedules` 表读写、`ScheduleState` / `ScheduleStatus` /
+  `Tick` / `Recovery` / `tick()` / `recover()` / `advance()`。老库里的表不 DROP。
+- **升级注意**：旧库的 `schedules` 表不再读，所以首次启动时 `next_fire_at` 按
+  `cron.next_after(now)` 重算、`missed_windows` 归零一次。两者都是「下一次该何时触发」的
+  等价答案。
+- 坏条目（cron 写错）**不会**删任务：`declared` 取 `config.toml` 的键，而不是解析成功的
+  子集，否则一个拼写错误会连投递历史一起删掉。
+
+### 定时任务：一拍之内的决策与记账搬进 `qcode-driver`
+
+投递、记账、确认、崩溃恢复从 GUI 的 `tokio::select!` 分支搬进 `qcode-driver`，IO 走
+`Host` trait（ADR-0092 §11 阶段 1）。收益不是省代码：「到期会不会投递 / 投了会不会重投 /
+重启会不会重投」现在能在单进程里用假时钟 + 真 `SessionStore` 验（12 条，每拍几微秒）。
+
+搬的过程中抓到一个**只有重启才暴露**的 bug，它在原代码里同样存在：重启后第一拍总是
+`away`（内存记账为空），而 away 分支在补确认之前就返回——于是「投递已落盘、规则没推进」
+那一次的回执在任何路径上都记不下来。真机复现：一个 `once` 任务跑完完整一轮后被杀，重启后
+`status: ended` / `last_receipt: null` / `delivery_log: 0`，而会话日志里躺着完整的
+`user_message` + `turn_ended`。现在推进前会先问「这一次其实投过吗」，投过就补记回执
+（`recovered:` 前缀）。
+
+
 ### 门禁：darwin 两个 triple 进 CI，`make check-platforms` 每次 push 必跑
 
 装了 darwin 的 std 之后才看清：`scripts/ci-cross-check.sh` 里那句「not checked (target std

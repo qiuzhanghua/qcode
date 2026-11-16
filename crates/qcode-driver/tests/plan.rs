@@ -40,6 +40,7 @@ fn task(rule: Rule, start: PrimitiveDateTime) -> ScheduledTask {
         overlap: Overlap::Queue,
         approval_timeout: None,
         status: TaskStatus::Active,
+        origin: qcode_core::schedule::Origin::User,
         stakeholders: Vec::new(),
         last_receipt: None,
         delivery_log: Vec::new(),

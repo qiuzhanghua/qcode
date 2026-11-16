@@ -7,9 +7,7 @@
 use qcode_core::engine::{DeltaSink, RunOptions, TurnContext, run_turn};
 use qcode_core::event::SessionStarted;
 use qcode_core::inbox::{QueuedMessage, SessionQueue, Submission};
-use qcode_core::schedule::{
-    Schedule, ScheduleState, ScheduleStatus, ScheduledMessage, ScheduledTask, Tick,
-};
+use qcode_core::schedule::{Schedule, ScheduledMessage, ScheduledTask};
 use qcode_core::scheduler::{EditTask, NewTask, Scheduler};
 use qcode_core::store::SessionStore;
 use qcode_ui_bridge::{KernelPort, QueueOp, ScheduleOp, SessionTarget, TaggedPort, UiCommand};
@@ -60,9 +58,20 @@ pub struct Engine {
     /// The environment `run_shell` injects (ADR-0064); the turn samples it
     /// first and records what the agent sees.
     pub shell_env: std::sync::Arc<qcode_tools::shell_env::ShellEnvCache>,
-    /// Scheduled turns from `[schedules]` (ADR-0059). Empty = no scheduler.
-    /// Their run state lives in the store, not here.
+    /// Scheduled turns from `[schedules]` (ADR-0059), already resolved.
+    ///
+    /// This is a **declaration**, not a mechanism: at startup it is reconciled
+    /// into the task table (`Origin::Config`), and from then on the driver fires
+    /// it like any other task (ADR-0093). Empty = nothing declared.
     pub schedules: Vec<qcode_core::schedule::Schedule>,
+    /// Every `[schedules.<name>]` key in the config, including the ones that
+    /// failed to resolve.
+    ///
+    /// Reconciliation needs "is it still declared", which is a question about
+    /// the file, not about the successfully parsed subset: a cron typo must not
+    /// look like "the user deleted this entry" and take the task's delivery
+    /// history with it.
+    pub schedule_declared: Vec<String>,
     /// `[schedules]` entries that did not resolve, with the reason. Shown as a
     /// broken row so a typo is visible instead of looking like "not configured".
     pub schedule_errors: Vec<(String, String)>,
@@ -339,22 +348,6 @@ fn publish(port: &TaggedPort, inbox: &SessionQueue, last: &mut Published) {
     }
 }
 
-/// Remember a schedule's decision, in memory and in the store.
-///
-/// A store failure is logged, not fatal: the window keeps running with the
-/// in-memory state and simply loses the record across a restart.
-fn save_schedule_state(
-    engine: &Engine,
-    name: &str,
-    state: &ScheduleState,
-    cache: &mut std::collections::BTreeMap<String, ScheduleState>,
-) {
-    cache.insert(name.to_string(), state.clone());
-    if let Err(error) = engine.store.save_schedule_state(name, state) {
-        tracing::warn!(%error, name, "cannot save schedule state");
-    }
-}
-
 /// Reports a panicking turn to the app loop.
 ///
 /// `run_turn` runs inside `tokio::spawn`, so a panic — a bug in a tool, in a
@@ -502,34 +495,31 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             // night. Set right before `start_turn!` and taken by it.
             let mut approval_deadline: Option<Duration> = None;
 
-            // The scheduler's run state, mirrored in the store between runs.
-            let schedules: Vec<Schedule> = engine.schedules.clone();
-            let mut schedule_states: std::collections::BTreeMap<String, ScheduleState> =
-                engine.store.schedule_states().unwrap_or_default();
-            let declared: Vec<String> = schedules
-                .iter()
-                .map(|schedule| schedule.name.clone())
-                .collect();
-            if let Err(error) = engine.store.prune_schedules(&declared) {
-                tracing::warn!(%error, "cannot prune schedule state");
-            }
-
-            // 运行时定时任务（Scheduled Tasks）：任务定义由 `Scheduler` 管理，
-            // 投递在本时钟 beat 扫描（与 config 条目并存；迁移后这里接管）。
-            // 单一时钟 beat 驱动全量扫描——cron 分钟级、interval ≥60s，30s
-            // beat 的精度足够，也省去独立定时器与 kick 信号。
+            // 定时任务：**一套模型**（ADR-0093）。
+            //
+            // `[schedules.<name>]` 条目在这里被对齐进任务表，此后与用户建的任务
+            // 走同一条投递路径（下面的 `schedule_driver`）。曾经配置条目由 GUI
+            // 自己再投一次，于是同一个条目一分钟投两遍——真机实测过。
             let scheduler = Arc::new(Scheduler::new(engine.store.clone()));
-            // ADR-0059 迁移：config 声明条目导入为运行时任务（幂等）。
-            if let Ok(added) = scheduler.import_config(
-                &schedules,
-                &schedule_states,
-                qcode_core::schedule::now_local(),
-            ) && added > 0
+            //
+            // `declared` 取的是 `config.toml` 里的**键**，不是 resolved 之后的
+            // 列表：cron 写坏时条目会被挑进 `schedule_errors`，按 resolved 判存在
+            // 性就会把任务连投递历史一起删掉。
+            let declared: Vec<String> = engine.schedule_declared.clone();
+            let schedules: Vec<Schedule> = engine.schedules.clone();
+            match scheduler.reconcile_config(&declared, &schedules, qcode_core::schedule::now_local())
             {
-                // Not a failure: the config gained scheduled turns and the runtime
-                // adopted them. Worth a line so a later "where did this task come
-                // from" has an answer.
-                tracing::info!(added, "imported [schedules] entries as tasks");
+                Ok(report) if report.touched() => {
+                    tracing::info!(
+                        created = report.created,
+                        updated = report.updated,
+                        removed = report.removed,
+                        "[schedules] reconciled into tasks"
+                    );
+                }
+                Ok(_) => {}
+                // 不致命：任务表这一次没对齐，投递照旧按上次的样子跑。
+                Err(error) => tracing::warn!(%error, "cannot reconcile [schedules]"),
             }
 
             // Publish a session's queue rows, remembering what the UI was told so
@@ -802,8 +792,8 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         //
                         // 窗口只做两件事：回答驱动问的事实（`GuiHost`），以及把它算出的
                         // 「该开的回合」真的开起来（`start_turn!` 留在这里，因为它要用
-                        // 引擎的装配）。
-                        let now = qcode_core::schedule::now_local();
+                        // 引擎的装配）。墙钟由 `GuiHost::now` 现取——驱动可能在
+                        // 一拍里跨过分钟边界，那一拍用同一个 `now` 更一致。
                         let report = {
                             let mut host = GuiHost {
                                 engine,
@@ -820,122 +810,10 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             };
                             schedule_driver.on_beat(&mut host, std::time::Instant::now())
                         };
-                        let away = report.away;
-
-                        for schedule in &schedules {
-                            let previous = schedule_states
-                                .get(&schedule.name)
-                                .cloned()
-                                .unwrap_or_default();
-                            if away {
-                                let recovery =
-                                    qcode_core::schedule::recover(schedule, &previous, now);
-                                let mut next = previous.clone();
-                                next.next_fire_at = recovery.next_fire_at;
-                                next.missed_windows = recovery.missed;
-                                if recovery.missed > 0 {
-                                    next.last_status =
-                                        Some(ScheduleStatus::Missed(recovery.missed));
-                                }
-                                save_schedule_state(
-                                    engine,
-                                    &schedule.name,
-                                    &next,
-                                    &mut schedule_states,
-                                );
-                                continue;
-                            }
-                            // `new = true` creates its task at fire time, so
-                            // there is nothing to be orphaned and nothing to
-                            // look up.
-                            let target = match &schedule.task {
-                                Some(id) => SessionTarget::Session(id.clone()),
-                                None => SessionTarget::Draft,
-                            };
-                            let exists = target
-                                .id()
-                                .is_none_or(|id| engine.store.task(id).is_ok());
-                            let busy = live.contains_key(&target);
-                            let decision =
-                                qcode_core::schedule::tick(schedule, &previous, now, busy, exists);
-                            let status = match decision {
-                                Tick::NotYet => None,
-                                Tick::SkipBusy => Some(ScheduleStatus::Skipped),
-                                Tick::Orphaned => Some(ScheduleStatus::Orphaned),
-                                Tick::Fire => {
-                                    // A fresh task per fire: logs a session but
-                                    // does not steal the view.
-                                    let target = match target.id() {
-                                        Some(_) => target.clone(),
-                                        None => match create_task(
-                                            engine,
-                                            &provider_name,
-                                            &port,
-                                            &model,
-                                            false,
-                                        ) {
-                                            Some(id) => SessionTarget::Session(id),
-                                            None => {
-                                                let next = qcode_core::schedule::advance(
-                                                    schedule,
-                                                    now,
-                                                    ScheduleStatus::Failed(
-                                                        "cannot create a task".to_string(),
-                                                    ),
-                                                );
-                                                save_schedule_state(
-                                                    engine,
-                                                    &schedule.name,
-                                                    &next,
-                                                    &mut schedule_states,
-                                                );
-                                                continue;
-                                            }
-                                        },
-                                    };
-                                    let busy = live.contains_key(&target);
-                                    let queue = host
-                                        .queue(&target)
-                                        .unwrap_or_else(|| host.open(&target).1);
-                                    approval_deadline = schedule.approval_timeout;
-                                    match queue.submit(
-                                        schedule.prompt.clone(),
-                                        Vec::new(),
-                                        busy,
-                                    ) {
-                                        Submission::Start(message) => {
-                                            start_turn!(
-                                                target.clone(),
-                                                message.text,
-                                                message.attachments
-                                            );
-                                            Some(ScheduleStatus::Fired)
-                                        }
-                                        // `overlap = "queue"` on a busy session:
-                                        // the message waits for the current turn.
-                                        Submission::Queued => Some(ScheduleStatus::Fired),
-                                    }
-                                }
-                            };
-                            if let Some(status) = status {
-                                let next = qcode_core::schedule::advance(schedule, now, status);
-                                save_schedule_state(
-                                    engine,
-                                    &schedule.name,
-                                    &next,
-                                    &mut schedule_states,
-                                );
-                            }
-                        }
-
-                        // ==== 运行时定时任务（Scheduled Tasks）====
-                        //
-                        // 投递、记账、确认、崩溃恢复都已经在驱动里做完（上面那一拍）。
-                        // 这里只剩「把该开的回合开起来」——因为 `start_turn!` 要用引擎
-                        // 的装配，而那一套不该塞进 `qcode-driver` 的 trait。
-                        //
-                        // ADR-0092 §6：投递路径这么薄，是为了让第二个执行者（daemon）
-                        // 复用同一份决策时不必再抄一遍「谁该跑」。
+                        // 一拍里该开的回合。投递、记账、确认、崩溃恢复都已经在
+                        // 驱动里做完（上面那一拍，ADR-0092 §6）；窗口只剩「把它算出的
+                        // 回合真的开起来」——因为 `start_turn!` 要用引擎的装配，而那
+                        // 一套不该塞进 `qcode-driver` 的 trait。
                         for start in report.starts {
                             approval_deadline = start.approval;
                             start_turn!(
@@ -1403,6 +1281,7 @@ mod probe_tests {
             overlap: Overlap::Queue,
             approval_timeout: None,
             status: qcode_core::schedule::TaskStatus::Active,
+            origin: qcode_core::schedule::Origin::User,
             stakeholders: Vec::new(),
             last_receipt: None,
             delivery_log: Vec::new(),
@@ -1493,6 +1372,7 @@ mod host_tests {
             agents_md: None,
             shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
             schedules: Vec::new(),
+            schedule_declared: Vec::new(),
             schedule_errors: Vec::new(),
             schedule_tick: None,
         }

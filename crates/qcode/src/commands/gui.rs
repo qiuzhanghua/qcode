@@ -116,6 +116,9 @@ pub(crate) fn gui_rebuild_hook(
                 agents_md,
                 shell_env: kernel.shell_env.clone(),
                 schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+                // `[schedules]` 的**键**（含解析失败的）：reconcile 用它判断
+                // 「还声明着吗」，见 `Engine::schedule_declared`。
+                schedule_declared: kernel.config.schedules.keys().cloned().collect(),
                 schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
                     .1
                     .into_iter()
@@ -435,6 +438,7 @@ pub(crate) async fn cmd_gui(
         agents_md: agents::load(&workspace)?,
         shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+        schedule_declared: kernel.config.schedules.keys().cloned().collect(),
         schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
             .1
             .into_iter()
