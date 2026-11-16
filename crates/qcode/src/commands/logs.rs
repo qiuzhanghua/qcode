@@ -1,7 +1,9 @@
 use super::*;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::io;
 use std::io::{Seek as _, Write as _};
+use std::path::Path;
 
 /// How often `--follow` looks for new bytes.
 ///
@@ -65,17 +67,33 @@ pub(crate) fn cmd_logs(
         // Naming the older files is the point of rotating them: a bug that showed
         // up last week is in a different file than today's.
         if files.len() > 1 {
-            println!("(older files in {}: {})", dir.display(), files.len() - 1);
+            if filter.is_active() {
+                // Said differently when filtering, because it is then a promise and
+                // not just a note: the search below really does open all of them.
+                // The old wording ("older files in …: 3") sat next to a `--grep` that
+                // only read the current file, so a session that started before the
+                // rotation looked like it had never started.
+                println!("(searching {} files in {})", files.len(), dir.display());
+            } else {
+                println!("(older files in {}: {})", dir.display(), files.len() - 1);
+            }
         }
-        let text = std::fs::read_to_string(&current)
-            .map_err(|error| format!("cannot read {}: {error}", current.display()))?;
-        // `--lines` counts what is *printed*, not what is read. Filtering after
-        // taking the tail would answer "the last 40 lines, of which 3 match",
-        // which is the opposite of what someone asking for a match wants.
-        let shown: Vec<&str> = text.lines().filter(|line| filter.matches(line)).collect();
-        let skip = shown.len().saturating_sub(args.lines);
-        for line in &shown[skip..] {
-            println!("{}", local_time(line));
+        if filter.is_active() {
+            // A question about *a line* spans files; the tail of today's file does
+            // not. This is the case that produced a wrong answer: `qc logs --grep
+            // 'pid=14275'` printed only `session ending`, because the `starting` line
+            // had gone to the previous day's file at the UTC-midnight rotation (08:00
+            // in CST) while the session was still running.
+            for line in filter.tail_across(&files, &current, args.lines)? {
+                println!("{}", local_time(&line));
+            }
+        } else {
+            let text = std::fs::read_to_string(&current)
+                .map_err(|error| format!("cannot read {}: {error}", current.display()))?;
+            let skip = text.lines().count().saturating_sub(args.lines);
+            for line in text.lines().skip(skip) {
+                println!("{}", local_time(line));
+            }
         }
         // Everything shown so far must not be shown again by the first poll.
         follower.skip_to_end();
@@ -120,6 +138,66 @@ impl Filter {
             pattern,
             since: since.map(parse_since).transpose()?,
         })
+    }
+
+    /// Whether this filter asks a question that spans files.
+    ///
+    /// `false` means "tail today's file", where older files are only mentioned.
+    /// `true` means "find the lines that match", and a line can be in any of them.
+    fn is_active(&self) -> bool {
+        self.pattern.is_some() || self.since.is_some()
+    }
+
+    /// The last `lines` matches across every file rotation left behind.
+    ///
+    /// Ordered by file (oldest first) and then by position, so the output reads like
+    /// one continuous log. `lines` is the total, not a per-file limit: `-n 40` means
+    /// forty lines, which is what someone reading a rotation boundary expects.
+    ///
+    /// A file that cannot be read is reported and skipped rather than taking the
+    /// whole answer down with it — the older files are the ones most likely to have
+    /// been touched by something else. The *current* file is different: it is what
+    /// was asked for, so failing on it is still an error.
+    fn tail_across(
+        &self,
+        files: &[PathBuf],
+        current: &Path,
+        lines: usize,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut kept: VecDeque<String> = VecDeque::with_capacity(lines.min(1024));
+        // `files` holds the dated files rotation wrote; a platform without symlinks
+        // names one of them `qc.log`, which `log_files` still matches, so the current
+        // file is covered here. The fallback is for a directory where nothing matched
+        // the pattern but `current` exists anyway.
+        let sources: Vec<&Path> = if files.is_empty() {
+            vec![current]
+        } else {
+            files.iter().map(PathBuf::as_path).collect()
+        };
+        for path in sources {
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if path == current => {
+                    return Err(format!("cannot read {}: {error}", path.display()).into());
+                }
+                Err(error) => {
+                    eprintln!("qcode: skipping {}: {error}", path.display());
+                    continue;
+                }
+            };
+            for line in text.lines().filter(|line| self.matches(line)) {
+                // Bounded so `--grep .` over a week of logs does not hold the whole
+                // week in memory to print forty lines of it.
+                if lines == 0 {
+                    return Ok(Vec::new());
+                }
+                if kept.len() == lines {
+                    kept.pop_front();
+                }
+                kept.push_back(line.to_string());
+            }
+        }
+        Ok(kept.into())
     }
 
     /// Whether a rendered line passes.
@@ -811,6 +889,94 @@ mod tests {
             !filter.matches("a line with no timestamp"),
             "undated lines cannot satisfy a time bound"
         );
+    }
+
+    /// The exact wrong answer that shipped: a search over the tail of one file.
+    ///
+    /// Reported from a real investigation — `qc logs --grep 'pid=14275'` printed only
+    /// `session ending`, and the session looked like it had never started. Rotation is
+    /// daily at UTC midnight (which is 08:00 in CST), so a session that began at 07:52
+    /// and was killed at 08:00 had its `starting` line in the previous day's file while
+    /// `qc logs` printed "older files in …: 3" and searched none of them.
+    #[test]
+    fn a_search_reaches_back_past_the_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = logging::log_dir(dir.path());
+        std::fs::create_dir_all(&logs).unwrap();
+        let yesterday = logs.join("qc.2026-11-15.log");
+        let today = logs.join("qc.2026-11-16.log");
+        std::fs::write(
+            &yesterday,
+            "2026-11-15T23:52:23.000000Z  INFO qc::lifecycle: qc session starting pid=14275 \
+             version=\"0.12.1\" command=gui\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &today,
+            "2026-11-16T00:00:56.000000Z  INFO qc::lifecycle: qc session ending pid=14275 \
+             exit=143 reason=sigterm uptime_ms=473201\n",
+        )
+        .unwrap();
+        // `log_files` orders by modification time, and both writes above can land in the
+        // same clock tick; make yesterday genuinely older.
+        std::fs::File::options()
+            .write(true)
+            .open(&yesterday)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        let filter = Filter::new(Some("pid=14275"), None).unwrap();
+        let files = logging::log_files(dir.path()).unwrap();
+        assert_eq!(files.len(), 2);
+        let found = filter.tail_across(&files, &today, 40).unwrap();
+        assert_eq!(
+            found.len(),
+            2,
+            "both halves of the session have to be found, not just the tail: {found:?}"
+        );
+        assert!(found[0].contains("session starting"), "{}", found[0]);
+        assert!(found[1].contains("session ending"), "{}", found[1]);
+    }
+
+    /// `-n` is a total across files, and the *last* matches are the ones kept — the
+    /// interesting ones are the most recent, whichever file they are in.
+    #[test]
+    fn the_line_limit_counts_across_files_and_keeps_the_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = logging::log_dir(dir.path());
+        std::fs::create_dir_all(&logs).unwrap();
+        let first = logs.join("qc.2026-11-15.log");
+        let second = logs.join("qc.2026-11-16.log");
+        std::fs::write(&first, "hit one\nhit two\n").unwrap();
+        std::fs::write(&second, "hit three\nmiss\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&first)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        let filter = Filter::new(Some("hit"), None).unwrap();
+        let files = logging::log_files(dir.path()).unwrap();
+        assert_eq!(
+            filter.tail_across(&files, &second, 2).unwrap(),
+            vec!["hit two".to_string(), "hit three".to_string()],
+            "two lines total, and they must be the newest two"
+        );
+        assert!(
+            filter.tail_across(&files, &second, 0).unwrap().is_empty(),
+            "-n 0 shows nothing, even with a filter"
+        );
+    }
+
+    /// A filter that asks no question leaves the tail alone: no filter means "show me
+    /// the end of today's file", and `is_active` is what keeps the two paths apart.
+    #[test]
+    fn an_empty_filter_is_not_an_across_files_search() {
+        assert!(!no_filter().is_active());
+        assert!(Filter::new(Some("x"), None).unwrap().is_active());
+        assert!(Filter::new(None, Some("1h")).unwrap().is_active());
     }
 
     fn append(path: &std::path::Path, text: &str) {
