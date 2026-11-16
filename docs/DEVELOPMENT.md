@@ -102,7 +102,7 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
 
 不是要求，只是本机的事实，便于对照：
 
-```
+```plain
 rustc / cargo   /home/q/cot/repo/cargo/bin/         （解包发行版，无 rustup）
 sysroot         /home/q/cot/lib/rust_1.100.0_linux_amd64_gnu
 zig             /home/q/cot/lib/zig_0.17.0_linux_amd64/zig
