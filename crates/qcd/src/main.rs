@@ -103,6 +103,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     //
     // 传错的后果不会报错，所以这段话必须留在这里。
     let machine_dir = qcode_kernel::data_dir_hint(None);
+    // 「请退出」的信号。由控制通道的 `Stop` 触发，主循环 select 在它上面。
+    //
+    // 用 `CancellationToken` 而不是 `bool` 标志：标志要等下一拍才被看见（默认
+    // 30 秒），而 `stop` 该是立刻的。
+    let stop = tokio_util::sync::CancellationToken::new();
     // 拿 `Option` 是因为 `Disabled` 分支没有锁可持有。`Some` 的 `Primary` 必须活到
     // 进程结束——掉了它就等于放锁（`Primary` 的文档就是这么要求的）。
     // `serve_primary` 把锁**移进监听线程**：不 `serve` 的话锁只是「占着」而通道
@@ -114,12 +119,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("cannot take the machine-wide lock: {error}"))?
     {
         Outcome::Primary(primary) => {
-            // 应答通道：`qc daemon status` 靠它确认「有活实例」。回调返回 `true`
-            // 表示继续接活——daemon 没有前台可「切到」，所以对任何激活请求都只是
-            // 记一句日志。
-            primary.serve(|| {
-                tracing::debug!("activation request received; qcd has no window to raise");
-                true
+            // 应答通道：`qc daemon status` 靠它确认「有活实例」，`qc daemon stop`
+            // 靠它把「请退出」送到这里。daemon 没有前台可「切到」，所以激活请求
+            // 只是记一句日志。
+            //
+            // `Stop` 通过 `CancellationToken` 交给主循环：**不用信号**是因为
+            // pid 不在锁里（ADR-0083），而通道比信号多给一样东西——应答。
+            let stop_for_channel = stop.clone();
+            primary.serve(move |request, reply| match request {
+                qcode_core::single_instance::Request::Activate => {
+                    tracing::debug!("activation request; qcd has no window to raise");
+                    // 应答由这里写（`serve` 的契约），不是由 accept_loop 代写。
+                    let _ = qcode_core::single_instance::ack(request, reply);
+                    true
+                }
+                qcode_core::single_instance::Request::Stop => {
+                    // **顺序是这段代码的全部意义**：先确认，再退出。
+                    //
+                    // 反过来写过的版本有个真实竞态：`cancel()` 之后主循环立刻
+                    // break，进程开始收摊，这个线程手里的应答就可能永远发不出去
+                    // ——客户端于是收到连接断开，分不清「它没听到」与「它听到了
+                    // 但来不及说」。停一个进程的人必须拿到确认。
+                    let _ = qcode_core::single_instance::ack(request, reply);
+                    tracing::info!("stop requested over the control channel");
+                    stop_for_channel.cancel();
+                    // 不再接活：通道随线程结束一起关掉。
+                    false
+                }
             });
         }
         Outcome::HandedOver => {
@@ -198,6 +224,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Ctrl-C：干净退出。正在跑的回合随进程结束而中断，会话日志里留下
             // `interrupted`（`repair_interrupted` 下次补）。
+            // 控制通道来的「请退出」（`qc daemon stop`）。与 Ctrl-C 同一条退出
+            // 路径：跑完当前这一拍就走。
+            _ = stop.cancelled() => {
+                eprintln!("qcd: stopping (requested over the control channel)");
+                break;
+            }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("qcd: stopping");
                 break;

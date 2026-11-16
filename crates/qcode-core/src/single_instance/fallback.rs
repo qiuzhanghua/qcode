@@ -27,7 +27,7 @@ pub(super) fn lock(_path: &Path) -> io::Result<Option<LockGuard>> {
     ))
 }
 
-pub(super) fn try_activate(_paths: &super::Paths) -> io::Result<bool> {
+pub(super) fn try_request(_paths: &super::Paths, _request: super::Request) -> io::Result<bool> {
     Ok(false)
 }
 
@@ -39,5 +39,9 @@ pub(super) fn listen(_paths: &super::Paths) -> io::Result<Listener> {
 }
 
 impl Listener {
-    pub(super) fn accept_loop<F: Fn() -> bool>(self, _on_activate: F) {}
+    pub(super) fn accept_loop<F: Fn(super::Request, &mut dyn std::io::Write) -> bool>(
+        self,
+        _on_request: F,
+    ) {
+    }
 }

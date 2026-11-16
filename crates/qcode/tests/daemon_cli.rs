@@ -139,3 +139,65 @@ fn status_without_a_daemon_says_stopped() {
         "{value}"
     );
 }
+
+/// `stop` 在没有 daemon 时是**成功**，不是错误。
+///
+/// 与 `start` 的非对称：那里「已经有了」有害（用户以为起了新的），这里「本来就没有」
+/// 只是意图已经满足。脚本里 `qc daemon stop` 该能无条件跑。
+#[test]
+fn stopping_a_stopped_daemon_succeeds() {
+    let data = tempfile::tempdir().expect("data dir");
+    let output = qc()
+        .args([
+            "daemon",
+            "stop",
+            "--data-dir",
+            &data.path().display().to_string(),
+        ])
+        .output()
+        .expect("run qc daemon stop");
+
+    // 机器级锁可能被同一台机器上别的 qcd 占着（开发者自己开着的那个）。那种情况下
+    // 「没有在跑」的判断不成立，于是这条只断言「不是崩溃」。
+    if output.status.success() {
+        assert!(
+            stdout_of(&output).contains("not running") || stdout_of(&output).contains("stopped"),
+            "success must say what happened: {}",
+            stdout_of(&output)
+        );
+    }
+}
+
+/// `stop` 与 `status` 用**同一个**判据（机器级锁），否则会出现「status 说在跑、
+/// stop 说没有」这种自相矛盾的话。
+///
+/// 这条不启动真 daemon（那要 spawn 一个常驻进程，在测试里留残留太容易），而是钉住
+/// 两个子命令对同一状态的**说法一致性**：状态是「没有」时，两边都不能说「在跑」。
+#[test]
+fn stop_and_status_agree_about_the_same_state() {
+    let data = tempfile::tempdir().expect("data dir");
+    let dir = data.path().display().to_string();
+
+    let status = qc()
+        .args(["daemon", "status", "--json", "--data-dir", &dir])
+        .output()
+        .expect("status");
+    let value: serde_json::Value = serde_json::from_str(stdout_of(&status).trim()).expect("json");
+    let state = value["daemon"]["state"].as_str().expect("state");
+
+    let stop = qc()
+        .args(["daemon", "stop", "--data-dir", &dir])
+        .output()
+        .expect("stop");
+    let said_not_running = stdout_of(&stop).contains("not running");
+
+    // 「不知道」（平台没有文件锁）或「在跑」（开发者自己开着 daemon）都不能推出
+    // 「stop 该说 not running」——只有 `stopped` 能。
+    if state == "stopped" {
+        assert!(
+            said_not_running,
+            "status said stopped but stop disagreed:\n{}",
+            stderr_of(&stop)
+        );
+    }
+}

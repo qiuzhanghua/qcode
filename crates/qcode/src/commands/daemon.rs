@@ -131,17 +131,43 @@ fn stop(machine_dir: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Running::Yes => {
-            // 阶段 3 只做到这里：**不能**替它决定怎么停。发 SIGTERM 需要一个我们
-            // 信任的 pid，而 pid 不在锁里（ADR-0083：锁就是身份，pid 会被复用）。
-            //
-            // 说清楚，而不是假装停了。
-            eprintln!(
-                "qc daemon: a daemon is running, but stopping it needs its pid,\n\
-                 which is not part of the lock (ADR-0083).\n\
-                 Stop it where it was started (Ctrl-C in its terminal), or\n\
-                 `pkill -f 'qcd --data-dir'`."
-            );
-            Ok(ExitCode::from(1))
+            // 走**控制通道**，不发信号。理由与 ADR-0083 拒绝 pid 文件同源：pid 会被
+            // 复用，而「我拿到的这个 pid 就是当初那个进程」无法证明。通道还多给一样
+            // 东西——应答：`kill` 成功只说明信号发出去了。
+            match qcode_core::single_instance::request_stop(Scope::QCD, machine_dir) {
+                Ok(true) => {
+                    // 收到确认 **≠** 已经退出：它是在收到之后才开始收摊的。等它真
+                    // 放开锁，否则「stop 之后立刻 status」会看到「还在跑」。
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while std::time::Instant::now() < deadline {
+                        if let Running::No = probe(machine_dir) {
+                            println!("qc daemon: stopped.");
+                            return Ok(ExitCode::SUCCESS);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    // 确认了但没停：说清楚，不要报成功。这可能是一次卡住的回合
+                    // （它不该无限期挡着退出，但阶段 4 才处理在跑的回合）。
+                    eprintln!(
+                        "qc daemon: it acknowledged the stop but is still running after 5s.\n\
+                         It may be finishing a turn; check `qc daemon status` again."
+                    );
+                    Ok(ExitCode::from(1))
+                }
+                Ok(false) => {
+                    // 锁在，但通道连不上：半死的实例（挂着但没在监听）。这种情形
+                    // 必须与「没有实例」分开——`probe` 刚说它在跑。
+                    eprintln!(
+                        "qc daemon: the lock is held but nothing answers on the control channel.\n\
+                         That process is wedged or shutting down. Wait, or kill it by pid."
+                    );
+                    Ok(ExitCode::from(1))
+                }
+                Err(error) => {
+                    eprintln!("qc daemon: cannot send the stop request: {error}");
+                    Ok(ExitCode::from(1))
+                }
+            }
         }
         Running::Unknown(why) => {
             eprintln!("qc daemon: cannot tell whether it is running ({why}).");

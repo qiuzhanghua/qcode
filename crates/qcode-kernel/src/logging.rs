@@ -247,7 +247,16 @@ fn misspelled_level(spec: &str) -> Option<&'static str> {
 /// never reach it.
 fn owns_target(target: &str) -> bool {
     let crate_name = target.split("::").next().unwrap_or(target);
-    crate_name == "qc" || crate_name == "qcode" || crate_name.starts_with("qcode_")
+    // `qcd` 是 daemon 的 crate。少了它，一个没有终端的常驻进程的所有 `info`
+    // 都进不了 `qc.log`——而那是它唯一的现场（ADR-0092 §11 阶段 3）。
+    //
+    // 实测症状：`qc daemon stop` 之后日志里只有 `lifecycle` 那两行，`qcd` 自己
+    // 写的「stop requested over the control channel」一条都没有，「它为什么停了」
+    // 于是无从回答。
+    crate_name == "qc"
+        || crate_name == "qcd"
+        || crate_name == "qcode"
+        || crate_name.starts_with("qcode_")
 }
 
 /// The file's default filter: our crates at `info`, everything else at `warn`.
@@ -568,6 +577,10 @@ mod tests {
             "qc::lifecycle",
             "qc::logging",
             "qc::commands::logs",
+            // The daemon's binary target. It has no terminal, so the file is the
+            // only place its `info` can go (ADR-0092 §11 阶段 3).
+            "qcd",
+            "qcd::detach",
             // The libraries.
             "qcode",
             "qcode_gui",
@@ -591,6 +604,10 @@ mod tests {
         // directions: a prefix that merely starts with the letters is not ours, and
         // a future crate called `qcode_extras` is.
         assert!(!owns_target("not_qcode"), "the name has to start with it");
+        assert!(
+            !owns_target("qcdx"),
+            "`qcd` must be a whole segment, not a prefix of another crate name"
+        );
         assert!(
             !owns_target("qcodezip"),
             "`qcode` must be a whole segment, not a prefix of another crate name"

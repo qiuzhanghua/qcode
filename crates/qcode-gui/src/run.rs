@@ -9,8 +9,34 @@ use crate::*;
 /// 第二份平台细节和第二个 bug。
 ///
 /// 返回 `false` = 队列已经断了，监听线程该收摊。
-fn activator(tx: std::sync::mpsc::Sender<tray::TrayCommand>) -> impl Fn() -> bool + Send + 'static {
-    move || tx.send(tray::TrayCommand::ShowWindow).is_ok()
+/// 激活通道的回调。
+///
+/// GUI 只认 `Activate`。`Stop` 直接忽略并继续接活——理由不是「还没做」，而是
+/// **窗口不该被任何外部渠道关掉**：用户可能正在里面看着一次回合。而且实际上也
+/// 收不到：`qc daemon stop` 连的是 `Scope::QCD` 的通道，与 GUI 的 `gui.sock`
+/// 是两个文件（ADR-0092 §5 与 ADR-0083 各一把锁）。
+fn activator(
+    tx: std::sync::mpsc::Sender<tray::TrayCommand>,
+) -> impl Fn(qcode_core::single_instance::Request, &mut dyn std::io::Write) -> bool + Send + 'static
+{
+    use qcode_core::single_instance::{Request, ack};
+    move |request, reply| match request {
+        Request::Activate => {
+            // 应答只在真的把请求塞进托盘队列之后写：队列断了说明窗口已经不在了，
+            // 那时候回 `ok` 会让调用者以为它被浮起来了。
+            let sent = tx.send(tray::TrayCommand::ShowWindow).is_ok();
+            if sent {
+                let _ = ack(request, reply);
+            }
+            sent
+        }
+        // 窗口不接受外部关闭。不回 `ok` 也不退出——「我听到了但我不干」这件事
+        // 协议里没有第三种回复，而沉默配合 `true` 正是它的表达。
+        Request::Stop => {
+            tracing::warn!("a stop request reached the GUI channel; ignoring it");
+            true
+        }
+    }
 }
 
 /// Open the window and drive it until the user closes it.
@@ -280,13 +306,58 @@ mod tests {
     /// 覆盖，合起来才是原来那条从 socket 到 `ShowWindow` 的链。
     #[test]
     fn an_activate_request_becomes_a_show_window_command() {
+        use qcode_core::single_instance::Request;
+
         let (tx, rx) = std::sync::mpsc::channel();
         let handler = activator(tx);
-        assert!(handler(), "队列还在时必须说「继续」");
+        // 应答写入端在真通道里是客户端那条连接；这里用一个 `Vec` 顶替，
+        // 顺便能断言「真的回了 ok」。
+        let mut reply: Vec<u8> = Vec::new();
+        assert!(
+            handler(Request::Activate, &mut reply),
+            "队列还在时必须说「继续」"
+        );
         assert_eq!(rx.try_recv(), Ok(tray::TrayCommand::ShowWindow));
+        assert_eq!(
+            String::from_utf8_lossy(&reply),
+            "{\"ok\":true}\n",
+            "接到队列之后必须回应答，否则调用者以为没送到"
+        );
 
         // 接收端没了：监听线程该收摊，而不是继续接受无人认领的请求。
+        // 而且**不能**回 `ok`——那会让调用者以为窗口被浮起来了。
         drop(rx);
-        assert!(!handler(), "队列断了之后必须说「停」");
+        let mut reply: Vec<u8> = Vec::new();
+        assert!(
+            !handler(Request::Activate, &mut reply),
+            "队列断了之后必须说「停」"
+        );
+        assert!(
+            reply.is_empty(),
+            "队列断了就不该回应答，got {:?}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+
+    /// 窗口不接受外部关闭。
+    ///
+    /// `qc daemon stop` 连的是 `Scope::QCD` 的通道，与 GUI 那条是两个文件，所以
+    /// 正常情况下这个回调收不到 `Stop`。但「收不到」是靠作用域保证的，不是靠这里
+    /// ——所以这条钉住「万一收到了也别退出」。
+    #[test]
+    fn a_stop_request_does_not_close_the_window() {
+        use qcode_core::single_instance::Request;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let handler = activator(tx);
+        let mut reply: Vec<u8> = Vec::new();
+        assert!(
+            handler(Request::Stop, &mut reply),
+            "窗口必须继续接活，而不是被外部关掉"
+        );
+        assert!(
+            reply.is_empty(),
+            "不回 ok：沉默 + 继续，才是「我听到了但我不干」"
+        );
     }
 }

@@ -172,9 +172,19 @@ impl Primary {
     /// 坑，另写一条「把窗口弄出来」的路只会有第二份平台细节和第二个 bug。
     ///
     /// 拿不到接收端的场合（托盘注册失败、`--help` 之类根本不开窗）不会走到这里。
-    pub fn serve<F>(self, on_activate: F)
+    ///
+    /// 闭包拿到一条请求和**一个应答写入端**，返回「还要不要继续接活」。应答由闭包
+    /// 自己写，而不是由 `accept_loop` 代写——这不是风格选择：
+    ///
+    /// > `Stop` 的语义是「退出去」，而回调一旦开始收摊（取消时钟、让主循环
+    /// > break），进程可能在这个线程写出应答**之前**就没了。客户端于是收到
+    /// > 连接断开，分不清「它没听到」与「它听到了但来不及说」。
+    ///
+    /// 把写入端交给闭包，顺序就由它决定：`Stop` 先 `ack` 再退出。见
+    /// [`ack`]。
+    pub fn serve<F>(self, on_request: F)
     where
-        F: Fn() -> bool + Send + 'static,
+        F: Fn(Request, &mut dyn std::io::Write) -> bool + Send + 'static,
     {
         let Self { _lock, listener } = self;
         // 线程故意 detach：它要活到进程结束，而进程结束时 OS 会替我们收摊
@@ -183,10 +193,40 @@ impl Primary {
             .name("qcode-single-instance".into())
             .spawn(move || {
                 let _lock = _lock;
-                listener.accept_loop(on_activate);
+                listener.accept_loop(on_request);
             })
             .ok();
     }
+}
+
+/// 给一条请求写应答。
+///
+/// 提供它是为了把协议字节关在这个模块里：调用方只说「我确认」，不必知道应答是
+/// `{"ok":true}\n`。要拒绝（目标已经不在了、不解这条请求）就**别调它**——沉默
+/// 是协议里表达「没人认领」的方式，与 `Ok(false)` 在客户端那侧对应。
+pub fn ack(request: Request, reply: &mut dyn std::io::Write) -> std::io::Result<()> {
+    reply.write_all(request.reply().as_bytes())?;
+    reply.flush()
+}
+
+/// 一条请求在通道里的字节形态。
+pub(crate) fn request_line(request: Request) -> &'static str {
+    match request {
+        Request::Activate => ACTIVATE_REQUEST,
+        Request::Stop => STOP_REQUEST,
+    }
+}
+
+/// 请 `scope` 上那个实例有控制权地退出。
+///
+/// 返回 `Ok(true)` = 对面确认收到（**不是**「它已经退出了」——它是收到之后才开始
+/// 收摊的）；`Ok(false)` = 那个 scope 上根本没有活实例。
+///
+/// `Err` 是链路问题：通道在但没人应答（半死的实例）、协议不对、超时。调用方必须
+/// 把它与 `Ok(false)` 分开处理——「没有实例」是成功的停止，「问了没人答」不是。
+pub fn request_stop(scope: Scope, data_dir: &Path) -> io::Result<bool> {
+    let paths = Paths::for_scope(scope, data_dir);
+    backend::try_request(&paths, Request::Stop)
 }
 
 /// 这个 data dir 对应的锁与通道位置。
@@ -302,7 +342,7 @@ pub fn acquire_in(scope: Scope, data_dir: &Path) -> io::Result<Outcome> {
     let mut attempt = 0;
     loop {
         // 1. 先连：连上就是有活实例。
-        match backend::try_activate(&paths) {
+        match backend::try_request(&paths, Request::Activate) {
             Ok(true) => {
                 release_in_process(&paths.lock);
                 return Ok(Outcome::HandedOver);
@@ -396,13 +436,51 @@ fn release_in_process(lock: &Path) {
 pub(crate) const ACTIVATE_REQUEST: &str = "{\"activate\":true}\n";
 pub(crate) const ACTIVATE_REPLY: &str = "{\"ok\":true}\n";
 
-/// `activate` 这一行是不是我们要的请求。宽进（多空白、少换行都认），
-/// 因为对面可能是别的版本、或者是人手 `nc` 进去试的。
-pub(crate) fn is_activate_request(line: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-        return false;
-    };
-    value.get("activate").and_then(|v| v.as_bool()) == Some(true)
+/// 「有控制权地退出」（ADR-0092 §11 阶段 3 的 `qc daemon stop`）。
+///
+/// 用**通道**而不是信号，理由和 ADR-0083 拒绝 pid 文件是同一条：pid 会被复用，
+/// 而「我拿到的这个 pid 就是当初那个进程」无法证明。通道还多给一样东西——**应答**：
+/// `kill` 成功只说明信号发出去了，不说明对方收得到、更不说明它准备退出。
+pub(crate) const STOP_REQUEST: &str = "{\"stop\":true}\n";
+pub(crate) const STOP_REPLY: &str = "{\"ok\":true}\n";
+
+/// 控制通道上的一条请求。
+///
+/// 只有两种，而且**永远不要再加第三种**：这个通道的价值在于「少到不必商量」。
+/// 需要传参数的控制（改 beat、切数据目录）应该走别的路——一条能带载荷的通道就是
+/// 一个需要版本协商的 RPC，而版本协商是这台机器上最不需要的东西。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    /// 把前台身份拿回来（GUI）。
+    Activate,
+    /// 有控制权地退出（daemon）。
+    Stop,
+}
+
+impl Request {
+    /// 解析一行。宽进（多空白、少换行都认），因为对面可能是别的版本、或者是人手
+    /// `nc` 进去试的。不认识的一律 `None`——**宁可不做，也不能把乱码当命令执行**。
+    ///
+    /// 两个键同时为 `true` 的载荷**拒绝**，不挑一个执行：那只可能来自写错的客户端
+    /// 或者一次错误拼接，而猜错的后果不对称——猜成 `Stop` 会停掉用户的 daemon。
+    /// 沉默是安全的那一侧。
+    pub fn parse(line: &str) -> Option<Self> {
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        let is = |key: &str| value.get(key).and_then(|v| v.as_bool()) == Some(true);
+        match (is("activate"), is("stop")) {
+            (true, false) => Some(Self::Activate),
+            (false, true) => Some(Self::Stop),
+            _ => None,
+        }
+    }
+
+    /// 这一行的应答。
+    pub(crate) fn reply(self) -> &'static str {
+        match self {
+            Self::Activate => ACTIVATE_REPLY,
+            Self::Stop => STOP_REPLY,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -410,16 +488,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn activate_request_is_parsed_leniently() {
-        assert!(is_activate_request(ACTIVATE_REQUEST));
-        assert!(is_activate_request("{\"activate\":true}"));
-        assert!(is_activate_request("  {\"activate\" : true}  "));
-        // 其余一律不认：宁可不浮窗，也不能把一条乱码当命令执行。
-        assert!(!is_activate_request("{\"activate\":false}"));
-        assert!(!is_activate_request("{\"activate\":\"true\"}"));
-        assert!(!is_activate_request("{\"quit\":true}"));
-        assert!(!is_activate_request("activate"));
-        assert!(!is_activate_request(""));
+    fn requests_are_parsed_leniently() {
+        assert_eq!(Request::parse(ACTIVATE_REQUEST), Some(Request::Activate));
+        assert_eq!(
+            Request::parse("{\"activate\":true}"),
+            Some(Request::Activate)
+        );
+        assert_eq!(
+            Request::parse("  {\"activate\" : true}  "),
+            Some(Request::Activate)
+        );
+        assert_eq!(Request::parse(STOP_REQUEST), Some(Request::Stop));
+        assert_eq!(Request::parse("{\"stop\": true}"), Some(Request::Stop));
+
+        // 其余一律不认：宁可不浮窗、不退出，也不能把一条乱码当命令执行。
+        for line in [
+            "{\"activate\":false}",
+            "{\"activate\":\"true\"}",
+            "{\"stop\":false}",
+            "{\"quit\":true}",
+            "activate",
+            "",
+            "{\"activate\":true,\"stop\":true}",
+        ] {
+            assert_eq!(Request::parse(line), None, "must not parse: {line:?}");
+        }
+    }
+
+    /// 一条请求同时带两个键时必须**不认**，而不是挑一个执行。
+    ///
+    /// 这条不是假想的：`activate` 与 `stop` 都是 `true` 的载荷只可能来自一个
+    /// 写错的客户端或者一次错误拼接，而「猜它想要哪个」的后果不对称——猜成 stop
+    /// 会停掉用户的 daemon。
+    #[test]
+    fn an_ambiguous_request_is_rejected() {
+        assert_eq!(Request::parse("{\"activate\":true,\"stop\":true}"), None);
     }
 
     #[test]

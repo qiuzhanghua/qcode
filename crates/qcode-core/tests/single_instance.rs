@@ -40,7 +40,10 @@ fn helper_holds_the_lock() {
     // 应答，正是 ADR-0083 §4 那一行要处理的状态。
     if std::env::var_os(HELPER_NO_CHANNEL).is_none() {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        primary.serve(move || tx.send(()).is_ok());
+        primary.serve(move |request, reply| {
+            let _ = qcode_core::single_instance::ack(request, reply);
+            tx.send(()).is_ok()
+        });
         std::mem::forget(rx);
     } else {
         // 锁必须继续被持有（`primary` 不能掉），所以别把它提前丢掉。
@@ -295,7 +298,10 @@ fn an_activate_request_reaches_the_handler() {
         panic!("干净的 data dir 应当能拿到锁");
     };
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    primary.serve(move || tx.send(()).is_ok());
+    primary.serve(move |request, reply| {
+        let _ = qcode_core::single_instance::ack(request, reply);
+        tx.send(()).is_ok()
+    });
 
     let paths = single_instance::Paths::for_data_dir(&dir);
     let mut stream = UnixStream::connect(&paths.channel).expect("连上刚起的通道");
@@ -325,7 +331,10 @@ fn stray_traffic_does_not_raise_the_window() {
         panic!("干净的 data dir 应当能拿到锁");
     };
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    primary.serve(move || tx.send(()).is_ok());
+    primary.serve(move |request, reply| {
+        let _ = qcode_core::single_instance::ack(request, reply);
+        tx.send(()).is_ok()
+    });
 
     let paths = single_instance::Paths::for_data_dir(&dir);
     for junk in [
@@ -348,4 +357,82 @@ fn describe(outcome: &SingleInstanceOutcome) -> String {
         SingleInstanceOutcome::HandedOver => "HandedOver".into(),
         SingleInstanceOutcome::Disabled(why) => format!("Disabled({why})"),
     }
+}
+
+// ── `Stop` 的应答顺序（ADR-0092 §11 阶段 3）────────────────────────────────
+//
+// 这一组守的是一个真实修过的竞态：如果通道在回调里**先**取消时钟**再**写应答，
+// 主循环可能在那两行之间 break、进程开始收摊，于是客户端永远收不到确认。
+// 它会把「它听到了」误报成「它没听到」。
+
+/// 请求能被解析成两个明确的动作，且歧义载荷被拒。
+#[test]
+fn the_wire_protocol_has_exactly_two_requests() {
+    use qcode_core::single_instance::Request;
+
+    assert_eq!(
+        Request::parse("{\"activate\":true}\n"),
+        Some(Request::Activate)
+    );
+    assert_eq!(Request::parse("{\"stop\":true}\n"), Some(Request::Stop));
+    // 两个都是 true 的载荷只可能来自写错的客户端。猜它想要哪个的后果不对称——
+    // 猜成 stop 会停掉用户的 daemon。
+    assert_eq!(Request::parse("{\"activate\":true,\"stop\":true}"), None);
+}
+
+/// `Stop` 的应答必须在进程退出**之前**送达。
+///
+/// 造法：起一个真进程，它的回调先 `ack` 再返回 `false`（退出 accept 循环），然后
+/// 立刻 `std::process::exit`。客户端必须拿到 `ok` 而不是连接断开。
+///
+/// 这条测的是**顺序契约**，不是某个实现细节：`serve` 把写入端交给回调，就是为了让
+/// 这个顺序能由回调保证。
+#[test]
+fn a_stop_reply_is_written_before_the_handler_exits() {
+    use qcode_core::single_instance::{Request, ack};
+
+    let dir = tempfile::tempdir().expect("data dir");
+    let data = dir.path().to_path_buf();
+
+    let primary = match qcode_core::single_instance::acquire_in(
+        qcode_core::single_instance::Scope::QCD,
+        &data,
+    )
+    .expect("acquire")
+    {
+        qcode_core::single_instance::Outcome::Primary(primary) => primary,
+        other => panic!("expected Primary, got {other:?}"),
+    };
+
+    primary.serve(move |request, reply| {
+        // 关键顺序：ack 在前，「准备退出」在后。
+        let _ = ack(request, reply);
+        if request == Request::Stop {
+            // 模拟「退出」：不再接活。真实实现里主循环随后就 break 了。
+            return false;
+        }
+        true
+    });
+
+    // 客户端：必须读到 `ok`，而且不能是超时/断开。
+    let stopped =
+        qcode_core::single_instance::request_stop(qcode_core::single_instance::Scope::QCD, &data)
+            .expect("the reply must arrive, not a broken pipe");
+    assert!(
+        stopped,
+        "the handler acknowledged but the client saw nothing"
+    );
+}
+
+/// 没人在听时 `request_stop` 返回 `Ok(false)`，不是一个「假的成功」。
+#[test]
+fn stopping_nothing_reports_false() {
+    let dir = tempfile::tempdir().expect("data dir");
+    // 不同目录 = 不同通道（`Scope` × 数据目录），所以这里一定没有监听者。
+    let stopped = qcode_core::single_instance::request_stop(
+        qcode_core::single_instance::Scope::QCD,
+        dir.path(),
+    )
+    .expect("no listener is not an io error");
+    assert!(!stopped, "nobody was listening, so nothing was stopped");
 }

@@ -10645,7 +10645,7 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 | `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
 | `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
-| `qc`（bin） | **客户端**（阶段 3） | `commands/daemon.rs`：`start` / `stop` / `status [--json]`。只做拉起 + 问话：spawn `qcd`、等它真拿到锁、`status` 探机器级锁 + 报数据目录级驱动四态。**找不到 `qcd` 时退出码 1 且说明它是独立二进制**（`tests/daemon_cli.rs` 3 条）。`stop` 阶段 3 **不能**真的停——见下 |
+| `qc`（bin） | **客户端**（阶段 3） | `commands/daemon.rs`：`start` / `stop` / `status [--json]`。只做拉起 + 问话：spawn `qcd`、等它真拿到锁、`status` 探机器级锁 + 报数据目录级驱动四态。**找不到 `qcd` 时退出码 1 且说明它是独立二进制**（`tests/daemon_cli.rs` 5 条）。`stop` 走**控制通道**，不发信号 |
 | `qcd`（新 package + bin） | **可分离启动**（阶段 2+3） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环、`detach.rs`（`setsid` / `DETACHED_PROCESS`+`CREATE_NEW_PROCESS_GROUP`、`find_qcd`）。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：让路等待、能回答「我服务哪个数据目录」 |
 
 四条留给后续实现的话：
@@ -10680,13 +10680,23 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
   驱动锁被占、配置坏了而退出。所以 spawn 之后**等它真拿到机器级锁**（3 秒上限），拿不到
   就说「起来了但没活下来」并指向日志。§11 那句「一个说已启动但其实没启动的 `daemon
   start` 比没有这个子命令更糟」在这里落成代码。
-- **`stop` 如实承认做不到。** pid 不在锁里（ADR-0083：锁就是身份，pid 会被复用），所以
-  `stop` 只能说「有一个在跑，但停它需要 pid，请去它被启动的地方停」。假装修好了是更坏的
-  失败——用户会以为停了。这是阶段 3 唯一主动留下的缺口，补它需要一条控制通道
-  （发一条 `{"stop":true}` 而不是信号），那是又一轮设计。
-
-**阶段 2 已落地（2026-11-16）**，四件值得记的事：
-
+- **`stop` 走控制通道，不发信号**（补记，同日）。第一版如实承认做不到（pid 不在锁里，
+  ADR-0083），现在补上了：往 `Scope::QCD` 的通道发 `{"stop":true}`，拿到应答之后等它
+  放开锁（5 秒上限）。通道相对信号多给一样东西——**应答**：`kill` 成功只说明信号发出
+  去了，不说明对方收得到、更不说明它准备退出。实机验过：`qc daemon stop` → `stopped.`
+  → `status` 立刻报「没有在跑」，日志里 `reason=normal`（不是 sigterm，说明它是走完主
+  循环退出的）。
+- **应答的写入顺序是个真竞态。** 第一版让 `accept_loop` 代写应答、回调只返回 bool，于是
+  `Stop` 的路径是「回调 cancel() → 主循环 break → 进程收摊 → 这个线程才写应答」——客户端
+  收到连接断开，分不清「它没听到」与「它听到了但来不及说」。改成**把写入端交给回调**，
+  顺序由它保证：`ack` 在前，`cancel` 在后。`tests/single_instance.rs` 有一条钉住它，验过
+  会红（把 ack 挪到 return 之后，客户端读到的是空应答）。
+- **`qcd` 的 `info` 一度全被日志层挡掉。** `logging::owns_target` 只认 `qc` / `qcode` /
+  `qcode_*`，不认 `qcd`——于是一个没有终端的常驻进程写的东西进不了 `qc.log`，而那是它
+  唯一的现场。症状很隐蔽：`qc daemon stop` 之后日志里只有 `lifecycle` 那两行，
+  「它为什么停了」无从回答。现在认 `qcd`，测试正反两面都钉住。
+- **歧义载荷被拒。** `{"activate":true,"stop":true}` 返回 `None` 而不是挑一个执行：那只
+  可能来自写错的客户端，而猜错的后果不对称——猜成 `Stop` 会停掉用户的 daemon。
 - **验证 1 从「手验一分钟」变成 CI 里 0.04 秒。** 原文要求「不开任何 GUI，建一条 1 分钟后
   触发的任务，到点自己跑完，`qc sessions` 里查得到完整事件」。手验要真等、还要有 provider。
   `Daemon::tick(at)` 的两个时间来源本来就是参数，加了 `WallClock` trait 之后墙钟也能注入，

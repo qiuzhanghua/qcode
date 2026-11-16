@@ -8,7 +8,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, is_activate_request};
+use super::{Request, request_line};
 
 /// 通道在 data dir 里的扩展名。完整名字是 `<scope>.sock`——GUI 作用域下正是
 /// ADR-0083 落地时的 `gui.sock`，改名会让升级期间的两个二进制互相看不见。
@@ -52,14 +52,15 @@ pub(super) fn lock(path: &Path) -> io::Result<Option<LockGuard>> {
     }
 }
 
-/// 连上去发一次 `activate`。
+/// 连上去发一条请求。
 ///
 /// 三种结果都要分清：
 ///
-/// - `Ok(true)`：对面确认收到。**这是「有活实例」的确证。**
+/// - `Ok(true)`：对面确认收到。**这是「有活实例」的确证**——对 `Activate` 与
+///   `Stop` 都是。`Stop` 能被确认，是这个协议相对信号的全部好处。
 /// - `Ok(false)`：连不上（`ECONNREFUSED` 说明文件是残留的、没有监听者）。
 /// - `Err`：链路层面的意外（超时、写到一半断）。调用方退回按锁判定。
-pub(super) fn try_activate(paths: &super::Paths) -> io::Result<bool> {
+pub(super) fn try_request(paths: &super::Paths, request: Request) -> io::Result<bool> {
     let mut stream = match UnixStream::connect(&paths.channel) {
         Ok(stream) => stream,
         Err(error) if is_absent(&error) => return Ok(false),
@@ -67,7 +68,7 @@ pub(super) fn try_activate(paths: &super::Paths) -> io::Result<bool> {
     };
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    stream.write_all(ACTIVATE_REQUEST.as_bytes())?;
+    stream.write_all(request_line(request).as_bytes())?;
     stream.flush()?;
     let mut line = String::new();
     let mut reader = BufReader::new(stream);
@@ -125,7 +126,10 @@ pub(super) fn listen(paths: &super::Paths) -> io::Result<Listener> {
 }
 
 impl Listener {
-    pub(super) fn accept_loop<F: Fn() -> bool>(self, on_activate: F) {
+    pub(super) fn accept_loop<F: Fn(super::Request, &mut dyn io::Write) -> bool>(
+        self,
+        on_request: F,
+    ) {
         for stream in self.listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             // 一条连接一个请求，处理完就断：协议只有一件事，不需要长连接，
@@ -140,15 +144,17 @@ impl Listener {
             if reader.read_line(&mut line).is_err() {
                 continue;
             }
-            if !is_activate_request(&line) {
+            let Some(request) = super::Request::parse(&line) else {
                 continue;
-            }
-            // 接收端（窗口）已经不在了就安静退出，别攒一堆没人认领的通知。
-            if !on_activate() {
+            };
+            // 应答由回调写（见 `Primary::serve`）：`Stop` 必须先确认再退出，否则
+            // 客户端分不清「没听到」与「听到了但来不及说」。
+            let keep_going = on_request(request, &mut stream);
+            // 接收端不再接活（窗口关了、daemon 要退）就安静退出，别攒一堆没人
+            // 认领的通知。
+            if !keep_going {
                 return;
             }
-            let _ = stream.write_all(ACTIVATE_REPLY.as_bytes());
-            let _ = stream.flush();
         }
         // 走到这里说明 accept 出错了（例如 fd 被关）。把 socket 文件收掉，
         // 免得下一次启动先撞一次 ECONNREFUSED —— 那虽然会被正确当成「没

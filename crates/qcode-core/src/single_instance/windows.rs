@@ -20,7 +20,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
-use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, is_activate_request};
+use super::{Request, request_line};
 
 /// 通道在 data dir 里的「文件名」。Windows 上它不是真文件，只是给
 /// [`Paths`](super::Paths) 一个稳定的落脚点（主要是日志里能显示个东西）。
@@ -90,7 +90,7 @@ pub(super) fn lock(path: &Path) -> io::Result<Option<LockGuard>> {
     Err(io::Error::from_raw_os_error(code as i32))
 }
 
-pub(super) fn try_activate(paths: &super::Paths) -> io::Result<bool> {
+pub(super) fn try_request(paths: &super::Paths, request: Request) -> io::Result<bool> {
     let name = channel_address(paths);
     // std 的 `OpenOptions` 走 `CreateFileW`，它认得 `\\.\pipe\...`。
     let mut stream = match std::fs::OpenOptions::new()
@@ -109,7 +109,7 @@ pub(super) fn try_activate(paths: &super::Paths) -> io::Result<bool> {
             return Err(error);
         }
     };
-    stream.write_all(ACTIVATE_REQUEST.as_bytes())?;
+    stream.write_all(request_line(request).as_bytes())?;
     stream.flush()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
@@ -138,8 +138,45 @@ pub(super) fn listen(paths: &super::Paths) -> io::Result<Listener> {
     })
 }
 
+/// 把命名管道句柄包成 `Write`，让回调与 unix 后端看到同一个接口。
+///
+/// 只实现 `write`/`flush`：协议是「一行 JSON 的应答」，不需要 `read`、不需要
+/// seek。
+struct PipeReply {
+    handle: HANDLE,
+}
+
+impl std::io::Write for PipeReply {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut written = 0u32;
+        // SAFETY: `handle` 由调用方保证在这个函数返回前有效（它就是刚读到请求
+        // 的那个句柄）；`buf` 是本进程的字节切片。
+        let ok = unsafe {
+            WriteFile(
+                self.handle,
+                buf.as_ptr(),
+                buf.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(written as usize)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        // `WriteFile` 已经把字节交给管道了，没有用户态缓冲可刷。
+        Ok(())
+    }
+}
+
 impl Listener {
-    pub(super) fn accept_loop<F: Fn() -> bool>(self, on_activate: F) {
+    pub(super) fn accept_loop<F: Fn(Request, &mut dyn std::io::Write) -> bool>(
+        self,
+        on_request: F,
+    ) {
         let wide_name = wide(&self.name);
         loop {
             // SAFETY: 名字是以 NUL 结尾的 UTF-16；其余参数都是常量，
@@ -185,18 +222,19 @@ impl Listener {
             };
             if ok != 0 && read > 0 {
                 let line = String::from_utf8_lossy(&buffer[..read as usize]);
-                if is_activate_request(&line) && on_activate() {
-                    let reply = ACTIVATE_REPLY.as_bytes();
-                    let mut written = 0u32;
-                    // SAFETY: 同上；回复是静态字节串。
-                    unsafe {
-                        WriteFile(
-                            handle,
-                            reply.as_ptr(),
-                            reply.len() as u32,
-                            &mut written,
-                            std::ptr::null_mut(),
-                        );
+                if let Some(request) = Request::parse(&line) {
+                    // 应答由回调写（与 unix 后端同一条规则：`Stop` 必须先确认再
+                    // 退出）。这里给的是一个最小的 `Write`，把原生句柄包起来，
+                    // 于是回调两端看到的是同一个接口。
+                    let mut reply = PipeReply { handle };
+                    let keep_going = on_request(request, &mut reply);
+                    if !keep_going {
+                        // 不再接活：与 unix 分支一样 quiet 退出。
+                        unsafe {
+                            DisconnectNamedPipe(handle);
+                            CloseHandle(handle);
+                        }
+                        break;
                     }
                 }
             }
