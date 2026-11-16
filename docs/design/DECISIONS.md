@@ -10889,3 +10889,80 @@ api_key_command = ["secret-tool", "lookup", "service", "deepseek"]
 `--check` 原来在缺 `Exec=` 时 `continue`（等于放行），也从不验证启动标记；现在两者都算失败。
 新增 `--launch` 走 `gtk-launch`，也就是菜单用的同一条 libgio 查找，但把 stderr 留在终端：
 菜单没有终端，`qc` 又常常「打印用法然后 exit 0」，所以那个症状原本拿不到任何证据。
+
+## ADR-0095：darwin 目标在 Linux 上也能类型检查——用 zig 供 C SDK，排除 GUI（2026-11-16）
+
+**状态**：Accepted（2026-11-16），已实现。
+**接续** ADR-0093 之后的门禁线：`scripts/ci-cross-check.sh` 自 0.12.0 起只覆盖 Windows，
+darwin 两个 triple 一直在 `SHIPPED` 里，却**从来没有被检查过**。
+
+**背景**
+
+工具链补上 darwin 的 std 之后（`rustup target add`），脚本里那行
+「not checked (target std not installed)」消失了——然后检查**从跳过变成了失败**：
+
+```
+error: failed to run custom build command for `libsqlite3-sys v0.39.1`
+  cc: error: unrecognized command-line option '-arch'
+  cc: error: unrecognized command-line option '-mmacosx-version-min=11.0'
+```
+
+也就是说，之前那句「未安装 std」把真正的原因挡在了后面：**不是 std 缺，是 C 编译器缺**。
+这比跳过更糟——一个本来绿的本地门禁因此变红，而红的原因与本次改动无关。
+
+失败链有三层，前两层能修，第三层不能：
+
+1. `libsqlite3-sys` / `aws-lc-sys` 的 build script 要一个能产出 Mach-O 的 C 编译器；
+2. `cc-rs` 检测到「像 clang」时会追加 `--target=arm64-apple-macosx`（Apple 拼法），
+   而 zig 只认 `aarch64-macos`，遇到不认识的架构名直接失败并打印可选架构列表；
+3. `gpui-pre-apple` 的 build script 是
+   ```rust
+   fn main() {
+       #[cfg(any(target_os = "macos", target_os = "ios"))]
+       apple_build::run();
+   }
+   ```
+   而 **build script 按宿主平台编译**。Linux 宿主上 `main` 是空的，`stitched_shaders.metal`
+   永远不会生成，Apple 专属的
+   `include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"))` 于是编译失败。
+   这不是缺库、缺 SDK、缺 flag，是「需要一个 macOS 宿主」，无法从配置层绕过。
+
+**决定**
+
+1. `scripts/zig-cc-darwin.sh` / `zig-cxx-darwin.sh`：用 `zig cc|c++ -target <zig 三元组>`
+   当 Apple 目标的 C 编译器。zig 自带 macOS SDK（libSystem stub 与头文件），而 `cargo check`
+   不需要链接，所以够用。包装脚本**丢掉** `--target=…` 那个参数（第 2 层），语言由
+   `ZIG_CC_TOOL` 选——不能走 `$1`，因为 cc-rs 的编译器家族探测
+   （`<cc> -E detect_compiler_family.c`）调用的是同一个值，带位置参数的包装会把探测弄坏。
+2. `apple_zig_target()` 把 triple 映射成 zig 的写法；本机没有 zig 时**不静默跳过**，而是
+   进 `missing_cc`，并说明缺的是「zig（它自带 macOS C SDK）」。
+3. darwin 目标加 `--exclude qcode-gui --exclude qcode`（第 3 层），并把这件事**打印出来**：
+   `checked, but not over the whole workspace`。17 个 crate 里覆盖 15 个，
+   覆盖面从 0 变成 15/17，但绝不能让它听起来像 17/17。
+
+**验证（Linux，2026-11-16）**
+
+| 测点 | 结果 |
+|---|---|
+| `cargo check --target aarch64-apple-darwin`（排除 GUI） | 通过，13.9s（含编译 sqlite 与 aws-lc 的汇编） |
+| 同上 `x86_64-apple-darwin` | 通过，13.3s |
+| 两个 darwin 目标的 `clippy -- -D warnings` | 通过 |
+| `bash scripts/ci-cross-check.sh`（全 4 个目标） | `cross-check: 4 target(s) type-check`，退出 0 |
+| 没有 zig 的 PATH 下只请求 darwin | `not checked (needs zig, which carries the macOS C SDK)`，提示准确 |
+
+**为什么值得做**
+
+第 3 层挡住的是 `qcode-gui` 与 `qcode`——而 `qcode` 的 `boot.rs` / `commands/gui.rs` 恰恰是
+`#[cfg(target_os = "macos")]` 与 Linux 共用同一份源码的地方（ADR-0094 改的就是那里）。
+所以这份本地门禁**覆盖不到今天最需要它保护的那两个文件**，那一部分仍只有 CI 的
+`test (macos-latest)` 与 `build (macos-26, …)` 兜着。把这条写清楚，比让一个绿勾暗示
+「darwin 全查过了」更诚实。
+
+**没有做**
+
+- 不把 `--target=arm64-apple-macosx` 的兼容塞进 zig：那是 cc-rs 与 zig 的命名分歧，
+  在包装脚本里丢掉一个参数比给 zig 打补丁便宜得多。
+- 不为 `gpui-pre-apple` 造一个「假 host」：伪造 `CARGO_CFG_TARGET_OS` 让 build script 跑
+  Apple 分支，等于让 Metal 编译器在 Linux 上被调用，只是把失败点往后挪。
+- 不动 CI：`cargo check` 交叉 + clippy 的本地门禁仍是本地门禁，真机 job 才是判据
+  （与 ADR-0093 末尾同一条立场）。
