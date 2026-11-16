@@ -526,7 +526,15 @@ impl SessionStore {
         #[cfg(not(unix))]
         let lock = {
             let _ = id;
-            take_immediate(file)?
+            // 与 Unix 分支一致：锁冲突（WouldBlock）映射为 `StoreError::Locked`，
+            // 而不是 `Io`——调用方（如标题生成的等锁重试）靠这个变体区分
+            // 「被占用」与「真正读写失败」。
+            match take_immediate(file) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(StoreError::Locked(id.to_string()));
+                }
+                other => other?,
+            }
         };
 
         Ok(lock)
