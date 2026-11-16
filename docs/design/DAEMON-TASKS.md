@@ -1,7 +1,7 @@
 # 常驻 daemon 任务清单（ADR-0092）
 
 > 设计依据：[ADR-0092](./DECISIONS.md#adr-0092常驻-daemondriving-不再绑在窗口上2026-11-15)。
-> 状态截至 2026-11-16。阶段 0 已完成，其余未开始。
+> 状态截至 2026-11-16。**阶段 0、阶段 1 已完成**；阶段 2–5 未开始。
 
 这份清单只写**怎么落地**，不重述为什么——理由在 ADR-0092。与 ADR 的关系是：ADR 的
 §11 是目标形态，这里是到达它的顺序，每一步带一个**能被证伪的出口判据**。
@@ -66,67 +66,137 @@ Unattended ⇒ 5 分钟」；`a_declared_deadline_beats_the_unattended_default` 
 
 ---
 
-## 阶段 1：让「一次投递」成为可测单元（未开始，最大的一块）
+## 阶段 1：让「一次投递」成为可测单元 ✅（2026-11-16）
 
-把 `qcode-gui/src/runtime.rs` 里这三样从窗口生命周期里挪出来：
+把 `qcode-gui/src/runtime.rs` 里这几样从窗口生命周期里挪出来：
 
-| 现状位置 | 内容 |
+| 原位置 | 内容 |
 |---|---|
-| `runtime.rs:476` `start_turn!` | 开一个回合（含审批 deadline、cost/model 上限） |
-| `runtime.rs:693` `deliver_schedule_group!` | 投递：写收件箱、记账、空闲就开回合 |
-| `runtime.rs:439`、`:442` | `inflight` / `pending_ack` 记账 |
-| `runtime.rs:395`、`:398`、`:404` | 时钟 beat、`gap_limit`、「进程睡过去了」判定（`last_beat`） |
+| `runtime.rs` `deliver_schedule_group!` | 投递：写收件箱、记账、空闲就开回合 |
+| `runtime.rs` `inflight` / `pending_ack` | 「已投递、未确认」的记账 |
+| `runtime.rs` `last_beat` / `gap_limit` | 时钟 beat、「进程睡过去了」判定 |
+| `runtime.rs` 确认 / 崩溃恢复两段 | 落盘确认、补确认、回执、推进规则 |
+| `runtime.rs` `bind_fresh_session` | `NewOnce` 首次投递后绑定会话 |
 
-（行号对应 `runtime.rs` 1643 行的状态。）
+### 做法：方案 A，但**只搬一拍，不搬循环**
 
-### 做法：方案 A —— IO 层放进 `qcode-driver`，对 `Host` trait 泛型
+`qcode-driver/src/runtime.rs`，两层：
 
-ADR-0092 §6 说 driver 是「纯逻辑」，但投递必然有 IO。分两层：
-
-- **决策层**（已存在，`lib.rs`）：`plan_tick` / `plan_recovery` / `advance_past` /
+- **决策层**（`lib.rs`，已有）：`plan_tick` / `plan_recovery` / `advance_past` /
   `delivery_session`。纯函数、假时钟可测。
-- **IO 层**（新增 `qcode-driver/src/runtime.rs`）：一个 `loop { select! }`，但会话收发、
-  跑回合、事件出口全部走 `Host` trait。GUI 与 `qcd` 各实现一份 `Host`。
+- **IO 层**（`runtime.rs`，新增 569 行）：`Clock` + `ScheduleDriver::on_beat` + `Host`。
 
 ```rust
 pub trait Host {
-    /// 会话忙不忙、还在不在——`plan_tick` 的 `Probe` 从这里来。
-    fn probe(&self) -> &dyn Probe;
-    /// 投递一条消息到目标会话，返回消息 id。
-    fn deliver(&mut self, target: &Target, message: Delivery) -> Result<String>;
-    /// 开一个回合（daemon 在这里 await，GUI 在这里 spawn）。
-    fn start_turn(&mut self, session: &str, deadline: Option<Duration>);
-    /// 事件出口（ADR-0092 §8 留的缝）。GUI 走进程内通道，daemon 写可跟随的流。
-    fn emit(&mut self, event: SchedulerEvent);
     fn now(&self) -> PrimitiveDateTime;
+    fn heartbeat(&mut self, at: PrimitiveDateTime);
+    fn executor(&self) -> Executor;              // Attended / Unattended
+    fn tasks(&self) -> Vec<ScheduledTask>;
+    fn update_task(&mut self, id: &str, patch: &mut dyn FnMut(&mut ScheduledTask)) -> bool;
+    fn is_busy(&self, task: &ScheduledTask) -> bool;
+    fn exists(&self, task: &ScheduledTask) -> bool;
+    fn create_session(&mut self) -> Option<String>;
+    fn deliver(&mut self, session: &str, task: &ScheduledTask, approval: Option<Duration>)
+        -> Option<Delivery>;                     // 含「该不该立刻开回合」
+    fn landed(&self, session: &str, task_id: &str, at: &str) -> Landed;  // Yes/NotYet/Gone
+    fn changed(&mut self);
 }
 
-pub async fn drive<H: Host>(host: &mut H, clock: Clock, stop: Stop) -> Result<(), DriveError>;
+impl ScheduleDriver {
+    pub fn on_beat<H: Host>(&mut self, host: &mut H, at: Instant) -> Report;
+}
 ```
 
-选方案 A（放在 `qcode-driver` 内部）而不是新 crate 的理由：决策与 IO 在同一处，
-`cargo tree` 一眼看出边界；拆成 `qcode-driver-host` 之后两个 crate 互相依赖，边界没
-省心反而多一层。代价是 crate 头注释里「不做投递」那段要跟着改——它本来是按目标形态
-写的。
+**与原计划不同的一处，必须说清**：原计划写的是
+`pub async fn drive<H: Host>(host, clock, stop)`——让驱动拥有整个 `loop { select! }`。
+实现时发现那是错的：
 
-**这一步的收益不是省代码，是「谁在跑」只在一处定义**：今天 GUI 与 daemon 之间任何
-分歧都只能靠人同步，而人手同步的东西迟早会不一致（`advance_past` 抽出来之前，
-`SkipBusy` 与 `Orphaned` 两条分支在 GUI 里各写了一遍一模一样的 `advance_rule`）。
+- GUI 的 `select!` 除了时钟还有 UI 命令、回合结束、队列发布（250ms ticker）、会话关闭。
+  那些是窗口的事，塞进 `Host` 会造出一种假抽象——trait 上挂十几个只有窗口能实现的
+  方法，daemon 一个都用不上。
+- 真按 `drive()` 写，GUI 要么留着原来那段再把 `drive()` 的循环包一层（第三个循环），
+  要么先重写整个 `select!`。前者正是 §6 要治的病。
+
+所以分界线画在**一拍**上：前端拥有循环，驱动拥有「一拍之内的全部决策与记账」。
+`Plan` 那种「只读计划、由调用方落地」的形状保持不变，而 `Delivery` / `StartTurn`
+是新的：`deliver` 只把消息放进收件箱，**要不要开回合**由 `Delivery.start` 告诉调用方，
+调用方再用自己的装配去跑（GUI 用 `start_turn!`，daemon 直接 await `run_turn`）。
+
+「打开一个回合」不进 trait 是有意的：`run_turn` 要 provider、工具注册表、策略、
+sandbox、子代理、审批器……那是前端装配的，不是调度的事。
 
 ### 出口判据
 
-1. 用**内存假 Host** 在单进程里跑通「建会话 → 到期 → 投递 → 确认落盘 → 再扫」，
-   不启窗口、不联网。这是今天做不到、也是 §6 存在的唯一理由。
-2. `runtime.rs` 的调度段（`:912`–`:1127`，211 行非空）降到一层适配器；`create_task` /
-   `bind_fresh_session` / `deliver_schedule_group!` 三个 helper 一起搬走。
-3. `cargo test -p qcode-gui` 不减少覆盖：现有那些「谁在跑」的断言改成对着 `Host`
-   假实现跑。
+1. ✅ 用**假 Host** 在单进程里跑通「建会话 → 到期 → 投递 → 确认落盘 → 再扫」，
+   不启窗口、不联网。`qcode-driver/tests/drive.rs` 12 条，真 `SessionStore` + 假时钟：
+   - `a_due_task_is_delivered_confirmed_and_advanced`（主链，五步全验）
+   - `a_pending_delivery_is_not_delivered_twice`（没落盘就不重投）
+   - `a_landed_delivery_is_recovered_instead_of_delivered_again`（重启不重投）
+   - `a_restart_after_a_landed_delivery_still_records_the_receipt`（重启补记回执，真机抓获）
+   - `a_restart_without_a_landed_delivery_records_no_receipt`（没投过就不造回执）
+   - `a_restart_with_an_overdue_task_does_not_replay_it`（错过不补跑）
+   - `a_long_gap_records_misses_without_firing`（睡三天只记错过）
+   - `a_deleted_target_is_orphaned_and_kept_active`
+   - `the_first_beat_only_advances`
+   - `unattended_delivery_carries_the_default_deadline` /
+     `attended_delivery_keeps_waiting_for_a_human`
+   - `a_beat_reads_the_task_table_a_constant_number_of_times`（性能护栏，见下）
+2. ✅ 调度段从 211 行非空降到 162 行，其中 28 行是 `[schedules]` 配置旧路径（**故意
+   没搬**，见「没做的」）。`deliver_schedule_group!`、`bind_fresh_session`、
+   `inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe`、确认与恢复两段
+   全部消失或搬走。**新增**的是 `GuiHost`（约 130 行）——那一层不是重复逻辑，是
+   「窗口把驱动的话译成对收件箱的动作」。
+3. ✅ GUI 侧覆盖没减：`target_exists` / `target_busy` 两条翻译层测试保留（改成测自由
+   函数），另加两条真的 `Engine` + `SessionHost` 单元测试
+   （`runtime::host_tests`）——「到点真的进收件箱吗」「忙的会话只排队吗」。这两条守的
+   是最容易悄悄坏的一环：`deliver` 少写一行 `followup_scheduled`，驱动那 10 条测试
+   仍然全绿（它们只验「我调了 deliver」），而用户什么也收不到。
 
-### 不要在这一步做的事
+### 实现中踩到的三个坑（值得记）
 
-- 不碰进程形态（分离、单实例、控制通道）。进程形态相对简单，真正的难点是循环能不能
-  泛型化；两件事混在一起做，会分不清失败是逻辑问题还是平台问题。
-- 不做 GUI 跟随界面（ADR-0092 §8 明确只留缝）。
+- **`Host::tasks` 是读盘**（`Scheduler::list()` → 读 `schedule/tasks.json` + 解析）。
+  第一版在 `Action::Fire` 的循环里对每个到期任务各调一次，于是一百条任务同时到期时
+  是 100 次读盘 + 100 次解析。测试里三五个任务完全看不出来，所以补了
+  `a_beat_reads_the_task_table_a_constant_number_of_times`（二十条任务，断言每拍
+  读盘次数 ≤ 3）。这类回归只有**用性能断言**才拦得住。
+- **`start_turn!` 里的 `continue`**：那个宏的错误分支靠 `continue` 跳过这一拍。搬进
+  任何方法之后 `continue` 都不再合法，所以「建会话失败」改成 `deliver` 返回 `None`、
+  驱动跳过这个任务、下一拍再试。顺带修掉一个副作用：原实现会让同一拍里**后续**的
+  到期任务也不投递，现在只有失败的那条被跳过。
+- **重启后第一拍是 `away`，而 away 分支不补确认——回执会永久丢失。** 这条是**在真机
+  上抓到的**，不是设计时想到的：单元测试 12 条全绿、clippy 干净、跨端通过，然后按
+  DAEMON-TASKS 自己的出口判据去真机跑了一遍才发现。
+
+  复现：GUI 投递了一个 `once` 任务、回合跑完、进程在下一拍（30s）确认之前被 `kill -9`。
+  重启后任务表是 `status: ended` / `last_receipt: null` / `delivery_log: 0`，而会话日志
+  里躺着完整的 `user_message` + `assistant_message` + `turn_ended`。用户查「这个任务跑过
+  吗」，答案是「没记录」。
+
+  原因：`Clock::tick` 第一拍**总是** `away`（内存记账空，无从判断上一次是什么时候），而
+  `on_beat` 的 away 分支在确认与恢复之前就 `return` 了。所以「投递已落盘、规则没推进」
+  这个状态，在**新进程**里没有任何一条路径能走到。
+
+  修法：`record_missed` 在推进前先问一句「这一次发生点其实已经投过吗」，投过就补记回执
+  （`message_id` 前缀 `recovered:`，审计时能看出是补记的）。回归测试
+  `a_restart_after_a_landed_delivery_still_records_the_receipt`，另有
+  `a_restart_without_a_landed_delivery_records_no_receipt` 守住反面（没投过就不许凭空
+  造回执）。
+
+  **为什么这个坑值得单独记**：它在原代码里同样存在——只是原来这段逻辑长在窗口生命周期
+  里，谁也复现不了「杀掉进程再起来」这个状态。阶段 1 的第一个真实收益不是省代码，是让
+  这一类「只有真机和重启才暴露」的错变得可测、可复现。
+
+### 没做的（诚实清单）
+
+- **`[schedules]` 配置路径没搬**（`runtime.rs` 里那 28 行）。它是 ADR-0059 的旧入口，
+  已被 `import_config` 迁移成运行时任务；两个路径的 `recover` / `tick` 是另一套语义
+  （`CronSpec` 而不是 `Rule`）。搬它要连带改「配置窗口推进」那套记账，与本阶段的
+  「让投递可测」不是一件事。**它仍然只在 GUI 里，daemon 不会驱动配置条目**——阶段 2
+  之前必须决定：迁移干净，还是让 daemon 也实现它。
+- **执行顺序变了**：原实现先跑配置路径再跑运行时任务，现在是驱动先跑（它拥有时钟），
+  配置路径随后。只有「配置条目与运行时任务靶同一个会话」时才看得出区别，而那种状态
+  本身是迁移的中间态。
+- 事件出口（ADR-0092 §8）只留了 `changed()`，没有做成可跟随的流；§8 说的缝还在。
 
 ---
 

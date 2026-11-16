@@ -10641,21 +10641,21 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 
 | 单元 | 现状 | 判据 |
 |---|---|---|
-| `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在；`inflight`、`pending_ack` 是 GUI 的局部状态——`qcode-driver` 只把它当参数收进来，`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
-| `qcode-driver` | **部分**：决策 + 审批缺省值 | `plan_tick` / `plan_recovery` / `advance_past` / `delivery_session`，加 `Executor::{Attended,Unattended}`；`tests/plan.rs` 9 个假时钟用例。**没有** beat / 投递 / 心跳 / 事件出口 |
+| `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在。`inflight` / `pending_ack` 不是**持久**记账，而是 `qcode-driver` 的 `ScheduleDriver` 内存态（重启即清零，靠会话日志补确认）——`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
+| `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
-| `qcode-gui` | **部分**：决策已改用它，循环本体还在 | `runtime.rs` 共 1643 行；时钟分支 `runtime.rs:912`–`1127` 仍在 GUI，`create_task`、`bind_fresh_session`、`deliver_schedule_group!` 也都还在这里。投递路径已改为消费 `Action::Fire` 的生效审批值 |
+| `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布）、`[schedules]` 配置旧路径 |
 | `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有 |
 | `qcd`（新 bin） | ❌ 不存在 | 同上；但前提已验，见下 |
 
 四条留给后续实现的话：
 
 1. **`qcode-driver` 的范围要按代码读，别按上表读。** 「时钟 beat、扫描、投递、心跳、事件
-   出口」里，实际只落地了「扫描/判到期」这一项：beat 在 `runtime.rs:395`，投递在 GUI 的
-   `deliver_schedule_group!`，记账在 GUI 的 `inflight`，心跳在 core 的 `scheduler.rs`，事件
-   出口还不存在。照上表字面估会以为「只剩一层进程壳」，实际是先搬那 211 行加三处 helper
-   与记账。crate 自己的头注释已经把边界写对了（「读时钟、占锁、写会话、跑 turn、投递消息
-   属于调用方」），以它为准。
+   出口」这五项现在只在最后一项上是缺的：beat / 扫描 / 投递 / 记账 / 确认 / 崩溃恢复都在
+   `qcode-driver`（阶段 1），心跳由 `Host::heartbeat` 落地（GUI 写 `scheduler.rs` 的那个
+   key）。**前端循环不在这里**，而且不该在这里——见 DAEMON-TASKS 阶段 1 那一节里
+   「与原计划不同的一处」。事件出口只有 `Host::changed()` 这个「任务表变了」的信号，
+   §8 说的可跟随流还不存在。
 2. **进度要记在这里，不要只留在 commit message 里。** `a630cd6` 之前，任何人读本 ADR 都
    会得到「§11 一样都还没做」的印象，然后重复这次对照。
 3. **§1 与 §11 的拆分方向已验证可行。** `qcd` = daemon + kernel 且不链 GPU 栈，这条现在
