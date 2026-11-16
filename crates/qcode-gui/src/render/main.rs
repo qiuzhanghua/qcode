@@ -679,13 +679,15 @@ impl Shell {
             self.ui.question_ticker = true;
             self.tick_question(cx);
         }
-        // 无选项的自由文本提问需要输入框。实体按「面板 call_id + 题目序号」懒
-        // 创建，面板换题或关闭时丢弃重建（输入框跟着题目走，不串题）。
+        // 无选项的自由文本提问需要输入框；周期题（`schedule_rule`）走结构化
+        // 选择器，不需要输入框。实体按「面板 call_id + 题目序号」懒创建，面板
+        // 换题或关闭时丢弃重建（输入框跟着题目走，不串题）。
         let input_need = self.ui.question.as_ref().map(|panel| {
+            let question = panel.current();
             (
                 panel.view.call_id.clone(),
                 panel.index,
-                panel.current().options.is_empty(),
+                question.options.is_empty() && !question.schedule_rule,
             )
         });
         if let Some((call_id, index, true)) = &input_need
@@ -718,13 +720,34 @@ impl Shell {
                 index: *index,
                 _subscription: subscription,
             });
-        } else if self
-            .ui
-            .question
-            .as_ref()
-            .is_none_or(|panel| !panel.current().options.is_empty())
-        {
+        } else if self.ui.question.as_ref().is_none_or(|panel| {
+            let question = panel.current();
+            !(question.options.is_empty() && !question.schedule_rule)
+        }) {
             self.ui.question_input = None;
+        }
+        // 周期题的选择器状态：按「call_id + 题目序号」懒创建。翻到别的题目时
+        // 保留（回到周期题时选择还在），换批（新 call_id）才重建。
+        let rule_need = self.ui.question.as_ref().map(|panel| {
+            (
+                panel.view.call_id.clone(),
+                panel.index,
+                panel.current().schedule_rule,
+            )
+        });
+        if let Some((call_id, index, true)) = &rule_need
+            && self
+                .ui
+                .question
+                .as_ref()
+                .and_then(|panel| panel.rule.as_ref())
+                .map(|rule| (&rule.call_id, rule.index))
+                != Some((call_id, *index))
+        {
+            let rule = self.new_question_rule(window, cx, call_id, *index);
+            if let Some(panel) = self.ui.question.as_mut() {
+                panel.rule = Some(rule);
+            }
         }
         if self.pending_send {
             self.pending_send = false;
@@ -1348,6 +1371,11 @@ impl Shell {
                                                     )
                                                 })
                                                 .child(Textarea::new(&state.input))
+                                        }))
+                                        // 周期题：结构化选择器（类型下拉 + 参数），
+                                        // 与定时任务编辑表单的周期区同构。
+                                        .children(question.schedule_rule.then(|| {
+                                            self.render_question_rule_picker(cx)
                                         }))
                                         .child(
                                             div()

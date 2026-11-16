@@ -356,7 +356,11 @@ impl Shell {
             if let Some(next) = self.tasks.first().map(|row| row.task.id.clone()) {
                 self.resume(next, window, cx);
             } else {
-                self.ui.app.push_notice("任务已删除");
+                // 任务列表空了：`active` 已置 None（面板变成空的「新任务」页），
+                // 但 runtime 的 `current` 仍指着被删的会话——此时直接发送会落到
+                // 一个不存在的 id（"session not found"）。自动开一个新会话顶上，
+                // 发送落在新会话上，而不是已删除的 id。
+                self.new_session(window, cx);
             }
         } else {
             self.ui.app.push_notice("任务已删除");

@@ -477,6 +477,34 @@ impl Scheduler {
         Ok(())
     }
 
+    /// 会话没有显式标题时用给定标题命名它（`SchedulerHandle` 的实现本体）。
+    ///
+    /// 「没有标题」= 事件日志里没有 `TaskRenamed`。写标题只是追加一个重命名
+    /// 事件；会话若不存在则返回 `NotFound`，由调用方决定要不要吞掉这个错误。
+    pub fn set_session_title_if_missing(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<(), ScheduleError> {
+        let events = self.store.load(session_id).map_err(ScheduleError::Store)?;
+        let task = self
+            .store
+            .task_from_events(session_id, &events)
+            .map_err(ScheduleError::Store)?;
+        if task.title().is_some() {
+            return Ok(());
+        }
+        // rename 上限 80 字符，任务名上限 120：超了就截断，别让写标题失败。
+        let title: String = title.trim().chars().take(80).collect();
+        if title.is_empty() {
+            return Ok(());
+        }
+        self.store
+            .rename_task(session_id, title)
+            .map_err(ScheduleError::Store)?;
+        Ok(())
+    }
+
     /// 内部读-改-写：驱动投递后写回执 / 推进发生点 / 换状态等引擎侧变更。
     pub fn update(
         &self,
@@ -550,6 +578,16 @@ pub trait SchedulerHandle: Send + Sync + std::fmt::Debug {
     fn resume(&self, id: &str, now: PrimitiveDateTime) -> Result<(), ScheduleError>;
     fn run_now(&self, id: &str, now: PrimitiveDateTime) -> Result<(), ScheduleError>;
     fn delete(&self, id: &str) -> Result<(), ScheduleError>;
+    /// 会话没有显式标题时用给定标题命名它。`schedule_create` 创建任务后把任务名
+    /// 写回绑定会话，让「对话没有 title 时任务名就是对话名」在**所有前端**生效。
+    ///
+    /// 「没有标题」= 事件日志里没有 `TaskRenamed`（用户从未重命名）；写标题只是
+    /// 追加一个重命名事件，会话内容不动。
+    fn set_session_title_if_missing(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<(), ScheduleError>;
 }
 
 impl SchedulerHandle for Scheduler {
@@ -592,6 +630,14 @@ impl SchedulerHandle for Scheduler {
 
     fn delete(&self, id: &str) -> Result<(), ScheduleError> {
         self.delete(id)
+    }
+
+    fn set_session_title_if_missing(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<(), ScheduleError> {
+        self.set_session_title_if_missing(session_id, title)
     }
 }
 
@@ -829,6 +875,39 @@ mod tests {
             scheduler.create(bad, now()),
             Err(ScheduleError::Invalid(_))
         ));
+    }
+
+    /// 会话没有显式标题（事件日志里无 `TaskRenamed`）时，任务名成为会话标题；
+    /// 已有标题时不覆盖。
+    #[test]
+    fn set_session_title_if_missing_names_an_untitled_session() {
+        let (_dir, scheduler) = store();
+        scheduler
+            .set_session_title_if_missing("t1", "每日日报")
+            .expect("set title");
+        let events = scheduler.store().load("t1").expect("load");
+        let renames: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                crate::event::EventKind::TaskRenamed(event) => Some(event.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(renames, ["每日日报"]);
+
+        // 已有标题：第二次调用不再追加重命名事件。
+        scheduler
+            .set_session_title_if_missing("t1", "别的名字")
+            .expect("no-op");
+        let events = scheduler.store().load("t1").expect("load");
+        let renames: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                crate::event::EventKind::TaskRenamed(event) => Some(event.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(renames, ["每日日报"]);
     }
 
     #[test]

@@ -558,6 +558,193 @@ impl Shell {
             .child(Input::new(input).w_full())
     }
 
+    /// 提问面板里「周期」题的结构化选择器：类型下拉 + 各自参数，与定时任务
+    /// 编辑表单的周期区同构。选择结果在提交时由 `RulePickerState::rule_text`
+    /// 拼成规范表达式回填给 `schedule_create` 工具。
+    pub(crate) fn render_question_rule_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let accent = theme.tokens.accent;
+        let accent_foreground = theme.accent_foreground;
+        let muted_foreground = theme.muted_foreground;
+        let Some(panel) = self.ui.question.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(rule) = panel.rule.as_ref() else {
+            return div().into_any_element();
+        };
+        let rule_items: Vec<(String, String)> = ScheduleRuleKind::ALL
+            .iter()
+            .map(|kind| (kind.as_stored().to_string(), kind.label().to_string()))
+            .collect();
+        // 星期：0=周日，同 crontab。多选 pill 组按周一起始排列。
+        const WEEKDAY_LABELS: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        let shell = cx.entity().downgrade();
+
+        // 周期类型对应的参数行。
+        let param_field: AnyElement = match rule.kind {
+            ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted_foreground)
+                        .child("时刻（HH:MM）"),
+                )
+                .child(TimeField::new(&rule.time).w_full())
+                .into_any_element(),
+            ScheduleRuleKind::Monthly => {
+                let day = rule.monthly_day.clone();
+                let time = rule.time.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(self.form_field(cx, "每月日期（1-31）", &day))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .text_color(muted_foreground)
+                                    .child("时刻（HH:MM）"),
+                            )
+                            .child(TimeField::new(&time).w_full()),
+                    )
+                    .into_any_element()
+            }
+            ScheduleRuleKind::Interval => self
+                .form_field(cx, "间隔秒数（≥ 60）", &rule.interval_secs)
+                .into_any_element(),
+            ScheduleRuleKind::Once => {
+                let picker = rule.once_picker.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted_foreground)
+                            .child("触发时刻（日期 + 时间）"),
+                    )
+                    .child(DatePicker::new(&picker).w_full())
+                    .into_any_element()
+            }
+            ScheduleRuleKind::Cron => self
+                .form_field(cx, "Cron 表达式（5 字段）", &rule.cron_expr)
+                .into_any_element(),
+        };
+
+        // 只有「每周」才出现的星期多选（pill 组）。
+        let weekday_pills = (rule.kind == ScheduleRuleKind::Weekly).then(|| {
+            let weekdays = rule.weekdays.clone();
+            let shell = shell.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted_foreground)
+                        .child("星期（可多选）"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .children(
+                            // 显示顺序：周一..周日（1..7，0=周日）。
+                            [1u8, 2, 3, 4, 5, 6, 0].into_iter().map({
+                                let shell = shell.clone();
+                                let weekdays = weekdays.clone();
+                                move |day| {
+                                    let selected = weekdays.contains(&day);
+                                    let shell = shell.clone();
+                                    div()
+                                        .id(format!("question-rule-weekday-{day}"))
+                                        .flex_1()
+                                        .h(px(30.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(6.0))
+                                        .text_size(sp(12.0))
+                                        .when(selected, |this| {
+                                            this.bg(accent).text_color(accent_foreground)
+                                        })
+                                        .on_click(move |_event, _window, cx| {
+                                            if let Some(shell) = shell.upgrade() {
+                                                shell.update(cx, |shell, cx| {
+                                                    if let Some(panel) = shell.ui.question.as_mut()
+                                                        && let Some(rule) = panel.rule.as_mut()
+                                                    {
+                                                        if rule.weekdays.contains(&day) {
+                                                            rule.weekdays.retain(|d| d != &day);
+                                                        } else {
+                                                            rule.weekdays.push(day);
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            }
+                                        })
+                                        .child(WEEKDAY_LABELS[day as usize].to_string())
+                                        .into_any_element()
+                                }
+                            }),
+                        )
+                        .into_any_element(),
+                )
+                .into_any_element()
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.form_select(
+                cx,
+                "周期",
+                "question-rule-kind",
+                rule.kind.label().to_string(),
+                rule.rule_menu_open,
+                rule_items,
+                rule.kind.as_stored().to_string(),
+                |shell| {
+                    if let Some(panel) = shell.ui.question.as_mut()
+                        && let Some(rule) = panel.rule.as_mut()
+                    {
+                        rule.rule_menu_open = !rule.rule_menu_open;
+                    }
+                },
+                |shell| {
+                    if let Some(panel) = shell.ui.question.as_mut()
+                        && let Some(rule) = panel.rule.as_mut()
+                    {
+                        rule.rule_menu_open = false;
+                    }
+                },
+                |shell, value| {
+                    if let Some(panel) = shell.ui.question.as_mut()
+                        && let Some(rule) = panel.rule.as_mut()
+                    {
+                        rule.kind = ScheduleRuleKind::from_stored(&value);
+                        rule.rule_menu_open = false;
+                    }
+                },
+            ))
+            .when_some(weekday_pills, |this, field| this.child(field))
+            .child(param_field)
+            .into_any_element()
+    }
+
     /// 定时任务表单的工作目录行：显示当前值（或「未指定」）+「选择目录」按钮，
     /// 点击弹出系统目录选择对话框（`pick_directory`）；已选时多一个「清除」。
     fn workdir_field(&self, cx: &mut Context<Self>) -> impl IntoElement {

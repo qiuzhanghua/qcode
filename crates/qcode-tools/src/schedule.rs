@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use qcode_core::provider::ToolSpec;
-use qcode_core::question::{QuestionAnswer, QuestionIntent, QuestionItem, QuestionRequest};
+use qcode_core::question::{
+    AnswerItem, QuestionAnswer, QuestionIntent, QuestionItem, QuestionOption, QuestionRequest,
+};
 use qcode_core::schedule::{
     MIN_DELIVERY_INTERVAL, Overlap, ScheduledTask, Target, now_local, parse_rule,
 };
@@ -38,13 +40,16 @@ fn handle(ctx: &ToolContext) -> Option<Arc<dyn SchedulerHandle>> {
     ctx.scheduler.clone()
 }
 
-/// `target` 参数：`new_once`（默认）/ `new` / `session:<id>`。
+/// `target` 参数：`new_once`（默认）/ `new` / `session:<id>`，以及提问选项的
+/// 中文 label（`复用同一个会话` / `每次新建一个会话`）——按钮显示中文，模型
+/// 收到的答案就是 label 本身。
 fn parse_target(text: &str) -> Option<Target> {
     let text = text.trim();
-    if text.is_empty() || text == "new_once" || text == "new-once" {
+    if text.is_empty() || text == "new_once" || text == "new-once" || text == "复用同一个会话"
+    {
         return Some(Target::NewOnce);
     }
-    if text == "new" {
+    if text == "new" || text == "每次新建一个会话" {
         return Some(Target::New);
     }
     if let Some(id) = text.strip_prefix("session:") {
@@ -133,9 +138,9 @@ pub struct ScheduleCreate;
 
 #[derive(Deserialize)]
 struct CreateArgs {
-    title: String,
-    prompt: String,
-    rule: String,
+    title: Option<String>,
+    prompt: Option<String>,
+    rule: Option<String>,
     #[serde(default)]
     target: String,
     #[serde(default)]
@@ -162,15 +167,15 @@ impl Tool for ScheduleCreate {
                 "`weekly <weekdays> HH:MM` (weekdays may repeat: 0 or sun = Sunday, ",
                 "1..7 or mon..sat; comma- or space-separated, e.g. `1,3,5`), ",
                 "`monthly <day> HH:MM` (day 1-31). ",
-                "The task lives in the store and keeps running after this session closes. ",
-                "When the user did not specify when the task runs (rule) or where it ",
-                "delivers (target), ask the user to confirm those first — never invent a ",
-                "default schedule such as \"every day at 08:00\". For the delivery target ",
-                "the question is exactly two options: reuse one session for every delivery, ",
-                "or create a new session each time — do not offer vague alternatives. ",
+                "Fields the user has not stated are collected by the tool itself: it ",
+                "pauses and asks the user for the missing name, prompt, rule, working ",
+                "directory and delivery target in one round — never invent a default ",
+                "schedule such as \"every day at 08:00\". The delivery target is exactly ",
+                "two options: reuse one session for every delivery (in a conversation ",
+                "that session is the current one), or create a new session each time. ",
                 "The working directory (`cwd`) is where the delivered turn runs: use an ",
-                "absolute path the user named; when the model cannot tell it from the ",
-                "conversation, omit `cwd` and the tool asks the user for it itself."
+                "absolute path the user named; when it is not given the tool asks for ",
+                "it too (the user may skip it and fall back to the session default)."
             )
             .to_string(),
             parameters: json!({
@@ -178,19 +183,19 @@ impl Tool for ScheduleCreate {
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "短而可区分的任务名称。"
+                        "description": "短而可区分的任务名称。用户没给时工具会主动向用户询问，可省略。"
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "到点后投递给会话的提醒内容（相当于一条用户消息）。"
+                        "description": "到点后投递给会话的提醒内容（相当于一条用户消息）。用户没给时工具会主动向用户询问，可省略。"
                     },
                     "rule": {
                         "type": "string",
-                        "description": "触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <星期列表> HH:MM（可多选，逗号分隔，如 1,3,5；0或sun=周日）/ monthly <日> HH:MM（日 1-31）。"
+                        "description": "触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <星期列表> HH:MM（可多选，逗号分隔，如 1,3,5；0或sun=周日）/ monthly <日> HH:MM（日 1-31）。用户没给时工具会主动向用户询问（列出全部周期方式），可省略。"
                     },
                     "target": {
                         "type": "string",
-                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。"
+                        "description": "投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。用户没给时工具会主动向用户询问，可省略。"
                     },
                     "overlap": {
                         "type": "string",
@@ -207,7 +212,7 @@ impl Tool for ScheduleCreate {
                         "description": "投递回合的工作目录（绝对路径）。用户明确给了就用；拿不准就省略，工具会主动向用户询问（用户可跳过用默认目录）。"
                     }
                 },
-                "required": ["title", "prompt", "rule"],
+                "required": [],
                 "additionalProperties": false
             }),
         }
@@ -224,27 +229,150 @@ impl Tool for ScheduleCreate {
         };
         let args: CreateArgs =
             serde_json::from_value(args).map_err(|err| ToolError::Invalid(err.to_string()))?;
-        let title = args.title.trim();
-        if title.is_empty() {
-            return Ok(ToolOutput::error("标题不能为空"));
+
+        // 缺失项一次问全：名称 / 内容 / 周期 / 工作目录 / 目标。不依赖模型自觉
+        // 先调 ask_user——描述里的引导可能被模型忽略，这里由工具自己问。
+        let mut title = trim_opt(args.title);
+        let mut prompt = trim_opt(args.prompt);
+        let mut rule_text = trim_opt(args.rule);
+        let mut cwd = args
+            .cwd
+            .map(|text| text.trim().to_string())
+            .filter(|t| !t.is_empty());
+        let mut target = trim_opt(Some(args.target));
+
+        let mut questions: Vec<QuestionItem> = Vec::new();
+        if title.is_none() {
+            questions.push(free_question(
+                "title",
+                "给这个定时任务起个名称（必填，简短可区分）。",
+            ));
         }
-        if args.prompt.trim().is_empty() {
-            return Ok(ToolOutput::error("内容不能为空"));
+        if prompt.is_none() {
+            questions.push(free_question(
+                "prompt",
+                "到点后投递给会话的内容是什么（必填，相当于一条用户消息）？",
+            ));
         }
+        if rule_text.is_none() {
+            questions.push(QuestionItem {
+                id: "rule".to_string(),
+                header: None,
+                question: "请选择触发周期（必填）。".to_string(),
+                detail: Some(
+                    "选类型后填对应参数（时刻 / 星期 / 日期 / 秒数 / Cron 表达式）。".to_string(),
+                ),
+                options: Vec::new(),
+                multi_select: false,
+                pick_directory: false,
+                schedule_rule: true,
+            });
+        }
+        // cwd / target 有默认（本回合工作目录 / new_once），只在「有人可问」时才
+        // 问；headless（`qc run --yes`、子代理）下直接回落默认，不制造提问。
+        if ctx.questioner.is_some() && cwd.is_none() {
+            questions.push(QuestionItem {
+                id: "cwd".to_string(),
+                header: None,
+                question: "请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）"
+                    .to_string(),
+                detail: None,
+                options: Vec::new(),
+                multi_select: false,
+                pick_directory: true,
+                schedule_rule: false,
+            });
+        }
+        if ctx.questioner.is_some() && target.is_none() {
+            questions.push(QuestionItem {
+                id: "target".to_string(),
+                header: None,
+                question: "每次投递到哪里？".to_string(),
+                detail: Some("二选一：复用同一个会话，或每次新建一个会话。".to_string()),
+                options: vec![
+                    QuestionOption {
+                        label: "复用同一个会话".to_string(),
+                        description: Some(
+                            "所有投递都进入创建它的这个会话（默认；在对话中创建时即当前对话）。"
+                                .to_string(),
+                        ),
+                    },
+                    QuestionOption {
+                        label: "每次新建一个会话".to_string(),
+                        description: Some("每次投递都新建一个会话。".to_string()),
+                    },
+                ],
+                multi_select: false,
+                pick_directory: false,
+                schedule_rule: false,
+            });
+        }
+
+        if !questions.is_empty() {
+            let Some(questioner) = &ctx.questioner else {
+                // headless（`qc run --yes`、子代理）没有提问方：cwd / target 的
+                // 问题根本不会进列表，走到这里缺的只可能是必填三项。不能凭空
+                // 编造，明确告诉模型它需要先向用户确认。
+                return Ok(ToolOutput::error(
+                    "缺少必要信息：请先向用户确认该定时任务的名称、内容与周期（工作目录与目标可省略），再调用 schedule_create",
+                ));
+            };
+            let request = QuestionRequest {
+                call_id: ctx.call_id.clone(),
+                questions,
+                intent: QuestionIntent::Confirm,
+                timeout: None,
+            };
+            match questioner.ask(&request, ctx.cancel.clone()).await {
+                QuestionAnswer::Answered(answers) => {
+                    if title.is_none() {
+                        title = answer_text(&answers, "title").map(str::to_string);
+                    }
+                    if prompt.is_none() {
+                        prompt = answer_text(&answers, "prompt").map(str::to_string);
+                    }
+                    if rule_text.is_none() {
+                        rule_text = answer_text(&answers, "rule").map(str::to_string);
+                    }
+                    if cwd.is_none() {
+                        cwd = answer_text(&answers, "cwd").map(str::to_string);
+                    }
+                    if target.is_none() {
+                        target = answer_choice(&answers, "target").map(str::to_string);
+                    }
+                }
+                // 超时 / 取消：信息不齐，不创建。
+                _ => return Ok(ToolOutput::error("创建已取消：未获得完整信息")),
+            }
+        }
+
+        // 必填项：问过仍缺（用户跳过）就不能继续。
+        let Some(title) = title else {
+            return Ok(ToolOutput::error("标题不能为空：用户未提供任务名称"));
+        };
+        let Some(prompt) = prompt else {
+            return Ok(ToolOutput::error("内容不能为空：用户未提供投递内容"));
+        };
+        let Some(rule_text) = rule_text else {
+            return Ok(ToolOutput::error("周期不能为空：用户未提供触发周期"));
+        };
         // 规则 / 目标 / overlap 的解析错误是模型可以修正的输入错误，作为工具
         // 结果返回（todo 工具同款约定），而不是引擎级失败。
-        let rule = match parse_rule(&args.rule) {
+        let rule = match parse_rule(&rule_text) {
             Ok(rule) => rule,
             Err(error) => return Ok(ToolOutput::error(format!("规则无效: {error}"))),
         };
-        let target = match parse_target(&args.target) {
-            Some(target) => target,
-            None => {
-                return Ok(ToolOutput::error(
-                    "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>"
-                        .to_string(),
-                ));
-            }
+        let target = match target {
+            Some(text) => match parse_target(&text) {
+                Some(target) => target,
+                None => {
+                    return Ok(ToolOutput::error(
+                        "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>"
+                            .to_string(),
+                    ));
+                }
+            },
+            None => Target::NewOnce,
         };
         // 在会话内创建且选「每次复用会话」（new_once）时，复用当前对话——这样
         // 任务从创建起就绑定到会话，详情页可立即跳转。
@@ -263,42 +391,6 @@ impl Tool for ScheduleCreate {
             }
         };
         let approval_timeout = args.approval_timeout_secs.map(Duration::from_secs);
-
-        // 工作目录：模型没给时工具主动询问用户（可跳过，用会话默认目录）。
-        // 不依赖模型自觉调用 ask_user——描述里的引导可能被模型忽略。
-        let mut cwd = args.cwd;
-        if cwd.is_none()
-            && let Some(questioner) = &ctx.questioner
-        {
-            let request = QuestionRequest {
-                call_id: ctx.call_id.clone(),
-                questions: vec![QuestionItem {
-                    id: "cwd".to_string(),
-                    header: None,
-                    question: "请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）"
-                        .to_string(),
-                    detail: None,
-                    options: Vec::new(),
-                    multi_select: false,
-                    pick_directory: true,
-                }],
-                intent: QuestionIntent::Confirm,
-                timeout: None,
-            };
-            // 超时 / 取消：不追问，用默认目录创建——所以只认 `Answered`，
-            // 其余分支本来也什么都不做。
-            if let QuestionAnswer::Answered(answers) =
-                questioner.ask(&request, ctx.cancel.clone()).await
-                && let Some(item) = answers.first().filter(|item| !item.is_skipped())
-                && let Some(text) = item
-                    .custom
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-            {
-                cwd = Some(text.to_string());
-            }
-        }
 
         // 兜底成这个回合的工作目录（ADR-0090 §11）。
         //
@@ -326,8 +418,8 @@ impl Tool for ScheduleCreate {
         let task = scheduler
             .create(
                 NewTask {
-                    title: title.to_string(),
-                    prompt: args.prompt,
+                    title,
+                    prompt,
                     rule,
                     target,
                     overlap,
@@ -337,6 +429,15 @@ impl Tool for ScheduleCreate {
                 now_local(),
             )
             .map_err(|error| ToolError::Invalid(error.to_string()))?;
+        // 绑定到会话（每次复用当前会话）且该会话没有显式标题时，把任务名作为
+        // 会话标题：对话没起名，任务名就是对话名（GUI/TUI/CLI 统一生效）。
+        if let Some(session) = task.target.session_id()
+            && !session.is_empty()
+            && let Err(err) = scheduler.set_session_title_if_missing(session, &task.title)
+        {
+            // 写标题失败不否决创建：任务已经登记成功，标题只是锦上添花。
+            tracing::warn!(%err, session, "schedule_create: naming the bound session failed");
+        }
         Ok(ToolOutput::ok(format!(
             "已创建定时任务 `{}`（id: {}）\n{}\n\n{}",
             task.title,
@@ -345,6 +446,42 @@ impl Tool for ScheduleCreate {
             qcode_core::scheduler::driver_footer(ctx.driver),
         )))
     }
+}
+
+/// 一次「自由文本回答」的问题。
+fn free_question(id: &str, question: &str) -> QuestionItem {
+    QuestionItem {
+        id: id.to_string(),
+        header: None,
+        question: question.to_string(),
+        detail: None,
+        options: Vec::new(),
+        multi_select: false,
+        pick_directory: false,
+        schedule_rule: false,
+    }
+}
+
+/// 去空白后的可选文本；空字符串视为「没给」。
+fn trim_opt(text: Option<String>) -> Option<String> {
+    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// 按 id 取自由文本回答（跳过 / 空视为没有）。
+fn answer_text<'a>(answers: &'a [AnswerItem], id: &str) -> Option<&'a str> {
+    answers
+        .iter()
+        .find(|answer| answer.id == id)
+        .and_then(|answer| answer.custom.as_deref().map(str::trim))
+        .filter(|text| !text.is_empty())
+}
+
+/// 按 id 取单选回答的选项 label。
+fn answer_choice<'a>(answers: &'a [AnswerItem], id: &str) -> Option<&'a str> {
+    answers
+        .iter()
+        .find(|answer| answer.id == id)
+        .and_then(|answer| answer.selected.first().map(String::as_str))
 }
 
 /// `schedule_list`: 列出所有定时任务。
@@ -595,10 +732,12 @@ mod tests {
     use std::sync::Mutex;
 
     use qcode_core::event::ToolStatus;
+    use qcode_core::question::{AnswerItem, QuestionAnswer, Questioner};
     use qcode_core::schedule::{DeliveryReceipt, Overlap, Rule, Target, TaskStatus};
     use qcode_core::scheduler::ScheduleError;
     use serde_json::json;
     use time::PrimitiveDateTime;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
 
@@ -608,6 +747,7 @@ mod tests {
         created: Mutex<Vec<(NewTask, PrimitiveDateTime)>>,
         edited: Mutex<Vec<(String, EditTask, PrimitiveDateTime)>>,
         actions: Mutex<Vec<(String, String)>>,
+        titles: Mutex<Vec<(String, String)>>,
         tasks: Mutex<Vec<ScheduledTask>>,
         unavailable: bool,
     }
@@ -659,7 +799,9 @@ mod tests {
                 .lock()
                 .expect("created lock")
                 .push((input.clone(), now));
-            let task = sample_task("t-1", &input.title);
+            let mut task = sample_task("t-1", &input.title);
+            // 保留传入的 target：工具按它判断「绑定到哪个会话」并写会话标题。
+            task.target = input.target.clone();
             Ok(task)
         }
 
@@ -706,6 +848,18 @@ mod tests {
                 .lock()
                 .expect("actions lock")
                 .push((id.to_string(), "delete".to_string()));
+            Ok(())
+        }
+
+        fn set_session_title_if_missing(
+            &self,
+            session_id: &str,
+            title: &str,
+        ) -> Result<(), ScheduleError> {
+            self.titles
+                .lock()
+                .expect("titles lock")
+                .push((session_id.to_string(), title.to_string()));
             Ok(())
         }
     }
@@ -773,7 +927,7 @@ mod tests {
             .expect("execute");
         assert_eq!(output.status, ToolStatus::Error);
         assert!(output.output.contains("at least 60"), "{}", output.output);
-        // 空标题。
+        // 空标题：headless 下工具直接说明缺了什么，让模型先向用户确认。
         let output = ScheduleCreate
             .execute(
                 &ctx,
@@ -782,7 +936,101 @@ mod tests {
             .await
             .expect("execute");
         assert_eq!(output.status, ToolStatus::Error);
-        assert!(output.output.contains("标题不能为空"));
+        assert!(output.output.contains("缺少必要信息"), "{}", output.output);
+    }
+
+    /// 一个返回固定答案批次的提问器，用于引擎外的工具测试（同 ask.rs 的 Fixed）。
+    #[derive(Debug)]
+    struct Fixed(QuestionAnswer);
+
+    #[async_trait]
+    impl Questioner for Fixed {
+        async fn ask(
+            &self,
+            _request: &QuestionRequest,
+            _cancel: CancellationToken,
+        ) -> QuestionAnswer {
+            self.0.clone()
+        }
+    }
+
+    /// 缺的字段由工具自己一次问全（名称 / 内容 / 周期 / 工作目录 / 目标），
+    /// 答案回填后照常创建——这是「在对话中创建」的唯一入口，不依赖模型先调
+    /// ask_user。
+    #[tokio::test]
+    async fn create_asks_for_missing_fields_in_one_round() {
+        let fake = Arc::new(FakeHandle::default());
+        let questioner = Arc::new(Fixed(QuestionAnswer::Answered(vec![
+            AnswerItem {
+                id: "title".into(),
+                selected: vec![],
+                custom: Some("每日日报".into()),
+            },
+            AnswerItem {
+                id: "prompt".into(),
+                selected: vec![],
+                custom: Some("写日报".into()),
+            },
+            AnswerItem {
+                id: "rule".into(),
+                selected: vec![],
+                custom: Some("daily 09:30".into()),
+            },
+            AnswerItem {
+                id: "cwd".into(),
+                selected: vec![],
+                custom: Some("D:\\work".into()),
+            },
+            AnswerItem {
+                id: "target".into(),
+                selected: vec!["每次新建一个会话".into()],
+                custom: None,
+            },
+        ])));
+        let ctx = context_with(Some(fake.clone() as Arc<dyn SchedulerHandle>))
+            .with_questioner(Some(questioner));
+        let output = ScheduleCreate
+            .execute(&ctx, json!({}))
+            .await
+            .expect("execute");
+        assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
+        let created = fake.created.lock().expect("created lock");
+        let (input, _) = created.first().expect("created");
+        assert_eq!(input.title, "每日日报");
+        assert_eq!(input.prompt, "写日报");
+        assert_eq!(
+            input.rule,
+            Rule::Daily {
+                hour: 9,
+                minute: 30
+            }
+        );
+        assert_eq!(input.target, Target::New);
+        assert_eq!(input.cwd.as_deref(), Some("D:\\work"));
+    }
+
+    /// 在对话中创建（new_once + 会话里）时绑定当前会话，并把任务名写为会话标题
+    /// ——对话没起名时，任务名就是对话名。
+    #[tokio::test]
+    async fn create_names_the_bound_session() {
+        let fake = Arc::new(FakeHandle::default());
+        let mut ctx = context_with(Some(fake.clone() as Arc<dyn SchedulerHandle>));
+        ctx.session_id = "s-42".to_string();
+        let output = ScheduleCreate
+            .execute(
+                &ctx,
+                json!({"title": "每日日报", "prompt": "写日报", "rule": "daily 09:30"}),
+            )
+            .await
+            .expect("execute");
+        assert_eq!(output.status, ToolStatus::Ok, "{}", output.output);
+        let created = fake.created.lock().expect("created lock");
+        let (input, _) = created.first().expect("created");
+        assert_eq!(input.target, Target::Session { id: "s-42".into() });
+        let titles = fake.titles.lock().expect("titles lock");
+        assert_eq!(titles.len(), 1, "{titles:?}");
+        assert_eq!(titles[0].0, "s-42");
+        assert_eq!(titles[0].1, "每日日报");
     }
 
     /// 这是 ADR-0088 的核心行为变化：handle 在、驱动不在 = **登记成功**，

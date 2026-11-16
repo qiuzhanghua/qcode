@@ -1,5 +1,6 @@
 use super::*;
 use crate::platform::pick_directory;
+use qcode_core::schedule::parse_rule;
 
 impl Shell {
     /// 当前是否正停在一个“没有任何对话内容”的新任务/草稿上。
@@ -515,9 +516,24 @@ impl Shell {
     /// closes (an open question resolves through the bridge, a continued one is
     /// steered in as a user message), and the next queued question opens.
     pub(crate) fn question_submit(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.ui.question.take() else {
+        let Some(mut panel) = self.ui.question.take() else {
             return;
         };
+        // 周期题：把选择器当前值拼成规范表达式写进该题的回答。参数没填齐或
+        // 表达式无效时拒绝提交，面板留在原题让用户修正。
+        if let Some(rule) = panel.rule.as_ref() {
+            match rule.rule_text(cx).filter(|text| parse_rule(text).is_ok()) {
+                Some(text) => {
+                    panel.customs[rule.index] = text;
+                }
+                None => {
+                    self.ui.question = Some(panel);
+                    self.ui.app.push_notice("周期不完整或无效：请检查周期选择");
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         let call_id = panel.view.call_id.clone();
         let questions = panel.view.questions.clone();
         let answers = panel.answers();

@@ -1,5 +1,6 @@
-//! 定时任务（Scheduled Tasks）的 Shell 侧动作：侧栏 ＋/⋮ 新建、详情页、
-//! 手动创建表单与动作下发。数据经 `Backend::schedule_tasks()` 读缓存、
+//! 定时任务（Scheduled Tasks）的 Shell 侧动作：详情页、编辑表单与动作下发。
+//! 创建定时任务已并入对话（模型调 `schedule_create` 工具补全缺失项），界面
+//! 不再有「＋」/「手动创建」入口。数据经 `Backend::schedule_tasks()` 读缓存、
 //! `Backend::schedule_op()` 发命令（结果经 `ScheduleChanged` / `ScheduleCreated`
 //! / `ScheduleNotice` 事件回传，见 `shell::poll`）。
 
@@ -24,7 +25,7 @@ pub(crate) enum ScheduleAction {
 /// （数据本身已在内存里——`delivery_log` 最多 200 条——这只控制渲染上限）。
 pub(crate) const SCHEDULE_LOG_PAGE_SIZE: usize = 30;
 
-/// 手动创建表单里「周期」的选择：每种规则一套自己的参数。
+/// 编辑表单里「周期」的选择：每种规则一套自己的参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScheduleRuleKind {
     Daily,
@@ -80,7 +81,7 @@ impl ScheduleRuleKind {
     }
 }
 
-/// 手动创建表单里「目标」的选择。
+/// 编辑表单里「目标」的选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScheduleTargetKind {
     NewOnce,
@@ -112,8 +113,9 @@ impl ScheduleTargetKind {
     }
 }
 
-/// 手动创建定时任务的表单：名称 / 内容 / 审批超时是输入框；周期与目标是
+/// 编辑定时任务的表单：名称 / 内容 / 审批超时是输入框；周期与目标是
 /// 下拉菜单 + 各自的参数。提交时把结构化状态翻译回规范表达式统一校验。
+/// （创建已并入对话，表单只从详情页「修改」进入。）
 pub(crate) struct ScheduleFormState {
     pub(crate) title: Entity<InputState>,
     pub(crate) prompt: Entity<InputState>,
@@ -137,7 +139,7 @@ pub(crate) struct ScheduleFormState {
     pub(crate) target_kind: ScheduleTargetKind,
     /// 投递回合的工作目录（绝对路径）；`None` = 用会话 / 引擎默认。
     pub(crate) cwd: Option<String>,
-    /// 编辑模式：要修改的任务 id；`None` = 手动创建。
+    /// 编辑模式：要修改的任务 id；`None` = 新建（当前界面已无新建入口，仅编辑用）。
     pub(crate) editing: Option<String>,
     // 各下拉菜单的开关。
     pub(crate) rule_menu_open: bool,
@@ -146,49 +148,6 @@ pub(crate) struct ScheduleFormState {
 }
 
 impl Shell {
-    /// 侧栏「定时任务」＋ / ⋮·在对话中创建：新建会话并预填创建提示。
-    ///
-    /// 任务列表里已经有一个「新任务」（尚无标题 / 内容的空任务）时，直接
-    /// 跳过去复用，不再新建——避免点一次就堆一个空的「新任务」行。其余情况
-    /// 复用「我的任务」的 `new_session`（含草稿保护）：复用了当前空会话时
-    /// 预填依然成立；被草稿保护拦下时，预填同样写进用户正在编辑的会话——
-    /// 他点的是「创建定时任务」，这个预填正是他要的。
-    pub(crate) fn new_schedule_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.schedule_menu_open = false;
-        // 任务列表里已存在的空任务（`titles` 里没有条目 = 尚无标题 = 「新任务」）。
-        let existing_new = self
-            .tasks
-            .iter()
-            .find(|row| !self.titles.contains_key(&row.task.id))
-            .map(|row| row.task.id.clone());
-        match existing_new {
-            Some(id) if self.active.as_deref() != Some(id.as_str()) => {
-                self.resume(id, window, cx);
-            }
-            _ => {
-                self.new_session(window, cx);
-                // 从定时任务详情页点进来时，`new_session` 可能因「复用空任务 /
-                // 草稿保护」提前返回（不切视图），这里必须切回任务视图，
-                // 预填才看得到。
-                self.enter_task_view(cx);
-            }
-        }
-        // 预填提示保持简短；「未明确周期时先向用户确认」的引导在
-        // schedule_create 工具描述里（模型调用工具时读到），不占输入框。
-        // 注意：title 生成会剥掉这个前缀（见 `qcode_core::task::SCHEDULE_DRAFT_PREFILL`）。
-        // set_value 直接覆盖：输入框原本有内容也一并清掉。
-        let prefill = format!("{}\n", qcode_core::task::SCHEDULE_DRAFT_PREFILL);
-        self.ui.input.update(cx, |input, cx| {
-            input.set_value(prefill, window, cx);
-            // 合成器是多行文本域：set_value 会把选择清到 0..0（开头），
-            // 光标落在第一行而不是预填句子的下一行。把光标移到文本末尾，
-            // 用户直接在下行输入需求。
-            let end = input.value().len();
-            input.set_selected_range(end..end, cx);
-            cx.notify();
-        });
-    }
-
     pub(crate) fn toggle_schedule_menu(&mut self, cx: &mut Context<Self>) {
         self.schedule_menu_open = !self.schedule_menu_open;
         cx.notify();
@@ -203,15 +162,6 @@ impl Shell {
         self.schedule_filter = filter;
         self.schedule_menu_open = false;
         cx.notify();
-    }
-
-    /// 手动创建：弹出表单（字段：名称 / 内容 / 周期 / 目标 / 审批超时）。
-    ///
-    /// 周期与目标是下拉菜单：周期默认「每天 09:00」，目标默认「新会话（复用）」，
-    /// 用户先选类型再填该类型自己的参数，不用手写 `daily 09:00` 这类表达式。
-    pub(crate) fn open_schedule_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.schedule_menu_open = false;
-        self.schedule_form_with(None, window, cx);
     }
 
     /// 详情页「修改」：打开编辑表单并预填原任务内容。
@@ -232,10 +182,10 @@ impl Shell {
         self.schedule_form_with(Some(&task), window, cx);
     }
 
-    /// 构造手动创建 / 编辑定时任务的表单。
+    /// 构造编辑定时任务的表单。
     ///
     /// 实体先按创建默认值构造，`prefill`（编辑模式）随后把原任务的字段写回
-    /// 对应输入框 / 参数。周期与目标下拉默认值同 `open_schedule_form`。
+    /// 对应输入框 / 参数。周期与目标下拉默认值即创建默认值。
     fn schedule_form_with(
         &mut self,
         prefill: Option<&ScheduledTask>,
@@ -399,7 +349,71 @@ impl Shell {
         cx.notify();
     }
 
-    /// 校验并提交手动创建表单；失败时保留表单并提示，成功则关闭并刷新。
+    /// 提问面板「周期」题的结构化选择器：默认值与手动表单一致（每天 09:00、
+    /// 周一只、每月 15 日、3600 秒、明天 09:00、Cron 占位）。实体在 render
+    /// 里按 `(call_id, index)` 懒创建，面板换题/换批时重建。
+    pub(crate) fn new_question_rule(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        call_id: &str,
+        index: usize,
+    ) -> crate::questions::RulePickerState {
+        let time = cx.new(|cx| {
+            let mut state = TimeFieldState::new(window, cx)
+                .precision(TimePrecision::Minute)
+                .hour_cycle(HourCycle::H23);
+            state.set_time(
+                chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("09:00"),
+                window,
+                cx,
+            );
+            state
+        });
+        let interval_secs = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("秒数（≥ 60）");
+            input.set_value("3600", window, cx);
+            input
+        });
+        let monthly_day = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("日（1-31）");
+            input.set_value("15", window, cx);
+            input
+        });
+        // 一次性默认「明天 09:00」：once 要求未来时刻，保证选完类型即可提交。
+        let once_picker = cx.new(|cx| {
+            let mut state = DatePickerState::new(window, cx)
+                .date_format("%Y-%m-%d %H:%M")
+                .time_precision(TimePrecision::Minute)
+                .hour_cycle(HourCycle::H23)
+                .default_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("09:00"));
+            let tomorrow = now_local().date().saturating_add(time::Duration::days(1));
+            let naive = chrono::NaiveDate::from_ymd_opt(
+                tomorrow.year(),
+                tomorrow.month() as u32,
+                tomorrow.day() as u32,
+            )
+            .expect("tomorrow is a real date");
+            state.set_date_time(naive.and_hms_opt(9, 0, 0).expect("09:00"), window, cx);
+            state
+        });
+        let cron_expr =
+            cx.new(|cx| InputState::new(window, cx).placeholder("5 字段，如 0 9 * * *"));
+        crate::questions::RulePickerState {
+            kind: ScheduleRuleKind::Daily,
+            time,
+            weekdays: vec![1],
+            monthly_day,
+            interval_secs,
+            once_picker,
+            cron_expr,
+            rule_menu_open: false,
+            call_id: call_id.to_string(),
+            index,
+        }
+    }
+
+    /// 校验并提交表单；失败时保留表单并提示，成功则关闭并刷新。
     pub(crate) fn submit_schedule_form(&mut self, cx: &mut Context<Self>) {
         // 先接管表单（其输入框实体归本函数所有，读值不借 self），失败再放回。
         let Some(form) = self.schedule_form.take() else {

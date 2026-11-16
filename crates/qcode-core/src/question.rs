@@ -32,6 +32,12 @@ pub struct QuestionItem {
     /// 用于「工作目录」这类既想弹框又想手工输入的提问。
     #[serde(default, skip_serializing_if = "is_false")]
     pub pick_directory: bool,
+    /// 周期类提问：前端渲染成「类型下拉 + 各自参数」的结构化选择器（与定时
+    /// 任务编辑表单的周期区同构），而不是自由文本输入。回答编码不变：提交时
+    /// 前端把选择拼成规范表达式（如 `daily 09:30`）作为 `custom` 回填；不认
+    /// 识该标记的前端照旧走自由文本，`question`/`detail` 里的格式说明仍然有效。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub schedule_rule: bool,
 }
 
 /// `bool` 没有 `is_false`，给 serde 的 `skip_serializing_if` 用。
@@ -330,6 +336,7 @@ mod tests {
                 .collect(),
             multi_select: false,
             pick_directory: false,
+            schedule_rule: false,
         }
     }
 

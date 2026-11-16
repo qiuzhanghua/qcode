@@ -84,7 +84,7 @@ impl Shell {
             .child(
                 div().px(px(MAIN_PAD_L)).pt_1().child(
                     div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                        "从左侧选择一个定时任务查看详情与运行记录；点「＋」在对话中创建，或用「⋮」手动创建。",
+                        "从左侧选择一个定时任务查看详情与运行记录；创建定时任务直接在对话里让模型完成。",
                     ),
                 ),
             )

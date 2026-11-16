@@ -1153,6 +1153,7 @@ mod tests {
                 ],
                 multi_select: false,
                 pick_directory: false,
+                schedule_rule: false,
             }],
             intent: QuestionIntent::Confirm,
             timeout: None,

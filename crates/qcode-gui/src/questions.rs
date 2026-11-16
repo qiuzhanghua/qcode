@@ -8,8 +8,13 @@
 
 use std::collections::VecDeque;
 
+use gpui_kit::component::date_picker::DatePickerState;
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::time_field::TimeFieldState;
 use qcode_core::question::{AnswerItem, QuestionItem};
 use qcode_ui_bridge::QuestionView;
+
+use crate::shell::schedule::ScheduleRuleKind;
 
 #[derive(Debug, Default)]
 pub struct QuestionQueue {
@@ -54,6 +59,80 @@ impl QuestionQueue {
     }
 }
 
+/// 「周期」题的结构化选择器状态：类型下拉 + 各自参数，与定时任务编辑表单的
+/// 周期区同构（见 `shell/schedule.rs` 的 `ScheduleFormState`）。实体在 render
+/// 里按 `(call_id, index)` 懒创建，面板换题/换批时重建；提交时由
+/// [`Self::rule_text`] 拼成规范表达式回填给工具。
+#[derive(Debug)]
+pub struct RulePickerState {
+    pub kind: ScheduleRuleKind,
+    pub time: gpui_kit::Entity<TimeFieldState>,
+    pub weekdays: Vec<u8>,
+    pub monthly_day: gpui_kit::Entity<InputState>,
+    pub interval_secs: gpui_kit::Entity<InputState>,
+    pub once_picker: gpui_kit::Entity<DatePickerState>,
+    pub cron_expr: gpui_kit::Entity<InputState>,
+    pub rule_menu_open: bool,
+    pub call_id: String,
+    pub index: usize,
+}
+
+impl RulePickerState {
+    /// 把选择器当前值拼成规范表达式（如 `daily 09:30`）；参数没填齐时返回
+    /// `None`（调用方据此拒绝提交）。
+    pub(crate) fn rule_text(&self, cx: &gpui_kit::App) -> Option<String> {
+        match self.kind {
+            ScheduleRuleKind::Daily | ScheduleRuleKind::Weekly | ScheduleRuleKind::Monthly => {
+                let clock = self.time.read(cx).time().format("%H:%M");
+                match self.kind {
+                    ScheduleRuleKind::Daily => Some(format!("daily {clock}")),
+                    ScheduleRuleKind::Weekly => {
+                        let mut weekdays = self.weekdays.clone();
+                        weekdays.sort_unstable();
+                        weekdays.dedup();
+                        if weekdays.is_empty() {
+                            return None;
+                        }
+                        Some(format!(
+                            "weekly {} {clock}",
+                            weekdays
+                                .iter()
+                                .map(|day| day.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ))
+                    }
+                    _ => {
+                        let day = self.monthly_day.read(cx).value().trim().to_string();
+                        if day.is_empty() {
+                            return None;
+                        }
+                        Some(format!("monthly {day} {clock}"))
+                    }
+                }
+            }
+            ScheduleRuleKind::Interval => {
+                let secs = self.interval_secs.read(cx).value().trim().to_string();
+                if secs.is_empty() {
+                    return None;
+                }
+                Some(format!("every {secs}"))
+            }
+            ScheduleRuleKind::Once => {
+                let naive = self.once_picker.read(cx).date_time().start()?;
+                Some(format!("once {}", naive.format("%Y-%m-%d %H:%M")))
+            }
+            ScheduleRuleKind::Cron => {
+                let expr = self.cron_expr.read(cx).value().trim().to_string();
+                if expr.is_empty() {
+                    return None;
+                }
+                Some(format!("cron {expr}"))
+            }
+        }
+    }
+}
+
 /// The panel's interactive state for the question currently on screen.
 #[derive(Debug)]
 pub struct QuestionPanel {
@@ -64,6 +143,8 @@ pub struct QuestionPanel {
     pub selected: Vec<Vec<usize>>,
     /// Free-text custom answers per question.
     pub customs: Vec<String>,
+    /// 「周期」题的选择器状态（`schedule_rule` 标记的那一题）。
+    pub rule: Option<RulePickerState>,
     /// The timed window elapsed: answers go through the steering path.
     pub continued: bool,
     /// A submit is in flight; the panel is frozen.
@@ -86,6 +167,7 @@ impl QuestionPanel {
             index: 0,
             selected: vec![Vec::new(); count],
             customs: vec![String::new(); count],
+            rule: None,
             continued: false,
             submitting: false,
             deadline,

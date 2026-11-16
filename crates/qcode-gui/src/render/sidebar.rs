@@ -873,8 +873,8 @@ impl Shell {
     }
 
     /// 定时任务段的段头：左侧与其它段头同构（chevron + 图标 + 名称），右侧
-    /// 是两个动作按钮——「＋」新建（跳新对话预填创建提示）与「⋮」菜单
-    /// （在对话中创建 / 手动创建 / 按状态过滤）。
+    /// 是「⋮」菜单（按状态过滤）。创建定时任务统一走对话：模型经
+    /// `schedule_create` 工具向用户补全缺失项，界面不再提供「＋」或手动创建入口。
     fn render_schedule_section_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
@@ -883,9 +883,8 @@ impl Shell {
             Button::new("schedule-menu")
                 .compact()
                 .icon(IconName::Ellipsis)
-                .tooltip("定时任务操作")
-                // 无边框透明：常态无底，悬浮/按下灰色（与「在对话中创建
-                // 定时任务」按钮一致）。
+                .tooltip("定时任务筛选")
+                // 无边框透明：常态无底，悬浮/按下灰色。
                 .custom(
                     ButtonCustomVariant::new(cx)
                         .color(cx.theme().transparent)
@@ -959,25 +958,7 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_0p5()
-                    .child(menu_wrapper)
-                    .child(
-                        Button::new("new-schedule-task")
-                            .icon(IconName::CirclePlus)
-                            .tooltip("在对话中创建定时任务")
-                            // 与「我的任务」段头「新建任务」按钮同款：无边框、
-                            // 常态透明，悬浮/按下加深灰色底。
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(cx.theme().transparent)
-                                    .hover(rgb(0x888888).opacity(0.2).into())
-                                    .active(rgb(0x888888).opacity(0.45).into())
-                                    .foreground(cx.theme().button_foreground),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.new_schedule_draft(window, cx);
-                            })),
-                    ),
+                    .child(menu_wrapper),
             )
             .on_click(cx.listener(move |this, _, _window, cx| {
                 this.toggle_sidebar_section(SidebarSection::Schedule, cx);
@@ -985,8 +966,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// 定时任务段头「⋮」的弹出菜单：在对话中创建 / 手动创建，以及
-    /// 按状态过滤（全部 / 已开启 / 已暂停 / 已结束）。
+    /// 定时任务段头「⋮」的弹出菜单：按状态过滤（全部 / 已开启 / 已暂停 /
+    /// 已结束）。创建定时任务已并入对话，由模型调 `schedule_create` 完成。
     fn render_schedule_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         div()
@@ -1005,40 +986,6 @@ impl Shell {
                 this.schedule_menu_open = false;
                 cx.notify();
             }))
-            .child(
-                Button::new("schedule-create-in-chat")
-                    .label("在对话中创建")
-                    .tooltip("新建会话，让模型按你的描述创建定时任务")
-                    // 菜单项无边框：常态透明，悬浮/按下灰色底。
-                    .custom(
-                        ButtonCustomVariant::new(cx)
-                            .color(cx.theme().transparent)
-                            .hover(rgb(0x888888).opacity(0.2).into())
-                            .active(rgb(0x888888).opacity(0.45).into())
-                            .foreground(cx.theme().popover_foreground),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.new_schedule_draft(window, cx);
-                    })),
-            )
-            .child(
-                Button::new("schedule-manual-create")
-                    .label("手动创建")
-                    .tooltip("填写名称 / 内容 / 周期等，直接创建")
-                    // 菜单项无边框：常态透明，悬浮/按下灰色底。
-                    .custom(
-                        ButtonCustomVariant::new(cx)
-                            .color(cx.theme().transparent)
-                            .hover(rgb(0x888888).opacity(0.2).into())
-                            .active(rgb(0x888888).opacity(0.45).into())
-                            .foreground(cx.theme().popover_foreground),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.open_schedule_form(window, cx);
-                    })),
-            )
             .child(
                 // 按状态过滤：原段头的过滤按钮移到这里，功能保持不变。
                 div()
@@ -1114,7 +1061,7 @@ impl Shell {
                         .py_1()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(muted)
-                        .child("还没有定时任务——点「＋」在对话中创建，或用「⋮」手动创建"),
+                        .child("还没有定时任务——直接在对话里让模型创建即可"),
                 )
             })
             .when(
