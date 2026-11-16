@@ -46,6 +46,18 @@ $Bin = (Select-String -Path crates\qcode\Cargo.toml -Pattern '^name\s*=\s*"([^"]
     Select-Object -Skip 1 -First 1).Matches.Groups[1].Value
 if (-not $Pkg -or -not $Bin) { Fail "读不出 crates\qcode\Cargo.toml 的包名 / [[bin]] 名" }
 
+# 常驻驱动（ADR-0092）与 `qc` 同属一次发布（ADR-0098 §7）。它是**独立 package**
+# （ADR-0092 §2），所以必须单独 `-p` 编出来：`-p qcode` 的普通依赖里没有 qcd
+# （只在 [dev-dependencies] 里，那是测试用的）。
+#
+# 漏掉它的后果不是「定时任务用不了」这么轻：GUI 段头那颗「启动」按钮点下去得到
+# `qcd` was not found，而 `find_qcd` 第一步就找「与 qc 同目录的兄弟」。
+$QcdPkg = (Select-String -Path crates\qcd\Cargo.toml -Pattern '^name\s*=\s*"([^"]+)"' |
+    Select-Object -First 1).Matches.Groups[1].Value
+if (-not $QcdPkg) { Fail "读不出 crates\qcd\Cargo.toml 的包名" }
+# crates\qcd 没有 [[bin]] 段（一个 package 一个 main.rs），包名即 exe 名。
+$QcdBin = $QcdPkg
+
 $Version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
     Select-Object -First 1).Matches.Groups[1].Value
 if (-not $Version) { Fail "读不出 Cargo.toml 的 [workspace.package] version" }
@@ -77,9 +89,12 @@ $Artifact = "${Pkg}_${Version}_windows_${Arch}${Suffix}"
 
 # ------------------------------------------------- 自动更新的资产名（-Release）
 #
-# crates\qcode\src\update.rs 只认一个形状：qc-<version>-<os>-<arch>[.exe]，
+# crates\qcode\src\update.rs 只认一个形状：<base>-<version>-<os>-<arch>[.exe]，
 # 其中的 os / arch 与 Rust 的 std::env::consts 一致（x86_64 / aarch64，
 # 不是 amd64 / arm64）。bash 版是同一份约定的另一半。
+#
+# base 有两个：`qc`（主程序）与 `qcd`（常驻驱动，ADR-0098 §7）。自更新两个都取，
+# 所以两个都得发——只发 qc 的话 `qc update` 之后用户得到「新 qc + 没有 qcd」。
 
 function Get-ReleaseArch([string]$Triple) {
     switch -Regex ($Triple) {
@@ -90,16 +105,16 @@ function Get-ReleaseArch([string]$Triple) {
     }
 }
 
-function Get-ReleaseAsset([string]$Triple) {
-    "qc-${Version}-windows-$(Get-ReleaseArch $Triple).exe"
+function Get-ReleaseAsset([string]$Base, [string]$Triple) {
+    "$Base-${Version}-windows-$(Get-ReleaseArch $Triple).exe"
 }
 
 function Get-Sha256([string]$Path) {
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
-function Publish-ReleaseAsset([string]$Triple, [string]$Source) {
-    $name = Get-ReleaseAsset $Triple
+function Publish-ReleaseAsset([string]$Base, [string]$Triple, [string]$Source) {
+    $name = Get-ReleaseAsset $Base $Triple
     $dest = Join-Path $OutDir $name
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     $sums = Join-Path $OutDir 'SHA256SUMS'
@@ -147,15 +162,23 @@ if ($Target -match '-gnullvm$') {
 # ---------------------------------------------------------------- 构建
 
 Write-Host "==> $Target"
-cargo build --locked --release --target $Target -p $Pkg
+cargo build --locked --release --target $Target -p $Pkg -p $QcdPkg
 if ($LASTEXITCODE -ne 0) { Fail "cargo build 失败（$LASTEXITCODE）" }
 
 $Binary = "target\$Target\release\$Bin.exe"
 if (-not (Test-Path $Binary)) { Fail "没有构建出 $Binary" }
 
+$DaemonBinary = "target\$Target\release\$QcdBin.exe"
+if (-not (Test-Path $DaemonBinary)) { Fail "没有构建出 $DaemonBinary（定时任务没有它就不会触发）" }
+
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Dest = Join-Path $OutDir "$Artifact.exe"
 Copy-Item -LiteralPath $Binary -Destination $Dest -Force
+
+# `qcd` 用发布资产名落在 dist\（与 bash 版同形）。`qc` 那个是历史名
+# （qcode_<v>_windows_<arch>.exe），保持不变；新加的这一个按新约定命名。
+$DaemonDest = Join-Path $OutDir (Get-ReleaseAsset $QcdBin $Target)
+Copy-Item -LiteralPath $DaemonBinary -Destination $DaemonDest -Force
 
 # 本机目标能真跑：拿产物自己报的版本与文件名对账
 if ($Target -eq $HostTriple) {
@@ -170,9 +193,14 @@ if ($Target -eq $HostTriple) {
 
 $Size = [math]::Round((Get-Item $Dest).Length / 1MB, 1)
 Write-Host "  dist: $Dest ($Size MB)"
+$DaemonSize = [math]::Round((Get-Item $DaemonDest).Length / 1MB, 1)
+Write-Host "  dist: $DaemonDest ($DaemonSize MB)"
 
 if ($Release) {
-    Publish-ReleaseAsset $Target $Dest
+    Publish-ReleaseAsset 'qc' $Target $Dest
+    # daemon 单独一条资产：`qc update` 按平台挑名字取它（update.rs 的
+    # asset_name_for），取不到就只更新 qc——用户于是得到「新 qc + 没有 qcd」。
+    Publish-ReleaseAsset $QcdBin $Target $DaemonDest
 }
 
 # 一个产物（ADR-0086）：`gui` 现在是默认 feature，上面那条 `cargo build` 出来的
@@ -186,6 +214,9 @@ if ($Archive) {
     New-Item -ItemType Directory -Force -Path $Inner | Out-Null
     # 包内是可执行文件名 qc.exe，与产物名区分
     Copy-Item -LiteralPath $Binary -Destination (Join-Path $Inner "$Bin.exe") -Force
+    # `qcd.exe` 必须与 `qc.exe` **同级**：解压后的目录就是 `find_qcd` 要找的布局
+    # （它第一步只看兄弟文件）。放进子目录等于把一个缺驱动的包交给用户。
+    Copy-Item -LiteralPath $DaemonBinary -Destination (Join-Path $Inner "$QcdBin.exe") -Force
     $Zip = Join-Path $OutDir "$Artifact.zip"
     if (Test-Path $Zip) { Remove-Item $Zip -Force }
     Compress-Archive -Path $Inner -DestinationPath $Zip

@@ -367,6 +367,36 @@ Windows 上（PowerShell）：
 .\build-for-release.ps1 -Target aarch64-pc-windows-gnullvm -Archive
 ```
 
+**Windows 上「打包好供测试」就是 `-Archive`**，它是 mac 上 `make app` 的对位物
+（Windows 没有 bundle 概念，一个解压目录即可）：
+
+```powershell
+.\build-for-release.ps1 -Archive     # -> dist\qcode_<v>_windows_amd64.zip
+```
+
+解压后目录里是 `qc.exe` **和** `qcd.exe`，两个都在才能用定时任务（ADR-0098 §7：
+`find_qcd` 第一步找与 `qc` 同目录的兄弟）。
+
+与 `make app` 的两处差异，都是 Windows 侧的真实缺口：
+
+1. **开窗口要显式给标记**——这边没有 `Info.plist` 替你说话：
+
+   ```powershell
+   .\dist\qcode_<v>_windows_amd64\qc.exe --launched-from-gui
+   ```
+
+   从资源管理器双击 `qc.exe` 得到的是**控制台**（它是控制台子系统程序，Windows 会
+   新建一个控制台），于是判定成终端、打印用法然后窗口关掉。这不是 bug，是判据：
+   "父进程是 explorer.exe 但**有**控制台" = 终端（`boot.rs` 的 `signals::windows`）。
+   想双击开窗口需要一个带该参数的 `.lnk`，仓库目前不生成它——已知缺口。
+2. **没有 debug 快路径**（`make app-debug` 的对位物）。本机快速循环直接用 cargo，
+   `target\debug\` 里同样两个二进制都在：
+
+   ```powershell
+   cargo build -p qcode -p qcd
+   .\target\debug\qc.exe --launched-from-gui
+   ```
+
 macOS 本地 unsigned app（不需要 Apple 账号）：
 
 ```bash

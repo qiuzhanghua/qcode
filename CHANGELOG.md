@@ -47,8 +47,9 @@ qcd: taking over (the other driver exited)
 `QCode.app/Contents/MacOS/` 下有两个二进制（`qc` 61M + `qcd` 16M），发布归档里的
 `qcd` 与 `qc` 同级，另有一条独立资产（`qcd-<版本>-<平台>`）供更新器分别替换。
 
-这一条曾经漏过，而且是**六个入口一起漏**：`make app`、`make linux-desktop`、
-`build-for-release`、Homebrew、Scoop、winget 全都只装/只编 `qc`，自更新也不管它。
+这一条曾经漏过，而且是**七个入口一起漏**：`make app`、`make linux-desktop`、
+`build-for-release`（bash 与 Windows 的 pwsh 两份）、Homebrew、Scoop、winget 全都只装/只编
+`qc`，自更新也不管它。
 于是 GUI 段头那颗「启动」按钮在打包版里点下去只会得到一句 `qcd` was not found，
 而所有测试照绿——因为 `cargo build` 把两个二进制都放进 `target/debug/`，`find_qcd`
 找同目录兄弟那一步永远命中。现在有一条读脚本与清单的测试盯着它

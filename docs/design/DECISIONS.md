@@ -11388,8 +11388,10 @@ TUI 今天**没有**定时任务界面。为了让「TUI 能启动 / 停止 / �
 
 - `make app` → `QCode.app/Contents/MacOS/{qc,qcd}`（同级，**不**放 `Resources/`）。
 - `make linux-desktop` → 编 `-p qcode -p qcd`，桌面入口指着的 `target/release/` 里两个都在。
-- `build-for-release` → 归档包根目录下 `qc` 与 `qcd` 同级；`--release` 另出一条
+- `build-for-release`（bash）→ 归档包根目录下 `qc` 与 `qcd` 同级；`--release` 另出一条
   `qcd-<版本>-<平台>` 资产，让更新器能分别替换。
+- `build-for-release.ps1`（Windows，**另一份实现**，不是 bash 版的包装）→ 同样两件事：
+  `-Archive` 的 zip 里 `qcd.exe` 与 `qc.exe` 同级，`-Release` 另发 `qcd-<版本>-windows-<arch>.exe`。
 - Homebrew → `bin.install` 两个（同一 bin 目录才有兄弟可找）；Scoop → `"bin": ["qc.exe","qcd.exe"]`；
   winget → 两个架构的 `NestedInstallerFiles` 都要列 `qcd.exe`（portable 安装器**只解出**点名的
   文件，漏了就永远没有那个文件）。
@@ -11397,15 +11399,17 @@ TUI 今天**没有**定时任务界面。为了让「TUI 能启动 / 停止 / �
 - `qc update` 自己装 `qcd` 到 `qc` 旁边。这条最容易漏：自更新走裸二进制路径，**没有**任何包
   管理器替它补文件，用户 `qc update` 之后就是「新 qc + 没有 qcd」的半套安装。
 
-**这一条漏过一次，而漏的方式值得记下来。** 本 ADR 实现完之后，上面六条路径**全都**还是只
-有 `qc`。GUI 那颗「启动」按钮在打包版里点下去得到 `qcd` was not found。**所有测试照绿**
+**这一条漏过两次，两次的漏法不同。** 第一次是本 ADR 实现完之后，上面那些路径**全都**只有
+`qc`：GUI 那颗「启动」按钮在打包版里点下去得到 `qcd` was not found，而**所有测试照绿**
 ——因为 `cargo build` 把两个二进制都放进 `target/debug/`，于是 `find_qcd` 的兄弟分支在测试里
-永远命中。
+永远命中。修完前面几条之后，`build-for-release.ps1` 仍然漏着：它是独立的 pwsh 实现，改 bash
+版不会碰到它。
 
-这是「测试布局与发布布局不同」这一类盲区的标准形状：行为测试看的是 `target/`，而缺陷在
-`dist/`。堵它的办法只能是读打包脚本与清单本身——`every_packaging_path_ships_the_daemon`
-逐条读 Makefile、两个脚本、三份清单、发布工作流与 `update.rs`，断言「编 qcd」「与 qc 同级」
-「上传 qcd 资产」「自更新装 qcd」。验过会红：去掉任意一条立即失败。
+这是「测试布局与发布布局不同」加「每个平台一份打包脚本」的复合形状：行为测试看的是
+`target/`，而缺陷在 `dist/`；bash 测试看的是 bash 脚本，而缺陷在 pwsh 脚本。堵它只能是读
+**每一份**打包脚本与清单——`every_packaging_path_ships_the_daemon` 逐条读 Makefile、三个
+脚本（含 ps1）、三份清单、发布工作流与 `update.rs`，断言「编 qcd」「与 qc 同级」「上传 qcd
+资产」「自更新装 qcd」。每条都验过会红：去掉任意一条立即失败。
 
 **后果**
 

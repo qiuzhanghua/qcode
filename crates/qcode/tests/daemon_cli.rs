@@ -404,4 +404,21 @@ fn every_packaging_path_ships_the_daemon() {
         updater.contains("daemon_beside"),
         "`qc update` 必须同时更新与 qc 同目录的 qcd"
     );
+
+    // Windows 侧的发布脚本是**另一份实现**（pwsh），不是 bash 版的包装。它的
+    // `-Archive` 就是 Windows 上「打包好供测试」的那条路，所以它也得带 qcd。
+    let windows = std::fs::read_to_string(root.join("build-for-release.ps1"))
+        .expect("read build-for-release.ps1");
+    assert!(
+        windows.contains("-p $Pkg -p $QcdPkg"),
+        "Windows 发布脚本必须把 daemon 一起编出来（-p $QcdPkg）"
+    );
+    assert!(
+        windows.contains(r#"Join-Path $Inner "$QcdBin.exe""#),
+        "Windows 的 -Archive 必须把 qcd.exe 放进与 qc.exe 同级的包根目录"
+    );
+    assert!(
+        windows.contains("Publish-ReleaseAsset $QcdBin"),
+        "Windows 侧也要发 qcd 的独立资产，否则 `qc update` 在 Windows 上取不到它"
+    );
 }
