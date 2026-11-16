@@ -40,9 +40,10 @@ check:
 	./build-for-release --check
 
 # Type-check the code this host cannot compile: the Windows and macOS backends
-# behind `#[cfg(...)]`. Only needs the target's std (`rustup target add ...`),
-# no linker, so it runs in seconds. See scripts/ci-cross-check.sh for why a
-# green `cargo test --workspace` on Linux does not mean the tree compiles.
+# behind `#[cfg(...)]`. Needs the target's std (`rustup target add ...`) plus a
+# cross C compiler for the bundled C dependencies -- llvm-mingw for Windows,
+# zig for darwin (`scripts/install-zig.sh`). No linker, so it runs in minutes.
+# See scripts/ci-cross-check.sh and docs/DEVELOPMENT.md.
 check-platforms:
 	./scripts/ci-cross-check.sh
 

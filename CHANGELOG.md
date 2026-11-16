@@ -1,5 +1,35 @@
 # Changelog
 
+## 未发布
+
+### 门禁：darwin 两个 triple 进 CI，`make check-platforms` 每次 push 必跑
+
+装了 darwin 的 std 之后才看清：`scripts/ci-cross-check.sh` 里那句「not checked (target std
+not installed)」一直挡着真正的原因——**不是 std 缺，是 C 编译器缺**。补上 std 后检查从
+「跳过」变成「失败」，而红的原因与任何改动无关。
+
+- 用 **zig** 供 macOS C SDK（libSystem stub 与头文件，`cargo check` 不链接所以够用），
+  新增 `scripts/zig-cc-darwin.sh` / `zig-cxx-darwin.sh`；两个 darwin triple 现在都能
+  check + clippy 通过；
+- `scripts/install-zig.sh` 固定版本 + 校验 sha256，装到已被 gitignore 的 `.toolchains/`
+  ——即 `build-for-release` 的 `find_zig` 本来就在看的位置；
+- CI 的 `test (ubuntu-latest)` 新增一步跑它，`actions/cache` 缓存 `.toolchains`；
+- **覆盖边界要说清**：17 个 crate 覆盖 15 个，排除 `qcode-gui` 与 `qcode`——`gpui-pre-apple`
+  的 build script 是 `#[cfg(any(target_os = "macos", target_os = "ios"))] fn main()`，而
+  build script 按**宿主**编译，Linux 上 `main` 是空的，Apple 专属的
+  `include_str!(…stitched_shaders.metal)` 永远没有文件。被排除的 `qcode` 里就有
+  `boot.rs` / `commands/gui.rs`，那部分仍只有 `test (macos-latest)` 兜着。脚本会把这句打
+  出来，不让绿勾暗示「darwin 全查过了」。
+- Windows triple 在 ubuntu runner 上仍检查不了（缺 llvm-mingw），继续由 `windows-build`
+  原生覆盖；脚本把它们列进 `not checked` 而不是静默跳过。
+
+### 新增 `docs/DEVELOPMENT.md`
+
+开发环境此前散在 README 的三节里（「Linux 构建依赖」「提交前自检」「发布构建」），而
+工具链已经是「Rust target × 交叉 C 编译器」的二维矩阵，散着写容易漏。新文档按
+「装什么 → 为什么在列表里 → 怎么自检 → 覆盖不到哪里」组织，并附
+`make check-platforms` 四种输出的读法。见 ADR-0095。
+
 ## 0.12.2 — 2026-11-16
 
 **一个用户可见的 bug 修复 + 一处诊断缺口。** 升级不需要迁移。

@@ -21,7 +21,11 @@
 #
 # Usage, from `scripts/ci-cross-check.sh`:
 #
-#     ZIG_CC_TARGET=aarch64-macos CC_aarch64_apple_darwin=…/zig-cc-darwin.sh …
+#     ZIG_CC_TARGET=aarch64-macos ZIG_BIN=…/zig CC_aarch64_apple_darwin=…/zig-cc-darwin.sh
+#
+# `ZIG_BIN` exists because zig need not be on PATH: `scripts/install-zig.sh` puts
+# it under `.toolchains/`, which is what `build-for-release`'s `find_zig` looks
+# at, and a bare `zig` here would silently disagree with that lookup.
 #
 # `ZIG_GLOBAL_CACHE_DIR` / `ZIG_LOCAL_CACHE_DIR` are passed through if set; zig
 # wants a writable cache and defaults to `~/.cache/zig`.
@@ -29,6 +33,7 @@ set -euo pipefail
 
 tool=${ZIG_CC_TOOL:-cc}
 target=${ZIG_CC_TARGET:?ZIG_CC_TARGET is not set (e.g. aarch64-macos)}
+zig_bin=${ZIG_BIN:-zig}
 
 args=()
 for arg in "$@"; do
@@ -38,4 +43,4 @@ for arg in "$@"; do
     args+=("$arg")
 done
 
-exec zig "$tool" -target "$target" "${args[@]}"
+exec "$zig_bin" "$tool" -target "$target" "${args[@]}"

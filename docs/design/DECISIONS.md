@@ -10964,5 +10964,39 @@ error: failed to run custom build command for `libsqlite3-sys v0.39.1`
   在包装脚本里丢掉一个参数比给 zig 打补丁便宜得多。
 - 不为 `gpui-pre-apple` 造一个「假 host」：伪造 `CARGO_CFG_TARGET_OS` 让 build script 跑
   Apple 分支，等于让 Metal 编译器在 Linux 上被调用，只是把失败点往后挪。
-- 不动 CI：`cargo check` 交叉 + clippy 的本地门禁仍是本地门禁，真机 job 才是判据
-  （与 ADR-0093 末尾同一条立场）。
+
+**追加（同日）：门禁从「本地自愿」变成 CI 必跑**
+
+原本这里写的是「不动 CI」。用户要求把它接进 ubuntu job 之后，那条立场改了，理由也变了：
+门禁的价值取决于它是否在每次 push 上真的运行，而不取决于它存在。改动是 `ci.yml` 的
+`test` job 里新增一步：
+
+```yaml
+- name: cross-target type-check (windows + darwin, ADR-0095)
+  if: runner.os == 'Linux'
+  run: |
+    zig_dir=$(bash scripts/install-zig.sh)
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin \
+                      aarch64-pc-windows-gnullvm x86_64-pc-windows-gnullvm
+    export PATH="$zig_dir:$PATH" ZIG_GLOBAL_CACHE_DIR="${RUNNER_TEMP}/zig-cache"
+    bash scripts/ci-cross-check.sh
+```
+
+三个配套决定：
+
+- **zig 的安装可复现**：`scripts/install-zig.sh` 固定版本（0.17.0）、校验 sha256，
+  装到已被 gitignore 的 `.toolchains/`，即 `build-for-release` 的 `find_zig` 本来就在看的
+  位置——一套约定，不是两套。sha256 默认取自 ziglang.org 自己的 `download/index.json`
+  （与 tarball 同源，能发现下载损坏、不能发现源被换），要钉死就传 `ZIG_SHA256`。
+- **缓存**：`actions/cache` 缓存 `.toolchains`，key 带版本号，升版本自动失效。
+- **Windows triple 在 ubuntu runner 上仍然检查不了**（缺 llvm-mingw，那是要额外装的大
+  工具链），所以那两条继续由 `windows-build` 原生覆盖。脚本会把它们列进
+  `not checked (no cross C compiler on PATH)` 而不是静默跳过；`test (ubuntu-latest)` 上
+  实际合格的是 darwin 两条，`checked=2`，足以避免「一个都没检查」那种空转。
+
+同时把 `windows-build` job 里那句「所以不再有 Linux cross-check job」的注释改掉了——它
+现在与事实相反，而一句会骗人的注释比没有注释更糟。
+
+未验证项：这条 CI 步骤在真 runner 上还没跑过（本机无法访问 GitHub Actions 的执行环境）。
+首次运行时最可能出问题的地方是 zig tarball 的下载与 `python3` 解析 index（ubuntu-latest
+两者都有），以及冷缓存下 darwin 两个 triple 的 sqlite / aws-lc 编译耗时。
