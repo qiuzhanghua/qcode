@@ -175,9 +175,17 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Dest = Join-Path $OutDir "$Artifact.exe"
 Copy-Item -LiteralPath $Binary -Destination $Dest -Force
 
-# `qcd` 用发布资产名落在 dist\（与 bash 版同形）。`qc` 那个是历史名
-# （qcode_<v>_windows_<arch>.exe），保持不变；新加的这一个按新约定命名。
-$DaemonDest = Join-Path $OutDir (Get-ReleaseAsset $QcdBin $Target)
+# `qcd` 落在 dist\ 的名字是**产物名**（下划线），不是发布资产名（连字符）。
+#
+# 两者相同会让 `-Release` 那一步 `Copy-Item` 搬到自己身上：
+#
+#   cp: '.../qcd-0.14.0-linux-aarch64' and '.../qcd-0.14.0-linux-aarch64' are the same file
+#
+# 这条在 0.14.0 的发布流水线上真的发生了（bash 侧同形，linux-arm64 job 红）。产物名用
+# `qcd_<v>_windows_<arch>`，资产名用 `qcd-<v>-windows-<arch>.exe`，与 `qc` 一直以来的
+# 安排一致（`qcode_..._windows_amd64.exe` vs `qc-...-windows-x86_64.exe`）。
+$DaemonArtifact = "${QcdPkg}_${Version}_windows_${Arch}${Suffix}"
+$DaemonDest = Join-Path $OutDir "$DaemonArtifact.exe"
 Copy-Item -LiteralPath $DaemonBinary -Destination $DaemonDest -Force
 
 # 本机目标能真跑：拿产物自己报的版本与文件名对账

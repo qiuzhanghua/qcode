@@ -413,4 +413,27 @@ fn every_packaging_path_ships_the_daemon() {
         windows.contains("Publish-ReleaseAsset $QcdBin"),
         "Windows 侧也要发 qcd 的独立资产，否则 `qc update` 在 Windows 上取不到它"
     );
+
+    // **产物名与发布资产名必须是两个不同的字符串。**
+    //
+    // 0.14.0 的 linux-arm64 发布 job 就栽在这里：`qcd` 的中间产物直接用了资产名，
+    // 于是 `--release` 那一步把文件搬到自己身上——
+    //
+    //   cp: '.../qcd-0.14.0-linux-aarch64' and '.../qcd-0.14.0-linux-aarch64' are the same file
+    //
+    // 而我本地只跑过 `--archive`（不经过 publish），所以是绿的。这条读脚本，钉住
+    // 「qcd 的 dist 名来自 artifact_name_for，不是 release_asset_named」。
+    assert!(
+        release.contains(r#"qcd_dest="$OUT_DIR/$(artifact_name_for "$QCD_PKG""#),
+        "qcd 的 dist 产物名必须走 artifact_name_for（下划线形），不能直接用发布资产名\
+         （连字符形）——两者相同会让 --release 的 cp 搬到自己身上"
+    );
+    assert!(
+        !release.contains(r#"qcd_dest="$OUT_DIR/$(release_asset_named"#),
+        "qcd_dest 不能取发布资产名：那样产物名与资产名重合，--release 会 cp 到自身"
+    );
+    assert!(
+        windows.contains("$DaemonArtifact"),
+        "Windows 侧同理：qcd 的 dist 名必须与它的发布资产名分开"
+    );
 }

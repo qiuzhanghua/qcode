@@ -176,14 +176,27 @@ exe_suffix() {
 }
 
 artifact_name() {
-    local target=$1 os arch libc
+    artifact_name_for "$PKG" "$1"
+}
+
+# 同一套产物命名，换一个 package 名。`qcd` 的中间产物必须与它的**发布资产名**不同，
+# 否则 `--release` 那一步 `cp` 会搬到自己身上：
+#
+#   cp: '.../qcd-0.14.0-linux-aarch64' and '.../qcd-0.14.0-linux-aarch64' are the same file
+#
+# 这条在 0.14.0 的发布流水线上真的发生了（linux-arm64 job 红）——因为本地只跑过
+# `--archive`，而 `--release` 才走 `publish_release_asset`。产物名用下划线形状
+# （`qcd_0.14.0_linux_arm64_gnu`），资产名用连字符形状（`qcd-0.14.0-linux-aarch64`），
+# 两者天生不同，与 `qc` 一直以来的安排一致。
+artifact_name_for() {
+    local pkg=$1 target=$2 os arch libc
     os=$(target_os "$target")
     arch=$(target_arch "$target")
     libc=$(target_libc "$target")
     if [ -n "$libc" ]; then
-        echo "${PKG}_${VERSION}_${os}_${arch}_${libc}"
+        echo "${pkg}_${VERSION}_${os}_${arch}_${libc}"
     else
-        echo "${PKG}_${VERSION}_${os}_${arch}"
+        echo "${pkg}_${VERSION}_${os}_${arch}"
     fi
 }
 
@@ -600,7 +613,9 @@ build_one() {
     dest="$OUT_DIR/$name$(exe_suffix "$target")"
     binary="target/$target/release/$BIN$(exe_suffix "$target")"
     qcd_binary="target/$target/release/$QCD_BIN$(exe_suffix "$target")"
-    qcd_dest="$OUT_DIR/$(release_asset_named "$QCD_BIN" "$target")"
+    # 产物名（下划线），**不是**发布资产名（连字符）。两者相同会让 `--release` 的
+    # `cp` 搬到自己身上（0.14.0 的 linux-arm64 就是这么红的）。
+    qcd_dest="$OUT_DIR/$(artifact_name_for "$QCD_PKG" "$target")$(exe_suffix "$target")"
 
     echo "==> $target"
     prepare_target "$target"

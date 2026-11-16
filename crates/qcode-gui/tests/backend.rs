@@ -757,7 +757,19 @@ async fn stopping_one_task_leaves_the_other_running() {
 /// 余量三秒而不是一秒：`cargo test` 并行跑，首个 beat 可能晚到，而 beat 晚三拍
 /// 以上会被判成「进程当时不在」，那条分支只推进不投递。
 fn upcoming(store: &SessionStore, name: &str, in_secs: u64) -> time::PrimitiveDateTime {
-    let at = qcode_core::schedule::now_local() + time::Duration::seconds(in_secs as i64);
+    // **截到秒**，与存储精度一致。
+    //
+    // 不截的话 `aimed` 带着微秒（`22:43:14.665359`），而任务表里存的是
+    // `22:43:14.0`，于是 `advanced()` 的 `next_fire_at != Some(aimed)` **恒为真**
+    // ——判据从来没生效过。实测（2026-11-16）：把 beat 分支改成 30 秒忙等，
+    // 依赖它的测试仍然 55ms 通过。
+    let now = qcode_core::schedule::now_local();
+    let at = now
+        .replace_microsecond(0)
+        .expect("microsecond 0 is always valid")
+        .replace_millisecond(0)
+        .expect("millisecond 0 is always valid")
+        + time::Duration::seconds(in_secs as i64);
     let scheduler = qcode_core::scheduler::Scheduler::new(store.clone());
     scheduler
         .update(name, |task| task.next_fire_at = Some(at))
@@ -863,7 +875,6 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     let store_for_check = store.clone();
     let entry = schedule("orphan", Some("gone123"), "review");
     declare(&store, std::slice::from_ref(&entry));
-    let aimed = upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedule_declared = vec!["orphan".to_string()];
     engine.schedules = vec![entry];
@@ -876,6 +887,15 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     // window above still comes round inside the deadline.
     engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
+
+    // 瞄准在构造之后：构造会做一次启动期对齐（ADR-0093），而先瞄准后构造会让
+    // `advanced()` 一上来就为真，于是这条测试不再测量任何东西（同下面那条
+    // flooding 测试，2026-11-16 一起修）。
+    let aimed = upcoming(&store_for_check, "orphan", 3);
+    assert!(
+        !advanced(&store_for_check, "orphan", aimed),
+        "precondition: the aimed window must still be intact before we measure"
+    );
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut decided = false;
@@ -1012,12 +1032,49 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
     let store_for_check = store.clone();
     let entry = schedule("orphan", Some("gone123"), "review");
     declare(&store, std::slice::from_ref(&entry));
-    let aimed = upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
     engine.schedule_declared = vec!["orphan".to_string()];
     engine.schedules = vec![entry];
     engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
+
+    // **瞄准必须在引擎起来之后**。构造时会做一次启动期对齐（ADR-0093），那一步
+    // 就会改掉 `next_fire_at`；先瞄准后构造的话，下面的 `advanced()` 第一轮就为真，
+    // 于是这条测试变成空转。
+    //
+    // 这不是推测：把 beat 分支改成 30 秒忙等，这条测试仍然 55ms 通过
+    // （2026-11-16 实测）。也就是说它原先**根本没有测量 beat**，尽管注释里写着
+    // 「用 4 秒忙等验过会红」——那条变异早随 ADR-0092 的重构失效了。
+    let aimed = upcoming(&store_for_check, "orphan", 3);
+    assert!(
+        !advanced(&store_for_check, "orphan", aimed),
+        "precondition: the aimed window must still be intact before we measure"
+    );
+
+    let warmup = Instant::now();
+    // 前提必须先于测量立住，而且**不依赖被测对象的速度**。
+    //
+    // 这里原本是「测量窗口里攒够 10 次唤醒」，而窗口长度正是被测对象：决定得越快
+    // = 越快通过 = 窗口越短 = 唤醒越少。于是这条自检在跑得**更快**的机器上更容易
+    // 失败。实测（2026-11-16，v0.14.0 的 CI）：本机 70ms 决定、唤醒 >10 稳定通过；
+    // CI 的 macOS runner 上只攒到 8 次——红。那不是产品问题，是这条自检把两个互相
+    // 矛盾的量绑在了一起。
+    //
+    // 现在拆成两件互不依赖的事：先**等**它真的产出（等待不占用被测窗口），再在测量
+    // 结束后确认它**还活着**（`yes` 不会自己退出，退出只可能是通道断了）。两件都
+    // 成立就足以证明「测量期间有一个终端在持续竞争」，与机器快慢无关。
+    while flood_events.wakeups() < 4 {
+        assert!(
+            !flood_events.child_exited(),
+            "the flooding terminal exited before producing anything; nothing was competing"
+        );
+        assert!(
+            warmup.elapsed() < Duration::from_secs(20),
+            "the flooding terminal produced only {} wakeups in 20s; it is not loading the machine",
+            flood_events.wakeups()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let start = Instant::now();
     let deadline = start + Duration::from_secs(15);
@@ -1027,19 +1084,16 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let decided_after = start.elapsed();
-    let wakeups_during = flood_events.wakeups();
 
     assert!(
         decided,
         "the beat never decided the orphan while a terminal was flooding"
     );
 
-    // Without this the test would pass on a machine where the flood never
-    // started: nothing was competing, so nothing was proven.
+    // 测量期间它必须一直在跑：这是「有东西在竞争」的第二个证据，同样不看速率。
     assert!(
-        wakeups_during > 10,
-        "the flooding terminal produced only {wakeups_during} wakeups; \
-         it was not actually loading the machine"
+        !flood_events.child_exited(),
+        "the flooding terminal died during the measurement; nothing was competing"
     );
     assert!(
         flood.with_view(|view| view.text().contains("qcode-flood")),
