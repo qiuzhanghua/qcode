@@ -2,7 +2,7 @@ use crate::dormant::Dormant;
 use crate::questions::{QuestionInputState, QuestionPanel, QuestionQueue};
 use crate::*;
 use qcode_core::schedule::ScheduledTask;
-use schedule::ScheduleFormState;
+use schedule::{SCHEDULE_LOG_PAGE_SIZE, ScheduleFormState};
 use std::collections::HashMap;
 use task_ui::TaskUi;
 // (V2.1) the model picker moved from a Select to a two-level DropdownMenu.
@@ -91,6 +91,10 @@ pub(crate) struct Shell {
     pub(crate) schedule_filter: Option<qcode_core::schedule::TaskStatus>,
     /// 定时任务详情页当前选中的任务 id（`None` = 空态）。
     pub(crate) schedule_detail: Option<String>,
+    /// 详情页运行记录当前展示的条数：初始一页，点「加载更多」每页 +30。
+    /// 每次打开详情页（或新建任务后自动跳入）重置；`delivery_log` 本身已在
+    /// 内存（最多 200 条），这只是渲染上限，不是数据分页。
+    pub(crate) schedule_log_count: usize,
     /// 手动创建定时任务的表单（`Some` = 弹窗打开中）。
     pub(crate) schedule_form: Option<ScheduleFormState>,
     /// 有托盘时关闭窗口 = 最小化（ADR-0052）。
@@ -342,6 +346,7 @@ impl Shell {
             schedule_menu_open: false,
             schedule_filter: None,
             schedule_detail: None,
+            schedule_log_count: SCHEDULE_LOG_PAGE_SIZE,
             schedule_form: None,
             minimize_on_close,
             pending_quit: false,
@@ -577,6 +582,8 @@ impl Shell {
                     // 手动创建成功：刷新列表并自动跳到新任务的详情页。
                     self.refresh_tasks();
                     self.schedule_detail = Some(id.clone());
+                    // 新任务的运行记录从第一页开始。
+                    self.schedule_log_count = SCHEDULE_LOG_PAGE_SIZE;
                     repaint = true;
                     continue;
                 }

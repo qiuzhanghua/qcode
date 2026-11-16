@@ -7,7 +7,7 @@
 //! `ScheduleChanged` / `ScheduleNotice` 事件回传。
 
 use super::*;
-use crate::shell::schedule::ScheduleAction;
+use crate::shell::schedule::{SCHEDULE_LOG_PAGE_SIZE, ScheduleAction};
 use qcode_core::schedule::{ScheduledTask, TaskStatus, now_local};
 
 /// Relative "when will this fire", computed at render time.
@@ -158,7 +158,6 @@ impl Shell {
                     .px(px(MAIN_PAD_L))
                     .pt_3()
                     .pb_4()
-                    .overflow_y_scroll()
                     .child(
                         div()
                             .w_full()
@@ -322,49 +321,96 @@ impl Shell {
                                 task.delivery_log.len()
                             )),
                     )
-                    .children(task.delivery_log.iter().rev().take(30).map(|receipt| {
+                    .child(
+                        // 运行记录独立滚动区：详情卡片与操作按钮固定在上方，列表
+                        // 自己滚；「加载更多」在列表末尾，没加载完就一直在。
                         div()
+                            .id("schedule-log-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
                             .w_full()
                             .flex()
                             .flex_col()
-                            .gap_0p5()
-                            .p_2()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(border)
-                            // 主内容 = 执行的任务（prompt）；旧记录没有则回退到发生时刻。
-                            .child(div().text_size(sp(BODY_SIZE)).child(
-                                if receipt.prompt.is_empty() {
-                                    format!("（旧记录：{}）", receipt.occurrence_at)
-                                } else {
-                                    receipt.prompt.clone()
-                                },
-                            ))
-                            .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                                format!(
-                                    "{} · 投递到 {} · message {}",
-                                    // 投递时间用实际投递确认时刻（`delivered_at`）：
-                                    // 点击「立即执行」时记录的就是那次执行的时间，
-                                    // 而不是计划触发点（`occurrence_at`）。
-                                    receipt.delivered_at,
-                                    receipt.target_session_id.as_deref().unwrap_or("-"),
-                                    receipt.message_id,
-                                ),
-                            ))
-                            .into_any_element()
-                    }))
-                    .when(task.earlier_records_pruned, |this| {
-                        this.child(
-                            div()
-                                .text_size(sp(CAPTION_SIZE))
-                                .text_color(muted)
-                                .child("（更早的记录已被裁剪）"),
-                        )
-                    }),
+                            .gap_1()
+                            .overflow_y_scroll()
+                            .children(
+                                task.delivery_log
+                                    .iter()
+                                    .rev()
+                                    .take(self.schedule_log_count)
+                                    .map(|receipt| {
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_0p5()
+                                            .p_2()
+                                            .rounded(px(8.0))
+                                            .border_1()
+                                            .border_color(border)
+                                            // 主内容 = 执行的任务（prompt）；旧记录
+                                            // 没有则回退到发生时刻。
+                                            .child(div().text_size(sp(BODY_SIZE)).child(
+                                                if receipt.prompt.is_empty() {
+                                                    format!("（旧记录：{}）", receipt.occurrence_at)
+                                                } else {
+                                                    receipt.prompt.clone()
+                                                },
+                                            ))
+                                            .child(
+                                                div()
+                                                    .text_size(sp(CAPTION_SIZE))
+                                                    .text_color(muted)
+                                                    .child(format!(
+                                                        "{} · 投递到 {} · message {}",
+                                                        // 投递时间用实际投递确认时刻
+                                                        // （`delivered_at`）：点击
+                                                        // 「立即执行」时记录的就是那次
+                                                        // 执行的时间，而不是计划触发点
+                                                        // （`occurrence_at`）。
+                                                        receipt.delivered_at,
+                                                        receipt
+                                                            .target_session_id
+                                                            .as_deref()
+                                                            .unwrap_or("-"),
+                                                        receipt.message_id,
+                                                    )),
+                                            )
+                                            .into_any_element()
+                                    }),
+                            )
+                            // 还有更早的记录没加载时，底部保留「加载更多」按钮；
+                            // 全部加载完按钮自然消失。
+                            .when(self.schedule_log_count < task.delivery_log.len(), |this| {
+                                this.child(
+                                    div().flex().justify_center().pt_1().child(
+                                        Button::new("schedule-log-more")
+                                            .label("加载更多")
+                                            .tooltip("继续加载更早的 30 条运行记录")
+                                            .on_click(cx.listener(|this, _, _window, cx| {
+                                                this.schedule_log_count += SCHEDULE_LOG_PAGE_SIZE;
+                                                cx.notify();
+                                            })),
+                                    ),
+                                )
+                            })
+                            .when(task.earlier_records_pruned, |this| {
+                                this.child(
+                                    div()
+                                        .text_size(sp(CAPTION_SIZE))
+                                        .text_color(muted)
+                                        .child("（更早的记录已被裁剪）"),
+                                )
+                            }),
+                    ),
             )
     }
 
     /// 详情页里的一行「键：值」。
+    ///
+    /// 值占满键位之后的剩余宽度（`flex_1`），并用 `min_w(0)` 允许在无空格
+    /// 的长串（如很长的 session id / message id）处断行——否则超长的「最近
+    /// 投递」会把整行撑出详情卡片。
     fn detail_line(&self, cx: &Context<Self>, key: &str, value: &str) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         div()
@@ -374,6 +420,12 @@ impl Shell {
             .gap_2()
             .text_size(sp(CAPTION_SIZE))
             .child(div().w(px(72.0)).text_color(muted).child(key.to_string()))
-            .child(div().text_size(sp(BODY_SIZE)).child(value.to_string()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(sp(BODY_SIZE))
+                    .child(value.to_string()),
+            )
     }
 }

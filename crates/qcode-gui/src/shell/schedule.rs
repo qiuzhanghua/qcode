@@ -20,6 +20,10 @@ pub(crate) enum ScheduleAction {
     Delete,
 }
 
+/// 运行记录列表的每页条数：详情页初始展示一页，点「加载更多」再加一页
+/// （数据本身已在内存里——`delivery_log` 最多 200 条——这只控制渲染上限）。
+pub(crate) const SCHEDULE_LOG_PAGE_SIZE: usize = 30;
+
 /// 手动创建表单里「周期」的选择：每种规则一套自己的参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScheduleRuleKind {
@@ -521,6 +525,8 @@ impl Shell {
     pub(crate) fn open_schedule_detail(&mut self, id: &str, cx: &mut Context<Self>) {
         self.view = MainView::Schedule;
         self.schedule_detail = Some(id.to_string());
+        // 新打开一个任务，运行记录回到第一页（最近一页）。
+        self.schedule_log_count = SCHEDULE_LOG_PAGE_SIZE;
         cx.notify();
     }
 
