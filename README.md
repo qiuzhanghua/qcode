@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.13.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.14.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -321,8 +321,8 @@ GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于�
 写地址，别依赖那个配置：
 
 ```bash
-git push git@gitee.com:opentj/qcode.git main v0.13.0   # 1. gitee，失败即停
-git push gh main v0.13.0                               # 2. GitHub，触发 CI / 发布
+git push git@gitee.com:opentj/qcode.git main v0.14.0   # 1. gitee，失败即停
+git push gh main v0.14.0                               # 2. GitHub，触发 CI / 发布
 ```
 
 推完两端用 `git ls-remote` 确认指向同一个 commit：
@@ -737,7 +737,8 @@ cargo build -p qcode-eval
   `qc tui` 使用同一个 `qcode_kernel::assemble`。左侧是“我的任务”，Task 可配置多个目录；
   支持 Task 新建/重命名/删除、目录增删/Relink/RO-RW/主目录、Turn 边界 pending Roots、
   审批浮层、图片粘贴、diff 视图、中断与 Settings 热重建。Composer 为 `Enter` 发送、
-  `Shift+Enter` 换行。release 只提供一个 `qc`（ADR-0086）。
+  `Shift+Enter` 换行。**窗口程序**只有一个 `qc`（ADR-0086）；另有不带界面的常驻驱动
+  `qcd`，与 `qc` 一起发布、放在同一目录（ADR-0092/0098，见「发布构建」）。
 - **图片输入**：`qc run --image shot.png "看看这个"`（可重复，PNG/JPEG/WebP/GIF，单张 ≤8 MB）
   把图片作为多模态消息发给 provider；provider 的 `Capabilities.images` 为 false 时直接报
   `this provider does not accept image input`，不会先发再让服务端 400。
@@ -800,9 +801,11 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.13.0 状态：一个 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
-定时任务的建法：跟 agent 说一句，或 `qc schedule create`（驱动仍在 GUI，
-ADR-0088/0090，入口取舍见 ADR-0097）、Task/目录模型
+v0.14.0 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
+一个常驻驱动 `qcd`（无窗口，只服务定时任务，与 `qc` 同目录发布）、
+定时任务的建法：跟 agent 说一句，或 `qc schedule create`（入口取舍见 ADR-0097）、
+定时任务的驱动：GUI 开着时由窗口推时钟，否则由 `qcd` 推——三处都能启停（`qc daemon`、
+GUI 段头按钮、TUI `/daemon`，ADR-0092/0098）、Task/目录模型
 （一个 Task 可挂多个目录，RO/RW 按目录授权）、
 三端系统托盘与 Queue/Steer、Settings 热重建、附件内容寻址存储、内建终端、
 会话标题自动生成（用户重命名 > 模型 > 兜底）、可折叠侧栏、shell 环境采样、

@@ -199,7 +199,7 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
 
 ---
 
-## 阶段 2：`qcd` 前台跑通（未开始）
+## 阶段 2：`qcd` 前台跑通 ✅（2026-11-15）
 
 `qcd` = kernel + driver IO 层 + 单实例锁（`Scope` 用新 prefix），**不链 GPU**。
 先只做 `qcd --foreground`，不做分离。
@@ -214,6 +214,16 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
 **出口判据**：ADR-0092「验证 1」——**不开任何 GUI**，`qc schedule create` 一条 1 分钟后
 触发的任务，`qcd` 前台跑到点自己跑完，`qc sessions` 里查得到完整事件（含
 `turn_started` / `assistant_message` / `turn_ended`）。
+
+**状态修正（2026-11-16）**：这段标题一直写着「未开始」，而阶段 3–6 都已完成——一行过时的
+标记不需要代码就能说谎。补记实测：`qcd --data-dir X --beat 2` 在没有任何 GUI 的情况下每 2
+秒一拍，`schedule/events.jsonl` 里是
+
+```
+{"kind":"driving","identity":"daemon:2026-11-16T22:31:24.355578","driving":true}
+{"kind":"beat","away":true,"fired":0,...}
+{"kind":"beat","away":false,...}     ← 之后每 2 秒一条
+```
 
 ---
 
@@ -266,6 +276,23 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
 - **「`qc` 侧只做客户端」从承诺变成测试**：`the_cli_does_not_depend_on_the_driver` 读
   `crates/qcode/Cargo.toml`，断言没有 `qcode-driver` 依赖行。行为测试只能抽查几个命令，
   依赖不会说谎——它一旦被加进去，整条边界就没了。验过会红。
+
+---
+
+## 阶段 6：三端入口 + 打包（ADR-0098 / ADR-0099）✅（2026-11-16）
+
+阶段 0–5 只做了 CLI 一个入口。本阶段把它补齐：
+
+- GUI 段头乒乓按钮（四态判定全在 `shell::daemon::decide`，有测试）；驱动不在时列表变灰
+  **但可编辑**，「立即执行」真禁用；`Held` 用黄字警告而不变灰。
+- TUI `/daemon start|stop|status`，与 `qc daemon` 一一对应。
+- `qcd` 与 `qc` 一起发布，且**必须同目录**：`make app`、`make linux-desktop`、
+  `build-for-release`（bash 与 Windows 的 pwsh 两份）、Homebrew、Scoop、winget、`qc update`
+  共七个入口。有一条读打包脚本与清单的测试盯着它们（验过会红）。
+- 单实例的身份与地址分开（ADR-0099）：路径超长不再静默丢掉互斥。
+
+**出口判据**：`make app` 出来的 bundle 里两个二进制都在，点「启动」真的起 `qcd`；
+临时 HOME（105 字节那个场景）下互斥仍然成立。
 
 ---
 
