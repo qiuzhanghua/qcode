@@ -1408,6 +1408,8 @@ mod host_tests {
             schedules: Vec::new(),
             schedule_declared: Vec::new(),
             schedule_errors: Vec::new(),
+            // 未开启：这些测试关心的是投递路径，不是标题生成。
+            session_title: None,
             schedule_tick: None,
         }
     }

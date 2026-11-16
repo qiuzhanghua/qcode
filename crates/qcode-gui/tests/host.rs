@@ -33,6 +33,7 @@ fn engine(dir: &std::path::Path) -> Engine {
         schedules: Vec::new(),
         schedule_declared: Vec::new(),
         schedule_errors: Vec::new(),
+        session_title: None,
         schedule_tick: None,
     }
 }

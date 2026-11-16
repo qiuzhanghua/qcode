@@ -247,7 +247,7 @@ pub fn is_eligible_message(message: &UserMessage) -> bool {
     {
         return false;
     }
-    !clean_title_text(&strip_schedule_prefill(&message.text)).is_empty()
+    !clean_title_text(strip_schedule_prefill(&message.text)).is_empty()
 }
 
 /// The first eligible user message: its seq and its cleaned text.
@@ -257,7 +257,7 @@ pub fn first_eligible_message(events: &[Event]) -> Option<(u64, String)> {
             if !is_eligible_message(message) {
                 continue;
             }
-            let text = clean_title_text(&strip_schedule_prefill(&message.text));
+            let text = clean_title_text(strip_schedule_prefill(&message.text));
             if !text.is_empty() {
                 return Some((event.seq, text));
             }
@@ -348,8 +348,8 @@ pub async fn generate_title(
     // 传入的 pending_input（与回合并行生成，对齐「标题在回合中就已生成」）。
     let source = first_eligible_message(&events).or_else(|| {
         pending_input.and_then(|text| {
-            let text = clean_title_text(&strip_schedule_prefill(text));
-            (!text.is_empty()).then(|| (0, text))
+            let text = clean_title_text(strip_schedule_prefill(text));
+            (!text.is_empty()).then_some((0, text))
         })
     });
     let Some((_, first_text)) = source else {

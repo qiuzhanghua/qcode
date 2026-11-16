@@ -65,7 +65,10 @@ impl QuestionQueue {
 /// [`Self::rule_text`] 拼成规范表达式回填给工具。
 #[derive(Debug)]
 pub struct RulePickerState {
-    pub kind: ScheduleRuleKind,
+    /// `pub(crate)` 而不是 `pub`：`ScheduleRuleKind` 住在私有的 `shell::schedule`
+    /// 里（有效可见性 `pub(crate)`），所以这个字段不可能更宽。字段可见性收窄即可，
+    /// 不必把整个 `RulePickerState` 也拖下去。
+    pub(crate) kind: ScheduleRuleKind,
     pub time: gpui_kit::Entity<TimeFieldState>,
     pub weekdays: Vec<u8>,
     pub monthly_day: gpui_kit::Entity<InputState>,
