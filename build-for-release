@@ -86,6 +86,14 @@ BIN=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' crates/qcode/Car
 [ -n "$PKG" ] || die "读不出 crates/qcode/Cargo.toml 的包名"
 [ -n "$BIN" ] || die "读不出 crates/qcode/Cargo.toml 的 [[bin]] 名"
 
+# 常驻 daemon（ADR-0092）是**第二个二进制**，与 `qc` 一起发布（ADR-0098 §7）。
+#
+# 必须在同一个归档里、且与 `qc` 同级：`find_qcd` 第一步就找「与 `qc` 同目录的兄弟」，
+# 因为解压后的布局就是这样。只发 `qc` 的后果不是「daemon 用不了」这么轻——GUI 的
+# 乒乓按钮会弹一句 `qcd` was not found，而那句文案写在用户点下去之后。
+QCD_PKG=qcd
+QCD_BIN=qcd
+
 VERSION=$(grep -m1 '^version[[:space:]]*=' Cargo.toml | cut -d'"' -f2)
 [ -n "$VERSION" ] || die "读不出 Cargo.toml 的 [workspace.package] version"
 
@@ -203,8 +211,13 @@ release_arch() {
 }
 
 release_asset() {
-    local target=$1
-    echo "qc-${VERSION}-$(release_os "$target")-$(release_arch "$target")$(exe_suffix "$target")"
+    release_asset_named qc "$1"
+}
+
+# 同一次发布里的另一个二进制（`qcd`）用同一套命名，只换前缀。
+release_asset_named() {
+    local base=$1 target=$2
+    echo "${base}-${VERSION}-$(release_os "$target")-$(release_arch "$target")$(exe_suffix "$target")"
 }
 
 sha256_of() {
@@ -220,8 +233,8 @@ sha256_of() {
 # 裸二进制 + 一行校验和。发布流水线把同一份 SHA256SUMS 合并成一个文件，
 # `qc update` 就靠它拒绝下载被替换过的产物。
 publish_release_asset() {
-    local target=$1 src=$2 name sums
-    name=$(release_asset "$target")
+    local target=$1 src=$2 base=${3:-qc} name sums
+    name=$(release_asset_named "$base" "$target")
     cp "$src" "$OUT_DIR/$name"
     chmod +x "$OUT_DIR/$name" 2>/dev/null || true
     sums="$OUT_DIR/SHA256SUMS"
@@ -542,13 +555,21 @@ prepare_target() {
 # ---------------------------------------------------------------- 输出
 
 pack_archive() {
-    local name=$1 target=$2 binary=$3
+    local name=$1 target=$2 binary=$3 qcd_binary=${4:-}
     local stage inner
     stage=$(mktemp -d)
     inner="$stage/$name"
     mkdir -p "$inner"
     # 包内是可执行文件名（qc / qc.exe），与产物名区分
     cp "$binary" "$inner/$BIN$(exe_suffix "$target")"
+    # `qcd` 必须与 `qc` **同级**：`find_qcd` 第一步就是找同目录的兄弟（ADR-0098 §7）。
+    # 放进子目录等于让解压后的布局与它支持的布局不一致——而失败发生在用户点
+    # 「启动」那一刻，不在打包时。
+    if [ -n "$qcd_binary" ] && [ -f "$qcd_binary" ]; then
+        cp "$qcd_binary" "$inner/$QCD_BIN$(exe_suffix "$target")"
+    else
+        die "归档缺 qcd：定时任务的常驻驱动与 qc 同属一次发布（ADR-0098 §7）"
+    fi
     # Linux 的桌面条目和主题图标：GNOME/Qt 的 dock 按 WM_CLASS 找 .desktop，
     # 再由它的 Icon= 找 hicolor 里的 PNG。只给裸二进制，装完还是齿轮。
     # 放在包内 share/ 下，与 /usr 的布局一致，可以整个前缀拷过去。
@@ -574,22 +595,30 @@ pack_archive() {
 }
 
 build_one() {
-    local target=$1 name dest binary
+    local target=$1 name dest binary qcd_binary qcd_dest
     name=$(artifact_name "$target")
     dest="$OUT_DIR/$name$(exe_suffix "$target")"
     binary="target/$target/release/$BIN$(exe_suffix "$target")"
+    qcd_binary="target/$target/release/$QCD_BIN$(exe_suffix "$target")"
+    qcd_dest="$OUT_DIR/$(release_asset_named "$QCD_BIN" "$target")"
 
     echo "==> $target"
     prepare_target "$target"
     # 一个产物（ADR-0086）：`gui` 现在是默认 feature，所以这条就是带窗口的那个
     # `qc`。从前默认关着、另出一份 `qcode-desktop-*`，用两份产物换一次瘦身；
     # 现在换回来了（实测 34.8 MB vs 16.2 MB，见 ADR-0086 §4）。
-    cargo build --locked --release --target "$target" -p "$PKG"
+    #
+    # `qcd` 一起编：它是 ADR-0092 的常驻驱动，与 `qc` 同属一次发布（ADR-0098 §7）。
+    # 它的依赖面刻意只有 kernel 与 driver（没有 gpui），所以交叉编译同样能过。
+    cargo build --locked --release --target "$target" -p "$PKG" -p "$QCD_PKG"
     [ -f "$binary" ] || die "没有构建出 $binary"
+    [ -f "$qcd_binary" ] || die "没有构建出 $qcd_binary"
 
     mkdir -p "$OUT_DIR"
     cp "$binary" "$dest"
     chmod +x "$dest" 2>/dev/null || true
+    cp "$qcd_binary" "$qcd_dest"
+    chmod +x "$qcd_dest" 2>/dev/null || true
 
     # 本机目标能真跑：拿产物自己去报版本，与文件名的版本对账。
     if [ "$target" = "$HOST_TRIPLE" ]; then
@@ -604,11 +633,15 @@ build_one() {
     fi
 
     echo "  dist: $dest ($(du -h "$dest" | cut -f1))"
+    echo "  dist: $qcd_dest ($(du -h "$qcd_dest" | cut -f1))"
     if [ "$RELEASE" = 1 ]; then
         publish_release_asset "$target" "$dest"
+        # daemon 单独一条资产：更新器按平台挑名字（`asset_for`），两条都得有，
+        # 否则「装上新版 qc、旧的 qcd 还在旁边」会让版本对不上。
+        publish_release_asset "$target" "$qcd_dest" "$QCD_BIN"
     fi
     if [ "$ARCHIVE" = 1 ]; then
-        pack_archive "$name" "$target" "$dest"
+        pack_archive "$name" "$target" "$dest" "$qcd_dest"
     fi
 }
 

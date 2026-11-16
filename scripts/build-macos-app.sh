@@ -96,6 +96,7 @@ fi
 # bundle 里的可执行文件名，与 bundle 名分开：
 #
 #   dist/QCode.app/Contents/MacOS/qc
+#   dist/QCode.app/Contents/MacOS/qcd     （定时任务的常驻驱动，ADR-0092/0098）
 #
 # Dock / Finder 显示的名字来自 Info.plist 的 CFBundleDisplayName，跟这个文件名无关，
 # 所以叫 `qc` 不会让图标底下写出命令名。这样安排是为了**三端一致**——终端里想敲哪个
@@ -111,6 +112,7 @@ EXEC_NAME="${QCODE_EXEC_NAME:-qc}"
 
 APP="$ROOT/dist/$APP_NAME.app"
 BIN="$ROOT/target/$PROFILE/qc"
+QCD_BIN="$ROOT/target/$PROFILE/qcd"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 if [[ -z "$VERSION" ]]; then
     echo "error: cannot read workspace version from Cargo.toml" >&2
@@ -118,11 +120,19 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 # 没有 `--features gui` 了（ADR-0086）：窗口是这个二进制的固有部分，不是可选项。
-echo "==> building qcode ($PROFILE)"
-"$CARGO_BIN" build ${PROFILE_FLAG:+"$PROFILE_FLAG"} -p qcode
+#
+# `qcd` 一起编、一起进 bundle：GUI 段头那颗乒乓按钮靠 `find_qcd` 找「与 qc 同目录的
+# 兄弟」，只放 `qc` 的话点下去会得到一句 `qcd` was not found（ADR-0098 §7）。
+echo "==> building qcode + qcd ($PROFILE)"
+"$CARGO_BIN" build ${PROFILE_FLAG:+"$PROFILE_FLAG"} -p qcode -p qcd
 
 if [[ ! -x "$BIN" ]]; then
     echo "error: built binary not found: $BIN" >&2
+    exit 1
+fi
+if [[ ! -x "$QCD_BIN" ]]; then
+    echo "error: built daemon not found: $QCD_BIN" >&2
+    echo "       定时任务没有它就不会触发；它必须与 qc 一起发布。" >&2
     exit 1
 fi
 
@@ -145,6 +155,11 @@ cp "$ROOT/crates/qcode/res/icons/macos/qcode.icns" "$APP/Contents/Resources/qcod
 #
 cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
 chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
+
+# 常驻驱动与主程序**同级**（不是 Resources/）：`find_qcd` 第一步就找同目录兄弟，
+# 而这条布局是它支持的、也是它文档里写的那条（ADR-0098 §7）。
+cp "$QCD_BIN" "$APP/Contents/MacOS/qcd"
+chmod +x "$APP/Contents/MacOS/qcd"
 
 # 体积守卫。release 该 strip 过（[profile.release] strip = "symbols"），正常 36M
 # 上下；突然上百兆说明 cargo 没按那个 profile 走，属于打包错了，不该悄悄产出。

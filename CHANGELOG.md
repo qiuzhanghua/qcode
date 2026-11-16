@@ -35,8 +35,23 @@ qcd: another driver (a GUI window?) holds this data directory; waiting...
 qcd: taking over (the other driver exited)
 ```
 
-**一台机器只有一个 daemon**（`locks/qcd.lock`，机器级，与 `--data-dir` 无关）。两个
-不同数据目录的 `qcd` 会互相拒绝。
+**一个用户只有一个 daemon**（`locks/qcd.lock`，每用户一把，base 是
+`$HOME/.local/share/qcode`，与 `--data-dir` 无关）。同一个用户的两个不同数据目录的
+`qcd` 会互相拒绝；换一个 OS 用户另起一个是允许的。
+
+> 上面这句原写作「一台机器只有一个」，是错的：锁的 base 在家目录下，并不跨用户。
+> 实测（2026-11-16）：同一 `HOME` 下换 `--data-dir` 被拒；换 `HOME` 两个 `qcd` 并存。
+> 术语与推理见 ADR-0098 §2。
+
+**`qcd` 与 `qc` 一起发布，且必须放同一个目录**：`make app` 的
+`QCode.app/Contents/MacOS/` 下有两个二进制（`qc` 61M + `qcd` 16M），发布归档里的
+`qcd` 与 `qc` 同级，另有一条独立资产（`qcd-<版本>-<平台>`）供更新器分别替换。
+
+这一条曾经漏过：`make app` 与 `build-for-release` 都只 `-p qcode`，产出的 app 里只有
+`qc`。于是 GUI 段头那颗「启动」按钮在打包版里点下去只会得到一句 `qcd` was not found，
+而所有测试照绿——因为 `cargo build` 把两个二进制都放进 `target/debug/`，`find_qcd`
+找同目录兄弟那一步永远命中。现在有一条读打包脚本的测试盯着它
+（`every_packaging_path_ships_the_daemon`），去掉 `-p qcd` 就会红。
 
 **`stop` 走控制通道，不发信号。** 通道多给一样东西——应答：`kill` 成功只说明信号发
 出去了，不说明对方收得到、更不说明它准备退出。退出走的是正常路径（日志里

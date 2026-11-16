@@ -11379,12 +11379,63 @@ TUI 今天**没有**定时任务界面。为了让「TUI 能启动 / 停止 / �
 一一对应，输出用同一套 `describe()` 文案。TUI 的定位仍是「跑一个会话」，不是管理面——管理面
 是 GUI 与 CLI 两条路。
 
+### 7. `qcd` 必须与 `qc` **同目录**发布
+
+`find_qcd` 的第一步是「找与自己同目录的兄弟」，第二步才是 `PATH`。这不是随便定的顺序：发布
+形态就是一个目录里放着两个二进制，用户解压之后直接跑。
+
+落实：
+
+- `make app` → `QCode.app/Contents/MacOS/{qc,qcd}`（同级，**不**放 `Resources/`）。
+- `build-for-release` → 归档包根目录下 `qc` 与 `qcd` 同级；`--release` 另出一条
+  `qcd-<版本>-<平台>` 资产，让更新器能分别替换。
+
+**这一条漏过一次，而漏的方式值得记下来。** 本 ADR 实现完之后，`make app` 与
+`build-for-release` 都还是只 `-p qcode`：产出的 app 里只有 `qc`，GUI 那颗「启动」按钮点下去
+得到 `qcd` was not found。**所有测试照绿**——因为 `cargo build` 把两个二进制都放进
+`target/debug/`，于是 `find_qcd` 的兄弟分支在测试里永远命中。
+
+这是「测试布局与发布布局不同」这一类盲区的标准形状：行为测试看的是 `target/`，而缺陷在
+`dist/`。堵它的办法只能是读打包脚本本身——`every_packaging_path_ships_the_daemon` 读
+`scripts/build-macos-app.sh` 与 `build-for-release`，断言「编 `qcd`」「与 `qc` 同级」。
+验过会红：去掉 `-p qcd` 立即失败。
+
 **后果**
 
 - 阶段 0–5 的 CLI 一直是唯一的入口，这个状态**比看起来更久**：GUI 与 TUI 都要等到本 ADR
   实现。在实现之前，「三端都能」这句话不成立，文档不能说成已支持。
 - 用户现在必须**记住**去启动 daemon。这是 §1 的代价，靠 §4 的状态句补偿，不靠提示音、不靠
   弹窗——定时任务错过本来就是静默的（ADR-0059 的不补跑语义）。
+- 发布物从「一个二进制」变成「两个」，这是本 ADR 唯一动到打包的地方。代价是安装/更新要
+  同时管两个文件：只更新 `qc` 会让新的按钮对着旧的 `qcd`（协议没变，所以能跑，但版本口径
+  不一致）；只更新 `qcd` 同理。§7 的独立资产让更新器能分别替换，而「两个都要有」这件事
+  由一条读脚本的测试盯着。
+
+**已知缺陷（本次发现，未修）**：`locks/qcd.sock` 的路径一超长，互斥就静默失效。
+
+`Paths::for_scope` 会 `canonicalize` 数据目录。macOS 上 `/var` 是 `/private/var` 的符号
+链接，于是临时 HOME（`$TMPDIR` = `/var/folders/...`）会被撑长 8 字节，把
+`<home>/.local/share/qcode/locks/qcd.sock` 推到 105 字节——超过 `sockaddr_un.sun_path`
+的 104。`bind` 报 `AF_UNIX path too long`，`acquire_in` 于是返回 `Disabled`：**qcd 照常
+运行并驱动定时任务，只是不带任何互斥**。它的警告走 stderr，而 detached 进程的 stderr 是
+`/dev/null`，所以没人看见。`qc daemon start` 等到 3 秒超时，看到锁是空的，报「probably
+exited」——一句假话，进程活得很好。
+
+实测（2026-11-16）：
+
+```
+canonical socket 路径长度 105 / 上限 104 → bind: AF_UNIX path too long
+非 canonical（98 字节）                → bind 成功
+```
+
+影响面：真实用户在 `/Users/q` 下（42 字节）不受影响；长家目录、家目录在符号链接卷上、
+以及**所有用临时 HOME 的测试**都落在坑里。后者正是这个 bug 一直没被发现的伪装——它让
+测试「全绿」，因为测试从没真正测到锁（`daemon_cli.rs` 现在用短路径 HOME 绕开它，绕开
+的地方有注释）。
+
+修法需要一个决定：`for_scope` 要么不 canonicalize（但那样两个进程可能对同一个目录给出
+不同身份——原设计正是为了防这个），要么在路径过长时改用哈希过的短名落在临时目录。两条
+都够写一个 ADR，所以不在这次改动里顺手改。
 - 三端会**同时**是 daemon 的客户端，于是 `stop` 的语义第一次有了真实的并发场景：GUI 正在跑
   回合、CLI 敲了 `stop`。今天 `stop` 收到确认就 `break` 主循环，**在跑的回合会被打断**，
   下一次启动靠 `repair_interrupted` 补一条。本期不改这个行为，但按钮必须显示「正在停止…」
@@ -11412,3 +11463,7 @@ TUI 今天**没有**定时任务界面。为了让「TUI 能启动 / 停止 / �
 9. 驱动不在时点「立即执行」：不可点（而不是点了没反应）。
 10. `qc daemon start` 被用户级锁拒绝时的文案，与 `qc daemon status` 说的一致：**都不承诺**报出
     daemon 服务的目录。
+11. `make app` 之后 `QCode.app/Contents/MacOS/` 里有 `qc` **和** `qcd`；只留 `qc`、清空 `PATH`
+    再 `daemon start` → 报 `not found`（兄弟分支找不到就是真的找不到）。
+12. 锁机制不可用（`QC_QCD_SINGLE_INSTANCE=0`）时 `daemon start` 说「无法验证」，**不**说
+    「probably exited」——实测那两种情况下进程都还活着，后者是一句假话。

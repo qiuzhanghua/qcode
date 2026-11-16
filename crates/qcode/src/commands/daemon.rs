@@ -82,16 +82,40 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
     // 两秒是实测的启动时间（`assemble` 要起 egress 代理、加载 skills，约 0.3s）；
     // 短于此的等待会把「慢」误报成「失败」，而失败是要人处理的。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    // 锁机制本身不可用时（NFS、权限、`QC_QCD_SINGLE_INSTANCE=0`），`presence`
+    // 永远答不出 `Running`。那不是「它没起来」，而是「问不出来」——两件事必须
+    // 分开说，否则下面那句「probably exited」就成了一句假话：进程活得好好的，
+    // 只是没有互斥。实测过（2026-11-16）：`QC_QCD_SINGLE_INSTANCE=0` 下 start 报
+    // 「did not take the lock」，而 `ps` 里那个 qcd 正在跑。
+    let mut blind_spot: Option<String> = None;
     while std::time::Instant::now() < deadline {
-        if let Presence::Running = qcode_core::daemon::presence(&user_dir) {
-            println!("qcd started (pid {pid}) — driving {}", served.display());
-            println!(
-                "Logs: {}",
-                qcode_kernel::logging::current_log(served).display()
-            );
-            return Ok(ExitCode::SUCCESS);
+        match qcode_core::daemon::presence(&user_dir) {
+            Presence::Running => {
+                println!("qcd started (pid {pid}) — driving {}", served.display());
+                println!(
+                    "Logs: {}",
+                    qcode_kernel::logging::current_log(served).display()
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
+            Presence::Unknown(why) => {
+                blind_spot = Some(why);
+                break;
+            }
+            Presence::Absent => {}
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // 问不出来：说清是**判断不了**，不猜结局。
+    if let Some(why) = blind_spot {
+        eprintln!(
+            "qc daemon: qcd was spawned (pid {pid}) but its state cannot be verified ({why}).\n\
+             The lock mechanism is unavailable, so a running daemon would be invisible here.\n\
+             It is most likely running; check `ps -p {pid}` or the log: {}",
+            qcode_kernel::logging::current_log(served).display()
+        );
+        return Ok(ExitCode::from(1));
     }
 
     // spawn 成功但它没活下来。不说「已启动」——那正是 §11 要防的那句话。

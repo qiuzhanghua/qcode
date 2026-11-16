@@ -16,18 +16,61 @@ fn qc() -> Command {
     command
         .env_remove("QCODE_LAUNCHED_FROM_GUI")
         .env_remove("__CFBundleIdentifier")
-        // 单实例的逃生口：这个测试不关心锁，只关心「找不到 qcd」这条路径。
-        // 但**不能**关掉它——关了 `acquire_in` 会走 `Disabled`，probe 变成
-        // `Unknown`，于是 `start` 直接进到「找 qcd」那一步。这正好是我们要的路径。
-        .env("QC_QCD_SINGLE_INSTANCE", "0")
+        // **不**关单实例锁（以前这里设了 `QC_QCD_SINGLE_INSTANCE=0`）：关掉之后
+        // `probe_in` 只会答 `Unknown`，于是 `start` 永远无法确认任何事，每次都落到
+        // 「验证不了」那条出口——测试也就再也测不到真的路径了。锁的互斥问题由
+        // `qc_as` 的 HOME 隔离解决，那才是正确的隔离层。
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
 }
 
-fn run(args: &[&str], path: &str) -> Output {
-    qc().args(args).env("PATH", path).output().expect("run qc")
+/// 一个**隔离的用户**：`HOME` 指到临时目录。
+///
+/// 为什么必须隔离：`qcd` 的互斥锁是**每用户**一把，base 在 `$HOME/.local/share/qcode`
+/// （ADR-0098 §2）。不隔离的话，同一台机器上开发者自己开着的 qcd、或者别的测试刚起的
+/// 那一个，会让 `status` 报 `running`——于是「没有 daemon 时说停着」这条测试随机失败。
+/// 2026-11-16 的门禁里就红过一次，排查发现是前面那条测试真的起了一个 daemon 没收拾。
+///
+/// 隔离之后 `--data-dir` 仍然各测各的：两个粒度本来就该分开问。
+fn qc_as(home: &std::path::Path) -> Command {
+    let mut command = qc();
+    command.env("HOME", home);
+    // Windows 上 `real_home` 先看 USERPROFILE；一起设掉，免得落到真实用户目录。
+    command.env("USERPROFILE", home);
+    command
+}
+
+/// 一个**短路径**的临时 HOME。
+///
+/// 不用 `tempfile::tempdir()`：它在 macOS 上给出 `$TMPDIR` = `/var/folders/...`，
+/// 而 `Paths::for_scope` 会对数据目录 `canonicalize`，把 `/var` 变成 `/private/var`
+/// （+8 字符）。于是 `<home>/.local/share/qcode/locks/qcd.sock` 冲到 105 字节，
+/// 超过 `sockaddr_un.sun_path` 的 104 → `bind` 报 `AF_UNIX path too long` →
+/// `acquire_in` 返回 `Disabled` → **qcd 照常跑，只是不带锁**。
+///
+/// 那样测试全绿，却一次也没测到锁；而 `start` 会等 3 秒然后误报「probably exited」。
+/// 2026-11-16 就是这么发现问题、并留下几条残留 daemon 进程的。`/tmp` 在 macOS 上
+/// 也是符号链接（→ `/private/tmp`），但短得多，canonicalize 之后仍远低于上限。
+fn short_home() -> tempfile::TempDir {
+    let base = if std::path::Path::new("/tmp").is_dir() {
+        std::path::PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    tempfile::Builder::new()
+        .prefix("qchome")
+        .tempdir_in(base)
+        .expect("short-path temp home")
+}
+
+fn run(home: &std::path::Path, args: &[&str], path: &str) -> Output {
+    qc_as(home)
+        .args(args)
+        .env("PATH", path)
+        .output()
+        .expect("run qc")
 }
 
 fn stdout_of(output: &Output) -> String {
@@ -41,6 +84,7 @@ fn stderr_of(output: &Output) -> String {
 /// **出口判据**：`PATH` 里没有 `qcd` 时，`qc daemon start` 退出码非 0 且说实话。
 #[test]
 fn starting_without_qcd_on_path_fails_and_says_so() {
+    let home = short_home();
     let data = tempfile::tempdir().expect("data dir");
     // 一个空目录当 PATH：连 `sh` 都找不到，所以只可能**不**找到 `qcd`。
     //
@@ -51,13 +95,10 @@ fn starting_without_qcd_on_path_fails_and_says_so() {
     // 于是这一条验的是**另一件事**：`daemon start` 无论如何都不会说「已启动」而
     // 实际上什么都没起。看下面的断言。
     let empty = tempfile::tempdir().expect("empty dir");
+    let data_dir = data.path().display().to_string();
     let output = run(
-        &[
-            "daemon",
-            "start",
-            "--data-dir",
-            &data.path().display().to_string(),
-        ],
+        home.path(),
+        &["daemon", "start", "--data-dir", &data_dir],
         &empty.path().display().to_string(),
     );
 
@@ -78,6 +119,16 @@ fn starting_without_qcd_on_path_fails_and_says_so() {
         stdout_of(&output),
         stderr_of(&output)
     );
+
+    // **收拾干净再走**。b) 分支会留下一个真进程；它握着**每用户**那把 qcd 锁，于是
+    // 后面每一条 `status`/`stop` 测试都会看到一个不该存在的「在跑」。
+    //
+    // 这条清理以前没有，后果实测过：2026-11-16 的一次门禁里三条 daemon 残留进程
+    // 让 `status_without_a_daemon_says_stopped` 红掉，而那条测试本身完全正确。
+    // 隔离 `HOME` 已经把它们彼此隔开，这里再保证「谁起的谁负责关」。
+    let _ = qc_as(home.path())
+        .args(["daemon", "stop", "--data-dir", &data_dir])
+        .output();
 }
 
 /// `qcd` 找不到时的文案必须可操作：说它是**独立二进制**、说该放哪。
@@ -111,8 +162,9 @@ fn the_not_installed_message_is_actionable() {
 /// `daemon status` 在没有 daemon 时**明确说没有**，不假装（ADR-0092 验证 6）。
 #[test]
 fn status_without_a_daemon_says_stopped() {
+    let home = short_home();
     let data = tempfile::tempdir().expect("data dir");
-    let output = qc()
+    let output = qc_as(home.path())
         .args([
             "daemon",
             "status",
@@ -146,8 +198,9 @@ fn status_without_a_daemon_says_stopped() {
 /// 只是意图已经满足。脚本里 `qc daemon stop` 该能无条件跑。
 #[test]
 fn stopping_a_stopped_daemon_succeeds() {
+    let home = short_home();
     let data = tempfile::tempdir().expect("data dir");
-    let output = qc()
+    let output = qc_as(home.path())
         .args([
             "daemon",
             "stop",
@@ -175,17 +228,18 @@ fn stopping_a_stopped_daemon_succeeds() {
 /// 两个子命令对同一状态的**说法一致性**：状态是「没有」时，两边都不能说「在跑」。
 #[test]
 fn stop_and_status_agree_about_the_same_state() {
+    let home = short_home();
     let data = tempfile::tempdir().expect("data dir");
     let dir = data.path().display().to_string();
 
-    let status = qc()
+    let status = qc_as(home.path())
         .args(["daemon", "status", "--json", "--data-dir", &dir])
         .output()
         .expect("status");
     let value: serde_json::Value = serde_json::from_str(stdout_of(&status).trim()).expect("json");
     let state = value["daemon"]["state"].as_str().expect("state");
 
-    let stop = qc()
+    let stop = qc_as(home.path())
         .args(["daemon", "stop", "--data-dir", &dir])
         .output()
         .expect("stop");
@@ -236,10 +290,57 @@ fn the_cli_does_not_depend_on_the_driver() {
         offenders.join("\n  ")
     );
 
-    // 反面：`qcd` 必须在（`detach` 模块提供了 spawn 与 find_qcd）。否则这条测试
-    // 会因为「两个都没写」而假绿。
+    // 反面：`qcd` 必须在（测试用它的 `NotInstalled` 文案）。否则这条测试会因为
+    // 「两个都没写」而假绿。它在 `[dev-dependencies]` 里——实现已经搬到
+    // `qcode-core::daemon`（ADR-0098 §1），发布物不依赖 daemon 这个包。
     assert!(
         manifest.contains("qcd = {"),
-        "`qc` needs `qcd` for detach/spawn — if that changed, update this test"
+        "tests read `qcd::detach` for the not-found message — if that moved, update this test"
+    );
+}
+
+/// **每一条打包路径都必须带上 `qcd`**（ADR-0098 §7）。
+///
+/// 这条守的是一个测试**看不见**的盲区：`cargo build` 把 `qc` 与 `qcd` 都放进
+/// `target/debug/`，于是 `find_qcd` 的第一步（找与 `qc` 同目录的兄弟）永远命中。
+/// 集成测试跑的是那个布局，发布物是另一个布局——往包里忘记拷 `qcd`，所有测试照绿，
+/// 而用户点 GUI 段头那颗「启动」会得到一句 `qcd` was not found。
+///
+/// 这个漏洞真的发生过：ADR-0098 实现完，`make app` 出来的 app 里只有 `qc`，
+/// `build-for-release` 也只打 `qc`。行为测试看不见 shell 脚本，所以这里读脚本文本，
+/// 与 `the_cli_does_not_depend_on_the_driver` 同一个办法（那条读 `Cargo.toml`）。
+#[test]
+fn every_packaging_path_ships_the_daemon() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    let app = std::fs::read_to_string(root.join("scripts/build-macos-app.sh"))
+        .expect("read scripts/build-macos-app.sh");
+    assert!(
+        app.contains("-p qcd"),
+        "`make app` 必须把 daemon 一起编出来（cargo build -p qcd）"
+    );
+    // 位置也是契约：`find_qcd` 只找同目录兄弟，放 Resources/ 就找不到。
+    assert!(
+        app.contains("Contents/MacOS/qcd"),
+        "`make app` 必须把 qcd 放在与 qc 同级的 Contents/MacOS/ 下——\
+         放别处 `find_qcd` 找不到（它第一步只看兄弟文件）"
+    );
+
+    let release =
+        std::fs::read_to_string(root.join("build-for-release")).expect("read build-for-release");
+    assert!(
+        release.contains("-p \"$QCD_PKG\""),
+        "发布链必须把 daemon 一起编出来（-p \"$QCD_PKG\"）"
+    );
+    // 归档里必须与 `qc` 同级：解压后的布局就是 `find_qcd` 要的那个。
+    assert!(
+        release.contains("$inner/$QCD_BIN"),
+        "发布归档必须把 qcd 放在与 qc 同级的包根目录下"
+    );
+    // 单独一条发布资产：更新器按平台挑名字，两条都得有。
+    assert!(
+        release.contains("release_asset_named"),
+        "发布链要给 qcd 一条自己的资产名（release_asset_named），\
+         否则只更新了 qc、qcd 留在旧版本"
     );
 }
