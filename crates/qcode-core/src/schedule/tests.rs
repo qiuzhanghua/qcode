@@ -132,175 +132,6 @@ fn an_expression_that_can_never_fire_returns_none() {
     );
 }
 
-fn schedule(overlap: Overlap, task: Option<&str>) -> Schedule {
-    Schedule {
-        name: "nightly".to_string(),
-        cron: parses("0 3 * * *"),
-        cron_text: "0 3 * * *".to_string(),
-        task: task.map(str::to_string),
-        prompt: "review the night's changes".to_string(),
-        overlap,
-        approval_timeout: None,
-        enabled: true,
-    }
-}
-
-fn state(next: PrimitiveDateTime) -> ScheduleState {
-    ScheduleState {
-        next_fire_at: Some(next),
-        ..ScheduleState::default()
-    }
-}
-
-#[test]
-fn an_entry_with_no_next_window_only_gets_one_scheduled() {
-    let entry = schedule(Overlap::Queue, None);
-    assert_eq!(
-        tick(
-            &entry,
-            &ScheduleState::default(),
-            at(2026, June, 1, 3, 0),
-            false,
-            true
-        ),
-        Tick::NotYet,
-        "starting the process must not fire every entry at once"
-    );
-    assert_eq!(
-        recover(&entry, &ScheduleState::default(), at(2026, June, 1, 3, 0)),
-        Recovery {
-            missed: 0,
-            next_fire_at: Some(at(2026, June, 2, 3, 0)),
-        }
-    );
-}
-
-#[test]
-fn the_window_fires_when_it_comes() {
-    let entry = schedule(Overlap::Queue, Some("t1"));
-    let now = at(2026, June, 2, 3, 0);
-    assert_eq!(tick(&entry, &state(now), now, false, true), Tick::Fire);
-    assert_eq!(
-        tick(&entry, &state(now), at(2026, June, 2, 2, 59), false, true),
-        Tick::NotYet
-    );
-}
-
-#[test]
-fn a_busy_session_queues_or_skips_as_configured() {
-    let now = at(2026, June, 2, 3, 0);
-    assert_eq!(
-        tick(
-            &schedule(Overlap::Queue, Some("t1")),
-            &state(now),
-            now,
-            true,
-            true
-        ),
-        Tick::Fire,
-        "queue means submit and let SessionQueue hold it"
-    );
-    assert_eq!(
-        tick(
-            &schedule(Overlap::Skip, Some("t1")),
-            &state(now),
-            now,
-            true,
-            true
-        ),
-        Tick::SkipBusy
-    );
-    assert_eq!(
-        tick(
-            &schedule(Overlap::Skip, Some("t1")),
-            &state(now),
-            now,
-            false,
-            true
-        ),
-        Tick::Fire
-    );
-}
-
-#[test]
-fn a_disabled_entry_never_fires_and_a_missing_task_is_orphaned() {
-    let now = at(2026, June, 2, 3, 0);
-    let mut disabled = schedule(Overlap::Queue, Some("t1"));
-    disabled.enabled = false;
-    assert_eq!(tick(&disabled, &state(now), now, false, true), Tick::NotYet);
-
-    assert_eq!(
-        tick(
-            &schedule(Overlap::Queue, Some("gone")),
-            &state(now),
-            now,
-            false,
-            false
-        ),
-        Tick::Orphaned,
-        "a deleted task must be reported, not silently skipped"
-    );
-    // A fresh task per fire has nothing to be orphaned.
-    assert_eq!(
-        tick(
-            &schedule(Overlap::Queue, None),
-            &state(now),
-            now,
-            false,
-            false
-        ),
-        Tick::Fire
-    );
-}
-
-#[test]
-fn windows_that_passed_while_asleep_are_counted_not_replayed() {
-    let entry = schedule(Overlap::Queue, None);
-    // Next window was 03:00 on the 1st; the process wakes at 09:00 on the 2nd.
-    let loaded = state(at(2026, June, 1, 3, 0));
-    let recovery = recover(&entry, &loaded, at(2026, June, 2, 9, 0));
-    assert_eq!(recovery.missed, 2, "the 1st and the 2nd both came and went");
-    assert_eq!(recovery.next_fire_at, Some(at(2026, June, 3, 3, 0)));
-}
-
-#[test]
-fn recovery_keeps_an_existing_future_window() {
-    let entry = schedule(Overlap::Queue, None);
-    let future = at(2026, June, 2, 3, 0);
-    assert_eq!(
-        recover(&entry, &state(future), at(2026, June, 1, 12, 0)),
-        Recovery {
-            missed: 0,
-            next_fire_at: Some(future)
-        }
-    );
-}
-
-#[test]
-fn advancing_records_the_decision_and_the_next_window() {
-    let entry = schedule(Overlap::Queue, None);
-    let now = at(2026, June, 2, 3, 0);
-    let next = advance(&entry, now, ScheduleStatus::Skipped);
-    assert_eq!(next.last_status, Some(ScheduleStatus::Skipped));
-    assert_eq!(next.last_fired_at, Some(now));
-    assert_eq!(next.next_fire_at, Some(at(2026, June, 3, 3, 0)));
-    assert_eq!(next.missed_windows, 0);
-}
-
-#[test]
-fn statuses_round_trip_through_the_store_encoding() {
-    for status in [
-        ScheduleStatus::Fired,
-        ScheduleStatus::Skipped,
-        ScheduleStatus::Orphaned,
-        ScheduleStatus::Missed(3),
-        ScheduleStatus::Failed("no session".to_string()),
-    ] {
-        assert_eq!(ScheduleStatus::parse(&status.as_str()), Some(status));
-    }
-    assert_eq!(ScheduleStatus::parse("nonsense"), None);
-}
-
 #[test]
 fn overlap_parsing_matches_the_config_spelling() {
     assert_eq!(Overlap::parse("queue"), Some(Overlap::Queue));
@@ -326,6 +157,7 @@ fn task_with(
         overlap: Overlap::Queue,
         approval_timeout: None,
         status,
+        origin: Origin::User,
         stakeholders: Vec::new(),
         last_receipt: None,
         delivery_log: Vec::new(),
@@ -705,35 +537,6 @@ fn delivery_log_is_pruned_to_the_retention_policy() {
     }
     assert_eq!(log.len(), DELIVERY_LOG_MAX_RECORDS);
     assert!(pruned);
-}
-
-#[test]
-fn import_config_schedule_carries_state_and_target_over() {
-    let entry = schedule(Overlap::Queue, Some("t1"));
-    let imported = import_config_schedule(
-        &entry,
-        Some(&state(at(2026, June, 2, 3, 0))),
-        at(2026, June, 1, 10, 0),
-    );
-    assert_eq!(imported.id, "nightly");
-    assert_eq!(
-        imported.rule,
-        Rule::Cron {
-            expr: "0 3 * * *".to_string()
-        }
-    );
-    assert_eq!(
-        imported.target,
-        Target::Session {
-            id: "t1".to_string()
-        }
-    );
-    assert_eq!(imported.status, TaskStatus::Active);
-    assert_eq!(imported.next_fire_at, Some(at(2026, June, 2, 3, 0)));
-
-    // 无状态 → 按 now 计算下一个窗口。
-    let fresh = import_config_schedule(&entry, None, at(2026, June, 1, 10, 0));
-    assert_eq!(fresh.next_fire_at, Some(at(2026, June, 2, 3, 0)));
 }
 
 #[test]

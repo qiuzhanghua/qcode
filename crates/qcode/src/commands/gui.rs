@@ -116,6 +116,9 @@ pub(crate) fn gui_rebuild_hook(
                 agents_md,
                 shell_env: kernel.shell_env.clone(),
                 schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+                // `[schedules]` 的**键**（含解析失败的）：reconcile 用它判断
+                // 「还声明着吗」，见 `Engine::schedule_declared`。
+                schedule_declared: kernel.config.schedules.keys().cloned().collect(),
                 schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
                     .1
                     .into_iter()
@@ -163,12 +166,12 @@ pub(crate) async fn cmd_gui(
     // also keeps the setup branch and the normal branch on the same directory
     // instead of resolving twice.
     let gui_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
-    let single = match qcode_gui::single_instance::acquire(&gui_data_dir) {
-        Ok(qcode_gui::SingleInstanceOutcome::Primary(primary)) => Some(primary),
+    let single = match qcode_core::single_instance::acquire(&gui_data_dir) {
+        Ok(qcode_core::single_instance::Outcome::Primary(primary)) => Some(primary),
         // Another instance raised its own window: that *is* what the user asked
         // for by launching us. Exit 0 — a script running `qc gui` must not see
         // a failure just because the GUI was already up.
-        Ok(qcode_gui::SingleInstanceOutcome::HandedOver) => {
+        Ok(qcode_core::single_instance::Outcome::HandedOver) => {
             // ADR-0082 §2 / ADR-0083 §5: even a process that exits immediately
             // goes through the log funnel. Writing "start" without "end" is what
             // makes the *next* launch report a false crash.
@@ -176,7 +179,7 @@ pub(crate) async fn cmd_gui(
         }
         // The mutex itself is broken (NFS, permissions). Not a reason to keep
         // the user out of the GUI — the GUI is how they debug things.
-        Ok(qcode_gui::SingleInstanceOutcome::Disabled(why)) => {
+        Ok(qcode_core::single_instance::Outcome::Disabled(why)) => {
             tracing::warn!(why = %why, "gui: single-instance check disabled");
             None
         }
@@ -192,6 +195,10 @@ pub(crate) async fn cmd_gui(
     /// 这与 gpm-go 那次 C1 实测一致（`open` 起来的进程只有 launchd 基线，
     /// `open --env K=V` 四种写法全不生效）。
     ///
+    /// Linux 是**另一种形式的同一个洞**：`.desktop` 由桌面会话 exec，给的是会话环境，
+    /// 而不是用户交互式 shell 的环境。`~/.zshrc` 里的 `export DEEPSEEK_API_KEY=…`
+    /// 因此不在进程里——见下面 `restore_launch_environment` 的注释。
+    ///
     /// 对 qcode 是实打实的损失，三处都在用：`qc doctor` 的 MCP 可执行文件查找
     /// （`doctor.rs` 已注明「Dock 启动时是 launchd 的最小 PATH」）、`config::resolve`
     /// 的 `env` API key 来源、`COT_HOME` / `TDP_HOME` 工具链注入。
@@ -203,16 +210,31 @@ pub(crate) async fn cmd_gui(
     /// 只补**当前缺失**的变量：显式传进来的 `--config` 之类不在这里，而用户真在
     /// 环境里设过的值（终端启动时通常全都有）不会被文件里的值盖掉。
     ///
-    /// 非 macOS 平台空转：Linux 的 `.desktop` 与 Windows 的 `.lnk` 本来就把环境/
-    /// 工作目录带进来了，没有这个洞。
-    #[cfg(target_os = "macos")]
+    /// **这里原本写着「非 macOS 平台空转：Linux 的 `.desktop` 与 Windows 的 `.lnk`
+    /// 本来就把环境/工作目录带进来了，没有这个洞」——那句在 Linux 上是错的**
+    /// （2026-11-16 修，ADR-0094）。桌面会话启动的进程拿到的是**会话环境**——
+    /// `systemd --user` / gnome-shell 从登录时的那份环境派生——而 `~/.zshrc` 里的
+    /// `export DEEPSEEK_API_KEY=…` 只存在于**交互式 shell**。于是同一台机器、同一个二进制：
+    ///
+    /// * 终端里跑 `./target/release/qc --launched-from-gui` → 继承 export → 有 key；
+    /// * 点图标 → 没有 key → `config::resolve` 判定该 provider 没有凭证，模型消失。
+    ///
+    /// 症状是「从菜单起就没有模型配置」，看起来像配置没读到，实际是环境不同。ADR-0086
+    /// §3 的验证表里 macOS 那一行是 `env -i` 实测过的，Linux 与 Windows 只记了「没有
+    /// 真机跑过」——这个洞就是那句备注。
+    ///
+    /// 所以 Linux 与 macOS 一样要补。Windows 仍空转：`.lnk` 同样只有登录会话环境，
+    /// 逻辑上有同一个洞，但多数人把 key 设成「用户环境变量」（那样会被继承），而本仓
+    /// 没有 Windows 真机可验证 pwsh 采样——留着当已知缺口，比照 macOS 的样子声称修好
+    /// 更诚实。
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn restore_launch_environment(config_path: Option<&std::path::Path>) {
         let settings = config_path
             .and_then(|path| qcode_kernel::config::load(path).ok())
             .map(|loaded| loaded.shell)
             .unwrap_or_default();
         if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
-            tracing::info!("gui: env sampling is off; graphical launch keeps the launchd baseline");
+            tracing::info!("gui: env sampling is off; graphical launch keeps the session baseline");
             return;
         }
         let cache = qcode_tools::shell_env::ShellEnvCache::new(settings);
@@ -220,7 +242,7 @@ pub(crate) async fn cmd_gui(
             // 采不到不是致命错误：界面照旧能开，只是上下文相关的功能会缺东西。
             // 说清楚缺什么，比让它悄悄半残好。
             tracing::warn!(
-                "gui: could not sample the login shell; PATH and env-based API keys stay at the launchd baseline"
+                "gui: could not sample the login shell; PATH and env-based API keys stay at the session baseline"
             );
             return;
         };
@@ -242,7 +264,7 @@ pub(crate) async fn cmd_gui(
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     fn restore_launch_environment(_config_path: Option<&std::path::Path>) {}
 
     // 顺序有讲究：**先**补环境，**再**算 workspace。
@@ -417,6 +439,7 @@ pub(crate) async fn cmd_gui(
         agents_md: agents::load(&workspace)?,
         shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
+        schedule_declared: kernel.config.schedules.keys().cloned().collect(),
         schedule_errors: qcode_kernel::config::resolve_schedules(&kernel.config.schedules)
             .1
             .into_iter()
@@ -508,6 +531,49 @@ pub(crate) async fn cmd_tui(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `restore_launch_environment` 必须在 Linux 上也有实现体（ADR-0094）。
+    ///
+    /// 这个函数原本是 `#[cfg(target_os = "macos")]`，注释还写着「Linux 的 `.desktop`
+    /// 本来就把环境带进来了，没有这个洞」。真机结果相反：菜单启动拿到的是**会话**
+    /// 环境，`~/.zshrc` 的 `export` 不在里面，于是 `api_key_env` 型凭证解析不到，
+    /// 模型整个消失——而同一个二进制从终端起一切正常。
+    ///
+    /// 「空转」在功能上是隐形的：`restore_launch_environment(..) {}` 编译得过、测试
+    /// 全绿、只在用户的桌面上失败。所以用一条对着源码的检查把它钉住，和
+    /// `boot.rs::the_linux_installer_writes_the_same_marker` 是同一个办法。
+    ///
+    /// **第一版写成了 `source.contains(r#"#[cfg(any(…))]"#)`，那条是自证**：断言里的
+    /// 字面量本身就在同一个文件里，于是它永远能找到「自己」，把两处 `cfg` 一起改回
+    /// macOS-only 依然绿。教训是这类检查必须**锚定位置**——只看某个函数定义之前的那
+    /// 一个属性，而不是全文件里有没有这个串。
+    #[test]
+    fn the_launch_environment_is_restored_on_linux_too() {
+        /// 取 `marker` 之前最近的一个 `#[cfg(..)]`，即真正作用于那个条目的属性。
+        fn cfg_above(source: &str, marker: &str) -> String {
+            let at = source.find(marker).unwrap_or_else(|| panic!("no {marker}"));
+            let head = &source[..at];
+            let start = head
+                .rfind("#[cfg(")
+                .expect("a cfg attribute above the item");
+            head[start..].trim().to_string()
+        }
+
+        let source = include_str!("gui.rs");
+        assert_eq!(
+            cfg_above(source, "fn restore_launch_environment(config_path"),
+            r#"#[cfg(any(target_os = "macos", target_os = "linux"))]"#,
+            "restore_launch_environment must be compiled for linux as well; a macOS-only \
+             cfg silently drops rc-file API keys on a menu launch"
+        );
+        // 另一条臂必须是**精确的补集**：写成 `not(macos)` 会让 Linux 同时命中两个
+        // 定义，写成 `not(macos, linux)` 少一个平台就漏一个平台。
+        assert_eq!(
+            cfg_above(source, "fn restore_launch_environment(_config_path"),
+            r#"#[cfg(not(any(target_os = "macos", target_os = "linux")))]"#,
+            "the no-op arm must be the exact complement of the real one"
+        );
+    }
 
     /// `QCODE_APP_WORKSPACE` 是覆盖口，从前由 `.app` 启动器的 `cd` 兑现，
     /// 启动器删掉后（ADR-0086）由 `gui_workspace` 兑现（ADR-0085 §4）。

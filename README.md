@@ -964,6 +964,7 @@ action = "allow"
 ## 文档
 
 - [更新日志](CHANGELOG.md) —— 版本变更
+- [开发环境](docs/DEVELOPMENT.md) —— 工具链、target、交叉 C 编译器与门禁怎么跑
 - [设计决策](docs/design/DECISIONS.md) —— 唯一事实来源
 - [v1 实现规格](docs/design/SPEC.md) —— 架构、事件模型、工具契约
 - [v2 实现规格（草案）](docs/design/V2-SPEC.md) —— Windows、网络出口、ACP、GUI 分期

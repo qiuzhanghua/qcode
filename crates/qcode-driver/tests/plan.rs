@@ -12,8 +12,10 @@
 
 use std::collections::HashSet;
 
-use qcode_core::schedule::{Overlap, Rule, ScheduledTask, Target, TaskStatus, at};
-use qcode_driver::{Action, Probe, advance_past, plan_recovery, plan_tick};
+use qcode_core::schedule::{
+    Overlap, Rule, ScheduledTask, Target, TaskStatus, UNATTENDED_APPROVAL_TIMEOUT, at,
+};
+use qcode_driver::{Action, Executor, Probe, advance_past, plan_recovery, plan_tick};
 use time::{Duration, PrimitiveDateTime};
 
 /// 一个什么都不忙、什么都存在的世界。
@@ -38,6 +40,7 @@ fn task(rule: Rule, start: PrimitiveDateTime) -> ScheduledTask {
         overlap: Overlap::Queue,
         approval_timeout: None,
         status: TaskStatus::Active,
+        origin: qcode_core::schedule::Origin::User,
         stakeholders: Vec::new(),
         last_receipt: None,
         delivery_log: Vec::new(),
@@ -67,7 +70,13 @@ fn a_yearly_daily_task_fires_exactly_once_a_day() {
     let mut now = minute_of(1, 0, 0);
     let end = now + Duration::days(366);
     while now < end {
-        let plan = plan_tick(std::slice::from_ref(&t), now, &inflight, &Idle);
+        let plan = plan_tick(
+            std::slice::from_ref(&t),
+            now,
+            &inflight,
+            &Idle,
+            Executor::Attended,
+        );
         for action in plan.into_actions() {
             match action {
                 Action::Fire { .. } => {
@@ -111,18 +120,43 @@ fn gates_hold_without_touching_the_rule() {
     let t = task(Rule::Daily { hour: 9, minute: 0 }, now);
     let busy_with_it: HashSet<String> = ["01TASK".to_string()].into_iter().collect();
     assert!(
-        plan_tick(std::slice::from_ref(&t), now, &busy_with_it, &Idle).is_empty(),
+        plan_tick(
+            std::slice::from_ref(&t),
+            now,
+            &busy_with_it,
+            &Idle,
+            Executor::Attended,
+        )
+        .is_empty(),
         "an in-flight task must not be replanned"
     );
 
     // 2. 还没到点。
     let before = now - Duration::minutes(1);
-    assert!(plan_tick(std::slice::from_ref(&t), before, &inflight, &Idle).is_empty());
+    assert!(
+        plan_tick(
+            std::slice::from_ref(&t),
+            before,
+            &inflight,
+            &Idle,
+            Executor::Attended,
+        )
+        .is_empty()
+    );
 
     // 3. 暂停中。
     let mut paused = t.clone();
     paused.status = TaskStatus::Paused;
-    assert!(plan_tick(std::slice::from_ref(&paused), now, &inflight, &Idle).is_empty());
+    assert!(
+        plan_tick(
+            std::slice::from_ref(&paused),
+            now,
+            &inflight,
+            &Idle,
+            Executor::Attended,
+        )
+        .is_empty()
+    );
 
     // 三条闸门都不该改动任务本身。
     assert_eq!(t.next_fire_at, Some(now));
@@ -146,18 +180,32 @@ fn busy_target_skips_only_when_the_task_says_skip() {
     }
 
     let queue_task = task(Rule::Daily { hour: 9, minute: 0 }, now);
-    let plan = plan_tick(std::slice::from_ref(&queue_task), now, &inflight, &Busy);
+    let plan = plan_tick(
+        std::slice::from_ref(&queue_task),
+        now,
+        &inflight,
+        &Busy,
+        Executor::Attended,
+    );
     assert_eq!(
         plan.actions(),
         [Action::Fire {
-            task_id: "01TASK".to_string()
+            task_id: "01TASK".to_string(),
+            // 有人值守 ⇒ 任务没声明就不设截止时间（ADR-0059 §4 原义）。
+            approval_timeout: None,
         }],
         "queue means: deliver even though the session is busy"
     );
 
     let mut skip_task = queue_task.clone();
     skip_task.overlap = Overlap::Skip;
-    let plan = plan_tick(std::slice::from_ref(&skip_task), now, &inflight, &Busy);
+    let plan = plan_tick(
+        std::slice::from_ref(&skip_task),
+        now,
+        &inflight,
+        &Busy,
+        Executor::Attended,
+    );
     assert_eq!(
         plan.actions(),
         [Action::SkipBusy {
@@ -189,7 +237,13 @@ fn a_deleted_target_is_orphaned_not_ignored() {
         id: "01SESSION".to_string(),
     };
 
-    let plan = plan_tick(std::slice::from_ref(&t), now, &HashSet::new(), &Gone);
+    let plan = plan_tick(
+        std::slice::from_ref(&t),
+        now,
+        &HashSet::new(),
+        &Gone,
+        Executor::Attended,
+    );
     assert_eq!(
         plan.actions(),
         [Action::Orphaned {
@@ -211,7 +265,16 @@ fn a_once_task_ends_and_stops() {
     advance_past(&mut t, now);
     assert_eq!(t.status, TaskStatus::Ended);
     assert_eq!(t.next_fire_at, None);
-    assert!(plan_tick(std::slice::from_ref(&t), now, &HashSet::new(), &Idle).is_empty());
+    assert!(
+        plan_tick(
+            std::slice::from_ref(&t),
+            now,
+            &HashSet::new(),
+            &Idle,
+            Executor::Attended,
+        )
+        .is_empty()
+    );
 }
 
 /// 崩溃恢复：投递已落盘但没推进，必须补确认而不是重投。
@@ -280,7 +343,81 @@ fn an_idle_beat_produces_nothing() {
         minute_of(1, 12, 0),
         &HashSet::new(),
         &Idle,
+        Executor::Attended,
     );
     assert!(plan.is_empty());
     assert_eq!(plan.firing(), 0);
+}
+
+/// 无人值守（daemon）必须补上审批截止时间，有人值守不补（ADR-0092 §7）。
+///
+/// 这条守的是一个**不会报错**的失败：daemon 跑一条没设截止时间的任务，审批
+/// 没人回答 ⇒ 那次会话的写锁一直握着 ⇒ 会话从此不可写，而没有一行日志会说
+/// 它坏了。所以缺省值必须由这份共用规则给出，而不是等 daemon 自己想起来。
+#[test]
+fn unattended_fills_the_missing_approval_deadline() {
+    let now = minute_of(1, 9, 0);
+    let t = task(Rule::Daily { hour: 9, minute: 0 }, now);
+    assert!(
+        t.approval_timeout.is_none(),
+        "前提：这个 fixture 本身没声明截止时间"
+    );
+
+    let attended = plan_tick(
+        std::slice::from_ref(&t),
+        now,
+        &HashSet::new(),
+        &Idle,
+        Executor::Attended,
+    );
+    assert_eq!(
+        attended.actions(),
+        [Action::Fire {
+            task_id: "01TASK".to_string(),
+            approval_timeout: None,
+        }],
+        "人在旁边 ⇒ 一直等人工，这是 ADR-0059 §4 的原义，不许改"
+    );
+
+    let unattended = plan_tick(
+        std::slice::from_ref(&t),
+        now,
+        &HashSet::new(),
+        &Idle,
+        Executor::Unattended,
+    );
+    assert_eq!(
+        unattended.actions(),
+        [Action::Fire {
+            task_id: "01TASK".to_string(),
+            approval_timeout: Some(UNATTENDED_APPROVAL_TIMEOUT),
+        }],
+        "没有人工 ⇒ 必须补缺省值，否则写锁永远握着"
+    );
+}
+
+/// 显式声明的截止时间永远优先于执行者的缺省值。
+///
+/// 用户写了 `--approval-timeout-secs`，那是他的决定；daemon 不该把它改小
+/// （改小会让本该等 30 分钟的任务 5 分钟就被拒），也不该改大。
+#[test]
+fn a_declared_deadline_beats_the_unattended_default() {
+    let now = minute_of(1, 9, 0);
+    let mut t = task(Rule::Daily { hour: 9, minute: 0 }, now);
+    t.approval_timeout = Some(std::time::Duration::from_secs(30 * 60));
+
+    let plan = plan_tick(
+        std::slice::from_ref(&t),
+        now,
+        &HashSet::new(),
+        &Idle,
+        Executor::Unattended,
+    );
+    assert_eq!(
+        plan.actions(),
+        [Action::Fire {
+            task_id: "01TASK".to_string(),
+            approval_timeout: Some(std::time::Duration::from_secs(30 * 60)),
+        }]
+    );
 }

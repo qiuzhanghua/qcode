@@ -13,8 +13,10 @@
 //! behaviour, not formatting.
 
 use super::*;
-use qcode_core::schedule::{Target, TaskStatus};
-use qcode_core::scheduler::{DriverStatus, NewTask, ScheduleError, Scheduler, driver_footer};
+use qcode_core::schedule::{Target, TaskStatus, UNATTENDED_APPROVAL_TIMEOUT};
+use qcode_core::scheduler::{
+    DriverStatus, NewTask, ScheduleError, Scheduler, approval_footer, driver_footer,
+};
 use std::fmt::Write as _;
 
 pub(crate) fn cmd_schedule(
@@ -178,6 +180,16 @@ fn cmd_create(
     if json {
         let report = serde_json::json!({
             "driver": driver_json(driver),
+            // ADR-0092 §7：`timeout_secs` 是任务声明的，`unattended_default_secs`
+            // 是无人值守执行时会补上的值（只在没声明时非 null）。两个都给出，
+            // 脚本才不用去猜「null 是永远等，还是会补」。
+            "approval": {
+                "timeout_secs": task.approval_timeout.map(|timeout| timeout.as_secs()),
+                "unattended_default_secs": task
+                    .approval_timeout
+                    .is_none()
+                    .then_some(UNATTENDED_APPROVAL_TIMEOUT.as_secs()),
+            },
             "task": task,
         });
         println!("{report}");
@@ -197,6 +209,9 @@ fn cmd_create(
         task.next_fire_at
             .map_or_else(|| "-".to_string(), |at| at.to_string())
     );
+    // ADR-0092 §7：缺省值不能静默补。`None` 在有人值守与无人值守下是两种
+    // 结果，所以这条必须一直印出来，而不是只在设了值时才提一句。
+    let _ = writeln!(report, "{}", approval_footer(task.approval_timeout));
     let _ = writeln!(report);
     report.push_str(&driver_footer(driver));
     write_report(&report)?;

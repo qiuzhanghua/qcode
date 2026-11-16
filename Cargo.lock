@@ -5336,7 +5336,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qcode"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5375,7 +5375,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-acp"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5391,7 +5391,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-attachments"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "image",
  "serde",
@@ -5403,7 +5403,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-core"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5427,16 +5427,17 @@ dependencies = [
 
 [[package]]
 name = "qcode-driver"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "qcode-core",
  "tempfile",
  "time",
+ "tracing",
 ]
 
 [[package]]
 name = "qcode-eval"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -5446,7 +5447,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-gui"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5483,7 +5484,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-image"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -5493,7 +5494,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-kernel"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5516,7 +5517,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-mcp"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "http",
@@ -5535,7 +5536,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-net"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "base64 0.22.1",
  "qcode-core",
@@ -5552,7 +5553,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-providers"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5573,14 +5574,14 @@ dependencies = [
 
 [[package]]
 name = "qcode-shell"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "qcode-terminal"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "alacritty_terminal",
  "libc",
@@ -5589,7 +5590,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tools"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "globset",
@@ -5615,7 +5616,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-tui"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "insta",
  "qcode-core",
@@ -5627,7 +5628,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-bridge"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "async-trait",
  "qcode-core",
@@ -5638,7 +5639,7 @@ dependencies = [
 
 [[package]]
 name = "qcode-ui-state"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "qcode-attachments",
  "qcode-core",

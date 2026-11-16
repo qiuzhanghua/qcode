@@ -9385,6 +9385,12 @@ Linux 与 Windows 的启动路径**，只到编译与语法检查为止。
 > 进 TUI。判定层（本节 §1–§2 的三层与三端信号）一个字没动，改的只是 `None` 分支的动作；
 > 表内其余各行——显式子命令、标记开窗、双击单实例、`.app` 单可执行文件——仍然逐条有效。
 
+> **2026-11-16：上段那句「没有真机跑过 Linux」，代价来了**（ADR-0094）。Linux `.desktop`
+> 启动与终端启动的进程环境不是同一份东西——前者是桌面会话环境，不含 shell rc 的 `export`
+> ——所以「凭证只从 `api_key_env` 来」的 provider 从菜单启动时被判成没有凭证，模型消失；
+> 而 §3 里 `restore_launch_environment` 的注释当时写的是「非 macOS 平台空转……没有这个洞」。
+> 那个函数的 `cfg` 现已放宽到 Linux，Windows 仍空转但**改记为已知缺口**。
+
 ### 两处实现时才发现的事
 
 1. **`LSEnvironment` 在可执行文件路径与命令行标记之间需要一条桥**：plist 设的环境变量
@@ -10628,6 +10634,41 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 「建了 ≠ 会跑」的诚实要延续到这里——一个说「已启动」但其实没启动的 `daemon start`，
 比没有这个子命令更糟。
 
+**进度**（2026-11-16 对照代码。上表是**目标形态**，不是现状；本 ADR 仍未完成）
+
+落地顺序、每阶段的出口判据与未覆盖清单见 **[DAEMON-TASKS.md](./DAEMON-TASKS.md)**。
+下面是「目标形态 vs 现状」的逐行对照，只记事实。
+
+| 单元 | 现状 | 判据 |
+|---|---|---|
+| `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在。`inflight` / `pending_ack` 不是**持久**记账，而是 `qcode-driver` 的 `ScheduleDriver` 内存态（重启即清零，靠会话日志补确认）——`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
+| `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
+| `qcode-daemon` | ❌ 不存在 | 无此 crate |
+| `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
+| `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有 |
+| `qcd`（新 bin） | ❌ 不存在 | 同上；但前提已验，见下 |
+
+四条留给后续实现的话：
+
+1. **`qcode-driver` 的范围要按代码读，别按上表读。** 「时钟 beat、扫描、投递、心跳、事件
+   出口」这五项现在只在最后一项上是缺的：beat / 扫描 / 投递 / 记账 / 确认 / 崩溃恢复都在
+   `qcode-driver`（阶段 1），心跳由 `Host::heartbeat` 落地（GUI 写 `scheduler.rs` 的那个
+   key）。**前端循环不在这里**，而且不该在这里——见 DAEMON-TASKS 阶段 1 那一节里
+   「与原计划不同的一处」。事件出口只有 `Host::changed()` 这个「任务表变了」的信号，
+   §8 说的可跟随流还不存在。
+   `[schedules]` 配置条目也已并进任务表（ADR-0096），所以 daemon 不必再实现一份配置驱动。
+2. **进度要记在这里，不要只留在 commit message 里。** `a630cd6` 之前，任何人读本 ADR 都
+   会得到「§11 一样都还没做」的印象，然后重复这次对照。
+3. **§1 与 §11 的拆分方向已验证可行。** `qcd` = daemon + kernel 且不链 GPU 栈，这条现在
+   就能验：`cargo tree -p qcode-kernel` 里 `wgpu`/`winit`/`wry`/`tao`/`glow`/`blade`/
+   `softbuffer` 计数为 0，而 providers、tools、mcp、net 全在——「完整引擎」与「不链 GPU
+   栈」可以同时满足。§11 要的那套进程级原语也已经不依赖界面：0b 把
+   `single_instance`（flock / LockFileEx / UDS / 命名管道）搬进了 `qcode-core`，
+   带 `Scope` 以便 daemon 用另一把锁。
+4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
+   拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
+   时断言退出码非 0 且 stderr 说实话。
+
 ### 12. 非目标（本期）
 
 - 登录自启（launchd / systemd user unit / 计划任务）
@@ -10763,3 +10804,345 @@ INFO qc::lifecycle: qc session starting pid=14275 …
   再谈，现在没有数据。
 - 没有动 stderr 的默认（`warn` 对终端仍是对的）。
 - 老日志里的噪音不会消失：7 天轮转自然淘汰。
+
+## ADR-0094：Linux 的 `.desktop` 也要从登录 shell 补环境（2026-11-16）
+
+**状态**：Accepted（2026-11-16），已实现。
+**更正** ADR-0086 §3 里 `restore_launch_environment` 的注释「非 macOS 平台空转：Linux 的
+`.desktop` 与 Windows 的 `.lnk` 本来就把环境/工作目录带进来了，没有这个洞」——**那句在
+Linux 上是错的**。ADR-0086 自己的验证表末尾也留着「**没有真机跑过** Linux 与 Windows 的启动
+路径，只到编译与语法检查为止」。这次就是那句备注里的洞。
+
+**背景**
+
+`make linux-desktop` 装好菜单入口后，从菜单启动**模型配置消失**，而同一个二进制从终端敲
+`./target/release/qc --launched-from-gui` 一切正常。两侧的差别只有一个：环境。
+
+配置里 provider 的凭证是 `api_key_env = "DEEPSEEK_API_KEY"`，而 `config::resolve` 的规则是
+「env 里没有 key、也没有 `api_key_command` → 这个 provider 不算可用」（`config/resolve.rs`）。
+于是「模型列表为空」不是配置没读到，是那个 provider 被判成没有凭证。
+
+两种启动方式的进程环境**不是同一份东西**：
+
+| 启动方式 | 环境来源 | 含 `~/.zshrc` 的 `export`？ |
+|---|---|---|
+| 终端里跑 `qc` / `qc --launched-from-gui` | 那个交互式 shell | 是 |
+| 点 `.desktop` | 桌面会话（`systemd --user` / gnome-shell 派生） | **否** |
+
+`.desktop` 不经过 shell，所以 shell rc 里的 `export` 一个都进不来。macOS 经 LaunchServices
+启动更彻底（只给 5 个变量），ADR-0086 §3 就是为它写的，但当时把 Linux 判成「没有这个洞」。
+
+**决定**
+
+`restore_launch_environment` 的 `cfg` 从 `target_os = "macos"` 放宽到
+`any(target_os = "macos", target_os = "linux")`。行为不变：**只补当前缺失的变量**
+（`std::env::var_os(..).is_none()`），所以终端启动、以及用户真在环境里设过的值都不受影响；
+`[shell] env_sampling = "off"` 时不补；采样失败只 `warn`，界面照旧能开。
+
+Windows 仍空转，但这回**如实记成已知缺口**而不是「没有洞」：`.lnk` 由 explorer 拉起，拿到的
+同样是登录会话环境，逻辑上有同一个洞。没修的理由是本仓没有 Windows 真机可验证 pwsh 采样，
+而多数人把 key 设成「用户环境变量」（那会被继承）——照 macOS 的样子声称修好，比不修更坏。
+
+**实测（Linux，2026-11-16）**
+
+| 测点 | 结果 |
+|---|---|
+| `strings target/debug/qc \| grep -c 'restored environment from the login shell'` | `1` —— Linux 二进制现在**含**这段逻辑（空转版本不会带上这个字符串） |
+| 临时 `HOME`，rc 里 `export QCODE_TEST_KEY=abc123`，`env -i HOME=… qc shell-env` | 采到 `QCODE_TEST_KEY` —— rc 的 `export` 确实能被子进程拿到 |
+| 真机点图标启动后的日志 | `added=49 sampled=100 shell=/usr/bin/zsh`，紧接着 `config resolved exists=true provider=deepseek model=deepseek-flash key=env DEEPSEEK_API_KEY` |
+| `cargo test -p qcode --bin qc` | 90 通过 |
+| `cargo clippy -p qcode --bin qc --all-targets` | 干净 |
+
+第三行才是判据：`key=env DEEPSEEK_API_KEY` 是 `api_key_source`，而 `config/resolve.rs` 只在
+`env(..)` 返回**非空值**时才产生这个字符串——所以 key 是真取到了，不是「配置读到了但没凭证」。
+
+> **一条被推翻的中间结论，留在这里当教训。** 修复前我用同一条采样命令做对照，得到
+> `env -i HOME=/home/q zsh -lic 'env -0'` 只有 4–8 个变量、且没有 `DEEPSEEK_API_KEY`，
+> 于是写下「key 不在任何 rc 文件里，只在 shell 的继承链上，采样永远补不上」。**这是错的**：
+> 那次探测跑在一个读不到 `~/.zshrc` 的沙箱里（`head ~/.zshrc` → `权限不够`），rc 根本没执行，
+> 采样自然退化。真实环境同一命令拿到 100 个变量。
+>
+> 探测环境的权限与被探测进程的环境不是同一份——这和本 ADR 正题（两种启动方式的环境不是同一份）
+> 是同一个错误的两种写法。**「探针跑在哪」本身就是被测条件的一部分**，对照实验尤其如此。
+
+> **同一条错误当天又犯了第二次，形式更隐蔽。** 为了找凭证来源，我用 `grep GITHUB_TOKEN
+> ~/.zshrc` 搜字面量，0 命中，于是判定「不在 rc 里，来自父进程环境」。**又是错的**：真机上的
+> rc 是这段
+>
+> ```sh
+> for f in ~/.config/github.env ~/.config/deepseek.env; do
+>   [ -r "$f" ] && { set -a; source "$f"; set +a; }
+> done
+> ```
+>
+> ——变量名根本不出现在 rc 里，`source` 的是另一个文件。**搜字面量找不到间接引用**，而
+> 「在文件里搜一个名字」恰恰是判断环境来源最直觉、也最容易骗过自己的办法。正确的问法不是
+> 「rc 里有没有这个词」，而是「rc 里 `source` / `eval` 了什么」。
+>
+> 这一条同时解释了本 ADR 的修复为什么对它有效：采样命令是 `zsh -lic 'env -0'`，`-i` 会读
+> `~/.zshrc`，`~/.zshrc` 会 `source` 那两个 env 文件，所以 `env -0` 的输出里就带上了密钥
+> （实测 `sampled=100`）。加载链有三层，缺任何一层结论都会反过来。
+>
+> 附带发现的另一个假象，一并记下：同一个沙箱**允许 `stat` 但拒绝读取文件内容**，于是
+> `[ -r file ]` 返回真而 `grep file` 报 `权限不够`——只查「可读性」判断不了「读不到」。
+> 同一时期 `gh auth status` 报 `The token in GITHUB_TOKEN is invalid`，而带同一个 token
+> `curl /user` 返回 **200**：那次也是沙箱拦了出网，gh 把**网络失败误报成凭证失效**。
+> 结论：判断凭证是否有效，要看 HTTP 状态码，不要看工具的措辞；判断环境来源，要看加载链，
+> 不要搜字面量。
+
+守卫是一条对着源码的检查（`gui.rs::tests::the_launch_environment_is_restored_on_linux_too`），
+因为「空转」在功能上是隐形的：`restore_launch_environment(..) {}` 编译得过、测试全绿，只在
+用户的桌面上失败。**它的第一版也是自证的**——写成 `source.contains(r#"#[cfg(any(…))]"#)`，
+而那个字面量本身就在同一个文件里，于是把两处 `cfg` 一起改回 macOS-only 依然绿。现在改成
+锚定位置：只看 `fn restore_launch_environment(…)` 之前最近的那一个 `#[cfg(..)]`，并要求另一条
+臂是精确补集。改完用变异验过两种回退：只改一处 → 编译期 `E0425`（函数不存在）；两处一起改
+→ 该测试红（`left: #[cfg(target_os = "macos")]`）。
+
+**边界**
+
+本次修复对「key 由 shell rc `export`」这一类已经够用，无需配置改动。仍然存在、且与启动方式
+无关的另一条路是 `api_key_command`——它给的是「key 由一个命令提供」的情形（keyring、
+`pass`、公司内部的凭据工具）：
+
+```toml
+[providers.deepseek]
+api_key_command = ["secret-tool", "lookup", "service", "deepseek"]
+```
+
+`api_key_command` 是一个 argv（不是 shell 串），qc 直接 exec 它、读 stdout 第一行，`stdin`
+是 `null`。key 从此不依赖任何 shell 环境。
+
+没有做、也不打算做的：
+
+- 不去读桌面会话的「secret service」或自动 import 用户 shell 的完整环境到 GUI 进程——那等于
+  把 shell 里所有 `export`（含无关的敏感变量）都灌进一个长命进程，代价远大于收益。
+- 不为 Windows 写一套未经验证的 pwsh 采样。
+- 不在 `qc doctor` 里新增「你的 key 来自哪里」的诊断节：`resolve` 已经在 `api_key_source`
+  字段里记了 `env DEEPSEEK_API_KEY` / `command …` / `keyless`，缺的是把它显示出来，那是另一件事。
+
+**顺带**：同一轮修了「点了没反应」这个报告缺证据的问题（`install-linux-desktop.sh`）——
+`--check` 原来在缺 `Exec=` 时 `continue`（等于放行），也从不验证启动标记；现在两者都算失败。
+新增 `--launch` 走 `gtk-launch`，也就是菜单用的同一条 libgio 查找，但把 stderr 留在终端：
+菜单没有终端，`qc` 又常常「打印用法然后 exit 0」，所以那个症状原本拿不到任何证据。
+
+## ADR-0095：darwin 目标在 Linux 上也能类型检查——用 zig 供 C SDK，排除 GUI（2026-11-16）
+
+**状态**：Accepted（2026-11-16），已实现。
+**接续** ADR-0093 之后的门禁线：`scripts/ci-cross-check.sh` 自 0.12.0 起只覆盖 Windows，
+darwin 两个 triple 一直在 `SHIPPED` 里，却**从来没有被检查过**。
+
+**背景**
+
+工具链补上 darwin 的 std 之后（`rustup target add`），脚本里那行
+「not checked (target std not installed)」消失了——然后检查**从跳过变成了失败**：
+
+```
+error: failed to run custom build command for `libsqlite3-sys v0.39.1`
+  cc: error: unrecognized command-line option '-arch'
+  cc: error: unrecognized command-line option '-mmacosx-version-min=11.0'
+```
+
+也就是说，之前那句「未安装 std」把真正的原因挡在了后面：**不是 std 缺，是 C 编译器缺**。
+这比跳过更糟——一个本来绿的本地门禁因此变红，而红的原因与本次改动无关。
+
+失败链有三层，前两层能修，第三层不能：
+
+1. `libsqlite3-sys` / `aws-lc-sys` 的 build script 要一个能产出 Mach-O 的 C 编译器；
+2. `cc-rs` 检测到「像 clang」时会追加 `--target=arm64-apple-macosx`（Apple 拼法），
+   而 zig 只认 `aarch64-macos`，遇到不认识的架构名直接失败并打印可选架构列表；
+3. `gpui-pre-apple` 的 build script 是
+   ```rust
+   fn main() {
+       #[cfg(any(target_os = "macos", target_os = "ios"))]
+       apple_build::run();
+   }
+   ```
+   而 **build script 按宿主平台编译**。Linux 宿主上 `main` 是空的，`stitched_shaders.metal`
+   永远不会生成，Apple 专属的
+   `include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"))` 于是编译失败。
+   这不是缺库、缺 SDK、缺 flag，是「需要一个 macOS 宿主」，无法从配置层绕过。
+
+**决定**
+
+1. `scripts/zig-cc-darwin.sh` / `zig-cxx-darwin.sh`：用 `zig cc|c++ -target <zig 三元组>`
+   当 Apple 目标的 C 编译器。zig 自带 macOS SDK（libSystem stub 与头文件），而 `cargo check`
+   不需要链接，所以够用。包装脚本**丢掉** `--target=…` 那个参数（第 2 层），语言由
+   `ZIG_CC_TOOL` 选——不能走 `$1`，因为 cc-rs 的编译器家族探测
+   （`<cc> -E detect_compiler_family.c`）调用的是同一个值，带位置参数的包装会把探测弄坏。
+2. `apple_zig_target()` 把 triple 映射成 zig 的写法；本机没有 zig 时**不静默跳过**，而是
+   进 `missing_cc`，并说明缺的是「zig（它自带 macOS C SDK）」。
+3. darwin 目标加 `--exclude qcode-gui --exclude qcode`（第 3 层），并把这件事**打印出来**：
+   `checked, but not over the whole workspace`。17 个 crate 里覆盖 15 个，
+   覆盖面从 0 变成 15/17，但绝不能让它听起来像 17/17。
+
+**验证（Linux，2026-11-16）**
+
+| 测点 | 结果 |
+|---|---|
+| `cargo check --target aarch64-apple-darwin`（排除 GUI） | 通过，13.9s（含编译 sqlite 与 aws-lc 的汇编） |
+| 同上 `x86_64-apple-darwin` | 通过，13.3s |
+| 两个 darwin 目标的 `clippy -- -D warnings` | 通过 |
+| `bash scripts/ci-cross-check.sh`（全 4 个目标） | `cross-check: 4 target(s) type-check`，退出 0 |
+| 没有 zig 的 PATH 下只请求 darwin | `not checked (needs zig, which carries the macOS C SDK)`，提示准确 |
+
+**为什么值得做**
+
+第 3 层挡住的是 `qcode-gui` 与 `qcode`——而 `qcode` 的 `boot.rs` / `commands/gui.rs` 恰恰是
+`#[cfg(target_os = "macos")]` 与 Linux 共用同一份源码的地方（ADR-0094 改的就是那里）。
+所以这份本地门禁**覆盖不到今天最需要它保护的那两个文件**，那一部分仍只有 CI 的
+`test (macos-latest)` 与 `build (macos-26, …)` 兜着。把这条写清楚，比让一个绿勾暗示
+「darwin 全查过了」更诚实。
+
+**没有做**
+
+- 不把 `--target=arm64-apple-macosx` 的兼容塞进 zig：那是 cc-rs 与 zig 的命名分歧，
+  在包装脚本里丢掉一个参数比给 zig 打补丁便宜得多。
+- 不为 `gpui-pre-apple` 造一个「假 host」：伪造 `CARGO_CFG_TARGET_OS` 让 build script 跑
+  Apple 分支，等于让 Metal 编译器在 Linux 上被调用，只是把失败点往后挪。
+
+**追加（同日）：门禁从「本地自愿」变成 CI 必跑**
+
+原本这里写的是「不动 CI」。用户要求把它接进 ubuntu job 之后，那条立场改了，理由也变了：
+门禁的价值取决于它是否在每次 push 上真的运行，而不取决于它存在。改动是 `ci.yml` 的
+`test` job 里新增一步：
+
+```yaml
+- name: cross-target type-check (windows + darwin, ADR-0095)
+  if: runner.os == 'Linux'
+  run: |
+    zig_dir=$(bash scripts/install-zig.sh)
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin \
+                      aarch64-pc-windows-gnullvm x86_64-pc-windows-gnullvm
+    export PATH="$zig_dir:$PATH" ZIG_GLOBAL_CACHE_DIR="${RUNNER_TEMP}/zig-cache"
+    bash scripts/ci-cross-check.sh
+```
+
+三个配套决定：
+
+- **zig 的安装可复现**：`scripts/install-zig.sh` 固定版本（0.17.0）、校验 sha256，
+  装到已被 gitignore 的 `.toolchains/`，即 `build-for-release` 的 `find_zig` 本来就在看的
+  位置——一套约定，不是两套。sha256 默认取自 ziglang.org 自己的 `download/index.json`
+  （与 tarball 同源，能发现下载损坏、不能发现源被换），要钉死就传 `ZIG_SHA256`。
+- **缓存**：`actions/cache` 缓存 `.toolchains`，key 带版本号，升版本自动失效。
+- **Windows triple 在 ubuntu runner 上仍然检查不了**（缺 llvm-mingw，那是要额外装的大
+  工具链），所以那两条继续由 `windows-build` 原生覆盖。脚本会把它们列进
+  `not checked (no cross C compiler on PATH)` 而不是静默跳过；`test (ubuntu-latest)` 上
+  实际合格的是 darwin 两条，`checked=2`，足以避免「一个都没检查」那种空转。
+
+同时把 `windows-build` job 里那句「所以不再有 Linux cross-check job」的注释改掉了——它
+现在与事实相反，而一句会骗人的注释比没有注释更糟。
+
+未验证项：这条 CI 步骤在真 runner 上还没跑过（本机无法访问 GitHub Actions 的执行环境）。
+首次运行时最可能出问题的地方是 zig tarball 的下载与 `python3` 解析 index（ubuntu-latest
+两者都有），以及冷缓存下 darwin 两个 triple 的 sqlite / aws-lc 编译耗时。
+
+---
+
+## ADR-0096：`[schedules]` 与任务表合一——一个条目只投一次（2026-11-16）
+
+**状态**：Accepted（2026-11-16）。**已实现**（2026-11-16）。依赖 ADR-0059（调度语义）、
+ADR-0088（注册与驱动分离）、ADR-0092 §11（阶段 1）。
+**取代**：ADR-0059 的「运行状态存 sqlite `schedules` 表」与「配置路径自己投递」；
+ADR-0088 的「导入一次，同名跳过」。
+
+**背景**
+
+ADR-0059 把定时任务做成「配置声明 + sqlite 里记运行状态」，由 GUI 的时钟 beat 自己投递。
+ADR-0088 加了运行时任务（`tasks.json`，多种规则，`followup_scheduled` 带结构标记），并把
+`[schedules]` 条目**导入**成运行时任务——但导入是「同名就跳过」，而且**配置路径继续投递**。
+
+于是同一个条目被两条路径各投一次。真机实测（`[schedules.tick] cron = "* * * * *"`，
+GUI 跑 150 秒）：
+
+```
+15:36:05  01M7HMHPXZ  user_message:1  scheduled:yes   ← 运行时路径
+15:36:05  01M7HMHPY4  user_message:1  scheduled:no    ← 配置路径
+15:37:05  01M7HMKHGY  user_message:1  scheduled:yes
+15:37:05  01M7HMKHH3  user_message:1  scheduled:no
+```
+
+一分钟一次的任务，150 秒里建了 **4 个会话、4 个回合**。配置路径那份还不带 `scheduled`
+标记，所以转录里既看不出「这是定时执行」，也无法归属到任务。
+
+第二个问题：**两套账本必然漂移**。把 cron 从 `* * * * *` 改成 `*/5 * * * *` 再重启：
+
+```
+sqlite  schedules 表 : next_fire_at = 15:40:00   ← 新 cron
+tasks.json          : rule = cron "* * * * *"    ← 旧 cron
+```
+
+`import_config` 按名字判重、从不 reconcile，所以改配置只改了一半：配置路径按新 cron 走，
+导入的任务按旧 cron 走。用户改了配置却只有一半生效，而没有任何界面能看出这件事。
+
+这两条在 ADR-0092 之前不可见，因为驱动只有 GUI 一个、而 GUI 的行为「看起来是对的」——
+没人会数同一分钟里建了几个会话。它们是阶段 1 把投递搬进 `qcode-driver`、可以按拍观察
+之后才暴露的。
+
+**决定**
+
+1. **一套模型**：`tasks.json` 是唯一定时任务表。`[schedules.<name>]` 是**另一个入口**，
+   不是另一套机制——启动时经 `Scheduler::reconcile_config` 变成任务，此后与用户建的任务
+   走**同一条**投递路径。
+2. **加 `Origin`**（`User` / `Config`，serde 默认 `User`）。合并之后「谁说了算」不能靠猜：
+   配置声明的条目改 `config.toml`，用户建的任务改 GUI/CLI。
+3. **配置来源的任务拒绝本地改动**：`pause` / `resume` / `edit` / `delete` 一律报
+   `ScheduleError::ConfigOwned`，并说出去哪儿改（`[schedules.<name>]`）。`run_now` 是运行
+   命令不是改声明，照旧允许。
+4. **删掉配置路径与它的状态**：GUI 的配置驱动循环（105 行）、sqlite `schedules` 表的读写
+   （`schedule_states` / `save_schedule_state` / `prune_schedules`）、以及只为它存在的
+   `ScheduleState` / `ScheduleStatus` / `Tick` / `Recovery` / `tick()` / `recover()` /
+   `advance()`。老的 `schedules` 表**不 DROP**：留着不花什么，回退时还在。
+
+### reconcile 的三条规则
+
+| 配置侧 | 任务表 | 说明 |
+|---|---|---|
+| 有 | 没有 | 建，`origin = config`，`id = 条目名` |
+| 有 | 有 | 声明字段跟着改；**运行事实不动** |
+| 没有了 | 有且 `origin = config` | 删 |
+| 没有了 | 有且 `origin = user` | 不动（用户的东西不该被一份配置的缺失带走）|
+
+「声明字段」= rule / prompt / target / overlap / approval_timeout / 启用状态。
+「运行事实」= 投递历史 / 回执 / 错过计数 / 预定会话 / `Ended` 状态。后者是**发生过什么**，
+覆盖它等于每次启动都清空审计记录。
+
+`enabled = false` 映射成 `Paused` 而不是删除：用户重新启用时状态与历史都接得回来。
+
+### 为什么 `declared` 与 `resolved` 是两个参数
+
+`resolve_schedules` 会把坏条目（cron 写错、prompt 空）挑进 `schedule_errors`，不出现在
+resolved 列表里。如果按 resolved 列表判断「这条还在不在」，**一个 cron 拼写错误就会把任务
+连投递历史一起删掉**——用户改回来时已经晚了。所以：
+
+- 「还在不在」按 `config.toml` 里的**键**（`declared`，来自 `Config.schedules` 的 key 集合）；
+- 「该是什么样」才按 resolved 的声明。
+
+真机验证过：把 `0 3 * * *` 写成 `0 3 * *`，重启后任务还在、规则仍是旧的，`schedule_errors`
+里多一条——用户看得见错在哪，而不是发现任务没了。
+
+### 一个任务被 reconcile 改名/改规则时，`next_fire_at` 怎么处理
+
+**规则变了才重算**。只改 prompt 时保留原窗口：每次都按 `now` 重算会把一个即将到点的任务
+推到下一个窗口，表现为「晚一拍」甚至「跳过一整轮」。回归测试
+`a_prompt_only_edit_keeps_the_pending_window`。
+
+**后果**
+
+- 双投消失：同一份配置，150 秒内从 4 个会话降到 2 个（每分钟一个），且都带 `scheduled`
+  标记。
+- 改配置现在真的生效（cron / prompt / target / overlap / approval_timeout / enabled），
+  删除条目会删任务。
+- 旧库的 `schedules` 表数据**不再读**，所以升级后第一次启动时：`next_fire_at` 按
+  `cron.next_after(now)` 重算、`missed_windows` 归零一次。这两项都是「下一次该什么时候
+  触发」的等价答案（重启后第一拍本来就是 `away`，只推进不补投），代价是错过计数从零开始。
+- `qc schedule delete/pause` 对配置条目会失败并指出配置文件。这是**有意的**：允许它「成功」
+  然后下次启动又被 reconcile 造回来，是更糟的失败形态（ADR-0090 §5）。
+- daemon（ADR-0092 阶段 2）不需要再实现一份配置驱动——配置条目在它眼里就是普通任务。
+
+**验证**
+
+- `scheduler.rs` 7 条 reconcile 用例：建立 / 跟随编辑且保留运行事实 / 只改 prompt 不动窗口 /
+  只 prune 自己建的 / 坏条目保留 / `enabled=false` 转 Paused / `ConfigOwned` 四连拒。
+- 真机四条：双投消失（上面那组会话数）、cron 改动传播且保留投递历史、`enabled=false` →
+  `paused`、删条目 → 任务表清空、坏 cron 保留任务。
+- `cargo test --workspace` 1347 通过；clippy / fmt / Windows 跨端类型检查全绿。

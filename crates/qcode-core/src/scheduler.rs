@@ -1,18 +1,18 @@
-//! 定时任务管理服务（运行时任务，区别于 config 只读声明）。
+//! 定时任务管理服务：**一套模型**（任务表 `tasks.json`），config 只是来源之一。
 //!
 //! 只负责"任务定义"的管理与校验：创建 / 编辑 / 启停 / 立即执行 / 删除 / 列表 /
-//! 查看 / 迁移。投递本身由引擎侧的 `ScheduleDriver` 负责（见 `qcode-gui::runtime`），
-//! 这里不读时钟——`now` 由调用方传入，方便用假时钟测试。
+//! 查看 / 与 `[schedules]` 对齐。投递本身由 `qcode_driver` 负责，这里不读时钟——
+//! `now` 由调用方传入，方便用假时钟测试。
 //!
-//! 任务定义落在 `SessionStore` 的 `schedule/tasks.json`（见 `store.rs`）。
+//! `[schedules.<name>]` 是**另一个入口，不是另一套机制**：它经
+//! [`Scheduler::reconcile_config`] 变成任务，此后与用户建的任务走同一条投递路径。
 
-use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use time::PrimitiveDateTime;
 
 use crate::schedule::{
-    Rule, Schedule, ScheduleState, ScheduledTask, Target, TaskStatus, import_config_schedule,
+    Origin, Rule, Schedule, ScheduledTask, Target, TaskStatus, UNATTENDED_APPROVAL_TIMEOUT,
 };
 use crate::store::{SessionStore, StoreError};
 
@@ -22,6 +22,11 @@ pub enum ScheduleError {
     Invalid(String),
     #[error("schedule task `{0}` not found")]
     NotFound(String),
+    /// 这条任务由 `config.toml` 声明，任务表只是它的投影：改它要去改配置。
+    #[error(
+        "schedule task `{0}` is declared in config.toml ([schedules.{0}]); edit that file instead"
+    )]
+    ConfigOwned(String),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -210,6 +215,48 @@ pub fn driver_footer(driver: DriverStatus) -> String {
     }
 }
 
+/// 审批截止时间这一栏该怎么说（ADR-0092 §7）。
+///
+/// 存在两张皮的原因：`approval_timeout = None` 在**有人值守**时是「一直等人工」，
+/// 在**无人值守**（daemon）时会被补成 [`UNATTENDED_APPROVAL_TIMEOUT`] 并自动
+/// 拒绝。同一份任务表、两种执行者、两种结果——所以文案必须把它们一起说出来，
+/// 而不是只在设了值的时候才提一句。
+///
+/// 与 [`driver_footer`] 放在一起、被 CLI 和 `schedule_*` 工具共用：ADR-0090 §5
+/// 那条「建了 ≠ 会跑」的诚实，靠的就是「用户和模型看到的是同一句话」。
+pub fn approval_footer(timeout: Option<Duration>) -> String {
+    match timeout {
+        Some(timeout) => format!("审批：{}(超时自动拒绝)。", describe_duration(timeout)),
+        None => format!(
+            "审批：**未设截止时间**——有人值守时一直等人工。\
+             无人值守执行时（常驻 daemon）会补 {}，超时自动拒绝：\
+             没有人在旁边，等下去会把那个会话的写锁一直握着。\
+             要改就加 `--approval-timeout-secs`。",
+            describe_duration(UNATTENDED_APPROVAL_TIMEOUT)
+        ),
+    }
+}
+
+/// `300s` → `5m`、`90s` → `1m30s`。只为人读，不参与任何判定。
+fn describe_duration(timeout: Duration) -> String {
+    let seconds = timeout.as_secs();
+    if seconds == 0 {
+        return "0s".to_string();
+    }
+    if seconds.is_multiple_of(3600) {
+        return format!("{}h", seconds / 3600);
+    }
+    if seconds.is_multiple_of(60) {
+        return format!("{}m", seconds / 60);
+    }
+    let (minutes, rest) = (seconds / 60, seconds % 60);
+    if minutes == 0 {
+        format!("{rest}s")
+    } else {
+        format!("{minutes}m{rest}s")
+    }
+}
+
 /// 新建任务的输入（`rule` 已解析为冻结规则，见 `schedule::parse_rule`）。
 #[derive(Debug, Clone)]
 pub struct NewTask {
@@ -321,6 +368,8 @@ impl Scheduler {
             overlap: input.overlap,
             approval_timeout: input.approval_timeout,
             status: TaskStatus::Active,
+            // 用户（或模型工具、CLI）建的：config.toml 无权改动它。
+            origin: Origin::User,
             stakeholders,
             last_receipt: None,
             delivery_log: Vec::new(),
@@ -354,6 +403,7 @@ impl Scheduler {
                 .iter_mut()
                 .find(|task| task.id == id)
                 .ok_or_else(|| ScheduleError::NotFound(id.to_string()))?;
+            reject_config_owned(task)?;
             if let Some(title) = patch.title {
                 let trimmed = title.trim();
                 if trimmed.is_empty() {
@@ -421,6 +471,9 @@ impl Scheduler {
             .iter_mut()
             .find(|task| task.id == id)
             .ok_or_else(|| ScheduleError::NotFound(id.to_string()))?;
+        // `enabled = false` 才是停掉配置条目的办法；在这里暂停会在下次启动时
+        // 被 reconcile 恢复，用户看不到任何解释。
+        reject_config_owned(task)?;
         task.status = TaskStatus::Paused;
         self.store.save_schedule_tasks(&tasks)?;
         Ok(())
@@ -435,6 +488,7 @@ impl Scheduler {
             .iter_mut()
             .find(|task| task.id == id)
             .ok_or_else(|| ScheduleError::NotFound(id.to_string()))?;
+        reject_config_owned(task)?;
         task.status = TaskStatus::Active;
         if task.next_fire_at.is_none() {
             task.next_fire_at = task.rule.next_after(now);
@@ -468,11 +522,13 @@ impl Scheduler {
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
-        let before = tasks.len();
-        tasks.retain(|task| task.id != id);
-        if tasks.len() == before {
+        let Some(task) = tasks.iter().find(|task| task.id == id) else {
             return Err(ScheduleError::NotFound(id.to_string()));
-        }
+        };
+        // 删掉也会被下次启动的 reconcile 造回来。要让一条配置条目消失，删的是
+        // `config.toml` 里那一段。
+        reject_config_owned(task)?;
+        tasks.retain(|task| task.id != id);
         self.store.save_schedule_tasks(&tasks)?;
         Ok(())
     }
@@ -523,35 +579,197 @@ impl Scheduler {
         Ok(())
     }
 
-    /// 把 config 声明的 `[schedules.<name>]` 条目一次性导入为运行时任务（幂等）：
-    /// 同名的任务已存在则跳过。
-    pub fn import_config(
+    /// 把 config 声明的 `[schedules.<name>]` 与任务表对齐（幂等、可重复调用）。
+    ///
+    /// 取代原来的 `import_config`（「同名就跳过」）。跳过是不够的：用户改了 cron、
+    /// 改了 prompt、把 `enabled` 设成 `false`、或者整条删掉——这些都不会传播。
+    /// 更糟的是旧实现让配置路径**继续自己投递**，于是同一个条目一分钟要投两次
+    /// （真机实测：一分钟一次的任务，150 秒建了 4 个会话）。
+    ///
+    /// 三条规则：
+    ///
+    /// 1. **声明了就存在**：`schedules` 里有的名字，任务表里一定有，字段按声明写。
+    /// 2. **声明变了就跟着变**：rule / prompt / target / overlap / approval_timeout /
+    ///    启用状态都从声明来。**投递历史、回执、错过计数、预定会话不动**——那是
+    ///    运行事实，不是声明。
+    /// 3. **声明没了才删**：`declared` 里没有、而任务是 [`Origin::Config`] 的，
+    ///    删掉。
+    ///
+    /// # 为什么 `declared` 与 `schedules` 是两个参数
+    ///
+    /// 坏的条目（cron 写错、prompt 空）会被 [`resolve_schedules`] 挑出去进
+    /// `schedule_errors`，不出现resolved 的 `schedules` 里。如果按 `schedules`
+    /// 判断「还在不在」，一个 cron 拼写错误就会让任务被删掉——用户改回来时任务
+    /// 和它的投递历史已经没了。所以「还在不在」按 `config.toml` 里的**键**判断
+    /// （`declared`），「该是什么样」才按 resolved 的声明。
+    ///
+    /// [`resolve_schedules`]: crate::schedule::Rule
+    pub fn reconcile_config(
         &self,
+        declared: &[String],
         schedules: &[Schedule],
-        states: &BTreeMap<String, ScheduleState>,
         now: PrimitiveDateTime,
-    ) -> Result<usize, ScheduleError> {
+    ) -> Result<ReconcileReport, ScheduleError> {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
         let mut tasks = self.store.load_schedule_tasks();
-        let mut existing: HashSet<String> = tasks.iter().map(|task| task.id.clone()).collect();
-        let mut added = 0;
+        let mut report = ReconcileReport::default();
+
         for schedule in schedules {
-            if !existing.insert(schedule.name.clone()) {
-                continue;
+            let desired = config_task(schedule, now);
+            match tasks.iter_mut().find(|task| task.id == schedule.name) {
+                Some(existing) => {
+                    if apply_declaration(existing, &desired) {
+                        report.updated += 1;
+                    } else {
+                        report.unchanged += 1;
+                    }
+                }
+                None => {
+                    tasks.push(desired);
+                    report.created += 1;
+                }
             }
-            tasks.push(import_config_schedule(
-                schedule,
-                states.get(&schedule.name),
-                now,
-            ));
-            added += 1;
         }
-        if added > 0 {
+
+        // 声明里已经没有的、且是配置投影出来的任务：删。
+        //
+        // `Origin::User` 的任务即使撞名也不删——用户自己建的东西不该被一份配置
+        // 文件的缺失带走。
+        let before = tasks.len();
+        tasks.retain(|task| {
+            !(task.origin == Origin::Config && !declared.iter().any(|name| name == &task.id))
+        });
+        report.removed = before - tasks.len();
+
+        if report.created + report.updated + report.removed > 0 {
             self.store.save_schedule_tasks(&tasks)?;
         }
-        Ok(added)
+        Ok(report)
+    }
+}
+
+/// [`Scheduler::reconcile_config`] 的结果，给日志与测试用。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReconcileReport {
+    pub created: usize,
+    /// 声明变了、已写回的任务数。
+    pub updated: usize,
+    /// 声明没了、已删除的任务数。
+    pub removed: usize,
+    /// 声明没变的任务数（绝大多数）。
+    pub unchanged: usize,
+}
+
+impl ReconcileReport {
+    /// 任务表是否被动过。
+    pub fn touched(&self) -> bool {
+        self.created + self.updated + self.removed > 0
+    }
+}
+
+/// 按一条 config 声明造出对应的任务。
+fn config_task(schedule: &Schedule, now: PrimitiveDateTime) -> ScheduledTask {
+    let (target, stakeholders) = match &schedule.task {
+        Some(id) => (Target::Session { id: id.clone() }, vec![id.clone()]),
+        None => (Target::New, Vec::new()),
+    };
+    ScheduledTask {
+        // id = 条目名：用户与 config 用同一个名字称呼它，`qc schedule view tick`
+        // 与 `[schedules.tick]` 指的是同一条。
+        id: schedule.name.clone(),
+        title: schedule.name.clone(),
+        prompt: schedule.prompt.clone(),
+        rule: Rule::Cron {
+            expr: schedule.cron_text.clone(),
+        },
+        target,
+        overlap: schedule.overlap,
+        approval_timeout: schedule.approval_timeout,
+        status: if schedule.enabled {
+            TaskStatus::Active
+        } else {
+            TaskStatus::Paused
+        },
+        origin: Origin::Config,
+        stakeholders,
+        last_receipt: None,
+        delivery_log: Vec::new(),
+        earlier_records_pruned: false,
+        missed_windows: 0,
+        reserved_session_id: None,
+        next_fire_at: schedule.cron.next_after(now),
+        cwd: None,
+    }
+}
+
+/// 把声明写进一条已存在的任务，返回是否真的改了。
+///
+/// **只动声明性的字段**。投递历史、回执、错过计数、预定会话、`last_status` 之类
+/// 的运行事实一律保留：那些是「发生过什么」，不是「应该是什么」。把它们一起覆盖
+/// 等于每次启动都把审计记录清空。
+fn apply_declaration(task: &mut ScheduledTask, desired: &ScheduledTask) -> bool {
+    let rule_changed = task.rule != desired.rule;
+    let mut changed = false;
+
+    if task.title != desired.title {
+        task.title = desired.title.clone();
+        changed = true;
+    }
+    if task.prompt != desired.prompt {
+        task.prompt = desired.prompt.clone();
+        changed = true;
+    }
+    if rule_changed {
+        // 规则换了，下一次触发点得重算——留着旧的会按旧 cron 的时刻投递。
+        task.rule = desired.rule.clone();
+        task.next_fire_at = desired.next_fire_at;
+        changed = true;
+    }
+    if task.target != desired.target {
+        // 换了目标，原先的 stakeholder 里那个会话不再相关；重算而不是追加，
+        // 否则「牵涉会话（只增不减）」会无限长下去。
+        task.target = desired.target.clone();
+        task.stakeholders = desired.stakeholders.clone();
+        changed = true;
+    }
+    if task.overlap != desired.overlap {
+        task.overlap = desired.overlap;
+        changed = true;
+    }
+    if task.approval_timeout != desired.approval_timeout {
+        task.approval_timeout = desired.approval_timeout;
+        changed = true;
+    }
+    // `enabled = false` ⇒ Paused；重新启用 ⇒ Active。只在两端之间切换，不去碰
+    // 用户手动 `Ended` 的任务（一次性规则跑完之后的状态）。
+    if task.status != desired.status && task.status != TaskStatus::Ended {
+        task.status = desired.status;
+        changed = true;
+    }
+    if task.origin != Origin::Config {
+        // 名字撞上了用户自己建的任务：声明接管它。记一条，因为用户的编辑从此
+        // 会被 config 覆盖，那是需要解释的行为。
+        tracing::warn!(
+            id = %task.id,
+            "a user task shares its id with a [schedules] entry; the config now owns it"
+        );
+        task.origin = Origin::Config;
+        changed = true;
+    }
+    changed
+}
+
+/// config 声明的任务不许在这里改。
+///
+/// 拒绝而不是「允许但下次 reconcile 覆盖」：后者会让用户在 GUI 里改一个字，
+/// 重启后无声消失——那种「改了没用、也没人说」是 ADR-0090 §5 要消灭的失败形态。
+/// 报错至少告诉他该去哪儿改。
+fn reject_config_owned(task: &ScheduledTask) -> Result<(), ScheduleError> {
+    match task.origin {
+        Origin::Config => Err(ScheduleError::ConfigOwned(task.id.clone())),
+        Origin::User => Ok(()),
     }
 }
 
@@ -644,8 +862,47 @@ impl SchedulerHandle for Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schedule::{Overlap, Rule, TaskStatus};
+    use crate::schedule::{DeliveryReceipt, Overlap, Rule, TaskStatus};
     use time::Month::June;
+
+    /// `approval_footer` 的两条分支必须把「两种执行者」说清楚。
+    ///
+    /// 这条测的不是措辞好看，是 ADR-0092 §7 的「不能静默补」：`None` 在有人
+    /// 值守时是「一直等」，在无人值守时会被补成 5 分钟并自动拒绝。任何一种
+    /// 说法漏掉另一半，用户（和模型）都会以为自己知道结果。
+    #[test]
+    fn approval_footer_names_both_executors() {
+        let set = approval_footer(Some(Duration::from_secs(90)));
+        assert!(set.contains("1m30s"), "要给出人读的时长：{set}");
+        assert!(set.contains("自动拒绝"), "设了值就只剩一种结果：{set}");
+        assert!(
+            !set.contains("无人值守"),
+            "设了值之后无人值守与有人值守一致，不必再区分：{set}"
+        );
+
+        let unset = approval_footer(None);
+        assert!(unset.contains("未设截止时间"), "{unset}");
+        assert!(unset.contains("一直等人工"), "有人值守那一半：{unset}");
+        assert!(unset.contains("无人值守"), "无人值守那一半：{unset}");
+        assert!(
+            unset.contains(&describe_duration(UNATTENDED_APPROVAL_TIMEOUT)),
+            "必须写出会补上的具体值，否则用户不知道该填多少：{unset}"
+        );
+        assert!(
+            unset.contains("--approval-timeout-secs"),
+            "要给出改的办法，否则这条只是坏消息：{unset}"
+        );
+    }
+
+    #[test]
+    fn durations_read_like_a_human_wrote_them() {
+        assert_eq!(describe_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(describe_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(describe_duration(Duration::from_secs(90)), "1m30s");
+        assert_eq!(describe_duration(Duration::from_secs(300)), "5m");
+        assert_eq!(describe_duration(Duration::from_secs(3600)), "1h");
+        assert_eq!(describe_duration(Duration::from_secs(5400)), "90m");
+    }
 
     fn store() -> (tempfile::TempDir, Scheduler) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -823,45 +1080,265 @@ mod tests {
         );
     }
 
-    #[test]
-    fn import_config_is_idempotent_and_preserves_state() {
-        let (_dir, scheduler) = store();
-        let schedule = Schedule {
-            name: "nightly".to_string(),
-            cron: crate::schedule::CronSpec::parse("0 3 * * *").expect("cron"),
-            cron_text: "0 3 * * *".to_string(),
+    /// 一条 `[schedules.<name>]` 声明。`overlap` / `enabled` 由测试覆盖。
+    fn config_entry(name: &str, cron: &str, prompt: &str) -> Schedule {
+        Schedule {
+            name: name.to_string(),
+            cron: crate::schedule::CronSpec::parse(cron).expect("cron"),
+            cron_text: cron.to_string(),
             task: Some("t1".to_string()),
-            prompt: "review".to_string(),
+            prompt: prompt.to_string(),
             overlap: Overlap::Queue,
             approval_timeout: None,
             enabled: true,
-        };
-        let states = BTreeMap::new();
+        }
+    }
+
+    /// 声明里有的名字，任务表里一定有；重复 reconcile 不再新增。
+    #[test]
+    fn reconcile_creates_what_the_config_declares() {
+        let (_dir, scheduler) = store();
+        let entry = config_entry("nightly", "0 3 * * *", "review");
+        let declared = vec!["nightly".to_string()];
+
+        let first = scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        assert_eq!(first.created, 1);
+        assert_eq!(first.updated, 0);
+
+        let task = scheduler.find("nightly").expect("created");
+        assert_eq!(task.origin, Origin::Config, "配置来源要能分辨出来");
         assert_eq!(
-            scheduler
-                .import_config(std::slice::from_ref(&schedule), &states, now())
-                .expect("import"),
-            1
-        );
-        assert_eq!(
-            scheduler
-                .import_config(std::slice::from_ref(&schedule), &states, now())
-                .expect("import"),
-            0
-        );
-        let imported = scheduler.find("nightly").expect("found");
-        assert_eq!(
-            imported.rule,
+            task.rule,
             Rule::Cron {
                 expr: "0 3 * * *".to_string()
             }
         );
         assert_eq!(
-            imported.target,
+            task.target,
             Target::Session {
                 id: "t1".to_string()
             }
         );
+
+        // 第二次：什么都不变。
+        let second = scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        assert_eq!(second.created, 0);
+        assert_eq!(second.unchanged, 1);
+        assert!(!second.touched());
+    }
+
+    /// 改了 cron / prompt / overlap / 目标，任务跟着变；**投递历史不动**。
+    ///
+    /// 「不动」这一半同样重要：把运行事实一起覆盖等于每次启动都清空审计记录。
+    #[test]
+    fn reconcile_follows_edits_and_keeps_run_history() {
+        let (_dir, scheduler) = store();
+        let declared = vec!["nightly".to_string()];
+        let mut entry = config_entry("nightly", "0 3 * * *", "review");
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+
+        // 造一点运行事实：一次投递回执 + 错过计数。
+        let receipt = DeliveryReceipt {
+            occurrence_at: now(),
+            delivered_at: now(),
+            message_id: "m1".to_string(),
+            target_session_id: Some("t1".to_string()),
+            prompt: "review".to_string(),
+        };
+        scheduler
+            .update("nightly", |task| {
+                task.last_receipt = Some(receipt.clone());
+                task.delivery_log.push(receipt.clone());
+                task.missed_windows = 3;
+                task.reserved_session_id = Some("t1".to_string());
+            })
+            .expect("record run facts");
+
+        // 用户改配置。
+        entry.cron = crate::schedule::CronSpec::parse("30 4 * * *").expect("cron");
+        entry.cron_text = "30 4 * * *".to_string();
+        entry.prompt = "review harder".to_string();
+        entry.overlap = Overlap::Skip;
+        let report = scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        assert_eq!(report.updated, 1);
+
+        let task = scheduler.find("nightly").expect("task");
+        assert_eq!(
+            task.rule,
+            Rule::Cron {
+                expr: "30 4 * * *".to_string()
+            },
+            "改 cron 必须传播，否则按旧时刻投递"
+        );
+        assert_eq!(task.prompt, "review harder");
+        assert_eq!(task.overlap, Overlap::Skip);
+        assert_eq!(
+            task.next_fire_at.map(|at| at.hour()),
+            Some(4),
+            "规则变了，下一次触发点要按新规则重算"
+        );
+        // 运行事实原样保留。
+        assert_eq!(task.last_receipt, Some(receipt.clone()));
+        assert_eq!(task.delivery_log.len(), 1);
+        assert_eq!(task.missed_windows, 3);
+        assert_eq!(task.reserved_session_id.as_deref(), Some("t1"));
+    }
+
+    /// 只改 prompt（不动 cron）时，**下一次触发点不该被推走**。
+    ///
+    /// 这条守的是一个会让任务「晚一拍」甚至「跳过一整轮」的错：每次都按 `now`
+    /// 重算 `next_fire_at`，一个刚刚快要到点的任务会被推到下一个窗口。
+    #[test]
+    fn a_prompt_only_edit_keeps_the_pending_window() {
+        let (_dir, scheduler) = store();
+        let declared = vec!["nightly".to_string()];
+        let mut entry = config_entry("nightly", "0 3 * * *", "review");
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        let pending = scheduler.find("nightly").expect("task").next_fire_at;
+
+        entry.prompt = "a different prompt".to_string();
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+
+        let task = scheduler.find("nightly").expect("task");
+        assert_eq!(task.prompt, "a different prompt");
+        assert_eq!(task.next_fire_at, pending, "规则没变，窗口不许动");
+    }
+
+    /// 声明没了 → 任务删掉；但用户自己建的任务即使撞名也不动。
+    #[test]
+    fn reconcile_prunes_only_what_it_created() {
+        let (_dir, scheduler) = store();
+        let declared = vec!["nightly".to_string()];
+        let entry = config_entry("nightly", "0 3 * * *", "review");
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+
+        let report = scheduler
+            .reconcile_config(&[], std::slice::from_ref(&entry), now())
+            .expect("reconcile with nothing declared");
+        assert_eq!(report.removed, 1);
+        assert!(scheduler.find("nightly").is_none(), "配置删了就没了");
+
+        // 用户建的任务：id 与一条（假的）配置条目同名，也不许被 reconcile 带走。
+        let user = scheduler.create(new_task(), now()).expect("user task");
+        scheduler
+            .reconcile_config(&[], std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        assert!(
+            scheduler.find(&user.id).is_some(),
+            "Origin::User 的任务不该被一份配置文件的缺失带走"
+        );
+    }
+
+    /// cron 写错：条目进 `schedule_errors`、不出现在 resolved 列表里，但**键还在**，
+    /// 所以任务必须留着。
+    ///
+    /// 这条是 reconcile 最容易搞错的一处：按「resolved 列表里有没有」判存在性，
+    /// 一个拼写错误就会把任务和它的投递历史一起删掉，用户改回来时已经晚了。
+    #[test]
+    fn a_broken_entry_is_kept_not_pruned() {
+        let (_dir, scheduler) = store();
+        let entry = config_entry("nightly", "0 3 * * *", "review");
+        scheduler
+            .reconcile_config(
+                &["nightly".to_string()],
+                std::slice::from_ref(&entry),
+                now(),
+            )
+            .expect("reconcile");
+
+        // 用户把 cron 写坏了：`declared` 里还有这个名字，但 resolved 列表是空的。
+        let report = scheduler
+            .reconcile_config(&["nightly".to_string()], &[], now())
+            .expect("reconcile");
+        assert_eq!(report.removed, 0, "键还在，只是解析失败");
+        let task = scheduler.find("nightly").expect("kept");
+        assert_eq!(
+            task.rule,
+            Rule::Cron {
+                expr: "0 3 * * *".to_string()
+            },
+            "保留旧规则，等用户改回来"
+        );
+    }
+
+    /// `enabled = false` 映射成 `Paused`，不是删除；改回 `true` 恢复。
+    #[test]
+    fn enabled_false_pauses_instead_of_removing() {
+        let (_dir, scheduler) = store();
+        let declared = vec!["nightly".to_string()];
+        let mut entry = config_entry("nightly", "0 3 * * *", "review");
+
+        entry.enabled = false;
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        let task = scheduler.find("nightly").expect("exists");
+        assert_eq!(task.status, TaskStatus::Paused, "停用 ≠ 删除");
+
+        entry.enabled = true;
+        scheduler
+            .reconcile_config(&declared, std::slice::from_ref(&entry), now())
+            .expect("reconcile");
+        assert_eq!(
+            scheduler.find("nightly").expect("exists").status,
+            TaskStatus::Active
+        );
+    }
+
+    /// 配置声明的任务不许在任务表这一侧改（改了下次 reconcile 就覆盖）。
+    #[test]
+    fn a_config_owned_task_refuses_local_edits() {
+        let (_dir, scheduler) = store();
+        let entry = config_entry("nightly", "0 3 * * *", "review");
+        scheduler
+            .reconcile_config(
+                &["nightly".to_string()],
+                std::slice::from_ref(&entry),
+                now(),
+            )
+            .expect("reconcile");
+
+        for result in [
+            scheduler.pause("nightly").map(|_| ()),
+            scheduler.resume("nightly", now()).map(|_| ()),
+            scheduler.delete("nightly"),
+            scheduler
+                .edit(
+                    "nightly",
+                    EditTask {
+                        title: Some("renamed".to_string()),
+                        ..EditTask::default()
+                    },
+                    now(),
+                )
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(ScheduleError::ConfigOwned(_))),
+                "配置来源的任务必须拒绝本地改动，实际 {result:?}"
+            );
+        }
+        // 报错要说清楚去哪儿改。
+        let message = ScheduleError::ConfigOwned("nightly".to_string()).to_string();
+        assert!(message.contains("config.toml"), "{message}");
+        assert!(message.contains("[schedules.nightly]"), "{message}");
+
+        // 「立即执行」是运行命令、不是改声明，必须照旧可用。
+        assert!(scheduler.run_now("nightly", now()).is_ok());
     }
 
     #[test]

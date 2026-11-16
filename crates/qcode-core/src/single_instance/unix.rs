@@ -8,10 +8,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, TrayCommand, is_activate_request};
+use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, is_activate_request};
 
-/// 通道在 data dir 里的文件名。
-pub(super) const CHANNEL_NAME: &str = "gui.sock";
+/// 通道在 data dir 里的扩展名。完整名字是 `<scope>.sock`——GUI 作用域下正是
+/// ADR-0083 落地时的 `gui.sock`，改名会让升级期间的两个二进制互相看不见。
+pub(super) const CHANNEL_EXT: &str = "sock";
 
 /// 单次连接 / 读写的上限。GUI 就在本机，跨进程握手不该慢；给一个上限是为了
 /// 让「对面卡住」变成一次明确的失败，而不是无限等。
@@ -124,7 +125,7 @@ pub(super) fn listen(paths: &super::Paths) -> io::Result<Listener> {
 }
 
 impl Listener {
-    pub(super) fn accept_loop(self, tx: std::sync::mpsc::Sender<TrayCommand>) {
+    pub(super) fn accept_loop<F: Fn() -> bool>(self, on_activate: F) {
         for stream in self.listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             // 一条连接一个请求，处理完就断：协议只有一件事，不需要长连接，
@@ -142,8 +143,8 @@ impl Listener {
             if !is_activate_request(&line) {
                 continue;
             }
-            // 通道到人没了不能挂：接收端（窗口）已经不在了，安静退出。
-            if tx.send(TrayCommand::ShowWindow).is_err() {
+            // 接收端（窗口）已经不在了就安静退出，别攒一堆没人认领的通知。
+            if !on_activate() {
                 return;
             }
             let _ = stream.write_all(ACTIVATE_REPLY.as_bytes());

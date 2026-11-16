@@ -20,11 +20,11 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
-use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, TrayCommand, is_activate_request};
+use super::{ACTIVATE_REPLY, ACTIVATE_REQUEST, is_activate_request};
 
 /// 通道在 data dir 里的「文件名」。Windows 上它不是真文件，只是给
 /// [`Paths`](super::Paths) 一个稳定的落脚点（主要是日志里能显示个东西）。
-pub(super) const CHANNEL_NAME: &str = "gui.pipe";
+pub(super) const CHANNEL_EXT: &str = "pipe";
 
 /// `ERROR_PIPE_CONNECTED`（535）：客户端在我们开始等之前就连上了。不是失败。
 const ERROR_PIPE_CONNECTED: u32 = 535;
@@ -41,7 +41,11 @@ fn hash(path: &Path) -> u64 {
 }
 
 pub(super) fn channel_address(paths: &super::Paths) -> String {
-    format!(r"\\.\pipe\qcode-gui-{:016x}", hash(&paths.data_dir))
+    format!(
+        r"\\.\pipe\qcode-{}-{:016x}",
+        paths.scope().prefix(),
+        hash(&paths.data_dir)
+    )
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -135,7 +139,7 @@ pub(super) fn listen(paths: &super::Paths) -> io::Result<Listener> {
 }
 
 impl Listener {
-    pub(super) fn accept_loop(self, tx: std::sync::mpsc::Sender<TrayCommand>) {
+    pub(super) fn accept_loop<F: Fn() -> bool>(self, on_activate: F) {
         let wide_name = wide(&self.name);
         loop {
             // SAFETY: 名字是以 NUL 结尾的 UTF-16；其余参数都是常量，
@@ -181,7 +185,7 @@ impl Listener {
             };
             if ok != 0 && read > 0 {
                 let line = String::from_utf8_lossy(&buffer[..read as usize]);
-                if is_activate_request(&line) && tx.send(TrayCommand::ShowWindow).is_ok() {
+                if is_activate_request(&line) && on_activate() {
                     let reply = ACTIVATE_REPLY.as_bytes();
                     let mut written = 0u32;
                     // SAFETY: 同上；回复是静态字节串。

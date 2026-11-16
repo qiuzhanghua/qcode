@@ -1,0 +1,9 @@
+# 把同一人的多个提交身份归并成一个，用于 `git shortlog` / `git log` / `git blame`
+# 的显示。它**不改写历史**：提交对象里存的仍是原始 author/committer，只是读的时候
+# 换成这里指定的名字与邮箱。
+#
+# 语法：正式名 <正式邮箱> [原始名] <原始邮箱>
+#
+# q <q@local> 不是第三个人：某个未配置 git 身份的会话（2026-11-11，AI 代理）直接
+# commit，git 用「用户名@主机名」兜底生成了这个身份。见 3fd3abf。
+qiuzhanghua <qiuzhanghua@icloud.com> q <q@local>

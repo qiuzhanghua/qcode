@@ -6,8 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.12.1", path = "../qcode-core" }
+qcode-core = { version = "0.12.2", path = "../qcode-core" }
 time.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

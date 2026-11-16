@@ -393,7 +393,7 @@ interrupted)`——半截回合被**正式关闭**，日志恢复平衡。调度
 
 | 阶段 | 行为 |
 |---|---|
-| 启动 | `kick()` + 会话激活能力就绪后再 `kick()`（补投错过的）；同时把现有 `[schedules]` 声明式条目导入为 active 任务（一次性迁移，行为不变） |
+| 启动 | `kick()` + 会话激活能力就绪后再 `kick()`（补投错过的）；同时把 `[schedules]` 声明式条目与任务表对齐（ADR-0096，每次都跑，不是一次性迁移） |
 | 退出 | 置停止标志 → 清定时器、排空已接受投递 → 排空通知队列 → 关存储 |
 | 变更通知 | 任务被外部修改时，向 `stakeholders` 中已加载的会话注入 `[SCHEDULED TASK CHANGE]`（非唤醒） |
 
@@ -417,7 +417,7 @@ interrupted)`——半截回合被**正式关闭**，日志恢复平衡。调度
 | 现有机制 | 本设计的位置 |
 |---|---|
 | `qcode_core::schedule`（cron 解析、`tick/recover/advance` 纯函数、`ScheduleState`） | 保留为规则的子集与语义基础；`cron` 规则直接复用 `CronSpec`；`recover` 的 missed 语义即 latest-only 的雏形 |
-| `[schedules.<name>]` 配置条目（ADR-0059） | 声明式旧入口：启动时导入为 `active` 任务，行为不变（调度时钟、overlap、审批超时、`schedule_hints` 全部保留） |
+| `[schedules.<name>]` 配置条目（ADR-0059） | 声明式旧入口：启动时**与任务表对齐**（`reconcile_config`，ADR-0096）——建 / 改 / 删都传播，`origin = config` 的任务不许在 GUI/CLI 侧改。此后再无独立投递路径 |
 | 引擎线程 + 单线程 tokio runtime（`runtime::spawn`） | `ScheduleDriver` 挂在该线程上；单定时器用 `tokio::time::sleep_until` |
 | 会话收件箱 `SessionQueue` / `Inbox`（`next-turn` / `next-step` 瞬态内存双队列；消息被 turn 认领后以 `user/message` 事件持久） | 投递载体；崩溃恢复的事实源是日志中的 `user/message` 事件 |
 | `SessionHost` 槽位（cancel token + queue + running） | `inflight` 占位与"会话空闲"信号的落地基础 |

@@ -2,6 +2,120 @@
 
 ## 未发布
 
+### 修复：`[schedules]` 配置条目被投递两次
+
+`[schedules.<name>]` 声明会被导入成运行时任务，而配置路径**继续自己投递**，于是同一个条目
+一次到期投两遍。真机实测（`cron = "* * * * *"`，GUI 跑 150 秒）：**4 个会话、4 个回合**，
+每次触发双份 token。配置路径那份还不带 `scheduled` 标记，转录里既看不出是定时执行、也无法
+归属到任务。
+
+顺带暴露第二个问题：两套账本必然漂移。把 cron 从 `* * * * *` 改成 `*/5 * * * *` 再重启，
+sqlite 的 `schedules` 表按新 cron 走、导入的任务按旧 cron 走——改配置只改了一半。
+
+- `[schedules]` 与任务表**合一**：启动时 `reconcile_config` 建 / 改 / 删都传播，此后只有
+  一条投递路径（ADR-0096）。修复后同一份配置 150 秒内 2 个会话（每分钟一个），都带标记。
+- 新增 `ScheduledTask.origin`（`user` / `config`）：配置来源的任务拒绝在 GUI/CLI 侧
+  `pause` / `resume` / `edit` / `delete`，报错并指出改 `config.toml` 的哪一段；`run_now`
+  照旧。`enabled = false` 映射成 `Paused`（不是删除），重新启用时历史接得回来。
+- 删掉配置路径专用的状态：sqlite `schedules` 表读写、`ScheduleState` / `ScheduleStatus` /
+  `Tick` / `Recovery` / `tick()` / `recover()` / `advance()`。老库里的表不 DROP。
+- **升级注意**：旧库的 `schedules` 表不再读，所以首次启动时 `next_fire_at` 按
+  `cron.next_after(now)` 重算、`missed_windows` 归零一次。两者都是「下一次该何时触发」的
+  等价答案。
+- 坏条目（cron 写错）**不会**删任务：`declared` 取 `config.toml` 的键，而不是解析成功的
+  子集，否则一个拼写错误会连投递历史一起删掉。
+
+### 定时任务：一拍之内的决策与记账搬进 `qcode-driver`
+
+投递、记账、确认、崩溃恢复从 GUI 的 `tokio::select!` 分支搬进 `qcode-driver`，IO 走
+`Host` trait（ADR-0092 §11 阶段 1）。收益不是省代码：「到期会不会投递 / 投了会不会重投 /
+重启会不会重投」现在能在单进程里用假时钟 + 真 `SessionStore` 验（12 条，每拍几微秒）。
+
+搬的过程中抓到一个**只有重启才暴露**的 bug，它在原代码里同样存在：重启后第一拍总是
+`away`（内存记账为空），而 away 分支在补确认之前就返回——于是「投递已落盘、规则没推进」
+那一次的回执在任何路径上都记不下来。真机复现：一个 `once` 任务跑完完整一轮后被杀，重启后
+`status: ended` / `last_receipt: null` / `delivery_log: 0`，而会话日志里躺着完整的
+`user_message` + `turn_ended`。现在推进前会先问「这一次其实投过吗」，投过就补记回执
+（`recovered:` 前缀）。
+
+
+### 门禁：darwin 两个 triple 进 CI，`make check-platforms` 每次 push 必跑
+
+装了 darwin 的 std 之后才看清：`scripts/ci-cross-check.sh` 里那句「not checked (target std
+not installed)」一直挡着真正的原因——**不是 std 缺，是 C 编译器缺**。补上 std 后检查从
+「跳过」变成「失败」，而红的原因与任何改动无关。
+
+- 用 **zig** 供 macOS C SDK（libSystem stub 与头文件，`cargo check` 不链接所以够用），
+  新增 `scripts/zig-cc-darwin.sh` / `zig-cxx-darwin.sh`；两个 darwin triple 现在都能
+  check + clippy 通过；
+- `scripts/install-zig.sh` 固定版本 + 校验 sha256，装到已被 gitignore 的 `.toolchains/`
+  ——即 `build-for-release` 的 `find_zig` 本来就在看的位置；
+- CI 的 `test (ubuntu-latest)` 新增一步跑它，`actions/cache` 缓存 `.toolchains`；
+- **覆盖边界要说清**：17 个 crate 覆盖 15 个，排除 `qcode-gui` 与 `qcode`——`gpui-pre-apple`
+  的 build script 是 `#[cfg(any(target_os = "macos", target_os = "ios"))] fn main()`，而
+  build script 按**宿主**编译，Linux 上 `main` 是空的，Apple 专属的
+  `include_str!(…stitched_shaders.metal)` 永远没有文件。被排除的 `qcode` 里就有
+  `boot.rs` / `commands/gui.rs`，那部分仍只有 `test (macos-latest)` 兜着。脚本会把这句打
+  出来，不让绿勾暗示「darwin 全查过了」。
+- Windows triple 在 ubuntu runner 上仍检查不了（缺 llvm-mingw），继续由 `windows-build`
+  原生覆盖；脚本把它们列进 `not checked` 而不是静默跳过。
+
+### 新增 `docs/DEVELOPMENT.md`
+
+开发环境此前散在 README 的三节里（「Linux 构建依赖」「提交前自检」「发布构建」），而
+工具链已经是「Rust target × 交叉 C 编译器」的二维矩阵，散着写容易漏。新文档按
+「装什么 → 为什么在列表里 → 怎么自检 → 覆盖不到哪里」组织，并附
+`make check-platforms` 四种输出的读法。见 ADR-0095。
+
+## 0.12.2 — 2026-11-16
+
+**一个用户可见的 bug 修复 + 一处诊断缺口。** 升级不需要迁移。
+
+### 修复：Linux 从菜单启动时模型配置「消失」
+
+症状是「终端里跑一切正常，点图标启动就没有模型」——同一个二进制、同一份配置。看起来像
+配置没读到，实际是**两种启动方式的进程环境不是同一份**：
+
+| 启动方式 | 环境来源 | 含 `~/.zshrc` 的 `export`？ |
+|---|---|---|
+| 终端里跑 `qc` | 那个交互式 shell | 是 |
+| 点 `.desktop` | 桌面会话（`systemd --user` / gnome-shell 派生） | **否** |
+
+配置里 provider 的凭证是 `api_key_env = "DEEPSEEK_API_KEY"`，而 `config::resolve` 的规则是
+「env 里没有 key、也没有 `api_key_command` → 这个 provider 不算可用」。于是那个 provider 被
+判成没有凭证，模型列表为空。
+
+`restore_launch_environment`（ADR-0086 §3）本来就是为这种缺口写的，但它的 `cfg` 只到 macOS，
+注释还断言「Linux 的 `.desktop` 本来就把环境带进来了，没有这个洞」——**那句是错的**。现在
+`cfg` 放宽到 Linux：只补当前缺失的变量，所以终端启动与用户真设过的值都不受影响；
+`[shell] env_sampling = "off"` 时不补；采样失败只 `warn`，界面照旧能开。
+
+真机验证（点图标启动后的日志）：
+
+```
+gui: restored environment from the login shell for a graphical launch added=49 sampled=100 shell=/usr/bin/zsh
+gui: config resolved exists=true provider=deepseek model=deepseek-flash key=env DEEPSEEK_API_KEY
+```
+
+`key=env DEEPSEEK_API_KEY` 是 `api_key_source`，只在 `env(..)` 返回**非空值**时产生——所以是
+真取到了。Windows 仍空转，但这次**如实记成已知缺口**：`.lnk` 由 explorer 拉起，是同一种洞；
+没修是本仓没有 Windows 真机可验证 pwsh 采样，声称修好比不修更坏。见 ADR-0094。
+
+### `install-linux-desktop.sh --launch`，以及 `--check` 不再放行坏条目
+
+「我点了图标什么都没发生」原本是这个脚本查不了的故障：菜单没有终端，`qc` 又常常「打印用法
+然后 exit 0」，于是症状拿不到任何证据。
+
+- `--launch` 走 `gtk-launch`（菜单用的同一条 libgio 查找），但把 stderr 留在终端；解析不到时
+  直接告诉你该看 `--check` 的哪一段；
+- `--check` 原先在缺 `Exec=` 时 `continue`——**等于把一个「什么都起不了」的条目标成健康**，
+  现在算失败；
+- `--check` 原先从不验证启动标记，现在验证：没有 `--launched-from-gui` 的条目会退回终端分支
+  （打印用法后退出），这在菜单里与「图标坏了」无法区分；
+- `--exec` 只在安装时才有意义，`--check` / `--launch` / `--uninstall` 不再对它打 PATH 警告。
+
+对应 `make linux-desktop-launch`。
+
 ### 内部：启动形态的判定变成可测的（判断与采集分开）
 
 三端的「终端还是窗口」判定原先与 `isatty` / `getppid` / 环境变量混在一起，唯一的测试

@@ -24,7 +24,7 @@ PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
 .PHONY: all native list check check-platforms perf release archive clean gui app app-debug \
-        linux-desktop linux-desktop-check linux-desktop-uninstall \
+        linux-desktop linux-desktop-check linux-desktop-launch linux-desktop-uninstall \
         linux-container linux-container-archive $(PLATFORMS)
 
 all:
@@ -40,9 +40,10 @@ check:
 	./build-for-release --check
 
 # Type-check the code this host cannot compile: the Windows and macOS backends
-# behind `#[cfg(...)]`. Only needs the target's std (`rustup target add ...`),
-# no linker, so it runs in seconds. See scripts/ci-cross-check.sh for why a
-# green `cargo test --workspace` on Linux does not mean the tree compiles.
+# behind `#[cfg(...)]`. Needs the target's std (`rustup target add ...`) plus a
+# cross C compiler for the bundled C dependencies -- llvm-mingw for Windows,
+# zig for darwin (`scripts/install-zig.sh`). No linker, so it runs in minutes.
+# See scripts/ci-cross-check.sh and docs/DEVELOPMENT.md.
 check-platforms:
 	./scripts/ci-cross-check.sh
 
@@ -101,10 +102,15 @@ linux-desktop:
 	@echo "foreground process group, and a GUI that gets one exits (the log records"
 	@echo "reason=sighup). setsid puts it in a new session, which the hangup misses."
 	@echo
-	@echo "inspect or remove: ./scripts/install-linux-desktop.sh --check|--uninstall"
+	@echo "inspect, start or remove: ./scripts/install-linux-desktop.sh --check|--launch|--uninstall"
 
 linux-desktop-check:
 	./scripts/install-linux-desktop.sh --check
+
+# The menu runs the entry without a terminal, so a startup failure there leaves no
+# evidence. This is the same lookup with stderr attached.
+linux-desktop-launch:
+	./scripts/install-linux-desktop.sh --launch
 
 linux-desktop-uninstall:
 	./scripts/install-linux-desktop.sh --uninstall

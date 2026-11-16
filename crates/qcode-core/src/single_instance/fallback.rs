@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 
 /// 这个平台上通道没有落脚点。
-pub(super) const CHANNEL_NAME: &str = "gui.channel";
+pub(super) const CHANNEL_EXT: &str = "channel";
 
 pub(super) struct LockGuard;
 
@@ -39,5 +39,5 @@ pub(super) fn listen(_paths: &super::Paths) -> io::Result<Listener> {
 }
 
 impl Listener {
-    pub(super) fn accept_loop(self, _tx: std::sync::mpsc::Sender<super::TrayCommand>) {}
+    pub(super) fn accept_loop<F: Fn() -> bool>(self, _on_activate: F) {}
 }

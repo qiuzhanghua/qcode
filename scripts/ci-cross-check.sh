@@ -34,6 +34,14 @@ set -o pipefail
 # Note on the aarch64 triples: a C build script (`cc-rs`) needs the matching
 # cross compiler, e.g. `aarch64-w64-mingw32-clang` for windows-gnullvm. The
 # release environment has llvm-mingw (`build-for-release` requires it).
+#
+# Note on the darwin triples: there is no C compiler for them on a Linux host and
+# no package that provides one, so these used to be listed here but unauthorised
+# by any toolchain — `cargo check` died in `libsqlite3-sys`. Zig carries the macOS
+# SDK and emits Mach-O, so `zig-cc-darwin.sh` drives it and both triples now check
+# (see `apple_zig_target`). What still cannot be checked here is `qcode-gui` and
+# `qcode`: `gpui-pre-apple`'s build script only runs on an Apple **host**. The
+# script prints that exclusion rather than quietly testing 15 of 17 crates.
 SHIPPED=(
     x86_64-pc-windows-gnullvm
     aarch64-pc-windows-gnullvm
@@ -69,12 +77,29 @@ cross_cc() {
     esac
 }
 
+# Apple targets are the third case: there is no `cc` for them on a Linux host and
+# no package that provides one, but **zig carries the macOS SDK** (libSystem
+# stubs, headers) and emits Mach-O objects, which is everything `cargo check`
+# needs. Verified working for `libsqlite3-sys` and `aws-lc-sys` (the latter builds
+# a lot of `.S` assembly) on both darwin triples.
+apple_zig_target() {
+    case "$1" in
+        aarch64-apple-darwin) printf 'aarch64-macos' ;;
+        x86_64-apple-darwin) printf 'x86_64-macos' ;;
+        *) return 1 ;;
+    esac
+}
+
 status=0
 checked=0
 # Two reasons to skip, kept apart because the fix differs: one needs
 # `rustup target add`, the other needs a compiler on PATH.
 missing_std=()
 missing_cc=()
+# Targets that were checked, but not over the whole workspace. Silence here would
+# turn "the gate ran" into an unfalsifiable claim, which is the failure this
+# script exists to prevent.
+partial=()
 
 for target in "${TARGETS[@]}"; do
     if [[ $target == "$native" ]]; then
@@ -93,8 +118,38 @@ for target in "${TARGETS[@]}"; do
         missing_cc+=("$target (needs $cc)")
         continue
     fi
+    extra=()
+    if zig_target=$(apple_zig_target "$target"); then
+        if ! command -v zig >/dev/null 2>&1; then
+            missing_cc+=("$target (needs zig, which carries the macOS C SDK)")
+            continue
+        fi
+        # Absolute: cc-rs resolves the tool itself, and a relative path with a
+        # slash is reported as "failed to find tool scripts/... (os error 2)".
+        here=$(cd "$(dirname "$0")" && pwd)
+        key=${target//-/_}
+        export ZIG_CC_TARGET="$zig_target"
+        export "CC_$key=$here/zig-cc-darwin.sh"
+        export "CXX_$key=$here/zig-cxx-darwin.sh"
+        export "AR_$key=zig ar"
+        # `qcode-gui` — and `qcode`, which depends on it — cannot be compiled for
+        # an Apple target from a non-Apple host, and no flag changes that:
+        # `gpui-pre-apple`'s build script is
+        #
+        #     fn main() {
+        #         #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #         apple_build::run();
+        #     }
+        #
+        # and a build script is compiled for the **host**. On Linux `main` is
+        # empty, so `stitched_shaders.metal` is never generated and the Apple-only
+        # `include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"))`
+        # fails. Excluding the pair keeps 15 of 17 crates covered instead of none.
+        extra=(--exclude qcode-gui --exclude qcode)
+        partial+=("$target (all crates except qcode-gui and qcode: gpui needs a macOS host)")
+    fi
     echo "==> cargo check --target $target"
-    if ! cargo check --workspace --all-targets --target "$target"; then
+    if ! cargo check --workspace --all-targets "${extra[@]}" --target "$target"; then
         status=1
         # A type error makes clippy pointless; skip it for this target.
         checked=$((checked + 1))
@@ -107,7 +162,7 @@ for target in "${TARGETS[@]}"; do
     # `#[cfg(windows)]`, so macOS clippy never saw it and Windows CI went red
     # twice (v0.11.0 for real type errors, then again for this lint).
     echo "==> cargo clippy --target $target"
-    if ! cargo clippy --workspace --all-targets --target "$target" -- -D warnings; then
+    if ! cargo clippy --workspace --all-targets "${extra[@]}" --target "$target" -- -D warnings; then
         status=1
     fi
     checked=$((checked + 1))
@@ -130,6 +185,12 @@ if ((${#missing_cc[@]} > 0)); then
     printf '  %s\n' "${missing_cc[@]}"
     printf 'install llvm-mingw and put its bin/ on PATH — the bundled C\n'
     printf 'dependencies (`libsqlite3-sys`, `aws-lc-sys`) are compiled with it.\n'
+fi
+
+if ((${#partial[@]} > 0)); then
+    printf '\nchecked, but not over the whole workspace:\n'
+    printf '  %s\n' "${partial[@]}"
+    printf 'The macOS host job in `ci.yml` covers what this cannot; see ADR-0095.\n'
 fi
 
 if ((checked == 0)); then

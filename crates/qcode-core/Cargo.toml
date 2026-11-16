@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-attachments = { version = "0.12.1", path = "../qcode-attachments" }
+qcode-attachments = { version = "0.12.2", path = "../qcode-attachments" }
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,11 +32,14 @@ tempfile.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# `LockFileEx` for the schedule-task write lock (ADR-0088 §5). The same API
-# guards the GUI's single-instance lock (ADR-0083), so this is not a new
-# platform surface — just the first user of it inside qcode-core.
+# `LockFileEx` for the schedule-task write lock (ADR-0088 §5) and the
+# single-instance lock (ADR-0083), plus named pipes for the single-instance
+# activation channel (ADR-0084). Both users are in this crate since ADR-0092
+# §11 moved the single-instance module here, out of `qcode-gui`.
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    # 命名管道：单实例的跨进程激活通道（ADR-0084）。
+    "Win32_System_Pipes",
 ] }

@@ -20,6 +20,7 @@ pub mod provider;
 pub mod question;
 pub mod schedule;
 pub mod scheduler;
+pub mod single_instance;
 pub mod snapshot;
 pub mod state;
 pub mod store;
@@ -48,11 +49,14 @@ pub use question::{
     reply_text, validate_request,
 };
 pub use schedule::{
-    Advance, CronSpec, DeliveryReceipt, Overlap, Schedule, ScheduleState, ScheduleStatus,
-    ScheduledTask, Target, TaskStatus, TaskTick, Tick, advance_rule, append_delivery,
-    import_config_schedule, now_local, parse_rule, task_tick,
+    Advance, CronSpec, DeliveryReceipt, Origin, Overlap, Schedule, ScheduledTask, Target,
+    TaskStatus, TaskTick, UNATTENDED_APPROVAL_TIMEOUT, advance_rule, append_delivery, now_local,
+    parse_rule, task_tick,
 };
-pub use scheduler::{EditTask, NewTask, ScheduleError, Scheduler, SchedulerHandle};
+pub use scheduler::{
+    EditTask, NewTask, ReconcileReport, ScheduleError, Scheduler, SchedulerHandle, approval_footer,
+    driver_footer,
+};
 pub use state::{TransitionError, Trigger, TurnState};
 pub use store::{SessionStore, SessionSummary, StoreError};
 pub use task::{MAX_ROOTS, Root, RootAccess, Task, TaskError};

@@ -49,6 +49,7 @@ fn engine_with_provider(
         agents_md: None,
         shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
+        schedule_declared: Vec::new(),
         schedule_errors: Vec::new(),
         session_title: None,
         schedule_tick: None,
@@ -747,33 +748,47 @@ async fn stopping_one_task_leaves_the_other_running() {
     assert_eq!(a_status, Some(TurnStatus::Completed), "A was not touched");
 }
 
-/// A schedule whose next window is a couple of seconds away, as the store would
-/// have recorded it after a previous run (ADR-0059 §1: run state lives in the
-/// store, not in the config file).
+/// 把一条（已由 reconcile 建出来的）任务的窗口挪到几秒之后。
 ///
-/// The margin has to survive the gap between this call and the engine's *first*
-/// beat. `backend.rs` snapshots `schedule_states` at startup, and that beat finds
-/// `last_beat == None`, so it takes the "the process was away" branch and runs
-/// `schedule::recover`. If the window has already passed by then, recover counts
-/// it as missed and re-schedules from the cron — which for `* * * * *` means the
-/// *next minute boundary*, up to 60s out, far past these deadlines.
+/// 这条测试要的是「重新触发真的会跑」，而窗口必须落在测试的截止时间之内。
+/// 以前这里写的是 sqlite 的 `schedules` 表；ADR-0093 之后进度记在任务上，所以
+/// 改的是任务的 `next_fire_at`——**同一个字段**，只是账本换成了唯一的那本。
 ///
-/// A one-second margin was not enough: `cargo test` runs this binary's tests in
-/// parallel, and `a_flooding_terminal_does_not_starve_the_scheduler_beat` spins a
-/// `yes` on a PTY, so the first beat can land more than a second late. Three
-/// seconds keeps the window ahead of that while still coming round well inside
-/// every caller's deadline.
-fn upcoming(store: &SessionStore, name: &str, in_secs: u64) {
+/// 余量三秒而不是一秒：`cargo test` 并行跑，首个 beat 可能晚到，而 beat 晚三拍
+/// 以上会被判成「进程当时不在」，那条分支只推进不投递。
+fn upcoming(store: &SessionStore, name: &str, in_secs: u64) -> time::PrimitiveDateTime {
     let at = qcode_core::schedule::now_local() + time::Duration::seconds(in_secs as i64);
-    store
-        .save_schedule_state(
-            name,
-            &qcode_core::schedule::ScheduleState {
-                next_fire_at: Some(at),
-                ..qcode_core::schedule::ScheduleState::default()
-            },
+    let scheduler = qcode_core::scheduler::Scheduler::new(store.clone());
+    scheduler
+        .update(name, |task| task.next_fire_at = Some(at))
+        .expect("aim the window");
+    at
+}
+
+/// 启动时做的那件事：把 `[schedules]` 对齐进任务表（ADR-0093）。
+///
+/// 测试自己也做一遍，是因为**窗口需要提前瞄准**：reconcile 出来的
+/// `next_fire_at` 是 `* * * * *` 的下一个整分，最远 60 秒，而测试的截止时间比那短。
+fn declare(store: &SessionStore, schedules: &[qcode_core::schedule::Schedule]) {
+    let declared: Vec<String> = schedules.iter().map(|entry| entry.name.clone()).collect();
+    qcode_core::scheduler::Scheduler::new(store.clone())
+        .reconcile_config(
+            declared.as_slice(),
+            schedules,
+            qcode_core::schedule::now_local(),
         )
-        .expect("schedule state");
+        .expect("reconcile [schedules]");
+}
+
+/// 这一拍有没有被决定过：`next_fire_at` 离开了测试瞄的那个窗口。
+///
+/// `Orphaned` / `SkipBusy` 都会推进规则（`advance_past`），而 `* * * * *` 推进后
+/// 落在下一个整分，必然不等于瞄准值。这就是「beat 已经做过决定」的可观察证据——
+/// 以前这个证据在 sqlite 的 `schedules.last_status` 里。
+fn advanced(store: &SessionStore, name: &str, aimed: time::PrimitiveDateTime) -> bool {
+    qcode_core::scheduler::Scheduler::new(store.clone())
+        .find(name)
+        .is_some_and(|task| task.next_fire_at != Some(aimed))
 }
 
 fn schedule(name: &str, task: Option<&str>, prompt: &str) -> qcode_core::schedule::Schedule {
@@ -805,10 +820,13 @@ async fn a_scheduled_window_fires_a_turn_on_the_task_it_names() {
     };
     let created = store.create_task(&meta).expect("task");
 
-    // A window a few seconds away, as a previous run would have recorded it.
+    // 声明 → 对齐进任务表 → 把窗口挪到几秒之后。
+    let entry = schedule("nightly", Some(&created.id), "review");
+    declare(&store, std::slice::from_ref(&entry));
     upcoming(&store, "nightly", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
-    engine.schedules = vec![schedule("nightly", Some(&created.id), "review")];
+    engine.schedule_declared = vec!["nightly".to_string()];
+    engine.schedules = vec![entry];
     // One second, not 100ms, for the same reason the orphan tests below use it:
     // a beat more than three ticks late counts as "the process was away"
     // (`gap_limit`, runtime.rs) and that branch only re-schedules — it never
@@ -843,9 +861,12 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path().to_path_buf());
     let store_for_check = store.clone();
-    upcoming(&store, "orphan", 3);
+    let entry = schedule("orphan", Some("gone123"), "review");
+    declare(&store, std::slice::from_ref(&entry));
+    let aimed = upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
-    engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
+    engine.schedule_declared = vec!["orphan".to_string()];
+    engine.schedules = vec![entry];
     // The scheduler treats a beat more than three beats late as "the process was
     // away" (runtime.rs, ADR-0059 §2) and then only re-schedules instead of
     // deciding anything, so the tolerance is three times this value. A 100ms tick
@@ -857,20 +878,25 @@ async fn a_schedule_pointing_at_a_deleted_task_is_recorded_not_run() {
     let mut backend = LocalBackend::new(engine);
 
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut status = None;
-    while Instant::now() < deadline && status.is_none() {
-        status = store_for_check
-            .schedule_states()
-            .ok()
-            .and_then(|states| states.get("orphan").cloned())
-            .and_then(|state| state.last_status);
+    let mut decided = false;
+    while Instant::now() < deadline && !decided {
+        decided = advanced(&store_for_check, "orphan", aimed);
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(status, Some(qcode_core::schedule::ScheduleStatus::Orphaned));
-    // Nothing ran: the scheduler never invented a session.
+    assert!(decided, "the orphan window was never decided");
+    // Nothing ran: the scheduler never invented a session, and the task stays
+    // Active so the user can re-point it (ADR-0092 §6).
     assert!(
         store_for_check.list().expect("sessions").is_empty(),
         "an orphaned entry must not create a turn"
+    );
+    let task = qcode_core::scheduler::Scheduler::new(store_for_check.clone())
+        .find("orphan")
+        .expect("task kept");
+    assert_eq!(
+        task.status,
+        qcode_core::schedule::TaskStatus::Active,
+        "an orphaned entry stays Active: the user can fix its target"
     );
     let _ = backend.try_recv();
 }
@@ -904,6 +930,7 @@ async fn a_runtime_task_fires_delivers_and_advances() {
             overlap: qcode_core::schedule::Overlap::Queue,
             approval_timeout: None,
             status: qcode_core::schedule::TaskStatus::Active,
+            origin: qcode_core::schedule::Origin::User,
             stakeholders: vec![created.id.clone()],
             last_receipt: None,
             delivery_log: Vec::new(),
@@ -983,29 +1010,27 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
     let data = tempfile::tempdir().expect("data");
     let store = SessionStore::new(data.path().to_path_buf());
     let store_for_check = store.clone();
-    upcoming(&store, "orphan", 3);
+    let entry = schedule("orphan", Some("gone123"), "review");
+    declare(&store, std::slice::from_ref(&entry));
+    let aimed = upcoming(&store, "orphan", 3);
     let mut engine = engine_with(workspace.path(), store, MockProvider::text("done"));
-    engine.schedules = vec![schedule("orphan", Some("gone123"), "review")];
+    engine.schedule_declared = vec!["orphan".to_string()];
+    engine.schedules = vec![entry];
     engine.schedule_tick = Some(Duration::from_secs(1));
     let mut backend = LocalBackend::new(engine);
 
     let start = Instant::now();
     let deadline = start + Duration::from_secs(15);
-    let mut status = None;
-    while Instant::now() < deadline && status.is_none() {
-        status = store_for_check
-            .schedule_states()
-            .ok()
-            .and_then(|states| states.get("orphan").cloned())
-            .and_then(|state| state.last_status);
+    let mut decided = false;
+    while Instant::now() < deadline && !decided {
+        decided = advanced(&store_for_check, "orphan", aimed);
         std::thread::sleep(Duration::from_millis(50));
     }
     let decided_after = start.elapsed();
     let wakeups_during = flood_events.wakeups();
 
-    assert_eq!(
-        status,
-        Some(qcode_core::schedule::ScheduleStatus::Orphaned),
+    assert!(
+        decided,
         "the beat never decided the orphan while a terminal was flooding"
     );
 

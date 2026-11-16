@@ -681,6 +681,10 @@ mod tests {
     /// 它和 `.desktop` 是两份东西：装到 `~/.local/share/applications` 的那份由脚本
     /// 用 `sed` 重写。两边漂了，装出来的条目就退回 TUI——而「点了没反应」是最难查的
     /// 那种报告。
+    ///
+    /// 脚本内部把这个标记收成了一个变量（`--check` 要验证它、`sed` 要写入它，两处
+    /// 各写一份字面量同样是漂移源），所以这里**两条都断言**：定义里是这个标记，
+    /// 且重写用的就是这个变量。只查其中一条时，另一条被改成别的值不会被发现。
     #[test]
     fn the_linux_installer_writes_the_same_marker() {
         let script = include_str!(concat!(
@@ -688,8 +692,12 @@ mod tests {
             "/../../scripts/install-linux-desktop.sh"
         ));
         assert!(
-            script.contains(&format!("Exec=$exec_cmd {LAUNCHED_FROM_GUI}")),
-            "install-linux-desktop.sh must rewrite Exec= with {LAUNCHED_FROM_GUI}"
+            script.contains(&format!("MARKER_ARG={LAUNCHED_FROM_GUI}")),
+            "install-linux-desktop.sh must define MARKER_ARG={LAUNCHED_FROM_GUI}"
+        );
+        assert!(
+            script.contains("Exec=$exec_cmd $MARKER_ARG"),
+            "install-linux-desktop.sh must rewrite Exec= with $MARKER_ARG"
         );
     }
 }
