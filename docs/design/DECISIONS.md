@@ -10683,15 +10683,35 @@ INFO qc::lifecycle: qc session starting pid=14275 …
 
 **验证**
 
-- 单测（`logging::tests`，13 个）：规则边界（`qc`/`qc_*`/`qcode_*` 的判定，`qcodezip`
+- 单测（`logging::tests`，15 个）：规则边界（`qc`/`qc_*`/`qcode_*` 的判定，`qcodezip`
   不算我们的）、hint 为 `INFO`、走真实 layer 断言「第三方 `info` 丢 / 第三方 `warn` 留 /
-  我们 `info` 留 / 我们 `debug` 丢」。
+  第三方 `error` 留 / 我们 `info` 留 / 我们 `debug` 丢」。`ERROR` 那一条是必须的：它的数值
+  最小，比较方向写反时前四条断言照样通过，而每条错误都已被吞掉。
 - **反向验证**：把规则里的 `qc` 去掉，那条 layer 测试立刻红，输出只剩
   `WARN gpui_wgpu::wgpu_context: theirs-warn`——与线上「文件为空」同一形状。
 - 端到端（真实二进制，临时数据目录）：默认跑一次，文件只有两条 lifecycle、stderr 0 字节；
   `RUST_LOG=debug` 后 stderr 出声。
 - `cargo fmt --check`；`cargo clippy --workspace --all-targets -D warnings`；
-  `cargo test --workspace` 1318 通过。
+  `cargo test --workspace` 1324 通过。
+
+**补充（同日复审）：打错的级别不再静默关掉日志**
+
+改完之后通读代码，发现一个比上面那个更坏的洞，顺着这条线一起修了：
+
+`RUST_LOG=inf`（把 `info` 打错）**不是解析失败**。`EnvFilter` 把裸词当成 **target 指令**，
+于是 `inf` 启用了一个叫 `inf` 的 target、其余全关。实测：默认写 2 行，`inf` 写 0 行，
+`warning`、`debugg` 同样，且**没有任何报错**。桌面启动没有 stderr，用户看到的只是「日志空了」。
+
+同一处还有我这次引入的回归：两个去向原先各自回退，文件回退到 stderr 的 `warn`——一次打字错误
+就能让文件比什么都不设还安静。现在 `usable_spec` 统一在 `init` 里判定，**拼错与解析失败都当作
+「没说」**，回落到默认（文件仍是 target 规则），并在 stderr 说明原委。
+
+- 只对「看起来是级别名」的裸词生效：`info` 的前缀/加字母（`inf`、`warning`、`debugg`）。
+  `RUST_LOG=qcode_gui`、`warn,qcode_gui=debug` 这类真 directive 不报。
+- 选择「忽略」而不是「照错执行」：能判断出「你大概想写 info」，就不该执行一个会把记录关掉的
+  决定；而桌面启动的 stderr 没人看，警告救不了空文件。
+- `--since` 的一个同类问题：`--since 9223372036854775807d` 乘法溢出，debug 构建 panic，
+  release 构建回绕成一个垃圾时间。改成 checked 运算，报「too large」并退出 1。
 
 **未做**
 

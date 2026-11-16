@@ -132,7 +132,14 @@ impl<'a> MakeWriter<'a> for LogFile {
 /// Call this after `Cli::parse` (the level comes from the config file it names)
 /// and before anything that might want to log.
 pub fn init(configured_level: Option<&str>) {
-    let explicit = explicit_level(std::env::var("RUST_LOG").ok().as_deref(), configured_level);
+    // Validated once, here, and not per destination.
+    //
+    // The fallback for an unparsable spec has to be *the defaults*, and the file's
+    // default is not a spec string at all (it is the target rule below). Letting
+    // each destination fall back on its own meant a typo made the file use stderr's
+    // `warn` — quieter than saying nothing, and silent about it.
+    let explicit = explicit_level(std::env::var("RUST_LOG").ok().as_deref(), configured_level)
+        .and_then(usable_spec);
     let stderr_spec = explicit.as_deref().unwrap_or(DEFAULT_LEVEL_STDERR);
 
     // Built inside each branch: a `Layer` is not `Clone`, and the two branches
@@ -165,6 +172,59 @@ pub fn init(configured_level: Option<&str>) {
             .with(file_layer().with_filter(OwnCratesAtInfo))
             .try_init(),
     };
+}
+
+/// A spec that `EnvFilter` accepts as written, or nothing plus a warning.
+///
+/// Two failure modes, and the second is the dangerous one:
+///
+/// - **It does not parse** (`warn=notalevel`): say so and use the defaults.
+/// - **It parses as something else entirely** (`inf`, `warning`, `debugg`): a bare
+///   word is a *target* directive to `EnvFilter`, so a misspelled level silently
+///   enables a target that matches nothing and switches everything else off. The
+///   file comes out empty and there is no error to find — measured: `RUST_LOG=inf`
+///   wrote 0 lines where the default writes 2. That is a typo, not a request to
+///   silence the program.
+///
+/// Both are ignored rather than honoured, for the same reason: a desktop launch has
+/// no stderr, so a warning written there is read by nobody — and the file it would
+/// have explained is the empty one. Falling back to the defaults means a typo costs at
+/// most the verbosity that was asked for, never the record. `RUST_LOG=qcode_gui` (a
+/// real target) is untouched: no level name is a prefix of it.
+fn usable_spec(spec: String) -> Option<String> {
+    if let Err(error) = EnvFilter::try_new(&spec) {
+        eprintln!(
+            "qcode: [log] level {spec:?} is not a valid filter ({error}); using the defaults"
+        );
+        return None;
+    }
+    if let Some(level) = misspelled_level(&spec) {
+        eprintln!(
+            "qcode: [log] level {spec:?} is not a level name; it would only enable a target by \
+             that name and log nothing else. Using the defaults — did you mean {level:?}?"
+        );
+        return None;
+    }
+    Some(spec)
+}
+
+/// The level a bare word was almost certainly meant to be, if any.
+///
+/// Only for words that are a prefix of a level or a level plus a letter, which is
+/// how typos of these six words actually look (`inf`, `warning`, `debugg`).
+/// `qcode_gui` and `warn,hyper=off` are not bare words and never reach this.
+fn misspelled_level(spec: &str) -> Option<&'static str> {
+    const LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
+    if spec.contains(['=', ',']) {
+        return None;
+    }
+    let word = spec.trim().to_ascii_lowercase();
+    if word.len() < 2 || LEVELS.contains(&word.as_str()) {
+        return None;
+    }
+    LEVELS
+        .into_iter()
+        .find(|level| level.starts_with(&word) || word.starts_with(level))
 }
 
 /// Whether an event's target belongs to this workspace.
@@ -337,14 +397,12 @@ pub fn current_log(data_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| log_dir(data_dir).join(CURRENT_LOG))
 }
 
-/// `RUST_LOG` > `[log] level` > per-destination default.
+/// `RUST_LOG` > `[log] level`, or nothing.
 ///
-/// Returns the two specs, file first. They are the same string whenever the user
-/// said anything explicit — an explicit level is an ask about *this process*, not
-/// about one destination, and `RUST_LOG=debug` must not leave the terminal quiet
-/// when the whole reason to type it was to watch the terminal. Only the absent
-/// case splits (ADR-0082).
-/// The level the user actually asked for, if any.
+/// One value for both destinations: an explicit level is an ask about *this
+/// process*, not about one destination, and `RUST_LOG=debug` must not leave the
+/// terminal quiet when the whole reason to type it was to watch the terminal. Only
+/// the absent case splits (ADR-0082), and [`init`] is where the split happens.
 ///
 /// Split out so it can be tested without mutating `RUST_LOG`: the first version of
 /// these tests did, and the two that touched it raced each other under the
@@ -543,6 +601,64 @@ mod tests {
         );
     }
 
+    /// A typo in the level must not switch logging off, and must not quietly make
+    /// the file quieter than saying nothing.
+    ///
+    /// Two distinct traps, both measured on the real binary before this was fixed:
+    ///
+    /// - `RUST_LOG=inf` does **not** fail to parse — `EnvFilter` reads a bare word as
+    ///   a *target* directive, so it enables a target called `inf` and turns
+    ///   everything else off. The file came out with 0 lines where the default writes
+    ///   2, and nothing said why.
+    /// - With the typo accepted, the per-destination fallback used to hand the file
+    ///   stderr's `warn`, so the file lost our `info` lines even in cases where the
+    ///   spec did fail to parse.
+    #[test]
+    fn a_misspelled_level_is_reported_not_silently_taken_as_a_target() {
+        // A real target is not a misspelling, whatever it looks like.
+        assert_eq!(misspelled_level("qcode_gui"), None);
+        assert_eq!(
+            misspelled_level("inf=debug"),
+            None,
+            "a directive, not a word"
+        );
+        assert_eq!(misspelled_level("warn,qcode=info"), None);
+        assert_eq!(
+            misspelled_level("info"),
+            None,
+            "the real word is not a typo"
+        );
+        assert_eq!(misspelled_level("off"), None);
+
+        // The typos that actually silence the log.
+        for (typo, meant) in [
+            ("inf", "info"),
+            ("warning", "warn"),
+            ("debugg", "debug"),
+            ("erro", "error"),
+            ("trac", "trace"),
+        ] {
+            assert_eq!(misspelled_level(typo), Some(meant), "{typo}");
+            // Ignored, not honoured: honouring it is what blacked the log out.
+            assert_eq!(usable_spec(typo.to_string()), None);
+        }
+    }
+
+    /// The fallback for an unparsable spec is *the defaults*, which for the file
+    /// means the target rule — not stderr's `warn`.
+    ///
+    /// Before this, `usable_spec` did not exist and each destination fell back on its
+    /// own: the file fell back to `warn`, so one typo made it quieter than leaving
+    /// `RUST_LOG` unset.
+    #[test]
+    fn an_unparsable_spec_falls_back_to_the_defaults_not_to_warn() {
+        assert_eq!(usable_spec("warn=notalevel".to_string()), None);
+        // `None` is what `init` reads as "nobody said anything", and that branch
+        // installs `OwnCratesAtInfo` for the file and `DEFAULT_LEVEL_STDERR` for the
+        // terminal.
+        assert_eq!(usable_spec("debug".to_string()).as_deref(), Some("debug"));
+    }
+
     /// The hint is what keeps `debug!` from being formatted in a hot path; without
     /// it every streaming token would be rendered and then thrown away.
     #[test]
@@ -611,6 +727,14 @@ mod tests {
                 "theirs-warn"
             );
             tracing::event!(target: "qc::lifecycle", tracing::Level::DEBUG, "ours-debug");
+            // `ERROR` is numerically the *lowest* level, so an inverted comparison
+            // would still drop third-party `info` and still pass everything else this
+            // test asks for — while silently swallowing every error in the log.
+            tracing::event!(
+                target: "gpui_wgpu::wgpu_context",
+                tracing::Level::ERROR,
+                "theirs-error"
+            );
         });
 
         let out = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
@@ -625,6 +749,10 @@ mod tests {
         assert!(
             out.contains("theirs-warn"),
             "a third-party warning is still ours to see: {out}"
+        );
+        assert!(
+            out.contains("theirs-error"),
+            "an inverted level comparison would look right and eat every error: {out}"
         );
         assert!(
             !out.contains("ours-debug"),

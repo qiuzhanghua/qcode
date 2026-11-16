@@ -394,17 +394,23 @@ pub(crate) struct LogsArgs {
     /// Keep printing new lines as they are written (Ctrl-C to stop).
     #[arg(long, short = 'f')]
     pub(crate) follow: bool,
-    /// Show only lines matching this (substring, or a regex when it compiles as one).
+    /// Show only lines matching this regular expression.
     ///
-    /// The file's default level is `info`, so a GUI startup buries the lifecycle
-    /// lines under a hundred `gpui_wgpu` / `zed_xim` lines. Without a filter the
-    /// only way to find "how did that run end" is `grep`, which is fine until the
-    /// file is the thing you cannot read (a sandbox, a bug report from someone
-    /// else). `--grep` makes it one command, and it applies to `--follow` too.
+    /// A regex and not a substring: the useful patterns here are anchored classes
+    /// (`session (starting|ending)`, `pid=14275`), and "it is a regex when it
+    /// compiles as one" would make `session (` silently a substring search for a
+    /// string nobody meant. An invalid pattern is an error, not a quiet fallback.
+    ///
+    /// The file's default level keeps third-party `info` out (ADR-0093), but a GUI
+    /// start still writes its own hundred lines around the two lifecycle ones.
+    /// Without a filter the only way to find "how did that run end" is `grep`, which
+    /// is fine until the file is the thing you cannot read (a sandbox, a bug report
+    /// from someone else). `--grep` makes it one command, and it applies to
+    /// `--follow` too — which `grep` cannot do.
     #[arg(long, value_name = "PATTERN")]
     pub(crate) grep: Option<String>,
-    /// Drop lines older than this. Accepts a duration (`30m`, `2h`, `7d`) or an
-    /// RFC 3339 timestamp.
+    /// Drop lines older than this: a duration (`30m`, `2h`, `7d`, bare seconds) or
+    /// an RFC 3339 timestamp.
     #[arg(long, value_name = "AGE|TIME")]
     pub(crate) since: Option<String>,
 }

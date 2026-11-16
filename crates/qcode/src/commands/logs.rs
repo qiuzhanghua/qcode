@@ -91,11 +91,11 @@ pub(crate) fn cmd_logs(
 
 /// What `qc logs` shows: an optional pattern and an optional lower time bound.
 ///
-/// Why this exists rather than leaving it to `grep`: the file's default level is
-/// `info`, so a GUI start writes a hundred `gpui_wgpu` / `zed_xim` lines around the
-/// two that say how the run ended. The lifecycle lines are the reason to open the
-/// file at all, and finding them meant knowing that. Here it is one flag — and it
-/// works while following, which `grep` cannot do.
+/// Why this exists rather than leaving it to `grep`: even with third-party noise
+/// kept out of the file (ADR-0093), a GUI start writes its own hundred lines around
+/// the two that say how the run ended. Those are the reason to open the file at all,
+/// and finding them meant knowing where to look. Here it is one flag — and it works
+/// while following, which `grep` cannot do.
 #[derive(Debug)]
 pub(crate) struct Filter {
     pattern: Option<regex::Regex>,
@@ -186,8 +186,16 @@ fn parse_since(
             );
         }
     };
+    // Checked, not `amount * seconds`: `--since 9223372036854775807d` overflowed
+    // and panicked in a debug build (`attempt to multiply with overflow`) and wrapped
+    // to a nonsense instant in a release build. Neither is an answer to a bad number.
+    let seconds = amount
+        .checked_mul(seconds)
+        .ok_or_else(|| format!("--since {value:?} is too large"))?;
     let now = chrono::Local::now().fixed_offset();
-    Ok(now - chrono::Duration::seconds(amount * seconds))
+    chrono::Duration::try_seconds(seconds)
+        .and_then(|back| now.checked_sub_signed(back))
+        .ok_or_else(|| format!("--since {value:?} is too far back to compare with anything").into())
 }
 
 /// Print whatever arrives, until the process is interrupted.
@@ -755,6 +763,28 @@ mod tests {
         );
         let error = parse_since("yesterday").unwrap_err().to_string();
         assert!(error.contains("neither a duration"), "{error}");
+    }
+
+    /// A number too big for the arithmetic is an error, not a crash.
+    ///
+    /// Found by hand: `--since 9223372036854775807d` panicked with `attempt to
+    /// multiply with overflow` (debug) and, worse, wrapped to a nonsense instant in
+    /// a release build — where a panic would at least have been honest.
+    #[test]
+    fn an_absurd_since_is_refused_instead_of_overflowing() {
+        for value in [
+            "9223372036854775807d",
+            "9223372036854775807w",
+            "9223372036854775807h",
+        ] {
+            let error = parse_since(value).unwrap_err().to_string();
+            assert!(
+                error.contains("too large") || error.contains("too far back"),
+                "{value} has to be refused, not wrapped: {error}"
+            );
+        }
+        // The boundary that must still work: a year back is a real question.
+        assert!(parse_since("365d").is_ok());
     }
 
     /// A line the filter cannot place in time is dropped under `--since`, but the

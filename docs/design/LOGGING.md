@@ -294,6 +294,13 @@ target」那个列表是照着包名写的；抓住它的是端到端跑一遍�
 过滤器是手写 `Filter` impl 而非 `filter_fn`，只为一件事：`max_level_hint` 必须返回 `INFO`。
 没有它，热路径上每条 `debug!` 都会被格式化后再丢弃——为没人要的级别付流式转发的钱。
 
+`ERROR` 是最容易被写反的一档：它的数值最小，`enabled` 里比较方向错掉时，第三方 `info` 照样被
+丢掉（看起来正确），而每条错误都被吞掉。测试因此显式钉着第三方 `error` 必须留下。
+
+**打错的级别**（ADR-0093 的补充）：`RUST_LOG=inf` 不是解析失败，`EnvFilter` 把裸词当 target
+指令，于是整个日志静默关闭（实测 0 行 vs 默认 2 行）。拼错的裸词与解析失败一样按「没说」处理，
+回落到默认，并在 stderr 说明。`RUST_LOG=qcode_gui` 这类真 directive 不受影响。
+
 ### 边界行
 
 ```
@@ -318,9 +325,9 @@ INFO qc::lifecycle: qc session ending   pid=313667 exit=143 reason=sigterm uptim
 
 ### `qc logs --grep` / `--since`：把边界行从噪音里捞出来
 
-文件默认级别是 `info`，所以一次 GUI 启动会在两条 lifecycle 行前后写下上百行
-`gpui_wgpu` / `zed_xim` / `gpui_linux` 的 info。`qc logs -n 5` 于是只显示 GPU 初始化，
-而「这次运行怎么结束的」恰恰是要看文件的原因。
+文件默认级别已按 target 收紧（上一节、ADR-0093），但一次 GUI 启动仍会在两条 lifecycle 行
+前后写下我们自己的上百行 info。`qc logs -n 5` 于是只显示启动细节，而「这次运行怎么结束的」
+恰恰是要看文件的原因。
 
 - `--grep <PATTERN>`：正则（不是子串），同时作用于尾巴和 `--follow`；
 - `--since <AGE|TIME>`：`30m` / `2h` / `7d`（从此刻回溯）或 RFC 3339 绝对时间。
