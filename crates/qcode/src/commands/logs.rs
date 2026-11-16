@@ -33,6 +33,10 @@ pub(crate) fn cmd_logs(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Built before anything is read, so a bad pattern is one clear error rather
+    // than a filter that silently passes everything.
+    let filter = Filter::new(args.grep.as_deref(), args.since.as_deref())?;
+
     let files = match logging::log_files(&data_dir) {
         Ok(files) => files,
         // Not "no log files": the directory could not be listed, and saying it is
@@ -65,8 +69,12 @@ pub(crate) fn cmd_logs(
         }
         let text = std::fs::read_to_string(&current)
             .map_err(|error| format!("cannot read {}: {error}", current.display()))?;
-        let skip = text.lines().count().saturating_sub(args.lines);
-        for line in text.lines().skip(skip) {
+        // `--lines` counts what is *printed*, not what is read. Filtering after
+        // taking the tail would answer "the last 40 lines, of which 3 match",
+        // which is the opposite of what someone asking for a match wants.
+        let shown: Vec<&str> = text.lines().filter(|line| filter.matches(line)).collect();
+        let skip = shown.len().saturating_sub(args.lines);
+        for line in &shown[skip..] {
             println!("{}", local_time(line));
         }
         // Everything shown so far must not be shown again by the first poll.
@@ -77,15 +85,119 @@ pub(crate) fn cmd_logs(
         return Ok(ExitCode::SUCCESS);
     }
 
-    follow_forever(&mut follower)?;
+    follow_forever(&mut follower, &filter)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// What `qc logs` shows: an optional pattern and an optional lower time bound.
+///
+/// Why this exists rather than leaving it to `grep`: the file's default level is
+/// `info`, so a GUI start writes a hundred `gpui_wgpu` / `zed_xim` lines around the
+/// two that say how the run ended. The lifecycle lines are the reason to open the
+/// file at all, and finding them meant knowing that. Here it is one flag — and it
+/// works while following, which `grep` cannot do.
+#[derive(Debug)]
+pub(crate) struct Filter {
+    pattern: Option<regex::Regex>,
+    since: Option<chrono::DateTime<chrono::FixedOffset>>,
+}
+
+impl Filter {
+    pub(crate) fn new(
+        pattern: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let pattern = match pattern {
+            Some(source) => Some(regex::Regex::new(source).map_err(|error| {
+                // Named rather than passed through: `regex`'s own message starts
+                // with the pattern, and from there it is not obvious which flag
+                // produced it.
+                format!("--grep {source:?} is not a valid pattern: {error}")
+            })?),
+            None => None,
+        };
+        Ok(Self {
+            pattern,
+            since: since.map(parse_since).transpose()?,
+        })
+    }
+
+    /// Whether a rendered line passes.
+    ///
+    /// A line with no parsable leading timestamp is dropped when `--since` is set:
+    /// it cannot be placed in time, and showing it would either contradict the
+    /// bound or need a second rule. The separator lines `--follow` prints (`--- …`)
+    /// are exempt, because they are the command talking, not the log.
+    pub(crate) fn matches(&self, line: &str) -> bool {
+        if let Some(pattern) = &self.pattern
+            && !pattern.is_match(line)
+        {
+            return false;
+        }
+        match &self.since {
+            None => true,
+            Some(bound) => match line_timestamp(line) {
+                Some(stamp) => stamp >= *bound,
+                None => line.starts_with("---"),
+            },
+        }
+    }
+}
+
+/// The timestamp a log line starts with, if it has one.
+fn line_timestamp(line: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let (stamp, _) = line.split_once(' ')?;
+    chrono::DateTime::parse_from_rfc3339(stamp).ok()
+}
+
+/// `--since`: a duration back from now (`30m`, `2h`, `7d`, `90s`) or an exact
+/// RFC 3339 timestamp.
+///
+/// Two forms because the two questions are different: "what happened in the last
+/// half hour" is how a user retells a bug, and "since 09:12" is what a log line in
+/// a bug report says.
+fn parse_since(
+    value: &str,
+) -> Result<chrono::DateTime<chrono::FixedOffset>, Box<dyn std::error::Error>> {
+    let value = value.trim();
+    if let Ok(exact) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Ok(exact);
+    }
+    let (amount, unit) = value.split_at(
+        value
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(value.len()),
+    );
+    let amount: i64 = amount.parse().map_err(|_| {
+        format!("--since {value:?} is neither a duration (30m, 2h, 7d) nor an RFC 3339 timestamp")
+    })?;
+    let unit = unit.trim();
+    let seconds = match unit {
+        "s" | "sec" | "secs" => 1,
+        "m" | "min" | "mins" => 60,
+        "h" | "hr" | "hrs" => 3600,
+        "d" | "day" | "days" => 86_400,
+        "w" | "week" | "weeks" => 7 * 86_400,
+        // Bare digits are seconds: the shortest thing to type for "just now".
+        "" => 1,
+        other => {
+            return Err(
+                format!("--since {value:?}: {other:?} is not a unit; use s, m, h, d or w").into(),
+            );
+        }
+    };
+    let now = chrono::Local::now().fixed_offset();
+    Ok(now - chrono::Duration::seconds(amount * seconds))
 }
 
 /// Print whatever arrives, until the process is interrupted.
 ///
 /// Ctrl-C ends the process the ordinary way (no handler is installed here), which
 /// is what `tail -f` does and what a reader expects.
-fn follow_forever(follower: &mut Follower) -> Result<(), Box<dyn std::error::Error>> {
+fn follow_forever(
+    follower: &mut Follower,
+    filter: &Filter,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut out = io::stdout().lock();
     loop {
         match follower.poll() {
@@ -99,7 +211,15 @@ fn follow_forever(follower: &mut Follower) -> Result<(), Box<dyn std::error::Err
                     }
                 }
                 if !update.text.is_empty() {
-                    if write!(out, "{}", local_times(&update.text)).is_err() {
+                    // Filtered while following too, through the same helper the
+                    // tail uses: `--grep` must not stop applying the moment the
+                    // first new line arrives.
+                    let block = rendered_block(&update.text, filter);
+                    if block.is_empty() {
+                        std::thread::sleep(FOLLOW_INTERVAL);
+                        continue;
+                    }
+                    if write!(out, "{block}").is_err() {
                         return Ok(());
                     }
                     // Flush per poll: the reader is a human or a pipe, not a
@@ -162,17 +282,24 @@ where
     Cow::Owned(format!("{local} {rest}"))
 }
 
-/// [`local_time`] applied line by line, keeping the trailing newlines.
+/// Render a block of log lines: filter each one, convert its timestamp, keep the
+/// newlines.
 ///
 /// The follower hands over a ready-to-print block, so the newlines are part of the
-/// contract: dropping one would join two events on one line.
-fn local_times(text: &str) -> String {
+/// contract: dropping one would join two events on one line. Filtering happens here
+/// rather than before so `--grep` applies to the tail and to `--follow` through the
+/// same code — the version that had two paths is the version where one of them
+/// silently stopped filtering.
+fn rendered_block(text: &str, filter: &Filter) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     for line in text.split_inclusive('\n') {
         let (body, newline) = match line.strip_suffix('\n') {
             Some(body) => (body, "\n"),
             None => (line, ""),
         };
+        if !filter.matches(body) {
+            continue;
+        }
         out.push_str(&local_time(body));
         out.push_str(newline);
     }
@@ -393,7 +520,7 @@ mod tests {
     fn every_line_is_converted_and_newlines_are_kept() {
         let text = "2026-11-12T23:03:37.428189Z  INFO a: one\n\
                     2026-11-12T23:03:38.000000Z  WARN b: two\n";
-        let out = local_times(text);
+        let out = rendered_block(text, &no_filter());
         assert_eq!(out.lines().count(), 2);
         assert!(out.ends_with('\n'), "the trailing newline must survive");
         assert!(out.contains("INFO a: one"));
@@ -556,6 +683,104 @@ mod tests {
         assert_eq!(follower.poll().unwrap(), Update::default());
         append(&path, "brand new\n");
         assert_eq!(follower.poll().unwrap().text, "brand new\n");
+    }
+
+    /// A filter that passes everything.
+    fn no_filter() -> Filter {
+        Filter::new(None, None).unwrap()
+    }
+
+    /// The feature this was added for: the lifecycle lines are two among a hundred
+    /// `gpui_wgpu` lines, and `-n 5` showed only the GPU noise.
+    #[test]
+    fn grep_keeps_the_lines_that_answer_how_the_run_ended() {
+        let filter = Filter::new(Some("session (starting|ending)"), None).unwrap();
+        let text = "2026-11-13T00:00:01Z  INFO gpui_wgpu::wgpu_context: Testing adapter\n\
+                    2026-11-13T00:00:02Z  INFO qc::lifecycle: qc session starting pid=7\n\
+                    2026-11-13T00:00:03Z  INFO zed_xim::x11rb: XConnected server\n\
+                    2026-11-13T00:00:04Z  INFO qc::lifecycle: qc session ending pid=7 reason=normal\n";
+        let out = rendered_block(text, &filter);
+        assert_eq!(out.lines().count(), 2, "{out}");
+        assert!(out.contains("qc session starting"));
+        assert!(out.contains("qc session ending"));
+        assert!(!out.contains("wgpu"));
+    }
+
+    /// A bad pattern is an error, not a filter that quietly matches everything:
+    /// silently showing the wrong lines is worse than refusing.
+    #[test]
+    fn a_bad_grep_is_reported_instead_of_ignored() {
+        let error = match Filter::new(Some("session ("), None) {
+            Ok(_) => panic!("an unclosed group has to be refused"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("--grep"), "must name the flag: {error}");
+    }
+
+    /// `--since` in both forms, and the two properties that matter: a duration is
+    /// relative to now, and an exact timestamp is taken as written.
+    #[test]
+    fn since_accepts_a_duration_or_an_exact_time() {
+        let now = chrono::Local::now().fixed_offset();
+        let half_hour = parse_since("30m").unwrap();
+        assert!(
+            (now - half_hour - chrono::Duration::minutes(30))
+                .num_seconds()
+                .abs()
+                < 5,
+            "30m must mean thirty minutes back"
+        );
+        assert!(
+            (now - parse_since("2h").unwrap() - chrono::Duration::hours(2))
+                .num_seconds()
+                .abs()
+                < 5
+        );
+        // Parsed and compared, not an epoch literal: the first version of this test
+        // hardcoded one and had the number of days wrong.
+        let exact = parse_since("2026-11-13T01:02:03Z").unwrap();
+        let expected = "2026-11-13T01:02:03Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        assert_eq!(exact.to_utc(), expected);
+    }
+
+    /// Labels that are not units are refused, and the message says what is allowed.
+    #[test]
+    fn since_rejects_a_unit_it_does_not_know() {
+        let error = parse_since("5y").unwrap_err().to_string();
+        assert!(
+            error.contains('y') && error.contains("s, m, h, d"),
+            "{error}"
+        );
+        let error = parse_since("yesterday").unwrap_err().to_string();
+        assert!(error.contains("neither a duration"), "{error}");
+    }
+
+    /// A line the filter cannot place in time is dropped under `--since`, but the
+    /// separator lines are the command talking and have to stay readable.
+    #[test]
+    fn since_drops_undated_lines_but_keeps_the_separators() {
+        let filter = Filter::new(None, Some("1h")).unwrap();
+        // Built from `now`, not written as a fixed date: a hardcoded "recent"
+        // timestamp is correct today and silently wrong tomorrow, which is exactly
+        // how the first version of this test failed.
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        assert!(filter.matches(&format!("{now}  INFO qc: now")), "recent");
+        assert!(
+            !Filter::new(None, Some("1h"))
+                .unwrap()
+                .matches("2020-01-01T00:00:00Z  INFO qc: ancient"),
+            "an old line has to be dropped"
+        );
+        assert!(
+            filter.matches("--- following qc.2026-11-13.log ---"),
+            "the follower's own separators are not log events"
+        );
+        assert!(
+            !filter.matches("a line with no timestamp"),
+            "undated lines cannot satisfy a time bound"
+        );
     }
 
     fn append(path: &std::path::Path, text: &str) {

@@ -5357,6 +5357,7 @@ dependencies = [
  "qcode-tools",
  "qcode-tui",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

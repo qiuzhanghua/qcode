@@ -8,6 +8,8 @@
 #   make release         # 门禁 + 全平台归档
 #   make linux-musl-amd64 windows-arm64
 #   make archive         # 全部平台 + tar.gz/zip
+#   make app             # macOS：打 dist/QCode.app（双击就跑）
+#   make linux-desktop   # Linux：装菜单入口（等于 mac 双击图标的效果）
 #   make linux-container # 非 Linux 宿主上用 podman 编 linux-amd64 + linux-arm64
 #
 # Windows 上用 build-for-release.ps1（见脚本头部）。
@@ -21,7 +23,9 @@ SHELL := /bin/bash
 PLATFORMS := linux-amd64 linux-arm64 linux-musl-amd64 linux-musl-arm64 \
              windows-amd64 windows-arm64 darwin-amd64 darwin-arm64
 
-.PHONY: all native list check check-platforms perf release archive clean gui app app-debug linux-container linux-container-archive $(PLATFORMS)
+.PHONY: all native list check check-platforms perf release archive clean gui app app-debug \
+        linux-desktop linux-desktop-check linux-desktop-uninstall \
+        linux-container linux-container-archive $(PLATFORMS)
 
 all:
 	./build-for-release all
@@ -75,6 +79,35 @@ app:
 
 app-debug:
 	./scripts/build-macos-app.sh --debug
+
+# Linux 侧与 `make app` + `open` 等价的两半：装菜单入口，以及把它 detach 起来。
+#
+# 没有 bundle 可打，所以这里不产出 `dist/` 里的东西——只有「应用菜单里有 qcode」这一件
+# 事，等于 mac 双击图标的效果。入口写的是绝对路径的 release 二进制，加
+# `--launched-from-gui`（`.desktop` 的 `Exec=` 能带参数，所以用 argv 形式；
+# `Info.plist` 那种没法带参数的地方才用环境变量，两者在 `qcode_core::launch` 里等价）。
+linux-desktop:
+	@if [ "$$(uname -s)" != Linux ]; then \
+		echo "this target is for Linux; on macOS use: make app && open dist/QCode.app" >&2; \
+		exit 1; \
+	fi
+	cargo build --release -p qcode
+	./scripts/install-linux-desktop.sh --exec $(CURDIR)/target/release/qc
+	@echo
+	@echo "installed. open it from the application menu, or detach it from a terminal:"
+	@echo "  setsid $(CURDIR)/target/release/qc --launched-from-gui >/dev/null 2>&1 &"
+	@echo
+	@echo "not the same as a bare '&': closing the terminal sends SIGHUP to the"
+	@echo "foreground process group, and a GUI that gets one exits (the log records"
+	@echo "reason=sighup). setsid puts it in a new session, which the hangup misses."
+	@echo
+	@echo "inspect or remove: ./scripts/install-linux-desktop.sh --check|--uninstall"
+
+linux-desktop-check:
+	./scripts/install-linux-desktop.sh --check
+
+linux-desktop-uninstall:
+	./scripts/install-linux-desktop.sh --uninstall
 
 # 非 Linux 宿主上编 Linux 产物：走 podman 容器（scripts/Containerfile.linux-builder）。
 # `make all` / `make release` 里的 Linux 目标会自动委派到这里，这两个目标只是给

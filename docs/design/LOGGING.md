@@ -298,3 +298,24 @@ INFO qc::lifecycle: qc session ending   pid=313667 exit=143 reason=sigterm uptim
 ——后者跨 DST 会错一小时。非时间戳行与解析失败的行原样输出：宁可显示 UTC，不丢行。
 
 代价：`cat`/`grep`/粘贴给别人的仍是 UTC，`qc logs` 的输出与原文件不逐字节相同。见 ADR-0082。
+
+### `qc logs --grep` / `--since`：把边界行从噪音里捞出来
+
+文件默认级别是 `info`，所以一次 GUI 启动会在两条 lifecycle 行前后写下上百行
+`gpui_wgpu` / `zed_xim` / `gpui_linux` 的 info。`qc logs -n 5` 于是只显示 GPU 初始化，
+而「这次运行怎么结束的」恰恰是要看文件的原因。
+
+- `--grep <PATTERN>`：正则（不是子串），同时作用于尾巴和 `--follow`；
+- `--since <AGE|TIME>`：`30m` / `2h` / `7d`（从此刻回溯）或 RFC 3339 绝对时间。
+  没有可解析时间戳的行在 `--since` 下被丢弃——它无法被定位在时间轴上；`--follow` 打的
+  分隔行（`--- …`）例外，那是命令自己说的话，不是日志事件；
+- `-n` 数的是**显示**的行数，不是读进来的行数。反过来（先取尾再过滤）会回答
+  「最后 40 行里有 3 行匹配」，与「我要找那条匹配」正好相反。
+
+非法正则直接报错并退出 1，不静默退化成「匹配一切」：显示错的行比拒绝更糟。
+
+```sh
+qc logs --grep 'session (starting|ending)'     # 每次运行怎么开始、怎么结束
+qc logs --since 30m --grep 'reason='           # 最近半小时的退出原因
+qc logs -f --grep ERROR                        # 边跟边过滤（grep 做不到）
+```

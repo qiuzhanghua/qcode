@@ -1,5 +1,37 @@
 # Changelog
 
+## 未发布
+
+### `qc logs` 有了 `--grep` 与 `--since`
+
+文件默认级别是 `info`，一次 GUI 启动会在两条 lifecycle 行前后写下上百行 `gpui_wgpu` /
+`zed_xim` 的 info。于是 `qc logs -n 5` 只显示 GPU 初始化，「这次运行怎么结束的」——打开
+文件唯一的原因——反而看不见。
+
+- `--grep <正则>`：同时作用于尾巴和 `--follow`（`grep` 做不到后者）；
+- `--since <30m|2h|7d|RFC3339>`：没有可解析时间戳的行会被丢弃，`--follow` 的分隔行例外；
+- `-n` 数的是**显示**行数：先取尾再过滤会回答「最后 40 行里有 3 行匹配」；
+- 非法正则报错退出 1，不静默退化成「匹配一切」。
+
+```sh
+qc logs --grep 'session (starting|ending)'
+qc logs --since 30m --grep 'reason='
+```
+
+### `make linux-desktop`：Linux 上等于 mac 的 `make app` + `open`
+
+`make app` 的两半在 Linux 上是两件事：没有 bundle 可打，对应物是菜单入口。
+
+```sh
+make linux-desktop      # cargo build --release + 装 .desktop 与图标
+```
+
+装完从应用菜单点开即可（`Exec=` 带 `--launched-from-gui`，与 macOS `Info.plist` 的
+`LSEnvironment` 等价）。命令行 detach 要用 `setsid qc --launched-from-gui &`，**不能**用
+裸 `&`：关终端会给前台进程组发 SIGHUP，GUI 收到就退出（日志记 `reason=sighup`，
+实测确认）。`setsid` 让它在新的会话里，挂断就发不到它——注意它是「脱离会话」而非
+「忽略信号」，手动 `kill -HUP` 仍然有效。
+
 ## 0.12.1 — 2026-11-15
 
 **一个正确性修复，没有新功能。** 升级不需要迁移。
@@ -767,9 +799,7 @@ could not prompt: unexpected escape sequence from terminal: ['\x1b' ']']
   `a_colour_reply_travels_the_write_path_to_the_child`（测试自己不触发答复）。把答复
   退回调用方时前两条会红——已实测。
 
-### 日志：`qc logs` 不再把「读不到」说成「没有」
-
-`log_files` 把 `read_dir` 的失败吞成了空列表，于是目录**读不了**时 `qc logs` 打印
+### 日志：`qc logs` 不再把「读不到」说成「没有」`log_files` 把 `read_dir` 的失败吞成了空列表，于是目录**读不了**时 `qc logs` 打印
 `no log files in <dir>` —— 而那个目录里躺着 13 KB 日志。这条消息会把人引向「日志没开」
 这个唯一确定错误的诊断。现在读不到就报读不到（带 errno，退出码非零），真正的空目录仍然
 是「还没有日志文件」而不是错误。

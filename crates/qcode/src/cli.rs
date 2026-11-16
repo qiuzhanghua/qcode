@@ -394,6 +394,19 @@ pub(crate) struct LogsArgs {
     /// Keep printing new lines as they are written (Ctrl-C to stop).
     #[arg(long, short = 'f')]
     pub(crate) follow: bool,
+    /// Show only lines matching this (substring, or a regex when it compiles as one).
+    ///
+    /// The file's default level is `info`, so a GUI startup buries the lifecycle
+    /// lines under a hundred `gpui_wgpu` / `zed_xim` lines. Without a filter the
+    /// only way to find "how did that run end" is `grep`, which is fine until the
+    /// file is the thing you cannot read (a sandbox, a bug report from someone
+    /// else). `--grep` makes it one command, and it applies to `--follow` too.
+    #[arg(long, value_name = "PATTERN")]
+    pub(crate) grep: Option<String>,
+    /// Drop lines older than this. Accepts a duration (`30m`, `2h`, `7d`) or an
+    /// RFC 3339 timestamp.
+    #[arg(long, value_name = "AGE|TIME")]
+    pub(crate) since: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

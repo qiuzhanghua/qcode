@@ -39,6 +39,8 @@ tracing-appender.workspace = true
 # `qc logs` shows timestamps in local time (ADR-0082). Not a new download: chrono
 # is already in the lock file and the cache through the GUI stack.
 chrono = "0.4"
+# `qc logs --grep`: also already in the tree through `qcode-tools`.
+regex.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # `kill(pid, 0)` —— 一个唯一用途是回答「那个进程还在吗」（lifecycle 的孤儿判定）。
