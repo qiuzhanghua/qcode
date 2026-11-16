@@ -132,7 +132,7 @@ fn status_without_a_daemon_says_stopped() {
         state == "stopped" || state == "unknown",
         "without a daemon the state must not be `running`, got {state}"
     );
-    // 驱动四态也在里面：数据目录级的问题与机器级的问题是两回事（ADR-0091 vs §5）。
+    // 驱动四态也在里面：数据目录级的问题与用户级的问题是两回事（ADR-0091 vs §5）。
     assert!(
         ["running", "held", "gone", "unknown"]
             .contains(&value["driver"]["state"].as_str().expect("driver.state")),
@@ -157,7 +157,7 @@ fn stopping_a_stopped_daemon_succeeds() {
         .output()
         .expect("run qc daemon stop");
 
-    // 机器级锁可能被同一台机器上别的 qcd 占着（开发者自己开着的那个）。那种情况下
+    // 用户级锁可能被同一个用户别的 qcd 占着（开发者自己开着的那个）。那种情况下
     // 「没有在跑」的判断不成立，于是这条只断言「不是崩溃」。
     if output.status.success() {
         assert!(
@@ -168,7 +168,7 @@ fn stopping_a_stopped_daemon_succeeds() {
     }
 }
 
-/// `stop` 与 `status` 用**同一个**判据（机器级锁），否则会出现「status 说在跑、
+/// `stop` 与 `status` 用**同一个**判据（用户级锁），否则会出现「status 说在跑、
 /// stop 说没有」这种自相矛盾的话。
 ///
 /// 这条不启动真 daemon（那要 spawn 一个常驻进程，在测试里留残留太容易），而是钉住

@@ -158,6 +158,19 @@ impl App {
             return None;
         }
 
+        if command == "/daemon" {
+            return match argument {
+                "start" => Some(UiAction::Daemon(crate::DaemonVerb::Start)),
+                "stop" => Some(UiAction::Daemon(crate::DaemonVerb::Stop)),
+                // 不带参数也当查询：那是用户打字最少、也最可能想要的那个答案。
+                "" | "status" => Some(UiAction::Daemon(crate::DaemonVerb::Status)),
+                other => {
+                    self.push_notice(format!("usage: /daemon start|stop|status (got '{other}')"));
+                    None
+                }
+            };
+        }
+
         if command == "/subagents" {
             self.handle_subagents(argument);
             return None;

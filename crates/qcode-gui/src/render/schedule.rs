@@ -224,9 +224,22 @@ impl Shell {
                                     })
                                     .disabled(
                                         status != TaskStatus::Active
-                                            || self.schedule_running.contains_key(&task_id),
+                                            || self.schedule_running.contains_key(&task_id)
+                                            // 驱动不在跑：**真禁用**（ADR-0098 §4）。
+                                            // 这一颗是「执行」，不是「登记」，所以它
+                                            // 与列表相反——能点但点了没反应更糟。
+                                            || self.driver_tone()
+                                                == crate::shell::daemon::DriverTone::Dormant,
                                     )
-                                    .tooltip("立即投递一次（不影响周期）")
+                                    .tooltip(
+                                        if self.driver_tone()
+                                            == crate::shell::daemon::DriverTone::Dormant
+                                        {
+                                            "驱动不在跑，投递了也没人执行"
+                                        } else {
+                                            "立即投递一次（不影响周期）"
+                                        },
+                                    )
                                     .on_click({
                                         let task_id = task_id.clone();
                                         cx.listener(move |this, _, _window, cx| {

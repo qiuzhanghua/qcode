@@ -678,6 +678,73 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     "no queued message {position} (see /queue)"
                                 )),
                             },
+                            UiAction::Daemon(verb) => {
+                                // 三个动词与 `qc daemon` 一一对应（ADR-0098 §6）。
+                                // 一次只做一件、只报一句：TUI 是「跑一个会话」的地方，
+                                // 不是管理面——所以这里没有状态表，只有一行结论。
+                                let user_dir = qcode_kernel::data_dir_hint(None);
+                                match verb {
+                                    qcode_tui::DaemonVerb::Status => {
+                                        let watch = qcode_core::daemon::Watch::read(
+                                            options.store,
+                                            &user_dir,
+                                        );
+                                        let daemon = match &watch.daemon {
+                                            qcode_core::daemon::Presence::Running => {
+                                                "daemon: running"
+                                            }
+                                            qcode_core::daemon::Presence::Absent => {
+                                                "daemon: not running"
+                                            }
+                                            qcode_core::daemon::Presence::Unknown(_) => {
+                                                "daemon: unknown"
+                                            }
+                                        };
+                                        app.push_notice(format!(
+                                            "{daemon} · {}",
+                                            qcode_core::scheduler::driver_footer(watch.driver)
+                                        ));
+                                    }
+                                    qcode_tui::DaemonVerb::Start => {
+                                        // 已经有一个就别再来一个：`start` 在那种情况下
+                                        // 会印一句「already running」并退出，而那句话
+                                        // 在 TUI 里只会变成一条吓人的通知。
+                                        match qcode_core::daemon::presence(&user_dir) {
+                                            qcode_core::daemon::Presence::Running => app
+                                                .push_notice(
+                                                    "daemon already running (one per user)"
+                                                        .to_string(),
+                                                ),
+                                            _ => match qcode_core::daemon::start(
+                                                options.store.root(),
+                                                None,
+                                            ) {
+                                                Ok(pid) => app.push_notice(format!(
+                                                    "daemon started (pid {pid}); it keeps running \
+                                                     after you quit"
+                                                )),
+                                                Err(error) => app.push_notice(format!(
+                                                    "cannot start the daemon: {error}"
+                                                )),
+                                            },
+                                        }
+                                    }
+                                    qcode_tui::DaemonVerb::Stop => {
+                                        match qcode_core::daemon::stop(&user_dir) {
+                                            Ok(true) => app.push_notice(
+                                                "daemon: stopped (tasks keep their definitions)"
+                                                    .to_string(),
+                                            ),
+                                            // 没有在跑不是错误：用户的意图已经满足。
+                                            Ok(false) => app
+                                                .push_notice("daemon: was not running".to_string()),
+                                            Err(error) => app.push_notice(format!(
+                                                "cannot stop the daemon: {error}"
+                                            )),
+                                        }
+                                    }
+                                }
+                            }
                             UiAction::Continue => {
                                 // The engine reads the paused turn from the log
                                 // and numbers this window itself, so nothing the

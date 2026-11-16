@@ -89,11 +89,15 @@ impl Scope {
     ///
     /// 与 `GUI` 的**作用域不同**，这一点必须记牢：GUI 那把锁住在
     /// `<data-dir>/locks/gui.lock`，作用域是「一个数据目录」；daemon 这把要回答
-    /// 的是「这台机器上是不是已经有一个 qcd 在跑」，所以它拿锁时传的是**默认**
-    /// 数据目录，不是 `--data-dir` 指的那个。
+    /// 的是「这个**用户**是不是已经有一个 qcd 在跑」，所以它拿锁时传的是**默认**
+    /// 数据目录（`$HOME/.local/share/qcode`），不是 `--data-dir` 指的那个。
     ///
-    /// 传错 base 的后果不会报错：两个不同 `--data-dir` 的 qcd 会各自抢到一把
-    /// 「机器级」锁，然后同时往两个数据目录里投递——而它们本该被拒。
+    /// 注意别把它叫「机器级」：base 在家目录下，所以两个 OS 用户各起一个 qcd 是
+    /// **合法**的。这个误称会让实现者以为要跨用户互斥，也让用户以为别人登录会
+    /// 挡住自己（ADR-0098 §2 有实测记录）。
+    ///
+    /// 传错 base 的后果不会报错：同一个用户的两个不同 `--data-dir` 的 qcd 会各自
+    /// 抢到一把「用户级」锁，然后同时往两个数据目录里投递——而它们本该被拒。
     pub const QCD: Self = Self {
         prefix: "qcd",
         env_var: "QC_QCD_SINGLE_INSTANCE",
@@ -426,6 +430,74 @@ fn claim_in_process(lock: &Path) -> bool {
 fn release_in_process(lock: &Path) {
     if let Ok(mut held) = in_process().lock() {
         held.remove(lock);
+    }
+}
+
+/// 有人持有这个作用域的锁吗——**问完什么都不留**。
+///
+/// 三态而不是 `bool`：`Unavailable` 是「锁机制本身坏了」（NFS、权限、目录不可写）。
+/// 把它合并成「没人」会让界面显示一个「启动」按钮，而点了也起不来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ownership {
+    Free,
+    Held,
+    Unavailable(String),
+}
+
+/// 只读探测：抢一次锁，立刻放开。
+///
+/// # 为什么不能直接用 `acquire_in` + `drop(Primary)`
+///
+/// 那正是这个函数存在的原因，也是它抓到的一个真 bug：`Primary` 被 drop 只放开
+/// **OS 锁**，而[进程内登记表](claim_in_process)是在 `acquire_in` 里 `claim` 的、
+/// 只在失败分支 `release`。于是同一个进程里第二次 `acquire_in` 会看到登记表里
+/// 还有自己，返回 `HandedOver` ——**一个假的「有人在跑」**。
+///
+/// 单次调用的 CLI 撞不上它（进程问一次就退了）；每秒轮询的 GUI 必然撞上：第一次
+/// 显示「启动」，之后永远是「停止」。所以探测必须有一个**自己的入口**，而不是
+/// 「让每个调用方记得 drop 之后再去撤销登记」——那种约定迟早漏一处。
+///
+/// # 不发通道请求
+///
+/// 只问锁，不 `try_request`：`Activate` 在 GUI 作用域上的语义是「把窗口拿到前台」，
+/// 一次探测不该有那种副作用（ADR-0091 的判据也只要锁）。代价是「锁被一个卡死的
+/// 进程占着」会被报成 `Held` —— 那是对的：它确实还在。
+pub fn probe_in(scope: Scope, data_dir: &Path) -> Ownership {
+    // 逃生口与 `acquire_in` 同一条：`Scope::env_var()=0` 的意思是「别让这套机制
+    // 挡住我」。探测也要认，否则 `QC_QCD_SINGLE_INSTANCE=0 qc daemon status` 会
+    // 报出一个**本该被忽略**的结论——而用户设这个变量的场合（CI、调试、另一个
+    // 终端里跑着 daemon）恰恰是他不需要这个答案的场合。
+    if disabled_by_env(scope) {
+        return Ownership::Unavailable(format!("{}=0", scope.env_var()));
+    }
+    let paths = Paths::for_scope(scope, data_dir);
+    if let Some(dir) = paths.lock.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // 本进程自己持有这个锁：那就是「有人在跑」，而且那个人就是我。
+    if !claim_in_process(&paths.lock) {
+        return Ownership::Held;
+    }
+    // 从这里往下每一条出口都要撤销登记。用 guard 而不是逐个分支手写：
+    // 上面那个 bug 的成因正是「有一个分支忘了」。
+    let _claim = Claim(&paths.lock);
+    match backend::lock(&paths.lock) {
+        // 抢到了 ⇒ 没人在跑。立刻放开。
+        Ok(Some(guard)) => {
+            drop(guard);
+            Ownership::Free
+        }
+        Ok(None) => Ownership::Held,
+        Err(error) => Ownership::Unavailable(error.to_string()),
+    }
+}
+
+/// 「登记表里的这一条随我离开而撤销」。
+struct Claim<'a>(&'a Path);
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        release_in_process(self.0);
     }
 }
 

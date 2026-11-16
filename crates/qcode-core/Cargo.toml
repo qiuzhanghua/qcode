@@ -42,4 +42,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_IO",
     # 命名管道：单实例的跨进程激活通道（ADR-0084）。
     "Win32_System_Pipes",
+    # `DETACHED_PROCESS` / `CREATE_NEW_PROCESS_GROUP`：分离启动 `qcd`
+    # （`daemon::spawn`，ADR-0098 把这段从 `qcd` 搬到 core）。
+    "Win32_System_Threading",
 ] }

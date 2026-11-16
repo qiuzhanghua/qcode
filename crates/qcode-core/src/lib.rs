@@ -12,6 +12,11 @@ pub mod agents;
 pub mod approval;
 pub mod compact;
 pub mod cost;
+/// daemon 的客户端视角：在不在、怎么起、怎么停（ADR-0092、ADR-0098）。
+///
+/// 放在 core 而不是三个前端各写一份：`Scope::QCD` 的锁与通道、`DriverStatus` 的
+/// 锁与心跳都已经在这里，组合起来的答案也该在这里。
+pub mod daemon;
 pub mod engine;
 pub mod event;
 pub mod history;

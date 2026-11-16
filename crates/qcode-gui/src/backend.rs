@@ -149,6 +149,13 @@ pub trait Backend {
     fn schedule_tasks(&self) -> Vec<ScheduledTask> {
         Vec::new()
     }
+    /// 定时任务的驱动现在是谁在推（ADR-0098 §2 的乒乓按钮与变灰都读它）。
+    ///
+    /// **两个粒度**：`driver` 是本数据目录，`daemon` 是这个用户。返回 `None` 的
+    /// 实现（未装配 kernel 的后端）由此让界面退回「不知道」，而不是猜一个。
+    fn driver_watch(&self) -> Option<qcode_core::daemon::Watch> {
+        None
+    }
     /// 对定时任务的操作（创建 / 编辑 / 暂停 / 恢复 / 立即执行 / 删除）。
     /// 结果经 `ScheduleChanged` / `ScheduleCreated` / `ScheduleNotice`
     /// 事件回传，不在本方法里返回。
@@ -312,6 +319,15 @@ impl Backend for UnconfiguredBackend {
         self.store.load_schedule_tasks()
     }
 
+    /// 没有 kernel 也有定时任务表，所以按钮与变灰照常工作（ADR-0090：登记不需要
+    /// 驱动）。这就是「灰但可编辑」在未配置状态下的样子——任务在，跑不了。
+    fn driver_watch(&self) -> Option<qcode_core::daemon::Watch> {
+        Some(qcode_core::daemon::Watch::read(
+            &self.store,
+            &qcode_kernel::data_dir_hint(None),
+        ))
+    }
+
     fn schedule_op(&mut self, _op: ScheduleOp) {}
 
     fn prompt(
@@ -407,6 +423,17 @@ impl LocalBackend {
 impl Backend for LocalBackend {
     fn cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    /// 驱动状态（ADR-0098）——两个粒度都在 `Watch` 里：本目录的时钟、这个用户的 `qcd`。
+    ///
+    /// 每次调用都会探一次锁，所以调用方**必须**缓存（见 `Shell::driver_watch`）：
+    /// 每帧问一次会把 render 变成文件系统调用。
+    fn driver_watch(&self) -> Option<qcode_core::daemon::Watch> {
+        Some(qcode_core::daemon::Watch::read(
+            &self.store,
+            &qcode_kernel::data_dir_hint(None),
+        ))
     }
 
     /// Rows for the sidebar badge and the per-task hints, **derived from the task

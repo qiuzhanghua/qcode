@@ -275,9 +275,23 @@ pub enum UiAction {
     /// /continue: pick a paused turn back up in a fresh budget window. The
     /// engine numbers the window from the log (ADR-0060 §2.11).
     Continue,
+    /// `/daemon start|stop|status`：常驻驱动的启停与查询（ADR-0098 §6）。
+    ///
+    /// 只带**动词**，不带路径或结果：驱动状态是按数据目录与按用户两把锁的事，
+    /// 由前端拿自己的 `data_dir` 去问 `qcode_core::daemon`。让这个 crate 知道
+    /// 路径就等于让它变成半个 store 客户端。
+    Daemon(DaemonVerb),
     /// /wrap: one more turn whose only job is the hand-off summary, so a paused
     /// task leaves a usable note even when the summary call ran out of budget.
     WrapUp,
+}
+
+/// `/daemon` 的三个动词，与 `qc daemon` 一一对应（ADR-0098 §6）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonVerb {
+    Start,
+    Stop,
+    Status,
 }
 
 /// How the status bar renders context usage.

@@ -1,6 +1,7 @@
 use crate::dormant::Dormant;
 use crate::questions::{QuestionInputState, QuestionPanel, QuestionQueue};
 use crate::*;
+use daemon::DaemonTransition;
 use qcode_core::schedule::ScheduledTask;
 use schedule::{SCHEDULE_LOG_PAGE_SIZE, ScheduleFormState};
 use std::collections::HashMap;
@@ -82,6 +83,18 @@ pub(crate) struct Shell {
     pub(crate) schedule_rows: Vec<ScheduleRow>,
     /// 运行时定时任务缓存（`Backend::schedule_tasks()`）：侧栏列表与详情页共用。
     pub(crate) schedule_tasks: Vec<ScheduledTask>,
+    /// 定时任务的驱动现在是谁在推（ADR-0098）：段头乒乓按钮与「变灰」都读它。
+    ///
+    /// **必须缓存**，不能每帧问 backend：那是一次 flock + 一次心跳查询，render 里
+    /// 做文件系统调用是另一种卡顿。刷新见 `Shell::refresh_driver_watch`。
+    pub(crate) driver_watch: Option<qcode_core::daemon::Watch>,
+    /// 上次探测驱动的时刻。探测有系统调用，按秒节流。
+    pub(crate) driver_watch_at: Option<std::time::Instant>,
+    /// 按钮上的过渡态：`start` / `stop` 已经发出、状态还没跟上。
+    ///
+    /// 存在的理由很具体——`stop` 要等正在收尾的回合，而用户看不到任何变化时会连点。
+    /// 连点的第二个请求会撞上「锁在、但通道没人答」而被报成失败。
+    pub(crate) daemon_transition: Option<DaemonTransition>,
     /// 点击「立即执行」后、投递落盘确认前处于执行中的任务：task id → 点击时刻。
     /// 详情页据此把按钮置为「执行中…」并禁用，防止重复点击。
     pub(crate) schedule_running: std::collections::HashMap<String, time::PrimitiveDateTime>,
@@ -202,6 +215,7 @@ pub(crate) struct Shell {
 }
 
 mod commands;
+pub(crate) mod daemon;
 mod routing;
 pub(crate) mod schedule;
 mod session;
@@ -342,6 +356,9 @@ impl Shell {
             schedule_section_open: prefs.schedule_section_open,
             schedule_rows: Vec::new(),
             schedule_tasks: Vec::new(),
+            driver_watch: None,
+            driver_watch_at: None,
+            daemon_transition: None,
             schedule_running: std::collections::HashMap::new(),
             schedule_menu_open: false,
             schedule_filter: None,
@@ -760,6 +777,10 @@ impl Shell {
             loop {
                 let interval = match this.update(cx, |shell, cx| {
                     shell.poll(cx);
+                    // 驱动状态每秒重探一次（节流在函数里）：按钮与「变灰」都读它，
+                    // 而它是窗口之外的事实——`qcd` 可能刚被 `qc daemon stop` 停掉
+                    // （ADR-0098）。
+                    shell.refresh_driver_watch();
                     // The terminal's reader thread sets `terminal_dirty` instead of
                     // notifying: this loop is the only place that may touch the
                     // entity, and it also applies the grid size the last frame

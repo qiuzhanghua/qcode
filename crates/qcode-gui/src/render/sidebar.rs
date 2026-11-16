@@ -303,7 +303,8 @@ impl Shell {
             .when(tasks_open, |this| this.child(self.render_task_list(cx)))
             .child(self.render_schedule_section_header(cx))
             .when(self.schedule_section_open, |this| {
-                this.child(self.render_schedule_list(cx))
+                this.child(self.render_driver_notice(cx))
+                    .child(self.render_schedule_list(cx))
             })
             // Fixed at the bottom, separated from the list by a hairline: above is
             // content, below is tools. `mt_auto` pins it to the bottom even when
@@ -958,10 +959,72 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap_0p5()
+                    .child(self.render_daemon_toggle(cx))
                     .child(menu_wrapper),
             )
             .on_click(cx.listener(move |this, _, _window, cx| {
                 this.toggle_sidebar_section(SidebarSection::Schedule, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// 驱动不在时那句「为什么这些任务不会响」（ADR-0098 §1 的代价，§4 的补偿）。
+    ///
+    /// 不画提示音、不弹窗：定时任务错过本来就是静默的（ADR-0059 的不补跑语义）。
+    /// 但**静默不等于不说**——它必须在用户看得见的地方写清楚，否则「装了不用的人」
+    /// 永远不会知道自己的任务没跑。文案复用 `driver_footer`，两处各写一份迟早会
+    /// 有一份说「会触发」另一份说「不会」。
+    fn render_driver_notice(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tone = self.driver_tone();
+        // 在跑就不占地方：那是最常见也最不需要解释的状态。
+        if tone == crate::shell::daemon::DriverTone::Live {
+            return div().into_any_element();
+        }
+        let color: gpui_kit::Hsla = match tone {
+            crate::shell::daemon::DriverTone::Drowsy => rgb(0xca8a04).into(),
+            _ => cx.theme().muted_foreground,
+        };
+        div()
+            .px_2()
+            .pb_1()
+            .text_size(sp(CAPTION_SIZE))
+            .text_color(color)
+            .child(crate::shell::daemon::status_sentence(
+                self.driver_watch.as_ref(),
+            ))
+            .into_any_element()
+    }
+
+    /// 定时任务段头的「乒乓」按钮：启动 / 停止常驻驱动（ADR-0098 §3）。
+    ///
+    /// 它的四格语义全在 `shell::daemon::decide` 里，这里只负责画：能点的用主色，
+    /// 不能点的**仍然画出来**（不是隐藏）——用户需要看到「为什么不能点」，而一个
+    /// 消失的按钮只会让人以为功能没了。
+    fn render_daemon_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = self.daemon_button();
+        let tone = self.driver_tone();
+        // 颜色：在跑=绿（象徵时钟），睡着=黄，不在=灰。
+        let color: gpui_kit::Hsla = match tone {
+            crate::shell::daemon::DriverTone::Live => rgb(0x16a34a).into(),
+            crate::shell::daemon::DriverTone::Drowsy => rgb(0xca8a04).into(),
+            crate::shell::daemon::DriverTone::Dormant => cx.theme().muted_foreground,
+        };
+        Button::new("schedule-daemon-toggle")
+            .label(button.label())
+            .tooltip(button.tooltip())
+            .disabled(!button.actionable())
+            .font_weight(FontWeight::NORMAL)
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().transparent)
+                    .hover(rgb(0x888888).opacity(0.2).into())
+                    .active(rgb(0x888888).opacity(0.45).into())
+                    .foreground(color),
+            )
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                // 段头本身点击 = 折叠/展开；这一颗按钮不能触发那个。
+                cx.stop_propagation();
+                this.toggle_daemon(cx);
             }))
             .into_any_element()
     }
@@ -1116,6 +1179,13 @@ impl Shell {
                     .when(
                         task.status == qcode_core::schedule::TaskStatus::Ended,
                         |this| this.opacity(0.55),
+                    )
+                    // 驱动不在跑：整行变灰（ADR-0098 §4）。**灰不是禁用**——点击、
+                    // 打开详情、编辑、删除全部照旧，因为登记不需要驱动
+                    // （ADR-0090）。把 opacity 当「不可交互」用会毁掉那个前提。
+                    .when(
+                        self.driver_tone() == crate::shell::daemon::DriverTone::Dormant,
+                        |this| this.opacity(0.45),
                     )
                     .child(
                         div()

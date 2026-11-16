@@ -131,8 +131,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "qcd — 定时任务的常驻驱动（ADR-0092）\n\n\
              Usage: qcd [--beat <secs>] [--data-dir <path>]\n\n\
-             一台机器只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，\n\
-             所以两个不同数据目录的 qcd 会互相拒绝。\n"
+             一个用户只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，\n\
+             所以同一个用户的两个不同数据目录的 qcd 会互相拒绝。换一个 OS 用户另起\n\
+             一个是允许的——锁的 base 就在那个用户自己的家目录下。\n"
         );
         return Ok(());
     }
@@ -157,14 +158,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // ── 1. 机器级单实例（ADR-0092 §5）────────────────────────────────────
+    // ── 1. 用户级单实例（ADR-0092 §5）────────────────────────────────────
     //
-    // base 是**默认**数据目录，不是 `--data-dir` 指的那个：这把锁要回答的是「这台
-    // 机器上是不是已经有一个 qcd」，而用 `--data-dir` 就会变成「这个数据目录有没有
-    // qcd」——于是两个不同目录的 daemon 各自「成功」，却违反了「一台机器一个」。
+    // base 是**默认**数据目录，不是 `--data-dir` 指的那个：这把锁要回答的是「这个
+    // 用户是不是已经有一个 qcd」，而用 `--data-dir` 就会变成「这个数据目录有没有
+    // qcd」——于是两个不同目录的 daemon 各自「成功」，却违反了「一个用户一个」。
+    //
+    // 作用域是**每个用户**，不是每台机器：base 在家目录下，所以两个 OS 用户各起
+    // 一个是合法的。措辞见 ADR-0098 §2——那里有实测记录。
     //
     // 传错的后果不会报错，所以这段话必须留在这里。
-    let machine_dir = qcode_kernel::data_dir_hint(None);
+    let user_dir = qcode_kernel::data_dir_hint(None);
     // 「请退出」的信号。由控制通道的 `Stop` 触发，主循环 select 在它上面。
     //
     // 用 `CancellationToken` 而不是 `bool` 标志：标志要等下一拍才被看见（默认
@@ -177,8 +181,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 「无法判断」。daemon 必须应答，否则它对自己的存在只能给出一句含糊的话。
     // 抢到的 `Primary` 全部交给 `serve`（锁随监听线程活到进程结束），所以这里
     // 不需要再保存它。`Disabled` 分支没有锁可交，行为一样。
-    match qcode_core::single_instance::acquire_in(Scope::QCD, &machine_dir)
-        .map_err(|error| format!("cannot take the machine-wide lock: {error}"))?
+    match qcode_core::single_instance::acquire_in(Scope::QCD, &user_dir)
+        .map_err(|error| format!("cannot take the user-wide lock: {error}"))?
     {
         Outcome::Primary(primary) => {
             // 应答通道：`qc daemon status` 靠它确认「有活实例」，`qc daemon stop`
@@ -214,8 +218,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 明确失败，不假装成功（ADR-0092 §11）：一个说「已启动」但其实没启动的
             // 进程，比没有这个能力更糟。
             eprintln!(
-                "qcd: another qcd is already running on this machine.\n\
-                 One daemon per machine (ADR-0092 §5); stopping this one."
+                "qcd: another qcd is already running for this user.\n\
+                 One daemon per user (ADR-0092 §5); stopping this one."
             );
             return Err("already running".into());
         }

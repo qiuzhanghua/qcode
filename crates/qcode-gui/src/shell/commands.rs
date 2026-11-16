@@ -118,6 +118,8 @@ impl Shell {
             UiAction::QueueSteer(position) => self.queue_op(position, QueueAction::Steer),
             UiAction::QueueDrop(position) => self.queue_op(position, QueueAction::Drop),
             UiAction::SteeringUndo(position) => self.queue_op(position, QueueAction::Unsteer),
+            // `/daemon` 与段头那颗按钮走同一条路（ADR-0098 §1：一个语义来源）。
+            UiAction::Daemon(verb) => self.daemon_command(verb, cx),
             // Approvals and image paste come from keystrokes, not commands;
             // nothing to do if one ever shows up here.
             UiAction::Approve { .. } | UiAction::PasteImage => {}
