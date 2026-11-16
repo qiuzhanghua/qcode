@@ -79,6 +79,12 @@ impl Release {
         self.assets.iter().find(|asset| asset.name == name)
     }
 
+    /// 同一次发布里的另一个二进制（`qcd`）。
+    pub fn asset_named(&self, base: &str, platform: &str) -> Option<&Asset> {
+        let name = asset_name_for(base, &self.version, platform);
+        self.assets.iter().find(|asset| asset.name == name)
+    }
+
     fn checksums(&self) -> Option<&Asset> {
         self.assets.iter().find(|asset| asset.name == "SHA256SUMS")
     }
@@ -92,8 +98,23 @@ pub fn platform() -> String {
 /// Raw binary asset name. Archives are for humans and package managers; the
 /// updater downloads the binary itself so it needs no archive decoder.
 pub fn asset_name(version: &str, platform: &str) -> String {
+    asset_name_for("qc", version, platform)
+}
+
+/// 同一套命名规则，换一个二进制的名字。
+///
+/// `build-for-release` 的 `release_asset_named` 必须与这里一致：那边发什么名字，
+/// 这边就按什么名字去取。两处各写一遍是重复，但一个是 shell、一个是 Rust，
+/// 而**名字对不上**的后果是 `qc update` 收到 404（有测试钉住这条字符串）。
+pub fn asset_name_for(base: &str, version: &str, platform: &str) -> String {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    format!("qc-{version}-{platform}{suffix}")
+    format!("{base}-{version}-{platform}{suffix}")
+}
+
+/// `qcd` 在磁盘上的名字——它与 `qc` **同目录**（`find_qcd` 第一步就看那里）。
+pub fn daemon_beside(exe: &Path) -> PathBuf {
+    let name = if cfg!(windows) { "qcd.exe" } else { "qcd" };
+    exe.with_file_name(name)
 }
 
 pub fn cache_path(data_dir: &Path) -> PathBuf {
@@ -521,11 +542,9 @@ pub async fn run(
     // notices use.
     eprintln!("downloading {}", asset.url);
     let bytes = download(&asset.url).await?;
-    let expected = checksum_for(
-        &String::from_utf8_lossy(&download(&checksums.url).await?),
-        &asset.name,
-    )
-    .ok_or_else(|| UpdateError::Manifest(format!("{} missing from SHA256SUMS", asset.name)))?;
+    let sums = String::from_utf8_lossy(&download(&checksums.url).await?).into_owned();
+    let expected = checksum_for(&sums, &asset.name)
+        .ok_or_else(|| UpdateError::Manifest(format!("{} missing from SHA256SUMS", asset.name)))?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
         return Err(UpdateError::Checksum {
@@ -550,7 +569,79 @@ pub async fn run(
         ),
         None => println!("installed {} at {}", release.version, current_exe.display()),
     }
+
+    // 常驻驱动与 `qc` 同属一次发布（ADR-0098 §7），这里一起更新。
+    update_daemon(&release, &platform, &current_exe, &sums, data_dir).await;
     Ok(())
+}
+
+/// 把 `qcd` 也换到同一个版本。
+///
+/// **为什么必须在自更新里做**：`qc update` 走的是裸二进制路径，不经过任何包管理器。
+/// 换完 `qc` 之后，它旁边**不会**自己长出一个 `qcd`。于是这次更新把一个能用的安装
+/// 变成了半套：GUI 段头那颗「启动」按钮点下去是 `qcd` was not found——与 `make app`
+/// 漏打包是同一类缺口，只是入口不同。
+///
+/// **失败不升级为整体失败**：`qc` 已经换好并生效了，此时报「更新失败」是假话。改为
+/// 打印一条能照着做的警告。旧 `qcd` 留着也能跑（协议没变），只是版本口径不一致。
+async fn update_daemon(
+    release: &Release,
+    platform: &str,
+    current_exe: &Path,
+    sums: &str,
+    data_dir: &Path,
+) {
+    let target = daemon_beside(current_exe);
+    let Some(asset) = release.asset_named("qcd", platform) else {
+        eprintln!(
+            "warning: this release publishes no {} binary.\n\
+             \x20        定时任务需要它（`qc daemon start`）；若 {} 已存在则仍可用旧版本。",
+            asset_name_for("qcd", &release.version, platform),
+            target.display()
+        );
+        return;
+    };
+    let Some(expected) = checksum_for(sums, &asset.name) else {
+        eprintln!(
+            "warning: {} is missing from SHA256SUMS; not installing the daemon.\n\
+             \x20        Unverified bytes next to `qc` is worse than a stale daemon.",
+            asset.name
+        );
+        return;
+    };
+
+    let bytes = match download(&asset.url).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("warning: cannot download {}: {error}", asset.name);
+            return;
+        }
+    };
+    let actual = sha256_hex(&bytes);
+    if actual != expected {
+        eprintln!(
+            "warning: {} failed verification (expected {expected}, got {actual}); \
+             kept the existing daemon",
+            asset.name
+        );
+        return;
+    }
+    if std::fs::create_dir_all(data_dir).is_ok() {
+        let _ = std::fs::write(data_dir.join(&asset.name), &bytes);
+    }
+
+    match install(&bytes, &target) {
+        Ok(_) => {
+            cleanup_backups(&target);
+            println!("daemon updated: {}", target.display());
+        }
+        // Windows 上正在跑的 qcd 会被占用；那是「下次再说」，不是更新失败。
+        Err(error) => eprintln!(
+            "warning: cannot install {}: {error}\n\
+             \x20        `qc daemon stop` 之后再跑一次 `qc update`，或在下次安装时覆盖。",
+            target.display()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -583,6 +674,35 @@ mod tests {
             } else {
                 "qc-0.2.0-linux-x86_64".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn the_daemon_asset_uses_the_same_name_shape() {
+        // 与 `build-for-release` 的 `release_asset_named` 是同一个形状
+        // （`<base>-<version>-<os>-<arch>`），只是 base 换成 `qcd`。
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        assert_eq!(
+            asset_name_for("qcd", "0.13.0", "macos-aarch64"),
+            format!("qcd-0.13.0-macos-aarch64{suffix}")
+        );
+        // 反面：`qc update` 取 `qc-*` 时不能取到 `qcd-*`——两个名字必须不同，
+        // 否则更新器会把 daemon 当成主程序装下去。
+        assert_ne!(
+            asset_name("0.13.0", "macos-aarch64"),
+            asset_name_for("qcd", "0.13.0", "macos-aarch64")
+        );
+    }
+
+    #[test]
+    fn the_daemon_sits_next_to_the_main_binary() {
+        let exe = Path::new("/opt/qcode/bin/qc");
+        let daemon = daemon_beside(exe);
+        // 同目录，不是子目录、不是 `Resources/`：`find_qcd` 第一步只看兄弟。
+        assert_eq!(daemon.parent(), exe.parent());
+        assert_eq!(
+            daemon.file_name().and_then(|n| n.to_str()),
+            Some(if cfg!(windows) { "qcd.exe" } else { "qcd" })
         );
     }
 

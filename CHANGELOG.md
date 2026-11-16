@@ -47,11 +47,15 @@ qcd: taking over (the other driver exited)
 `QCode.app/Contents/MacOS/` 下有两个二进制（`qc` 61M + `qcd` 16M），发布归档里的
 `qcd` 与 `qc` 同级，另有一条独立资产（`qcd-<版本>-<平台>`）供更新器分别替换。
 
-这一条曾经漏过：`make app` 与 `build-for-release` 都只 `-p qcode`，产出的 app 里只有
-`qc`。于是 GUI 段头那颗「启动」按钮在打包版里点下去只会得到一句 `qcd` was not found，
+这一条曾经漏过，而且是**六个入口一起漏**：`make app`、`make linux-desktop`、
+`build-for-release`、Homebrew、Scoop、winget 全都只装/只编 `qc`，自更新也不管它。
+于是 GUI 段头那颗「启动」按钮在打包版里点下去只会得到一句 `qcd` was not found，
 而所有测试照绿——因为 `cargo build` 把两个二进制都放进 `target/debug/`，`find_qcd`
-找同目录兄弟那一步永远命中。现在有一条读打包脚本的测试盯着它
-（`every_packaging_path_ships_the_daemon`），去掉 `-p qcd` 就会红。
+找同目录兄弟那一步永远命中。现在有一条读脚本与清单的测试盯着它
+（`every_packaging_path_ships_the_daemon`），去掉任意一条就会红。
+
+`qc update` 现在也把 `qcd` 换到同一版本（装在 `qc` 旁边）。走裸二进制路径的用户没有
+包管理器替他们补文件，漏了这一步就等于「更新完定时任务不能用」。
 
 **`stop` 走控制通道，不发信号。** 通道多给一样东西——应答：`kill` 成功只说明信号发
 出去了，不说明对方收得到、更不说明它准备退出。退出走的是正常路径（日志里

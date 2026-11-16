@@ -15,7 +15,10 @@
       "extract_dir": "qcode_@@VERSION@@_windows_arm64"
     }
   },
-  "bin": "qc.exe",
+  "bin": [
+    "qc.exe",
+    "qcd.exe"
+  ],
   "checkver": {
     "github": "https://github.com/qiuzhanghua/qcode"
   }

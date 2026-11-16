@@ -352,9 +352,10 @@ make release         # 门禁通过后打全部平台归档
 
 `--release`（PowerShell 版 `-Release`）在归档之外再产出自更新器消费的裸二进制
 `dist/qc-<version>-<os>-<arch>[.exe]` 与 `dist/SHA256SUMS`。
-**只有一个产物**（ADR-0086）：`qc` 既能在终端里当 TUI 用，也能双击开窗口，前端由启动
-形态决定。发布矩阵里的桌面安装包目前只出 Windows；macOS 本地可以生成 unsigned `.app`，
-见下文。打 tag（`v*`）由
+**只有一个窗口程序**（ADR-0086）：`qc` 既能在终端里当 TUI 用，也能双击开窗口，前端由启动
+形态决定。另外还有一个**无窗口**的常驻驱动 `qcd`（ADR-0092），它只服务定时任务，与 `qc`
+一起发布、放在同一目录——不是第二个 GUI 产物。发布矩阵里的桌面安装包目前只出 Windows；
+macOS 本地可以生成 unsigned `.app`，见下文。打 tag（`v*`）由
 `.github/workflows/release.yml` 跑完整矩阵、重算校验和、渲染安装清单并发布：
 Homebrew formula / Scoop / winget 三件套由 `packaging/render.sh` 从 `dist/` 里
 **实际归档的字节**生成（模板在 `packaging/`，成品只存在于 release 与各仓库 PR 里）。
@@ -759,9 +760,12 @@ cargo build -p qcode-eval
   因为一次会话不该为每个 server 付这个往返；启动期的日志只有一行
   `mcp capabilities read from the handshake` 说明判定依据。
 - **自动更新**：`qc update --check` 只报告；`qc update` 下载并就地替换当前二进制（旧文件留
-  `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
+  `<exe>.old-<时间戳>`）。发布物是裸二进制 `qc-<version>-<os>-<arch>[.exe]`、
+  `qcd-<version>-<os>-<arch>[.exe]` 与 `SHA256SUMS`，
   只认 GitHub Releases API 给出的 `browser_download_url`，校验和不符则不落盘——没有归档解包器，
-  也没有自签名单。启动时最多每 `[update] check_days` 天查一次，只在 stderr 提一句
+  也没有自签名单。`qcd` 会被装到 `qc` **旁边**（`find_qcd` 第一步只找同目录兄弟），因为
+  「更新完 `qc` 却没有 `qcd`」等于把定时任务更新成不能用。
+  启动时最多每 `[update] check_days` 天查一次，只在 stderr 提一句
   `notice: qc <x> is available`；`enabled = false` 或 `check = false` 可关（企业内网默认关）。
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。

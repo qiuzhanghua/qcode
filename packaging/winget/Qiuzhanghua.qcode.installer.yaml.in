@@ -5,6 +5,7 @@ InstallerType: zip
 NestedInstallerType: portable
 Commands:
   - qc
+  - qcd
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_amd64.zip
@@ -12,11 +13,23 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: qcode_@@VERSION@@_windows_amd64\qc.exe
         PortableCommandAlias: qc
+      # `qcd.exe` 必须列出来，否则 winget 只解出 `qc.exe`：portable 安装器只装
+      # NestedInstallerFiles 里点名的文件，其余留在 zip 里不落地。于是
+      # `find_qcd` 找同目录兄弟会落空——GUI 那颗「启动」按钮直接不可用
+      # （ADR-0098 §7）。别名让 `qcd` 也能在 PATH 上用。
+      - RelativeFilePath: qcode_@@VERSION@@_windows_amd64\qcd.exe
+        PortableCommandAlias: qcd
   - Architecture: arm64
     InstallerUrl: https://github.com/qiuzhanghua/qcode/releases/download/v@@VERSION@@/qcode_@@VERSION@@_windows_arm64.zip
     InstallerSha256: @@SHA_WINDOWS_ARM64@@
     NestedInstallerFiles:
       - RelativeFilePath: qcode_@@VERSION@@_windows_arm64\qc.exe
         PortableCommandAlias: qc
+      # `qcd.exe` 必须列出来，否则 winget 只解出 `qc.exe`：portable 安装器只装
+      # NestedInstallerFiles 里点名的文件，其余留在 zip 里不落地。于是
+      # `find_qcd` 找同目录兄弟会落空——GUI 那颗「启动」按钮直接不可用
+      # （ADR-0098 §7）。别名让 `qcd` 也能在 PATH 上用。
+      - RelativeFilePath: qcode_@@VERSION@@_windows_arm64\qcd.exe
+        PortableCommandAlias: qcd
 ManifestType: installer
 ManifestVersion: 1.6.0

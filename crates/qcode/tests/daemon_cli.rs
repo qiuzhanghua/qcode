@@ -343,4 +343,65 @@ fn every_packaging_path_ships_the_daemon() {
         "发布链要给 qcd 一条自己的资产名（release_asset_named），\
          否则只更新了 qc、qcd 留在旧版本"
     );
+
+    // ---- 同一课的另一半：装到**别的**入口也会漏。 ----
+    //
+    // 下面每条都是「用户点下去那一刻才发现」的路径，而且互不覆盖：修好 `make app`
+    // 不等于修好 brew / scoop / winget / 自更新。
+
+    let makefile = std::fs::read_to_string(root.join("Makefile")).expect("read Makefile");
+    let linux_desktop = makefile
+        .lines()
+        .skip_while(|line| !line.starts_with("linux-desktop:"))
+        .take_while(|line| !line.starts_with("linux-desktop-check:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        linux_desktop.contains("-p qcd"),
+        "`make linux-desktop` 必须把 daemon 一起编出来，否则装好的桌面入口指着一个\
+         没有 qcd 的 target/release/"
+    );
+
+    let brew = std::fs::read_to_string(root.join("packaging/homebrew/qc.rb.in"))
+        .expect("read homebrew formula");
+    assert!(
+        brew.contains("bin.install Dir[\"qcode_*/qcd\"].first"),
+        "Homebrew formula 必须把 qcd 装进 bin——与 qc 同一个目录才有兄弟可找"
+    );
+
+    let scoop = std::fs::read_to_string(root.join("packaging/scoop/qc.json.in"))
+        .expect("read scoop manifest");
+    assert!(
+        scoop.contains("\"qcd.exe\""),
+        "scoop 的 bin 要带上 qcd.exe，否则 `qcd` 不在 PATH 上"
+    );
+
+    let winget =
+        std::fs::read_to_string(root.join("packaging/winget/Qiuzhanghua.qcode.installer.yaml.in"))
+            .expect("read winget installer manifest");
+    // portable 安装器**只解出** NestedInstallerFiles 里点名的文件，其余留在 zip 里。
+    // 少写一行 = winget 用户机器上永远没有 qcd.exe。
+    assert_eq!(
+        winget.matches(r"\qcd.exe").count(),
+        2,
+        "winget 的两个架构都必须在 NestedInstallerFiles 里列出 qcd.exe"
+    );
+
+    // 资产上传的 glob 也是契约：`dist/qc-*` 匹配不到 `qcd-*`（第三个字符是 `d`
+    // 不是 `-`），于是新加的资产根本不会出现在 release 页面上，自更新取不到。
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("read release workflow");
+    assert!(
+        workflow.contains("dist/qcd-*"),
+        "发布工作流必须上传 dist/qcd-*：`dist/qc-*` 这个 glob 不含 qcd"
+    );
+
+    // 自更新走的是裸二进制路径，包管理器不管它。不在这里装 qcd，用户更新完就是
+    // 「新 qc + 没有 qcd」的半套安装。
+    let updater =
+        std::fs::read_to_string(root.join("crates/qcode/src/update.rs")).expect("read update.rs");
+    assert!(
+        updater.contains("daemon_beside"),
+        "`qc update` 必须同时更新与 qc 同目录的 qcd"
+    );
 }

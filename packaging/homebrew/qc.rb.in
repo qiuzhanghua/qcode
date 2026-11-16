@@ -27,8 +27,21 @@ class Qc < Formula
   end
 
   def install
-    # 归档里是 qcode_<version>_<os>_<arch>/qc（与包名同名的顶层目录）。
+    # 归档里是 qcode_<version>_<os>_<arch>/{qc,qcd}（与包名同名的顶层目录）。
+    #
+    # 两个都要装，而且必须落在**同一个** bin 目录：`find_qcd` 第一步就找与 `qc`
+    # 同目录的兄弟（ADR-0098 §7）。只装 `qc` 的话，brew 用户点 GUI 段头那颗
+    # 「启动」会得到 `qcd` was not found——而 brew 是 macOS 上最常见的装法。
     bin.install Dir["qcode_*/qc"].first
+    bin.install Dir["qcode_*/qcd"].first
+  end
+
+  def caveats
+    <<~EOS
+      定时任务需要一个常驻驱动 qcd，它和 qc 装在同一目录：
+        qc daemon start     # 起 qcd，关掉窗口也能按时触发
+        qc daemon status    # 现在是谁在推时钟
+    EOS
   end
 
   test do

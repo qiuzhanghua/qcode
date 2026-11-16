@@ -92,7 +92,7 @@ linux-desktop:
 		echo "this target is for Linux; on macOS use: make app && open dist/QCode.app" >&2; \
 		exit 1; \
 	fi
-	cargo build --release -p qcode
+	cargo build --release -p qcode -p qcd
 	./scripts/install-linux-desktop.sh --exec $(CURDIR)/target/release/qc
 	@echo
 	@echo "installed. open it from the application menu, or detach it from a terminal:"
