@@ -86,9 +86,13 @@ fn detail(task: &ScheduledTask) -> String {
             MIN_DELIVERY_INTERVAL.whole_seconds()
         ),
     ];
-    if let Some(timeout) = task.approval_timeout {
-        lines.push(format!("审批超时：{}s", timeout.as_secs()));
-    }
+    // ADR-0092 §7：不设截止时间**不是**「无所谓」，是「有人值守时一直等、
+    // 无人值守时补缺省值」。省略这一行会让模型以为它是无限期，然后建出一条
+    // 在 daemon 上会被自动拒绝的任务而毫不知情。设了值也走同一句话，
+    // 免得同一份报告里出现两种措辞。
+    lines.push(qcode_core::scheduler::approval_footer(
+        task.approval_timeout,
+    ));
     if let Some(cwd) = &task.cwd {
         lines.push(format!("工作目录：`{cwd}`"));
     }

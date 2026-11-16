@@ -23,9 +23,11 @@
 //! [`Probe`] 提供——于是这个 crate 里没有一行平台代码，也没有一行 store 代码。
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use qcode_core::schedule::{
-    Advance, ScheduledTask, TaskStatus, TaskTick, advance_rule, delivery_floor_end, task_tick,
+    Advance, ScheduledTask, TaskStatus, TaskTick, UNATTENDED_APPROVAL_TIMEOUT, advance_rule,
+    delivery_floor_end, task_tick,
 };
 use time::PrimitiveDateTime;
 
@@ -36,7 +38,16 @@ use time::PrimitiveDateTime;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// 到期了，投递它。调用方负责建会话、写消息、跑 turn。
-    Fire { task_id: String },
+    ///
+    /// `approval_timeout` 是**这次投递实际生效的**截止时间，不是任务表里存的
+    /// 那个：无人值守时 [`Executor::default_approval`] 会补一个缺省值
+    /// （ADR-0092 §7）。调用方照着它设审批，不要再自己去读 `task`——那正是
+    /// GUI 与 daemon 会各自算出不同答案的地方。
+    Fire {
+        task_id: String,
+        /// `None` = 一直等人工（只在有人值守时可能出现）。
+        approval_timeout: Option<Duration>,
+    },
     /// 到期了，但目标会话正忙而且这个任务声明了 `skip`：跳过这一轮并推进规则。
     ///
     /// 与 config 里 `[schedules]` 的 `skip` 语义一致（ADR-0059）。
@@ -56,6 +67,45 @@ pub trait Probe {
     fn is_busy(&self, task: &ScheduledTask) -> bool;
     /// 目标会话还在吗（被删掉的任务要判 `Orphaned`）。
     fn exists(&self, task: &ScheduledTask) -> bool;
+}
+
+/// 谁来跑这次投递。同一个任务表，两种执行者，审批的缺省语义不同（ADR-0092 §7）。
+///
+/// 这个参数不是可选的「配置」：`plan_tick` 是 GUI 与 daemon 共用的那一份规则，
+/// 而「审批没设截止时间时怎么办」在两边答案不同。做成显式参数，是为了让每个
+/// 调用点**自己声明**它是谁——而不是靠一个隐式全局量，让 daemon 一接上就悄悄
+/// 继承了「一直等人工」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Executor {
+    /// 有窗口 / 终端，人在旁边。`None` 就是「一直等人工」——ADR-0059 §4 的原义，
+    /// GUI 今天的行为。这里**什么都不改**，改了就没人能在旁边点一下。
+    Attended,
+    /// 常驻 daemon：没有人工。`None` 会被补成
+    /// [`UNATTENDED_APPROVAL_TIMEOUT`]，超时自动拒绝。
+    ///
+    /// 不补的后果是硬的：一次审批没人回答 ⇒ 那个会话的写锁一直握着 ⇒ 会话从此
+    /// 不可写，而且没有任何东西会报错。
+    Unattended,
+}
+
+impl Executor {
+    /// 任务没声明审批截止时间时，这个执行者该用多少。
+    ///
+    /// 抽成一个方法而不是在 [`plan_tick`] 里写 `if unattended`：缺省值只有一个
+    /// 定义处，改它只改一处。
+    pub fn default_approval(self) -> Option<Duration> {
+        match self {
+            Self::Attended => None,
+            Self::Unattended => Some(UNATTENDED_APPROVAL_TIMEOUT),
+        }
+    }
+
+    /// 把任务声明的值和执行者的缺省值合成**生效**值。
+    ///
+    /// 显式声明永远优先：用户写了 `--approval-timeout-secs`，那是他的决定。
+    pub fn effective_approval(self, declared: Option<Duration>) -> Option<Duration> {
+        declared.or_else(|| self.default_approval())
+    }
 }
 
 /// 一次扫描的计划。空计划是常态（绝大多数 beat 什么也不该发生）。
@@ -105,6 +155,7 @@ pub fn plan_tick(
     now: PrimitiveDateTime,
     inflight: &HashSet<String>,
     probe: &dyn Probe,
+    executor: Executor,
 ) -> Plan {
     let mut actions = Vec::new();
     for task in tasks {
@@ -124,6 +175,7 @@ pub fn plan_tick(
             TaskTick::NotYet => {}
             TaskTick::Fire => actions.push(Action::Fire {
                 task_id: task.id.clone(),
+                approval_timeout: executor.effective_approval(task.approval_timeout),
             }),
             TaskTick::SkipBusy => actions.push(Action::SkipBusy {
                 task_id: task.id.clone(),

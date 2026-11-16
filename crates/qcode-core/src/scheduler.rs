@@ -12,7 +12,8 @@ use std::time::Duration;
 use time::PrimitiveDateTime;
 
 use crate::schedule::{
-    Rule, Schedule, ScheduleState, ScheduledTask, Target, TaskStatus, import_config_schedule,
+    Rule, Schedule, ScheduleState, ScheduledTask, Target, TaskStatus, UNATTENDED_APPROVAL_TIMEOUT,
+    import_config_schedule,
 };
 use crate::store::{SessionStore, StoreError};
 
@@ -207,6 +208,48 @@ pub fn driver_footer(driver: DriverStatus) -> String {
              **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
                 .to_string()
         }
+    }
+}
+
+/// 审批截止时间这一栏该怎么说（ADR-0092 §7）。
+///
+/// 存在两张皮的原因：`approval_timeout = None` 在**有人值守**时是「一直等人工」，
+/// 在**无人值守**（daemon）时会被补成 [`UNATTENDED_APPROVAL_TIMEOUT`] 并自动
+/// 拒绝。同一份任务表、两种执行者、两种结果——所以文案必须把它们一起说出来，
+/// 而不是只在设了值的时候才提一句。
+///
+/// 与 [`driver_footer`] 放在一起、被 CLI 和 `schedule_*` 工具共用：ADR-0090 §5
+/// 那条「建了 ≠ 会跑」的诚实，靠的就是「用户和模型看到的是同一句话」。
+pub fn approval_footer(timeout: Option<Duration>) -> String {
+    match timeout {
+        Some(timeout) => format!("审批：{}(超时自动拒绝)。", describe_duration(timeout)),
+        None => format!(
+            "审批：**未设截止时间**——有人值守时一直等人工。\
+             无人值守执行时（常驻 daemon）会补 {}，超时自动拒绝：\
+             没有人在旁边，等下去会把那个会话的写锁一直握着。\
+             要改就加 `--approval-timeout-secs`。",
+            describe_duration(UNATTENDED_APPROVAL_TIMEOUT)
+        ),
+    }
+}
+
+/// `300s` → `5m`、`90s` → `1m30s`。只为人读，不参与任何判定。
+fn describe_duration(timeout: Duration) -> String {
+    let seconds = timeout.as_secs();
+    if seconds == 0 {
+        return "0s".to_string();
+    }
+    if seconds.is_multiple_of(3600) {
+        return format!("{}h", seconds / 3600);
+    }
+    if seconds.is_multiple_of(60) {
+        return format!("{}m", seconds / 60);
+    }
+    let (minutes, rest) = (seconds / 60, seconds % 60);
+    if minutes == 0 {
+        format!("{rest}s")
+    } else {
+        format!("{minutes}m{rest}s")
     }
 }
 
@@ -600,6 +643,45 @@ mod tests {
     use super::*;
     use crate::schedule::{Overlap, Rule, TaskStatus};
     use time::Month::June;
+
+    /// `approval_footer` 的两条分支必须把「两种执行者」说清楚。
+    ///
+    /// 这条测的不是措辞好看，是 ADR-0092 §7 的「不能静默补」：`None` 在有人
+    /// 值守时是「一直等」，在无人值守时会被补成 5 分钟并自动拒绝。任何一种
+    /// 说法漏掉另一半，用户（和模型）都会以为自己知道结果。
+    #[test]
+    fn approval_footer_names_both_executors() {
+        let set = approval_footer(Some(Duration::from_secs(90)));
+        assert!(set.contains("1m30s"), "要给出人读的时长：{set}");
+        assert!(set.contains("自动拒绝"), "设了值就只剩一种结果：{set}");
+        assert!(
+            !set.contains("无人值守"),
+            "设了值之后无人值守与有人值守一致，不必再区分：{set}"
+        );
+
+        let unset = approval_footer(None);
+        assert!(unset.contains("未设截止时间"), "{unset}");
+        assert!(unset.contains("一直等人工"), "有人值守那一半：{unset}");
+        assert!(unset.contains("无人值守"), "无人值守那一半：{unset}");
+        assert!(
+            unset.contains(&describe_duration(UNATTENDED_APPROVAL_TIMEOUT)),
+            "必须写出会补上的具体值，否则用户不知道该填多少：{unset}"
+        );
+        assert!(
+            unset.contains("--approval-timeout-secs"),
+            "要给出改的办法，否则这条只是坏消息：{unset}"
+        );
+    }
+
+    #[test]
+    fn durations_read_like_a_human_wrote_them() {
+        assert_eq!(describe_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(describe_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(describe_duration(Duration::from_secs(90)), "1m30s");
+        assert_eq!(describe_duration(Duration::from_secs(300)), "5m");
+        assert_eq!(describe_duration(Duration::from_secs(3600)), "1h");
+        assert_eq!(describe_duration(Duration::from_secs(5400)), "90m");
+    }
 
     fn store() -> (tempfile::TempDir, Scheduler) {
         let dir = tempfile::tempdir().expect("tempdir");

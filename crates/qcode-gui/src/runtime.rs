@@ -693,11 +693,13 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             macro_rules! deliver_schedule_group {
                 ($session_id:expr, $tasks:expr) => {{
                     let session_id: String = $session_id;
-                    let tasks: Vec<ScheduledTask> = $tasks;
+                    // 每个任务带着 `plan_tick` 算出的**生效**审批截止时间
+                    // （ADR-0092 §7），不再由这里去读 `task.approval_timeout`。
+                    let tasks: Vec<(ScheduledTask, Option<std::time::Duration>)> = $tasks;
                     let target = SessionTarget::Session(session_id.clone());
                     let busy = live.contains_key(&target);
                     let queue = host.queue(&target).unwrap_or_else(|| host.open(&target).1);
-                    for task in &tasks {
+                    for (task, approval_timeout) in &tasks {
                         // 投递即定时任务「开始执行」：开始时间（发生点）、执行内容
                         // （标题 + prompt）与目标会话一并落日志；执行结果在回合
                         // 结束时记（见 `done_rx` 分支）。
@@ -728,7 +730,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             .or_default()
                             .push((task.id.clone(), session_id.clone(), at));
                         if !busy {
-                            approval_deadline = task.approval_timeout.or(approval_deadline);
+                            approval_deadline = (*approval_timeout).or(approval_deadline);
                         }
                     }
                     // 空闲会话立刻开回合（一次一个，其余留在队列等回合结束）；
@@ -1052,13 +1054,23 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                             now,
                             &inflight,
                             &probe,
+                            // 窗口开着 = 人在旁边。这个参数就是 ADR-0092 §7 的分界线：
+                            // 无人值守时同一条规则会补上审批截止时间，否则没人回答的
+                            // 审批会把会话写锁握到天亮。
+                            qcode_driver::Executor::Attended,
                         );
-                        let mut due: Vec<ScheduledTask> = Vec::new();
+                        // 每个待投递任务带上 `Action::Fire` 算出的**生效**截止时间
+                        // （ADR-0092 §7）。GUI 是 `Attended`，所以它与任务表里存的
+                        // 值相同——但值一律从动作来，第二执行者接上时不用改投递路径。
+                        let mut due: Vec<(ScheduledTask, Option<std::time::Duration>)> = Vec::new();
                         for action in plan.into_actions() {
                             match action {
-                                qcode_driver::Action::Fire { task_id } => {
+                                qcode_driver::Action::Fire {
+                                    task_id,
+                                    approval_timeout,
+                                } => {
                                     if let Some(task) = scheduler.find(&task_id) {
-                                        due.push(task);
+                                        due.push((task, approval_timeout));
                                     }
                                 }
                                 // 跳过这一轮并推进：与 config 的 skip 一致。
@@ -1086,24 +1098,30 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
 
                         // ③ 分组投递：同一固定会话合并为一条消息；New/NewOnce
                         // 各自建会话再投。
-                        let mut groups: BTreeMap<String, Vec<ScheduledTask>> = BTreeMap::new();
-                        let mut fresh: Vec<ScheduledTask> = Vec::new();
-                        for task in due {
+                        let mut groups: BTreeMap<
+                            String,
+                            Vec<(ScheduledTask, Option<std::time::Duration>)>,
+                        > = BTreeMap::new();
+                        let mut fresh: Vec<(ScheduledTask, Option<std::time::Duration>)> = Vec::new();
+                        for (task, approval_timeout) in due {
                             match task.target.session_id() {
                                 Some(id) => {
-                                    groups.entry(id.to_string()).or_default().push(task);
+                                    groups
+                                        .entry(id.to_string())
+                                        .or_default()
+                                        .push((task, approval_timeout));
                                 }
-                                None => fresh.push(task),
+                                None => fresh.push((task, approval_timeout)),
                             }
                         }
-                        for task in fresh {
+                        for (task, approval_timeout) in fresh {
                             let Some(id) =
                                 create_task(engine, &provider_name, &port, &model, false)
                             else {
                                 continue; // 建会话失败：下一个 beat 再试。
                             };
                             bind_fresh_session(&scheduler, &task.id, &id);
-                            deliver_schedule_group!(id, vec![task]);
+                            deliver_schedule_group!(id, vec![(task, approval_timeout)]);
                         }
                         for (session_id, tasks) in groups {
                             deliver_schedule_group!(session_id, tasks);
@@ -1418,11 +1436,16 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                 // 分支用 `continue`，只能在循环上下
                                                 // 文展开。
                                                 if let Some(task) = scheduler.find(&id) {
+                                                    // 「立即执行」是人在点，与 beat 的
+                                                    // `Attended` 同一条规则：从同一个
+                                                    // 方法拿生效值，别在这里另写一份。
+                                                    let approval = qcode_driver::Executor::Attended
+                                                        .effective_approval(task.approval_timeout);
                                                     match task.target.session_id() {
                                                         Some(session) => {
                                                             deliver_schedule_group!(
                                                                 session.to_string(),
-                                                                vec![task]
+                                                                vec![(task, approval)]
                                                             );
                                                         }
                                                         None => {
@@ -1445,7 +1468,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                                 );
                                                                 deliver_schedule_group!(
                                                                     new_id,
-                                                                    vec![task]
+                                                                    vec![(task, approval)]
                                                                 );
                                                             }
                                                         }

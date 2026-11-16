@@ -1123,6 +1123,21 @@ pub fn append_delivery(
 /// `MIN_DELIVERY_INTERVAL_MS`）。
 pub const MIN_DELIVERY_INTERVAL: TimeSpan = TimeSpan::seconds(60);
 
+/// 无人值守执行时，审批没设截止时间会补上的缺省值（ADR-0092 §7）。
+///
+/// 为什么必须有：`approval_timeout = None` 的语义是「一直等人工」（ADR-0059
+/// §4）。有窗口/终端时这是对的——人去泡杯咖啡就回来了。但 daemon 没有人工，
+/// 一条没设截止时间的任务会让那次会话的写锁**永远**握着，那个会话从此不可写，
+/// 而且没有任何东西会报错。
+///
+/// 为什么是 5 分钟：定时任务都在后台跑，没人会盯着屏幕等它；5 分钟足够盖住
+/// 「用户正好在机器旁边、看到提示就点一下」，又不至于让一个真正的无人值守
+/// 回合锁住会话一整晚。真正需要更长时间的，应当显式写 `--approval-timeout-secs`。
+///
+/// **不能静默补**：建任务时就要把「无人值守会这样处理」说出来，理由同 ADR-0090
+/// §5——用户必须知道他的任务在没人看着的时候会怎么被处理。
+pub const UNATTENDED_APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// 本次投递最早可再次发生的时刻（对齐 dsh `nextAdmissionAt`）。
 ///
 /// 锚定规则与 dsh 一致：任务自身频率 ≥ 最小间隔时锚定到发生点（确认延迟
