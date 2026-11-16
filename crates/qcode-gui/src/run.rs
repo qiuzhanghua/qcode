@@ -1,5 +1,44 @@
 use crate::*;
 
+#[cfg(test)]
+mod tests {
+    // 刻意不写 `use super::*`：`run.rs` 顶部是 `use crate::*`，在这里再 glob
+    // 一次会让名字解析把整个 crate 根重新过一遍，`gpui_kit::actions!` 那次
+    // 展开当场把 rustc 打崩（SIGSEGV，只在 `cargo test` 这个 target 上复现）。
+    use super::activator;
+    use crate::tray;
+
+    /// ADR-0084 §3：激活请求必须落在托盘那条「显示主窗口」上。
+    ///
+    /// 单实例模块现在只负责「把请求交给调用方」（它住在 `qcode_core`，不认识
+    /// 任何界面类型），所以这条映射要在这里单独钉住——两段各自被自己的测试
+    /// 覆盖，合起来才是原来那条从 socket 到 `ShowWindow` 的链。
+    #[test]
+    fn an_activate_request_becomes_a_show_window_command() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handler = activator(tx);
+        assert!(handler(), "队列还在时必须说「继续」");
+        assert_eq!(rx.try_recv(), Ok(tray::TrayCommand::ShowWindow));
+
+        // 接收端没了：监听线程该收摊，而不是继续接受无人认领的请求。
+        drop(rx);
+        assert!(!handler(), "队列断了之后必须说「停」");
+    }
+}
+
+/// 激活请求 → 托盘「显示主窗口」。
+///
+/// 单实例模块（`qcode_core::single_instance`）收到 `activate` 后只把请求交给
+/// 调用方，具体做什么由这里定。走托盘那条队列是有意的（ADR-0084 §3）：托盘
+/// 「显示主窗口」已经处理了三端各自「原生调用必须推迟到 foreground executor」
+/// 的坑（macOS 还要 `deminiaturize:`），另写一条「把窗口弄出来」的路只会有
+/// 第二份平台细节和第二个 bug。
+///
+/// 返回 `false` = 队列已经断了，监听线程该收摊。
+fn activator(tx: std::sync::mpsc::Sender<tray::TrayCommand>) -> impl Fn() -> bool + Send + 'static {
+    move || tx.send(tray::TrayCommand::ShowWindow).is_ok()
+}
+
 /// Open the window and drive it until the user closes it.
 ///
 /// `single` 是本进程抢到的那把单实例锁（ADR-0083）。它必须一路传到这里：
@@ -10,7 +49,7 @@ pub fn run(
     backend: Box<dyn Backend>,
     config_path: PathBuf,
     data_dir: PathBuf,
-    single: Option<crate::single_instance::Primary>,
+    single: Option<qcode_core::single_instance::Primary>,
 ) {
     let prefs = GuiPreferences::load(&data_dir);
     gpui_kit::application()
@@ -56,7 +95,7 @@ pub fn run(
             // 线程，于是锁活到进程结束（ADR-0083 §1：不做「退出时解锁」）。
             let activated = single.is_some();
             if let Some(single) = single {
-                single.serve(tray_tx);
+                single.serve(activator(tray_tx));
             }
             let window_options = window_icon::attach(match prefs.window_geometry.as_ref() {
                 Some(geometry) => WindowOptions {

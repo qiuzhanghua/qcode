@@ -20,6 +20,7 @@ pub mod provider;
 pub mod question;
 pub mod schedule;
 pub mod scheduler;
+pub mod single_instance;
 pub mod snapshot;
 pub mod state;
 pub mod store;

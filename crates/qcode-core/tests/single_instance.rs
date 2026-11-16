@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use qcode_gui::SingleInstanceOutcome;
-use qcode_gui::single_instance;
+use qcode_core::single_instance;
+use qcode_core::single_instance::Outcome as SingleInstanceOutcome;
 
 /// 子进程模式的开关：设了它，子进程就抢锁、报「准备好了」、然后一直等。
 const HELPER_DIR: &str = "QC_SI_HELPER_DIR";
@@ -39,8 +39,8 @@ fn helper_holds_the_lock() {
     // `QC_SI_HELPER_NO_CHANNEL` 让这一步不发生：锁被占、却没有人在通道上
     // 应答，正是 ADR-0083 §4 那一行要处理的状态。
     if std::env::var_os(HELPER_NO_CHANNEL).is_none() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        primary.serve(tx);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        primary.serve(move || tx.send(()).is_ok());
         std::mem::forget(rx);
     } else {
         // 锁必须继续被持有（`primary` 不能掉），所以别把它提前丢掉。
@@ -275,13 +275,15 @@ fn a_silent_holder_makes_us_fail_instead_of_taking_over() {
     );
 }
 
-/// 收到激活请求之后，第一个实例必须把它变成 [`TrayCommand::ShowWindow`]。
+/// 通道收到 `activate` 之后必须把它交给调用方，并回复确认。
 ///
-/// 这条钉的是 ADR-0084 §3 那句「与托盘『显示主窗口』完全同一条路径」：只要
-/// 这条映射成立，激活就自动继承了托盘那条路已经处理好的三端细节（原生调用
-/// 推迟到 foreground executor、macOS 的 `deminiaturize:` 等等），不需要第二份。
+/// 把「请求 → 具体动作」那一步留给调用方是 ADR-0092 §11 搬家的结果：这个模块
+/// 不再认识任何界面类型。GUI 那一侧映射到托盘「显示主窗口」是有意的
+/// （ADR-0084 §3，见 `qcode-gui` 的 `activator`）：只要那条映射成立，激活就
+/// 自动继承了托盘那条路已经处理好的三端细节（原生调用推迟到 foreground
+/// executor、macOS 的 `deminiaturize:` 等等），不需要第二份。
 #[test]
-fn an_activate_request_becomes_a_show_window_command() {
+fn an_activate_request_reaches_the_handler() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
@@ -292,8 +294,8 @@ fn an_activate_request_becomes_a_show_window_command() {
     let SingleInstanceOutcome::Primary(primary) = single_instance::acquire(&dir).unwrap() else {
         panic!("干净的 data dir 应当能拿到锁");
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    primary.serve(tx);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    primary.serve(move || tx.send(()).is_ok());
 
     let paths = single_instance::Paths::for_data_dir(&dir);
     let mut stream = UnixStream::connect(&paths.channel).expect("连上刚起的通道");
@@ -302,10 +304,8 @@ fn an_activate_request_becomes_a_show_window_command() {
     BufReader::new(stream).read_line(&mut reply).unwrap();
     assert!(reply.contains("\"ok\":true"), "回复应当确认：{reply:?}");
 
-    let command = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("第一个实例应当收到一条命令");
-    assert_eq!(command, qcode_gui::tray::TrayCommand::ShowWindow);
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("第一个实例应当把请求交给调用方");
 }
 
 /// 不是激活请求的连接一律不许变成命令。
@@ -324,8 +324,8 @@ fn stray_traffic_does_not_raise_the_window() {
     let SingleInstanceOutcome::Primary(primary) = single_instance::acquire(&dir).unwrap() else {
         panic!("干净的 data dir 应当能拿到锁");
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    primary.serve(tx);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    primary.serve(move || tx.send(()).is_ok());
 
     let paths = single_instance::Paths::for_data_dir(&dir);
     for junk in [

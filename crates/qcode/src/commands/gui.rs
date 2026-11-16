@@ -162,12 +162,12 @@ pub(crate) async fn cmd_gui(
     // also keeps the setup branch and the normal branch on the same directory
     // instead of resolving twice.
     let gui_data_dir = qcode_kernel::resolve_data_dir(data_dir.clone());
-    let single = match qcode_gui::single_instance::acquire(&gui_data_dir) {
-        Ok(qcode_gui::SingleInstanceOutcome::Primary(primary)) => Some(primary),
+    let single = match qcode_core::single_instance::acquire(&gui_data_dir) {
+        Ok(qcode_core::single_instance::Outcome::Primary(primary)) => Some(primary),
         // Another instance raised its own window: that *is* what the user asked
         // for by launching us. Exit 0 — a script running `qc gui` must not see
         // a failure just because the GUI was already up.
-        Ok(qcode_gui::SingleInstanceOutcome::HandedOver) => {
+        Ok(qcode_core::single_instance::Outcome::HandedOver) => {
             // ADR-0082 §2 / ADR-0083 §5: even a process that exits immediately
             // goes through the log funnel. Writing "start" without "end" is what
             // makes the *next* launch report a false crash.
@@ -175,7 +175,7 @@ pub(crate) async fn cmd_gui(
         }
         // The mutex itself is broken (NFS, permissions). Not a reason to keep
         // the user out of the GUI — the GUI is how they debug things.
-        Ok(qcode_gui::SingleInstanceOutcome::Disabled(why)) => {
+        Ok(qcode_core::single_instance::Outcome::Disabled(why)) => {
             tracing::warn!(why = %why, "gui: single-instance check disabled");
             None
         }
