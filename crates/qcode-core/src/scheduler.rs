@@ -382,7 +382,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         tasks.push(task.clone());
         self.store.save_schedule_tasks(&tasks)?;
         Ok(task)
@@ -397,7 +397,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let updated = {
             let task = tasks
                 .iter_mut()
@@ -466,7 +466,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let task = tasks
             .iter_mut()
             .find(|task| task.id == id)
@@ -483,7 +483,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let task = tasks
             .iter_mut()
             .find(|task| task.id == id)
@@ -502,7 +502,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let task = tasks
             .iter_mut()
             .find(|task| task.id == id)
@@ -521,7 +521,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let Some(task) = tasks.iter().find(|task| task.id == id) else {
             return Err(ScheduleError::NotFound(id.to_string()));
         };
@@ -570,7 +570,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
             return Err(ScheduleError::NotFound(id.to_string()));
         };
@@ -613,7 +613,7 @@ impl Scheduler {
         // 读-改-写全程持锁（ADR-0088 §5）：两个前端同时登记时，后来者若拿
         // 自己那份旧快照写回，会把前者整表覆盖。
         let _tasks_guard = self.store.lock_file_blocking(SCHEDULE_TASKS_LOCK)?;
-        let mut tasks = self.store.load_schedule_tasks();
+        let mut tasks = self.store.try_load_schedule_tasks()?;
         let mut report = ReconcileReport::default();
 
         for schedule in schedules {

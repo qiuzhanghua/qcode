@@ -52,6 +52,17 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Task(#[from] TaskError),
+    /// `schedule/tasks.json` 在，但读不懂。
+    ///
+    /// 单独一个变体而不是复用 [`Self::Json`]：调用方需要区分「文件没有」与「文件坏
+    /// 了」，而这两件事的后果相反——前者是「还没建过任务」，后者是「你的任务还在，
+    /// 但我读不出来，所以**不要**拿空表去覆盖它」。
+    #[error("{path} is not readable: {source}")]
+    ScheduleTasks {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 /// Exclusive writer lock for one session, held for the duration of a turn.
@@ -1102,11 +1113,60 @@ impl SessionStore {
     }
 
     /// 容错读取任务定义：文件缺失 / 损坏都视为空（下次保存会覆盖坏数据）。
-    pub fn load_schedule_tasks(&self) -> Vec<ScheduledTask> {
-        let Ok(text) = fs::read_to_string(self.schedule_tasks_path()) else {
-            return Vec::new();
+    /// Read the task table, **telling the caller when it is unreadable**.
+    ///
+    /// This is the honest entry point; [`Self::load_schedule_tasks`] is the
+    /// forgiving one. The distinction matters because the two failure modes have
+    /// opposite consequences:
+    ///
+    /// - **No file** → nothing has been registered yet. An empty table is the
+    ///   truth, and writing one is harmless.
+    /// - **Unreadable file** → the tasks are still there, we just cannot parse
+    ///   them. Returning an empty table here is how a corrupted `tasks.json`
+    ///   becomes silent data loss: the next read-modify-write sees zero tasks,
+    ///   then writes its own single one back over all of them.
+    ///
+    /// Mutating paths (`Scheduler::create` / `update` / `delete` / `pause` … and
+    /// `import_config`) must use this one.
+    pub fn try_load_schedule_tasks(&self) -> Result<Vec<ScheduledTask>, StoreError> {
+        let path = self.schedule_tasks_path();
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            // Not there = never registered. That is an empty table, not an error.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(StoreError::Io(error)),
         };
-        serde_json::from_str(&text).unwrap_or_default()
+        // An empty or whitespace-only file is a fresh one (a truncated write, or
+        // a file someone created with `touch`), not a corrupt one.
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(&text).map_err(|source| StoreError::ScheduleTasks {
+            path: path.display().to_string(),
+            source,
+        })
+    }
+
+    /// Read the task table, treating "unreadable" as "empty".
+    ///
+    /// **Read-only, tolerant view** — for listing and for the driver's scan, where
+    /// an unparseable file must not crash the clock. It logs the failure so
+    /// `qc logs` can still answer "why is nothing firing".
+    ///
+    /// Never use this on a read-modify-write path: it cannot tell "no tasks" from
+    /// "cannot read the tasks", and writing back the former destroys the latter.
+    /// Mutations go through [`Self::try_load_schedule_tasks`].
+    pub fn load_schedule_tasks(&self) -> Vec<ScheduledTask> {
+        match self.try_load_schedule_tasks() {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                // Say it once per call, at `warn`: this is the difference between
+                // "nothing scheduled" and "your schedule is there but unreadable",
+                // and the user cannot see the difference without this line.
+                tracing::warn!(%error, "cannot read the schedule task table; treating it as empty");
+                Vec::new()
+            }
+        }
     }
 
     /// 原子写任务定义：先写临时文件再 rename。
@@ -1815,5 +1875,105 @@ fn driver_status_needs_the_lock_not_just_a_heartbeat() {
     assert_eq!(
         DriverStatus::read(&store, now),
         DriverStatus::Gone { at: now }
+    );
+}
+
+/// 损坏的 `tasks.json` 不许表现为「没有任务」。
+///
+/// 这一组测试守的是一个会让用户丢掉全部定时任务的形状：`load_schedule_tasks` 曾
+/// 用 `unwrap_or_default()`，于是解析失败 = 空表，而空表会被下一个读-改-写原样写
+/// 回去——**所有任务被一条新任务覆盖掉**，且没有任何错误。
+#[test]
+fn a_corrupt_task_table_is_an_error_not_an_empty_one() {
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    std::fs::create_dir_all(dir.path().join("schedule")).expect("dir");
+    // 正是我实机踩到的那个形状：时间写成 `2026-11-16 19:05:58.0`，而
+    // serde 只认 `2026-11-16T19:05:58`。人眼几乎看不出区别。
+    std::fs::write(
+        store.schedule_tasks_path(),
+        r#"[{"id":"01X","title":"t","next_fire_at":"2026-11-16 19:05:58.0"}]"#,
+    )
+    .expect("write");
+
+    let error = store
+        .try_load_schedule_tasks()
+        .expect_err("a corrupt table must be reported, not flattened to empty");
+    // 错误信息要点出是哪个文件——不然用户不知道去看哪儿。
+    assert!(
+        error.to_string().contains("tasks.json"),
+        "the error should name the file: {error}"
+    );
+
+    // 宽容版仍然给空表（只读路径不该崩），但**它不能再让写路径毁掉数据**：
+    // 严格版的存在就是为此。
+    assert!(store.load_schedule_tasks().is_empty());
+}
+
+/// 文件不在 = 还没建过任务。这不是错误。
+#[test]
+fn a_missing_task_table_is_simply_empty() {
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    assert!(
+        store
+            .try_load_schedule_tasks()
+            .expect("no file is fine")
+            .is_empty()
+    );
+}
+
+/// 空文件（`touch` 出来的、或截断的写）也算空表，不是损坏。
+#[test]
+fn a_blank_task_table_is_empty_not_corrupt() {
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    std::fs::create_dir_all(dir.path().join("schedule")).expect("dir");
+    std::fs::write(store.schedule_tasks_path(), "  \n").expect("write");
+    assert!(
+        store
+            .try_load_schedule_tasks()
+            .expect("blank is fine")
+            .is_empty()
+    );
+}
+
+/// 最要命的一条：表坏了的时候，**写路径必须失败**，不能拿空表覆盖。
+#[test]
+fn a_corrupt_table_cannot_be_overwritten_by_a_new_task() {
+    use crate::schedule::{Overlap, Rule, Target, now_local};
+    use crate::scheduler::{NewTask, Scheduler};
+
+    let dir = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(dir.path());
+    std::fs::create_dir_all(dir.path().join("schedule")).expect("dir");
+    let corrupt = r#"[{"id":"01KEEP","title":"still here","next_fire_at":"garbage"}]"#;
+    std::fs::write(store.schedule_tasks_path(), corrupt).expect("write");
+
+    let scheduler = Scheduler::new(store.clone());
+    let error = scheduler
+        .create(
+            NewTask {
+                title: "new".to_string(),
+                prompt: "p".to_string(),
+                rule: Rule::Daily { hour: 9, minute: 0 },
+                target: Target::New,
+                overlap: Overlap::Queue,
+                approval_timeout: None,
+                cwd: None,
+            },
+            now_local(),
+        )
+        .expect_err("creating over a corrupt table must fail loudly");
+    assert!(
+        error.to_string().contains("tasks.json"),
+        "the error should name the file: {error}"
+    );
+
+    // 关键断言：磁盘上那份**一个字节都没变**。以前这里会变成只有一条新任务的表。
+    let after = std::fs::read_to_string(store.schedule_tasks_path()).expect("read");
+    assert_eq!(
+        after, corrupt,
+        "a failed create must not rewrite the table it could not read"
     );
 }
