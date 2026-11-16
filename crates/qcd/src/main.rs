@@ -63,6 +63,68 @@ fn data_dir_arg() -> Result<PathBuf, String> {
     Ok(qcode_kernel::data_dir_hint(None))
 }
 
+/// 等驱动锁空出来，然后拿下它（ADR-0092 §10：daemon 让路）。
+///
+/// 为什么要等而不是退出：先开窗口、后启 daemon 是很自然的顺序，而「因为你开着窗口
+/// 所以 daemon 直接不启动」要求人在关窗口之后再手敲一次 `qc daemon start`。等的代价
+/// 是一个睡着的进程，收益是那个顺序不必有人值守。
+///
+/// 等待期间**什么都不做**：不写心跳（那会让 `qc schedule list` 报告有两个驱动）、
+/// 不扫任务表。就是每秒试一次锁。
+///
+/// 注意这把锁是**数据目录级**的（ADR-0091），所以「让路」的范围就是那个目录：另一个
+/// 数据目录的 GUI 开着不影响这里。
+fn wait_for_driver_lock(
+    store: &qcode_core::store::SessionStore,
+    identity: &str,
+    sink: &mut dyn qcode_driver::events::Sink,
+) -> Result<qcode_core::store::FileLock, Box<dyn std::error::Error>> {
+    use qcode_driver::events::Event;
+    let mut announced = false;
+    loop {
+        match store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
+            Ok(Some(lock)) => {
+                // 「我开始开车」写进可跟随的事件流，于是「谁在开车」有时间线——
+                // 排「为什么那段时间没触发」时，这条是第一眼看的东西。
+                sink.emit(Event::Driving {
+                    at: qcode_core::schedule::now_local(),
+                    identity: identity.to_string(),
+                    driving: true,
+                });
+                if announced {
+                    // 说一声「接上了」：否则日志里只有「让路」那一行，看起来像
+                    // 一直没在干活。
+                    tracing::info!("the other driver is gone; taking over");
+                    eprintln!("qcd: taking over (the other driver exited)");
+                }
+                return Ok(lock);
+            }
+            Ok(None) => {
+                if !announced {
+                    // 让路也是事件：一个「daemon 在等 GUI 退出」的时间段，正是
+                    // 「为什么那几小时没触发」的答案。
+                    sink.emit(Event::Driving {
+                        at: qcode_core::schedule::now_local(),
+                        identity: identity.to_string(),
+                        driving: false,
+                    });
+                    // 只喊一次。每秒喊一次会把日志刷满，而这件事没变过。
+                    tracing::info!(
+                        "another process drives this data directory; waiting (ADR-0092 §10)"
+                    );
+                    eprintln!(
+                        "qcd: another driver (a GUI window?) holds this data directory; \
+                         waiting for it to exit. Ctrl-C to give up."
+                    );
+                    announced = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(error) => return Err(format!("cannot probe the driver lock: {error}").into()),
+        }
+    }
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -176,23 +238,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 3. 驱动锁（ADR-0091，数据目录级）──────────────────────────────────
     //
-    // 与上面那把是两回事：这把回答「谁是**这个数据目录**的时钟」，GUI 已经在推的
-    // 时候 daemon 就不该推。拿不到就退出，让人知道是谁在开车（阶段 4 再做「让路
-    // 等待」——那是有了 `qc daemon status` 之后才有意义的事）。
-    let driver_lock = assembled
-        .store
-        .try_lock_file(qcode_core::scheduler::DRIVER_LOCK)
-        .map_err(|error| format!("cannot take the driver lock: {error}"))?;
-    let Some(_driver_lock) = driver_lock else {
-        eprintln!(
-            "qcd: another process (a GUI window?) is driving this data directory; \
-             qcd will not drive it too (ADR-0091). Close it, or use `qc daemon status`."
-        );
-        return Err("driver lock held elsewhere".into());
-    };
+    // 与上面那把是两回事：这把回答「谁是**这个数据目录**的时钟」。
+    //
+    // ADR-0092 §10：GUI 已经在推的时候 daemon **让路**——不抢、等它退出、然后接手。
+    // 不是退出进程，因为那会让「先开窗口、后启 daemon」这个很自然的顺序需要人再手动
+    // 起一次。
+    //
+    // 等待期间**不做任何事**：不写心跳（那会让 `qc schedule list` 说「有两个驱动」）、
+    // 不扫任务表（扫了也不会投，而且会读盘）。就是纯等。
+    // `_driver_lock` 必须活到 `run()` 结束：掉了它就等于放锁。
+    // 出口先建：让路/接手也是事件，它们发生在「什么时候拿到锁」之前。
+    let mut sink = qcode_driver::events::FileSink::under(assembled.store.root());
+    let sink_path = sink.path().to_path_buf();
+    // 身份要在这里算：它写进事件，而事件在拿锁的过程中就开始了。
+    let identity = format!(
+        "daemon:{}",
+        qcode_core::schedule::now_local()
+            .to_string()
+            .replace(' ', "T")
+    );
+    let _driver_lock = wait_for_driver_lock(&assembled.store, &identity, &mut sink)?;
 
     // ── 4. 跑着 ────────────────────────────────────────────────────────────
-    let mut daemon = Daemon::new(assembled, beat);
+    // 可跟随的事件出口（ADR-0092 §8）：一行一条 JSON，`tail -f` 就能看着它跑。
+    // 本期只留缝，GUI 的跟随界面是后续的事。
+    let mut daemon = Daemon::new(assembled, beat).with_sink(Box::new(sink));
+    tracing::info!(path = %sink_path.display(), "schedule events go here");
     eprintln!(
         "qcd: driving {} (beat {}s, identity {})",
         daemon.assembled.store.root().display(),

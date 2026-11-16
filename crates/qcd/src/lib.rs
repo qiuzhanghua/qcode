@@ -87,6 +87,9 @@ pub struct Daemon {
     clock: Box<dyn WallClock>,
     /// 任务没指定 cwd 时的回落目录：进程启动时所在目录。
     workspace: std::path::PathBuf,
+    /// 可跟随的事件出口（ADR-0092 §8）。daemon 用文件，GUI 用 `Noop`——
+    /// 窗口里的事件走它自己那条 `SessionEvent` 端口，不需要第二个出口。
+    sink: Box<dyn qcode_driver::events::Sink>,
 }
 
 impl Daemon {
@@ -113,7 +116,29 @@ impl Daemon {
             skills,
             clock,
             workspace,
+            sink: Box::new(qcode_driver::events::Noop),
         }
+    }
+
+    /// 换一个事件出口。
+    pub fn with_sink(mut self, sink: Box<dyn qcode_driver::events::Sink>) -> Self {
+        self.sink = sink;
+        self
+    }
+
+    /// 换成一个**可共用**的收集器，返回能读的那一半。
+    ///
+    /// 测试需要「驱动照常跑，同时我能看到它写了什么」。`Sink` 只有 `emit`（它不需要
+    /// 读——跟随者是另一个方向的事），所以这里用共享句柄：驱动持有写端，测试持有读端。
+    pub fn with_collected_events(
+        mut self,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Mutex<Vec<qcode_driver::events::Event>>>,
+    ) {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        self.sink = Box::new(SharedCollector(shared.clone()));
+        (self, shared)
     }
 
     /// 驱动身份，写进心跳。GUI 写的是 `gui:<时刻>`，两者要能分辨。
@@ -153,6 +178,11 @@ impl Daemon {
             self.run(start).await;
         }
         self.live.clear();
+        // 一拍一条事件，**最后**写：到这里 `report` 的计数才是完整的。
+        self.sink.emit(qcode_driver::events::Event::from_report(
+            &report,
+            self.clock.now(),
+        ));
         report
     }
 
@@ -179,6 +209,16 @@ impl Daemon {
             .and_then(|task| task.cwd)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| self.workspace.clone());
+
+        // 事件必须在 `run_turn` **之前**写：`scheduled` 会被 `RunOptions` 消费掉，
+        // 而「开始了」正是跟随者最需要立刻看到的一条——等回合跑完才写，
+        // 「看着它跑」就没有意义了。
+        let task_id = scheduled.task_id.clone();
+        self.sink.emit(qcode_driver::events::Event::TurnStarted {
+            at: self.clock.now(),
+            session: start.session.clone(),
+            task_id: task_id.clone(),
+        });
 
         let outcome = run_turn(
             TurnContext {
@@ -223,6 +263,11 @@ impl Daemon {
 
         match outcome {
             Ok(outcome) => {
+                self.sink.emit(qcode_driver::events::Event::TurnFinished {
+                    at: self.clock.now(),
+                    session: start.session.clone(),
+                    ok: true,
+                });
                 tracing::info!(
                     session = %start.session,
                     turns = outcome.turns,
@@ -232,8 +277,24 @@ impl Daemon {
             // 回合失败不是 daemon 的失败：会话日志里有记录，下一拍照常。
             // 打日志是为了 `qc logs` 能看到，不是为了让进程退出。
             Err(error) => {
+                self.sink.emit(qcode_driver::events::Event::TurnFinished {
+                    at: self.clock.now(),
+                    session: start.session.clone(),
+                    ok: false,
+                });
                 tracing::warn!(session = %start.session, %error, "scheduled turn failed");
             }
+        }
+    }
+}
+
+/// 把事件写进共享的 `Vec`，供测试从外面读。
+struct SharedCollector(std::sync::Arc<std::sync::Mutex<Vec<qcode_driver::events::Event>>>);
+
+impl qcode_driver::events::Sink for SharedCollector {
+    fn emit(&mut self, event: qcode_driver::events::Event) {
+        if let Ok(mut events) = self.0.lock() {
+            events.push(event);
         }
     }
 }

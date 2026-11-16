@@ -230,15 +230,28 @@ sandbox、子代理、审批器……那是前端装配的，不是调度的事�
 
 ---
 
-## 阶段 4：GUI 改消费方 + daemon 让路（未开始）
+## 阶段 4：GUI 改消费方 + daemon 让路 ✅（2026-11-16）
 
-- GUI 删掉自己那份驱动循环，改用 `qcode-driver` 的 IO 层，实现自己的 `Host`。
-- 单写者锁拿不到时 daemon **不抢**、记一次错过、继续（ADR-0092 §10：有人在场优先）。
-- 事件出口留缝（§8），只留接口不做界面。
-- `runtime.rs:407` 那个硬编码的 `format!("gui:{}")` 身份要能区分是谁在开车。
+- ~~GUI 删掉自己那份驱动循环~~ —— **阶段 1 已经做了**（`GuiHost` 实现 `Host`，
+  时钟分支调 `on_beat`）。本阶段确认它没被破坏。
+- **daemon 让路**（§10）：`wait_for_driver_lock` 每秒试一次，拿到就接手。不是退出——
+  「先开窗口、后启 daemon」是很自然的顺序，要求人关窗后再手敲一次不合算。等待期间
+  **什么都不做**：不写心跳、不扫任务表。
+- **事件出口留缝**（§8）：`qcode-driver/src/events.rs`，四个事件（beat /
+  turn_started / turn_finished / driving），一行一条 JSON，落
+  `schedule/events.jsonl`。选文件而不是 socket：跨平台一个实现、跟随就是 `tail -f`、
+  写失败不影响驱动。**只留缝，GUI 的跟随界面不做。**
+- **身份已经能分辨**：GUI 写 `gui:<时刻>`、daemon 写 `daemon:<时刻>`，两者都进心跳与
+  `Driving` 事件。
 
-**出口判据**：ADR-0092「验证 2」——GUI 开着、daemon 已在跑，GUI **不重复驱动**
-（依赖 ADR-0091 的锁），设置页正确显示驱动在 daemon 那里。
+**出口判据**：ADR-0092「验证 2」——GUI 开着、daemon 已在跑，GUI **不重复驱动**。
+
+实机验过让路：用一个真进程持锁 5 秒，`qcd` 打印「waiting for it to exit」，锁释放后
+打印「taking over」，事件流里留下 `driving:false` → `driving:true` 的时间线。
+
+**未做（诚实清单）**：设置页那一行还没显示「驱动在 daemon 那里」。GUI 的定时任务界面
+本来就没有驱动状态位，加它要动 `Backend` 缓存与渲染层。目前用户从 `qc schedule list`、
+`qc daemon status` 和工具结果里看得到三处。
 
 ---
 

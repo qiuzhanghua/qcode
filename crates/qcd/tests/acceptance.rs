@@ -311,3 +311,56 @@ async fn a_long_absence_skips_instead_of_catching_up() {
         .await;
     assert_eq!(second.fired, 0, "still no catch-up: {second:?}");
 }
+
+/// 事件出口（ADR-0092 §8 的缝）：一拍一条，回合一开一结。
+///
+/// 这条守的是「缝的形状」而不是格式：将来要改字段可以，但**一拍必须留一条**、
+/// **回合开始必须早于结束**。跟随者靠这两点判断「它现在跑到哪了」。
+#[tokio::test]
+async fn the_event_sink_records_beats_and_turns() {
+    use qcode_driver::events::Event;
+
+    let data = tempfile::tempdir().expect("data dir");
+    let store = SessionStore::new(data.path());
+    let base = at(2026, Month::June, 1, 8, 59);
+    create_task(&store, base + time::Duration::minutes(1));
+    let clock = Arc::new(FakeClock::new(base));
+
+    let (mut daemon, events) = qcd::Daemon::with_clock(
+        assembled(data.path()),
+        Duration::from_secs(1),
+        Box::new(SharedClock(clock.clone())),
+    )
+    .with_collected_events();
+
+    // 两拍：away + 正常（第二拍到点）。
+    daemon.tick(Instant::now()).await;
+    clock.set(base + time::Duration::minutes(2));
+    daemon
+        .tick(Instant::now() + Duration::from_millis(500))
+        .await;
+
+    let events = events.lock().expect("events").clone();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| match event {
+            Event::Beat { .. } => "beat",
+            Event::TurnStarted { .. } => "turn_started",
+            Event::TurnFinished { .. } => "turn_finished",
+            Event::Driving { .. } => "driving",
+        })
+        .collect();
+
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == "beat").count(),
+        2,
+        "每一拍都要留一条：{kinds:?}"
+    );
+    let started = kinds.iter().position(|kind| *kind == "turn_started");
+    let finished = kinds.iter().position(|kind| *kind == "turn_finished");
+    match (started, finished) {
+        (Some(start), Some(end)) => assert!(start < end, "开始必须早于结束：{kinds:?}"),
+        (None, None) => panic!("到点那一拍没写回合事件：{kinds:?}"),
+        _ => panic!("回合事件必须成对：{kinds:?}"),
+    }
+}

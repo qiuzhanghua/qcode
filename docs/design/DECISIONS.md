@@ -10644,7 +10644,7 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 | `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在。`inflight` / `pending_ack` 不是**持久**记账，而是 `qcode-driver` 的 `ScheduleDriver` 内存态（重启即清零，靠会话日志补确认）——`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
 | `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
-| `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
+| `qcode-gui` | **消费方**（阶段 1 起，阶段 4 复核） | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
 | `qc`（bin） | **客户端**（阶段 3） | `commands/daemon.rs`：`start` / `stop` / `status [--json]`。只做拉起 + 问话：spawn `qcd`、等它真拿到锁、`status` 探机器级锁 + 报数据目录级驱动四态。**找不到 `qcd` 时退出码 1 且说明它是独立二进制**（`tests/daemon_cli.rs` 5 条）。`stop` 走**控制通道**，不发信号 |
 | `qcd`（新 package + bin） | **可分离启动**（阶段 2+3） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环、`detach.rs`（`setsid` / `DETACHED_PROCESS`+`CREATE_NEW_PROCESS_GROUP`、`find_qcd`）。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：让路等待、能回答「我服务哪个数据目录」 |
 
@@ -10668,6 +10668,20 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
    拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
    时断言退出码非 0 且 stderr 说实话。
+
+**阶段 4 已落地（2026-11-16）**，两件：
+
+- **§10 让路**：`qcd` 拿不到驱动锁时**每秒试一次**，不退出、不抢。等待期间什么都不做
+  （不写心跳——那会让 `qc schedule list` 说有两个驱动；不扫任务表——扫了也不会投）。
+  实机验过：一个真进程持锁 5 秒，`qcd` 打印「waiting for it to exit」，锁一放开就打印
+  「taking over」。
+- **§8 的缝**：`qcode-driver/src/events.rs`，四个事件（beat / turn_started /
+  turn_finished / driving），一行一条 JSON，落 `schedule/events.jsonl`。**选文件而不是
+  socket**：跨平台一个实现、跟随就是 `tail -f`、写失败不影响驱动（与 `session/*.jsonl`
+  同一种取舍）。GUI 的跟随界面本期不做——但接口先定，否则以后要做就得改驱动核心，那时
+  两个前端都已经依赖它。
+- **顺带确认**：GUI 早在阶段 1 就是 `Host` 的消费者，本阶段只验证没被破坏。身份
+  `gui:<时刻>` / `daemon:<时刻>` 从那时起就能分辨。
 
 **阶段 3 已落地（2026-11-16）**，三件：
 

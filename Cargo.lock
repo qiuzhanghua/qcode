@@ -5450,6 +5450,7 @@ name = "qcode-driver"
 version = "0.13.0"
 dependencies = [
  "qcode-core",
+ "serde_json",
  "tempfile",
  "time",
  "tracing",

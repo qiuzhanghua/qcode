@@ -34,6 +34,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+pub mod events;
 pub mod runtime;
 
 use qcode_core::schedule::{
@@ -262,4 +263,17 @@ pub fn delivery_session(task: &ScheduledTask) -> Option<&str> {
     task.target
         .session_id()
         .or(task.reserved_session_id.as_deref())
+}
+
+/// 测试共用的固定时刻。
+///
+/// 放在这里而不是各测试文件里：`events` 与 `runtime` 的测试都要一个确定的
+/// `PrimitiveDateTime`，两处各写一个「2026 年某天」会让失败信息里的时间对不上。
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use time::Month;
+
+    pub(crate) fn at_2026() -> time::PrimitiveDateTime {
+        qcode_core::schedule::at(2026, Month::June, 1, 9, 0)
+    }
 }
