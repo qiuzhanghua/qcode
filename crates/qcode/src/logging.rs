@@ -43,13 +43,22 @@ pub const CURRENT_LOG: &str = "qc.log";
 /// Daily files to keep, current one included.
 const KEEP_FILES: usize = 7;
 
-/// Level when nothing says otherwise, for the file.
+/// Level when nothing says otherwise, for the file: **our** crates.
 ///
 /// `info` and not `warn`: the file is the only record of a run for a desktop
 /// launch (there is no terminal to scroll back), and a log that holds nothing but
-/// warnings cannot answer "what did it actually do". The cost is volume, bought
-/// back by the 7-day rotation. See ADR-0082.
-const DEFAULT_LEVEL_FILE: &str = "info";
+/// warnings cannot answer "what did it actually do". See ADR-0082.
+const DEFAULT_LEVEL_FILE_OWN: tracing::Level = tracing::Level::INFO;
+
+/// Level when nothing says otherwise, for the file: everything else.
+///
+/// A GUI start logs ~100 lines of `gpui_wgpu` adapter probing, `zed_xim` X11
+/// handshakes and `gpui_linux` frame timing. At `info` for all of it, the two
+/// lifecycle lines that say how the run ended are a rounding error in the noise —
+/// measured: `qc logs -n 5` showed nothing but GPU setup. Those crates are still
+/// available at `warn` (their failures are ours to see), and `RUST_LOG` still
+/// turns them up when the window itself is what is being debugged.
+const DEFAULT_LEVEL_FILE_OTHER: tracing::Level = tracing::Level::WARN;
 
 /// Level when nothing says otherwise, for the terminal.
 ///
@@ -123,28 +132,91 @@ impl<'a> MakeWriter<'a> for LogFile {
 /// Call this after `Cli::parse` (the level comes from the config file it names)
 /// and before anything that might want to log.
 pub fn init(configured_level: Option<&str>) {
-    let (file_spec, stderr_spec) =
-        specs(std::env::var("RUST_LOG").ok().as_deref(), configured_level);
+    let explicit = explicit_level(std::env::var("RUST_LOG").ok().as_deref(), configured_level);
+    let stderr_spec = explicit.as_deref().unwrap_or(DEFAULT_LEVEL_STDERR);
 
-    let stderr_filter = filter_for(&stderr_spec, DEFAULT_LEVEL_STDERR);
-    let file_filter = filter_for(&file_spec, DEFAULT_LEVEL_FILE);
-
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .event_format(RedactedFormat::new(ANSI_STDERR))
-        .with_writer(io::stderr)
-        .with_filter(stderr_filter);
-
-    let file_layer = tracing_subscriber::fmt::layer()
-        .event_format(RedactedFormat::new(ANSI_FILE))
-        .with_writer(LogFile)
-        .with_filter(file_filter);
+    // Built inside each branch: a `Layer` is not `Clone`, and the two branches
+    // need differently typed file filters.
+    let stderr_layer = || {
+        tracing_subscriber::fmt::layer()
+            .event_format(RedactedFormat::new(ANSI_STDERR))
+            .with_writer(io::stderr)
+            .with_filter(filter_for(stderr_spec, DEFAULT_LEVEL_STDERR))
+    };
+    let file_layer = || {
+        tracing_subscriber::fmt::layer()
+            .event_format(RedactedFormat::new(ANSI_FILE))
+            .with_writer(LogFile)
+    };
 
     // `try_init` and not `init`: a second call (a re-exec, a test harness that
     // already installed a subscriber) must not panic the application.
-    let _ = tracing_subscriber::registry()
-        .with(stderr_layer)
-        .with(file_layer)
-        .try_init();
+    let _ = match &explicit {
+        // An explicit ask is one filter for both destinations: `RUST_LOG=debug`
+        // means "show me everything", not "show me our crates and nothing else".
+        Some(spec) => tracing_subscriber::registry()
+            .with(stderr_layer())
+            .with(file_layer().with_filter(filter_for(spec, DEFAULT_LEVEL_STDERR)))
+            .try_init(),
+        // Nobody said anything: the file is a record of what *we* did, so our
+        // crates speak at `info` and the framework chatter stays at `warn`.
+        None => tracing_subscriber::registry()
+            .with(stderr_layer())
+            .with(file_layer().with_filter(OwnCratesAtInfo))
+            .try_init(),
+    };
+}
+
+/// Whether an event's target belongs to this workspace.
+///
+/// Targets are module paths, so the first segment is the crate name with its
+/// dashes turned into underscores: `qcode-gui` logs as `qcode_gui::shell::mod`.
+/// A prefix match on `qcode` therefore does *not* cover `qcode_gui` — the whole
+/// reason this is a rule rather than a list of eighteen names is so that adding a
+/// crate cannot silently drop its `info` lines; the alternative needs a drift test
+/// against the manifests to stay honest.
+///
+/// `qc` is in the list because the binary target is named `qc`, not `qcode`: every
+/// module compiled into it logs as `qc::logging`, `qc::lifecycle`. Omitting it
+/// filters out the lifecycle lines this whole file exists to keep — which is
+/// exactly what the first version of this function did, and why the fix is pinned
+/// by a test that names the real target instead of a plausible one.
+///
+/// No other binary needs a name here: `logging::init` is called from `qc` only, so
+/// `qc-eval` and the MCP probe servers never install this layer and their targets
+/// never reach it.
+fn owns_target(target: &str) -> bool {
+    let crate_name = target.split("::").next().unwrap_or(target);
+    crate_name == "qc" || crate_name == "qcode" || crate_name.starts_with("qcode_")
+}
+
+/// The file's default filter: our crates at `info`, everything else at `warn`.
+///
+/// A hand-written [`Filter`] rather than `filter_fn`, because only a real impl can
+/// report `max_level_hint` — without one every `debug!` in a streaming hot path
+/// would be *formatted* before being discarded, and the terminal would pay for a
+/// log level nobody asked for.
+struct OwnCratesAtInfo;
+
+impl<S: Subscriber> tracing_subscriber::layer::Filter<S> for OwnCratesAtInfo {
+    fn enabled(
+        &self,
+        meta: &tracing::Metadata<'_>,
+        _cx: &tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        let ceiling = if owns_target(meta.target()) {
+            DEFAULT_LEVEL_FILE_OWN
+        } else {
+            DEFAULT_LEVEL_FILE_OTHER
+        };
+        *meta.level() <= ceiling
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        // The most verbose any event can be. Saying `INFO` here is what keeps
+        // `debug!`/`trace!` from being built at all.
+        Some(tracing::level_filters::LevelFilter::INFO)
+    }
 }
 
 /// Where logs live for a given data directory.
@@ -272,16 +344,6 @@ pub fn current_log(data_dir: &Path) -> PathBuf {
 /// about one destination, and `RUST_LOG=debug` must not leave the terminal quiet
 /// when the whole reason to type it was to watch the terminal. Only the absent
 /// case splits (ADR-0082).
-fn specs(rust_log: Option<&str>, configured_level: Option<&str>) -> (String, String) {
-    match explicit_level(rust_log, configured_level) {
-        Some(spec) => (spec.clone(), spec),
-        None => (
-            DEFAULT_LEVEL_FILE.to_string(),
-            DEFAULT_LEVEL_STDERR.to_string(),
-        ),
-    }
-}
-
 /// The level the user actually asked for, if any.
 ///
 /// Split out so it can be tested without mutating `RUST_LOG`: the first version of
@@ -395,22 +457,179 @@ mod tests {
     /// The defaults split, and that is the whole point of ADR-0082: the file has
     /// to be a usable record, the terminal has to stay out of the prompt.
     #[test]
-    fn absent_setting_splits_file_info_from_stderr_warn() {
-        let (file, stderr) = specs(None, None);
-        assert_eq!(file, "info");
-        assert_eq!(stderr, "warn");
-        assert_ne!(file, stderr, "an unsplit default defeats the purpose");
+    fn absent_setting_splits_the_file_record_from_a_quiet_terminal() {
+        assert_eq!(explicit_level(None, None), None);
+        assert_eq!(DEFAULT_LEVEL_FILE_OWN, tracing::Level::INFO);
+        assert_eq!(DEFAULT_LEVEL_FILE_OTHER, tracing::Level::WARN);
+        // The stderr default is a spec string, so it is compared through the filter
+        // that actually consumes it rather than by eyeballing the literal.
+        assert_eq!(filter_for(DEFAULT_LEVEL_STDERR, "off").to_string(), "warn");
+        assert!(
+            DEFAULT_LEVEL_FILE_OWN > DEFAULT_LEVEL_FILE_OTHER,
+            "our crates must be the verboser of the two, or the split does nothing"
+        );
     }
 
     /// An explicit ask applies to both: `RUST_LOG=debug` exists to watch the
     /// terminal, so clamping stderr to `warn` would make the escape hatch useless.
+    ///
+    /// Asserted through `explicit_level`, which is what both destinations consult;
+    /// the old version of this test went through a helper that also spelled out the
+    /// defaults, so it could pass while `init` ignored the value.
     #[test]
     fn an_explicit_level_applies_to_both_destinations() {
-        let (file, stderr) = specs(Some("debug"), None);
-        assert_eq!((file.as_str(), stderr.as_str()), ("debug", "debug"));
+        for (rust_log, configured, expected) in [
+            (Some("debug"), None, "debug"),
+            (None, Some("error"), "error"),
+            // `RUST_LOG` wins, and it is the one that reaches both destinations.
+            (Some("debug"), Some("error"), "debug"),
+        ] {
+            assert_eq!(
+                explicit_level(rust_log, configured).as_deref(),
+                Some(expected)
+            );
+        }
+    }
 
-        let (file, stderr) = specs(None, Some("error"));
-        assert_eq!((file.as_str(), stderr.as_str()), ("error", "error"));
+    /// The rule that replaces a list of eighteen crate names.
+    ///
+    /// The failure mode being pinned, in the order both were actually hit:
+    ///
+    /// 1. `qc::lifecycle` is the **binary's** target (the bin is named `qc`, not
+    ///    `qcode`), and a rule written only around `qcode*` filtered out the
+    ///    lifecycle lines — the file came out empty. Unit tests missed it because
+    ///    the list of "own" targets was written from the package names.
+    /// 2. `EnvFilter` prefix matching stops at `::`, so `qcode=info` says nothing
+    ///    about `qcode_gui` — the GUI, where a desktop run spends all its time,
+    ///    would silently fall back to `warn`.
+    #[test]
+    fn our_own_crates_are_recognised_by_target() {
+        for own in [
+            // The binary target, as it really appears in the file.
+            "qc",
+            "qc::lifecycle",
+            "qc::logging",
+            "qc::commands::logs",
+            // The libraries.
+            "qcode",
+            "qcode_gui",
+            "qcode_gui::shell::mod",
+            "qcode_kernel::config",
+            "qcode_tools::sandbox",
+            "qcode_terminal::screen",
+        ] {
+            assert!(owns_target(own), "{own} is ours");
+        }
+        for other in [
+            "gpui_wgpu::wgpu_context",
+            "zed_xim::x11rb",
+            "gpui_linux::linux::x11::client",
+            "hyper_util::client",
+            "xim_ctext",
+        ] {
+            assert!(!owns_target(other), "{other} is not ours");
+        }
+        // The boundary a naive `contains("qcode")` would get wrong, in both
+        // directions: a prefix that merely starts with the letters is not ours, and
+        // a future crate called `qcode_extras` is.
+        assert!(!owns_target("not_qcode"), "the name has to start with it");
+        assert!(
+            !owns_target("qcodezip"),
+            "`qcode` must be a whole segment, not a prefix of another crate name"
+        );
+        assert!(
+            owns_target("qcode_extras::x"),
+            "a crate added later is covered without editing a list"
+        );
+    }
+
+    /// The hint is what keeps `debug!` from being formatted in a hot path; without
+    /// it every streaming token would be rendered and then thrown away.
+    #[test]
+    fn the_file_filter_advertises_a_useful_level_hint() {
+        // `Filter<S>` is generic, so the impl has to be picked for a subscriber
+        // type before the method can be named at all.
+        let hint = <OwnCratesAtInfo as tracing_subscriber::layer::Filter<
+            tracing_subscriber::Registry,
+        >>::max_level_hint(&OwnCratesAtInfo);
+        assert_eq!(
+            hint,
+            Some(tracing::level_filters::LevelFilter::INFO),
+            "a missing hint makes the macros construct every debug event"
+        );
+    }
+
+    /// The default, through the real layer machinery rather than the rule function:
+    /// a `gpui_wgpu` info line must not reach the file, but its warning must.
+    ///
+    /// This is the property the whole change is for. Asserted on what the layer
+    /// writes, because `owns_target` being right says nothing about whether the
+    /// filter is wired into the file layer at all — the first attempt at this had
+    /// the rule correct and still wrote nothing, for `qc::lifecycle` (see
+    /// `our_own_crates_are_recognised_by_target`).
+    #[test]
+    fn the_file_default_keeps_third_party_info_out() {
+        #[derive(Clone)]
+        struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        struct SinkWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl io::Write for SinkWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for Sink {
+            type Writer = SinkWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                SinkWriter(self.0.clone())
+            }
+        }
+
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let layer = tracing_subscriber::fmt::layer()
+            .event_format(RedactedFormat::new(ANSI_FILE))
+            .with_writer(Sink(buffer.clone()))
+            .with_filter(OwnCratesAtInfo);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(target: "qc::lifecycle", tracing::Level::INFO, "ours-info");
+            tracing::event!(
+                target: "gpui_wgpu::wgpu_context",
+                tracing::Level::INFO,
+                "theirs-info"
+            );
+            tracing::event!(
+                target: "gpui_wgpu::wgpu_context",
+                tracing::Level::WARN,
+                "theirs-warn"
+            );
+            tracing::event!(target: "qc::lifecycle", tracing::Level::DEBUG, "ours-debug");
+        });
+
+        let out = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
+        assert!(
+            out.contains("ours-info"),
+            "our own info must be kept: {out}"
+        );
+        assert!(
+            !out.contains("theirs-info"),
+            "the adapter-probing noise is exactly what this default drops: {out}"
+        );
+        assert!(
+            out.contains("theirs-warn"),
+            "a third-party warning is still ours to see: {out}"
+        );
+        assert!(
+            !out.contains("ours-debug"),
+            "the hint caps at info, so debug must not be built: {out}"
+        );
     }
 
     /// A typo must not take the process down, and must not silently change the
@@ -419,8 +638,8 @@ mod tests {
     fn an_unparsable_level_falls_back_instead_of_panicking() {
         // `EnvFilter` accepts `foo` as a target-only directive, so use a string it
         // genuinely rejects rather than one that merely looks odd.
-        let filter = filter_for("warn=notalevel", DEFAULT_LEVEL_FILE);
-        assert_eq!(filter.to_string(), DEFAULT_LEVEL_FILE);
+        let filter = filter_for("warn=notalevel", DEFAULT_LEVEL_STDERR);
+        assert_eq!(filter.to_string(), DEFAULT_LEVEL_STDERR);
     }
 
     /// The path `qc logs` prints and the path the appender writes have to be the

@@ -10617,3 +10617,85 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
   → 由 `qcd` 提供；「GUI 关窗只是隐藏到托盘」这句仍然对，但不再是唯一形态。
 - **ADR-0086 不变**：`qc` 仍是一个二进制、窗口是它的固有部分。本 ADR 只是**另加**一个
   不带窗口的二进制，没有把窗口拆出去。
+
+## ADR-0093：日志文件默认级别按 target 收紧——我们的 `info`，其余 `warn`（2026-11-16）
+
+**状态**：Accepted（2026-11-16），已实现。
+**修改** ADR-0082 §3「默认级别 `info`，且文件与终端**分开**」里的文件一侧。
+**顺带更正** ADR-0082 §3 末句「两处默认值都要改」——那句在 ADR-0082 自己把 `[log] level`
+改成 `Option<String>` 之后就失效了：`config` 侧不再有默认级别，只有 `logging.rs` 一处。
+
+**背景**
+
+ADR-0082 把文件默认级别定成 `info`，理由是「文件是桌面启动唯一的记录」。理由成立，但落到
+真实的 GUI 启动上，记录被淹掉了。实测：
+
+```
+$ qc logs -n 5
+INFO gpui_wgpu::wgpu_context: Testing adapter: Intel(R) Graphics (RPL-S) (Vulkan)…
+INFO gpui_wgpu::wgpu_context: Selected GPU: Intel
+INFO zed_xim::x11rb: XConnected server on 46137355
+INFO gpui_linux::linux::x11::client: Refreshing every 16ms
+INFO qc::lifecycle: qc session starting pid=14275 …
+```
+
+一次启动约一百行第三方 `info`（`gpui_wgpu` 适配器探测、`zed_xim` X11 握手、`gpui_linux`
+帧计时），而「这次运行怎么结束的」——打开文件唯一的原因——是其中两行。`-n` 截尾永远截不到
+它们。这不是级别定低了，是**级别只管了去向、没管来源**。
+
+**决定**
+
+文件默认变成按 target 分级：我们的 crate `info`，其余 `warn`。终端仍是 `warn`，`RUST_LOG`
+与会话级 `[log] level` 仍同时覆盖两者（ADR-0082 那半条不变）。
+
+**为什么是规则而不是清单**
+
+直觉做法是列十八个 crate 名写进 `EnvFilter`（`warn,qcode=info,qcode_gui=info,…`）。
+否决，因为清单会**静默**腐烂：新增一个 crate、忘了加进去，它的 `info` 从此不见，且没有任何
+报错——只有「怎么少了一行」的猜谜。防它需要一条对着 manifests 的漂移测试，等于用测试给清单
+续命。
+
+改成规则：target 是模块路径，首段就是 crate 名（`qcode-gui` → `qcode_gui`），于是「首段是
+`qcode` / 以 `qcode_` 开头 / 是 `qc`」即我们的，其余一律第三方。新 crate 自动覆盖。
+
+`EnvFilter` 的前缀匹配在这里帮不上忙：它停在 `::`，`qcode=info` 对 `qcode_gui` 无效——这正是
+「不能靠一个前缀」的具体形状。
+
+**`qc` 必须显式列出（第一版就错在这）**
+
+二进制 target 叫 `qc`，不是 `qcode`，装进它的模块记作 `qc::lifecycle`、`qc::logging`。
+第一版规则只匹配 `qcode*`，`qc::lifecycle` 被当成第三方，结果**文件一条都不剩**。单测没抓住，
+因为「我们的 target」那组用例是照着包名写的；抓住它的是改完端到端跑一次看文件为空。
+
+这条留作教训：**级别的验收标准是「文件里有那两行」，不是「规则函数返回 true」**。现在的测试
+两条都钉着——一条按真实 target 判规则，一条走完整 layer 机制断言第三方 `info` 被丢、
+我们的 `info` 与第三方 `warn` 都在。
+
+**实现细节：手写 `Filter` 而不是 `filter_fn`**
+
+`filter_fn` 给不出 `max_level_hint`，整体订阅者于是拿不到「最详细到 `INFO`」这个上界，每条
+`debug!`/`trace!` 都会被**构造**（参数求值、字段编码）再丢弃。这在流式转发的热路径上是实打实
+的开销，为的是没人要的级别。所以写了个 `impl Filter<S>`，`enabled` 里查 target，`hint` 返回
+`INFO`。
+
+代价照实说：这是我们自己维护的过滤器语义，`RUST_LOG` 的解析仍交给 `EnvFilter`，两条路径的
+一致性靠测试（`RUST_LOG=debug` 端到端验过：终端从静默变出声，文件出现 `debug` 行）。
+
+**验证**
+
+- 单测（`logging::tests`，13 个）：规则边界（`qc`/`qc_*`/`qcode_*` 的判定，`qcodezip`
+  不算我们的）、hint 为 `INFO`、走真实 layer 断言「第三方 `info` 丢 / 第三方 `warn` 留 /
+  我们 `info` 留 / 我们 `debug` 丢」。
+- **反向验证**：把规则里的 `qc` 去掉，那条 layer 测试立刻红，输出只剩
+  `WARN gpui_wgpu::wgpu_context: theirs-warn`——与线上「文件为空」同一形状。
+- 端到端（真实二进制，临时数据目录）：默认跑一次，文件只有两条 lifecycle、stderr 0 字节；
+  `RUST_LOG=debug` 后 stderr 出声。
+- `cargo fmt --check`；`cargo clippy --workspace --all-targets -D warnings`；
+  `cargo test --workspace` 1318 通过。
+
+**未做**
+
+- 没有为第三方 `warn` 做去重或限流：`gpui_linux` 的帧告警在窗口画不出来时会刷屏。真出现时
+  再谈，现在没有数据。
+- 没有动 stderr 的默认（`warn` 对终端仍是对的）。
+- 老日志里的噪音不会消失：7 天轮转自然淘汰。

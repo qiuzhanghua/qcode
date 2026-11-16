@@ -255,7 +255,8 @@ println!("downloading {}", asset.url);
   （含 `wgpu_hal` 的 Vulkan 驱动警告——那正是「窗口画不出来」时要看的东西，保留）。
   **注：默认级别已于 ADR-0082 改为文件 `info` / 终端 `warn`。** 当时这条顾虑只在终端成立，
   桌面用户没有终端；文件保持 `info` 才有记录价值。GUI 启动的那几条 `info` 从此会落进文件，
-  这正是它们存在的理由。
+  这正是它们存在的理由。**又据 ADR-0093 收紧**：文件的 `info` 只给我们的 crate，第三方停在
+  `warn`——「GUI 启动那几条 `info` 落进文件」仍然成立，但那一百行适配器探测不再跟着进来。
 - `cargo test --workspace` 110 个测试二进制通过；`cargo test -p qcode-gui --all-targets`
   通过；clippy（含 `-p qcode --features gui`、`-p qcode-gui`）与 fmt 干净。
 
@@ -267,15 +268,31 @@ println!("downloading {}", asset.url);
 
 | 去向 | 默认 | 理由 |
 |---|---|---|
-| `logs/qc.log` | `info` | 桌面启动没有终端可回滚，文件是唯一的记录；只有告警的日志回答不了「它做了什么」 |
+| `logs/qc.log` | 我们的 crate `info`，其余 `warn` | 桌面启动没有终端可回滚，文件是唯一的记录；但第三方的 `info` 会把记录淹掉 |
 | stderr | `warn` | 交互时不该把每条 `session created` 念到用户提示符上 |
 
 显式设置（`RUST_LOG` 或 `[log] level`）同时作用于两者：写 `RUST_LOG=debug` 的人就是要盯终端。
 只有「谁都没说」才分叉，所以 `[log] level` 的类型是 `Option<String>`——必须能区分「没写」与
-「写了 `warn`」。
+「写了 `warn`」。默认值只有 `qcode/src/logging.rs` 一处：`None` 时由 `init` 选过滤器，serde 不
+会填任何默认级别。（ADR-0082 里「`qcode-kernel` 的 `default_log_level`」那句，在 ADR-0082 自己
+把 `[log] level` 改成 `Option<String>` 之后就失效了。）
 
-⚠️ 默认值有**两处**：`qcode/src/logging.rs` 的常量与 `qcode-kernel` 的 `default_log_level`。
-只改前者没有效果，serde 会把配置填满。
+**为什么文件默认不是全 `info`**（ADR-0093）：一次 GUI 启动会写约一百行 `gpui_wgpu`（适配器
+探测）、`zed_xim`（X11 握手）、`gpui_linux`（帧计时）的 `info`，两条 lifecycle 行成了噪音里的
+零头——实测 `qc logs -n 5` 只显示 GPU 初始化。这些第三方的 `warn` 以上仍保留（它们的失败是我们
+的问题），要看它们的 `info` 用 `RUST_LOG`。
+
+判定是**按 target 前缀的规则**，不是十八个 crate 名的清单：target 是模块路径，首段就是 crate
+名，`qcode-gui` 记作 `qcode_gui::…`。所以 `qc`（二进制 target，模块记作 `qc::lifecycle`）、
+`qcode`、`qcode_*` 算我们的，其余一律第三方。用清单的问题是**新增 crate 会静默丢掉它的
+`info`**，而这条规则天然覆盖。
+
+一个踩到的坑：`qc` 必须显式在规则里。二进制 target 叫 `qc` 而不是 `qcode`，第一版只匹配
+`qcode*`，结果文件一条都不剩——lifecycle 行全被当成第三方过滤掉了。单测没抓住，因为「我们的
+target」那个列表是照着包名写的；抓住它的是端到端跑一遍看文件为空。
+
+过滤器是手写 `Filter` impl 而非 `filter_fn`，只为一件事：`max_level_hint` 必须返回 `INFO`。
+没有它，热路径上每条 `debug!` 都会被格式化后再丢弃——为没人要的级别付流式转发的钱。
 
 ### 边界行
 

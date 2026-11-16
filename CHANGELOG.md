@@ -2,11 +2,25 @@
 
 ## 未发布
 
+### 日志文件默认级别收紧：我们的 crate `info`，其余 `warn`
+
+一次 GUI 启动约一百行 `gpui_wgpu` / `zed_xim` / `gpui_linux` 的 `info`，两条 lifecycle 行
+成了噪音里的零头——实测 `qc logs -n 5` 只显示 GPU 适配器探测。
+
+- 默认：`qc`、`qcode`、`qcode_*`（我们的）写 `info`，第三方停在 `warn`；
+- 判定按 target 前缀的**规则**，不是十八个 crate 名的清单，新增 crate 自动覆盖；
+- `RUST_LOG` / `[log] level` 行为不变，仍同时覆盖文件与终端；
+- 手写 `Filter` impl 而非 `filter_fn`：需要 `max_level_hint = INFO`，否则热路径上每条
+  `debug!` 都会被构造后丢弃。
+
+**第一版就错了一次**：二进制 target 叫 `qc` 而不是 `qcode`，规则漏掉它，文件一条不剩。抓住它
+的是端到端跑一遍，单测没抓住（用例照着包名写）。现在的测试按真实 target 判、且走完整 layer
+机制断言留/丢。见 ADR-0093。
+
 ### `qc logs` 有了 `--grep` 与 `--since`
 
-文件默认级别是 `info`，一次 GUI 启动会在两条 lifecycle 行前后写下上百行 `gpui_wgpu` /
-`zed_xim` 的 info。于是 `qc logs -n 5` 只显示 GPU 初始化，「这次运行怎么结束的」——打开
-文件唯一的原因——反而看不见。
+即使文件默认已经收紧（上一条），仍会需要「只看某类行」：要查的是
+`pid=14275` 怎么死的，而文件里还有别的运行记录。
 
 - `--grep <正则>`：同时作用于尾巴和 `--follow`（`grep` 做不到后者）；
 - `--since <30m|2h|7d|RFC3339>`：没有可解析时间戳的行会被丢弃，`--follow` 的分隔行例外；
