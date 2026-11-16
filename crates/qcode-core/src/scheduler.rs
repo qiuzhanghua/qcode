@@ -202,14 +202,16 @@ pub fn driver_footer(driver: DriverStatus) -> String {
             )
         }
         DriverStatus::Gone { at } => format!(
-            "**驱动不在跑**（上次心跳 {at}，进程已退出）：该任务需要有一个持有调度时钟的\
-             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
-             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+            "**驱动不在跑**（上次心跳 {at}，进程已退出）：该任务需要有进程持有调度时钟才会触发。\
+             两种都可以：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），\
+             或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，\
+             并记为错过——不补跑。"
         ),
         DriverStatus::Unknown => {
-            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有一个持有调度时钟的\
-             进程在运行时才会触发（当前只有 GUI 提供）。GUI 关窗只是隐藏到托盘、进程继续跑，\
-             **退出进程才停**。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有进程持有\
+             调度时钟才会触发：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），\
+             或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，\
+             并记为错过——不补跑。"
                 .to_string()
         }
     }
@@ -1404,5 +1406,67 @@ mod tests {
         assert!(matches!(result, Err(ScheduleError::Invalid(_))));
         // 拒绝后原任务保持不变，仍能正常查到。
         assert!(scheduler.find(&created.id).is_some());
+    }
+}
+
+#[cfg(test)]
+mod footer_tests {
+    use super::*;
+
+    /// 「不在跑」的说明必须提到**两条**路，而不是只有 GUI。
+    ///
+    /// 这条曾经是说谎的：`qcd` 落地之后，`driver_footer` 还写着「当前只有 GUI 提供」
+    /// 与「GUI 关窗只是隐藏到托盘」——两句话都在告诉用户「你只有开窗口这一条路」，
+    /// 而 `qc daemon start` 那时已经能用了。用户读到它不会去试，于是「定时任务不跑」
+    /// 这个症状会一直挂着。
+    ///
+    /// 现在钉住三件事：两条路都提到、`qc daemon start` 这个名字准确、以及「不补跑」
+    /// 这条后果没被删掉（它是 ADR-0059 §3 的全部要点）。
+    #[test]
+    fn the_not_running_footer_names_both_drivers() {
+        for status in [
+            DriverStatus::Gone {
+                at: crate::schedule::at(2026, time::Month::June, 1, 9, 0),
+            },
+            DriverStatus::Unknown,
+        ] {
+            let text = driver_footer(status);
+            assert!(
+                text.contains("qc daemon start"),
+                "must name the daemon, not only the GUI: {text}"
+            );
+            assert!(text.contains("qcd"), "must name the binary: {text}");
+            assert!(
+                text.contains("GUI"),
+                "the GUI route still exists and must be mentioned: {text}"
+            );
+            assert!(
+                text.contains("不补跑"),
+                "the consequence must not be dropped (ADR-0059 §3): {text}"
+            );
+            assert!(
+                !text.contains("只有 GUI"),
+                "the old claim is now false: {text}"
+            );
+        }
+    }
+
+    /// 在跑与「在跑但睡着了」两条不能说「不在跑」。
+    ///
+    /// 尤其是 `Held`：它被误说成「不在跑」时，用户会去重建一条本来没事的任务。
+    #[test]
+    fn running_footers_never_say_not_running() {
+        let at = crate::schedule::at(2026, time::Month::June, 1, 9, 0);
+        for status in [
+            DriverStatus::Running { at },
+            DriverStatus::Held { at: Some(at) },
+        ] {
+            assert!(status.is_running(), "{status:?} is running");
+            let text = driver_footer(status);
+            assert!(
+                !text.contains("不在跑"),
+                "{status:?} must not read as stopped: {text}"
+            );
+        }
     }
 }

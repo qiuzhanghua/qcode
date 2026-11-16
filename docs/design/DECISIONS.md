@@ -10488,10 +10488,11 @@ ADR-0090 里给 `qc schedule list` 加的那行「驱动：…」现在读起来
 
 ## ADR-0092：常驻 daemon——driving 不再绑在窗口上（2026-11-15）
 
-**状态**：Accepted（2026-11-15）。**未实现**。依赖 **ADR-0091（驱动互斥，前置）**、
-ADR-0088（注册与驱动分离）、ADR-0059（调度语义）、ADR-0090（CLI 管理）、
-ADR-0086（一个 `qc`，窗口是固有部分）、ADR-0083（单实例锁）。
-**取代** ADR-0090 §5 里「当前只有 GUI 提供驱动」那句话（实现后生效）。
+**状态**：Accepted（2026-11-15）。**已实现**（2026-11-16，阶段 0–5）。依赖
+**ADR-0091（驱动互斥，前置）**、ADR-0088（注册与驱动分离）、ADR-0059（调度语义）、
+ADR-0090（CLI 管理）、ADR-0086（一个 `qc`，窗口是固有部分）、ADR-0083（单实例锁）。
+**已取代** ADR-0090 §5 里「当前只有 GUI 提供驱动」那句话：`driver_footer` 现在同时
+提到 GUI 与 `qc daemon start`，并有测试钉住它不再说「只有 GUI」。
 
 **背景**
 
@@ -10634,99 +10635,14 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 「建了 ≠ 会跑」的诚实要延续到这里——一个说「已启动」但其实没启动的 `daemon start`，
 比没有这个子命令更糟。
 
-**进度**（2026-11-16 对照代码。上表是**目标形态**，不是现状；本 ADR 仍未完成）
+**实现记录**
 
-落地顺序、每阶段的出口判据与未覆盖清单见 **[DAEMON-TASKS.md](./DAEMON-TASKS.md)**。
-下面是「目标形态 vs 现状」的逐行对照，只记事实。
+落地顺序、每阶段的出口判据见 **[DAEMON-TASKS.md](./DAEMON-TASKS.md)**（已完成，留作
+历史）。这里只留结论：§1–§11 的决定全部落地，六条验证里第 1、2、6 条有自动化测试，
+第 3、8 条实机验过，第 4 条（三平台各跑一次）与第 7 条（`qc update` 先停 daemon）
+**没有验过**——它们需要真机与一次发版才能覆盖。
 
-| 单元 | 现状 | 判据 |
-|---|---|---|
-| `qcode-core` | 锁 ✅ / 记账 ❌ | `scheduler.rs` 的 `DRIVER_LOCK` 在。`inflight` / `pending_ack` 不是**持久**记账，而是 `qcode-driver` 的 `ScheduleDriver` 内存态（重启即清零，靠会话日志补确认）——`qcode-core` 里 0 次。另有 `single_instance`（0b 搬入）与 §7 的 `UNATTENDED_APPROVAL_TIMEOUT` |
-| `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
-| `qcode-daemon` | ❌ 不存在 | 无此 crate |
-| `qcode-gui` | **消费方**（阶段 1 起，阶段 4 复核） | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
-| `qc`（bin） | **客户端**（阶段 3） | `commands/daemon.rs`：`start` / `stop` / `status [--json]`。只做拉起 + 问话：spawn `qcd`、等它真拿到锁、`status` 探机器级锁 + 报数据目录级驱动四态。**找不到 `qcd` 时退出码 1 且说明它是独立二进制**（`tests/daemon_cli.rs` 5 条）。`stop` 走**控制通道**，不发信号 |
-| `qcd`（新 package + bin） | **可分离启动**（阶段 2+3） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环、`detach.rs`（`setsid` / `DETACHED_PROCESS`+`CREATE_NEW_PROCESS_GROUP`、`find_qcd`）。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：让路等待、能回答「我服务哪个数据目录」 |
-
-四条留给后续实现的话：
-
-1. **`qcode-driver` 的范围要按代码读，别按上表读。** 「时钟 beat、扫描、投递、心跳、事件
-   出口」这五项现在只在最后一项上是缺的：beat / 扫描 / 投递 / 记账 / 确认 / 崩溃恢复都在
-   `qcode-driver`（阶段 1），心跳由 `Host::heartbeat` 落地（GUI 写 `scheduler.rs` 的那个
-   key）。**前端循环不在这里**，而且不该在这里——见 DAEMON-TASKS 阶段 1 那一节里
-   「与原计划不同的一处」。事件出口只有 `Host::changed()` 这个「任务表变了」的信号，
-   §8 说的可跟随流还不存在。
-   `[schedules]` 配置条目也已并进任务表（ADR-0096），所以 daemon 不必再实现一份配置驱动。
-2. **进度要记在这里，不要只留在 commit message 里。** `a630cd6` 之前，任何人读本 ADR 都
-   会得到「§11 一样都还没做」的印象，然后重复这次对照。
-3. **§1 与 §11 的拆分方向已验证可行。** `qcd` = daemon + kernel 且不链 GPU 栈，这条现在
-   就能验：`cargo tree -p qcode-kernel` 里 `wgpu`/`winit`/`wry`/`tao`/`glow`/`blade`/
-   `softbuffer` 计数为 0，而 providers、tools、mcp、net 全在——「完整引擎」与「不链 GPU
-   栈」可以同时满足。§11 要的那套进程级原语也已经不依赖界面：0b 把
-   `single_instance`（flock / LockFileEx / UDS / 命名管道）搬进了 `qcode-core`，
-   带 `Scope` 以便 daemon 用另一把锁。
-4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
-   拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
-   时断言退出码非 0 且 stderr 说实话。
-
-**阶段 4 已落地（2026-11-16）**，两件：
-
-- **§10 让路**：`qcd` 拿不到驱动锁时**每秒试一次**，不退出、不抢。等待期间什么都不做
-  （不写心跳——那会让 `qc schedule list` 说有两个驱动；不扫任务表——扫了也不会投）。
-  实机验过：一个真进程持锁 5 秒，`qcd` 打印「waiting for it to exit」，锁一放开就打印
-  「taking over」。
-- **§8 的缝**：`qcode-driver/src/events.rs`，四个事件（beat / turn_started /
-  turn_finished / driving），一行一条 JSON，落 `schedule/events.jsonl`。**选文件而不是
-  socket**：跨平台一个实现、跟随就是 `tail -f`、写失败不影响驱动（与 `session/*.jsonl`
-  同一种取舍）。GUI 的跟随界面本期不做——但接口先定，否则以后要做就得改驱动核心，那时
-  两个前端都已经依赖它。
-- **顺带确认**：GUI 早在阶段 1 就是 `Host` 的消费者，本阶段只验证没被破坏。身份
-  `gui:<时刻>` / `daemon:<时刻>` 从那时起就能分辨。
-
-**阶段 3 已落地（2026-11-16）**，三件：
-
-- **分离进程三平台各一段**（`qcd/src/detach.rs`）：unix 用 `setsid`（成为新会话首进程，
-  没有控制终端），Windows 用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`。stdin 接空
-  设备、stdout/stderr 丢弃——**不能继承**，否则 `qc daemon start` 会一直等孩子关句柄。
-  实机验过：`qc daemon start --data-dir /tmp/dm` 之后那个后台进程自己把到点的任务跑完了
-  （`turns=1`），而 `qc daemon status` 报「在跑」。
-- **`start` 不靠 `spawn` 成功就说成功。** 起进程只证明 fork 成功，那个进程可能立刻因为
-  驱动锁被占、配置坏了而退出。所以 spawn 之后**等它真拿到机器级锁**（3 秒上限），拿不到
-  就说「起来了但没活下来」并指向日志。§11 那句「一个说已启动但其实没启动的 `daemon
-  start` 比没有这个子命令更糟」在这里落成代码。
-- **`stop` 走控制通道，不发信号**（补记，同日）。第一版如实承认做不到（pid 不在锁里，
-  ADR-0083），现在补上了：往 `Scope::QCD` 的通道发 `{"stop":true}`，拿到应答之后等它
-  放开锁（5 秒上限）。通道相对信号多给一样东西——**应答**：`kill` 成功只说明信号发出
-  去了，不说明对方收得到、更不说明它准备退出。实机验过：`qc daemon stop` → `stopped.`
-  → `status` 立刻报「没有在跑」，日志里 `reason=normal`（不是 sigterm，说明它是走完主
-  循环退出的）。
-- **应答的写入顺序是个真竞态。** 第一版让 `accept_loop` 代写应答、回调只返回 bool，于是
-  `Stop` 的路径是「回调 cancel() → 主循环 break → 进程收摊 → 这个线程才写应答」——客户端
-  收到连接断开，分不清「它没听到」与「它听到了但来不及说」。改成**把写入端交给回调**，
-  顺序由它保证：`ack` 在前，`cancel` 在后。`tests/single_instance.rs` 有一条钉住它，验过
-  会红（把 ack 挪到 return 之后，客户端读到的是空应答）。
-- **`qcd` 的 `info` 一度全被日志层挡掉。** `logging::owns_target` 只认 `qc` / `qcode` /
-  `qcode_*`，不认 `qcd`——于是一个没有终端的常驻进程写的东西进不了 `qc.log`，而那是它
-  唯一的现场。症状很隐蔽：`qc daemon stop` 之后日志里只有 `lifecycle` 那两行，
-  「它为什么停了」无从回答。现在认 `qcd`，测试正反两面都钉住。
-- **歧义载荷被拒。** `{"activate":true,"stop":true}` 返回 `None` 而不是挑一个执行：那只
-  可能来自写错的客户端，而猜错的后果不对称——猜成 `Stop` 会停掉用户的 daemon。
-- **验证 1 从「手验一分钟」变成 CI 里 0.04 秒。** 原文要求「不开任何 GUI，建一条 1 分钟后
-  触发的任务，到点自己跑完，`qc sessions` 里查得到完整事件」。手验要真等、还要有 provider。
-  `Daemon::tick(at)` 的两个时间来源本来就是参数，加了 `WallClock` trait 之后墙钟也能注入，
-  于是 `tests/acceptance.rs` 用假时钟 + 真 `SessionStore` + 真 `run_turn` + mock provider
-  把整条链路跑完。三件事分开测：到点跑完、没到点不动、长时间缺席不补跑。
-- **`qcd` 必须是独立 package，这点被体积证明了。** 在 `crates/qcode` 里加第二个 `[[bin]]`
-  会共用那份依赖表，于是把 gpui → wgpu 链接进一个没有窗口的常驻进程。实测：`qcd` 69M、
-  `qc` 199M，`cargo tree -p qcd | grep -cE "gpui|wgpu|winit"` 为 **0**。裁决不是靠读文档，
-  是 `cargo tree`。
-- **三个文件从 `qc` 二进制搬进了下层，因为第二个前端够不到它们**：`lifecycle`（→ core）、
-  `agents`（→ core）、`logging`（→ kernel，那里已经是装配点）。这不是重构洁癖：搬之前
-  `qcd` 跑起来**一行日志都没有**，「daemon 的日志是唯一现场」直接落空。搬的过程还顺手发现
-  `lifecycle` 依赖 `qcode-tools::child_groups`（方向的死结），改成 `install_reaper` 注入
-  回调——二进制把注册表交给 core，core 不认识 tools。
-- **`Executor::Unattended` 在实机生效了。** 实跑时 `StartTurn.approval` 是 `Some(300s)`
-  ——§7 那条「没设截止时间的任务会让会话写锁永远握着」的硬约束，从纸面变成了运行时的值。
+未覆盖清单见 DAEMON-TASKS 末尾（登录自启、系统通知、GUI 跟随界面、多数据目录）。
 
 ### 12. 非目标（本期）
 

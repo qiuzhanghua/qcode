@@ -70,8 +70,16 @@ fn cli_says_who_will_trigger_the_task() {
         stdout.contains("驱动未知"),
         "the driver state is not reported:\n{stdout}"
     );
-    // 三条必须在，缺一条这条提示就会误导人。
-    assert!(stdout.contains("只有 GUI 提供"), "missing owner:\n{stdout}");
+    // 三条必须在，缺一条这条提示就会误导人。第一条从 ADR-0092 落地起是**两条路**：
+    // GUI 开着，或者 `qc daemon start` 起一个没有界面的 qcd。
+    assert!(
+        stdout.contains("qc daemon start"),
+        "missing the daemon route:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("只有 GUI"),
+        "the old claim is now false:\n{stdout}"
+    );
     assert!(
         stdout.contains("退出进程才停"),
         "missing lifetime:\n{stdout}"

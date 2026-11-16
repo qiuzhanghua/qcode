@@ -201,3 +201,45 @@ fn stop_and_status_agree_about_the_same_state() {
         );
     }
 }
+
+/// `qc` 侧**只做客户端**：它不驱动，也不碰 `qcode-driver` 的决策。
+///
+/// 这条是 ADR-0092 §11 的承诺变成测试。承诺是「`qc daemon start|stop|status` 只做
+/// 拉起 + 问话」，而它很容易在后续维护里走样——比如有人为了「status 顺便报一下下次
+/// 触发时间」把驱动逻辑拉进来，于是 `qc` 与 daemon 的依赖面重新纠缠。
+///
+/// 检查的是**依赖**而不是行为：`crates/qcode` 的 `Cargo.toml` 里不能出现
+/// `qcode-driver`。行为测试只能抽查几个命令，依赖不会说谎——它一旦被加进去，整条
+/// 边界就没了。
+#[test]
+fn the_cli_does_not_depend_on_the_driver() {
+    let manifest = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+    )
+    .expect("read our own manifest");
+
+    // 找 `qcode-driver` 出现在依赖段里的位置。注释里提到它是可以的（我们确实在注释
+    // 里解释过为什么不用它），所以只认「行首的依赖写法」。
+    let offenders: Vec<&str> = manifest
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#')
+                && trimmed.starts_with("qcode-driver")
+                && trimmed.contains('=')
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`qc` must stay a client of the daemon, not a second driver.\n\
+         These dependency lines pull the driver into the CLI:\n  {}",
+        offenders.join("\n  ")
+    );
+
+    // 反面：`qcd` 必须在（`detach` 模块提供了 spawn 与 find_qcd）。否则这条测试
+    // 会因为「两个都没写」而假绿。
+    assert!(
+        manifest.contains("qcd = {"),
+        "`qc` needs `qcd` for detach/spawn — if that changed, update this test"
+    );
+}

@@ -91,9 +91,19 @@ fn create_then_list_round_trip() {
     assert!(created_out.contains("daily 08:00"), "{created_out}");
 
     // 「登记成功 ≠ 会跑」是这条命令唯一可能误导的地方（ADR-0090 §5）。
-    // 三条必须在：谁在触发、关窗 ≠ 停、不补跑。
-    assert!(created_out.contains("只有 GUI 提供"), "{created_out}");
-    assert!(created_out.contains("退出进程才停"), "{created_out}");
+    //
+    // 三条必须在：谁在触发、关窗 ≠ 停、不补跑。前者从 ADR-0092 落地起是**两条路**
+    // （GUI 开着 / `qc daemon start`）——那时「只有 GUI」就变成假话了，而说假话的
+    // 后果是用户不去试那条已经存在的路。
+    assert!(
+        created_out.contains("qc daemon start"),
+        "must name the daemon route: {created_out}"
+    );
+    assert!(created_out.contains("GUI"), "{created_out}");
+    assert!(
+        !created_out.contains("只有 GUI"),
+        "the old claim is now false: {created_out}"
+    );
     assert!(created_out.contains("不补跑"), "{created_out}");
 
     let listed = run(dir.path(), &["schedule", "list"]);
