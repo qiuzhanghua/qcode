@@ -1,0 +1,30 @@
+[package]
+name = "qcd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# 独立 package 而不是 `crates/qcode` 里的第二个 `[[bin]]`（ADR-0092 §2）。
+#
+# 这条不是风格问题：依赖是按 **package** 算的，不是按 bin。在 `crates/qcode`
+# 里加一个 `[[bin]] name = "qcd"`，它会和 `qc` 共用同一份依赖表，于是把
+# `qcode-gui` → gpui → wgpu/winit 全部链接进一个本该没有界面的常驻进程。
+# 那正是 ADR-0092 §2 要避免的东西，而且**不会报错**——只会在发布物体积上体现。
+#
+# 所以这里的依赖面刻意只有 kernel（引擎）与 driver（决策 + 一拍）：
+# 没有 qcode-gui、没有 qcode-tui、没有 qcode-terminal。
+[dependencies]
+qcode-core = { version = "0.13.0", path = "../qcode-core" }
+qcode-driver = { version = "0.13.0", path = "../qcode-driver" }
+qcode-kernel = { version = "0.13.0", path = "../qcode-kernel" }
+qcode-tools = { version = "0.13.0", path = "../qcode-tools" }
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+qcode-providers = { version = "0.13.0", path = "../qcode-providers" }
+tempfile.workspace = true

@@ -1,0 +1,196 @@
+//! `qcd` 的前台形态（ADR-0092 §11 阶段 2）。
+//!
+//! 只做「跑着」这一件事：装配引擎、抢单实例锁、每 30 秒推一次时钟，Ctrl-C 停。
+//! 分离进程、`qc daemon start|stop|status`、三平台各一段，都在阶段 3——先把「不开
+//! 任何 GUI 也能跑完一条任务」验出来，那是 ADR-0092 唯一的核心验收。
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use qcd::Daemon;
+use qcode_core::single_instance::{Outcome, Scope};
+
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    // 先解析参数再初始化日志：`--data-dir` 决定日志落在哪里，而 daemon 的日志是它
+    // 唯一的现场（ADR-0082）——写错目录等于没有日志。
+    let data_dir = match data_dir_arg() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("qcd: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    // **必须**在第一条 `tracing` 之前装好 subscriber，否则什么都不会落盘。`qcd`
+    // 没有终端，一行都不写等于这个进程从未存在过——这正是第一版实跑时的样子：
+    // 启动、退出、`qc.log` 里一个字都没有。
+    qcode_kernel::logging::init(None);
+    qcode_kernel::logging::attach_file(&data_dir);
+
+    qcode_core::lifecycle::install_reaper(qcode_tools::child_groups::kill_all);
+    qcode_core::lifecycle::start("qcd", &data_dir);
+
+    let exit = match run().await {
+        Ok(()) => 0,
+        Err(error) => {
+            // 无终端：说出来给日志，同时给 stderr（前台跑时有人看得见）。
+            tracing::error!(%error, "qcd stopped with an error");
+            eprintln!("qcd: {error}");
+            1
+        }
+    };
+    qcode_core::lifecycle::finish(exit);
+    std::process::ExitCode::from(exit as u8)
+}
+
+/// 只挑出 `--data-dir`，因为日志初始化必须发生在完整参数校验之前。
+///
+/// 重复一次扫描不算问题：`run()` 里那次才是权威的（它会拒绝未知参数），这里只
+/// 需要知道「日志该写哪」。
+fn data_dir_arg() -> Result<PathBuf, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--data-dir" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "--data-dir needs a value".to_string())?;
+            return Ok(PathBuf::from(value));
+        }
+        index += 1;
+    }
+    Ok(qcode_kernel::data_dir_hint(None))
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "qcd — 定时任务的常驻驱动（ADR-0092）\n\n\
+             Usage: qcd [--beat <secs>] [--data-dir <path>]\n\n\
+             一台机器只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，\n\
+             所以两个不同数据目录的 qcd 会互相拒绝。\n"
+        );
+        return Ok(());
+    }
+
+    let mut beat = qcd::DEFAULT_BEAT;
+    let mut data_dir: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--beat" => {
+                let value = args.get(index + 1).ok_or("--beat needs a value")?;
+                let secs: u64 = value.parse().map_err(|_| "--beat must be seconds")?;
+                beat = Duration::from_secs(secs.max(1));
+                index += 2;
+            }
+            "--data-dir" => {
+                let value = args.get(index + 1).ok_or("--data-dir needs a value")?;
+                data_dir = Some(PathBuf::from(value));
+                index += 2;
+            }
+            other => return Err(format!("qcd: unknown argument {other:?}").into()),
+        }
+    }
+
+    // ── 1. 机器级单实例（ADR-0092 §5）────────────────────────────────────
+    //
+    // base 是**默认**数据目录，不是 `--data-dir` 指的那个：这把锁要回答的是「这台
+    // 机器上是不是已经有一个 qcd」，而用 `--data-dir` 就会变成「这个数据目录有没有
+    // qcd」——于是两个不同目录的 daemon 各自「成功」，却违反了「一台机器一个」。
+    //
+    // 传错的后果不会报错，所以这段话必须留在这里。
+    let machine_dir = qcode_kernel::data_dir_hint(None);
+    // 拿 `Option` 是因为 `Disabled` 分支没有锁可持有。`Some` 的 `Primary` 必须活到
+    // 进程结束——掉了它就等于放锁（`Primary` 的文档就是这么要求的）。
+    let _machine_lock = match qcode_core::single_instance::acquire_in(Scope::QCD, &machine_dir)
+        .map_err(|error| format!("cannot take the machine-wide lock: {error}"))?
+    {
+        Outcome::Primary(primary) => Some(primary),
+        Outcome::HandedOver => {
+            // 明确失败，不假装成功（ADR-0092 §11）：一个说「已启动」但其实没启动的
+            // 进程，比没有这个能力更糟。
+            eprintln!(
+                "qcd: another qcd is already running on this machine.\n\
+                 One daemon per machine (ADR-0092 §5); stopping this one."
+            );
+            return Err("already running".into());
+        }
+        Outcome::Disabled(why) => {
+            // 锁机制不可用时**继续跑**：单实例是「防重复」而不是「防启动」，而定时
+            // 任务不跑是更坏的后果。说一句，别静默。
+            eprintln!("qcd: single-instance check skipped ({why}); two daemons could overlap");
+            None
+        }
+    };
+
+    // ── 2. 装配引擎（ADR-0036：唯一装配点）────────────────────────────────
+    let assembled = qcode_kernel::assemble(
+        None,
+        &std::env::current_dir()?,
+        data_dir,
+        None,
+        Default::default(),
+    )
+    .await?;
+
+    // ── 3. 驱动锁（ADR-0091，数据目录级）──────────────────────────────────
+    //
+    // 与上面那把是两回事：这把回答「谁是**这个数据目录**的时钟」，GUI 已经在推的
+    // 时候 daemon 就不该推。拿不到就退出，让人知道是谁在开车（阶段 4 再做「让路
+    // 等待」——那是有了 `qc daemon status` 之后才有意义的事）。
+    let driver_lock = assembled
+        .store
+        .try_lock_file(qcode_core::scheduler::DRIVER_LOCK)
+        .map_err(|error| format!("cannot take the driver lock: {error}"))?;
+    let Some(_driver_lock) = driver_lock else {
+        eprintln!(
+            "qcd: another process (a GUI window?) is driving this data directory; \
+             qcd will not drive it too (ADR-0091). Close it, or use `qc daemon status`."
+        );
+        return Err("driver lock held elsewhere".into());
+    };
+
+    // ── 4. 跑着 ────────────────────────────────────────────────────────────
+    let mut daemon = Daemon::new(assembled, beat);
+    eprintln!(
+        "qcd: driving {} (beat {}s, identity {})",
+        daemon.assembled.store.root().display(),
+        daemon.beat().as_secs(),
+        daemon.identity()
+    );
+
+    let mut clock = tokio::time::interval(beat);
+    // 第一拍立刻到来（`interval` 的默认行为），那正是我们要的：进程起来就该扫一次，
+    // 而不是先干等 30 秒。
+    //
+    // 每一拍传 `Instant::now()` 而不是累加 `beat`：`Clock` 拿它算「距上一拍多久」，
+    // 而机器休眠时 tokio 的定时器与单调时钟会一起走过那段时间——用真实值才看得出
+    // 「进程当时不在」（ADR-0059 §2）。
+    loop {
+        tokio::select! {
+            _ = clock.tick() => {
+                let report = daemon.tick(Instant::now()).await;
+                if report.changed_tasks() {
+                    tracing::info!(
+                        fired = report.fired,
+                        skipped = report.skipped,
+                        orphaned = report.orphaned,
+                        recovered = report.recovered,
+                        confirmed = report.confirmed,
+                        "schedule beat"
+                    );
+                }
+            }
+            // Ctrl-C：干净退出。正在跑的回合随进程结束而中断，会话日志里留下
+            // `interrupted`（`repair_interrupted` 下次补）。
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("qcd: stopping");
+                break;
+            }
+        }
+    }
+    Ok(())
+}

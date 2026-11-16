@@ -466,7 +466,7 @@ where
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
-        let redactor = qcode_kernel::redact::current();
+        let redactor = crate::redact::current();
         if redactor.is_empty() {
             // Nothing to mask: stream straight through rather than formatting
             // twice. This is the common case for a CLI run with no key resolved.
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn secrets_never_reach_a_rendered_line() {
         const KEY: &str = "sk-live-THIS-MUST-NEVER-APPEAR";
-        qcode_kernel::redact::install([KEY.to_string()]);
+        crate::redact::install([KEY.to_string()]);
 
         let line = rendered(ANSI_FILE, || {
             // The same secret twice in one line: a partial mask (first occurrence

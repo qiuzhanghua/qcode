@@ -219,7 +219,7 @@ pub(crate) fn install_ctrl_c(cancel: CancellationToken) {
                 // Through `lifecycle` and not `process::exit`: the second Ctrl-C is
                 // the ordinary way an interactive run dies, and it must leave the
                 // end line behind like any other exit.
-                crate::lifecycle::exit_now(130, crate::lifecycle::Reason::SigInt);
+                qcode_core::lifecycle::exit_now(130, qcode_core::lifecycle::Reason::SigInt);
             }
         }
     });
@@ -232,7 +232,7 @@ pub(crate) fn install_ctrl_c(cancel: CancellationToken) {
 /// reaches `lifecycle::finish` without changing every command's return type. Only
 /// the four places that build a non-zero code need it.
 pub(crate) fn exit_code(code: u8) -> std::process::ExitCode {
-    crate::lifecycle::note_exit_code(i32::from(code));
+    qcode_core::lifecycle::note_exit_code(i32::from(code));
     std::process::ExitCode::from(code)
 }
 

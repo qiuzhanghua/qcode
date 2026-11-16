@@ -1,8 +1,5 @@
-mod agents;
 mod boot;
 mod doctor;
-mod lifecycle;
-mod logging;
 #[cfg(windows)]
 mod sandbox_probe;
 mod tui;
@@ -69,7 +66,7 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
     let log_level = qcode_kernel::load_config(config.clone(), &workspace)
         .ok()
         .and_then(|loaded| loaded.log.level);
-    logging::init(log_level.as_deref());
+    qcode_kernel::logging::init(log_level.as_deref());
 
     // The file lives in the data directory, so it has to wait for that path. The
     // hint, not `resolve_data_dir`: that one probes and falls back, and a command
@@ -86,8 +83,12 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
     let logs_command = matches!(command, Some(Command::Logs(_)));
     if !logs_command {
         let data_dir = qcode_kernel::data_dir_hint(data_dir.clone());
-        logging::attach_file(&data_dir);
-        lifecycle::start(command_name(&command, launch.frontend), &data_dir);
+        qcode_kernel::logging::attach_file(&data_dir);
+        // The child-group registry lives in `qcode-tools`, which `qcode-core`
+        // cannot depend on; the binary that owns the groups hands the reaper
+        // over so a forced exit can still kill them (ADR-0082).
+        qcode_core::lifecycle::install_reaper(qcode_tools::child_groups::kill_all);
+        qcode_core::lifecycle::start(command_name(&command, launch.frontend), &data_dir);
     }
 
     let result = match command {
@@ -148,7 +149,7 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
     // signal paths write their own (see `lifecycle`), and the guard there keeps
     // this from doubling it.
     let exit = if code == ExitCode::SUCCESS { 0 } else { 1 };
-    lifecycle::finish(exit);
+    qcode_core::lifecycle::finish(exit);
     code
 }
 

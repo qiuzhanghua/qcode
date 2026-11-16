@@ -4,6 +4,11 @@
 //! particular OS, or how a tool is executed. Implementations live in sibling
 //! crates and are injected through the traits defined here.
 
+/// `AGENTS.md` 的发现与读取。
+///
+/// 与 [`lifecycle`] 同一个理由搬进来：`qcd` 也要守同一套项目规矩，否则一条定时
+/// 任务会做出与前台回合不一样的事——而两边都会认为自己是对的。
+pub mod agents;
 pub mod approval;
 pub mod compact;
 pub mod cost;
@@ -12,6 +17,12 @@ pub mod event;
 pub mod history;
 pub mod inbox;
 pub mod launch;
+/// The first and last line of every run (ADR-0082).
+///
+/// Lives in `qcode-core` rather than in the `qc` binary because `qcd` needs the
+/// same two boundary lines: it has no terminal either, so `qc.log` is its only
+/// record of having run at all (ADR-0092 §2, stage 2).
+pub mod lifecycle;
 pub mod network;
 pub mod paths;
 pub mod policy;

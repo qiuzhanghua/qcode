@@ -89,7 +89,7 @@ pub(crate) fn gui_rebuild_hook(
             // ADR-0087: same two strings `qc run` and the TUI inject, so the
             // model sees `AGENTS.md` and the skills index here too.
             let skills_prompt = kernel.skills.prompt_section();
-            let agents_md = agents::load(&workspace).ok().flatten();
+            let agents_md = qcode_core::agents::load(&workspace).ok().flatten();
             let engine = qcode_gui::Engine {
                 store: kernel.store,
                 provider: kernel.provider.into(),
@@ -154,7 +154,7 @@ pub(crate) async fn cmd_gui(
     // callback is idempotent (`lifecycle::end_once` writes once and ignores the
     // rest), so on Linux and Windows it just writes the same line a moment earlier.
     // Gating it would make the two platforms diverge in a way only the log sees.
-    qcode_gui::on_quit(Box::new(|| crate::lifecycle::finish(0)));
+    qcode_gui::on_quit(Box::new(|| qcode_core::lifecycle::finish(0)));
 
     // ADR-0083 §3: the lock is taken at the very top of `cmd_gui`, and `main`
     // never touches it. That placement is what keeps `qc run` / `qc acp` /
@@ -175,7 +175,7 @@ pub(crate) async fn cmd_gui(
             // ADR-0082 §2 / ADR-0083 §5: even a process that exits immediately
             // goes through the log funnel. Writing "start" without "end" is what
             // makes the *next* launch report a false crash.
-            crate::lifecycle::exit_now(0, crate::lifecycle::Reason::HandedOver)
+            qcode_core::lifecycle::exit_now(0, qcode_core::lifecycle::Reason::HandedOver)
         }
         // The mutex itself is broken (NFS, permissions). Not a reason to keep
         // the user out of the GUI — the GUI is how they debug things.
@@ -436,7 +436,7 @@ pub(crate) async fn cmd_gui(
         snapshots: Some(snapshots),
         // ADR-0087: same two strings `qc run` and the TUI inject.
         skills_prompt: kernel.skills.prompt_section(),
-        agents_md: agents::load(&workspace)?,
+        agents_md: qcode_core::agents::load(&workspace)?,
         shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
         schedule_declared: kernel.config.schedules.keys().cloned().collect(),
@@ -491,7 +491,7 @@ pub(crate) async fn cmd_tui(
         "starting TUI"
     );
 
-    let agents_md = agents::load(&workspace)?;
+    let agents_md = qcode_core::agents::load(&workspace)?;
     let skills = kernel.skills.clone();
     let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);

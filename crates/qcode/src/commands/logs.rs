@@ -26,8 +26,8 @@ pub(crate) fn cmd_logs(
     data_dir: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let data_dir = qcode_kernel::resolve_data_dir(data_dir);
-    let dir = logging::log_dir(&data_dir);
-    let current = logging::current_log(&data_dir);
+    let dir = qcode_kernel::logging::log_dir(&data_dir);
+    let current = qcode_kernel::logging::current_log(&data_dir);
 
     println!("{}", current.display());
 
@@ -39,7 +39,7 @@ pub(crate) fn cmd_logs(
     // than a filter that silently passes everything.
     let filter = Filter::new(args.grep.as_deref(), args.since.as_deref())?;
 
-    let files = match logging::log_files(&data_dir) {
+    let files = match qcode_kernel::logging::log_files(&data_dir) {
         Ok(files) => files,
         // Not "no log files": the directory could not be listed, and saying it is
         // empty sends the reader looking for a logging bug that is not there. An
@@ -416,7 +416,7 @@ pub(crate) struct Follower {
 
 impl Follower {
     pub(crate) fn new(data_dir: PathBuf) -> Self {
-        let path = logging::current_log(&data_dir);
+        let path = qcode_kernel::logging::current_log(&data_dir);
         Self {
             data_dir,
             path,
@@ -446,7 +446,7 @@ impl Follower {
 
         // Resolve every time: rotation moves the symlink target, and on platforms
         // without symlinks `current_log` picks a different dated file.
-        let current = logging::current_log(&self.data_dir);
+        let current = qcode_kernel::logging::current_log(&self.data_dir);
         if current != self.path {
             notice = Some(format!(
                 "--- following {} ---",
@@ -617,7 +617,7 @@ mod tests {
     /// (which is how the tests stay platform-neutral — Windows refuses to make one).
     fn fixture(dated: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let logs = logging::log_dir(dir.path());
+        let logs = qcode_kernel::logging::log_dir(dir.path());
         std::fs::create_dir_all(&logs).unwrap();
         let path = logs.join(dated);
         std::fs::write(&path, "").unwrap();
@@ -707,7 +707,7 @@ mod tests {
         append(&path, "yesterday\n");
         assert_eq!(follower.poll().unwrap().text, "yesterday\n");
 
-        let next = logging::log_dir(dir.path()).join("qc.2026-01-02.log");
+        let next = qcode_kernel::logging::log_dir(dir.path()).join("qc.2026-01-02.log");
         std::fs::write(&next, "today\n").unwrap();
         // Make the old file older, because `log_files` orders by modification time
         // and the two writes above can land in the same clock tick.
@@ -746,13 +746,13 @@ mod tests {
     #[test]
     fn a_file_that_appears_later_is_picked_up() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(logging::log_dir(dir.path())).unwrap();
+        std::fs::create_dir_all(qcode_kernel::logging::log_dir(dir.path())).unwrap();
         let mut follower = Follower::new(dir.path().to_path_buf());
 
         assert_eq!(follower.poll().unwrap(), Update::default());
         assert_eq!(follower.poll().unwrap(), Update::default());
 
-        let path = logging::log_dir(dir.path()).join("qc.2026-01-01.log");
+        let path = qcode_kernel::logging::log_dir(dir.path()).join("qc.2026-01-01.log");
         std::fs::write(&path, "first ever line\n").unwrap();
         assert_eq!(follower.poll().unwrap().text, "first ever line\n");
     }
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn a_search_reaches_back_past_the_rotation() {
         let dir = tempfile::tempdir().unwrap();
-        let logs = logging::log_dir(dir.path());
+        let logs = qcode_kernel::logging::log_dir(dir.path());
         std::fs::create_dir_all(&logs).unwrap();
         let yesterday = logs.join("qc.2026-11-15.log");
         let today = logs.join("qc.2026-11-16.log");
@@ -927,7 +927,7 @@ mod tests {
             .unwrap();
 
         let filter = Filter::new(Some("pid=14275"), None).unwrap();
-        let files = logging::log_files(dir.path()).unwrap();
+        let files = qcode_kernel::logging::log_files(dir.path()).unwrap();
         assert_eq!(files.len(), 2);
         let found = filter.tail_across(&files, &today, 40).unwrap();
         assert_eq!(
@@ -944,7 +944,7 @@ mod tests {
     #[test]
     fn the_line_limit_counts_across_files_and_keeps_the_newest() {
         let dir = tempfile::tempdir().unwrap();
-        let logs = logging::log_dir(dir.path());
+        let logs = qcode_kernel::logging::log_dir(dir.path());
         std::fs::create_dir_all(&logs).unwrap();
         let first = logs.join("qc.2026-11-15.log");
         let second = logs.join("qc.2026-11-16.log");
@@ -958,7 +958,7 @@ mod tests {
             .unwrap();
 
         let filter = Filter::new(Some("hit"), None).unwrap();
-        let files = logging::log_files(dir.path()).unwrap();
+        let files = qcode_kernel::logging::log_files(dir.path()).unwrap();
         assert_eq!(
             filter.tail_across(&files, &second, 2).unwrap(),
             vec!["hit two".to_string(), "hit three".to_string()],

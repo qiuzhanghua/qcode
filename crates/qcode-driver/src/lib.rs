@@ -37,10 +37,15 @@ use std::time::Duration;
 pub mod runtime;
 
 use qcode_core::schedule::{
-    Advance, ScheduledTask, TaskStatus, TaskTick, UNATTENDED_APPROVAL_TIMEOUT, advance_rule,
-    delivery_floor_end, task_tick,
+    Advance, ScheduledTask, TaskStatus, TaskTick, advance_rule, delivery_floor_end, task_tick,
 };
 use time::PrimitiveDateTime;
+
+/// 无人值守时的缺省审批截止时间（ADR-0092 §7）。
+///
+/// 重导出 `qcode-core` 的那一个，而不是另立一个值：驱动、CLI 输出与 daemon 三方
+/// 若各写一个数字，用户看到的「5 分钟」与真正生效的就会不是同一个数。
+pub use qcode_core::schedule::UNATTENDED_APPROVAL_TIMEOUT;
 
 /// 一个 tick 里对**一个**任务该做什么。
 ///

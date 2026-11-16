@@ -5,6 +5,12 @@
 
 pub mod config;
 pub mod config_edit;
+/// 日志初始化与 `qc.log` 的落点。
+///
+/// 在 `qcode-kernel` 而不是某个二进制里：`qc` 与 `qcd` 都要写同一份 `qc.log`，
+/// 而 daemon 没有终端——日志是它唯一的现场（ADR-0082）。放在 kernel 是因为这里
+/// 已经是「装配点」（`assemble`、`redact::install`），不是因为它和引擎有关。
+pub mod logging;
 pub mod provider_registry;
 pub mod redact;
 /// Engine-backed `subagent` runner (ADR-0087). It lives here, not in the binary,

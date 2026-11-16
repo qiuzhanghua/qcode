@@ -16,6 +16,8 @@ qcode-providers = { version = "0.13.0", path = "../qcode-providers" }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 toml.workspace = true
 toml_edit = "0.22"
 # `spawn_blocking` for the shell environment sample (ADR-0070). `assemble` is
@@ -45,4 +47,3 @@ path = "tests/support/http_probe_server.rs"
 tempfile.workspace = true
 # Captures the `skipping MCP server` warnings the grant tests would otherwise
 # drop (no subscriber in a test process), so a failed spawn says why.
-tracing-subscriber.workspace = true

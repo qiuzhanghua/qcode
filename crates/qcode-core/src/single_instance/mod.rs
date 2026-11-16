@@ -85,6 +85,20 @@ impl Scope {
         env_var: "QC_GUI_SINGLE_INSTANCE",
     };
 
+    /// 定时任务 daemon（ADR-0092 §5）。
+    ///
+    /// 与 `GUI` 的**作用域不同**，这一点必须记牢：GUI 那把锁住在
+    /// `<data-dir>/locks/gui.lock`，作用域是「一个数据目录」；daemon 这把要回答
+    /// 的是「这台机器上是不是已经有一个 qcd 在跑」，所以它拿锁时传的是**默认**
+    /// 数据目录，不是 `--data-dir` 指的那个。
+    ///
+    /// 传错 base 的后果不会报错：两个不同 `--data-dir` 的 qcd 会各自抢到一把
+    /// 「机器级」锁，然后同时往两个数据目录里投递——而它们本该被拒。
+    pub const QCD: Self = Self {
+        prefix: "qcd",
+        env_var: "QC_QCD_SINGLE_INSTANCE",
+    };
+
     /// 锁文件与通道文件的前缀（`gui` → `locks/gui.lock`）。
     pub fn prefix(&self) -> &'static str {
         self.prefix

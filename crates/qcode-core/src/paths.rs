@@ -106,6 +106,55 @@ pub fn log_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("logs")
 }
 
+/// The log file this process is writing to.
+///
+/// `logs/qc.log` is a symlink to the current daily file (ADR-0082). A `qc log`
+/// invocation reads it, and so does the orphan scan in
+/// [`crate::lifecycle`]; both need to resolve to the *same* file the writer
+/// holds, which is why this is one function rather than two similar ones.
+///
+/// Falls back to the expected path when neither the link nor any file exists:
+/// callers use it as "where the log would be", and a missing file is reported
+/// by the reader, not by path resolution.
+pub fn current_log(data_dir: &Path) -> PathBuf {
+    let link = log_dir(data_dir).join(LOG_NAME);
+    if link.exists() {
+        return link;
+    }
+    latest_log_file(data_dir).unwrap_or(link)
+}
+
+/// Name of the stable entry point into the rolled logs.
+pub const LOG_NAME: &str = "qc.log";
+
+/// The most recent rolled file in `logs/`, if any.
+///
+/// Filtered and ordered **exactly** as `qc logs` orders them (`log_files`):
+/// name starts with `qc.`, ends with `.log`, newest mtime last. Keeping the two
+/// in step matters because `current_log` reads through this — a different order
+/// here would make the orphan scan read a different file than the one the user
+/// is looking at.
+fn latest_log_file(data_dir: &Path) -> Option<PathBuf> {
+    let dir = log_dir(data_dir);
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            entry.file_type().is_ok_and(|kind| kind.is_file())
+                && name.starts_with("qc.")
+                && name.ends_with(".log")
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect();
+    files.sort();
+    files.pop().map(|(_, path)| path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

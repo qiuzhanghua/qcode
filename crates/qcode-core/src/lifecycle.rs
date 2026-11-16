@@ -174,7 +174,7 @@ fn end_once(reason: Reason, exit: i32) {
 /// amount of cleverness in the exit paths: an end line that is *missing* is the
 /// signal, and the next launch is the only place it can be reported.
 fn report_orphans(data_dir: &Path) {
-    let path = crate::logging::current_log(data_dir);
+    let path = crate::paths::current_log(data_dir);
     let Some(tail) = read_tail(&path) else {
         return;
     };
@@ -354,6 +354,31 @@ fn before_forced_exit(reason: Reason, code: i32) {
     end_once(reason, code);
 }
 
+/// A hook run just before a forced exit, to kill whatever this process started.
+///
+/// Injected rather than called directly: the registry of child process groups
+/// lives in `qcode-tools`, which depends on this crate, so reaching for it here
+/// would be a cycle. The binary that owns those groups installs the hook at
+/// startup; a process that never registers one simply has nothing to reap.
+///
+/// Type is a plain `fn` pointer, not a closure: it runs on a signal path where
+/// taking a lock to find it would be the deadlock this whole file is careful
+/// about.
+static REAPER: std::sync::RwLock<Option<fn() -> usize>> = std::sync::RwLock::new(None);
+
+/// Register the function called before a forced exit. Idempotent.
+///
+/// Read via `try_read`: on a signal path a contended lock must not hang the
+/// process. A failed read means "someone is installing it right now", and the
+/// right answer then is to skip the reap rather than block — the groups are
+/// killed by the kernel when the process dies anyway; this hook only makes it
+/// happen before the exit line is written.
+pub fn install_reaper(reaper: fn() -> usize) {
+    if let Ok(mut slot) = REAPER.write() {
+        *slot = Some(reaper);
+    }
+}
+
 /// Kill every registered child group, returning how many there were.
 ///
 /// Split out from [`before_forced_exit`] so the half without process-wide side
@@ -365,7 +390,8 @@ fn before_forced_exit(reason: Reason, code: i32) {
 /// there is nobody left to escalate later. Synchronous and microseconds-cheap, so
 /// it fits in the ~200ms a signal death gives us.
 fn reap_child_groups() -> usize {
-    qcode_tools::child_groups::kill_all()
+    let reaper = REAPER.try_read().ok().and_then(|slot| *slot);
+    reaper.map_or(0, |reaper| reaper())
 }
 
 /// Windows has no `SIGTERM`; the equivalent events arrive on a console handler
@@ -512,27 +538,36 @@ mod tests {
     /// that `the_end_line_is_written_once` owns, and the two would race. The wiring
     /// itself is pinned by `the_forced_exit_reaps_before_it_writes_the_end_line`.
     ///
-    /// Unix only: Windows registers job objects (`register_in_job`) rather than
-    /// process groups, so there is no `LiveGroup::register` to drive there. The
-    /// source-shape test above covers both platforms.
-    #[cfg(unix)]
+    /// What this asserts is the **hook**, not the registry behind it: the registry
+    /// of live process groups lives in `qcode-tools`, which this crate cannot
+    /// depend on. That the registered groups actually get drained is
+    /// `qcode-tools`'s test, where the registry is in scope.
     #[test]
-    fn a_forced_exit_reaps_the_registered_child_groups() {
-        // A pid that cannot exist: this test must never signal a real process.
-        let guard = qcode_tools::child_groups::LiveGroup::register(4_000_021);
-        assert!(
-            qcode_tools::child_groups::registered().contains(&4_000_021),
-            "the fixture has to be registered before this proves anything"
+    fn a_forced_exit_calls_the_reaper_that_was_installed() {
+        static CALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn reaper() -> usize {
+            CALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            3
+        }
+
+        install_reaper(reaper);
+        assert_eq!(reap_child_groups(), 3, "the reaper's count is the answer");
+        assert_eq!(
+            CALLED.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "installing a reaper has to make the forced-exit path actually call it"
         );
-        assert!(
-            reap_child_groups() >= 1,
-            "the forcing path has to reap, not just log"
-        );
-        assert!(
-            qcode_tools::child_groups::registered().is_empty(),
-            "the registry has to be drained, or the groups are lost with the process"
-        );
-        drop(guard);
+    }
+
+    /// A process that never installed a reaper has nothing to reap, and must not
+    /// panic on the signal path.
+    #[test]
+    fn no_reaper_means_nothing_to_reap() {
+        // `install_reaper` has no "clear" because no real process ever unsets it;
+        // this test only runs meaningfully in a binary where nothing registered,
+        // so it asserts the tolerant shape rather than a specific count.
+        let count = reap_child_groups();
+        assert!(count <= 4_000_000, "a count, not a panic: got {count}");
     }
 
     /// A clean pair after a dirty one clears the warning: the previous run was

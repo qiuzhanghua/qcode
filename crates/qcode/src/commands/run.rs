@@ -129,7 +129,7 @@ pub(crate) async fn cmd_run(
         "provider resolved"
     );
 
-    let agents_md = agents::load(&workspace)?;
+    let agents_md = qcode_core::agents::load(&workspace)?;
     if agents_md.is_some() {
         tracing::info!("loaded AGENTS.md from the workspace root");
     }

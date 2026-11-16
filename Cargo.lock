@@ -5335,6 +5335,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qcd"
+version = "0.13.0"
+dependencies = [
+ "async-trait",
+ "qcode-core",
+ "qcode-driver",
+ "qcode-kernel",
+ "qcode-providers",
+ "qcode-tools",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "qcode"
 version = "0.13.0"
 dependencies = [
@@ -5512,6 +5529,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.22.27",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
 ]
 

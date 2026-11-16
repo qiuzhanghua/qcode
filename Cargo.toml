@@ -17,6 +17,8 @@ members = [
   "crates/qcode-kernel",
   # 定时任务的驱动逻辑：纯决策，无 IO/时钟/线程；GUI 与 daemon 共用（ADR-0092 §6）。
   "crates/qcode-driver",
+  # 定时任务的常驻驱动。独立 package，所以不链 gpui（ADR-0092 §2）。
+  "crates/qcd",
   "crates/qcode-attachments",
   # Terminal emulation core for the desktop GUI; see ADR-0062.
   "crates/qcode-terminal",

@@ -10645,8 +10645,8 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 | `qcode-driver` | **决策 + 一拍** | `lib.rs`：`plan_tick` / `plan_recovery` / `advance_past` / `delivery_session` / `Executor::{Attended,Unattended}`（`tests/plan.rs` 9 条假时钟用例）。`runtime.rs`：`Clock` + `ScheduleDriver::on_beat` + `Host`，即时钟 beat、投递、记账、确认、崩溃恢复（`tests/drive.rs` 12 条，真 store + 假时钟）。**没有**：前端循环（留在各自前端，见 DAEMON-TASKS 阶段 1）、可跟随的事件出口 |
 | `qcode-daemon` | ❌ 不存在 | 无此 crate |
 | `qcode-gui` | **消费方** | 调度段已是适配器：`GuiHost` 实现 `Host`（约 130 行），时钟分支调 `on_beat` 并消费 `report.starts`。`deliver_schedule_group!`、`bind_fresh_session`、`inflight` / `pending_ack`、`last_beat` / `gap_limit`、`GuiProbe` 都已删除；`[schedules]` 配置路径也已随 ADR-0096 删除。**仍在 GUI**：`select!` 循环本身（UI 命令/回合结束/队列发布） |
-| `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有 |
-| `qcd`（新 bin） | ❌ 不存在 | 同上；但前提已验，见下 |
+| `qc`（bin） | ❌ 无 `daemon` 子命令 | `crates/qcode/src/cli.rs` 的 17 个子命令里没有（阶段 3） |
+| `qcd`（新 package + bin） | **前台可跑**（阶段 2） | `crates/qcd`：`Daemon::tick(at)`（可注入墙钟 + 单调时钟）、`DaemonHost` 实现 `Host`（10 个方法）、`main.rs` 前台循环。**无 GPU 依赖**（`cargo tree -p qcd` 里 gpui/wgpu/winit 计数 0，对照 `qc` 是 39），体积 69M vs 199M。`tests/acceptance.rs` 3 条自动化验收。**没有**：分离进程、`qc daemon` 客户端、让路等待 |
 
 四条留给后续实现的话：
 
@@ -10668,6 +10668,25 @@ daemon **不发系统通知**。三条平台通道（UserNotifications / Windows
 4. **「`qcd` 没装时要明确失败」目前无处验证。** 连 `qc daemon start` 都还没有，用户敲下去
    拿到的是 clap 的 unknown subcommand。做客户端时要用集成测试守住——PATH 里没有 `qcd`
    时断言退出码非 0 且 stderr 说实话。
+
+**阶段 2 已落地（2026-11-16）**，四件值得记的事：
+
+- **验证 1 从「手验一分钟」变成 CI 里 0.04 秒。** 原文要求「不开任何 GUI，建一条 1 分钟后
+  触发的任务，到点自己跑完，`qc sessions` 里查得到完整事件」。手验要真等、还要有 provider。
+  `Daemon::tick(at)` 的两个时间来源本来就是参数，加了 `WallClock` trait 之后墙钟也能注入，
+  于是 `tests/acceptance.rs` 用假时钟 + 真 `SessionStore` + 真 `run_turn` + mock provider
+  把整条链路跑完。三件事分开测：到点跑完、没到点不动、长时间缺席不补跑。
+- **`qcd` 必须是独立 package，这点被体积证明了。** 在 `crates/qcode` 里加第二个 `[[bin]]`
+  会共用那份依赖表，于是把 gpui → wgpu 链接进一个没有窗口的常驻进程。实测：`qcd` 69M、
+  `qc` 199M，`cargo tree -p qcd | grep -cE "gpui|wgpu|winit"` 为 **0**。裁决不是靠读文档，
+  是 `cargo tree`。
+- **三个文件从 `qc` 二进制搬进了下层，因为第二个前端够不到它们**：`lifecycle`（→ core）、
+  `agents`（→ core）、`logging`（→ kernel，那里已经是装配点）。这不是重构洁癖：搬之前
+  `qcd` 跑起来**一行日志都没有**，「daemon 的日志是唯一现场」直接落空。搬的过程还顺手发现
+  `lifecycle` 依赖 `qcode-tools::child_groups`（方向的死结），改成 `install_reaper` 注入
+  回调——二进制把注册表交给 core，core 不认识 tools。
+- **`Executor::Unattended` 在实机生效了。** 实跑时 `StartTurn.approval` 是 `Some(300s)`
+  ——§7 那条「没设截止时间的任务会让会话写锁永远握着」的硬约束，从纸面变成了运行时的值。
 
 ### 12. 非目标（本期）
 

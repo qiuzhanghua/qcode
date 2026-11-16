@@ -53,7 +53,7 @@ pub(crate) async fn cmd_acp(
         &kernel.resolved.model,
         kernel.config.agent.max_cost_usd,
     )?;
-    let agents_md = agents::load(&workspace)?;
+    let agents_md = qcode_core::agents::load(&workspace)?;
     let skills_prompt = kernel.skills.prompt_section();
 
     tracing::info!(
