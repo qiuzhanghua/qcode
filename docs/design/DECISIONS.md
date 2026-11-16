@@ -8575,6 +8575,20 @@ ADR-0077 把日志落到 `logs/qc.log`，ADR-0079 把 38 处 `eprintln!` 归入 
   放在 `init()` 后等于写了不落盘——需求会静默失效。
 - 覆盖：`main` 的单一漏斗（所有 `cmd_*` 的 `Result` 汇到这里）、`SIGTERM`/`SIGHUP`、panic hook、
   连按两次 Ctrl-C 的 `exit(130)`。`SIGTERM` 那条是最主要的实际死法：ACP 被编辑器关掉。
+
+**信号路径也要收子进程组（2026-11-16 补）**
+
+信号路径原来是 `end_once` 之后直接 `exit`，**跳过了 GUI 退出钩子做的 `kill_all()`**。后果
+不对称：关终端（走 `on_app_quit`）会清理，注销/被 SIGTERM（走信号）则把 `cargo build`
+留在自己的进程组里——登记表就在本进程内存里，进程一走就没人知道那些组存在，而「异常退出
+靠下次启动补账」只能补日志，补不回进程。
+
+修法是把两处强制退出都换成同一个漏斗 `before_forced_exit`：先 `kill_all()`，再记末行。
+顺序不能反——末行写完就 exit，后面的清理再也不会执行。Windows 的
+`CTRL_CLOSE_EVENT`/`CTRL_LOGOFF_EVENT`/`CTRL_SHUTDOWN_EVENT` 漏的是同一件事，一并改。
+能捕获的信号不是「无法留下痕迹」的那种死法（SIGKILL/崩溃才是），既然有机会跑代码，就该
+把该收的收掉。
+
 - **信号处理不在 handler 自己的栈上打日志**：`tracing` 写端要拿锁，handler 打断的正是持锁
   线程就会死锁在退出路径上。异步信号走 tokio（在普通任务上投递），Windows 控制台回调是没有
   替代方案的那个例外，已在代码里注明。

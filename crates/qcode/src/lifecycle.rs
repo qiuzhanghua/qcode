@@ -325,11 +325,47 @@ fn install_signal_handlers() {
                 return;
             };
             if stream.recv().await.is_some() {
-                end_once(reason, code);
+                before_forced_exit(reason, code);
                 std::process::exit(code);
             }
         });
     }
+}
+
+/// Everything that must happen before a signal kills us.
+///
+/// Split out from the handler so it can be tested: the handler ends in
+/// `std::process::exit`, which a test cannot come back from.
+///
+/// The order matters. Child groups first, then the end line — a SIGTERM in the
+/// middle of a turn leaves `cargo build` running in its own process group, and
+/// nothing will ever reap it: the registry lives in this process and dies with
+/// it. The GUI's `on_app_quit` hook already does exactly this (`kill_all`), and
+/// this path used to skip it purely because it was written earlier — so closing
+/// the terminal mid-turn cleaned up and a logout mid-turn leaked. A signal we can
+/// catch is not the unloggable case the orphan scan exists for.
+///
+/// `cfg_attr` rather than a plain `allow`: the fallback platform has no forced-exit
+/// path at all, so the function is genuinely unused there — but on a platform that
+/// does have one, forgetting the call must stay visible as a warning.
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+fn before_forced_exit(reason: Reason, code: i32) {
+    reap_child_groups();
+    end_once(reason, code);
+}
+
+/// Kill every registered child group, returning how many there were.
+///
+/// Split out from [`before_forced_exit`] so the half without process-wide side
+/// effects can be tested: `end_once` flips a static that another test in this
+/// binary owns, and racing it would make that test flaky rather than this one
+/// wrong.
+///
+/// SIGKILL per group, matching the quit hook: the process is on its way out and
+/// there is nobody left to escalate later. Synchronous and microseconds-cheap, so
+/// it fits in the ~200ms a signal death gives us.
+fn reap_child_groups() -> usize {
+    qcode_tools::child_groups::kill_all()
 }
 
 /// Windows has no `SIGTERM`; the equivalent events arrive on a console handler
@@ -357,9 +393,14 @@ fn install_signal_handlers() {
     unsafe extern "system" fn handler(event: u32) -> i32 {
         match event {
             CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
+                // Same order and the same reason as the Unix path: the registered
+                // process groups are ours to reap, and this process is the only one
+                // that knows they exist. A logoff mid-turn used to leave
+                // `taskkill`-able trees running with nobody to kill them.
+                //
                 // No signal number exists on this platform; 0 says "not our exit
                 // code to report", and `reason` carries the meaning.
-                end_once(Reason::SigTerm, 0);
+                before_forced_exit(Reason::SigTerm, 0);
                 // Hand the event back so the default handler still terminates us.
                 FALSE
             }
@@ -377,7 +418,6 @@ fn install_signal_handlers() {
 
 #[cfg(not(any(unix, windows)))]
 fn install_signal_handlers() {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +463,76 @@ mod tests {
             start_line(3)
         );
         assert_eq!(orphan_pid(&text).as_deref(), Some("3"));
+    }
+
+    /// The funnel must reap *before* it writes the end line, and it must reap at all.
+    ///
+    /// Asserted against the source because the behaviour is not observable from a
+    /// test: seeing it requires exiting the process, and `end_once` flips a static
+    /// that `the_end_line_is_written_once` owns — racing it would trade one flaky test
+    /// for another. What is being pinned is the *order of two statements and the
+    /// presence of one call*, which the source states directly; the repo already
+    /// asserts code shape this way for `install-linux-desktop.sh`.
+    ///
+    /// The first version of the test below called `reap_child_groups()` itself and so
+    /// proved nothing about the wiring: deleting the call from the funnel left it
+    /// green, which is exactly how the bug got in.
+    #[test]
+    fn the_forced_exit_reaps_before_it_writes_the_end_line() {
+        let source = include_str!("lifecycle.rs");
+        let start = source
+            .find("fn before_forced_exit")
+            .expect("the forced-exit funnel has to exist");
+        let rest = &source[start..];
+        let body = &rest[..rest.find("\n}").expect("the funnel has to end")];
+
+        let reap = body
+            .find("reap_child_groups()")
+            .expect("the funnel has to reap the process groups it registered");
+        let end = body
+            .find("end_once(")
+            .expect("the funnel still has to write the end line");
+        assert!(
+            reap < end,
+            "reap first: the end line is the last thing that runs before exit, so \
+             anything after it never happens"
+        );
+    }
+
+    /// A forced exit has to reap the groups it registered.
+    ///
+    /// The bug this pins: the signal path only wrote the end line and exited, so a
+    /// SIGTERM in the middle of a turn left `cargo build` running in its own process
+    /// group forever — the registry lives in this process's memory and dies with it,
+    /// and the next launch's orphan scan can only restore the *log*, not the process.
+    /// Closing the terminal (the GUI quit hook) always cleaned up; logging out
+    /// (a signal) did not.
+    ///
+    /// Only the reaping half is asserted, deliberately: `end_once` flips a static
+    /// that `the_end_line_is_written_once` owns, and the two would race. The wiring
+    /// itself is pinned by `the_forced_exit_reaps_before_it_writes_the_end_line`.
+    ///
+    /// Unix only: Windows registers job objects (`register_in_job`) rather than
+    /// process groups, so there is no `LiveGroup::register` to drive there. The
+    /// source-shape test above covers both platforms.
+    #[cfg(unix)]
+    #[test]
+    fn a_forced_exit_reaps_the_registered_child_groups() {
+        // A pid that cannot exist: this test must never signal a real process.
+        let guard = qcode_tools::child_groups::LiveGroup::register(4_000_021);
+        assert!(
+            qcode_tools::child_groups::registered().contains(&4_000_021),
+            "the fixture has to be registered before this proves anything"
+        );
+        assert!(
+            reap_child_groups() >= 1,
+            "the forcing path has to reap, not just log"
+        );
+        assert!(
+            qcode_tools::child_groups::registered().is_empty(),
+            "the registry has to be drained, or the groups are lost with the process"
+        );
+        drop(guard);
     }
 
     /// A clean pair after a dirty one clears the warning: the previous run was

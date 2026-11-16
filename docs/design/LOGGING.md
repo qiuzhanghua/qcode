@@ -309,6 +309,9 @@ INFO qc::lifecycle: qc session ending   pid=313667 exit=143 reason=sigterm uptim
 ```
 
 - 只有这两条带 pid；`reason` ∈ `normal` / `sigint` / `sigterm` / `sighup` / `panic`。
+- `sigterm` / `sighup` 走 `before_forced_exit`：**先杀掉登记的进程组，再写末行**。顺序是
+  语义的一部分——末行写完立刻 `exit`，之后的清理不会执行；而登记表在本进程内存里，进程一走
+  那些进程组就再没人找得到（下次启动的补账能补日志，补不回进程）。
 - **不记 argv**：启动时 `redact::install` 还没武装，`--api-key` 会原样落盘。只记子命令名。
 - 必须在 `attach_file()` 之后——之前写的会被 `FileTarget::Nowhere` 丢掉，等于写了不落盘。
 - `qc logs` 自己豁免（读取不该创建被读的文件），它的边界行只在终端。
