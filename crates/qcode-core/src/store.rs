@@ -12,8 +12,8 @@ use rusqlite::{Connection, params};
 use time::{Duration, OffsetDateTime};
 
 use crate::event::{
-    Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, TaskRenamed, ToolResult,
-    ToolStatus,
+    Event, EventKind, RootsChanged, SessionStarted, TaskConfigured, TaskRenamed, TitleGenerated,
+    TitleSource, ToolResult, ToolStatus,
 };
 use crate::schedule::{ScheduleState, ScheduleStatus, ScheduledTask};
 use crate::task::{Root, Task, TaskError};
@@ -404,6 +404,34 @@ impl SessionStore {
         Ok(event)
     }
 
+    /// Append a model-or-fallback session title (会话标题自动生成设计). Unlike
+    /// [`Self::rename_task`] it does not touch the Task aggregate — a generated
+    /// title is a display fact, not a user rename.
+    pub fn append_title_generated(
+        &self,
+        id: &str,
+        title: String,
+        message_seqs: Vec<u64>,
+        source: TitleSource,
+    ) -> Result<Event, StoreError> {
+        let _lock = self.lock(id)?;
+        let events = self.load(id)?;
+        let seq = events.last().map(|event| event.seq).unwrap_or(0) + 1;
+        let turn = events.last().map(|event| event.turn).unwrap_or(0);
+        let event = Event::new(
+            seq,
+            id,
+            turn,
+            EventKind::TitleGenerated(TitleGenerated {
+                title,
+                message_seqs,
+                source,
+            }),
+        );
+        self.append(&event)?;
+        Ok(event)
+    }
+
     /// Rebuild the Task view from the session log, falling back to a legacy
     /// single-root task when no task event exists.
     pub fn task(&self, id: &str) -> Result<Task, StoreError> {
@@ -609,6 +637,10 @@ impl SessionStore {
         let lines: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
         let total = lines.len();
         let mut events: Vec<Event> = Vec::new();
+        // A newer build may append kinds this reader does not know. Skipping
+        // them keeps the log replayable (schema-additive contract); the seq
+        // continuity check below then has to tolerate the gap.
+        let mut skipped_unknown = false;
 
         for (index, line) in lines.iter().enumerate() {
             if line.trim().is_empty() {
@@ -619,17 +651,49 @@ impl SessionStore {
                     if let Some(last) = events.last() {
                         let expected = last.seq + 1;
                         if event.seq != expected {
-                            return Err(StoreError::Seq {
+                            if !skipped_unknown {
+                                return Err(StoreError::Seq {
+                                    expected,
+                                    got: event.seq,
+                                });
+                            }
+                            // A skipped future-kind event explains the gap; the
+                            // log itself is fine.
+                            tracing::warn!(
                                 expected,
-                                got: event.seq,
-                            });
+                                got = event.seq,
+                                "seq gap after skipping an unknown event kind"
+                            );
                         }
                     }
                     events.push(event);
                 }
                 // A crash can leave a partial final line. Drop only that one.
                 Err(_) if index + 1 == total => break,
-                Err(err) => return Err(StoreError::Json(err)),
+                Err(err) => {
+                    // A deserialization failure on a non-final line is either
+                    // corruption or a kind this build predates. The `type` tag
+                    // tells them apart: an unknown kind is skipped, corruption
+                    // still fails the load.
+                    let unknown = serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("type")
+                                .and_then(|tag| tag.as_str())
+                                .map(|tag| !crate::event::KNOWN_EVENT_TYPES.contains(&tag))
+                        })
+                        .unwrap_or(false);
+                    if unknown {
+                        skipped_unknown = true;
+                        tracing::debug!(
+                            session = %id,
+                            "skipping an event kind written by a newer build"
+                        );
+                        continue;
+                    }
+                    return Err(StoreError::Json(err));
+                }
             }
         }
 
@@ -1423,6 +1487,98 @@ mod tests {
         let task = store.task(&created.id).expect("task");
         assert_eq!(task.title(), Some("My Task"));
         assert_eq!(task.roots[0].label, "code");
+    }
+
+    #[test]
+    fn append_title_generated_is_read_back_as_the_latest_title() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+
+        store
+            .append_title_generated(
+                &created.id,
+                "模型标题".to_string(),
+                vec![3],
+                TitleSource::Auto {
+                    provider: "mock".to_string(),
+                    model: "mock-1".to_string(),
+                },
+            )
+            .expect("append generated title");
+        assert_eq!(
+            crate::title::latest_title(&store.load(&created.id).expect("load")).as_deref(),
+            Some("模型标题")
+        );
+
+        // A fallback written later wins, exactly like a later rename.
+        store
+            .append_title_generated(
+                &created.id,
+                "兜底标题".to_string(),
+                vec![3],
+                TitleSource::Fallback,
+            )
+            .expect("append fallback title");
+        assert_eq!(
+            crate::title::latest_title(&store.load(&created.id).expect("load")).as_deref(),
+            Some("兜底标题")
+        );
+        // 生成标题不动 Task 聚合：`task()` 仍无标题，用户重命名语义不受污染。
+        assert_eq!(store.task(&created.id).expect("task").title(), None);
+    }
+
+    #[test]
+    fn load_skips_an_unknown_event_kind_written_by_a_newer_build() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        let path = store.session_path(&created.id);
+
+        // A user message at seq 3, then an unknown-kind line at seq 4 (a newer
+        // build), then a valid assistant line at seq 5 — the gap must not fail
+        // the load, and the unknown line must be skipped.
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        writeln!(
+            file,
+            r#"{{"v":11,"seq":3,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"user_message","data":{{"text":"hi"}}}}"#,
+            created.id
+        )
+        .expect("user line");
+        writeln!(
+            file,
+            r#"{{"v":99,"seq":4,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"future_kind","data":{{}}}}"#,
+            created.id
+        )
+        .expect("unknown line");
+        writeln!(
+            file,
+            r#"{{"v":11,"seq":5,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"assistant_message","data":{{"blocks":[],"provider_raw":null}}}}"#,
+            created.id
+        )
+        .expect("assistant line");
+        file.flush().expect("flush");
+
+        let events = store
+            .load(&created.id)
+            .expect("load skips the unknown kind");
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| match &event.kind {
+                EventKind::UserMessage(_) => "user",
+                EventKind::AssistantMessage(_) => "assistant",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["other", "other", "user", "assistant"]);
+        assert_eq!(events[2].seq, 3);
+        assert_eq!(events[3].seq, 5);
     }
 
     #[test]

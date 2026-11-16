@@ -249,7 +249,8 @@ impl App {
             // Task/root configuration is not rendered in the transcript yet.
             EventKind::TaskConfigured(_)
             | EventKind::TaskRenamed(_)
-            | EventKind::RootsChanged(_) => {}
+            | EventKind::RootsChanged(_)
+            | EventKind::TitleGenerated(_) => {}
         }
     }
 
@@ -355,7 +356,8 @@ impl App {
             | EventKind::ApprovalDecided(_)
             | EventKind::TaskConfigured(_)
             | EventKind::TaskRenamed(_)
-            | EventKind::RootsChanged(_) => {}
+            | EventKind::RootsChanged(_)
+            | EventKind::TitleGenerated(_) => {}
         }
     }
 

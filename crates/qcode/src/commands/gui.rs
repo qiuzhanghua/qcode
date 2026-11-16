@@ -121,6 +121,7 @@ pub(crate) fn gui_rebuild_hook(
                     .into_iter()
                     .map(|error| (error.name().to_string(), error.to_string()))
                     .collect(),
+                session_title: kernel.config.session_title.to_title_config().ok().flatten(),
                 schedule_tick: None,
             };
             Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
@@ -421,6 +422,7 @@ pub(crate) async fn cmd_gui(
             .into_iter()
             .map(|error| (error.name().to_string(), error.to_string()))
             .collect(),
+        session_title: kernel.config.session_title.to_title_config().ok().flatten(),
         schedule_tick: None,
     };
     let backend = qcode_gui::LocalBackend::new(engine).with_rebuild(gui_rebuild_hook(

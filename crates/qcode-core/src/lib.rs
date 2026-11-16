@@ -24,6 +24,7 @@ pub mod snapshot;
 pub mod state;
 pub mod store;
 pub mod task;
+pub mod title;
 pub mod todo;
 pub mod tool;
 pub mod write_scope;

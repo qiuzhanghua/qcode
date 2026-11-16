@@ -277,6 +277,30 @@ pub(crate) async fn cmd_run(
         );
     }
 
+    // 会话标题自动生成（会话标题自动生成设计）：回合开始前就并行启动——模型
+    // 调用与回合重叠，回合结束锁释放后立即落盘，标题不用等回合跑完再生成。
+    // 首条消息尚未写入日志，所以把本次输入作为 pending 来源传给生成器。
+    let title_task = if let Some(title_config) = loaded.session_title.to_title_config()? {
+        let title_cancel = CancellationToken::new();
+        let gen_provider = provider.clone();
+        let gen_store = store.clone();
+        let gen_session = session_id.clone();
+        let gen_prompt = prompt.clone();
+        Some(tokio::spawn(async move {
+            qcode_core::title::generate_title(
+                gen_provider.as_ref(),
+                &gen_store,
+                &gen_session,
+                &title_config,
+                &title_cancel,
+                Some(&gen_prompt),
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
     // 定时任务：`qc run` 能**登记**（任务定义是 store 里的纯数据），但不会**触发**
     // ——驱动（时钟 + 会话宿主）不在这个进程里（ADR-0088 §1）。工具结果会说明这条，
     // 所以这里注入的是「能登记 + 驱动状态」而不是干脆不给。
@@ -326,6 +350,18 @@ pub(crate) async fn cmd_run(
     )
     .await
     .map_err(|err| redactor.redact(&err.to_string()))?;
+
+    // 标题生成与回合并行启动，回合结束锁已释放；这里等它落盘（生成器在
+    // 回合内已完成模型调用，落盘等待只会是一瞬），进程退出前必须拿到结果。
+    if let Some(task) = title_task {
+        match task.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::debug!(%error, session = %session_id, "session title generation failed")
+            }
+            Err(error) => tracing::debug!(%error, "session title generation task panicked"),
+        }
+    }
 
     // A budget pause is a normal ending, not a failure: exit code 75
     // (EX_TEMPFAIL) tells a script "not done, run me again" without looking

@@ -233,16 +233,7 @@ impl Backend for UnconfiguredBackend {
 
     fn title(&self, id: &str) -> Option<String> {
         let events = self.store.load(id).ok()?;
-        events.iter().find_map(|event| match &event.kind {
-            EventKind::UserMessage(message) => {
-                let text = qcode_core::task::strip_schedule_prefill(&message.text)
-                    .replace('\n', " ")
-                    .trim()
-                    .to_string();
-                (!text.is_empty()).then(|| text.chars().take(48).collect())
-            }
-            _ => None,
-        })
+        qcode_core::title::display_title(&events, &qcode_core::title::TitleConfig::default())
     }
 
     fn set_roots(&mut self, _id: &str, _roots: Vec<Root>) -> Result<(), String> {
@@ -466,16 +457,7 @@ impl Backend for LocalBackend {
 
     fn title(&self, id: &str) -> Option<String> {
         let events = self.store.load(id).ok()?;
-        events.iter().find_map(|event| match &event.kind {
-            EventKind::UserMessage(message) => {
-                let text = qcode_core::task::strip_schedule_prefill(&message.text)
-                    .replace('\n', " ")
-                    .trim()
-                    .to_string();
-                (!text.is_empty()).then(|| text.chars().take(48).collect())
-            }
-            _ => None,
-        })
+        qcode_core::title::display_title(&events, &qcode_core::title::TitleConfig::default())
     }
 
     fn set_roots(&mut self, id: &str, roots: Vec<Root>) -> Result<(), String> {

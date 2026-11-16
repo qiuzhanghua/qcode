@@ -66,6 +66,9 @@ pub enum UiEvent {
     ScheduleCreated { id: String },
     /// 定时任务管理操作失败的提示信息。
     ScheduleNotice { message: String },
+    /// 会话标题已自动生成（会话标题自动生成设计）：任务列表里的标题变了，
+    /// UI 应刷新任务列表。host 级，与具体会话无关——标题挂在任务行上。
+    TasksChanged,
 }
 
 /// Which session an event belongs to (ADR-0058 §2).
@@ -589,6 +592,11 @@ impl TaggedPort {
     pub fn send_schedule_notice(&self, message: String) {
         self.port
             .emit(&self.target, UiEvent::ScheduleNotice { message });
+    }
+
+    /// 会话标题已自动生成：UI 刷新任务列表以显示新标题。
+    pub fn send_tasks_changed(&self) {
+        self.port.emit(&self.target, UiEvent::TasksChanged);
     }
 
     /// The approver the engine should be given: prompts are tagged with this

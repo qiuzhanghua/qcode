@@ -105,6 +105,10 @@ pub struct Config {
     /// Turn budget for one user message.
     #[serde(default)]
     pub agent: AgentConfig,
+    /// 会话标题自动生成（会话标题自动生成设计 §6）。`enabled` 缺省关闭：
+    /// 只有显式开启才会为会话做一次小额的模型标题调用。
+    #[serde(default)]
+    pub session_title: SessionTitleConfig,
     /// stdio MCP servers. Disabled entries are kept for quick toggling.
     #[serde(default)]
     pub mcp: McpConfig,
@@ -230,6 +234,7 @@ impl Default for Config {
             pricing: BTreeMap::new(),
             context: ContextConfig::default(),
             agent: AgentConfig::default(),
+            session_title: SessionTitleConfig::default(),
             mcp: McpConfig::default(),
             skills: SkillsConfig::default(),
             sandbox: SandboxConfig::default(),
@@ -553,6 +558,106 @@ impl Default for AgentConfig {
 
 fn default_max_turns() -> u32 {
     64
+}
+
+/// 会话标题自动生成（会话标题自动生成设计 §6）。默认值与引擎侧
+/// `qcode_core::title::TitleConfig::default()` 一致，缺省整体关闭。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionTitleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_max_title_bytes")]
+    pub max_title_bytes: usize,
+    #[serde(default = "default_fallback_max_words")]
+    pub fallback_max_words: usize,
+    #[serde(default = "default_fallback_max_bytes")]
+    pub fallback_max_bytes: usize,
+    #[serde(default = "default_max_input_bytes")]
+    pub max_input_bytes: usize,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u64,
+    #[serde(default = "default_title_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_target_words")]
+    pub target_words: u32,
+    #[serde(default = "default_target_cjk_chars")]
+    pub target_cjk_chars: u32,
+    /// 显式路由覆盖；必须与 `model` 成对。缺省跟随会话自身的 provider/model。
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Default for SessionTitleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_title_bytes: default_max_title_bytes(),
+            fallback_max_words: default_fallback_max_words(),
+            fallback_max_bytes: default_fallback_max_bytes(),
+            max_input_bytes: default_max_input_bytes(),
+            max_output_tokens: default_max_output_tokens(),
+            timeout_ms: default_title_timeout_ms(),
+            target_words: default_target_words(),
+            target_cjk_chars: default_target_cjk_chars(),
+            provider: None,
+            model: None,
+        }
+    }
+}
+
+impl SessionTitleConfig {
+    /// 映射为引擎侧标题策略；未开启时返回 `None`。校验规则见设计 §6：
+    /// `provider`/`model` 必须成对、`fallback_max_bytes ≤ max_title_bytes`。
+    pub fn to_title_config(&self) -> Result<Option<qcode_core::title::TitleConfig>, String> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        if self.provider.is_some() != self.model.is_some() {
+            return Err("provider and model must be supplied together".to_string());
+        }
+        if self.fallback_max_bytes > self.max_title_bytes {
+            return Err("fallback_max_bytes must not exceed max_title_bytes".to_string());
+        }
+        Ok(Some(qcode_core::title::TitleConfig {
+            max_title_bytes: self.max_title_bytes,
+            fallback_max_words: self.fallback_max_words,
+            fallback_max_bytes: self.fallback_max_bytes,
+            max_input_bytes: self.max_input_bytes,
+            max_output_tokens: self.max_output_tokens,
+            timeout: std::time::Duration::from_millis(self.timeout_ms),
+            target_words: self.target_words,
+            target_cjk_chars: self.target_cjk_chars,
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+        }))
+    }
+}
+
+fn default_max_title_bytes() -> usize {
+    80
+}
+fn default_fallback_max_words() -> usize {
+    5
+}
+fn default_fallback_max_bytes() -> usize {
+    40
+}
+fn default_max_input_bytes() -> usize {
+    2000
+}
+fn default_max_output_tokens() -> u64 {
+    64
+}
+fn default_title_timeout_ms() -> u64 {
+    15_000
+}
+fn default_target_words() -> u32 {
+    5
+}
+fn default_target_cjk_chars() -> u32 {
+    12
 }
 
 /// The sandbox backend a fresh config gets on this platform.

@@ -487,6 +487,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "pricing",
             "context",
             "agent",
+            "session_title",
             "mcp",
             "skills",
             "sandbox",
@@ -542,6 +543,22 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("default-model", &["provider", "model"]),
     ("ui", &["busy_delivery"]),
+    (
+        "session_title",
+        &[
+            "enabled",
+            "max_title_bytes",
+            "fallback_max_words",
+            "fallback_max_bytes",
+            "max_input_bytes",
+            "max_output_tokens",
+            "timeout_ms",
+            "target_words",
+            "target_cjk_chars",
+            "provider",
+            "model",
+        ],
+    ),
     (
         "terminal",
         &[

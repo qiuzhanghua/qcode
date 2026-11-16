@@ -591,6 +591,12 @@ impl Shell {
                     self.set_notice(message.clone(), true, cx);
                     continue;
                 }
+                // 会话标题自动生成后任务行上的标题变了：刷新列表并重绘。
+                UiEvent::TasksChanged => {
+                    self.refresh_tasks();
+                    repaint = true;
+                    continue;
+                }
                 _ => {}
             }
             let finished = match &event {

@@ -66,6 +66,8 @@ pub struct Engine {
     /// `[schedules]` entries that did not resolve, with the reason. Shown as a
     /// broken row so a typo is visible instead of looking like "not configured".
     pub schedule_errors: Vec<(String, String)>,
+    /// 会话标题自动生成策略；`None` = 未开启（会话标题自动生成设计）。
+    pub session_title: Option<qcode_core::title::TitleConfig>,
     /// How often the scheduler's clock beats. `None` = 30 s, which is finer
     /// than a cron expression can express. A test (or a hand check) sets a
     /// short beat instead of waiting half a minute.
@@ -533,6 +535,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let snapshots = engine.snapshots.clone();
                     let network = engine.network.clone();
                     let workspace = engine.workspace.clone();
+                    let title_config = engine.session_title.clone();
                     // ADR-0087: the GUI used to leave both of these `None`, so
                     // the model never saw `AGENTS.md` or the skills index.
                     let turn_skills = engine.skills_prompt.clone();
@@ -561,6 +564,37 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let cancel = token.clone();
                     let task_inbox = task_queue.inbox();
                     let task_shell_env = engine.shell_env.clone();
+                    // 会话标题生成完成后通知 UI 刷新任务列表。端口必须在 spawn
+                    // 前 clone：在闭包内再 `port.tagged(..)` 会把外层循环的
+                    // `port` 整个 move 进闭包，后续迭代就没法用了。
+                    let title_port = port.tagged(SessionTarget::Session(task_session.clone()));
+                    // 会话标题自动生成（会话标题自动生成设计）：回合开始前就并行
+                    // 启动——模型调用与回着重叠，落盘等待会话锁（回合结束必然
+                    // 释放），回合一结束标题立即就位并刷新侧栏。首条消息尚未写入
+                    // 日志，把本次输入作为 pending 来源传给生成器。
+                    if let Some(title_config) = title_config {
+                        let gen_store = store.clone();
+                        let gen_provider = provider.clone();
+                        let gen_session = task_session.clone();
+                        let gen_prompt = $text.clone();
+                        let gen_port = title_port.clone();
+                        tokio::spawn(async move {
+                            let gen_cancel = tokio_util::sync::CancellationToken::new();
+                            match qcode_core::title::generate_title(
+                                gen_provider.as_ref(),
+                                &gen_store,
+                                &gen_session,
+                                &title_config,
+                                &gen_cancel,
+                                Some(&gen_prompt),
+                            )
+                            .await
+                            {
+                                Ok(Some(_)) => gen_port.send_tasks_changed(),
+                                Ok(None) | Err(_) => {}
+                            }
+                        });
+                    }
                     tokio::spawn(async move {
                         // A panic anywhere below unwinds this task without
                         // reaching `done.send`; `guard` covers that path.

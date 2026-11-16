@@ -170,7 +170,9 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
         // 定时任务事件是 host 级的，不进会话视图。
         UiEvent::ScheduleChanged
         | UiEvent::ScheduleCreated { .. }
-        | UiEvent::ScheduleNotice { .. } => {}
+        | UiEvent::ScheduleNotice { .. }
+        // 会话标题变化由 `Shell::poll` 直接刷新任务列表，不进会话视图。
+        | UiEvent::TasksChanged => {}
     }
     applied
 }

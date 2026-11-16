@@ -40,7 +40,12 @@ use crate::task::Root;
 /// attachments use. Additive — a v10 reader replays the log with the images
 /// missing, which costs the model the picture but not the text summary the tool
 /// wrote about it.
-pub const EVENT_SCHEMA_VERSION: u32 = 11;
+///
+/// v12 adds `TitleGenerated` (会话标题自动生成设计): the model or the
+/// deterministic fallback produced a session title. Additive — a v11 reader
+/// that skips unknown kinds replays the log unchanged, and the display layer
+/// falls back to its own derivation when the event is missing.
+pub const EVENT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -95,8 +100,36 @@ pub enum EventKind {
     /// What the shell environment sampling produced for this turn (ADR-0064).
     /// Names only: a value could be an API key, and the log outlives the turn.
     ShellEnvSampled(ShellEnvSampled),
+    /// A session title produced by the model or the deterministic fallback
+    /// (会话标题自动生成设计). The display layer treats it like a rename: the
+    /// latest title event wins.
+    TitleGenerated(TitleGenerated),
     Error(ErrorEvent),
 }
+
+/// The `type` tag strings the log can carry, in [`EventKind`] order. `store`
+/// reads this to tell an unknown kind (a newer build) apart from a corrupt
+/// line, so schema-additive events never break an older reader.
+pub const KNOWN_EVENT_TYPES: &[&str] = &[
+    "session_started",
+    "task_configured",
+    "task_renamed",
+    "roots_changed",
+    "turn_started",
+    "user_message",
+    "assistant_message",
+    "approval_requested",
+    "approval_decided",
+    "tool_call",
+    "tool_result",
+    "compaction",
+    "turn_ended",
+    "budget_hint",
+    "mcp_tools_refreshed",
+    "shell_env_sampled",
+    "title_generated",
+    "error",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionStarted {
@@ -123,6 +156,34 @@ pub struct TaskConfigured {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskRenamed {
     pub title: String,
+}
+
+/// A session title produced by the model or the deterministic fallback
+/// (会话标题自动生成设计).
+///
+/// The display layer treats it like [`TaskRenamed`]: the latest title event —
+/// rename or generated — wins, and the first user message is only the final
+/// fallback. `source` records who decided the text so a later reader can tell
+/// an automatic result from a user rename.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TitleGenerated {
+    pub title: String,
+    /// The `user_message` seqs the title was derived from. Empty for a
+    /// fallback written over a first message whose seq a reader may not want
+    /// to chase; the generator always fills it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_seqs: Vec<u64>,
+    pub source: TitleSource,
+}
+
+/// Who decided a generated session title.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TitleSource {
+    /// The model produced it; `provider`/`model` name the route used.
+    Auto { provider: String, model: String },
+    /// The deterministic first-message fallback produced it.
+    Fallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

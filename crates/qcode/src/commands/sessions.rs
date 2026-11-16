@@ -2,10 +2,10 @@ use super::*;
 
 /// The name the sidebar shows for a session.
 ///
-/// An explicit rename wins over the first user message, and the last rename wins
-/// over earlier ones, so the whole log decides — that is what the sidebar
-/// renders (`Backend::title` only knows the fallback). `None` when the session
-/// never got a name at all.
+/// An explicit rename or a generated title wins over the first user message,
+/// and the last of either wins over earlier ones, so the whole log decides —
+/// that is what the sidebar renders (`Backend::title` only knows the fallback).
+/// `None` when the session never got a name at all.
 fn task_title(store: &SessionStore, id: &str) -> Option<String> {
     match store.load(id) {
         Ok(events) => task_title_from_events(&events),
@@ -18,31 +18,7 @@ fn task_title(store: &SessionStore, id: &str) -> Option<String> {
 }
 
 fn task_title_from_events(events: &[qcode_core::event::Event]) -> Option<String> {
-    use qcode_core::event::EventKind;
-
-    let mut renamed: Option<String> = None;
-    let mut first_message: Option<String> = None;
-    for event in events {
-        match &event.kind {
-            EventKind::TaskRenamed(event) => {
-                let title = event.title.trim();
-                if !title.is_empty() {
-                    renamed = Some(title.to_string());
-                }
-            }
-            EventKind::UserMessage(message) if first_message.is_none() => {
-                let text = qcode_core::task::strip_schedule_prefill(&message.text)
-                    .replace('\n', " ")
-                    .trim()
-                    .to_string();
-                if !text.is_empty() {
-                    first_message = Some(text.chars().take(48).collect());
-                }
-            }
-            _ => {}
-        }
-    }
-    renamed.or(first_message)
+    qcode_core::title::display_title(events, &qcode_core::title::TitleConfig::default())
 }
 
 pub(crate) fn cmd_sessions(

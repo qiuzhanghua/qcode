@@ -50,6 +50,7 @@ fn engine_with_provider(
         shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
         schedules: Vec::new(),
         schedule_errors: Vec::new(),
+        session_title: None,
         schedule_tick: None,
     }
 }
