@@ -518,6 +518,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         removed = report.removed,
                         "[schedules] reconciled into tasks"
                     );
+                    // **必须广播**：侧栏的定时任务列表读的是任务表，而它只在收到
+                    // 事件时刷新（`shell/mod.rs` 的 `ScheduleChanged` 分支）。
+                    // 不广播的话，配置声明的条目在启动后一直是「还没有定时任务」
+                    // ——要等到用户碰巧做点别的事才出现。这是 ADR-0096 把列表的
+                    // 来源从 config 换成任务表时漏掉的一环。
+                    //
+                    // 走 `Draft` 是这条事件与具体会话无关（host 级）的惯例：
+                    // `Host::changed` 也这么发。
+                    port.tagged(SessionTarget::Draft).send_schedule_changed();
                 }
                 Ok(_) => {}
                 // 不致命：任务表这一次没对齐，投递照旧按上次的样子跑。

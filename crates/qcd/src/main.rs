@@ -78,10 +78,27 @@ fn wait_for_driver_lock(
     store: &qcode_core::store::SessionStore,
     identity: &str,
     sink: &mut dyn qcode_driver::events::Sink,
-) -> Result<qcode_core::store::FileLock, Box<dyn std::error::Error>> {
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Option<qcode_core::store::FileLock>, Box<dyn std::error::Error>> {
     use qcode_driver::events::Event;
     let mut announced = false;
     loop {
+        // **等待必须是可打断的**（ADR-0100 实测抓到）。没有这一句的话：GUI 正驱动
+        // 时（`WindowDriven`）点按钮起的 qcd 会在这里排队，然后 `qc daemon stop`
+        // 或再点一次按钮**都杀不掉它**——控制通道的应答已经写了、`cancel()` 也调
+        // 过了，但主线程卡在这个同步循环里，永远走不到那个 `select!`。进程留着，
+        // 锁已经放掉，于是用户在界面上看到的是「灰的、但 `ps` 里有个 qcd」。
+        //
+        // 放在循环顶部而不是 sleep 之后：点击与这一拍之间不该再有 1 秒的窗口。
+        if stop.is_cancelled() {
+            sink.emit(Event::Driving {
+                at: qcode_core::schedule::now_local(),
+                identity: identity.to_string(),
+                driving: false,
+            });
+            eprintln!("qcd: stopping (it was waiting for the other driver)");
+            return Ok(None);
+        }
         match store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
             Ok(Some(lock)) => {
                 // 「我开始开车」写进可跟随的事件流，于是「谁在开车」有时间线——
@@ -97,7 +114,7 @@ fn wait_for_driver_lock(
                     tracing::info!("the other driver is gone; taking over");
                     eprintln!("qcd: taking over (the other driver exited)");
                 }
-                return Ok(lock);
+                return Ok(Some(lock));
             }
             Ok(None) => {
                 if !announced {
@@ -261,7 +278,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .to_string()
             .replace(' ', "T")
     );
-    let _driver_lock = wait_for_driver_lock(&assembled.store, &identity, &mut sink)?;
+    // `None` = 还在等驱动锁的时候被叫停了。那不是失败：用户就是让它停的。
+    let Some(_driver_lock) = wait_for_driver_lock(&assembled.store, &identity, &mut sink, &stop)?
+    else {
+        return Ok(());
+    };
 
     // ── 4. 跑着 ────────────────────────────────────────────────────────────
     // 可跟随的事件出口（ADR-0092 §8）：一行一条 JSON，`tail -f` 就能看着它跑。

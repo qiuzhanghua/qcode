@@ -995,30 +995,66 @@ impl Shell {
             .into_any_element()
     }
 
-    /// 定时任务段头的「乒乓」按钮：启动 / 停止常驻驱动（ADR-0098 §3）。
+    /// 定时任务段头那颗图标：**启动 / 停止常驻驱动**（ADR-0100）。
     ///
-    /// 它的四格语义全在 `shell::daemon::decide` 里，这里只负责画：能点的用主色，
-    /// 不能点的**仍然画出来**（不是隐藏）——用户需要看到「为什么不能点」，而一个
-    /// 消失的按钮只会让人以为功能没了。
+    /// 一个图标，不是一段文字。之前这里是「启动」「停止」「窗口」这类两三个字的
+    /// 标签，占掉了段头一半的宽度，而侧栏只有 200 多像素——那三个字既挤掉了标题，
+    /// 又说不出「这是按键」。
+    ///
+    /// **亮度只回答一个问题：`qcd` 这个进程在不在跑。** 在跑 = 正常色，不在 = 与
+    /// 「定时任务」整段一起变灰。它与段落那层灰是两件事，别混：
+    ///
+    /// - 段落灰 = 「这些任务到点不会自己响」（数据目录级的驱动状态）；
+    /// - 图标灰 = 「那个常驻进程没在跑」（每用户一个）。
+    ///
+    /// 所以「窗口正驱动 + 没有 daemon」那一格是**段落不灰、图标灰**——那不是矛盾，
+    /// 那正是需要被看见的状态：任务会响，但窗口一关就不响了。
+    ///
+    /// 图标本身用 `gpui-kit` 内置的 Lucide 集（ISC，见 `gpui-kit-assets/LICENSE-LUCIDE`）：
+    /// 不下载、不新增资产、不留署名义务。`Ghost` 是 Unix「守护进程」那个谱系的形象
+    /// （daemon = 守护精灵），比 `PawPrint`（只表达「爪子」，不表达「在不在跑」）
+    /// 和 `Power`（像电源开关，会让人以为点它是关整个应用）都更贴这一点。
     fn render_daemon_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = self.daemon_button();
-        let tone = self.driver_tone();
-        // 颜色：在跑=绿（象徵时钟），睡着=黄，不在=灰。
-        let color: gpui_kit::Hsla = match tone {
-            crate::shell::daemon::DriverTone::Live => rgb(0x16a34a).into(),
-            crate::shell::daemon::DriverTone::Drowsy => rgb(0xca8a04).into(),
-            crate::shell::daemon::DriverTone::Dormant => cx.theme().muted_foreground,
+        let running = button.qcd_running();
+        // **用颜色而不是明暗**（ADR-0100 §4）。灰/亮那套要靠对比才读得出，而侧栏
+        // 上还有别的灰：图标灰与段落灰挨在一起时，「哪一层是什么意思」全凭猜。
+        // 绿/灰是两回事——绿只可能有一个意思，而这个意思正是用户问的那件事
+        // （「它在跑吗」）。
+        //
+        // 睡着（`Held`）仍不在这里表达：图标只回答「进程在不在」，而「心跳过期」
+        // 是另一件事，它的黄字在下面那行说明里（`render_driver_notice`）。一个图标
+        // 承担两个含义，就等于两个都没说清。
+        let color: gpui_kit::Hsla = if running {
+            rgb(0x16a34a).into()
+        } else {
+            cx.theme().muted_foreground
         };
         Button::new("schedule-daemon-toggle")
-            .label(button.label())
-            .tooltip(button.tooltip())
+            .compact()
+            // 过渡态画转圈：按下去到状态跟上之间有个空档，空档里必须看得出「我知道
+            // 你点了」。`loading(true)` 会把图标临时换成 `gpui-kit` 自带的动画转圈，
+            // 也是唯一不额外分支的写法（`ButtonIcon` 是私有类型，两种图标混在一个
+            // `match` 里编不过）。
+            .loading(matches!(
+                button,
+                crate::shell::daemon::DaemonButton::Busy(_)
+            ))
+            // 过渡态不许再点：连点两次 start 会在锁上排两个 qcd。`loading` 已经让
+            // 指针不响应，`disabled` 再把「不可点」这件事告诉无障碍层——两个都要，
+            // 它们说的不是同一个通道。
             .disabled(!button.actionable())
+            .icon(IconName::Ghost)
+            .tooltip(button.tooltip())
+            .accessibility_label(format!("定时任务常驻驱动：{}", button.state_word()))
             .font_weight(FontWeight::NORMAL)
+            .text_color(color)
             .custom(
                 ButtonCustomVariant::new(cx)
                     .color(cx.theme().transparent)
                     .hover(rgb(0x888888).opacity(0.2).into())
                     .active(rgb(0x888888).opacity(0.45).into())
+                    // 悬浮不变色：亮度是状态，不该被指针位置改写。
                     .foreground(color),
             )
             .on_click(cx.listener(move |this, _, _window, cx| {

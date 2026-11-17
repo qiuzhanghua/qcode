@@ -56,32 +56,65 @@ pub(crate) enum DaemonButton {
 }
 
 impl DaemonButton {
-    /// 能点吗。**只有 Start 与 Stop 能点**——这正是「灰是标记，不是许可撤销」的
-    /// 另一半：不能点的只有这一颗按钮，列表不受影响（ADR-0098 §4）。
-    pub(crate) fn actionable(&self) -> bool {
-        matches!(self, Self::Start | Self::Stop)
+    /// **`qcd` 这个进程在不在跑。** 段头那颗图标绿不绿，只看这一件事。
+    ///
+    /// 与 [`DriverTone`] 是两个问题，别混：那是「这些任务到点会不会自己响」
+    /// （数据目录级），这是「那个常驻进程在不在」（每用户一个）。`WindowDriven`
+    /// 正是两者不一致的那一格——窗口在推时钟（段落不灰），但没有 `qcd`（图标灰）。
+    ///
+    /// 过渡态按**此刻的事实**算，不按「将要怎样」算：`Stopping` 期间它还在（正在
+    /// 收尾），`Starting` 期间它还没起来。这一段只有一两秒，但把它画反了就等于
+    /// 告诉用户「已经没了」——而那时候 `qc daemon status` 还会说它在。
+    pub(crate) fn qcd_running(&self) -> bool {
+        matches!(
+            self,
+            Self::Stop | Self::OccupiedElsewhere | Self::Busy(DaemonTransition::Stopping)
+        )
     }
 
-    /// 悬停提示。说清「为什么不能点」，而不是让用户自己猜。
+    /// 能点吗。**只有过渡态不能点**（ADR-0100）。
+    ///
+    /// 旧版只让 Start / Stop 可点，其余四格是灰按钮加一句「为什么不能点」。那是
+    /// 错的设计：`WindowDriven` 恰恰是最该能点的一格——用户开着窗口，想要「关掉
+    /// 窗口后还在跑」，正确动作就是**现在**起一个 daemon，让它等窗口退出后接手
+    /// （ADR-0092 §10 让它等得起）。做成死按钮等于把用户逼到「先关窗口，再去启动」
+    /// ——而窗口一关，这颗按钮他也看不见了。
+    pub(crate) fn actionable(&self) -> bool {
+        !matches!(self, Self::Busy(_))
+    }
+
+    /// 悬停提示：说清**点下去会发生什么**，以及图标为什么是那个亮度。
     pub(crate) fn tooltip(&self) -> &'static str {
         match self {
-            Self::Start => "启动定时任务驱动（关掉窗口后任务仍会触发）",
-            Self::Stop => "停止定时任务驱动（到点不再触发；任务与列表都还在）",
-            Self::WindowDriven => "现在由这个窗口驱动；关掉窗口任务就不跑了",
-            Self::OccupiedElsewhere => "驱动在跑，但服务的是另一个数据目录",
-            Self::Unknown => "查不出驱动状态",
+            Self::Start => "常驻驱动没在跑（图标灰）。点一下启动：关掉窗口后任务仍会触发。",
+            Self::Stop => "常驻驱动在跑（图标绿）。点一下停止：到点不再触发，任务与列表都还在。",
+            // 这一格最需要解释：窗口在推、但没有 daemon。点了会起一个**排队**的
+            // daemon（ADR-0092 §10），不是抢。
+            Self::WindowDriven => {
+                "现在由这个窗口驱动，没有常驻驱动（图标灰）。\
+                 点一下启动：它会等这个窗口退出后接手。"
+            }
+            Self::OccupiedElsewhere => {
+                "常驻驱动在跑（图标绿），但服务的是另一个数据目录——一个用户只有一个。\
+                 点一下把它停掉。"
+            }
+            Self::Unknown => "查不出驱动状态（图标灰）。点一下会尝试启动。",
             Self::Busy(DaemonTransition::Starting) => "正在启动…",
             Self::Busy(DaemonTransition::Stopping) => "正在停止…",
         }
     }
 
-    /// 图标下的短标签。侧栏很窄，所以三个字以内。
-    pub(crate) fn label(&self) -> &'static str {
+    /// 状态的一句话说清（`/daemon status` 与无障碍标签共用）。
+    ///
+    /// 不再是「画在图标下面的字」——那颗按钮现在只有一个图标（ADR-0100）。文字仍
+    /// 然要有：一个只有图形的按钮，屏幕阅读器读不出任何东西。
+    pub(crate) fn state_word(&self) -> &'static str {
         match self {
-            Self::Start => "启动",
-            Self::Stop => "停止",
-            Self::WindowDriven => "窗口",
-            Self::OccupiedElsewhere | Self::Unknown => "—",
+            Self::Start => "未常驻",
+            Self::Stop => "常驻中",
+            Self::WindowDriven => "仅窗口驱动",
+            Self::OccupiedElsewhere => "常驻在别处",
+            Self::Unknown => "状态未知",
             Self::Busy(DaemonTransition::Starting) => "启动中",
             Self::Busy(DaemonTransition::Stopping) => "停止中",
         }
@@ -191,26 +224,27 @@ impl Shell {
         }
     }
 
-    /// 点段头那个按钮。
+    /// 点段头那颗图标（ADR-0100：**乒乓键**）。
+    ///
+    /// 判断只剩一个问题——**`qcd` 在跑吗**：在跑就停，没在跑就启。那四格仍然存在，
+    /// 但它们现在只决定提示语与「点了会发生什么」，不再决定「能不能点」。
+    ///
+    /// 两处细节值得留住：
+    ///
+    /// - `WindowDriven` 点下去是**起一个排队的 daemon**，不是「什么都不做」。它会在
+    ///   窗口退出后接手（ADR-0092 §10），而且因为 qcd 在拿驱动锁**之前**就握住了
+    ///   用户级锁，下一次探测会如实显示「常驻中」——不会出现「点了但看起来没动」。
+    /// - `OccupiedElsewhere` 点下去停的是**这个用户的** daemon，它可能正服务另一个
+    ///   数据目录。这与 `qc daemon stop` 是同一个口径（ADR-0098 §2：一个用户一个），
+    ///   提示语里写明了。
     pub(crate) fn toggle_daemon(&mut self, cx: &mut Context<Self>) {
         match self.daemon_button() {
-            DaemonButton::Start => self.request_daemon_start(cx),
-            DaemonButton::Stop => self.request_daemon_stop(cx),
-            // 不能点的几格：给一句为什么，而不是静默。
-            other => {
-                let why = match other {
-                    DaemonButton::WindowDriven => {
-                        "现在由这个窗口驱动。关闭窗口后任务就不再触发——那时可以启动常驻驱动。"
-                    }
-                    DaemonButton::OccupiedElsewhere => {
-                        "驱动在跑，但服务的是另一个数据目录（一个用户只有一个）。\
-                         要它服务这里，先用 `qc daemon stop` 停掉。"
-                    }
-                    DaemonButton::Unknown => "查不出驱动状态，先确认 `qc daemon status` 说了什么。",
-                    DaemonButton::Busy(_) => "正在切换，等它完成。",
-                    DaemonButton::Start | DaemonButton::Stop => unreachable!("handled above"),
-                };
-                self.ui.app.push_notice(why.to_string());
+            DaemonButton::Stop | DaemonButton::OccupiedElsewhere => self.request_daemon_stop(cx),
+            DaemonButton::Start | DaemonButton::WindowDriven | DaemonButton::Unknown => {
+                self.request_daemon_start(cx)
+            }
+            DaemonButton::Busy(_) => {
+                self.ui.app.push_notice("正在切换，等它完成。".to_string());
                 cx.notify();
             }
         }
@@ -235,7 +269,7 @@ impl Shell {
                 let button = self.daemon_button();
                 self.ui
                     .app
-                    .push_notice(format!("{} · {sentence}", button.label()));
+                    .push_notice(format!("{} · {sentence}", button.state_word()));
                 cx.notify();
             }
             qcode_ui_state::DaemonVerb::Start => self.request_daemon_start(cx),
@@ -244,6 +278,19 @@ impl Shell {
     }
 
     pub(crate) fn request_daemon_start(&mut self, cx: &mut Context<Self>) {
+        // 已经在跑就别再起一个：锁会拦住第二个 qcd，但它会**排队等**（ADR-0092 §10），
+        // 于是一次误点换来一个永远睡着的进程。这里先问一句，比事后解释便宜。
+        if self
+            .driver_watch
+            .as_ref()
+            .is_some_and(|watch| watch.daemon.is_running())
+        {
+            self.ui
+                .app
+                .push_notice("常驻驱动已经在跑了，不用再启动。".to_string());
+            cx.notify();
+            return;
+        }
         self.daemon_transition = Some(DaemonTransition::Starting);
         let data_dir = self.data_dir.clone();
         // 起进程会阻塞（找二进制、fork、等锁）：放到后台执行器，界面这一帧照画。
@@ -259,10 +306,21 @@ impl Shell {
                 shell.driver_watch_at = None;
                 shell.refresh_driver_watch();
                 match result {
-                    Ok(pid) => shell
-                        .ui
-                        .app
-                        .push_notice(format!("定时任务驱动已启动（pid {pid}）")),
+                    Ok(pid) => {
+                        // 起来了 ≠ 在推时钟。走 `WindowDriven` 那条路时它会在驱动锁上
+                        // 排队，等到窗口退出才接手（ADR-0092 §10）——那种「点了但看起来
+                        // 没动」必须说出来，否则用户会再点一次。
+                        let waiting = !shell
+                            .driver_watch
+                            .as_ref()
+                            .is_some_and(|watch| watch.daemon.is_running());
+                        let message = if waiting {
+                            format!("定时任务驱动已启动（pid {pid}），正在等这个窗口退出后接手。")
+                        } else {
+                            format!("定时任务驱动已启动（pid {pid}）")
+                        };
+                        shell.ui.app.push_notice(message);
+                    }
                     Err(error) => shell
                         .ui
                         .app
@@ -386,20 +444,112 @@ mod tests {
         }
     }
 
-    /// 只有两颗按钮能点。这条钉住「灰是标记，不是许可撤销」的另一半：
-    /// 不能点的**只有**这一颗，列表不受影响（ADR-0098 §4）。
+    /// **图标绿不绿，只看 `qcd` 在不在跑**（ADR-0100）。四格里只有两格是绿的。
+    ///
+    /// 这条是这次改动最容易画错的地方：段落那层灰问的是「任务会不会自己响」，
+    /// 图标这层亮问的是「那个进程在不在」。两句话不是一回事，`WindowDriven` 就是
+    /// 它们分叉的那一格——段落不灰（窗口在推时钟），图标灰（没有 qcd）。
     #[test]
-    fn only_start_and_stop_are_actionable() {
-        assert!(DaemonButton::Start.actionable());
-        assert!(DaemonButton::Stop.actionable());
+    fn the_icon_is_lit_exactly_when_qcd_runs() {
+        let lit = [
+            DaemonButton::Stop,
+            DaemonButton::OccupiedElsewhere,
+            DaemonButton::Busy(DaemonTransition::Stopping),
+        ];
+        for button in lit {
+            assert!(button.qcd_running(), "{button:?} should light the icon");
+        }
+        let dark = [
+            DaemonButton::Start,
+            DaemonButton::WindowDriven,
+            DaemonButton::Unknown,
+            DaemonButton::Busy(DaemonTransition::Starting),
+        ];
+        for button in dark {
+            assert!(!button.qcd_running(), "{button:?} should grey the icon");
+        }
+        // 从 `Watch` 推出来的那一层也要一致：窗口自己在驱动时，图标必须是灰的。
+        let window_driven = decide(
+            Some(&Watch {
+                driver: DriverStatus::Running { at: at() },
+                daemon: Presence::Absent,
+            }),
+            None,
+        );
+        assert_eq!(window_driven, DaemonButton::WindowDriven);
+        assert!(
+            !window_driven.qcd_running(),
+            "the window driving is not the daemon running"
+        );
+    }
+
+    /// **除了过渡态，每一格都能点**（ADR-0100：乒乓键）。
+    ///
+    /// 旧版让四格里的三格不可点，包括 `WindowDriven`——那一格恰恰是最需要在
+    /// 窗口里点的一格（点了就起一个排队的 daemon）。这条测试守住那次修正。
+    #[test]
+    fn only_a_transition_is_not_actionable() {
         for button in [
+            DaemonButton::Start,
+            DaemonButton::Stop,
+            DaemonButton::WindowDriven,
+            DaemonButton::OccupiedElsewhere,
+            DaemonButton::Unknown,
+        ] {
+            assert!(button.actionable(), "{button:?} must be clickable");
+        }
+        for button in [
+            DaemonButton::Busy(DaemonTransition::Starting),
+            DaemonButton::Busy(DaemonTransition::Stopping),
+        ] {
+            assert!(!button.actionable(), "{button:?} must not be clickable");
+        }
+    }
+
+    /// 提示语必须说出**点下去会发生什么**，而不只是描述状态。
+    ///
+    /// 一个只有图标的按钮没有文字兜底，提示就是它全部的说明书。
+    #[test]
+    fn every_tooltip_says_what_a_click_does() {
+        for button in [
+            DaemonButton::Start,
+            DaemonButton::Stop,
+            DaemonButton::WindowDriven,
+            DaemonButton::OccupiedElsewhere,
+            DaemonButton::Unknown,
+        ] {
+            let tip = button.tooltip();
+            assert!(
+                tip.contains("点一下"),
+                "{button:?} must say what a click does, got {tip:?}"
+            );
+        }
+        // 亮度也要在里面说清，否则「灰」永远是个谜。
+        assert!(DaemonButton::Start.tooltip().contains("灰"));
+        assert!(DaemonButton::Stop.tooltip().contains("绿"));
+        assert!(DaemonButton::WindowDriven.tooltip().contains("灰"));
+    }
+
+    /// 状态词不能重复、不能为空：它同时是 `/daemon status` 的第一句和这颗图标
+    /// 唯一的无障碍名字。
+    #[test]
+    fn every_cell_has_its_own_state_word() {
+        let words = [
+            DaemonButton::Start,
+            DaemonButton::Stop,
             DaemonButton::WindowDriven,
             DaemonButton::OccupiedElsewhere,
             DaemonButton::Unknown,
             DaemonButton::Busy(DaemonTransition::Starting),
             DaemonButton::Busy(DaemonTransition::Stopping),
-        ] {
-            assert!(!button.actionable(), "{button:?} must not be clickable");
+        ]
+        .map(|button| button.state_word());
+        for (index, word) in words.iter().enumerate() {
+            assert!(!word.is_empty());
+            assert!(
+                !words[index + 1..].contains(word),
+                "{word:?} is used twice; a screen reader would give two states one name"
+            );
         }
     }
 
