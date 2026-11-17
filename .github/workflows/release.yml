@@ -56,6 +56,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 与 ci.yml 的构建 job 一致：runner 预装的 rustc 会落后于 MSRV。
+      # v0.15.0 的教训——那次把 MSRV 抬到 1.100，而 runner 上是 1.99.1，
+      # 于是 ci.yml（用 @stable）全绿、release 三个平台全红，报
+      # "rustc 1.99.1 is not supported by the following packages"。
+      # 发版产物必须和 CI 用同一条工具链，否则「CI 绿」证明不了「能发」。
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: build (linux)
         if: runner.os == 'Linux'
         run: |
