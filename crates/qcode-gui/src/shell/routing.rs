@@ -147,10 +147,22 @@ pub(crate) fn apply_to_ui(ui: &mut TaskUi, event: UiEvent) -> Applied {
             ui.app.abort_turn(qcode_core::event::TurnStatus::Failed);
             ui.app.status.last = None;
             ui.approvals = ApprovalQueue::default();
+            // 这条事件的含义是「这个 turn 不会再有下文了」，所以它也**结算**
+            // 「有 turn 在跑」。正常情况下 `TurnFinished` 紧随其后、本来也会清掉
+            // 标记，但创建任务失败的两条路径只发这一条；只靠 `TurnFinished` 的话，
+            // 那里标记会一直为真——任务看着在跑、目录改动永远排在 `pending_roots`
+            // 里等一个不会来的 turn。
+            ui.turn_in_flight = false;
             // 完整报错放在输入框上方的提示框里（状态栏那条由调用者补）。
             ui.error_banner = Some(message.clone());
             applied.turn_failed = Some(message);
             applied.changed = true;
+            applied.repaint = true;
+        }
+        // 只说话、不动 turn 状态：命令被拒、选项没生效。turn 可能还在跑，
+        // 结算 `turn_in_flight` 会把一个活着的 turn 显示成空闲。
+        UiEvent::Notice { message } => {
+            ui.error_banner = Some(message);
             applied.repaint = true;
         }
         UiEvent::TurnFinished { .. } => {

@@ -494,6 +494,27 @@ mod tests {
         assert_eq!(queue.pending_step()[0].text, "run");
     }
 
+    /// 空闲时 `steer` 返回 `None`，文本**跟着一起没了**——它按值收下那条消息。
+    /// 所以任何拿到 `running == false` 的调用方都必须改走 `submit`：用户按的
+    /// 是发送，输入框已经被清空，静默丢弃等于丢字。
+    ///
+    /// 调用方是 `runtime.rs` 的 `UiCommand::Steer`：界面那边「在不在跑」是乐观
+    /// 猜测，可能是陈旧的，只有引擎的 `live` 是权威。
+    #[test]
+    fn an_idle_steer_drops_its_text_so_callers_must_submit_instead() {
+        let queue = SessionQueue::new();
+        assert!(queue.steer("lost".into(), Vec::new(), false).is_none());
+        // 没有留下任何痕迹，也没有变成排队消息。
+        assert!(queue.pending_step().is_empty());
+        assert!(queue.queued().is_empty());
+
+        // 空闲走 `submit` 才是「送出去」的那条路。
+        match queue.submit("kept".into(), Vec::new(), false) {
+            Submission::Start(message) => assert_eq!(message.text, "kept"),
+            Submission::Queued => panic!("an idle submit starts a turn"),
+        }
+    }
+
     #[test]
     fn session_queue_remove_and_steer_by_position() {
         let queue = SessionQueue::new();

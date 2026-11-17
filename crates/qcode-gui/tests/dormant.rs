@@ -154,6 +154,28 @@ fn a_failure_keeps_the_entry_for_its_banner() {
     assert!(!dormant.is_settled());
 }
 
+/// 一条 `Notice` 说的是「这件事没生效」，不是「turn 结束了」。两者以前共用
+/// `TurnFailed`，于是切 provider 失败的提示会把一个还在跑的后台会话标记成空闲，
+/// 切过去时看不到它在跑。
+#[test]
+fn a_notice_speaks_without_ending_the_turn() {
+    let mut dormant = Dormant::default();
+    apply_to_dormant(&mut dormant, turn_started(1));
+    assert!(dormant.running);
+    apply_to_dormant(
+        &mut dormant,
+        UiEvent::Notice {
+            message: "无法切换到 openai".to_string(),
+        },
+    );
+    assert!(dormant.running, "a notice must not settle the turn");
+    assert_eq!(
+        dormant.error_banner.as_deref(),
+        Some("无法切换到 openai"),
+        "the user still has to see it on the next visit"
+    );
+}
+
 #[test]
 fn logged_errors_are_kept_for_the_next_visit() {
     let mut dormant = Dormant::default();

@@ -131,6 +131,11 @@ pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
             dormant.error_banner = Some(message);
             applied = Applied::boundary();
         }
+        // 只说话、不动 `running`：这条事件自己说明 turn 还在跑。
+        UiEvent::Notice { message } => {
+            dormant.error_banner = Some(message);
+            applied.repaint = true;
+        }
         UiEvent::TurnFinished { .. } => {
             dormant.running = false;
             applied = Applied::boundary();

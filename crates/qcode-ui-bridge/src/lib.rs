@@ -50,8 +50,21 @@ pub enum UiEvent {
     /// The active session changed. `None` means a new draft session that has
     /// not written a log yet.
     SessionChanged { id: Option<String> },
-    /// run_turn returned an error before it could emit TurnEnded.
+    /// run_turn returned an error before it could emit TurnEnded. **The turn is
+    /// over**: nothing more arrives for it, and the session is idle again —
+    /// handlers must settle "a turn is in flight" on this event.
+    ///
+    /// A failure that does *not* end the turn (a provider switch that kept the
+    /// old route, say) is [`UiEvent::Notice`] instead. The two used to share
+    /// this event, so no handler could tell "settle the turn" from "say
+    /// something" and the flag stayed set until some later event happened to
+    /// clear it.
     TurnFailed { message: String },
+    /// Something the user must see that does **not** change turn state: a
+    /// command was rejected, an option could not be applied. Session-scoped
+    /// like [`UiEvent::TurnFailed`], shown in the same banner, but a turn may
+    /// still be running and the view must not settle its in-flight flag.
+    Notice { message: String },
     /// The engine task has fully returned and the session lock is released.
     TurnFinished { session: Option<String> },
     /// The pending follow-up queue changed; the UI redraws the queue dock.
@@ -558,6 +571,12 @@ impl TaggedPort {
     pub fn send_turn_failed(&self, message: String) {
         self.port
             .emit(&self.target, UiEvent::TurnFailed { message });
+    }
+
+    /// A message for the user that changes no turn state (see
+    /// [`UiEvent::Notice`]).
+    pub fn send_notice(&self, message: String) {
+        self.port.emit(&self.target, UiEvent::Notice { message });
     }
 
     pub fn send_turn_finished(&self, session: Option<String>) {
