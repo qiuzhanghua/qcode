@@ -1164,16 +1164,24 @@ fn key_from_command(provider: &str, argv: &[String]) -> Result<String, ConfigErr
             detail: "the command is empty".to_string(),
         });
     };
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(rest)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| ConfigError::KeyCommand {
-            provider: provider.to_string(),
-            detail: error.to_string(),
-        })?;
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // 0x08000000 = CREATE_NO_WINDOW。`qcd` 以 DETACHED_PROCESS 启动（没有
+        // 控制台），从这里 spawn `powershell` 取 key 时，Windows 会给 console
+        // 程序新建一个控制台窗口闪一下（GUI 有终端控制台所以不闪，qcd 没有）。
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command.spawn().map_err(|error| ConfigError::KeyCommand {
+        provider: provider.to_string(),
+        detail: error.to_string(),
+    })?;
 
     // Read in a thread so a chatty child cannot deadlock on a full pipe.
     let mut stdout = child.stdout.take().expect("piped stdout");

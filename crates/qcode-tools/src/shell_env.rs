@@ -295,6 +295,14 @@ pub fn sample(
         _ => {
             let mut command = Command::new(&program);
             command.args(&args);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt as _;
+                // 0x08000000 = CREATE_NO_WINDOW。`qcd` 无控制台（DETACHED_PROCESS），
+                // 采样 `pwsh` 环境时 Windows 会给 console 程序新建一个控制台窗口
+                // 闪一下（unix 侧对应的处理是 `detach_from_controlling_terminal`）。
+                command.creation_flags(0x08000000);
+            }
             command
         }
     };

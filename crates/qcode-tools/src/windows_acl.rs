@@ -36,6 +36,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -71,9 +72,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CreateMutexW, CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess,
-    INFINITE, OpenProcessToken, PROCESS_INFORMATION, ReleaseMutex, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateMutexW, CreateProcessAsUserW, GetCurrentProcess,
+    GetExitCodeProcess, INFINITE, OpenProcessToken, PROCESS_INFORMATION, ReleaseMutex,
+    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
 };
 
 use crate::sandbox::{OutsideRoots, Sandbox, SandboxError};
@@ -84,6 +85,50 @@ pub const HELPER_COMMAND: &str = "sandbox-run";
 /// Exit code the helper uses when it cannot set the sandbox up. It never falls
 /// back to an unconfined spawn.
 const EXIT_SETUP_FAILED: i32 = 127;
+
+/// 定位 sandbox helper。helper 必须是 `qc` 本身——它拥有隐藏的 `sandbox-run`
+/// 子命令（见 [`HELPER_COMMAND`] 与 `with_helper` 的注释）。直接取
+/// `current_exe()` 在 `qcd` 进程里会拿到 `qcd.exe`，而 qcd 不认识
+/// `sandbox-run`，于是装配引擎时的 preflight 当场失败（ADR-0092 拆出 qcd 后
+/// 在 Windows 上第一次暴露的 bug）。
+///
+/// 查找顺序与 `qcode_core::daemon::find_qcd` 对称：
+/// 1. 自己就是 `qc.exe`（GUI 装配）→ 用自己；
+/// 2. 同目录的 `qc.exe`（发布布局把两个二进制放进同一目录）→ 用它；
+/// 3. `PATH`。
+fn helper_binary() -> Result<PathBuf, SandboxError> {
+    let me = std::env::current_exe()
+        .map_err(|err| SandboxError::Setup(format!("current_exe: {err}")))?;
+    helper_from(&me, std::env::var_os("PATH").as_deref())
+}
+
+/// `helper_binary` 的纯路径部分，单独抽出来以便测试。`path` 是查找用的
+/// `PATH`（测试传 `None` 以消除对真实环境变量的依赖）。
+fn helper_from(me: &Path, path: Option<&OsStr>) -> Result<PathBuf, SandboxError> {
+    let name = if cfg!(windows) { "qc.exe" } else { "qc" };
+    let name = OsStr::new(name);
+    if me.file_name().is_some_and(|n| n == name) {
+        return Ok(me.to_path_buf());
+    }
+    if let Some(dir) = me.parent() {
+        let sibling = dir.join(name);
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+    }
+    if let Some(path) = path {
+        for dir in std::env::split_paths(path) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(SandboxError::Setup(format!(
+        "cannot locate the sandbox helper `{}`: it must sit next to the current executable or be on PATH",
+        name.to_string_lossy()
+    )))
+}
 
 /// `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED`.
 ///
@@ -122,8 +167,7 @@ impl WindowsAcl {
             ))
         })?;
         let temp = private_temp(&workspace)?;
-        let helper = std::env::current_exe()
-            .map_err(|err| SandboxError::Setup(format!("current_exe: {err}")))?;
+        let helper = helper_binary()?;
 
         let mut extra = Vec::new();
         for path in extra_writable {
@@ -205,6 +249,11 @@ impl WindowsAcl {
         }
         command.arg("--").arg(program).args(args);
         command.current_dir(cwd);
+        // `qcd` 以 DETACHED_PROCESS 启动（没有控制台）。它 spawn 的 helper
+        // （console 程序）若不指定 CREATE_NO_WINDOW，Windows 会为它新建一个
+        // 控制台窗口——每次 preflight 都闪一下黑窗口。GUI 不闪只是因为继承了
+        // 终端的控制台。helper 及其子进程共用这个隐藏控制台，管道照常继承。
+        command.creation_flags(CREATE_NO_WINDOW);
         command
     }
 }
@@ -1078,7 +1127,10 @@ fn spawn_confined(
             std::ptr::null(),
             std::ptr::null(),
             1,
-            CREATE_SUSPENDED,
+            // `CREATE_NO_WINDOW` 与 helper 那处同因：qcd 无控制台（DETACHED_PROCESS），
+            // 被沙箱的命令若是 console 程序，继承不到可见控制台时 Windows 会新建一个
+            // 窗口。preflight 的 `cmd.exe /c exit 0` 就是这么闪出来的。
+            CREATE_SUSPENDED | CREATE_NO_WINDOW,
             // `lpEnvironment` must stay NULL: an explicit block makes the call
             // fail with ERROR_INVALID_PARAMETER for a restricted token.
             std::ptr::null(),
@@ -1408,6 +1460,36 @@ fn query_token(handle: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_uses_itself_when_it_is_qc() {
+        let me = PathBuf::from(r"C:\bin\qc.exe");
+        assert_eq!(helper_from(&me, None).unwrap(), me);
+    }
+
+    #[test]
+    fn helper_prefers_a_sibling_named_qc_over_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        // `qcd.exe` 与 `qc.exe` 同目录：发布布局（build-for-release 把两个二进制
+        // 放进同一归档）。qcd 装配 sandbox 时必须找到这个同目录的 `qc`。
+        let qcd = dir.path().join("qcd.exe");
+        std::fs::write(&qcd, b"x").unwrap();
+        let qc = dir.path().join("qc.exe");
+        std::fs::write(&qc, b"x").unwrap();
+        assert_eq!(helper_from(&qcd, None).unwrap(), qc);
+    }
+
+    #[test]
+    fn helper_fails_loudly_when_qc_is_nowhere() {
+        let dir = tempfile::tempdir().unwrap();
+        // 单独部署 qcd、同目录没有 qc 且 PATH 为空时，报 Setup 而非假装成功。
+        let qcd = dir.path().join("qcd.exe");
+        std::fs::write(&qcd, b"x").unwrap();
+        assert!(matches!(
+            helper_from(&qcd, None),
+            Err(SandboxError::Setup(_))
+        ));
+    }
 
     #[test]
     fn quotes_arguments_with_spaces_quotes_and_trailing_backslashes() {

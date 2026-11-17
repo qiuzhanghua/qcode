@@ -380,6 +380,14 @@ async fn connect_stdio(
     let base = || {
         let mut command = std::process::Command::new(program);
         command.args(&args).current_dir(workspace);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            // 0x08000000 = CREATE_NO_WINDOW。`qcd` 以 DETACHED_PROCESS 启动（无
+            // 控制台），stdio MCP server 从这里 spawn（sandbox = off / none 时走
+            // 这一支），Windows 会给 console server 新建一个控制台窗口闪一下。
+            command.creation_flags(0x08000000);
+        }
         command
     };
     let command = match confine {
