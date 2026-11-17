@@ -19,7 +19,7 @@ make check-platforms   # 宿主编不了的那几个 target 的类型检查
 
 | 项 | 值 | 说明 |
 | --- | --- | --- |
-| rustc | 1.100.0 | 本机验证版本；`Cargo.toml` 的 MSRV 是 **1.95**，CI 有独立的 `msrv` job |
+| rustc | 1.100.0 | 本机验证版本；`Cargo.toml` 的 MSRV 也是 **1.100**（与容器镜像、CI `msrv` job 同一版，只有一个数字） |
 | edition | 2024 | 需要 1.85+，MSRV 已高于此 |
 | 宿主 | `x86_64-unknown-linux-gnu` | 本文所有验证都在此宿主上完成 |
 | 管理器 | rustup 或不带 rustup 的发行版 | cot 工具链是解包的发行版、**没有 rustup**，装 target 要另想办法（见下） |
@@ -55,7 +55,7 @@ Rust 侧装好 std 还不够：`libsqlite3-sys` 与 `aws-lc-sys` 的 build scrip
 | 目标平台 | 需要 | 本机验证 |
 | --- | --- | --- |
 | `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 有（`llvm-mingw_20261006`），两个 triple 的 check + clippy 均通过 |
-| `*-apple-darwin` | **zig**（自带 macOS SDK：libSystem stub 与头文件） | 有（0.17.0），两个 triple 的 check + clippy 均通过 |
+| `*-apple-darwin` | **zig**（自带 macOS SDK：libSystem stub 与头文件） | 有（0.17.1），两个 triple 的 check + clippy 均通过 |
 
 darwin 那条的两个坑（都已写进 `scripts/zig-cc-darwin.sh`，改脚本前先看它）：
 
@@ -105,7 +105,7 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
 ```plain
 rustc / cargo   /home/q/cot/repo/cargo/bin/         （解包发行版，无 rustup）
 sysroot         /home/q/cot/lib/rust_1.100.0_linux_amd64_gnu
-zig             /home/q/cot/lib/zig_0.17.0_linux_amd64/zig
+zig             /home/q/cot/lib/zig_0.17.1_linux_amd64/zig
 llvm-mingw      /home/q/cot/lib/llvm-mingw_20261006_linux_amd64/bin/
 ```
 

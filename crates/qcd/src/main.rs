@@ -10,8 +10,66 @@ use std::time::{Duration, Instant};
 use qcd::Daemon;
 use qcode_core::single_instance::{Outcome, Scope};
 
+/// `qcd --help` 的正文。
+///
+/// 与 `--version` 一样必须在任何初始化之前打印，理由见 [`early_exit`]。
+const HELP: &str = "\
+qcd — 定时任务的常驻驱动（ADR-0092）
+
+Usage: qcd [--beat <secs>] [--data-dir <path>]
+       qcd --version | --help
+
+一个用户只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，
+所以同一个用户的两个不同数据目录的 qcd 会互相拒绝。换一个 OS 用户另起
+一个是允许的——锁的 base 就在那个用户自己的家目录下。
+";
+
+/// `--version` / `--help`：在日志、`lifecycle`、那把锁**之前**回答。
+///
+/// # 为什么位置是这个函数唯一的难点
+///
+/// 这两行由脚本调用：`build-for-release` 拿产物的 `--version` 与文件名对账，
+/// `qc update` 装完 `qcd` 也读一次（`update::verify_daemon`）。而它们排在初始化
+/// 之后有一处**真实**的副作用——实测 `qcd --help`（这一版之前）会先在数据目录里
+/// 建出 `logs/`，再写一对 `session starting` / `session ending`。一个只问问题的
+/// 调用不该留下任何现场；`qc --version` 就没有这个问题（clap 在解析阶段就退出）。
+///
+/// 第二个约束：必须早于 `acquire_in`。否则「磁盘上这个 qcd 是哪个版本」在
+/// **正跑着一个 qcd 时**就问不出来——而那恰恰是最常问的时候（`qc update` 刚换完
+/// 文件、老进程还活着）。版本问答是只读的，它不该被一把表示「谁在跑」的锁挡住。
+///
+/// 只认大写的 `-V`：`-v` 留给将来的 verbose，别让它先在版本上被占掉。
+fn early_exit() -> Option<std::process::ExitCode> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            // 有取值的开关：连它的值一起跳过。否则 `qcd --data-dir --version`
+            // 里那个 `--version` 会被当成请求，而它其实是一个（很怪的）目录名。
+            "--data-dir" | "--beat" => index += 2,
+            "--version" | "-V" => {
+                // 与 `qc <version>` 同形。不是审美：`build-for-release` 用
+                // `awk '{print $NF}'` 取版本，两边同形才能共用一条对账逻辑。
+                println!("qcd {}", env!("CARGO_PKG_VERSION"));
+                return Some(std::process::ExitCode::SUCCESS);
+            }
+            "--help" | "-h" => {
+                println!("{HELP}");
+                return Some(std::process::ExitCode::SUCCESS);
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    // 最先做的事，先于一切副作用（见 [`early_exit`]）。
+    if let Some(exit) = early_exit() {
+        return exit;
+    }
+
     // 先解析参数再初始化日志：`--data-dir` 决定日志落在哪里，而 daemon 的日志是它
     // 唯一的现场（ADR-0082）——写错目录等于没有日志。
     let data_dir = match data_dir_arg() {
@@ -143,18 +201,9 @@ fn wait_for_driver_lock(
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // `--help` / `--version` 已经在 `main` 最前面答完了（[`early_exit`]），这里
+    // 只剩真正要起一个 daemon 的那些参数。
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "qcd — 定时任务的常驻驱动（ADR-0092）\n\n\
-             Usage: qcd [--beat <secs>] [--data-dir <path>]\n\n\
-             一个用户只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，\n\
-             所以同一个用户的两个不同数据目录的 qcd 会互相拒绝。换一个 OS 用户另起\n\
-             一个是允许的——锁的 base 就在那个用户自己的家目录下。\n"
-        );
-        return Ok(());
-    }
-
     let mut beat = qcd::DEFAULT_BEAT;
     let mut data_dir: Option<PathBuf> = None;
     let mut index = 0;
@@ -171,7 +220,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 data_dir = Some(PathBuf::from(value));
                 index += 2;
             }
-            other => return Err(format!("qcd: unknown argument {other:?}").into()),
+            // 不带 `qcd:` 前缀：`main` 打印时已经加了一次，写在这里会得到
+            // `qcd: qcd: unknown argument "-v"`。
+            other => return Err(format!("unknown argument {other:?}").into()),
         }
     }
 

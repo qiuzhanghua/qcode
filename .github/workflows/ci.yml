@@ -98,12 +98,12 @@ jobs:
           path: .toolchains
           # Keyed on the version `scripts/install-zig.sh` pins, so bumping it
           # invalidates the cache instead of silently reusing the old binary.
-          key: zig-0.17.0-${{ runner.os }}
+          key: zig-0.17.1-${{ runner.os }}
       - name: cross-target type-check (windows + darwin, ADR-0095)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # 0.17.0 is what `scripts/install-zig.sh` pins. Zig carries the macOS C
+          # 0.17.1 is what `scripts/install-zig.sh` pins. Zig carries the macOS C
           # SDK, which is the only way a Linux host compiles `libsqlite3-sys` and
           # `aws-lc-sys` for a darwin triple.
           zig_dir=$(bash scripts/install-zig.sh)
@@ -167,13 +167,16 @@ jobs:
         run: cargo run -p qcode -- run "hi" --provider mock --json --data-dir .tmp/windows-data
 
   msrv:
-    name: msrv (1.95)
+    # Must match `[workspace.package] rust-version` in `Cargo.toml`. The other
+    # jobs run `stable`, which floats: this job is the only thing holding the
+    # declared floor still. Raise both together or neither.
+    name: msrv (1.100)
     # Same reasoning as the `test` job: see the note there.
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       # Same pkg-config set as the `test` job: `cargo check --workspace` covers
       # qcode-gui, whose fontconfig build script fails without the -dev package.

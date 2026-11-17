@@ -10,7 +10,7 @@
 #
 #   scripts/install-zig.sh              # install/verify, print the bin dir
 #   scripts/install-zig.sh --check      # report only, never touch the network
-#   ZIG_VERSION=0.17.0 scripts/install-zig.sh
+#   ZIG_VERSION=0.17.1 scripts/install-zig.sh
 #   ZIG_SHA256=<hex> scripts/install-zig.sh   # pin the checksum explicitly
 #
 # Output contract: the **directory containing `zig`** goes to stdout and nothing
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ZIG_VERSION=${ZIG_VERSION:-0.17.0}
+ZIG_VERSION=${ZIG_VERSION:-0.17.1}
 INDEX_URL=${ZIG_INDEX_URL:-https://ziglang.org/download/index.json}
 
 say() { printf '%s\n' "$*" >&2; }
