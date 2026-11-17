@@ -691,6 +691,16 @@ impl Shell {
             .cursor_pointer()
             .child(
                 div()
+                    // The left cluster must be the one that gives way when the
+                    // sidebar is too narrow. Without `flex_1` both children are
+                    // content-sized, so a header wider than the panel pushes the
+                    // trailing buttons outside it — at a large `font_size` the
+                    // 定时任务 header needs more than `SIDEBAR_MIN_WIDTH` (200)
+                    // and `…` fell past the edge. Same treatment as a task row
+                    // (`:484`): shrink the label, never the controls.
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -723,6 +733,13 @@ impl Shell {
                             .text_size(sp(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(if open { foreground } else { muted })
+                            // Icons are fixed pixels while text scales with
+                            // `font_size`, so a long label is the only part that
+                            // can yield. It is clipped rather than ellipsized
+                            // (`.truncate()` would add the …; not done here) —
+                            // either way the buttons keep their place.
+                            .whitespace_nowrap()
+                            .overflow_hidden()
                             .child(label),
                     ),
             )
@@ -732,6 +749,9 @@ impl Shell {
                     Button::new(id)
                         .icon(IconName::CirclePlus)
                         .tooltip(tooltip)
+                        // 控件不让宽：`flex_shrink` 默认 1.0，不加这一句它会和
+                        // 左簇分空间、把自己压窄。
+                        .flex_shrink(0.0)
                         // 无边框圆钮：常态透明，悬浮/按下加深灰色底（自定义变体
                         // 不画边框，见 gpui-component button.rs）。
                         .custom(
@@ -966,6 +986,13 @@ impl Shell {
             .cursor_pointer()
             .child(
                 div()
+                    // Same as `render_section_header`: the label gives way, the
+                    // controls never do. This header is the wider of the two at
+                    // any `font_size` (two trailing buttons), so it is the one
+                    // that overflowed first.
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -990,11 +1017,17 @@ impl Shell {
                             .text_size(sp(14.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(if open { foreground } else { muted })
+                            .whitespace_nowrap()
+                            .overflow_hidden()
                             .child("定时任务"),
                     ),
             )
             .child(
                 div()
+                    // Controls never shrink: `flex_shrink` defaults to 1.0, so
+                    // without this they would lose width to the label instead of
+                    // keeping their own. Buttons keep their hit area.
+                    .flex_shrink(0.0)
                     .flex()
                     .flex_row()
                     .items_center()
