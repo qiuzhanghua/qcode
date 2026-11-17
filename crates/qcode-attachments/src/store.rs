@@ -429,6 +429,42 @@ fn set_read_only(path: &Path) -> Result<(), StoreError> {
     fs::set_permissions(path, permissions).map_err(|source| io_error(path, source))
 }
 
+/// Write `bytes` to `target` without ever exposing a partial file there.
+///
+/// `root` is where the scratch `tmp/` lives (the store root here, a session's
+/// snapshot directory for ADR-0101's blob store). The order is the one every
+/// content-addressed write in this workspace uses: create in `tmp/`, write,
+/// `sync_all`, `rename` into place, then fsync the directory that now holds it.
+///
+/// Public because snapshot storage needs exactly this and ADR-0101 §4 says to
+/// reuse it rather than write a second one. The failure it prevents is specific:
+/// a blob named after its sha256 but holding half the bytes would be reused
+/// forever by an "already exists, skip" write path.
+pub fn write_atomically(root: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp_dir = root.join("tmp");
+    fs::create_dir_all(&tmp_dir)?;
+    let mut tmp = TempFile::create(root).map_err(store_to_io)?;
+    tmp.write_all(bytes).map_err(store_to_io)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    tmp.commit_to(target).map_err(store_to_io)?;
+    if let Some(parent) = target.parent() {
+        // Best effort: on a platform where directories cannot be opened the
+        // rename is still atomic, only its durability across a power cut is not.
+        let _ = fsync_dir(parent);
+    }
+    Ok(())
+}
+
+/// Flatten a [`StoreError`] for callers whose own error type is `io::Error`.
+fn store_to_io(error: StoreError) -> io::Error {
+    match error {
+        StoreError::Io { source, .. } => source,
+        other => io::Error::other(other.to_string()),
+    }
+}
+
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
     #[cfg(unix)]
     {

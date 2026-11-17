@@ -610,6 +610,18 @@ where
         // before they touch it. A snapshot failure must not fail the turn: the
         // write still has to happen.
         if let Some(snapshots) = ctx.snapshots {
+            // Snapshots are `<relative path>` keyed, so the base must be the one
+            // `restore` writes back into: the session's primary root. Using
+            // `options.cwd` here instead keys pre-images against a directory the
+            // session may not even live in — a frontend started in `$HOME` and
+            // then pointed at a checkout recorded the home directory tree (90.9%
+            // of one measured 22.3 GB of snapshots) while the checkout itself
+            // never got a pre-image. `cwd` is still the fallback for a session
+            // that has no roots yet.
+            let snapshot_root: &Path = task
+                .primary_root()
+                .map(|root| root.path.as_path())
+                .unwrap_or(options.cwd.as_path());
             // The cap is charged per turn, so one turn's several shell commands
             // report it once instead of once per call.
             let mut capped_reported = false;
@@ -617,7 +629,7 @@ where
                 // A shell command can write anywhere, so guessing paths from the
                 // command line would lose files. When enabled, copy the tree.
                 if call.name == "run_shell" && snapshots.shell_enabled() {
-                    match snapshots.snapshot_tree(options.session_id, turns, &options.cwd) {
+                    match snapshots.snapshot_tree(options.session_id, turns, snapshot_root) {
                         // The cap is per turn, so report it once per turn. A turn
                         // that was already full adds nothing: saying "hit its cap"
                         // there reads like a new truncation and repeats forever on
@@ -653,7 +665,7 @@ where
                     continue;
                 }
                 if let Err(error) =
-                    snapshots.record(options.session_id, turns, &options.cwd, &paths)
+                    snapshots.record(options.session_id, turns, snapshot_root, &paths)
                 {
                     tracing::warn!(
                         %error,
