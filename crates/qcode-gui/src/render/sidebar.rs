@@ -16,6 +16,11 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// renaming it is this one string (ADR-0063 §2).
 const PRODUCT_NAME: &str = "AI 工具";
 
+/// 目录编辑器里一行目录的高度。行内那三个按钮取 `Size::Small`（24px）正是
+/// 为了对齐这个数：默认的 `Medium` 是 32px，而 `compact()` 只改内边距不动高度，
+/// 于是按钮上下各溢出 8px、压到下一行上。
+const ROOT_ROW_H: f32 = 24.0;
+
 /// 定时任务列表的状态过滤选项（`None` = 全部）。
 const SCHEDULE_FILTERS: [Option<qcode_core::schedule::TaskStatus>; 4] = [
     None,
@@ -168,6 +173,34 @@ impl Shell {
             )
             .into_any_element()
     }
+    /// One action button on a root row, sized to that row.
+    ///
+    /// `Size::Small` is 24px — exactly `ROOT_ROW_H`. The default `Medium` is
+    /// 32px, and `compact()` does not change height (it only trims padding and
+    /// sets a 32px min width), so a `Medium` button overflowed 8px above and
+    /// below a 24px row and pressed into the next one.
+    ///
+    /// Borderless like the section-header `+`: these sit on every row, so at
+    /// rest they must not compete with the label.
+    fn root_action(
+        cx: &Context<Self>,
+        id: String,
+        icon: IconName,
+        tooltip: &'static str,
+    ) -> Button {
+        Button::new(id)
+            .icon(icon)
+            .tooltip(tooltip)
+            .with_size(Size::Small)
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().transparent)
+                    .hover(rgb(0x888888).opacity(0.2).into())
+                    .active(rgb(0x888888).opacity(0.45).into())
+                    .foreground(cx.theme().muted_foreground),
+            )
+    }
+
     pub(crate) fn render_task_roots(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.active_task_row() else {
             return div().into_any_element();
@@ -180,14 +213,18 @@ impl Shell {
             let label = root.label.clone();
             let path = root.path.display().to_string();
             let missing = root.state() == RootState::Missing;
-            let primary = if root.primary { "★" } else { "☆" };
+            let primary = if root.primary {
+                IconName::StarFill
+            } else {
+                IconName::Star
+            };
             let mut line = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1()
                 .w_full()
-                .h(px(24.0))
+                .h(px(ROOT_ROW_H))
                 .child(
                     Button::new(format!("root-alias-{task_id}-{label}"))
                         .text()
@@ -205,43 +242,49 @@ impl Shell {
             }
             let line = line
                 .child(
-                    Button::new(format!("root-primary-{task_id}-{label}"))
-                        .compact()
-                        .label(primary)
-                        .tooltip("设为主目录")
-                        .on_click({
-                            let task_id = task_id.clone();
-                            let label = label.clone();
-                            cx.listener(move |this, _, _window, cx| {
-                                this.set_task_primary_root(&task_id, &label, cx);
-                            })
-                        }),
+                    Self::root_action(
+                        cx,
+                        format!("root-primary-{task_id}-{label}"),
+                        primary,
+                        "设为主目录",
+                    )
+                    .on_click({
+                        let task_id = task_id.clone();
+                        let label = label.clone();
+                        cx.listener(move |this, _, _window, cx| {
+                            this.set_task_primary_root(&task_id, &label, cx);
+                        })
+                    }),
                 )
                 .child(
-                    Button::new(format!("root-relink-{task_id}-{label}"))
-                        .compact()
-                        .label("↗")
-                        .tooltip("重新关联目录")
-                        .on_click({
-                            let task_id = task_id.clone();
-                            let label = label.clone();
-                            cx.listener(move |this, _, _window, cx| {
-                                this.relink_task_root(&task_id, &label, cx);
-                            })
-                        }),
+                    Self::root_action(
+                        cx,
+                        format!("root-relink-{task_id}-{label}"),
+                        IconName::FolderSymlink,
+                        "重新关联目录",
+                    )
+                    .on_click({
+                        let task_id = task_id.clone();
+                        let label = label.clone();
+                        cx.listener(move |this, _, _window, cx| {
+                            this.relink_task_root(&task_id, &label, cx);
+                        })
+                    }),
                 )
                 .child(
-                    Button::new(format!("root-remove-{task_id}-{label}"))
-                        .compact()
-                        .label("×")
-                        .tooltip("移除目录")
-                        .on_click({
-                            let task_id = task_id.clone();
-                            let label = label.clone();
-                            cx.listener(move |this, _, _window, cx| {
-                                this.request_remove_task_root(&task_id, &label, path.clone(), cx);
-                            })
-                        }),
+                    Self::root_action(
+                        cx,
+                        format!("root-remove-{task_id}-{label}"),
+                        IconName::X,
+                        "移除目录",
+                    )
+                    .on_click({
+                        let task_id = task_id.clone();
+                        let label = label.clone();
+                        cx.listener(move |this, _, _window, cx| {
+                            this.request_remove_task_root(&task_id, &label, path.clone(), cx);
+                        })
+                    }),
                 );
             section = section.child(line);
         }
@@ -251,13 +294,6 @@ impl Shell {
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
                     .child("当前 Turn 结束后应用"),
-            );
-        } else if self.ui.turn_in_flight {
-            section = section.child(
-                div()
-                    .text_size(sp(CAPTION_SIZE))
-                    .text_color(rgb(0x888888))
-                    .child("Turn 结束后应用"),
             );
         }
         section.into_any_element()
