@@ -139,6 +139,27 @@ fn killing_the_holder_releases_the_lock() {
 ///
 /// `qc schedule list` 探一次锁是为了回答「有人在吗」；如果探完不放开，一次只读查询
 /// 就能把真正的驱动挡在门外。
+///
+/// # 为什么最后那一步要重试（2026-11-17 实测抓到的假红）
+///
+/// 这条测试曾经在 `--test-threads=8` 下约 20% 概率报「the probe kept the lock」，
+/// 单跑 60 轮却 0 次。原因不在探测，在**同进程别的测试会 `fork`**：
+///
+/// > `flock` 的锁挂在 **open file description** 上，而 `fork` 会复制整张 fd 表——
+/// > 于是子进程手里有同一份 OFD。父进程 `close()` 掉自己那个 fd 时，锁**不会释放**，
+/// > 因为子进程还开着它；要等子进程 `exec`（`O_CLOEXEC` 那一刻才真正关掉）。
+///
+/// 那一刻很短，但探测的持锁窗口同样短，两条窄窗口撞上就是这个假红。实测（python
+/// `os.fork`，不 exec）：父进程持锁 → fork → 父进程 close → 另一个进程仍看到 held；
+/// 子进程退出后才 free。
+///
+/// 所以这里**允许最多 5 秒**去拿到锁，而不是断言一次。真漏锁的话永远拿不到，测试
+/// 照样红——它测的性质（探测不留下持锁）一点没松。同进程 spawn 子进程的那几条测试
+/// （`a_second_process_cannot_take_the_driver_lock` 等）就是 fork 的来源。
+///
+/// 产品侧不需要为此改什么：那儿 fork 之后立刻 `exec`，`O_CLOEXEC` 会把 fd 关掉；
+/// 而且 `wait_for_driver_lock` 本来就每秒重试（ADR-0092 §10），一次瞬时假 `Held`
+/// 只让它晚起不到一秒。
 #[test]
 fn probing_does_not_keep_the_lock() {
     let tmp = tempfile::tempdir().expect("data dir");
@@ -154,7 +175,10 @@ fn probing_does_not_keep_the_lock() {
         let _ = DriverStatus::read(&store, qcode_core::schedule::now_local());
     }
     assert!(
-        store.try_lock_file(DRIVER_LOCK).expect("probe").is_some(),
+        wait_until(
+            || store.try_lock_file(DRIVER_LOCK).expect("probe").is_some(),
+            Duration::from_secs(5)
+        ),
         "the probe kept the lock"
     );
 }
