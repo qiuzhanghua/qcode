@@ -64,7 +64,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
-    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    GetConsoleWindow, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -72,9 +72,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateMutexW, CreateProcessAsUserW, GetCurrentProcess,
-    GetExitCodeProcess, INFINITE, OpenProcessToken, PROCESS_INFORMATION, ReleaseMutex,
-    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateMutexW, CreateProcessAsUserW, DETACHED_PROCESS,
+    GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcessToken, PROCESS_INFORMATION,
+    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
 };
 
 use crate::sandbox::{OutsideRoots, Sandbox, SandboxError};
@@ -1080,6 +1080,48 @@ impl TokenBuilder {
     }
 }
 
+/// 这个进程自己有没有控制台。
+///
+/// 用来决定要不要为受限子进程规避控制台窗口：`qcd` 以 `DETACHED_PROCESS` 启动
+/// （没有控制台），而终端里跑的 `qc` 有。
+fn parent_has_console() -> bool {
+    unsafe { !GetConsoleWindow().is_null() }
+}
+
+/// `CreateProcessAsUserW` 的 flags：**只在没有控制台时才规避窗口**。
+///
+/// # 为什么不是无条件 `CREATE_NO_WINDOW`
+///
+/// `CREATE_NO_WINDOW` 的语义是「这是个控制台程序，给它分配一个不显示窗口的控制台」。
+/// **分配**控制台要访问 `WinSta0`，而那个访问权是授给交互用户的——本文件构造的受限
+/// 令牌只带 `logon / everyone / workspace / temp` 四个 SID，原用户 SID 已被剥掉
+/// （见 [`build_token`]）。于是分配失败，控制台程序起不来：`cmd.exe /c exit 0`
+/// 返回 66，preflight 报
+/// `sandbox windows-acl failed its preflight: helper exited with 66`，而 stderr 是空的
+/// ——受限进程连解释自己为什么失败的机会都没有。
+///
+/// 注意失败的是**被沙箱的那个进程**，不是 helper：helper 用普通令牌跑，它自己的
+/// `CREATE_NO_WINDOW`（[`WindowsAcl::helper_command`]）是另一回事，也确实需要它。
+///
+/// # 为什么不是无条件不加
+///
+/// 父进程没有控制台时（`qcd`），console 程序会凭空得到一个可见的控制台窗口——
+/// 每跑一条命令闪一下黑框，这正是当初加 `CREATE_NO_WINDOW` 要修的问题。
+///
+/// 所以按父进程的实际情况分开，两件事都能成立：
+///
+/// - 父进程**有**控制台：什么都不加，子进程挂到父进程那个控制台上，不会新窗口，
+///   也不需要分配（这条正是本次 CI 变红之前的行为）。
+/// - 父进程**没有**控制台：`DETACHED_PROCESS`，明确「不要分配控制台」。它不申请
+///   控制台对象，所以不受受限令牌缺少 `WinSta0` 权限的影响。
+fn confined_creation_flags(parent_has_console: bool) -> u32 {
+    if parent_has_console {
+        CREATE_SUSPENDED
+    } else {
+        CREATE_SUSPENDED | DETACHED_PROCESS
+    }
+}
+
 /// Spawns `program` under `token`, inheriting the helper's own std handles.
 fn spawn_confined(
     token: &HANDLE,
@@ -1127,10 +1169,7 @@ fn spawn_confined(
             std::ptr::null(),
             std::ptr::null(),
             1,
-            // `CREATE_NO_WINDOW` 与 helper 那处同因：qcd 无控制台（DETACHED_PROCESS），
-            // 被沙箱的命令若是 console 程序，继承不到可见控制台时 Windows 会新建一个
-            // 窗口。preflight 的 `cmd.exe /c exit 0` 就是这么闪出来的。
-            CREATE_SUSPENDED | CREATE_NO_WINDOW,
+            confined_creation_flags(parent_has_console()),
             // `lpEnvironment` must stay NULL: an explicit block makes the call
             // fail with ERROR_INVALID_PARAMETER for a restricted token.
             std::ptr::null(),
@@ -1460,6 +1499,26 @@ fn query_token(handle: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 有控制台时**不能**加任何与控制台有关的 flag：受限令牌分配不出控制台
+    /// （缺 `WinSta0` 权限），`cmd.exe /c exit 0` 会以 66 退出，preflight 报
+    /// `helper exited with 66` 而 stderr 为空。
+    #[test]
+    fn a_parent_with_a_console_asks_for_no_console_handling() {
+        assert_eq!(confined_creation_flags(true), CREATE_SUSPENDED);
+        assert_eq!(confined_creation_flags(true) & CREATE_NO_WINDOW, 0);
+    }
+
+    /// 没有控制台时（`qcd`）也不能用 `CREATE_NO_WINDOW`——那是「分配一个隐藏的
+    /// 控制台」，同一个权限问题。`DETACHED_PROCESS` 才是「不要控制台」。
+    #[test]
+    fn a_parent_without_a_console_detaches_instead_of_hiding_one() {
+        let flags = confined_creation_flags(false);
+        assert_ne!(flags & DETACHED_PROCESS, 0);
+        assert_eq!(flags & CREATE_NO_WINDOW, 0);
+        // 挂起仍然要，它是 job object 与 ResumeThread 之间那个窗口的前提。
+        assert_ne!(flags & CREATE_SUSPENDED, 0);
+    }
 
     #[test]
     fn helper_uses_itself_when_it_is_qc() {
