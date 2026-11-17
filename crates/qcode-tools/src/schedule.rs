@@ -187,7 +187,7 @@ impl Tool for ScheduleCreate {
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "短而可区分的任务名称。用户没给时工具会主动向用户询问，可省略。"
+                        "description": "用用户的语言、以「动作 + 对象」形式起的简短任务名（如「获取北京时间」）。省略「创建/定时任务」这类元词、时间、状态和 id。用户没给时工具会主动向用户询问，可省略。"
                     },
                     "prompt": {
                         "type": "string",
