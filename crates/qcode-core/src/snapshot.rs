@@ -678,7 +678,15 @@ fn write_blob(session_dir: &Path, bytes: &[u8]) -> io::Result<String> {
     if target.is_file() {
         return Ok(sha);
     }
-    qcode_attachments::store::write_atomically(session_dir, &target, bytes)?;
+    if let Err(error) = qcode_attachments::store::write_atomically(session_dir, &target, bytes) {
+        // Two writers can race on the same sha, and only Unix lets the loser's
+        // `rename` replace the winner's file: on Windows it fails with "already
+        // exists". The bytes are identical by construction — the name *is* their
+        // sha256 — so losing the race is success, not an error (ADR-0101 §4).
+        if !target.is_file() {
+            return Err(error);
+        }
+    }
     Ok(sha)
 }
 
