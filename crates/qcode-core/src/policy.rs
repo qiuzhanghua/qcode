@@ -42,6 +42,154 @@ fn tool_matches(pattern: &str, tool: &str) -> bool {
     }
 }
 
+/// Characters that end one simple command and start the next.
+///
+/// The substitutions and subshells are in the list because they run a command
+/// too: `` `rm -rf x` `` and `$(rm -rf x)` are as real as `; rm -rf x`.
+const COMMAND_BREAKS: [char; 7] = [';', '\n', '&', '|', '(', ')', '`'];
+
+/// Is `c` part of a shell word, as opposed to the boundary between words?
+///
+/// `.` and `-` count as word characters so a prefix cannot grow past its own
+/// spelling: `rm -rf` must not match `rm -rfx` or `rm -rf-extra`.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+/// Remove redirections, so their `&` and their target file are not mistaken
+/// for a command separator and a command.
+///
+/// `cargo test 2>&1 > /dev/null` is one `cargo test` command; treating the `&`
+/// as a separator would split it into `cargo test 2>` and `1`, and an `allow`
+/// rule for `cargo test` would then stop matching a command the user allows
+/// today.
+fn strip_redirections(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                out.push(c);
+            }
+            '\\' => {
+                out.push(c);
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '<' | '>' => {
+                while matches!(chars.peek(), Some('<' | '>')) {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'&') {
+                    // `2>&1`, `>&2`: a file descriptor, not a file name.
+                    while matches!(chars.peek(), Some(c) if c.is_ascii_digit() || *c == '&') {
+                        chars.next();
+                    }
+                } else if matches!(chars.peek(), Some(c) if !c.is_whitespace()) {
+                    // `>/dev/null`: the target is glued to the operator.
+                    while matches!(chars.peek(), Some(c) if !c.is_whitespace()) {
+                        chars.next();
+                    }
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Split a command line into the simple commands it runs, quoting respected.
+fn simple_commands(command: &str) -> Vec<String> {
+    let cleaned = strip_redirections(command);
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = cleaned.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            current.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            '\\' => {
+                current.push(c);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ if COMMAND_BREAKS.contains(&c) => {
+                segments.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    segments
+        .into_iter()
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// Does this simple command start with `prefix`, word by word?
+///
+/// A prefix that already ends at a boundary (`"echo "` from the
+/// `allow = ["run_shell:echo *"]` shorthand) needs no second check; only a
+/// prefix ending inside a word has to be told apart from a longer one.
+fn starts_with_command(segment: &str, prefix: &str) -> bool {
+    let Some(rest) = segment.strip_prefix(prefix) else {
+        return false;
+    };
+    if prefix.chars().next_back().is_some_and(is_word_char) {
+        rest.chars().next().is_none_or(|c| !is_word_char(c))
+    } else {
+        true
+    }
+}
+
+/// Does this simple command contain `prefix` as a whole word anywhere?
+fn contains_command(segment: &str, prefix: &str) -> bool {
+    let ends_at_boundary = prefix.chars().next_back().is_some_and(is_word_char);
+    let mut from = 0;
+    while let Some(found) = segment[from..].find(prefix) {
+        let start = from + found;
+        let ends_cleanly = !ends_at_boundary
+            || segment[start + prefix.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_word_char(c));
+        let starts_cleanly = segment[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_word_char(c));
+        if starts_cleanly && ends_cleanly {
+            return true;
+        }
+        // Advance one character, not one match: `rmrm -rf` must still find the
+        // `rm -rf` that starts at the second `rm`.
+        from = start + segment[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -64,7 +212,33 @@ pub struct Rule {
     /// precise `deny`.
     #[serde(default)]
     pub tool: Option<String>,
-    /// Matches when the `command` argument starts with this prefix.
+    /// Matches when a **simple command** inside `command` starts with this
+    /// prefix.
+    ///
+    /// A prefix rule is a statement about a command, not about a command line,
+    /// and that difference is the whole point of the field: `deny` on `rm -rf`
+    /// used to compare only the first bytes of the line, so `cd /tmp && rm -rf
+    /// x` — the spelling people actually type — slipped through, and so did a
+    /// leading space, `sudo rm -rf` and `/bin/rm -rf`. Measured before the fix:
+    /// 7 of 11 plausible spellings of `rm -rf` and `git push --force` reached
+    /// the shell.
+    ///
+    /// The two actions read the split differently, because "any" is the safe
+    /// direction for one and not the other:
+    ///
+    /// - `deny` matches when the prefix occurs as a word anywhere in any
+    ///   simple command, so `cd x && rm -rf y`, `sudo rm -rf y` and
+    ///   `sh -c 'rm -rf y'` are all refused. A `deny` that also catches
+    ///   `echo rm -rf` is the intended trade: refusing too much is
+    ///   recoverable, refusing too little is not.
+    /// - `allow` and `ask` match only when **every** simple command starts with
+    ///   the prefix. Allowing on "any" would let `git status && rm -rf x`
+    ///   inherit an allowlist entry written for `git status`.
+    ///
+    /// This is a text rule, not a parser: it catches the spellings that occur
+    /// out of habit, not a command built deliberately to dodge it (`"$CMD"
+    /// -rf`, `git -C repo push --force`, an alias, a script file). The OS
+    /// sandbox is the boundary that does not care about spelling.
     #[serde(default)]
     pub command_prefix: Option<String>,
     /// Matches the `path` argument against a glob (e.g. `src/**`).
@@ -136,7 +310,21 @@ impl Rule {
             let Some(command) = args.get("command").and_then(|value| value.as_str()) else {
                 return false;
             };
-            if !command.starts_with(prefix) {
+            let segments = simple_commands(command);
+            let matched = match self.action {
+                // Refuse if any part of the line runs it.
+                Action::Deny => segments
+                    .iter()
+                    .any(|segment| contains_command(segment, prefix)),
+                // Allow only if every part of the line is what was allowed.
+                _ => {
+                    !segments.is_empty()
+                        && segments
+                            .iter()
+                            .all(|segment| starts_with_command(segment, prefix))
+                }
+            };
+            if !matched {
                 return false;
             }
         }
@@ -567,6 +755,118 @@ mod tests {
                 .action,
             Action::Ask
         );
+    }
+
+    /// Every spelling measured as an escape before the split existed. The
+    /// point of the list is that these are ordinary commands, not attacks:
+    /// `cd x && rm -rf y` is how the command gets typed.
+    #[test]
+    fn a_deny_prefix_refuses_compound_and_wrapped_spellings() {
+        let policy = Policy::new(vec![
+            rule(
+                "deny-rm-rf",
+                Some("run_shell"),
+                Some("rm -rf"),
+                Action::Deny,
+            ),
+            rule(
+                "deny-force-push",
+                Some("run_shell"),
+                Some("git push --force"),
+                Action::Deny,
+            ),
+        ]);
+        let denied = [
+            "rm -rf /tmp/x",
+            "  rm -rf /tmp/x",
+            "cd /tmp && rm -rf x",
+            "true; rm -rf x",
+            "true || rm -rf x",
+            "ls | rm -rf x",
+            "sudo rm -rf x",
+            "/bin/rm -rf x",
+            "sh -c 'rm -rf x'",
+            "echo $(rm -rf x)",
+            "echo `rm -rf x`",
+            "TMPDIR=1 rm -rf x",
+            "git push --force origin main",
+            "git fetch && git push --force",
+            "make 2>&1 && git push --force",
+        ];
+        for command in denied {
+            assert_eq!(
+                policy
+                    .evaluate(
+                        "run_shell",
+                        ApprovalClass::Shell,
+                        &json!({"command": command})
+                    )
+                    .action,
+                Action::Deny,
+                "{command} should be denied"
+            );
+        }
+    }
+
+    /// The other half of the contract: a rule must not fire on a command that
+    /// merely looks like the denied one.
+    #[test]
+    fn a_deny_prefix_ignores_longer_words_that_contain_it() {
+        let policy = Policy::new(vec![rule(
+            "deny-rm-rf",
+            Some("run_shell"),
+            Some("rm -rf"),
+            Action::Deny,
+        )]);
+        for command in [
+            "rm -rfx /tmp/x",
+            "xrm -rf /tmp/x",
+            "rm -rf-extra /tmp/x",
+            "ls -la",
+        ] {
+            assert_ne!(
+                policy
+                    .evaluate(
+                        "run_shell",
+                        ApprovalClass::Shell,
+                        &json!({"command": command})
+                    )
+                    .action,
+                Action::Deny,
+                "{command} should not be denied"
+            );
+        }
+    }
+
+    /// An allowlist entry covers the line only when the line is nothing but
+    /// that command; "any segment matches" would hand out `rm -rf` for free.
+    #[test]
+    fn an_allow_prefix_requires_every_simple_command_to_match() {
+        let policy = Policy::new(vec![rule(
+            "allow-git",
+            Some("run_shell"),
+            Some("git"),
+            Action::Allow,
+        )]);
+        let allowed = |command: &str| {
+            policy
+                .evaluate(
+                    "run_shell",
+                    ApprovalClass::Execute,
+                    &json!({"command": command}),
+                )
+                .action
+                == Action::Allow
+        };
+        assert!(allowed("git status"));
+        assert!(allowed("git fetch && git status"));
+        // Redirections are not commands, so they do not break the allowlist.
+        assert!(allowed("git log 2>&1 > /dev/null"));
+        assert!(allowed("git log > /tmp/out.txt"));
+        assert!(!allowed("git status && rm -rf x"));
+        assert!(!allowed("echo hi && git status"));
+        // A prefix is a word, not a byte string.
+        assert!(!allowed("gitk"));
     }
 
     #[test]
