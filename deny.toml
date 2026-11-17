@@ -26,6 +26,20 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant
     "RUSTSEC-2026-0371", # zbus_names
     "RUSTSEC-2026-0372", # zvariant_derive
+    # chrono 全版本失去维护（2026-09-14，`informational`，`patched = []`——没有
+    # 任何版本可升级到，也没有漏洞本身，官方建议换 `jiff` 或 `time`）。
+    #
+    # 换不掉：chrono 不是我们的选择。依赖树里 5 个第三方包各自要求它——
+    # `gpui-base` / `gpui-component` / `gpui-pre` / `gpui-pre-scheduler`（窗口栈）
+    # 与 `rmcp`（MCP 客户端）。剩下的自身用法只有两处，改成 `time` 也不会让这条
+    # 公告消失，只会把改动面摊大：
+    #   - `qcode-gui`：DatePicker / TimeField 的值类型就是 `chrono::NaiveDate` /
+    #     `NaiveTime`，由 gpui-component 的 API 决定，跟着它走；
+    #   - `qcode/src/commands/logs.rs`：`qc logs` 的本地时间戳（ADR-0082）。
+    #
+    # 重议条件：gpui 栈或 rmcp 迁到 `time`/`jiff`、chrono 因此离开依赖树时，删掉这条
+    # 豁免（`cargo deny check` 会开始报 `advisory-not-detected`，那就是信号）。
+    "RUSTSEC-2026-0543", # chrono
     #
     # 曾经的 lru 豁免（RUSTSEC-2026-0253 `LruCache::pop()` 的 panic 安全性、
     # RUSTSEC-2026-0002 `IterMut` 违反 Stacked Borrows）于 2026-11-13 清掉：

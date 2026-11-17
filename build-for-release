@@ -706,6 +706,19 @@ preflight() {
     # advisory-db 默认从 GitHub 拉；内网/墙内经常连不上（git clone 会卡到超时）。
     # 本地已经有库就先离线用，避免每次门禁都等一次网络；要更新就 cargo deny fetch。
     # 没有本地库才走在线拉取（第一次需要能访问 GitHub 或配好代理）。
+    #
+    # **`--offline` 的代价，2026-11-17 撞到过**：数据库不新 = 门禁看不见新公告，
+    # 于是本地全绿而 CI 红在 `cargo deny`。那天 chrono 失去维护（RUSTSEC-2026-0543，
+    # 2026-09-14 发布）而本地库停在 11-12，`make check` 一路绿灯，推送后 CI 才报。
+    # 所以「advisories ok」只在数据库是新的时才等于「没有新公告」。
+    #
+    # 本机（HTTPS 代理对 github.com 返回 407）刷新数据库要绕开代理，否则 git fetch
+    # 直接失败、`cargo deny check`（不带 `--offline`）也会因此报错退出：
+    #
+    #     env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
+    #         -u https_proxy -u http_proxy -u all_proxy cargo deny fetch
+    #
+    # 顺手把它作为发布前的习惯：`cargo deny fetch` 一次，再跑门禁。
     if [ -n "${CARGO_HOME:-}" ] && [ -d "$CARGO_HOME/advisory-dbs" ] &&
         [ -n "$(ls -A "$CARGO_HOME/advisory-dbs" 2>/dev/null)" ]; then
         echo "    （用本地 advisory 库 $CARGO_HOME/advisory-dbs；更新用 cargo deny fetch）"
