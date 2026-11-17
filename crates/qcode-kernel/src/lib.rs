@@ -564,6 +564,16 @@ pub struct Assembled {
     pub resolved: config::Resolved,
     pub policy: qcode_core::policy::Policy,
     pub store: qcode_core::store::SessionStore,
+    /// The working directory this kernel was assembled for — the same value the
+    /// sandbox was built around and config lookup used.
+    ///
+    /// Stored rather than re-read by callers: `qcd` needs it as the fallback for
+    /// a task without a `cwd`, and asking `current_dir()` a second time is how a
+    /// process ends up with two answers to "where am I". `qcd` is the case that
+    /// proves it — spawned from a GUI whose cwd is `/`, its second read would be
+    /// the filesystem root, which is precisely what the first read had to
+    /// replace (see `qcd::launch_workspace`).
+    pub workspace: std::path::PathBuf,
     pub tools: ToolRegistry,
     pub skills: Arc<SkillSet>,
     pub provider: Box<dyn Provider>,
@@ -647,6 +657,7 @@ pub async fn assemble(
         resolved,
         policy,
         store,
+        workspace: cwd.to_path_buf(),
         tools,
         skills,
         shell_env,

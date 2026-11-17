@@ -299,14 +299,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // ── 2. 装配引擎（ADR-0036：唯一装配点）────────────────────────────────
-    let assembled = qcode_kernel::assemble(
-        None,
-        &std::env::current_dir()?,
-        data_dir,
-        None,
-        Default::default(),
-    )
-    .await?;
+    // 工作区不能直接取 `current_dir()`：从 GUI spawn 出来的 qcd 继承了 `/`
+    // （ADR-0085），而 `/` 会被沙箱构建拒绝，daemon 于是启动即退出。见
+    // `qcd::launch_workspace`。
+    let workspace = qcd::launch_workspace(&user_dir);
+    let assembled =
+        qcode_kernel::assemble(None, &workspace, data_dir, None, Default::default()).await?;
 
     // ── 3. 驱动锁（ADR-0091，数据目录级）──────────────────────────────────
     //
