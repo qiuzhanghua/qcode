@@ -532,6 +532,27 @@ pub(crate) async fn cmd_tui(
 mod tests {
     use super::*;
 
+    /// `QCODE_APP_WORKSPACE` 是**进程全局**的，而测试默认并行。
+    ///
+    /// 下面两条测试都改它，于是「A 设好 → B 覆盖 → A 读」这个交错会真的发生：
+    /// A 读到自己设的目录之外的值，`gui_workspace` 正确地忽略坏值、退回默认规则，
+    /// A 却断言「应该解析成我设的那个目录」——红了。**红的不是产品代码，是测试**。
+    ///
+    /// 2026-11-17 的 0.15.0 CI 上就这么红过一次（`test (ubuntu-latest)` 61 passed
+    /// 1 failed）：本机 28 核、单跑这两条从不失败，CI 的 2 核 runner 上 62 条测试
+    /// 挤在一起才撞上。所以这不是「偶发」，是「只在小机器上显形」。
+    ///
+    /// 用锁而不是把两条合成一条：它们验的是两件不同的事（好值生效 / 坏值被忽略），
+    /// 合起来会让失败信息说不清是哪一件坏了。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 拿锁并穿透中毒：一条测试 panic 之后，其余的不该连带报「poisoned」。
+    fn hold_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// `restore_launch_environment` 必须在 Linux 上也有实现体（ADR-0094）。
     ///
     /// 这个函数原本是 `#[cfg(target_os = "macos")]`，注释还写着「Linux 的 `.desktop`
@@ -583,10 +604,13 @@ mod tests {
     ///   设了 → 直接用，不再退
     #[test]
     fn the_workspace_override_wins_over_the_root_fallback() {
+        let _env = hold_env_lock();
         let dir = std::env::temp_dir().join(format!("qc-ws-override-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let expected = dir.canonicalize().expect("canonical temp dir");
-        // SAFETY: 单测进程里只有这一条在用这个变量名。
+        // SAFETY: `hold_env_lock` 保证同进程内没有别的测试同时动这个变量名。
+        // （它不是「全局无数据竞争」的证明——`set_var` 影响的是整个进程，而其它
+        // 测试仍可能读 `std::env`——但对这个变量而言，写这一侧是串行的。）
         unsafe { std::env::set_var("QCODE_APP_WORKSPACE", &dir) };
         let workspace = gui_workspace();
         unsafe { std::env::remove_var("QCODE_APP_WORKSPACE") };
@@ -599,7 +623,9 @@ mod tests {
     /// 指了个不存在的目录就当没设：宁可退回默认规则，也不要因为一个坏路径拒绝开窗。
     #[test]
     fn a_broken_override_is_ignored_instead_of_failing() {
-        // SAFETY: 同上。
+        let _env = hold_env_lock();
+        // SAFETY: 同 `the_workspace_override_wins_over_the_root_fallback`——这把锁
+        // 把「谁在写这个变量」串行化，交错不再可能。
         unsafe { std::env::set_var("QCODE_APP_WORKSPACE", "/nonexistent/qc-nowhere") };
         let workspace = gui_workspace();
         unsafe { std::env::remove_var("QCODE_APP_WORKSPACE") };
