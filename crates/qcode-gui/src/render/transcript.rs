@@ -45,6 +45,7 @@ pub(crate) fn unit_row(
     index: usize,
     shell: &Shell,
     entity: &Entity<Shell>,
+    running_mark: Hsla,
     color: Hsla,
     divider: Hsla,
 ) -> AnyElement {
@@ -56,7 +57,7 @@ pub(crate) fn unit_row(
             // The trailing scroller row holds the blinking typing indicator
             // while a turn streams; once it finishes the row is empty.
             if shell.ui.app.status.running {
-                running_row(shell, color, divider)
+                running_row(shell, running_mark, color, divider)
             } else {
                 div().into_any_element()
             }
@@ -165,7 +166,12 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// Running row at the tail of the transcript: a flipping QC mark,
 /// then "工作中，用时 1分23秒 ···". The seconds are recomputed on every render,
 /// driven by the 1s waiting ticker; the mark flips on its own animation.
-pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyElement {
+///
+/// `mark` and `color` are separate on purpose. The mark is the product's glyph and
+/// wears the dock/tray blue ([`brand_blue`]); the elapsed time is status text and
+/// keeps the muted foreground. One colour for both would either turn the duration
+/// into a brand-blue shout or drop the mark back into the grey it was in.
+pub(crate) fn running_row(shell: &Shell, mark: Hsla, color: Hsla, divider: Hsla) -> AnyElement {
     let elapsed = shell
         .ui
         .app
@@ -180,7 +186,7 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
     let icon = Icon::default()
         .data(QC_MARK)
         .size(px(14.0))
-        .text_color(color)
+        .text_color(mark)
         .with_animation(
             "qc-running",
             Animation::new(std::time::Duration::from_millis(2400)).repeat(),
@@ -193,7 +199,7 @@ pub(crate) fn running_row(shell: &Shell, color: Hsla, divider: Hsla) -> AnyEleme
                 // sin shifts right, so the right edge leads.
                 let alpha = if scale < 0.0 { 0.72 } else { 1.0 };
                 let dx = angle.sin() * 1.5;
-                icon.text_color(color.opacity(alpha)).transform(
+                icon.text_color(mark.opacity(alpha)).transform(
                     Transformation::default()
                         .with_scaling(size(scale, 1.0))
                         .with_translation(point(px(dx), px(0.0))),
