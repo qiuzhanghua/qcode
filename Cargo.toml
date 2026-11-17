@@ -43,10 +43,19 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.package]
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 license = "MIT"
-rust-version = "1.95"
+# The floor is deliberately the version every entry point already uses: the
+# dev machine, `scripts/Containerfile.linux-builder` (`rust:1.100`) and the CI
+# `msrv` job. One number to remember instead of two that can drift.
+#
+# What it buys: `cargo` refuses to build on anything older with one clear
+# message instead of a parse error inside a dependency. What it costs: the
+# `msrv` job no longer tests an *older* compiler than the main jobs — it pins
+# the floor against the floating `stable`, so raising this line without
+# raising that job would silently make the declaration a lie.
+rust-version = "1.100"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

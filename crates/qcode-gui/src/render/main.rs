@@ -759,12 +759,20 @@ impl Shell {
         let popover = theme.popover;
         let border = theme.border;
         let running_color = theme.muted_foreground;
+        let running_mark = brand_blue(theme.mode);
         let running_divider = border;
         let list = MessageScroller::new("transcript", self.ui.scroller.clone(), {
             let entity = entity.clone();
             move |index, _window, cx| {
                 let shell = entity.read(cx);
-                unit_row(index, shell, &entity, running_color, running_divider)
+                unit_row(
+                    index,
+                    shell,
+                    &entity,
+                    running_mark,
+                    running_color,
+                    running_divider,
+                )
             }
         })
         .scrollbar(false)

@@ -643,6 +643,17 @@ build_one() {
             die "产物报的版本是 ${reported}，文件名里却是 ${VERSION}（Cargo.toml 没 bump？）"
         fi
         echo "  version: $reported"
+
+        # `qcd` 也问一次。它与 `qc` 共用同一个 `$VERSION`，但在这一版之前**没有**
+        # `--version`，于是它在发布流程里从来没被问过——一个只会被复制、从不会被
+        # 对账的产物。而它正是 `qc update` 装完要校验的那个文件（判断口径见
+        # `verify_daemon`），所以「它能报出自己的版本」本身就是发布契约的一部分。
+        local reported_qcd
+        reported_qcd=$("$qcd_dest" --version 2>/dev/null | awk '{print $NF}')
+        if [ "$reported_qcd" != "$VERSION" ]; then
+            die "qcd 产物报的版本是 '${reported_qcd}'，Cargo.toml 里却是 ${VERSION}"
+        fi
+        echo "  version(qcd): $reported_qcd"
     else
         echo "  version: ${VERSION}（交叉产物，静态核对）"
     fi

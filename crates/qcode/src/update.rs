@@ -634,6 +634,7 @@ async fn update_daemon(
         Ok(_) => {
             cleanup_backups(&target);
             println!("daemon updated: {}", target.display());
+            verify_daemon(&target, &release.version);
         }
         // Windows 上正在跑的 qcd 会被占用；那是「下次再说」，不是更新失败。
         Err(error) => eprintln!(
@@ -644,9 +645,87 @@ async fn update_daemon(
     }
 }
 
+/// 装上之后问一次磁盘上那个 `qcd`：你报的是哪个版本。
+///
+/// **为什么值得多起一个进程**：上面那行 `daemon updated: …` 在拿到 `--version`
+/// 之前是一句无法验证的话——它能证明「字节写出去了」，不能证明「旁边那个文件会
+/// 说自己是谁」。而两边版本不一致时症状是散的：`qc daemon status` 说「在跑」，
+/// 定时任务的行为却按老 daemon 走，没有任何地方报错。读一次版本是这条链路上唯一
+/// 便宜的对账点（`qcd --version` 在 `qcd` 里排在任何初始化之前，见
+/// `crates/qcd/src/main.rs` 的 `early_exit`：不写日志、不抢锁，所以即使正有一个
+/// daemon 在跑也能问）。
+///
+/// **警告而不改退出码**，与 [`update_daemon`] 的整体口径一致：`qc` 已经换好并
+/// 生效了，此时报「更新失败」是假话。
+fn verify_daemon(target: &Path, expected: &str) {
+    let output = match std::process::Command::new(target).arg("--version").output() {
+        Ok(output) => output,
+        // 起不来比版本不符严重：刚写下去的文件跑不起来（权限、格式、缺动态库）。
+        Err(error) => {
+            eprintln!(
+                "warning: cannot run {} --version: {error}\n\
+                 \x20        旁边的 qc 已经更新；定时任务需要这个文件能执行。",
+                target.display()
+            );
+            return;
+        }
+    };
+
+    // 旧 `qcd` 不认识 `--version`：exit 1 + `unknown argument "--version"`。
+    // 那是「这个 daemon 太旧」，不是「这次更新装错了」，两句话必须分开说——否则
+    // 下次升级的人会被一句警告吓到，而其实什么都没坏。
+    if !output.status.success() {
+        eprintln!(
+            "warning: {} --version failed ({}); the installed daemon predates version \
+             reporting.\n\
+             \x20        它仍能跑，只是这样对不了账。",
+            target.display(),
+            output.status
+        );
+        return;
+    }
+
+    let reported = parse_version(&String::from_utf8_lossy(&output.stdout));
+    if reported.as_deref() != Some(expected) {
+        eprintln!(
+            "warning: {} reports {}, expected {expected:?}\n\
+             \x20        装上去的不是这次发布的 daemon。旧的仍能跑（协议没变），\
+             但版本口径不一致。",
+            target.display(),
+            reported.as_deref().unwrap_or("nothing"),
+        );
+    }
+}
+
+/// 从 `qcd --version` 的 stdout 里取版本：最后一列。
+///
+/// 与 `build-for-release` 的 `awk '{print $NF}'` 是**同一条规则**。这是两份实现
+/// 之间唯一必须一致的约定：脚本与本程序对同一个输出得出不同结论，会让「产物报的
+/// 版本对不对」变成一件取决于用哪个工具去问的事。
+fn parse_version(stdout: &str) -> Option<String> {
+    let last = stdout.split_whitespace().last()?;
+    Some(last.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `qcd --version` 的输出只有一种形状，而 `parse_version` 必须与脚本里的
+    /// `awk '{print $NF}'` 得出同一个结论。多空白、少换行都认（对面可能是手敲的
+    /// 版本，或者一个包装脚本加了前缀）。
+    #[test]
+    fn the_last_column_is_the_version() {
+        assert_eq!(parse_version("qcd 0.14.1\n").as_deref(), Some("0.14.1"));
+        assert_eq!(parse_version("qcd 0.14.1").as_deref(), Some("0.14.1"));
+        assert_eq!(
+            parse_version("  qcd   0.14.1  \r\n").as_deref(),
+            Some("0.14.1")
+        );
+        // 空输出不能变成「版本是空字符串」——那样错误信息会莫名其妙地正确。
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("\n\n"), None);
+    }
 
     #[test]
     fn versions_compare_numerically_not_lexically() {

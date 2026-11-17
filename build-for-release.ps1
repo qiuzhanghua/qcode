@@ -195,6 +195,15 @@ if ($Target -eq $HostTriple) {
         Fail "产物报的版本是 $Reported，文件名里却是 $Version（Cargo.toml 没 bump？）"
     }
     Write-Host "  version: $Reported"
+
+    # `qcd` 也问一次。它与 `qc` 共用同一个 `$Version`，但在这一版之前没有
+    # `--version`，于是它在发布流程里从来没被问过——而它正是 `qc update` 装完要
+    # 校验的那个文件（`update::verify_daemon`）。
+    $ReportedQcd = (& $DaemonDest --version | ForEach-Object { $_ -split '\s+' } | Select-Object -Last 1)
+    if ($ReportedQcd -ne $Version) {
+        Fail "qcd 产物报的版本是 '$ReportedQcd'，Cargo.toml 里却是 $Version"
+    }
+    Write-Host "  version(qcd): $ReportedQcd"
 } else {
     Write-Host "  version: $Version（交叉产物，静态核对）"
 }

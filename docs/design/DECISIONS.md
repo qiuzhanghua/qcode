@@ -11017,6 +11017,13 @@ error: failed to run custom build command for `libsqlite3-sys v0.39.1`
 同时把 `windows-build` job 里那句「所以不再有 Linux cross-check job」的注释改掉了——它
 现在与事实相反，而一句会骗人的注释比没有注释更糟。
 
+> **2026-11-17 修订**：上面钉的版本已从 0.17.0 升到 **0.17.1**（patch 级）。`scripts/install-zig.sh`
+> 是唯一的来源，`ci.yml` 的缓存 key 与 `docs/DEVELOPMENT.md` 跟着它走；这一段的 0.17.0 是
+> 当时的记录，不再改动。实测：本机用 0.17.1 跑 `scripts/ci-cross-check.sh` 的两个 darwin
+> triple，`checked=2` 通过；`zig cc -target aarch64-linux-{gnu,musl}` 与 `aarch64-macos`
+> 仍照常产目标文件，wrapper 里那三个坑（Apple 拼法、`-O0` 插 UBSan、`armv8.5-a` 的
+> `.note.gnu.property`）一个都没变。
+
 未验证项：这条 CI 步骤在真 runner 上还没跑过（本机无法访问 GitHub Actions 的执行环境）。
 首次运行时最可能出问题的地方是 zig tarball 的下载与 `python3` 解析 index（ubuntu-latest
 两者都有），以及冷缓存下 darwin 两个 triple 的 sqlite / aws-lc 编译耗时。

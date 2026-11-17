@@ -593,7 +593,11 @@ impl Shell {
                         Icon::default()
                             .data(QC_MARK)
                             .size(px(18.0))
-                            .text_color(cx.theme().foreground),
+                            // The dock/tray blue rather than the theme foreground:
+                            // this is the product's mark, and it should be the same
+                            // mark as the one next to the app in the dock. See
+                            // [`brand_blue`] for why dark mode brightens it a step.
+                            .text_color(brand_blue(cx.theme().mode)),
                     )
                     .child(
                         div()
