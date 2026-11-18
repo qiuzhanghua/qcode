@@ -458,7 +458,7 @@ impl SetupView {
     /// Write whatever the debounce has been holding. `Err` carries why it could not, so
     /// a caller about to lose the window (see `prepare_to_close`) can say so instead of
     /// only logging it to a console nobody is looking at.
-    fn flush_auto_save(
+    pub(crate) fn flush_auto_save(
         &mut self,
         kind: AutoSaveKind,
         cx: &mut Context<Self>,
@@ -474,6 +474,10 @@ impl SetupView {
                     match write_config(&self.path, &config) {
                         Ok(()) => {
                             self.config = config;
+                            // 这次保存成功了：清掉旧的失败提示，否则弹框
+                            // 「保存」用 `self.error` 判断成败时会误判失败、
+                            // 怎么点都关不掉。
+                            self.error = None;
                             // The last flush won: a table write already persisted
                             // any pending scalar edit, so drop it to avoid a
                             // redundant rewrite.

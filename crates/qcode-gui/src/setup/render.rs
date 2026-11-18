@@ -390,9 +390,11 @@ impl Render for SetupView {
             .child(content)
             .child(footer)
             // Modal overlays (settings mode only): the provider edit dialog,
-            // the custom-provider declaration dialog, the probe candidate
-            // picker and the provider delete confirmation.
+            // the 「添加模型」provider picker, the custom-provider declaration
+            // dialog, the probe candidate picker and the delete confirmation.
             .child(self.render_provider_dialog(cx))
+            .child(self.render_add_model_dialog(cx))
+            .child(self.render_provider_picker(cx))
             .child(self.render_custom_card(cx))
             .child(self.render_probe_picker(window, cx))
             .child(self.render_delete_dialog(cx))

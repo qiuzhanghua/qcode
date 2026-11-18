@@ -12,7 +12,7 @@ use qcode_providers::{
 };
 
 use crate::config::{
-    CatalogEntry, Config, Protocol, ProviderConfig, catalog_entries, catalog_entry,
+    CatalogEntry, Config, ModelEntry, Protocol, ProviderConfig, catalog_entries, catalog_entry,
 };
 
 /// Directory-level credential state of one provider route (M3).
@@ -304,6 +304,27 @@ impl ProviderRegistry {
             ]),
             other => MockProvider::text(format!("mock provider: {other}")),
         }
+    }
+}
+
+/// Whether a route counts as "has models configured": a profile exists in
+/// `config.providers` and its `models` list is non-empty or `default_model` is
+/// set. Catalog built-in model lists do not count — the user made no choice.
+/// Both the settings page and the main-window picker filter on this.
+pub fn configured_models(route: &str, config: &Config) -> bool {
+    let Some(profile) = config.providers.get(route) else {
+        return false;
+    };
+    !profile.models.is_empty() || profile.default_model.is_some()
+}
+
+/// The effective model list of a route: `providers.<route>.models` overrides
+/// the catalog, otherwise the catalog's built-in models are served (for a
+/// provider whose `default_model` is set but whose `models` is empty).
+pub fn effective_models(route: &str, config: &Config) -> Vec<ModelEntry> {
+    match config.providers.get(route) {
+        Some(profile) if !profile.models.is_empty() => profile.models.clone(),
+        _ => crate::config::catalog_models(route),
     }
 }
 
