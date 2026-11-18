@@ -144,7 +144,13 @@ mod linux_backend {
                 if event.len > 0 {
                     let name = unsafe {
                         std::ffi::CStr::from_ptr(
-                            buffer.as_ptr().add(offset + size_of::<inotify_event>()) as *const i8,
+                            // 别写死 `i8` 或 `u8`：`c_char` 在 x86_64 是 `i8`、aarch64 是
+                            // `u8`，写死任一个都只在半个矩阵上编得过。用 `c_char` 与
+                            // `from_ptr` 的签名同源，与目标无关。
+                            buffer
+                                .as_ptr()
+                                .add(offset + size_of::<inotify_event>())
+                                .cast::<std::ffi::c_char>(),
                         )
                     };
                     if name.to_bytes() == TASKS_JSON.as_bytes()
