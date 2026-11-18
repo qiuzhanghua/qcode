@@ -42,6 +42,53 @@ use host::DaemonHost;
 /// 会让「同一分钟内被投两次」更难排查。
 pub const DEFAULT_BEAT: Duration = Duration::from_secs(30);
 
+/// 这次启动的工作区，`fallback` 只在读不到 cwd 时用。
+///
+/// # 为什么不是一个 `current_dir()`
+///
+/// GUI 从 Finder / Dock 启动时 cwd 是 `/`（ADR-0085），而 `qcd` 是那个 GUI
+/// `spawn` 出来的子进程，于是原样继承了 `/`。这不是一个「勉强的默认值」而是一个
+/// **让 daemon 起不来**的值：`qcode_kernel::assemble` 把 cwd 当作沙箱的
+/// primary root，而 `profile_for_roots` 对文件系统根是硬拒绝——
+///
+/// ```text
+/// ERROR qcd: qcd stopped with an error error=sandbox setup failed:
+///            refusing to sandbox the filesystem root as a root
+/// ```
+///
+/// 结果是 `[sandbox] mode = "sandbox-exec"` 时，从 GUI 启停 daemon 全部无效：
+/// 进程 spawn 成功、立刻以 exit=1 退出，而 `daemon::start` 只报 spawn 的 pid，
+/// 于是界面看起来像「点了没反应」。实测这台机器上连点七次，七次都在 2ms 内死掉。
+///
+/// 同一份规则 GUI 早就有了（[`qcode_core::choose_workspace`]，见
+/// `qc::commands::gui::gui_workspace`），daemon 是漏掉的那一处。用同一个函数而不是
+/// 再写一遍判据：两处对「什么算一个合法的工作区」必须只有一个答案。
+///
+/// # 已知取舍：落点就是家目录
+///
+/// 文件系统根回落到**家目录**，与 GUI 从 Finder 启动时一致，这是选定的行为，
+/// 不是顺手抄来的默认值。代价说清楚：家目录作为沙箱主根时写范围是整个家目录
+/// （实测 `~/.ssh` 可写），而 `qcode_core::paths::dangerous_write_root` 明确拒绝
+/// 把家目录当**额外写根**——两处判断不一致，是有意为之：交互式的 GUI 有审批兜底，
+/// 而 daemon 无人值守。
+///
+/// 这个代价之所以可接受，是因为它几乎不会被用到：建任务时会把 workspace 写实
+/// （ADR-0090 §11，`runtime.rs` 与 `qc schedule add` 都写 `cwd`），所以「任务没有
+/// cwd」只剩下手工改过的历史数据。要让 daemon 真正拥有一个窄的落点，得先决定
+/// 「daemon 的工作区是什么」，那是另一个问题（`~/.local/share/qcode` 是候选）。
+pub fn launch_workspace(fallback: &std::path::Path) -> std::path::PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| fallback.to_path_buf());
+    let home = qcode_kernel::config::home_dir().map(|home| home.canonicalize().unwrap_or(home));
+    let (workspace, fell_back) = qcode_core::choose_workspace(cwd, home);
+    if fell_back {
+        tracing::warn!(
+            workspace = %workspace.display(),
+            "qcd: started with a filesystem root as cwd; using the home directory as the workspace"
+        );
+    }
+    workspace
+}
+
 /// 墙钟的来源。
 ///
 /// 抽出来是为了让 ADR-0092 的验收能进 CI：真等一分钟不是测试。生产用的是
@@ -102,8 +149,10 @@ impl Daemon {
     pub fn with_clock(assembled: Assembled, beat: Duration, clock: Box<dyn WallClock>) -> Self {
         let identity = format!("daemon:{}", now_local().to_string().replace(' ', "T"));
         // 启动目录：任务没指定 cwd 时回落到这里（ADR-0090 §2 那条规则的 daemon 侧）。
-        let workspace =
-            std::env::current_dir().unwrap_or_else(|_| assembled.store.root().to_path_buf());
+        // 取自 `assembled` 而不是再读一次 `current_dir()`：装配时的那个值已经过
+        // 「文件系统根换成家目录」的规则，再读一次会得到没经过它的原值（见
+        // [`launch_workspace`]）。
+        let workspace = assembled.workspace.clone();
         let agents_md = qcode_core::agents::load(&workspace).ok().flatten();
         let skills = assembled.skills.prompt_section();
         Self {

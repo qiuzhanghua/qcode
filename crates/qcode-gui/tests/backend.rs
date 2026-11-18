@@ -1013,9 +1013,10 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
     // wiring the terminal's pump *onto* that runtime, and that would show up here
     // as a beat that stops landing.
     //
-    // The bound below was checked by mutation: inserting a 4 s busy-wait into the
-    // beat arm of `runtime.rs` makes this test fail at the status assertion, so
-    // it is measuring the beat and not just happening to pass.
+    // Sensitivity was re-measured on 2026-11-17 rather than trusted from the note
+    // that used to sit here (it claimed a 4 s busy-wait fails this; it does not,
+    // see the bound below). Measured: baseline 3.08 s, 4 s stall 4.08 s (passes,
+    // one missed beat is allowed), 30 s stall fails after 15 s.
     use qcode_terminal::{Session, SessionConfig};
 
     let flood = Session::spawn(SessionConfig::command(
@@ -1100,11 +1101,22 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
         "the flood's output never reached its grid"
     );
 
-    // A beat that starves shows up as a decision that takes many beats. The beat
-    // is 1s and the scheduler tolerates a 3s gap before treating it as "away",
-    // so one missed beat is allowed and a starved loop is not.
+    // A beat that starves shows up as a decision that takes many beats. The aim
+    // is 3 s ahead on the *wall clock*, so the baseline is ~3.08 s on any machine
+    // — the wait is not CPU-bound, which is why this bound does not have to be
+    // generous for slow runners. The beat is 1 s, so 5 s allows one missed beat
+    // and catches a loop that has stopped landing beats.
+    //
+    // **Measured, because the previous note here was wrong.** It claimed a 4 s
+    // busy-wait in the beat arm makes this fail. It does not: a 4 s stall costs
+    // exactly one beat (4.08 s measured against a 3.08 s baseline), and one
+    // missed beat is allowed by design. A 30 s stall *does* fail, with the
+    // "never decided the orphan" message after 15 s — which is also the shape of
+    // a real starvation, so the test still has teeth. What it deliberately does
+    // not do is fail on a single hiccup; tightening it to catch that would trade
+    // a real check for a flake on a loaded runner.
     assert!(
-        decided_after < Duration::from_secs(6),
+        decided_after < Duration::from_secs(5),
         "the orphan took {decided_after:?} to be decided while a terminal was \
          flooding; the terminal is competing with the beat"
     );

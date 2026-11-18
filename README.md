@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.15.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.15.2**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -321,8 +321,8 @@ GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于�
 写地址，别依赖那个配置：
 
 ```bash
-git push git@gitee.com:opentj/qcode.git main v0.15.0   # 1. gitee，失败即停
-git push gh main v0.15.0                               # 2. GitHub，触发 CI / 发布
+git push git@gitee.com:opentj/qcode.git main v0.15.2   # 1. gitee，失败即停
+git push gh main v0.15.2                               # 2. GitHub，触发 CI / 发布
 ```
 
 推完两端用 `git ls-remote` 确认指向同一个 commit：
@@ -574,9 +574,13 @@ cargo build -p qcode-eval
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。macOS `sandbox-exec` 已按
   Task 的 RO/RW 目录重建 profile；Linux/Windows 多目录重建仍待补齐。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
+  `landlock`（Linux）、`windows-acl`（Windows）。**四个后端能力不同，选型与差异见
+  [SANDBOX-BACKENDS.md](./design/SANDBOX-BACKENDS.md)**（机制、能力矩阵、PTY 与 `/tmp` 的
+  具体差别、本机实测）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
-  可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
+  可拒绝网络，`landlock` 只做文件系统（**不管网络**：`[sandbox] network` 在它上面会被丢弃，
+  出口代理只是给子进程设 `HTTP_PROXY` 引流，不是强制，见
+  [SANDBOX-BACKENDS.md §7](./design/SANDBOX-BACKENDS.md)），`windows-acl` 只限制写
   （读与网络不受限，硬链接与命名管道不在覆盖范围，因此报 `partial`）。四个后端都认
   `extra_writable`（除 workspace 与私有 temp 外额外可写的子树）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
@@ -801,7 +805,7 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.15.0 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
+v0.15.2 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
 一个常驻驱动 `qcd`（无窗口，只服务定时任务，与 `qc` 同目录发布；段头那颗幽灵图标
 绿色＝它在跑、灰色＝没在跑，点一下启停，ADR-0100）、
 定时任务的建法：跟 agent 说一句，或 `qc schedule create`（入口取舍见 ADR-0097）、

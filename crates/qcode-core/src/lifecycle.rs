@@ -542,8 +542,20 @@ mod tests {
     /// of live process groups lives in `qcode-tools`, which this crate cannot
     /// depend on. That the registered groups actually get drained is
     /// `qcode-tools`'s test, where the registry is in scope.
+    /// Serializes the two tests that touch the process-wide `REAPER` slot.
+    ///
+    /// Without it `a_forced_exit_calls_the_reaper_that_was_installed` asserts a
+    /// count of 1 while `no_reaper_means_nothing_to_reap` is free to call the
+    /// same hook in between, and the assertion reads "left: 2, right: 1" — a
+    /// flake that says nothing about the code under test and everything about
+    /// the thread that happened to run first.
+    static REAPER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_forced_exit_calls_the_reaper_that_was_installed() {
+        let _guard = REAPER_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         static CALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         fn reaper() -> usize {
             CALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -563,6 +575,9 @@ mod tests {
     /// panic on the signal path.
     #[test]
     fn no_reaper_means_nothing_to_reap() {
+        let _guard = REAPER_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // `install_reaper` has no "clear" because no real process ever unsets it;
         // this test only runs meaningfully in a binary where nothing registered,
         // so it asserts the tolerant shape rather than a specific count.

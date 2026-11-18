@@ -1,5 +1,128 @@
 # Changelog
 
+## 0.15.2 — 2026-11-18
+
+补丁版：三个界面 bug，其中第一个会**丢用户的输入**。都是「界面自己猜状态」造成的——一处是
+turn 在不在跑由视图自己记，两处是侧栏按内容宽度铺开、没给标题让步的余地。没有破坏性变更，
+配置与日志格式不变。
+
+### 「有 turn 在跑」只由引擎结算（ADR-0102）
+
+起因是一条界面反馈：没改配置，却显示「Turn 结束后应用」。查下去不是文案问题，而是
+`TaskUi::turn_in_flight` 这个字段有 5 处置真、3 处置假，而「到底有没有 turn 在跑」的权威在
+引擎的 `live` 映射——两边没有任何对账。三种能指到代码的后果：
+
+- **丢字**：`[ui] busy_delivery = "steer"` 时，空闲状态下 steer 会**按值收下文本后返回
+  `None`**，而输入框已清空、标记已置真。用户看到的是「发出去了，但模型没回」——丢的是整句话。
+- **卡住**：建任务失败的两条路径只发 `TurnFailed`，没有跟事件，于是界面认为 turn 还在跑，
+  目录改动排进 `pending_roots`、重命名排进 `pending_task_renames`，等一个不会来的 turn 结束；
+  「删除任务」直接变灰。
+- **误结算**：切 provider 失败时发的 `TurnFailed` 收口了一个**还活着**的 turn，把正在等审批的
+  提示一起清掉。
+
+根因不是「少一次同步」，而是**一个事件同时表示「turn 结束了」和「有句话要说」**。ADR-0102
+把充要条件写死：
+
+> `TurnFailed` 的充要条件是「这个 turn 不会再有下文」。
+
+按此审计三处调用点全部成立；「切 provider 失败」改用新的 `UiEvent::Notice`——同一个横幅槽位，
+但不碰 `turn_in_flight`、不 `abort_turn`、不清待审批。另定：乐观置真保留（「停止」按钮必须
+立刻可点），但**置假只能来自引擎**；引擎忽略命令时必须要么照做、要么回一条事件，禁止静默丢弃。
+
+### 侧栏两处溢出
+
+- **段头把按钮挤出面板**：字号放大到 20 后，「定时任务」段右侧那颗 `…` 跑到侧栏外面。两个段头
+  都是 `.justify_between()` + 两个内容大小的子 div，没有 `flex_1`、没有 `min_w(0)`、标题也没有
+  `whitespace_nowrap`，宽度不够时没有任何东西让步。而**图标与按钮是固定 px，只有文字随
+  `font_size` 缩放**，所以溢出必然先出现在标题那侧。补上任务行早就在用的那个组合
+  （`.flex_1().min_w(px(0.0)).overflow_hidden()`）。
+- **目录编辑器的按钮比行大一圈**：行高 24px，按钮是默认 `Size::Medium` = 32px，上下各溢出 8px，
+  还占掉侧栏一半宽度。改 `Size::Small`（24px）并把行高抽成 `ROOT_ROW_H` 写死对应关系；字形也从
+  文本（`★ ☆ ↗ ×`）换成图标管线，与段头一致。
+
+已知边界：字号极大（如上限 32）时段头标题会被裁得很短。这是选定的取舍——裁剪自解释，而按钮
+跑到面板外是点不到。
+
+## 0.15.1 — 2026-11-17
+
+一个「把量出来的数字兑现成结构」的版本。三件事互不相干，但都是先把现状量清楚、再发现
+量出来的东西和代码假设不一致：快照装的东西不是仓库、`command_prefix` 拦的不是命令、
+`qcd` 的工作区不是它以为的那个目录。**没有破坏性变更**：旧布局的快照仍可读（不自动迁移，
+见 ADR-0101 边界 3），配置格式不变。
+
+### 快照：blob + 每 turn manifest（ADR-0101）
+
+先按 ADR-0101 的口径量了本机（4 个会话 / 587 个 turn）：
+
+    699,584 个实例  22.3 GB  →  2,637 份唯一内容  112.9 MB   (202×)
+
+去重率比 ADR 正文实测（4×）高两个数量级，但**变量不是去重率，是快照装了什么**：90.9%
+（20.3 GB）来自家目录——`.WebUI`（浏览器 profile）、`.bun/install/cache`、
+`.anaconda_backup`；仓库只占 2.02 GB。**250 个 turn 的 64 MB 额度在家目录上就用完了，
+仓库一个文件都没进快照**：既有空间代价，又没有恢复价值。
+
+两个成因都在 ADR 射程之外，先修它们：
+
+- **遍历根取的是引擎进程的 workspace，不是会话的 `primary_root`**。从 `$HOME` 启动的 GUI
+  打开 checkout 后 `RunOptions.cwd` 仍是 `~`，整棵家目录被当工作区复制；而 `restore` 按
+  `primary_root` 拼路径，两边键对不上——**回滚会写到错误位置**。改：`turn.rs` 用
+  `task.primary_root()`，无 roots 时才回落 `cwd`。
+- **`TREE_SKIP` 只有 14 项，全是仓库内缓存**，家目录那一类一项都没有。补上 `.WebUI`、
+  `.bun`、`.cache`、`Library`、`.local`、`.anaconda_backup` 等。理由与 `target/` 相同：
+  跳过只放弃那个目录的回滚能力，不放弃它的内容。
+
+然后才是 ADR-0101 本身：快照从「每次全量复制」改成内容寻址的 blob + 每 turn 一份
+manifest，blob 按会话存放。**存量 22 GB 不自动迁移、不自动清理**——回收要删会话或手工
+清目录，`scripts/gc-orphan-snapshots.sh` 与 `scripts/reset-snapshots.sh` 是给这个用的。
+
+### 沙箱：两条规则其实都没拦住东西
+
+- `command_prefix` 用的是 `command.starts_with(prefix)`，于是 deny 规则只在命令**以该
+  前缀开头**时生效。实测 11 种常见写法里 7 种能穿过 `rm -rf` 与 `git push --force` 的封锁：
+  `cd /tmp && rm -rf x`、`sudo rm -rf /tmp/x`、前导空格、`/bin/rm`、`sh -c '...'`、
+  `git push -f`。而 `[sandbox] mode = "none"` 时这两条规则就是**唯一的边界**。
+  改成先按 `;` `&&` `||` `|` 换行、子 shell 与 `$( )` / 反引号切分成简单命令，再逐段匹配。
+  两个方向刻意不同：`deny` 命中**任意**一段即拒（多拒可挽回，少拒不能）；`allow` / `ask`
+  要求**每一段**都匹配（按「任一」放行会让 `git status && rm -rf x` 继承 allowlist）。
+  重定向先剔除，否则 `allow = ["run_shell:cargo test"]` 会被 `2>&1` 切成两段而失效。
+- `qcd` 从 GUI 启动时 cwd 是 `/`（ADR-0085），而这个 cwd 被当作沙箱 primary root，
+  `profile_for_roots` 对文件系统根是硬拒绝——于是设了 `sandbox-exec` 之后**从 GUI 启停
+  daemon 全部无效**：spawn 成功、2ms 后退出，界面只是「点了没反应」。新增
+  `qcd::launch_workspace` 复用 GUI 早就有的「根换成家目录」规则（`choose_workspace`）。
+
+### Windows：受限令牌分配不出控制台
+
+`53d7cab` 给 `CreateProcessAsUserW` 加了 `CREATE_NO_WINDOW`，Windows CI 的 `mock smoke`
+自那以后一直红（`helper exited with 66`——66 是**被沙箱的进程**的退出码，它连解释自己
+为什么失败都做不到）。根因是 `CREATE_NO_WINDOW` 的语义是「给**分配**一个不显示窗口的
+控制台」，分配要访问 `WinSta0`，而受限令牌只带四个 SID、原用户 SID 已被剥掉。
+
+两种父进程分开处理：父进程**有**控制台（终端里的 `qc`）什么都不加，子进程挂到父进程那个
+控制台上；父进程**没有**控制台（`qcd`）用 `DETACHED_PROCESS`，即「不要控制台」而不是
+「分配一个隐藏的」。两者都不含 `CREATE_NO_WINDOW`，都保留 `CREATE_SUSPENDED`。
+
+顺带：快照记录在 Windows 上碰到同一个 sha 的 rename 竞争会报假警告——`rename` 只在 Unix
+上静默替换，Windows 上后者以 "already exists" 失败。字节相同是构造出来的（文件名就是它
+的 sha256），所以 rename 失败后目标已存在即视为成功。
+
+### 门禁：本地绿灯曾经不可信
+
+`cargo deny` 在推送后红在 `chrono` 的 unmaintained 公告（RUSTSEC-2026-0543，全版本受影响、
+没有可升级目标）。换不掉：chrono 不是我们的选择，依赖树里 5 个第三方包各自要求它
+（gpui 栈四个 + `rmcp`）。与已有的 `paste` / `instant` 等同形豁免。
+
+**但更值得记的是它为什么没在本地红**：`build-for-release` 的 `cargo deny --offline check`
+用的是本机 advisory 库，而本机的库停在 11-12——公告 09-14 就发布了，那之后库没再更新。
+本地 `make check` 因此一路绿灯。这个盲区已写进脚本注释。
+
+### 小改动
+
+- 定时任务的 `title` 参数改成 dsh 的 `TITLE_HELP` 风格（动作+对象，省略元词/时间/状态/id），
+  模型不再原样复述用户输入。
+- 侧栏头部与「工作中」的 QC 标记改用 dock/tray 的品牌蓝（浅色 `#2F6BFF`，深色提亮到
+  `#6691FF` 以在 `neutral-950` 上拿到 6.66:1）。同一个标志在两处颜色不同，看起来像两个产品。
+- `flooding` 测试的灵敏度按实测重写，预算收到 5s。
+
 ## 0.15.0 — 2026-11-17
 
 一个「把版本号变成可问的事实」的版本：`qcd` 终于能报自己是谁，顺带把工具链的下限提到

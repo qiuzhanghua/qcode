@@ -49,6 +49,9 @@ fn assembled(data_dir: &std::path::Path) -> Assembled {
         },
         policy: qcode_core::policy::Policy::new(Vec::new()),
         store,
+        // 任务没指定 cwd 时的回落点。这个测试不关心具体值，但字段必须与
+        // `qcode_kernel::assemble` 填的那份同义：装配时用的工作区。
+        workspace: std::env::temp_dir(),
         tools: qcode_core::tool::ToolRegistry::new(Vec::new()),
         skills: Arc::new(qcode_tools::skills::SkillSet::default()),
         provider: Box::new(MockProvider::text("done")),

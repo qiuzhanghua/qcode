@@ -43,7 +43,7 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.package]
-version = "0.15.0"
+version = "0.15.2"
 edition = "2024"
 license = "MIT"
 # The floor is deliberately the version every entry point already uses: the
@@ -71,6 +71,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 async-trait = "0.1"
 base64 = "0.22"
+# ADR-0101 §7: one declaration, so snapshots and attachments cannot drift onto
+# two majors of the same hash.
+sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 # Same major as rmcp's `http`, so `HeaderName`/`HeaderValue` unify across the

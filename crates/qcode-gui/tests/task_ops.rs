@@ -88,6 +88,11 @@ fn work_in_progress_does_not_mark_unread() {
         requested_scope: None,
         justification: None,
     })));
+    // 只说话不动 turn 的事件不是「这个任务有话说」：turn 还在跑，未读要点亮
+    // 等它自己结束。把它们算进未读会在跑到一半时给任务行点上红点。
+    assert!(!marks_unread(&UiEvent::Notice {
+        message: "无法切换到 openai".to_string(),
+    }));
 }
 
 /// 草稿发出第一条消息：引擎新建的会话名还不在屏上，按 target 分流会把它算成

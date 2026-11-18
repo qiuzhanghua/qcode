@@ -1073,7 +1073,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         }
                                         Err(error) => {
                                             tracing::warn!(%error, "cannot switch provider");
-                                            port.tagged(current.clone()).send_turn_failed(format!(
+                                            // The turn keeps running on the old
+                                            // route: this is a notice, not a
+                                            // failed turn. Sending `TurnFailed`
+                                            // here aborted the live turn card
+                                            // and dropped its pending approvals.
+                                            port.tagged(current.clone()).send_notice(format!(
                                                 "无法切换到 {next_provider}：{error}"
                                             ));
                                         }
@@ -1146,14 +1151,29 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 }
                             }
                             UiCommand::Steer { text, attachments } => {
-                                // Only a live turn can take steering; the dock
-                                // does not offer it while idle.
                                 let target = current.clone();
                                 let running = live.contains_key(&target);
                                 let queue = host
                                     .queue(&target)
                                     .unwrap_or_else(|| host.open(&target).1);
-                                queue.steer(text, attachments, running);
+                                // 「是不是在跑」只有引擎知道；界面那边是乐观
+                                // 猜测，可能是陈旧的。以前无论真假都调 `steer`，
+                                // 而它在空闲时返回 None 并把文本丢掉——用户按的是
+                                // 发送、输入框已经清空，那句话就无影无踪了。空闲时
+                                // 退回成一条普通消息：它开自己的 turn，和 `Prompt`
+                                // 的空闲分支同一条路。
+                                if running {
+                                    queue.steer(text, attachments, true);
+                                } else {
+                                    match queue.submit(text, attachments, false) {
+                                        Submission::Start(message) => start_turn!(
+                                            target.clone(),
+                                            message.text,
+                                            message.attachments
+                                        ),
+                                        Submission::Queued => {}
+                                    }
+                                }
                                 publish_to!(target);
                             }
                             UiCommand::QueueOp { id, op } => {

@@ -1273,6 +1273,13 @@ user/agent 两条 chunk）；手工 smoke：`qc acp --config .tmp/acp-mock.toml`
 > [ADR-0101](#adr-0101快照改按内容寻址blob-按会话存放不做全局库2026-11-17) 取代**
 > ——副本改为「blob + 每 turn 一份 manifest」，blob 按会话存放。§2–§6 的记录时机、回滚语义、
 > 越界拒绝、不碰 git，以及补充章节的 `snapshot_shell` 开关与跳目录名单，**全部不变**。
+>
+> **2026-11-17 补**：整树快照的**遍历根**曾取引擎进程的 workspace，而不是会话的
+> `primary_root`。从 `$HOME` 启动的前端打开 checkout 后，每个 `run_shell` 都在复制整棵家目录，
+> 而 `restore` 按 `primary_root` 拼路径，两边键对不上；实测一台机器上 22.3 GB 快照里 90.9%
+> 是家目录内容，250 个 turn 的额度用完时仓库一个文件都没记。已改为 `task.primary_root()`
+> （无 roots 时回落 `cwd`），并扩充 `TREE_SKIP` 覆盖家目录缓存与浏览器 profile。细节见
+> ADR-0101「实现补记」三。
 
 **背景**：agent 改坏代码时，`sessions fork` 只能分叉对话，不能把工作区还原。
 
@@ -11769,7 +11776,8 @@ qc daemon stop  → 控制通道应答了，cancel() 也调了
 
 ## ADR-0101：快照改按内容寻址——blob 按会话存放，不做全局库（2026-11-17）
 
-**状态**：Accepted（2026-11-17）。**取代 ADR-0034 §1 的磁盘布局，并改写其补充章节「没有快照
+**状态**：Accepted（2026-11-17）。**已实现**（2026-11-17，决定 1/4/5 落地；实现中补了两处
+记账，见文末「实现补记」）。**取代 ADR-0034 §1 的磁盘布局，并改写其补充章节「没有快照
 GC」这一条边界**；ADR-0034 §2–§6 的记录时机、回滚语义、越界拒绝、不碰 git 全部保留不变，补充
 章节里 `snapshot_shell` 的开关与跳目录名单也不变。不是实现记录，是设计裁定。
 
@@ -12042,3 +12050,164 @@ into place"）。复用同一套，不要再写一个。
    用裸写实现必然红。
 10. **跨会话冗余符合预期**：两个会话各跑一次内容不变的整树快照 → 两个会话的 `blobs/` 各存一份
     相同内容，磁盘按 2× 增长。这条**故意记账**：它是决定 2 的已知代价，不是 bug，别当回归修。
+
+**实现补记**（2026-11-17，落地决定 1/4/5 时发现的三件本 ADR 没写的事）
+
+### 一、`manifest.json` 多了一个 `charged` 字段
+
+布局照决定 1 实现，但每份 manifest 多记一个 `charged`（该 turn 被计费的唯一字节数）。
+
+原因是「去重按会话、额度按 turn」这两个口径放在一起时，单看 manifest 算不出 turn 的已用额度：
+一个 turn 若只是重新引用上几个 turn 存过的 blob，它实际花掉 0 字节，但按 manifest 里的路径
+求和却是几十 MB。少了这个字段，该 turn 的**第二条** `run_shell` 会读出一个虚高的「已满」，
+直接不再记录——正是决定 5 要消灭的那个症状，只是换了个入口。
+
+`charged` 不进 `restore` 的读取面，只影响额度判断，所以不改变回滚语义。
+
+### 二、验证 9 无法按原样写
+
+原文要求「在写 blob 的中途注入失败（写一半就退出），重启后 `blobs/` 里不应存在一个文件名与
+内容不符的 blob……用裸写实现必然红」。
+
+**这个 API 里没有可以注入崩溃的位置。** `write_blob` 把整块 buffer 交给
+`qcode_attachments::store::write_atomically`，后者只在最后 rename，测试既插不进写的中途，也
+观察不到「目标路径上先出现半个文件」。裸写实现也不会留下可观察的差别：两者在成功路径上的外部
+表现完全相同。
+
+所以落地的测试钉的是三件**可判定**的事：失败绝不发布（用一个文件占住分片路径，让 rename 失败，
+断言目标路径仍不存在）、写入确实经过 `tmp/` 且事后清空、任何 blob 的内容与名字相符。最后一条
+才是这个 ADR 真正在意的性质——名字与内容不符的 blob 会被后续所有 turn 永久复用。**「崩写注入」
+这一条留着，等有了注释点再补。**
+
+### 三、量的是 22 GB，不是 129 MB——根不在去重，在遍历根
+
+落地前先按本 ADR 的口径量了一遍开发机（2026-11-17，`~/.local/share/qcode/snapshots`，
+4 个会话 587 个 turn）：
+
+```
+699,584 个实例   22.3 GB   →   2,637 份唯一内容   112.9 MB   (202×)
+```
+
+比 ADR 正文实测二（5,240 / 102 MB / 4×）大两个数量级，而且**变量不是去重率，是快照装了什么**：
+90.9% 的字节（20.3 GB）来自家目录——`.WebUI`（浏览器 profile）、`.bun/install/cache`、
+`.anaconda_backup`；仓库内容只占 2.02 GB。**250 个 turn 的 64 MB 额度在家目录上就用完了，仓库
+一个文件都没进快照**——既有空间代价，又没有恢复价值。
+
+两个成因，都在本 ADR 的射程之外（分别属于 ADR-0034 补充章节与 §1 的入参）：
+
+1. **遍历根取的是引擎进程的 workspace，不是会话的 `primary_root`。** 从 `$HOME` 启动的 GUI
+   打开一个 checkout 后，`RunOptions.cwd` 仍是 `~`，于是整棵家目录被当工作区快照；而 `restore`
+   按 `primary_root` 拼路径，两边的键根本对不上。改：`turn.rs` 用
+   `task.primary_root()`，无 roots 时才回落 `cwd`。
+2. **`TREE_SKIP` 只有 14 项，且全是仓库内缓存。** 家目录那一类（`.WebUI`、`.bun`、`.cache`、
+   `Library`、`.local`、`.anaconda_backup` 等）一项都没有。补上一份，理由与 `target/` 相同：
+   跳过只是放弃那个目录的回滚能力，不是放弃它的内容。
+
+这两条与决定 6 的关系：`snapshot_shell` 保持默认 `true` 的前提，是它的额度花在工作区上。上面
+两条不修，决定 6 的论证对这批用户是不成立的。
+
+## ADR-0102：「有 turn 在跑」只有一个真相源——引擎的 `live`（2026-11-17）
+
+**状态**：Accepted（2026-11-17）。**已实现**（同日）。改动面在 `qcode-ui-bridge` 的事件枚举、
+`qcode-gui` 的 routing/dormant/runtime 三处；不改投递策略、不改队列语义、不改 ADR-0058 §7 的
+按会话分流。不是实现记录，是设计裁定。
+
+**背景**
+
+一条普通的界面反馈「我没改配置，`Turn 结束后应用` 不该显示」查下去，发现的不是一处文案，
+而是一条所有权不清的字段。
+
+`TaskUi::turn_in_flight` 是**视图本地**的乐观标记（`shell/task_ui.rs:75`，文档说它「True until
+the engine task has fully returned」）。它有 **5 处置真**、**3 处置假**：
+
+| 置真 | 位置 | 依据 |
+|---|---|---|
+| 发送提示词 | `shell/session.rs:313` | 即将发命令 |
+| 命令发提示词 | `shell/commands.rs:147` | 同上 |
+| 切回后台会话 | `shell/session.rs:149` | dormant 记的 `running` |
+| 继续暂停的 turn | `shell/view.rs:163` | 即将发 `Continue` |
+| 收尾暂停的 turn | `shell/view.rs:181` | 即将发 `Prompt` |
+
+| 置假 | 位置 | 依据 |
+|---|---|---|
+| 正常结束 | `shell/routing.rs:169` | `TurnFinished` |
+| turn 失败 | `shell/routing.rs:155` | `TurnFailed`（本 ADR 新增） |
+| 重建 backend | `shell/mod.rs:988` | 换了引擎任务 |
+
+而「这个会话到底有没有 turn 在跑」的**权威**在引擎侧：`runtime.rs` 的 `live` 映射（本进程内
+谁占着会话锁）。两边没有任何对账——界面按自己的猜测置真，引擎按 `live` 决定要不要照做。
+乐观猜测与权威不同步时，有三个已经能指到代码的后果：
+
+1. **丢字**（需要 `[ui] busy_delivery = "steer"`，默认是 `Queue`，所以不是所有人都碰得上）。
+   `shell/session.rs:305` 按标记选路：标记为真且投递策略是 steer → `backend.steer`。引擎那条
+   分支先问 `live`，空闲时 `queue.steer(..., running=false)` **按值收下文本后返回 `None`**
+   （`qcode-core/src/inbox.rs:85-92`）——文本被丢掉。而输入框在 `:314` 已经清空、标记在 `:313`
+   又置真了。用户看到的是「发出去了，但模型没回」。
+2. **卡住**。`runtime.rs:136`（`NewSession` 建任务失败）与 `:586`（`Prompt` 建任务失败，随后
+   `continue` 跳过收尾）只发 `TurnFailed`、不发 `TurnFinished`。若「结算」只认后者，这两条路径
+   之后标记永远为真。后果不止一句提示：`task_state()` 用它算 `Running`，于是
+   `task_ops::edit_must_wait` 为真 —— 目录改动排进 `pending_roots`、重命名排进
+   `pending_task_renames`，都在等一个不会来的 turn 结束；「删除任务」直接变灰。
+3. **误结算**。`runtime.rs:982`（切 provider 失败，旧路由此刻仍在用）也发 `TurnFailed`。这条
+   事件在 routing 里会 `abort_turn` 并把待审批清空 —— 于是一次「没切成」的提示，把一个**还活着**
+   的 turn 的卡片收口了，屏幕上正在等批准的提示也消失了。同一个事件背着两种互斥语义。
+
+第 3 条说明根因不是「少一次同步」，而是**一个事件同时表示「turn 结束了」和「有句话要说」**。
+只要这两件事共用一个载体，任何一处复用都会漂。
+
+**决定**
+
+1. **乐观置真，只有引擎事件能置假。** `turn_in_flight` 保留——界面必须在发出命令的那一帧就变成
+   「停止」按钮，等回执会有一帧空窗。但它只是**投影**，契约是单向的：UI 可以乐观置真，置假
+   只能来自引擎。这条写进字段文档，`shell/mod.rs:988` 的重建路径是唯一例外（那是换了引擎本身）。
+2. **`TurnFailed` 的充要条件是「这个 turn 不会再有下文」。** 它自己也结算 turn 状态，不依赖
+   后面跟一条 `TurnFinished`。当时的三处调用点按此审计：`:136` 建任务失败（不会再有 turn）、
+   `:586` 同上、`:1296` `run_turn` 返回 `Err`（终态）——全部成立。
+3. **说话不结束 turn 的，用 `UiEvent::Notice`。** 它落在同一个横幅槽位（`error_banner`），但不
+   碰 `turn_in_flight`、不 `abort_turn`、不清待审批。`runtime.rs:982` 改用它。
+4. **禁止静默丢弃。** 引擎忽略一条命令时，必须要么照做，要么回一条事件说明。`UiCommand::Steer`
+   在空闲时退回 `submit`（开自己的 turn），与 `Prompt` 的空闲分支同一条路——用户按的是发送，
+   那句话就该送到。
+
+**边界**
+
+1. **不做引擎单向驱动 UI 的彻底重构**（见候选 B）。`live` 跨线程，让界面每帧去问它就是一次同步
+   IPC 进 render 路径；而「停止」按钮必须立刻可点。乐观置真的那一帧窗口是选定的代价。
+2. **`pending_roots` 仍按 task id 排队**，ADR-0058 §7 不动。本 ADR 只保证它会等到一个**真的**
+   结束事件（决定 2），不改变「按哪个 task 排」。
+3. **建任务失败时那条消息不救。** 它已经从队列 `claim_next_turn()` 取走
+   （`inbox.rs:78-81`），`create_task` 失败意味着磁盘层面已经不可用，重新入队也只是等下一次
+   同样失败。错误横幅是唯一交代。
+4. **`Notice` 与 `TurnFailed` 只差「是否结算 turn」**，这是一处真实的认知负担。缓解：两个变体的
+   文档互相指向，且 `TurnFailed` 的文档写明充要条件（决定 2）。
+5. **`routing::apply_to_ui` 仍然无法单测**：它要一个 `Window`（crate 是 `test = false`，
+   ADR-0037）。决定 2 在界面侧的落地靠代码审阅，能被测试钉住的是 dormant 侧与 inbox 侧。
+
+**候选方案**
+
+- **A. 维持现状（只用视图标记）。** 已证会漂，且漂了以后是「丢字 / 卡住 / 误结算」三种真实
+  后果，不是显示瑕疵。否。
+- **B. 引擎单向推送权威 turn 状态，界面不自己置真。** 语义最干净，但发出命令到收到回执之间
+  界面必须显示点什么：显示「空闲」会让用户再按一次（重复提交）；显示「在跑」就是乐观置真，
+  只是把标记换了个来源。收益是可测性，代价是一帧空窗或一次往返。否（保留为将来选项）。
+- **C. 每次读 `turn_in_flight` 时向引擎询问。** 读发生在 render 路径上，跨线程同步查询不可接受。
+  否。
+- **D. 采纳**：乐观置真 + 置假只认引擎 + 事件按「是否终态」分工 + 禁止静默丢弃。代价是一帧窗口
+  与两个相近的事件变体，换来的是三条后果全部消失，且不需要跨线程查询。
+
+**实现补记**
+
+- `qcode-ui-bridge`：新增 `UiEvent::Notice { message }` 与 `send_notice`；`TurnFailed` 的文档
+  写明「the turn is over」，并指向 `Notice`。
+- `qcode-gui/shell/routing.rs`：`TurnFailed` 增 `turn_in_flight = false`；新增 `Notice` 分支
+  （只设 `error_banner` + 重绘）。`TurnFinished` 不变。
+- `qcode-gui/dormant.rs`：`Notice` 只写 `error_banner`，不碰 `running`。
+- `qcode-gui/runtime.rs`：`:982` 由 `send_turn_failed` 改为 `send_notice`；`UiCommand::Steer`
+  先判 `running`，空闲走 `queue.submit` 并 `start_turn!`。
+- 测试三处：`inbox::tests::an_idle_steer_drops_its_text_so_callers_must_submit_instead`（钉住
+  「steer 会吃文本」这个前提，否则决定 4 看起来可以省掉）、
+  `dormant::a_notice_speaks_without_ending_the_turn`、
+  `task_ops::work_in_progress_does_not_mark_unread` 增补 `Notice`。
+- 顺带：侧栏把这段常驻提示去掉了。`shell/render/sidebar.rs` 原本在「Turn 在跑但没有待变更」时
+  也显示「Turn 结束后应用」——条件句写成了状态句，读起来像「有改动在等」。现在只有真有
+  `pending_roots` 时才显示「当前 Turn 结束后应用」。规格同步在 `GUI-V3.md`。

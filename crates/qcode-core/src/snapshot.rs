@@ -6,17 +6,27 @@
 //! deletes the files that did not exist at that boundary. Files the agent never
 //! touched are left alone.
 //!
-//! Layout under `<data-dir>/snapshots/<session>/<turn>/`:
+//! Layout under `<data-dir>/snapshots/<session>/` (ADR-0101):
 //!
-//! - `files/<workspace-relative path>` — the content before the write;
-//! - `absent.txt` — paths that did not exist yet (one per line), so a rollback
-//!   can remove them instead of leaving an empty file behind.
+//! - `blobs/<sha[..2]>/<sha256>` — content, written once, then read-only;
+//! - `<turn>/manifest.json` — that turn's `<relative path> -> sha256`;
+//! - `<turn>/absent.txt` — paths that did not exist yet (one per line), so a
+//!   rollback can remove them instead of leaving an empty file behind.
+//!
+//! Turns written before ADR-0101 hold `<turn>/files/<relative path>` instead and
+//! are still readable: `restore` picks the layout per turn, and the two produce
+//! the same result for the same logical content.
+//!
+//! Snapshots are immutable once written. A blob can be shared by many turns, so
+//! anything that rewrites an existing blob silently corrupts every turn that
+//! points at it (ADR-0101 §3).
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// Which paths a tool call is going to modify.
 ///
@@ -98,21 +108,64 @@ const TREE_MAX_TOTAL: u64 = 64 * 1024 * 1024;
 /// is 1.6 GB across 64k files — enough to fill the total cap on its own and
 /// leave the snapshot holding registry sources instead of the checkout.
 /// `crates/qcode-eval` skips the same names.
+///
+/// The home-directory half of this list came from measuring one machine
+/// (2026-11-17, ADR-0101's review): a session whose tree snapshot was rooted at
+/// `$HOME` spent 90.9% of its 22.3 GB on `.WebUI` (browser profile),
+/// `.bun/install/cache` and `.anaconda_backup`, and in 250 of its turns the
+/// 64 MB budget ran out before a single file of the checkout was copied. A
+/// cache or profile directory is never what `run_shell` was asked to change, and
+/// a skipped directory costs a rollback of that directory only — the same
+/// bargain `target/` already makes.
 const TREE_SKIP: &[&str] = &[
+    // VCS metadata: never what the command meant to edit.
     ".git",
     ".hg",
     ".svn",
+    // Build output.
     "target",
-    "node_modules",
     "dist",
-    ".tmp",
-    ".qcode-data",
-    ".qc-data",
+    "node_modules",
     ".venv",
+    "venv",
     "__pycache__",
+    ".tox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".parcel-cache",
+    ".turbo",
+    "Pods",
+    // Toolchain and package-manager caches.
     ".cargo-home",
     ".rustup-home",
     ".toolchains",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".bun",
+    ".yarn",
+    ".pnpm-store",
+    ".gradle",
+    ".m2",
+    ".cache",
+    // This tool's own state, and the scratch trees next to it.
+    ".tmp",
+    ".qcode-data",
+    ".qc-data",
+    // Desktop and browser profiles: megabytes of binary state per directory,
+    // rewritten on a timer by something that is not the agent.
+    "Library",
+    ".WebUI",
+    ".local",
+    ".Trash",
+    // Editor and backup trees that hold full copies of everything.
+    ".anaconda_backup",
+    ".anaconda",
+    ".conda",
 ];
 
 /// Size bounds for a workspace snapshot. Fields rather than bare constants so
@@ -191,59 +244,74 @@ impl SnapshotStore {
         primary_root: &Path,
         paths: &[PathBuf],
     ) -> io::Result<usize> {
-        let dir = self.session_dir(session).join(turn.to_string());
+        let session_dir = self.session_dir(session);
+        let dir = session_dir.join(turn.to_string());
+        let mut manifest = read_manifest(&dir)?;
+        let mut absent = read_absent(&dir)?;
         let mut recorded = 0;
         for path in paths {
             let Some(relative) = relative_to(primary_root, path) else {
                 continue;
             };
-            let stored = dir.join("files").join(&relative);
-            let mut absent = read_absent(&dir)?;
-            if stored.exists() || absent.iter().any(|known| known == &relative) {
+            let key = path_key(&relative);
+            if manifest.files.contains_key(&key) || absent.iter().any(|known| known == &relative) {
                 continue;
             }
             match std::fs::read(primary_root.join(&relative)) {
                 Ok(bytes) => {
-                    if let Some(parent) = stored.parent() {
-                        std::fs::create_dir_all(parent)?;
+                    // Only content this session did not already hold is charged
+                    // (ADR-0101 §5), and only that is newly spent on disk.
+                    let new = !blob_exists(&session_dir, &sha256(&bytes));
+                    let sha = write_blob(&session_dir, &bytes)?;
+                    if new {
+                        manifest.charged += bytes.len() as u64;
                     }
-                    std::fs::write(&stored, bytes)?;
+                    manifest.files.insert(key, sha);
                     recorded += 1;
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     absent.push(relative);
-                    write_absent(&dir, &absent)?;
                     recorded += 1;
                 }
                 Err(error) => return Err(error),
             }
         }
+        if recorded > 0 {
+            write_manifest(&dir, &manifest)?;
+            write_absent(&dir, &absent)?;
+        }
         Ok(recorded)
     }
 
     /// Copy the whole workspace as the pre-image for `turn`, bounded by
-    /// [`TREE_MAX_FILE`] / [`TREE_MAX_TOTAL`] and skipping build/VCS trees.
+    /// [`TREE_MAX_FILE`] / [`TREE_MAX_TOTAL`] and skipping build/VCS/cache trees.
     ///
     /// Used before `run_shell`, which can write any file: the alternative is
     /// guessing paths from a command line, and a wrong guess loses the file.
+    ///
+    /// `primary_root` must be the session's own root, not the process working
+    /// directory. Those differ whenever a frontend is started somewhere else and
+    /// the session is pointed at a checkout afterwards, and the snapshot would
+    /// then walk the startup directory instead — megabytes of home directory per
+    /// turn, with the checkout itself never reached (ADR-0101, review).
     pub fn snapshot_tree(
         &self,
         session: &str,
         turn: u32,
         primary_root: &Path,
     ) -> io::Result<TreeReport> {
-        let dir = self
-            .session_dir(session)
-            .join(turn.to_string())
-            .join("files");
-        // The cap belongs to the turn, not to this call. A turn can run several
-        // shell commands, and charging only fresh writes let each of them copy
-        // another TREE_MAX_TOTAL on top: turns rolled up to gigabytes of trees
-        // that the cap was supposed to prevent.
-        let (files, bytes) = stored_totals(&dir);
+        let session_dir = self.session_dir(session);
+        let dir = session_dir.join(turn.to_string());
+        let mut manifest = read_manifest(&dir)?;
+        // The cap belongs to the turn, not to this call, and it is charged in
+        // **unique bytes** (ADR-0101 §5): content the session already holds is
+        // free, no matter how many paths or turns point at it. Charging raw bytes
+        // made a single `run_shell` eat the whole 64 MB by re-copying an
+        // unchanged tree, after which real changes no longer fit and a rollback
+        // came back "partly usable".
         let mut report = TreeReport {
-            files,
-            bytes,
+            files: manifest.files.len(),
+            bytes: manifest.charged,
             ..TreeReport::default()
         };
         if report.bytes >= self.limits.total {
@@ -286,32 +354,43 @@ impl SnapshotStore {
                     report.skipped_large += 1;
                     continue;
                 }
-                if report.bytes + metadata.len() > self.limits.total {
-                    report.capped = true;
-                    break;
-                }
-                let stored = dir.join(relative);
-                // Stored by an earlier call in this turn, and already counted.
-                if stored.exists() {
+                let key = path_key(relative);
+                // Stored by an earlier call in this turn: the first pre-image
+                // wins, and it is already counted.
+                if manifest.files.contains_key(&key) {
                     continue;
                 }
                 let Ok(bytes) = std::fs::read(&path) else {
                     continue;
                 };
-                if let Some(parent) = stored.parent() {
-                    std::fs::create_dir_all(parent)?;
+                let sha = sha256(&bytes);
+                // Content the session already holds costs nothing: the blob is
+                // reused, not written again.
+                let cost = if blob_exists(&session_dir, &sha) {
+                    0
+                } else {
+                    bytes.len() as u64
+                };
+                if report.bytes + cost > self.limits.total {
+                    report.capped = true;
+                    break;
                 }
-                std::fs::write(&stored, &bytes)?;
+                write_blob(&session_dir, &bytes)?;
+                manifest.files.insert(key, sha);
+                manifest.charged += cost;
                 report.files += 1;
-                report.bytes += bytes.len() as u64;
+                report.bytes += cost;
                 report.added_files += 1;
-                report.added_bytes += bytes.len() as u64;
+                report.added_bytes += cost;
             }
             if report.capped {
                 break;
             }
             // Pushed in reverse so the walk stays lexicographic as it pops.
             stack.extend(subdirs.into_iter().rev());
+        }
+        if report.added_files > 0 {
+            write_manifest(&dir, &manifest)?;
         }
         Ok(report)
     }
@@ -392,15 +471,19 @@ impl SnapshotStore {
     pub fn files(&self, session: &str, turn: u32) -> io::Result<Vec<String>> {
         let dir = self.session_dir(session).join(turn.to_string());
         let mut files = Vec::new();
-        let files_dir = dir.join("files");
-        if files_dir.is_dir() {
-            let mut stored = Vec::new();
-            collect_files(&files_dir, &files_dir, &mut stored)?;
-            files.extend(
-                stored
-                    .into_iter()
-                    .map(|path| path.to_string_lossy().into_owned()),
-            );
+        if manifest_exists(&dir) {
+            files.extend(read_manifest(&dir)?.files.into_keys());
+        } else {
+            let files_dir = dir.join("files");
+            if files_dir.is_dir() {
+                let mut stored = Vec::new();
+                collect_files(&files_dir, &files_dir, &mut stored)?;
+                files.extend(
+                    stored
+                        .into_iter()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                );
+            }
         }
         for absent in read_absent(&dir)? {
             files.push(format!("{} (absent)", absent.to_string_lossy()));
@@ -432,6 +515,19 @@ impl SnapshotStore {
             for absent in read_absent(&dir)? {
                 pre_images.entry(absent).or_insert(None);
             }
+            // Two layouts, one result. A turn written before ADR-0101 has no
+            // manifest and its pre-images are whole files under `files/`; a turn
+            // written since has a manifest naming blobs. Picking per turn keeps
+            // old sessions readable without a migration, and this branch is the
+            // only place that knows the difference.
+            if manifest_exists(&dir) {
+                for (relative, sha) in read_manifest(&dir)?.files {
+                    pre_images
+                        .entry(PathBuf::from(relative))
+                        .or_insert_with(|| Some(blob_path(&self.session_dir(session), &sha)));
+                }
+                continue;
+            }
             let mut stored = Vec::new();
             let files_dir = dir.join("files");
             if files_dir.is_dir() {
@@ -439,16 +535,15 @@ impl SnapshotStore {
             }
             for path in stored {
                 pre_images
-                    .entry(path)
-                    .or_insert_with(|| Some(dir.join("files")));
+                    .entry(path.clone())
+                    .or_insert_with(|| Some(dir.join("files").join(&path)));
             }
         }
 
         for (relative, source) in pre_images {
             let target = primary_root.join(&relative);
             match source {
-                Some(stored_dir) => {
-                    let from = stored_dir.join(&relative);
+                Some(from) => {
                     let bytes = std::fs::read(&from)?;
                     // A directory where a file is expected is a conflict we
                     // cannot resolve safely; report and skip instead of
@@ -547,27 +642,126 @@ fn write_absent(dir: &Path, paths: &[PathBuf]) -> io::Result<()> {
     std::fs::write(dir.join("absent.txt"), text)
 }
 
-/// Files and bytes one turn already holds under its `files/` tree.
-fn stored_totals(dir: &Path) -> (usize, u64) {
-    fn walk(dir: &Path, files: &mut usize, bytes: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if metadata.is_dir() {
-                walk(&entry.path(), files, bytes);
-            } else {
-                *files += 1;
-                *bytes += metadata.len();
+/// `<session>/blobs/<sha[..2]>/<sha256>` — the same content-addressed shape
+/// `qcode-attachments` uses (ADR-0101 §1). The shard keeps a single directory
+/// in the thousands of entries; the flat name means the path no longer grows
+/// with workspace depth.
+fn blob_path(session_dir: &Path, sha: &str) -> PathBuf {
+    let shard = sha.get(..2).unwrap_or(sha);
+    session_dir.join("blobs").join(shard).join(sha)
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// Store `bytes` under its sha256 and return the name. Existing content is left
+/// alone: that is what makes a repeated pre-image free instead of a copy.
+///
+/// The write goes through `tmp/` and a rename, never a plain `fs::write`
+/// (ADR-0101 §4). A blob interrupted halfway would otherwise sit at a path that
+/// claims a sha it does not match, and the "already exists, skip" rule above
+/// would then reuse it for every later turn — a rollback would restore corrupt
+/// bytes with no error anywhere.
+fn blob_exists(session_dir: &Path, sha: &str) -> bool {
+    blob_path(session_dir, sha).is_file()
+}
+
+fn write_blob(session_dir: &Path, bytes: &[u8]) -> io::Result<String> {
+    let sha = sha256(bytes);
+    let target = blob_path(session_dir, &sha);
+    if target.is_file() {
+        return Ok(sha);
+    }
+    if let Err(error) = qcode_attachments::store::write_atomically(session_dir, &target, bytes) {
+        // Two writers can race on the same sha, and only Unix lets the loser's
+        // `rename` replace the winner's file: on Windows it fails with "already
+        // exists". The bytes are identical by construction — the name *is* their
+        // sha256 — so losing the race is success, not an error (ADR-0101 §4).
+        if !target.is_file() {
+            return Err(error);
+        }
+    }
+    Ok(sha)
+}
+
+/// One turn's `<relative path> -> sha256`, plus the unique bytes charged to it.
+///
+/// `charged` exists because the cap is per turn while deduplication is per
+/// session: a turn that only re-references blobs an earlier turn stored must
+/// remember it paid nothing, or its second `run_shell` would recompute the total
+/// from the manifest, decide it was already full, and stop recording — the exact
+/// failure ADR-0101 §5 set out to remove.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Manifest {
+    files: BTreeMap<String, String>,
+    charged: u64,
+}
+
+fn manifest_path(dir: &Path) -> PathBuf {
+    dir.join("manifest.json")
+}
+
+fn manifest_exists(dir: &Path) -> bool {
+    manifest_path(dir).is_file()
+}
+
+/// A manifest that exists but cannot be parsed is an error, not an empty map:
+/// treating it as empty would let a rollback silently skip a turn's pre-images
+/// and report success.
+fn read_manifest(dir: &Path) -> io::Result<Manifest> {
+    let path = manifest_path(dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Manifest::default()),
+        Err(error) => return Err(error),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut manifest = Manifest {
+        charged: parsed
+            .get("charged")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        ..Manifest::default()
+    };
+    if let Some(entries) = parsed.get("files").and_then(serde_json::Value::as_object) {
+        for (relative, sha) in entries {
+            if let Some(sha) = sha.as_str() {
+                manifest.files.insert(relative.clone(), sha.to_string());
             }
         }
     }
-    let (mut files, mut bytes) = (0, 0);
-    walk(dir, &mut files, &mut bytes);
-    (files, bytes)
+    Ok(manifest)
+}
+
+fn write_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let body = serde_json::json!({
+        "files": manifest.files,
+        "charged": manifest.charged,
+    });
+    let text = serde_json::to_vec_pretty(&body).map_err(io::Error::other)?;
+    qcode_attachments::store::write_atomically(
+        dir.parent().unwrap_or(dir),
+        &manifest_path(dir),
+        &text,
+    )
+}
+
+/// A relative path as a manifest key: `/`-separated on every platform, so a
+/// manifest written on Windows still restores on macOS.
+fn path_key(relative: &Path) -> String {
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -783,8 +977,11 @@ mod tests {
             file: 1024,
             total: 10,
         };
-        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
-            std::fs::write(workspace.join(name), "1234").unwrap();
+        // Four distinct 4-byte files. Distinct because the cap is charged in
+        // unique bytes (ADR-0101 §5): four copies of the same bytes cost 4, not
+        // 16, and that distinction is the point of the next test.
+        for (index, name) in ["a.txt", "b.txt", "c.txt", "d.txt"].iter().enumerate() {
+            std::fs::write(workspace.join(name), format!("{}345", index)).unwrap();
         }
 
         let first = store.snapshot_tree("s1", 1, &workspace).expect("tree");
@@ -797,9 +994,14 @@ mod tests {
         assert_eq!((second.files, second.bytes), (2, 8), "{second:?}");
         assert!(second.capped);
 
-        // A new turn starts from an empty tree and gets its own cap.
+        // A new turn starts from an empty budget and can now record **all four**:
+        // `a.txt` and `b.txt` are content this session already holds, so they
+        // cost nothing, and only `c.txt`/`d.txt` reach its own 10-byte cap. Under
+        // the old raw-byte charge this turn would have capped at two files again
+        // even though it added only 8 bytes of disk.
         let next = store.snapshot_tree("s1", 2, &workspace).expect("tree");
-        assert_eq!((next.files, next.bytes), (2, 8), "{next:?}");
+        assert_eq!((next.files, next.bytes), (4, 8), "{next:?}");
+        assert!(!next.capped, "{next:?}");
     }
 
     #[test]
@@ -809,8 +1011,8 @@ mod tests {
             file: 1024,
             total: 10,
         };
-        for name in ["a.txt", "b.txt", "c.txt"] {
-            std::fs::write(workspace.join(name), "1234").unwrap();
+        for (index, name) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            std::fs::write(workspace.join(name), format!("{}345", index)).unwrap();
         }
 
         let first = store.snapshot_tree("s1", 1, &workspace).expect("tree");
@@ -833,8 +1035,10 @@ mod tests {
             file: 1024,
             total: 10,
         };
-        for name in ["d.txt", "b.txt", "a.txt", "c.txt"] {
-            std::fs::write(workspace.join(name), "1234").unwrap();
+        // Distinct contents, so the cap bites on the third file instead of being
+        // absorbed by deduplication.
+        for (index, name) in ["d.txt", "b.txt", "a.txt", "c.txt"].iter().enumerate() {
+            std::fs::write(workspace.join(name), format!("{}345", index)).unwrap();
         }
 
         // Sorted walk, so the truncated set is `a.txt` + `b.txt` rather than
@@ -872,5 +1076,412 @@ mod tests {
         let store = SnapshotStore::new(std::env::temp_dir().join("qcode-snapshot-flag"));
         assert!(!store.shell_enabled());
         assert!(store.with_shell(true).shell_enabled());
+    }
+
+    fn blob_bytes(store: &SnapshotStore, session: &str) -> u64 {
+        blobs_of(store, session)
+            .iter()
+            .filter_map(|blob| std::fs::metadata(blob).ok())
+            .map(|metadata| metadata.len())
+            .sum()
+    }
+
+    fn blobs_of(store: &SnapshotStore, session: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let dir = store.root().join(session).join("blobs");
+        if !dir.is_dir() {
+            return found;
+        }
+        for shard in std::fs::read_dir(&dir).expect("blobs").flatten() {
+            if !shard.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            for blob in std::fs::read_dir(shard.path()).expect("shard").flatten() {
+                found.push(blob.path());
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// ADR-0101 verification 1.
+    #[test]
+    fn the_same_content_in_two_turns_is_stored_once() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("a.txt"), "unchanged content").unwrap();
+
+        store
+            .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("turn 1");
+        store
+            .record("s1", 2, &workspace, &[PathBuf::from("a.txt")])
+            .expect("turn 2");
+
+        assert_eq!(
+            blobs_of(&store, "s1").len(),
+            1,
+            "one content, one blob, across turns"
+        );
+        // Both turns still name it, so rolling back to either finds the bytes.
+        for turn in [1, 2] {
+            let manifest =
+                read_manifest(&store.root().join("s1").join(turn.to_string())).expect("manifest");
+            assert_eq!(manifest.files.len(), 1, "turn {turn}");
+        }
+        let report = store.restore("s1", 1, &workspace).expect("restore");
+        assert_eq!(report.restored, 1);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "unchanged content"
+        );
+    }
+
+    /// ADR-0101 verification 2: the regression test for the 93% measured on a
+    /// real session. A second tree snapshot of an unchanged workspace must add
+    /// nothing, and the session directory must not grow.
+    #[test]
+    fn a_second_unchanged_tree_snapshot_adds_nothing_and_grows_nothing() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(workspace.join("src").join(name), name.repeat(100)).unwrap();
+        }
+
+        let first = store.snapshot_tree("s1", 1, &workspace).expect("turn 1");
+        assert_eq!(first.added_files, 3, "{first:?}");
+        assert!(first.added_bytes > 0);
+        let blobs_after_first = blob_bytes(&store, "s1");
+
+        let second = store.snapshot_tree("s1", 2, &workspace).expect("turn 2");
+        assert_eq!(second.added_files, 3, "the manifest still names them");
+        assert_eq!(
+            second.added_bytes, 0,
+            "unchanged content must cost zero unique bytes: {second:?}"
+        );
+        // Blob bytes stay flat. The turn's own `manifest.json` is new and is
+        // O(number of paths), not O(file sizes) — that is the whole trade.
+        assert_eq!(
+            blob_bytes(&store, "s1"),
+            blobs_after_first,
+            "no blob may be written twice"
+        );
+        assert_eq!(blobs_of(&store, "s1").len(), 3);
+    }
+
+    /// ADR-0101 verification 3: a change, a deletion and a creation rolled back
+    /// through the new layout must land byte for byte where the old test puts
+    /// them.
+    #[test]
+    fn the_manifest_layout_rolls_back_a_change_a_delete_and_a_create() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/changed.rs"), "v1").unwrap();
+        std::fs::write(workspace.join("deleted.rs"), "keep me").unwrap();
+
+        store.snapshot_tree("s1", 1, &workspace).expect("tree");
+
+        std::fs::write(workspace.join("src/changed.rs"), "v2").unwrap();
+        std::fs::remove_file(workspace.join("deleted.rs")).unwrap();
+        std::fs::write(workspace.join("created.rs"), "new").unwrap();
+
+        let report = store.restore("s1", 1, &workspace).expect("restore");
+        assert_eq!(report.restored, 2, "{report:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("src/changed.rs")).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("deleted.rs")).unwrap(),
+            "keep me"
+        );
+        assert!(workspace.join("created.rs").exists());
+    }
+
+    /// ADR-0101 verification 6 (and boundary 3): an old-layout turn directory
+    /// with only `files/` still restores, and both layouts restore the same
+    /// logical content identically.
+    #[test]
+    fn both_layouts_restore_the_same_logical_content() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/a.rs"), "old bytes").unwrap();
+
+        // Hand-build a pre-ADR-0101 turn: files/ only, no manifest.
+        let turn_dir = store.root().join("s1").join("1");
+        std::fs::create_dir_all(turn_dir.join("files/src")).unwrap();
+        std::fs::write(turn_dir.join("files/src/a.rs"), "old bytes").unwrap();
+        assert!(
+            !manifest_exists(&turn_dir),
+            "the fixture must be old layout"
+        );
+
+        // The same logical content through the new layout, in another session.
+        let new_turn = store.root().join("s2").join("1");
+        std::fs::create_dir_all(&new_turn).unwrap();
+        let sha = write_blob(&store.root().join("s2"), b"old bytes").expect("blob");
+        let mut manifest = Manifest::default();
+        manifest.files.insert("src/a.rs".to_string(), sha);
+        manifest.charged = b"old bytes".len() as u64;
+        write_manifest(&new_turn, &manifest).expect("manifest");
+
+        for session in ["s1", "s2"] {
+            std::fs::write(workspace.join("src/a.rs"), "clobbered").unwrap();
+            let report = store.restore(session, 1, &workspace).expect("restore");
+            assert_eq!(report.restored, 1, "{session}: {report:?}");
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("src/a.rs")).unwrap(),
+                "old bytes",
+                "{session} must restore the same bytes"
+            );
+            // `files()` reports the same logical set from either layout.
+            assert_eq!(
+                store.files(session, 1).expect("files"),
+                vec!["src/a.rs".to_string()],
+                "{session}"
+            );
+        }
+    }
+
+    /// ADR-0101 verification 5: the cap counts unique bytes, so a turn that is
+    /// mostly a repeat of what an earlier turn stored does not get capped.
+    #[test]
+    fn the_cap_counts_unique_bytes_not_copied_bytes() {
+        let (_dir, mut store, workspace) = fixture();
+        store.limits = TreeLimits {
+            file: 1024,
+            total: 10,
+        };
+        // Turn 1 stores 8 unique bytes.
+        std::fs::write(workspace.join("a.txt"), "aaaa").unwrap();
+        std::fs::write(workspace.join("b.txt"), "bbbb").unwrap();
+        let first = store.snapshot_tree("s1", 1, &workspace).expect("turn 1");
+        assert_eq!((first.bytes, first.capped), (8, false), "{first:?}");
+
+        // Turn 2 touches the same files, changes one, and adds a new 2-byte file:
+        // the repeated 8 bytes are free, so the 2 new bytes fit in the 10-byte
+        // budget. Charging raw bytes would have capped this turn immediately.
+        std::fs::write(workspace.join("a.txt"), "aaaa").unwrap();
+        std::fs::write(workspace.join("b.txt"), "cccc").unwrap();
+        std::fs::write(workspace.join("c.txt"), "dd").unwrap();
+        let second = store.snapshot_tree("s1", 2, &workspace).expect("turn 2");
+        assert_eq!(
+            (
+                second.files,
+                second.bytes,
+                second.added_bytes,
+                second.capped
+            ),
+            (3, 6, 6, false),
+            "only 'cccc' and 'dd' are new bytes: {second:?}"
+        );
+    }
+
+    /// ADR-0101 verification 7: deleting a session takes its blobs with it and
+    /// leaves another session's blobs untouched.
+    #[test]
+    fn deleting_a_session_takes_its_blobs_and_no_one_elses() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("a.txt"), "shared content").unwrap();
+        for session in ["s1", "s2"] {
+            store
+                .record(session, 1, &workspace, &[PathBuf::from("a.txt")])
+                .expect("record");
+        }
+        assert_eq!(blobs_of(&store, "s1").len(), 1);
+        assert_eq!(blobs_of(&store, "s2").len(), 1);
+
+        assert!(store.remove_session("s1").expect("remove"));
+        assert!(
+            !store.root().join("s1").exists(),
+            "the whole session directory goes, blobs included"
+        );
+        // No reference counting anywhere: s2 owns its own copy.
+        assert_eq!(blobs_of(&store, "s2").len(), 1);
+        let report = store.restore("s2", 1, &workspace).expect("restore s2");
+        assert_eq!(report.restored, 1);
+    }
+
+    /// ADR-0101 verification 8: a blob orphaned by deleting a turn directory is
+    /// recorded garbage, deliberately not collected.
+    #[test]
+    fn a_blob_left_by_a_deleted_turn_is_not_collected() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("a.txt"), "one").unwrap();
+        std::fs::write(workspace.join("b.txt"), "two").unwrap();
+        store
+            .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("turn 1");
+        store
+            .record("s1", 2, &workspace, &[PathBuf::from("b.txt")])
+            .expect("turn 2");
+        assert_eq!(blobs_of(&store, "s1").len(), 2);
+
+        // Deleting a turn is not something the product offers, but the ADR says
+        // to write down what happens: the blob stays, unreferenced, until the
+        // session itself goes.
+        std::fs::remove_dir_all(store.root().join("s1").join("2")).expect("remove turn");
+        assert_eq!(
+            blobs_of(&store, "s1").len(),
+            2,
+            "no sweep runs at turn granularity"
+        );
+        assert_eq!(store.turns("s1").expect("turns"), vec![1]);
+    }
+
+    /// ADR-0101 verification 9, in the form this API can actually support.
+    ///
+    /// The ADR asks for a crash injected mid-write, so that a half-written blob
+    /// would be caught at its sha path. There is no seam for that here:
+    /// `write_blob` hands a whole buffer to a helper whose only publishes are
+    /// `rename`s, so a test can neither interrupt the write nor observe a partial
+    /// file at the destination. What is pinned instead is what a failure *is*
+    /// allowed to leave behind:
+    ///
+    /// 1. a failed publish leaves nothing at the blob path,
+    /// 2. the scratch directory is used and ends up empty,
+    /// 3. anything at a blob path holds exactly the bytes its name claims.
+    ///
+    /// Point 3 is the invariant the ADR cares about — a blob whose content does
+    /// not match its name is reused forever, because the write path skips what
+    /// already exists. Point 1 is what a non-atomic writer would break the moment
+    /// the write itself fails, rather than on a power cut.
+    #[test]
+    fn a_failed_publish_leaves_nothing_at_the_blob_path() {
+        let (_dir, store, workspace) = fixture();
+        let session_dir = store.root().join("s1");
+        // A shard path occupied by a *file* makes the publish fail after the
+        // bytes are already written, which is the interesting moment.
+        std::fs::create_dir_all(session_dir.join("blobs")).unwrap();
+        std::fs::write(session_dir.join("blobs").join("ab"), b"in the way").unwrap();
+        let blocked = session_dir.join("blobs").join("ab").join("deadbeef");
+        let error = qcode_attachments::store::write_atomically(&session_dir, &blocked, b"bytes");
+        assert!(error.is_err(), "publishing over a file must fail");
+        assert!(
+            !blocked.exists(),
+            "a failed publish must not leave a short blob behind"
+        );
+
+        // The normal path: the bytes go through `tmp/` and it ends up empty.
+        std::fs::write(workspace.join("a.txt"), "the real bytes").unwrap();
+        store
+            .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("record");
+        let scratch = session_dir.join("tmp");
+        assert!(
+            scratch.is_dir(),
+            "the write must go through a scratch directory"
+        );
+        assert_eq!(
+            std::fs::read_dir(&scratch).expect("tmp").count(),
+            0,
+            "the scratch file must be renamed into place, not left behind"
+        );
+        // And the one blob that does exist matches its own name.
+        let blobs = blobs_of(&store, "s1");
+        assert_eq!(blobs.len(), 1, "{blobs:?}");
+        let name = blobs[0].file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(sha256(&std::fs::read(&blobs[0]).unwrap()), name);
+    }
+
+    /// A file left in `tmp/` by a crashed writer is not content: it is not
+    /// reachable from any manifest, it does not count toward `size`, and it does
+    /// not stop the next record of the same path from producing the real blob.
+    #[test]
+    fn a_half_written_scratch_file_is_never_content() {
+        let (_dir, store, workspace) = fixture();
+        let session_dir = store.root().join("s1");
+        let scratch = session_dir.join("tmp");
+        std::fs::create_dir_all(&scratch).expect("tmp");
+        // Half the bytes, at a name that claims nothing.
+        std::fs::write(scratch.join("leftover"), b"the real").expect("half a write");
+
+        // Nothing points at it, so nothing can restore it.
+        assert!(blobs_of(&store, "s1").is_empty());
+        assert!(store.turns("s1").expect("turns").is_empty());
+        assert!(
+            !blob_path(&session_dir, &sha256(b"the real")).exists(),
+            "an interrupted write must not publish a short blob"
+        );
+
+        // Recording the same content now produces the correct blob, once.
+        std::fs::write(workspace.join("a.txt"), "the real bytes").unwrap();
+        store
+            .record("s1", 1, &workspace, &[PathBuf::from("a.txt")])
+            .expect("record");
+        let blobs = blobs_of(&store, "s1");
+        assert_eq!(blobs.len(), 1, "{blobs:?}");
+        assert_eq!(std::fs::read(&blobs[0]).unwrap(), b"the real bytes");
+        assert_eq!(
+            sha256(&std::fs::read(&blobs[0]).unwrap()),
+            blobs[0].file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    /// ADR-0101 verification 10: two sessions that snapshot the same tree each
+    /// keep a full copy. This is decision 2's announced price, written down so a
+    /// future measurement reads it as expected rather than as a regression.
+    #[test]
+    fn two_sessions_snapshotting_one_tree_keep_one_copy_each() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("a.txt"), "same tree").unwrap();
+        for session in ["s1", "s2"] {
+            store.snapshot_tree(session, 1, &workspace).expect("tree");
+        }
+        assert_eq!(blobs_of(&store, "s1").len(), 1);
+        assert_eq!(blobs_of(&store, "s2").len(), 1);
+        assert_eq!(
+            store.size("s1").expect("s1"),
+            store.size("s2").expect("s2"),
+            "the same bytes twice, by design (ADR-0101 §2)"
+        );
+    }
+
+    /// The skip list has to cover the home-directory trees that measurement found
+    /// filling the cap before any source file of the checkout was reached.
+    #[test]
+    fn a_workspace_snapshot_skips_home_caches_and_profiles() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("src.rs"), "source").unwrap();
+        for cache in [
+            ".WebUI/WebUIChromeProfile/Default",
+            ".bun/install/cache",
+            ".anaconda_backup/x/.ipython/profile_default",
+            "Library/Caches",
+            ".cache/pip",
+            ".local/share",
+        ] {
+            std::fs::create_dir_all(workspace.join(cache)).unwrap();
+            std::fs::write(workspace.join(cache).join("blob"), "cache").unwrap();
+        }
+
+        let report = store.snapshot_tree("s1", 1, &workspace).expect("tree");
+        assert_eq!(report.files, 1, "{report:?}");
+        assert!(!report.capped);
+        assert_eq!(
+            store.files("s1", 1).expect("files"),
+            vec!["src.rs".to_string()]
+        );
+    }
+
+    /// A skipped directory is not merely unrecorded: a rollback must not delete
+    /// it either, or turning on the skip list would start removing caches.
+    #[test]
+    fn a_skipped_directory_survives_a_rollback() {
+        let (_dir, store, workspace) = fixture();
+        std::fs::write(workspace.join("src.rs"), "v1").unwrap();
+        std::fs::create_dir_all(workspace.join("target/debug")).unwrap();
+        std::fs::write(workspace.join("target/debug/junk"), "build").unwrap();
+        store.snapshot_tree("s1", 1, &workspace).expect("tree");
+
+        std::fs::write(workspace.join("src.rs"), "v2").unwrap();
+        store.restore("s1", 1, &workspace).expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("src.rs")).unwrap(),
+            "v1"
+        );
+        assert!(
+            workspace.join("target/debug/junk").exists(),
+            "an unrecorded path is left alone"
+        );
     }
 }
