@@ -18,7 +18,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        # `ubuntu-24.04-arm` is here because v0.15.3 shipped a linux backend bug
+        # that only aarch64 could see: `CStr::from_ptr(.. as *const i8)` in
+        # `crates/qcode-gui/src/fs_watch.rs`, where `c_char` is `u8` on aarch64 and
+        # `i8` on x86_64. Every other gate was macos-latest / ubuntu-latest / the
+        # darwin+windows cross-check — `i8` in all of them — so the line
+        # type-checked in five places and still failed the release build.
+        #
+        # Don't "optimise" this row away. It is the only native aarch64-linux
+        # compiler in CI, and the same arch the release matrix ships
+        # (`build (ubuntu-24.04-arm, linux-arm64)`), so this is where that class of
+        # bug becomes a push-time failure instead of a failed release.
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -91,8 +102,15 @@ jobs:
       # their C dependency needs llvm-mingw, which is a large toolchain to add
       # here, and `windows-build` compiles those `#[cfg(windows)]` files natively.
       # The script says so rather than skipping in silence.
+      #
+      # Pinned to `ubuntu-latest` rather than "any Linux": the matrix also has
+      # `ubuntu-24.04-arm` now, where this step would re-download zig for a
+      # second arch and cross-compile darwin/windows from it — the same coverage
+      # twice, on the slower runner. One x86_64 host checking the foreign triples
+      # is enough; the arm runner's job is to compile the workspace natively for
+      # aarch64, which is the thing no other job does.
       - name: cache zig (.toolchains)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.os == 'ubuntu-latest'
         uses: actions/cache@v4
         with:
           path: .toolchains
@@ -100,7 +118,7 @@ jobs:
           # invalidates the cache instead of silently reusing the old binary.
           key: zig-0.17.1-${{ runner.os }}
       - name: cross-target type-check (windows + darwin, ADR-0095)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           # 0.17.1 is what `scripts/install-zig.sh` pins. Zig carries the macOS C
