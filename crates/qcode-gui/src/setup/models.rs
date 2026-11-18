@@ -4,11 +4,10 @@
 //! confirmation. Wizard mode keeps the original table form in `render.rs`.
 
 use super::*;
-use crate::{CAPTION_SIZE, SECONDARY_SIZE, sp};
+use crate::{CAPTION_SIZE, CODE_SIZE, SECONDARY_SIZE, sp};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
-use gpui_kit::component::popover::Popover;
 
 /// `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`: a route id usable as a settings key.
 fn route_valid(route: &str) -> bool {
@@ -39,194 +38,16 @@ fn credential_text(state: qcode_kernel::provider_registry::CredentialState) -> &
 }
 
 impl SetupView {
-    /// 一个 provider 是否真正可用：凭证齐全或无需密钥，且无需密钥的
-    /// provider（如 ollama）端点必须可达，否则视为不可用——不可用的
-    /// provider 不给「设为默认」入口。端点可达性由后台探测写入
-    /// `self.reachability`（见 `ensure_reachability`），渲染路径只读缓存，
-    /// 探测结果未落地前按不可用处理。
+    /// 一个 provider 是否真正可用：凭证齐全或无需密钥，缺失密钥的 provider
+    /// 无法访问、也不能被设为默认。改版后端点可达性不再自动探测：已配置
+    /// 模型的 keyless provider（如 ollama）视为可用，真正不可用时由配置页
+    /// 「获取可用模型」或任务运行期报错兜底。
     fn provider_usable(&self, row: &qcode_kernel::provider_registry::ConfigurableProvider) -> bool {
-        use qcode_kernel::provider_registry::CredentialState;
-        if matches!(row.credential_state, CredentialState::Missing) {
-            return false;
-        }
-        if matches!(row.credential_state, CredentialState::Keyless) {
-            return self.reachability.get(&row.route).copied().unwrap_or(false);
-        }
-        true
+        !matches!(
+            row.credential_state,
+            qcode_kernel::provider_registry::CredentialState::Missing
+        )
     }
-
-    /// 后台探测无密钥 provider（如 ollama）的端点可达性：渲染路径不再同步
-    /// 做 DNS/TCP（会卡住整窗），只在这里发起探测线程并把结果异步写回缓存。
-    /// 幂等：每个 route 至多一个在途探测，10 秒内不重复探测。
-    fn ensure_reachability(&mut self, cx: &mut Context<Self>) {
-        use qcode_kernel::provider_registry::CredentialState;
-        use std::time::Duration;
-        let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
-            .list_configurable_providers(&self.config);
-        let now = std::time::Instant::now();
-        let mut pending: Vec<(String, String)> = Vec::new();
-        for row in &directory {
-            if !matches!(row.credential_state, CredentialState::Keyless) {
-                continue;
-            }
-            let route = row.route.clone();
-            if self.reach_inflight.contains(&route) {
-                continue;
-            }
-            if self
-                .reach_checked_at
-                .get(&route)
-                .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(10))
-            {
-                continue;
-            }
-            let base = self
-                .config
-                .providers
-                .get(&route)
-                .and_then(|profile| profile.base_url.as_deref())
-                .or_else(|| {
-                    qcode_kernel::config::catalog_entry(&route).map(|entry| entry.base_url)
-                });
-            let Some(base) = base else {
-                continue;
-            };
-            pending.push((route, base.to_string()));
-        }
-        if pending.is_empty() {
-            return;
-        }
-        let tx = if let Some(tx) = &self.reach_tx {
-            tx.clone()
-        } else {
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.reach_tx = Some(tx.clone());
-            self.reach_rx = Some(rx);
-            self.spawn_reach_drain(cx);
-            tx
-        };
-        for (route, base) in pending {
-            self.reach_inflight.insert(route.clone());
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                // 阻塞的 DNS/TCP 探测（`endpoint_reachable` 的 DNS 解析无超时）
-                // 跑在后台线程上；UI 线程只在本函数开头读缓存，从不被它卡住。
-                let ok = crate::endpoint_reachable(&base);
-                let _ = tx.send((route, ok));
-            });
-        }
-    }
-
-    /// 唯一一个后台循环：把可达性探测结果从通道取回、写入缓存并重绘。
-    /// 通道断开（所有探测线程已退出）或设置窗口关闭时结束。
-    fn spawn_reach_drain(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
-                    .await;
-                let done = this.update(cx, |view, cx| {
-                    if view.closing {
-                        view.reach_rx = None;
-                        view.reach_tx = None;
-                        return true;
-                    }
-                    // 先把通道里的结果全部收进本地再写状态：借用 `reach_rx`
-                    // 期间不能同时修改它。
-                    let drained = {
-                        let Some(rx) = &view.reach_rx else {
-                            view.reach_tx = None;
-                            return true;
-                        };
-                        let mut results: Vec<(String, bool)> = Vec::new();
-                        let mut disconnected = false;
-                        loop {
-                            match rx.try_recv() {
-                                Ok(item) => results.push(item),
-                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    disconnected = true;
-                                    break;
-                                }
-                            }
-                        }
-                        (results, disconnected)
-                    };
-                    let (results, disconnected) = drained;
-                    let mut received = false;
-                    for (route, ok) in results {
-                        view.reach_inflight.remove(&route);
-                        view.reachability.insert(route.clone(), ok);
-                        view.reach_checked_at
-                            .insert(route, std::time::Instant::now());
-                        received = true;
-                    }
-                    if disconnected {
-                        view.reach_rx = None;
-                        view.reach_tx = None;
-                    }
-                    if received {
-                        cx.notify();
-                    }
-                    disconnected
-                });
-                match done {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(_) => break,
-                }
-            }
-        })
-        .detach();
-    }
-}
-
-/// 默认模型选择器的候选：按 provider 分组，来自**内存里的草稿配置**。
-///
-/// 与 `crate::provider_models` 有两点不同，都是刻意的：
-///
-/// - 读 `config` 而不是磁盘上的 config.toml —— 设置页正在编辑的就是这份草稿，
-///   改了 provider 的模型目录还没落盘时，选择器就该看得见。
-/// - 不按凭证/端点可用性过滤。设置页正是补凭证的地方；把 provider 从列表里
-///   藏起来，用户会以为自己的修改没保存。真正不能用的 provider 在跑任务时
-///   才会报错，那时错误信息比列表里少一行有用得多。
-pub(super) fn default_model_candidates(config: &Config) -> Vec<(String, Vec<String>)> {
-    let mut out = Vec::new();
-    for (name, provider) in &config.providers {
-        // mock 路由不是真 provider，不该被选成默认。
-        if matches!(
-            name.as_str(),
-            "mock"
-                | "mock-tools"
-                | "mock-approval"
-                | "mock-todo"
-                | "mock-subagent"
-                | "mock-ask"
-                | "mock-schedule"
-        ) {
-            continue;
-        }
-        let mut models: Vec<String> = provider
-            .models
-            .iter()
-            .map(|model| model.id.clone())
-            .collect();
-        if let Some(default) = &provider.default_model
-            && !models.iter().any(|model| model == default)
-        {
-            models.push(default.clone());
-        }
-        if models.is_empty() {
-            models = config::catalog_models(name)
-                .into_iter()
-                .map(|model| model.id)
-                .collect();
-        }
-        if !models.is_empty() {
-            out.push((name.clone(), models));
-        }
-    }
-    out
 }
 
 /// `pin_default` 的内存部分：把 provider 与 model 写进 `[default-model]`，
@@ -257,249 +78,27 @@ fn candidate_label(candidate: &qcode_providers::discovery::ModelCandidate) -> St
     }
 }
 
-/// The warning under the free-text model box, or `None` when the name is known.
-///
-/// Typing a display name where an id belongs is a real and quiet mistake: the
-/// config saves, the first request comes back 400, and the model name looks
-/// correct because it is — just not as an id.
-fn unknown_model_message(typed: &str, known: &[String]) -> Option<String> {
-    let typed = typed.trim();
-    if typed.is_empty() || known.iter().any(|id| id == typed) {
-        return None;
-    }
-    Some(format!(
-        "「{typed}」不在已知的模型列表里。这里填的是 id，不是显示名（例如 deepseek-flash，而不是 DeepSeek-V4.1-Flash）；可以点卡片上的「获取可用模型」核对。"
-    ))
-}
-
-/// Every model id the settings window already knows for `provider`: the rows in
-/// `[[providers.<p>.models]]`, that provider's `default_model`, the pinned
-/// `[default-model]` when it points here, and the builtin catalog.
-///
-/// Used only to warn when the free-text model box is given something that is
-/// not an id at all — the box still accepts it, because a brand-new model or a
-/// gateway alias has to be typeable before the catalog catches up.
-fn known_model_ids(config: &Config, provider: &str) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
-    if let Some(profile) = config.providers.get(provider) {
-        ids.extend(profile.models.iter().map(|model| model.id.clone()));
-        if let Some(model) = &profile.default_model {
-            ids.push(model.clone());
-        }
-    }
-    if config.default_model.provider.as_deref() == Some(provider)
-        && let Some(model) = &config.default_model.model
-    {
-        ids.push(model.clone());
-    }
-    ids.extend(
-        qcode_kernel::config::catalog_models(provider)
-            .into_iter()
-            .map(|model| model.id),
-    );
-    ids.retain(|id| !id.is_empty());
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
 impl SetupView {
-    /// 顶部那行「当前默认：provider / model」，现在可点：展开一个按 provider
-    /// 分组的候选列表，选中即写 `[default-model]`。
-    ///
-    /// 加这个入口之前，设置页**没有**改默认模型的途径：每张卡片的「设为默认」
-    /// 只改 provider（已经是默认时不渲染），而 provider 行里的「Default
-    /// model」被 `[default-model].model` 压着（见 `sync_default_model`）。
-    /// 于是「换同一家的另一个模型」这件事只能在底部模型菜单里做，或者手改
-    /// config.toml。这里把它放回设置页。
-    ///
-    /// 候选来自内存里的草稿配置而不是磁盘：正在编辑的就是它。也不按凭证过滤
-    /// ——设置页正是补凭证的地方，把 provider 藏起来只会让人以为它没保存。
-    fn render_default_model_line(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        // 「手输」是 id 与显示名最容易混起来的地方（DeepSeek 的 id 是
-        // `deepseek-flash`，显示名是 `DeepSeek-V4.1-Flash`）：打了一个已知
-        // 清单里没有的名字时给一句提示，而不是等用户在请求里拿到 400。
-        // 计算放在构建弹层之前，闭包就不必再借 `self`。
-        let unknown_model_hint: Option<String> = {
-            let typed = self.default_model_input.read(cx).value().trim().to_string();
-            match self.config.default_model.provider.clone() {
-                Some(provider) => {
-                    unknown_model_message(&typed, &known_model_ids(&self.config, &provider))
-                }
-                None => None,
-            }
-        };
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let hovered = theme.secondary;
-        let provider = self.config.default_model.provider.clone();
-        let model = self.config.default_model.model.clone();
-        let label = match (&provider, &model) {
-            (Some(provider), Some(model)) => format!("当前默认：{provider} / {model}"),
-            (Some(provider), None) => format!("当前默认提供方：{provider}"),
-            _ => "未设置默认；将使用第一个可用的提供方。".to_string(),
-        };
-        let groups = default_model_candidates(&self.config);
-        // 目标 provider：当前默认的那个；没有默认时取候选里的第一个，否则用户
-        // 输入的模型无处可去。
-        let target_provider = provider
-            .clone()
-            .or_else(|| groups.first().map(|(name, _)| name.clone()));
-        let shell = cx.entity().downgrade();
-        let input = self.default_model_input.clone();
-
-        Popover::new("default-model-popover")
-            .anchor(Anchor::BottomLeft)
-            .appearance(true)
-            .overlay_closable(true)
-            .trigger(
-                Button::new("default-model-trigger")
-                    .label(label)
-                    .text()
-                    .dropdown_caret(true),
-            )
-            .content(move |_state, _window, cx| {
-                let state = cx.entity().downgrade();
-                let mut rows = div().flex().flex_col().gap_1().p_1().min_w(px(240.0));
-                if groups.is_empty() {
-                    rows = rows.child(
-                        div()
-                            .p_2()
-                            .text_size(sp(SECONDARY_SIZE))
-                            .text_color(muted)
-                            .child("还没有可选的模型：先给一个 provider 配上模型或默认模型。"),
-                    );
-                }
-                for (group_provider, models) in &groups {
-                    rows = rows.child(
-                        div()
-                            .h(px(22.0))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .text_size(sp(CAPTION_SIZE))
-                            .text_color(muted)
-                            .child(group_provider.clone()),
-                    );
-                    for group_model in models {
-                        let checked = provider.as_deref() == Some(group_provider.as_str())
-                            && model.as_deref() == Some(group_model.as_str());
-                        let p = group_provider.clone();
-                        let m = group_model.clone();
-                        let shell = shell.clone();
-                        let state = state.clone();
-                        rows = rows.child(
-                            div()
-                                .id(format!("default-model-row-{group_provider}-{group_model}"))
-                                .h(px(24.0))
-                                .px_2()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_2()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .text_size(sp(SECONDARY_SIZE))
-                                .hover(move |this| this.bg(hovered))
-                                .child(div().flex_1().child(m.clone()))
-                                .when(checked, |this| this.child("✓"))
-                                .on_click(move |_event, window, cx| {
-                                    if let Some(shell) = shell.upgrade() {
-                                        shell.update(cx, |view, cx| {
-                                            view.pin_default(&p, Some(m.as_str()), window, cx);
-                                        });
-                                    }
-                                    if let Some(state) = state.upgrade() {
-                                        state.update(cx, |state, cx| state.dismiss(window, cx));
-                                    }
-                                }),
-                        );
-                    }
-                }
-                // 目录里没有的模型（新版本、网关别名）只能靠手输：候选列表
-                // 只会列出已经登记的值，没有这一行就「设不成功」。
-                //
-                let free_text = div()
-                    .mt_1()
-                    .pt_2()
-                    .border_t_1()
-                    .border_color(muted)
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                        match &target_provider {
-                            Some(provider) => format!("设为 {provider} 的默认模型"),
-                            None => "先配置一个 provider".to_string(),
-                        },
-                    ))
-                    .child(Input::new(&input).aria_label("默认模型名"))
-                    .child(match &unknown_model_hint {
-                        Some(message) => div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .text_color(muted)
-                            .child(message.clone())
-                            .into_any_element(),
-                        None => div().into_any_element(),
-                    })
-                    .child(
-                        Button::new("set-custom-default-model")
-                            .label("设为默认")
-                            .on_click({
-                                let shell = shell.clone();
-                                let state = state.clone();
-                                let input = input.clone();
-                                let target = target_provider.clone();
-                                move |_event, window, cx| {
-                                    let Some(provider) = target.clone() else {
-                                        return;
-                                    };
-                                    let typed = input.read(cx).value().trim().to_string();
-                                    if typed.is_empty() {
-                                        return;
-                                    }
-                                    if let Some(shell) = shell.upgrade() {
-                                        shell.update(cx, |view, cx| {
-                                            view.pin_default(
-                                                &provider,
-                                                Some(typed.as_str()),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                    input.update(cx, |input, cx| {
-                                        input.set_value("", window, cx);
-                                        cx.notify();
-                                    });
-                                    if let Some(state) = state.upgrade() {
-                                        state.update(cx, |state, cx| state.dismiss(window, cx));
-                                    }
-                                }
-                            }),
-                    );
-                rows = rows.child(free_text);
-                rows.into_any_element()
-            })
-            .into_any_element()
-    }
-
     /// The provider card list: saved notice, one card per directory row, the
     /// inline editor for the open route, and the add actions.
     pub(crate) fn render_models_providers(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        // 后台发起无密钥 provider 端点探测（结果异步落地后 notify 重绘），
-        // 渲染路径只用缓存结果，不会在这里被 DNS/TCP 卡住。
-        self.ensure_reachability(cx);
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
         let theme = cx.theme();
         let (success_color, muted_color, border_color) =
             (theme.success, theme.muted_foreground, theme.border);
         let mut cards = div().flex().flex_col().gap_2();
-        // V2.1: the three legacy default fields were removed; the effective
-        // default is summarized here (and changeable by clicking it) and
-        // pinned per card via "设为默认".
-        cards = cards.child(self.render_default_model_line(cx));
+        // V3: 「添加模型/供应商」→ Provider 选择框（只选择）→ 配置页；入口
+        // 放在列表顶部（原默认行下拉按钮的位置）。
+        cards = cards.child(
+            div().flex().flex_row().gap_2().child(
+                Button::new("open-provider-picker")
+                    .label("＋ 添加模型/供应商")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_provider_picker(window, cx);
+                    })),
+            ),
+        );
         if let Some(notice) = &self.saved_notice {
             cards = cards.child(
                 div()
@@ -508,31 +107,40 @@ impl SetupView {
                     .child(notice.to_string()),
             );
         }
-        for row in &directory {
+        // V3: 只展示「已配置了模型」的 provider（`configured_models`：profile
+        // 存在且 models 非空或 default_model 已设置）；没有配置模型的不展示。
+        let filtered: Vec<&qcode_kernel::provider_registry::ConfigurableProvider> = directory
+            .iter()
+            .filter(|row| {
+                qcode_kernel::provider_registry::configured_models(&row.route, &self.config)
+            })
+            .collect();
+        if filtered.is_empty() {
+            cards = cards.child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(muted_color)
+                    .child("还没有配置模型的 Provider。点击「＋ 添加模型/供应商」选择 Provider 并配置。"),
+            );
+        }
+        for row in filtered {
             let route = row.route.clone();
             let display = if row.display_name == row.route {
                 row.route.clone()
             } else {
                 format!("{} ({})", row.display_name, row.route)
             };
-            let dot = match row.credential_state {
-                qcode_kernel::provider_registry::CredentialState::Configured => {
-                    Some(div().size(px(8.0)).rounded_full().bg(success_color))
-                }
-                // 未配置凭据用空心圆圈（透明填充、中性色描边），不用红点。
-                qcode_kernel::provider_registry::CredentialState::Missing => Some(
-                    div()
-                        .size(px(8.0))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(muted_color),
-                ),
-                qcode_kernel::provider_registry::CredentialState::Keyless => None,
-            };
+            // 默认 provider 前显示实心绿点；其余渲染同尺寸的透明占位
+            // （无背景），保证卡片文字左侧对齐。
+            let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
+            let expanded = self.expanded_routes.contains(&route);
             let mut head = div().flex().flex_row().items_center().gap_2();
-            if let Some(dot) = dot {
-                head = head.child(dot);
-            }
+            head = head.child(
+                div()
+                    .size(px(8.0))
+                    .rounded_full()
+                    .when(is_default, |this| this.bg(success_color)),
+            );
             head = head
                 .child(
                     div()
@@ -552,18 +160,9 @@ impl SetupView {
                         ),
                 )
                 .child(div().flex_grow(1.0));
-            if self.config.default_model.provider.as_deref() == Some(route.as_str()) {
-                head = head.child(
-                    div()
-                        .text_size(sp(CAPTION_SIZE))
-                        .text_color(success_color)
-                        .child("当前默认"),
-                );
-            }
-            // 已配置且可用（凭证齐全或无需密钥且端点可达）的 provider，只要
-            // 还不是默认，就在卡片上给一个「设为默认」快捷按钮。
+            // 已配置且可用（凭证齐全或无需密钥）的 provider，只要还不是
+            // 默认，就在卡片上给一个「设为默认」快捷按钮。
             let usable = self.provider_usable(row);
-            let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
             if row.configured && usable && !is_default {
                 let route_for_default = route.clone();
                 head = head.child(
@@ -574,51 +173,368 @@ impl SetupView {
                         })),
                 );
             }
-            // 编辑在弹出对话框里进行（删除等动作也移入对话框），卡片只放
-            // 编辑/添加按钮。未配置的提供方首次点击会先写入预设行再弹出
-            // 同一个编辑对话框。
-            if row.configured {
-                let route_for_edit = route.clone();
-                head = head.child(
-                    Button::new(format!("edit-provider-{route}"))
-                        .label("编辑")
-                        .on_click(cx.listener(move |this, _, _window, cx| {
-                            this.open_editor(&route_for_edit, cx);
-                        })),
+            // 编辑在弹出对话框里进行（模型增删等动作也移入对话框）。
+            let route_for_edit = route.clone();
+            head = head.child(
+                Button::new(format!("edit-provider-{route}"))
+                    .label("编辑")
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.open_editor(&route_for_edit, cx);
+                    })),
+            );
+            // 删除走同一个确认弹框（`render_delete_dialog`）。
+            let route_for_delete = route.clone();
+            head = head.child(
+                Button::new(format!("delete-provider-{route}"))
+                    .label("删除")
+                    .danger()
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.saved_notice = None;
+                        this.editing_provider = None;
+                        this.delete_target = Some(route_for_delete.clone());
+                        cx.notify();
+                    })),
+            );
+            // 展开/收起模型列表。
+            let route_for_caret = route.clone();
+            let head_caret = Button::new(format!("expand-provider-{route}"))
+                .label(if expanded { "收起 ▾" } else { "展开 ▸" })
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.toggle_provider_expanded(&route_for_caret, cx);
+                }));
+            head = head.child(head_caret);
+
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .border_1()
+                .border_color(border_color)
+                .rounded(px(10.0))
+                .p_3()
+                .child(head);
+            if expanded {
+                let models =
+                    qcode_kernel::provider_registry::effective_models(&route, &self.config);
+                let mut list = div().flex().flex_col().gap_1();
+                for model in &models {
+                    let label = match &model.name {
+                        Some(name) if name != &model.id => format!("{} — {name}", model.id),
+                        _ => model.id.clone(),
+                    };
+                    let caps = format!(
+                        "上下文 {} · 最大输出 {}",
+                        model
+                            .context_window
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        model
+                            .max_tokens
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    );
+                    list = list.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .pl_6()
+                            .py_1()
+                            .border_t_1()
+                            .border_color(border_color)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .text_size(sp(CODE_SIZE))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .text_color(muted_color)
+                                    .child(caps),
+                            ),
+                    );
+                }
+                if models.is_empty() {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .pt_2()
+                            .border_t_1()
+                            .border_color(border_color)
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(muted_color)
+                            .child("该 Provider 尚无模型，点击上方按钮添加。"),
+                    );
+                }
+                let route_manage = route.clone();
+                list = list.child(
+                    div().pt_1().child(
+                        Button::new(format!("manage-models-{route}"))
+                            .label("＋ 配置模型")
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.open_add_model(&route_manage, cx);
+                            })),
+                    ),
                 );
-            } else {
-                let route_for_add = route.clone();
-                head = head.child(
-                    Button::new(format!("add-provider-{route}"))
-                        .label("编辑")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_provider_preset(&route_for_add, window, cx);
-                            this.open_editor(&route_for_add, cx);
-                        })),
-                );
+                card = card.child(list);
             }
-            cards = cards.child(
+            cards = cards.child(card);
+        }
+        cards.into_any_element()
+    }
+
+    /// The「添加模型」Provider 选择框（modal，只选择不配置）：列目录中的
+    /// 全部 Provider（catalog + 手写 route），点击某行即关闭并进入配置页；
+    /// 底部固定「自定义提供方…」入口。
+    pub(crate) fn render_provider_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.wizard || !self.adding_provider {
+            return div().into_any_element();
+        }
+        let theme = cx.theme();
+        let (popover, popover_fg, border_color, muted_color, hovered) = (
+            theme.popover,
+            theme.popover_foreground,
+            theme.border,
+            theme.muted_foreground,
+            theme.secondary,
+        );
+        let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
+            .list_configurable_providers(&self.config);
+        let mut rows = div().flex().flex_col().gap_1();
+        for row in &directory {
+            // 本地 Ollama 不在「添加模型」选择框里提供：模型需自行配置，
+            // 没有「一键添加」的预设。
+            if row.route == "ollama" {
+                continue;
+            }
+            let route = row.route.clone();
+            let display = if row.display_name == row.route {
+                row.route.clone()
+            } else {
+                format!("{} ({})", row.display_name, row.route)
+            };
+            let dot = match row.credential_state {
+                qcode_kernel::provider_registry::CredentialState::Configured => {
+                    Some(div().size(px(8.0)).rounded_full().bg(theme.success))
+                }
+                qcode_kernel::provider_registry::CredentialState::Missing => Some(
+                    div()
+                        .size(px(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(muted_color),
+                ),
+                qcode_kernel::provider_registry::CredentialState::Keyless => None,
+            };
+            let route_pick = route.clone();
+            let mut entry = div()
+                .id(format!("picker-provider-{route}"))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(move |this| this.bg(hovered))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pick_provider(&route_pick, window, cx);
+                }));
+            if let Some(dot) = dot {
+                entry = entry.child(dot);
+            }
+            entry = entry
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().child(display))
+                        .child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(muted_color)
+                                .child(format!(
+                                    "{} · {}",
+                                    row.protocol.label(),
+                                    credential_text(row.credential_state)
+                                )),
+                        ),
+                )
+                .child(div().flex_grow(1.0));
+            rows = rows.child(entry);
+        }
+        rows = rows.child(
+            div()
+                .mt_1()
+                .pt_2()
+                .border_t_1()
+                .border_color(border_color)
+                .child(
+                    div()
+                        .id("picker-custom-provider")
+                        .flex()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(hovered))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.pick_custom(window, cx);
+                        }))
+                        .child("自定义提供方…"),
+                ),
+        );
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
                 div()
+                    .w(px(420.0))
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(popover)
                     .border_1()
                     .border_color(border_color)
-                    .rounded(px(10.0))
-                    .p_3()
-                    .child(head),
-            );
+                    .p_4()
+                    .text_color(popover_fg)
+                    .child(div().child("选择 Provider"))
+                    .child(
+                        div()
+                            .id("provider-picker-scroll")
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .max_h(px(360.0))
+                            .overflow_y_scroll()
+                            .child(rows),
+                    )
+                    .child(
+                        div().flex().flex_row().justify_end().child(
+                            Button::new("cancel-provider-picker")
+                                .label("取消")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.close_provider_picker(cx);
+                                })),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 「为某 Provider 添加模型」的纯添加弹框（modal）：只含模型目录
+    /// 编辑器（现有模型行 + 添加/删除 + 获取可用模型），不含 API 密钥、
+    /// 更多配置与删除 Provider。
+    pub(crate) fn render_add_model_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.wizard {
+            return div().into_any_element();
         }
-        cards = cards.child(
-            div().flex().flex_row().gap_2().child(
-                Button::new("open-custom-provider")
-                    .label("＋ 添加自定义提供方")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_custom_card(window, cx);
-                    })),
-            ),
+        let Some(route) = &self.adding_model_provider else {
+            return div().into_any_element();
+        };
+        let Some(table) = self.tables.get("providers") else {
+            return div().into_any_element();
+        };
+        let Some(row) = table
+            .rows
+            .iter()
+            .find(|row| cell(row, "name", cx).trim() == route)
+        else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let (popover, popover_fg, border_color, danger_color) = (
+            theme.popover,
+            theme.popover_foreground,
+            theme.border,
+            theme.danger,
         );
-        cards.into_any_element()
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(520.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(popover)
+                    .border_1()
+                    .border_color(border_color)
+                    .p_4()
+                    .text_color(popover_fg)
+                    .child(div().child(format!("为 {route} 添加模型")))
+                    .child(
+                        div()
+                            .id("add-model-dialog-scroll")
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .max_h(px(440.0))
+                            .overflow_y_scroll()
+                            .child(self.render_models_editor(row, route, cx)),
+                    )
+                    .child(match &self.provider_error {
+                        Some(error) => div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(danger_color)
+                            .child(error.to_string())
+                            .into_any_element(),
+                        None => div().into_any_element(),
+                    })
+                    .child(
+                        div().flex().flex_row().justify_end().child(
+                            Button::new("close-add-model-dialog")
+                                .label("保存")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    // 弹框内的模型行编辑只在点「保存」时
+                                    // 写盘。直接用 flush 的 Result 判断成败：
+                                    // 成功才关闭，失败保持弹框打开并显示原因。
+                                    match this.flush_auto_save(AutoSaveKind::Tables, cx) {
+                                        Ok(()) => {
+                                            this.provider_error = None;
+                                            // 延迟到当前事件处理结束再关闭弹窗：
+                                            // 同一事件内 close 的 notify 若触发
+                                            // 渲染会读到尚未生效的状态（GPUI
+                                            // 渲染缓存），跨到下一帧再关。
+                                            cx.defer_in(window, |view, _window, cx| {
+                                                view.close_add_model(cx);
+                                            });
+                                        }
+                                        Err(error) => {
+                                            // 保存失败：保持弹框打开并把原因
+                                            // 显示在弹框内。
+                                            this.provider_error = Some(error);
+                                            cx.notify();
+                                        }
+                                    }
+                                })),
+                        ),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// The provider edit modal (settings mode): API key first, the fixed
@@ -1645,6 +1561,7 @@ impl SetupView {
         self.provider_error = None;
         self.provider_notice = None;
         self.declaring = false;
+        self.adding_provider = false;
         self.saved_notice = None;
         cx.notify();
     }
@@ -1665,6 +1582,60 @@ impl SetupView {
         if !changed {
             self.saved_notice = None;
         }
+    }
+
+    /// 切换一个 provider 卡片模型列表的展开/收起（纯 UI 状态）。
+    fn toggle_provider_expanded(&mut self, route: &str, cx: &mut Context<Self>) {
+        if !self.expanded_routes.remove(route) {
+            self.expanded_routes.insert(route.to_string());
+        }
+        cx.notify();
+    }
+
+    /// 打开「添加模型」的 Provider 选择框：只做选择，不配置；选中某个
+    /// Provider 后关闭选择框并进入该 Provider 的配置页。
+    fn open_provider_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.adding_provider = true;
+        self.editing_provider = None;
+        self.declaring = false;
+        self.saved_notice = None;
+        cx.notify();
+    }
+
+    fn close_provider_picker(&mut self, cx: &mut Context<Self>) {
+        self.adding_provider = false;
+        cx.notify();
+    }
+
+    /// 选择框里点了一个 Provider：关闭选择框，未配置的 catalog route 先
+    /// 写入预设行，再打开同一个编辑对话框。
+    fn pick_provider(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_provider_picker(cx);
+        if !self.config.providers.contains_key(route) {
+            self.add_provider_preset(route, window, cx);
+        }
+        self.open_editor(route, cx);
+    }
+
+    /// 选择框底部的「自定义提供方…」：关闭选择框，进入自定义声明卡片。
+    fn pick_custom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_provider_picker(cx);
+        self.open_custom_card(window, cx);
+    }
+
+    /// 打开「为某 Provider 添加模型」的纯添加弹框（只含模型目录编辑器，
+    /// 不含密钥/配置/删除），用于展开列表里的「＋ 配置模型」。
+    fn open_add_model(&mut self, route: &str, cx: &mut Context<Self>) {
+        self.adding_model_provider = Some(route.to_string());
+        self.editing_provider = None;
+        self.provider_error = None;
+        self.provider_notice = None;
+        cx.notify();
+    }
+
+    fn close_add_model(&mut self, cx: &mut Context<Self>) {
+        self.adding_model_provider = None;
+        cx.notify();
     }
 
     fn open_custom_card(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1782,7 +1753,7 @@ mod label_tests {
     // re-exports GPUI's own `test` proc-macro attribute; `use super::*` would
     // pull it in, and every `#[test]` below would then expand to the GPUI macro
     // instead of the built-in attribute, recursing until the limit trips.
-    use super::{candidate_label, unknown_model_message};
+    use super::candidate_label;
     use qcode_providers::discovery::ModelCandidate;
 
     fn candidate(id: &str, name: Option<&str>) -> ModelCandidate {
@@ -1808,22 +1779,5 @@ mod label_tests {
             candidate_label(&candidate("deepseek-flash", Some("deepseek-flash"))),
             "deepseek-flash"
         );
-    }
-
-    #[test]
-    fn a_known_id_gets_no_warning() {
-        let known = vec!["deepseek-flash".to_string(), "deepseek-v4-pro".to_string()];
-        assert_eq!(unknown_model_message("deepseek-flash", &known), None);
-        assert_eq!(unknown_model_message("  deepseek-v4-pro ", &known), None);
-        assert_eq!(unknown_model_message("", &known), None);
-    }
-
-    #[test]
-    fn a_display_name_typed_as_an_id_gets_the_id_warning() {
-        let known = vec!["deepseek-flash".to_string()];
-        let message = unknown_model_message("DeepSeek-V4.1-Flash", &known).unwrap();
-        assert!(message.contains("DeepSeek-V4.1-Flash"));
-        assert!(message.contains("deepseek-flash"));
-        assert!(message.contains("id"));
     }
 }

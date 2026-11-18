@@ -22,7 +22,7 @@ use qcode_tools::sandbox::SandboxMode;
 
 use qcode_kernel::config::SandboxNetworkMode;
 use qcode_tools::web_search::SearchBackend;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 
 mod credentials;
@@ -130,6 +130,16 @@ pub struct SetupView {
     saved_notice: Option<String>,
     /// Whether the custom-provider declaration card is open.
     declaring: bool,
+    /// Whether the provider-picker overlay (「添加模型」→ 选择 Provider) is open.
+    /// The picker only selects; picking a route opens the edit dialog.
+    adding_provider: bool,
+    /// Provider routes whose model list is expanded on the Models page (pure UI
+    /// state, never persisted).
+    expanded_routes: BTreeSet<String>,
+    /// Route whose pure "add model" dialog is open (from the expanded model
+    /// list's 「在此 Provider 添加模型」). Unlike the edit dialog this shows
+    /// only the model catalog editor, no credentials/config/delete.
+    adding_model_provider: Option<String>,
     /// Probe candidate model ids (U3): open while Some, adopted on confirm.
     probe_candidates: Option<Vec<qcode_providers::discovery::ModelCandidate>>,
     /// Probe candidates the user picked to adopt.
@@ -148,10 +158,6 @@ pub struct SetupView {
     /// Model drafts on the declaration card (adopted only on create).
     custom_models: Vec<ModelRowState>,
     custom_error: Option<String>,
-    /// The default-model picker's "type a model name" box. A model that is in no
-    /// provider's catalog (a brand-new release, a gateway alias) can only be
-    /// reached by typing it, and typing it is exactly what the picker lacked.
-    default_model_input: Entity<InputState>,
     /// Set when the settings window is closing: background tasks (the model
     /// probe poll loop, auto-save debounce) short-circuit instead of touching
     /// the removed window, which GPUI would report as "window not found".
@@ -161,16 +167,6 @@ pub struct SetupView {
     /// newest generation fires, so rapid typing coalesces into one write).
     pending_auto_save: Option<AutoSaveKind>,
     auto_save_generation: u64,
-    /// 设置窗口的无密钥 provider 端点可达性（Models 页卡片）：后台探测线程
-    /// 写入，渲染路径只读，不再同步做 DNS/TCP。`reachability` 是每个 route 的
-    /// 最近结果，`reach_checked_at` 是探测时刻（10 秒内不重复探测，与主窗口
-    /// `keyless_endpoint_reachable` 的缓存窗口一致），`reach_inflight` 是在途
-    /// route，tx/rx 是全部探测线程共用的那一条结果通道。
-    reachability: BTreeMap<String, bool>,
-    reach_checked_at: BTreeMap<String, std::time::Instant>,
-    reach_inflight: HashSet<String>,
-    reach_tx: Option<std::sync::mpsc::Sender<(String, bool)>>,
-    reach_rx: Option<std::sync::mpsc::Receiver<(String, bool)>>,
     /// One close attempt has already been refused because the last write failed.
     /// The next one goes through, so a read-only config cannot trap the user.
     close_after_save_error: bool,
@@ -367,6 +363,9 @@ impl SetupView {
             delete_target: None,
             saved_notice: None,
             declaring: false,
+            adding_provider: false,
+            expanded_routes: BTreeSet::new(),
+            adding_model_provider: None,
             probe_candidates: None,
             probe_picked: HashSet::new(),
             probe_query: String::new(),
@@ -378,29 +377,12 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
-            default_model_input: input(window, cx, String::new(), "输入模型名"),
             closing: false,
             close_after_save_error: false,
             pending_auto_save: None,
             auto_save_generation: 0,
-            reachability: BTreeMap::new(),
-            reach_checked_at: BTreeMap::new(),
-            reach_inflight: HashSet::new(),
-            reach_tx: None,
-            reach_rx: None,
             _input_subscriptions: Vec::new(),
         };
-        // The free-text default-model row warns when the typed name is not a
-        // known id for that provider; that warning lives in `SetupView`, so it
-        // has to hear about every keystroke in the input.
-        view._input_subscriptions.push(cx.subscribe(
-            &view.default_model_input,
-            |_view, _input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            },
-        ));
         for field in forms::FIELDS {
             let key = field.path.join(".");
             match field.kind {

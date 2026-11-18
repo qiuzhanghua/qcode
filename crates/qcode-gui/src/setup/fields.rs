@@ -128,6 +128,8 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         },
         ["terminal", "start_cwd"] => config.terminal.start_cwd.clone(),
         ["terminal", "font"] => config.terminal.font.clone(),
+        ["terminal", "max_scrollback"] => config.terminal.max_scrollback.to_string(),
+        ["terminal", "max_terminals"] => config.terminal.max_terminals.to_string(),
         _ => options.first().unwrap_or(&"").to_string(),
     }
 }
@@ -148,10 +150,12 @@ pub(crate) fn scalar_bool(config: &Config, path: &[&str]) -> bool {
 
 pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> Result<(), String> {
     match path {
-        ["context", "window_tokens"] => {
-            config.context.window_tokens = parse(value, "context.window_tokens")?;
-        }
-        ["agent", "max_turns"] => config.agent.max_turns = parse(value, "agent.max_turns")?,
+        ["context", "window_tokens"] => apply_num(
+            value,
+            "context.window_tokens",
+            &mut config.context.window_tokens,
+        )?,
+        ["agent", "max_turns"] => apply_num(value, "agent.max_turns", &mut config.agent.max_turns)?,
         ["agent", "max_cost_usd"] => {
             config.agent.max_cost_usd = if value.trim().is_empty() {
                 None
@@ -170,11 +174,13 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             };
         }
         ["shell", "env_command"] => config.shell.env_command = value.to_string(),
-        ["shell", "env_timeout_ms"] => {
-            config.shell.env_timeout_ms = parse(value, "shell.env_timeout_ms")?
-        }
+        ["shell", "env_timeout_ms"] => apply_num(
+            value,
+            "shell.env_timeout_ms",
+            &mut config.shell.env_timeout_ms,
+        )?,
         ["shell", "env_ttl_secs"] => {
-            config.shell.env_ttl_secs = parse(value, "shell.env_ttl_secs")?
+            apply_num(value, "shell.env_ttl_secs", &mut config.shell.env_ttl_secs)?
         }
         ["approval", "allow"] => config.approval.allow = lines_from(value),
         ["approval", "deny"] => config.approval.deny = lines_from(value),
@@ -187,12 +193,16 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
                 _ => qcode_tools::shell_env::ShellAudit::Names,
             };
         }
-        ["terminal", "max_scrollback"] => {
-            config.terminal.max_scrollback = parse(value, "terminal.max_scrollback")?
-        }
-        ["terminal", "max_terminals"] => {
-            config.terminal.max_terminals = parse(value, "terminal.max_terminals")?
-        }
+        ["terminal", "max_scrollback"] => apply_num(
+            value,
+            "terminal.max_scrollback",
+            &mut config.terminal.max_scrollback,
+        )?,
+        ["terminal", "max_terminals"] => apply_num(
+            value,
+            "terminal.max_terminals",
+            &mut config.terminal.max_terminals,
+        )?,
         ["ui", "busy_delivery"] => {
             config.ui.busy_delivery = match value {
                 "steer" => qcode_kernel::config::BusyDelivery::Steer,
@@ -235,14 +245,16 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             config.search.api_key_command = (!argv.is_empty()).then_some(argv);
         }
         ["search", "max_results"] => {
-            config.search.max_results = parse(value, "search.max_results")?;
+            apply_num(value, "search.max_results", &mut config.search.max_results)?;
         }
         ["search", "base_url"] => {
             config.search.base_url = (!value.trim().is_empty()).then(|| value.trim().to_string());
         }
         ["update", "enabled"] => config.update.enabled = value == "true",
         ["update", "check"] => config.update.check = value == "true",
-        ["update", "check_days"] => config.update.check_days = parse(value, "update.check_days")?,
+        ["update", "check_days"] => {
+            apply_num(value, "update.check_days", &mut config.update.check_days)?
+        }
         ["update", "repo"] => config.update.repo = value.to_string(),
         ["update", "base_url"] => {
             config.update.base_url = (!value.trim().is_empty()).then(|| value.trim().to_string());
@@ -385,6 +397,20 @@ pub(crate) fn extra_body_from_lines(lines: &[String]) -> BTreeMap<String, serde_
         })
         .filter(|(key, _)| !key.is_empty())
         .collect()
+}
+
+/// 数值字段的容错应用：空值保留当前值（未配置的字段用默认，auto-save 不
+/// 应因它失败），非空才解析；非法非空仍报错。
+///
+/// 历史教训：`scalar_string` 漏了 `terminal.max_scrollback` 等分支时播种为
+/// 空串，`parse("")` 直接失败，导致**任何**表格保存（auto-save / 保存）都被
+/// 拦下——新模型添加后写不进 config 就是这个原因。
+fn apply_num<T: std::str::FromStr>(value: &str, label: &str, slot: &mut T) -> Result<(), String> {
+    let value = value.trim();
+    if !value.is_empty() {
+        *slot = parse(value, label)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn parse<T: std::str::FromStr>(value: &str, label: &str) -> Result<T, String> {

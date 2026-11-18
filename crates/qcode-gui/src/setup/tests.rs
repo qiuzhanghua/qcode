@@ -169,44 +169,6 @@ fn the_shadowed_model_is_the_one_the_global_default_names() {
 }
 
 #[test]
-fn the_default_picker_lists_each_providers_models_and_hides_mock() {
-    use qcode_kernel::config::{Config, ModelEntry, ProviderConfig};
-    let mut config = Config::default();
-    config.providers.insert(
-        "deepseek".into(),
-        ProviderConfig {
-            default_model: Some("deepseek-flash".into()),
-            ..ProviderConfig::default()
-        },
-    );
-    config.providers.insert(
-        "minimax".into(),
-        ProviderConfig {
-            models: vec![ModelEntry {
-                id: "MiniMax-M3".into(),
-                ..ModelEntry::default()
-            }],
-            ..ProviderConfig::default()
-        },
-    );
-    config
-        .providers
-        .insert("mock".into(), ProviderConfig::default());
-
-    let groups = super::models::default_model_candidates(&config);
-    let names: Vec<&str> = groups.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        vec!["deepseek", "minimax"],
-        "mock is not a real route"
-    );
-    // The row's own default model is offered even when the catalog is empty …
-    assert_eq!(groups[0].1, vec!["deepseek-flash".to_string()]);
-    // … and an explicit model list is used as-is.
-    assert_eq!(groups[1].1, vec!["MiniMax-M3".to_string()]);
-}
-
-#[test]
 fn the_images_switch_only_becomes_an_override_when_it_disagrees() {
     // deepseek's catalog entry takes images (ADR-0071), so an untouched switch
     // says `true` and must not be written: freezing `images = true` into the

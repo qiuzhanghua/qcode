@@ -310,18 +310,9 @@ impl SetupView {
         let name = input(window, cx, name_value, "显示名称");
         let context_window = input(window, cx, context_value, "上下文窗口");
         let max_tokens = input(window, cx, max_value, "最大输出 token");
-        if !self.wizard {
-            for entity in [&model_id, &name, &context_window, &max_tokens] {
-                self._input_subscriptions.push(cx.subscribe(
-                    entity,
-                    |view, _input, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            view.auto_save(cx, AutoSaveKind::Tables, true);
-                        }
-                    },
-                ));
-            }
-        }
+        // 模型行输入**不**自动保存：编辑中不写盘（避免把半截 id 写进
+        // config），只在用户点「保存」时由调用方显式 flush（见
+        // `render_add_model_dialog` 的保存按钮、编辑对话框的「保存」）。
         ModelRowState {
             id,
             model_id,
@@ -608,7 +599,9 @@ impl SetupView {
         cx.notify();
     }
 
-    /// Append one blank model row to a provider row's catalog.
+    /// Append one blank model row to a provider row's catalog. Only mutates
+    /// the in-memory table row; persisting is deferred to the caller's save
+    /// (「保存」按钮), so model edits never write half-typed values.
     pub(crate) fn add_model(&mut self, row_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let model = self.model_row(window, cx, None);
         let Some(table) = self.tables.get_mut("providers") else {
@@ -618,7 +611,6 @@ impl SetupView {
             return;
         };
         row.models.push(model);
-        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }
 
@@ -631,7 +623,6 @@ impl SetupView {
             return;
         };
         row.models.retain(|model| model.id != model_id);
-        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }
 
@@ -645,7 +636,6 @@ impl SetupView {
             return;
         };
         row.models.clear();
-        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }
 
