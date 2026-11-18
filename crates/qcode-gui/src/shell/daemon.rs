@@ -222,6 +222,15 @@ impl Shell {
                 self.daemon_transition = None;
             }
         }
+        // 兜底（`cancel_stale_transition`）：进程 spawn 成功但状态始终没跟上——比如
+        // 刚起就崩在握住用户级锁之前。不能让按钮永远转圈（ADR-0098 §4 没有这一格）。
+        if self.daemon_transition.is_some()
+            && self
+                .daemon_transition_at
+                .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(10))
+        {
+            self.daemon_transition = None;
+        }
     }
 
     /// 点段头那颗图标（ADR-0100：**乒乓键**）。
@@ -278,6 +287,13 @@ impl Shell {
     }
 
     pub(crate) fn request_daemon_start(&mut self, cx: &mut Context<Self>) {
+        // 上一个切换还没收尾：按钮已经转圈了，命令行再发一个会撞上「锁在、通道没
+        // 人答」。跟 `toggle_daemon` 的 Busy 分支同一句。
+        if self.daemon_transition.is_some() {
+            self.ui.app.push_notice("正在切换，等它完成。".to_string());
+            cx.notify();
+            return;
+        }
         // 已经在跑就别再起一个：锁会拦住第二个 qcd，但它会**排队等**（ADR-0092 §10），
         // 于是一次误点换来一个永远睡着的进程。这里先问一句，比事后解释便宜。
         if self
@@ -292,6 +308,7 @@ impl Shell {
             return;
         }
         self.daemon_transition = Some(DaemonTransition::Starting);
+        self.daemon_transition_at = Some(std::time::Instant::now());
         let data_dir = self.data_dir.clone();
         // 起进程会阻塞（找二进制、fork、等锁）：放到后台执行器，界面这一帧照画。
         cx.spawn(async move |this, cx| {
@@ -300,31 +317,40 @@ impl Shell {
                 .spawn(async move { qcode_core::daemon::start(&data_dir, None) })
                 .await;
             this.update(cx, |shell, cx| {
-                shell.daemon_transition = None;
-                // 无论成败都立刻重探：成功时立刻显示「停止」，失败时回到「启动」并
-                // 说清为什么——那比一个停在「启动中」的按钮诚实。
+                // 过渡态**不**在这里撤销：`spawn` 返回只说明进程创建成功，qcd 还要
+                // 一两秒才握住用户级锁，此刻清掉会露出「灰 → 等 → 绿」的夹缝，看着
+                // 像点击没生效。由 `refresh_driver_watch` 在状态跟上（`is_running`）
+                // 时撤销；失败或卡住才在这里清。
+                // 无论成败都立刻重探一次。
                 shell.driver_watch_at = None;
                 shell.refresh_driver_watch();
                 match result {
                     Ok(pid) => {
                         // 起来了 ≠ 在推时钟。走 `WindowDriven` 那条路时它会在驱动锁上
                         // 排队，等到窗口退出才接手（ADR-0092 §10）——那种「点了但看起来
-                        // 没动」必须说出来，否则用户会再点一次。
-                        let waiting = !shell
-                            .driver_watch
-                            .as_ref()
-                            .is_some_and(|watch| watch.daemon.is_running());
-                        let message = if waiting {
-                            format!("定时任务驱动已启动（pid {pid}），正在等这个窗口退出后接手。")
-                        } else {
-                            format!("定时任务驱动已启动（pid {pid}）")
+                        // 没动」必须说出来，否则用户会再点一次。刚 spawn 完可能还在
+                        // 就绪，两种「还没在推」分开说。
+                        let message = match shell.driver_watch.as_ref() {
+                            Some(watch)
+                                if watch.daemon.is_running()
+                                    && matches!(watch.driver, DriverStatus::Running { .. }) =>
+                            {
+                                format!("定时任务驱动已启动（pid {pid}）")
+                            }
+                            Some(watch) if watch.daemon.is_running() => format!(
+                                "定时任务驱动已启动（pid {pid}），正在等这个窗口退出后接手。"
+                            ),
+                            _ => format!("定时任务驱动已启动（pid {pid}），正在就绪…"),
                         };
                         shell.ui.app.push_notice(message);
                     }
-                    Err(error) => shell
-                        .ui
-                        .app
-                        .push_notice(format!("无法启动定时任务驱动：{error}")),
+                    Err(error) => {
+                        shell.daemon_transition = None;
+                        shell
+                            .ui
+                            .app
+                            .push_notice(format!("无法启动定时任务驱动：{error}"))
+                    }
                 }
                 cx.notify();
             })
@@ -336,6 +362,7 @@ impl Shell {
 
     pub(crate) fn request_daemon_stop(&mut self, cx: &mut Context<Self>) {
         self.daemon_transition = Some(DaemonTransition::Stopping);
+        self.daemon_transition_at = Some(std::time::Instant::now());
         // 用户级的 base：`stop` 停的是这个用户的 daemon，不是「这个数据目录的」。
         let user_dir = qcode_kernel::data_dir_hint(None);
         cx.spawn(async move |this, cx| {
@@ -344,17 +371,25 @@ impl Shell {
                 .spawn(async move { qcode_core::daemon::stop(&user_dir) })
                 .await;
             this.update(cx, |shell, cx| {
-                shell.daemon_transition = None;
+                // 与 start 同一条规矩：`request_stop` 只是把停的信号送出去，进程还要
+                // 一会儿才退出。过渡态等状态跟上（`!is_running`）才撤销，否则会露出
+                // 「还绿着」的夹缝。
                 shell.driver_watch_at = None;
                 shell.refresh_driver_watch();
                 match result {
                     Ok(true) => shell.ui.app.push_notice("定时任务驱动已停止".to_string()),
                     // `false` 不是错误：用户点下去时它可能刚好自己退了。
-                    Ok(false) => shell.ui.app.push_notice("驱动已经不在了".to_string()),
-                    Err(error) => shell
-                        .ui
-                        .app
-                        .push_notice(format!("无法停止定时任务驱动：{error}")),
+                    Ok(false) => {
+                        shell.daemon_transition = None;
+                        shell.ui.app.push_notice("驱动已经不在了".to_string())
+                    }
+                    Err(error) => {
+                        shell.daemon_transition = None;
+                        shell
+                            .ui
+                            .app
+                            .push_notice(format!("无法停止定时任务驱动：{error}"))
+                    }
                 }
                 cx.notify();
             })

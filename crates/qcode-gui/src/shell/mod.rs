@@ -95,6 +95,9 @@ pub(crate) struct Shell {
     /// 存在的理由很具体——`stop` 要等正在收尾的回合，而用户看不到任何变化时会连点。
     /// 连点的第二个请求会撞上「锁在、但通道没人答」而被报成失败。
     pub(crate) daemon_transition: Option<DaemonTransition>,
+    /// 过渡态何时开始。状态跟上就撤销；状态一直跟不上（比如刚起就崩在握住
+    /// 用户级锁之前）时用它兜底，不让按钮永远转圈（ADR-0098 §4 没有这一格）。
+    pub(crate) daemon_transition_at: Option<std::time::Instant>,
     /// 点击「立即执行」后、投递落盘确认前处于执行中的任务：task id → 点击时刻。
     /// 详情页据此把按钮置为「执行中…」并禁用，防止重复点击。
     pub(crate) schedule_running: std::collections::HashMap<String, time::PrimitiveDateTime>,
@@ -359,6 +362,7 @@ impl Shell {
             driver_watch: None,
             driver_watch_at: None,
             daemon_transition: None,
+            daemon_transition_at: None,
             schedule_running: std::collections::HashMap::new(),
             schedule_menu_open: false,
             schedule_filter: None,
