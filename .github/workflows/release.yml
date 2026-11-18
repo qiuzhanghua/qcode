@@ -100,6 +100,12 @@ jobs:
       # Not taking v7/v8: `download-artifact@v8` turns a digest mismatch from a
       # warning into a hard error, and both latest majors are ESM rewrites. That
       # is unrelated churn in the one job that produces the public artifacts.
+      #
+      # 升级后这段真验过（本 workflow 只在 tag 触发，等下次发版才发现就太晚了）：
+      # 用一个探针分支复刻 publish 依赖的形状 —— `path: dist/*` 多文件 glob（含
+      # 子目录）、`merge-multiple: true` 下到 `artifacts/`、顶层必须是扁平文件
+      # （`Get-ChildItem artifacts -File` 不看子目录）—— 跑通并断言了内容完整，
+      # run 44299187362。所以 Windows 那段规整脚本不用改。
       - uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.os }}
