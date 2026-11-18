@@ -470,6 +470,10 @@ mod tests {
     /// `exit=129 reason=sighup`. Reload therefore uses `SIGUSR1`. Pinning the
     /// reason here so the next person does not "fix" it back.
     #[test]
+    // `Reason` is `#[cfg(unix)]`-gated (Windows has no hangup concept), so the
+    // test that pins its string has to be gated the same way — otherwise the
+    // Windows cross-check sees a variant that does not exist there.
+    #[cfg(unix)]
     fn sighup_is_claimed_by_the_exit_path_not_available_for_reload() {
         // The string that showed up in `qc.log` when the reload was mis-wired.
         assert_eq!(Reason::SigHup.as_str(), "sighup");

@@ -171,9 +171,10 @@ mod linux_backend {
 mod macos_backend {
     use super::*;
     use std::io;
+    use std::os::unix::ffi::OsStrExt;
 
     use libc::{
-        EV_ADD, EV_CLEAR, EV_SET, EVFILT_VNODE, NOTE_DELETE, NOTE_RENAME, NOTE_WRITE, O_DIRECTORY,
+        EV_ADD, EV_CLEAR, EVFILT_VNODE, NOTE_DELETE, NOTE_RENAME, NOTE_WRITE, O_DIRECTORY,
         O_RDONLY, kevent, kqueue,
     };
 
@@ -189,21 +190,32 @@ mod macos_backend {
         if kq < 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut event: libc::Kevent = std::mem::zeroed();
-        EV_SET(
-            &mut event,
-            dir_fd as usize,
-            EVFILT_VNODE,
-            EV_ADD | EV_CLEAR,
-            NOTE_WRITE | NOTE_RENAME | NOTE_DELETE,
-            0,
-            std::ptr::null_mut(),
-        );
-        if unsafe { kevent(kq, &event, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0 {
+        // `EV_SET` 是 C 宏，libc crate 里没有对应的函数或常量——它要的就是一个
+        // 填好的 `kevent`，所以直接构造结构体。字段与
+        // `libc/src/unix/bsd/apple/mod.rs` 里那个 `#[repr(packed(4))]` 的定义一致。
+        let registered = libc::kevent {
+            ident: dir_fd as libc::uintptr_t,
+            filter: EVFILT_VNODE,
+            flags: EV_ADD | EV_CLEAR,
+            fflags: NOTE_WRITE | NOTE_RENAME | NOTE_DELETE,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        if unsafe {
+            kevent(
+                kq,
+                &registered,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        } < 0
+        {
             return Err(io::Error::last_os_error());
         }
         loop {
-            let mut out: libc::Kevent = std::mem::zeroed();
+            let mut out: libc::kevent = unsafe { std::mem::zeroed() };
             let n = unsafe { kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null()) };
             if n < 0 {
                 return Err(io::Error::last_os_error());
