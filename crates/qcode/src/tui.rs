@@ -61,6 +61,11 @@ pub struct TuiOptions<'a> {
     pub skills: Vec<SkillView>,
     /// Active sandbox backend name, shown in the status bar.
     pub sandbox: String,
+    /// The config file this session was assembled from, if any.
+    ///
+    /// ADR-0103: the TUI never re-assembles, so a change to this file means the
+    /// running sandbox and network policy are stale. Watched, not reloaded.
+    pub config_path: Option<PathBuf>,
     /// Existing session to resume; `None` creates a new one.
     pub resume: Option<String>,
     /// Also snapshot the workspace before run_shell ([agent] snapshot_shell).
@@ -426,6 +431,14 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
 
+    // ADR-0103: this process cannot re-assemble its kernel, so a config edit
+    // would silently leave the old `[sandbox]`/`[network]` in force. Watch the
+    // file and say so once. Checked against the ticker rather than every frame:
+    // a `stat` at 60Hz is pointless I/O for something a human just saved.
+    let mut config_watch =
+        qcode_kernel::config_watch::ConfigWatch::new(options.config_path.clone());
+    let mut config_watch_ticks: u32 = 0;
+
     // Follow-up queue shared with the engine: a message sent while a turn runs
     // waits here (or is steered into the running turn's next step).
     let queue = SessionQueue::new();
@@ -493,6 +506,18 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         tokio::select! {
             biased;
             _ = ticker.tick() => {
+                // ADR-0103: every ~60th frame (≈1s) ask whether the config file
+                // moved. `changed` reports once, so the warning cannot repeat.
+                config_watch_ticks += 1;
+                if config_watch_ticks >= 60 {
+                    config_watch_ticks = 0;
+                    if let Some(path) = config_watch.changed() {
+                        let warning = qcode_kernel::config_watch::ConfigWatch::warning(path);
+                        tracing::warn!("{warning}");
+                        app.notice(warning);
+                        dirty = true;
+                    }
+                }
                 if dirty {
                     if let Err(err) = terminal.terminal.draw(|frame| render(frame, &app)) {
                         break Err(err.into());

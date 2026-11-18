@@ -1552,6 +1552,31 @@ fn toggle_tool_flips_only_the_requested_card() {
     ));
 }
 
+/// ADR-0103 §1：配置变更的警告必须是一条**对话记录行**，不是状态栏一闪。
+///
+/// 用户不会盯着屏幕等警告；他是在后面某次 `run_shell` 行为不对、回头翻记录时
+/// 才发现「原来配置早就改了、进程还用着旧的」。所以这条要能回看得到，并且要
+/// 顶到可见处（`scroll = 0`）。
+#[test]
+fn a_notice_lands_in_the_transcript_where_it_can_be_read_back() {
+    let mut app = App::new("deepseek", "deepseek-flash");
+    app.blocks.push(Block::Assistant("earlier".into()));
+    app.scroll = 7;
+
+    app.notice("config.toml changed on disk; this process is still running the startup config");
+
+    // 进了对话记录，且作为独立一行（`loose_blocks` 不挂在任何 turn 上）。
+    assert_eq!(app.blocks.len(), 2);
+    assert_eq!(app.loose_blocks, vec![1]);
+    assert!(
+        matches!(&app.blocks[1], Block::Assistant(text) if text.contains("still running the startup config")),
+        "{:?}",
+        app.blocks[1]
+    );
+    // 顶到可见处，否则用户当下根本看不到它。
+    assert_eq!(app.scroll, 0);
+}
+
 #[test]
 fn reset_transcript_keeps_configuration_and_clears_state() {
     let mut app = App::new("deepseek", "deepseek-flash");

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use qcd::Daemon;
+use qcd::{Daemon, ReloadDecision, decide_reload};
 use qcode_core::single_instance::{Outcome, Scope};
 
 /// `qcd --help` 的正文。
@@ -75,6 +75,9 @@ async fn main() -> std::process::ExitCode {
     let data_dir = match data_dir_arg() {
         Ok(dir) => dir,
         Err(error) => {
+            // 这是本进程**唯一**的 eprintln：`--data-dir` 错了就不知道日志该写哪，
+            // 而 subscriber 还没装（`logging::init` 在下面），此时 `tracing` 写了
+            // 也无人接收。给它 stderr 是唯一的出路。
             eprintln!("qcd: {error}");
             return std::process::ExitCode::from(2);
         }
@@ -92,9 +95,10 @@ async fn main() -> std::process::ExitCode {
     let exit = match run().await {
         Ok(()) => 0,
         Err(error) => {
-            // 无终端：说出来给日志，同时给 stderr（前台跑时有人看得见）。
+            // 无终端：日志是唯一的现场（ADR-0082）。`logging::init` 的 stderr 层
+            // 已经把 error 级别同时送出去，前台手跑时看得见，不需要再 eprintln
+            // 一次——那样只是把同一句话写两遍。
             tracing::error!(%error, "qcd stopped with an error");
-            eprintln!("qcd: {error}");
             1
         }
     };
@@ -154,7 +158,7 @@ fn wait_for_driver_lock(
                 identity: identity.to_string(),
                 driving: false,
             });
-            eprintln!("qcd: stopping (it was waiting for the other driver)");
+            tracing::info!("stopping while waiting for the other driver");
             return Ok(None);
         }
         match store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
@@ -170,7 +174,6 @@ fn wait_for_driver_lock(
                     // 说一声「接上了」：否则日志里只有「让路」那一行，看起来像
                     // 一直没在干活。
                     tracing::info!("the other driver is gone; taking over");
-                    eprintln!("qcd: taking over (the other driver exited)");
                 }
                 return Ok(Some(lock));
             }
@@ -185,11 +188,8 @@ fn wait_for_driver_lock(
                     });
                     // 只喊一次。每秒喊一次会把日志刷满，而这件事没变过。
                     tracing::info!(
-                        "another process drives this data directory; waiting (ADR-0092 §10)"
-                    );
-                    eprintln!(
-                        "qcd: another driver (a GUI window?) holds this data directory; \
-                         waiting for it to exit. Ctrl-C to give up."
+                        "another process drives this data directory; waiting (ADR-0092 §10) \
+                         — another driver (a GUI window?) holds it; Ctrl-C to give up"
                     );
                     announced = true;
                 }
@@ -285,16 +285,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Outcome::HandedOver => {
             // 明确失败，不假装成功（ADR-0092 §11）：一个说「已启动」但其实没启动的
             // 进程，比没有这个能力更糟。
-            eprintln!(
-                "qcd: another qcd is already running for this user.\n\
-                 One daemon per user (ADR-0092 §5); stopping this one."
+            tracing::warn!(
+                "another qcd is already running for this user; \
+                 one daemon per user (ADR-0092 §5); stopping this one"
             );
             return Err("already running".into());
         }
         Outcome::Disabled(why) => {
             // 锁机制不可用时**继续跑**：单实例是「防重复」而不是「防启动」，而定时
             // 任务不跑是更坏的后果。说一句，别静默。
-            eprintln!("qcd: single-instance check skipped ({why}); two daemons could overlap");
+            tracing::warn!("single-instance check skipped ({why}); two daemons could overlap");
         }
     };
 
@@ -337,16 +337,46 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 可跟随的事件出口（ADR-0092 §8）：一行一条 JSON，`tail -f` 就能看着它跑。
     // 本期只留缝，GUI 的跟随界面是后续的事。
     let mut daemon = Daemon::new(assembled, beat).with_sink(Box::new(sink));
-    tracing::info!(path = %sink_path.display(), "schedule events go here");
-    eprintln!(
-        "qcd: driving {} (beat {}s, identity {})",
-        daemon.assembled.store.root().display(),
-        daemon.beat().as_secs(),
-        daemon.identity()
+    // 启动那一行要能回答「这个 daemon 在驱动哪儿、每拍多久、它是谁」——排
+    // 「为什么那段时间没触发」时先看它。沙箱名一并写上，后面 reload 换成什么
+    // 才有得比。
+    tracing::info!(
+        path = %sink_path.display(),
+        store = %daemon.assembled.store.root().display(),
+        beat = daemon.beat().as_secs(),
+        identity = daemon.identity(),
+        sandbox = %daemon.assembled.sandbox,
+        "driving"
     );
 
     let mut clock = tokio::time::interval(beat);
-    // 第一拍立刻到来（`interval` 的默认行为），那正是我们要的：进程起来就该扫一次，
+    // ADR-0103: `qcd` assembles once and never re-reads, so a config edit — very
+    // often a *tightened* `[sandbox]` — keeps running under the old grants until
+    // the daemon restarts. Nobody is watching the daemon's output the way a TUI
+    // user watches a screen, so the warning goes through `tracing` at `warn`:
+    // that level is written to both the log file and stderr by `logging::init`,
+    // which is how "must reach both" is satisfied here — not by a second
+    // `eprintln!` (a detached daemon has `/dev/null` on stderr anyway).
+    let mut config_watch =
+        qcode_kernel::config_watch::ConfigWatch::new(daemon.assembled.config_path.clone());
+
+    // ADR-0103 §2：`SIGUSR1` 显式重载。Unix 才有这个概念；Windows 上 daemon 用
+    // 控制通道，`reload_signal` 退化为永不触发的通道。
+    //
+    // 不用 SIGHUP：`qcode_core::lifecycle` 已把它定义为「终端没了 → 退出」
+    // （`install_signal_handlers`），两个 tokio 任务抢同一个信号没有先手保证。
+    #[cfg(unix)]
+    let mut reload_signal = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::user_defined1())?
+    };
+    #[cfg(not(unix))]
+    let mut reload_signal = {
+        let (_tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+        rx
+    };
+    // 收到 SIGHUP 但当时有回合在跑：等收口再换。
+    let mut reload_pending = false; // 第一拍立刻到来（`interval` 的默认行为），那正是我们要的：进程起来就该扫一次，
     // 而不是先干等 30 秒。
     //
     // 每一拍传 `Instant::now()` 而不是累加 `beat`：`Clock` 拿它算「距上一拍多久」，
@@ -355,6 +385,56 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         tokio::select! {
             _ = clock.tick() => {
+                // ADR-0103: the beat is the natural checkpoint — a config edit is
+                // a human action, so 30s of staleness is fine, and `changed()`
+                // fires once so the log does not fill with repeats.
+                if let Some(path) = config_watch.changed() {
+                    let warning = qcode_kernel::config_watch::ConfigWatch::warning(path);
+                    // `warn` 级别本就双写：日志文件 + stderr（`logging::init` 的
+                    // stderr 层默认 `warn` 起）。ADR-0103 要的「同时到达」由级别
+                    // 保证，不需要再来一次 eprintln。
+                    tracing::warn!("{warning}");
+                }
+                // ADR-0103 §2：待换的配置在**空闲**时换入，运行中继续等。
+                // 「空闲」用 daemon 自己的 live/starting：一拍之内可能有回合在跑，
+                // 拍与拍之间没有。判定本身在 `decide_reload` 里，有单测钉住。
+                if decide_reload(reload_pending, daemon.has_live_turns()) == ReloadDecision::ReloadNow
+                {
+                    reload_pending = false;
+                    match qcode_kernel::assemble(
+                        None,
+                        &daemon.assembled.workspace,
+                        Some(daemon.assembled.store.root().to_path_buf()),
+                        None,
+                        Default::default(),
+                    )
+                    .await
+                    {
+                        Ok(fresh) => {
+                            // 新配置的 mtime 起点要跟着换，否则下一拍会把「刚刚
+                            // reload 用的那个版本」当成又改了一次。
+                            config_watch = qcode_kernel::config_watch::ConfigWatch::new(
+                                fresh.config_path.clone(),
+                            );
+                            daemon.reload(fresh);
+                            // ADR-0103 验证 2 要「一条进程内可观测的证据」。`sandbox`
+                            // 字段就是那条证据——它是 `Sandbox::name()`，换没换成读它。
+                            tracing::info!(
+                                sandbox = %daemon.assembled.sandbox,
+                                "reloaded configuration"
+                            );
+                        }
+                        // 装配失败（多半是刚写坏的配置）：留着旧的继续跑比停下来好，
+                        // 但必须说清楚还在用旧的。
+                        Err(error) => {
+                            tracing::error!(
+                                %error,
+                                sandbox = %daemon.assembled.sandbox,
+                                "reload failed; still running the old configuration"
+                            );
+                        }
+                    }
+                }
                 let report = daemon.tick(Instant::now()).await;
                 if report.changed_tasks() {
                     tracing::info!(
@@ -372,12 +452,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 控制通道来的「请退出」（`qc daemon stop`）。与 Ctrl-C 同一条退出
             // 路径：跑完当前这一拍就走。
             _ = stop.cancelled() => {
-                eprintln!("qcd: stopping (requested over the control channel)");
+                tracing::info!("stopping (requested over the control channel)");
                 break;
             }
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("qcd: stopping");
+                tracing::info!("stopping (ctrl-c)");
                 break;
+            }
+            // ADR-0103 §2：显式重载。选信号而不是自动监听 mtime，因为 `qcd` 是
+            // 无人值守的——「一次不注意的保存」不该悄悄改变正在跑的定时任务的权限
+            // 边界。责任留在人手上：改完再 `kill -USR1`。
+            //
+            // 用 SIGUSR1 而不是 SIGHUP：`qcode_core::lifecycle` 已经装了 SIGHUP
+            // 处理器，语义是「终端没了 → 清理子进程组并退出」（128+1=129）。那个
+            // 语义对 CLI/TUI 是对的（关终端后不该留下孤儿 `cargo build`），但它让
+            // SIGHUP 不可能同时表示「重载」——第一版就是这么写的，实测 `kill -HUP`
+            // 直接把 daemon 杀了（日志 `exit=129 reason=sighup`）。SIGUSR1 没有内置
+            // 含义，也不会与 lifecycle 冲突。
+            _ = reload_signal.recv() => {
+                tracing::info!("SIGUSR1 received; reloading configuration when idle");
+                // 运行中不换引擎（会打断回合），标记 pending，等下一拍空闲时换入。
+                reload_pending = true;
             }
         }
     }

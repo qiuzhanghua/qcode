@@ -59,6 +59,9 @@ fn assembled(data_dir: &std::path::Path) -> Assembled {
         network: None,
         sandbox: "none".to_string(),
         shell_env: Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
+        // ADR-0103: this hand-built kernel reads no file, so there is nothing to
+        // watch. The daemon test cares about delivery, not config staleness.
+        config_path: None,
     }
 }
 

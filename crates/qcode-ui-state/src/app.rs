@@ -115,6 +115,20 @@ impl App {
         }
     }
 
+    /// Say something in the transcript that is not part of a turn.
+    ///
+    /// ADR-0103: the TUI cannot re-assemble its kernel mid-session, so when the
+    /// config file changes under it the only honest thing to do is say so. This
+    /// is deliberately a transcript row rather than a status-bar flash: the
+    /// warning has to still be readable when the user looks back and wonders why
+    /// a tightened `[sandbox]` had no effect.
+    pub fn notice(&mut self, text: impl Into<String>) {
+        let index = self.blocks.len();
+        self.blocks.push(Block::Assistant(text.into()));
+        self.loose_blocks.push(index);
+        self.scroll = 0;
+    }
+
     /// Clear the transcript before replaying a resumed session.
     ///
     /// Provider/model/sandbox/skills are configuration, not transcript state;

@@ -92,6 +92,7 @@ fn run(dir: &Path, port: KernelPort) {
 mod linux_backend {
     use super::*;
     use std::io;
+    use std::os::unix::ffi::OsStrExt as _;
 
     use libc::{
         EINTR, IN_CLOEXEC, IN_CLOSE_WRITE, IN_CREATE, IN_MODIFY, IN_MOVED_TO, IN_NONBLOCK, POLLIN,

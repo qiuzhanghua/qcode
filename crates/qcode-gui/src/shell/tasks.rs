@@ -9,31 +9,6 @@ fn truncate_to_second(at: time::PrimitiveDateTime) -> time::PrimitiveDateTime {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 回执落盘被截断到整秒、点击时刻带纳秒：同一秒内点击并确认时，
-    /// 截断后的点击时刻必须判为「回执已到达」（`delivered_at >= clicked_sec`）。
-    #[test]
-    fn a_same_second_receipt_clears_the_waiting_state() {
-        let clicked = time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(2026, time::Month::November, 18).expect("date"),
-            time::Time::from_hms_nano(11, 16, 11, 183_528_300).expect("time"),
-        );
-        // 回执的 delivered_at：同一秒，经 serde_wall_clock 截断到整秒。
-        let delivered_at = truncate_to_second(clicked);
-        assert_eq!(delivered_at.nanosecond(), 0, "截断后必须是整秒");
-        assert!(
-            delivered_at >= truncate_to_second(clicked),
-            "同一秒的回执必须解除「执行中…」等待态"
-        );
-        // 控制组：下一秒的回执也满足；点击的下一秒内回执必须大于点击。
-        let next_second = truncate_to_second(clicked) + time::Duration::seconds(1);
-        assert!(next_second >= truncate_to_second(clicked));
-    }
-}
-
 impl Shell {
     pub(crate) fn refresh_tasks(&mut self) {
         // 定时任务的提示随任务一起刷新：错过的窗口、失效的条目、失败的触发都
@@ -480,5 +455,34 @@ impl Shell {
             root.primary = root.label == label;
         }
         self.update_task_roots(task_id, roots, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // 显式导入，**不要**换成 `use super::*`：本文件顶部已经是 `use super::*`，
+    // 而父模块 `shell/mod.rs` 又是 `use crate::*`。再套一层 glob 会让 rustc 把
+    // 整条 `crate::*` 链重新展开一遍，`clippy --all-targets` 在 lib test 这个
+    // target 上直接栈溢出（SIGABRT）。与 `shell/daemon.rs` 里记的是同一个坑。
+    use super::truncate_to_second;
+
+    /// 回执落盘被截断到整秒、点击时刻带纳秒：同一秒内点击并确认时，
+    /// 截断后的点击时刻必须判为「回执已到达」（`delivered_at >= clicked_sec`）。
+    #[test]
+    fn a_same_second_receipt_clears_the_waiting_state() {
+        let clicked = time::PrimitiveDateTime::new(
+            time::Date::from_calendar_date(2026, time::Month::November, 18).expect("date"),
+            time::Time::from_hms_nano(11, 16, 11, 183_528_300).expect("time"),
+        );
+        // 回执的 delivered_at：同一秒，经 serde_wall_clock 截断到整秒。
+        let delivered_at = truncate_to_second(clicked);
+        assert_eq!(delivered_at.nanosecond(), 0, "截断后必须是整秒");
+        assert!(
+            delivered_at >= truncate_to_second(clicked),
+            "同一秒的回执必须解除「执行中…」等待态"
+        );
+        // 控制组：下一秒的回执也满足；点击的下一秒内回执必须大于点击。
+        let next_second = truncate_to_second(clicked) + time::Duration::seconds(1);
+        assert!(next_second >= truncate_to_second(clicked));
     }
 }
