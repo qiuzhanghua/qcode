@@ -574,7 +574,9 @@ cargo build -p qcode-eval
   shell 环境清洗、独立进程组、超时与 `kill_on_drop`。macOS `sandbox-exec` 已按
   Task 的 RO/RW 目录重建 profile；Linux/Windows 多目录重建仍待补齐。
 - **沙箱（实验）**：`[sandbox] mode` 可选 `sandbox-exec`（macOS）、`bwrap` 或
-  `landlock`（Linux）、`windows-acl`（Windows）。`run_shell` 由对应工具包裹：默认 deny，
+  `landlock`（Linux）、`windows-acl`（Windows）。**四个后端能力不同，选型与差异见
+  [SANDBOX-BACKENDS.md](./design/SANDBOX-BACKENDS.md)**（机制、能力矩阵、PTY 与 `/tmp` 的
+  具体差别、本机实测）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
   可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
   （读与网络不受限，硬链接与命名管道不在覆盖范围，因此报 `partial`）。四个后端都认
