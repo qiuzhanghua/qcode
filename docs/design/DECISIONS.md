@@ -12351,10 +12351,24 @@ Landlock 是**进程级不可逆降权**（ADR-0012 §2）：即使热重载，�
 
 1. TUI 启动后改 `config.toml` → 界面上出现一条警告，且后续 `run_shell` 仍按启动时配置执行
    （用 `allow_pty = false` 造一个能区分的用例：改文件后 pty 仍可/仍不可分配）。
+   实测记录（2026-11-18）：警告如期出现，且是**对话记录里的一行**（`App::notice` 推
+   `loose_blocks`、`scroll = 0`），不是状态栏一闪：
+
+   ```
+   WARN qc::tui: /home/q/.config/qcode/config.toml changed on disk; this process is still
+   running the config it loaded at startup (sandbox and network settings are unchanged)
+   — restart to apply
+   ```
+
+   「仍按启动时配置」在结构上成立：`cmd_tui` 全路径只有一处 `assemble`，没有任何重装配
+   入口，所以这不是自觉遵守而是没有别的可能。
 2. `qcd` 运行中改配置 → 有告警；`kill -USR1` 后，**空闲时**配置生效（`qc doctor` 之外需一条
    进程内可观测的证据，例如 `qcd` 日志打出新 sandbox 描述）；**运行中**则等到回合收口才换入。
    实测记录（2026-11-18）：`kill -HUP` 会杀掉 daemon（`exit=129 reason=sighup`），必须用 `-USR1`。
 3. `qcd` 在回合运行中收到 `SIGUSR1`：不中断回合，标记 pending，回合结束后换入。
+   实测记录（2026-11-18）：已手工验过。判定逻辑另由 `qcd::decide_reload` 的单测钉住
+   （`a_signal_during_a_live_turn_waits_instead_of_interrupting` 等 4 条），三分支
+   `Nothing` / `WaitForIdle` / `ReloadNow` 互不相同——合并其中两个会让那条测试红。
 4. 设置页在 turn 运行中保存 → 文案不承诺「立即」；turn 结束后才换入，且界面能看出换入发生。
 5. `qcd` 收到 `SIGUSR1` 但只有 `stop` 通道可用（旧版本、控制通道不可用）时仍能工作——信号与
    socket 是两条独立通路。

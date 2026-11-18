@@ -36,6 +36,33 @@ use tokio_util::sync::CancellationToken;
 
 use host::DaemonHost;
 
+/// ADR-0103 §2：待换配置该怎么办。
+///
+/// 抽成一个纯函数是为了让 ADR 验证 2/3 的核心语义能在 CI 里钉住——原先是内联在
+/// `main.rs` 的 `select!` 里，`pending` 与「有没有回合在跑」两个条件交错，
+/// 只能靠手工发信号验证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadDecision {
+    /// 没有待换的配置：什么都不做。
+    Nothing,
+    /// 有待换的，但此刻有回合在跑：继续等，**不打断回合**。
+    WaitForIdle,
+    /// 有待换的且空闲：现在换入。
+    ReloadNow,
+}
+
+/// 每一拍问一次：现在能不能换配置。
+///
+/// 「空闲」由调用方从 `Daemon::has_live_turns` 取出。运行中必须等——换引擎会打断
+/// 回合，而 `qcd` 是无人值守的，一个正在跑的定时任务不该因为有人改了配置而报废。
+pub fn decide_reload(pending: bool, has_live_turns: bool) -> ReloadDecision {
+    match (pending, has_live_turns) {
+        (false, _) => ReloadDecision::Nothing,
+        (true, true) => ReloadDecision::WaitForIdle,
+        (true, false) => ReloadDecision::ReloadNow,
+    }
+}
+
 /// 一拍默认 30 秒。
 ///
 /// 与 GUI 同一个值，理由也一样：cron 的精度是分钟，30 秒留出漂移余量。更密的拍只
@@ -394,5 +421,42 @@ impl qcode_core::approval::Approver for UnattendedApprover {
             _ = cancel.cancelled() => qcode_core::approval::Answer::Deny,
             _ = tokio::time::sleep(self.deadline) => qcode_core::approval::Answer::Deny,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReloadDecision, decide_reload};
+
+    /// 没收到信号时每一拍都不做事：重载是显式动作（ADR-0103 §2 不选自动监听
+    /// mtime，因为 `qcd` 无人值守，「一次不注意的保存」不该改变权限边界）。
+    #[test]
+    fn without_a_signal_nothing_is_reloaded() {
+        assert_eq!(decide_reload(false, false), ReloadDecision::Nothing);
+        // 没收到信号、有回合在跑，同样不做事——不是「等空闲」，是根本没这事。
+        assert_eq!(decide_reload(false, true), ReloadDecision::Nothing);
+    }
+
+    /// ADR-0103 验证 3：回合运行中收到 `SIGUSR1` 时**不打断**，标记 pending 等收口。
+    #[test]
+    fn a_signal_during_a_live_turn_waits_instead_of_interrupting() {
+        assert_eq!(decide_reload(true, true), ReloadDecision::WaitForIdle);
+    }
+
+    /// ADR-0103 验证 2：空闲时收到信号就直接换。
+    #[test]
+    fn a_signal_while_idle_reloads_at_once() {
+        assert_eq!(decide_reload(true, false), ReloadDecision::ReloadNow);
+    }
+
+    /// 三个分支互不相同：如果有人把 `WaitForIdle` 和 `ReloadNow` 合并成一个
+    /// bool，这条会红——「等」和「换」的差别正是验证 3 要保的东西。
+    #[test]
+    fn waiting_and_reloading_are_distinguishable() {
+        let waiting = decide_reload(true, true);
+        let reloading = decide_reload(true, false);
+        assert_ne!(waiting, reloading);
+        assert_ne!(waiting, ReloadDecision::Nothing);
+        assert_ne!(reloading, ReloadDecision::Nothing);
     }
 }
