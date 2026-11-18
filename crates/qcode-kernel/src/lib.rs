@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod config_edit;
+pub mod config_watch;
 /// 日志初始化与 `qc.log` 的落点。
 ///
 /// 在 `qcode-kernel` 而不是某个二进制里：`qc` 与 `qcd` 都要写同一份 `qc.log`，
@@ -146,6 +147,13 @@ pub struct Kernel {
     /// The environment `run_shell` injects (ADR-0064). Callers sample and take
     /// the audit before a turn so the log records what the agent actually saw.
     pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
+    /// The config file this kernel was assembled from, if one exists.
+    ///
+    /// ADR-0103: frontends that do not re-assemble on change (TUI, `qcd`) use
+    /// this to tell the user that the file no longer matches what is running.
+    /// It is the *resolved* path — after `--config`, `QCODE_CONFIG`, portable
+    /// mode and the XDG default — not whatever the caller passed in.
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 use std::path::PathBuf;
@@ -586,6 +594,13 @@ pub struct Assembled {
     /// The environment `run_shell` injects (ADR-0064). Callers sample and take
     /// the audit before a turn so the log records what the agent actually saw.
     pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
+    /// The config file this kernel was assembled from, if one exists.
+    ///
+    /// ADR-0103: frontends that do not re-assemble on change (TUI, `qcd`) use
+    /// this to tell the user that the file no longer matches what is running.
+    /// It is the *resolved* path — after `--config`, `QCODE_CONFIG`, portable
+    /// mode and the XDG default — not whatever the caller passed in.
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 /// Assemble the kernel for the directory qc was started in.
@@ -601,7 +616,12 @@ pub async fn assemble(
     approval_policy: Option<&Path>,
     overrides: config::Overrides,
 ) -> Result<Assembled, Box<dyn std::error::Error>> {
-    let loaded = load_config(config_path, cwd)?;
+    let loaded = load_config(config_path.clone(), cwd)?;
+    // ADR-0103: the frontends that never re-assemble need the resolved path to
+    // notice the file changing under them. `discover` is the same resolver
+    // `load_config` used above (flag → env → portable → user), so the two agree;
+    // a failure here is not fatal — it only costs the warning.
+    let watched_config = config::discover(config_path).ok().map(|found| found.path);
     let resolved = config::resolve(&loaded, &overrides, &|key| std::env::var(key).ok())?;
     // The one place every frontend passes through, and the moment the key becomes
     // known. Installing here is what keeps `qc acp` — a long-lived headless server
@@ -665,6 +685,7 @@ pub async fn assemble(
         egress,
         network,
         sandbox: sandbox_name,
+        config_path: watched_config,
     })
 }
 

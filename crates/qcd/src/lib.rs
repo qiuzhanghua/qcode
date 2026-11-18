@@ -175,6 +175,26 @@ impl Daemon {
         self
     }
 
+    /// 换上重新装配好的引擎（ADR-0103 §2，`SIGHUP`）。
+    ///
+    /// 只换 `assembled` 与由它派生的两段提示：`identity` 标识这个**进程**而不是
+    /// 它的配置，`clock`/`sink` 是进程级设施，都不该因为一次配置变更而重置。
+    ///
+    /// 调用方必须先确认「没有回合在跑」——`tick` 之外没有别的入口会跑回合，而
+    /// `live`/`starting` 只在一拍之内非空，所以主循环在拍与拍之间调用这里就是
+    /// 安全的。这一点由调用点保证，不在这里猜。
+    pub fn reload(&mut self, assembled: Assembled) {
+        self.workspace = assembled.workspace.clone();
+        self.agents_md = qcode_core::agents::load(&self.workspace).ok().flatten();
+        self.skills = assembled.skills.prompt_section();
+        self.assembled = assembled;
+    }
+
+    /// 有回合正在跑吗？`SIGHUP` 要等到没有才换入。
+    pub fn has_live_turns(&self) -> bool {
+        !self.live.is_empty() || !self.starting.is_empty()
+    }
+
     /// 换成一个**可共用**的收集器，返回能读的那一半。
     ///
     /// 测试需要「驱动照常跑，同时我能看到它写了什么」。`Sink` 只有 `emit`（它不需要

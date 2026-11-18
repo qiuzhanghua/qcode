@@ -75,7 +75,9 @@ impl Render for SetupView {
             body = body
                 .child(TextView::markdown(
                     "settings-about",
-                    "## About\n\nqcode desktop. Saving applies to the open window immediately: it rebuilds the kernel in place.",
+                    "## About\n\nqcode desktop. Saving applies to the open window when every session \
+                     is idle: the kernel is rebuilt in place, no restart and no second window. A \
+                     turn that is still running finishes first.",
                 ))
                 .child(format!("qcode {}", env!("CARGO_PKG_VERSION")))
                 .child(format!("Config: {}", self.path.display()))

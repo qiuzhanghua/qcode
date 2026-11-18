@@ -462,6 +462,19 @@ mod tests {
         )
     }
 
+    /// `SIGHUP` is taken: it means "the terminal is gone, clean up and exit".
+    ///
+    /// ADR-0103 §2 first used `SIGHUP` for `qcd`'s config reload and it killed the
+    /// daemon — both handlers are tokio tasks with no priority between them, and
+    /// this one ends in `process::exit(129)`; the observed log line was
+    /// `exit=129 reason=sighup`. Reload therefore uses `SIGUSR1`. Pinning the
+    /// reason here so the next person does not "fix" it back.
+    #[test]
+    fn sighup_is_claimed_by_the_exit_path_not_available_for_reload() {
+        // The string that showed up in `qc.log` when the reload was mis-wired.
+        assert_eq!(Reason::SigHup.as_str(), "sighup");
+    }
+
     /// The ordinary case, and the one that must never produce a false warning:
     /// every run that finished cleanly has a matching pair.
     #[test]

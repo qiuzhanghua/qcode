@@ -518,6 +518,7 @@ pub(crate) async fn cmd_tui(
         skills_prompt,
         skills: skill_views,
         sandbox: kernel.sandbox.clone(),
+        config_path: kernel.config_path.clone(),
         resume,
         network,
         busy_delivery: loaded.ui.busy_delivery,

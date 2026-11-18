@@ -346,7 +346,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut clock = tokio::time::interval(beat);
-    // 第一拍立刻到来（`interval` 的默认行为），那正是我们要的：进程起来就该扫一次，
+    // ADR-0103: `qcd` assembles once and never re-reads, so a config edit — very
+    // often a *tightened* `[sandbox]` — keeps running under the old grants until
+    // the daemon restarts. Nobody is watching the daemon's output the way a TUI
+    // user watches a screen, so this has to reach both the log file and stderr:
+    // it is unattended, and silent staleness is the worst outcome here.
+    let mut config_watch =
+        qcode_kernel::config_watch::ConfigWatch::new(daemon.assembled.config_path.clone());
+
+    // ADR-0103 §2：`SIGUSR1` 显式重载。Unix 才有这个概念；Windows 上 daemon 用
+    // 控制通道，`reload_signal` 退化为永不触发的通道。
+    //
+    // 不用 SIGHUP：`qcode_core::lifecycle` 已把它定义为「终端没了 → 退出」
+    // （`install_signal_handlers`），两个 tokio 任务抢同一个信号没有先手保证。
+    #[cfg(unix)]
+    let mut reload_signal = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::user_defined1())?
+    };
+    #[cfg(not(unix))]
+    let mut reload_signal = {
+        let (_tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+        rx
+    };
+    // 收到 SIGHUP 但当时有回合在跑：等收口再换。
+    let mut reload_pending = false; // 第一拍立刻到来（`interval` 的默认行为），那正是我们要的：进程起来就该扫一次，
     // 而不是先干等 30 秒。
     //
     // 每一拍传 `Instant::now()` 而不是累加 `beat`：`Clock` 拿它算「距上一拍多久」，
@@ -355,6 +379,46 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         tokio::select! {
             _ = clock.tick() => {
+                // ADR-0103: the beat is the natural checkpoint — a config edit is
+                // a human action, so 30s of staleness is fine, and `changed()`
+                // fires once so the log does not fill with repeats.
+                if let Some(path) = config_watch.changed() {
+                    let warning = qcode_kernel::config_watch::ConfigWatch::warning(path);
+                    tracing::warn!("{warning}");
+                    eprintln!("qcd: {warning}");
+                }
+                // ADR-0103 §2：待换的配置在**空闲**时换入，运行中继续等。
+                // 「空闲」用 daemon 自己的 live/starting：一拍之内可能有回合在跑，
+                // 拍与拍之间没有。
+                if reload_pending && !daemon.has_live_turns() {
+                    reload_pending = false;
+                    match qcode_kernel::assemble(
+                        None,
+                        &daemon.assembled.workspace,
+                        Some(daemon.assembled.store.root().to_path_buf()),
+                        None,
+                        Default::default(),
+                    )
+                    .await
+                    {
+                        Ok(fresh) => {
+                            // 新配置的 mtime 起点要跟着换，否则下一拍会把「刚刚
+                            // reload 用的那个版本」当成又改了一次。
+                            config_watch = qcode_kernel::config_watch::ConfigWatch::new(
+                                fresh.config_path.clone(),
+                            );
+                            daemon.reload(fresh);
+                            tracing::info!(sandbox = %daemon.assembled.sandbox, "qcd: reloaded configuration");
+                            eprintln!("qcd: reloaded configuration");
+                        }
+                        // 装配失败（多半是刚写坏的配置）：留着旧的继续跑比停下来好，
+                        // 但必须说清楚还在用旧的。
+                        Err(error) => {
+                            tracing::error!(%error, "qcd: reload failed; still running the old configuration");
+                            eprintln!("qcd: reload failed ({error}); still running the old configuration");
+                        }
+                    }
+                }
                 let report = daemon.tick(Instant::now()).await;
                 if report.changed_tasks() {
                     tracing::info!(
@@ -378,6 +442,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("qcd: stopping");
                 break;
+            }
+            // ADR-0103 §2：显式重载。选信号而不是自动监听 mtime，因为 `qcd` 是
+            // 无人值守的——「一次不注意的保存」不该悄悄改变正在跑的定时任务的权限
+            // 边界。责任留在人手上：改完再 `kill -USR1`。
+            //
+            // 用 SIGUSR1 而不是 SIGHUP：`qcode_core::lifecycle` 已经装了 SIGHUP
+            // 处理器，语义是「终端没了 → 清理子进程组并退出」（128+1=129）。那个
+            // 语义对 CLI/TUI 是对的（关终端后不该留下孤儿 `cargo build`），但它让
+            // SIGHUP 不可能同时表示「重载」——第一版就是这么写的，实测 `kill -HUP`
+            // 直接把 daemon 杀了（日志 `exit=129 reason=sighup`）。SIGUSR1 没有内置
+            // 含义，也不会与 lifecycle 冲突。
+            _ = reload_signal.recv() => {
+                eprintln!("qcd: SIGUSR1 — reloading configuration");
+                // 运行中不换引擎（会打断回合），标记 pending，等下一拍空闲时换入。
+                reload_pending = true;
             }
         }
     }
