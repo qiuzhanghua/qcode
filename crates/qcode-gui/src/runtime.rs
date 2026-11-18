@@ -459,7 +459,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
             // 在此之前这里没有任何互斥，靠的是「GUI 单实例」这个隐含前提（ADR-0083），
             // 而那条规则的作用域是显示会话，不是数据目录。ADR-0092 的 daemon 一旦落地，
             // 两个驱动会同时在扫同一份任务表。
-            let driver_lock = match engine.store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
+            let mut driver_lock = match engine.store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK) {
                 Ok(Some(lock)) => Some(lock),
                 Ok(None) => {
                     tracing::info!(
@@ -872,6 +872,31 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // 不是驱动就不写心跳、不扫描（ADR-0091 §4）。跳过整段而不是
                         // 只跳过投递：away 判定与 config 窗口推进也属于「推动时间」，
                         // 让两个进程各推一次就是把「错过」算两遍。
+                        if driver_lock.is_none() {
+                            // 持锁的那个进程可能已经走了——最常见的是用户在窗口里
+                            // 点「停止常驻驱动」，把 qcd 停掉。此时窗口本可以接管，
+                            // 但锁只在启动时抢过一次，于是「GUI 开着」却没有任何
+                            // 时钟在走：任务到点不触发，界面显示「驱动不在跑」，而
+                            // 提示语还写着「GUI 开着」就行。两者矛盾。
+                            //
+                            // 每拍重试（30s 一次）而不是只在启动时试一次，与 `qcd`
+                            // 的等待循环对称：它也是盯着锁、对方一退就接手。抢不到
+                            // 就照旧不驱动——`try_lock_file` 立即返回，不会阻塞。
+                            if let Ok(Some(lock)) =
+                                engine.store.try_lock_file(qcode_core::scheduler::DRIVER_LOCK)
+                            {
+                                driver_lock = Some(lock);
+                                tracing::info!(
+                                    "the other driver is gone; this window takes over"
+                                );
+                                port.tagged(SessionTarget::Draft).send_schedule_notice(
+                                    "定时任务改由这个窗口驱动（之前持有驱动锁的进程已退出）。\
+                                     关掉窗口就会停——要让它一直跑，用 `qc daemon start`。"
+                                        .to_string(),
+                                );
+                                port.tagged(SessionTarget::Draft).send_schedule_changed();
+                            }
+                        }
                         if driver_lock.is_none() {
                             // 但「立即执行」是本进程自己投的（GUI 直接投递那条路，
                             // 见 `ScheduleOp::RunNow`），确认也必须由本进程完成——
