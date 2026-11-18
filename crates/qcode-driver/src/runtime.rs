@@ -217,8 +217,8 @@ impl Report {
 struct Awaiting {
     task_id: String,
     session: String,
-    /// 发生点（`next_fire_at` 的字符串形式），与日志里的 `scheduled.at` 对齐。
-    at: String,
+    /// 发生点（`next_fire_at`）。确认用它匹配日志（转字符串）与决定要不要推进。
+    at: PrimitiveDateTime,
 }
 
 /// 驱动的运行态。
@@ -250,6 +250,47 @@ impl ScheduleDriver {
     /// 「已投递、未确认」的任务 id。给前端做可观测（测试也用它断言不重投）。
     pub fn inflight(&self) -> &HashSet<String> {
         &self.inflight
+    }
+
+    /// 登记一次**直接投递**（不走扫描的那条路，如 GUI 的「立即执行」）。
+    ///
+    /// 它与扫描投递的唯一差别是触发源：投递一旦发生，确认就必须与扫描走同一套
+    /// （[`confirm`] 按 `pending` 记账、以会话日志为事实源）。不登记的后果是这条
+    /// 投递永远不会被确认——回执、运行记录、以及界面上「执行中」的等待态全都
+    /// 落不了地。
+    ///
+    /// `at` 是这次投递的发生点（`next_fire_at`），确认按它匹配日志里的
+    /// `scheduled.at`，并按它决定要不要把下次触发推进到下一个周期。
+    pub fn register_delivery(
+        &mut self,
+        message_id: &str,
+        task_id: &str,
+        session: &str,
+        at: PrimitiveDateTime,
+    ) {
+        self.inflight.insert(task_id.to_string());
+        self.pending
+            .entry(message_id.to_string())
+            .or_default()
+            .push(Awaiting {
+                task_id: task_id.to_string(),
+                session: session.to_string(),
+                at,
+            });
+    }
+
+    /// 只确认、不扫描。
+    ///
+    /// 持有驱动锁的进程在 `on_beat` 里顺带确认自己的登记。但「立即执行」是任何
+    /// 前端都能发的，而驱动锁只在一个进程手里：投递方若是**没锁的那个**（GUI 在
+    /// daemon 开车时点「立即执行」），它就得自己确认——本进程投的就该本进程认。
+    /// 这里只认本进程的 `pending`，不会替别的进程确认它的投递。
+    pub fn confirm_landed<H: Host>(
+        &mut self,
+        host: &mut H,
+        now: PrimitiveDateTime,
+    ) -> (usize, usize) {
+        self.confirm(host, now)
     }
 
     /// 一拍。`at` 是单调时钟上的此刻；`now` 由 [`Host::now`] 给。
@@ -372,10 +413,7 @@ impl ScheduleDriver {
                 .push(Awaiting {
                     task_id: task.id.clone(),
                     session,
-                    at: task
-                        .next_fire_at
-                        .map(|at| at.to_string())
-                        .unwrap_or_default(),
+                    at: task.next_fire_at.unwrap_or(now),
                 });
             report.fired += 1;
             if let Some(start) = delivery.start {
@@ -450,7 +488,7 @@ impl ScheduleDriver {
         for (message_id, awaiting) in self.pending.iter() {
             let mut all_landed = true;
             for entry in awaiting {
-                match host.landed(&entry.session, &entry.task_id, &entry.at) {
+                match host.landed(&entry.session, &entry.task_id, &entry.at.to_string()) {
                     Landed::Yes => {
                         let (id, session, message) = (
                             entry.task_id.clone(),
@@ -459,10 +497,11 @@ impl ScheduleDriver {
                         );
                         if host.update_task(&id, &mut |task| {
                             record_delivery(task, &message, &session, now);
-                            // 只有当下次触发点仍是「已触发」的时刻才推进到下一个
-                            // 未来时刻。`RunNow` 已把下一次拨到未来，这里再推会
-                            // 跳过一个周期。
-                            if task.next_fire_at.is_none_or(|next| next <= now) {
+                            // 推进判据是「这次投递的发生点」而不是确认时刻：`RunNow`
+                            // 已把下次触发拨到未来（点击时刻之后），若拿确认时刻判
+                            // `next <= now`，一条排队到下一个周期之后才落盘的投递
+                            // 会把下一个周期也吞掉——「立即执行一次之后就不投递了」。
+                            if task.next_fire_at.is_none_or(|next| next <= entry.at) {
                                 advance_past(task, now);
                             }
                         }) {

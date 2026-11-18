@@ -45,4 +45,7 @@ windows-sys = { version = "0.60", features = [
     # `DETACHED_PROCESS` / `CREATE_NEW_PROCESS_GROUP`：分离启动 `qcd`
     # （`daemon::spawn`，ADR-0098 把这段从 `qcd` 搬到 core）。
     "Win32_System_Threading",
+    # `SetConsoleCtrlHandler`（`lifecycle::install_signal_handlers`，
+    # 关窗/注销/关机时收割子进程组）。
+    "Win32_System_Console",
 ] }

@@ -149,6 +149,7 @@ pub fn apply_to_dormant(dormant: &mut Dormant, event: UiEvent) -> Applied {
         UiEvent::ScheduleChanged
         | UiEvent::ScheduleCreated { .. }
         | UiEvent::ScheduleNotice { .. }
+        | UiEvent::ScheduleRunNowRejected { .. }
         // 会话标题变化由 `Shell::poll` 直接刷新任务列表，不进会话视图。
         | UiEvent::TasksChanged => {}
     }

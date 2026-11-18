@@ -188,18 +188,57 @@ fn target_busy(
     starting.contains(id) || live.contains_key(&SessionTarget::Session(id.to_string()))
 }
 
+/// 「立即执行」准入闸。`Some(原因)` = 拒绝，`None` = 放行。
+///
+/// 两道闸都是跨进程 / 全局信号：
+/// - 目标会话锁（ADR-0060）：任一进程（GUI 或 qcd）里只要这个会话有活动回合，
+///   `SessionWriter` 就持有 `locks/<id>.lock`，这里非阻塞探测即知「忙」；探测
+///   成功（拿到锁）立刻 drop 释放，无副作用。`new` 目标没有固定会话，天然不忙，
+///   直接放行（对齐 dsh：每轮投递独立新会话，互不干扰）。
+/// - 最小投递间隔（60s）：上次投递还没到护栏时刻也拒绝，防连续狂点。
+///
+/// 命中闸门时调用方**不得** run_now / 投递 / 登记 / advance——任务状态零变更，
+/// 并回 `ScheduleRunNowRejected` 让 shell 解除「执行中…」等待态（否则这个乐观
+/// 状态没有回执可依、按钮永远卡住）。
+fn run_now_admission(store: &SessionStore, task: &ScheduledTask) -> Option<&'static str> {
+    let locked = task
+        .target
+        .session_id()
+        .or(task.reserved_session_id.as_deref())
+        .is_some_and(|session| {
+            matches!(
+                store.lock(session),
+                Err(qcode_core::store::StoreError::Locked(_))
+            )
+        });
+    if locked {
+        return Some("该任务正在执行中，请等待其回合结束再执行");
+    }
+    // 护栏时刻**还没到**才拒绝：`delivery_floor_end` 只回答「最早可再投时刻」，
+    // 不判断它是否已过——拿 `.is_some()` 判断会把「投过一次」当成永远拒绝。
+    let now = qcode_core::schedule::now_local();
+    if qcode_core::schedule::delivery_floor_end(task).is_some_and(|end| end > now) {
+        return Some("投递过于频繁：两次投递至少间隔 60 秒");
+    }
+    None
+}
+
 impl GuiHost<'_> {
-    /// 「立即执行」：投递一条任务并返回该开的回合（`None` = 建会话失败或已在跑）。
+    /// 「立即执行」：投递一条任务并返回（目标会话，投递结果）。`None` = 建会话失败。
     ///
     /// 与 beat 那一条走**同一段代码**（`create_session` → `bind_session` →
     /// `deliver`），差别只在触发源：这里是用户点了按钮，beat 是时钟到点。
     /// ADR-0092 §6 要的就是这个——两份各自演化的投递路径迟早会不一致，而
     /// 「立即执行」与「到点执行」表现不同是用户最难理解的一类错。
+    ///
+    /// 返回整个 `Delivery`（而不是只取 `.start`）：调用方登记确认时需要
+    /// `message_id`（驱动按它查「这条落盘了吗」），而忙碌会话的投递没有 `start`，
+    /// 目标会话仍要从这里带出去。
     fn deliver_now(
         &mut self,
         task: &ScheduledTask,
         approval: Option<Duration>,
-    ) -> Option<qcode_driver::runtime::StartTurn> {
+    ) -> Option<(String, qcode_driver::runtime::Delivery)> {
         let session = match task.target.session_id() {
             Some(id) => id.to_string(),
             None => {
@@ -208,7 +247,8 @@ impl GuiHost<'_> {
                 id
             }
         };
-        self.deliver(&session, task, approval)?.start
+        let delivery = self.deliver(&session, task, approval)?;
+        Some((session, delivery))
     }
 }
 
@@ -491,6 +531,9 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     .replace(' ', "T")
             );
             let mut published: HashMap<SessionTarget, Published> = HashMap::new();
+            // 「立即执行」投递后的提前确认信号（见 `ScheduleOp::RunNow` 分支）：
+            // 回执确认不必等下一个 beat（默认 30s），消息一落盘就该确认。
+            let (confirm_tx, mut confirm_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
             // An approval prompt from a scheduled turn expires (ADR-0059 §4):
             // nobody is watching, so it must not hold the session lock all
@@ -532,6 +575,12 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                 // 不致命：任务表这一次没对齐，投递照旧按上次的样子跑。
                 Err(error) => tracing::warn!(%error, "cannot reconcile [schedules]"),
             }
+
+            // 挂任务表文件监听：任何进程（GUI 自己或脱离 GUI 常驻的 `qcd`）写
+            // `schedule/tasks.json` 时，UI 都能立刻刷新详情页与运行记录。通知来自
+            // OS 而不是驱动进程——qcd 开车时它不推事件（阶段 2 只写日志），而双方
+            // 唯一的交集就是这张表。见 `fs_watch` 模块。
+            crate::fs_watch::spawn_schedule_watcher(&port, engine.store.root());
 
             // Publish a session's queue rows, remembering what the UI was told so
             // an unchanged queue costs nothing.
@@ -824,6 +873,31 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                         // 只跳过投递：away 判定与 config 窗口推进也属于「推动时间」，
                         // 让两个进程各推一次就是把「错过」算两遍。
                         if driver_lock.is_none() {
+                            // 但「立即执行」是本进程自己投的（GUI 直接投递那条路，
+                            // 见 `ScheduleOp::RunNow`），确认也必须由本进程完成——
+                            // 否则详情页的「执行中」等待态与运行记录永远落不了地。
+                            // 只确认、不扫描：这里只认本进程的登记，不会替持锁的
+                            // daemon 确认它的投递。
+                            let (confirmed, abandoned) = {
+                                let mut host = GuiHost {
+                                    engine,
+                                    port: &port,
+                                    host: &host,
+                                    live: &live,
+                                    scheduler: &scheduler,
+                                    driver_instance: &driver_instance,
+                                    model: &model,
+                                    provider_name: &provider_name,
+                                    starting: HashSet::new(),
+                                };
+                                schedule_driver.confirm_landed(
+                                    &mut host,
+                                    qcode_core::schedule::now_local(),
+                                )
+                            };
+                            if confirmed > 0 || abandoned > 0 {
+                                port.tagged(SessionTarget::Draft).send_schedule_changed();
+                            }
                             continue;
                         }
                         // ==== 一拍（ADR-0092 §6）====
@@ -868,6 +942,31 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 engine.max_turns,
                                 engine.max_cost_usd
                             );
+                        }
+                    }
+                    // 「立即执行」的提前确认（`ScheduleOp::RunNow` 分支投递后发起的
+                    // 500ms 延迟信号）：刚投的消息一落盘就写回执，不必等下一个 beat。
+                    // 与 beat 的确认幂等——已确认的登记会被移出 `pending`。
+                    _ = confirm_rx.recv() => {
+                        let (confirmed, _abandoned) = {
+                            let mut host = GuiHost {
+                                engine,
+                                port: &port,
+                                host: &host,
+                                live: &live,
+                                scheduler: &scheduler,
+                                driver_instance: &driver_instance,
+                                model: &model,
+                                provider_name: &provider_name,
+                                starting: HashSet::new(),
+                            };
+                            schedule_driver.confirm_landed(
+                                &mut host,
+                                qcode_core::schedule::now_local(),
+                            )
+                        };
+                        if confirmed > 0 {
+                            port.tagged(SessionTarget::Draft).send_schedule_changed();
                         }
                     }
                     command = commands.recv() => {
@@ -1171,6 +1270,21 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         .map(|_| Some("已恢复".to_string()))
                                         .map_err(|error| error.to_string()),
                                     ScheduleOp::RunNow { id } => {
+                                        // 准入闸：目标会话锁 + 最小投递间隔
+                                        // （见 `run_now_admission`）。命中即拒——
+                                        // 不 run_now / 不投递 / 不登记 / 不 advance，
+                                        // 任务状态零变更，并回 `ScheduleRunNowRejected`
+                                        // 让 shell 解除「执行中…」等待态。
+                                        let rejected = scheduler
+                                            .find(&id)
+                                            .and_then(|task| {
+                                                run_now_admission(&engine.store, &task)
+                                            });
+                                        if let Some(message) = rejected {
+                                            port.tagged(SessionTarget::Draft)
+                                                .send_schedule_run_now_rejected(id.clone());
+                                            Err(message.to_string())
+                                        } else {
                                         match scheduler.run_now(&id, now) {
                                             Ok(()) => {
                                                 // 立即投递，不等下一个 beat：点击
@@ -1189,7 +1303,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                     // 先建会话、`NewOnce` 建完就绑，否则
                                                     // 每次「立即执行」都会新建一个会话，
                                                     // 详情页也没有「打开会话」按钮。
-                                                    let start = {
+                                                    let session_and_delivery = {
                                                         let mut gui_host = GuiHost {
                                                             engine,
                                                             port: &port,
@@ -1203,26 +1317,66 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                         };
                                                         gui_host.deliver_now(&task, approval)
                                                     };
-                                                    if let Some(start) = start {
-                                                        approval_deadline = start.approval;
-                                                        start_turn!(
-                                                            SessionTarget::Session(start.session),
-                                                            start.text,
-                                                            Vec::new(),
-                                                            None,
-                                                            Some(start.scheduled),
-                                                            engine.max_turns,
-                                                            engine.max_cost_usd
+                                                    if let Some((session, delivery)) =
+                                                        session_and_delivery
+                                                    {
+                                                        // 登记这次直接投递：它不走扫描，但
+                                                        // 确认必须与扫描投递走同一条路径
+                                                        // （驱动按 `pending` 记账、以会话日志
+                                                        // 为事实源）。不登记的话这条投递永远
+                                                        // 不会被确认——详情页的「执行中」与
+                                                        // 运行记录就落不了地。忙碌会话的消息
+                                                        // 还在队列里等回合结束，同样登记：
+                                                        // 落盘后由确认路径按日志认领。
+                                                        schedule_driver.register_delivery(
+                                                            &delivery.message_id,
+                                                            &task.id,
+                                                            &session,
+                                                            task.next_fire_at.unwrap_or(now),
                                                         );
+                                                        if let Some(start) = delivery.start {
+                                                            approval_deadline = start.approval;
+                                                            start_turn!(
+                                                                SessionTarget::Session(
+                                                                    start.session,
+                                                                ),
+                                                                start.text,
+                                                                Vec::new(),
+                                                                None,
+                                                                Some(start.scheduled),
+                                                                engine.max_turns,
+                                                                engine.max_cost_usd
+                                                            );
+                                                        }
                                                     }
                                                 }
                                                 // 立即把下次触发拨到最近的未来时刻，详情
                                                 // 页不用等落盘确认就显示正确的下次执行时间。
                                                 let _ = scheduler
                                                     .update(&id, |task| qcode_driver::advance_past(task, now));
+                                                // 投递后主动确认：默认 beat 30s，而刚投的
+                                                // 消息在回合开始（`begin_turn`）就落盘，回执
+                                                // 不该等下一个 30s 窗口。回合启动可能慢于
+                                                // 500ms（provider 初始化等），所以按 500ms
+                                                // 间隔多试几次、共 3s——消息一落盘就被确认。
+                                                // 忙碌会话的消息仍在排队时这些确认都返回
+                                                // NotYet，由 beat 兜底。
+                                                let tx = confirm_tx.clone();
+                                                tokio::spawn(async move {
+                                                    for _ in 0..6 {
+                                                        tokio::time::sleep(
+                                                            Duration::from_millis(500),
+                                                        )
+                                                        .await;
+                                                        if tx.send(()).is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                });
                                                 Ok(Some("已触发".to_string()))
                                             }
                                             Err(error) => Err(error.to_string()),
+                                        }
                                         }
                                     }
                                     ScheduleOp::Delete { id } => scheduler
@@ -1295,6 +1449,20 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                 engine.max_turns,
                                 engine.max_cost_usd
                             );
+                            // 刚才续跑的回合由 `start_turn!` 异步启动，落盘发生在
+                            // 它的 `begin_turn`。立即安排确认：**忙碌会话上点「立即
+                            // 执行」投出的消息**（`deliver` 时 `busy` → 只入队不开回合）
+                            // 就在这一刻落盘，回执不该等下一个 30s beat——否则按钮
+                            // 在回合结束后还要再等半分钟才变回。
+                            let tx = confirm_tx.clone();
+                            tokio::spawn(async move {
+                                for _ in 0..6 {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    if tx.send(()).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
                         }
                         publish_to!(target);
                     }
@@ -1374,6 +1542,75 @@ mod probe_tests {
                 "a fresh target has no session to be busy"
             );
         }
+    }
+
+    /// 立即执行准入闸：目标会话被任一进程持有（`SessionWriter` 的锁在）→ 拒绝；
+    /// 释放后放行；`new` 目标没有固定会话 → 恒放行（每轮投递独立新会话）。
+    #[test]
+    fn run_now_admission_reads_the_session_lock() {
+        let dir = tempfile::tempdir().expect("data dir");
+        let store = qcode_core::store::SessionStore::new(dir.path());
+        let session = store
+            .create_task(&qcode_core::event::SessionStarted {
+                model: "mock-1".to_string(),
+                provider: "mock".to_string(),
+                cwd: "/tmp".to_string(),
+                version: "0".to_string(),
+                parent: None,
+            })
+            .expect("session")
+            .id;
+        let task = task_with(Target::Session {
+            id: session.clone(),
+        });
+
+        // 会话里正有一个回合（锁被持有，可能是 qcd 开的）：拒绝。
+        let guard = store.lock(&session).expect("take the session lock");
+        assert_eq!(
+            run_now_admission(&store, &task),
+            Some("该任务正在执行中，请等待其回合结束再执行")
+        );
+        drop(guard);
+
+        // 锁释放后放行。
+        assert_eq!(run_now_admission(&store, &task), None);
+
+        // `new` 目标没有固定会话：恒放行。
+        let fresh = task_with(Target::New);
+        assert_eq!(run_now_admission(&store, &fresh), None);
+    }
+
+    /// 最小投递间隔护栏：刚投递过（有回执）且在 60s 护栏内 → 拒绝；护栏已过
+    /// （旧回执）→ 放行。后一半守的是真实的回归：`.is_some()` 判护栏会把
+    /// 「投过一次」当成永远拒绝，按钮从此点不动。
+    #[test]
+    fn run_now_admission_obeys_the_delivery_floor() {
+        let dir = tempfile::tempdir().expect("data dir");
+        let store = qcode_core::store::SessionStore::new(dir.path());
+        let mut task = task_with(Target::New);
+        let now = qcode_core::schedule::now_local();
+        task.last_receipt = Some(qcode_core::schedule::DeliveryReceipt {
+            occurrence_at: now,
+            delivered_at: now,
+            message_id: "m".to_string(),
+            target_session_id: None,
+            prompt: String::new(),
+        });
+        assert_eq!(
+            run_now_admission(&store, &task),
+            Some("投递过于频繁：两次投递至少间隔 60 秒")
+        );
+
+        // 回执是很久以前的（护栏已过）：放行。
+        let stale = now - Duration::from_secs(120);
+        task.last_receipt = Some(qcode_core::schedule::DeliveryReceipt {
+            occurrence_at: stale,
+            delivered_at: stale,
+            message_id: "m".to_string(),
+            target_session_id: None,
+            prompt: String::new(),
+        });
+        assert_eq!(run_now_admission(&store, &task), None);
     }
 }
 

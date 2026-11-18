@@ -13,6 +13,7 @@ pub mod backend;
 pub mod copy_text;
 pub mod dormant;
 pub mod forms;
+mod fs_watch;
 pub mod gui_prefs;
 pub mod host;
 pub mod platform;

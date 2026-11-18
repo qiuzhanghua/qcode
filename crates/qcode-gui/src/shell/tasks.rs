@@ -1,5 +1,39 @@
 use super::*;
 
+/// 截断到整秒：与 `serde_wall_clock` 落盘后的回执精度对齐（见 `refresh_tasks`）。
+fn truncate_to_second(at: time::PrimitiveDateTime) -> time::PrimitiveDateTime {
+    time::PrimitiveDateTime::new(
+        at.date(),
+        time::Time::from_hms(at.hour(), at.minute(), at.second())
+            .expect("HH:MM:SS from a valid time"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回执落盘被截断到整秒、点击时刻带纳秒：同一秒内点击并确认时，
+    /// 截断后的点击时刻必须判为「回执已到达」（`delivered_at >= clicked_sec`）。
+    #[test]
+    fn a_same_second_receipt_clears_the_waiting_state() {
+        let clicked = time::PrimitiveDateTime::new(
+            time::Date::from_calendar_date(2026, time::Month::November, 18).expect("date"),
+            time::Time::from_hms_nano(11, 16, 11, 183_528_300).expect("time"),
+        );
+        // 回执的 delivered_at：同一秒，经 serde_wall_clock 截断到整秒。
+        let delivered_at = truncate_to_second(clicked);
+        assert_eq!(delivered_at.nanosecond(), 0, "截断后必须是整秒");
+        assert!(
+            delivered_at >= truncate_to_second(clicked),
+            "同一秒的回执必须解除「执行中…」等待态"
+        );
+        // 控制组：下一秒的回执也满足；点击的下一秒内回执必须大于点击。
+        let next_second = truncate_to_second(clicked) + time::Duration::seconds(1);
+        assert!(next_second >= truncate_to_second(clicked));
+    }
+}
+
 impl Shell {
     pub(crate) fn refresh_tasks(&mut self) {
         // 定时任务的提示随任务一起刷新：错过的窗口、失效的条目、失败的触发都
@@ -25,12 +59,17 @@ impl Shell {
         self.schedule_tasks = schedule_tasks;
         // 解除「立即执行」的等待态：任务已有比点击时刻更新的投递回执 = 落盘完成。
         self.schedule_running.retain(|id, clicked| {
+            // 回执的 `delivered_at` 经 `serde_wall_clock` 落盘时被截断到整秒，
+            // 而 `clicked` 带纳秒：同一秒内点击并确认时 `delivered_at(x.0) >=
+            // clicked(x.xxx)` 恒为假，等待态永远解不开。比较前把点击时刻
+            // 截断到秒，两边精度对齐。
+            let clicked_sec = truncate_to_second(*clicked);
             !self.schedule_tasks.iter().any(|task| {
                 &task.id == id
                     && task
                         .last_receipt
                         .as_ref()
-                        .is_some_and(|r| r.delivered_at >= *clicked)
+                        .is_some_and(|r| r.delivered_at >= clicked_sec)
             })
         });
         match self.backend.tasks() {

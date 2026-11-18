@@ -66,6 +66,9 @@ pub enum UiEvent {
     ScheduleCreated { id: String },
     /// 定时任务管理操作失败的提示信息。
     ScheduleNotice { message: String },
+    /// 「立即执行」被准入闸拒绝（目标会话在跑 / 投递过于频繁）：UI 应解除该
+    /// 任务点击时置的「执行中…」等待态并提示原因，否则按钮会卡住。
+    ScheduleRunNowRejected { id: String },
     /// 会话标题已自动生成（会话标题自动生成设计）：任务列表里的标题变了，
     /// UI 应刷新任务列表。host 级，与具体会话无关——标题挂在任务行上。
     TasksChanged,
@@ -592,6 +595,13 @@ impl TaggedPort {
     pub fn send_schedule_notice(&self, message: String) {
         self.port
             .emit(&self.target, UiEvent::ScheduleNotice { message });
+    }
+
+    /// 「立即执行」被准入闸拒绝：UI 解除该任务的等待态（见
+    /// [`UiEvent::ScheduleRunNowRejected`]）。
+    pub fn send_schedule_run_now_rejected(&self, id: String) {
+        self.port
+            .emit(&self.target, UiEvent::ScheduleRunNowRejected { id });
     }
 
     /// 会话标题已自动生成：UI 刷新任务列表以显示新标题。

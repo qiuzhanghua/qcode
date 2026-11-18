@@ -345,6 +345,192 @@ fn a_due_task_is_delivered_confirmed_and_advanced() {
     assert_eq!(fx.host.delivered, 1, "投递总次数必须还是 1");
 }
 
+/// 「立即执行」直接投递（不走扫描）也必须走同一条确认路径。
+///
+/// 这条守的是一次真实的回归：GUI 的 RunNow 直接投递在改成 `qcode-driver` 消费者
+/// 之后忘了登记记账，于是那条投递永远不会被确认——详情页的「执行中」等待态与
+/// 运行记录永远落不了地。这里复现那条路的完整形状：
+/// `run_now` 拨到点击时刻 → 直接投递 → `register_delivery` 登记 → 确认按日志写回执。
+#[test]
+fn a_run_now_delivery_is_registered_and_confirmed() {
+    let mut fx = fixture(day(8, 0));
+    let session = fx.host.new_session();
+    let id = fx.host.daily_task(
+        Target::Session {
+            id: session.clone(),
+        },
+        day(9, 0),
+        None,
+    );
+    let clicked = day(9, 0);
+    // RunNow 把下次触发拨到点击时刻（与 GUI 的 `ScheduleOp::RunNow` 一致）。
+    fx.host.scheduler.run_now(&id, clicked).expect("run now");
+    let task = fx.host.task(&id);
+    let at = task.next_fire_at.expect("run now sets the occurrence");
+
+    // 直接投递：GUI 的 `deliver_now` 就是这段代码（不经扫描）。
+    let delivery = fx.host.deliver(&session, &task, None).expect("deliver");
+    assert_eq!(
+        delivery.start.as_ref().map(|s| s.scheduled.at.as_str()),
+        Some(at.to_string().as_str()),
+        "投递消息必须带着与登记同一个发生点，确认才按得上"
+    );
+
+    let mut driver = ScheduleDriver::new(Clock::new(Duration::from_secs(30)));
+    driver.register_delivery(&delivery.message_id, &id, &session, at);
+    assert_eq!(
+        driver.inflight().len(),
+        1,
+        "登记后进入 in-flight，扫描不再碰它"
+    );
+
+    // 消息已落盘（FakeHost 的 `deliver` 真写了 `user/message`）：没锁的进程用
+    // `confirm_landed` 确认自己的投递（GUI 在 daemon 开车时正是这个形状）。
+    let (confirmed, abandoned) = driver.confirm_landed(&mut fx.host, day(9, 1));
+    assert_eq!(confirmed, 1);
+    assert_eq!(abandoned, 0);
+    assert!(driver.inflight().is_empty(), "确认后槽位必须释放");
+
+    let task = fx.host.task(&id);
+    assert!(task.last_receipt.is_some(), "必须记回执，否则运行记录为空");
+    assert_eq!(task.delivery_log.len(), 1, "投递历史要有这一条");
+    assert_eq!(task.last_receipt.unwrap().delivered_at, day(9, 1));
+}
+
+/// RunNow（含 GUI 分支的 `advance_past`）之后，下一个到点的 beat 必须还能投。
+///
+/// 守「立即执行一次之后就不投递了」的回归：GUI 的 RunNow 在投递后立即
+/// `advance_past`，若这一步把下次触发拨错、或回执锚点把最小投递间隔推过
+/// 下一个周期，定时到点就会从此消失。
+#[test]
+fn a_run_now_advance_keeps_the_next_scheduled_fire() {
+    let mut fx = fixture(day(8, 0));
+    let session = fx.host.new_session();
+    let id = fx.host.daily_task(
+        Target::Session {
+            id: session.clone(),
+        },
+        day(9, 0),
+        None,
+    );
+    let clicked = day(8, 0);
+    // GUI 的 `ScheduleOp::RunNow`：run_now 把下次触发拨到点击时刻。
+    fx.host.scheduler.run_now(&id, clicked).expect("run now");
+    let task = fx.host.task(&id);
+    let at = task.next_fire_at.expect("run now sets the occurrence");
+
+    // 直接投递 + 登记（与 GUI 的 `deliver_now` / `register_delivery` 一致）。
+    let delivery = fx.host.deliver(&session, &task, None).expect("deliver");
+    let mut driver = ScheduleDriver::new(Clock::new(Duration::from_secs(30)));
+    driver.register_delivery(&delivery.message_id, &id, &session, at);
+
+    // GUI 分支投递后立即 advance：下次触发从点击时刻拨到当天 09:00。
+    fx.host
+        .scheduler
+        .update(&id, |task| qcode_driver::advance_past(task, clicked))
+        .expect("advance");
+    assert_eq!(
+        fx.host.task(&id).next_fire_at,
+        Some(day(9, 0)),
+        "RunNow 后下次触发应是最近的未来周期"
+    );
+
+    // 确认（消息已落盘，FakeHost 的 deliver 真写了 user/message）。
+    let (confirmed, _abandoned) = driver.confirm_landed(&mut fx.host, day(8, 1));
+    assert_eq!(confirmed, 1);
+
+    // 到 09:00 的一拍：必须再投——RunNow 不能吞掉下一个周期。
+    let base = t0();
+    driver.on_beat(&mut fx.host, beat_at(base, 0)); // away
+    fx.host.now = day(9, 0);
+    let report = driver.on_beat(&mut fx.host, beat_at(base, 1_000));
+    assert_eq!(report.fired, 1, "RunNow 之后下一个到点的周期必须照常投递");
+
+    // 下一拍确认后推进到明天 09:00，任务继续活着。
+    let report = driver.on_beat(&mut fx.host, beat_at(base, 2_000));
+    assert_eq!(report.confirmed, 1);
+    assert_eq!(
+        fx.host.task(&id).next_fire_at,
+        Some(day(9, 0) + time::Duration::days(1)),
+        "投完推进到明天的周期"
+    );
+}
+
+/// RunNow 投递排队（忙会话）且落盘晚于下一个周期：确认时**不得**把下一个
+/// 周期吞掉——推进判据是投递的发生点，不是确认时刻。
+///
+/// 守「立即执行一次之后就不投递了」的另一半：排队中的手动投递确认时若按
+/// `next <= now` 推进，会把「今天 09:00」这个还没被自己的回合投过的周期
+/// 直接拨到明天，任务从此少一轮。
+#[test]
+fn a_run_now_queued_past_the_next_occurrence_does_not_swallow_it() {
+    let mut fx = fixture(day(8, 0));
+    let session = fx.host.new_session();
+    let id = fx.host.daily_task(
+        Target::Session {
+            id: session.clone(),
+        },
+        day(9, 0),
+        None,
+    );
+    let clicked = day(8, 0);
+    fx.host.scheduler.run_now(&id, clicked).expect("run now");
+    let task = fx.host.task(&id);
+    let at = task.next_fire_at.expect("run now sets the occurrence");
+
+    // 忙会话：deliver 只排队、不开回合、消息不落盘。
+    fx.host.land = false;
+    fx.host.busy.insert(session.clone());
+    let delivery = fx.host.deliver(&session, &task, None).expect("deliver");
+    assert!(delivery.start.is_none(), "忙：只排队不开回合");
+    let mut driver = ScheduleDriver::new(Clock::new(Duration::from_secs(30)));
+    driver.register_delivery(&delivery.message_id, &id, &session, at);
+    fx.host
+        .scheduler
+        .update(&id, |task| qcode_driver::advance_past(task, clicked))
+        .expect("advance");
+    assert_eq!(
+        fx.host.task(&id).next_fire_at,
+        Some(day(9, 0)),
+        "RunNow 后下次触发是当天 09:00"
+    );
+
+    // 排队中的消息直到 09:30 才落盘（当前回合结束、drain 认领并开回合）。
+    fx.host.land = true;
+    let events = fx.host.store.load(&session).expect("log");
+    fx.host
+        .store
+        .append(&Event::new(
+            events.len() as u64 + 1,
+            &session,
+            1,
+            EventKind::UserMessage(UserMessage {
+                starts_segment: false,
+                queued_id: None,
+                text: task.prompt.clone(),
+                attachments: Vec::new(),
+                continuation: None,
+                question_reply: None,
+                scheduled: Some(ScheduledMessage {
+                    task_id: id.clone(),
+                    title: task.title.clone(),
+                    prompt: task.prompt.clone(),
+                    at: at.to_string(),
+                }),
+            }),
+        ))
+        .expect("append the queued delivery");
+
+    // 09:30 确认：下次触发必须仍是当天 09:00——下一个周期不能被吞。
+    let (confirmed, _abandoned) = driver.confirm_landed(&mut fx.host, day(9, 30));
+    assert_eq!(confirmed, 1);
+    assert_eq!(
+        fx.host.task(&id).next_fire_at,
+        Some(day(9, 0)),
+        "排队的 RunNow 确认晚于 09:00，也不许把 09:00 周期吞掉"
+    );
+}
+
 /// 投递已登记但**还没落盘**：继续等，不重投。
 ///
 /// 这条守的是一次真实的错：如果驱动只看「到期了没」，一个还在收件箱里排队的

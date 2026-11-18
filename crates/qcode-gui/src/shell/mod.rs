@@ -608,6 +608,13 @@ impl Shell {
                     self.set_notice(message.clone(), true, cx);
                     continue;
                 }
+                // 「立即执行」被准入闸拒绝：解除点击时置的「执行中…」等待态，
+                // 否则这个乐观状态没有回执可依、按钮永远卡住。
+                UiEvent::ScheduleRunNowRejected { id } => {
+                    self.schedule_running.remove(id);
+                    repaint = true;
+                    continue;
+                }
                 // 会话标题自动生成后任务行上的标题变了：刷新列表并重绘。
                 UiEvent::TasksChanged => {
                     self.refresh_tasks();
