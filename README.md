@@ -578,7 +578,9 @@ cargo build -p qcode-eval
   [SANDBOX-BACKENDS.md](./design/SANDBOX-BACKENDS.md)**（机制、能力矩阵、PTY 与 `/tmp` 的
   具体差别、本机实测）。`run_shell` 由对应工具包裹：默认 deny，
   只读系统路径与 workspace，只写 workspace / 临时目录 / Cargo 目录；`bwrap`/`sandbox-exec`
-  可拒绝网络，`landlock` 只做文件系统（网络仍由审批控制），`windows-acl` 只限制写
+  可拒绝网络，`landlock` 只做文件系统（**不管网络**：`[sandbox] network` 在它上面会被丢弃，
+  出口代理只是给子进程设 `HTTP_PROXY` 引流，不是强制，见
+  [SANDBOX-BACKENDS.md §7](./design/SANDBOX-BACKENDS.md)），`windows-acl` 只限制写
   （读与网络不受限，硬链接与命名管道不在覆盖范围，因此报 `partial`）。四个后端都认
   `extra_writable`（除 workspace 与私有 temp 外额外可写的子树）。启用时先 preflight，失败则 `qc` 拒绝启动
   （嵌套沙箱里会 EPERM；bwrap 需要系统安装 bubblewrap，Ubuntu 24.04 还要放开
