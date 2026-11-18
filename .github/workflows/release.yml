@@ -54,7 +54,7 @@ jobs:
     # macos 8m / windows 15m）取 2.5 倍余量。
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 与 ci.yml 的构建 job 一致：runner 预装的 rustc 会落后于 MSRV。
       # v0.15.0 的教训——那次把 MSRV 抬到 1.100，而 runner 上是 1.99.1，
@@ -88,7 +88,19 @@ jobs:
           ./build-for-release.ps1 -Target x86_64-pc-windows-msvc -Archive -Release
           ./build-for-release.ps1 -Target aarch64-pc-windows-msvc -Archive -Release
 
-      - uses: actions/upload-artifact@v4
+      # The runtime floor matters here, not the newest tag: these two actions
+      # pass every platform's build output between jobs, so they must run on the
+      # **same** `@actions/artifact` backend. `upload-artifact` v5 was explicitly
+      # "preliminary Node 24, still node20 by default", which is why the floor is
+      # v6 here and v7 on the download side (v6 there is still node20). Mixed
+      # v4/node20 on one end and node24 on the other is the combination to avoid;
+      # both node24 is fine, and both are still zipped archives over the same
+      # backend.
+      #
+      # Not taking v7/v8: `download-artifact@v8` turns a digest mismatch from a
+      # warning into a hard error, and both latest majors are ESM rewrites. That
+      # is unrelated churn in the one job that produces the public artifacts.
+      - uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.os }}
           path: dist/*
@@ -103,9 +115,11 @@ jobs:
     # macos 8m / windows 15m）取 2.5 倍余量。
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      # Paired with `upload-artifact@v6` above — see the note there for why the
+      # two move together and why this is v7 and not v8.
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
           merge-multiple: true

@@ -32,7 +32,7 @@ jobs:
         os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -110,8 +110,11 @@ jobs:
       # is enough; the arm runner's job is to compile the workspace natively for
       # aarch64, which is the thing no other job does.
       - name: cache zig (.toolchains)
+        # v5 is the first major on Node 24; the deprecation notice named only
+        # `checkout` and `upload-artifact` because they were the ones that ran,
+        # but `cache@v4` was node20 too and would have been next.
         if: runner.os == 'Linux' && matrix.os == 'ubuntu-latest'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .toolchains
           # Keyed on the version `scripts/install-zig.sh` pins, so bumping it
@@ -145,7 +148,7 @@ jobs:
     timeout-minutes: 40
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -193,7 +196,7 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       # Same pkg-config set as the `test` job: `cargo check --workspace` covers
@@ -212,7 +215,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
