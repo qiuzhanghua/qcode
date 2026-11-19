@@ -363,7 +363,18 @@ impl Render for SetupView {
             // wizard-only, Review shows as About) next to the scrolling body.
             // Borderless ghost buttons: unselected on the window's own white
             // fill, selected with the grey active tint — no leading dots.
-            let mut rail = div().w(px(180.0)).h_full().flex().flex_col().gap_1().p_2();
+            // 左导航轨固定 180px 宽。`flex_shrink` 默认 1.0，不带这一句时，
+            // 右侧正文内容一宽（Network & Sandbox 的宽输入框、About 的长行）
+            // 就会把 rail 压缩变窄——正文可以收缩（scroll 有 min_w_0），
+            // 导航轨不该跟着缩。
+            let mut rail = div()
+                .w(px(180.0))
+                .h_full()
+                .flex()
+                .flex_shrink(0.0)
+                .flex_col()
+                .gap_1()
+                .p_2();
             for (index, item) in Page::ALL.iter().enumerate() {
                 if *item == Page::Welcome {
                     continue;
@@ -703,19 +714,14 @@ impl SetupView {
                             .child(message),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("close-sandbox-blocked")
-                                    .label("知道了")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.sandbox_blocked = None;
-                                        cx.notify();
-                                    })),
-                            ),
+                        div().flex().flex_row().justify_end().gap_2().child(
+                            Button::new("close-sandbox-blocked")
+                                .label("知道了")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.sandbox_blocked = None;
+                                    cx.notify();
+                                })),
+                        ),
                     ),
             )
             .into_any_element()
