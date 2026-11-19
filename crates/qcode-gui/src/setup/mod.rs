@@ -79,6 +79,17 @@ pub(crate) enum AutoSaveKind {
     Tables,
 }
 
+/// Which surface an in-flight model probe serves: the editing provider's row,
+/// or the custom declaration card's drafts. The candidate picker adopts into
+/// that surface; the poll loop drops results once the surface closes or
+/// switches (the editor, the custom card and the add-model dialog are open one
+/// at a time).
+#[derive(Clone, PartialEq)]
+pub(crate) enum ProbeSurface {
+    Provider(String),
+    Custom,
+}
+
 pub struct SetupView {
     path: PathBuf,
     data_dir: PathBuf,
@@ -148,6 +159,9 @@ pub struct SetupView {
     probe_query: String,
     /// The picker's search input (created while the picker is open).
     probe_search: Option<Entity<InputState>>,
+    /// Which surface the in-flight probe serves (see [`ProbeSurface`]); the
+    /// poll loop and the picker adoption read it to find the adoption target.
+    probe_target: Option<ProbeSurface>,
     /// Custom-provider declaration card drafts (U4); all `Some` while open.
     custom_route: Option<Entity<InputState>>,
     custom_name: Option<Entity<InputState>>,
@@ -369,6 +383,7 @@ impl SetupView {
             probe_candidates: None,
             probe_picked: HashSet::new(),
             probe_query: String::new(),
+            probe_target: None,
             probe_search: None,
             custom_route: None,
             custom_name: None,

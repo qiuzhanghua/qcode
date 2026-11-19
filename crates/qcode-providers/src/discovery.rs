@@ -133,6 +133,11 @@ pub async fn discover_model_candidates(
 ) -> Result<Vec<ModelCandidate>, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
+        // An overall deadline: a server that accepts the connection but never
+        // answers would otherwise leave the probe hanging forever (the GUI
+        // shows 「探测中…」 and every retry click silently no-ops on the
+        // in-flight guard).
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| format!("cannot build HTTP client: {error}"))?;
     let url = models_url(base_url);

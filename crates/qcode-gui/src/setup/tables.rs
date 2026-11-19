@@ -375,9 +375,6 @@ impl SetupView {
     /// foreground poll loop. Results are candidate metadata only — nothing is
     /// persisted until the user adopts them from the picker (U3).
     pub(crate) fn probe_models(&mut self, route: &str, cx: &mut Context<Self>) {
-        if self.probe_rx.is_some() {
-            return; // a probe is already in flight
-        }
         let Some((name, base_url, api_key_env)) = self
             .tables
             .get("providers")
@@ -419,6 +416,76 @@ impl SetupView {
             .get(&name)
             .map(|existing| existing.headers.clone())
             .unwrap_or_default();
+        self.start_probe(ProbeSurface::Provider(name), base_url, api_key, headers, cx);
+    }
+
+    /// Probe the custom declaration card's drafts (`GET {base}/models`): the
+    /// endpoint and key env the card currently holds. Nothing is persisted;
+    /// adoption into the card's `custom_models` happens through the picker, and
+    /// the create writes the profile.
+    pub(crate) fn probe_custom_models(&mut self, cx: &mut Context<Self>) {
+        let base_url = self
+            .custom_base_url
+            .as_ref()
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let key_env = self
+            .custom_key_env
+            .as_ref()
+            .map(|input| input.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let api_key = if key_env.is_empty() {
+            None
+        } else {
+            std::env::var(&key_env).ok().filter(|key| !key.is_empty())
+        };
+        // A declared route has no config row yet, so no headers exist to reuse;
+        // a gateway that needs extra headers must create the profile first.
+        self.start_probe(
+            ProbeSurface::Custom,
+            base_url,
+            api_key,
+            std::collections::BTreeMap::new(),
+            cx,
+        );
+    }
+
+    /// Shared probe machinery: spawn the discovery on a worker thread, drain
+    /// the result channel in a foreground poll loop, and open the candidate
+    /// picker on success. `surface` decides where results are adopted and what
+    /// still counts as the probe's home: when the surface closes or switches,
+    /// the loop discards the result instead of reopening a stale picker.
+    fn start_probe(
+        &mut self,
+        surface: ProbeSurface,
+        base_url: String,
+        api_key: Option<String>,
+        headers: std::collections::BTreeMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        // A probe is already in flight. The only way one sticks is the worker
+        // thread ending without a message (teardown races); a dead channel then
+        // means the state was never cleared, so recover instead of letting the
+        // button silently do nothing forever.
+        if let Some(rx) = &self.probe_rx {
+            if matches!(
+                rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            ) {
+                self.probe_rx = None;
+                self.probe_result = None;
+                self.probe_target = None;
+            } else {
+                self.probe_result = Some("正在探测中…".to_string());
+                cx.notify();
+                return;
+            }
+        }
+        if base_url.is_empty() {
+            self.probe_result = Some("请先填写 API 地址".to_string());
+            cx.notify();
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -439,8 +506,8 @@ impl SetupView {
         self.probe_rx = Some(rx);
         self.probe_result = Some("探测中…".to_string());
         self.probe_candidates = None;
+        self.probe_target = Some(surface.clone());
         cx.notify();
-        let route = name.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -451,14 +518,17 @@ impl SetupView {
                         // The window is being torn down: stop polling instead
                         // of touching the removed window.
                         view.probe_rx = None;
+                        view.probe_target = None;
                         return true;
                     }
-                    // 编辑框已关闭或切换到了别的 provider：丢弃探测结果，
-                    // 不再写入 probe_result / 打开候选对话框。
-                    if view.editing_provider.as_deref() != Some(route.as_str()) {
+                    // 承载探测的表面已关闭或切换（编辑框关闭、切到别的
+                    // provider、自定义卡片关闭）：丢弃探测结果，不再写入
+                    // probe_result / 打开候选对话框。
+                    if view.probe_target.as_ref() != Some(&surface) {
                         view.probe_rx = None;
                         view.probe_result = None;
                         view.probe_candidates = None;
+                        view.probe_target = None;
                         return true;
                     }
                     let received = view.probe_rx.as_ref().map(|rx| rx.try_recv());
@@ -473,7 +543,7 @@ impl SetupView {
                         Some(Ok(Ok(candidates))) => {
                             view.probe_rx = None;
                             view.probe_result = None;
-                            view.open_probe_picker(&route, &candidates, cx);
+                            view.open_probe_picker(&surface, &candidates, cx);
                             cx.notify();
                             true
                         }
@@ -504,30 +574,37 @@ impl SetupView {
     }
 
     /// Open the candidate picker over `ids`: everything not already in the
-    /// route's model rows starts picked (adopting a selection never silently
+    /// surface's model rows starts picked (adopting a selection never silently
     /// rewrites a capacity the user corrected).
     fn open_probe_picker(
         &mut self,
-        route: &str,
+        surface: &ProbeSurface,
         candidates: &[qcode_providers::discovery::ModelCandidate],
         cx: &mut Context<Self>,
     ) {
-        let known = self
-            .tables
-            .get("providers")
-            .and_then(|table| {
-                table
-                    .rows
-                    .iter()
-                    .find(|row| cell(row, "name", cx).trim() == route)
-            })
-            .map(|row| {
-                row.models
-                    .iter()
-                    .map(|model| model.model_id.read(cx).value().to_string())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let known = match surface {
+            ProbeSurface::Provider(route) => self
+                .tables
+                .get("providers")
+                .and_then(|table| {
+                    table
+                        .rows
+                        .iter()
+                        .find(|row| cell(row, "name", cx).trim() == route)
+                })
+                .map(|row| {
+                    row.models
+                        .iter()
+                        .map(|model| model.model_id.read(cx).value().to_string())
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default(),
+            ProbeSurface::Custom => self
+                .custom_models
+                .iter()
+                .map(|model| model.model_id.read(cx).value().to_string())
+                .collect(),
+        };
         self.probe_candidates = Some(candidates.to_vec());
         self.probe_picked = candidates
             .iter()
@@ -537,66 +614,89 @@ impl SetupView {
         self.probe_query = String::new();
     }
 
-    /// Adopt the picked probe candidates into the editing provider's model
-    /// list, then close the picker.
+    /// Adopt the picked probe candidates into the probe surface's model list
+    /// (the editing provider's row, or the custom declaration card's drafts),
+    /// then close the picker.
     pub(crate) fn adopt_probe_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(route) = self.editing_provider.clone() else {
+        let Some(surface) = self.probe_target.clone() else {
             return;
         };
-        let Some(table) = self.tables.get_mut("providers") else {
-            return;
-        };
-        let Some(row) = table.rows.iter_mut().find(|row| {
-            row.cells
-                .get("name")
-                .map(|input| input.read(cx).value().trim() == route)
-                .unwrap_or(false)
-        }) else {
-            return;
-        };
-        let existing = row
-            .models
-            .iter()
-            .map(|model| model.model_id.read(cx).value().to_string())
-            .collect::<HashSet<_>>();
-        let pending = self
-            .probe_picked
-            .iter()
-            .filter(|id| !existing.contains(*id))
-            .cloned()
-            .collect::<Vec<_>>();
+        let candidates = self.probe_candidates.clone().unwrap_or_default();
+        let pending = self.probe_picked.iter().cloned().collect::<Vec<_>>();
         self.probe_candidates = None;
         self.probe_picked.clear();
         self.probe_query.clear();
-        if pending.is_empty() {
-            return;
-        }
-        let candidates = self.probe_candidates.clone().unwrap_or_default();
-        let new_rows = pending
+        self.probe_search = None;
+        self.probe_target = None;
+        let existing = match &surface {
+            ProbeSurface::Provider(route) => self
+                .tables
+                .get("providers")
+                .and_then(|table| {
+                    table
+                        .rows
+                        .iter()
+                        .find(|row| cell(row, "name", cx).trim() == route)
+                })
+                .map(|row| {
+                    row.models
+                        .iter()
+                        .map(|model| model.model_id.read(cx).value().to_string())
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default(),
+            ProbeSurface::Custom => self
+                .custom_models
+                .iter()
+                .map(|model| model.model_id.read(cx).value().to_string())
+                .collect(),
+        };
+        // Build the new rows before mutating the table: `model_row_from_candidate`
+        // needs `&mut self`, which cannot coexist with a table borrow.
+        let added = pending
             .iter()
-            .map(|id| {
-                let candidate = candidates.iter().find(|candidate| &candidate.id == id);
-                let model = qcode_kernel::config::ModelEntry {
-                    id: id.clone(),
-                    name: candidate.and_then(|candidate| candidate.name.clone()),
-                    context_window: candidate.and_then(|candidate| candidate.context_window),
-                    max_tokens: candidate.and_then(|candidate| candidate.max_tokens),
-                };
-                self.model_row(window, cx, Some(&model))
-            })
+            .filter(|id| !existing.contains(*id))
+            .map(|id| self.model_row_from_candidate(window, cx, &candidates, id))
             .collect::<Vec<_>>();
-        if let Some(state) = self.tables.get_mut("providers")
-            && let Some(row) = state.rows.iter_mut().find(|row| {
-                row.cells
-                    .get("name")
-                    .map(|input| input.read(cx).value().trim() == route)
-                    .unwrap_or(false)
-            })
-        {
-            row.models.extend(new_rows);
+        match surface {
+            ProbeSurface::Provider(route) => {
+                if let Some(table) = self.tables.get_mut("providers")
+                    && let Some(row) = table.rows.iter_mut().find(|row| {
+                        row.cells
+                            .get("name")
+                            .map(|input| input.read(cx).value().trim() == route)
+                            .unwrap_or(false)
+                    })
+                {
+                    row.models.extend(added);
+                }
+                self.auto_save(cx, AutoSaveKind::Tables, false);
+            }
+            ProbeSurface::Custom => {
+                // 自定义卡片只在「创建」时落盘，这里只改草稿。
+                self.custom_models.extend(added);
+            }
         }
-        self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
+    }
+
+    /// Build one model draft row from a picked candidate, keeping the metadata
+    /// the listing carried (name, context window, output ceiling).
+    fn model_row_from_candidate(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        candidates: &[qcode_providers::discovery::ModelCandidate],
+        id: &str,
+    ) -> ModelRowState {
+        let candidate = candidates.iter().find(|candidate| candidate.id == id);
+        let model = qcode_kernel::config::ModelEntry {
+            id: id.to_string(),
+            name: candidate.and_then(|candidate| candidate.name.clone()),
+            context_window: candidate.and_then(|candidate| candidate.context_window),
+            max_tokens: candidate.and_then(|candidate| candidate.max_tokens),
+        };
+        self.model_row(window, cx, Some(&model))
     }
 
     /// Append one blank model row to a provider row's catalog. Only mutates

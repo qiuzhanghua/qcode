@@ -288,9 +288,9 @@ impl SetupView {
         cards.into_any_element()
     }
 
-    /// The「添加模型」Provider 选择框（modal，只选择不配置）：列目录中的
-    /// 全部 Provider（catalog + 手写 route），点击某行即关闭并进入配置页；
-    /// 底部固定「自定义提供方…」入口。
+    /// The「添加模型」Provider 选择框（modal，只选择不配置）：顶部固定
+    /// 「自定义提供方…」入口，下面列目录中的全部 Provider（catalog +
+    /// 手写 route），点击某行即关闭并进入配置页。
     pub(crate) fn render_provider_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.wizard || !self.adding_provider {
             return div().into_any_element();
@@ -305,8 +305,39 @@ impl SetupView {
         );
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
+        // 已配置（凭证可用）的排在前面，免得用户总得滚动才能看到；组内保持
+        // 目录顺序（稳定分区，不是排序——排序会把用户自定义的手写 route 打乱）。
+        let (mut usable, mut missing) = directory.into_iter().partition::<Vec<_>, _>(|row| {
+            !matches!(
+                row.credential_state,
+                qcode_kernel::provider_registry::CredentialState::Missing
+            )
+        });
+        usable.append(&mut missing);
         let mut rows = div().flex().flex_col().gap_1();
-        for row in &directory {
+        rows = rows.child(
+            div()
+                .mb_1()
+                .pb_2()
+                .border_b_1()
+                .border_color(border_color)
+                .child(
+                    div()
+                        .id("picker-custom-provider")
+                        .flex()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(hovered))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.pick_custom(window, cx);
+                        }))
+                        .child("自定义提供方…"),
+                ),
+        );
+        for row in &usable {
             // 本地 Ollama 不在「添加模型」选择框里提供：模型需自行配置，
             // 没有「一键添加」的预设。
             if row.route == "ollama" {
@@ -370,28 +401,6 @@ impl SetupView {
                 .child(div().flex_grow(1.0));
             rows = rows.child(entry);
         }
-        rows = rows.child(
-            div()
-                .mt_1()
-                .pt_2()
-                .border_t_1()
-                .border_color(border_color)
-                .child(
-                    div()
-                        .id("picker-custom-provider")
-                        .flex()
-                        .items_center()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .hover(|this| this.bg(hovered))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.pick_custom(window, cx);
-                        }))
-                        .child("自定义提供方…"),
-                ),
-        );
         div()
             .absolute()
             .top_0()
@@ -1140,9 +1149,33 @@ impl SetupView {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_size(sp(CAPTION_SIZE)).child("模型目录"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_size(sp(CAPTION_SIZE)).child("模型目录"))
+                        .child(div().flex_grow(1.0))
+                        .child(
+                            Button::new("custom-probe-models")
+                                .label("获取可用模型")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.probe_custom_models(cx);
+                                })),
+                        ),
+                )
                 .child(models),
         );
+        // 探测进行中/失败的结果行，复用编辑框同款文案。
+        if let Some(result) = &self.probe_result {
+            body = body.child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(danger_color)
+                    .child(result.to_string()),
+            );
+        }
         if let Some(error) = &self.custom_error {
             body = body.child(
                 div()
@@ -1555,6 +1588,7 @@ impl SetupView {
     /// Open one provider's edit dialog; one provider at a time, so opening a
     /// dialog closes the custom declaration card and clears the saved notice.
     fn open_editor(&mut self, route: &str, cx: &mut Context<Self>) {
+        self.clear_probe();
         self.editing_provider = Some(route.to_string());
         // 每次打开都从折叠态开始：对话框第一条只有 API 密钥。
         self.editor_expanded = false;
@@ -1573,10 +1607,8 @@ impl SetupView {
         self.editing_provider = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
         // 上一次的探测结果/报错；探测线程的轮询也会因对话框关闭而丢弃
-        // 结果（见 `probe_models`）。
-        self.probe_rx = None;
-        self.probe_result = None;
-        self.probe_candidates = None;
+        // 结果（见 `start_probe`）。
+        self.clear_probe();
         self.provider_error = None;
         self.provider_notice = None;
         if !changed {
@@ -1617,7 +1649,7 @@ impl SetupView {
         self.open_editor(route, cx);
     }
 
-    /// 选择框底部的「自定义提供方…」：关闭选择框，进入自定义声明卡片。
+    /// 选择框顶部的「自定义提供方…」：关闭选择框，进入自定义声明卡片。
     fn pick_custom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_provider_picker(cx);
         self.open_custom_card(window, cx);
@@ -1626,6 +1658,7 @@ impl SetupView {
     /// 打开「为某 Provider 添加模型」的纯添加弹框（只含模型目录编辑器，
     /// 不含密钥/配置/删除），用于展开列表里的「＋ 配置模型」。
     fn open_add_model(&mut self, route: &str, cx: &mut Context<Self>) {
+        self.clear_probe();
         self.adding_model_provider = Some(route.to_string());
         self.editing_provider = None;
         self.provider_error = None;
@@ -1639,6 +1672,7 @@ impl SetupView {
     }
 
     fn open_custom_card(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_probe();
         self.declaring = true;
         self.editing_provider = None;
         self.saved_notice = None;
@@ -1654,6 +1688,7 @@ impl SetupView {
 
     fn close_custom_card(&mut self) {
         self.declaring = false;
+        self.clear_probe();
         self.custom_route = None;
         self.custom_name = None;
         self.custom_base_url = None;
@@ -1739,11 +1774,28 @@ impl SetupView {
         cx.notify();
     }
 
+    /// Abort any in-flight model probe: the surface it served (the provider
+    /// editor, the custom declaration card, or the add-model dialog) has closed
+    /// or switched — those surfaces are open one at a time, so a probe whose
+    /// home is gone must not reopen a stale picker. The probe poll loop also
+    /// notices via `probe_target` on its next tick, but clearing here stops it
+    /// immediately.
+    fn clear_probe(&mut self) {
+        self.probe_rx = None;
+        self.probe_result = None;
+        self.probe_candidates = None;
+        self.probe_picked.clear();
+        self.probe_query.clear();
+        self.probe_search = None;
+        self.probe_target = None;
+    }
+
     fn close_probe_picker(&mut self) {
         self.probe_candidates = None;
         self.probe_picked.clear();
         self.probe_query.clear();
         self.probe_search = None;
+        self.probe_target = None;
     }
 }
 

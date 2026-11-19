@@ -1211,6 +1211,31 @@ fn catalog_carries_the_builtin_routes() {
     assert_eq!(catalog_entry("claude").map(|c| c.route), Some("anthropic"));
     assert_eq!(catalog_entry("nope"), None);
     assert!(catalog_entries().any(|entry| entry.route == "minimax"));
+    // The pi-ai-aligned additions all speak OpenAI-compatible wire protocol.
+    for route in [
+        "openrouter",
+        "google",
+        "groq",
+        "mistral",
+        "xai",
+        "moonshotai",
+        "zai",
+        "zai-coding-cn",
+        "qwen-token-plan-cn",
+        "xiaomi",
+        "cerebras",
+        "together",
+        "fireworks",
+        "nvidia",
+        "huggingface",
+        "ant-ling",
+    ] {
+        assert_eq!(
+            catalog_entry(route).map(|c| c.protocol),
+            Some(Protocol::OpenAi),
+            "{route}"
+        );
+    }
 }
 
 #[test]
