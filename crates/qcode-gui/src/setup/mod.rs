@@ -172,6 +172,10 @@ pub struct SetupView {
     /// Model drafts on the declaration card (adopted only on create).
     custom_models: Vec<ModelRowState>,
     custom_error: Option<String>,
+    /// A sandbox mode the user clicked but the machine cannot honour (e.g.
+    /// `bwrap` without bubblewrap installed). While `Some`, a modal explains
+    /// how to make it available; the selection is left unchanged.
+    sandbox_blocked: Option<&'static str>,
     /// Set when the settings window is closing: background tasks (the model
     /// probe poll loop, auto-save debounce) short-circuit instead of touching
     /// the removed window, which GPUI would report as "window not found".
@@ -392,6 +396,7 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
+            sandbox_blocked: None,
             closing: false,
             close_after_save_error: false,
             pending_auto_save: None,

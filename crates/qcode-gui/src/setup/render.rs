@@ -455,6 +455,7 @@ impl Render for SetupView {
             .child(self.render_custom_card(cx))
             .child(self.render_probe_picker(window, cx))
             .child(self.render_delete_dialog(cx))
+            .child(self.render_sandbox_blocked_dialog(cx))
             // Ctrl+= / Ctrl+- (Cmd+= / Cmd+- on macOS) zoom the whole UI's text
             // while this window has focus; the key bindings are app-global, the
             // handlers are per-window (see `SetupView::zoom_font`).
@@ -557,11 +558,29 @@ impl SetupView {
                     let key = key.clone();
                     let value = option.to_string();
                     let entity = entity.clone();
+                    let option = *option;
                     row = row.child(
                         Button::new(format!("select-{key}-{option}"))
                             .label(format!("{marker} {option}"))
                             .on_click(move |_, _, cx| {
                                 entity.update(cx, |view, cx| {
+                                    // `bwrap` needs bubblewrap installed: picking it
+                                    // without the package would fail at assembly
+                                    // with a bare error. Say so now, and leave the
+                                    // selection untouched until it is available.
+                                    if key == "sandbox.mode"
+                                        && option == "bwrap"
+                                        && !qcode_tools::sandbox::bwrap_installed()
+                                    {
+                                        view.sandbox_blocked = Some(
+                                            "bwrap 不可用：bubblewrap 未安装。请用系统包管理器安装 \
+                                             bubblewrap（Debian/Ubuntu：sudo apt install bubblewrap；\
+                                             Fedora：sudo dnf install bubblewrap；Arch：sudo pacman -S bubblewrap），\
+                                             然后重试。",
+                                        );
+                                        cx.notify();
+                                        return;
+                                    }
                                     view.selects.insert(key.clone(), value.clone());
                                     view.auto_save(cx, AutoSaveKind::Scalar(field.path), false);
                                     cx.notify();
@@ -638,6 +657,68 @@ impl SetupView {
             )
             .child(control);
         row.into_any_element()
+    }
+
+    /// A sandbox mode the machine cannot honour (e.g. `bwrap` without
+    /// bubblewrap): a modal explains how to make it available, and the
+    /// selection stays put. The modal is deliberately a plain overlay like the
+    /// delete confirmation — the whole point is that the click changed nothing.
+    pub(crate) fn render_sandbox_blocked_dialog(&self, cx: &Context<Self>) -> AnyElement {
+        let Some(message) = self.sandbox_blocked else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let (popover, popover_fg, muted_color, border_color) = (
+            theme.popover,
+            theme.popover_foreground,
+            theme.muted_foreground,
+            theme.border,
+        );
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000055))
+            .child(
+                div()
+                    .w(px(520.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .rounded(px(10.0))
+                    .bg(popover)
+                    .border_1()
+                    .border_color(border_color)
+                    .p_4()
+                    .text_color(popover_fg)
+                    .child("沙箱后端不可用")
+                    .child(
+                        div()
+                            .text_size(crate::sp(crate::SECONDARY_SIZE))
+                            .text_color(muted_color)
+                            .child(message),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("close-sandbox-blocked")
+                                    .label("知道了")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.sandbox_blocked = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_table(

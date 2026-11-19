@@ -139,6 +139,26 @@ pub struct SandboxPaths<'a> {
     pub allow_pty: bool,
 }
 
+/// Whether the `bwrap` backend can be used on this machine: bubblewrap must be
+/// installed. The settings page consults this before letting a user pick the
+/// backend, so an unavailable option says "install it" instead of failing at
+/// assembly.
+#[cfg(target_os = "linux")]
+pub fn bwrap_installed() -> bool {
+    Command::new("bwrap")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// Non-Linux builds never offer `bwrap`, so the answer is always no.
+#[cfg(not(target_os = "linux"))]
+pub fn bwrap_installed() -> bool {
+    false
+}
+
 /// Build the configured sandbox. `SandboxExec` is preflighted here so a broken
 /// sandbox fails before any tool runs.
 pub fn build(
