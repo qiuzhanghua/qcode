@@ -44,6 +44,8 @@ pub(crate) enum Command {
     Logs(LogsArgs),
     /// Show or edit the config file.
     Config(ConfigArgs),
+    /// List available config templates (ADR-0104).
+    Template(TemplateArgs),
     /// Manage configured MCP servers.
     Mcp(McpArgs),
     /// Diagnose configuration, credentials and data directory.
@@ -145,6 +147,19 @@ pub(crate) enum ConfigCommand {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Generate a config file from a built-in template (ADR-0104).
+    ///
+    /// The template is scaffolding, not an overlay: it is read once, writes an
+    /// ordinary `config.toml`, and never participates in loading afterwards.
+    Init {
+        /// Template id, e.g. `security-landlock`, `security/landlock`, or a
+        /// bare `landlock` when it names exactly one template.
+        #[arg(long, value_name = "TEMPLATE")]
+        template: String,
+        /// Overwrite an existing config file (prints a diff first).
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -161,6 +176,18 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         account: Option<String>,
     },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TemplateArgs {
+    #[command(subcommand)]
+    pub(crate) command: TemplateCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TemplateCommand {
+    /// List available templates (built-in and user), with their platform.
+    List,
 }
 
 #[derive(Debug, Args)]
