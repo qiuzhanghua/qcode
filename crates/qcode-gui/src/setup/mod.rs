@@ -176,6 +176,11 @@ pub struct SetupView {
     /// `bwrap` without bubblewrap installed). While `Some`, a modal explains
     /// how to make it available; the selection is left unchanged.
     sandbox_blocked: Option<&'static str>,
+    /// The help circle whose popover is open. Driven by hover: entering the
+    /// circle sets it, mouse-out or the popover closing for another reason
+    /// clears it. Kept as state because the popover is controlled (`open` +
+    /// `on_open_change`), which is how hover becomes the trigger.
+    hover_help: Option<String>,
     /// Set when the settings window is closing: background tasks (the model
     /// probe poll loop, auto-save debounce) short-circuit instead of touching
     /// the removed window, which GPUI would report as "window not found".
@@ -397,6 +402,7 @@ impl SetupView {
             custom_models: Vec::new(),
             custom_error: None,
             sandbox_blocked: None,
+            hover_help: None,
             closing: false,
             close_after_save_error: false,
             pending_auto_save: None,

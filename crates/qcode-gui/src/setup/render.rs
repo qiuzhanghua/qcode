@@ -4,7 +4,6 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::tooltip::Tooltip;
 
 /// A small circular "?" glyph drawn by hand (a bordered circle with a "?"
 /// inside). The Button component enforces a minimum size too large for this
@@ -635,36 +634,78 @@ impl SetupView {
                     .items_center()
                     .gap_1()
                     .child(div().child(field.label))
-                    // The help text floats over a popover on click, keeping the
-                    // first version's tooltip visuals (a click trigger instead
-                    // of hover). `appearance(false)` drops the popover's own
-                    // surface so the Tooltip content is the only floating layer.
-                    .child(
+                    // 提示词条 hover 触发：悬浮在问号上弹出、移开收起，
+                    // 取代早期点击触发的 Popover。实现为受控 popover
+                    // （open + on_open_change）——hover 状态由 SetupView 持有，
+                    // 鼠标移开、点外部、Esc 关闭时同步清掉。
+                    .child({
+                        let open = self.hover_help.as_deref() == Some(key.as_str());
+                        let entity = cx.entity();
+                        let open_entity = entity.clone();
+                        let hover_entity = entity.clone();
+                        let hover_key = key.clone();
                         Popover::new(format!("help-{key}"))
                             .anchor(Anchor::BottomLeft)
-                            .offset(px(4.0))
+                            .offset(px(1.5))
                             .appearance(false)
+                            .open(open)
+                            .on_open_change(move |open, _window, cx| {
+                                let entity = open_entity.clone();
+                                entity.update(cx, |view, cx| {
+                                    if !*open {
+                                        view.hover_help = None;
+                                        cx.notify();
+                                    }
+                                });
+                            })
                             .trigger(HelpCircle(
                                 div()
                                     .id(format!("help-trigger-{key}"))
-                                    .size(px(10.0))
+                                    .size(px(14.0))
                                     .rounded_full()
                                     .border_1()
                                     .border_color(border_color)
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .cursor_pointer()
-                                    .text_size(px(8.0))
+                                    .text_size(px(10.0))
                                     .text_color(muted_foreground)
+                                    .on_hover(move |hovered, _window, cx| {
+                                        let entity = hover_entity.clone();
+                                        let key = hover_key.clone();
+                                        entity.update(cx, |view, cx| {
+                                            if *hovered {
+                                                view.hover_help = Some(key.clone());
+                                            } else if view.hover_help.as_deref()
+                                                == Some(key.as_str())
+                                            {
+                                                view.hover_help = None;
+                                            }
+                                            cx.notify();
+                                        });
+                                    })
                                     .child("?"),
                             ))
                             .content(move |_state, window, cx| {
-                                Tooltip::new(field.help)
-                                    .build(window, cx)
+                                // 自绘提示框，不用 Tooltip 组件：它自带
+                                // `.m_3()`（12px margin，tooltip.rs:118），那正是
+                                // 「offset 调成 0 仍有距离」的来源。正文用
+                                // caption 字号 + muted 灰，长文本在 max_w 内换行，
+                                // 不会溢出右边框。
+                                div()
+                                    .max_w(px(420.0))
+                                    .bg(cx.theme().popover)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .rounded(cx.theme().radius)
+                                    .px_2()
+                                    .py_1()
+                                    .text_size(crate::sp(crate::CAPTION_SIZE))
+                                    .child(field.help)
                                     .into_any_element()
-                            }),
-                    ),
+                            })
+                    }),
             )
             .child(control);
         row.into_any_element()
