@@ -94,6 +94,7 @@ pub(crate) fn gui_rebuild_hook(
                 store: kernel.store,
                 provider: kernel.provider.into(),
                 provider_name: kernel.resolved.name.clone(),
+                sandbox: kernel.sandbox.clone(),
                 proxy_url: kernel
                     .egress
                     .as_ref()
@@ -414,6 +415,7 @@ pub(crate) async fn cmd_gui(
         store: kernel.store,
         provider: kernel.provider.into(),
         provider_name: kernel.resolved.name.clone(),
+        sandbox: kernel.sandbox.clone(),
         proxy_url: kernel
             .egress
             .as_ref()

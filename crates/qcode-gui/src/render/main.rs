@@ -1725,10 +1725,21 @@ impl Shell {
                                         self.ui.app.status.turn, total_tokens
                                     ))
                                     .right(context_label(&self.ui.app))
-                                    .right(format!("sandbox {}", self.ui.app.sandbox)),
+                                    .right(sandbox_status(&self.ui.app.sandbox)),
                             ),
                     ),
             )
+    }
+}
+
+/// `无沙箱` when no OS sandbox is assembled, otherwise `landlock沙箱`-style —
+/// the status bar reads as a fact about what the current kernel confines with,
+/// not as a bare identifier.
+fn sandbox_status(sandbox: &str) -> String {
+    if sandbox.is_empty() || sandbox == "none" {
+        "无沙箱".to_string()
+    } else {
+        format!("{sandbox}沙箱")
     }
 }
 

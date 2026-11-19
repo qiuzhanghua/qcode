@@ -30,6 +30,11 @@ pub struct Engine {
     pub store: SessionStore,
     pub provider: std::sync::Arc<dyn qcode_core::provider::Provider>,
     pub provider_name: String,
+    /// The sandbox backend name (`none`, `bwrap`, `landlock`, …) this engine
+    /// was assembled with, for the status bar. Carried on the engine so a
+    /// settings rebuild can push the new value onto the UI instead of leaving
+    /// the bar on the value the window started with.
+    pub sandbox: String,
     /// Egress proxy URL of the assembled kernel; a cross-provider model
     /// switch rebuilds the provider with the same proxy.
     pub proxy_url: Option<String>,
@@ -1680,6 +1685,7 @@ mod host_tests {
             store: SessionStore::new(dir),
             provider: Arc::new(qcode_providers::MockProvider::text("hello")),
             provider_name: "mock".to_string(),
+            sandbox: "none".to_string(),
             proxy_url: None,
             tools: qcode_core::tool::ToolRegistry::new(Vec::new()),
             policy: qcode_core::policy::Policy::new(Vec::new()),

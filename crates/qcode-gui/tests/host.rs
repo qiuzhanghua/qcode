@@ -14,6 +14,7 @@ fn engine(dir: &std::path::Path) -> Engine {
         store: qcode_core::store::SessionStore::new(dir),
         provider: Arc::new(qcode_providers::MockProvider::text("hello")),
         provider_name: "mock".to_string(),
+        sandbox: "none".to_string(),
         proxy_url: None,
         tools: qcode_core::tool::ToolRegistry::new(Vec::new()),
         policy: qcode_core::policy::Policy::new(Vec::new()),

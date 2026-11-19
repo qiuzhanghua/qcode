@@ -219,6 +219,12 @@ pub trait Backend {
     fn provider(&self) -> Option<String> {
         None
     }
+    /// Sandbox backend currently assembled, for the status bar. Synced after a
+    /// settings rebuild exactly like `model`/`provider`; a backend that cannot
+    /// report it (no kernel assembled) leaves the bar on the old value.
+    fn sandbox(&self) -> Option<String> {
+        None
+    }
     fn try_recv(&mut self) -> Option<SessionEvent>;
     /// Build a fresh backend from the current configuration. The shell calls
     /// this when the config file changes, so saving Settings takes effect
@@ -378,6 +384,7 @@ pub struct LocalBackend {
     cwd: PathBuf,
     model: String,
     provider: String,
+    sandbox: String,
     store: SessionStore,
     /// Entries that could not be resolved, so a typo is visible rather than
     /// looking like "no schedules configured".
@@ -392,6 +399,7 @@ impl LocalBackend {
         let cwd = engine.workspace.clone();
         let model = engine.model.clone();
         let provider = engine.provider_name.clone();
+        let sandbox = engine.sandbox.clone();
         let store = engine.store.clone();
         let schedule_errors = engine.schedule_errors.clone();
         let (ui, port) = channels();
@@ -401,6 +409,7 @@ impl LocalBackend {
             cwd,
             model,
             provider,
+            sandbox,
             store,
             schedule_errors,
             commands: ui.commands,
@@ -623,6 +632,10 @@ impl Backend for LocalBackend {
 
     fn provider(&self) -> Option<String> {
         Some(self.provider.clone())
+    }
+
+    fn sandbox(&self) -> Option<String> {
+        Some(self.sandbox.clone())
     }
 
     fn try_recv(&mut self) -> Option<SessionEvent> {

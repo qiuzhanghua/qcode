@@ -1015,6 +1015,9 @@ impl Shell {
                 if let Some(model) = self.backend.model() {
                     self.ui.app.status.model = model;
                 }
+                if let Some(sandbox) = self.backend.sandbox() {
+                    self.ui.app.sandbox = sandbox;
+                }
                 if let Ok(tasks) = self.backend.tasks() {
                     self.tasks = tasks;
                 }
