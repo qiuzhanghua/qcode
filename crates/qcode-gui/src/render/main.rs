@@ -1721,10 +1721,11 @@ impl Shell {
                                 StatusBar::new()
                                     .left(self.ui.notice.clone().unwrap_or_default())
                                     .left(format!(
-                                        "{} turn(s) - {} token(s)",
-                                        self.ui.app.status.turn, total_tokens
+                                        "{} turn(s) - {} token(s)     {}",
+                                        self.ui.app.status.turn,
+                                        total_tokens,
+                                        context_label(&self.ui.app)
                                     ))
-                                    .right(context_label(&self.ui.app))
                                     .right(sandbox_status(&self.ui.app.sandbox)),
                             ),
                     ),
@@ -1739,7 +1740,7 @@ fn sandbox_status(sandbox: &str) -> String {
     if sandbox.is_empty() || sandbox == "none" {
         "无沙箱".to_string()
     } else {
-        format!("{sandbox}沙箱")
+        format!("{sandbox} 沙箱")
     }
 }
 
