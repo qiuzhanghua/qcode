@@ -474,13 +474,13 @@ impl Shell {
         }
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
-        // 设置窗口跟随主窗口的尺寸：宽高都是主窗口的 2/3，相对主窗口横竖
+        // 设置窗口跟随主窗口的尺寸：宽高都是主窗口的 3/4，相对主窗口横竖
         // 居中。主窗口几何由 render 每帧写入 `prefs.window_geometry`（全局
         // 坐标），多显示器下也正落在主窗口中央。取不到时退回固定尺寸。
         let (size, origin) = match self.prefs.window_geometry.as_ref() {
             Some(geometry) => {
-                let width = geometry.width * 2.0 / 3.0;
-                let height = geometry.height * 2.0 / 3.0;
+                let width = geometry.width * 3.0 / 4.0;
+                let height = geometry.height * 3.0 / 4.0;
                 let x = geometry.x + (geometry.width - width) / 2.0;
                 let y = geometry.y + (geometry.height - height) / 2.0;
                 (size(px(width), px(height)), point(px(x), px(y)))
