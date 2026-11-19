@@ -474,16 +474,21 @@ impl Shell {
         }
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
-        // A settings dialog is a fixed-size side window, not the main window at
-        // the main window's size: open it near the middle of the screen so every
-        // field is visible without maximizing. Height is 70% of the pre-2026-11
-        // 680px so the dialog fits without losing its bottom; the whole window
-        // is 10% larger (宽 × 高 = 880 × 476 → 968 × 524).
+        // 设置窗口跟随主窗口的尺寸：宽高都是主窗口的 2/3，相对主窗口横竖
+        // 居中。主窗口几何由 render 每帧写入 `prefs.window_geometry`（全局
+        // 坐标），多显示器下也正落在主窗口中央。取不到时退回固定尺寸。
+        let (size, origin) = match self.prefs.window_geometry.as_ref() {
+            Some(geometry) => {
+                let width = geometry.width * 2.0 / 3.0;
+                let height = geometry.height * 2.0 / 3.0;
+                let x = geometry.x + (geometry.width - width) / 2.0;
+                let y = geometry.y + (geometry.height - height) / 2.0;
+                (size(px(width), px(height)), point(px(x), px(y)))
+            }
+            None => (size(px(968.0), px(524.0)), point(px(280.0), px(120.0))),
+        };
         let options = window_icon::attach(WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                point(px(280.0), px(120.0)),
-                size(px(968.0), px(524.0)),
-            ))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, size))),
             titlebar: Some(TitlebarOptions {
                 title: Some("设置".into()),
                 ..Default::default()
