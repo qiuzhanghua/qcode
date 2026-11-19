@@ -300,7 +300,11 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
         let kind = match kind {
             "security" => Kind::Security,
             "llm" => Kind::Llm,
-            other => return Err(format!("unknown template kind {other:?}; use security/ or llm/")),
+            other => {
+                return Err(format!(
+                    "unknown template kind {other:?}; use security/ or llm/"
+                ));
+            }
         };
         Some((kind, id))
     } else {
@@ -340,9 +344,7 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
 ///
 /// Source is `built-in` for now; user templates are a later decision, but the
 /// label is printed so the column exists when they arrive.
-pub(crate) fn cmd_template(
-    args: TemplateArgs,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+pub(crate) fn cmd_template(args: TemplateArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match args.command {
         TemplateCommand::List => {
             let templates = qcode_kernel::template::all()?;

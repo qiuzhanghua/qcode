@@ -211,6 +211,25 @@ impl Render for SetupView {
                 }
                 for field in forms::fields_for(page) {
                     body = body.child(self.render_field(field, cx));
+                    // 能力边界文案与 `qc config init` 的 security 模板同源（ADR-0104
+                    // §7）：后端能做什么、不能做什么，写在选中项下面一行，而不是藏
+                    // 在 help 里——「配了沙箱以为安全了」正是这份 ADR 要消灭的认知差。
+                    if field.path == ["sandbox", "mode"] {
+                        let mode = self
+                            .selects
+                            .get("sandbox.mode")
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(text) = sandbox_capability(&mode) {
+                            body = body.child(
+                                div()
+                                    .py_1()
+                                    .text_size(crate::sp(crate::CAPTION_SIZE))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text),
+                            );
+                        }
+                    }
                 }
                 for table in forms::tables_for(page) {
                     body = body.child(self.render_table(table, cx));
@@ -236,6 +255,31 @@ impl Render for SetupView {
                      Confinement applies to processes started after that: a `run_shell` already \
                      running keeps the grants it started with.",
                 );
+                // ADR-0104 §7: `strict` is the one combination that can never
+                // assemble outside macOS. The select hides it for other backends,
+                // but a file written before this rule could still carry it —
+                // say so instead of letting assembly fail with a bare error.
+                let mode = self
+                    .selects
+                    .get("sandbox.mode")
+                    .cloned()
+                    .unwrap_or_default();
+                let network = self
+                    .selects
+                    .get("sandbox.network")
+                    .cloned()
+                    .unwrap_or_default();
+                if network == "strict" && mode != "sandbox-exec" {
+                    body = body.child(
+                        div()
+                            .text_size(crate::sp(crate::CAPTION_SIZE))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "⚠ network = strict 只支持 [sandbox] mode = \"sandbox-exec\"（当前是 {mode}）；\
+                                 这样保存后装配会失败，请把 Network 改成 proxy 或 off。"
+                            )),
+                    );
+                }
             }
         }
 
@@ -297,6 +341,7 @@ impl Render for SetupView {
             .flex_col()
             .flex_grow(1.0)
             .min_h_0()
+            .min_w_0()
             .id(if self.wizard {
                 "setup-scroll"
             } else {
@@ -439,6 +484,32 @@ fn section_intro(page: Page) -> &'static str {
     }
 }
 
+/// A sandbox mode's capability boundary, in the wording the security templates
+/// carry (ADR-0104 §7: a template's summary must say what the backend can and
+/// cannot do — "landlock 网络不限制"、"windows-acl 只限写"、…).
+///
+/// Read from the templates rather than hardcoded here, so the settings page and
+/// `qc config init` can never drift about what a backend actually confines.
+/// Parsed once and cached; a parse failure degrades to no caption.
+fn sandbox_capability(mode: &str) -> Option<String> {
+    use qcode_kernel::template::Kind;
+    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    let rows = CACHE.get_or_init(|| {
+        qcode_kernel::template::all()
+            .map(|templates| {
+                templates
+                    .into_iter()
+                    .filter(|template| template.kind == Kind::Security)
+                    .map(|template| (template.id, template.summary))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    rows.iter()
+        .find(|(id, _)| id == mode)
+        .map(|(_, summary)| summary.clone())
+}
+
 impl SetupView {
     pub(crate) fn render_field(
         &self,
@@ -464,8 +535,24 @@ impl SetupView {
             FieldKind::Select(options) => {
                 let current = self.selects.get(&key).cloned().unwrap_or_default();
                 let entity = cx.entity();
+                // ADR-0104 §7: `strict` needs `sandbox-exec` — the only backend
+                // with a hard egress. Offering it for landlock/bwrap/… lets a
+                // user pick a combination that fails at assembly, which is the
+                // very thing the ADR exists to prevent, so it is hidden unless
+                // the mode that can honour it is selected.
+                let mut options = options.to_vec();
+                if (field.path == ["sandbox", "network"] || field.path == ["network", "mode"])
+                    && !forms::network_strict_allowed(
+                        self.selects
+                            .get("sandbox.mode")
+                            .map(String::as_str)
+                            .unwrap_or_default(),
+                    )
+                {
+                    options.retain(|option| *option != "strict");
+                }
                 let mut row = div().flex().flex_row().gap_1();
-                for option in options {
+                for option in options.iter() {
                     let marker = if current == *option { "●" } else { "○" };
                     let key = key.clone();
                     let value = option.to_string();
@@ -502,7 +589,7 @@ impl SetupView {
         };
         let theme = cx.theme();
         let (muted_foreground, border_color) = (theme.muted_foreground, theme.border);
-        div()
+        let row = div()
             .flex()
             .flex_row()
             .items_center()
@@ -549,8 +636,8 @@ impl SetupView {
                             }),
                     ),
             )
-            .child(control)
-            .into_any_element()
+            .child(control);
+        row.into_any_element()
     }
 
     pub(crate) fn render_table(

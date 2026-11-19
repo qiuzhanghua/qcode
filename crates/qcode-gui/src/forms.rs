@@ -103,6 +103,20 @@ const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec"];
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const SANDBOX_MODES: &[&str] = &["none"];
 const NETWORK_MODES: &[&str] = &["off", "proxy", "strict", "open"];
+/// The legacy `[network] mode` key (folded into `[sandbox] network` by
+/// ADR-0065). `NetworkMode` has no `open`, so offering it here would make the
+/// select produce a value the loader rejects.
+const NETWORK_LEGACY_MODES: &[&str] = &["off", "proxy", "strict"];
+
+/// Whether `[sandbox] network = "strict"` may be selected for a mode.
+///
+/// ADR-0104 §7: `strict` is implemented only for macOS `sandbox-exec`
+/// (`sandbox::build` rejects `ProxyOnly` for every other backend), so the
+/// settings page hides the option unless that backend is selected — a user
+/// must not be able to pick a combination that fails at assembly.
+pub fn network_strict_allowed(mode: &str) -> bool {
+    mode == "sandbox-exec"
+}
 const UNKNOWN_HOSTS: &[&str] = &["ask", "deny", "allow"];
 const SEARCH_BACKENDS: &[&str] = &["brave", "tavily", "searxng"];
 const RULE_ACTIONS: &[&str] = &["allow", "ask", "deny"];
@@ -374,7 +388,7 @@ pub const FIELDS: &[FieldSpec] = &[
         path: &["network", "mode"],
         label: "Network mode",
         page: Page::NetworkSandbox,
-        kind: FieldKind::Select(NETWORK_MODES),
+        kind: FieldKind::Select(NETWORK_LEGACY_MODES),
         help: "strict is macOS sandbox-exec proxy-only hard mode",
     },
     FieldSpec {

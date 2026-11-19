@@ -50,6 +50,42 @@ fn switching_provider_drops_the_mock_default() {
     );
 }
 
+/// ADR-0104 §7: `strict` is the one combination that can never assemble outside
+/// macOS, so the settings page must not offer it for any other backend.
+#[test]
+fn strict_network_is_only_offered_for_sandbox_exec() {
+    assert!(forms::network_strict_allowed("sandbox-exec"));
+    for mode in ["none", "landlock", "bwrap", "windows-acl"] {
+        assert!(
+            !forms::network_strict_allowed(mode),
+            "{mode} must not offer network = strict"
+        );
+    }
+}
+
+/// The Network & Sandbox page must actually carry the sandbox controls: a
+/// regression where the mode/network fields silently left the page would make
+/// the settings screen unable to change the sandbox at all (ADR-0104 §7 — the
+/// page was once described as having no form at all).
+#[test]
+fn network_sandbox_page_lists_the_sandbox_controls() {
+    let fields: Vec<&forms::FieldSpec> = forms::fields_for(forms::Page::NetworkSandbox).collect();
+    let paths: Vec<String> = fields.iter().map(|field| field.path.join(".")).collect();
+    assert!(paths.contains(&"sandbox.mode".to_string()), "{paths:?}");
+    assert!(paths.contains(&"sandbox.network".to_string()), "{paths:?}");
+    assert!(
+        paths.contains(&"sandbox.extra_writable".to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.path == ["sandbox", "mode"]
+                && matches!(field.kind, FieldKind::Select(_))),
+        "sandbox.mode must be a Select"
+    );
+}
+
 #[test]
 fn sync_default_model_moves_the_global_default_with_the_provider_row() {
     let mut default = qcode_kernel::config::DefaultModelConfig {
