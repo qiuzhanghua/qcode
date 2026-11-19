@@ -1,0 +1,26 @@
+# bubblewrap —— Linux 上有网络隔离的文件系统沙箱。
+#
+# 比 landlock 强在两点：网络可以真的隔离（`network = "off"` 时连原始套接字也出不去），
+# 以及 `--dev` 会挂一个新的 devpts，于是沙箱里有自己私有的 PTY。
+# 代价是依赖系统装了 `bwrap`（多数发行版的 `bubblewrap` 包）。
+
+[template]
+title = "bubblewrap（Linux，文件系统 + 网络隔离）"
+summary = "需要系统装 bwrap。文件系统受限，且能真正做到网络隔离（landlock 做不到）。"
+os = ["linux"]
+
+[config.sandbox]
+mode = "bwrap"
+# 唯一权威，不要再写 `[network] mode`。想让智能体完全离线，把这里改成 "off"。
+network = "proxy"
+# 读整个家目录；`~` 按当前用户的 home 展开。
+extra_read = ["~"]
+# 给它一个写的地方。目录不存在时跳过并告警，不是启动失败。
+extra_writable = ["~/Documents"]
+
+[config.network]
+enabled = true
+allow = []
+unknown = "ask"
+audit = true
+allow_private = false

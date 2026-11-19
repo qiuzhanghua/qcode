@@ -1,0 +1,42 @@
+# windows-acl —— Windows 的写受限令牌。
+#
+# 能力边界要说清：它**只限制写**。读是通的，网络也不受影响（`strict` 在
+# Windows 上不存在，只有 proxy / off）。要读隔离或网络隔离，Windows 目前没有
+# 对应的后端。
+#
+# 内建于二进制，不需要额外安装；在嵌套/受限的 shell 里可能因为拿不到权限而
+# 失败（报 `SetNamedSecurityInfoW(..): win32 5` 并 exit 127）——失败关闭，
+# 不会退回不受限执行。
+
+[template]
+title = "windows-acl（Windows，仅限制写）"
+summary = "内建，无需安装。只约束写：读与网络都不受这个后端限制。"
+os = ["windows"]
+
+[[note]]
+os = "windows"
+text = "下面两行 extra_read / extra_writable 在本后端下的实际效果不同："
+[[note]]
+os = "windows"
+text = "  · extra_writable 生效——写受限令牌靠它决定能写哪些目录。"
+[[note]]
+os = "windows"
+text = "  · extra_read 是空操作——Windows 后端不限制读，写什么都不会改变可读范围。"
+[[note]]
+os = "windows"
+text = "目录不存在时会被跳过并告警，不会导致启动失败（OneDrive 重定向 Documents 时常见）。"
+
+[config.sandbox]
+mode = "windows-acl"
+# 唯一权威，不要再写 `[network] mode`。
+network = "proxy"
+# 保留在这里是为了让同一份配置在三平台形状一致；在 Windows 上不产生效果。
+extra_read = ["~"]
+extra_writable = ["~/Documents"]
+
+[config.network]
+enabled = true
+allow = []
+unknown = "ask"
+audit = true
+allow_private = false

@@ -171,9 +171,23 @@ impl WindowsAcl {
 
         let mut extra = Vec::new();
         for path in extra_writable {
-            let canonical = std::fs::canonicalize(path).map_err(|err| {
-                SandboxError::Setup(format!("canonicalize {}: {err}", path.display()))
-            })?;
+            // A path that does not exist is skipped, not refused (same rule as
+            // the Linux backends, so one template behaves the same everywhere).
+            // It bites on Windows specifically: `~/Documents` is the shipped
+            // default, and when OneDrive redirects the known folder the literal
+            // `%USERPROFILE%\Documents` may not be there. Failing to start over
+            // a default the user did not write is worse than granting less.
+            let canonical = match std::fs::canonicalize(path) {
+                Ok(canonical) => canonical,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "[sandbox] extra_writable: path cannot be resolved; skipping it"
+                    );
+                    continue;
+                }
+            };
             if canonical.starts_with(&workspace) || workspace.starts_with(&canonical) {
                 return Err(SandboxError::Setup(format!(
                     "extra writable root {} overlaps the workspace {}; pick one",

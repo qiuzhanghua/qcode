@@ -1,0 +1,32 @@
+# Landlock —— Linux 的文件系统沙箱，**不限制网络**。
+#
+# Linux 5.13+ 的内核特性，无外部依赖（不需要装 bwrap）。它只约束文件系统：
+# `[sandbox] network` 能到 proxy / off，但不存在「硬出口」这一档——
+# 沙箱外的原始套接字照样能出去。要网络隔离请用 bwrap。
+
+[template]
+title = "Landlock（Linux，仅文件系统）"
+summary = "内核级文件系统限制，无外部依赖。网络不限制：proxy 只是应用层代理，原始套接字可以绕过。"
+os = ["linux"]
+
+[config.sandbox]
+mode = "landlock"
+# 网络与沙箱是同一个问题（ADR-0104 §7）：`strict` 只在 macOS sandbox-exec 上成立，
+# 所以这里只能 proxy / off。这一行是网络的唯一权威，不要再去写 `[network] mode`。
+network = "proxy"
+# 读整个家目录。`~` 按当前用户的 home 展开（Windows 用 USERPROFILE），所以这一行
+# 三平台都是对的。放开它是为了让工具链、缓存、配置文件都能被读到——代价是
+# `~/.ssh`、`~/.aws`、浏览器配置也一并可读，要收紧就换成具体子目录。
+extra_read = ["~"]
+# 家目录下的文档目录，给智能体一个写的地方。目录不存在时跳过并告警（不是启动失败）：
+# 有些 Linux 发行版本地化成 `~/文档`，有些容器里根本没有这个目录。
+extra_writable = ["~/Documents"]
+
+[config.network]
+enabled = true
+# 空列表 = 只允许 provider 自己的主机（它们按 [providers.*] 自动加入）。
+allow = []
+# 不在 allow 里的主机：ask = 工具层询问；deny = 直接拒绝。
+unknown = "ask"
+audit = true
+allow_private = false

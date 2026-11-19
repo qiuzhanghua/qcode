@@ -1,0 +1,45 @@
+# 不使用 OS 沙箱。
+#
+# **先读这一句：这里没有沙箱，审批（approval）是唯一的执行边界。**
+# `run_shell` 能读到什么、写到哪里、能不能联网，都不再由内核或系统机制约束，
+# 而是由 `[approval]` 规则和 workspace 路径检查决定。
+#
+# 它有正当用途——CI、容器里、以及「先在无沙箱下跑通，再回头收紧」这个真实流程。
+# 但如果你要的是「智能体碰不到我的东西」，那这份模板不是你想要的：
+# Linux 用 landlock / bwrap，macOS 用 darwin，Windows 用 windows-acl。
+#
+# 这一份三平台通用（没有 `os` 限制），因为「不做限制」本身与平台无关。
+
+[template]
+title = "无沙箱（approval 是唯一边界）"
+summary = "不做 OS 级限制。谁能在哪读、在哪写、能不能联网，全部由 approval 规则决定。"
+
+[[note]]
+text = "本模板不限制任何东西：extra_read / extra_writable 写在这里也没有执行方。"
+
+[config.sandbox]
+mode = "none"
+network = "proxy"
+# 无沙箱时这两个列表不产生任何效果（没有后端去执行它们）。留空以免误导。
+extra_read = []
+extra_writable = []
+
+[config.network]
+enabled = true
+allow = []
+# 没有沙箱时这一条尤其重要：不在 allow 里的主机，ask 表示工具层会停下来问。
+unknown = "ask"
+audit = true
+allow_private = false
+
+# ── 建议的 approval 形状 ──────────────────────────────────────────────────────
+# 既然边界只剩审批，就别让它空着。用简写最省事（`工具:谓词`）：
+#
+# [config.approval]
+# # 只读的工具直接放行，免得每回合都在同一个 echo 上点确认。
+# allow = ["read_file", "run_shell:echo *", "run_shell:ls *", "run_shell:git status *"]
+# # 无论怎么问都不允许的：出了事不可逆的那些。
+# deny = ["run_shell:rm -rf /*", "run_shell:git push --force *"]
+#
+# 简写里 `command_prefix` 按字面前缀匹配，`path_glob` 用 glob；需要同时约束多个
+# 谓词时改用 `[[config.approval.rules]]` 写完整规则。

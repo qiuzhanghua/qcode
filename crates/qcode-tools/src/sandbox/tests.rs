@@ -808,14 +808,17 @@ mod linux_tests {
     /// `/` grant as a working bind, so the two backends would disagree about the
     /// same config while each looked self-consistent.
     #[test]
-    fn both_linux_backends_refuse_a_dangerous_or_missing_extra_writable() {
+    fn both_linux_backends_refuse_a_dangerous_extra_writable_and_skip_a_missing_one() {
         let workspace = tempfile::tempdir().expect("workspace");
         let missing = workspace.path().join("no-such-dir");
 
-        let bwrap_missing =
-            Bwrap::new(workspace.path(), false, &[], std::slice::from_ref(&missing))
-                .expect_err("bwrap must reject a missing extra_writable root");
-        assert!(bwrap_missing.to_string().contains("extra_writable"));
+        // A missing root is skipped, not fatal: the shipped default grants
+        // `~/Documents`, which does not exist on servers, in containers, under a
+        // localized distro, or when OneDrive redirects the known folder. Failing
+        // to start over a default the user never wrote is the worse outcome, and
+        // skipping grants *less* than asked — it fails safe.
+        Bwrap::new(workspace.path(), false, &[], std::slice::from_ref(&missing))
+            .expect("bwrap must skip a missing extra_writable root, not refuse to start");
 
         let bwrap_root = Bwrap::new(workspace.path(), false, &[], &[PathBuf::from("/")])
             .expect_err("bwrap must reject / writable");
@@ -825,10 +828,8 @@ mod linux_tests {
             eprintln!("skipping the landlock half: landlock unavailable here");
             return;
         }
-        let landlock_missing =
-            Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing), false)
-                .expect_err("landlock must reject a missing extra_writable root");
-        assert!(landlock_missing.to_string().contains("extra_writable"));
+        Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing), false)
+            .expect("landlock must skip a missing extra_writable root, not refuse to start");
     }
 
     fn bwrap_or_skip(workspace: &Path) -> Option<Bwrap> {
@@ -1424,23 +1425,22 @@ mod landlock_runtime {
     /// write root is indistinguishable from the setting being ignored, which is
     /// the exact symptom this field spent a release having.
     #[test]
-    fn extra_write_rejects_a_missing_root() {
+    fn extra_write_skips_a_missing_root_but_keeps_the_real_ones() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         if landlock_abi().is_err() {
             eprintln!("skipping: landlock unavailable here");
             return;
         }
         let missing = workspace.path().join("no-such-dir");
-        let error = Landlock::new(workspace.path(), &[], std::slice::from_ref(&missing), false)
-            .expect_err("a missing extra_writable root must be rejected");
-        assert!(
-            error.to_string().contains("extra_writable"),
-            "the message must name the field: {error}"
-        );
-        assert!(
-            error.to_string().contains("no-such-dir"),
-            "the message must name the path: {error}"
-        );
+        let real = tempfile::tempdir().expect("a real extra root");
+        // The present root must survive the filter; only the missing one drops.
+        Landlock::new(
+            workspace.path(),
+            &[],
+            &[missing, real.path().to_path_buf()],
+            false,
+        )
+        .expect("a missing extra_writable root must be skipped, not fatal");
     }
 
     /// The dangerous shapes are refused at the backend too, not only by config
@@ -1573,23 +1573,24 @@ mod landlock_runtime {
     /// A read root that does not exist is a startup error that names itself,
     /// rather than a rule Landlock silently skips.
     #[test]
-    fn extra_read_rejects_a_missing_root() {
+    fn extra_read_skips_a_missing_root_but_keeps_the_real_ones() {
         let workspace = tempfile::tempdir().expect("temp workspace");
         if landlock_abi().is_err() {
             eprintln!("skipping: landlock unavailable here");
             return;
         }
         let missing = workspace.path().join("no-such-prefix");
-        let error = Landlock::new(workspace.path(), std::slice::from_ref(&missing), &[], false)
-            .expect_err("a missing extra_read root must be rejected");
-        assert!(
-            error.to_string().contains("extra_read"),
-            "the message must name the field: {error}"
-        );
-        assert!(
-            error.to_string().contains("no-such-prefix"),
-            "the message must name the path: {error}"
-        );
+        let real = tempfile::tempdir().expect("a real extra read root");
+        // Same rule as the write side: absent roots grant nothing, so they are
+        // skipped rather than turned into a startup failure. Present ones must
+        // still be installed.
+        Landlock::new(
+            workspace.path(),
+            &[missing, real.path().to_path_buf()],
+            &[],
+            false,
+        )
+        .expect("a missing extra_read root must be skipped, not fatal");
     }
 
     /// The write set is the roots, and the two shapes must actually differ on a

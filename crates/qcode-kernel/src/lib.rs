@@ -18,6 +18,9 @@ pub mod redact;
 /// because every frontend needs it: `qcode` could not lend a type to
 /// `qcode-gui`, which depends on it and not the other way around.
 pub mod subagent;
+/// Config templates (ADR-0104). Embedded assets plus their validation; the
+/// `qc config init` command that writes them lives in the binary.
+pub mod template;
 
 /// Kept here so configuration stops reaching into the binary crate.
 pub const DEFAULT_REPO: &str = "qiuzhanghua/qcode";

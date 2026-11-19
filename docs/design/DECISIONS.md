@@ -12663,27 +12663,91 @@ sandbox-exec 要 `ProxyOnly` 直接报错）。所以「网络多严」与「沙
 写「已加固」这种没有对应事实的话。`landlock.toml` 尤其要说清「网络不限制」——这是最容易
 被误解成「有沙箱就安全」的一格。
 
-### 8. 机器特定的路径只给注释，不给值
+### 8. 缺省配置的沙箱边界：读 home、写 Documents，三平台一致
+>
+> **本条已修订（2026-11-18，实现时）。** 初版写的是「机器特定的路径只给注释，不给值」。
+> 那条规则保护的是一个真实问题（抄别人机器上的绝对路径会失效，且失效长得像「某命令莫名
+> Permission denied」），但它过头了：`~` 与 `~/Documents` 不是机器特定的，它们按当前用户
+> 的 home 展开，三平台都成立。而缺省配置**应该**直接给出一个能用的边界——读得到家目录、
+> 写得进文档目录——否则模板等于只给了一份说明书。
+>
+> 修订后的规则：**只允许 `~` 与 `~/sub/dir` 形式的相对值，绝对路径仍然只给注释。**
 
-`extra_read` / `extra_writable` 天然是机器特定的（内核注释举的例子就是本机的
-`~/cot/lib/rust_*`）。模板里写成注释示例：
+实际取值（四个后端模板一致）：
 
 ```toml
-[config.sandbox]
-mode = "landlock"
-
-# 额外授予读权限的根。默认已含 /usr /bin /lib /etc 等系统目录；装在别处的工具链
-# 需要在这里列出来，否则受限的 `run_shell` 看不到它——例如：
-#   extra_read = ["~/cot/lib/rust_1.100", "~/.cargo/registry"]
-#
-# 额外授予写权限的根。危险形状（/、家目录本身、/home）在 load 时会被拒绝：
-#   extra_writable = ["~/Documents"]
+extra_read = ["~"]              # 读整个家目录
+extra_writable = ["~/Documents"] # 写文档目录
 ```
 
-不写实际值，因为抄到别人机器上就是错的，而**错的 read 根的表现是「某个命令莫名
-Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
+`~` 的展开走 `expand_tilde`：Linux/macOS 用 `$HOME`，Windows 用 `USERPROFILE`
+（`qcode_core::real_home`），所以同一行在三个平台都是对的。`~/Documents` 同理。
 
-### 9. 每个模板都必须在 CI 里被解析一遍
+**代价必须写明**：`extra_read = ["~"]` 意味着 `~/.ssh`、`~/.aws`、`~/.config`、
+浏览器配置都在可读范围内。这是「读得到家目录」的字面后果，不是实现缺陷，所以
+`landlock.toml` 的注释里直接写了这一点，并给出收窄办法（换成具体子目录）。
+
+**目录不存在不再是致命错误。** 这条是修订带来的必然后果：`~/Documents` 在服务器上、
+在容器里、在本地化成 `~/文档` 的发行版上、在 OneDrive 重定向了已知文件夹的 Windows 上
+都可能不存在。初版实现里 Linux 直接报错、Windows 在 `canonicalize` 处报错——那等于
+「默认值让 qcode 起不来」。
+
+现在三个平台统一为：**跳过 + 一条 `warn`**。方向是失败安全的——它让智能体拿到的
+权限**更少**，不会更多。而危险形状（`/`、家目录本身、`/home`）仍然是硬错误：那不是
+「少给了权限」，是「给多了还没人注意」。
+
+### 9. 按平台区分：模板可以声明自己属于哪个 OS，键可以声明在某平台无效
+
+一项配置在不同 OS 上可能**不存在**，也可能**存在但无效**。两种都要能表达，否则模板会
+写出「能加载、装配必失败」或者「看起来设了、其实没有」的文件。
+
+**(a) 整份模板的适用平台。** `[template] os = ["linux"]`，缺省为空 = 全平台：
+
+```toml
+[template]
+title = "bubblewrap（Linux，文件系统 + 网络隔离）"
+os = ["linux"]
+```
+
+`config init` 在平台不匹配时**拒绝**，并说明原因。这与初版验证 3 相反——初版写的是
+「模板不是平台门禁，应当接受写出，随后由 `qc doctor` 说不可用」。改主意的理由：
+写出一个本机装配必失败的文件，用户第一步就会撞墙，而错误信息来自 `Sandbox::build`
+的深处（`Unsupported("bwrap")`），不是「你抄了 Linux 的模板」。`--force` 仍然可以写，
+用于给另一台机器准备配置。
+
+各模板的声明：
+
+| 模板 | `os` |
+|---|---|
+| `bwrap` | `["linux"]` |
+| `landlock` | `["linux"]` |
+| `darwin` | `["macos"]` |
+| `windows-acl` | `["windows"]` |
+| `none` | 空（全平台） |
+
+`none` 不加限制，因为「不做限制」本身与平台无关。
+
+**(b) 单个键在某平台是空操作。** 用 `[[note]]`，渲染成注释，可用 `os` 限定：
+
+```toml
+[[note]]
+os = "windows"
+text = "· extra_read 是空操作——Windows 后端不限制读，写什么都不会改变可读范围。"
+```
+
+`windows-acl.toml` 就靠这个说清一件事：它**只限制写**，所以同一份 `extra_read = ["~"]`
+在 Linux/macOS 是真实授权、在 Windows 是一个空操作。两行都保留，让配置文件在三平台
+形状一致，差异由注释说明——而不是给 Windows 写一个不存在的字段，或者干脆不写让三份
+模板长得不一样。
+
+不引入「按平台覆盖同一个键的值」(`[config.windows] extra_read = [...]`) 那一层：
+今天没有任何一个键需要在两个平台上取**不同的值**（`~` 已经解决了路径差异），
+而一个「同名键在不同平台取不同值」的机制，读配置文件的人从文件本身看不出实际生效的是
+哪一个——那正是 ADR-0103 立规矩要消灭的认知差。真需要时再加，届时它必须同时给出
+「本机实际取值」的可读途径。
+
+
+### 10. 每个模板都必须在 CI 里被解析一遍
 
 一条测试遍历 `TemplateAsset::iter()`，对每份模板：按 schema 解析 → 展开成 `Config` →
 过 `check_version` + `unknown_keys` + `mcp.validate()` + `sandbox.validate()`。
@@ -12695,7 +12759,7 @@ Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
 同一测试还要钉住 §7 的组合矩阵：每个 security 模板产出的 `(mode, network)` 必须能通过
 `sandbox_network()` 与 `build()` 的自洽检查，且 `strict` 只出现在 `darwin.toml`。
 
-### 10. `mode = "none"` 的模板保留
+### 11. `mode = "none"` 的模板保留
 
 只提供「最严」的模板会让预设体系暗示「只有加固可选」，而 `none` 是有正当用途的：CI、
 容器内、以及「先在无沙箱下跑通再收紧」这个真实流程。
@@ -12722,6 +12786,17 @@ Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
   `add_provider_preset` + `list_configurable_providers`（引用式，做法正确，模板只需补
   CLI 与第三方）；security 侧的 `Page::NetworkSandbox` 只有一个标题、没有表单。前者是
   「别重复造」，后者是「从零开始」。
+- **缺省边界比初版宽，这是有意的。** 初版 §8 只给注释，等于「模板告诉你去配，但没配」。
+  现在给的是 `extra_read = ["~"]` + `extra_writable = ["~/Documents"]`：读得到家目录、
+  写得进文档目录，三平台一致。代价（`~/.ssh` 等也在可读范围）写进了模板注释，而不是
+  藏起来。要更严的用户改一行即可，但那必须是他看到的主动选择。
+- **目录不存在从「致命」降为「warn + 跳过」。** 这是缺省值的必然要求：`~/Documents`
+  在服务器/容器/本地化发行版/OneDrive 重定向下都可能不存在。跳过是失败安全的（给得更少），
+  危险形状仍是硬错误（给得更坏）。三个平台同一规则，见 `check_extra_write`、
+  `existing_extra_read`、`WindowsAcl::new`。
+- **平台门禁与初版相反。** 初版说「模板不是平台门禁」，实现时改成「不匹配就拒绝，
+  `--force` 才写」。理由：写出一份本机装配必失败的文件，用户撞上的是 `Unsupported`
+  裸错误，不是「你抄了别的平台的模板」。
 
 **验证**
 
@@ -12729,10 +12804,14 @@ Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
    上产出文件，`qc doctor` 显示 `sandbox: landlock ...`，且 `qc run "hi" --provider mock`
    能跑通。
 2. 已存在 `config.toml` 时再次 `config init` 被拒绝；`--force` 时先打印 diff 再覆盖。
-3. 在 macOS 上 `config init --template landlock` 应能被接受写出（模板不是平台门禁），
-   但随后的 `qc doctor` / 首个回合必须给出**明确**的「这个后端在本平台不可用」，而不是
-   一个 `Unsupported` 裸错误。
+3. **平台门禁（已修订）**：在 macOS 上 `config init --template landlock` 应当**被拒绝**
+   并说明「这份模板属于 linux」；加 `--force` 则写出，且文件里带上「本平台不可用」的说明。
+   初版要求「接受写出、随后由 doctor 说不可用」，实现时改掉了——理由见 §9(a)。
 4. `cargo test -p qcode-kernel template` 覆盖全部模板的解析与 §7 的组合矩阵；故意改坏
-   一份模板（写一个不存在的键）必须让这条测试红。
+   一份模板（写一个不存在的键）必须让这条测试红。当前 15 条，含平台声明、平台注释隔离、
+   `~`-相对路径、以及「每个后端模板都给了 `~` + `~/Documents`」。
 5. `config init --template deepseek` 产出的文件里**不含** `base_url`（复用 catalog），
    而自包含模板产出的文件含全部字段。
+6. **缺省边界可跑（三平台）**：用任意 security 模板生成的配置在 Linux/macOS/Windows 上
+   都要能启动——包括 `~/Documents` 不存在的机器（应当只有一条 warn，不是启动失败）。
+   Windows 上额外确认 `extra_read` 是空操作这一事实有注释说明。

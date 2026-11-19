@@ -20,6 +20,10 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 toml.workspace = true
 toml_edit = "0.22"
+# ADR-0104 §3: `template/` is embedded here rather than in `crates/qcode`
+# because all three frontends read templates and `qcd` does not depend on
+# `crates/qcode`.
+rust-embed.workspace = true
 # `spawn_blocking` for the shell environment sample (ADR-0070). `assemble` is
 # awaited on the GUI's UI executor, so blocking that thread for a shell startup
 # would freeze the window; the sample has to go to a blocking thread.

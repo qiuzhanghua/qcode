@@ -134,39 +134,71 @@ pub(crate) fn bwrap_args(
     args
 }
 
-/// Validate `[sandbox] extra_writable` for a Linux backend.
+/// Validate `[sandbox] extra_writable` for a Linux backend, returning the paths
+/// that will actually be granted.
 ///
 /// Shared by `Bwrap` and `Landlock` rather than written twice: the two would
 /// drift into "bubblewrap refuses `/` but landlock grants it", and neither copy
 /// would look wrong on its own (ADR-0068's lesson).
 ///
-/// Two failures, both of which the user cannot diagnose from inside a sandbox:
+/// Two cases, deliberately different:
 ///
-/// * A path that does not exist. `Landlock` would install no rule and stay
-///   denied; `bubblewrap` would fail with its own message about a mount. Either
-///   way it reads as "the setting is ignored", which is the exact symptom
-///   `extra_writable` already spent a release having.
-/// * A dangerous shape. `SandboxConfig::validate` refuses these at load time;
-///   this second check covers `Sandbox::build`'s direct callers, because a rule
-///   installed here cannot be taken back.
+/// * **A path that does not exist** is skipped with a warning. Refusing to start
+///   was the older behaviour, and it made a perfectly ordinary config unusable
+///   on a machine that simply has no `~/Documents` — which is the norm on a
+///   server, and happens on Windows when OneDrive redirects the known folder
+///   (ADR-0104 §8: a shipped template grants `~/Documents`, so this must not be
+///   fatal). Skipping fails safe in the only direction that matters: the agent
+///   gets *less* than it asked for, never more.
+/// * **A dangerous shape** is still refused. `/`, the home directory itself and
+///   `/home` are never what was meant, and unlike a missing directory the
+///   consequence is silent over-granting. `SandboxConfig::validate` refuses these
+///   at load time; this second check covers `Sandbox::build`'s direct callers,
+///   because a rule installed here cannot be taken back.
 #[cfg(target_os = "linux")]
-fn check_extra_write(extra_write: &[PathBuf]) -> Result<(), SandboxError> {
-    if let Some(missing) = extra_write.iter().find(|path| !path.exists()) {
-        return Err(SandboxError::Setup(format!(
-            "[sandbox] extra_writable: {} does not exist",
-            missing.display()
-        )));
-    }
+fn check_extra_write(extra_write: &[PathBuf]) -> Result<Vec<PathBuf>, SandboxError> {
     let home = qcode_core::real_home();
+    let mut kept = Vec::with_capacity(extra_write.len());
     for path in extra_write {
+        if !path.exists() {
+            tracing::warn!(
+                path = %path.display(),
+                "[sandbox] extra_writable: path does not exist; skipping it"
+            );
+            continue;
+        }
         if let Some(reason) = qcode_core::dangerous_write_root(path, home.as_deref()) {
             return Err(SandboxError::Setup(format!(
                 "[sandbox] extra_writable: {} is {reason}; narrow it to a subdirectory",
                 path.display()
             )));
         }
+        kept.push(path.clone());
     }
-    Ok(())
+    Ok(kept)
+}
+
+/// Drop `extra_read` entries that do not exist, with a warning.
+///
+/// Same reasoning as [`check_extra_write`]'s missing-path branch: a read root
+/// that is absent grants nothing, so skipping it is fail-safe, while refusing to
+/// start turns "this machine has no such directory" into "qcode will not run".
+#[cfg(target_os = "linux")]
+fn existing_extra_read(extra_read: &[PathBuf]) -> Vec<PathBuf> {
+    extra_read
+        .iter()
+        .filter(|path| {
+            if path.exists() {
+                return true;
+            }
+            tracing::warn!(
+                path = %path.display(),
+                "[sandbox] extra_read: path does not exist; skipping it"
+            );
+            false
+        })
+        .cloned()
+        .collect()
 }
 
 /// Cargo/Rustup homes are build caches: bind them read-write, like the macOS
@@ -222,7 +254,7 @@ impl Bwrap {
                 "refusing to sandbox the filesystem root as the workspace".to_string(),
             ));
         }
-        check_extra_write(extra_write)?;
+        let extra_write = check_extra_write(extra_write)?;
         Ok(Self {
             roots: vec![BwrapRoot {
                 path: workspace.to_path_buf(),
@@ -233,7 +265,7 @@ impl Bwrap {
             // command comes from `with_roots`, which states this for itself.
             outside: OutsideRoots::BuildCaches,
             extra_read: extra_read.to_vec(),
-            extra_write: extra_write.to_vec(),
+            extra_write,
         })
     }
 
@@ -588,20 +620,13 @@ impl Landlock {
         extra_write: Vec<PathBuf>,
         allow_pty: bool,
     ) -> Result<Self, SandboxError> {
-        // A read root that does not exist is a configuration mistake the user
-        // cannot see from the inside: Landlock would install no rule and the
-        // path stays denied, which looks exactly like the feature not working.
-        // `add_path_rule` would fail with ENOENT instead, which is louder but
-        // arrives as a raw errno at startup. Name it.
-        if let Some(missing) = extra_read.iter().find(|path| !path.exists()) {
-            return Err(SandboxError::Setup(format!(
-                "[sandbox] extra_read: {} does not exist",
-                missing.display()
-            )));
-        }
+        // A read root that does not exist grants nothing (Landlock installs no
+        // rule and the path stays denied), so it is skipped with a warning
+        // rather than refused — see `existing_extra_read`.
+        let extra_read = existing_extra_read(&extra_read);
         // Same reasoning for the write side, and it matters more — see
         // `check_extra_write`.
-        check_extra_write(&extra_write)?;
+        let extra_write = check_extra_write(&extra_write)?;
         if let Some((path, _)) = roots.iter().find(|(path, _)| path == Path::new("/")) {
             return Err(SandboxError::Setup(format!(
                 "refusing to sandbox the filesystem root as a root: {}",

@@ -5525,6 +5525,7 @@ dependencies = [
  "qcode-providers",
  "qcode-tools",
  "reqwest",
+ "rust-embed",
  "serde",
  "serde_json",
  "tempfile",

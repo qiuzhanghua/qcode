@@ -1,0 +1,32 @@
+# sandbox-exec —— macOS 的系统沙箱。
+#
+# 这是**唯一**支持 network = "strict" 的后端：代理照常跑，而 Seatbelt 生成的
+# profile 只放行到那个 loopback 端口。别的后端配 strict 会在装配时直接报错
+# （见 `sandbox/mod.rs`：非 sandbox-exec 要 ProxyOnly 即 Unsupported）。
+#
+# `sandbox-exec` 是 macOS 自带的，不需要额外安装。
+
+[template]
+title = "sandbox-exec（macOS，唯一支持硬出口）"
+summary = "macOS 自带。唯一能配 network = strict 的后端：除代理端口外，发出的连接一律被拒。"
+os = ["macos"]
+
+[config.sandbox]
+mode = "sandbox-exec"
+# 唯一权威，不要再写 `[network] mode`。
+#
+# 想要最严的一档，把下面这行改成 "strict"：代理照常工作，但沙箱只允许连到它，
+# 未知主机的原始连接连不到（这是本后端独有的能力）。
+# 完全离线则改成 "off"。
+network = "proxy"
+# 读整个家目录；`~` 按当前用户的 home 展开。
+extra_read = ["~"]
+# 给它一个写的地方。目录不存在时跳过并告警，不是启动失败。
+extra_writable = ["~/Documents"]
+
+[config.network]
+enabled = true
+allow = []
+unknown = "ask"
+audit = true
+allow_private = false
