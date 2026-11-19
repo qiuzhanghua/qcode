@@ -12370,6 +12370,13 @@ Landlock 是**进程级不可逆降权**（ADR-0012 §2）：即使热重载，�
    （`a_signal_during_a_live_turn_waits_instead_of_interrupting` 等 4 条），三分支
    `Nothing` / `WaitForIdle` / `ReloadNow` 互不相同——合并其中两个会让那条测试红。
 4. 设置页在 turn 运行中保存 → 文案不承诺「立即」；turn 结束后才换入，且界面能看出换入发生。
+   实测记录（2026-11-18）：本期只改了 About 页，**漏了两处**，事后补齐——
+   `setup/render.rs` 的沙箱页导语原本写着 "Sandbox and network settings apply
+   immediately"，`setup/save.rs` 的保存提示原本写着 "the main window picks the change
+   up immediately"。两者都早于本 ADR（11-02 / 10-30），但错的正是本 ADR 要消灭的那句
+   话，而沙箱页导语尤其致命：它承诺的恰是 §4 说「永远不成立」的那种立即。现分别改为
+   「every session is idle 时换入，且对之后启动的进程生效」与「applies once every
+   session is idle」。
 5. `qcd` 收到 `SIGUSR1` 但只有 `stop` 通道可用（旧版本、控制通道不可用）时仍能工作——信号与
    socket 是两条独立通路。
 
@@ -12520,11 +12527,24 @@ env = "DEEPSEEK_API_KEY"      # 写进文件的是这个变量名
 **secret 绝不落进 `config.toml`**：文件里只出现 `api_key_env = "..."`——这与 ADR-0039
 的 key store 和现有的 `api_key_env` / `api_key_command` 两条取值路径一致，不新增第三套。
 
-### 5. llm 模板：优先引用 catalog，允许自包含
+### 5. llm 模板：GUI 已有等价实现，模板只补 CLI 与第三方
 
-两种形态，由 `[template] catalog` 决定：
+**先记一条实现现状，因为它改变了这一节的定位：** GUI 的
+`setup/tables.rs:add_provider_preset` 已经就是「引用式」——从 `catalog_entry(route)`
+取 `base_url` / `api_key_env` / `default_model` / `protocol` 预填一行，注释写着
+「catalog is the single fact source for preset values … so new catalog routes get a
+button and a pre-filled row automatically」。选择框的数据源是
+`ProviderRegistry::list_configurable_providers`（catalog 在前、用户手写 route 在后）。
 
-**引用式**（内置 provider 的常态）——只问用户什么，事实来自 `CATALOG`：
+所以「按 provider 预填参数」**在 GUI 里已经存在且做法正确**。`llm/` 模板不是新能力，
+它补的是 `add_provider_preset` 覆盖不到的两处：
+
+1. **没有 GUI 的时候**——`qc config init --template deepseek` 是命令行等价物。
+2. **catalog 里没有的 provider**——GUI 有「自定义提供方…」入口，CLI 侧今天没有。
+
+两种形态仍由 `[template] catalog` 决定：
+
+**引用式**（内置 provider）——只问用户什么，事实来自 `CATALOG`：
 
 ```toml
 [template]
@@ -12564,7 +12584,13 @@ protocol = "openai"
 default_model = "gpt-5.4"
 ```
 
-这样两种需求都覆盖：内置的 5 个不产生副本，第三方的能自助扩展而无需改 Rust。
+这样两种需求都覆盖：内置 provider 不产生副本，第三方的能自助扩展而无需改 Rust。
+
+**与 GUI 的关系**：本期不合并两条路径。GUI 的预填是「交互式、逐字段可改」，模板是
+「声明式、写下即定型」，两者的错误处理与确认点都不同。将来若要让 GUI 直接读 `llm/` 模板
+（§非目标里说的选择器），应当让 GUI 复用它已有的 `add_provider_preset` 机制去消费模板的
+`[config]` 段，而不是让模板另造一套界面状态。
+
 
 ### 6. oauth2 的边界：不实现授权协议，用 `api_key_command`
 
@@ -12613,6 +12639,15 @@ token 过期了怎么办（没人能点浏览器）。本 ADR 只保证模板 sc
 sandbox-exec 要 `ProxyOnly` 直接报错）。所以「网络多严」与「沙箱用哪个」不是两个独立
 问题——拆成两份模板，用户完全可以拼出一个装配必失败的组合，而失败点在运行时。
 
+**与 llm 侧相反，这一节没有既有的 GUI 实现要对接。** `Page::NetworkSandbox` 在
+`setup/render.rs` 里只有一个标题和一句介绍，没有任何 `render_*` 表单——`fields.rs` 里
+虽存在 `["sandbox","mode"]` 的取值/写回分支，但那一页没有把它们渲染出来（对照
+`Page::Models` 有自己的 `render_models_providers`）。它也没有按平台过滤可选的 `mode`。
+
+这有两个后果：security 模板在 GUI 侧是**干净增量**，不必迁就已有抽象；同时也说明今天
+在 GUI 里根本改不了沙箱模式，模板 + `qc config init` 会是**第一个**让用户不必手写 TOML
+就能选后端的东西。
+
 一份 security 模板 = 一个**已验证自洽**的组合：
 
 | 模板 | `[sandbox] mode` | `[network]` 可到什么程度 |
@@ -12622,6 +12657,7 @@ sandbox-exec 要 `ProxyOnly` 直接报错）。所以「网络多严」与「沙
 | `darwin.toml` | `sandbox-exec` | `off` / `proxy` / **`strict`** |
 | `windows-acl.toml` | `windows-acl` | `proxy`/`off`；只限写 |
 | `none.toml` | `none` | `off` / `proxy`；**approval 是唯一边界** |
+
 
 每个模板的 `summary` 必须如实写出这个后端的**能力边界**，用 `describe()` 的措辞，不许
 写「已加固」这种没有对应事实的话。`landlock.toml` 尤其要说清「网络不限制」——这是最容易
@@ -12682,6 +12718,10 @@ Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
   不挡路。
 - **非目标**：GUI 的模板选择器（后续，单独决定）；oauth2 授权协议的实现（§6）；
   「模板作为叠加层」（§1 已否决）。
+- **两片 GUI 现状不对称，模板落地时不要假设对称**：llm 侧已有
+  `add_provider_preset` + `list_configurable_providers`（引用式，做法正确，模板只需补
+  CLI 与第三方）；security 侧的 `Page::NetworkSandbox` 只有一个标题、没有表单。前者是
+  「别重复造」，后者是「从零开始」。
 
 **验证**
 

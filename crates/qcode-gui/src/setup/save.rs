@@ -178,8 +178,9 @@ impl SetupView {
                 self.prefs = prefs;
                 self.saved = true;
                 self.error = None;
-                self.info =
-                    Some("saved - the main window picks the change up immediately".to_string());
+                // ADR-0103 §3：不是「立即」——换入要等所有会话空闲，
+                // 见 `shell/mod.rs` 里 `pending_rebuild` 的两个前置条件。
+                self.info = Some("saved - applies once every session is idle".to_string());
                 // The wizard hands over to the main window by quitting; a
                 // settings dialog has done its job and closes itself.
                 if self.wizard {

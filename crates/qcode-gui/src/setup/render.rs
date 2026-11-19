@@ -223,8 +223,18 @@ impl Render for SetupView {
                 body = body.child(self.render_shell_environment_probe(cx));
             }
             if !self.wizard && matches!(page, Page::NetworkSandbox) {
+                // ADR-0103 §3：措辞是事实，不是期望。换配置要重建整个 kernel，
+                // 而重建只在所有会话空闲时发生（`shell/mod.rs` 的 `pending_rebuild`），
+                // 所以「立即生效」从来不成立；原句是这么写的，已改。
+                //
+                // 另半句来自 ADR-0103 §4：即使换进去了，也是**对下一个进程**生效——
+                // Landlock 是进程级不可逆降权，已经在跑的 `run_shell` 及其子孙不会
+                // 因为这次收紧而失去已有权限。不说清这点，用户会以为「点了就安全了」。
                 body = body.child(
-                    "Sandbox and network settings apply immediately: each change is saved as you make it.",
+                    "Sandbox and network settings are saved as you change them, and take effect \
+                     once every session is idle — the kernel is rebuilt then, never mid-turn. \
+                     Confinement applies to processes started after that: a `run_shell` already \
+                     running keeps the grants it started with.",
                 );
             }
         }
