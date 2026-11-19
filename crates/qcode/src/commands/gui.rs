@@ -73,6 +73,9 @@ pub(crate) fn gui_rebuild_hook(
         let workspace = workspace.clone();
         let data_dir = data_dir.clone();
         let approval_policy = approval_policy.clone();
+        // `data_dir` 下面会被 move 进 `assemble`；rebuild hook 构造还要用它，
+        // 所以先留一份。
+        let rebuild_data_dir = data_dir.clone();
         Box::pin(async move {
             // No nested runtime here: the caller awaits this on the UI executor.
             let kernel = qcode_kernel::assemble(
@@ -128,7 +131,20 @@ pub(crate) fn gui_rebuild_hook(
                 session_title: kernel.config.session_title.to_title_config().ok().flatten(),
                 schedule_tick: None,
             };
-            Ok(Box::new(qcode_gui::LocalBackend::new(engine)) as Box<dyn qcode_gui::Backend>)
+            // 重建出来的 backend 必须还能再重建：不挂 hook 的话，第一次保存
+            // 设置换进来的 backend 是「一次性」的，之后的配置变化全部被
+            // `rebuild_hook().is_none()` 拒绝——状态栏、模型等跟着第一次
+            // rebuild 之后就不再更新。挂同一个 hook（参数一致），无限次可用。
+            let rebuild = gui_rebuild_hook(
+                config_path.clone(),
+                workspace.clone(),
+                rebuild_data_dir,
+                approval_policy.clone(),
+            );
+            Ok(
+                Box::new(qcode_gui::LocalBackend::new(engine).with_rebuild(rebuild))
+                    as Box<dyn qcode_gui::Backend>,
+            )
         })
     })
 }

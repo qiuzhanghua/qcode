@@ -579,6 +579,11 @@ impl Shell {
     /// Idempotent — it takes what is in the channel and returns — so it is safe
     /// to call from anywhere.
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
+        // 设置窗口是独立窗口，主窗口空闲时并不 render——render 里的那次
+        // `reload_on_config_change` 只在重绘时跑，于是「设置页保存了新配置、
+        // 状态栏没跟上」（沙箱、模型都依赖它）。ticker 每 150ms 到这里，
+        // 顺手看一眼 config mtime，保存后立刻重建、状态栏随之更新。
+        self.reload_on_config_change(cx);
         let reasoning_was_live = self.ui.app.streaming_reasoning_block.is_some();
         // The visible view's rows changed: it needs a scroller resync.
         let mut resync = false;
