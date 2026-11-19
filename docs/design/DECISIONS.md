@@ -12372,3 +12372,327 @@ Landlock 是**进程级不可逆降权**（ADR-0012 §2）：即使热重载，�
 4. 设置页在 turn 运行中保存 → 文案不承诺「立即」；turn 结束后才换入，且界面能看出换入发生。
 5. `qcd` 收到 `SIGUSR1` 但只有 `stop` 通道可用（旧版本、控制通道不可用）时仍能工作——信号与
    socket 是两条独立通路。
+
+## ADR-0104：配置模板是脚手架，不是叠加层（2026-11-18）
+
+**状态**：Accepted（2026-11-18）。新增「模板」这一层，只改变**配置怎么被写出来**，
+不改变 `assemble`、不改变任何默认值、不改变配置的解析与生效规则（ADR-0036 / ADR-0103
+的结论原样成立）。
+
+**背景**
+
+新机器、新用户要从零手写一份 `config.toml`。两类内容最容易写错，而写错的代价不同：
+
+- **`[sandbox]` / `[network]`**——这四个后端的能力差异是实测出来的，不是文档能概括的：
+  `sandbox-exec` 是唯一支持 network `strict`（硬出口）的后端；`windows-acl` 只限写、
+  不限读与网络；`bwrap` 有网络隔离与私有 devpts；`landlock` **仅文件系统**、网络完全不
+  限制。让用户凭名字猜，结果是「配了沙箱，以为安全了」。
+- **`[providers.*]`**——`base_url` / `api_key_env` / `default_model` / `protocol` 四者
+  必须互相自洽。填错一个，报错点是第一次发请求时的一个 400 或 401，而不是启动时。
+
+### 一、现状：配置是纯覆盖层，第一次启动根本不生成文件
+
+`load_config` 在没有 `config.toml` 时直接 `Config::default()` +
+`load_project(workspace)`（`lib.rs:457-461`）——**磁盘上什么也不写**。所有默认值都在代码
+里：`serde(default)`、`default_true()`，以及按平台分叉的 `default_sandbox_mode()`
+（Windows → `windows-acl`、macOS → `sandbox-exec`、Linux → `landlock`）。
+
+所以「模板」今天不存在任何形态，连「首次生成的骨架」都没有。
+
+### 二、`CATALOG` 已经是 provider 的事实源
+
+`config/catalog.rs` 的 `CATALOG` 里 5 个 provider（openai / deepseek / ollama / minimax /
+anthropic）各带 `protocol` / `base_url` / `api_key_env` / `default_model` / `models` /
+`images` / `reasoning_split`。用户配置没写的字段**回落到 catalog**，settings 页与
+resolver 读同一份。
+
+于是 `config.toml` 里的
+
+```toml
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-flash"
+```
+
+三行全部与 catalog 逐字相同——纯副本。**这是本 ADR 最重要的一条约束：模板不许再造第三
+份副本。**
+
+### 三、选错沙箱后端要到 `build()` 才失败
+
+`SandboxConfig::validate()` 只查 `extra_writable` 的危险路径，不查 mode 与平台是否匹配。
+macOS 用户抄一份 `landlock` 的预设，会在**装配时**得到
+`SandboxError::Unsupported("landlock")`。失败关闭（安全方向是对的），但诊断很差——它说的是
+「不支持」，而不是「你抄了 Linux 的预设」。
+
+**决定**
+
+### 1. 模板是脚手架：生成一次，之后归用户
+
+模板只在**用户显式要求**时被读一次，产出一份普通的 `config.toml`；此后模板再也不参与
+加载。不做「模板作为基础层、用户配置写差异」。
+
+理由：叠加层意味着**升级 qcode 会改变用户正在跑的权限边界**——某次发版把模板里的
+`extra_read` 收紧了，用户下次启动就换了边界，中间没有任何动作、没有任何提示。这正是
+ADR-0103 花一整篇消灭的那种情况（「配置看起来生效、实际没生效、不报错」的镜像：这里更糟，
+是「没人改配置，权限却变了」）。安全边界不该因为 `cargo upgrade` 就动。
+
+代价（必须承认）：二进制里的默认值改好了，用户那份快照不会跟。所有「生成配置文件」的
+产品都有这个问题，对策见 §8。
+
+### 2. 三条命令
+
+```
+qc config init --template security-landlock      # 写 security 模板
+qc config init --template deepseek               # 追加/合并一个 provider
+qc template list                                  # 列出可用模板（含来源：内置/用户）
+```
+
+`config init` 的语义：
+
+- 目标文件**不存在** → 写出模板产出的完整文件。
+- 目标文件**已存在** → **拒绝覆盖**，除非 `--force`。已存在时只允许「追加一个
+  `[providers.*]`」（provider 模板），且必须在打印 diff 之后询问确认。
+- 任何情况下都不静默改动已有的 `[sandbox]` / `[network]`——那是安全边界，改它必须是
+  用户看到 diff 并点头的动作。
+
+### 3. 目录与嵌入
+
+```
+crates/qcode-kernel/template/
+  llm/deepseek.toml
+  llm/minimax.toml
+  llm/openai.toml
+  llm/anthropic.toml
+  llm/ollama.toml
+  llm/_oauth2-example.toml
+  security/landlock.toml
+  security/bwrap.toml
+  security/darwin.toml
+  security/windows-acl.toml
+  security/none.toml
+```
+
+文件名不带 `security-` / `llm-` 前缀：目录已经表明种类，`security/landlock.toml` 与
+`llm/deepseek.toml` 对称。写在这里只是免得以后为此争论。
+
+**放在 `qcode-kernel`，不放在 `crates/qcode`。** 三个前端都要读模板（`qc` 的命令、
+GUI 的后续选择器、`qcd` 将来可能的自动初始化），而 `qcd` 不依赖 `crates/qcode`——放错
+地方的表现是「GUI 能列模板、qcd 编译不过」或者更糟：为了一个 TOML 把 gpui 链进 daemon。
+
+嵌入用 `rust-embed`（与 `cot_cli` 一致）：
+
+```rust
+#[derive(rust_embed::Embed)]
+#[folder = "template/"]
+struct TemplateAsset;
+```
+
+选它而不是 `include_str!`，理由是 debug 构建从磁盘读：**改一个模板不用重编译**。模板是
+文案性资产，会反复调整；`include_str!` 还得手工维护文件清单，加一个模板忘记加一行，表现
+是「模板存在但运行时找不到」。
+
+release 构建真嵌入，体积代价是几 KB 级，对 `qc` 那个体量可以忽略。
+
+### 4. 模板 schema
+
+一份模板 = **要问用户什么** + **写进文件什么**。
+
+```toml
+[template]
+kind = "llm"                  # llm | security
+id = "deepseek"
+title = "DeepSeek"
+summary = "OpenAI 兼容端点；只需要一个 API key。"
+
+[[prompt]]
+key = "api_key"
+label = "DEEPSEEK_API_KEY"
+kind = "secret"               # secret 的值不进配置文件
+env = "DEEPSEEK_API_KEY"      # 写进文件的是这个变量名
+
+[config]                      # 原样（含 ${key} 替换）写进 config.toml
+```
+
+`prompt.kind` 三种：`secret`（读入后写 key store 或只提示环境变量名）、`text`（原样代入
+`${key}`）、`path`（展开 `~` 后代入）。非 secret 的答案用 `${key}` 在 `[config]` 里替换。
+
+**secret 绝不落进 `config.toml`**：文件里只出现 `api_key_env = "..."`——这与 ADR-0039
+的 key store 和现有的 `api_key_env` / `api_key_command` 两条取值路径一致，不新增第三套。
+
+### 5. llm 模板：优先引用 catalog，允许自包含
+
+两种形态，由 `[template] catalog` 决定：
+
+**引用式**（内置 provider 的常态）——只问用户什么，事实来自 `CATALOG`：
+
+```toml
+[template]
+kind = "llm"
+id = "deepseek"
+catalog = "deepseek"          # base_url / api_key_env / default_model 全从这里来
+
+[[prompt]]
+key = "api_key"
+label = "DEEPSEEK_API_KEY"
+kind = "secret"
+env = "DEEPSEEK_API_KEY"
+```
+
+生成出来的 `config.toml` 只有：
+
+```toml
+[providers.deepseek]
+api_key_env = "DEEPSEEK_API_KEY"
+```
+
+——甚至可以更少：`api_key_env` 也在 catalog 里，所以真实产出可以是一个**空节 + 一行注释**
+说明「其余取自内置 catalog」。这与现状一致（今天不写 `[providers.deepseek]` 也能用），
+模板的价值在于**告诉用户「DeepSeek 可用、只需一个 key」**，而不是搬运字段。
+
+**自包含**（catalog 里没有的 provider）——写全字段，模板就是事实：
+
+```toml
+[template]
+kind = "llm"
+id = "my-gateway"
+
+[config.providers.my-gateway]
+base_url = "https://gw.example.com/v1"
+api_key_env = "MY_GW_KEY"
+protocol = "openai"
+default_model = "gpt-5.4"
+```
+
+这样两种需求都覆盖：内置的 5 个不产生副本，第三方的能自助扩展而无需改 Rust。
+
+### 6. oauth2 的边界：不实现授权协议，用 `api_key_command`
+
+模板要能表达「这个 provider 需要的参数比一个 key 多」，但**本 ADR 不实现 oauth2 授权
+流程**（authorize URL、code 兑换、refresh token 轮转、过期重取）。
+
+今天的 `ProviderConfig` 已经有 `api_key_command: Option<Vec<String>>`——从外部命令取
+key（`resolve.rs:230-250`，`env` 优先、`command` 兜底）。这就是 oauth2 的真实可行路径：
+token 交给专门的工具管，qcode 只负责调用它。
+
+所以 oauth2 类模板长这样：
+
+```toml
+[template]
+kind = "llm"
+id = "vertex-oauth"
+title = "Vertex (服务账号)"
+summary = "凭证由 gcloud 管理，qcode 每次请求前取一次 token。"
+
+[[prompt]]
+key = "project"
+label = "GCP project id"
+kind = "text"
+
+[config.providers.vertex]
+base_url = "https://us-central1-aiplatform.googleapis.com/v1"
+api_key_command = ["gcloud", "auth", "print-access-token"]
+protocol = "openai"
+extra_body = { project = "${project}" }
+```
+
+真正的 oauth2 客户端（在进程内走一遍授权、自己存 refresh token）是另一个决定，需要它自己
+的 ADR：它要处理凭据落盘（往哪写、怎么加密）、过期、以及在 `qcd` 这种无人值守进程里
+token 过期了怎么办（没人能点浏览器）。本 ADR 只保证模板 schema 不会挡住它。
+
+### 7. security 模板必须同时覆盖 `[sandbox]` 与 `[network]`
+
+不拆成两个模板。理由是一条硬约束：
+
+```rust
+// config/mod.rs:381
+/// Egress mode. `strict` requires `[sandbox] mode = "sandbox-exec"`.
+```
+
+`strict` 网络**只在 macOS 的 `sandbox-exec` 上成立**（`sandbox/mod.rs:156`：非
+sandbox-exec 要 `ProxyOnly` 直接报错）。所以「网络多严」与「沙箱用哪个」不是两个独立
+问题——拆成两份模板，用户完全可以拼出一个装配必失败的组合，而失败点在运行时。
+
+一份 security 模板 = 一个**已验证自洽**的组合：
+
+| 模板 | `[sandbox] mode` | `[network]` 可到什么程度 |
+|---|---|---|
+| `landlock.toml` | `landlock` | 仅 `proxy`/`off`；文件系统受限，网络不受限 |
+| `bwrap.toml` | `bwrap` | `proxy`/`off`；有网络隔离 |
+| `darwin.toml` | `sandbox-exec` | `off` / `proxy` / **`strict`** |
+| `windows-acl.toml` | `windows-acl` | `proxy`/`off`；只限写 |
+| `none.toml` | `none` | `off` / `proxy`；**approval 是唯一边界** |
+
+每个模板的 `summary` 必须如实写出这个后端的**能力边界**，用 `describe()` 的措辞，不许
+写「已加固」这种没有对应事实的话。`landlock.toml` 尤其要说清「网络不限制」——这是最容易
+被误解成「有沙箱就安全」的一格。
+
+### 8. 机器特定的路径只给注释，不给值
+
+`extra_read` / `extra_writable` 天然是机器特定的（内核注释举的例子就是本机的
+`~/cot/lib/rust_*`）。模板里写成注释示例：
+
+```toml
+[config.sandbox]
+mode = "landlock"
+
+# 额外授予读权限的根。默认已含 /usr /bin /lib /etc 等系统目录；装在别处的工具链
+# 需要在这里列出来，否则受限的 `run_shell` 看不到它——例如：
+#   extra_read = ["~/cot/lib/rust_1.100", "~/.cargo/registry"]
+#
+# 额外授予写权限的根。危险形状（/、家目录本身、/home）在 load 时会被拒绝：
+#   extra_writable = ["~/Documents"]
+```
+
+不写实际值，因为抄到别人机器上就是错的，而**错的 read 根的表现是「某个命令莫名
+Permission denied」**——用户会怀疑 qcode，不会怀疑模板。
+
+### 9. 每个模板都必须在 CI 里被解析一遍
+
+一条测试遍历 `TemplateAsset::iter()`，对每份模板：按 schema 解析 → 展开成 `Config` →
+过 `check_version` + `unknown_keys` + `mcp.validate()` + `sandbox.validate()`。
+
+理由：模板是最容易腐烂的一类资产——它不参与编译，字段改名、枚举值改名都不会让构建失败，
+**只会让用户拿到一份启动即报错的配置**。没有这条测试，等价于「发出去的模板没有编译期
+保护」。
+
+同一测试还要钉住 §7 的组合矩阵：每个 security 模板产出的 `(mode, network)` 必须能通过
+`sandbox_network()` 与 `build()` 的自洽检查，且 `strict` 只出现在 `darwin.toml`。
+
+### 10. `mode = "none"` 的模板保留
+
+只提供「最严」的模板会让预设体系暗示「只有加固可选」，而 `none` 是有正当用途的：CI、
+容器内、以及「先在无沙箱下跑通再收紧」这个真实流程。
+
+但 `none.toml` 必须把代价写在最前面：`mode = "none"` 时 **approval 是唯一的执行边界**
+（`noop.rs` 的 `describe()` 原话），所以这份模板要连带给出 `[approval]` 的建议形状，
+否则「安全模板」四个字站不住。
+
+**后果 / 边界**
+
+- **升级不动用户配置。** 模板只在 `config init` 时读一次；之后改模板、改 `CATALOG`、
+  改代码里的默认值，都不影响已经生成的 `config.toml`。
+- **快照会漂。** 二进制默认值改好了，用户那份不跟。对策是模板产出的文件带当前
+  `schema` 版本，配合已有的 `qc config migrate`（ADR-0065）走向前迁移；`qc doctor`
+  要能看出「这份文件是某个旧版模板生成的」——但那需要标记来源，本期不做，记在此。
+- **与 ADR-0103 的关系不变。** 生成的 `config.toml` 就是普通配置文件：改了它，
+  TUI/`qcd` 照旧告警、照旧只在重启或 `SIGUSR1` 后生效。模板不引入任何新的生效路径。
+- **`CATALOG` 仍是内置 provider 的唯一事实源。** 引用式模板不复制它的字段；若将来要让
+  模板完全取代 `CATALOG`（build.rs 从 TOML 生成常量），那是另一个决定，本 ADR 只保证
+  不挡路。
+- **非目标**：GUI 的模板选择器（后续，单独决定）；oauth2 授权协议的实现（§6）；
+  「模板作为叠加层」（§1 已否决）。
+
+**验证**
+
+1. `qc config init --template landlock` 在一台**没有** `config.toml` 的机器（容器即可）
+   上产出文件，`qc doctor` 显示 `sandbox: landlock ...`，且 `qc run "hi" --provider mock`
+   能跑通。
+2. 已存在 `config.toml` 时再次 `config init` 被拒绝；`--force` 时先打印 diff 再覆盖。
+3. 在 macOS 上 `config init --template landlock` 应能被接受写出（模板不是平台门禁），
+   但随后的 `qc doctor` / 首个回合必须给出**明确**的「这个后端在本平台不可用」，而不是
+   一个 `Unsupported` 裸错误。
+4. `cargo test -p qcode-kernel template` 覆盖全部模板的解析与 §7 的组合矩阵；故意改坏
+   一份模板（写一个不存在的键）必须让这条测试红。
+5. `config init --template deepseek` 产出的文件里**不含** `base_url`（复用 catalog），
+   而自包含模板产出的文件含全部字段。
