@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.15.3", path = "../qcode-core" }
+qcode-core = { version = "0.16.0", path = "../qcode-core" }
 serde_json.workspace = true
 time.workspace = true
 tracing.workspace = true

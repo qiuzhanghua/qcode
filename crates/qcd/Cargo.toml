@@ -15,10 +15,10 @@ rust-version.workspace = true
 # 所以这里的依赖面刻意只有 kernel（引擎）与 driver（决策 + 一拍）：
 # 没有 qcode-gui、没有 qcode-tui、没有 qcode-terminal。
 [dependencies]
-qcode-core = { version = "0.15.3", path = "../qcode-core" }
-qcode-driver = { version = "0.15.3", path = "../qcode-driver" }
-qcode-kernel = { version = "0.15.3", path = "../qcode-kernel" }
-qcode-tools = { version = "0.15.3", path = "../qcode-tools" }
+qcode-core = { version = "0.16.0", path = "../qcode-core" }
+qcode-driver = { version = "0.16.0", path = "../qcode-driver" }
+qcode-kernel = { version = "0.16.0", path = "../qcode-kernel" }
+qcode-tools = { version = "0.16.0", path = "../qcode-tools" }
 async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -37,5 +37,5 @@ windows-sys = { version = "0.60", features = [
 ] }
 
 [dev-dependencies]
-qcode-providers = { version = "0.15.3", path = "../qcode-providers" }
+qcode-providers = { version = "0.16.0", path = "../qcode-providers" }
 tempfile.workspace = true
