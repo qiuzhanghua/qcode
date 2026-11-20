@@ -39,6 +39,32 @@ fn activator(
     }
 }
 
+/// The largest window with a comfortable 16:9 aspect that fits 90% of the
+/// work area, clamped into the usable band.
+///
+/// The ratio is fixed so the window keeps one shape on every display; the
+/// independent width/height fractions it replaces let the aspect drift with
+/// the screen (1.6 on ultrawide up to 2.2 on 4K). The floors may bend the
+/// ratio on very small screens — a usable minimum beats a strict shape.
+fn first_run_size(work: Size<Pixels>) -> Size<Pixels> {
+    const RATIO: f32 = 16.0 / 9.0;
+    let max_w = (work.width.as_f32() * 0.9).min(MAX_WINDOW_WIDTH);
+    let max_h = (work.height.as_f32() * 0.9).min(MAX_WINDOW_HEIGHT);
+    let (w, h) = if max_w / max_h > RATIO {
+        // The screen is wider than 16:9, so the window is height-limited.
+        (max_h * RATIO, max_h)
+    } else {
+        // The screen is taller/narrower, so the window is width-limited.
+        (max_w, max_w / RATIO)
+    };
+    let w = w.max(MIN_WINDOW_WIDTH);
+    let h = h.max(MIN_WINDOW_HEIGHT);
+    size(
+        px(w.min(work.width.as_f32())),
+        px(h.min(work.height.as_f32())),
+    )
+}
+
 /// Open the window and drive it until the user closes it.
 ///
 /// `single` 是本进程抢到的那把单实例锁（ADR-0083）。它必须一路传到这里：
@@ -105,15 +131,22 @@ pub fn run(
                     ))),
                     ..Default::default()
                 },
-                // First run: no saved geometry yet, so open at the desktop
-                // default size, centred, instead of the platform default.
-                None => WindowOptions {
-                    window_bounds: Some(WindowBounds::centered(
-                        size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)),
-                        cx,
-                    )),
-                    ..Default::default()
-                },
+                // First run: no saved geometry yet, so size the window to the
+                // screen and centre it instead of the platform default. The
+                // size is the largest 16:9 window that fits 90% of the work
+                // area, clamped into the usable band — every screen ends up
+                // with the same comfortable shape instead of a ratio that
+                // drifts with the display.
+                None => {
+                    let size = match cx.primary_display() {
+                        Some(display) => first_run_size(display.visible_bounds().size),
+                        None => size(px(DEFAULT_WINDOW_WIDTH), px(DEFAULT_WINDOW_HEIGHT)),
+                    };
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::centered(size, cx)),
+                        ..Default::default()
+                    }
+                }
             });
             let zoom = zoom_keystrokes(cx.platform_info().is_mac());
             // Image paste is Ctrl+Shift+V (Cmd+Shift+V on a mac keyboard) rather

@@ -468,8 +468,29 @@ struct RenameTaskState {
 
 /// Default desktop window size for a first run, when no geometry has been
 /// saved yet. The actual bounds are recorded into `gui.json` on first render.
+///
+/// `DEFAULT_*` is the fallback when no display can be queried; the real first
+/// run sizes itself to the screen instead (see `run.rs`):
+///
+/// ```text
+/// 首次打开：取能放进「工作区 × 0.9」的最大 16:9 窗口，
+/// 再 clamp 进 [MIN_WINDOW_WIDTH..MAX_WINDOW_WIDTH] ×
+///        [MIN_WINDOW_HEIGHT..MAX_WINDOW_HEIGHT]。
+/// ```
+///
+/// The ratio is fixed (16:9) so every screen gets the same comfortable shape;
+/// a fixed 1200×620 default feels small on 2K/4K displays, and independent
+/// width/height fractions let the window's aspect drift with the screen.
 const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f32 = 620.0;
+
+/// The band the first-run window size is clamped into. The floor keeps the
+/// window usable on small screens; the ceiling stops it filling a huge
+/// display.
+const MIN_WINDOW_WIDTH: f32 = 900.0;
+const MAX_WINDOW_WIDTH: f32 = 1920.0;
+const MIN_WINDOW_HEIGHT: f32 = 600.0;
+const MAX_WINDOW_HEIGHT: f32 = 1200.0;
 
 #[cfg(test)]
 mod tests {
