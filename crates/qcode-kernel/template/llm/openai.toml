@@ -1,0 +1,20 @@
+# OpenAI —— 官方端点，只需要一个 API key。
+#
+# 引用式模板（ADR-0104 §5）：base_url / 模型清单取自内置 catalog，
+# 本文件只写 key 的环境变量名。
+
+[template]
+kind = "llm"
+id = "openai"
+catalog = "openai"
+title = "OpenAI"
+summary = "OpenAI 官方端点；只需要一个 API key，模型清单取自内置 catalog。"
+
+[[prompt]]
+key = "api_key"
+label = "OPENAI_API_KEY"
+kind = "secret"
+env = "OPENAI_API_KEY"
+
+[config.providers.openai]
+api_key_env = "OPENAI_API_KEY"

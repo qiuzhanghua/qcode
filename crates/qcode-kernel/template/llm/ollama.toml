@@ -1,0 +1,15 @@
+# Ollama —— 本地模型服务，不需要 API key。
+#
+# 引用式模板（ADR-0104 §5）：base_url 取自内置 catalog。没有 prompt、
+# 也没有 api_key_env——本地端点本身无 key。默认模型留空，用
+# `ollama pull` 装的模型可通过设置页「获取可用模型」探测补上。
+
+[template]
+kind = "llm"
+id = "ollama"
+catalog = "ollama"
+title = "Ollama"
+summary = "本地 Ollama 服务，不需要 API key；默认模型留空，可手动添加或探测。"
+
+[config.providers.ollama]
+# 无 key：本地端点。默认模型需自行添加（设置页可「获取可用模型」探测）。

@@ -1,0 +1,22 @@
+# Vertex（服务账号）—— 凭证由 gcloud 管理，qcode 每次请求前取一次 token。
+#
+# 这是一份「自包含」模板（ADR-0104 §5）：catalog 里没有这个 provider，
+# 所以这里写全字段，模板就是事实源。qcode 不实现 oauth2 授权流程
+# （ADR-0104 §6），token 交给专门的工具管，qcode 只调用它——也就是
+# `api_key_command`。
+
+[template]
+kind = "llm"
+title = "Vertex (服务账号)"
+summary = "凭证由 gcloud 管理，qcode 每次请求前取一次 token；不需要 api_key_env。"
+
+[[prompt]]
+key = "project"
+label = "GCP project id"
+kind = "text"
+
+[config.providers.vertex]
+base_url = "https://us-central1-aiplatform.googleapis.com/v1"
+api_key_command = ["gcloud", "auth", "print-access-token"]
+protocol = "openai"
+extra_body = { project = "${project}" }

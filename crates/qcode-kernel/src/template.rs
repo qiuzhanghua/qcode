@@ -19,7 +19,8 @@
 //! `rust-embed`: debug builds read them from disk (editing a template needs no
 //! rebuild), release builds carry them in the binary.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -257,6 +258,16 @@ impl Template {
             path: self.source.clone(),
             message,
         };
+        // A reference template names the catalog route it reuses; that route
+        // must exist, or the generated file's "rest comes from the catalog"
+        // promise has nothing to hold on to (ADR-0104 §5).
+        if let Some(catalog) = &self.catalog {
+            if crate::config::catalog_entry(catalog).is_none() {
+                return Err(invalid(format!(
+                    "[template] catalog = {catalog:?} is not a built-in route",
+                )));
+            }
+        }
         // Typos are silent in serde, so catch them the same way a real file does.
         let unknown = crate::config::unknown_keys(&self.config);
         if !unknown.is_empty() {
@@ -359,6 +370,54 @@ impl Template {
             format!("{header}\n{body}")
         })
     }
+
+    /// The TOML this template writes after its prompts have been answered.
+    ///
+    /// Text and path answers replace `${key}` in the generated text; a path
+    /// answer's `~` is expanded first. Secret answers never land in the file
+    /// (ADR-0104 §4) — the `[config]` holds only the environment variable name,
+    /// so a template that tried to write `${api_key}` leaves a placeholder
+    /// behind, which the check at the end turns into an error instead of a
+    /// silently wrong file.
+    pub fn substitute(&self, answers: &HashMap<String, String>) -> Result<String, TemplateError> {
+        let invalid = |message: String| TemplateError::Invalid {
+            path: self.source.clone(),
+            message,
+        };
+        let mut out = self.document()?;
+        for prompt in &self.prompts {
+            if prompt.kind == PromptKind::Secret {
+                continue;
+            }
+            let key = &prompt.key;
+            let value = answers.get(key).ok_or_else(|| {
+                invalid(format!(
+                    "missing answer for prompt {key:?} (kind {:?})",
+                    prompt.kind,
+                ))
+            })?;
+            let value = if prompt.kind == PromptKind::Path {
+                crate::config::expand_tilde(Path::new(value), crate::config::home_dir().as_deref())
+            } else {
+                PathBuf::from(value)
+            };
+            out = out.replace(&format!("${{{key}}}"), &value.to_string_lossy());
+        }
+        if let Some(leftover) = first_placeholder(&out) {
+            return Err(invalid(format!(
+                "unresolved placeholder ${{{leftover}}}; every ${{\u{2026}}} must be \
+                 answered by a text/path prompt",
+            )));
+        }
+        Ok(out)
+    }
+}
+
+/// The first `${…}` in `text`, named without the braces, for error messages.
+fn first_placeholder(text: &str) -> Option<String> {
+    let start = text.find("${")? + 2;
+    let end = text[start..].find('}')?;
+    Some(text[start..start + end].to_string())
 }
 
 /// The comment block at the very top of a template, comments and blank lines
@@ -825,5 +884,231 @@ base_url = "https://example.com/v1"
                 template.summary,
             );
         }
+    }
+
+    /// The llm templates are the ADR-0104 §3 list: five catalog routes plus one
+    /// self-contained oauth2 example. Pinned rather than counted — a template
+    /// disappearing is a user-visible regression.
+    #[test]
+    fn the_llm_templates_cover_the_reference_routes() {
+        let templates = all().unwrap();
+        let llm: Vec<&str> = templates
+            .iter()
+            .filter(|template| template.kind == Kind::Llm)
+            .map(|template| template.id.as_str())
+            .collect();
+        assert_eq!(
+            llm,
+            vec![
+                "_oauth2-example",
+                "anthropic",
+                "deepseek",
+                "minimax",
+                "ollama",
+                "openai"
+            ],
+        );
+    }
+
+    /// llm templates apply everywhere (ADR-0104 §9): unlike the security
+    /// backends, none of them is bound to a platform.
+    #[test]
+    fn llm_templates_apply_on_every_platform() {
+        for template in all().unwrap() {
+            if template.kind != Kind::Llm {
+                continue;
+            }
+            assert!(
+                template.os.is_empty(),
+                "{} declares os = {:?}",
+                template.id,
+                template.os
+            );
+            for os in ["linux", "macos", "windows"] {
+                assert!(
+                    template.applies_on(os),
+                    "{} must apply on {os}",
+                    template.id
+                );
+            }
+        }
+    }
+
+    /// Reference templates must not copy catalog fields (ADR-0104 §5): the
+    /// catalog is the single fact source, and a `base_url` written into a
+    /// template would be the second copy that drifts. The generated document
+    /// carries no `base_url`, and the parsed config leaves the route's endpoint
+    /// at its catalog default.
+    #[test]
+    fn reference_templates_do_not_copy_catalog_fields() {
+        for template in all().unwrap() {
+            if template.kind != Kind::Llm || template.catalog.is_none() {
+                continue;
+            }
+            let document = template.document().unwrap();
+            // The word may appear in the caveat text (saying what the catalog
+            // supplies); an actual `key = value` line must not.
+            assert!(
+                !document.contains("base_url ="),
+                "{} must not write base_url: {document}",
+                template.id,
+            );
+            assert!(
+                !document.contains("default_model ="),
+                "{} must not write default_model: {document}",
+                template.id,
+            );
+            let config = template.config().unwrap();
+            let provider = config
+                .providers
+                .get(&template.id)
+                .unwrap_or_else(|| panic!("{} must declare its own route", template.id));
+            assert!(
+                provider.base_url.is_none(),
+                "{} sets base_url = {:?}; leave it to the catalog",
+                template.id,
+                provider.base_url,
+            );
+        }
+    }
+
+    /// `ollama` is the keyless reference template: no prompt, no api_key_env —
+    /// a local endpoint has no key to ask for (ADR-0104 §5).
+    #[test]
+    fn the_ollama_template_is_keyless() {
+        let template = find(Kind::Llm, "ollama").unwrap();
+        assert!(template.prompts.is_empty(), "ollama must not ask for a key");
+        let config = template.config().unwrap();
+        let provider = config.providers.get("ollama").unwrap();
+        assert!(provider.api_key_env.is_none());
+        assert!(provider.api_key_command.is_none());
+    }
+
+    /// The oauth2 example is self-contained (ADR-0104 §5/§6): it carries its
+    /// own `base_url`, `protocol` and `api_key_command`, and never an
+    /// `api_key_env`. It also demonstrates the prompt machinery: `${project}`
+    /// is substituted from a text answer.
+    #[test]
+    fn the_oauth2_example_is_self_contained() {
+        let template = find(Kind::Llm, "_oauth2-example").unwrap();
+        assert!(template.catalog.is_none(), "self-contained template");
+        let document = template.document().unwrap();
+        for needle in ["base_url", "api_key_command", "protocol", "${project}"] {
+            assert!(document.contains(needle), "{needle} missing:\n{document}");
+        }
+        assert!(
+            !document.contains("api_key_env"),
+            "self-contained template must not use api_key_env:\n{document}"
+        );
+        let answers = HashMap::from([("project".to_string(), "my-gcp".to_string())]);
+        let out = template.substitute(&answers).unwrap();
+        assert!(out.contains("my-gcp"), "{out}");
+        assert!(!out.contains("${project}"), "{out}");
+    }
+
+    /// Secret answers never land in the generated file (ADR-0104 §4): the file
+    /// carries only the environment variable name. Even if a caller hands over
+    /// a secret answer, substituting it is refused — the prompt kind makes it
+    /// invisible.
+    #[test]
+    fn secret_answers_never_land_in_the_file() {
+        let template = find(Kind::Llm, "deepseek").unwrap();
+        let answers = HashMap::from([("api_key".to_string(), "sk-secret-value".to_string())]);
+        let out = template.substitute(&answers).unwrap();
+        assert!(
+            !out.contains("sk-secret-value"),
+            "a secret answer leaked into the config:\n{out}"
+        );
+        assert!(out.contains("DEEPSEEK_API_KEY"), "{out}");
+    }
+
+    /// A text/path prompt without an answer is an error, not an empty line: the
+    /// generated file would silently miss the field the template promised.
+    #[test]
+    fn substitution_requires_prompt_answers() {
+        let template = find(Kind::Llm, "_oauth2-example").unwrap();
+        let error = template.substitute(&HashMap::new()).unwrap_err();
+        assert!(
+            format!("{error}").contains("project"),
+            "error should name the unanswered prompt: {error}"
+        );
+    }
+
+    /// A `${…}` nobody can answer is a template defect. The same check that
+    /// keeps secret values out of the file also catches a template that forgot
+    /// to declare its own placeholder.
+    #[test]
+    fn unresolved_placeholder_is_an_error() {
+        let text = r#"
+[template]
+kind = "llm"
+title = "T"
+summary = "S"
+
+[config.providers.ghost]
+base_url = "https://example.com/${nobody}"
+"#;
+        let template = Template::parse("llm/ghost.toml", text).unwrap();
+        let error = template.substitute(&HashMap::new()).unwrap_err();
+        assert!(
+            format!("{error}").contains("nobody"),
+            "error should name the unresolved placeholder: {error}"
+        );
+    }
+
+    /// A reference template naming a route the catalog does not ship has
+    /// nothing to fall back to; `config()` must refuse it at the template layer
+    /// rather than write a config whose "rest comes from the catalog" is a lie.
+    #[test]
+    fn a_catalog_reference_must_name_a_builtin_route() {
+        let text = r#"
+[template]
+kind = "llm"
+title = "T"
+summary = "S"
+catalog = "not-a-route"
+
+[config.providers.ghost]
+api_key_env = "GHOST_KEY"
+"#;
+        let template = Template::parse("llm/ghost.toml", text).unwrap();
+        let error = template.config().unwrap_err();
+        assert!(
+            format!("{error}").contains("not-a-route"),
+            "error should name the missing route: {error}"
+        );
+    }
+
+    /// Path answers have `~` expanded before substitution, so a template can
+    /// write a home-relative value without knowing the home. The expected
+    /// expansion is computed with the same helper the implementation uses,
+    /// keeping the test home-independent.
+    #[test]
+    fn path_answers_expand_tilde() {
+        let text = r#"
+[template]
+kind = "llm"
+title = "T"
+summary = "S"
+
+[[prompt]]
+key = "dir"
+label = "dir"
+kind = "path"
+
+[config.providers.local]
+base_url = "http://localhost"
+extra_body = { dir = "${dir}" }
+"#;
+        let template = Template::parse("llm/local.toml", text).unwrap();
+        let home = crate::config::home_dir();
+        let expected = crate::config::expand_tilde(Path::new("~/lib"), home.as_deref());
+        let answers = HashMap::from([("dir".to_string(), "~/lib".to_string())]);
+        let out = template.substitute(&answers).unwrap();
+        assert!(
+            out.contains(&expected.to_string_lossy().into_owned()),
+            "{out}"
+        );
+        assert!(!out.contains("~/lib"), "the raw answer leaked:\n{out}");
     }
 }

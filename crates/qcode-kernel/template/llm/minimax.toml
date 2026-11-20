@@ -1,0 +1,20 @@
+# MiniMax —— OpenAI 兼容端点，只需要一个 API key。
+#
+# 引用式模板（ADR-0104 §5）：base_url / 模型清单取自内置 catalog，
+# 本文件只写 key 的环境变量名。国际版账号需要另改 base_url。
+
+[template]
+kind = "llm"
+id = "minimax"
+catalog = "minimax"
+title = "MiniMax"
+summary = "OpenAI 兼容端点；只需要一个 API key，其余配置取自内置 catalog。"
+
+[[prompt]]
+key = "api_key"
+label = "MINIMAX_API_KEY"
+kind = "secret"
+env = "MINIMAX_API_KEY"
+
+[config.providers.minimax]
+api_key_env = "MINIMAX_API_KEY"

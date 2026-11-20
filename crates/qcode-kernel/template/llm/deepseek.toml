@@ -1,0 +1,21 @@
+# DeepSeek —— OpenAI 兼容端点，只需要一个 API key。
+#
+# 这是一份「引用式」模板（ADR-0104 §5）：base_url / default_model 等字段
+# 取自内置 catalog，本文件不复制它们。生成的 config.toml 只有一行
+# `api_key_env`，其余配置照旧回落到 catalog。
+
+[template]
+kind = "llm"
+id = "deepseek"
+catalog = "deepseek"
+title = "DeepSeek"
+summary = "OpenAI 兼容端点；只需要一个 API key，其余配置取自内置 catalog。"
+
+[[prompt]]
+key = "api_key"
+label = "DEEPSEEK_API_KEY"
+kind = "secret"
+env = "DEEPSEEK_API_KEY"
+
+[config.providers.deepseek]
+api_key_env = "DEEPSEEK_API_KEY"
