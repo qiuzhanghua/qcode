@@ -129,9 +129,13 @@ impl DirectManipulationHandler {
 impl Drop for DirectManipulationHandler {
     fn drop(&mut self) {
         unsafe {
-            self.viewport.Stop().log_err();
-            self.viewport.Abandon().log_err();
-            self.manager.Deactivate(self.window).log_err();
+            // Drop 在窗口销毁时运行，此刻 self.window 可能已经失效；
+            // Deactivate 用死句柄会打出假的 ERROR_INVALID_WINDOW_HANDLE。
+            if IsWindow(Some(self.window)).as_bool() {
+                self.viewport.Stop().log_err();
+                self.viewport.Abandon().log_err();
+                self.manager.Deactivate(self.window).log_err();
+            }
         }
     }
 }

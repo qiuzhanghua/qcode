@@ -294,7 +294,11 @@ impl WindowsWindowInner {
 
     fn handle_size_move_loop_exit(&self, handle: HWND) -> Option<isize> {
         unsafe {
-            KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
+            // 关闭窗口时可能还在 size-move 循环里，此时句柄已经销毁；
+            // KillTimer 用死句柄会打出假的 ERROR_INVALID_WINDOW_HANDLE。
+            if IsWindow(Some(handle)).as_bool() {
+                KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
+            }
         }
         None
     }
