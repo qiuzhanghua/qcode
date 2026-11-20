@@ -658,7 +658,11 @@ pub(crate) fn keychain_exists(provider: &str) -> Option<Vec<String>> {
                 provider.to_string(),
             ]);
         }
-        return None;
+        // Tail expression, not `return None;`: the latter trips `needless_return`
+        // on whichever platform's block this is — and only on that one, since the
+        // other `cfg` arms are not compiled here. That is how the Linux and
+        // Windows arms went unnoticed until CI ran them.
+        None
     }
     #[cfg(target_os = "linux")]
     {
@@ -676,7 +680,7 @@ pub(crate) fn keychain_exists(provider: &str) -> Option<Vec<String>> {
                 provider.to_string(),
             ]);
         }
-        return None;
+        None
     }
     #[cfg(target_os = "windows")]
     {
@@ -693,7 +697,7 @@ pub(crate) fn keychain_exists(provider: &str) -> Option<Vec<String>> {
                 script,
             ]);
         }
-        return None;
+        None
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {

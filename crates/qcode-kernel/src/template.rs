@@ -261,12 +261,12 @@ impl Template {
         // A reference template names the catalog route it reuses; that route
         // must exist, or the generated file's "rest comes from the catalog"
         // promise has nothing to hold on to (ADR-0104 §5).
-        if let Some(catalog) = &self.catalog {
-            if crate::config::catalog_entry(catalog).is_none() {
-                return Err(invalid(format!(
-                    "[template] catalog = {catalog:?} is not a built-in route",
-                )));
-            }
+        if let Some(catalog) = &self.catalog
+            && crate::config::catalog_entry(catalog).is_none()
+        {
+            return Err(invalid(format!(
+                "[template] catalog = {catalog:?} is not a built-in route",
+            )));
         }
         // Typos are silent in serde, so catch them the same way a real file does.
         let unknown = crate::config::unknown_keys(&self.config);
