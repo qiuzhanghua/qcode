@@ -135,6 +135,41 @@ impl Terminals {
         Some(id)
     }
 
+    /// Close every tab whose shell has exited. Returns how many went away.
+    ///
+    /// `exit` is the normal way to leave a shell, so the tab should leave with
+    /// it. Without this the tab stayed on screen as a dead grid: `has_exited`
+    /// already swallowed typing, pasting and key presses, so the only thing left
+    /// for the user to do was notice that nothing happened and close the tab by
+    /// hand. The same applies to a shell that died on its own.
+    ///
+    /// Teardown matches [`Self::close_active`]: `close` signals the process
+    /// group and waits for it to empty, which must not run on the UI thread.
+    pub(crate) fn close_exited(&mut self) -> usize {
+        let mut closed = 0;
+        let mut index = 0;
+        while index < self.tabs.len() {
+            if !self.tabs[index].session.has_exited() {
+                index += 1;
+                continue;
+            }
+            let tab = self.tabs.remove(index);
+            std::thread::spawn(move || {
+                tab.session.close();
+            });
+            // Keep `active` pointing at the same tab it did before: removing an
+            // entry before it shifts it down by one.
+            if index < self.active {
+                self.active -= 1;
+            }
+            closed += 1;
+        }
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len().saturating_sub(1);
+        }
+        closed
+    }
+
     /// The live directory of the active shell, used when opening the next one.
     pub(crate) fn inherited_cwd(&self) -> Option<PathBuf> {
         let tab = self.active()?;
@@ -302,6 +337,15 @@ impl crate::shell::Shell {
     /// The clipboard cannot move there: it belongs to the app, which owns the real
     /// clipboard and the UI thread that reads it.
     pub(crate) fn service_terminal(&mut self, cx: &mut Context<Self>) {
+        // A shell that exited takes its tab with it, before the clipboard loop
+        // below gets a chance to answer a program that is no longer there.
+        if self.terminals.close_exited() > 0 {
+            self.clear_selection(cx);
+            if self.terminals.is_empty() {
+                self.view = crate::shell::MainView::Task;
+            }
+            cx.notify();
+        }
         for tab in &mut self.terminals.tabs {
             if !tab.session.events().has_pending() {
                 continue;
@@ -807,6 +851,13 @@ impl gpui_kit::EntityInputHandler for crate::shell::Shell {
 #[cfg(test)]
 mod tests {
     use super::{GridPoint, selected_text};
+    // The exit tests spawn real shells, so they are unix-only; on Windows these
+    // two would be unused imports — and `-D warnings` in the cross-check makes
+    // that an error rather than a warning.
+    #[cfg(unix)]
+    use super::Terminals;
+    #[cfg(unix)]
+    use qcode_kernel::config::TerminalConfig;
 
     fn screen(columns: usize, rows: usize, output: &[u8]) -> qcode_terminal::Screen {
         let mut screen = qcode_terminal::Screen::new(columns, rows, 100);
@@ -841,5 +892,106 @@ mod tests {
         let screen = screen(20, 2, b"alpha\r\nbravo");
         let point = GridPoint { row: 1, column: 0 };
         assert_eq!(selected_text(&screen.view(), point, point), "b");
+    }
+
+    /// A shell that exits the moment it starts, so `has_exited` turns true
+    /// without needing a real interactive session.
+    ///
+    /// `config.shell` is a program path, not a command line, so this has to be a
+    /// file. It is made executable on unix only — the GUI tests run on all three
+    /// platforms and only the unix ones can express this shape.
+    #[cfg(unix)]
+    fn exiting_shell(tag: &str) -> TerminalConfig {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!("qcode-terminal-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let script = dir.join("shell");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write shell");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shell");
+        TerminalConfig {
+            shell: script.display().to_string(),
+            ..TerminalConfig::default()
+        }
+    }
+
+    /// Opening a terminal whose shell exits immediately, and letting
+    /// `close_exited` see it, must leave no tabs behind.
+    ///
+    /// This is the `exit` path the user hits: the tab used to stay on screen as
+    /// a dead grid that swallowed every key press.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_that_exited_takes_its_tab_with_it() {
+        let dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let config = exiting_shell("exited");
+
+        let mut terminals = Terminals::default();
+        assert!(terminals.open(&config, None, 80, 24, &dirty));
+        assert_eq!(terminals.tabs.len(), 1);
+
+        // The child is reaped by the reader thread, so this is the one thing in
+        // the test that has to wait. A second is far longer than `exit 0` needs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !terminals.tabs[0].session.has_exited() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shell never reported its exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        assert_eq!(terminals.close_exited(), 1);
+        assert!(terminals.is_empty());
+        // `active` must stay in range or the next `active()` panics.
+        assert_eq!(terminals.active, 0);
+        assert!(terminals.active().is_none());
+
+        // A second pass has nothing left to do — the tab is gone, not hidden.
+        assert_eq!(terminals.close_exited(), 0);
+    }
+
+    /// Closing an exited tab that sits *before* the active one keeps `active`
+    /// pointing at the same tab, instead of silently switching the user's view.
+    #[cfg(unix)]
+    #[test]
+    fn closing_an_exited_tab_keeps_the_active_tab_active() {
+        let dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mut terminals = Terminals::default();
+        assert!(terminals.open(&exiting_shell("shift"), None, 80, 24, &dirty));
+        // `cat` on a pty blocks on input, so this tab is still alive when the
+        // first one goes away — which is what makes `active` wrong if the index
+        // is not adjusted.
+        let alive = TerminalConfig {
+            shell: "/bin/cat".to_string(),
+            ..TerminalConfig::default()
+        };
+        assert!(terminals.open(&alive, None, 80, 24, &dirty));
+        assert_eq!(terminals.tabs.len(), 2);
+        terminals.active = 1;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !terminals.tabs[0].session.has_exited() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first shell never exited"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!terminals.tabs[1].session.has_exited(), "`cat` exited too");
+
+        assert_eq!(terminals.close_exited(), 1);
+        assert_eq!(terminals.tabs.len(), 1);
+        // The surviving tab must still be the one the user was looking at.
+        assert_eq!(terminals.active, 0);
+        assert!(
+            !terminals
+                .active()
+                .expect("one tab left")
+                .session
+                .has_exited()
+        );
     }
 }
