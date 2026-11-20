@@ -29,7 +29,32 @@ jobs:
         # compiler in CI, and the same arch the release matrix ships
         # (`build (ubuntu-24.04-arm, linux-arm64)`), so this is where that class of
         # bug becomes a push-time failure instead of a failed release.
+        #
+        # The arm row runs **check + clippy, not the test suite** (see the
+        # `full-tests` flag below). That is a resource limit, not a smaller
+        # promise: on 2026-11-20 the arm job was SIGTERM'd twice while linking
+        # the test binaries, and the cause was measured, not guessed — see the
+        # note on the `test` step.
         os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          # Which rows run the full test suite. The arm row does not: it is the
+          # only job that compiles aarch64-linux natively, and it has to do that
+          # from scratch whenever `Cargo.lock` changes (the `rust-cache` key
+          # hashes every Cargo.toml/Cargo.lock, so a new dependency invalidates
+          # it). Linking ~90 test binaries at once exceeds what the runner has,
+          # and the job died with SIGTERM mid-link, twice.
+          #
+          # What the arm row *does* run is the part no other job covers:
+          # `cargo check` and `cargo clippy` compile every
+          # `#[cfg(target_os = "linux")]` and every aarch64-specific line —
+          # `c_char` being `u8` rather than `i8` is exactly such a line, and it
+          # is a compile error, not a runtime one. Linking is what it skips.
+          - os: macos-latest
+            full-tests: true
+          - os: ubuntu-latest
+            full-tests: true
+          - os: ubuntu-24.04-arm
+            full-tests: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -60,13 +85,41 @@ jobs:
       - name: clippy
         shell: bash
         run: bash scripts/ci-clippy.sh
+      # The arm row stops here and runs `check` instead of the test suite.
+      #
+      # Measured on 2026-11-20 (run 44720063264, attempt 2): the arm job was
+      # SIGTERM'd twice — exit 143 — at the same point both times, after ~4.5
+      # minutes, with 23 `Compiling` lines and **zero** `Linking` lines and zero
+      # tests started. Not a test hang, not a timeout (the job limit is 30
+      # minutes): the runner was killed while linking.
+      #
+      # Why it had to link from scratch: `rust-cache`'s key hashes every
+      # Cargo.toml/Cargo.lock, so `rust-embed` joining `qcode-kernel`'s
+      # dependencies (ADR-0104 step 1) invalidated the arm cache, which had
+      # been created on 2026-11-18. x64 and macOS had a cache for the new lock
+      # and their `test` step took 3 minutes; the arm row had none and had to
+      # build and link ~90 test binaries from zero on a 4-vCPU runner.
+      #
+      # So the arm row runs the two things that catch the class of bug it
+      # exists for — aarch64-specific **compile** errors — and skips linking.
+      # `cargo check` does not link, and neither does clippy.
+      - name: check (no link)
+        if: matrix.full-tests == false
+        shell: bash
+        run: cargo check --workspace --all-targets
       - name: test
+        if: matrix.full-tests
         shell: bash
         run: bash scripts/ci-test.sh
       - name: fixture self-check
+        if: matrix.full-tests
         run: bash eval/fixtures/workspace/scripts/ci.sh
+      # This one links a test binary that pulls in `reqwest` -> `aws-lc-sys`,
+      # the heaviest C dependency in the tree — the same linking that the arm
+      # row could not survive. The sandbox assertions themselves are
+      # architecture-independent and run on the x64 row.
       - name: linux sandbox tests
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.full-tests
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
