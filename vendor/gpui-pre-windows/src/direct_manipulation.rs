@@ -96,6 +96,14 @@ impl DirectManipulationHandler {
 
     pub fn on_pointer_hit_test(&self, wparam: WPARAM) {
         unsafe {
+            // The touchpad viewport is bound to this window's HWND; on a
+            // closing window the handle may already be destroyed, and
+            // SetContact then fails with a spurious
+            // ERROR_INVALID_WINDOW_HANDLE. Same guard as the VSync
+            // RedrawWindow loop (platform.rs).
+            if !IsWindow(Some(self.window)).as_bool() {
+                return;
+            }
             let pointer_id = wparam.loword() as u32;
             let mut pointer_type = POINTER_INPUT_TYPE::default();
             if GetPointerType(pointer_id, &mut pointer_type).is_ok() && pointer_type == PT_TOUCHPAD
@@ -107,7 +115,9 @@ impl DirectManipulationHandler {
 
     pub fn update(&self) {
         unsafe {
-            self.update_manager.Update(None).log_err();
+            if IsWindow(Some(self.window)).as_bool() {
+                self.update_manager.Update(None).log_err();
+            }
         }
     }
 

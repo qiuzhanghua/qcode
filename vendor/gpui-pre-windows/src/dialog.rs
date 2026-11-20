@@ -238,7 +238,12 @@ unsafe extern "system" fn close_dialog(hwnd: HWND, _: LPARAM) -> BOOL {
     let length = unsafe { GetClassNameW(hwnd, &mut class_name) } as usize;
     let dialog_class = w!("#32770");
     if class_name.get(..length) == Some(unsafe { dialog_class.as_wide() }) {
-        unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).log_err() };
+        // The dialog may already be destroyed by the time this thread
+        // enumerates it; posting to a dead HWND logs a spurious
+        // ERROR_INVALID_WINDOW_HANDLE.
+        if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).log_err() };
+        }
     }
     TRUE
 }
