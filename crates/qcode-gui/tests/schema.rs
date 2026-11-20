@@ -9,7 +9,12 @@ fn every_known_config_key_has_a_control() {
     let mut missing = Vec::new();
     for (section, keys) in known {
         for key in *keys {
-            if *key == "version" || (section.is_empty() && sections.contains(key)) {
+            // `version` 与 `schema`：前者是内部版本号，后者是 `qc config init`
+            // 写入的文件格式标记——都不该由用户表单编辑。
+            if *key == "version"
+                || *key == "schema"
+                || (section.is_empty() && sections.contains(key))
+            {
                 continue;
             }
             // V2.1: `default_provider` and `[default-model]` no longer have
@@ -22,7 +27,13 @@ fn every_known_config_key_has_a_control() {
                 // user invents (cron, prompt, task, overlap, timeout). A form
                 // cannot invent keys, so it is edited in the config file; the
                 // sidebar shows the run state (ADR-0059 §1).
-                || (section.is_empty() && *key == "schedules");
+                || (section.is_empty() && *key == "schedules")
+                // ADR-0065: `[network] mode` / `enabled` were folded into the
+                // authoritative `[sandbox] network`. The page shows only the
+                // latter; old files keep working through the loader's fallback
+                // (`Config::network_mode_with`), and a save never rewrites the
+                // legacy keys, so they need no control.
+                || (*section == "network" && matches!(*key, "mode" | "enabled"));
             if auto_managed {
                 continue;
             }

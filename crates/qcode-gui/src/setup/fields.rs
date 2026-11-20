@@ -22,7 +22,14 @@ pub(crate) fn textarea(
     value: String,
     placeholder: &str,
 ) -> Entity<TextareaState> {
-    let input = cx.new(|cx| TextareaState::new(window, cx).placeholder(placeholder.to_string()));
+    // 保留软换行（长内容自动折行），但把续行缩进改为 None：编辑器默认
+    // WrappingIndent::Same 会让前导空格把续行顶格区域占成「不可输入」的空白，
+    // 看着像丢了内容。列表型输入（一行一条）用顶格续行最符合直觉。
+    let input = cx.new(|cx| {
+        TextareaState::new(window, cx)
+            .placeholder(placeholder.to_string())
+            .wrapping_indent(WrappingIndent::None)
+    });
     input.update(cx, |input, cx| input.set_value(value, window, cx));
     input
 }

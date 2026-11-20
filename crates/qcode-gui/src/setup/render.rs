@@ -4,6 +4,11 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::text::markdown_ast;
+use gpui_kit::component::text::{
+    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
+    MarkdownPlugin,
+};
 
 /// A small circular "?" glyph drawn by hand (a bordered circle with a "?"
 /// inside). The Button component enforces a minimum size too large for this
@@ -208,26 +213,53 @@ impl Render for SetupView {
                             })),
                     );
                 }
-                for field in forms::fields_for(page) {
-                    body = body.child(self.render_field(field, cx));
-                    // 能力边界文案与 `qc config init` 的 security 模板同源（ADR-0104
-                    // §7）：后端能做什么、不能做什么，写在选中项下面一行，而不是藏
-                    // 在 help 里——「配了沙箱以为安全了」正是这份 ADR 要消灭的认知差。
-                    if field.path == ["sandbox", "mode"] {
-                        let mode = self
-                            .selects
-                            .get("sandbox.mode")
-                            .cloned()
-                            .unwrap_or_default();
-                        if let Some(text) = sandbox_capability(&mode) {
-                            body = body.child(
-                                div()
-                                    .py_1()
-                                    .text_size(crate::sp(crate::CAPTION_SIZE))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(text),
-                            );
+                // Network & Sandbox 页分两段排布：沙箱（含审批）在上、网络出口
+                // 在下，中间一条横线隔开。其余页面仍按 FIELDS 的定义顺序平铺。
+                if page == Page::NetworkSandbox {
+                    // 「网络出口」组随 `sandbox.network` 变化：只有代理启动
+                    // （proxy/strict）时白名单、私有网段、未知主机策略和审计才有
+                    // 执行者；off 由沙箱直接断网、open 直连裸网络，整组换成一行
+                    // 说明，免得把死配置展示成可调项。旧写法 `[network] mode` /
+                    // `enabled` 不展示：老文件的兼容由加载逻辑推导，保存不改写它们。
+                    let network = self
+                        .selects
+                        .get("sandbox.network")
+                        .cloned()
+                        .unwrap_or_default();
+                    body = body.child(group_heading("Sandbox"));
+                    for path in forms::NETWORK_SANDBOX_SANDBOX_GROUP {
+                        let Some(field) = forms::field_at(path) else {
+                            continue;
+                        };
+                        body = body.child(self.render_field(field, cx));
+                    }
+                    body = body.child(div().h(px(1.0)).w_full().my_1().bg(cx.theme().border));
+                    body = body.child(group_heading("Network"));
+                    let egress = forms::network_egress_fields(&network);
+                    if egress.is_empty() {
+                        let reason = if network == "open" {
+                            "当前为裸网络（open）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。"
+                        } else {
+                            "出站已被沙箱全部阻断（off）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。"
+                        };
+                        body = body.child(
+                            div()
+                                .py_1()
+                                .text_size(crate::sp(crate::CAPTION_SIZE))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(reason),
+                        );
+                    } else {
+                        for path in egress {
+                            let Some(field) = forms::field_at(path) else {
+                                continue;
+                            };
+                            body = body.child(self.render_field(field, cx));
                         }
+                    }
+                } else {
+                    for field in forms::fields_for(page) {
+                        body = body.child(self.render_field(field, cx));
                     }
                 }
                 for table in forms::tables_for(page) {
@@ -495,30 +527,175 @@ fn section_intro(page: Page) -> &'static str {
     }
 }
 
-/// A sandbox mode's capability boundary, in the wording the security templates
-/// carry (ADR-0104 §7: a template's summary must say what the backend can and
-/// cannot do — "landlock 网络不限制"、"windows-acl 只限写"、…).
+/// 设置页分组的小标题（Network & Sandbox 用）：secondary 字号、半粗，
+/// 与页头 `## 标题` 拉开层级。
+fn group_heading(title: &'static str) -> Div {
+    div()
+        .pt_1()
+        .text_size(crate::sp(crate::SECONDARY_SIZE))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(title)
+}
+
+/// 行内问号圆圈携带的数据：哪个键（hover_help 的键）与它的帮助文本。
+struct HelpInlineData {
+    key: String,
+    help: &'static str,
+}
+
+/// 该节点是否是 `<qc-help/>` 行内 HTML 标记（独立函数便于直接测试）。
+pub(super) fn is_help_marker(node: &markdown_ast::Node) -> bool {
+    matches!(
+        node,
+        markdown_ast::Node::Html(html) if html.value == "<qc-help/>"
+    )
+}
+
+/// 把 `<qc-help/>` 行内 HTML 标记替换为悬浮提示圆圈（MarkdownPlugin）。
 ///
-/// Read from the templates rather than hardcoded here, so the settings page and
-/// `qc config init` can never drift about what a backend actually confines.
-/// Parsed once and cached; a parse failure degrades to no caption.
-fn sandbox_capability(mode: &str) -> Option<String> {
-    use qcode_kernel::template::Kind;
-    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    let rows = CACHE.get_or_init(|| {
-        qcode_kernel::template::all()
-            .map(|templates| {
-                templates
-                    .into_iter()
-                    .filter(|template| template.kind == Kind::Security)
-                    .map(|template| (template.id, template.summary))
-                    .collect()
-            })
-            .unwrap_or_default()
-    });
-    rows.iter()
-        .find(|(id, _)| id == mode)
-        .map(|(_, summary)| summary.clone())
+/// 为什么走 markdown 行内元素管线：普通 div 布局做不到「圆圈跟在换行标签
+/// 最后一个字后面」——换行的文本盒占满整列，圆圈作为兄弟元素只能对齐盒子
+/// 右缘。把圆圈做成文本行内元素（InlineElement）后它随文字一起换行，
+/// 永远停在最后一个字符后面。
+struct HelpInlinePlugin {
+    entity: Entity<SetupView>,
+    key: String,
+    help: &'static str,
+}
+
+impl MarkdownPlugin for HelpInlinePlugin {
+    fn name(&self) -> &str {
+        "qc-help"
+    }
+
+    fn parse(
+        &self,
+        node: &markdown_ast::Node,
+        _cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        // 标签文案里不可能出现 `<qc-help/>`，匹配它是安全的。解析在后台任务
+        // 上运行，不能碰 Window/App，只用节点值判断。
+        if is_help_marker(node) {
+            Some(MarkdownNode::new(
+                "qc-help",
+                HelpInlineData {
+                    key: self.key.clone(),
+                    help: self.help,
+                },
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
+        let data = node.data::<HelpInlineData>()?;
+        let theme = cx.theme();
+        let open = self.entity.read(cx).hover_help.as_deref() == Some(data.key.as_str());
+        let popover = help_popover(
+            self.entity.clone(),
+            data.key.clone(),
+            data.help,
+            open,
+            theme.muted_foreground,
+            theme.border,
+        );
+        let circle = InlineElement::new(popover.into_any_element());
+        // 默认对齐把元素底边贴到行底（descent 侧），14px 圆圈因此在行内
+        // 明显偏低。行内图片用的居中算法是 size.height/2 + 正文基线 - 行高/2；
+        // 正文基线即文字在其行框内的基线（centered_baseline），用正文的
+        // 字号与行高重新 shape 一行就能拿到。
+        let line_height = context.line_height();
+        let body = window.text_system().shape_line(
+            " ".into(),
+            context.font_size(),
+            &[context.text_style().to_run(1)],
+            None,
+        );
+        let body_baseline = (line_height - body.ascent - body.descent) / 2. + body.ascent;
+        let baseline = (px(7.0) + body_baseline - line_height / 2.).max(Pixels::ZERO);
+        Some(circle.with_baseline(baseline))
+    }
+}
+
+/// 问号圆圈的悬浮提示 popover：hover 触发（`hover_help` 受控）、移开/Esc/
+/// 点外部关闭。Split 布局（兄弟元素）与 Inline 布局（文本行内元素）共用。
+fn help_popover(
+    entity: Entity<SetupView>,
+    key: String,
+    help: &'static str,
+    open: bool,
+    muted_foreground: Hsla,
+    border_color: Hsla,
+) -> Popover {
+    let open_entity = entity.clone();
+    let hover_entity = entity.clone();
+    let hover_key = key.clone();
+    let id = format!("help-{key}");
+    let trigger_id = format!("help-trigger-{key}");
+    Popover::new(id)
+        .anchor(Anchor::BottomLeft)
+        .offset(px(1.5))
+        .appearance(false)
+        .open(open)
+        .on_open_change(move |open, _window, cx| {
+            let entity = open_entity.clone();
+            entity.update(cx, |view, cx| {
+                if !*open {
+                    view.hover_help = None;
+                    cx.notify();
+                }
+            });
+        })
+        .trigger(HelpCircle(
+            div()
+                .id(trigger_id)
+                .size(px(14.0))
+                .rounded_full()
+                .border_1()
+                .border_color(border_color)
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(10.0))
+                .text_color(muted_foreground)
+                .on_hover(move |hovered, _window, cx| {
+                    let entity = hover_entity.clone();
+                    let key = hover_key.clone();
+                    entity.update(cx, |view, cx| {
+                        if *hovered {
+                            view.hover_help = Some(key.clone());
+                        } else if view.hover_help.as_deref() == Some(key.as_str()) {
+                            view.hover_help = None;
+                        }
+                        cx.notify();
+                    });
+                })
+                .child("?"),
+        ))
+        .content(move |_state, _window, cx| {
+            // 自绘提示框，不用 Tooltip 组件：它自带 `.m_3()`（12px margin，
+            // tooltip.rs:118），那正是「offset 调成 0 仍有距离」的来源。正文
+            // 用 caption 字号 + muted 灰，长文本在 max_w 内换行，不溢出右边框。
+            div()
+                .max_w(px(420.0))
+                .bg(cx.theme().popover)
+                .text_color(cx.theme().muted_foreground)
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .px_2()
+                .py_1()
+                .text_size(crate::sp(crate::CAPTION_SIZE))
+                .child(help)
+                .into_any_element()
+        })
 }
 
 impl SetupView {
@@ -616,99 +793,34 @@ impl SetupView {
                 Input::new(input).aria_label(field.label).into_any_element()
             }
         };
-        let theme = cx.theme();
-        let (muted_foreground, border_color) = (theme.muted_foreground, theme.border);
-        let row = div()
+        // 全页统一的字段行：标签文字 + 问号圆圈作为文本行内元素流式排布。
+        // 普通 div 做不到「圆圈跟在换行标签最后一个字后面」——换行的文本盒
+        // 占满整列、圆圈只能贴盒右缘；走 TextView 的 markdown 行内元素管线
+        // 后圆圈随文字一起换行，永远停在最后一个字符后面。
+        let plugin = HelpInlinePlugin {
+            entity: cx.entity(),
+            key: key.clone(),
+            help: field.help,
+        };
+        // 标记前留一个空格：圆圈与最后一个字符之间要有间距。
+        let markdown = format!("{} <qc-help/>", field.label);
+        // 不能是 flex 容器：TextView 作为 flex 子项按内容宽度布局、不收缩
+        // 换行。普通块级容器会让 TextView 填满标签列宽（行宽的 16%）并换行。
+        let label_block = div().w(relative(0.16)).flex_shrink(0.0).child(
+            TextView::markdown(format!("label-{key}"), markdown)
+                .selectable(false)
+                .markdown_extensions(MarkdownExtensions::default().plugin(plugin)),
+        );
+        let control_block = div().flex_1().min_w_0().child(control);
+        div()
             .flex()
             .flex_row()
-            .items_center()
-            .justify_between()
-            .gap_3()
+            .items_start()
+            .gap_6()
             .py_1()
-            .border_b_1()
-            .border_color(rgba(0x7f7f7f20))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(div().child(field.label))
-                    // 提示词条 hover 触发：悬浮在问号上弹出、移开收起，
-                    // 取代早期点击触发的 Popover。实现为受控 popover
-                    // （open + on_open_change）——hover 状态由 SetupView 持有，
-                    // 鼠标移开、点外部、Esc 关闭时同步清掉。
-                    .child({
-                        let open = self.hover_help.as_deref() == Some(key.as_str());
-                        let entity = cx.entity();
-                        let open_entity = entity.clone();
-                        let hover_entity = entity.clone();
-                        let hover_key = key.clone();
-                        Popover::new(format!("help-{key}"))
-                            .anchor(Anchor::BottomLeft)
-                            .offset(px(1.5))
-                            .appearance(false)
-                            .open(open)
-                            .on_open_change(move |open, _window, cx| {
-                                let entity = open_entity.clone();
-                                entity.update(cx, |view, cx| {
-                                    if !*open {
-                                        view.hover_help = None;
-                                        cx.notify();
-                                    }
-                                });
-                            })
-                            .trigger(HelpCircle(
-                                div()
-                                    .id(format!("help-trigger-{key}"))
-                                    .size(px(14.0))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(border_color)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(10.0))
-                                    .text_color(muted_foreground)
-                                    .on_hover(move |hovered, _window, cx| {
-                                        let entity = hover_entity.clone();
-                                        let key = hover_key.clone();
-                                        entity.update(cx, |view, cx| {
-                                            if *hovered {
-                                                view.hover_help = Some(key.clone());
-                                            } else if view.hover_help.as_deref()
-                                                == Some(key.as_str())
-                                            {
-                                                view.hover_help = None;
-                                            }
-                                            cx.notify();
-                                        });
-                                    })
-                                    .child("?"),
-                            ))
-                            .content(move |_state, window, cx| {
-                                // 自绘提示框，不用 Tooltip 组件：它自带
-                                // `.m_3()`（12px margin，tooltip.rs:118），那正是
-                                // 「offset 调成 0 仍有距离」的来源。正文用
-                                // caption 字号 + muted 灰，长文本在 max_w 内换行，
-                                // 不会溢出右边框。
-                                div()
-                                    .max_w(px(420.0))
-                                    .bg(cx.theme().popover)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .rounded(cx.theme().radius)
-                                    .px_2()
-                                    .py_1()
-                                    .text_size(crate::sp(crate::CAPTION_SIZE))
-                                    .child(field.help)
-                                    .into_any_element()
-                            })
-                    }),
-            )
-            .child(control);
-        row.into_any_element()
+            .child(label_block)
+            .child(control_block)
+            .into_any_element()
     }
 
     /// A sandbox mode the machine cannot honour (e.g. `bwrap` without

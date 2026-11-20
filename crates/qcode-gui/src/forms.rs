@@ -103,10 +103,6 @@ const SANDBOX_MODES: &[&str] = &["none", "sandbox-exec"];
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 const SANDBOX_MODES: &[&str] = &["none"];
 const NETWORK_MODES: &[&str] = &["off", "proxy", "strict", "open"];
-/// The legacy `[network] mode` key (folded into `[sandbox] network` by
-/// ADR-0065). `NetworkMode` has no `open`, so offering it here would make the
-/// select produce a value the loader rejects.
-const NETWORK_LEGACY_MODES: &[&str] = &["off", "proxy", "strict"];
 
 /// Whether `[sandbox] network = "strict"` may be selected for a mode.
 ///
@@ -344,7 +340,7 @@ pub const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         path: &["sandbox", "network"],
-        label: "Network",
+        label: "Network mode",
         page: Page::NetworkSandbox,
         kind: FieldKind::Select(NETWORK_MODES),
         help: "off: no egress; proxy: through the proxy; strict: proxy only (macOS); open: raw sockets",
@@ -383,20 +379,6 @@ pub const FIELDS: &[FieldSpec] = &[
         page: Page::NetworkSandbox,
         kind: FieldKind::Bool,
         help: "landlock: lets a confined process open a PTY. The only devpts available is the host's, so this also reaches your other terminals' shells — off by default; prefer mode = bwrap",
-    },
-    FieldSpec {
-        path: &["network", "mode"],
-        label: "Network mode",
-        page: Page::NetworkSandbox,
-        kind: FieldKind::Select(NETWORK_LEGACY_MODES),
-        help: "strict is macOS sandbox-exec proxy-only hard mode",
-    },
-    FieldSpec {
-        path: &["network", "enabled"],
-        label: "Start egress proxy",
-        page: Page::NetworkSandbox,
-        kind: FieldKind::Bool,
-        help: "Required by strict mode",
     },
     FieldSpec {
         path: &["network", "allow"],
@@ -760,6 +742,46 @@ pub const GUI_FIELDS: &[FieldSpec] = &[
 
 pub fn fields_for(page: Page) -> impl Iterator<Item = &'static FieldSpec> {
     FIELDS.iter().filter(move |field| field.page == page)
+}
+
+/// `Network & Sandbox` 页「沙箱」组的字段，按渲染顺序排列。
+///
+/// 审批两条归在沙箱组：`mode = none` 时审批就是唯一边界（ADR-0065）。
+pub const NETWORK_SANDBOX_SANDBOX_GROUP: &[&[&str]] = &[
+    &["sandbox", "mode"],
+    &["sandbox", "network"],
+    &["sandbox", "extra_writable"],
+    &["sandbox", "extra_read"],
+    &["sandbox", "allow_pty"],
+    &["approval", "allow"],
+    &["approval", "deny"],
+];
+
+/// 「网络出口」组在当前沙箱网络模式下的**有效**字段。
+///
+/// 只有代理启动（`proxy` / `strict`）时白名单、私有网段、未知主机策略和审计
+/// 才有执行者；`off` 由沙箱直接断网、`open` 直连裸网络，这四项都无从生效，
+/// 于是返回空表，让页面用一行说明代替整组。
+///
+/// 旧写法 `[network] mode` / `enabled` 不在这里：兼容完全交给加载逻辑
+/// （`Config::network_mode_with` 在 `[sandbox] network` 未写时回退推导），
+/// 设置页只呈现权威键，保存时也不会改写这两个键。
+pub fn network_egress_fields(mode: &str) -> Vec<&'static [&'static str]> {
+    if matches!(mode, "proxy" | "strict") {
+        vec![
+            &["network", "allow"],
+            &["network", "allow_private"],
+            &["network", "unknown"],
+            &["network", "audit"],
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// 按路径取字段定义（分组渲染时用；路径不存在返回 `None`）。
+pub fn field_at(path: &[&str]) -> Option<&'static FieldSpec> {
+    FIELDS.iter().find(|field| field.path == path)
 }
 
 pub fn tables_for(page: Page) -> impl Iterator<Item = &'static TableSpec> {

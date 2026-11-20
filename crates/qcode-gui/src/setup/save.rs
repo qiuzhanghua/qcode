@@ -406,7 +406,6 @@ impl SetupView {
         })
         .detach();
     }
-
     /// Get the pending edit onto disk, then say whether the window may go away.
     ///
     /// Closing used to lose the last edit: the debounce timer woke up, saw `closing`,
@@ -435,9 +434,11 @@ impl SetupView {
         }
         // The decision itself is a pure function (see `decide_close`), because it is
         // the part that silently lost an edit and the part a test can reach without a
-        // window.
+        // window. The flush here is the **synchronous** variant: the window must not
+        // close before the last edit is actually on disk (the auto-save path writes on
+        // the background executor instead, so typing never stalls on disk IO).
         let outcome = decide_close(wizard, pending, warned, |kind| {
-            self.flush_auto_save(kind, cx)
+            self.flush_auto_save_sync(kind, cx)
         });
         match outcome {
             CloseOutcome::Close | CloseOutcome::CloseDespiteFailure => {
@@ -456,10 +457,29 @@ impl SetupView {
         }
     }
 
-    /// Write whatever the debounce has been holding. `Err` carries why it could not, so
-    /// a caller about to lose the window (see `prepare_to_close`) can say so instead of
-    /// only logging it to a console nobody is looking at.
+    /// Auto-save flush for the debounce / immediate path. The config is built
+    /// and validated on the UI thread; the disk write then runs on the
+    /// background executor, so typing never stalls on disk IO. `Err` carries
+    /// validation failures that must not reach the disk.
     pub(crate) fn flush_auto_save(
+        &mut self,
+        kind: AutoSaveKind,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        match kind {
+            // gui.json 是几百字节的小文件，且写后要立刻把偏好应用到所有窗口，
+            // 保持同步写入。
+            AutoSaveKind::Scalar(path) if path.first() == Some(&"gui") => {
+                self.auto_save_gui(path, cx)
+            }
+            AutoSaveKind::Scalar(path) => self.auto_save_scalar(path, cx),
+            AutoSaveKind::Tables => self.auto_save_tables(cx),
+        }
+    }
+
+    /// The same flush with the disk write running synchronously: the close path
+    /// must not close the window before the last edit is on disk.
+    pub(crate) fn flush_auto_save_sync(
         &mut self,
         kind: AutoSaveKind,
         cx: &mut Context<Self>,
@@ -468,42 +488,8 @@ impl SetupView {
             AutoSaveKind::Scalar(path) if path.first() == Some(&"gui") => {
                 self.auto_save_gui(path, cx)
             }
-            AutoSaveKind::Scalar(path) => self.auto_save_scalar(path, cx),
-            AutoSaveKind::Tables => match self.build_config(cx, false) {
-                Ok(mut config) => {
-                    self.keep_foreign_default_model(&mut config);
-                    match write_config(&self.path, &config) {
-                        Ok(()) => {
-                            self.config = config;
-                            // 这次保存成功了：清掉旧的失败提示，否则弹框
-                            // 「保存」用 `self.error` 判断成败时会误判失败、
-                            // 怎么点都关不掉。
-                            self.error = None;
-                            // The last flush won: a table write already persisted
-                            // any pending scalar edit, so drop it to avoid a
-                            // redundant rewrite.
-                            self.pending_auto_save = None;
-                            Ok(())
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "auto-save failed");
-                            Err(format!("config.toml 没能写入：{error}"))
-                        }
-                    }
-                }
-                // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
-                // 设置页顶部，避免“编辑不生效又看不到错误”。
-                Err(error) => {
-                    self.error = Some(error.clone());
-                    cx.notify();
-                    // `debug`, not `warn`: this fires on every debounce while the
-                    // user is halfway through typing a valid value, and the reason
-                    // is already on screen. Logging it at `warn` would bury the
-                    // real failures above in validation noise.
-                    tracing::debug!(%error, "auto-save skipped: invalid form");
-                    Err(format!("表单还有问题，改动没有写入：{error}"))
-                }
-            },
+            AutoSaveKind::Scalar(path) => self.auto_save_scalar_sync(path, cx),
+            AutoSaveKind::Tables => self.auto_save_tables_sync(cx),
         }
     }
 
@@ -513,12 +499,44 @@ impl SetupView {
     fn auto_save_scalar(
         &mut self,
         path: &'static [&'static str],
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let Some(value) = self.field_value(path, cx) else {
+        let Some((config, value)) = self.build_scalar(path, cx)? else {
             // The widget is gone (the page changed under the debounce). Nothing was
             // typed into it, so nothing can be lost by calling this a success.
             return Ok(());
+        };
+        let path_buf = self.path.clone();
+        self.spawn_config_write(config, AutoSaveKind::Scalar(path), cx, move || {
+            qcode_kernel::config_edit::set_scalar(&path_buf, path, value.as_deref())
+        });
+        Ok(())
+    }
+
+    /// Synchronous variant of [`Self::auto_save_scalar`] for the close path.
+    fn auto_save_scalar_sync(
+        &mut self,
+        path: &'static [&'static str],
+        cx: &Context<Self>,
+    ) -> Result<(), String> {
+        let Some((config, value)) = self.build_scalar(path, cx)? else {
+            return Ok(());
+        };
+        qcode_kernel::config_edit::set_scalar(&self.path, path, value.as_deref())
+            .map_err(|error| format!("{} 没能写入：{error}", path.join(".")))?;
+        self.config = config;
+        Ok(())
+    }
+
+    /// Build the final config for one scalar edit. `None` means the widget is
+    /// gone (nothing to write); `Err` means the value does not validate.
+    fn build_scalar(
+        &self,
+        path: &'static [&'static str],
+        cx: &Context<Self>,
+    ) -> Result<Option<(Config, Option<String>)>, String> {
+        let Some(value) = self.field_value(path, cx) else {
+            return Ok(None);
         };
         let mut config = self.config.clone();
         if let Err(error) = apply_scalar(&mut config, path, &value) {
@@ -532,18 +550,118 @@ impl SetupView {
         let write_value = if value.trim().is_empty() && OPTIONAL_PATHS.contains(&path) {
             None
         } else {
-            Some(value.as_str())
+            Some(value)
         };
-        match qcode_kernel::config_edit::set_scalar(&self.path, path, write_value) {
-            Ok(()) => {
-                self.config = config;
+        Ok(Some((config, write_value)))
+    }
+
+    /// Persist the table rows: build the config on the UI thread, write on the
+    /// background executor.
+    fn auto_save_tables(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        match self.build_config(cx, false) {
+            Ok(mut config) => {
+                self.keep_foreign_default_model(&mut config);
+                let path = self.path.clone();
+                let config_for_write = config.clone();
+                self.spawn_config_write(config, AutoSaveKind::Tables, cx, move || {
+                    write_config(&path, &config_for_write)
+                });
                 Ok(())
             }
+            // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
+            // 设置页顶部，避免“编辑不生效又看不到错误”。
             Err(error) => {
-                tracing::warn!(%error, "auto-save failed");
-                Err(format!("{} 没能写入：{error}", path.join(".")))
+                self.error = Some(error.clone());
+                cx.notify();
+                // `debug`, not `warn`: this fires on every debounce while the
+                // user is halfway through typing a valid value, and the reason
+                // is already on screen. Logging it at `warn` would bury the
+                // real failures above in validation noise.
+                tracing::debug!(%error, "auto-save skipped: invalid form");
+                Err(format!("表单还有问题，改动没有写入：{error}"))
             }
         }
+    }
+
+    /// Synchronous variant of [`Self::auto_save_tables`] for the close path.
+    fn auto_save_tables_sync(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        match self.build_config(cx, false) {
+            Ok(mut config) => {
+                self.keep_foreign_default_model(&mut config);
+                match write_config(&self.path, &config) {
+                    Ok(()) => {
+                        self.config = config;
+                        // 这次保存成功了：清掉旧的失败提示，否则弹框
+                        // 「保存」用 `self.error` 判断成败时会误判失败、
+                        // 怎么点都关不掉。
+                        self.error = None;
+                        // The last flush won: a table write already persisted
+                        // any pending scalar edit, so drop it to avoid a
+                        // redundant rewrite.
+                        self.pending_auto_save = None;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "auto-save failed");
+                        Err(format!("config.toml 没能写入：{error}"))
+                    }
+                }
+            }
+            Err(error) => {
+                self.error = Some(error.clone());
+                cx.notify();
+                tracing::debug!(%error, "auto-save skipped: invalid form");
+                Err(format!("表单还有问题，改动没有写入：{error}"))
+            }
+        }
+    }
+
+    /// Run the disk write on the background executor, strictly serialised:
+    /// while one write is in flight, further flushes queue in
+    /// `pending_auto_save` and the completion callback re-flushes them. On
+    /// completion the in-memory config is refreshed and any write error is
+    /// surfaced — all on the UI thread, so the file IO itself never stalls
+    /// typing.
+    fn spawn_config_write(
+        &mut self,
+        config: Config,
+        kind: AutoSaveKind,
+        cx: &mut Context<Self>,
+        write: impl FnOnce() -> Result<(), qcode_kernel::config::ConfigError> + Send + 'static,
+    ) {
+        if self.auto_save_writing {
+            // 上一个写盘还在后台进行：记下这次，完成回调里补写，保证串行。
+            self.pending_auto_save = Some(kind);
+            return;
+        }
+        self.auto_save_writing = true;
+        let state_config = config.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { write() }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.auto_save_writing = false;
+                if view.closing {
+                    // 关闭路径已同步落盘；在途的这次结果只清标记，不碰窗口。
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        view.config = state_config;
+                        view.error = None;
+                        // 写盘期间又来了新改动：补写一次，保持串行。
+                        if let Some(kind) = view.pending_auto_save.take() {
+                            let _ = view.flush_auto_save(kind, cx);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "auto-save failed");
+                        view.error = Some(format!("config.toml 没能写入：{error}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Persist one `gui.json` preference (Appearance section) and apply it to
@@ -605,9 +723,15 @@ impl SetupView {
         if let Some(value) = self.selects.get(&key) {
             return Some(value.clone());
         }
-        self.inputs
+        if let Some(value) = self.inputs.get(&key) {
+            return Some(value.read(cx).value().to_string());
+        }
+        // `Lines` 字段（每行一项的列表）用多行 textarea 承载；自动保存必须
+        // 从这里取值，否则这类字段（如 `search.api_key_command`）改完永远写
+        // 不进配置——`build_scalar` 只拿到 `None`，当成控件已消失而跳过。
+        self.textareas
             .get(&key)
-            .map(|input| input.read(cx).value().to_string())
+            .map(|textarea| textarea.read(cx).value().to_string())
     }
 }
 

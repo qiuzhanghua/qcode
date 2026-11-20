@@ -4,7 +4,7 @@ use crate::window_icon;
 use gpui_kit::base::Selectable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState, WrappingIndent};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::text::TextView;
 // `*` re-exports `gpui_macros::test` — a proc-macro attribute named `test`.
@@ -190,6 +190,11 @@ pub struct SetupView {
     /// newest generation fires, so rapid typing coalesces into one write).
     pending_auto_save: Option<AutoSaveKind>,
     auto_save_generation: u64,
+    /// A config write is in flight on the background executor. While true,
+    /// further flushes queue into `pending_auto_save` and the completion
+    /// callback re-flushes them, keeping writes strictly serial (two atomic
+    /// writes racing would clobber each other's rename).
+    auto_save_writing: bool,
     /// One close attempt has already been refused because the last write failed.
     /// The next one goes through, so a read-only config cannot trap the user.
     close_after_save_error: bool,
@@ -407,6 +412,7 @@ impl SetupView {
             close_after_save_error: false,
             pending_auto_save: None,
             auto_save_generation: 0,
+            auto_save_writing: false,
             _input_subscriptions: Vec::new(),
         };
         for field in forms::FIELDS {

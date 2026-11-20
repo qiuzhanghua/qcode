@@ -6,7 +6,29 @@ use super::{
     sync_default_model,
 };
 use crate::forms::{self, FieldKind};
+use gpui_kit::component::text::markdown_ast;
 use std::path::PathBuf;
+
+/// 行内问号圆圈的标记识别：只有 `<qc-help/>` 这一个 HTML 节点被当成标记，
+/// 普通标签文字与其它 HTML 都不匹配——否则换行标签的圆圈会被误替换。
+#[test]
+fn help_marker_matches_only_the_qc_marker() {
+    let marker = markdown_ast::Node::Html(markdown_ast::Html {
+        value: "<qc-help/>".to_string(),
+        position: None,
+    });
+    let other = markdown_ast::Node::Html(markdown_ast::Html {
+        value: "<b>x</b>".to_string(),
+        position: None,
+    });
+    let text = markdown_ast::Node::Text(markdown_ast::Text {
+        value: "Network mode".to_string(),
+        position: None,
+    });
+    assert!(super::render::is_help_marker(&marker));
+    assert!(!super::render::is_help_marker(&other));
+    assert!(!super::render::is_help_marker(&text));
+}
 
 /// Every `FieldKind::Lines` table column must be edited with a multi-line
 /// textarea; `is_lines_cell` is the classification used when seeding rows. A
@@ -84,6 +106,59 @@ fn network_sandbox_page_lists_the_sandbox_controls() {
                 && matches!(field.kind, FieldKind::Select(_))),
         "sandbox.mode must be a Select"
     );
+}
+
+/// 分组渲染只按分组表取字段：分组表漏掉一个（或路径写错）会让该项从设置页
+/// 上消失，所以要求「沙箱组 + 网络出口组（proxy 时的最大集合）」与
+/// `fields_for` 一一对应。
+#[test]
+fn network_sandbox_groups_cover_exactly_the_page_fields() {
+    let mut expected: Vec<String> = forms::fields_for(forms::Page::NetworkSandbox)
+        .map(|field| field.path.join("."))
+        .collect();
+    let mut grouped: Vec<String> = forms::NETWORK_SANDBOX_SANDBOX_GROUP
+        .iter()
+        .chain(forms::network_egress_fields("proxy").iter())
+        .map(|path| path.join("."))
+        .collect();
+    expected.sort();
+    grouped.sort();
+    assert_eq!(expected, grouped);
+}
+
+/// 代理不启动时（off/open）白名单等四项没有执行者：整组应为空，由页面用
+/// 一行说明代替；否则界面会把死配置展示成可调项。
+#[test]
+fn network_egress_hides_proxy_only_fields_when_no_proxy_runs() {
+    for mode in ["off", "open"] {
+        assert!(
+            forms::network_egress_fields(mode).is_empty(),
+            "{mode} must hide the proxy-only fields"
+        );
+    }
+    for mode in ["proxy", "strict"] {
+        let paths: Vec<String> = forms::network_egress_fields(mode)
+            .iter()
+            .map(|path| path.join("."))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "network.allow",
+                "network.allow_private",
+                "network.unknown",
+                "network.audit"
+            ],
+            "{mode}"
+        );
+    }
+    // 旧写法 `[network] mode` / `enabled` 完全不下发控件：兼容由加载逻辑完成。
+    let all: Vec<String> = forms::FIELDS
+        .iter()
+        .map(|field| field.path.join("."))
+        .collect();
+    assert!(!all.iter().any(|path| path == "network.mode"), "{all:?}");
+    assert!(!all.iter().any(|path| path == "network.enabled"), "{all:?}");
 }
 
 #[test]
