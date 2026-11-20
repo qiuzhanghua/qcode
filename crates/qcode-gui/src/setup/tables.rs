@@ -327,12 +327,12 @@ impl SetupView {
         route: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         // The catalog is the single fact source for preset values: route,
         // endpoint, key env and default model all come from the entry, so new
         // catalog routes get a button and a pre-filled row automatically.
         let Some(entry) = qcode_kernel::config::catalog_entry(route) else {
-            return;
+            return false;
         };
         let row = self.row(
             [
@@ -361,11 +361,32 @@ impl SetupView {
             .iter()
             .map(|model| self.model_row(window, cx, Some(model)))
             .collect();
+        // 重新添加一个「配置节已删、密钥还在钥匙串」的 provider（删行不删
+        // 凭据）：预设只写 api_key_env 会把存着的密钥孤儿化——provider 出现
+        // 了但用不了。凭据库里有该路由的密钥时，把读取命令恢复进本行，
+        // 保存后 `api_key_command` 继续走钥匙串。返回是否恢复，让调用方
+        // （picker）在打开编辑框后提示用户。
+        let restored = if let Some(argv) = keychain_exists(entry.route) {
+            if let Some(command) = row.textareas.get_mut("api_key_command") {
+                command.update(cx, |input, cx| {
+                    input.set_value(argv.join("\n"), window, cx);
+                    cx.notify();
+                });
+            }
+            true
+        } else {
+            false
+        };
         if let Some(state) = self.tables.get_mut("providers") {
             state.rows.push(row);
         }
-        self.auto_save(cx, AutoSaveKind::Tables, false);
+        // 预设行只进表格（供编辑框使用），**不写盘**：选中一个 provider 不应
+        // 立刻把它写进 config、刷到列表里。落盘由编辑框的「保存」按钮触发
+        // （`flush_auto_save(Tables)`），或由编辑任何单元格的防抖自动保存。
+        // 取消选择时行仍留在表格里（未写入、卡片列表按 `self.config` 过滤
+        // 不会显示它），再次选择会接着编辑同一行。
         cx.notify();
+        restored
     }
 
     /// Probe one route's endpoint for its model list (`GET {base}/models`).

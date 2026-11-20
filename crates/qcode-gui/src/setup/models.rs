@@ -735,8 +735,18 @@ impl SetupView {
                         {
                             this.store_provider_key(row_id, window, cx);
                         }
-                        this.close_editor(true);
-                        this.saved_notice = Some(format!("已保存 {route_close}。"));
+                        // 「保存」= 真正落盘：picker 选中的预设行此时才写进
+                        // config、刷进列表。flush 失败（表单校验不过）时不
+                        // 关对话框、不声称已保存。
+                        match this.flush_auto_save(AutoSaveKind::Tables, cx) {
+                            Ok(()) => {
+                                this.close_editor(true);
+                                this.saved_notice = Some(format!("已保存 {route_close}。"));
+                            }
+                            Err(error) => {
+                                this.provider_error = Some(error);
+                            }
+                        }
                         cx.notify();
                     })),
             );
@@ -1643,10 +1653,31 @@ impl SetupView {
     /// 写入预设行，再打开同一个编辑对话框。
     fn pick_provider(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.close_provider_picker(cx);
-        if !self.config.providers.contains_key(route) {
-            self.add_provider_preset(route, window, cx);
-        }
+        // 用表格行而不是 `self.config` 决定要不要写预设行。`self.config`
+        // 只在异步自动保存完成时才更新：刚删掉一个 provider 后它还残留着
+        // 那条旧 profile，`pick_provider` 会因此跳过预设写入，卡片继续按
+        // 那份残留状态渲染——「删了再添加，不配 key 也立刻冒出来」。
+        // 表格才是「正在编辑哪条记录」的真源。
+        let already_has_row = self
+            .tables
+            .get("providers")
+            .map(|table| {
+                table
+                    .rows
+                    .iter()
+                    .any(|row| cell(row, "name", cx).trim() == route)
+            })
+            .unwrap_or(false);
+        let restored_key = if !already_has_row {
+            self.add_provider_preset(route, window, cx)
+        } else {
+            false
+        };
         self.open_editor(route, cx);
+        // `open_editor` 会清掉提示，所以密钥恢复的提示在它之后设置。
+        if restored_key {
+            self.provider_notice = Some(format!("已从系统钥匙串恢复 {route} 的密钥读取命令"));
+        }
     }
 
     /// 选择框顶部的「自定义提供方…」：关闭选择框，进入自定义声明卡片。

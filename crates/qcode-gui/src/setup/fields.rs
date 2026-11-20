@@ -635,6 +635,72 @@ pub(crate) fn keychain_store(_provider: &str, _key: &str) -> Result<Vec<String>,
     Err("keychain setup is not implemented on this platform yet".to_string())
 }
 
+/// The `api_key_command` argv that reads a stored key for `provider`, when one
+/// exists — or `None`.
+///
+/// A provider's config section can be deleted while its key stays in the key
+/// store (deleting a row does not remove the credential). Re-adding it from
+/// the picker writes a fresh preset with only `api_key_env`, which orphans the
+/// stored key: the profile reappears but cannot use it. The picker restores
+/// the read command so the re-added provider works immediately. The argv
+/// matches [`keychain_store`]'s, so the round-trip is the same command.
+pub(crate) fn keychain_exists(provider: &str) -> Option<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    {
+        if credentials::macos::find("qcode", provider).is_ok() {
+            return Some(vec![
+                "security".to_string(),
+                "find-generic-password".to_string(),
+                "-w".to_string(),
+                "-s".to_string(),
+                "qcode".to_string(),
+                "-a".to_string(),
+                provider.to_string(),
+            ]);
+        }
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("secret-tool")
+            .args(["lookup", "service", "qcode", "user", provider])
+            .output()
+            .ok()?;
+        if !output.stdout.is_empty() {
+            return Some(vec![
+                "secret-tool".to_string(),
+                "lookup".to_string(),
+                "service".to_string(),
+                "qcode".to_string(),
+                "user".to_string(),
+                provider.to_string(),
+            ]);
+        }
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = credentials::windows_credential_read_script(&format!("qcode/{provider}"));
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok()?;
+        if !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+            return Some(vec![
+                "powershell".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                script,
+            ]);
+        }
+        return None;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 pub(crate) fn gui_string(prefs: &GuiPreferences, path: &[&str], options: &[&str]) -> String {
     match path {
         ["gui", "theme"] => prefs.theme.clone(),

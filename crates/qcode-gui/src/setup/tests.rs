@@ -541,6 +541,35 @@ fn windows_keychain_store_round_trips_via_credwrite_and_powershell() {
         .status();
 }
 
+/// `keychain_exists` mirrors the store round trip: a key that was stored is
+/// reported with the read argv, and after the credential is deleted it reports
+/// nothing. This is the check `add_provider_preset` uses to restore a
+/// re-added provider's stored key.
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_keychain_exists_tracks_the_stored_credential() {
+    use super::credentials::windows_credential_delete_script;
+    use super::{keychain_exists, keychain_store};
+    let provider = format!("test-{}", std::process::id());
+    keychain_store(&provider, "sk-exists-123").expect("store");
+    let argv = keychain_exists(&provider).expect("the stored key must be visible");
+    assert_eq!(argv.first().map(String::as_str), Some("powershell"));
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &windows_credential_delete_script(&format!("qcode/{provider}")),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    assert!(
+        keychain_exists(&provider).is_none(),
+        "after delete the key must not be reported"
+    );
+}
+
 /// The generated PowerShell must stay on one line and must not let a provider
 /// name close the string it is embedded in.
 #[test]

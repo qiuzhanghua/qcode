@@ -648,6 +648,12 @@ impl SetupView {
                     Ok(()) => {
                         view.config = state_config;
                         view.error = None;
+                        // 写盘完成后 `self.config` 换成了新值，必须重绘：卡片
+                        // 列表按 `self.config` 过滤（`configured_models`），
+                        // 不加 notify 的话删除/添加的 provider 要等到下一次
+                        // 碰巧触发的重绘才从列表消失/出现——看起来就是
+                        // 「点了好一会列表才去掉」。
+                        cx.notify();
                         // 写盘期间又来了新改动：补写一次，保持串行。
                         if let Some(kind) = view.pending_auto_save.take() {
                             let _ = view.flush_auto_save(kind, cx);

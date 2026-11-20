@@ -228,6 +228,28 @@ pub(crate) mod macos {
         }
     }
 
+    /// Whether a generic password exists; used to restore `api_key_command`
+    /// when a provider is re-added after its config section was deleted.
+    pub(crate) fn find(service: &str, account: &str) -> Result<(), i32> {
+        let status = unsafe {
+            SecKeychainFindGenericPassword(
+                std::ptr::null(),
+                len(service),
+                service.as_ptr().cast::<c_char>(),
+                len(account),
+                account.as_ptr().cast::<c_char>(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        match status {
+            ERR_SEC_SUCCESS => Ok(()),
+            ERR_SEC_ITEM_NOT_FOUND => Err(status),
+            other => Err(other),
+        }
+    }
+
     /// Whether the process can reach a default keychain at all; headless or
     /// locked sessions cannot, and callers should then fall back to an
     /// environment variable instead of blaming the key.
