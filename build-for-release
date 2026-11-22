@@ -708,6 +708,14 @@ preflight() {
     # 记下的那种事故形状。
     if [ -x "$ROOT/target/debug/qc" ]; then
         echo "==> 双语 golden（scripts/check-i18n-golden.sh）"
+        # 先分清「脚本跑不起来」与「文案真的不一致」——两者都曾以同一句话
+        # 报出来：`check-i18n-golden.sh` 在 git 里记的是 100644（没有执行位），
+        # 于是每次 `make check` 到这一步都是 `Permission denied`，却被 die 成
+        # 「与基线不一致」。查 golden 的人会去翻 43 个 fixture，而真正的问题是
+        # 一个 bit。
+        if [ ! -x "$ROOT/scripts/check-i18n-golden.sh" ]; then
+            die "scripts/check-i18n-golden.sh 没有执行位（git 里应为 100755，见 git ls-files -s）"
+        fi
         "$ROOT/scripts/check-i18n-golden.sh" || die "双语 golden 与基线不一致（见 scripts/check-i18n-golden.sh --record）"
     else
         echo "==> 双语 golden：跳过（没有 target/debug/qc；先 cargo build -p qcode）"

@@ -262,9 +262,9 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, status.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
 
-        let show = utf16(qcode_i18n::tr("gui.tray.show_window"));
+        let show = utf16(qcode_i18n::tr("gui.tray.show_window").as_ref());
         AppendMenuW(menu, MF_STRING, MENU_SHOW, show.as_ptr());
-        let stop = utf16(qcode_i18n::tr("gui.tray.stop_current"));
+        let stop = utf16(qcode_i18n::tr("gui.tray.stop_current").as_ref());
         let stop_flags = if snapshot.can_stop() {
             MF_STRING
         } else {
@@ -272,7 +272,7 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32) {
         };
         AppendMenuW(menu, stop_flags, MENU_STOP, stop.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        let quit = utf16(qcode_i18n::tr("gui.tray.quit"));
+        let quit = utf16(qcode_i18n::tr("gui.tray.quit").as_ref());
         AppendMenuW(menu, MF_STRING, MENU_QUIT, quit.as_ptr());
 
         // 微软文档：给通知图标弹上下文菜单时，调用 TrackPopupMenu 前当前
