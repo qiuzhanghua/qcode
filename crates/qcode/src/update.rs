@@ -26,23 +26,50 @@ const NOTICE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
-    #[error("update check failed: {0}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("err.cli.update.check_failed", &[.0.to_string().as_str()])
+    )]
     Http(#[from] reqwest::Error),
-    #[error("release manifest is not understood: {0}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("err.cli.update.manifest_unreadable", &[.0.as_str()])
+    )]
     Manifest(String),
-    #[error("HTTP {status} from {url}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "err.cli.update.http_status",
+            &[.status.to_string().as_str(), .url.as_str()]
+        )
+    )]
     Status { status: u16, url: String },
-    #[error("{repo} has no published release yet")]
+    #[error("{}", qcode_i18n::trp("err.cli.update.no_release", &[.repo.as_str()]))]
     NoRelease { repo: String },
-    #[error("release {version} has no asset for this platform ({platform})")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "err.cli.update.no_asset",
+            &[.version.as_str(), .platform.as_str()]
+        )
+    )]
     NoAsset { version: String, platform: String },
-    #[error("checksum mismatch for {name}: expected {expected}, got {actual}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "err.cli.update.checksum_mismatch",
+            &[.name.as_str(), .expected.as_str(), .actual.as_str()]
+        )
+    )]
     Checksum {
         name: String,
         expected: String,
         actual: String,
     },
-    #[error("release {0} does not publish SHA256SUMS; refusing to install an unverified binary")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("err.cli.update.unverified", &[.0.as_str()])
+    )]
     Unverified(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -294,7 +321,9 @@ pub async fn fetch_latest(config: &super::config::UpdateConfig) -> Result<Releas
     let tag = body
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| UpdateError::Manifest("no tag_name".into()))?;
+        .ok_or_else(|| {
+            UpdateError::Manifest(qcode_i18n::tr("err.cli.update.no_tag_name").into_owned())
+        })?;
     let version = tag.trim_start_matches('v').to_string();
     let assets = body
         .get("assets")
@@ -536,7 +565,9 @@ pub async fn run(
 
     if !args.yes {
         if !std::io::stdin().is_terminal() {
-            return Err("refusing to replace the running binary without --yes on a non-TTY".into());
+            return Err(qcode_i18n::tr("err.cli.update.refuse_non_tty")
+                .into_owned()
+                .into());
         }
         // A prompt is narration, and it must reach the person answering it.
         // On stdout `qc update > out.log` would print the question into the file
@@ -561,8 +592,12 @@ pub async fn run(
     );
     let bytes = download(&asset.url).await?;
     let sums = String::from_utf8_lossy(&download(&checksums.url).await?).into_owned();
-    let expected = checksum_for(&sums, &asset.name)
-        .ok_or_else(|| UpdateError::Manifest(format!("{} missing from SHA256SUMS", asset.name)))?;
+    let expected = checksum_for(&sums, &asset.name).ok_or_else(|| {
+        UpdateError::Manifest(qcode_i18n::trp(
+            "err.cli.update.missing_from_sums",
+            &[asset.name.as_str()],
+        ))
+    })?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
         return Err(UpdateError::Checksum {

@@ -136,7 +136,7 @@ fn an_unreachable_channel_fails_with_the_http_error() {
     let output = qc(&config, &dir.path().join("data"), &["update", "--check"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("update check failed"), "{stderr}");
+    assert!(stderr.contains("更新检查失败"), "{stderr}");
 }
 
 #[test]
@@ -203,6 +203,6 @@ fn a_checksum_mismatch_leaves_the_target_alone() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("checksum mismatch"), "{stderr}");
+    assert!(stderr.contains("校验和对不上"), "{stderr}");
     assert_eq!(std::fs::read(&target).unwrap(), b"old-binary");
 }

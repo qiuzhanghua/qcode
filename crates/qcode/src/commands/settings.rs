@@ -113,7 +113,11 @@ pub(crate) fn cmd_config(
                 .arg(&path)
                 .status()?;
             if !status.success() {
-                return Err(format!("editor exited with {status}").into());
+                return Err(qcode_i18n::trp(
+                    "err.cli.settings.editor_exited",
+                    &[status.to_string().as_str()],
+                )
+                .into());
             }
             match config::load(&path) {
                 Ok(_) => println!(
@@ -139,13 +143,20 @@ fn parse_credential(name: &str) -> Result<qcode_mcp::CredentialPreset, String> {
             .map(|preset| preset.label())
             .collect::<Vec<_>>()
             .join(", ");
-        format!("unknown credential preset {name:?}; use one of: {choices}")
+        qcode_i18n::trp(
+            "err.cli.template.unknown_preset",
+            &[format!("{name:?}").as_str(), choices.as_str()],
+        )
     })
 }
 
 fn parse_sandbox(mode: &str) -> Result<qcode_mcp::McpSandboxMode, String> {
-    qcode_mcp::McpSandboxMode::from_label(mode)
-        .ok_or_else(|| format!("unknown sandbox mode {mode:?}; use \"confine\" or \"off\""))
+    qcode_mcp::McpSandboxMode::from_label(mode).ok_or_else(|| {
+        qcode_i18n::trp(
+            "err.cli.settings.sandbox_mode_invalid",
+            &[format!("{mode:?}").as_str()],
+        )
+    })
 }
 
 /// Split `--header "Name: value"` into a pair.
@@ -155,13 +166,17 @@ fn parse_sandbox(mode: &str) -> Result<qcode_mcp::McpSandboxMode, String> {
 /// `qc mcp add` cannot accept a header that loading the file would reject.
 fn parse_header(raw: &str) -> Result<(String, String), String> {
     let Some((name, value)) = raw.split_once(':') else {
-        return Err(format!(
-            "header {raw:?} is not `Name: value`; use e.g. --header 'Accept: application/json'"
+        return Err(qcode_i18n::trp(
+            "err.cli.settings.header_not_pair",
+            &[format!("{raw:?}").as_str()],
         ));
     };
     let (name, value) = (name.trim(), value.trim());
     if name.is_empty() {
-        return Err(format!("header {raw:?} has no name"));
+        return Err(qcode_i18n::trp(
+            "err.cli.settings.header_no_name",
+            &[format!("{raw:?}").as_str()],
+        ));
     }
     Ok((name.to_string(), value.to_string()))
 }
@@ -286,10 +301,14 @@ fn config_init(
     if !template.applies_here() {
         if !force {
             return Err(format!(
-                "this template belongs to {}; refusing to write it on {} \
-                 (use --force to write anyway)",
-                template.os.join(", "),
-                qcode_kernel::template::CURRENT_OS,
+                "{}",
+                qcode_i18n::trp(
+                    "err.cli.template.wrong_os",
+                    &[
+                        template.os.join(", ").as_str(),
+                        qcode_kernel::template::CURRENT_OS
+                    ],
+                ),
             )
             .into());
         }
@@ -319,10 +338,9 @@ fn config_init(
 
     if path.exists() {
         if !force {
-            return Err(format!(
-                "{} already exists; refusing to overwrite \
-                 (use --force to print a diff first)",
-                path.display(),
+            return Err(qcode_i18n::trp(
+                "err.cli.template.already_exists",
+                &[path.display().to_string().as_str()],
             )
             .into());
         }
@@ -387,8 +405,11 @@ fn collect_prompt_answers(
     if !std::io::stdin().is_terminal() {
         let keys: Vec<&str> = asks.iter().map(|prompt| prompt.key.as_str()).collect();
         return Err(format!(
-            "this template asks for {}; run it on a terminal",
-            keys.join(", "),
+            "{}",
+            qcode_i18n::trp(
+                "err.cli.template.needs_terminal",
+                &[keys.join(", ").as_str()]
+            ),
         )
         .into());
     }
@@ -401,7 +422,9 @@ fn collect_prompt_answers(
         std::io::stdin().read_line(&mut line)?;
         let value = line.trim();
         if value.is_empty() {
-            return Err(format!("empty answer for {} is not useful", prompt.key).into());
+            return Err(
+                qcode_i18n::trp("err.cli.settings.empty_answer", &[prompt.key.as_str()]).into(),
+            );
         }
         answers.insert(prompt.key.clone(), value.to_string());
     }
@@ -429,8 +452,11 @@ fn provider_append(
     let loaded = config::load(path)?;
     if loaded.providers.contains_key(id) {
         return Err(format!(
-            "{} already has a [providers.{id}] section; edit it directly instead",
-            path.display(),
+            "{}",
+            qcode_i18n::trp(
+                "err.cli.template.provider_exists",
+                &[path.display().to_string().as_str(), id.as_str()],
+            ),
         )
         .into());
     }
@@ -505,7 +531,9 @@ fn combine_config(existing: &str, section: &str) -> Result<String, String> {
 fn confirm_append() -> Result<bool, Box<dyn std::error::Error>> {
     use std::io::{IsTerminal, Write as _};
     if !std::io::stdin().is_terminal() {
-        return Err("appending needs a terminal to confirm".into());
+        return Err(qcode_i18n::tr("err.cli.settings.append_needs_terminal")
+            .into_owned()
+            .into());
     }
     eprint!("append? [y/N] ");
     std::io::stderr().flush()?;
@@ -545,8 +573,9 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
             "security" => Kind::Security,
             "llm" => Kind::Llm,
             other => {
-                return Err(format!(
-                    "unknown template kind {other:?}; use security/ or llm/"
+                return Err(qcode_i18n::trp(
+                    "err.cli.template.unknown_kind",
+                    &[format!("{other:?}").as_str()],
                 ));
             }
         };
@@ -556,7 +585,10 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
     };
     if let Some((kind, id)) = prefixed {
         if id.is_empty() {
-            return Err(format!("template name after the kind is empty: {arg:?}"));
+            return Err(qcode_i18n::trp(
+                "err.cli.settings.template_name_empty",
+                &[format!("{arg:?}").as_str()],
+            ));
         }
         return Ok((kind, id.to_string()));
     }
@@ -567,9 +599,9 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
             if let Some(previous) = found
                 && previous != template.kind
             {
-                return Err(format!(
-                    "{arg:?} exists in both security/ and llm/; spell it out, e.g. \
-                     security-{arg} or llm-{arg}"
+                return Err(qcode_i18n::trp(
+                    "err.cli.template.ambiguous_kind",
+                    &[format!("{arg:?}").as_str(), arg],
                 ));
             }
             found = Some(template.kind);
@@ -577,8 +609,9 @@ fn parse_template_arg(arg: &str) -> Result<(qcode_kernel::template::Kind, String
     }
     match found {
         Some(kind) => Ok((kind, arg.to_string())),
-        None => Err(format!(
-            "no template named {arg:?}; run `qc template list` to see the available ones"
+        None => Err(qcode_i18n::trp(
+            "err.cli.template.no_such_template",
+            &[format!("{arg:?}").as_str()],
         )),
     }
 }

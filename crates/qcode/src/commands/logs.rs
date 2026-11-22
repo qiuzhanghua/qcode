@@ -45,7 +45,14 @@ pub(crate) fn cmd_logs(
         // empty sends the reader looking for a logging bug that is not there. An
         // unreadable directory is its own answer, and it is a failure.
         Err(error) => {
-            return Err(format!("cannot read {}: {error}", dir.display()).into());
+            return Err(qcode_i18n::trp(
+                "err.cli.logs.cannot_read",
+                &[
+                    dir.display().to_string().as_str(),
+                    error.to_string().as_str(),
+                ],
+            )
+            .into());
         }
     };
     let mut follower = Follower::new(data_dir.clone());
@@ -199,7 +206,14 @@ impl Filter {
             let text = match std::fs::read_to_string(path) {
                 Ok(text) => text,
                 Err(error) if path == current => {
-                    return Err(format!("cannot read {}: {error}", path.display()).into());
+                    return Err(qcode_i18n::trp(
+                        "err.cli.logs.cannot_read",
+                        &[
+                            path.display().to_string().as_str(),
+                            error.to_string().as_str(),
+                        ],
+                    )
+                    .into());
                 }
                 Err(error) => {
                     eprintln!(
@@ -289,21 +303,31 @@ fn parse_since(
         // Bare digits are seconds: the shortest thing to type for "just now".
         "" => 1,
         other => {
-            return Err(
-                format!("--since {value:?}: {other:?} is not a unit; use s, m, h, d or w").into(),
-            );
+            return Err(qcode_i18n::trp(
+                "err.cli.logs.since_not_a_unit",
+                &[format!("{value:?}").as_str(), format!("{other:?}").as_str()],
+            )
+            .into());
         }
     };
     // Checked, not `amount * seconds`: `--since 9223372036854775807d` overflowed
     // and panicked in a debug build (`attempt to multiply with overflow`) and wrapped
     // to a nonsense instant in a release build. Neither is an answer to a bad number.
-    let seconds = amount
-        .checked_mul(seconds)
-        .ok_or_else(|| format!("--since {value:?} is too large"))?;
+    let seconds = amount.checked_mul(seconds).ok_or_else(|| {
+        qcode_i18n::trp(
+            "err.cli.logs.since_too_large",
+            &[format!("{value:?}").as_str()],
+        )
+    })?;
     let now = chrono::Local::now().fixed_offset();
     chrono::Duration::try_seconds(seconds)
         .and_then(|back| now.checked_sub_signed(back))
-        .ok_or_else(|| format!("--since {value:?} is too far back to compare with anything").into())
+        .ok_or_else(|| {
+            Box::<dyn std::error::Error>::from(qcode_i18n::trp(
+                "err.cli.logs.since_too_far_back",
+                &[format!("{value:?}").as_str()],
+            ))
+        })
 }
 
 /// Print whatever arrives, until the process is interrupted.

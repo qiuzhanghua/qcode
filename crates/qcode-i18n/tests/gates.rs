@@ -805,7 +805,33 @@ fn ui_text_positions() -> &'static [&'static str] {
         "push_notice(",
         "write!(",
         "writeln!(",
-        "push_str!(",
+        // `.push_str(` 是**方法调用**，不是宏——Rust 没有 `push_str!`。
+        // 之前这里是 `push_str!(`：一个永远匹配不到任何东西的死标记，看着像
+        // 覆盖、其实一条都没扫，`actions.rs` 的 "Follow the skill instructions
+        // above now." 就这么留了一轮（I18N.md §10.19）。
+        ".push_str(",
+        // **走返回值**的错误串（I18N.md §10.19）。它们不经过任何 `println!`：
+        // `main.rs` 统一 `eprintln!("error: {err}")`，所以每一个 `Err(…)` 最终
+        // 都会原样打到用户眼前（`qc sessions delete nope` → `error: no such
+        // session: nope`）。位置表按「输出调用」判，而这批是**构造错误值**，
+        // 于是整批落在门外。
+        //
+        // 三条覆盖 133 处：`Err(format!(…))`、`Err("…".into())`、
+        // `.ok_or_else(|| format!(…))`。`Err(` 不误伤 `map_err(`（大小写不同）
+        // 也不误伤 `Err(e) =>` 匹配臂（括号里没有字面量）。
+        "Err(",
+        ".ok_or_else(",
+        ".ok_or(",
+        // `.map_err(|_| format!("…"))`：把下层错误换成自己的一句。整条错误串
+        // 只在这里出现一次，不比 `Err(...)` 少见（`qc logs` 的
+        // `--since … is neither a duration …` 就是这种形状，第一版没覆盖）。
+        ".map_err(|",
+        // `thiserror` 的 `#[error("…")]`：属性宏**生成** `Display`，正文全是
+        // 用户读到的错误文案（`duplicate MCP server name '{0}'`）。这类既不是
+        // `println!`、也不是 `Err(...)` 的实参，位置表不收就整批看不见。
+        // 注意它不能像别处那样把 `tr()` 嵌进去——`#[error]` 只接受格式串字面量，
+        // 真要翻得改成手写 `impl Display`（I18N.md §10.19）。
+        "#[error(",
     ]
 }
 
@@ -933,15 +959,42 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
             .iter()
             .filter_map(|marker| line.find(marker).map(|at| at + marker.len()))
             .any(|end| line[end..].trim().is_empty());
-        let tail = if marker_ends_line && index + 1 < lines.len() {
-            format!(
-                "{}\n{}",
-                line,
-                lines[index + 1..(index + 3).min(lines.len())].join("\n")
-            )
+
+        // 一次调用的字面量常常在**下一行**：
+        //     return Err(format!(
+        //         "cannot read {}: {error}", dir.display()).into());
+        // 第一版的续看条件是「标记正好结束该行」——`Err(format!(` 结束该行但
+        // `Err(` 不结束，于是整类漏掉（`shell_env.rs` 的 `"{} exited with …"`、
+        // `logs.rs` 的 `cannot read …` 之外还有几处）。判据换成**括号有没有闭合**：
+        // 这才是「这个调用还没写完」的真正含义，可判定、不靠行数猜。
+        let paren_delta = |text: &str| -> i32 {
+            text.chars().filter(|ch| *ch == '(').count() as i32
+                - text.chars().filter(|ch| *ch == ')').count() as i32
+        };
+        let mut end_line = index;
+        let mut depth = paren_delta(line);
+        while depth > 0 && end_line + 1 < lines.len() && end_line - index < 12 {
+            end_line += 1;
+            depth += paren_delta(lines[end_line]);
+        }
+        let tail = if end_line > index {
+            lines[index..=end_line].join("\n")
         } else {
             line.to_string()
         };
+        // 行级、**作者显式声明**的豁免：`// i18n:keep 机制名，不翻`。
+        //
+        // 与文件级 `intentional_english` 的区别：那种是「整个文件面向机器」，
+        // 这种是「这一行里的字面量是**标识符或值**，不是散文」——`sandbox-exec`
+        // 是沙箱后端名（要拿去对 man page 与配置值），`streamable-http` 是协议名。
+        // 它们和同文件里真正该翻的错误文案混在一起，文件级豁免会连带盖住后者。
+        //
+        // 为什么用注释而不是「按内容猜」：判据仍是**位置**——作者标注的位置。
+        // 内容猜（「像不像标识符」）会把 `prompt is empty` 也放过。要求理由写在
+        // 同一行，是为了让每次豁免都在 diff 里露出来、能被审。
+        if tail.contains("// i18n:keep") {
+            continue;
+        }
         for marker in &markers {
             // `Debug` 实现里的 `write!(f, …)` 是**调试表示**（`Disabled({why})`、
             // `AttachmentId({})`），不是给用户读的文案，跳过。
@@ -1002,7 +1055,12 @@ fn is_multi_literal_marker(marker: &str) -> bool {
             | "push_notice("
             | "write!("
             | "writeln!("
-            | "push_str!("
+            | ".push_str("
+            | "Err("
+            | ".ok_or_else("
+            | ".ok_or("
+            | ".map_err(|"
+            | "#[error("
     )
 }
 
@@ -1291,31 +1349,44 @@ fn no_new_hardcoded_english_ui_text() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// 遍历一个 crate 的 `src/`，返回 `(相对路径, 生产部分源码)`。
+/// 遍历一个 crate 的 `src/`，返回 `(相对 `src/` 的路径, 生产部分源码)`。
+///
+/// 路径**带子目录**：`sandbox/macos.rs` 这种分层不是装饰，豁免表按完整相对路径
+/// 点名（`qcode-tools/sandbox/macos.rs`）。第一版只返回 basename，于是**所有分子
+/// 目录的豁免都从未生效**（`matches!` 是精确比较），不同的 `mod.rs` 还会在基线与
+/// 报错里撞成一个名字——查的人会去错的文件。
 fn scan_ui_sources(dir: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if path.is_dir() {
-            if matches!(name, "tests" | "target") || name.starts_with('.') {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if matches!(name, "tests" | "target") || name.starts_with('.') {
+                    continue;
+                }
+                walk(root, &path, out);
                 continue;
             }
-            out.extend(scan_ui_sources(&path));
-            continue;
+            if !name.ends_with(".rs") || name == "tests.rs" {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let production = &source[..test_module_start(&source)];
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((relative, production.to_string()));
         }
-        if !name.ends_with(".rs") || name == "tests.rs" {
-            continue;
-        }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let production = &source[..test_module_start(&source)];
-        out.push((name.to_string(), production.to_string()));
     }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
     out
 }
 

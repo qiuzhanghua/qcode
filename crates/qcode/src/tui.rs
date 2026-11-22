@@ -565,9 +565,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 // own turn once the current one ends.
                                 queue.submit(text, std::mem::take(&mut pending_images), true);
                                 app.status.queued = queue.queued().len();
-                                app.push_notice(format!(
-                                    "queued ({} pending): starts when this turn ends",
-                                    app.status.queued
+                                app.push_notice(qcode_i18n::trp(
+                                    "tui.notice.queued",
+                                    &[app.status.queued.to_string().as_str()],
                                 ));
                             }
                             UiAction::Steer(text) => {
@@ -579,9 +579,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 ) {
                                     Some(_) => {
                                         app.status.steering = queue.pending_step().len();
-                                        app.push_notice(format!(
-                                            "steering ({} waiting): lands at the next step",
-                                            app.status.steering
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.steering_added",
+                                            &[app.status.steering.to_string().as_str()],
                                         ));
                                     }
                                     None => app.push_notice(qcode_i18n::tr("tui.notice.no_turn").into_owned()),
@@ -615,12 +615,14 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                             },
                                         ),
                                     );
-                                    app.push_notice(format!(
-                                        "image attached: {}x{} ({} KB) — sent with the next message ({} pending)",
-                                        image.width,
-                                        image.height,
-                                        size_kb,
-                                        pending_images.len()
+                                    app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.image_attached",
+                                        &[
+                                            image.width.to_string().as_str(),
+                                            image.height.to_string().as_str(),
+                                            size_kb.to_string().as_str(),
+                                            pending_images.len().to_string().as_str(),
+                                        ],
                                     ));
                                 }
                                 Err(error) => app.push_notice(qcode_i18n::trp(
@@ -647,16 +649,17 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     Some(message) => {
                                         app.status.queued = queue.queued().len();
                                         app.status.steering = queue.pending_step().len();
-                                        app.push_notice(format!(
-                                            "steering: {}",
-                                            preview(&message.text)
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.steering_preview",
+                                            &[preview(&message.text).as_str()],
                                         ));
                                     }
                                     None if !engine_running => {
                                         app.push_notice(qcode_i18n::tr("tui.notice.no_turn").into_owned())
                                     }
-                                    None => app.push_notice(format!(
-                                        "no queued message {position} (see /queue)"
+                                    None => app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.no_queued_message",
+                                        &[position.to_string().as_str()],
                                     )),
                                 }
                             }
@@ -666,10 +669,12 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     app.push_notice(qcode_i18n::tr("tui.notice.steering_empty").into_owned());
                                 } else {
                                     for (index, item) in items.iter().enumerate() {
-                                        app.push_notice(format!(
-                                            "{}. {} (waiting for the next step)",
-                                            index + 1,
-                                            preview(&item.text)
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.steering_item",
+                                            &[
+                                                (index + 1).to_string().as_str(),
+                                                preview(&item.text).as_str(),
+                                            ],
                                         ));
                                     }
                                 }
@@ -683,28 +688,34 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     Some(message) => {
                                         app.status.queued = queue.queued().len();
                                         app.status.steering = queue.pending_step().len();
-                                        app.push_notice(format!(
-                                            "returned to the queue: {} ({} queued)",
-                                            preview(&message.text),
-                                            app.status.queued
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.returned_to_queue",
+                                            &[
+                                                preview(&message.text).as_str(),
+                                                app.status.queued.to_string().as_str(),
+                                            ],
                                         ));
                                     }
-                                    None => app.push_notice(format!(
-                                        "no steering item {position} (see /steering)"
+                                    None => app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.no_steering_item",
+                                        &[position.to_string().as_str()],
                                     )),
                                 }
                             }
                             UiAction::QueueDrop(position) => match queue.remove_at(position - 1) {
                                 Some(message) => {
                                     app.status.queued = queue.queued().len();
-                                    app.push_notice(format!(
-                                        "dropped: {} ({} pending)",
-                                        preview(&message.text),
-                                        app.status.queued
+                                    app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.dropped",
+                                        &[
+                                            preview(&message.text).as_str(),
+                                            app.status.queued.to_string().as_str(),
+                                        ],
                                     ));
                                 }
-                                None => app.push_notice(format!(
-                                    "no queued message {position} (see /queue)"
+                                None => app.push_notice(qcode_i18n::trp(
+                                    "tui.notice.no_queued_message",
+                                    &[position.to_string().as_str()],
                                 )),
                             },
                             UiAction::Daemon(verb) => {
@@ -748,12 +759,13 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                                 options.store.root(),
                                                 None,
                                             ) {
-                                                Ok(pid) => app.push_notice(format!(
-                                                    "daemon started (pid {pid}); it keeps running \
-                                                     after you quit"
+                                                Ok(pid) => app.push_notice(qcode_i18n::trp(
+                                                    "tui.notice.daemon_started",
+                                                    &[pid.to_string().as_str()],
                                                 )),
-                                                Err(error) => app.push_notice(format!(
-                                                    "cannot start the daemon: {error}"
+                                                Err(error) => app.push_notice(qcode_i18n::trp(
+                                                    "tui.notice.cannot_start_daemon",
+                                                    &[error.to_string().as_str()],
                                                 )),
                                             },
                                         }
@@ -767,8 +779,9 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                             // 没有在跑不是错误：用户的意图已经满足。
                                             Ok(false) => app
                                                 .push_notice(qcode_i18n::tr("tui.notice.daemon_was_not_running").into_owned()),
-                                            Err(error) => app.push_notice(format!(
-                                                "cannot stop the daemon: {error}"
+                                            Err(error) => app.push_notice(qcode_i18n::trp(
+                                                "tui.notice.cannot_stop_daemon",
+                                                &[error.to_string().as_str()],
                                             )),
                                         }
                                     }
@@ -822,19 +835,27 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         let files = snapshots
                                             .files(&session_id, turn)
                                             .unwrap_or_default();
-                                        app.push_notice(format!(
-                                            "turn {turn}: {} file(s) · {}",
-                                            files.len(),
-                                            files.join(", ")
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.turn_files",
+                                            &[
+                                                turn.to_string().as_str(),
+                                                files.len().to_string().as_str(),
+                                                files.join(", ").as_str(),
+                                            ],
                                         ));
                                     }
                                 }
                             }
                             UiAction::Rollback(turn) => {
                                 match snapshots.restore(&session_id, turn, &options.workspace) {
-                                    Ok(report) => app.push_notice(format!(
-                                        "rolled back to before turn {turn}: restored {}, removed {} created (turns {:?})",
-                                        report.restored, report.deleted, report.turns
+                                    Ok(report) => app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.rolled_back",
+                                        &[
+                                            turn.to_string().as_str(),
+                                            report.restored.to_string().as_str(),
+                                            report.deleted.to_string().as_str(),
+                                            format!("{:?}", report.turns).as_str(),
+                                        ],
                                     )),
                                     Err(error) => {
                                         app.push_notice(qcode_i18n::trp(

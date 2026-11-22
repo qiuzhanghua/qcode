@@ -173,15 +173,19 @@ fn cmd_create(
     let rule = qcode_core::schedule::parse_rule(&args.rule)
         .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
     let target = Target::parse(args.target.as_deref().unwrap_or("")).ok_or_else(|| {
-        format!(
-            "--target {:?}: expected new_once / new / session:<id>",
-            args.target.unwrap_or_default()
+        qcode_i18n::trp(
+            "err.cli.schedule_target.invalid",
+            &[format!("{:?}", args.target.unwrap_or_default()).as_str()],
         )
     })?;
     let overlap = match args.overlap.as_deref() {
         None | Some("") => qcode_core::schedule::Overlap::Queue,
-        Some(text) => qcode_core::schedule::Overlap::parse(text)
-            .ok_or_else(|| format!("--overlap {text:?}: expected queue / skip"))?,
+        Some(text) => qcode_core::schedule::Overlap::parse(text).ok_or_else(|| {
+            qcode_i18n::trp(
+                "err.cli.schedule.overlap_invalid",
+                &[format!("{text:?}").as_str()],
+            )
+        })?,
     };
     let cwd = resolve_cwd(args.cwd)?;
 

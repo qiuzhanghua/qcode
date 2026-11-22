@@ -38,17 +38,21 @@ pub(crate) async fn cmd_run(
     let continuation = continue_ || raise_turns.is_some() || raise_cost.is_some() || raise_persist;
     if continuation {
         if resume.is_none() {
-            return Err("--continue needs --resume <session> to know which turn to resume".into());
+            return Err(qcode_i18n::tr("err.cli.run.continue_needs_resume")
+                .into_owned()
+                .into());
         }
         if raise_turns.is_some() && max_turns.is_some()
             || raise_cost.is_some() && max_cost.is_some()
         {
-            return Err(
-                "--raise-* already sets the limit for this window; drop the duplicate flag".into(),
-            );
+            return Err(qcode_i18n::tr("err.cli.run.raise_duplicate_limit")
+                .into_owned()
+                .into());
         }
         if raise_persist && raise_turns.is_none() && raise_cost.is_none() {
-            return Err("--raise-persist needs --raise-turns or --raise-cost".into());
+            return Err(qcode_i18n::tr("err.cli.run.raise_persist_needs_either")
+                .into_owned()
+                .into());
         }
     }
 
@@ -62,7 +66,9 @@ pub(crate) async fn cmd_run(
         }
     };
     if prompt.trim().is_empty() && !continuation {
-        return Err("prompt is empty".into());
+        return Err(qcode_i18n::tr("err.cli.run.prompt_empty")
+            .into_owned()
+            .into());
     }
 
     let workspace = match cwd {
@@ -108,7 +114,12 @@ pub(crate) async fn cmd_run(
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+                .ok_or_else(|| {
+                    qcode_i18n::trp(
+                        "err.cli.run.not_a_file_name",
+                        &[path.display().to_string().as_str()],
+                    )
+                })?;
             let reader = std::fs::File::open(path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
             let stored = attachments_store.put_file(name, reader)?;
@@ -263,7 +274,9 @@ pub(crate) async fn cmd_run(
     tools.extend([Arc::new(SubagentTool::new(runner)) as Arc<dyn Tool>]);
 
     if timeout == Some(0) {
-        return Err("--timeout must be at least 1 second".into());
+        return Err(qcode_i18n::tr("err.cli.run.timeout_too_small")
+            .into_owned()
+            .into());
     }
 
     let cancel = CancellationToken::new();

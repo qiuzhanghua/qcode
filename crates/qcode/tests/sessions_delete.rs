@@ -113,7 +113,11 @@ fn a_mistyped_id_aborts_instead_of_deleting_everything() {
     );
     assert!(!output.status.success(), "must refuse: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no such session"), "{stderr}");
+    // 文案跟随语言；这个 harness 钉的是中文（第 12 行）。
+    assert!(
+        stderr.contains("没有这个会话") && !stderr.contains("no such session"),
+        "{stderr}"
+    );
     assert!(log(dir.path(), &id).exists(), "nothing may be deleted");
 }
 
@@ -223,7 +227,8 @@ fn keep_title_aborts_on_an_unknown_title() {
     );
     assert!(!output.status.success(), "must refuse: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no session titled"), "{stderr}");
+    // 文案跟随语言；这个 harness 钉的是中文（第 12 行）。
+    assert!(stderr.contains("没有标题为"), "{stderr}");
     assert!(log(dir.path(), &id).exists(), "nothing may be deleted");
 }
 
@@ -242,7 +247,7 @@ fn keep_title_aborts_when_the_title_is_ambiguous() {
     );
     assert!(!output.status.success(), "must refuse: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("titled"), "{stderr}");
+    assert!(stderr.contains("都叫"), "{stderr}");
     assert!(log(dir.path(), &first).exists());
     assert!(log(dir.path(), &second).exists());
 }

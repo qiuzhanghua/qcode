@@ -195,7 +195,11 @@ pub(crate) fn cmd_sessions(
                 // meant to protect — the exact failure this subcommand exists to
                 // avoid.
                 if let Some(missing) = ids.iter().find(|id| !all.iter().any(|s| &&s.id == id)) {
-                    return Err(format!("no such session: {missing}").into());
+                    return Err(qcode_i18n::trp(
+                        "err.cli.sessions.no_such_session",
+                        &[missing.as_str()],
+                    )
+                    .into());
                 }
                 if except {
                     all.iter()
@@ -207,7 +211,9 @@ pub(crate) fn cmd_sessions(
                 }
             } else {
                 if !ids.is_empty() || except {
-                    return Err("give ids, or --keep-title, not both".into());
+                    return Err(qcode_i18n::tr("err.cli.sessions.ids_or_keep_title")
+                        .into_owned()
+                        .into());
                 }
                 // Picking by the name the sidebar shows, because that is what the
                 // user can actually read off the screen. A title that resolves to
@@ -226,17 +232,20 @@ pub(crate) fn cmd_sessions(
                         .collect();
                     match matches.as_slice() {
                         [] => {
-                            return Err(format!(
-                                "no session titled {wanted:?}; \
-                                 `qc sessions list --titles` shows the names"
+                            return Err(qcode_i18n::trp(
+                                "err.cli.sessions_title.no_such_title",
+                                &[format!("{wanted:?}").as_str()],
                             )
                             .into());
                         }
                         [only] => keep.push((*only).to_string()),
                         many => {
-                            return Err(format!(
-                                "{} sessions are titled {wanted:?}; pass the id instead",
-                                many.len()
+                            return Err(qcode_i18n::trp(
+                                "err.cli.sessions_title.ambiguous_title",
+                                &[
+                                    many.len().to_string().as_str(),
+                                    format!("{wanted:?}").as_str(),
+                                ],
                             )
                             .into());
                         }
@@ -337,7 +346,9 @@ pub(crate) fn cmd_sessions(
                 .list()?
                 .into_iter()
                 .find(|session| session.id == id)
-                .ok_or_else(|| format!("no such session: {id}"))?;
+                .ok_or_else(|| {
+                    qcode_i18n::trp("err.cli.sessions.no_such_session", &[id.as_str()])
+                })?;
             let workspace = PathBuf::from(&session.started.cwd);
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
             let turns = snapshots.turns(&id)?;
@@ -414,7 +425,9 @@ pub(crate) fn store_key(
     std::io::stdin().read_to_string(&mut key)?;
     let key = key.trim();
     if key.is_empty() {
-        return Err("no key on stdin; try: echo <key> | qc config key set".into());
+        return Err(qcode_i18n::tr("err.cli.sessions.no_key_on_stdin")
+            .into_owned()
+            .into());
     }
 
     #[cfg(target_os = "macos")]
@@ -432,7 +445,9 @@ pub(crate) fn store_key(
             ])
             .status()?;
         if !status.success() {
-            return Err("`security add-generic-password` failed".into());
+            return Err(qcode_i18n::tr("err.cli.sessions.security_add_failed")
+                .into_owned()
+                .into());
         }
         // 只翻前一句；片段是要用户**粘进 config.toml** 的，翻了就废了。片段放进
         // `format!` 的第二个参数而不是写进格式串，既让它保持逐字原样，也让它不被
@@ -462,7 +477,9 @@ pub(crate) fn store_key(
             .expect("piped stdin")
             .write_all(key.as_bytes())?;
         if !child.wait()?.success() {
-            return Err("`secret-tool store` failed".into());
+            return Err(qcode_i18n::tr("err.cli.sessions.secret_tool_failed")
+                .into_owned()
+                .into());
         }
         let snippet = format!(
             "api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]"
@@ -510,7 +527,9 @@ pub(crate) fn store_key(
             .expect("piped stdin")
             .write_all(format!("{key}\n").as_bytes())?;
         if !child.wait()?.success() {
-            return Err("storing the key with DPAPI failed".into());
+            return Err(qcode_i18n::tr("err.cli.sessions.dpapi_failed")
+                .into_owned()
+                .into());
         }
         println!(
             "{}\n{}",

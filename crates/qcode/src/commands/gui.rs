@@ -481,7 +481,9 @@ pub(crate) async fn cmd_tui(
     resume: Option<String>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err("TUI needs a terminal; use `qc run \"...\"` for headless mode".into());
+        return Err(qcode_i18n::tr("err.cli.gui.tui_needs_terminal")
+            .into_owned()
+            .into());
     }
 
     let workspace = std::env::current_dir()?.canonicalize()?;

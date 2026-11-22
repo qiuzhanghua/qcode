@@ -25,21 +25,21 @@ pub fn read_image() -> Result<Image, String> {
     // a successful open, and the global memory is unlocked before returning.
     unsafe {
         if IsClipboardFormatAvailable(CF_DIB) == 0 {
-            return Err("the clipboard does not hold an image".to_string());
+            return Err(qcode_i18n::tr("err.image.clipboard.no_image").into_owned());
         }
         if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return Err("cannot open the clipboard (another app may hold it)".to_string());
+            return Err(qcode_i18n::tr("err.image.clipboard.cannot_open").into_owned());
         }
         let handle = GetClipboardData(CF_DIB);
         if handle.is_null() {
             CloseClipboard();
-            return Err("cannot read the clipboard image".to_string());
+            return Err(qcode_i18n::tr("err.image.clipboard.cannot_read").into_owned());
         }
         let size = GlobalSize(handle);
         let pointer = GlobalLock(handle);
         if pointer.is_null() || size == 0 {
             CloseClipboard();
-            return Err("cannot lock the clipboard image".to_string());
+            return Err(qcode_i18n::tr("err.image.clipboard.cannot_lock").into_owned());
         }
         let bytes = std::slice::from_raw_parts(pointer as *const u8, size).to_vec();
         GlobalUnlock(handle);
@@ -63,7 +63,7 @@ pub fn read_image() -> Result<Image, String> {
     // main thread, which is where the GUI paste handler runs.
     let data = unsafe { pasteboard.dataForType(NSPasteboardTypePNG) };
     let Some(data) = data else {
-        return Err("the clipboard does not hold a PNG image".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.no_png").into_owned());
     };
     let bytes = data.to_vec();
     let (width, height) = png_dimensions(&bytes)?;
@@ -78,7 +78,7 @@ pub fn read_image() -> Result<Image, String> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn read_image() -> Result<Image, String> {
-    Err("pasting images is not implemented on this platform".to_string())
+    Err(qcode_i18n::tr("err.image.clipboard.not_implemented").into_owned())
 }
 
 /// Width and height from a PNG header. Enough to size the thumbnail; the bytes
@@ -90,15 +90,15 @@ pub fn read_image() -> Result<Image, String> {
 fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if bytes.len() < 24 || bytes[0..8] != SIGNATURE {
-        return Err("the clipboard image is not a PNG".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.not_png").into_owned());
     }
     if &bytes[12..16] != b"IHDR" {
-        return Err("the PNG header is malformed".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.bad_png_header").into_owned());
     }
     let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
     let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
     if width == 0 || height == 0 {
-        return Err("the clipboard image has no pixels".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.image_no_pixels").into_owned());
     }
     Ok((width, height))
 }
@@ -109,7 +109,7 @@ fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
 /// else is rejected rather than guessed at.
 pub fn decode_dib(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if bytes.len() < 40 {
-        return Err("the clipboard bitmap header is truncated".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.bitmap_header_truncated").into_owned());
     }
     let header_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
     let width = i32::from_le_bytes(bytes[4..8].try_into().unwrap());
@@ -120,13 +120,16 @@ pub fn decode_dib(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let colors = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
 
     if width <= 0 || height == 0 {
-        return Err("the clipboard bitmap has no pixels".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.bitmap_no_pixels").into_owned());
     }
     if compression != 0 {
-        return Err("only uncompressed clipboard bitmaps are supported".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.bitmap_uncompressed_only").into_owned());
     }
     if bits != 24 && bits != 32 {
-        return Err(format!("{bits}-bit clipboard bitmaps are not supported"));
+        return Err(qcode_i18n::trp(
+            "err.image.clipboard.bitmap_bits_unsupported",
+            &[bits.to_string().as_str()],
+        ));
     }
 
     let width = width as u32;
@@ -136,7 +139,7 @@ pub fn decode_dib(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let offset = header_size + colors * 4;
     let needed = offset as u64 + u64::from(stride) * u64::from(height);
     if (bytes.len() as u64) < needed {
-        return Err("the clipboard bitmap is shorter than its header claims".to_string());
+        return Err(qcode_i18n::tr("err.image.clipboard.bitmap_shorter").into_owned());
     }
 
     let mut rgba = vec![0u8; width as usize * height as usize * 4];

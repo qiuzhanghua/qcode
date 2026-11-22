@@ -54,7 +54,11 @@ pub(crate) fn read_images(
         let metadata = std::fs::metadata(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         if metadata.len() > MAX_IMAGE_BYTES {
-            return Err(format!("{} is larger than 8 MB", path.display()).into());
+            return Err(qcode_i18n::trp(
+                "err.cli.image.too_large",
+                &[path.display().to_string().as_str()],
+            )
+            .into());
         }
         let mime = match path
             .extension()
@@ -67,9 +71,9 @@ pub(crate) fn read_images(
             Some("webp") => "image/webp",
             Some("gif") => "image/gif",
             _ => {
-                return Err(format!(
-                    "{}: only PNG, JPEG, WebP and GIF are supported",
-                    path.display()
+                return Err(qcode_i18n::trp(
+                    "err.cli.mod.unsupported_image",
+                    &[path.display().to_string().as_str()],
                 )
                 .into());
             }
@@ -97,14 +101,14 @@ pub(crate) fn activated_prompt(
             .take(20)
             .map(|skill| skill.name.as_str())
             .collect();
-        return Err(format!(
-            "unknown skill '{name}'; available: {}",
-            available.join(", ")
+        return Err(qcode_i18n::trp(
+            "err.cli.mod.unknown_skill",
+            &[name, available.join(", ").as_str()],
         )
         .into());
     };
     let task = if task.trim().is_empty() {
-        "Follow the skill instructions above now.".to_string()
+        qcode_i18n::tr("err.cli.mod.follow_skill").into_owned()
     } else {
         task
     };

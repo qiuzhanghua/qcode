@@ -1959,6 +1959,218 @@ tool:
     timed_out:
       en: "command timed out after %{0}s"
       zh-CN: "命令在 %{0} 秒后超时"
+# CLI 的错误串（走返回值；`main.rs` 统一打 `error: {err}`）。I18N.md §10.19。
+# 规矩与别处一致：命令名（`--since`、`qc config key set`）、选项名、单位缩写
+# （s/m/h/d/w）、文件名不翻；`%{n}` 是运行期事实。
+err:
+  image:
+    clipboard:
+      no_image:
+        en: "the clipboard does not hold an image"
+        zh-CN: 剪贴板里没有图片
+      cannot_open:
+        en: "cannot open the clipboard (another app may hold it)"
+        zh-CN: 打不开剪贴板（可能有别的程序占着）
+      cannot_read:
+        en: "cannot read the clipboard image"
+        zh-CN: 读不了剪贴板里的图片
+      cannot_lock:
+        en: "cannot lock the clipboard image"
+        zh-CN: 锁不住剪贴板里的图片
+      no_png:
+        en: "the clipboard does not hold a PNG image"
+        zh-CN: 剪贴板里没有 PNG 图片
+      not_implemented:
+        en: "pasting images is not implemented on this platform"
+        zh-CN: 这个平台还不支持粘贴图片
+      not_png:
+        en: "the clipboard image is not a PNG"
+        zh-CN: 剪贴板里的图片不是 PNG
+      bad_png_header:
+        en: "the PNG header is malformed"
+        zh-CN: PNG 文件头是坏的
+      image_no_pixels:
+        en: "the clipboard image has no pixels"
+        zh-CN: 剪贴板里的图片没有像素
+      bitmap_header_truncated:
+        en: "the clipboard bitmap header is truncated"
+        zh-CN: 剪贴板位图的文件头不完整
+      bitmap_no_pixels:
+        en: "the clipboard bitmap has no pixels"
+        zh-CN: 剪贴板位图没有像素
+      bitmap_uncompressed_only:
+        en: "only uncompressed clipboard bitmaps are supported"
+        zh-CN: 只支持未压缩的剪贴板位图
+      bitmap_bits_unsupported:
+        en: "%{0}-bit clipboard bitmaps are not supported"
+        zh-CN: "不支持 %{0} 位的剪贴板位图"
+      bitmap_shorter:
+        en: "the clipboard bitmap is shorter than its header claims"
+        zh-CN: 剪贴板位图比它文件头声明的短
+  cli:
+    mod:
+      unsupported_image:
+        en: "%{0}: only PNG, JPEG, WebP and GIF are supported"
+        zh-CN: "%{0}：只支持 PNG、JPEG、WebP 和 GIF"
+      unknown_skill:
+        en: "unknown skill '%{0}'; available: %{1}"
+        zh-CN: "不认识的技能 `%{0}`；可用的有：%{1}"
+      follow_skill:
+        en: "Follow the skill instructions above now."
+        zh-CN: 现在按上面的技能说明执行。
+    schedule_target:
+      invalid:
+        en: "--target %{0}: expected new_once / new / session:<id>"
+        zh-CN: "`--target %{0}`：只认 new_once、new 或 session:<id>"
+    sessions_title:
+      no_such_title:
+        en: "no session titled %{0}; `qc sessions list --titles` shows the names"
+        zh-CN: "没有标题为 %{0} 的会话；`qc sessions list --titles` 能看名字"
+      ambiguous_title:
+        en: "%{0} sessions are titled %{1}; pass the id instead"
+        zh-CN: "有 %{0} 个会话都叫 %{1}；改用 id 指定"
+    template:
+      no_such_template:
+        en: "no template named %{0}; run `qc template list` to see the available ones"
+        zh-CN: "没有叫 %{0} 的模板；跑 `qc template list` 看有哪些"
+      needs_terminal:
+        en: "this template asks for %{0}; run it on a terminal"
+        zh-CN: "这个模板要问 %{0}；请在终端里跑"
+      wrong_os:
+        en: "this template belongs to %{0}; refusing to write it on %{1} (use --force to write anyway)"
+        zh-CN: "这个模板属于 %{0}；拒绝写到 %{1} 上（坚持要写就加 `--force`）"
+      unknown_preset:
+        en: "unknown credential preset %{0}; use one of: %{1}"
+        zh-CN: "不认识的凭据预设 %{0}；从这些里选：%{1}"
+      unknown_kind:
+        en: "unknown template kind %{0}; use security/ or llm/"
+        zh-CN: "不认识的模板类别 %{0}；用 security/ 或 llm/"
+      ambiguous_kind:
+        en: "%{0} exists in both security/ and llm/; spell it out, e.g. security-%{1} or llm-%{1}"
+        zh-CN: "%{0} 在 security/ 和 llm/ 里都有；写全一点，例如 security-%{1} 或 llm-%{1}"
+      already_exists:
+        en: "%{0} already exists; refusing to overwrite (use --force to print a diff first)"
+        zh-CN: "%{0} 已经存在；不覆盖（想先看 diff 就加 `--force`）"
+      provider_exists:
+        en: "%{0} already has a [providers.%{1}] section; edit it directly instead"
+        zh-CN: "%{0} 里已经有 [providers.%{1}]；直接改它就行"
+    logs:
+      cannot_read:
+        en: "cannot read %{0}: %{1}"
+        zh-CN: "读不了 %{0}：%{1}"
+      since_too_large:
+        en: "--since %{0} is too large"
+        zh-CN: "`--since %{0}` 太长了"
+      since_too_far_back:
+        en: "--since %{0} is too far back to compare with anything"
+        zh-CN: "`--since %{0}` 回溯得太远，没有可比较的东西"
+      since_not_a_unit:
+        en: "--since %{0}: %{1} is not a unit; use s, m, h, d or w"
+        zh-CN: "`--since %{0}`：%{1} 不是单位；用 s、m、h、d 或 w"
+    image:
+      too_large:
+        en: "%{0} is larger than 8 MB"
+        zh-CN: "%{0} 超过 8 MB"
+    run:
+      continue_needs_resume:
+        en: "--continue needs --resume <session> to know which turn to resume"
+        zh-CN: "`--continue` 需要配 `--resume <会话>` 才知道续哪一轮"
+      raise_duplicate_limit:
+        en: "--raise-* already sets the limit for this window; drop the duplicate flag"
+        zh-CN: "`--raise-*` 已经为这个窗口设了上限；去掉重复的那个选项"
+      raise_persist_needs_either:
+        en: "--raise-persist needs --raise-turns or --raise-cost"
+        zh-CN: "`--raise-persist` 需要 `--raise-turns` 或 `--raise-cost`"
+      timeout_too_small:
+        en: "--timeout must be at least 1 second"
+        zh-CN: "`--timeout` 至少 1 秒"
+      prompt_empty:
+        en: "prompt is empty"
+        zh-CN: 提示词是空的
+      not_a_file_name:
+        en: "%{0}: not a file name"
+        zh-CN: "%{0}：不是文件名"
+    schedule:
+      overlap_invalid:
+        en: "--overlap %{0}: expected queue / skip"
+        zh-CN: "`--overlap %{0}`：只认 queue 或 skip"
+    sessions:
+      no_such_session:
+        en: "no such session: %{0}"
+        zh-CN: "没有这个会话：%{0}"
+      ids_or_keep_title:
+        en: "give ids, or --keep-title, not both"
+        zh-CN: "给了 id 就不能同时给 `--keep-title`"
+      no_key_on_stdin:
+        en: "no key on stdin; try: echo <key> | qc config key set"
+        zh-CN: "stdin 上没有密钥；试试：echo <key> | qc config key set"
+      security_add_failed:
+        en: "`security add-generic-password` failed"
+        zh-CN: "`security add-generic-password` 执行失败了"
+      secret_tool_failed:
+        en: "`secret-tool store` failed"
+        zh-CN: "`secret-tool store` 执行失败了"
+      dpapi_failed:
+        en: "storing the key with DPAPI failed"
+        zh-CN: "用 DPAPI 存密钥失败了"
+    settings:
+      editor_exited:
+        en: "editor exited with %{0}"
+        zh-CN: "编辑器退出了（%{0}）"
+      sandbox_mode_invalid:
+        en: "unknown sandbox mode %{0}; use \"confine\" or \"off\""
+        zh-CN: "不认识的沙箱模式 %{0}；用 \"confine\" 或 \"off\""
+      header_not_pair:
+        en: "header %{0} is not `Name: value`; use e.g. --header 'Accept: application/json'"
+        zh-CN: "header %{0} 不是 `名字: 值` 的形状；例如 --header 'Accept: application/json'"
+      header_no_name:
+        en: "header %{0} has no name"
+        zh-CN: "header %{0} 没有名字"
+      empty_answer:
+        en: "empty answer for %{0} is not useful"
+        zh-CN: "%{0} 的回答是空的，没用"
+      append_needs_terminal:
+        en: "appending needs a terminal to confirm"
+        zh-CN: "追加需要终端来确认"
+      template_name_empty:
+        en: "template name after the kind is empty: %{0}"
+        zh-CN: "kind 后面的模板名是空的：%{0}"
+    gui:
+      tui_needs_terminal:
+        en: "TUI needs a terminal; use `qc run \"...\"` for headless mode"
+        zh-CN: "TUI 需要终端；无头模式用 `qc run \"...\"`"
+    update:
+      check_failed:
+        en: "update check failed: %{0}"
+        zh-CN: "更新检查失败：%{0}"
+      manifest_unreadable:
+        en: "release manifest is not understood: %{0}"
+        zh-CN: "看不懂发布清单：%{0}"
+      http_status:
+        en: "HTTP %{0} from %{1}"
+        zh-CN: "HTTP %{0}（来自 %{1}）"
+      no_release:
+        en: "%{0} has no published release yet"
+        zh-CN: "%{0} 还没有发布过版本"
+      no_asset:
+        en: "release %{0} has no asset for this platform (%{1})"
+        zh-CN: "版本 %{0} 没有这个平台的产物（%{1}）"
+      checksum_mismatch:
+        en: "checksum mismatch for %{0}: expected %{1}, got %{2}"
+        zh-CN: "%{0} 的校验和对不上：期望 %{1}，实际 %{2}"
+      unverified:
+        en: "release %{0} does not publish SHA256SUMS; refusing to install an unverified binary"
+        zh-CN: "版本 %{0} 没有发布 SHA256SUMS；拒绝安装未校验的二进制"
+      missing_from_sums:
+        en: "%{0} missing from SHA256SUMS"
+        zh-CN: "SHA256SUMS 里没有 %{0}"
+      no_tag_name:
+        en: "no tag_name"
+        zh-CN: 清单里没有 tag_name
+      refuse_non_tty:
+        en: "refusing to replace the running binary without --yes on a non-TTY"
+        zh-CN: "非 TTY 下不加 `--yes` 不替换正在运行的二进制"
+
 core:
   # 斜杠命令的用法提示与状态回话。命令名、参数占位（`<n>`）、按键**不翻**：
   # 用户要照着敲/按。`Esc` 也保留原文——那是键帽上的字。
@@ -3540,6 +3752,48 @@ kernel:
 # 字面量，翻了就按不出来。翻的只是它们周围的说明。
 tui:
   notice:
+    queued:
+      en: "queued (%{0} pending): starts when this turn ends"
+      zh-CN: "已入队（共 %{0} 条待发）：这一轮结束后开始"
+    steering_added:
+      en: "steering (%{0} waiting): lands at the next step"
+      zh-CN: "已插话（共 %{0} 条待落）：在下一步生效"
+    image_attached:
+      en: "image attached: %{0}x%{1} (%{2} KB) — sent with the next message (%{3} pending)"
+      zh-CN: "已附加图片：%{0}x%{1}（%{2} KB）——随下一条消息发出（共 %{3} 条待发）"
+    steering_preview:
+      en: "steering: %{0}"
+      zh-CN: "插话：%{0}"
+    no_queued_message:
+      en: "no queued message %{0} (see /queue)"
+      zh-CN: "没有第 %{0} 条排队消息（见 /queue）"
+    steering_item:
+      en: "%{0}. %{1} (waiting for the next step)"
+      zh-CN: "%{0}. %{1}（等待下一步）"
+    returned_to_queue:
+      en: "returned to the queue: %{0} (%{1} queued)"
+      zh-CN: "已放回队列：%{0}（共 %{1} 条排队）"
+    no_steering_item:
+      en: "no steering item %{0} (see /steering)"
+      zh-CN: "没有第 %{0} 条插话（见 /steering）"
+    dropped:
+      en: "dropped: %{0} (%{1} pending)"
+      zh-CN: "已丢弃：%{0}（共 %{1} 条待发）"
+    daemon_started:
+      en: "daemon started (pid %{0}); it keeps running after you quit"
+      zh-CN: "daemon 已启动（pid %{0}）；你退出后它继续跑"
+    cannot_start_daemon:
+      en: "cannot start the daemon: %{0}"
+      zh-CN: "启动不了 daemon：%{0}"
+    cannot_stop_daemon:
+      en: "cannot stop the daemon: %{0}"
+      zh-CN: "停不了 daemon：%{0}"
+    turn_files:
+      en: "turn %{0}: %{1} file(s) · %{2}"
+      zh-CN: "第 %{0} 轮：%{1} 个文件 · %{2}"
+    rolled_back:
+      en: "rolled back to before turn %{0}: restored %{1}, removed %{2} created (turns %{3})"
+      zh-CN: "已回滚到第 %{0} 轮之前：恢复 %{1} 个，删除 %{2} 个新建（轮次 %{3}）"
     no_turn:
       en: "no turn is running"
       zh-CN: 没有在跑的回合

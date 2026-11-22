@@ -41,6 +41,9 @@ fn run(workspace: &Path, home: &Path, skill: &str) -> std::process::Output {
         .arg(workspace.join("data"))
         .current_dir(workspace)
         .env("HOME", home)
+        // 钉住语言（ADR-0105 §6）：`unknown skill …` 现在跟随语言，不钉的话
+        // 这条断言在中文宿主机上通过、英文宿主机上红。
+        .env("QCODE_LANG", "zh-CN")
         .output()
         .expect("run qc")
 }
@@ -79,6 +82,6 @@ fn unknown_skill_fails_before_the_turn() {
     let output = run(workspace.path(), home.path(), "nope");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unknown skill 'nope'"), "{stderr}");
+    assert!(stderr.contains("不认识的技能"), "{stderr}");
     assert!(stderr.contains("demo"), "{stderr}");
 }

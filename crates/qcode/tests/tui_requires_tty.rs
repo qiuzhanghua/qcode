@@ -23,6 +23,8 @@ fn tui_refuses_without_a_tty() {
         // "refuse instead of doing something surprising".
         .env_remove("QCODE_LAUNCHED_FROM_GUI")
         .env_remove("__CFBundleIdentifier")
+        // 钉住语言（ADR-0105 §6）：这句错误现在跟随语言。
+        .env("QCODE_LANG", "zh-CN")
         .args([
             "tui",
             "--data-dir",
@@ -37,7 +39,7 @@ fn tui_refuses_without_a_tty() {
     assert!(!output.status.success(), "qc unexpectedly started a TUI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("TUI needs a terminal"),
+        stderr.contains("TUI 需要终端"),
         "missing actionable error:\n{stderr}"
     );
     assert!(

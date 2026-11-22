@@ -200,7 +200,9 @@ fn continue_without_a_session_is_refused_before_any_work() {
     );
     assert_ne!(output.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--continue needs --resume"), "{stderr}");
+    // 文案现在跟随语言，而这个 harness 钉的是中文（第 30 行）。
+    assert!(stderr.contains("--continue") && stderr.contains("--resume"), "{stderr}");
+    assert!(!stderr.contains("needs --resume to know which turn"), "{stderr}");
     // Refusing early means no half-written session log.
     assert!(!dir.path().join("data").join("sessions").exists());
 }
