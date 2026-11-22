@@ -77,6 +77,9 @@ ui:
     edit:
       en: Edit
       zh-CN: 编辑
+    saved:
+      en: Saved
+      zh-CN: 已保存
     set_default:
       en: Set as default
       zh-CN: 设为默认
@@ -135,6 +138,567 @@ ui:
 # 这里的中文一律**保持原文**：这一批只做「把文案搬进表」，不顺手改中文措辞，
 # 否则一次提交里混着「翻译」和「改稿」，中文界面变了却没人能一眼看出为什么。
 gui:
+  # 主区（`render/main.rs`）：状态栏、审批/提问面板、预算提示、覆盖层。
+  main:
+    # 模型下拉里的一行：`使用「provider」（model）`。
+    use_model:
+      en: "Use \"%{0}\" (%{1})"
+      zh-CN: "使用「%{0}」（%{1}）"
+    # 状态栏的沙箱读写状态（对任务下全部目录统一生效，所以只有两态）。
+    sandbox_write:
+      en: Workspace writable
+      zh-CN: 工作区可写
+    sandbox_read_only:
+      en: Read-only
+      zh-CN: 仅可读取
+    sandbox_menu_tip:
+      en: Sandbox directory permissions (apply to every directory of this task)
+      zh-CN: 沙箱目录权限（对当前任务全部目录生效）
+    # 状态栏的沙箱后端摘要：`无沙箱` / `<backend> 沙箱`。
+    sandbox_none:
+      en: No sandbox
+      zh-CN: 无沙箱
+    sandbox_backend:
+      en: "%{0} sandbox"
+      zh-CN: "%{0} 沙箱"
+    push:
+      en: Push
+      zh-CN: 推送
+    answer_placeholder:
+      en: Type an answer…
+      zh-CN: 输入回答…
+    # 覆盖层标题与按钮。
+    command_output:
+      en: Command output
+      zh-CN: 命令输出
+    diff:
+      en: Changes
+      zh-CN: 改动
+    close:
+      en: Close
+      zh-CN: 关闭
+    upload:
+      en: Choose file
+      zh-CN: 选择文件
+    # 预算接近上限的提示卡。
+    budget_title:
+      en: Budget almost used up
+      zh-CN: 预算接近上限
+    budget_body_more:
+      en: Continuing will spend more budget; for more room, raise [agent] max_turns / max_cost_usd, or start a new task.
+      zh-CN: 继续跑会消耗更多预算；需要更多空间可以调大 [agent] max_turns / max_cost_usd，或者在新任务里重开。
+    budget_body_pauses:
+      en: When the budget runs out this turn pauses rather than failing — you can continue, wrap up, or leave it.
+      zh-CN: 预算用完时这一轮会「暂停」而不是报错：可以直接继续、收尾，或者先这样。
+    new_task:
+      en: New task
+      zh-CN: 新建任务
+    ignore:
+      en: Ignore
+      zh-CN: 忽略
+    submitted:
+      en: Submitted, waiting for the engine to confirm…
+      zh-CN: 已提交，等待引擎确认…
+    # 审批面板。
+    approval:
+      title:
+        en: Waiting for approval
+        zh-CN: 等待审批
+      # 这是全仓库最需要说清的一句话：它同时回答「要什么权限」「为什么被拦」
+      # 「影响哪里」「会不会改文件」。四件事缺一件，用户就只能在「允许」和
+      # 「拒绝」之间猜。
+      explain:
+        en: "Allow %{0} permission for this call? While running %{1} it was stopped by %{2}, so it cannot write in %{3}. It needs elevated permission; this call changes no file contents or ownership."
+        zh-CN: "是否允许本次操作使用%{0}权限：执行%{1}时，被%{2}拦截，无法在%{3}目录上执行写入，需要提升操作权限；此次操作不会改动任何文件的内容和所有者。"
+      escalate:
+        en: "Requesting elevation to %{0}: %{1}"
+        zh-CN: "请求提权到 %{0}：%{1}"
+      no_reason:
+        en: (no reason given)
+        zh-CN: （未说明理由）
+      allow:
+        en: Allow
+        zh-CN: 允许
+      allow_always:
+        en: Always allow
+        zh-CN: 总是允许
+      deny:
+        en: Deny
+        zh-CN: 拒绝
+      # 工具类别：审批面板第一句里的「什么权限」。
+      kind_shell:
+        en: command execution
+        zh-CN: 执行命令
+      kind_files:
+        en: file read/write
+        zh-CN: 读写文件
+      # 拦截原因。这些是**把引擎的英文 reason 映射成一句人话**，所以查表与
+      # 译文必须一起动：`reason` 匹配的是英文关键字（见 `render/main.rs`）。
+      reason_process:
+        en: the process-execution policy
+        zh-CN: 进程执行策略
+      reason_sandbox_escalation:
+        en: the sandbox-escalation policy
+        zh-CN: 沙箱提权策略
+      reason_outside_workspace:
+        en: the write-outside-workspace policy
+        zh-CN: 工作区外写入策略
+      reason_multi_file:
+        en: the multi-file-write policy
+        zh-CN: 多文件写入策略
+      reason_external_tool:
+        en: the external-tool policy
+        zh-CN: 外部工具策略
+      reason_network:
+        en: the network-access policy
+        zh-CN: 网络访问策略
+      reason_rule:
+        en: a permission rule
+        zh-CN: 权限规则
+      current_dir:
+        en: the current directory
+        zh-CN: 当前目录
+    # 提问面板。
+    question:
+      title:
+        en: Question
+        zh-CN: 提问
+      progress:
+        en: "Question %{0} of %{1}"
+        zh-CN: 第 %{0} 题，共 %{1} 题
+      pick_dir:
+        en: Choose directory
+        zh-CN: 选择目录
+      back:
+        en: Previous
+        zh-CN: 上一题
+      skip:
+        en: Skip
+        zh-CN: 跳过
+      submit:
+        en: Submit
+        zh-CN: 提交
+      next:
+        en: Next
+        zh-CN: 下一题
+    error_banner:
+      en: Request failed · full details
+      zh-CN: 请求报错 · 完整信息
+  # 侧栏（`render/sidebar.rs`）：产品名、两个段、任务行菜单、目录编辑、图标轨。
+  sidebar:
+    # 产品标识（ADR-0063 §2 定的临时名 `AI 工具`）。
+    #
+    # **这一条与厂商名不同，是按界面语言翻的**：`AI 工具` 是普通词（"AI tools"），
+    # 不是商标；英文界面里留着四个汉字读起来像 bug。等 ADR-0063 说的「正式名」落地
+    # 时，把两边的值写成同一个（或退回一个 `const`）即可 —— 那时它才成为真正的
+    # 产品名，按 kernel 厂商名的规矩不翻。
+    product_name:
+      en: AI tools
+      zh-CN: AI 工具
+    # 两段手风琴的段头。
+    section:
+      tasks:
+        en: My tasks
+        zh-CN: 我的任务
+      schedule:
+        en: Scheduled tasks
+        zh-CN: 定时任务
+      new_task:
+        en: New task
+        zh-CN: 新建任务
+      terminal:
+        en: Terminal
+        zh-CN: 终端
+      settings_tooltip:
+        en: Settings (opens in a new window)
+        zh-CN: 设置（在新窗口中打开）
+      settings_aria:
+        en: Settings, opens in a new window
+        zh-CN: 设置，在新窗口中打开
+    # 任务行的 ⋯ 菜单与提示。
+    menu:
+      actions:
+        en: Task actions
+        zh-CN: 任务操作
+      stop:
+        en: Stop
+        zh-CN: 停止
+      stop_tip_running:
+        en: Stop this task (the others keep running)
+        zh-CN: 停止这个任务（不影响其它任务）
+      stop_tip_idle:
+        en: This task is not running
+        zh-CN: 这个任务没有在跑
+      rename:
+        en: Rename
+        zh-CN: 重命名
+      rename_tip_running:
+        en: A rename applies once the turn finishes
+        zh-CN: 运行中改名将在 Turn 结束后生效
+      rename_tip:
+        en: Rename task
+        zh-CN: 重命名任务
+      delete:
+        en: Delete task
+        zh-CN: 删除任务
+      delete_tip_running:
+        en: Deletable once the current turn finishes
+        zh-CN: 结束当前 Turn 后可删除
+      add_dir:
+        en: Add directory
+        zh-CN: 添加目录
+    # 任务行尾的状态尾巴（前导 ` · ` 在 key 里，因为它跟标题拼在一起）。
+    row:
+      missing_root:
+        en: " · directory lost"
+        zh-CN: " · 目录丢失"
+      waiting_approval:
+        en: " · waiting for approval"
+        zh-CN: " · 待审批"
+    # 目录编辑器的三个按钮与状态。
+    root:
+      missing:
+        en: Lost
+        zh-CN: 丢失
+      set_primary:
+        en: Set as primary
+        zh-CN: 设为主目录
+      relink:
+        en: Relink directory
+        zh-CN: 重新关联目录
+      remove:
+        en: Remove directory
+        zh-CN: 移除目录
+      pending:
+        en: Applied after the current turn
+        zh-CN: 当前 Turn 结束后应用
+    # 图标轨（折叠态）。
+    rail:
+      expand:
+        en: Expand sidebar
+        zh-CN: 展开侧栏
+      collapse:
+        en: Collapse sidebar
+        zh-CN: 折叠侧栏
+      tasks:
+        en: Tasks
+        zh-CN: 任务
+      schedule:
+        en: Scheduled
+        zh-CN: 定时
+    # 定时任务段。
+    schedule:
+      filter:
+        en: Filter scheduled tasks
+        zh-CN: 定时任务筛选
+      filter_by_status:
+        en: Filter by status
+        zh-CN: 按状态过滤
+      all:
+        en: All
+        zh-CN: 全部
+      status_active:
+        en: Active
+        zh-CN: 已开启
+      status_paused:
+        en: Paused
+        zh-CN: 已暂停
+      status_ended:
+        en: Ended
+        zh-CN: 已结束
+      empty:
+        en: No scheduled tasks yet — ask the model in the chat to create one
+        zh-CN: 还没有定时任务——直接在对话里让模型创建即可
+      empty_filtered:
+        en: "No scheduled tasks in \"%{0}\""
+        zh-CN: "没有「%{0}」状态的定时任务"
+      driver_aria:
+        en: "Scheduled-task resident driver: %{0}"
+        zh-CN: "定时任务常驻驱动：%{0}"
+  # 对话流（`render/transcript.rs`）。
+  transcript:
+    # 工具名 → 动词。**只是动词**：标识符（`run_shell`）不翻，见 `tool_label`。
+    verb:
+      shell:
+        en: Run command
+        zh-CN: 运行命令
+      list_dir:
+        en: List directory
+        zh-CN: 列出目录
+      glob:
+        en: Find files
+        zh-CN: 查找文件
+      search:
+        en: Search
+        zh-CN: 搜索
+      read:
+        en: Read file
+        zh-CN: 读取文件
+      write:
+        en: Write file
+        zh-CN: 写入文件
+      edit:
+        en: Edit file
+        zh-CN: 修改文件
+      todo:
+        en: Update todo list
+        zh-CN: 更新待办
+      subagent:
+        en: Sub-agent
+        zh-CN: 子代理
+    queued:
+      en: Queued
+      zh-CN: 排队中
+    thinking:
+      en: Thinking
+      zh-CN: 思考
+    copied:
+      en: Copied
+      zh-CN: 已复制
+    copy:
+      en: Copy
+      zh-CN: 复制
+    copy_turn:
+      en: Whole turn
+      zh-CN: 整轮
+    view_diff:
+      en: View
+      zh-CN: 查看
+    # 定时投递的消息：说明它不是你刚打的字。
+    scheduled:
+      en: "⏱ Scheduled · %{0}"
+      zh-CN: "⏱ 定时任务 · %{0}"
+    paused:
+      en: "⏸ Paused · %{0}"
+      zh-CN: "⏸ 已暂停 · %{0}"
+    # 「这一轮干了什么」的一句话摘要。
+    did:
+      writes:
+        en: changed files
+        zh-CN: 修改了文件
+      shells:
+        en: ran commands
+        zh-CN: 执行了命令
+      reads:
+        en: read files
+        zh-CN: 已读取文件
+      separator:
+        en: ", "
+        zh-CN: "，"
+    # 暂停卡片的三个出口。三个都要短：并排放在一张卡片里。
+    resume:
+      en: Continue
+      zh-CN: 继续
+    wrap_up:
+      en: Wrap up
+      zh-CN: 收尾
+    dismiss:
+      en: Leave it for now
+      zh-CN: 先这样
+    image_unavailable:
+      en: "[image no longer available]"
+      zh-CN: "[图片已不可用]"
+  # 任务管理（`shell/tasks.rs`）：新建、重命名、目录、删除。
+  task:
+    new_title:
+      en: New task
+      zh-CN: 新任务
+    title_placeholder:
+      en: Task title
+      zh-CN: 任务标题
+    title_required:
+      en: The task title cannot be empty
+      zh-CN: 任务标题不能为空
+    renamed:
+      en: Task renamed
+      zh-CN: 任务已重命名
+    rename_pending:
+      en: Renamed once this task's turn finishes
+      zh-CN: 该任务的 Turn 结束后重命名
+    rename_failed:
+      en: "Could not rename the task: %{0}"
+      zh-CN: "无法重命名任务: %{0}"
+    delete_running:
+      en: Stop this task before deleting it
+      zh-CN: 请先停止该任务，再删除正在运行的任务
+    delete_failed:
+      en: "Could not delete the task: %{0}"
+      zh-CN: "无法删除任务: %{0}"
+    deleted:
+      en: Task deleted
+      zh-CN: 任务已删除
+    roots_updated_failed:
+      en: "Could not update the directories: %{0}"
+      zh-CN: "无法更新目录: %{0}"
+    roots_applying:
+      en: Applying the pending directory change
+      zh-CN: 正在应用待处理的目录变更
+    roots_pending:
+      en: The directory change is applied once this task's turn finishes
+      zh-CN: 目录变更将在该任务的 Turn 结束后应用
+    root_exists:
+      en: "That directory is already there: %{0}"
+      zh-CN: "目录已存在: %{0}"
+  # 定时任务在 GUI 里的操作回执与拒绝理由（`runtime.rs`、`backend.rs`）。
+  schedule:
+    hint:
+      broken:
+        en: "The schedule is misconfigured: %{0}"
+        zh-CN: "定时配置有误: %{0}"
+      orphaned:
+        en: The schedule is dead (its target session was deleted)
+        zh-CN: 定时已失效（目标会话已删除）
+      missed:
+        en: "%{0} scheduled deliveries were missed"
+        zh-CN: 定时错过 %{0} 次
+    # 「立即执行」的准入闸。命中即拒，任务状态零变更。
+    reject:
+      busy:
+        en: This task is already running; wait for its turn to finish
+        zh-CN: 该任务正在执行中，请等待其回合结束再执行
+      too_frequent:
+        en: "Delivered too often: two deliveries are at least 60 seconds apart"
+        zh-CN: 投递过于频繁：两次投递至少间隔 60 秒
+    no_driver_lock:
+      en: "Cannot take the driver lock, so this window will not trigger scheduled tasks (see the log: qc logs)."
+      zh-CN: 拿不到驱动锁，这个窗口不会触发定时任务（详见日志 qc logs）。
+    op:
+      created:
+        en: "Created scheduled task `%{0}`"
+        zh-CN: "已创建定时任务 `%{0}`"
+      listed:
+        en: "%{0} scheduled tasks"
+        zh-CN: 共 %{0} 个定时任务
+      not_found:
+        en: That scheduled task does not exist
+        zh-CN: 定时任务不存在
+      paused:
+        en: Paused
+        zh-CN: 已暂停
+      resumed:
+        en: Resumed
+        zh-CN: 已恢复
+      ran:
+        en: Triggered
+        zh-CN: 已触发
+      deleted:
+        en: Deleted
+        zh-CN: 已删除
+  runtime:
+    switch_provider_failed:
+      en: "Could not switch to %{0}: %{1}"
+      zh-CN: 无法切换到 %{0}：%{1}
+  # 右侧回合导航栏（`render/rail.rs`）。
+  rail:
+    turn:
+      en: "Turn %{0}"
+      zh-CN: "第 %{0} 轮"
+    answering:
+      en: (answering…)
+      zh-CN: （回答中…）
+    no_answer:
+      en: (no answer yet)
+      zh-CN: （暂无回答）
+    jump_to_bottom:
+      en: Jump to the bottom
+      zh-CN: 跳转到底部
+  # 窗口级通知（状态栏一行）。`shell/` 与 `runtime.rs` 都在用。
+  notice:
+    stopping_all:
+      en: Stopping the running tasks…
+      zh-CN: 正在停止正在运行的任务…
+    stopping_task:
+      en: "Stopping %{0}"
+      zh-CN: 正在停止 %{0}
+    settings_pending_all_idle:
+      en: "Settings saved: applied once every task is idle"
+      zh-CN: 设置已保存：等所有任务空闲后应用
+    settings_pending_after_turn:
+      en: Settings saved; they take effect after the current task finishes
+      zh-CN: 设置已保存，将在当前任务结束后生效
+    settings_no_reload:
+      en: Settings saved, but this backend cannot reload
+      zh-CN: 设置已保存，但此后端不支持重新加载
+    model_search_placeholder:
+      en: Search models…
+      zh-CN: 搜索模型…
+    not_configured:
+      en: "Not configured yet: open Settings"
+      zh-CN: 还没有配置：先打开「设置」
+    schedule_incomplete_rule:
+      en: "The period is incomplete or invalid: check the period selection"
+      zh-CN: 周期不完整或无效：请检查周期选择
+  # 新建 / 切换任务时的提示（`shell/session.rs`）。
+  session:
+    no_provider:
+      en: No provider is configured yet; set one up in Settings, then create a task
+      zh-CN: 还没有配置 provider，先在 Settings 里配置再新建任务
+    draft_unsent:
+      en: "This draft has not been sent yet: send it, or clear it before creating another task"
+      zh-CN: 这份草稿还没发出去：发送它，或清空后再新建任务
+    empty_task:
+      en: This task has no content yet; just ask
+      zh-CN: 当前任务还没有内容，直接提问即可
+    resumed_unsent:
+      en: Continuing the unsent new task
+      zh-CN: 继续未发送的新任务
+    draft_parked:
+      en: The unsent new task was parked; press + to return to it
+      zh-CN: 未发送的新任务已暂存，按 + 回到它
+  # 托盘菜单。三个平台各写一份同样的三个条目 —— 只留一条 key，否则三种平台
+  # 的菜单文案迟早不一样。
+  tray:
+    show_window:
+      en: Show window
+      zh-CN: 显示主窗口
+    stop_current:
+      en: Stop the current task
+      zh-CN: 停止当前任务
+    quit:
+      en: Quit
+      zh-CN: 退出
+    # 菜单顶部那一行（disabled）：一眼看出「现在在干什么」。
+    status_approval:
+      en: QCode · waiting for approval (%{0})
+      zh-CN: QCode · 等待审批（%{0}）
+    status_running:
+      en: QCode · running
+      zh-CN: QCode · 运行中
+    status_idle:
+      en: QCode · idle
+      zh-CN: QCode · 空闲
+  terminal:
+    title:
+      en: Terminal
+      zh-CN: 终端
+    empty:
+      en: No terminals yet
+      zh-CN: 还没有终端
+    new:
+      en: New terminal
+      zh-CN: 新建终端
+    too_many:
+      en: "At most %{0} terminals; close one before opening another"
+      zh-CN: 最多 %{0} 个终端；先关掉一个再开新的
+    start_failed:
+      en: "Could not start the terminal (%{0}): %{1}"
+      zh-CN: 终端启动失败（%{0}）：%{1}
+  # 输入框右下角的发送提示。键名不翻（`Enter`、`Shift+Enter` 要照着按）。
+  composer:
+    send_enter:
+      en: Enter sends · Shift+Enter for a new line
+      zh-CN: Enter 发送 · Shift+Enter 换行
+    send_cmd_enter:
+      en: Cmd+Enter sends · Enter for a new line
+      zh-CN: Cmd+Enter 发送 · Enter 换行
+    send_ctrl_enter:
+      en: Ctrl+Enter sends · Enter for a new line
+      zh-CN: Ctrl+Enter 发送 · Enter 换行
+  attachment:
+    bad_image:
+      en: "%{0}: not a supported image format (png / jpeg / webp / gif)"
+      zh-CN: "%{0}: 不是支持的图片格式（png / jpeg / webp / gif）"
+
   setup:
     # 凭证状态。三个词是仪器读数，不是句子：卡片副标题里与协议名并排（`OpenAI
     # 兼容 · 凭证缺失`），所以尽量短。
@@ -295,6 +859,27 @@ gui:
     window_title:
       en: Settings
       zh-CN: 设置
+    # 下面五条原本是**纯英文字面量**：门禁 2 只查中文，所以它们从第一批起就一直
+    # 漏在中文界面里。硬棘轮对这一类的盲区见 I18N.md（en 是源语言，英文常量长得
+    # 跟源语言一样）。
+    open_in_editor:
+      en: Open in editor
+      zh-CN: 在编辑器中打开
+    save_and_start:
+      en: Save & Start
+      zh-CN: 保存并开始
+    provider_key_label:
+      en: API key (stored in Keychain, not config.toml)
+      zh-CN: API 密钥（存入钥匙串，不写 config.toml）
+    provider_key_aria:
+      en: Provider API key for Keychain
+      zh-CN: 存入钥匙串的 Provider API 密钥
+    store_key:
+      en: Store key
+      zh-CN: 存入密钥
+    add_custom_row:
+      en: Add custom row
+      zh-CN: 添加自定义行
     autosave:
       en: Autosave · changes are written immediately
       zh-CN: 自动保存 · 修改即时写入

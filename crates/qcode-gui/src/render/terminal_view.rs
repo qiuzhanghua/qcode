@@ -322,7 +322,7 @@ impl Shell {
                 .terminals
                 .error
                 .clone()
-                .unwrap_or_else(|| "还没有终端".to_string());
+                .unwrap_or_else(|| qcode_i18n::tr("gui.terminal.empty").to_string());
             return div()
                 .size_full()
                 .flex()
@@ -341,7 +341,7 @@ impl Shell {
                         .cursor_pointer()
                         .bg(secondary)
                         .text_color(foreground)
-                        .child("新建终端")
+                        .child(qcode_i18n::tr("gui.terminal.new"))
                         .on_click(cx.listener(|this, _, window, cx| this.new_terminal(window, cx))),
                 )
                 .into_any_element();

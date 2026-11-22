@@ -205,7 +205,14 @@ fn target_busy(
 /// 命中闸门时调用方**不得** run_now / 投递 / 登记 / advance——任务状态零变更，
 /// 并回 `ScheduleRunNowRejected` 让 shell 解除「执行中…」等待态（否则这个乐观
 /// 状态没有回执可依、按钮永远卡住）。
-fn run_now_admission(store: &SessionStore, task: &ScheduledTask) -> Option<&'static str> {
+/// 返回拒收理由（`None` = 放行）。
+///
+/// 返回 `Option<std::borrow::Cow<'static, str>>` 而不是 `&'static str`：理由是界面
+/// 文案，跟着 locale 走。
+fn run_now_admission(
+    store: &SessionStore,
+    task: &ScheduledTask,
+) -> Option<std::borrow::Cow<'static, str>> {
     let locked = task
         .target
         .session_id()
@@ -217,13 +224,13 @@ fn run_now_admission(store: &SessionStore, task: &ScheduledTask) -> Option<&'sta
             )
         });
     if locked {
-        return Some("该任务正在执行中，请等待其回合结束再执行");
+        return Some(qcode_i18n::tr("gui.schedule.reject.busy"));
     }
     // 护栏时刻**还没到**才拒绝：`delivery_floor_end` 只回答「最早可再投时刻」，
     // 不判断它是否已过——拿 `.is_some()` 判断会把「投过一次」当成永远拒绝。
     let now = qcode_core::schedule::now_local();
     if qcode_core::schedule::delivery_floor_end(task).is_some_and(|end| end > now) {
-        return Some("投递过于频繁：两次投递至少间隔 60 秒");
+        return Some(qcode_i18n::tr("gui.schedule.reject.too_frequent"));
     }
     None
 }
@@ -485,8 +492,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // 进程都认为自己在推时间，而重复投递是没有提示的那种错。
                     tracing::warn!(%error, "cannot take the driver lock; not scheduling");
                     port.tagged(SessionTarget::Draft).send_schedule_notice(
-                        "拿不到驱动锁，这个窗口不会触发定时任务（详见日志 qc logs）。"
-                            .to_string(),
+                        qcode_i18n::tr("gui.schedule.no_driver_lock").to_string(),
                     );
                     None
                 }
@@ -1108,9 +1114,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             // failed turn. Sending `TurnFailed`
                                             // here aborted the live turn card
                                             // and dropped its pending approvals.
-                                            port.tagged(current.clone()).send_notice(format!(
-                                                "无法切换到 {next_provider}：{error}"
-                                            ));
+                                            port.tagged(current.clone()).send_notice(
+                                                qcode_i18n::trp(
+                                                    "gui.runtime.switch_provider_failed",
+                                                    &[
+                                                        next_provider.as_str(),
+                                                        error.to_string().as_str(),
+                                                    ],
+                                                ),
+                                            );
                                         }
                                     }
                                 }
@@ -1274,19 +1286,19 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                         )
                                         .map(|task| {
                                             created_id = Some(task.id.clone());
-                                            Some(format!(
-                                                "已创建定时任务 `{}`",
-                                                task.title
+                                            Some(qcode_i18n::trp(
+                                                "gui.schedule.op.created",
+                                                &[task.title.as_str()],
                                             ))
                                         })
                                         .map_err(|error| error.to_string()),
-                                    ScheduleOp::List => Ok(Some(format!(
-                                        "共 {} 个定时任务",
-                                        scheduler.list().len()
+                                    ScheduleOp::List => Ok(Some(qcode_i18n::trp(
+                                        "gui.schedule.op.listed",
+                                        &[scheduler.list().len().to_string()],
                                     ))),
                                     ScheduleOp::Get { id } => match scheduler.find(&id) {
                                         Some(task) => Ok(Some(format!("{task:?}"))),
-                                        None => Err("定时任务不存在".to_string()),
+                                        None => Err(qcode_i18n::tr("gui.schedule.op.not_found").to_string()),
                                     },
                                     ScheduleOp::Edit {
                                         id,
@@ -1309,15 +1321,15 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                             },
                                             now,
                                         )
-                                        .map(|_| Some("已保存".to_string()))
+                                        .map(|_| Some(qcode_i18n::tr("ui.action.saved").to_string()))
                                         .map_err(|error| error.to_string()),
                                     ScheduleOp::Pause { id } => scheduler
                                         .pause(&id)
-                                        .map(|_| Some("已暂停".to_string()))
+                                        .map(|_| Some(qcode_i18n::tr("gui.schedule.op.paused").to_string()))
                                         .map_err(|error| error.to_string()),
                                     ScheduleOp::Resume { id } => scheduler
                                         .resume(&id, now)
-                                        .map(|_| Some("已恢复".to_string()))
+                                        .map(|_| Some(qcode_i18n::tr("gui.schedule.op.resumed").to_string()))
                                         .map_err(|error| error.to_string()),
                                     ScheduleOp::RunNow { id } => {
                                         // 准入闸：目标会话锁 + 最小投递间隔
@@ -1423,7 +1435,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                                         }
                                                     }
                                                 });
-                                                Ok(Some("已触发".to_string()))
+                                                Ok(Some(qcode_i18n::tr("gui.schedule.op.ran").to_string()))
                                             }
                                             Err(error) => Err(error.to_string()),
                                         }
@@ -1431,7 +1443,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     }
                                     ScheduleOp::Delete { id } => scheduler
                                         .delete(&id)
-                                        .map(|_| Some("已删除".to_string()))
+                                        .map(|_| Some(qcode_i18n::tr("gui.schedule.op.deleted").to_string()))
                                         .map_err(|error| error.to_string()),
                                 };
                                 match result {
@@ -1616,8 +1628,10 @@ mod probe_tests {
 
         // 会话里正有一个回合（锁被持有，可能是 qcd 开的）：拒绝。
         let guard = store.lock(&session).expect("take the session lock");
+        // 断言比对中文文案，先钉语言（I18N.md 不变量 5）。
+        qcode_i18n::pin_for_tests();
         assert_eq!(
-            run_now_admission(&store, &task),
+            run_now_admission(&store, &task).as_deref(),
             Some("该任务正在执行中，请等待其回合结束再执行")
         );
         drop(guard);
@@ -1646,8 +1660,9 @@ mod probe_tests {
             target_session_id: None,
             prompt: String::new(),
         });
+        qcode_i18n::pin_for_tests();
         assert_eq!(
-            run_now_admission(&store, &task),
+            run_now_admission(&store, &task).as_deref(),
             Some("投递过于频繁：两次投递至少间隔 60 秒")
         );
 

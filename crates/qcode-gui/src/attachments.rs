@@ -35,8 +35,9 @@ pub(crate) fn attach_image(
 ) -> Result<PendingAttachment, String> {
     let label = label.into();
     let Some(mime) = ImageMime::sniff(bytes) else {
-        return Err(format!(
-            "{label}: 不是支持的图片格式（png / jpeg / webp / gif）"
+        return Err(qcode_i18n::trp(
+            "gui.attachment.bad_image",
+            &[label.as_str()],
         ));
     };
     let store = AttachmentStore::open(data_dir).map_err(|error| error.to_string())?;

@@ -300,12 +300,14 @@ impl Shell {
         let backend_is_configured = backend.is_configured();
         // The window starts on one task's view; every other task it has visited
         // lives in `parked` (ADR-0058 §4).
-        let mut ui = TaskUi::fresh(app, window, cx, &send_mode, send_hint);
-        ui.notice =
-            (!backend_is_configured).then(|| "not configured yet: open Settings".to_string());
+        let mut ui = TaskUi::fresh(app, window, cx, &send_mode, &send_hint);
+        ui.notice = (!backend_is_configured)
+            .then(|| qcode_i18n::tr("gui.notice.not_configured").to_string());
         // Provider/Model 菜单的搜索框：Change 事件写入搜索词并重置高亮。
-        let model_search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…".to_string()));
+        let model_search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.notice.model_search_placeholder").to_string())
+        });
         let model_search_subscription = cx.subscribe(
             &model_search_input,
             |shell, _input, event: &InputEvent, cx| {
@@ -439,7 +441,11 @@ impl Shell {
             ui.app.status.running = false;
         }
         self.quitting = true;
-        self.set_notice("正在停止正在运行的任务…".to_string(), false, cx);
+        self.set_notice(
+            qcode_i18n::tr("gui.notice.stopping_all").to_string(),
+            false,
+            cx,
+        );
         cx.notify();
         // 等 `TurnFinished` 不设上限会把「退出」变成「卡住」：provider 可能一时
         // 不理会取消令牌。5 秒后照样退出——日志是权威源（ADR-0057），强杀不需要
@@ -894,7 +900,7 @@ impl Shell {
         if self.backend.rebuild_hook().is_none() {
             self.ui
                 .app
-                .push_notice("settings saved, but this backend cannot reload");
+                .push_notice(qcode_i18n::tr("gui.notice.settings_no_reload"));
             cx.notify();
             return;
         }
@@ -903,7 +909,11 @@ impl Shell {
         // 把别的任务的输出一起掐掉。标志位在 `poll` 里兑现。
         if self.any_turn_running() {
             self.pending_rebuild = true;
-            self.set_notice("设置已保存：等所有任务空闲后应用".to_string(), false, cx);
+            self.set_notice(
+                qcode_i18n::tr("gui.notice.settings_pending_all_idle").to_string(),
+                false,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -915,7 +925,7 @@ impl Shell {
         let Some(rebuild) = self.backend.rebuild_hook() else {
             self.ui
                 .app
-                .push_notice("settings saved, but this backend cannot reload");
+                .push_notice(qcode_i18n::tr("gui.notice.settings_no_reload"));
             cx.notify();
             return;
         };
@@ -923,10 +933,9 @@ impl Shell {
         // 读新配置），但引擎只在当前 turn 结束后才换，新配置下次任务开始用。
         if self.ui.app.status.running {
             self.pending_rebuild = true;
-            self.ui
-                .app
-                .push_notice("设置已保存，将在当前任务结束后生效");
-            self.set_notice("设置已保存，将在当前任务结束后生效".to_string(), false, cx);
+            let pending = qcode_i18n::tr("gui.notice.settings_pending_after_turn");
+            self.ui.app.push_notice(pending.clone());
+            self.set_notice(pending.to_string(), false, cx);
             cx.notify();
             return;
         }

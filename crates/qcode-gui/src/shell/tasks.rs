@@ -131,7 +131,10 @@ impl Shell {
                 cx.notify();
             }
             Err(error) => {
-                self.ui.app.push_notice(format!("无法更新目录: {error}"));
+                self.ui.app.push_notice(qcode_i18n::trp(
+                    "gui.task.roots_updated_failed",
+                    std::slice::from_ref(&error),
+                ));
                 cx.notify();
             }
         }
@@ -156,7 +159,10 @@ impl Shell {
         };
         // 重新拉取：成功的新标题来自 store，失败的会回退到旧标题。
         if let Err(error) = self.backend.rename_task(task_id, title) {
-            self.ui.app.push_notice(format!("无法重命名任务: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.task.rename_failed",
+                std::slice::from_ref(&error),
+            ));
         }
         self.refresh_tasks();
         cx.notify();
@@ -171,7 +177,9 @@ impl Shell {
         let Some(roots) = self.pending_roots.remove(&task_id) else {
             return;
         };
-        self.ui.app.push_notice("正在应用待处理的目录变更");
+        self.ui
+            .app
+            .push_notice(qcode_i18n::tr("gui.task.roots_applying"));
         self.apply_roots_now(&task_id, roots, cx);
     }
 
@@ -186,7 +194,7 @@ impl Shell {
             self.pending_roots.insert(task_id.to_string(), roots);
             self.ui
                 .app
-                .push_notice("目录变更将在该任务的 Turn 结束后应用");
+                .push_notice(qcode_i18n::tr("gui.task.roots_pending"));
             cx.notify();
             return;
         }
@@ -209,9 +217,10 @@ impl Shell {
             }
         };
         if roots.iter().any(|root| root.path == path) {
-            self.ui
-                .app
-                .push_notice(format!("目录已存在: {}", path.display()));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.task.root_exists",
+                &[path.display().to_string()],
+            ));
             cx.notify();
             return;
         }
@@ -262,8 +271,11 @@ impl Shell {
             .titles
             .get(task_id)
             .cloned()
-            .unwrap_or_else(|| "新任务".to_string());
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("任务标题"));
+            .unwrap_or_else(|| qcode_i18n::tr("gui.task.new_title").to_string());
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.task.title_placeholder").to_string())
+        });
         input.update(cx, |input, cx| input.set_value(current, window, cx));
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
@@ -287,7 +299,9 @@ impl Shell {
         };
         let title = state.input.read(cx).value().trim().to_string();
         if title.is_empty() {
-            self.ui.app.push_notice("任务标题不能为空");
+            self.ui
+                .app
+                .push_notice(qcode_i18n::tr("gui.task.title_required"));
             self.rename_task = Some(state);
             cx.notify();
             return;
@@ -297,17 +311,22 @@ impl Shell {
             self.pending_task_renames
                 .insert(state.task_id.clone(), title.clone());
             self.titles.insert(state.task_id.clone(), title);
-            self.ui.app.push_notice("该任务的 Turn 结束后重命名");
+            self.ui
+                .app
+                .push_notice(qcode_i18n::tr("gui.task.rename_pending"));
             cx.notify();
             return;
         }
         match self.backend.rename_task(&state.task_id, title) {
             Ok(()) => {
                 self.refresh_tasks();
-                self.ui.app.push_notice("任务已重命名");
+                self.ui.app.push_notice(qcode_i18n::tr("gui.task.renamed"));
             }
             Err(error) => {
-                self.ui.app.push_notice(format!("无法重命名任务: {error}"));
+                self.ui.app.push_notice(qcode_i18n::trp(
+                    "gui.task.rename_failed",
+                    std::slice::from_ref(&error),
+                ));
                 self.rename_task = Some(state);
             }
         }
@@ -323,7 +342,7 @@ impl Shell {
         if self.task_running(task_id) {
             self.ui
                 .app
-                .push_notice("请先停止该任务，再删除正在运行的任务");
+                .push_notice(qcode_i18n::tr("gui.task.delete_running"));
             cx.notify();
             return;
         }
@@ -339,7 +358,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Err(error) = self.backend.delete_task(task_id) {
-            self.ui.app.push_notice(format!("无法删除任务: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.task.delete_failed",
+                std::slice::from_ref(&error),
+            ));
             cx.notify();
             return;
         }
@@ -377,7 +399,7 @@ impl Shell {
                 self.new_session(window, cx);
             }
         } else {
-            self.ui.app.push_notice("任务已删除");
+            self.ui.app.push_notice(qcode_i18n::tr("gui.task.deleted"));
         }
         cx.notify();
     }

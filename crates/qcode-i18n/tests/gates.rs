@@ -194,6 +194,37 @@ fn every_key_resolves_at_runtime() {
     );
 }
 
+/// 门禁 6：声明的 key 必须有人引用（没有孤儿）。
+///
+/// 门禁 4 查的是「引用了不存在的 key」，反过来没人查：一条翻好的 key 如果随着
+/// 代码重构失去调用点，它会安静地留在表里——下次有人改文案时改它、改完发现界面
+/// 没变，或者更糟：两条 key 表达同一件事，只有一条还在用。孤儿是翻译表的腐坏起点。
+///
+/// **动态 key 例外**：本仓库所有取译文的地方都用字面量（`tr("a.b")`），包括
+/// `match` 分支里的那些（`weekday_name` 之类）。将来若出现拼出来的 key，这条
+/// 门禁会误报，那时的正解是在调用处加白名单注释，而不是关掉这条门禁。
+#[test]
+fn every_declared_key_is_referenced() {
+    let (keys, _) = declared_keys();
+    // **扫全文，含测试代码**：`app.name` / `app.error_prefix` 只被本 crate 的
+    // 自检测试引用（P0 用来证明链路通的那两条），它们是合法在用的。孤儿要抓的是
+    // 「谁都不提它了」，不是「只有测试提它」。
+    let mut referenced = std::collections::BTreeSet::new();
+    for (_, _, source) in all_sources() {
+        referenced.extend(referenced_keys(&source));
+    }
+    let orphans: Vec<&String> = keys.difference(&referenced).collect();
+    assert!(
+        orphans.is_empty(),
+        "这些 key 声明了但没人引用（翻译表在腐坏）：\n  - {}",
+        orphans
+            .iter()
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  - ")
+    );
+}
+
 // ------------------------------------------------------------------ 门禁 2
 
 /// 一个 crate 里的一条中文串（crate 名, 转义后的字面量）。
@@ -386,7 +417,13 @@ fn referenced_keys(source: &str) -> Vec<String> {
         // 标识符边界：`tr(` 得是完整的标识符，不能是 `startr(`。
         let starts_ident = i == 0 || !is_ident_byte(bytes[i - 1]);
         if starts_ident {
-            for callee in [&b"trp("[..], &b"tr("[..], &b"_rust_i18n_translate("[..]] {
+            // 长的在前：先试 `trp_in(`，否则 `trp(` 会把它截住。
+            for callee in [
+                &b"trp_in("[..],
+                &b"trp("[..],
+                &b"tr("[..],
+                &b"_rust_i18n_translate("[..],
+            ] {
                 if !bytes[i..].starts_with(callee) {
                     continue;
                 }
@@ -441,6 +478,49 @@ fn skip_comment(bytes: &[u8], start: usize) -> usize {
         }
     }
     i
+}
+
+/// 遍历 `crates/` 下的**全部** `.rs`（含测试代码），返回 `(crate 名, 路径, 全文)`。
+fn all_sources() -> Vec<(String, PathBuf, String)> {
+    let mut out = Vec::new();
+    fn walk(crate_name: &str, dir: &Path, out: &mut Vec<(String, PathBuf, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "target" || name.starts_with('.') {
+                    continue;
+                }
+                walk(crate_name, &path, out);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            out.push((crate_name.to_string(), path, source));
+        }
+    }
+    let crates = workspace_root().join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        walk(&name, &dir, &mut out);
+    }
+    out
 }
 
 /// 遍历 `crates/` 下的生产代码，返回 `(crate 名, 文件路径, 生产部分源码)`。

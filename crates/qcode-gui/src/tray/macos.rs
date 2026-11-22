@@ -134,10 +134,16 @@ pub fn start(commands: Sender<TrayCommand>) -> Option<MacTray> {
         }
         entry
     };
-    let show = mk_item("显示主窗口", sel!(showAction:));
-    let stop = mk_item("停止当前任务", sel!(stopAction:));
+    let show = mk_item(
+        qcode_i18n::tr("gui.tray.show_window").as_ref(),
+        sel!(showAction:),
+    );
+    let stop = mk_item(
+        qcode_i18n::tr("gui.tray.stop_current").as_ref(),
+        sel!(stopAction:),
+    );
     stop.setEnabled(false);
-    let quit = mk_item("退出", sel!(quitAction:));
+    let quit = mk_item(qcode_i18n::tr("gui.tray.quit").as_ref(), sel!(quitAction:));
     quit.setKeyEquivalent(&NSString::from_str("q"));
     quit.setKeyEquivalentModifierMask(objc2_app_kit::NSEventModifierFlags::Command);
 

@@ -148,14 +148,18 @@ impl Tray for QcodeTray {
                 ..Default::default()
             }),
             MenuItem::Separator,
-            self.item("显示主窗口", true, TrayCommand::ShowWindow),
             self.item(
-                "停止当前任务",
+                qcode_i18n::tr("gui.tray.show_window"),
+                true,
+                TrayCommand::ShowWindow,
+            ),
+            self.item(
+                qcode_i18n::tr("gui.tray.stop_current"),
                 self.snapshot.can_stop(),
                 TrayCommand::StopCurrent,
             ),
             MenuItem::Separator,
-            self.item("退出", true, TrayCommand::Quit),
+            self.item(qcode_i18n::tr("gui.tray.quit"), true, TrayCommand::Quit),
         ]
     }
 }

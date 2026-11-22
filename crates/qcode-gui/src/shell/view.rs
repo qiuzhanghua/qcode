@@ -490,7 +490,7 @@ impl Shell {
         let options = window_icon::attach(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, size))),
             titlebar: Some(TitlebarOptions {
-                title: Some("设置".into()),
+                title: Some(qcode_i18n::tr("gui.setup.window_title").into()),
                 ..Default::default()
             }),
             ..Default::default()

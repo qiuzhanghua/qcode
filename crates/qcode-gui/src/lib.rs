@@ -110,13 +110,14 @@ const RESULT_SIZE: f32 = 12.0;
 /// Composer placeholder tail: how to send. Each task gets its own composer
 /// (ADR-0058 §4), so the hint is derived from the preference rather than
 /// captured once at startup.
-fn send_hint(send_mode: &str) -> &'static str {
+fn send_hint(send_mode: &str) -> std::borrow::Cow<'static, str> {
+    use qcode_i18n::tr;
     if send_mode == "enter" {
-        "Enter 发送 · Shift+Enter 换行"
+        tr("gui.composer.send_enter")
     } else if cfg!(target_os = "macos") {
-        "Cmd+Enter 发送 · Enter 换行"
+        tr("gui.composer.send_cmd_enter")
     } else {
-        "Ctrl+Enter 发送 · Enter 换行"
+        tr("gui.composer.send_ctrl_enter")
     }
 }
 const RESULT_LINE: f32 = 22.0;

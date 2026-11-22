@@ -60,7 +60,7 @@ impl Render for SetupView {
                             .gap_2()
                             .child(
                                 Button::new("repair-editor")
-                                    .label("Open in editor")
+                                    .label(qcode_i18n::tr("gui.setup.open_in_editor"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         if let Err(error) = open_in_editor(&this.path) {
                                             this.error = Some(error);
@@ -330,7 +330,7 @@ impl Render for SetupView {
                 )
                 .child(
                     Button::new("setup-save")
-                        .label("Save & Start")
+                        .label(qcode_i18n::tr("gui.setup.save_and_start"))
                         .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                 );
         } else {
@@ -1004,16 +1004,16 @@ impl SetupView {
                                     .flex_col()
                                     .gap_1()
                                     .child(
-                                        div()
-                                            .child("API key (stored in Keychain, not config.toml)"),
+                                        div().child(qcode_i18n::tr("gui.setup.provider_key_label")),
                                     )
                                     .child(
-                                        Input::new(secret)
-                                            .aria_label("Provider API key for Keychain"),
+                                        Input::new(secret).aria_label(qcode_i18n::tr(
+                                            "gui.setup.provider_key_aria",
+                                        )),
                                     )
                                     .child(
                                         Button::new(format!("store-key-{key}-{key_row_id}"))
-                                            .label("Store key")
+                                            .label(qcode_i18n::tr("gui.setup.store_key"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.store_provider_key(key_row_id, window, cx);
                                             })),
@@ -1071,7 +1071,7 @@ impl SetupView {
         table_view
             .child(
                 Button::new(format!("add-{key}"))
-                    .label("Add custom row")
+                    .label(qcode_i18n::tr("gui.setup.add_custom_row"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let spec = forms::TABLES
                             .iter()

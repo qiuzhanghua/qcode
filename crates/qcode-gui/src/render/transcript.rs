@@ -94,7 +94,7 @@ fn pending_row(text: String, steered: bool) -> AnyElement {
             .into_any_element();
     }
     let preview: String = text.replace('\n', " ").chars().take(120).collect();
-    let status = "排队中";
+    let status = qcode_i18n::tr("gui.transcript.queued");
     // 与 queue dock 的配色保持一致：队列灰色。
     let (status_color, bg) = (rgb(0x888888), rgba(0x7f7f7f10));
     div()
@@ -329,7 +329,11 @@ pub(crate) fn live_reasoning_row(shell: &Shell, entity: &Entity<Shell>) -> AnyEl
                     });
                 }
             })
-            .child(header_lead(expanded, IconName::Brain, "思考"))
+            .child(header_lead(
+                expanded,
+                IconName::Brain,
+                qcode_i18n::tr("gui.transcript.thinking").to_string(),
+            ))
             .children((!expanded && !preview.is_empty()).then(|| {
                 div()
                     .text_color(rgb(0x777777))
@@ -395,7 +399,11 @@ pub(crate) fn reasoning_row(
                     entity.update(cx, |shell, cx| shell.toggle_reasoning(block, cx));
                 }
             })
-            .child(header_lead(expanded, IconName::Brain, "思考"))
+            .child(header_lead(
+                expanded,
+                IconName::Brain,
+                qcode_i18n::tr("gui.transcript.thinking").to_string(),
+            ))
             .children((!expanded && !preview.is_empty()).then(|| {
                 div()
                     .text_color(rgb(0x777777))
@@ -428,19 +436,23 @@ pub(crate) fn reasoning_row(
     row.into_any_element()
 }
 pub(crate) fn tool_label(name: &str) -> String {
+    // **工具名本身不翻**（`run_shell` 是契约里的标识符），只翻映射出来的动词。
+    // 认不出的工具名原样显示 —— 那正是「有个新工具还没配动词」的信号，盖成
+    // 一句通用中文反而看不出。
     match name {
-        "run_shell" | "shell" => "运行命令",
-        "list_dir" => "列出目录",
-        "glob" => "查找文件",
-        "grep" | "search" => "搜索",
-        "read_file" | "read" => "读取文件",
-        "write_file" | "write" => "写入文件",
-        "edit_file" | "edit" | "apply_patch" => "修改文件",
-        "todo_write" | "todo" => "更新待办",
-        "subagent" | "task" => "子代理",
-        _ => name,
+        "run_shell" | "shell" => qcode_i18n::tr("gui.transcript.verb.shell").to_string(),
+        "list_dir" => qcode_i18n::tr("gui.transcript.verb.list_dir").to_string(),
+        "glob" => qcode_i18n::tr("gui.transcript.verb.glob").to_string(),
+        "grep" | "search" => qcode_i18n::tr("gui.transcript.verb.search").to_string(),
+        "read_file" | "read" => qcode_i18n::tr("gui.transcript.verb.read").to_string(),
+        "write_file" | "write" => qcode_i18n::tr("gui.transcript.verb.write").to_string(),
+        "edit_file" | "edit" | "apply_patch" => {
+            qcode_i18n::tr("gui.transcript.verb.edit").to_string()
+        }
+        "todo_write" | "todo" => qcode_i18n::tr("gui.transcript.verb.todo").to_string(),
+        "subagent" | "task" => qcode_i18n::tr("gui.transcript.verb.subagent").to_string(),
+        _ => name.to_string(),
     }
-    .to_string()
 }
 pub(crate) fn tool_icon_name(name: &str) -> IconName {
     match name {
@@ -796,7 +808,7 @@ fn copy_command_button(
     copy_chip(
         SharedString::from(format!("copy-command-{index}")),
         call_id.to_string(),
-        "复制",
+        qcode_i18n::tr("gui.transcript.copy"),
         command.to_string(),
         shell.copied_recently(call_id),
         entity.clone(),
@@ -814,7 +826,7 @@ fn copy_command_button(
 fn copy_chip(
     element_id: SharedString,
     flash: String,
-    label: &'static str,
+    label: std::borrow::Cow<'static, str>,
     text: String,
     copied: bool,
     entity: Entity<Shell>,
@@ -828,7 +840,11 @@ fn copy_chip(
         .text_size(sp(CAPTION_SIZE))
         .text_color(if copied { rgb(0x4c9a68) } else { rgb(0x8a8a8a) })
         .hover(|style| style.bg(rgba(0x7f7f7f14)).text_color(rgb(0x333333)))
-        .child(if copied { "已复制" } else { label })
+        .child(if copied {
+            qcode_i18n::tr("gui.transcript.copied")
+        } else {
+            label
+        })
         .on_click(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
             entity.update(cx, |shell, cx| shell.mark_copied(flash.clone(), cx));
@@ -939,7 +955,7 @@ fn code_block_copy_actions(
             .child(copy_chip(
                 SharedString::from(format!("copy-{flash}")),
                 flash.clone(),
-                "复制",
+                qcode_i18n::tr("gui.transcript.copy"),
                 body.clone(),
                 copied,
                 entity.clone(),
@@ -978,7 +994,7 @@ fn answer_actions(index: usize, text: &str, shell: &Shell, entity: &Entity<Shell
         row = row.child(copy_chip(
             SharedString::from(format!("copy-{plain_flash}")),
             plain_flash.clone(),
-            "复制",
+            qcode_i18n::tr("gui.transcript.copy"),
             plain,
             shell.copied_recently(&plain_flash),
             entity.clone(),
@@ -991,7 +1007,7 @@ fn answer_actions(index: usize, text: &str, shell: &Shell, entity: &Entity<Shell
         row = row.child(copy_chip(
             SharedString::from(format!("copy-{markdown_flash}")),
             markdown_flash.clone(),
-            "Markdown",
+            std::borrow::Cow::Borrowed("Markdown"),
             source.to_string(),
             shell.copied_recently(&markdown_flash),
             entity.clone(),
@@ -1002,7 +1018,7 @@ fn answer_actions(index: usize, text: &str, shell: &Shell, entity: &Entity<Shell
         row = row.child(copy_chip(
             SharedString::from(format!("copy-{flash}")),
             flash.clone(),
-            "整轮",
+            qcode_i18n::tr("gui.transcript.copy_turn"),
             whole,
             shell.copied_recently(&flash),
             entity.clone(),
@@ -1113,7 +1129,10 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                                             .text_size(sp(14.0))
                                             .line_height(sp(22.0))
                                             .text_color(rgb(0x555555))
-                                            .child(format!("⏱ 定时任务 · {}", scheduled.at)),
+                                            .child(qcode_i18n::trp(
+                                                "gui.transcript.scheduled",
+                                                std::slice::from_ref(&scheduled.at),
+                                            )),
                                     )
                                     .child(
                                         div()
@@ -1382,7 +1401,7 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                     details = details.child(
                         div().flex().flex_row().pt_1().child(
                             Button::new(SharedString::from(format!("view-diff-{index}")))
-                                .label("查看")
+                                .label(qcode_i18n::tr("gui.transcript.view_diff"))
                                 .on_click({
                                     let entity = entity.clone();
                                     move |_, _, cx| {
@@ -1498,15 +1517,17 @@ fn process_label(shell: &Shell, blocks: &[usize]) -> Option<String> {
     }
     let mut parts = Vec::new();
     if writes {
-        parts.push("修改了文件");
+        parts.push(qcode_i18n::tr("gui.transcript.did.writes"));
     }
     if shells {
-        parts.push("执行了命令");
+        parts.push(qcode_i18n::tr("gui.transcript.did.shells"));
     }
     if reads {
-        parts.push("已读取文件");
+        parts.push(qcode_i18n::tr("gui.transcript.did.reads"));
     }
-    (!parts.is_empty()).then(|| parts.join("，"))
+    // 分隔符也是译文的一部分：中文用顿号、英文用逗号加空格。
+    let separator = qcode_i18n::tr("gui.transcript.did.separator");
+    (!parts.is_empty()).then(|| parts.join(separator.as_ref()))
 }
 
 /// The pause card: why the turn stopped, what it got done, and the three ways
@@ -1537,7 +1558,10 @@ fn pause_card(
                     div()
                         .text_size(sp(BODY_SIZE))
                         .text_color(amber)
-                        .child(format!("⏸ 已暂停 · {}", card.headline)),
+                        .child(qcode_i18n::trp(
+                            "gui.transcript.paused",
+                            &[card.headline.as_str()],
+                        )),
                 )
                 .children(card.window_note.map(|note| {
                     div()
@@ -1575,9 +1599,12 @@ fn pause_card(
             .iter()
             .map(|line| line.command.as_str())
             .collect();
-        let mut line = format!("已运行：{}", runs.join(" · "));
+        let mut line = qcode_i18n::trp("tui.pause.commands", &[runs.join(" · ")]);
         if card.more_commands > 0 {
-            line.push_str(&format!(" 等 {} 条", runs.len() + card.more_commands));
+            line.push_str(&qcode_i18n::trp(
+                "tui.pause.more_commands",
+                &[(runs.len() + card.more_commands).to_string()],
+            ));
         }
         body = body.child(
             div()
@@ -1594,7 +1621,7 @@ fn pause_card(
         .pt_1()
         .child(
             Button::new(("pause-continue", index))
-                .label("继续")
+                .label(qcode_i18n::tr("gui.transcript.resume"))
                 .on_click({
                     let entity = entity.clone();
                     move |_, _, cx| {
@@ -1602,15 +1629,19 @@ fn pause_card(
                     }
                 }),
         )
-        .child(Button::new(("pause-wrap", index)).label("收尾").on_click({
-            let entity = entity.clone();
-            move |_, _, cx| {
-                entity.update(cx, |shell, cx| shell.wrap_up_paused_turn(cx));
-            }
-        }))
+        .child(
+            Button::new(("pause-wrap", index))
+                .label(qcode_i18n::tr("gui.transcript.wrap_up"))
+                .on_click({
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |shell, cx| shell.wrap_up_paused_turn(cx));
+                    }
+                }),
+        )
         .child(
             Button::new(("pause-dismiss", index))
-                .label("先这样")
+                .label(qcode_i18n::tr("gui.transcript.dismiss"))
                 .on_click({
                     let entity = entity.clone();
                     move |_, _, cx| {
@@ -1625,7 +1656,10 @@ fn pause_card(
             div()
                 .text_size(sp(CAPTION_SIZE))
                 .text_color(muted)
-                .child(format!("第 {} 个预算窗口", shell.ui.app.status.window))
+                .child(qcode_i18n::trp(
+                    "ui.pause.window",
+                    &[shell.ui.app.status.window.to_string()],
+                ))
         }));
     Some(
         div()
@@ -1653,7 +1687,7 @@ fn image_tile(image: &qcode_ui_state::ImageBlock, shell: &Shell, index: usize) -
         return div()
             .text_size(sp(SECONDARY_SIZE))
             .text_color(rgb(0x999999))
-            .child("[图片已不可用]")
+            .child(qcode_i18n::tr("gui.transcript.image_unavailable"))
             .into_any_element();
     }
     // Fit inside a 360×260 box, never scaling up past the original.

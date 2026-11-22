@@ -27,7 +27,7 @@ impl Tab {
         let title = self.session.events().title();
         let title = title.trim();
         if title.is_empty() {
-            "终端".to_string()
+            qcode_i18n::tr("gui.terminal.title").to_string()
         } else {
             title.to_string()
         }
@@ -83,9 +83,9 @@ impl Terminals {
         dirty: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> bool {
         if self.tabs.len() >= config.max_terminals.max(1) {
-            self.error = Some(format!(
-                "最多 {} 个终端；先关掉一个再开新的",
-                config.max_terminals.max(1)
+            self.error = Some(qcode_i18n::trp(
+                "gui.terminal.too_many",
+                &[config.max_terminals.max(1).to_string()],
             ));
             return false;
         }
@@ -217,7 +217,12 @@ fn spawn(
             background: to_term_rgb(crate::render::terminal_view::TERMINAL_BACKGROUND),
         },
     })
-    .map_err(|error| format!("终端启动失败（{}）：{error}", choice.program.display()))?;
+    .map_err(|error| {
+        qcode_i18n::trp(
+            "gui.terminal.start_failed",
+            &[choice.program.display().to_string(), error.to_string()],
+        )
+    })?;
 
     Ok(session)
 }

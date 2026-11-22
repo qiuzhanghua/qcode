@@ -1,5 +1,15 @@
 //! Native platform helpers: file/directory pickers with captions in the
 //! machine's UI language.
+//!
+//! **这里的文案故意不进翻译表（I18N.md 的例外）。** 它们不是我们的界面，而是
+//! 操作系统对话框里的一句提示：对话框自身的按钮、侧栏、树节点由系统按**机器显示
+//! 语言**渲染，我们只补一句 prompt/caption。如果这句跟着 `QCODE_LANG` 走，那么在
+//! 一台中文 macOS 上把 `QCODE_LANG=en` 的人会得到一个「英文 caption + 中文按钮」
+//! 的半截对话框——比两边都用中文更糟。
+//!
+//! 所以判定用 [`native_ui_is_zh`]（读 `AppleLanguages` / `LANG`），Windows 那一支
+//! 在 PowerShell 里按 `InstalledUICulture` 自己选。这几条中文字面量因此会**永久留在
+//! 门禁 2 的基线里**：基线只能表达「还存在」，不能表达「故意留着」，理由就写在这里。
 
 use std::path::PathBuf;
 

@@ -36,11 +36,11 @@ impl TraySnapshot {
     /// 菜单顶部那一行（disabled）。
     pub fn status_line(&self) -> String {
         if self.approvals > 0 {
-            format!("QCode · 等待审批（{}）", self.approvals)
+            qcode_i18n::trp("gui.tray.status_approval", &[self.approvals.to_string()])
         } else if self.running {
-            "QCode · 运行中".to_string()
+            qcode_i18n::tr("gui.tray.status_running").to_string()
         } else {
-            "QCode · 空闲".to_string()
+            qcode_i18n::tr("gui.tray.status_idle").to_string()
         }
     }
 

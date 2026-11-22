@@ -274,12 +274,10 @@ impl Shell {
                                 .rounded(cx.theme().radius)
                                 .gap_2()
                                 .cursor_pointer()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_size(sp(13.0))
-                                        .child(format!("使用「{typed}」（{p}）")),
-                                )
+                                .child(div().flex_1().text_size(sp(13.0)).child(qcode_i18n::trp(
+                                    "gui.main.use_model",
+                                    &[typed.as_str(), p.as_str()],
+                                )))
                                 .on_click(move |_event, window, cx| {
                                     if let Some(shell) = shell.upgrade() {
                                         shell.update(cx, |shell, cx| {
@@ -427,9 +425,9 @@ impl Shell {
         // 仅当所有目录都为只读时显示「仅可读取」，否则显示「工作区可写」。
         let all_ro = roots.iter().all(|root| root.access == RootAccess::ReadOnly);
         let label = if all_ro {
-            "仅可读取"
+            qcode_i18n::tr("gui.main.sandbox_read_only")
         } else {
-            "工作区可写"
+            qcode_i18n::tr("gui.main.sandbox_write")
         };
         let current_rw = roots
             .iter()
@@ -440,12 +438,12 @@ impl Shell {
             .label(label)
             .icon(IconName::Shield)
             .dropdown_caret(true)
-            .tooltip("沙箱目录权限（对当前任务全部目录生效）")
+            .tooltip(qcode_i18n::tr("gui.main.sandbox_menu_tip"))
             .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
                 menu.item({
                     let shell = shell.clone();
                     let task_id = task_id.clone();
-                    PopupMenuItem::new("工作区可写")
+                    PopupMenuItem::new(qcode_i18n::tr("gui.main.sandbox_write"))
                         .checked(current_rw)
                         .on_click(move |_, _, cx| {
                             if let Some(shell) = shell.upgrade() {
@@ -462,7 +460,7 @@ impl Shell {
                 .item({
                     let shell = shell.clone();
                     let task_id = task_id.clone();
-                    PopupMenuItem::new("仅可读取")
+                    PopupMenuItem::new(qcode_i18n::tr("gui.main.sandbox_read_only"))
                         .checked(current_ro)
                         .on_click(move |_, _, cx| {
                             if let Some(shell) = shell.upgrade() {
@@ -513,7 +511,7 @@ impl Shell {
                 let steer_id = id.clone();
                 row = row.child(
                     Button::new(format!("queue-steer-{steer_id}"))
-                        .label("推送")
+                        .label(qcode_i18n::tr("gui.main.push"))
                         .on_click(cx.listener(move |this, _, _, _| {
                             this.backend.queue_op(steer_id.clone(), QueueOp::Steer);
                         })),
@@ -701,7 +699,7 @@ impl Shell {
             let input = cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 4)
-                    .placeholder("输入回答…")
+                    .placeholder(qcode_i18n::tr("gui.main.answer_placeholder").to_string())
             });
             let subscription = cx.subscribe(&input, |shell, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -793,7 +791,7 @@ impl Shell {
             .as_deref()
             .and_then(|id| self.titles.get(id))
             .cloned()
-            .unwrap_or_else(|| "新任务".to_string());
+            .unwrap_or_else(|| qcode_i18n::tr("gui.main.new_task").to_string());
 
         let header = div()
             .flex()
@@ -900,11 +898,11 @@ impl Shell {
                                                 .line_height(sp(26.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0xffffff))
-                                                .child("命令输出"),
+                                                .child(qcode_i18n::tr("gui.main.command_output")),
                                         )
                                         .child(
                                             Button::new("dismiss-command-output")
-                                                .label("关闭")
+                                                .label(qcode_i18n::tr("gui.main.close"))
                                                 .on_click(cx.listener(
                                                     |this, _, window, cx| {
                                                         this.close_command_output(window, cx);
@@ -973,11 +971,11 @@ impl Shell {
                                 div()
                                     .text_size(sp(CAPTION_SIZE))
                                     .opacity(0.6)
-                                    .child("改动"),
+                                    .child(qcode_i18n::tr("gui.main.diff")),
                             )
                             .child(
                                 Button::new("close-diff")
-                                    .label("关闭")
+                                    .label(qcode_i18n::tr("gui.main.close"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.close_diff_view(cx);
                                     })),
@@ -1021,7 +1019,7 @@ impl Shell {
                                                     .line_height(sp(26.0))
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .text_color(rgb(0x000000))
-                                                    .child("预算接近上限"),
+                                                    .child(qcode_i18n::tr("gui.main.budget_title")),
                                             ),
                                     )
                                     .child(
@@ -1046,19 +1044,18 @@ impl Shell {
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x000000))
-                                                    .child(
-                                                        "继续跑会消耗更多预算；需要更多空间可以调大 \
-                                                         [agent] max_turns / max_cost_usd，或者在新任务里重开。",
-                                                    ),
+                                                    .child(qcode_i18n::tr(
+                                                        "gui.main.budget_body_more",
+                                                    )),
                                             )
                                             .child(
                                                 div()
                                                     .text_size(sp(15.0))
                                                     .line_height(sp(24.0))
                                                     .text_color(rgb(0x666666))
-                                                    .child(
-                                                        "预算用完时这一轮会「暂停」而不是报错：可以直接继续、收尾，或者先这样。",
-                                                    ),
+                                                    .child(qcode_i18n::tr(
+                                                        "gui.main.budget_body_pauses",
+                                                    )),
                                             )
                                             .child(
                                                 div()
@@ -1068,7 +1065,7 @@ impl Shell {
                                                     .gap_2()
                                                     .child(
                                                         Button::new("round-hint-new-task")
-                                                            .label("新建任务")
+                                                            .label(qcode_i18n::tr("gui.main.new_task"))
                                                             .on_click(cx.listener(
                                                                 |this, _, window, cx| {
                                                                     this.new_session(window, cx);
@@ -1077,7 +1074,7 @@ impl Shell {
                                                     )
                                                     .child(
                                                         Button::new("round-hint-ignore")
-                                                            .label("忽略")
+                                                            .label(qcode_i18n::tr("gui.main.ignore"))
                                                             .on_click(cx.listener(
                                                                 |this, _, _window, cx| {
                                                                     // 每个任务各自记住
@@ -1110,40 +1107,59 @@ impl Shell {
                         // 避免输入框自身的边框/圆角从提示框背后透出来。
                         self.ui.approvals.current().map(|view| {
                             let kind: String = match view.tool.as_str() {
-                                "run_shell" | "shell" => "执行命令".to_string(),
+                                "run_shell" | "shell" => {
+                                    qcode_i18n::tr("gui.main.approval.kind_shell").to_string()
+                                }
                                 "read_file" | "write_file" | "edit_file" | "apply_patch"
                                 | "list_dir" | "glob" | "read" | "write" | "edit"
-                                | "search" => "读写文件".to_string(),
+                                | "search" => {
+                                    qcode_i18n::tr("gui.main.approval.kind_files").to_string()
+                                }
                                 _ => tool_label(&view.tool),
                             };
-                            // 拦截原因映射成中文，其余情况直接展示原文。
+                            // 引擎给的 `reason` 是英文关键字，**匹配串不能跟着翻译**
+                            // （它是引擎的字符串，不是我们的），只把查到的这句话翻译。
                             let reason_cn = match view.reason.as_str() {
-                                reason if reason.contains("process execution") => "进程执行策略",
-                                reason if reason.contains("sandbox escalation") => "沙箱提权策略",
+                                reason if reason.contains("process execution") => {
+                                    qcode_i18n::tr("gui.main.approval.reason_process")
+                                }
+                                reason if reason.contains("sandbox escalation") => {
+                                    qcode_i18n::tr("gui.main.approval.reason_sandbox_escalation")
+                                }
                                 reason if reason.contains("write outside workspace") => {
-                                    "工作区外写入策略"
+                                    qcode_i18n::tr("gui.main.approval.reason_outside_workspace")
                                 }
                                 reason if reason.contains("multi-file write") => {
-                                    "多文件写入策略"
+                                    qcode_i18n::tr("gui.main.approval.reason_multi_file")
                                 }
-                                reason if reason.contains("external tool") => "外部工具策略",
-                                reason if reason.contains("network access") => "网络访问策略",
-                                reason if reason.contains("matched rule") => "权限规则",
-                                reason => reason,
+                                reason if reason.contains("external tool") => {
+                                    qcode_i18n::tr("gui.main.approval.reason_external_tool")
+                                }
+                                reason if reason.contains("network access") => {
+                                    qcode_i18n::tr("gui.main.approval.reason_network")
+                                }
+                                reason if reason.contains("matched rule") => {
+                                    qcode_i18n::tr("gui.main.approval.reason_rule")
+                                }
+                                reason => std::borrow::Cow::Borrowed(reason),
                             };
+                            // `当前目录` 是占位说明（真的没有 cwd 时），不是路径，
+                            // 所以它在 key 里；有 cwd 时原样显示路径。
                             let dir = if self.cwd.is_empty() {
-                                "当前目录".to_string()
+                                qcode_i18n::tr("gui.main.approval.current_dir").to_string()
                             } else {
                                 self.cwd.clone()
                             };
                             // 第一部分：说明文案（黑字）；第二部分：具体的执行
                             // 内容（灰字），字体都比此前略大。
-                            let explain = format!(
-                                "是否允许本次操作使用{kind}权限：执行{summary}时，被{reason_cn}拦截，无法在{dir}目录上执行写入，需要提升操作权限；此次操作不会改动任何文件的内容和所有者。",
-                                kind = kind,
-                                summary = view.summary,
-                                reason_cn = reason_cn,
-                                dir = dir,
+                            let explain = qcode_i18n::trp(
+                                "gui.main.approval.explain",
+                                &[
+                                    kind.as_str(),
+                                    view.summary.as_str(),
+                                    reason_cn.as_ref(),
+                                    dir.as_str(),
+                                ],
                             );
                             div()
                                 // 与提问面板同宽：左右各收窄 5%，居中。
@@ -1173,7 +1189,7 @@ impl Shell {
                                                 .line_height(sp(26.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0x000000))
-                                                .child("等待审批"),
+                                                .child(qcode_i18n::tr("gui.main.approval.title")),
                                         ),
                                 )
                                 .child(
@@ -1206,11 +1222,17 @@ impl Shell {
                                                 .text_size(sp(13.0))
                                                 .line_height(sp(22.0))
                                                 .text_color(rgb(0xb45309))
-                                                .child(format!(
-                                                    "请求提权到 {scope}：{}",
-                                                    view.justification
-                                                        .as_deref()
-                                                        .unwrap_or("（未说明理由）")
+                                                .child(qcode_i18n::trp(
+                                                    "gui.main.approval.escalate",
+                                                    &[
+                                                        scope.as_str(),
+                                                        view.justification.as_deref().unwrap_or(
+                                                            qcode_i18n::tr(
+                                                                "gui.main.approval.no_reason",
+                                                            )
+                                                            .as_ref(),
+                                                        ),
+                                                    ],
                                                 ))
                                         }))
                                         .child(
@@ -1219,7 +1241,7 @@ impl Shell {
                                                 .flex_row()
                                                 .gap_2()
                                                 .child(
-                                                    Button::new("allow").label("允许")
+                                                    Button::new("allow").label(qcode_i18n::tr("gui.main.approval.allow"))
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(true, false, cx);
@@ -1228,7 +1250,7 @@ impl Shell {
                                                 )
                                                 .child(
                                                     Button::new("allow-session")
-                                                        .label("总是允许")
+                                                        .label(qcode_i18n::tr("gui.main.approval.allow_always"))
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(true, true, cx);
@@ -1236,7 +1258,7 @@ impl Shell {
                                                         )),
                                                 )
                                                 .child(
-                                                    Button::new("deny").label("拒绝")
+                                                    Button::new("deny").label(qcode_i18n::tr("gui.main.approval.deny"))
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.answer(false, false, cx);
@@ -1289,7 +1311,7 @@ impl Shell {
                                                 .line_height(sp(26.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0x000000))
-                                                .child("提问"),
+                                                .child(qcode_i18n::tr("gui.main.question.title")),
                                         ),
                                 )
                                 .child(
@@ -1304,7 +1326,10 @@ impl Shell {
                                                 .text_size(sp(12.0))
                                                 .line_height(sp(20.0))
                                                 .text_color(rgb(0x888888))
-                                                .child(format!("第 {index} 题，共 {count} 题")),
+                                                .child(qcode_i18n::trp(
+                                                    "gui.main.question.progress",
+                                                    &[index.to_string(), count.to_string()],
+                                                )),
                                         )
                                         .children(question.header.clone().map(|header| {
                                             div()
@@ -1364,7 +1389,7 @@ impl Shell {
                                                             .justify_start()
                                                             .child(
                                                                 Button::new("question-pick-dir")
-                                                                    .label("选择目录")
+                                                                    .label(qcode_i18n::tr("gui.main.question.pick_dir"))
                                                                     .on_click(cx.listener(
                                                                         |this,
                                                                          _event,
@@ -1392,27 +1417,27 @@ impl Shell {
                                                 .gap_2()
                                                 .children((index > 0).then(|| {
                                                     Button::new("question-back")
-                                                        .label("上一题")
+                                                        .label(qcode_i18n::tr("gui.main.question.back"))
                                                         .on_click(cx.listener(|this, _, _window, cx| {
                                                             this.question_back(cx);
                                                         }))
                                                 }))
                                                 .child(
                                                     Button::new("question-skip")
-                                                        .label("跳过")
+                                                        .label(qcode_i18n::tr("gui.main.question.skip"))
                                                         .on_click(cx.listener(|this, _, _window, cx| {
                                                             this.question_skip(cx);
                                                         })),
                                                 )
                                                 .child(if is_last {
                                                     Button::new("question-submit")
-                                                        .label("提交")
+                                                        .label(qcode_i18n::tr("gui.main.question.submit"))
                                                         .on_click(cx.listener(|this, _, _window, cx| {
                                                             this.question_submit(cx);
                                                         }))
                                                 } else {
                                                     Button::new("question-next")
-                                                        .label("下一题")
+                                                        .label(qcode_i18n::tr("gui.main.question.next"))
                                                         .on_click(cx.listener(|this, _, _window, cx| {
                                                             this.question_next(cx);
                                                         }))
@@ -1450,7 +1475,7 @@ impl Shell {
                                                 .line_height(sp(26.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0x000000))
-                                                .child("请求报错 · 完整信息"),
+                                                .child(qcode_i18n::tr("gui.main.error_banner")),
                                         ),
                                 )
                                 .child(
@@ -1474,7 +1499,7 @@ impl Shell {
                                                 .gap_2()
                                                 .child(
                                                     Button::new("dismiss-error")
-                                                        .label("关闭")
+                                                        .label(qcode_i18n::tr("gui.main.close"))
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.ui.error_banner = None;
@@ -1498,7 +1523,7 @@ impl Shell {
                             .text_size(sp(SECONDARY_SIZE))
                             .line_height(sp(SECONDARY_LINE))
                             .text_color(rgb(0x777777))
-                            .child("已提交，等待引擎确认…")
+                            .child(qcode_i18n::tr("gui.main.submitted"))
                     }))
                     .when(
                         // 预算提示也占输入框位置（与权限/报错框一致），显示时
@@ -1634,7 +1659,7 @@ impl Shell {
                                             .gap_2()
                                             .child(
                                                 Button::new("upload")
-                                                    .label("选择文件")
+                                                    .label(qcode_i18n::tr("gui.main.upload"))
                                                     .icon(IconName::Plus)
                                                     .on_click(cx.listener(|this, _, _window, cx| {
                                                         this.upload_file(cx)
@@ -1738,9 +1763,9 @@ impl Shell {
 /// not as a bare identifier.
 fn sandbox_status(sandbox: &str) -> String {
     if sandbox.is_empty() || sandbox == "none" {
-        "无沙箱".to_string()
+        qcode_i18n::tr("gui.main.sandbox_none").to_string()
     } else {
-        format!("{sandbox} 沙箱")
+        qcode_i18n::trp("gui.main.sandbox_backend", &[sandbox])
     }
 }
 
@@ -1750,12 +1775,19 @@ fn budget_hint_line(hint: Option<&qcode_core::event::BudgetHint>) -> String {
     let Some(hint) = hint else {
         return String::new();
     };
-    let mut line = format!("已用 {}/{} 轮", hint.turns, hint.max_turns);
+    let mut line = qcode_i18n::trp(
+        "ui.pause.turns_used",
+        &[hint.turns.to_string(), hint.max_turns.to_string()],
+    );
     if let Some(max_cost) = hint.max_cost_usd {
         line.push_str(&format!(" · ${:.2} / ${max_cost:.2}", hint.cost_usd));
     }
     if hint.window > 1 {
-        line.push_str(&format!(" · 第 {} 个预算窗口", hint.window));
+        line.push_str(" · ");
+        line.push_str(&qcode_i18n::trp(
+            "ui.pause.window",
+            &[hint.window.to_string()],
+        ));
     }
     line
 }

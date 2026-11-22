@@ -379,6 +379,6 @@ impl Shell {
     ) -> TaskUi {
         let send_mode = self.prefs.send_mode.clone();
         let hint = crate::send_hint(&send_mode);
-        TaskUi::fresh(app, window, cx, &send_mode, hint)
+        TaskUi::fresh(app, window, cx, &send_mode, &hint)
     }
 }

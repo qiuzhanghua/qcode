@@ -34,7 +34,7 @@ impl Shell {
             // 没有内核时 UnconfiguredBackend::new_session 是空实现：不拦一下的话
             // 点“+”什么都不会发生，看起来像按钮坏了。
             self.set_notice(
-                "还没有配置 provider，先在 Settings 里配置再新建任务".to_string(),
+                qcode_i18n::tr("gui.session.no_provider").to_string(),
                 true,
                 cx,
             );
@@ -48,9 +48,11 @@ impl Shell {
             if self.ui.has_unsent_content(cx) {
                 self.ui
                     .app
-                    .push_notice("这份草稿还没发出去：发送它，或清空后再新建任务");
+                    .push_notice(qcode_i18n::tr("gui.session.draft_unsent"));
             } else {
-                self.ui.app.push_notice("当前任务还没有内容，直接提问即可");
+                self.ui
+                    .app
+                    .push_notice(qcode_i18n::tr("gui.session.empty_task"));
             }
             cx.notify();
             return;
@@ -61,7 +63,7 @@ impl Shell {
         if self.active.is_none() && self.ui.has_unsent_content(cx) {
             self.ui
                 .app
-                .push_notice("这份草稿还没发出去：发送它，或清空后再新建任务");
+                .push_notice(qcode_i18n::tr("gui.session.draft_unsent"));
             cx.notify();
             return;
         }
@@ -69,7 +71,11 @@ impl Shell {
         // 装回来比重建一个空的强——重开一个空任务只会让那份草稿停在没人看得见
         // 的槽位上。提示走状态栏：草稿的转录是空的，塞一行反而像有内容。
         if self.unpark_draft(window, cx) {
-            self.set_notice("继续未发送的新任务".to_string(), true, cx);
+            self.set_notice(
+                qcode_i18n::tr("gui.session.resumed_unsent").to_string(),
+                true,
+                cx,
+            );
             self.pending_root_delete = None;
             self.pending_task_delete = None;
             self.rename_task = None;
@@ -210,7 +216,11 @@ impl Shell {
         if parked_draft {
             // 屏上那份没发出去的新任务被换走了：它还在，但只能从 `+` 回去，
             // 不说一声就等于用户以为打的字没了。
-            self.set_notice("未发送的新任务已暂存，按 + 回到它".to_string(), true, cx);
+            self.set_notice(
+                qcode_i18n::tr("gui.session.draft_parked").to_string(),
+                true,
+                cx,
+            );
         }
         self.ui.resetting = true;
         self.ui.empty_draft = false;
@@ -404,7 +414,11 @@ impl Shell {
     pub(crate) fn stop_task(&mut self, task_id: &str, cx: &mut Context<Self>) {
         self.mark_stopped(Some(task_id));
         self.backend.cancel(Some(task_id));
-        self.set_notice(format!("正在停止 {}", short_id(task_id)), true, cx);
+        self.set_notice(
+            qcode_i18n::trp("gui.notice.stopping_task", &[short_id(task_id)]),
+            true,
+            cx,
+        );
     }
 
     /// Make Stop visibly immediate in whichever view owns the turn, even if the
@@ -528,7 +542,9 @@ impl Shell {
                 }
                 None => {
                     self.ui.question = Some(panel);
-                    self.ui.app.push_notice("周期不完整或无效：请检查周期选择");
+                    self.ui
+                        .app
+                        .push_notice(qcode_i18n::tr("gui.notice.schedule_incomplete_rule"));
                     cx.notify();
                     return;
                 }

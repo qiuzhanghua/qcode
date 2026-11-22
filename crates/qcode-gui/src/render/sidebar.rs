@@ -14,7 +14,13 @@ const QC_MARK: &[u8] = include_bytes!(concat!(
 /// Chinese labels around it — 我的任务 / 定时任务 / 终端 / 设置 — are feature
 /// names, and this one is the product's. A placeholder until a real name exists;
 /// renaming it is this one string (ADR-0063 §2).
-const PRODUCT_NAME: &str = "AI 工具";
+///
+/// 现在按界面语言取（`gui.sidebar.product_name`）：`AI 工具` 是普通词而非商标，
+/// 英文界面里留四个汉字读起来像 bug。**正式名落地时**把 yml 两边的值写成同一个，
+/// 或退回一个 `const` —— 那时它才成为真正的产品名，按 kernel 厂商名的规矩不翻。
+fn product_name() -> std::borrow::Cow<'static, str> {
+    qcode_i18n::tr("gui.sidebar.product_name")
+}
 
 /// 目录编辑器里一行目录的高度。行内那三个按钮取 `Size::Small`（24px）正是
 /// 为了对齐这个数：默认的 `Medium` 是 32px，而 `compact()` 只改内边距不动高度，
@@ -29,13 +35,16 @@ const SCHEDULE_FILTERS: [Option<qcode_core::schedule::TaskStatus>; 4] = [
     Some(qcode_core::schedule::TaskStatus::Ended),
 ];
 
-/// 过滤条件的中文标签。
-fn schedule_filter_label(filter: Option<qcode_core::schedule::TaskStatus>) -> &'static str {
+/// 过滤条件的标签。`Cow` 而不是 `&'static str`：译文来自运行期 locale。
+fn schedule_filter_label(
+    filter: Option<qcode_core::schedule::TaskStatus>,
+) -> std::borrow::Cow<'static, str> {
+    use qcode_i18n::tr;
     match filter {
-        None => "全部",
-        Some(qcode_core::schedule::TaskStatus::Active) => "已开启",
-        Some(qcode_core::schedule::TaskStatus::Paused) => "已暂停",
-        Some(qcode_core::schedule::TaskStatus::Ended) => "已结束",
+        None => tr("gui.sidebar.schedule.all"),
+        Some(qcode_core::schedule::TaskStatus::Active) => tr("gui.sidebar.schedule.status_active"),
+        Some(qcode_core::schedule::TaskStatus::Paused) => tr("gui.sidebar.schedule.status_paused"),
+        Some(qcode_core::schedule::TaskStatus::Ended) => tr("gui.sidebar.schedule.status_ended"),
     }
 }
 
@@ -93,12 +102,12 @@ impl Shell {
             }))
             .child(
                 Button::new(format!("task-stop-{task_id}"))
-                    .label("停止")
+                    .label(qcode_i18n::tr("gui.sidebar.menu.stop"))
                     .disabled(!running)
                     .tooltip(if running {
-                        "停止这个任务（不影响其它任务）"
+                        qcode_i18n::tr("gui.sidebar.menu.stop_tip_running")
                     } else {
-                        "这个任务没有在跑"
+                        qcode_i18n::tr("gui.sidebar.menu.stop_tip_idle")
                     })
                     // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规。
                     .font_weight(FontWeight::NORMAL)
@@ -120,11 +129,11 @@ impl Shell {
             )
             .child(
                 Button::new(format!("task-rename-{task_id}"))
-                    .label("重命名")
+                    .label(qcode_i18n::tr("gui.sidebar.menu.rename"))
                     .tooltip(if running {
-                        "运行中改名将在 Turn 结束后生效"
+                        qcode_i18n::tr("gui.sidebar.menu.rename_tip_running")
                     } else {
-                        "重命名任务"
+                        qcode_i18n::tr("gui.sidebar.menu.rename_tip")
                     })
                     // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规。
                     .font_weight(FontWeight::NORMAL)
@@ -145,12 +154,12 @@ impl Shell {
             )
             .child(
                 Button::new(format!("task-delete-{task_id}"))
-                    .label("删除任务")
+                    .label(qcode_i18n::tr("gui.sidebar.menu.delete"))
                     .disabled(running)
                     .tooltip(if running {
-                        "结束当前 Turn 后可删除"
+                        qcode_i18n::tr("gui.sidebar.menu.delete_tip_running")
                     } else {
-                        "删除任务"
+                        qcode_i18n::tr("gui.sidebar.menu.delete")
                     })
                     // 菜单项无边框：常态透明，悬浮/按下灰色底；字重保持常规，
                     // 文字用危险红。
@@ -182,12 +191,7 @@ impl Shell {
     ///
     /// Borderless like the section-header `+`: these sit on every row, so at
     /// rest they must not compete with the label.
-    fn root_action(
-        cx: &Context<Self>,
-        id: String,
-        icon: IconName,
-        tooltip: &'static str,
-    ) -> Button {
+    fn root_action(cx: &Context<Self>, id: String, icon: IconName, tooltip: String) -> Button {
         Button::new(id)
             .icon(icon)
             .tooltip(tooltip)
@@ -237,7 +241,7 @@ impl Shell {
                     div()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(rgb(0xd06060))
-                        .child("丢失"),
+                        .child(qcode_i18n::tr("gui.sidebar.root.missing")),
                 );
             }
             let line = line
@@ -246,7 +250,7 @@ impl Shell {
                         cx,
                         format!("root-primary-{task_id}-{label}"),
                         primary,
-                        "设为主目录",
+                        qcode_i18n::tr("gui.sidebar.root.set_primary").to_string(),
                     )
                     .on_click({
                         let task_id = task_id.clone();
@@ -261,7 +265,7 @@ impl Shell {
                         cx,
                         format!("root-relink-{task_id}-{label}"),
                         IconName::FolderSymlink,
-                        "重新关联目录",
+                        qcode_i18n::tr("gui.sidebar.root.relink").to_string(),
                     )
                     .on_click({
                         let task_id = task_id.clone();
@@ -276,7 +280,7 @@ impl Shell {
                         cx,
                         format!("root-remove-{task_id}-{label}"),
                         IconName::X,
-                        "移除目录",
+                        qcode_i18n::tr("gui.sidebar.root.remove").to_string(),
                     )
                     .on_click({
                         let task_id = task_id.clone();
@@ -293,7 +297,7 @@ impl Shell {
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(rgb(0x888888))
-                    .child("当前 Turn 结束后应用"),
+                    .child(qcode_i18n::tr("gui.sidebar.root.pending")),
             );
         }
         section.into_any_element()
@@ -324,11 +328,11 @@ impl Shell {
             .child(self.render_sidebar_header(cx))
             .child(self.render_section_header(
                 SidebarSection::Tasks,
-                "我的任务",
+                qcode_i18n::tr("gui.sidebar.section.tasks").to_string(),
                 Some((
                     "new-task",
-                    "+",
-                    "新建任务",
+                    "+".to_string(),
+                    qcode_i18n::tr("gui.sidebar.section.new_task").to_string(),
                     // 新建任务只从展开态的段头进入：图标轨里没有 `+`
                     // （ADR-0063 §1、§4）。A2 的代价就是这个，用户已确认。
                     SidebarAction::NewTask,
@@ -360,11 +364,16 @@ impl Shell {
                     .child(
                         Button::new("open-terminal")
                             .icon(IconName::SquareTerminal)
-                            .accessibility_label("终端")
+                            .accessibility_label(qcode_i18n::tr("gui.sidebar.section.terminal"))
                             // 按钮内容默认居中（`h_flex().size_full().justify_center()`），
                             // 所以一个裸文字子元素会把图标拉到中间。撑成整行才让图标贴左，
                             // 与下面「设置」那行对齐——它本来就是因为徽标需要整行才左对齐的。
-                            .child(div().w_full().text_size(sp(14.0)).child("终端"))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(sp(14.0))
+                                    .child(qcode_i18n::tr("gui.sidebar.section.terminal")),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_terminal_view(window, cx);
                             })),
@@ -376,8 +385,10 @@ impl Shell {
                             // 终端 switches the main view, 设置 opens a window of its
                             // own. Side by side at the bottom, they would otherwise
                             // read as the same kind of thing.
-                            .tooltip("设置（在新窗口中打开）")
-                            .accessibility_label("设置，在新窗口中打开")
+                            .tooltip(qcode_i18n::tr("gui.sidebar.section.settings_tooltip"))
+                            .accessibility_label(qcode_i18n::tr(
+                                "gui.sidebar.section.settings_aria",
+                            ))
                             .child(
                                 div()
                                     .w_full()
@@ -386,7 +397,11 @@ impl Shell {
                                     .items_center()
                                     .justify_between()
                                     // 汉字比按钮默认字号（14px）大两档，随全局字号缩放联动。
-                                    .child(div().text_size(sp(14.0)).child("设置"))
+                                    .child(
+                                        div()
+                                            .text_size(sp(14.0))
+                                            .child(qcode_i18n::tr("gui.setup.window_title")),
+                                    )
                                     .child(
                                         Icon::new(IconName::ExternalLink)
                                             .with_size(Size::Small)
@@ -426,7 +441,7 @@ impl Shell {
                 .titles
                 .get(&row.task.id)
                 .cloned()
-                .unwrap_or_else(|| "新任务".to_string());
+                .unwrap_or_else(|| qcode_i18n::tr("gui.task.new_title").to_string());
             let title = full_title.clone();
             // A task with a vanished directory is broken until it is relinked,
             // so say so in the row itself instead of hiding it behind the
@@ -438,9 +453,9 @@ impl Shell {
                 .filter(|root| root.state() == RootState::Missing)
                 .count();
             let wonky = if missing > 0 {
-                " · 目录丢失".to_string()
+                qcode_i18n::tr("gui.sidebar.row.missing_root").to_string()
             } else if !active && state == TaskState::WaitingApproval {
-                " · 待审批".to_string()
+                qcode_i18n::tr("gui.sidebar.row.waiting_approval").to_string()
             } else if let Some(hint) = self.schedule_hints.get(&id) {
                 format!(" · {hint}")
             } else {
@@ -516,7 +531,7 @@ impl Shell {
                 Button::new(format!("task-menu-{}", row.task.id))
                     .compact()
                     .icon(IconName::Ellipsis)
-                    .tooltip("任务操作")
+                    .tooltip(qcode_i18n::tr("gui.sidebar.menu.actions"))
                     // 透明背景：常态字体灰，悬浮/按下变黑。Custom 变体的
                     // foreground 决定悬浮文字色，调用层 text_color 只是
                     // 常态底色（悬浮时被覆盖）。
@@ -571,7 +586,7 @@ impl Shell {
                     Button::new(format!("task-add-dir-{}", row.task.id))
                         .compact()
                         .icon(IconName::FolderPlus)
-                        .tooltip("添加目录")
+                        .tooltip(qcode_i18n::tr("gui.sidebar.menu.add_dir"))
                         // 与「任务操作」按钮一致：透明背景，常态灰色、悬浮黑色。
                         .custom(
                             ButtonCustomVariant::new(cx)
@@ -644,7 +659,7 @@ impl Shell {
                             // A placeholder name: the binary is `qc`, the crate is
                             // `qcode`, and this is the product label the window
                             // shows. Renaming it is a one-string change.
-                            .child(PRODUCT_NAME),
+                            .child(product_name()),
                     ),
             )
             .child(
@@ -653,8 +668,8 @@ impl Shell {
                     // 轮廓，16px）；背景与「新建任务」按钮一致——常态无色、
                     // 悬浮/按下灰色底。
                     .icon(IconName::PanelLeft)
-                    .tooltip("折叠侧栏")
-                    .accessibility_label("折叠侧栏")
+                    .tooltip(qcode_i18n::tr("gui.sidebar.rail.collapse"))
+                    .accessibility_label(qcode_i18n::tr("gui.sidebar.rail.collapse"))
                     .custom(
                         ButtonCustomVariant::new(cx)
                             .color(cx.theme().transparent)
@@ -670,8 +685,8 @@ impl Shell {
     fn render_section_header(
         &self,
         section: SidebarSection,
-        label: &'static str,
-        action: Option<(&'static str, &'static str, &'static str, SidebarAction)>,
+        label: String,
+        action: Option<(&'static str, String, String, SidebarAction)>,
         open: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -821,7 +836,7 @@ impl Shell {
             .child(self.rail_button(
                 "rail-expand",
                 IconName::ChevronRight,
-                "展开侧栏",
+                qcode_i18n::tr("gui.sidebar.rail.expand").to_string(),
                 false,
                 None,
                 cx,
@@ -829,7 +844,7 @@ impl Shell {
             .child(self.rail_button(
                 "rail-tasks",
                 IconName::FolderKanban,
-                "任务",
+                qcode_i18n::tr("gui.sidebar.rail.tasks").to_string(),
                 self.view == MainView::Task,
                 self.task_badge(),
                 cx,
@@ -838,7 +853,7 @@ impl Shell {
             .child(self.rail_button(
                 "rail-schedule",
                 IconName::CalendarClock,
-                "定时",
+                qcode_i18n::tr("gui.sidebar.rail.schedule").to_string(),
                 self.view == MainView::Schedule,
                 self.schedule_badge(),
                 cx,
@@ -846,7 +861,7 @@ impl Shell {
             .child(self.rail_button(
                 "rail-terminal",
                 IconName::SquareTerminal,
-                "终端",
+                qcode_i18n::tr("gui.sidebar.section.terminal").to_string(),
                 self.view == MainView::Terminal,
                 None,
                 cx,
@@ -855,7 +870,7 @@ impl Shell {
             .child(self.rail_button(
                 "rail-settings",
                 IconName::Settings,
-                "设置（在新窗口中打开）",
+                qcode_i18n::tr("gui.sidebar.section.settings_tooltip").to_string(),
                 false,
                 None,
                 cx,
@@ -866,7 +881,7 @@ impl Shell {
         &self,
         id: &'static str,
         icon: IconName,
-        label: &'static str,
+        label: String,
         active: bool,
         badge: Option<bool>,
         cx: &mut Context<Self>,
@@ -874,11 +889,12 @@ impl Shell {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let accent = cx.theme().info;
+        // 顺带修掉一处重复：这里原先连着两次 `.tooltip(label)`，第二次纯属覆盖，
+        // 是 `String` 化之前 `&'static str` 能被复制才没报错的遗留。
         let button = Button::new(id)
             .icon(icon)
-            .tooltip(label)
+            .tooltip(label.clone())
             .accessibility_label(label)
-            .tooltip(label)
             .cursor_pointer();
 
         let button = if active {
@@ -944,7 +960,7 @@ impl Shell {
             Button::new("schedule-menu")
                 .compact()
                 .icon(IconName::Ellipsis)
-                .tooltip("定时任务筛选")
+                .tooltip(qcode_i18n::tr("gui.sidebar.schedule.filter"))
                 // 无边框透明：常态无底，悬浮/按下灰色。
                 .custom(
                     ButtonCustomVariant::new(cx)
@@ -1019,7 +1035,7 @@ impl Shell {
                             .text_color(if open { foreground } else { muted })
                             .whitespace_nowrap()
                             .overflow_hidden()
-                            .child("定时任务"),
+                            .child(qcode_i18n::tr("gui.sidebar.section.schedule")),
                     ),
             )
             .child(
@@ -1119,7 +1135,10 @@ impl Shell {
             .disabled(!button.actionable())
             .icon(IconName::Ghost)
             .tooltip(button.tooltip())
-            .accessibility_label(format!("定时任务常驻驱动：{}", button.state_word()))
+            .accessibility_label(qcode_i18n::trp(
+                "gui.sidebar.schedule.driver_aria",
+                &[button.state_word().as_ref()],
+            ))
             .font_weight(FontWeight::NORMAL)
             .text_color(color)
             .custom(
@@ -1173,7 +1192,7 @@ impl Shell {
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(theme.muted_foreground)
                             .px_1()
-                            .child("按状态过滤"),
+                            .child(qcode_i18n::tr("gui.sidebar.schedule.filter_by_status")),
                     )
                     .children(SCHEDULE_FILTERS.iter().enumerate().map(|(index, filter)| {
                         let selected = *filter == self.schedule_filter;
@@ -1233,7 +1252,7 @@ impl Shell {
                         .py_1()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(muted)
-                        .child("还没有定时任务——直接在对话里让模型创建即可"),
+                        .child(qcode_i18n::tr("gui.sidebar.schedule.empty")),
                 )
             })
             .when(
@@ -1245,9 +1264,9 @@ impl Shell {
                             .py_1()
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(muted)
-                            .child(format!(
-                                "没有「{}」状态的定时任务",
-                                schedule_filter_label(filter)
+                            .child(qcode_i18n::trp(
+                                "gui.sidebar.schedule.empty_filtered",
+                                &[schedule_filter_label(filter).as_ref()],
                             )),
                     )
                 },

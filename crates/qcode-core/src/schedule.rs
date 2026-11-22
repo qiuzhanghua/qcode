@@ -336,16 +336,19 @@ impl CronSpec {
 
 /// 星期名（`weekly` 的展示形式里用）。索引与 [`weekday_of`] 同一套：周日 = 0。
 fn weekday_name(day: u32) -> String {
-    let key = match day {
-        0 => "core.schedule.weekday.sun",
-        1 => "core.schedule.weekday.mon",
-        2 => "core.schedule.weekday.tue",
-        3 => "core.schedule.weekday.wed",
-        4 => "core.schedule.weekday.thu",
-        5 => "core.schedule.weekday.fri",
-        _ => "core.schedule.weekday.sat",
-    };
-    qcode_i18n::tr(key).to_string()
+    // 每个 arm 直接调 `tr`，而不是先算出 key 再调一次：key 字面量要落在调用点上，
+    // 否则「引用了哪个 key」这件事就只剩运行期才知道（门禁 4 与 6 都看不见）。
+    use qcode_i18n::tr;
+    match day {
+        0 => tr("core.schedule.weekday.sun"),
+        1 => tr("core.schedule.weekday.mon"),
+        2 => tr("core.schedule.weekday.tue"),
+        3 => tr("core.schedule.weekday.wed"),
+        4 => tr("core.schedule.weekday.thu"),
+        5 => tr("core.schedule.weekday.fri"),
+        _ => tr("core.schedule.weekday.sat"),
+    }
+    .to_string()
 }
 
 fn weekday_of(day: Weekday) -> u32 {

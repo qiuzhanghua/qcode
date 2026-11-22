@@ -140,7 +140,12 @@ impl Shell {
                     Block::User { text, .. } => Some(head_and_body(text)),
                     _ => None,
                 })
-                .unwrap_or_else(|| (format!("第 {} 轮", turn.number), String::new())),
+                .unwrap_or_else(|| {
+                    (
+                        qcode_i18n::trp("gui.rail.turn", &[turn.number.to_string()]),
+                        String::new(),
+                    )
+                }),
             None => (String::new(), String::new()),
         };
         let (answer_title, answer_body) = match self.ui.app.turns.get(turn_index) {
@@ -153,9 +158,15 @@ impl Shell {
                 })
                 .unwrap_or_else(|| {
                     if turn.running() {
-                        ("（回答中…）".to_string(), String::new())
+                        (
+                            qcode_i18n::tr("gui.rail.answering").to_string(),
+                            String::new(),
+                        )
                     } else {
-                        ("（暂无回答）".to_string(), String::new())
+                        (
+                            qcode_i18n::tr("gui.rail.no_answer").to_string(),
+                            String::new(),
+                        )
                     }
                 }),
             None => (String::new(), String::new()),
@@ -239,8 +250,8 @@ impl Shell {
             .child(
                 Button::new("jump-latest")
                     .icon(IconName::ArrowDown)
-                    .accessibility_label("跳转到底部")
-                    .tooltip("跳转到底部")
+                    .accessibility_label(qcode_i18n::tr("gui.rail.jump_to_bottom"))
+                    .tooltip(qcode_i18n::tr("gui.rail.jump_to_bottom"))
                     .on_click(cx.listener(|this, _, _window, cx| this.jump_to_bottom(cx))),
             )
             .into_any_element()

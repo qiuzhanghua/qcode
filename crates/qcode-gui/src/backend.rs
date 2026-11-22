@@ -108,13 +108,19 @@ impl ScheduleRow {
     /// nothing worth a reader's attention.
     pub fn hint(&self) -> Option<String> {
         if let Some(reason) = &self.broken {
-            return Some(format!("定时配置有误: {reason}"));
+            return Some(qcode_i18n::trp(
+                "gui.schedule.hint.broken",
+                &[reason.as_str()],
+            ));
         }
         if self.orphaned {
-            return Some("定时已失效（目标会话已删除）".to_string());
+            return Some(qcode_i18n::tr("gui.schedule.hint.orphaned").to_string());
         }
         if self.missed_windows > 0 {
-            return Some(format!("定时错过 {} 次", self.missed_windows));
+            return Some(qcode_i18n::trp(
+                "gui.schedule.hint.missed",
+                &[self.missed_windows.to_string()],
+            ));
         }
         None
     }
