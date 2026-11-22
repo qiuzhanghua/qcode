@@ -134,9 +134,13 @@ impl Tool for ReadFile {
         if let Some(mime) = image_mime(&bytes) {
             let size = bytes.len();
             let label = resolved.path.display().to_string();
-            let mut output = ToolOutput::ok(format!(
-                "{label}: {mime}, {size} bytes — returned as an image, not as text."
-            ));
+            let mut output = ToolOutput::ok(
+                qcode_i18n::trp(
+                    "tool.fs.image_returned",
+                    &[label.as_str(), mime, size.to_string().as_str()],
+                )
+                .to_string(),
+            );
             output.images.push(ToolImage {
                 mime_type: mime.to_string(),
                 data: bytes,
@@ -245,10 +249,17 @@ impl Tool for WriteFile {
         let contents = args.content;
         let written = contents.len();
         blocking(move || atomic_write(&target, &contents)).await?;
-        Ok(
-            ToolOutput::ok(format!("wrote {written} bytes to {}", resolved.display))
-                .with_diff(diff),
+        Ok(ToolOutput::ok(
+            qcode_i18n::trp(
+                "tool.fs.wrote",
+                &[
+                    written.to_string().as_str(),
+                    resolved.display.to_string().as_str(),
+                ],
+            )
+            .to_string(),
         )
+        .with_diff(diff))
     }
 }
 
@@ -345,10 +356,16 @@ impl Tool for EditFile {
         let diff = crate::diff::file(&path::diff_path(&resolved), Some(&original), Some(&updated));
         let write_path = path.clone();
         blocking(move || atomic_write(&write_path, &updated)).await?;
-        Ok(ToolOutput::ok(format!(
-            "replaced {matches} occurrence(s) in {}",
-            resolved.display
-        ))
+        Ok(ToolOutput::ok(
+            qcode_i18n::trp(
+                "tool.fs.replaced",
+                &[
+                    matches.to_string().as_str(),
+                    resolved.display.to_string().as_str(),
+                ],
+            )
+            .to_string(),
+        )
         .with_diff(diff))
     }
 }

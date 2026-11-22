@@ -221,33 +221,33 @@ impl Tool for ScheduleCreate {
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": qcode_i18n::tr("tool.schedule.param.title")
+                        "description": "A short task name in the user's own language, shaped as \"action + object\" (e.g. \"fetch Beijing time\"). Leave out meta words like \"create\"/\"scheduled task\", and leave out time, status and id. The tool asks the user when it is missing; may be omitted."
                     },
                     "prompt": {
                         "type": "string",
-                        "description": qcode_i18n::tr("tool.schedule.param.prompt")
+                        "description": "The reminder delivered into the conversation at trigger time (equivalent to one user message). The tool asks the user when it is missing; may be omitted."
                     },
                     "rule": {
                         "type": "string",
-                        "description": qcode_i18n::tr("tool.schedule.param.rule")
+                        "description": "Trigger rule: cron <expr> / once YYYY-MM-DD HH:MM / every <seconds> (>= 60) / daily HH:MM / weekly <weekdays> HH:MM (may repeat, comma-separated, e.g. 1,3,5; 0 or sun = Sunday) / monthly <day> HH:MM (day 1-31). The tool asks the user when it is missing (listing every period form); may be omitted."
                     },
                     "target": {
                         "type": "string",
-                        "description": qcode_i18n::tr("tool.schedule.param.target")
+                        "description": "Delivery target, one of two: new_once = reuse one session for every delivery (default; in a conversation, the current one); new = create a new session each time. Use session:<session-id> only when the user names a specific conversation. The tool asks the user when it is missing; may be omitted."
                     },
                     "overlap": {
                         "type": "string",
                         "enum": ["queue", "skip"],
-                        "description": qcode_i18n::tr("tool.schedule.param.overlap")
+                        "description": "When the target session is busy: queue = wait for the turn to end (default), skip = skip this delivery."
                     },
                     "approval_timeout_secs": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": qcode_i18n::tr("tool.schedule.param.approval_timeout")
+                        "description": "Approval timeout in seconds for the delivered turn; omit to wait for human approval indefinitely."
                     },
                     "cwd": {
                         "type": "string",
-                        "description": qcode_i18n::tr("tool.schedule.param.cwd")
+                        "description": "Working directory of the delivered turn (absolute path). Use it when the user gave one; when unsure, omit it and the tool asks (the user may skip and use the default)."
                     }
                 },
                 "required": [],
@@ -620,7 +620,7 @@ impl Tool for ScheduleView {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": qcode_i18n::tr("tool.schedule.param.id")}
+                    "id": {"type": "string", "description": "Task id (from schedule_list)."}
                 },
                 "required": ["id"],
                 "additionalProperties": false
@@ -701,18 +701,18 @@ impl Tool for ScheduleEdit {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": qcode_i18n::tr("tool.schedule.param.id")},
+                    "id": {"type": "string", "description": "Task id (from schedule_list)."},
                     "action": {
                         "type": "string",
                         "enum": ["edit", "pause", "resume", "run_now", "delete"],
-                        "description": qcode_i18n::tr("tool.schedule.param.action")
+                        "description": "edit = change fields (default); pause = pause; resume = resume; run_now = run once now; delete = delete."
                     },
                     "title": {"type": "string"},
                     "prompt": {"type": "string"},
-                    "rule": {"type": "string", "description": qcode_i18n::tr("tool.schedule.param.new_rule")},
+                    "rule": {"type": "string", "description": "The new rule, same format as schedule_create's rule."},
                     "target": {"type": "string"},
                     "overlap": {"type": "string", "enum": ["queue", "skip"]},
-                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": qcode_i18n::tr("tool.schedule.param.clear_timeout")}
+                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": "Pass null to clear the approval timeout."}
                 },
                 "required": ["id"],
                 "additionalProperties": false

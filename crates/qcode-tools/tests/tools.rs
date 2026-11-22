@@ -332,6 +332,7 @@ async fn wait_until_gone(pid: i32) -> bool {
 #[cfg(unix)]
 #[tokio::test]
 async fn cancellation_kills_the_whole_process_group() {
+    qcode_i18n::pin_for_tests();
     let dir = tempfile::tempdir().unwrap();
     let cancel = CancellationToken::new();
     let ctx = context(dir.path()).with_cancel(cancel.clone());
@@ -346,7 +347,7 @@ async fn cancellation_kills_the_whole_process_group() {
 
     let output = output.unwrap();
     assert_eq!(output.status, ToolStatus::Cancelled);
-    assert!(output.output.contains("cancelled by user"));
+    assert!(output.output.contains("用户已取消"));
 
     let pid = pid.expect("background child never wrote its pid");
     assert!(
@@ -358,6 +359,7 @@ async fn cancellation_kills_the_whole_process_group() {
 #[cfg(unix)]
 #[tokio::test]
 async fn timeout_kills_the_whole_process_group() {
+    qcode_i18n::pin_for_tests();
     let dir = tempfile::tempdir().unwrap();
     let ctx = context(dir.path());
     let pid_file = dir.path().join("child.pid");
@@ -376,7 +378,8 @@ async fn timeout_kills_the_whole_process_group() {
         .unwrap();
 
     assert_eq!(output.status, ToolStatus::Error);
-    assert!(output.output.contains("timed out after 1s"));
+    // 措辞跟着界面语言（`tool.shell.timed_out`）；断言中文原文，硬编码英文会红。
+    assert!(output.output.contains("命令在 1 秒后超时"));
 
     let pid: i32 = std::fs::read_to_string(&pid_file)
         .unwrap()
@@ -692,7 +695,9 @@ async fn read_file_returns_a_picture_as_an_image() {
     // The text is what a text-only model sees, and what a human reads in the
     // transcript, so it has to say what happened.
     assert!(output.output.contains("image/png"), "{}", output.output);
-    assert!(output.output.contains("bytes"), "{}", output.output);
+    // 「字节」而不是 `bytes`：这句话跟着界面语言走（`tool.fs.image_returned`），
+    // 而本文件的另一个测试钉了 `zh-CN`，进程级生效。
+    assert!(output.output.contains("字节"), "{}", output.output);
 }
 
 /// Detection is by content, not by name: the tool must not trust an extension

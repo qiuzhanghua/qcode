@@ -267,7 +267,9 @@ impl Tool for GrepTool {
         results.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
         if results.is_empty() {
-            return Ok(ToolOutput::ok("no matches"));
+            return Ok(ToolOutput::ok(
+                qcode_i18n::tr("tool.search.no_matches").to_string(),
+            ));
         }
 
         let mut output = String::new();

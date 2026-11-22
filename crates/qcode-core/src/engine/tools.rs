@@ -63,7 +63,9 @@ where
         if halted || tool_context.cancel.is_cancelled() {
             // Keep the one-call-one-result invariant even when the run is
             // going away; replay and resume depend on it.
-            outputs[index] = Some(ToolOutput::cancelled("cancelled by user"));
+            outputs[index] = Some(ToolOutput::cancelled(
+                qcode_i18n::tr("tool.cancelled").to_string(),
+            ));
             halted = true;
             index += 1;
             continue;
@@ -225,7 +227,7 @@ where
         return Ok(PlannedCall::terminal(
             call,
             None,
-            ToolOutput::cancelled("cancelled by user"),
+            ToolOutput::cancelled(qcode_i18n::tr("tool.cancelled").to_string()),
         ));
     }
 
@@ -341,7 +343,7 @@ where
         return Ok(PlannedCall::terminal(
             call,
             Some(class),
-            ToolOutput::cancelled("cancelled by user"),
+            ToolOutput::cancelled(qcode_i18n::tr("tool.cancelled").to_string()),
         ));
     }
 

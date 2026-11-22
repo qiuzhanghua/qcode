@@ -288,7 +288,10 @@ impl Tool for RunShell {
         };
 
         if ctx.cancel.is_cancelled() {
-            return Ok(ToolOutput::cancelled("cancelled by user\n"));
+            return Ok(ToolOutput::cancelled(format!(
+                "{}\n",
+                qcode_i18n::tr("tool.cancelled")
+            )));
         }
 
         let (program, shell_args) = shell_invocation(&args.command)?;
@@ -481,9 +484,12 @@ impl Tool for RunShell {
         let exit_code = exit_status.and_then(|status| status.code());
         let mut text = String::new();
         if cancelled_by_user {
-            text.push_str("cancelled by user\n");
+            text.push_str(&format!("{}\n", qcode_i18n::tr("tool.cancelled")));
         } else if timed_out {
-            text.push_str(&format!("command timed out after {timeout_secs}s\n"));
+            text.push_str(&format!(
+                "{}\n",
+                qcode_i18n::trp("tool.shell.timed_out", &[timeout_secs.to_string().as_str()])
+            ));
         } else {
             text.push_str(&format!(
                 "exit code: {}\n",

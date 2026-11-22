@@ -163,7 +163,9 @@ impl Tool for AskUser {
                 Ok(ToolOutput::ok(json!({ "answers": answers }).to_string()))
             }
             QuestionAnswer::TimedOut => Ok(ToolOutput::ok(pending_result(&request.call_id))),
-            QuestionAnswer::Cancelled => Ok(ToolOutput::cancelled("cancelled by user")),
+            QuestionAnswer::Cancelled => Ok(ToolOutput::cancelled(
+                qcode_i18n::tr("tool.cancelled").to_string(),
+            )),
         }
     }
 }

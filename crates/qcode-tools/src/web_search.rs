@@ -307,7 +307,7 @@ impl Tool for WebSearch {
             .build()
             .map_err(|error| ToolError::Network(error.to_string()))?;
         let response = tokio::select! {
-            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled("web_search cancelled")),
+            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled(qcode_i18n::tr("tool.web_search.cancelled").to_string())),
             response = tokio::time::timeout(TIMEOUT, client.execute(request)) => response,
         };
 
@@ -324,7 +324,7 @@ impl Tool for WebSearch {
 
         let status = response.status();
         let body = tokio::select! {
-            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled("web_search cancelled")),
+            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled(qcode_i18n::tr("tool.web_search.cancelled").to_string())),
             body = response.text() => body.map_err(|error| ToolError::Network(error.to_string()))?,
         };
 

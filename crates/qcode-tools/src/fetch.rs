@@ -79,7 +79,7 @@ impl Tool for WebFetch {
         };
 
         let response = tokio::select! {
-            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled("web_fetch cancelled")),
+            _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled(qcode_i18n::tr("tool.fetch.cancelled").to_string())),
             response = client.get(url.clone()).send() => response,
         }
         .map_err(|error| ToolError::Network(error.to_string()))?;
@@ -103,7 +103,7 @@ impl Tool for WebFetch {
         let mut response = response;
         loop {
             let chunk = tokio::select! {
-                _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled("web_fetch cancelled")),
+                _ = ctx.cancel.cancelled() => return Ok(ToolOutput::cancelled(qcode_i18n::tr("tool.fetch.cancelled").to_string())),
                 chunk = response.chunk() => chunk,
             }
             .map_err(|error| ToolError::Network(error.to_string()))?;

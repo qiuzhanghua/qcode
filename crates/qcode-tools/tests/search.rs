@@ -104,6 +104,7 @@ async fn grep_filters_by_glob() {
 
 #[tokio::test]
 async fn grep_reports_no_matches() {
+    qcode_i18n::pin_for_tests();
     let dir = workspace();
     let ctx = context(&dir);
 
@@ -111,5 +112,8 @@ async fn grep_reports_no_matches() {
         .execute(&ctx, json!({"pattern": "definitely-not-here"}))
         .await
         .unwrap();
-    assert_eq!(output.output, "no matches");
+    // 这句话跟着界面语言走（`tool.search.no_matches`），所以测试必须自己钉语言，
+    // 不能靠进程默认值。断言**中文原文**而不是拿 `tr()` 反查期望值：后者在 `en`
+    // 下恰好等于硬编码的英文，抓不到「压根没接线」。
+    assert_eq!(output.output, "没有匹配");
 }

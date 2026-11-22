@@ -774,6 +774,16 @@ fn ui_text_positions() -> &'static [&'static str] {
         "label: ",
         "help: ",
         "title: ",
+        // 工具结果摘要（ADR-0105 §5）：用户在工具卡片上直接读到的那句话。
+        // `ToolOutput::ok(变量)` / `ok(tr(…))` 不以引号开头，自动不算。
+        "ToolOutput::ok(",
+        "ToolOutput::err(",
+        "ToolOutput::cancelled(",
+        // 有意**不**收 `push_str(` / `write!(`：它们是通用字符串拼装，
+        // `qcode-tools/macos.rs` 用它拼 sandbox-exec 的 profile DSL
+        // （`(allow file-read*`），翻了那条规则就废了；`apply.rs` 用它拼纯换行。
+        // 位置判据在「通用 API」上失效，所以工具输出只认 `ToolOutput::*` 这个
+        // 唯一的构造入口——`run_shell` 的超时/取消那几句也走它。
     ]
 }
 
@@ -860,7 +870,26 @@ fn no_new_hardcoded_english_ui_text() {
     let baseline_path = root.join("scripts").join("i18n-baseline-en.txt");
 
     let mut found: BTreeSet<(String, String)> = BTreeSet::new();
-    for crate_name in ["qcode-gui", "qcode-tui", "qcode-ui-state", "qcode"] {
+    // 全 crate 扫描：中文门禁（门禁 2）本来就扫全部 crate，英文面只扫一半的话，
+    // `qcode-tools` / `qcode-core` 里新增硬编码英文工具输出就没人管。
+    for crate_name in [
+        "qcode-gui",
+        "qcode-tui",
+        "qcode-ui-state",
+        "qcode",
+        "qcode-tools",
+        "qcode-core",
+        "qcode-kernel",
+        "qcode-mcp",
+        "qcode-providers",
+        "qcode-terminal",
+        "qcode-shell",
+        "qcode-driver",
+        "qcode-ui-bridge",
+        "qcode-attachments",
+        "qcode-image",
+        "qcd",
+    ] {
         let dir = root.join("crates").join(crate_name).join("src");
         for entry in scan_ui_sources(&dir) {
             let (relative, production) = entry;

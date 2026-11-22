@@ -1754,41 +1754,6 @@ tool:
     unavailable:
       en: "The scheduled-task service is unavailable: this session has no task store wired up, so no scheduled task can be registered."
       zh-CN: 定时任务服务不可用：当前会话没有接入任务存储（无法登记定时任务）。
-    param:
-      title:
-        en: A short task name in the user's own language, shaped as "action + object" (e.g. "fetch Beijing time"). Leave out meta words like "create"/"scheduled task", and leave out time, status and id. The tool asks the user when it is missing; may be omitted.
-        zh-CN: 用用户的语言、以「动作 + 对象」形式起的简短任务名（如「获取北京时间」）。省略「创建/定时任务」这类元词、时间、状态和 id。用户没给时工具会主动向用户询问，可省略。
-      prompt:
-        en: The reminder delivered into the conversation at trigger time (equivalent to one user message). The tool asks the user when it is missing; may be omitted.
-        zh-CN: 到点后投递给会话的提醒内容（相当于一条用户消息）。用户没给时工具会主动向用户询问，可省略。
-      rule:
-        en: "Trigger rule: cron <expr> / once YYYY-MM-DD HH:MM / every <seconds> (>= 60) / daily HH:MM / weekly <weekdays> HH:MM (may repeat, comma-separated, e.g. 1,3,5; 0 or sun = Sunday) / monthly <day> HH:MM (day 1-31). The tool asks the user when it is missing (listing every period form); may be omitted."
-        zh-CN: 触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <星期列表> HH:MM（可多选，逗号分隔，如 1,3,5；0或sun=周日）/ monthly <日> HH:MM（日 1-31）。用户没给时工具会主动向用户询问（列出全部周期方式），可省略。
-      target:
-        en: "Delivery target, one of two: new_once = reuse one session for every delivery (default; in a conversation, the current one); new = create a new session each time. Use session:<session-id> only when the user names a specific conversation. The tool asks the user when it is missing; may be omitted."
-        zh-CN: 投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。用户没给时工具会主动向用户询问，可省略。
-      overlap:
-        en: "When the target session is busy: queue = wait for the turn to end (default), skip = skip this delivery."
-        zh-CN: 目标会话忙碌时：queue=等回合结束再投（默认），skip=跳过本次。
-      approval_timeout:
-        en: Approval timeout in seconds for the delivered turn; omit to wait for human approval indefinitely.
-        zh-CN: 投递回合的审批超时秒数；不传则一直等人工审批。
-      cwd:
-        en: Working directory of the delivered turn (absolute path). Use it when the user gave one; when unsure, omit it and the tool asks (the user may skip and use the default).
-        zh-CN: 投递回合的工作目录（绝对路径）。用户明确给了就用；拿不准就省略，工具会主动向用户询问（用户可跳过用默认目录）。
-      id:
-        en: Task id (from schedule_list).
-        zh-CN: 任务 id（来自 schedule_list）。
-      action:
-        en: "edit = change fields (default); pause = pause; resume = resume; run_now = run once now; delete = delete."
-        zh-CN: edit=改字段（默认）；pause=暂停；resume=恢复；run_now=立即执行一次；delete=删除。
-      new_rule:
-        en: The new rule, same format as schedule_create's rule.
-        zh-CN: 新规则，格式同 schedule_create 的 rule。
-      clear_timeout:
-        en: Pass null to clear the approval timeout.
-        zh-CN: 传 null 清除审批超时。
-    # 向导式追问（渲进界面，用户直接作答）。
     ask:
       title:
         en: Give this scheduled task a name (required, short and distinguishable).
@@ -1884,6 +1849,49 @@ tool:
 # 的 `CONTINUE_PROMPT` / `WRAP_UP_PROMPT` / `HAND_OFF_PROMPT`，都保持中文原样。
 # 理由见 I18N.md §2.3 B 类：prompt 一翻就改模型行为、毁提示缓存、让 eval 基线漂，
 # 而「模型说什么语言」由模型自己按对话内容决定，不由界面语言决定。
+
+  # ---- 工具返回值里用户看得见的固定措辞（ADR-0105 §5）----
+  #
+  # 只收**结果摘要**：工具做了什么、结果为空、超时、被取消。这些是用户直接看到的
+  # 那句话，GUI 里就显示在工具卡片上。
+  #
+  # 不收的（有意，不是漏）：
+  # - 工具 spec 的 description 与参数说明（约 37 条）：发给模型的指令，不是结果面，
+  #   统一英文。§10.13 记了为什么。
+  # - `ToolError` 的技术诊断（`invalid glob`、`invalid hunk header`、`cannot resolve
+  #   path` 等约 14 条）：受众是模型，它要据此改参数；`glob`/`regex`/`hunk`/`UTF-8`
+  #   这些词翻成中文反而更难对上。
+  # - `exit code: N` / `signal`：shell 约定的技术标记，与 `PWD`、`glob` 同类。
+  fs:
+    image_returned:
+      en: "%{0}: %{1}, %{2} bytes — returned as an image, not as text."
+      zh-CN: "%{0}：%{1}，%{2} 字节——以图片返回，不是文本。"
+    wrote:
+      en: "wrote %{0} bytes to %{1}"
+      zh-CN: "已写入 %{0} 字节到 %{1}"
+    replaced:
+      en: "replaced %{0} occurrence(s) in %{1}"
+      zh-CN: "%{1} 中替换了 %{0} 处"
+  fetch:
+    cancelled:
+      en: web_fetch cancelled
+      zh-CN: web_fetch 已取消
+  web_search:
+    cancelled:
+      en: web_search cancelled
+      zh-CN: web_search 已取消
+  search:
+    no_matches:
+      en: "no matches"
+      zh-CN: 没有匹配
+  # 引擎与 shell 工具共用：一次工具调用被用户中断时的那句话，概念相同。
+  cancelled:
+    en: "cancelled by user"
+    zh-CN: 用户已取消
+  shell:
+    timed_out:
+      en: "command timed out after %{0}s"
+      zh-CN: "命令在 %{0} 秒后超时"
 core:
   driver:
     # 一句话说清「能不能触发」。工具结果与界面共用同一份。
@@ -2071,6 +2079,7 @@ core:
 
 # CLI（`qc`）运行时输出与 TUI 提示。帮助文本（clap）另算，见 I18N.md §4.3。
 cli:
+
   # ---- P2：clap 的帮助与报错（见 `crates/qcode/src/clap_i18n.rs`）----
   #
   # 与其它段的根本区别：**这些键是拼出来的**，不是字面量。`clap_i18n::localize`
