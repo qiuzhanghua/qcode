@@ -18,6 +18,9 @@ rust-version.workspace = true
 qcode-core = { version = "0.16.0", path = "../qcode-core" }
 qcode-driver = { version = "0.16.0", path = "../qcode-driver" }
 qcode-kernel = { version = "0.16.0", path = "../qcode-kernel" }
+# 界面语言（ADR-0105）。daemon 跑定时任务时工具结果的文案跟着 `[ui] language`，
+# 见 `qcode_i18n::init_for_daemon`。
+qcode-i18n = { version = "0.16.0", path = "../qcode-i18n" }
 qcode-tools = { version = "0.16.0", path = "../qcode-tools" }
 async-trait.workspace = true
 tokio.workspace = true

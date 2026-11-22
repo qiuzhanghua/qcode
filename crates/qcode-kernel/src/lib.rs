@@ -465,6 +465,24 @@ pub fn load_config(
     }
 }
 
+/// 配置里给的语言，供**在 clap 之前**就要定语言的调用方使用（GUI 三个入口）。
+///
+/// 读不到、文件不存在、解析失败一律返回 `None` —— 语言是「有就用，没有就跟随
+/// 环境/系统」，绝不能让一次配置读失败把界面卡住。首次运行的向导（`run_setup`）
+/// 就是文件还不存在的情况。
+///
+/// 与 `main.rs` 读 `[log] level` 是同一个形状（`load_config(...).ok()`），代价也一样：
+/// 这个函数会把配置读第二遍，其间的警告此时没有订阅者接。调用方本来就要再读一次，
+/// 那次会重放同样的警告，所以不丢信息。
+pub fn configured_language(
+    explicit: Option<std::path::PathBuf>,
+    workspace: &std::path::Path,
+) -> Option<String> {
+    load_config(explicit, workspace)
+        .ok()
+        .and_then(|config| config.ui.language)
+}
+
 /// Where the data directory *would* be, without touching the filesystem.
 ///
 /// Logging needs a destination before anything else runs, and it must not be the

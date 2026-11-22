@@ -99,6 +99,52 @@ pub fn init(configured: Option<&str>) {
     set(decide(explicit, system.as_deref()));
 }
 
+/// 配置里的显式语言值，`auto` / 空 / 认不出的值一律是 `None`。
+///
+/// 给「已经有了语言，但配置后来才读出来」的调用方：`qc` 的界面语言必须在 clap
+/// 之前定（帮助文案是解析时求值的），而 `[ui] language` 在配置加载之后才拿到。
+/// 那条路已经用环境变量/系统定过一次，这里只负责回答「配置里是否又给了明确指定」，
+/// 是的话再 [`set`] 一次。
+pub fn explicit(configured: Option<&str>) -> Option<&'static str> {
+    configured.and_then(normalize)
+}
+
+/// daemon（`qcd`）的语言：**`[ui] language` 压过 `QCODE_LANG`**，与 [`init`]
+/// 相反。
+///
+/// 这是 ADR-0105 §9 第 2 条记的例外，不是笔误：daemon 没有界面，它产出的文案是
+/// **定时任务的结果**，而它的环境变量来自「启动它的那个 shell」——可能是一个 CI
+/// 容器、一个写死了 `QCODE_LANG` 的 dotfile、或者 GUI 转手 spawn 时继承的空环境。
+/// 让那种东西决定「用户明天早上看到的提醒是什么语言」是不对的。
+///
+/// 反过来，配置文件是用户为**这台机器**做的选择，正是应该影响任务产出的东西。
+///
+/// 配置没说（`None` / `auto`）时仍然尊重 `QCODE_LANG` 与系统首选——此时没有矛盾
+/// 需要裁决。也**不**跟随配置重载：ADR-0105 §9 定的是「改配置后重启生效」，daemon
+/// 的语言在它启动那一刻定下来，日志里那条「reloaded configuration」不该顺手换语言。
+pub fn init_for_daemon(configured: Option<&str>) {
+    let from_env = std::env::var(LANG_ENV).ok();
+    // 只取系统首选语言，与 `init` 同一条理由（首选是法语的用户给他中文更奇怪）。
+    let system = sys_locale::get_locale();
+    set(daemon_decision(
+        configured,
+        from_env.as_deref(),
+        system.as_deref(),
+    ));
+}
+
+/// [`init_for_daemon`] 的**纯**判断，单独拆出来只为了能测。
+///
+/// 与 [`decide`] 的唯一差别是前两项换了位置：配置压过环境变量。逐条看
+/// `daemon_decision_matrix` 那个测试，它把「为什么反着来」钉成了可执行的形式。
+pub fn daemon_decision(
+    configured: Option<&str>,
+    env: Option<&str>,
+    system: Option<&str>,
+) -> &'static str {
+    explicit(configured).unwrap_or_else(|| decide(env, system))
+}
+
 /// 归一化后写入。认不出时落 [`DEFAULT`]。
 ///
 /// 这是进程级状态（`rust-i18n` 的 `CURRENT_LOCALE` 是一个全局 `AtomicStr`）。
@@ -273,6 +319,56 @@ mod tests {
         assert_eq!(decide(Some("fr"), None), EN);
         // 空值当未设置。
         assert_eq!(decide(Some(""), Some("zh-Hans-CN")), ZH_CN);
+    }
+
+    /// `[ui] language` 的值怎么读。
+    ///
+    /// 关键在于 `auto`：它必须等价于「没指定」，否则「跟随系统」会变成一个
+    /// 认不出的显式值，落回 `en` —— 中文用户选了 auto 反而看到英文。
+    #[test]
+    fn explicit_treats_auto_as_unset() {
+        assert_eq!(explicit(Some("auto")), None);
+        assert_eq!(explicit(Some("AUTO")), None);
+        assert_eq!(explicit(Some("")), None);
+        assert_eq!(explicit(None), None);
+        // 认不出的 locale 也是「没指定」，跟着系统走，而不是报错。
+        assert_eq!(explicit(Some("fr-FR")), None);
+
+        assert_eq!(explicit(Some("zh-CN")), Some(ZH_CN));
+        assert_eq!(explicit(Some("zh-Hans-CN")), Some(ZH_CN));
+        assert_eq!(explicit(Some("zh-Hant-TW")), Some(ZH_CN));
+        assert_eq!(explicit(Some("en_GB.UTF-8")), Some(EN));
+        assert_eq!(explicit(Some("C")), Some(EN));
+    }
+
+    /// daemon 的优先级**与 `init` 相反**：配置压过环境变量。
+    ///
+    /// 这不是笔误，是 ADR-0105 §9 第 2 条的例外。逐条钉住，免得以后有人「顺手
+    /// 统一」成 `decide` —— 那会让一个写死了 `QCODE_LANG` 的 CI 容器决定用户看到
+    /// 的定时提醒是什么语言。
+    #[test]
+    fn daemon_decision_matrix() {
+        // 配置在就是配置说了算，哪怕环境变量指了另一种。
+        assert_eq!(
+            daemon_decision(Some("zh-CN"), Some("en"), Some("en-US")),
+            ZH_CN
+        );
+        assert_eq!(
+            daemon_decision(Some("en"), Some("zh-CN"), Some("zh-CN")),
+            EN
+        );
+        // 配置没说才轮到环境变量，然后才是系统。
+        assert_eq!(daemon_decision(None, Some("zh-CN"), Some("en-US")), ZH_CN);
+        assert_eq!(
+            daemon_decision(Some("auto"), Some("zh-CN"), Some("en-US")),
+            ZH_CN
+        );
+        assert_eq!(daemon_decision(None, None, Some("zh-Hans-CN")), ZH_CN);
+        assert_eq!(daemon_decision(None, None, None), EN);
+
+        // 对照组：同样的输入走 `init` 那条路，结果正好相反。
+        assert_eq!(decide(Some("en"), Some("zh-CN")), EN);
+        assert_eq!(daemon_decision(Some("zh-CN"), Some("en"), None), ZH_CN);
     }
 
     /// 译文按 locale 取，绕过全局状态（并行测试里不能靠 `set`）。

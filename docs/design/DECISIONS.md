@@ -12896,6 +12896,29 @@ rust-i18n = "4.2"   # 与 gpui-component 同一份，lock 里仍是 4.2.4
 （他们仍由系统语言判定为中文），而是 `LANG` 缺省为 `C` 的 Linux 容器/CI 里。这类环境
 本来也不该看到中文。
 
+**补记（2026-11-22）：配置项 `[ui] language` 与 daemon 的例外。**
+
+P0 只做了环境变量 + 系统首选，因为「读配置」要等配置加载，而 `--help` 是解析时求值的。
+悬着一个实际问题：**双击图标启动的 GUI 没有 `QCODE_LANG`**，能选的只有系统语言。
+
+现在补成 `QCODE_LANG` → `[ui] language` → 系统 → `en`，各处落点不同：
+
+| 进程 | 何时定 | 优先级 |
+|---|---|---|
+| `qc` 第一次 | clap 之前 | `QCODE_LANG` > 系统 > `en` |
+| `qc` 第二次 | 配置读出来之后 | `QCODE_LANG` > `[ui] language` > 系统 |
+| GUI 三入口 | 窗口建起来之前 | `QCODE_LANG` > `[ui] language` > 系统 |
+| `qcd` | 装配之后 | **`[ui] language` > `QCODE_LANG`** > 系统 |
+
+`qcd` 这一行**故意反过来**，是本 ADR 唯一一处例外：daemon 的环境变量来自启动它的那个
+shell（CI 容器、dotfile、GUI 转手 spawn 的空环境），不该决定「用户明早看到的定时提醒
+是什么语言」；配置文件是用户为这台机器做的选择。反例与实现
+（`qcode_i18n::daemon_decision`，带矩阵测试）见 [I18N.md](./I18N.md) §10.14。
+
+`qc` 的两次机会留一个**已知不对称**：`qc --help` 仍按环境变量/系统定语言（解析太早），
+而命令输出跟随配置。要消除它得在 clap 之前扫 argv 找 `--config`，没做——见 §10.14 的
+理由。
+
 ### 3. 必须归一化，否则静默失效
 
 macOS 返回的是 **`zh-Hans-CN`**（带 script 子标签），不是 `zh-CN`。直接丢给

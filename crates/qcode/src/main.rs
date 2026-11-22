@@ -115,9 +115,22 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
     // here because no subscriber exists yet. The command loads the same file again
     // and repeats any warning with the logger running, so nothing is lost overall.
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let log_level = qcode_kernel::load_config(config.clone(), &workspace)
-        .ok()
-        .and_then(|loaded| loaded.log.level);
+    let loaded = qcode_kernel::load_config(config.clone(), &workspace).ok();
+
+    // 语言的第二次机会（I18N.md §9 第 4 条）：`init` 在 clap 之前跑，那时只有
+    // 环境变量与系统首选；`[ui] language` 要等配置读出来。帮助与解析报错仍然是
+    // 第一次定下的语言（它们求值太早，改不了），但**命令的输出**跟随配置。
+    //
+    // `QCODE_LANG` 仍然压过配置（ADR-0105 §2 的优先级），所以只在环境变量缺席时
+    // 才补这一枪。`auto` / 认不出的值经 `explicit` 变成 `None`，等于不改。
+    if std::env::var_os(qcode_i18n::LANG_ENV).is_none()
+        && let Some(locale) =
+            qcode_i18n::explicit(loaded.as_ref().and_then(|it| it.ui.language.as_deref()))
+    {
+        qcode_i18n::set(locale);
+    }
+
+    let log_level = loaded.and_then(|loaded| loaded.log.level);
     qcode_kernel::logging::init(log_level.as_deref());
 
     // The file lives in the data directory, so it has to wait for that path. The

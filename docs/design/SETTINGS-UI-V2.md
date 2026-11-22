@@ -106,7 +106,7 @@ qcode 设置窗口目前是"顶部 ●/○ 横向导航 + 10 个页面 + 表单�
 | 左侧导航项 | 现 `Page` | 内容 |
 |---|---|---|
 | **Models** | Models | 默认模型（`default_provider` + `[default-model]`）+ providers 表 + 目录条 + 预设/探测（已落地，纳入布局） |
-| Agent | Agent | context / max_turns / max_cost / busy_delivery / snapshot |
+| Agent | Agent | context / max_turns / max_cost / busy_delivery / language / snapshot |
 | Network & Sandbox | NetworkSandbox | sandbox + network 字段 |
 | Search | Search | 搜索后端与 key |
 | MCP | Mcp | MCP servers 表 |

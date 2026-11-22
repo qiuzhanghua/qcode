@@ -78,13 +78,21 @@ pub fn run(
     single: Option<qcode_core::single_instance::Primary>,
 ) {
     let prefs = GuiPreferences::load(&data_dir);
+    // 语言在这里先算好：配置文件路径此时已经在手上，而 `[ui] language` 正是
+    // 「双击启动的 GUI 怎么选语言」的答案（I18N.md §9 第 4 条）。读失败退回
+    // 环境变量/系统首选，见 `configured_language`。
+    let language = qcode_kernel::configured_language(
+        Some(config_path.clone()),
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    );
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             // 见 `setup::run_setup`：这一次 `init` 同时覆盖框架与我们的文案，
             // 修掉「中文界面里剪贴板写着 Copy」那个既有 bug（ADR-0105 §1）。
-            qcode_i18n::init(None);
+            // 优先级 `QCODE_LANG` > `[ui] language` > 系统 > en（ADR-0105 §2）。
+            qcode_i18n::init(language.as_deref());
             cx.activate(true);
             prefs.apply(cx);
             // 退出前杀掉 run_shell 还挂着的进程组（ADR-0073）。

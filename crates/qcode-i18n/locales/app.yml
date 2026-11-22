@@ -1076,6 +1076,13 @@ gui:
         help:
           en: "names records variable names and changes, never values"
           zh-CN: "`names` 只记变量名与变化，从不记值"
+      ui.language:
+        label:
+          en: "Language"
+          zh-CN: "界面语言"
+        help:
+          en: "Follow the system, or force one. Takes effect after a restart; QCODE_LANG overrides it (the daemon is the exception: here it wins)"
+          zh-CN: "跟随系统，或强制指定一种。重启后生效；`QCODE_LANG` 优先于它（daemon 是例外，这里由它说了算）"
       ui.busy_delivery:
         label:
           en: "Busy delivery"

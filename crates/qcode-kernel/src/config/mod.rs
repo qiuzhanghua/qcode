@@ -62,6 +62,22 @@ pub enum BusyDelivery {
 pub struct UiConfig {
     #[serde(default)]
     pub busy_delivery: BusyDelivery,
+    /// 界面语言（ADR-0105 §9 / I18N.md §9 第 2、4 条）。
+    ///
+    /// 值接受任意 locale 标签，交给 [`qcode_i18n::normalize`] 归一化：
+    /// `"zh-CN"` / `"zh-Hant-TW"` → 中文，`"en"` / `"C"` → 英文。
+    /// `None` 与 `"auto"` 都是「跟随系统首选」——`normalize` 对认不出的值返回
+    /// `None`，于是 `auto` 自然落回系统判定，不需要特判。
+    ///
+    /// **为什么是一个自由字符串而不是枚举**：locale 标签的组合太多（`zh-Hans-CN`、
+    /// `en_GB.UTF-8`、`fr`…），枚举会把它们全变成反序列化错误，而正确行为是
+    /// 「认不出就跟随系统」。校验放在归一化那一步，不在 serde 这一层。
+    ///
+    /// 优先级见 [`qcode_i18n::init`]：`QCODE_LANG` 压过这里（与 `RUST_LOG` 压过
+    /// `[log] level` 同一条规矩）。**daemon 是例外**，它反过来让这里压过环境变量，
+    /// 理由见 [`qcode_i18n::init_for_daemon`]。
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// Global default model section `[default-model]` (M1 two-tier selection).

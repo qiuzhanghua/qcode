@@ -1165,6 +1165,39 @@ fn ui_busy_delivery_defaults_to_queue_and_parses_steer() {
     assert_eq!(config.ui.busy_delivery, BusyDelivery::Steer);
 }
 
+/// `[ui] language` 是自由字符串：认不出的值不是错误（正确行为是「跟随系统」），
+/// 所以它必须能被反序列化，而不是像 `busy_delivery` 那样卡在 serde 上。
+#[test]
+fn ui_language_is_free_form_and_absent_means_auto() {
+    let config: Config = toml::from_str("").expect("empty config");
+    assert_eq!(config.ui.language, None, "缺省就是跟随系统");
+
+    let config: Config = toml::from_str("[ui]\nlanguage = \"zh-CN\"\n").expect("parse");
+    assert_eq!(config.ui.language.as_deref(), Some("zh-CN"));
+
+    // 显式写 auto 与不写等价（由 `qcode_i18n::explicit` 归一化成同一条路）。
+    let config: Config = toml::from_str("[ui]\nlanguage = \"auto\"\n").expect("parse");
+    assert_eq!(config.ui.language.as_deref(), Some("auto"));
+
+    // 认不出的标签照收，不在这一层报错 —— 否则法语用户连启动都做不到。
+    let config: Config = toml::from_str("[ui]\nlanguage = \"fr-FR\"\n").expect("parse");
+    assert_eq!(config.ui.language.as_deref(), Some("fr-FR"));
+}
+
+/// `language` 必须在「已知键」表里，否则每次加载都报一条 typo 警告
+/// —— README 的示例配置会自己骂自己。
+#[test]
+fn ui_language_is_a_known_key() {
+    let document: toml::Table = "[ui]\nlanguage = \"zh-CN\"\nbusy_delivery = \"steer\"\n"
+        .parse()
+        .expect("document");
+    assert!(
+        unknown_keys(&document).is_empty(),
+        "{:?}",
+        unknown_keys(&document)
+    );
+}
+
 #[test]
 fn an_unknown_busy_delivery_is_rejected() {
     let error = toml::from_str::<Config>("[ui]\nbusy_delivery = \"drop\"\n").unwrap_err();

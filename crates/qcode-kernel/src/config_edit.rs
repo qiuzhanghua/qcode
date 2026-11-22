@@ -443,6 +443,11 @@ impl ConfigEdit {
             &["ui", "busy_delivery"],
             busy_delivery_str(config.ui.busy_delivery),
         )?;
+        // `language` 必须在这里显式写一遍：`apply_config` 是逐字段枚举的，漏一行
+        // 就是「设置页能选、保存后消失」——值在内存里改了，落盘时没人写它。
+        // `None`（= auto）由 `set_optional_str` 处理成「删掉这一行」，于是文件里
+        // 不会留下 `language = "auto"` 这种零信息。
+        self.set_optional_str(&["ui", "language"], config.ui.language.clone())?;
 
         self.set_str(&["sandbox", "mode"], sandbox_mode(&config.sandbox.mode))?;
         self.set_str(
@@ -1198,6 +1203,7 @@ roots = ["~/skills"]
         config.agent.max_turns = 12;
         config.agent.max_cost_usd = Some(0.5);
         config.agent.snapshot_shell = false;
+        config.ui.language = Some("zh-CN".to_string());
         config.sandbox.mode = SandboxMode::SandboxExec;
         config.sandbox.network = Some(crate::config::SandboxNetworkMode::Proxy);
         config.sandbox.extra_writable = vec![std::path::PathBuf::from("/tmp/extra")];
@@ -1270,6 +1276,9 @@ roots = ["~/skills"]
         assert_eq!(loaded.agent.max_turns, 12);
         assert_eq!(loaded.agent.max_cost_usd, Some(0.5));
         assert!(!loaded.agent.snapshot_shell);
+        // 漏了 `apply_config` 里那一行的话，这里会变成 `None` —— 设置页能选、
+        // 保存后消失，而没有任何别的测试会红。
+        assert_eq!(loaded.ui.language.as_deref(), Some("zh-CN"));
         assert_eq!(loaded.sandbox.mode, SandboxMode::SandboxExec);
         assert_eq!(loaded.sandbox.extra_writable.len(), 1);
         assert_eq!(loaded.network.mode, NetworkMode::Strict);

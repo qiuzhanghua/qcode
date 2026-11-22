@@ -137,6 +137,18 @@ pub(crate) fn scalar_string(config: &Config, path: &[&str], options: &[&str]) ->
         ["terminal", "font"] => config.terminal.font.clone(),
         ["terminal", "max_scrollback"] => config.terminal.max_scrollback.to_string(),
         ["terminal", "max_terminals"] => config.terminal.max_terminals.to_string(),
+        // 这两条原来都落到 `_` 分支，于是下拉框永远显示 `options[0]`
+        // （`queue` / `auto`）——即使配置写的是 `steer` / `zh-CN`。写回是对的、
+        // 显示是错的，最坏的情况是「看一眼以为没生效，再点一下」。
+        ["ui", "busy_delivery"] => match config.ui.busy_delivery {
+            qcode_kernel::config::BusyDelivery::Queue => "queue".to_string(),
+            qcode_kernel::config::BusyDelivery::Steer => "steer".to_string(),
+        },
+        ["ui", "language"] => config
+            .ui
+            .language
+            .clone()
+            .unwrap_or_else(|| "auto".to_string()),
         _ => options.first().unwrap_or(&"").to_string(),
     }
 }
@@ -214,6 +226,14 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
             config.ui.busy_delivery = match value {
                 "steer" => qcode_kernel::config::BusyDelivery::Steer,
                 _ => qcode_kernel::config::BusyDelivery::Queue,
+            };
+        }
+        ["ui", "language"] => {
+            // `auto` 写成 `None`：两者含义相同，但 `None` 让文件里干脆不出现这一行，
+            // 与「没设置过」完全一致，也少一条要维护的零信息。
+            config.ui.language = match value {
+                "auto" | "" => None,
+                other => Some(other.to_string()),
             };
         }
         ["sandbox", "mode"] => config.sandbox.mode = parse_sandbox(value)?,

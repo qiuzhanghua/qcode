@@ -1165,3 +1165,51 @@ fn path_cells_round_trip() {
         paths
     );
 }
+
+/// 设置页两类下拉框的**读方向**。
+///
+/// `scalar_string` 最后一条 `_ => options.first()` 很危险：任何忘了写分支的字段
+/// 都会永远显示第一个选项。`[ui] busy_delivery` 与 `[ui] language` 就都踩过——
+/// 写回是对的、显示是错的，界面上看不出「配置已生效」，用户会再点一次。
+#[test]
+fn ui_selects_read_back_the_configured_value() {
+    use qcode_kernel::config::{BusyDelivery, Config};
+
+    let mut config = Config::default();
+    assert_eq!(
+        super::scalar_string(&config, &["ui", "busy_delivery"], &["queue", "steer"]),
+        "queue"
+    );
+    config.ui.busy_delivery = BusyDelivery::Steer;
+    assert_eq!(
+        super::scalar_string(&config, &["ui", "busy_delivery"], &["queue", "steer"]),
+        "steer"
+    );
+
+    // 没设置过 `language` 时显示 `auto`（跟随系统），而不是空串。
+    assert_eq!(
+        super::scalar_string(&config, &["ui", "language"], &["auto", "zh-CN", "en"]),
+        "auto"
+    );
+    config.ui.language = Some("zh-CN".into());
+    assert_eq!(
+        super::scalar_string(&config, &["ui", "language"], &["auto", "zh-CN", "en"]),
+        "zh-CN"
+    );
+}
+
+/// 写方向：`auto` 落成 `None`，于是 `config.toml` 里那一行干脆不出现。
+#[test]
+fn ui_language_writes_auto_as_absent() {
+    use qcode_kernel::config::Config;
+
+    let mut config = Config::default();
+    super::apply_scalar(&mut config, &["ui", "language"], "zh-CN").expect("写 zh-CN");
+    assert_eq!(config.ui.language.as_deref(), Some("zh-CN"));
+
+    super::apply_scalar(&mut config, &["ui", "language"], "auto").expect("写 auto");
+    assert_eq!(config.ui.language, None);
+
+    super::apply_scalar(&mut config, &["ui", "language"], "").expect("写空");
+    assert_eq!(config.ui.language, None);
+}

@@ -543,7 +543,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         &["enabled", "check", "check_days", "repo", "base_url"],
     ),
     ("default-model", &["provider", "model"]),
-    ("ui", &["busy_delivery"]),
+    ("ui", &["busy_delivery", "language"]),
     (
         "session_title",
         &[

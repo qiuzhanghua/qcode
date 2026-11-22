@@ -311,6 +311,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let assembled =
         qcode_kernel::assemble(None, &workspace, data_dir, None, Default::default()).await?;
 
+    // 定时任务的语言（ADR-0105 §9 第 2 条）：用装配好的配置里那一项，且**压过**
+    // `QCODE_LANG`。daemon 的环境来自启动它的那个 shell，不该决定用户明天早上看到
+    // 的提醒是什么语言；配置文件是用户为这台机器做的选择。理由与反例见
+    // `qcode_i18n::init_for_daemon`。
+    //
+    // 放在装配之后、驱动循环之前：从这里开始的每一条工具结果都已经需要译文。
+    // 配置重载**不**再动语言（ADR-0105 §9：改配置后重启生效）。
+    qcode_i18n::init_for_daemon(assembled.config.ui.language.as_deref());
+
     // ── 3. 驱动锁（ADR-0091，数据目录级）──────────────────────────────────
     //
     // 与上面那把是两回事：这把回答「谁是**这个数据目录**的时钟」。

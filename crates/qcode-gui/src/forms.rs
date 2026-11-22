@@ -337,6 +337,19 @@ pub const FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Select(&["queue", "steer"]),
         help: "gui.setup.spec.ui.busy_delivery.help",
     },
+    // 语言放在 `FIELDS`（config.toml）而不是 `GUI_FIELDS`（gui.json）：CLI 与
+    // daemon 也要读它，gui.json 它们看不见。
+    //
+    // 页面选 Agent 而不是 Appearance：`Appearance` 按设计只收 `gui.json` 的字段
+    // （见 SETTINGS-UI-V2.md §4.2 的拆分理由），把一条 config.toml 字段放进去会
+    // 让那一页出现两种保存位置。这里和 `busy_delivery` 挨着——同属 `[ui]`。
+    FieldSpec {
+        path: &["ui", "language"],
+        label: "gui.setup.spec.ui.language.label",
+        page: Page::Agent,
+        kind: FieldKind::Select(&["auto", "zh-CN", "en"]),
+        help: "gui.setup.spec.ui.language.help",
+    },
     FieldSpec {
         path: &["agent", "snapshot_shell"],
         label: "gui.setup.spec.agent.snapshot_shell.label",

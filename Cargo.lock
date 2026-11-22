@@ -5343,6 +5343,7 @@ dependencies = [
  "libc",
  "qcode-core",
  "qcode-driver",
+ "qcode-i18n",
  "qcode-kernel",
  "qcode-providers",
  "qcode-tools",

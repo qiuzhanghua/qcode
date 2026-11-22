@@ -320,12 +320,18 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
 /// Open the first-run/setup wizard. Returns when the user saves (which quits
 /// the GPUI app) or closes the window.
 pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
-    gpui_kit::application().run(|cx| {
+    // 与 `run` 同一条路：语言在窗口建起来之前定。首次运行的向导此时配置还不存在，
+    // `configured_language` 会返回 `None`，于是走环境变量/系统 —— 正是要的行为。
+    let language = qcode_kernel::configured_language(
+        Some(path.clone()),
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    );
+    gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         // 框架自带文案（剪贴板 Copy、日历周标题、表格分页…）一直停在默认 `en`，
         // 因为这里从来没设过语言 —— 那是 ADR-0105 §1 记的既有 bug。gpui-kit 与
         // 我们用的是**同一份** rust-i18n，所以这一次 `init` 两边一起生效。
-        qcode_i18n::init(None);
+        qcode_i18n::init(language.as_deref());
         let options = window_icon::attach(WindowOptions::default());
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);
@@ -340,12 +346,18 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
 
 /// Open the same form pages as a settings window (no wizard restart).
 pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
-    gpui_kit::application().run(|cx| {
+    // 与 `run` 同一条路：语言在窗口建起来之前定。首次运行的向导此时配置还不存在，
+    // `configured_language` 会返回 `None`，于是走环境变量/系统 —— 正是要的行为。
+    let language = qcode_kernel::configured_language(
+        Some(path.clone()),
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    );
+    gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         // 框架自带文案（剪贴板 Copy、日历周标题、表格分页…）一直停在默认 `en`，
         // 因为这里从来没设过语言 —— 那是 ADR-0105 §1 记的既有 bug。gpui-kit 与
         // 我们用的是**同一份** rust-i18n，所以这一次 `init` 两边一起生效。
-        qcode_i18n::init(None);
+        qcode_i18n::init(language.as_deref());
         let options = window_icon::attach(WindowOptions::default());
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);

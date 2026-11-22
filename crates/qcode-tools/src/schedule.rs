@@ -707,12 +707,12 @@ impl Tool for ScheduleEdit {
                         "enum": ["edit", "pause", "resume", "run_now", "delete"],
                         "description": "edit = change fields (default); pause = pause; resume = resume; run_now = run once now; delete = delete."
                     },
-                    "title": {"type": "string"},
-                    "prompt": {"type": "string"},
+                    "title": {"type": "string", "description": "New task name; omit to keep the current one."},
+                    "prompt": {"type": "string", "description": "New reminder text; omit to keep the current one."},
                     "rule": {"type": "string", "description": "The new rule, same format as schedule_create's rule."},
-                    "target": {"type": "string"},
-                    "overlap": {"type": "string", "enum": ["queue", "skip"]},
-                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": "Pass null to clear the approval timeout."}
+                    "target": {"type": "string", "description": "New delivery target, same values as schedule_create's target (new_once / new / session:<id>); omit to keep the current one."},
+                    "overlap": {"type": "string", "enum": ["queue", "skip"], "description": "New busy-session policy: queue = wait for the turn to end, skip = skip this delivery; omit to keep the current one."},
+                    "approval_timeout_secs": {"type": "integer", "minimum": 1, "description": "New approval timeout in seconds; pass null to clear it; omit to keep the current one."}
                 },
                 "required": ["id"],
                 "additionalProperties": false
