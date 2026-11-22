@@ -378,15 +378,15 @@ pub(crate) async fn cmd_run(
         }
         if !json {
             println!();
-            println!("paused: {}", pause_line(pause));
+            println!(
+                "{}",
+                qcode_i18n::trp("cli.run.paused", &[pause_line(pause).as_str()])
+            );
             if let Some(summary) = &pause.summary {
                 println!("{summary}");
             }
             println!();
-            println!(
-                "continue: `qc run --continue`, or send another message; \
-                 raise [agent] max_turns / --max-cost to give it more room"
-            );
+            println!("{}", qcode_i18n::tr("cli.run.continue_hint"));
         }
         if loaded.update.checks_on_startup()
             && let Some(notice) = update::notice(&loaded.update, &data_dir).await
@@ -412,12 +412,21 @@ pub(crate) async fn cmd_run(
     }
 
     if !json {
-        println!("session: {}", outcome.session_id);
+        println!(
+            "{}",
+            qcode_i18n::trp("cli.run.session", &[outcome.session_id.as_str()])
+        );
         println!();
         println!("{}", outcome.text);
         if outcome.cost_usd > 0.0 {
             println!();
-            println!("cost: ${:.6} (estimated)", outcome.cost_usd);
+            println!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.run.cost",
+                    &[format!("{:.6}", outcome.cost_usd).as_str()]
+                )
+            );
         }
     }
 

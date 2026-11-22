@@ -79,6 +79,9 @@ fn qc(config: &Path, data_dir: &Path, args: &[&str]) -> std::process::Output {
         .arg("--data-dir")
         .arg(data_dir)
         .args(args)
+        // 钉住语言（ADR-0105 §6）：`qc update` 的输出现在跟随 `[ui] language` /
+        // `QCODE_LANG`。
+        .env("QCODE_LANG", "zh-CN")
         .output()
         .expect("run qc")
 }
@@ -108,7 +111,7 @@ fn check_reports_a_newer_release_and_a_matching_one() {
     let output = qc(&config, &dir.path().join("data"), &["update", "--check"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("update available"), "{stdout}");
+    assert!(stdout.contains("有可用更新"), "{stdout}");
     assert!(stdout.contains("99.0.0"), "{stdout}");
 
     let port = serve(1, |path, port| {
@@ -118,7 +121,7 @@ fn check_reports_a_newer_release_and_a_matching_one() {
     let output = qc(&config, &dir.path().join("data"), &["update", "--check"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("up to date"), "{stdout}");
+    assert!(stdout.contains("已是最新版本"), "{stdout}");
 }
 
 #[test]

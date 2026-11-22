@@ -13,9 +13,11 @@ pub(crate) fn cmd_config(
             print_config(&loaded);
             if loaded.schema < qcode_kernel::config::CONFIG_VERSION {
                 println!(
-                    "\nthis file is schema {}; `qc config migrate` can drop duplicated defaults \
-                     (backup kept as .bak)",
-                    loaded.schema
+                    "\n{}",
+                    qcode_i18n::trp(
+                        "cli.cfg.show_outdated",
+                        &[loaded.schema.to_string().as_str()]
+                    )
                 );
             }
         }
@@ -34,34 +36,56 @@ pub(crate) fn cmd_config(
             let report = qcode_kernel::config_edit::migrate_user_config(&path)?;
             if !report.changed {
                 println!(
-                    "{}: already schema {} (nothing to do)",
-                    path.display(),
-                    report.from
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.cfg.migrate_current",
+                        &[
+                            path.display().to_string().as_str(),
+                            report.from.to_string().as_str()
+                        ]
+                    )
                 );
             } else {
                 println!(
-                    "{}: schema {} → {}",
-                    path.display(),
-                    report.from,
-                    qcode_kernel::config::CONFIG_VERSION
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.cfg.migrate_done",
+                        &[
+                            path.display().to_string().as_str(),
+                            report.from.to_string().as_str(),
+                            qcode_kernel::config::CONFIG_VERSION.to_string().as_str()
+                        ]
+                    )
                 );
                 if report.folded_defaults > 0 {
                     println!(
-                        "  folded {} provider default_model key(s) into [default-model]",
-                        report.folded_defaults
+                        "{}",
+                        qcode_i18n::trp(
+                            "cli.cfg.migrate_folded_defaults",
+                            &[report.folded_defaults.to_string().as_str()]
+                        )
                     );
                 }
                 if report.folded_network {
-                    println!("  folded [network] enabled/mode into [sandbox] network");
+                    println!("{}", qcode_i18n::tr("cli.cfg.migrate_folded_network"));
                 }
                 if report.collapsed_models > 0 {
                     println!(
-                        "  collapsed {} model table(s) into `models = [\"id\", …]`",
-                        report.collapsed_models
+                        "{}",
+                        qcode_i18n::trp(
+                            "cli.cfg.migrate_collapsed_models",
+                            &[report.collapsed_models.to_string().as_str()]
+                        )
                     );
                 }
                 if let Some(backup) = &report.backup {
-                    println!("  backup: {}", backup.display());
+                    println!(
+                        "{}",
+                        qcode_i18n::trp(
+                            "cli.cfg.migrate_backup",
+                            &[backup.display().to_string().as_str()]
+                        )
+                    );
                 }
             }
         }
@@ -92,8 +116,14 @@ pub(crate) fn cmd_config(
                 return Err(format!("editor exited with {status}").into());
             }
             match config::load(&path) {
-                Ok(_) => println!("config ok: {}", path.display()),
-                Err(err) => eprintln!("warning: {err}"),
+                Ok(_) => println!(
+                    "{}",
+                    qcode_i18n::trp("cli.cfg.edit_ok", &[path.display().to_string().as_str()])
+                ),
+                Err(err) => eprintln!(
+                    "{}",
+                    qcode_i18n::trp("cli.cfg.edit_bad", &[err.to_string().as_str()])
+                ),
             }
         }
     }
@@ -186,19 +216,31 @@ pub(crate) fn cmd_mcp(
                 },
             )?;
             println!(
-                "added MCP server '{name}' ({}) to {}",
-                if transport.url.is_some() {
-                    "streamable-http"
-                } else {
-                    "stdio"
-                },
-                path.display()
+                "{}",
+                qcode_i18n::trp(
+                    "cli.cfg.mcp_added",
+                    &[
+                        name.as_str(),
+                        if transport.url.is_some() {
+                            "streamable-http"
+                        } else {
+                            "stdio"
+                        },
+                        path.display().to_string().as_str()
+                    ]
+                )
             );
         }
         McpCommand::Remove { name } => {
             let path = config::edit_path(config_path)?;
             config::mcp_remove(&path, &name)?;
-            println!("removed MCP server '{name}' from {}", path.display());
+            println!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.cfg.mcp_removed",
+                    &[name.as_str(), path.display().to_string().as_str()]
+                )
+            );
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -297,13 +339,24 @@ fn config_init(
     std::fs::write(&path, &document)?;
     match config::load(&path) {
         Ok(_) => println!(
-            "wrote {} from template {}/{id}",
-            path.display(),
-            kind.as_str()
+            "{}",
+            qcode_i18n::trp(
+                "cli.cfg.init_wrote",
+                &[
+                    path.display().to_string().as_str(),
+                    format!("{}/{}", kind.as_str(), id).as_str()
+                ]
+            )
         ),
         Err(error) => eprintln!(
-            "warning: wrote {} but it does not load: {error}",
-            path.display()
+            "{}",
+            qcode_i18n::trp(
+                "cli.cfg.init_not_loadable",
+                &[
+                    path.display().to_string().as_str(),
+                    error.to_string().as_str()
+                ]
+            )
         ),
     }
     print_key_hints(&template);
@@ -401,11 +454,23 @@ fn provider_append(
     // terminal; production passes [`confirm_append`], which refuses to even
     // ask on a non-TTY.
     if !confirm()? {
-        println!("cancelled; {} unchanged", path.display());
+        println!(
+            "{}",
+            qcode_i18n::trp(
+                "cli.cfg.append_cancelled",
+                &[path.display().to_string().as_str()]
+            )
+        );
         return Ok(ExitCode::SUCCESS);
     }
     std::fs::write(path, &combined)?;
-    println!("appended [providers.{id}] to {}", path.display());
+    println!(
+        "{}",
+        qcode_i18n::trp(
+            "cli.cfg.append_done",
+            &[id.as_str(), path.display().to_string().as_str()]
+        )
+    );
     print_key_hints(template);
     Ok(ExitCode::SUCCESS)
 }
@@ -463,10 +528,7 @@ fn print_key_hints(template: &qcode_kernel::template::Template) {
         .filter(|prompt| prompt.kind == PromptKind::Secret)
     {
         let env = prompt.env.as_deref().unwrap_or("(none)");
-        println!(
-            "this provider reads the key from {env}: set it in the environment, \
-             or store it with `echo <key> | qc config key set <provider>`"
-        );
+        println!("{}", qcode_i18n::trp("cli.cfg.key_hint", &[env]));
     }
 }
 
@@ -537,19 +599,32 @@ pub(crate) fn cmd_template(args: TemplateArgs) -> Result<ExitCode, Box<dyn std::
                     template.os.join(", ")
                 };
                 let applies = if template.applies_here() {
-                    "applies here"
+                    qcode_i18n::tr("cli.template.applies").into_owned()
                 } else {
-                    "not for this platform"
+                    qcode_i18n::tr("cli.template.not_for_platform").into_owned()
                 };
                 println!(
-                    "{:<10} {:<14} [built-in] {} ({os}; {applies})",
-                    template.kind.as_str(),
-                    template.id,
-                    template.title,
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.template.line",
+                        &[
+                            format!("{:<10}", template.kind.as_str()).as_str(),
+                            format!("{:<14}", template.id).as_str(),
+                            template.title.as_str(),
+                            os.as_str(),
+                            applies.as_str(),
+                        ]
+                    )
                 );
                 println!("    {}", template.summary);
             }
-            println!("\n{} template(s)", templates.len());
+            println!(
+                "\n{}",
+                qcode_i18n::trp(
+                    "cli.template.count",
+                    &[templates.len().to_string().as_str()]
+                )
+            );
         }
     }
     Ok(ExitCode::SUCCESS)

@@ -2112,6 +2112,138 @@ cli:
     skipping:
       en: "qcode: skipping %{0}: %{1}"
       zh-CN: "qcode：跳过 %{0}：%{1}"
+  skills:
+    disabled:
+      en: "skills are disabled ([skills] enabled = false)"
+      zh-CN: "技能已关闭（`[skills] enabled = false`）"
+    none_found:
+      en: "no skills discovered; checked:"
+      zh-CN: "没有发现技能；检查过这些位置："
+    count:
+      en: "%{0} skill(s)"
+      zh-CN: "%{0} 个技能"
+    skill_line:
+      en: "%{0}  [%{1}]  files=%{2}"
+      zh-CN: "%{0}  [%{1}]  文件 %{2} 个"
+  shell_env:
+    sampling_off:
+      en: "environment sampling is off ([shell] env_sampling = \"off\")"
+      zh-CN: "环境采样已关闭（`[shell] env_sampling = \"off\"`）"
+    sampling_off_detail:
+      en: "run_shell only sees the allow list plus the egress proxy variables"
+      zh-CN: "run_shell 只能看到白名单加上出网代理那几个变量"
+    sampling_failed:
+      en: "sampling failed after %{0}ms"
+      zh-CN: "采样在 %{0}ms 后失败"
+    last_attempt_failed:
+      en: "  last attempt failed: %{0}"
+      zh-CN: "  上一次尝试失败：%{0}"
+    full_needs_terminal:
+      en: "--full needs a terminal; printing names only"
+      zh-CN: "--full 需要终端；这里只列出变量名"
+    new_since:
+      en: "  new since the previous sample: %{0}"
+      zh-CN: "  相比上一次采样新增：%{0}"
+    gone_since:
+      en: "  gone since the previous sample: %{0}"
+      zh-CN: "  相比上一次采样消失：%{0}"
+    summary:
+      en: "shell: %{0}   variables: %{1}   sampled in %{2}ms%{3}"
+      zh-CN: "shell：%{0}   变量 %{1} 个   采样耗时 %{2}ms%{3}"
+    summary_cached:
+      en: "  (cached)"
+      zh-CN: "  （来自缓存）"
+  run:
+    session:
+      en: "session: %{0}"
+      zh-CN: "会话：%{0}"
+    cost:
+      en: "cost: $%{0} (estimated)"
+      zh-CN: "花费：$%{0}（估算）"
+    paused:
+      en: "paused: %{0}"
+      zh-CN: "暂停：%{0}"
+    pause_used_turns:
+      en: "used %{0}/%{1} turns"
+      zh-CN: "已用 %{0}/%{1} 轮"
+    pause_cost:
+      en: "cost $%{0} of $%{1}"
+      zh-CN: "已花 $%{0}，上限 $%{1}"
+    continue_hint:
+      en: "continue: `qc run --continue`, or send another message; raise [agent] max_turns / --max-cost to give it more room"
+      zh-CN: "继续：`qc run --continue`，或者再发一条消息；想给更多空间就调高 `[agent] max_turns` / `--max-cost`"
+
+  cfg:
+    show_outdated:
+      en: "this file is schema %{0}; `qc config migrate` can drop duplicated defaults (backup kept as .bak)"
+      zh-CN: "这个文件是 schema %{0}；`qc config migrate` 可以合并掉重复的默认值（会留一份 .bak 备份）"
+    edit_ok:
+      en: "config ok: %{0}"
+      zh-CN: "配置没问题：%{0}"
+    edit_bad:
+      en: "warning: %{0}"
+      zh-CN: "警告：%{0}"
+    migrate_current:
+      en: "%{0}: already schema %{1} (nothing to do)"
+      zh-CN: "%{0}：已经是 schema %{1}（无需改动）"
+    migrate_done:
+      en: "%{0}: schema %{1} → %{2}"
+      zh-CN: "%{0}：schema %{1} → %{2}"
+    migrate_folded_defaults:
+      en: "  folded %{0} provider default_model key(s) into [default-model]"
+      zh-CN: "  把 %{0} 处 provider 的 default_model 折进了 `[default-model]`"
+    migrate_folded_network:
+      en: "  folded [network] enabled/mode into [sandbox] network"
+      zh-CN: "  把 `[network]` 的 enabled/mode 折进了 `[sandbox]` 的 network"
+    migrate_collapsed_models:
+      en: "  collapsed %{0} model table(s) into `models = [\"id\", …]`"
+      zh-CN: "  把 %{0} 个 model 表压成了 `models = [\"id\", …]`"
+    migrate_backup:
+      en: "  backup: %{0}"
+      zh-CN: "  备份：%{0}"
+    mcp_added:
+      en: "added MCP server '%{0}' (%{1}) to %{2}"
+      zh-CN: "已添加 MCP 服务器 `%{0}`（%{1}）到 %{2}"
+    mcp_removed:
+      en: "removed MCP server '%{0}' from %{1}"
+      zh-CN: "已从 %{1} 移除 MCP 服务器 `%{0}`"
+    init_wrote:
+      en: "wrote %{0} from template %{1}"
+      zh-CN: "已用模板 %{1} 写出 %{0}"
+    init_not_loadable:
+      en: "warning: wrote %{0} but it does not load: %{1}"
+      zh-CN: "警告：写出了 %{0}，但它加载不起来：%{1}"
+    append_cancelled:
+      en: "cancelled; %{0} unchanged"
+      zh-CN: "已取消；%{0} 未改动"
+    append_done:
+      en: "appended [providers.%{0}] to %{1}"
+      zh-CN: "已把 `[providers.%{0}]` 追加到 %{1}"
+    key_hint:
+      en: "this provider reads the key from %{0}: set it in the environment, or store it with `echo <key> | qc config key set <provider>`"
+      zh-CN: "这个供应商从 %{0} 读密钥：把它设在环境变量里，或者用 `echo <key> | qc config key set <provider>` 存起来"
+  template:
+    line:
+      en: "%{0} %{1} [built-in] %{2} (%{3}; %{4})"
+      zh-CN: "%{0} %{1} [built-in] %{2}（%{3}；%{4}）"
+    applies:
+      en: "applies here"
+      zh-CN: 本机适用
+    not_for_platform:
+      en: "not for this platform"
+      zh-CN: 不适用于本平台
+    count:
+      en: "%{0} template(s)"
+      zh-CN: "%{0} 个模板"
+
+  sandbox_grant:
+    granted:
+      en: "granted windows-acl write access to %{0}"
+      zh-CN: "已给 %{0} 授予 windows-acl 写权限"
+    revoked:
+      en: "revoked %{0} ACE(s) under %{1}"
+      zh-CN: "已撤销 %{1} 下的 %{0} 条 ACE"
+
   session:
     no_sessions:
       en: "no sessions"
@@ -2772,9 +2904,61 @@ cli:
       cannot_tell:
         en: "qc daemon: cannot tell whether it is running (%{0})."
         zh-CN: "qc daemon：判断不出它是否在跑（%{0}）。"
-  # `qc update` 里那些带具体后果的警告尾巴。英文主干保留在代码里（`warning: …`），
-  # 这里只放跟在 `\x20        ` 后面的那句解释——它不是装饰，是「接下来怎么办」。
+  # `qc update` 的输出。**`warning:` 也一起翻**（`警告：`）：先前这里只翻警告的
+  # 尾巴、主干留英文，于是同一行读起来是「warning: 无法…」——半英文半中文，
+  # 正是 ADR-0105 §9 不变量 5 禁止的。现在整行一个键。
   update:
+    current_version:
+      en: "current version: %{0} (%{1})"
+      zh-CN: "当前版本：%{0}（%{1}）"
+    no_release:
+      en: "no published release for %{0} yet"
+      zh-CN: "%{0} 还没有发布任何版本"
+    latest:
+      en: "latest release:  %{0}"
+      zh-CN: "最新发布：  %{0}"
+    up_to_date:
+      en: "qcode is up to date"
+      zh-CN: "qcode 已是最新版本"
+    available:
+      en: "update available: %{0} -> %{1} (run `qc update` to install)"
+      zh-CN: "有可用更新：%{0} → %{1}（跑 `qc update` 安装）"
+    downloading:
+      en: "downloading %{0}"
+      zh-CN: "正在下载 %{0}"
+    updated:
+      en: "updated to %{0} (previous binary: %{1})"
+      zh-CN: "已更新到 %{0}（原二进制：%{1}）"
+    installed:
+      en: "installed %{0} at %{1}"
+      zh-CN: "已安装 %{0} 到 %{1}"
+    daemon_updated:
+      en: "daemon updated: %{0}"
+      zh-CN: "daemon 已更新：%{0}"
+    warn_no_binary:
+      en: "warning: this release publishes no %{0} binary.\n        %{1}"
+      zh-CN: "警告：这次发布没有提供 %{0} 二进制。\n        %{1}"
+    warn_missing_sum:
+      en: "warning: %{0} is missing from SHA256SUMS; not installing the daemon.\n        Unverified bytes next to `qc` is worse than a stale daemon."
+      zh-CN: "警告：SHA256SUMS 里没有 %{0}，不装 daemon。\n        放在 `qc` 旁边的未校验字节，比一个旧 daemon 更糟。"
+    warn_cannot_download:
+      en: "warning: cannot download %{0}: %{1}"
+      zh-CN: "警告：无法下载 %{0}：%{1}"
+    warn_verify_failed:
+      en: "warning: %{0} failed verification (expected %{1}, got %{2}); kept the existing daemon"
+      zh-CN: "警告：%{0} 校验没过（期望 %{1}，实际 %{2}）；保留了现有的 daemon"
+    warn_cannot_install:
+      en: "warning: cannot install %{0}: %{1}\n        %{2}"
+      zh-CN: "警告：无法安装 %{0}：%{1}\n        %{2}"
+    warn_cannot_run:
+      en: "warning: cannot run %{0} --version: %{1}\n        %{2}"
+      zh-CN: "警告：跑不了 %{0} --version：%{1}\n        %{2}"
+    warn_version_failed:
+      en: "warning: %{0} --version failed (%{1}); the installed daemon predates version reporting.\n        %{2}"
+      zh-CN: "警告：%{0} --version 失败（%{1}）；装着的 daemon 太旧，还不报版本。\n        %{2}"
+    warn_mismatch:
+      en: "warning: %{0} reports %{1}, expected %{2}\n        %{3}"
+      zh-CN: "警告：%{0} 报的是 %{1}，期望 %{2}\n        %{3}"
     no_daemon_binary_hint:
       en: Scheduled tasks need it (`qc daemon start`); if %{0} already exists, the old version still works.
       zh-CN: 定时任务需要它（`qc daemon start`）；若 %{0} 已存在则仍可用旧版本。
@@ -2790,6 +2974,10 @@ cli:
     version_mismatch_hint:
       en: The binary installed is not the daemon from this release. The old one still runs (the protocol did not change), but the versions no longer line up.
       zh-CN: 装上去的不是这次发布的 daemon。旧的仍能跑（协议没变），但版本口径不一致。
+    nothing_reported:
+      en: nothing
+      zh-CN: （空）
+
   # TUI 的状态行提示（进入时会话时推一条 notice）。键位与斜杠命令**不翻译**：
   # 它们是要用户照着按的字面量，翻了就按不出来。
   tui:

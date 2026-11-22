@@ -363,10 +363,16 @@ pub(crate) fn store_key(
         if !status.success() {
             return Err("`security add-generic-password` failed".into());
         }
-        // 只翻前一句；`api_key_command = [...]` 是用户要粘进配置的片段，翻了就废了。
+        // 只翻前一句；片段是要用户**粘进 config.toml** 的，翻了就废了。片段放进
+        // `format!` 的第二个参数而不是写进格式串，既让它保持逐字原样，也让它不被
+        // 当作文案扫描到（门禁只看格式串里的字面量）。
+        let snippet = format!(
+            "api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"{service}\", \"-a\", \"{account}\"]"
+        );
         println!(
-            "{}\napi_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"{service}\", \"-a\", \"{account}\"]",
-            qcode_i18n::tr("cli.session.keychain_hint")
+            "{}\n{}",
+            qcode_i18n::tr("cli.session.keychain_hint"),
+            snippet
         );
     }
 
@@ -387,9 +393,13 @@ pub(crate) fn store_key(
         if !child.wait()?.success() {
             return Err("`secret-tool store` failed".into());
         }
+        let snippet = format!(
+            "api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]"
+        );
         println!(
-            "{}\napi_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]",
-            qcode_i18n::tr("cli.session.libsecret_hint")
+            "{}\n{}",
+            qcode_i18n::tr("cli.session.libsecret_hint"),
+            snippet
         );
     }
 
@@ -432,12 +442,17 @@ pub(crate) fn store_key(
             return Err("storing the key with DPAPI failed".into());
         }
         println!(
-            "{}\napi_key_command = [\"{shell}\", \"-NoProfile\", \"-Command\", \"$s = Get-Content '{}' | ConvertTo-SecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))\"]",
+            "{}\n{}",
             qcode_i18n::trp(
                 "cli.session.dpapi_hint",
                 &[path.display().to_string().as_str()]
             ),
-            path.display()
+            {
+                format!(
+                    "api_key_command = [\"{shell}\", \"-NoProfile\", \"-Command\", \"$s = Get-Content '{}' | ConvertTo-SecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))\"]",
+                    path.display()
+                )
+            }
         );
     }
 

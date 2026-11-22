@@ -329,9 +329,20 @@ pub(crate) fn print_pause(session_id: &str, pause: &PauseInfo) {
 
 /// `已用 64/64 轮`, or `成本 $5.00/$5.00`, for the one-line pause report.
 pub(crate) fn pause_line(pause: &PauseInfo) -> String {
+    // 这一句虽然住在 `output.rs`（整文件对英文门禁豁免，见文件头的理由），但它
+    // 是**给用户读的散文**，不是配置 dump，所以照样走 `tr()`。
     match pause.limit {
-        PauseLimit::Turns(limit) => format!("used {}/{} turns", pause.used.turns, limit),
-        PauseLimit::Usd(limit) => format!("cost ${:.2} of ${limit:.2}", pause.used.cost_usd),
+        PauseLimit::Turns(limit) => qcode_i18n::trp(
+            "cli.run.pause_used_turns",
+            &[
+                pause.used.turns.to_string().as_str(),
+                limit.to_string().as_str(),
+            ],
+        ),
+        PauseLimit::Usd(limit) => qcode_i18n::trp(
+            "cli.run.pause_cost",
+            &[format!("{:.2}", pause.used.cost_usd), format!("{limit:.2}")],
+        ),
     }
 }
 

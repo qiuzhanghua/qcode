@@ -804,8 +804,21 @@ fn literal_after(line: &str, marker: &str) -> Option<String> {
         match ch {
             '"' => return Some(out),
             '\\' => {
-                // 保留转义对的原文（`\n` 之类），不必解释成真字符。
+                // `\` 后面直接跟换行是**续行**（Rust 会把换行与后面的缩进一起吃掉），
+                // 不是转义。不认它，一条多行文案会被切成好几段，基线文件里就出现
+                // 只有缩进和 `\x20` 的碎片行——那样的账没法读，也没法还。
                 if let Some((_, escaped)) = chars.next() {
+                    if escaped == '\n' {
+                        while let Some((_, next)) = chars.clone().next() {
+                            if next.is_whitespace() {
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        out.push(' ');
+                        continue;
+                    }
                     out.push('\\');
                     out.push(escaped);
                 }
@@ -856,27 +869,112 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
                 .all(|ch| ch.is_ascii_lowercase() || ch == '_' || ch == '-')
     };
 
+    // 只剩占位符的（`{report}`、`{HELP}`、`{}`、`{label} {field}`）不是文案：
+    // 里面一个"字"都没有，全是变量插值。`println!("{report}")` 这种写法很常见，
+    // 它把文案留在 `report` 里、由别处拼好——那部分另有位置可查。
+    let is_placeholder_only = |text: &str| {
+        let mut rest = text.to_string();
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            rest.replace_range(open..open + close + 1, " ");
+        }
+        // 转义对（`\n`、`\t`）也不是字：`"{}\n{}"` 只是"两个占位符之间换个行"。
+        let mut cleaned = String::new();
+        let mut iter = rest.chars();
+        while let Some(ch) = iter.next() {
+            if ch == '\\' {
+                let _ = iter.next();
+            } else {
+                cleaned.push(ch);
+            }
+        }
+        !cleaned.chars().any(|ch| ch.is_ascii_alphabetic())
+    };
+
+    // `--- a` / `+++ b` 是 **unified diff 的文件头**，不是文案：`qc config init`
+    // 与 `qc config append` 都会先打一段 diff 让人确认，那两个前缀是补丁语法的
+    // 一部分，翻了两边就对不上、`patch` 也不认。
+    let is_diff_header = |text: &str| text.starts_with("--- ") || text.starts_with("+++ ");
+
     let mut markers: Vec<&str> = ui_text_positions().to_vec();
     if relative.ends_with("forms.rs") {
         markers.push("=> ");
     }
 
+    // 多行调用的字面量在下一行：`println!(\n    "shell: {} …",`。只看单行会漏掉
+    // 整类写法（`qc shell-env` / `qc doctor` 都是这么写的），所以把「本行剩余
+    // 部分 + 紧随其后的几行」拼成一段再找。
+    let lines: Vec<&str> = production.lines().collect();
     let mut out = Vec::new();
-    for (index, line) in production.lines().enumerate() {
+    for (index, line) in lines.iter().enumerate() {
+        // 只在**标记本行之后没有字面量**时才往后看：否则同一句会在「含标记的行」
+        // 与「上一行的续看窗口」里各被数一次，重复计数会让基线与统计失真。
+        let marker_ends_line = markers
+            .iter()
+            .filter_map(|marker| line.find(marker).map(|at| at + marker.len()))
+            .any(|end| line[end..].trim().is_empty());
+        let tail = if marker_ends_line && index + 1 < lines.len() {
+            format!(
+                "{}\n{}",
+                line,
+                lines[index + 1..(index + 3).min(lines.len())].join("\n")
+            )
+        } else {
+            line.to_string()
+        };
         for marker in &markers {
-            let Some(text) = literal_after(line, marker) else {
+            let Some(text) = literal_after(&tail, marker) else {
                 continue;
             };
             if !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
                 continue;
             }
-            if is_key(&text) || is_progress_tag(&text) {
+            if is_key(&text)
+                || is_progress_tag(&text)
+                || is_placeholder_only(&text)
+                || is_diff_header(&text)
+            {
                 continue;
             }
             out.push((index + 1, text));
         }
     }
     out
+}
+
+/// 有意保持英文的文件（每条都带理由，不是「懒得翻」）。
+///
+/// 判据只有一条：**它面向的是机器或另一个进程，不是坐在界面前的人。**
+/// 想往这里加一行，先在 PR 里写清为什么不翻——这张表是审计面，不是垃圾桶。
+///
+/// 与基线的区别：基线是**待还的债**（只许减少，最终归零）；这张表是**决定**，
+/// 不随时间减少。两者混在一张表里，棘轮就永远降不到零，也就看不出还剩多少。
+fn intentional_english(path: &str) -> bool {
+    matches!(
+        path,
+        // `qcd --help` / `--version`：被脚本与 `qc update` 读的表面，且必须在任何
+        // 初始化之前就能回答（I18N.md §9 第 1 条已定：保持英文）。
+        | "qcd/main.rs"
+        // `tracing` 日志与日志配置的诊断：排障与搜 issue 用，与界面语言无关
+        // （ADR-0105 §4）。这条是**唯一**允许在日志里出现英文的地方。
+        | "qcode-kernel/logging.rs"
+        // 品牌名，不翻。
+        | "qcode-gui/linux.rs"
+        // 沙箱 helper 子进程的 stderr 前缀：面向的是排障的人，且 helper 进程
+        // 可能在语言尚未初始化的极早期退出。
+        | "qcode-tools/windows_acl.rs"
+        // `qc sandbox probe`：沙箱行为的诊断工具，输出是给人**对照 ADR 与
+        // `sandbox-exec` 文档**排障用的，不是给终端用户读的。它与 `qc doctor`
+        // 不同——doctor 面向用户，最终要翻（在基线里）。
+        | "qcode/sandbox_probe.rs"
+        // `[approval]` 的结构化明细（`argv:` / `cwd:` / `rule:` / `reason:` …）：
+        // 与 `qc config show` 同类——`字段名: 值` 的 dump，字段名要能 grep。
+        // 注意 `reason` 的值是**模型写的**，它本来就可能是中文，这一块天然混排，
+        // 所以更要把字段名固定成一种语言。
+        | "qcode-core/approval.rs"
+    )
 }
 
 /// 门禁 2 的英文面：禁止**新增**硬编码的英文界面文案。
@@ -915,6 +1013,9 @@ fn no_new_hardcoded_english_ui_text() {
         let dir = root.join("crates").join(crate_name).join("src");
         for entry in scan_ui_sources(&dir) {
             let (relative, production) = entry;
+            if intentional_english(&format!("{crate_name}/{relative}")) {
+                continue;
+            }
             // `output.rs` 整个文件是有意的英文面（I18N.md §10.15）：
             // `qc config show` 是 `键 = 值` 的 dump（要能 grep/diff，且没有
             // `--json` 旁路），其余是 `[tool]` / `[approval]` / `[turn]` 这种

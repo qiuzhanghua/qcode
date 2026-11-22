@@ -23,6 +23,9 @@ fn list(config: &Path, workspace: &Path, home: &Path) -> String {
         .arg(config)
         .current_dir(workspace)
         .env("HOME", home)
+        // 钉住语言（ADR-0105 §6）：`skills list` 的标题行现在跟随 `[ui] language` /
+        // `QCODE_LANG`。技能名与 `[global]` 这类来源标签不翻，所以只有计数行要改。
+        .env("QCODE_LANG", "zh-CN")
         .output()
         .expect("run qc");
     assert!(
@@ -84,7 +87,7 @@ fn lists_global_configured_and_project_roots() {
     assert!(stdout.contains("tilde  [config]"), "{stdout}");
     assert!(stdout.contains("project-agents  [project]"), "{stdout}");
     assert!(stdout.contains("project-skill  [project]"), "{stdout}");
-    assert!(stdout.contains("6 skill(s)"), "{stdout}");
+    assert!(stdout.contains("6 个技能"), "{stdout}");
 }
 
 #[test]
@@ -95,12 +98,12 @@ fn reports_disabled_and_empty_discovery() {
 
     std::fs::write(&config, "").unwrap();
     let stdout = list(&config, workspace.path(), home.path());
-    assert!(stdout.contains("no skills discovered"), "{stdout}");
+    assert!(stdout.contains("没有发现技能"), "{stdout}");
     assert!(stdout.contains("[global]"), "{stdout}");
     assert!(stdout.contains("[user]"), "{stdout}");
     assert!(stdout.contains("[project]"), "{stdout}");
 
     std::fs::write(&config, "[skills]\nenabled = false\n").unwrap();
     let stdout = list(&config, workspace.path(), home.path());
-    assert!(stdout.contains("skills are disabled"), "{stdout}");
+    assert!(stdout.contains("技能已关闭"), "{stdout}");
 }

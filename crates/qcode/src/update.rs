@@ -484,26 +484,41 @@ pub async fn run(
     };
     cleanup_backups(&current_exe);
 
-    println!("current version: {CURRENT_VERSION} ({})", platform());
+    println!(
+        "{}",
+        qcode_i18n::trp(
+            "cli.update.current_version",
+            &[CURRENT_VERSION, platform().as_str()]
+        )
+    );
     let release = match fetch_latest(config).await {
         Ok(release) => release,
         // Not having published anything yet is an answer, not a failure.
         Err(UpdateError::NoRelease { repo }) => {
-            println!("no published release for {repo} yet");
+            println!(
+                "{}",
+                qcode_i18n::trp("cli.update.no_release", &[repo.as_str()])
+            );
             return Ok(());
         }
         Err(err) => return Err(err.into()),
     };
-    println!("latest release:  {}", release.version);
+    println!(
+        "{}",
+        qcode_i18n::trp("cli.update.latest", &[release.version.as_str()])
+    );
 
     if !is_newer(&release.version, CURRENT_VERSION) {
-        println!("qcode is up to date");
+        println!("{}", qcode_i18n::tr("cli.update.up_to_date"));
         return Ok(());
     }
     if args.check {
         println!(
-            "update available: {} -> {} (run `qc update` to install)",
-            CURRENT_VERSION, release.version
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.available",
+                &[CURRENT_VERSION, release.version.as_str()]
+            )
         );
         return Ok(());
     }
@@ -540,7 +555,10 @@ pub async fn run(
     // Progress, not a result: a script parsing stdout wants the outcome
     // (`installed …`), not a line per byte range. Same channel the `[update]`
     // notices use.
-    eprintln!("downloading {}", asset.url);
+    eprintln!(
+        "{}",
+        qcode_i18n::trp("cli.update.downloading", &[asset.url.as_str()])
+    );
     let bytes = download(&asset.url).await?;
     let sums = String::from_utf8_lossy(&download(&checksums.url).await?).into_owned();
     let expected = checksum_for(&sums, &asset.name)
@@ -563,11 +581,25 @@ pub async fn run(
     let backup = install(&bytes, &current_exe)?;
     match backup {
         Some(backup) => println!(
-            "updated to {} (previous binary: {})",
-            release.version,
-            backup.display()
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.updated",
+                &[
+                    release.version.as_str(),
+                    backup.display().to_string().as_str()
+                ]
+            )
         ),
-        None => println!("installed {} at {}", release.version, current_exe.display()),
+        None => println!(
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.installed",
+                &[
+                    release.version.as_str(),
+                    current_exe.display().to_string().as_str()
+                ]
+            )
+        ),
     }
 
     // 常驻驱动与 `qc` 同属一次发布（ADR-0098 §7），这里一起更新。
@@ -594,21 +626,23 @@ async fn update_daemon(
     let target = daemon_beside(current_exe);
     let Some(asset) = release.asset_named("qcd", platform) else {
         eprintln!(
-            "warning: this release publishes no {} binary.\n\
-             \x20        {}",
-            asset_name_for("qcd", &release.version, platform),
+            "{}",
             qcode_i18n::trp(
-                "cli.update.no_daemon_binary_hint",
-                &[target.display().to_string()]
+                "cli.update.warn_no_binary",
+                &[
+                    asset_name_for("qcd", &release.version, platform).as_str(),
+                    qcode_i18n::tr("cli.update.no_daemon_binary_hint")
+                        .replace("%{0}", &target.display().to_string())
+                        .as_str()
+                ]
             )
         );
         return;
     };
     let Some(expected) = checksum_for(sums, &asset.name) else {
         eprintln!(
-            "warning: {} is missing from SHA256SUMS; not installing the daemon.\n\
-             \x20        Unverified bytes next to `qc` is worse than a stale daemon.",
-            asset.name
+            "{}",
+            qcode_i18n::trp("cli.update.warn_missing_sum", &[asset.name.as_str()])
         );
         return;
     };
@@ -616,16 +650,24 @@ async fn update_daemon(
     let bytes = match download(&asset.url).await {
         Ok(bytes) => bytes,
         Err(error) => {
-            eprintln!("warning: cannot download {}: {error}", asset.name);
+            eprintln!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.update.warn_cannot_download",
+                    &[asset.name.as_str(), error.to_string().as_str()]
+                )
+            );
             return;
         }
     };
     let actual = sha256_hex(&bytes);
     if actual != expected {
         eprintln!(
-            "warning: {} failed verification (expected {expected}, got {actual}); \
-             kept the existing daemon",
-            asset.name
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.warn_verify_failed",
+                &[asset.name.as_str(), expected.as_str(), actual.as_str()]
+            )
         );
         return;
     }
@@ -636,15 +678,26 @@ async fn update_daemon(
     match install(&bytes, &target) {
         Ok(_) => {
             cleanup_backups(&target);
-            println!("daemon updated: {}", target.display());
+            println!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.update.daemon_updated",
+                    &[target.display().to_string().as_str()]
+                )
+            );
             verify_daemon(&target, &release.version);
         }
         // Windows 上正在跑的 qcd 会被占用；那是「下次再说」，不是更新失败。
         Err(error) => eprintln!(
-            "warning: cannot install {}: {error}\n\
-             \x20        {}",
-            target.display(),
-            qcode_i18n::tr("cli.update.install_retry_hint")
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.warn_cannot_install",
+                &[
+                    target.display().to_string().as_str(),
+                    error.to_string().as_str(),
+                    qcode_i18n::tr("cli.update.install_retry_hint").as_ref(),
+                ]
+            )
         ),
     }
 }
@@ -667,10 +720,15 @@ fn verify_daemon(target: &Path, expected: &str) {
         // 起不来比版本不符严重：刚写下去的文件跑不起来（权限、格式、缺动态库）。
         Err(error) => {
             eprintln!(
-                "warning: cannot run {} --version: {error}\n\
-                 \x20        {}",
-                target.display(),
-                qcode_i18n::tr("cli.update.cannot_run_hint")
+                "{}",
+                qcode_i18n::trp(
+                    "cli.update.warn_cannot_run",
+                    &[
+                        target.display().to_string().as_str(),
+                        error.to_string().as_str(),
+                        qcode_i18n::tr("cli.update.cannot_run_hint").as_ref(),
+                    ]
+                )
             );
             return;
         }
@@ -681,24 +739,34 @@ fn verify_daemon(target: &Path, expected: &str) {
     // 下次升级的人会被一句警告吓到，而其实什么都没坏。
     if !output.status.success() {
         eprintln!(
-            "warning: {} --version failed ({}); the installed daemon predates version \
-             reporting.\n\
-             \x20        {}",
-            qcode_i18n::tr("cli.update.no_version_output_hint"),
-            target.display(),
-            output.status
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.warn_version_failed",
+                &[
+                    target.display().to_string().as_str(),
+                    output.status.to_string().as_str(),
+                    qcode_i18n::tr("cli.update.no_version_output_hint").as_ref(),
+                ]
+            )
         );
         return;
     }
 
     let reported = parse_version(&String::from_utf8_lossy(&output.stdout));
     if reported.as_deref() != Some(expected) {
+        let nothing = qcode_i18n::tr("cli.update.nothing_reported").into_owned();
+        let reported = reported.as_deref().unwrap_or(nothing.as_str());
         eprintln!(
-            "warning: {} reports {}, expected {expected:?}\n\
-             \x20        {}",
-            target.display(),
-            reported.as_deref().unwrap_or("nothing"),
-            qcode_i18n::tr("cli.update.version_mismatch_hint"),
+            "{}",
+            qcode_i18n::trp(
+                "cli.update.warn_mismatch",
+                &[
+                    target.display().to_string().as_str(),
+                    reported,
+                    format!("{expected:?}").as_str(),
+                    qcode_i18n::tr("cli.update.version_mismatch_hint").as_ref(),
+                ]
+            )
         );
     }
 }

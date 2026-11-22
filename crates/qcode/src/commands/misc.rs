@@ -11,12 +11,27 @@ pub(crate) fn cmd_sandbox(args: SandboxArgs) -> Result<ExitCode, Box<dyn std::er
         SandboxCommand::Grant { .. } => {
             let root =
                 qcode_tools::windows_acl::grant_path(&path).map_err(std::io::Error::other)?;
-            println!("granted windows-acl write access to {}", root.display());
+            println!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.sandbox_grant.granted",
+                    &[root.display().to_string().as_str()]
+                )
+            );
         }
         SandboxCommand::Revoke { .. } => {
             let (root, removed) =
                 qcode_tools::windows_acl::revoke_path(&path).map_err(std::io::Error::other)?;
-            println!("revoked {removed} ACE(s) under {}", root.display());
+            println!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.sandbox_grant.revoked",
+                    &[
+                        removed.to_string().as_str(),
+                        root.display().to_string().as_str()
+                    ]
+                )
+            );
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -117,7 +132,7 @@ pub(crate) fn cmd_skills(
     let workspace = std::env::current_dir()?.canonicalize()?;
     let loaded = qcode_kernel::load_config(config_path, &workspace)?;
     if !loaded.skills.enabled {
-        println!("skills are disabled ([skills] enabled = false)");
+        println!("{}", qcode_i18n::tr("cli.skills.disabled"));
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -125,7 +140,7 @@ pub(crate) fn cmd_skills(
     let skills = SkillSet::discover(&roots);
 
     if skills.is_empty() {
-        println!("no skills discovered; checked:");
+        println!("{}", qcode_i18n::tr("cli.skills.none_found"));
         for (source, path) in &roots {
             println!("  [{}] {}", source.label(), path.display());
         }
@@ -134,15 +149,23 @@ pub(crate) fn cmd_skills(
 
     for skill in skills.iter() {
         println!(
-            "{}  [{}]  files={}",
-            skill.name,
-            skill.source.label(),
-            skill.files.len()
+            "{}",
+            qcode_i18n::trp(
+                "cli.skills.skill_line",
+                &[
+                    skill.name.as_str(),
+                    skill.source.label(),
+                    skill.files.len().to_string().as_str()
+                ]
+            )
         );
         println!("  {}", skill.dir.display());
         println!("  {}", skill.description.replace('\n', " "));
     }
-    println!("\n{} skill(s)", skills.len());
+    println!(
+        "\n{}",
+        qcode_i18n::trp("cli.skills.count", &[skills.len().to_string().as_str()])
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -160,8 +183,8 @@ pub(crate) fn cmd_shell_env(
     let settings = loaded.shell.clone();
 
     if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
-        println!("environment sampling is off ([shell] env_sampling = \"off\")");
-        println!("run_shell only sees the allow list plus the egress proxy variables");
+        println!("{}", qcode_i18n::tr("cli.shell_env.sampling_off"));
+        println!("{}", qcode_i18n::tr("cli.shell_env.sampling_off_detail"));
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -170,7 +193,13 @@ pub(crate) fn cmd_shell_env(
     let sample = cache.current();
     let report = cache.last_report().unwrap_or_default();
     let Some(sample) = sample else {
-        println!("sampling failed after {}ms", started.elapsed().as_millis());
+        println!(
+            "{}",
+            qcode_i18n::trp(
+                "cli.shell_env.sampling_failed",
+                &[started.elapsed().as_millis().to_string().as_str()]
+            )
+        );
         if let Some(error) = report.error {
             println!("  {error}");
         }
@@ -179,7 +208,7 @@ pub(crate) fn cmd_shell_env(
 
     let full = args.full && std::io::stdout().is_terminal();
     if args.full && !full {
-        eprintln!("--full needs a terminal; printing names only");
+        eprintln!("{}", qcode_i18n::tr("cli.shell_env.full_needs_terminal"));
     }
 
     if args.json {
@@ -199,25 +228,44 @@ pub(crate) fn cmd_shell_env(
     }
 
     println!(
-        "shell: {}   variables: {}   sampled in {}ms{}",
-        sample.program().display(),
-        sample.len(),
-        report.duration_ms,
-        if report.cached { "  (cached)" } else { "" }
+        "{}",
+        qcode_i18n::trp(
+            "cli.shell_env.summary",
+            &[
+                sample.program().display().to_string().as_str(),
+                sample.len().to_string().as_str(),
+                report.duration_ms.to_string().as_str(),
+                if report.cached {
+                    qcode_i18n::tr("cli.shell_env.summary_cached").into_owned()
+                } else {
+                    String::new()
+                }
+                .as_str()
+            ]
+        )
     );
     if let Some(error) = &report.error {
-        println!("  last attempt failed: {error}");
+        println!(
+            "{}",
+            qcode_i18n::trp("cli.shell_env.last_attempt_failed", &[error.as_str()])
+        );
     }
     if !report.added.is_empty() {
         println!(
-            "  new since the previous sample: {}",
-            report.added.join(", ")
+            "{}",
+            qcode_i18n::trp(
+                "cli.shell_env.new_since",
+                &[report.added.join(", ").as_str()]
+            )
         );
     }
     if !report.removed.is_empty() {
         println!(
-            "  gone since the previous sample: {}",
-            report.removed.join(", ")
+            "{}",
+            qcode_i18n::trp(
+                "cli.shell_env.gone_since",
+                &[report.removed.join(", ").as_str()]
+            )
         );
     }
     println!();

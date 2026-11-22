@@ -25,6 +25,9 @@ fn run(dir: &Path, args: &[&str]) -> std::process::Output {
         // file the run reads; otherwise the limit lands in the developer's real
         // config.
         .env("QCODE_CONFIG", dir.join("config.toml"))
+        // 钉住语言（ADR-0105 §6）：暂停行现在跟随 `[ui] language` / `QCODE_LANG`。
+        // 不钉的话这条断言会在中文宿主机上通过、英文宿主机上红。
+        .env("QCODE_LANG", "zh-CN")
         .env("NO_COLOR", "1");
     command.output().expect("qc runs")
 }
@@ -93,7 +96,7 @@ fn a_budget_pause_exits_75_and_continues_in_a_new_window() {
         String::from_utf8_lossy(&first.stderr)
     );
     let stdout = String::from_utf8_lossy(&first.stdout);
-    assert!(stdout.contains("paused: used 1/1 turns"), "{stdout}");
+    assert!(stdout.contains("暂停：已用 1/1 轮"), "{stdout}");
     assert!(stdout.contains("--continue"), "{stdout}");
 
     let ended = types(dir.path(), "turn_ended");
