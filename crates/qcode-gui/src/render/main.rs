@@ -1642,7 +1642,7 @@ impl Shell {
                                             // Shared with the terminal: see
                                             // `COMPOSER_TEXT_SIZE`.
                                             .text_size(crate::composer_text_size())
-                                            .aria_label("Message qcode"),
+                                            .aria_label(qcode_i18n::tr("gui.composer.message_qcode")),
                                     )
                             })
                             .child(

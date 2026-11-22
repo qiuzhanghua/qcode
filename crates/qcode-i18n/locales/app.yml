@@ -541,6 +541,23 @@ gui:
       zh-CN: "目录已存在: %{0}"
   # 定时任务在 GUI 里的操作回执与拒绝理由（`runtime.rs`、`backend.rs`）。
   schedule:
+    # 驱动锁易主/被占时的两条提示。原文硬编码中文，英文用户会看到中文。
+    notice_took_over:
+      en: >-
+        This window now drives the scheduled tasks (the process holding the
+        driver lock exited). Closing the window stops them — to keep them
+        running, use `qc daemon start`.
+      zh-CN: >-
+        定时任务改由这个窗口驱动（之前持有驱动锁的进程已退出）。
+        关掉窗口就会停——要让它一直跑，用 `qc daemon start`。
+    notice_other_driver:
+      en: >-
+        Another process drives the scheduled tasks (it holds the driver lock),
+        so this window will not fire them. To see who is running, use
+        `qc schedule list`.
+      zh-CN: >-
+        定时任务由另一个进程驱动（它持有驱动锁），这个窗口不重复触发。
+        要确认谁在跑，用 `qc schedule list`。
     hint:
       broken:
         en: "The schedule is misconfigured: %{0}"
@@ -685,6 +702,10 @@ gui:
       zh-CN: 终端启动失败（%{0}）：%{1}
   # 输入框右下角的发送提示。键名不翻（`Enter`、`Shift+Enter` 要照着按）。
   composer:
+    # 输入框的无障碍名（屏幕阅读器会读它，不显示在界面上）。
+    message_qcode:
+      en: "Message qcode"
+      zh-CN: "给 qcode 发消息"
     send_enter:
       en: Enter sends · Shift+Enter for a new line
       zh-CN: Enter 发送 · Shift+Enter 换行
@@ -856,6 +877,66 @@ gui:
         en: A custom provider needs an API endpoint.
         zh-CN: 自定义提供方需要填写 API 地址。
     # ---- 向导模式与设置窗口外壳（`setup/render.rs`）----
+    # 向导/设置页的侧栏页面名（`Page::title_key`）。
+    page:
+      welcome:
+        en: "Welcome"
+        zh-CN: "欢迎"
+      models:
+        en: "Models"
+        zh-CN: "模型"
+      agent:
+        en: "Agent & Context"
+        zh-CN: "执行者与上下文"
+      network_sandbox:
+        en: "Network & Sandbox"
+        zh-CN: "网络与沙箱"
+      search:
+        en: "Search"
+        zh-CN: "搜索"
+      mcp:
+        en: "MCP"
+        zh-CN: "MCP"
+      skills:
+        en: "Skills"
+        zh-CN: "技能"
+      approval_pricing:
+        en: "Approval & Pricing"
+        zh-CN: "审批与计价"
+      appearance:
+        en: "Appearance"
+        zh-CN: "外观"
+      update:
+        en: "Update"
+        zh-CN: "更新"
+      review:
+        en: "Review"
+        zh-CN: "检查一遍"
+      # 设置模式里最后一页讲「关于本程序」，与向导的「检查一遍」不同义。
+      about:
+        en: "About"
+        zh-CN: "关于"
+    # 分组小标题与向导按钮。
+    group:
+      sandbox:
+        en: "Sandbox"
+        zh-CN: "沙箱"
+      network:
+        en: "Network"
+        zh-CN: "网络"
+    action:
+      quit:
+        en: "Quit"
+        zh-CN: "退出"
+      back:
+        en: "Back"
+        zh-CN: "上一步"
+      next:
+        en: "Next"
+        zh-CN: "下一步"
+      remove:
+        en: "Remove"
+        zh-CN: "移除"
     window_title:
       en: Settings
       zh-CN: 设置
@@ -941,6 +1022,18 @@ gui:
         en: "⚠ network = strict only supports [sandbox] mode = \"sandbox-exec\" (currently %{0}); saving this way breaks assembly — set Network to proxy or off."
         zh-CN: "⚠ network = strict 只支持 [sandbox] mode = \"sandbox-exec\"（当前是 %{0}）；这样保存后装配会失败，请把 Network 改成 proxy 或 off。"
     sandbox:
+      # 选了 bwrap 但没装。命令名与发行版名不翻。
+      bwrap_missing:
+        en: >-
+          bwrap unavailable: bubblewrap is not installed. Install it with your
+          system package manager (Debian/Ubuntu: sudo apt install bubblewrap;
+          Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap),
+          then retry.
+        zh-CN: >-
+          bwrap 不可用：bubblewrap 未安装。请用系统包管理器安装 bubblewrap
+          （Debian/Ubuntu：sudo apt install bubblewrap；
+          Fedora：sudo dnf install bubblewrap；Arch：sudo pacman -S bubblewrap），
+          然后重试。
       unavailable:
         en: Sandbox backend unavailable
         zh-CN: 沙箱后端不可用

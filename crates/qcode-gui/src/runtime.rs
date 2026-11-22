@@ -481,9 +481,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     // 建任务，用户会以为任务会跑。走 notice 通道是因为它已经是
                     // 「说一句给用户看」的现成机制，不必为此新加一套界面状态。
                     port.tagged(SessionTarget::Draft).send_schedule_notice(
-                        "定时任务由另一个进程驱动（它持有驱动锁），这个窗口不重复触发。\
-                         要确认谁在跑，用 `qc schedule list`。"
-                            .to_string(),
+                        qcode_i18n::tr("gui.schedule.notice_other_driver").into_owned(),
                     );
                     None
                 }
@@ -901,9 +899,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                                     "the other driver is gone; this window takes over"
                                 );
                                 port.tagged(SessionTarget::Draft).send_schedule_notice(
-                                    "定时任务改由这个窗口驱动（之前持有驱动锁的进程已退出）。\
-                                     关掉窗口就会停——要让它一直跑，用 `qc daemon start`。"
-                                        .to_string(),
+                                    qcode_i18n::tr("gui.schedule.notice_took_over").into_owned(),
                                 );
                                 port.tagged(SessionTarget::Draft).send_schedule_changed();
                             }

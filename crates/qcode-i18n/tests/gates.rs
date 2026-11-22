@@ -743,3 +743,239 @@ fn han_detection_covers_fullwidth_punctuation() {
     assert!(!is_han('A'));
     assert!(!starts_han("abc", 0));
 }
+
+// ------------------------------------------------------------- 门禁 2 的英文面
+
+/// 在源码里出现的、**处于 UI 文案位置**的英文字面量。
+///
+/// ## 为什么按位置判、不按内容判
+///
+/// 「像不像界面文案」没有可靠的语法判据：`"running"` / `"queue"` 是状态名，
+/// `"ModelMenu"` 是 widget id，`"Terminal"` 是 key context，而 `"Sandbox"` 是
+/// 界面标题——都是单个英文单词。靠大小写、空格去猜只会两头误判。
+///
+/// 所以这里只认**位置**：一个字符串字面量紧跟在下列「只可能装界面文案」的位置之后，
+/// 才算 UI 文案。这些位置在 gui 里就那么多，位置集合比内容启发式稳得多。
+///
+/// 已知盲区（有意接受）：`format!("…")` 里拼出来的文案、`.child(StyledText…)` 的
+/// 间接来源、以及没被列出的新 API。门禁是棘轮，位置集合可以长；宁可漏，不要误报到
+/// 让人关掉它。
+fn ui_text_positions() -> &'static [&'static str] {
+    &[
+        // 组件 API 里只收文案的参数。
+        ".label(",
+        ".aria_label(",
+        // setup 页的分组标题。
+        "group_heading(",
+        // `FieldSpec` / `ColumnSpec` / `TableSpec` 的数据字段（`forms.rs`）。
+        "label: ",
+        "help: ",
+        "title: ",
+    ]
+}
+
+/// 从 `line` 里 `marker` 之后抽字面量；不是字面量开头的返回 `None`。
+///
+/// `None` 覆盖 `.label(format!(…))`、`.label(tr("…"))` 这些已经走 i18n 的写法——
+/// 这正是本门禁想要的结果：**改成 `tr()` 之后它自动不再被算作文案**。
+fn literal_after(line: &str, marker: &str) -> Option<String> {
+    let rest = line[line.find(marker)? + marker.len()..].trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.char_indices();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => {
+                // 保留转义对的原文（`\n` 之类），不必解释成真字符。
+                if let Some((_, escaped)) = chars.next() {
+                    out.push('\\');
+                    out.push(escaped);
+                }
+            }
+            _ => {
+                let _ = index;
+                out.push(ch);
+            }
+        }
+    }
+    None
+}
+
+/// 一个文件的 UI 位置字面量。
+///
+/// `forms.rs` 里的 `=> "…"` 额外算作文案位置：`Page::title()` 是
+/// `match self { Self::Welcome => "Welcome", … }`，那 11 个页面名直接进侧栏。
+/// **只对 `forms.rs` 开这个位置**——别的文件里 `=> "…"` 大多是状态名与 widget id
+/// （`"queue"` / `"ok"` / `"running"`），全算进来就是纯噪声。
+fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
+    // 纯 key 形态（`gui.setup.page.welcome`）不是文案：它是查表的地址。
+    // 这一条是为「把 `Page::title()` 改成返回 key」准备的，否则改完本门禁会立刻误报。
+    let is_key = |text: &str| {
+        !text.is_empty()
+            && text.split('.').all(|part| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+    };
+
+    let mut markers: Vec<&str> = ui_text_positions().to_vec();
+    if relative.ends_with("forms.rs") {
+        markers.push("=> ");
+    }
+
+    let mut out = Vec::new();
+    for (index, line) in production.lines().enumerate() {
+        for marker in &markers {
+            let Some(text) = literal_after(line, marker) else {
+                continue;
+            };
+            if !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
+                continue;
+            }
+            if is_key(&text) {
+                continue;
+            }
+            out.push((index + 1, text));
+        }
+    }
+    out
+}
+
+/// 门禁 2 的英文面：禁止**新增**硬编码的英文界面文案。
+///
+/// 与中文那条是同一件事的两个方向。只查中文会漏掉这一类——本门禁上线前，
+/// 设置页/向导有 150 多条英文文案从未走过 `tr()`（`forms.rs` 的 `FieldSpec` 数据表
+/// 就是主战场），而中文那条门禁对它们完全沉默。
+///
+/// 基线是**棘轮**：只允许减少。改一条就把基线重抓一次。
+#[test]
+fn no_new_hardcoded_english_ui_text() {
+    let root = workspace_root();
+    let baseline_path = root.join("scripts").join("i18n-baseline-en.txt");
+
+    let mut found: BTreeSet<(String, String)> = BTreeSet::new();
+    for crate_name in ["qcode-gui", "qcode-tui", "qcode-ui-state", "qcode"] {
+        let dir = root.join("crates").join(crate_name).join("src");
+        for entry in scan_ui_sources(&dir) {
+            let (relative, production) = entry;
+            for (_, text) in ui_text_in(&relative, &production) {
+                found.insert((format!("{crate_name}/{relative}"), text));
+            }
+        }
+    }
+
+    if std::env::var_os("QCODE_I18N_UPDATE_BASELINE").is_some() {
+        let mut text = String::from(
+            "# 门禁 2 的英文面基线：现存硬编码英文 UI 文案（I18N.md §8.1）。\n\
+             # 格式：crate/相对路径<TAB>字面量。**只允许减少。**\n\
+             # 重跑：QCODE_I18N_UPDATE_BASELINE=1 cargo test -p qcode-i18n\n\
+             #\n\
+             # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /\n\
+             # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——\n\
+             # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。\n",
+        );
+        for (path, literal) in &found {
+            text.push_str(path);
+            text.push('\t');
+            text.push_str(literal);
+            text.push('\n');
+        }
+        std::fs::write(&baseline_path, text).expect("写不了英文基线文件");
+        return;
+    }
+
+    let baseline = read_baseline(&baseline_path);
+    let added: Vec<_> = found.difference(&baseline).collect();
+    let removed: Vec<_> = baseline.difference(&found).collect();
+
+    let mut problems = Vec::new();
+    if !added.is_empty() {
+        problems.push(format!(
+            "新增了 {} 条硬编码英文 UI 文案。界面文案请走 `qcode_i18n::tr()`：",
+            added.len()
+        ));
+        for (path, literal) in added.iter().take(30) {
+            problems.push(format!("  + [{path}] {literal:?}"));
+        }
+        if added.len() > 30 {
+            problems.push(format!("  …还有 {} 条", added.len() - 30));
+        }
+    }
+    if !removed.is_empty() {
+        problems.push(format!(
+            "基线里有 {} 条已经不存在了 —— 棘轮该往前走一格。",
+            removed.len()
+        ));
+        for (path, literal) in removed.iter().take(10) {
+            problems.push(format!("  - [{path}] {literal:?}"));
+        }
+        problems.push(
+            "确认无误后执行：\n    QCODE_I18N_UPDATE_BASELINE=1 cargo test -p qcode-i18n"
+                .to_string(),
+        );
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// 遍历一个 crate 的 `src/`，返回 `(相对路径, 生产部分源码)`。
+fn scan_ui_sources(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if matches!(name, "tests" | "target") || name.starts_with('.') {
+                continue;
+            }
+            out.extend(scan_ui_sources(&path));
+            continue;
+        }
+        if !name.ends_with(".rs") || name == "tests.rs" {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = &source[..test_module_start(&source)];
+        out.push((name.to_string(), production.to_string()));
+    }
+    out
+}
+
+#[test]
+fn ui_text_detector_ignores_translated_calls() {
+    // 已经走 tr() 的不再算文案——这是「改完就自动出清单」的关键。
+    assert_eq!(
+        literal_after(r#"  .label(tr("gui.setup.back"))"#, ".label("),
+        None
+    );
+    assert_eq!(
+        literal_after(r#"  .label(format!("{x}"))"#, ".label("),
+        None
+    );
+    // 字面量本身要认出来。
+    assert_eq!(
+        literal_after(r#"  .label("Back"),"#, ".label(").as_deref(),
+        Some("Back")
+    );
+}
+
+#[test]
+fn ui_text_detector_skips_key_shaped_strings() {
+    let hits = ui_text_in(
+        "forms.rs",
+        "fn f() {\n    Self::Welcome => \"gui.page.welcome\",\n}\n",
+    );
+    assert!(hits.is_empty(), "纯 key 不该算文案：{hits:?}");
+    let hits = ui_text_in(
+        "forms.rs",
+        "fn f() {\n    Self::Welcome => \"Welcome\",\n}\n",
+    );
+    assert_eq!(hits.len(), 1, "英文页面名要算文案：{hits:?}");
+}

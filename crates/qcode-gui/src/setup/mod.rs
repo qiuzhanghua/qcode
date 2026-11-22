@@ -175,7 +175,12 @@ pub struct SetupView {
     /// A sandbox mode the user clicked but the machine cannot honour (e.g.
     /// `bwrap` without bubblewrap installed). While `Some`, a modal explains
     /// how to make it available; the selection is left unchanged.
-    sandbox_blocked: Option<&'static str>,
+    /// 沙箱不可用时要弹出的说明（已翻译）。
+    ///
+    /// 原先这里硬编码一段中文，英文用户会看到一整段中文——中文那条门禁把它当
+    /// 「有意不翻」放行了，实际只是漏了。译文在这里就算好（`tr("…")` 的字面量
+    /// 落在置值处，门禁 6 才看得见），渲染处直接用。
+    sandbox_blocked_message: Option<std::borrow::Cow<'static, str>>,
     /// The help circle whose popover is open. Driven by hover: entering the
     /// circle sets it, mouse-out or the popover closing for another reason
     /// clears it. Kept as state because the popover is controlled (`open` +
@@ -414,7 +419,7 @@ impl SetupView {
             custom_protocol: "openai".to_string(),
             custom_models: Vec::new(),
             custom_error: None,
-            sandbox_blocked: None,
+            sandbox_blocked_message: None,
             hover_help: None,
             closing: false,
             close_after_save_error: false,

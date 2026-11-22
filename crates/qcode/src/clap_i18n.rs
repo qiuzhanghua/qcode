@@ -244,7 +244,7 @@ fn rewrite_line(line: &str) -> String {
         let to = to.as_ref();
         owned = match rule.kind {
             Kind::Heading => match owned.strip_prefix(rule.pattern) {
-                Some(rest) => format!("{to}{}", rest.trim_start_matches(' ')),
+                Some(rest) => format!("{to}{}", join_after_heading(to, rest)),
                 None => owned,
             },
             Kind::Anywhere => owned.replace(rule.pattern, to),
@@ -256,6 +256,21 @@ fn rewrite_line(line: &str) -> String {
         };
     }
     owned
+}
+
+/// 节标题译文与它后面那段原文怎么接。
+///
+/// 英文 `Usage: qc` 里冒号后**必须**有那个空格；中文全角冒号后**不该**有。
+/// 判据因此放在**译文**上，而不是靠调用方「英文别走这条路径」那样的 `if` 守卫——
+/// 后者一旦有人为了「统一渲染路径」删掉，英文格式就静默坏掉（`Usage:qc`），
+/// 而门禁只抓文本时未必察觉。写成这样，两种语言都是构造上正确的。
+fn join_after_heading<'a>(translation: &str, rest: &'a str) -> &'a str {
+    // 全角冒号（以及别的全角标点结尾）不需要补半角空格。
+    if translation.ends_with('：') || translation.ends_with('。') {
+        rest.trim_start_matches(' ')
+    } else {
+        rest
+    }
 }
 
 /// 按 `pattern` 里唯一那个 `{}` 把 `line` 切成 前/洞/后，再用 `to` 拼回去。
@@ -321,5 +336,24 @@ mod tests {
     #[test]
     fn one_hole_misses_cleanly() {
         assert!(one_hole("nothing here", "unexpected argument '{}' found", "x").is_none());
+    }
+
+    /// 节标题的接法：全角冒号吃掉空格，半角冒号保留它。
+    ///
+    /// 这条钉的是「英文走 `apply_labels` 也不会变成 `Usage:qc`」——那曾经是个
+    /// 靠调用方 if 守卫才成立的隐雷（见 I18N.md §10.11）。
+    #[test]
+    fn heading_join_depends_on_the_translation_not_the_caller() {
+        assert_eq!(
+            join_after_heading("用法：", " qc [OPTIONS]"),
+            "qc [OPTIONS]"
+        );
+        assert_eq!(
+            join_after_heading("Usage:", " qc [OPTIONS]"),
+            " qc [OPTIONS]"
+        );
+        // 独占一行的节标题（`Options:` 后面什么都没有）两种都成立。
+        assert_eq!(join_after_heading("选项：", ""), "");
+        assert_eq!(join_after_heading("Options:", ""), "");
     }
 }

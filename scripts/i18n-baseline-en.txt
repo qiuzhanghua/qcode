@@ -1,0 +1,159 @@
+# 门禁 2 的英文面基线：现存硬编码英文 UI 文案（I18N.md §8.1）。
+# 格式：crate/相对路径<TAB>字面量。**只允许减少。**
+# 重跑：QCODE_I18N_UPDATE_BASELINE=1 cargo test -p qcode-i18n
+#
+# 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
+# `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
+# 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
+qcode-gui/forms.rs	0 keeps the first snapshot until an rc file changes
+qcode-gui/forms.rs	A timeout keeps the previous snapshot instead of blocking the turn
+qcode-gui/forms.rs	Accepts images
+qcode-gui/forms.rs	Action
+qcode-gui/forms.rs	Allow private/loopback hosts
+qcode-gui/forms.rs	Allow pseudo-terminals
+qcode-gui/forms.rs	Allowed hosts
+qcode-gui/forms.rs	Always allow
+qcode-gui/forms.rs	Append allow/deny records to logs/network.jsonl
+qcode-gui/forms.rs	Approval rules
+qcode-gui/forms.rs	Args (one per line)
+qcode-gui/forms.rs	Audit network
+qcode-gui/forms.rs	Auto session title
+qcode-gui/forms.rs	Base UI font size in pixels
+qcode-gui/forms.rs	Base URL
+qcode-gui/forms.rs	Busy delivery
+qcode-gui/forms.rs	Byte cap for the fallback; must not exceed the title byte cap
+qcode-gui/forms.rs	Cache read
+qcode-gui/forms.rs	Cache write
+qcode-gui/forms.rs	Cached for check_days
+qcode-gui/forms.rs	Check interval (days)
+qcode-gui/forms.rs	Check on startup
+qcode-gui/forms.rs	Code font
+qcode-gui/forms.rs	Command
+qcode-gui/forms.rs	Command prefix
+qcode-gui/forms.rs	Compaction starts at 78% of this value
+qcode-gui/forms.rs	Context window (tokens)
+qcode-gui/forms.rs	Credentials (one per line)
+qcode-gui/forms.rs	Default model
+qcode-gui/forms.rs	Density
+qcode-gui/forms.rs	Discover SKILL.md roots on startup
+qcode-gui/forms.rs	Dropped variables
+qcode-gui/forms.rs	Empty derives `{shell} -lic 'env -0'`; {shell} is substituted
+qcode-gui/forms.rs	Empty detects the shell you are already using; the built-in terminal starts it
+qcode-gui/forms.rs	Empty follows the cwd of the active terminal, then home
+qcode-gui/forms.rs	Empty picks a fixed-width font that covers CJK, when the system has one
+qcode-gui/forms.rs	Empty uses BRAVE_API_KEY or TAVILY_API_KEY
+qcode-gui/forms.rs	Enable Agent Skills
+qcode-gui/forms.rs	Enable version checks
+qcode-gui/forms.rs	Enable web_search
+qcode-gui/forms.rs	Enabled
+qcode-gui/forms.rs	Enables rollback for shell/MCP edits; capped at 64 MB
+qcode-gui/forms.rs	Enter sends, or Cmd/Ctrl+Enter sends and Enter inserts a newline
+qcode-gui/forms.rs	Env (KEY=VALUE per line)
+qcode-gui/forms.rs	Environment audit
+qcode-gui/forms.rs	Explicit route override; pair with the model. Empty follows the session's own route
+qcode-gui/forms.rs	Extra body
+qcode-gui/forms.rs	Extra readable roots
+qcode-gui/forms.rs	Extra skill roots
+qcode-gui/forms.rs	Extra writable roots
+qcode-gui/forms.rs	Fallback bytes
+qcode-gui/forms.rs	Fallback words
+qcode-gui/forms.rs	First message larger than this skips generation
+qcode-gui/forms.rs	Follow the system appearance or force a theme
+qcode-gui/forms.rs	Font
+qcode-gui/forms.rs	Font size
+qcode-gui/forms.rs	GitHub owner/repo whose releases are the channel
+qcode-gui/forms.rs	Hard UTF-8 byte limit for any accepted title (80 ≈ 26 CJK chars)
+qcode-gui/forms.rs	History kept per terminal, not visible rows
+qcode-gui/forms.rs	ID
+qcode-gui/forms.rs	Independent of conversation calls
+qcode-gui/forms.rs	Input
+qcode-gui/forms.rs	Input byte cap
+qcode-gui/forms.rs	Key command (one argv per line)
+qcode-gui/forms.rs	Key env
+qcode-gui/forms.rs	Log level
+qcode-gui/forms.rs	MCP sandbox default
+qcode-gui/forms.rs	MCP servers
+qcode-gui/forms.rs	Max cost (USD)
+qcode-gui/forms.rs	Max results
+qcode-gui/forms.rs	Max terminals
+qcode-gui/forms.rs	Max turns
+qcode-gui/forms.rs	Minimum days between checks
+qcode-gui/forms.rs	Mirror or local test server
+qcode-gui/forms.rs	Model
+qcode-gui/forms.rs	Model calls allowed for one user message
+qcode-gui/forms.rs	Model derives a title from the first message; off keeps the truncated-message fallback
+qcode-gui/forms.rs	Monospace family used for code blocks
+qcode-gui/forms.rs	Name
+qcode-gui/forms.rs	Network mode
+qcode-gui/forms.rs	Never allow
+qcode-gui/forms.rs	Never replaces the binary automatically
+qcode-gui/forms.rs	Noise such as PWD or SHLVL, removed from the snapshot
+qcode-gui/forms.rs	OS sandbox for run_shell; none keeps approval as the boundary
+qcode-gui/forms.rs	Off by default: the sandbox hides most of the user's real environment
+qcode-gui/forms.rs	One `tool:pattern` per line, e.g. run_shell:echo * (ADR-0065)
+qcode-gui/forms.rs	One argv per line; used when the env key is absent
+qcode-gui/forms.rs	One path per line, whole subtree; every backend. Not `/`, `~`, `/home`
+qcode-gui/forms.rs	One path per line, whole subtree; read + execute, every backend
+qcode-gui/forms.rs	One path per line; ~/ is expanded
+qcode-gui/forms.rs	One prefix (COT_*) or exact name per line, copied from this process
+qcode-gui/forms.rs	Only for local Ollama or test servers
+qcode-gui/forms.rs	Open tabs beyond this are refused
+qcode-gui/forms.rs	Optional; needs a pricing entry for the model
+qcode-gui/forms.rs	Output
+qcode-gui/forms.rs	Output token cap
+qcode-gui/forms.rs	Pair with the title provider
+qcode-gui/forms.rs	Pass-through variables
+qcode-gui/forms.rs	Path glob
+qcode-gui/forms.rs	Pricing (USD per million tokens)
+qcode-gui/forms.rs	Prompt target for CJK titles
+qcode-gui/forms.rs	Prompt target for non-CJK titles
+qcode-gui/forms.rs	Protocol
+qcode-gui/forms.rs	Providers
+qcode-gui/forms.rs	Read paths (one per line)
+qcode-gui/forms.rs	Same shorthand; a deny wins over an allow
+qcode-gui/forms.rs	Sample inside the sandbox
+qcode-gui/forms.rs	Sampling command
+qcode-gui/forms.rs	Sampling timeout (ms)
+qcode-gui/forms.rs	Sandbox
+qcode-gui/forms.rs	Sandbox mode
+qcode-gui/forms.rs	Scope
+qcode-gui/forms.rs	Scrollback lines
+qcode-gui/forms.rs	SearXNG instance or custom endpoint
+qcode-gui/forms.rs	Search backend
+qcode-gui/forms.rs	Search base URL
+qcode-gui/forms.rs	Search key command
+qcode-gui/forms.rs	Search key env
+qcode-gui/forms.rs	Send mode
+qcode-gui/forms.rs	Sending while a turn runs queues a follow-up or steers into it
+qcode-gui/forms.rs	Shell
+qcode-gui/forms.rs	Shell environment
+qcode-gui/forms.rs	Snapshot before shell
+qcode-gui/forms.rs	Snapshot lifetime (s)
+qcode-gui/forms.rs	Spacing of transcript rows
+qcode-gui/forms.rs	Start directory
+qcode-gui/forms.rs	Target CJK chars
+qcode-gui/forms.rs	Target words
+qcode-gui/forms.rs	Theme
+qcode-gui/forms.rs	Timeout (ms)
+qcode-gui/forms.rs	Timeout (s)
+qcode-gui/forms.rs	Title byte cap
+qcode-gui/forms.rs	Title call past this fails silently and keeps the fallback
+qcode-gui/forms.rs	Title model
+qcode-gui/forms.rs	Title provider
+qcode-gui/forms.rs	Tool
+qcode-gui/forms.rs	Unknown host policy
+qcode-gui/forms.rs	Update API base URL
+qcode-gui/forms.rs	Update repo
+qcode-gui/forms.rs	Without a usable backend the tool is not registered
+qcode-gui/forms.rs	Word cap for the deterministic first-message fallback
+qcode-gui/forms.rs	Writable paths (one per line)
+qcode-gui/forms.rs	ask is enforced by tool approvals; shell/MCP deny
+qcode-gui/forms.rs	auto asks the login shell once per session; off keeps the allow-list only
+qcode-gui/forms.rs	brave / tavily / searxng
+qcode-gui/forms.rs	confine derives a per-server grant; each server may override it
+qcode-gui/forms.rs	host or host:port; provider host is added automatically
+qcode-gui/forms.rs	landlock: lets a confined process open a PTY. The only devpts available is the host's, so this also reaches your other terminals' shells — off by default; prefer mode = bwrap
+qcode-gui/forms.rs	names records variable names and changes, never values
+qcode-gui/forms.rs	off: no egress; proxy: through the proxy; strict: proxy only (macOS); open: raw sockets
+qcode-gui/forms.rs	warn, info, debug, or per-module like `qcode_gui=debug,warn`; RUST_LOG overrides it
+qcode-gui/linux.rs	QCode

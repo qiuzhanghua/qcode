@@ -147,6 +147,40 @@ for lang in "${LANGS[@]}"; do
     check_case "$lang" err-unknown-sub definitely-not-a-command
 done
 
+# 不变量 1 的后半句：**en 路径保留颜色**。
+#
+# 主流程固定了 `NO_COLOR=1`（否则 diff 里全是转义码），于是「颜色被改坏」这件事
+# 在文本基线里**完全不可见**——我实测过：把 en 路径从原生 `Error::print()` 改成
+# `render().to_string()`（文本一模一样、只是丢了颜色），87 项全绿通过。
+#
+# 而这不是假想：中文路径**本来就是无色的**（`StyledStr` 的 `Display` 明确
+# colorless），所以「颜色」是整个双语化里只有 en 享受到的东西，也最容易被顺手
+# 改掉。所以这里单独在伪 TTY 下抓一次，断言 en 的 stderr **带** 转义码。
+#
+# 用 `script` 造伪 TTY：clap 只在 `is_terminal()` 为真时着色，而 `env -i` 起的是
+# 管道。macOS 与 Linux 的 `script` 参数不同（前者 `-q /dev/null cmd`，后者
+# `-qec cmd /dev/null`），所以两头都试。
+color_check() {
+    local out
+    if out=$(script -q /dev/null env -i PATH="$PATH" HOME="$work/home" \
+        TERM=xterm-256color QCODE_LANG=en "$QC" --nope 2>&1); then :; fi
+    if [ -z "$out" ]; then
+        out=$(script -qec "env -i PATH='$PATH' HOME='$work/home' TERM=xterm-256color             QCODE_LANG=en '$QC' --nope" /dev/null 2>&1) || true
+    fi
+    case "$out" in
+    *$(printf '\033[')*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+if ! color_check; then
+    echo "✗ en 路径丢了颜色。" >&2
+    echo "  原因几乎总是：把 en 也送进了 \`render().to_string()\`——那是 colorless 的。" >&2
+    echo "  en 必须走原生 \`Error::print()/exit()\`（见 crates/qcode/src/main.rs）。" >&2
+    fail=1
+fi
+checked=$((checked + 1))
+
 # 不变量：`--version` 与语言无关（ADR-0105 不变量 2）。
 en_version=$(run_qc en --version)
 zh_version=$(run_qc zh-CN --version)

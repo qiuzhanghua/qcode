@@ -70,7 +70,7 @@ impl Render for SetupView {
                             )
                             .child(
                                 Button::new("repair-quit")
-                                    .label("Quit")
+                                    .label(qcode_i18n::tr("gui.setup.action.quit"))
                                     .on_click(cx.listener(|_this, _, _window, cx| cx.quit())),
                             ),
                     );
@@ -230,7 +230,7 @@ impl Render for SetupView {
                         .get("sandbox.network")
                         .cloned()
                         .unwrap_or_default();
-                    body = body.child(group_heading("Sandbox"));
+                    body = body.child(group_heading(qcode_i18n::tr("gui.setup.group.sandbox")));
                     for path in forms::NETWORK_SANDBOX_SANDBOX_GROUP {
                         let Some(field) = forms::field_at(path) else {
                             continue;
@@ -238,7 +238,7 @@ impl Render for SetupView {
                         body = body.child(self.render_field(field, cx));
                     }
                     body = body.child(div().h(px(1.0)).w_full().my_1().bg(cx.theme().border));
-                    body = body.child(group_heading("Network"));
+                    body = body.child(group_heading(qcode_i18n::tr("gui.setup.group.network")));
                     let egress = forms::network_egress_fields(&network);
                     if egress.is_empty() {
                         let reason = if network == "open" {
@@ -320,12 +320,12 @@ impl Render for SetupView {
             footer = footer
                 .child(
                     Button::new("setup-back")
-                        .label("Back")
+                        .label(qcode_i18n::tr("gui.setup.action.back"))
                         .on_click(cx.listener(|this, _, _window, cx| this.back(cx))),
                 )
                 .child(
                     Button::new("setup-next")
-                        .label("Next")
+                        .label(qcode_i18n::tr("gui.setup.action.next"))
                         .on_click(cx.listener(|this, _, _window, cx| this.next(cx))),
                 )
                 .child(
@@ -411,8 +411,10 @@ impl Render for SetupView {
                 if *item == Page::Welcome {
                     continue;
                 }
+                // 设置模式（非向导）里最后一页讲的是「关于本程序」，不是向导的
+                // 「检查一遍」。文案另立 key：它和 `Page::Review` 的向导名字不同义。
                 let title = if *item == Page::Review {
-                    "About"
+                    qcode_i18n::tr("gui.setup.page.about")
                 } else {
                     item.title()
                 };
@@ -478,7 +480,7 @@ impl Render for SetupView {
                             .pl_3()
                             .child(qcode_i18n::tr("gui.setup.window_title"))
                     })
-                    .child(if self.wizard { page.title() } else { "" }),
+                    .child(if self.wizard { page.title() } else { "".into() }),
             )
             .children(
                 self.error
@@ -535,12 +537,12 @@ fn section_intro(page: Page) -> std::borrow::Cow<'static, str> {
 
 /// 设置页分组的小标题（Network & Sandbox 用）：secondary 字号、半粗，
 /// 与页头 `## 标题` 拉开层级。
-fn group_heading(title: &'static str) -> Div {
+fn group_heading(title: impl Into<gpui::SharedString>) -> Div {
     div()
         .pt_1()
         .text_size(crate::sp(crate::SECONDARY_SIZE))
         .font_weight(FontWeight::SEMIBOLD)
-        .child(title)
+        .child(title.into())
 }
 
 /// 行内问号圆圈携带的数据：哪个键（hover_help 的键）与它的帮助文本。
@@ -765,12 +767,8 @@ impl SetupView {
                                         && option == "bwrap"
                                         && !qcode_tools::sandbox::bwrap_installed()
                                     {
-                                        view.sandbox_blocked = Some(
-                                            "bwrap 不可用：bubblewrap 未安装。请用系统包管理器安装 \
-                                             bubblewrap（Debian/Ubuntu：sudo apt install bubblewrap；\
-                                             Fedora：sudo dnf install bubblewrap；Arch：sudo pacman -S bubblewrap），\
-                                             然后重试。",
-                                        );
+                                        view.sandbox_blocked_message =
+                                            Some(qcode_i18n::tr("gui.setup.sandbox.bwrap_missing"));
                                         cx.notify();
                                         return;
                                     }
@@ -834,7 +832,7 @@ impl SetupView {
     /// selection stays put. The modal is deliberately a plain overlay like the
     /// delete confirmation — the whole point is that the click changed nothing.
     pub(crate) fn render_sandbox_blocked_dialog(&self, cx: &Context<Self>) -> AnyElement {
-        let Some(message) = self.sandbox_blocked else {
+        let Some(message) = self.sandbox_blocked_message.clone() else {
             return div().into_any_element();
         };
         let theme = cx.theme();
@@ -877,7 +875,7 @@ impl SetupView {
                             Button::new("close-sandbox-blocked")
                                 .label(qcode_i18n::tr("gui.setup.sandbox.dismiss"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.sandbox_blocked = None;
+                                    this.sandbox_blocked_message = None;
                                     cx.notify();
                                 })),
                         ),
@@ -1024,7 +1022,7 @@ impl SetupView {
                         let row_id = row.id;
                         card.child(
                             Button::new(format!("remove-{key}-{row_id}"))
-                                .label("Remove")
+                                .label(qcode_i18n::tr("gui.setup.action.remove"))
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.remove_row(&table_key, row_id, cx);
                                 })),

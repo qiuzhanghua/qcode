@@ -38,19 +38,25 @@ impl Page {
         Page::Review,
     ];
 
-    pub fn title(self) -> &'static str {
+    /// 侧栏里的页面名（已翻译）。
+    ///
+    /// 这里原本硬编码 11 个英文名，中文界面下整条侧栏是英文，而中文那条门禁
+    /// （只查汉字）对它完全沉默。译文 key 直接写成 `tr("…")` 的字面量：门禁 6
+    /// 靠这些字面量才知道「这些 key 有人在用」，绕一层 `*_key()` 它就看不见了。
+    pub fn title(self) -> std::borrow::Cow<'static, str> {
+        use qcode_i18n::tr;
         match self {
-            Self::Welcome => "Welcome",
-            Self::Models => "Models",
-            Self::Agent => "Agent & Context",
-            Self::NetworkSandbox => "Network & Sandbox",
-            Self::Search => "Search",
-            Self::Mcp => "MCP",
-            Self::Skills => "Skills",
-            Self::ApprovalPricing => "Approval & Pricing",
-            Self::Appearance => "Appearance",
-            Self::Update => "Update",
-            Self::Review => "Review",
+            Self::Welcome => tr("gui.setup.page.welcome"),
+            Self::Models => tr("gui.setup.page.models"),
+            Self::Agent => tr("gui.setup.page.agent"),
+            Self::NetworkSandbox => tr("gui.setup.page.network_sandbox"),
+            Self::Search => tr("gui.setup.page.search"),
+            Self::Mcp => tr("gui.setup.page.mcp"),
+            Self::Skills => tr("gui.setup.page.skills"),
+            Self::ApprovalPricing => tr("gui.setup.page.approval_pricing"),
+            Self::Appearance => tr("gui.setup.page.appearance"),
+            Self::Update => tr("gui.setup.page.update"),
+            Self::Review => tr("gui.setup.page.review"),
         }
     }
 }

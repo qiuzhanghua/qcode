@@ -21,6 +21,10 @@ fn run_with_provider(dir: &std::path::Path, provider: &str) -> String {
             dir.to_str().expect("utf-8 path"),
         ])
         .stdin(Stdio::null())
+        // 断言的是**中文**输出（`已创建定时任务` / `不补跑` …），而 `qc` 的语言
+        // 来自 `QCODE_LANG` 或系统首选。不钉的话，这条测试在系统语言是英文的机器
+        // 上会红——它此前只在本机（中文 macOS）通过过，是个随宿主语言漂移的假绿。
+        .env("QCODE_LANG", "zh-CN")
         .output()
         .expect("run qc");
     assert!(
