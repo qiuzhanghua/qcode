@@ -1,0 +1,9 @@
+Rewrite a v1 file into the schema-2 shape (ADR-0065): fold `[providers.*].default_model` into `[default-model]`, collapse model tables that only carry an id, and switch `version` to `schema`
+
+Usage: qc config migrate [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

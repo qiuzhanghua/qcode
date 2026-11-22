@@ -11,6 +11,14 @@
 //! 所以这里遍历**真实的** `Command` 树，把 `localize` 会查的每一个 key 都算出来，
 //! 与 `locales/*.yml` 里声明的 `cli.cmd.*` 做双向比对。
 //!
+//! **只要求「用户看得见」的项有译文**：隐藏的子命令与隐藏的参数不出现在 `--help`
+//! 里，中文界面也就不会露出它们的英文，留英文是有意的（见 `collect_missing`）。
+//!
+//! **平台差异**：`Windows` 下命令树多出 `sandbox`（可见）与三个 hidden 的内部命令。
+//! 可见的 `sandbox.*` 有译文；hidden 的靠上面那条规则跳过。所以本门禁在任何平台上
+//! 都能过，而 Windows 上会**多查** `cli.cmd.sandbox.*`（macOS / Linux 查不到，
+//! 那些 key 由门禁 6 的 `cli.cmd.` 豁免放行）。
+//!
 //! **为什么住在 `src/` 而不是 `tests/`**：`Cli` 定义在 `qcode` 这个二进制 crate 里，
 //! 集成测试（`tests/`）看不到二进制 crate 的私有项；同一目录下的 `#[cfg(test)]`
 //! 模块则可以。代价是它不算「集成测试」，但门禁 2 的扫描器仍然跳过它
@@ -20,6 +28,13 @@ use clap::CommandFactory;
 use std::collections::BTreeSet;
 
 use crate::cli::Cli;
+
+/// 只在**别的**平台存在的命令前缀。
+///
+/// `sandbox` 是 `#[cfg(windows)]`：在 macOS / Linux 上它根本不进命令树，所以「声明
+/// 了却查不到」是**预期**，不是拼错。反过来在 Windows 上它查得到，这条豁免也就不起
+/// 作用——所以两个方向都是对的，不需要 `cfg` 分支。
+const OTHER_PLATFORM_ONLY: &[&str] = &["cli.cmd.sandbox."];
 
 /// `localize` 会去查的所有 key（与 `clap_i18n::localize_at` 同构）。
 fn reachable_keys() -> BTreeSet<String> {
@@ -111,13 +126,22 @@ fn collect_missing(
     need("long_about".to_string(), cmd.get_long_about().is_some());
     for arg in cmd.get_arguments() {
         let id = arg.get_id().to_string();
-        // `help` / `version` 是 clap 自己加的，没有我们的话要说。
-        if id == "help" || id == "version" || arg.get_help().is_none() {
+        if id == "help" || id == "version" {
+            continue;
+        }
+        // 隐藏的参数（`--child`、`--public-dir` 之类内部开关）不出现在 `--help` 里，
+        // 中文界面里也就不会露出英文——留英文是有意的，不要求译文。
+        if arg.is_hide_set() || arg.get_help().is_none() {
             continue;
         }
         need(format!("arg.{id}.help"), true);
     }
     for sub in cmd.get_subcommands() {
+        // 隐藏子命令同理：`sandbox-probe` / `sandbox-run` / `whoami` 是内部命令，
+        // 用户看不到它们，也就不存在「中文界面里露出英文」。
+        if sub.is_hide_set() {
+            continue;
+        }
         let next = if path.is_empty() {
             sub.get_name().to_string()
         } else {
@@ -134,7 +158,15 @@ fn every_help_key_is_reachable_and_declared() {
     assert!(!declared.is_empty(), "一条 cli.cmd.* 都没读到");
 
     // 方向一：声明了却**永远查不到**（拼错，或命令删了而译文留着）。
-    let unreachable: Vec<&String> = declared.difference(&reachable).collect();
+    // 别的平台才有的命令前缀先摘出去（见 `OTHER_PLATFORM_ONLY`）。
+    let unreachable: Vec<&String> = declared
+        .difference(&reachable)
+        .filter(|key| {
+            !OTHER_PLATFORM_ONLY
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
+        .collect();
     assert!(
         unreachable.is_empty(),
         "这些 cli.cmd.* 声明了但命令树里查不到（key 拼错，或命令已删）：\n  - {}",

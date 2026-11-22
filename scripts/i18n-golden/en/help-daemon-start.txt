@@ -1,0 +1,10 @@
+Start the daemon in the background
+
+Usage: qc daemon start [OPTIONS]
+
+Options:
+      --beat <SECS>             Clock beat in seconds (default 30)
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

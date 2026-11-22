@@ -1,0 +1,17 @@
+创建一条定时任务
+
+用法：qc schedule create [OPTIONS] --title <TITLE> --prompt <PROMPT> --rule <RULE>
+
+选项：
+      --data-dir <DATA_DIR>           数据目录。默认取 XDG 数据目录
+      --title <TITLE>                 简短、可区分的名称
+      --config <CONFIG>               配置文件。默认 ~/.config/qcode/config.toml
+      --prompt <PROMPT>               到点投递的内容：原样作为一条用户消息送出
+      --approval-policy <PATH>        审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+      --rule <RULE>                   cron <expr> | once YYYY-MM-DD HH:MM | every <秒> (>=60) | daily HH:MM | weekly <星期> HH:MM | monthly <日> HH:MM
+      --target <TARGET>               new_once（默认）| new | session:<id>
+      --cwd <PATH>                    投递的回合在哪里跑。默认当前目录，存成绝对路径；文件系统根会回落到你的家目录，因为 `/` 不能当沙箱根
+      --overlap <POLICY>              queue（默认）| skip
+      --approval-timeout-secs <SECS>  投递回合的审批超过这么多秒就拒绝；省略则一直等人工
+      --json                          机器可读输出：创建出来的任务加上驱动状态
+  -h, --help                          打印帮助

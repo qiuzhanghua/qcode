@@ -1,0 +1,35 @@
+按 id 删掉一个或多个会话。
+
+`gc` 只能按年龄删，而「一批跑批把库弄脏了、真正的工作夹在中间」这种情况它帮不上忙。
+
+用法：qc sessions delete [OPTIONS] [ID]...
+
+参数：
+  [ID]...
+          要删的会话 id。配上 `--except` 时变成要保留的 id
+
+选项：
+      --data-dir <DATA_DIR>
+          数据目录。默认取 XDG 数据目录
+
+      --except
+          Treat `ids` as the sessions to keep and delete every other one.
+          
+          Listing what to keep is the shorter and safer form when a few real sessions are buried under a pile of test runs.
+
+      --config <CONFIG>
+          配置文件。默认 ~/.config/qcode/config.toml
+
+      --keep-title <TITLE>...
+          Keep the sessions shown under these titles in the sidebar.
+          
+          The sidebar shows names, not ids, so this is what a user can copy. A title that matches no session, or more than one, is an error.
+
+      --approval-policy <PATH>
+          审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+
+      --yes
+          真的删；不加就只列出会删掉哪些
+
+  -h, --help
+          打印帮助 (see a summary with '-h')

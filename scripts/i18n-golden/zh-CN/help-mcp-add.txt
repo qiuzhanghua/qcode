@@ -1,0 +1,23 @@
+往用户配置里追加一个服务器
+
+用法：qc mcp add [OPTIONS] <--command <COMMAND>|--url <URL>> <NAME>
+
+参数：
+  <NAME>  
+
+选项：
+      --command <COMMAND>            stdio 传输：要启动的程序
+      --data-dir <DATA_DIR>          数据目录。默认取 XDG 数据目录
+      --config <CONFIG>              配置文件。默认 ~/.config/qcode/config.toml
+      --url <URL>                    streamable HTTP 传输：端点 URL（ADR-0067）
+      --approval-policy <PATH>       审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+      --bearer-token-env <VAR>       存放 bearer token 的环境变量名。token 本身永远不写进配置文件
+      --header <NAME:VALUE>          额外的请求头，`Name: value`。可重复。敏感名字（authorization、cookie、token、key、secret、password）会被拒收：请用 `--bearer-token-env`
+      --arg <ARGS>                   可重复：服务器命令的一个参数
+      --disabled                     加进来但先停用
+      --timeout-secs <TIMEOUT_SECS>  
+      --read-path <PATH>             额外的读+执行根目录，在从 `command` 推导出的那些之外（ADR-0066）。可重复
+      --write-path <PATH>            额外的可写根目录，在工作区与服务器私有 HOME 之外。可重复
+      --credential <PRESET>          允许服务器读取的 `$HOME` 下凭据子树：`github`、`aws`、`ssh`、`npm`、`netrc` 或 `docker`。可重复
+      --sandbox <MODE>               `confine`（默认）或 `off`；`off` 让这个服务器不带系统沙箱运行，`qc doctor` 会标出来
+  -h, --help                         打印帮助

@@ -1,0 +1,12 @@
+Read the key from stdin and store it, then print the config line
+
+Usage: qc config key set [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --provider <PROVIDER>     Config provider name, e.g. deepseek [default: deepseek]
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --service <SERVICE>       Key store service name [default: qcode]
+      --account <ACCOUNT>       Account name inside the service
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

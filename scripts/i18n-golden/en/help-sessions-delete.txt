@@ -1,0 +1,35 @@
+Remove one or more sessions by id.
+
+`gc` can only drop by age, which does not help when a batch of runs polluted the store and the real work is interleaved with it.
+
+Usage: qc sessions delete [OPTIONS] [ID]...
+
+Arguments:
+  [ID]...
+          Session ids to remove. With `--except`, the ids to keep
+
+Options:
+      --data-dir <DATA_DIR>
+          Data directory. Defaults to the XDG data home
+
+      --except
+          Treat `ids` as the sessions to keep and delete every other one.
+          
+          Listing what to keep is the shorter and safer form when a few real sessions are buried under a pile of test runs.
+
+      --config <CONFIG>
+          Config file. Defaults to ~/.config/qcode/config.toml
+
+      --keep-title <TITLE>...
+          Keep the sessions shown under these titles in the sidebar.
+          
+          The sidebar shows names, not ids, so this is what a user can copy. A title that matches no session, or more than one, is an error.
+
+      --approval-policy <PATH>
+          Approval policy file ([[rules]]). Replaces the config's approval rules
+
+      --yes
+          Actually delete; without it, only print what would go
+
+  -h, --help
+          Print help (see a summary with '-h')

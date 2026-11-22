@@ -1,0 +1,9 @@
+List discovered skills and the roots that were checked
+
+Usage: qc skills list [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

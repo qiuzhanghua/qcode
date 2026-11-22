@@ -1,0 +1,17 @@
+Create a scheduled task
+
+Usage: qc schedule create [OPTIONS] --title <TITLE> --prompt <PROMPT> --rule <RULE>
+
+Options:
+      --data-dir <DATA_DIR>           Data directory. Defaults to the XDG data home
+      --title <TITLE>                 Short, distinguishable name
+      --config <CONFIG>               Config file. Defaults to ~/.config/qcode/config.toml
+      --prompt <PROMPT>               What gets delivered when it fires — sent verbatim as a user message
+      --approval-policy <PATH>        Approval policy file ([[rules]]). Replaces the config's approval rules
+      --rule <RULE>                   cron <expr> | once YYYY-MM-DD HH:MM | every <secs> (>=60) | daily HH:MM | weekly <days> HH:MM | monthly <day> HH:MM
+      --target <TARGET>               new_once (default) | new | session:<id>
+      --cwd <PATH>                    Where the delivered turn runs. Defaults to the current directory, stored absolute — a filesystem root falls back to your home directory, because `/` cannot be a sandbox root
+      --overlap <POLICY>              queue (default) | skip
+      --approval-timeout-secs <SECS>  Deny the delivered turn's approvals after this many seconds; omit to wait for a human
+      --json                          Machine-readable output: the created task plus the driver state
+  -h, --help                          Print help

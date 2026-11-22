@@ -1960,6 +1960,31 @@ cli:
       about:
         en: "Serve the Agent Client Protocol over stdio (for editors)"
         zh-CN: "通过 stdio 提供 Agent Client Protocol（给编辑器用）"
+    # Windows-only，且是**可见**命令（`qc --help` 在 Windows 上会列出它）。
+    # 另三个 Windows 内部命令（`sandbox-probe` / `sandbox-run` / `whoami`）是 hidden，
+    # 用户看不到，**有意留英文**——门禁 7 只要求可见项有译文。
+    sandbox:
+      about:
+        en: "Inspect or repair the Windows ACL sandbox grants"
+        zh-CN: "查看或修复 Windows ACL 沙箱的授权"
+      grant:
+        about:
+          en: "Give the sandbox write access to a directory tree"
+          zh-CN: "给沙箱某个目录树的写权限"
+        arg:
+          path:
+            help:
+              en: "Directory to grant. Defaults to the current directory"
+              zh-CN: "要授权的目录。默认当前目录"
+      revoke:
+        about:
+          en: "Remove a grant from a directory tree"
+          zh-CN: "撤掉某个目录树的授权"
+        arg:
+          path:
+            help:
+              en: "Directory to revoke. Defaults to the current directory"
+              zh-CN: "要撤权的目录。默认当前目录"
   schedule:
     created:
       en: "Created scheduled task `%{0}` (id: %{1})"

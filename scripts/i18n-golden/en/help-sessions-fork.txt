@@ -1,0 +1,13 @@
+Copy a conversation prefix into a new session
+
+Usage: qc sessions fork [OPTIONS] <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --at <SEQ>                Fork after this event seq (default: the whole session)
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

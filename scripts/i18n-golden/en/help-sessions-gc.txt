@@ -1,0 +1,17 @@
+Remove sessions whose last event is older than N days
+
+Usage: qc sessions gc [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>
+          Data directory. Defaults to the XDG data home
+      --older-than-days <OLDER_THAN_DAYS>
+          [default: 30]
+      --config <CONFIG>
+          Config file. Defaults to ~/.config/qcode/config.toml
+      --yes
+          Actually delete; without it, only print candidates
+      --approval-policy <PATH>
+          Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help
+          Print help

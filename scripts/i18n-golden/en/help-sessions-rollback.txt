@@ -1,0 +1,14 @@
+Put the workspace back to the state before a turn
+
+Usage: qc sessions rollback [OPTIONS] --to <TURN> <ID>
+
+Arguments:
+  <ID>  
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --to <TURN>               Turn to roll back to: files are restored to their state before it
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --yes                     Restore without asking for confirmation
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

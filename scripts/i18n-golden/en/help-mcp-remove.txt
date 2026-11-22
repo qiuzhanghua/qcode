@@ -1,0 +1,12 @@
+Remove a server by name
+
+Usage: qc mcp remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

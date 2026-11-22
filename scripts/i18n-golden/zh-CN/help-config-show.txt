@@ -1,0 +1,9 @@
+打印生效的（合并后的）配置
+
+用法：qc config show [OPTIONS]
+
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

@@ -1,0 +1,24 @@
+Generate a config file from a built-in template (ADR-0104).
+
+The template is scaffolding, not an overlay: it is read once, writes an ordinary `config.toml`, and never participates in loading afterwards.
+
+Usage: qc config init [OPTIONS] --template <TEMPLATE>
+
+Options:
+      --data-dir <DATA_DIR>
+          Data directory. Defaults to the XDG data home
+
+      --template <TEMPLATE>
+          Template id, e.g. `security-landlock`, `security/landlock`, or a bare `landlock` when it names exactly one template
+
+      --config <CONFIG>
+          Config file. Defaults to ~/.config/qcode/config.toml
+
+      --force
+          Overwrite an existing config file (prints a diff first)
+
+      --approval-policy <PATH>
+          Approval policy file ([[rules]]). Replaces the config's approval rules
+
+  -h, --help
+          Print help (see a summary with '-h')

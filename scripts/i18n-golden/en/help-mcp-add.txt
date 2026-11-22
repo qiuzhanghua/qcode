@@ -1,0 +1,23 @@
+Append a server to the user config
+
+Usage: qc mcp add [OPTIONS] <--command <COMMAND>|--url <URL>> <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --command <COMMAND>            Stdio transport: the program to start
+      --data-dir <DATA_DIR>          Data directory. Defaults to the XDG data home
+      --config <CONFIG>              Config file. Defaults to ~/.config/qcode/config.toml
+      --url <URL>                    Streamable HTTP transport: the endpoint URL (ADR-0067)
+      --approval-policy <PATH>       Approval policy file ([[rules]]). Replaces the config's approval rules
+      --bearer-token-env <VAR>       Name of the environment variable holding the bearer token. The token itself is never written to the config file
+      --header <NAME:VALUE>          Extra request header, `Name: value`. Repeatable. Sensitive names (authorization, cookie, token, key, secret, password) are refused: use `--bearer-token-env`
+      --arg <ARGS>                   Repeatable: one argument for the server command
+      --disabled                     Add the server but leave it disabled
+      --timeout-secs <TIMEOUT_SECS>  
+      --read-path <PATH>             Extra read+execute root, beyond the ones derived from `command` (ADR-0066). Repeatable
+      --write-path <PATH>            Extra writable root, beyond the workspace and the server's private HOME. Repeatable
+      --credential <PRESET>          Credential subtree under `$HOME` the server may read: `github`, `aws`, `ssh`, `npm`, `netrc` or `docker`. Repeatable
+      --sandbox <MODE>               `confine` (default) or `off`; `off` runs this server without an OS sandbox and makes `qc doctor` mark it
+  -h, --help                         Print help

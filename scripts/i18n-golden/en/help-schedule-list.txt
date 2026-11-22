@@ -1,0 +1,11 @@
+List scheduled tasks
+
+Usage: qc schedule list [OPTIONS]
+
+Options:
+      --all                     Include paused and ended tasks. `--json` is always exhaustive
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --json                    Machine-readable output. This shape is the stable contract; the text form is not
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

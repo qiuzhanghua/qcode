@@ -1,0 +1,24 @@
+按内置模板生成一个配置文件（ADR-0104）。
+
+模板只是脚手架，不是叠加层：它只被读一次，写出一份普通的 `config.toml`，此后完全不参与加载。
+
+用法：qc config init [OPTIONS] --template <TEMPLATE>
+
+选项：
+      --data-dir <DATA_DIR>
+          数据目录。默认取 XDG 数据目录
+
+      --template <TEMPLATE>
+          模板 id，例如 `security-landlock`、`security/landlock`；只指一个模板时也可以只写 `landlock`
+
+      --config <CONFIG>
+          配置文件。默认 ~/.config/qcode/config.toml
+
+      --force
+          覆盖已存在的配置文件（先打印差异）
+
+      --approval-policy <PATH>
+          审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+
+  -h, --help
+          打印帮助 (see a summary with '-h')

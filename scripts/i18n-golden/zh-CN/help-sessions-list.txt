@@ -1,0 +1,21 @@
+列出已存的会话，最新的在前
+
+用法：qc sessions list [OPTIONS]
+
+选项：
+      --data-dir <DATA_DIR>
+          数据目录。默认取 XDG 数据目录
+
+      --titles
+          Also print the title the sidebar shows for each session.
+          
+          Reading a title means scanning the session log (the last rename wins), so this is opt-in: a plain listing stays index-only.
+
+      --config <CONFIG>
+          配置文件。默认 ~/.config/qcode/config.toml
+
+      --approval-policy <PATH>
+          审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+
+  -h, --help
+          打印帮助 (see a summary with '-h')
