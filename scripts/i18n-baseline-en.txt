@@ -3,8 +3,11 @@
 # 重跑：QCODE_I18N_UPDATE_BASELINE=1 cargo test -p qcode-i18n
 #
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
-# `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
+# `label:` / `help:` / `title:`，forms.rs 另加 `=> `；工具结果摘要另加
+# `ToolOutput::*`；CLI 输出另加 `println!` / `eprintln!` 与
+# `self.ok/warn/fail(` 这类两参数调用点），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
-qcode/doctor.rs	all checks passed
-qcode/doctor.rs	qcode {}
-qcode/doctor.rs	{} check(s) failed
+#
+# **现状：0 条。** 这不是「门禁没在跑」——`no_new_hardcoded_english_ui_text`
+# 通过即代表这个数为 0。有意保持英文的文件在 `intentional_english()` 里，
+# 每条带理由；它们与这张表是两回事：这张表是债，那张表是决定。

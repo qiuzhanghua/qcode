@@ -22,6 +22,12 @@ fn qc(args: &[&str], home: &Path) -> String {
         .env_remove("HTTPS_PROXY")
         .env_remove("ALL_PROXY")
         .env_remove("DEEPSEEK_API_KEY")
+        // 钉住语言（ADR-0105 §6）：doctor 的输出现在跟随 `[ui] language` /
+        // `QCODE_LANG`。这里钉的是 **en** 而不是 zh-CN——这一整个文件的断言都在
+        // 检「原因写得对不对」（`does not exist; the grant skips it` 之类），
+        // 把 89 条断言改写成中文只会让 diff 盖住真正的改动，也容易把断言改弱。
+        // 「中文真的生效」由 `doctor_speaks_chinese_when_asked` 单独盯住。
+        .env("QCODE_LANG", "en")
         .output()
         .expect("run qc");
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -682,4 +688,45 @@ fn an_absolute_command_does_not_sample_the_shell() {
     );
     let grant_line = line(&text, "mcp probe:");
     assert!(grant_line.starts_with("[ok]"), "{grant_line}");
+}
+
+/// 上面整片测试钉的是 `en`（它们检的是原因文案本身）。这一条专盯**中文真的
+/// 生效**：标签、明细、汇总结论三处都要是中文，而且不能出现「标签中文、明细
+/// 英文」的半截状态——那是 ADR-0105 §9 不变量 5 禁止的形状。
+#[test]
+fn doctor_speaks_chinese_when_asked() {
+    let home = tempfile::tempdir().expect("home");
+    let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+        .args(["doctor", "--data-dir"])
+        .arg(home.path().join("data"))
+        .env("HOME", home.path())
+        .env("QCODE_LANG", "zh-CN")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
+        .env_remove("DEEPSEEK_API_KEY")
+        .output()
+        .expect("run qc");
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    // 标签
+    assert!(text.contains("数据目录"), "{text}");
+    assert!(text.contains("供应商"), "{text}");
+    // 明细（同一行里标签与明细都得是中文）
+    assert!(text.contains("没找到："), "config 的明细没翻：\n{text}");
+    assert!(
+        text.contains("mock 供应商；不发网络请求"),
+        "credentials 的明细没翻：\n{text}"
+    );
+    // 行首标记保持英文（`grep '^\[warn\]'` 是真实用法，见 I18N.md §10.15）
+    assert!(text.contains("[warn] 配置:"), "{text}");
+    // 汇总
+    assert!(
+        text.contains("全部检查通过") || text.contains("项检查未通过"),
+        "结论那行没翻：\n{text}"
+    );
+    // 反例：这些英文原文不该再出现在中文输出里
+    assert!(!text.contains("data dir:"), "{text}");
+    assert!(!text.contains("all checks passed"), "{text}");
 }

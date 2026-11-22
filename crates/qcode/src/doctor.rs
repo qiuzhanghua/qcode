@@ -21,7 +21,10 @@ pub async fn run(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut doctor = Doctor { failures: 0 };
 
-    println!("qcode {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "{}",
+        qcode_i18n::trp("cli.doctor.banner", &[env!("CARGO_PKG_VERSION")])
+    );
     println!();
 
     doctor.check_data_dir(&data_dir);
@@ -39,18 +42,21 @@ pub async fn run(
         doctor.check_mcp_capabilities(&config, &data_dir).await;
     }
     doctor.ok(
-        "acp",
-        format!(
-            "protocol v{} over stdio (`qc acp`)",
-            qcode_acp::PROTOCOL_VERSION
+        qcode_i18n::tr("cli.doctor.label.acp"),
+        qcode_i18n::trp(
+            "cli.doctor.detail.acp_ok",
+            &[qcode_acp::PROTOCOL_VERSION.to_string().as_str()],
         ),
     );
 
     println!();
     if doctor.failures == 0 {
-        println!("all checks passed");
+        println!("{}", qcode_i18n::tr("cli.doctor.all_passed"));
     } else {
-        println!("{} check(s) failed", doctor.failures);
+        println!(
+            "{}",
+            qcode_i18n::trp("cli.doctor.failed", &[doctor.failures.to_string().as_str()])
+        );
     }
 
     Ok(doctor.failures == 0)
@@ -66,27 +72,51 @@ struct Doctor {
 /// macOS, libsecret on Linux, the credential store on Windows. The API key
 /// itself is never printed, only the command that would store it.
 fn key_store_hint() -> Vec<String> {
+    // 只翻前缀（`store it:` / `then:` / `avoid:`）；后面跟的是**要敲的命令**与
+    // 配置片段，逐字保留——翻了就粘不进去。这也是这三句只能在这里拼、
+    // 不能整句进译文表的原因。
     #[cfg(target_os = "macos")]
     {
         vec![
-            "store it: security add-generic-password -a \"$USER\" -s qcode -w".to_string(),
-            "then: api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"qcode\", \"-a\", \"$USER\"]".to_string(),
+            format!(
+                "{} security add-generic-password -a \"$USER\" -s qcode -w",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_store")
+            ),
+            format!(
+                "{} api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"qcode\", \"-a\", \"$USER\"]",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_then")
+            ),
         ]
     }
     #[cfg(target_os = "linux")]
     {
         vec![
-            "store it: secret-tool store --label qcode service qcode user deepseek".to_string(),
-            "then: api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"qcode\", \"user\", \"deepseek\"]".to_string(),
+            format!(
+                "{} secret-tool store --label qcode service qcode user deepseek",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_store")
+            ),
+            format!(
+                "{} api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"qcode\", \"user\", \"deepseek\"]",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_then")
+            ),
         ]
     }
     #[cfg(target_os = "windows")]
     {
         vec![
-            "store it: Settings > provider > key (CredWriteW, secret piped over stdin)".to_string(),
-            "then: api_key_command = [\"powershell\", \"-NoProfile\", \"-Command\", \"...\"]"
-                .to_string(),
-            "avoid: cmdkey /pass:<key>, which puts the key in the command line".to_string(),
+            format!(
+                "{} Settings > provider > key (CredWriteW, secret piped over stdin)",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_store")
+            ),
+            format!(
+                "{} api_key_command = [\"powershell\", \"-NoProfile\", \"-Command\", \"...\"]",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_then")
+            ),
+            format!(
+                "{} cmdkey /pass:<key>{}",
+                qcode_i18n::tr("cli.doctor.detail.key_store_hint_avoid"),
+                qcode_i18n::tr("cli.doctor.detail.key_store_avoid_reason")
+            ),
         ]
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -100,30 +130,48 @@ impl Doctor {
     /// the failure the settings dialog hit.
     fn write_probe(&mut self, path: &Path) {
         let Some(dir) = path.parent() else {
-            self.fail("config writable", "config path has no parent directory");
+            self.fail(
+                qcode_i18n::tr("cli.doctor.label.config_writable"),
+                qcode_i18n::tr("cli.doctor.detail.config_no_parent"),
+            );
             return;
         };
         if config::dir_accepts_new_files(dir) {
-            self.ok("config writable", dir.display().to_string());
+            self.ok(
+                qcode_i18n::tr("cli.doctor.label.config_writable"),
+                dir.display().to_string(),
+            );
         } else {
             self.fail(
-                "config writable",
-                format!("{}: {}", dir.display(), config::CONFIG_DIR_HINT),
+                qcode_i18n::tr("cli.doctor.label.config_writable"),
+                format!(
+                    "{}: {}",
+                    dir.display(),
+                    // 日志里那份保持英文（ADR-0105 §4），用户可见的这份要翻。
+                    // 改一处要改两处：`cli.doctor.detail.config_dir_hint`。
+                    qcode_i18n::tr("cli.doctor.detail.config_dir_hint")
+                ),
             );
         }
     }
 
-    fn ok(&self, label: &str, detail: impl AsRef<str>) {
-        println!("[ok]   {label}: {}", detail.as_ref());
+    // 三个方法收的是**已经翻好的标签**（调用点写 `qcode_i18n::tr("cli.doctor.label.x")`），
+    // 自己不查表：组合标签（`MCP 网络`）需要在调用点拼参数，帮不上忙。
+    //
+    // `[ok]` / `[warn]` / `[fail]` 这三个方括号标记保持英文：它们是行首的机器可读
+    // 标记（`grep '^\[fail\]'` 是真实用法），与 `[tool]` / `[approval]` 同类
+    // （I18N.md §10.15）。
+    fn ok(&self, label: impl AsRef<str>, detail: impl AsRef<str>) {
+        println!("[ok]   {}: {}", label.as_ref(), detail.as_ref());
     }
 
-    fn warn(&self, label: &str, detail: impl AsRef<str>) {
-        println!("[warn] {label}: {}", detail.as_ref());
+    fn warn(&self, label: impl AsRef<str>, detail: impl AsRef<str>) {
+        println!("[warn] {}: {}", label.as_ref(), detail.as_ref());
     }
 
-    fn fail(&mut self, label: &str, detail: impl AsRef<str>) {
+    fn fail(&mut self, label: impl AsRef<str>, detail: impl AsRef<str>) {
         self.failures += 1;
-        println!("[fail] {label}: {}", detail.as_ref());
+        println!("[fail] {}: {}", label.as_ref(), detail.as_ref());
     }
 
     fn check_data_dir(&mut self, explicit: &Option<PathBuf>) {
@@ -135,8 +183,14 @@ impl Doctor {
         });
 
         match result {
-            Ok(()) => self.ok("data dir", dir.display().to_string()),
-            Err(err) => self.fail("data dir", format!("{}: {err}", dir.display())),
+            Ok(()) => self.ok(
+                qcode_i18n::tr("cli.doctor.label.data_dir"),
+                dir.display().to_string(),
+            ),
+            Err(err) => self.fail(
+                qcode_i18n::tr("cli.doctor.label.data_dir"),
+                format!("{}: {err}", dir.display()),
+            ),
         }
     }
 
@@ -150,7 +204,7 @@ impl Doctor {
             None => match config::default_path() {
                 Ok(path) => path,
                 Err(err) => {
-                    self.fail("config", err.to_string());
+                    self.fail(qcode_i18n::tr("cli.doctor.label.config"), err.to_string());
                     return Config::default();
                 }
             },
@@ -158,11 +212,20 @@ impl Doctor {
 
         if !path.exists() {
             if explicit.is_some() {
-                self.fail("config", format!("not found: {}", path.display()));
+                self.fail(
+                    qcode_i18n::tr("cli.doctor.label.config"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.config_not_found",
+                        &[path.display().to_string().as_str()],
+                    ),
+                );
             } else {
                 self.warn(
-                    "config",
-                    format!("not found: {} (using defaults)", path.display()),
+                    qcode_i18n::tr("cli.doctor.label.config"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.config_not_found_defaults",
+                        &[path.display().to_string().as_str()],
+                    ),
                 );
             }
             return Config::default();
@@ -171,19 +234,24 @@ impl Doctor {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         match config::load_merged(&path, &workspace) {
             Ok(config) => {
-                self.ok("config", path.display().to_string());
+                self.ok(
+                    qcode_i18n::tr("cli.doctor.label.config"),
+                    path.display().to_string(),
+                );
                 self.write_probe(&path);
                 self.ok(
-                    "config schema",
-                    format!(
-                        "version {} (this build supports {})",
-                        config.schema,
-                        config::CONFIG_VERSION
+                    qcode_i18n::tr("cli.doctor.label.config_schema"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.schema_version",
+                        &[
+                            config.schema.to_string().as_str(),
+                            config::CONFIG_VERSION.to_string().as_str(),
+                        ],
                     ),
                 );
                 if workspace.join(config::PROJECT_CONFIG_RELATIVE).exists() {
                     self.ok(
-                        "project config",
+                        qcode_i18n::tr("cli.doctor.label.project_config"),
                         workspace
                             .join(config::PROJECT_CONFIG_RELATIVE)
                             .display()
@@ -193,7 +261,7 @@ impl Doctor {
                 config
             }
             Err(err) => {
-                self.fail("config", err.to_string());
+                self.fail(qcode_i18n::tr("cli.doctor.label.config"), err.to_string());
                 Config::default()
             }
         }
@@ -201,26 +269,32 @@ impl Doctor {
 
     fn check_search(&mut self, config: &Config) {
         if !config.search.enabled {
-            self.ok("web_search", "disabled ([search] enabled = false)");
+            self.ok(
+                qcode_i18n::tr("cli.doctor.label.web_search"),
+                qcode_i18n::tr("cli.doctor.detail.search_disabled"),
+            );
             return;
         }
         let settings = config.search.settings(&|key| std::env::var(key).ok());
         if settings.is_usable() {
             self.ok(
-                "web_search",
-                format!("backend '{}' is ready", settings.backend.name()),
+                qcode_i18n::tr("cli.doctor.label.web_search"),
+                qcode_i18n::trp(
+                    "cli.doctor.detail.search_backend_ready",
+                    &[settings.backend.name()],
+                ),
             );
         } else if settings.backend == qcode_tools::web_search::SearchBackend::Searxng {
             self.warn(
-                "web_search",
-                "backend 'searxng' needs [search] base_url; the tool is not registered",
+                qcode_i18n::tr("cli.doctor.label.web_search"),
+                qcode_i18n::tr("cli.doctor.detail.search_searxng_needs_url"),
             );
         } else {
             self.warn(
-                "web_search",
-                format!(
-                    "export {} (or set [search] api_key_env); the tool is not registered",
-                    config.search.key_env_name().unwrap_or_default()
+                qcode_i18n::tr("cli.doctor.label.web_search"),
+                qcode_i18n::trp(
+                    "cli.doctor.detail.search_needs_key",
+                    &[config.search.key_env_name().unwrap_or_default().as_str()],
                 ),
             );
         }
@@ -231,31 +305,40 @@ impl Doctor {
             std::env::var(key).ok()
         }) {
             Ok(resolved) => {
-                self.ok("provider", &resolved.name);
-                self.ok("model", &resolved.model);
+                self.ok(qcode_i18n::tr("cli.doctor.label.provider"), &resolved.name);
+                self.ok(qcode_i18n::tr("cli.doctor.label.model"), &resolved.model);
                 if let Some(base_url) = &resolved.base_url {
-                    self.ok("base url", base_url);
+                    self.ok(qcode_i18n::tr("cli.doctor.label.base_url"), base_url);
                 }
                 if resolved.is_mock {
-                    self.warn("credentials", "mock provider; no network calls");
+                    self.warn(
+                        qcode_i18n::tr("cli.doctor.label.credentials"),
+                        qcode_i18n::tr("cli.doctor.detail.creds_mock"),
+                    );
                 } else if resolved.api_key.is_some() {
                     // The source, never the value: `env NAME`, `command NAME`.
                     self.ok(
-                        "credentials",
-                        format!("API key present ({})", resolved.api_key_source),
+                        qcode_i18n::tr("cli.doctor.label.credentials"),
+                        qcode_i18n::trp(
+                            "cli.doctor.detail.creds_key_present",
+                            &[resolved.api_key_source.to_string().as_str()],
+                        ),
                     );
                 } else {
-                    self.ok("credentials", "keyless provider");
+                    self.ok(
+                        qcode_i18n::tr("cli.doctor.label.credentials"),
+                        qcode_i18n::tr("cli.doctor.detail.creds_keyless"),
+                    );
                 }
                 self.check_pricing(config, &resolved.model);
             }
             Err(err) => {
                 let missing_key =
                     matches!(err, qcode_kernel::config::ConfigError::MissingKey { .. });
-                self.fail("provider", err.to_string());
+                self.fail(qcode_i18n::tr("cli.doctor.label.provider"), err.to_string());
                 if missing_key {
                     for line in key_store_hint() {
-                        self.warn("key storage", &line);
+                        self.warn(qcode_i18n::tr("cli.doctor.label.key_storage"), &line);
                     }
                 }
             }
@@ -270,28 +353,23 @@ impl Doctor {
             Some(price) if price.validate() => {
                 if limit.is_some() {
                     self.ok(
-                        "pricing",
-                        format!("{model} declared; `--max-cost` stops at the limit"),
+                        qcode_i18n::tr("cli.doctor.label.pricing"),
+                        qcode_i18n::trp("cli.doctor.detail.pricing_stops", &[model]),
                     );
                 } else {
                     self.ok(
-                        "pricing",
-                        format!(
-                            "{model} declared; set `--max-cost` or `[agent] max_cost_usd` to actually stop"
-                        ),
+                        qcode_i18n::tr("cli.doctor.label.pricing"),
+                        qcode_i18n::trp("cli.doctor.detail.pricing_no_stop", &[model]),
                     );
                 }
             }
             Some(_) => self.warn(
-                "pricing",
-                format!("the `[pricing.{model}]` entry is incomplete; it is ignored"),
+                qcode_i18n::tr("cli.doctor.label.pricing"),
+                qcode_i18n::trp("cli.doctor.detail.pricing_incomplete", &[model]),
             ),
             None => self.warn(
-                "pricing",
-                format!(
-                    "no `[pricing.{model}]` entry; `--max-cost` cannot stop the run. \
-                     Prices are not guessed — declare the rates or ignore this line"
-                ),
+                qcode_i18n::tr("cli.doctor.label.pricing"),
+                qcode_i18n::trp("cli.doctor.detail.pricing_missing", &[model]),
             ),
         }
     }
@@ -305,7 +383,10 @@ impl Doctor {
             Err(_) => return,
         };
         if resolved.is_mock {
-            self.ok("connectivity", "skipped (mock provider)");
+            self.ok(
+                qcode_i18n::tr("cli.doctor.label.connectivity"),
+                qcode_i18n::tr("cli.doctor.detail.conn_skipped_mock"),
+            );
             return;
         }
 
@@ -314,7 +395,13 @@ impl Doctor {
             match qcode_kernel::build_egress(config, &dir, resolved.base_url.as_deref()).await {
                 Ok(egress) => egress,
                 Err(err) => {
-                    self.fail("connectivity", format!("cannot start egress proxy: {err}"));
+                    self.fail(
+                        qcode_i18n::tr("cli.doctor.label.connectivity"),
+                        qcode_i18n::trp(
+                            "cli.doctor.detail.conn_proxy_failed",
+                            &[err.to_string().as_str()],
+                        ),
+                    );
                     return;
                 }
             };
@@ -324,7 +411,10 @@ impl Doctor {
         ) {
             Ok(provider) => provider,
             Err(err) => {
-                self.fail("connectivity", err.to_string());
+                self.fail(
+                    qcode_i18n::tr("cli.doctor.label.connectivity"),
+                    err.to_string(),
+                );
                 return;
             }
         };
@@ -350,15 +440,36 @@ impl Doctor {
         };
 
         match tokio::time::timeout(Duration::from_secs(10), probe).await {
-            Ok(Ok(())) => self.ok("connectivity", "provider responded"),
+            Ok(Ok(())) => self.ok(
+                qcode_i18n::tr("cli.doctor.label.connectivity"),
+                qcode_i18n::tr("cli.doctor.detail.conn_responded"),
+            ),
             Ok(Err(ProviderError::Auth(err))) => {
-                self.fail("connectivity", format!("authentication failed: {err}"));
+                self.fail(
+                    qcode_i18n::tr("cli.doctor.label.connectivity"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.conn_auth_failed",
+                        &[err.to_string().as_str()],
+                    ),
+                );
             }
             Ok(Err(ProviderError::InvalidRequest(err))) => {
-                self.fail("connectivity", format!("invalid request: {err}"));
+                self.fail(
+                    qcode_i18n::tr("cli.doctor.label.connectivity"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.conn_invalid_request",
+                        &[err.to_string().as_str()],
+                    ),
+                );
             }
-            Ok(Err(err)) => self.warn("connectivity", err.to_string()),
-            Err(_) => self.warn("connectivity", "timed out after 10s"),
+            Ok(Err(err)) => self.warn(
+                qcode_i18n::tr("cli.doctor.label.connectivity"),
+                err.to_string(),
+            ),
+            Err(_) => self.warn(
+                qcode_i18n::tr("cli.doctor.label.connectivity"),
+                qcode_i18n::tr("cli.doctor.detail.conn_timeout"),
+            ),
         }
     }
 
@@ -366,10 +477,16 @@ impl Doctor {
         match Command::new("rustc").arg("--version").output() {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                self.ok("rustc", version);
+                self.ok(qcode_i18n::tr("cli.doctor.label.rustc"), version);
             }
-            Ok(_) => self.warn("rustc", "`rustc --version` failed"),
-            Err(_) => self.warn("rustc", "not found on PATH (only needed to build)"),
+            Ok(_) => self.warn(
+                qcode_i18n::tr("cli.doctor.label.rustc"),
+                qcode_i18n::tr("cli.doctor.detail.rustc_version_failed"),
+            ),
+            Err(_) => self.warn(
+                qcode_i18n::tr("cli.doctor.label.rustc"),
+                qcode_i18n::tr("cli.doctor.detail.rustc_missing"),
+            ),
         }
     }
 
@@ -387,18 +504,20 @@ impl Doctor {
                 .unwrap_or_else(|| "unknown".to_string())
         };
         self.ok(
-            "token",
-            format!(
-                "integrity {}; restricted sids {}",
-                field("token integrity:"),
-                field("token restricted sids:")
+            qcode_i18n::tr("cli.doctor.label.token"),
+            qcode_i18n::trp(
+                "cli.doctor.detail.token_details",
+                &[
+                    field("token integrity:").as_str(),
+                    field("token restricted sids:").as_str(),
+                ],
             ),
         );
         for line in lines.iter().filter(|line| line.starts_with("create ")) {
             if line.contains(": error:") {
                 self.warn(
-                    "temp",
-                    format!("{line}; a sandboxed shell falls back to a temp inside the workspace"),
+                    qcode_i18n::tr("cli.doctor.label.temp"),
+                    qcode_i18n::trp("cli.doctor.detail.temp_fallback", &[line.as_str()]),
                 );
             }
         }
@@ -407,43 +526,62 @@ impl Doctor {
     fn check_update(&mut self, config: &Config, data_dir: &Option<PathBuf>) {
         let update = &config.update;
         if !update.enabled {
-            self.warn("update", "disabled; qc never looks for new releases");
+            self.warn(
+                qcode_i18n::tr("cli.doctor.label.update"),
+                qcode_i18n::tr("cli.doctor.detail.update_disabled"),
+            );
             return;
         }
 
         let directory = qcode_kernel::resolve_data_dir(data_dir.clone());
         let schedule = if update.check {
-            format!("every {} day(s)", update.check_days)
+            qcode_i18n::trp(
+                "cli.doctor.detail.update_schedule_days",
+                &[update.check_days.to_string().as_str()],
+            )
         } else {
-            "only via `qc update`".to_string()
+            qcode_i18n::tr("cli.doctor.detail.update_schedule_manual").into_owned()
         };
-        let detail = format!(
-            "current {}, checks {schedule} (repo {})",
-            crate::update::CURRENT_VERSION,
-            update.repo
+        let detail = qcode_i18n::trp(
+            "cli.doctor.detail.update_detail",
+            &[
+                crate::update::CURRENT_VERSION,
+                schedule.as_str(),
+                update.repo.as_str(),
+            ],
         );
 
         let Some((checked_at, latest)) = crate::update::cached(&directory) else {
-            self.ok("update", format!("{detail}; no cached check yet"));
+            self.ok(
+                qcode_i18n::tr("cli.doctor.label.update"),
+                qcode_i18n::trp("cli.doctor.detail.update_no_cache", &[detail.as_str()]),
+            );
             return;
         };
         let age = crate::update::cache_age_days(checked_at);
         match latest {
             Some(latest) if crate::update::is_newer(&latest, crate::update::CURRENT_VERSION) => {
                 self.warn(
-                    "update",
-                    format!(
-                        "{detail}; {latest} is available (last check {age}d ago, run `qc update`)"
+                    qcode_i18n::tr("cli.doctor.label.update"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.update_available",
+                        &[detail.as_str(), latest.as_str(), age.to_string().as_str()],
                     ),
                 );
             }
             Some(latest) => self.ok(
-                "update",
-                format!("{detail}; latest seen {latest} (last check {age}d ago)"),
+                qcode_i18n::tr("cli.doctor.label.update"),
+                qcode_i18n::trp(
+                    "cli.doctor.detail.update_latest_seen",
+                    &[detail.as_str(), latest.as_str(), age.to_string().as_str()],
+                ),
             ),
             None => self.ok(
-                "update",
-                format!("{detail}; last check {age}d ago found nothing"),
+                qcode_i18n::tr("cli.doctor.label.update"),
+                qcode_i18n::trp(
+                    "cli.doctor.detail.update_nothing_found",
+                    &[detail.as_str(), age.to_string().as_str()],
+                ),
             ),
         }
     }
@@ -453,14 +591,14 @@ impl Doctor {
         if config.sandbox.mode == SandboxMode::None {
             if strict {
                 self.fail(
-                    "network hard mode",
-                    "requires [sandbox] mode = \"sandbox-exec\" (macOS)",
+                    qcode_i18n::tr("cli.doctor.label.network_hard_mode"),
+                    qcode_i18n::tr("cli.doctor.detail.net_requires_sandbox_exec"),
                 );
                 return;
             }
             self.warn(
-                "sandbox",
-                "none; approval and workspace path checks are the boundary",
+                qcode_i18n::tr("cli.doctor.label.sandbox"),
+                qcode_i18n::tr("cli.doctor.detail.sandbox_none_boundary"),
             );
             return;
         }
@@ -468,15 +606,15 @@ impl Doctor {
         if strict {
             if config.sandbox.mode != SandboxMode::SandboxExec {
                 self.fail(
-                    "network hard mode",
-                    "requires [sandbox] mode = \"sandbox-exec\" (macOS)",
+                    qcode_i18n::tr("cli.doctor.label.network_hard_mode"),
+                    qcode_i18n::tr("cli.doctor.detail.net_requires_sandbox_exec"),
                 );
                 return;
             }
             if !config.network.enabled {
                 self.fail(
-                    "network hard mode",
-                    "requires [network] enabled = true (the proxy is the only allowed destination)",
+                    qcode_i18n::tr("cli.doctor.label.network_hard_mode"),
+                    qcode_i18n::tr("cli.doctor.detail.net_requires_proxy"),
                 );
                 return;
             }
@@ -502,11 +640,21 @@ impl Doctor {
         // message that `extra_read` produces when the directory is gone.
         let home = config::home_dir();
         for (field, paths) in [
-            ("sandbox extra_read", &config.sandbox.extra_read),
-            ("sandbox extra_writable", &config.sandbox.extra_writable),
+            // 在这里就 `tr()`：门禁靠 `tr("字面量")` 认「这个 key 有人用」，
+            // 往数组里塞裸 key 再在循环里 `tr(field)`，对门禁就是**没人用**——
+            // 它会以「声明了但没人引用」报出来。这不是门禁的毛病：能 grep 到
+            // 的引用才是引用。
+            (
+                qcode_i18n::tr("cli.doctor.label.sandbox_extra_read"),
+                &config.sandbox.extra_read,
+            ),
+            (
+                qcode_i18n::tr("cli.doctor.label.sandbox_extra_writable"),
+                &config.sandbox.extra_writable,
+            ),
         ] {
             for path in paths {
-                self.ok(field, show_path(path, home.as_deref()));
+                self.ok(&field, show_path(path, home.as_deref()));
             }
         }
         match sandbox::build(
@@ -520,15 +668,18 @@ impl Doctor {
             },
         ) {
             Ok(sandbox) => {
-                self.ok("sandbox", sandbox.describe());
+                self.ok(
+                    qcode_i18n::tr("cli.doctor.label.sandbox"),
+                    sandbox.describe(),
+                );
                 if strict {
                     self.ok(
-                        "network hard mode",
-                        "proxy-only via sandbox-exec; the proxy port is assigned at startup",
+                        qcode_i18n::tr("cli.doctor.label.network_hard_mode"),
+                        qcode_i18n::tr("cli.doctor.detail.net_proxy_only"),
                     );
                 }
             }
-            Err(err) => self.fail("sandbox", err.to_string()),
+            Err(err) => self.fail(qcode_i18n::tr("cli.doctor.label.sandbox"), err.to_string()),
         }
     }
 
@@ -583,7 +734,13 @@ impl Doctor {
         ) {
             Ok(sandbox) => sandbox,
             Err(error) => {
-                self.warn("mcp probe", format!("no sandbox: {error}"));
+                self.warn(
+                    qcode_i18n::tr("cli.doctor.label.mcp_probe"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.mcp_no_sandbox",
+                        &[error.to_string().as_str()],
+                    ),
+                );
                 return;
             }
         };
@@ -592,9 +749,10 @@ impl Doctor {
             Ok(egress) => egress,
             Err(error) => {
                 self.warn(
-                    "mcp probe",
-                    format!(
-                        "cannot start the egress proxy, remote servers will be skipped: {error}"
+                    qcode_i18n::tr("cli.doctor.label.mcp_probe"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.mcp_proxy_failed",
+                        &[error.to_string().as_str()],
                     ),
                 );
                 None
@@ -622,7 +780,11 @@ impl Doctor {
         .await;
 
         for report in &reports {
-            let label = format!("mcp probe {}", report.server);
+            let label = format!(
+                "{} {}",
+                qcode_i18n::tr("cli.doctor.label.mcp_probe"),
+                report.server
+            );
             if let Some(error) = &report.error {
                 // `warn`, not `fail`: one unreachable server loses its own
                 // tools and the session still runs (ADR-0066's rule for the
@@ -642,16 +804,23 @@ impl Doctor {
             };
             self.ok(
                 &label,
-                format!(
-                    "protocol {} · declares tools={} resources={} prompts={} · registered {registered}{}",
-                    report.protocol_version.as_deref().unwrap_or("-"),
-                    report.declared.tools,
-                    report.declared.resources,
-                    report.declared.prompts,
-                    match report.instructions_bytes {
-                        Some(bytes) => format!(" · instructions {bytes} bytes"),
-                        None => String::new(),
-                    }
+                qcode_i18n::trp(
+                    "cli.doctor.detail.mcp_probe_ok",
+                    &[
+                        report.protocol_version.as_deref().unwrap_or("-"),
+                        report.declared.tools.to_string().as_str(),
+                        report.declared.resources.to_string().as_str(),
+                        report.declared.prompts.to_string().as_str(),
+                        registered.as_str(),
+                        match report.instructions_bytes {
+                            Some(bytes) => qcode_i18n::trp(
+                                "cli.doctor.detail.mcp_probe_instructions",
+                                &[bytes.to_string().as_str()],
+                            ),
+                            None => String::new(),
+                        }
+                        .as_str(),
+                    ],
                 ),
             );
 
@@ -687,7 +856,14 @@ impl Doctor {
                     // Covered by `agrees_with`; listed so the match is total.
                     _ => continue,
                 };
-                self.warn(&format!("mcp probe {} {name}", report.server), detail);
+                self.warn(
+                    format!(
+                        "{} {} {name}",
+                        qcode_i18n::tr("cli.doctor.label.mcp_probe"),
+                        report.server
+                    ),
+                    detail,
+                );
             }
         }
     }
@@ -702,13 +878,19 @@ impl Doctor {
     /// config. The negotiated protocol version is logged at startup instead.
     fn check_remote(&mut self, label: &str, server: &McpServerConfig, config: &Config) {
         let Some(url) = server.url.as_deref() else {
-            self.warn(label, "no url; qcode will skip it");
+            self.warn(label, qcode_i18n::tr("cli.doctor.detail.mcp_no_url"));
             return;
         };
         let parsed = match reqwest::Url::parse(url) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.warn(label, format!("url {url:?} is unusable: {error}"));
+                self.warn(
+                    label,
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.mcp_bad_url",
+                        &[format!("{url:?}").as_str(), error.to_string().as_str()],
+                    ),
+                );
                 return;
             }
         };
@@ -727,18 +909,22 @@ impl Doctor {
         // "audited" would be a claim about a mechanism that is not running.
         let proxy = config.network_plan().proxy;
         let audit = if !proxy {
-            "no proxy, so nothing is audited"
+            qcode_i18n::tr("cli.doctor.detail.audit_none")
         } else if config.network.audit {
-            "audited"
+            qcode_i18n::tr("cli.doctor.detail.audit_on")
         } else {
-            "not audited ([network] audit = false)"
+            qcode_i18n::tr("cli.doctor.detail.audit_off")
         };
         self.ok(
             label,
-            format!(
-                "transport streamable-http, {url}, credentials [bearer {token}], headers [{}], \
-                 {audit}",
-                server.headers.len()
+            qcode_i18n::trp(
+                "cli.doctor.detail.mcp_remote_ok",
+                &[
+                    url,
+                    token.as_str(),
+                    server.headers.len().to_string().as_str(),
+                    audit.as_ref(),
+                ],
             ),
         );
 
@@ -748,8 +934,8 @@ impl Doctor {
             && std::env::var_os(var).is_none()
         {
             self.warn(
-                &format!("{label} bearer_token_env_var"),
-                format!("${var} is not set in qcode's environment, so this server is skipped"),
+                qcode_i18n::trp("cli.doctor.label.mcp_bearer", &[label]),
+                qcode_i18n::trp("cli.doctor.detail.mcp_bearer_unset", &[var.as_str()]),
             );
         }
 
@@ -758,9 +944,8 @@ impl Doctor {
             // one there is no client, and a remote server is refused rather
             // than connected around the proxy (ADR-0067 §2).
             self.warn(
-                &format!("{label} network"),
-                "[network] enabled = false, so qcode has no egress client and will refuse this \
-                 server instead of connecting around the proxy",
+                qcode_i18n::trp("cli.doctor.label.mcp_network", &[label]),
+                qcode_i18n::tr("cli.doctor.detail.mcp_no_egress"),
             );
             return;
         }
@@ -771,19 +956,19 @@ impl Doctor {
             // `unknown = "allow"` lets the proxy through, but it lets every
             // other host through too; worth one line so it is a choice.
             self.warn(
-                &format!("{label} network"),
-                format!(
-                    "{host}:{port} is not in [network] allow, and it will be reached only \
-                     because [network] unknown = \"allow\""
+                qcode_i18n::trp("cli.doctor.label.mcp_network", &[label]),
+                qcode_i18n::trp(
+                    "cli.doctor.detail.mcp_unknown_allow",
+                    &[host.as_str(), port.to_string().as_str()],
                 ),
             );
             return;
         }
         self.warn(
-            &format!("{label} network"),
-            format!(
-                "{host}:{port} is not in [network] allow, so the proxy will answer 403 and this \
-                 server will contribute no tools; add allow = [\"{host}:{port}\"] under [network]"
+            qcode_i18n::trp("cli.doctor.label.mcp_network", &[label]),
+            qcode_i18n::trp(
+                "cli.doctor.detail.mcp_not_allowed",
+                &[host.as_str(), port.to_string().as_str()],
             ),
         );
     }
@@ -813,20 +998,21 @@ impl Doctor {
                 // is not found, so it goes on its own line rather than being
                 // inferred from a `not found` message.
                 self.ok(
-                    "mcp path",
-                    format!(
-                        "{} (sampled with {program})",
-                        show_path_list(&path.to_string_lossy())
+                    qcode_i18n::tr("cli.doctor.label.mcp_path"),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.mcp_path_sampled",
+                        &[
+                            show_path_list(&path.to_string_lossy()).as_str(),
+                            program.as_str(),
+                        ],
                     ),
                 );
                 Some(path)
             }
             None => {
                 self.warn(
-                    "mcp path",
-                    "no shell environment snapshot, so a bare `command` is looked up in qcode's \
-                     own PATH only; under `qc gui` from the Dock that is launchd's minimal one — \
-                     use an absolute path, or check `qc shell-env`",
+                    qcode_i18n::tr("cli.doctor.label.mcp_path"),
+                    qcode_i18n::tr("cli.doctor.detail.mcp_path_no_snapshot"),
                 );
                 None
             }
@@ -864,15 +1050,15 @@ impl Doctor {
         let global = config.sandbox.mode != SandboxMode::None;
         if !global && config.mcp.servers.iter().any(|server| server.enabled) {
             self.warn(
-                "mcp",
-                "[sandbox] mode = \"none\": no server is confined, whatever [mcp] sandbox says",
+                qcode_i18n::tr("cli.doctor.label.mcp"),
+                qcode_i18n::tr("cli.doctor.detail.mcp_sandbox_none"),
             );
         }
 
         for server in &config.mcp.servers {
-            let label = format!("mcp {}", server.name);
+            let label = format!("{} {}", qcode_i18n::tr("cli.doctor.label.mcp"), server.name);
             if !server.enabled {
-                self.ok(&label, "disabled; skipped at startup");
+                self.ok(&label, qcode_i18n::tr("cli.doctor.detail.mcp_disabled"));
                 continue;
             }
 
@@ -888,7 +1074,7 @@ impl Doctor {
                 None => {
                     self.warn(
                         &label,
-                        "sets both or neither of `command` and `url`; qcode will skip it",
+                        qcode_i18n::tr("cli.doctor.detail.mcp_bad_transport"),
                     );
                     continue;
                 }
@@ -900,9 +1086,8 @@ impl Doctor {
                     continue;
                 }
                 self.warn(
-                    &format!("{label} env {key}"),
-                    "the value is a literal, so the secret is in the config file; write \
-                     ${NAME} instead so it is read from qcode's environment",
+                    qcode_i18n::trp("cli.doctor.label.mcp_env", &[label.as_str(), key.as_str()]),
+                    qcode_i18n::tr("cli.doctor.detail.mcp_env_literal"),
                 );
             }
 
@@ -922,11 +1107,14 @@ impl Doctor {
                 for path in paths {
                     let shown = show_path(path, real_home.as_deref());
                     if path.exists() {
-                        self.ok(&format!("{label} {field}"), shown);
+                        self.ok(
+                            qcode_i18n::trp("cli.doctor.label.mcp_field", &[label.as_str(), field]),
+                            shown,
+                        );
                     } else {
                         self.warn(
-                            &format!("{label} {field}"),
-                            format!("{shown} does not exist; the grant skips it"),
+                            qcode_i18n::trp("cli.doctor.label.mcp_field", &[label.as_str(), field]),
+                            qcode_i18n::trp("cli.doctor.detail.grant_missing", &[shown.as_str()]),
                         );
                     }
                 }
@@ -948,10 +1136,10 @@ impl Doctor {
                     .collect::<Vec<_>>()
                     .join(" or ");
                 self.warn(
-                    &format!("{label} credentials"),
-                    format!(
-                        "\"{}\" grants nothing on this machine (no {wanted})",
-                        preset.label()
+                    qcode_i18n::trp("cli.doctor.label.mcp_credentials", &[label.as_str()]),
+                    qcode_i18n::trp(
+                        "cli.doctor.detail.grant_nothing",
+                        &[preset.label(), wanted.as_str()],
                     ),
                 );
             }
@@ -959,8 +1147,7 @@ impl Doctor {
             if !server.sandbox_mode(config.mcp.sandbox).is_confined() {
                 self.warn(
                     &label,
-                    "sandbox = \"off\"; the server is not confined, so it reads and writes \
-                     whatever your user can",
+                    qcode_i18n::tr("cli.doctor.detail.sandbox_off_unconfined"),
                 );
                 continue;
             }

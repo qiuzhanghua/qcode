@@ -331,22 +331,32 @@ impl Sandbox for Bwrap {
         // exactly about not letting the printed grant and the enforced grant
         // drift apart: "bubblewrap" alone does not say whether build caches
         // came along.
-        let mut text = format!(
-            "bubblewrap (network {}, writes: {})",
-            if self.network { "allowed" } else { "denied" },
-            if self.outside.grants_build_caches() {
-                "roots + build caches + host /tmp"
+        let mut text = {
+            let network = if self.network {
+                qcode_i18n::tr("core.sandbox.describe.network_allowed")
             } else {
-                "roots only"
-            }
-        );
+                qcode_i18n::tr("core.sandbox.describe.network_denied")
+            };
+            let writes = if self.outside.grants_build_caches() {
+                qcode_i18n::tr("core.sandbox.describe.writes_roots_caches")
+            } else {
+                qcode_i18n::tr("core.sandbox.describe.writes_roots_only")
+            };
+            qcode_i18n::trp(
+                "core.sandbox.describe.bwrap",
+                &[network.as_ref(), writes.as_ref()],
+            )
+        };
         if !self.extra_read.is_empty() {
             let list: Vec<String> = self
                 .extra_read
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            text.push_str(&format!(", extra read: [{}]", list.join(", ")));
+            text.push_str(&qcode_i18n::trp(
+                "core.sandbox.describe.extra_read",
+                &[list.join(", ").as_str()],
+            ));
         }
         if !self.extra_write.is_empty() {
             let list: Vec<String> = self
@@ -354,7 +364,10 @@ impl Sandbox for Bwrap {
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            text.push_str(&format!(", extra write: [{}]", list.join(", ")));
+            text.push_str(&qcode_i18n::trp(
+                "core.sandbox.describe.extra_write",
+                &[list.join(", ").as_str()],
+            ));
         }
         text
     }
@@ -855,21 +868,22 @@ impl Sandbox for Landlock {
         // `qc doctor` prints this and nothing else about the ruleset, so the
         // extra read roots have to appear here or "what can this actually
         // reach?" is unanswerable from the outside (ADR-0066 §1).
-        let mut text = format!(
-            "Landlock filesystem confinement (network not restricted, writes: {})",
-            if self.outside.grants_build_caches() {
-                "roots + build caches + host /tmp"
-            } else {
-                "roots only"
-            }
-        );
+        let writes = if self.outside.grants_build_caches() {
+            qcode_i18n::tr("core.sandbox.describe.writes_roots_caches")
+        } else {
+            qcode_i18n::tr("core.sandbox.describe.writes_roots_only")
+        };
+        let mut text = qcode_i18n::trp("core.sandbox.describe.landlock", &[writes.as_ref()]);
         if !self.extra_read.is_empty() {
             let list: Vec<String> = self
                 .extra_read
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            text.push_str(&format!(", extra read: [{}]", list.join(", ")));
+            text.push_str(&qcode_i18n::trp(
+                "core.sandbox.describe.extra_read",
+                &[list.join(", ").as_str()],
+            ));
         }
         if !self.extra_write.is_empty() {
             let list: Vec<String> = self
@@ -877,10 +891,13 @@ impl Sandbox for Landlock {
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            text.push_str(&format!(", extra write: [{}]", list.join(", ")));
+            text.push_str(&qcode_i18n::trp(
+                "core.sandbox.describe.extra_write",
+                &[list.join(", ").as_str()],
+            ));
         }
         if self.allow_pty {
-            text.push_str(", pty: host devpts");
+            text.push_str(&qcode_i18n::tr("core.sandbox.describe.pty"));
         }
         text
     }

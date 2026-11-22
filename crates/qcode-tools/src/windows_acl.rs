@@ -278,11 +278,12 @@ impl Sandbox for WindowsAcl {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "windows-acl (partial): write-restricted token; writes allowed only under {} and {}; \
-             reads and network are not restricted; hard links and named pipes are not covered",
-            self.workspace.display(),
-            self.temp.display()
+        qcode_i18n::trp(
+            "core.sandbox.describe.windows_acl",
+            &[
+                self.workspace.display().to_string().as_str(),
+                self.temp.display().to_string().as_str(),
+            ],
         )
     }
 

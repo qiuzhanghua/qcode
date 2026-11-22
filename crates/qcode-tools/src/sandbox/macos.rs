@@ -80,12 +80,19 @@ impl Sandbox for SandboxExec {
     }
 
     fn describe(&self) -> String {
+        // 这一段会出现在 `qc doctor` 与授权报错里，是给人读的（I18N.md §10.17）。
+        // 机制名（`sandbox-exec`）不翻：用户要拿它对照 man page 与 ADR。
         match self.network {
-            SandboxNetwork::Deny => "sandbox-exec (network denied)".to_string(),
-            SandboxNetwork::Allow => "sandbox-exec (network allowed)".to_string(),
-            SandboxNetwork::ProxyOnly { port } => {
-                format!("sandbox-exec (network proxy-only on localhost:{port})")
+            SandboxNetwork::Deny => {
+                qcode_i18n::tr("core.sandbox.describe.macos_denied").into_owned()
             }
+            SandboxNetwork::Allow => {
+                qcode_i18n::tr("core.sandbox.describe.macos_allowed").into_owned()
+            }
+            SandboxNetwork::ProxyOnly { port } => qcode_i18n::trp(
+                "core.sandbox.describe.macos_proxy_only",
+                &[port.to_string().as_str()],
+            ),
         }
     }
 

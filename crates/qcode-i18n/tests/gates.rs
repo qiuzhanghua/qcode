@@ -783,6 +783,16 @@ fn ui_text_positions() -> &'static [&'static str] {
         // 只收 `println!` / `eprintln!` —— 它们是**直接输出**，没有误伤风险。
         "println!(",
         "eprintln!(",
+        // `qc doctor` 的两参数检查行（I18N.md §10.17）。第一个参数是标签 key，
+        // **第二个**才是明细——`is_multi_literal_marker` 会把两者都取出来，
+        // 标签被 `is_key` 滤掉、明细照查。不收这几个标记时，doctor 的 22 个标签
+        // 与约 45 条明细整批落在两条门禁之间：中文门禁只找汉字，英文门禁看这里。
+        "self.ok(",
+        "self.warn(",
+        "self.fail(",
+        "doctor.ok(",
+        "doctor.warn(",
+        "doctor.fail(",
         // 有意**不**收 `push_str(` / `write!(`：它们是通用字符串拼装，
         // `qcode-tools/macos.rs` 用它拼 sandbox-exec 的 profile DSL
         // （`(allow file-read*`），翻了那条规则就废了；`apply.rs` 用它拼纯换行。
@@ -925,20 +935,90 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
             line.to_string()
         };
         for marker in &markers {
-            let Some(text) = literal_after(&tail, marker) else {
-                continue;
+            // 两参数的调用点（`self.warn(key, detail)`）**第二个**字面量才是文案：
+            // 只取 `literal_after` 会永远看到第一个（也就是已翻好的 key），明细就
+            // 整批躲过去。doctor 的 22 个标签与约 45 条明细正是这么漏掉两批的，
+            // 所以这几个标记取「标记之后的全部字面量」。
+            let texts = if is_multi_literal_marker(marker) {
+                literals_after(&tail, marker)
+            } else {
+                literal_after(&tail, marker).into_iter().collect()
             };
-            if !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
-                continue;
+            for text in texts {
+                if !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
+                    continue;
+                }
+                if is_key(&text)
+                    || is_progress_tag(&text)
+                    || is_placeholder_only(&text)
+                    || is_diff_header(&text)
+                {
+                    continue;
+                }
+                out.push((index + 1, text));
             }
-            if is_key(&text)
-                || is_progress_tag(&text)
-                || is_placeholder_only(&text)
-                || is_diff_header(&text)
-            {
-                continue;
+        }
+    }
+    out
+}
+
+/// 一行里有**两段**文案、只有第二段是文案的调用点。
+///
+/// `self.ok(label_key, detail)` 的第一个参数现在是 `qcode_i18n::tr(…)` 里的 key
+/// （形状像 key，会被 `is_key` 滤掉），真正要盯的是第二个参数。只用「标记之后的
+/// 第一个字面量」会永远只看到那个 key——**这正是 doctor 那一批躲过两轮扫描的原因**。
+fn is_multi_literal_marker(marker: &str) -> bool {
+    matches!(
+        marker,
+        "self.ok(" | "self.warn(" | "self.fail(" | "doctor.ok(" | "doctor.warn(" | "doctor.fail("
+    )
+}
+
+/// `marker` 之后同一段文本里的**全部**字符串字面量（按出现顺序）。
+///
+/// 不能用 `literal_after` 循环：那个函数要求「标记之后（跳空白）立刻是引号」，
+/// 而这里标记后面还有 `qcode_i18n::tr(` 之类的代码，第一个字面量前面隔着东西。
+fn literals_after(text: &str, marker: &str) -> Vec<String> {
+    let Some(at) = text.find(marker) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut chars = text[at + marker.len()..].chars();
+    while let Some(ch) = chars.next() {
+        if ch != '"' {
+            continue;
+        }
+        let mut lit = String::new();
+        let mut closed = false;
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => {
+                    closed = true;
+                    break;
+                }
+                // 转义对原样保留（`\n` 之类）；`\` 后跟换行是续行，折成一个空格。
+                '\\' => match chars.next() {
+                    Some('\n') => {
+                        while let Some(w) = chars.clone().next() {
+                            if w.is_whitespace() {
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        lit.push(' ');
+                    }
+                    Some(escaped) => {
+                        lit.push('\\');
+                        lit.push(escaped);
+                    }
+                    None => break,
+                },
+                _ => lit.push(c),
             }
-            out.push((index + 1, text));
+        }
+        if closed {
+            out.push(lit);
         }
     }
     out

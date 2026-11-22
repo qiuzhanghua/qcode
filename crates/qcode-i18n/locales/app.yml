@@ -1900,6 +1900,54 @@ tool:
       en: "command timed out after %{0}s"
       zh-CN: "命令在 %{0} 秒后超时"
 core:
+  # 沙箱与授权的自述（`qc doctor` 与授权报错共用同一份）。
+  #
+  # 为什么不翻实现名：`sandbox-exec` / `bubblewrap` / `Landlock` / `windows-acl`
+  # 是**机制名**，用户要拿它去对照 man page 与 ADR；翻了就查不到。
+  sandbox:
+    describe:
+      macos_denied:
+        en: "sandbox-exec (network denied)"
+        zh-CN: "sandbox-exec（网络拒绝）"
+      macos_allowed:
+        en: "sandbox-exec (network allowed)"
+        zh-CN: "sandbox-exec（网络允许）"
+      macos_proxy_only:
+        en: "sandbox-exec (network proxy-only on localhost:%{0})"
+        zh-CN: "sandbox-exec（网络只能走 localhost:%{0} 的代理）"
+      bwrap:
+        en: "bubblewrap (network %{0}, writes: %{1})"
+        zh-CN: "bubblewrap（网络%{0}，可写：%{1}）"
+      landlock:
+        en: "Landlock filesystem confinement (network not restricted, writes: %{0})"
+        zh-CN: "Landlock 文件系统限制（网络不受限，可写：%{0}）"
+      windows_acl:
+        en: "windows-acl (partial): write-restricted token; writes allowed only under %{0} and %{1}; reads and network are not restricted; hard links and named pipes are not covered"
+        zh-CN: "windows-acl（部分）：写受限令牌；只允许写入 %{0} 和 %{1}；读与网络不受限；硬链接与命名管道不在覆盖范围内"
+      noop:
+        en: "no OS sandbox; approval is the execution boundary"
+        zh-CN: "没有系统沙箱；执行边界就是审批"
+      network_allowed:
+        en: "allowed"
+        zh-CN: 允许
+      network_denied:
+        en: "denied"
+        zh-CN: 拒绝
+      writes_roots_caches:
+        en: "roots + build caches + host /tmp"
+        zh-CN: "根目录 + 构建缓存 + 宿主 /tmp"
+      writes_roots_only:
+        en: "roots only"
+        zh-CN: "只有根目录"
+      extra_read:
+        en: ", extra read: [%{0}]"
+        zh-CN: "，额外可读：[%{0}]"
+      extra_write:
+        en: ", extra write: [%{0}]"
+        zh-CN: "，额外可写：[%{0}]"
+      pty:
+        en: ", pty: host devpts"
+        zh-CN: "，pty：宿主 devpts"
   driver:
     # 一句话说清「能不能触发」。工具结果与界面共用同一份。
     describe:
@@ -2243,6 +2291,255 @@ cli:
     revoked:
       en: "revoked %{0} ACE(s) under %{1}"
       zh-CN: "已撤销 %{1} 下的 %{0} 条 ACE"
+
+  # `qc doctor`：标签（第一参数）与明细（第二参数）。
+  #
+  # 明细里混着两类东西，处理方式不同：
+  # - **散文**（`mock provider; no network calls`）→ 翻译；
+  # - **数据**（路径、版本号、来自下层 crate 的错误串）→ 原样透传。它们是运行期
+  #   事实，不是这句话的一部分，翻了反而对不上真实输出。
+  doctor:
+    all_passed:
+      en: "all checks passed"
+      zh-CN: 全部检查通过
+    failed:
+      en: "%{0} check(s) failed"
+      zh-CN: "%{0} 项检查未通过"
+    banner:
+      en: "qcode %{0}"
+      zh-CN: "qcode %{0}"
+    label:
+      # 程序名 / 协议名 / 配置键名不翻（与设置页一致）。
+      acp: { en: "ACP", zh-CN: "ACP" }
+      base_url: { en: "base url", zh-CN: "基础 URL" }
+      config: { en: "config", zh-CN: 配置 }
+      config_schema: { en: "config schema", zh-CN: "配置 schema" }
+      config_writable: { en: "config writable", zh-CN: 配置可写 }
+      connectivity: { en: "connectivity", zh-CN: 连通性 }
+      credentials: { en: "credentials", zh-CN: 凭据 }
+      data_dir: { en: "data dir", zh-CN: 数据目录 }
+      key_storage: { en: "key storage", zh-CN: 密钥存储 }
+      mcp: { en: "mcp", zh-CN: "MCP" }
+      mcp_path: { en: "mcp path", zh-CN: "MCP 路径" }
+      mcp_probe: { en: "mcp probe", zh-CN: "MCP 探测" }
+      model: { en: "model", zh-CN: 模型 }
+      network_hard_mode: { en: "network hard mode", zh-CN: 网络强制模式 }
+      pricing: { en: "pricing", zh-CN: 计价 }
+      project_config: { en: "project config", zh-CN: 项目配置 }
+      provider: { en: "provider", zh-CN: 供应商 }
+      rustc: { en: "rustc", zh-CN: "rustc" }
+      sandbox: { en: "sandbox", zh-CN: 沙箱 }
+      sandbox_extra_read: { en: "sandbox extra_read", zh-CN: "沙箱 extra_read" }
+      sandbox_extra_writable: { en: "sandbox extra_writable", zh-CN: "沙箱 extra_writable" }
+      temp: { en: "temp", zh-CN: 临时目录 }
+      token: { en: "token", zh-CN: 令牌 }
+      update: { en: "update", zh-CN: 更新 }
+      web_search: { en: "web_search", zh-CN: "web_search" }
+      # 拼接标签：`%{0}` 是已经翻好的基础标签，后缀才是要翻的那部分。
+      mcp_network: { en: "%{0} network", zh-CN: "%{0} 网络" }
+      mcp_bearer: { en: "%{0} bearer_token_env_var", zh-CN: "%{0} bearer_token_env_var" }
+      mcp_env: { en: "%{0} env %{1}", zh-CN: "%{0} env %{1}" }
+      mcp_field: { en: "%{0} %{1}", zh-CN: "%{0} %{1}" }
+      mcp_credentials: { en: "%{0} credentials", zh-CN: "%{0} 凭据" }
+    detail:
+      config_no_parent:
+        en: "config path has no parent directory"
+        zh-CN: 配置路径没有父目录
+      config_dir_hint:
+        en: "this directory refuses new files; either allow qc in your AV/EDR policy, set QCODE_CONFIG to a writable path, or create a `qcode.portable` file next to qc.exe to keep the config there"
+        zh-CN: 这个目录不接受新文件；要么在杀软/EDR 策略里放行 qc，要么把 QCODE_CONFIG 指到可写路径，或者在 qc.exe 旁边建一个 `qcode.portable` 把配置留在那儿
+      config_not_found:
+        en: "not found: %{0}"
+        zh-CN: "没找到：%{0}"
+      config_not_found_defaults:
+        en: "not found: %{0} (using defaults)"
+        zh-CN: "没找到：%{0}（用默认值）"
+      schema_version:
+        en: "version %{0} (this build supports %{1})"
+        zh-CN: "版本 %{0}（这个构建支持 %{1}）"
+      search_disabled:
+        en: "disabled ([search] enabled = false)"
+        zh-CN: "已关闭（`[search] enabled = false`）"
+      search_backend_ready:
+        en: "backend '%{0}' is ready"
+        zh-CN: "后端 `%{0}` 就绪"
+      search_searxng_needs_url:
+        en: "backend 'searxng' needs [search] base_url; the tool is not registered"
+        zh-CN: "后端 `searxng` 需要 `[search] base_url`；这个工具没有被注册"
+      search_needs_key:
+        en: "export %{0} (or set [search] api_key_env); the tool is not registered"
+        zh-CN: "导出 %{0}（或设置 `[search] api_key_env`）；这个工具没有被注册"
+      creds_mock:
+        en: "mock provider; no network calls"
+        zh-CN: "mock 供应商；不发网络请求"
+      creds_key_present:
+        en: "API key present (%{0})"
+        zh-CN: "API key 已就位（%{0}）"
+      creds_keyless:
+        en: "keyless provider"
+        zh-CN: 无需密钥的供应商
+      pricing_stops:
+        en: "%{0} declared; `--max-cost` stops at the limit"
+        zh-CN: "已声明 %{0}；`--max-cost` 到点就停"
+      pricing_no_stop:
+        en: "%{0} declared; set `--max-cost` or `[agent] max_cost_usd` to actually stop"
+        zh-CN: "已声明 %{0}；要真的停下来，得设 `--max-cost` 或 `[agent] max_cost_usd`"
+      pricing_incomplete:
+        en: "the `[pricing.%{0}]` entry is incomplete; it is ignored"
+        zh-CN: "`[pricing.%{0}]` 这一项不完整；已忽略"
+      pricing_missing:
+        en: "no `[pricing.%{0}]` entry; `--max-cost` cannot stop the run. Prices are not guessed — declare the rates or ignore this line"
+        zh-CN: "没有 `[pricing.%{0}]` 这一项；`--max-cost` 停不下来。价格不猜——要么声明费率，要么忽略这一行"
+      conn_skipped_mock:
+        en: "skipped (mock provider)"
+        zh-CN: "跳过（mock 供应商）"
+      conn_proxy_failed:
+        en: "cannot start egress proxy: %{0}"
+        zh-CN: "起不了出网代理：%{0}"
+      conn_responded:
+        en: "provider responded"
+        zh-CN: 供应商有应答
+      conn_auth_failed:
+        en: "authentication failed: %{0}"
+        zh-CN: "认证没过：%{0}"
+      conn_invalid_request:
+        en: "invalid request: %{0}"
+        zh-CN: "请求无效：%{0}"
+      conn_timeout:
+        en: "timed out after 10s"
+        zh-CN: 10 秒后超时
+      rustc_version_failed:
+        en: "`rustc --version` failed"
+        zh-CN: "`rustc --version` 失败"
+      rustc_missing:
+        en: "not found on PATH (only needed to build)"
+        zh-CN: "PATH 上找不到（只在构建时需要）"
+      token_details:
+        en: "integrity %{0}; restricted sids %{1}"
+        zh-CN: "完整性级别 %{0}；受限 SID %{1}"
+      temp_fallback:
+        en: "%{0}; a sandboxed shell falls back to a temp inside the workspace"
+        zh-CN: "%{0}；被沙箱的 shell 会退回到工作区内的临时目录"
+      update_disabled:
+        en: "disabled; qc never looks for new releases"
+        zh-CN: "已关闭；qc 从不查找新版本"
+      update_no_cache:
+        en: "%{0}; no cached check yet"
+        zh-CN: "%{0}；还没有缓存过的检查结果"
+      update_available:
+        en: "%{0}; %{1} is available (last check %{2}d ago, run `qc update`)"
+        zh-CN: "%{0}；有 %{1} 可用（上次检查是 %{2} 天前，跑 `qc update`）"
+      update_latest_seen:
+        en: "%{0}; latest seen %{1} (last check %{2}d ago)"
+        zh-CN: "%{0}；见过的最新是 %{1}（上次检查是 %{2} 天前）"
+      update_schedule_days:
+        en: "every %{0} day(s)"
+        zh-CN: "每 %{0} 天检查一次"
+      update_schedule_manual:
+        en: "only via `qc update`"
+        zh-CN: "只在跑 `qc update` 时检查"
+      update_detail:
+        en: "current %{0}, checks %{1} (repo %{2})"
+        zh-CN: "当前 %{0}，%{1}（仓库 %{2}）"
+      update_nothing_found:
+        en: "%{0}; last check %{1}d ago found nothing"
+        zh-CN: "%{0}；%{1} 天前那次检查什么也没找到"
+      net_requires_sandbox_exec:
+        en: "requires [sandbox] mode = \"sandbox-exec\" (macOS)"
+        zh-CN: "需要 `[sandbox] mode = \"sandbox-exec\"`（macOS）"
+      net_requires_proxy:
+        en: "requires [network] enabled = true (the proxy is the only allowed destination)"
+        zh-CN: "需要 `[network] enabled = true`（代理是唯一被允许的出口）"
+      net_proxy_only:
+        en: "proxy-only via sandbox-exec; the proxy port is assigned at startup"
+        zh-CN: "经 sandbox-exec 只走代理；代理端口在启动时分配"
+      sandbox_none_boundary:
+        en: "none; approval and workspace path checks are the boundary"
+        zh-CN: "无；边界就是审批和路径检查"
+      mcp_no_sandbox:
+        en: "no sandbox: %{0}"
+        zh-CN: "没有沙箱：%{0}"
+      mcp_proxy_failed:
+        en: "cannot start the egress proxy, remote servers will be skipped: %{0}"
+        zh-CN: "起不了出网代理，远程服务器会被跳过：%{0}"
+      mcp_probe_ok:
+        en: "protocol %{0} · declares tools=%{1} resources=%{2} prompts=%{3} · registered %{4}%{5}"
+        zh-CN: "协议 %{0} · 声明 tools=%{1} resources=%{2} prompts=%{3} · 已注册 %{4}%{5}"
+      mcp_probe_instructions:
+        en: " · instructions %{0} bytes"
+        zh-CN: " · instructions %{0} 字节"
+      mcp_no_url:
+        en: "no url; qcode will skip it"
+        zh-CN: "没有 url；qcode 会跳过它"
+      mcp_bad_url:
+        en: "url %{0} is unusable: %{1}"
+        zh-CN: "url %{0} 用不了：%{1}"
+      mcp_remote_ok:
+        en: "transport streamable-http, %{0}, credentials [bearer %{1}], headers [%{2}], %{3}"
+        zh-CN: "传输 streamable-http，%{0}，凭据 [bearer %{1}]，请求头 [%{2}]，%{3}"
+      audit_none:
+        en: "no proxy, so nothing is audited"
+        zh-CN: "没有代理，也就没有审计"
+      audit_on:
+        en: "audited"
+        zh-CN: 已审计
+      audit_off:
+        en: "not audited ([network] audit = false)"
+        zh-CN: "未审计（`[network] audit = false`）"
+      mcp_bearer_unset:
+        en: "$%{0} is not set in qcode's environment, so this server is skipped"
+        zh-CN: "qcode 的环境里没有 $%{0}，所以跳过这个服务器"
+      mcp_no_egress:
+        en: "[network] enabled = false, so qcode has no egress client and will refuse this server instead of connecting around the proxy"
+        zh-CN: "`[network] enabled = false`，所以 qcode 没有出网客户端，会拒绝这个服务器——而不是绕开代理去连"
+      mcp_unknown_allow:
+        en: "%{0}:%{1} is not in [network] allow, and it will be reached only because [network] unknown = \"allow\""
+        zh-CN: "%{0}:%{1} 不在 `[network]` 的 allow 里，它能出去只是因为 `[network] unknown = \"allow\"`"
+      mcp_not_allowed:
+        en: "%{0}:%{1} is not in [network] allow, so the proxy will answer 403 and this server will contribute no tools; add allow = [\"%{0}:%{1}\"] under [network]"
+        zh-CN: "%{0}:%{1} 不在 `[network]` 的 allow 里，代理会回 403，这个服务器不会贡献任何工具；在 `[network]` 下加 `allow = [\"%{0}:%{1}\"]`"
+      mcp_path_sampled:
+        en: "%{0} (sampled with %{1})"
+        zh-CN: "%{0}（用 %{1} 采的样）"
+      mcp_path_no_snapshot:
+        en: "no shell environment snapshot, so a bare `command` is looked up in qcode's own PATH only; under `qc gui` from the Dock that is launchd's minimal one — use an absolute path, or check `qc shell-env`"
+        zh-CN: "没有 shell 环境快照，所以裸 `command` 只在 qcode 自己的 PATH 里找；从 Dock 起 `qc gui` 时那是 launchd 的最小 PATH——写绝对路径，或者看 `qc shell-env`"
+      mcp_sandbox_none:
+        en: "[sandbox] mode = \"none\": no server is confined, whatever [mcp] sandbox says"
+        zh-CN: "`[sandbox] mode = \"none\"`：不管 `[mcp]` 的 sandbox 怎么说，没有服务器被关起来"
+      mcp_disabled:
+        en: "disabled; skipped at startup"
+        zh-CN: "已关闭；启动时跳过"
+      mcp_bad_transport:
+        en: "sets both or neither of `command` and `url`; qcode will skip it"
+        zh-CN: "`command` 和 `url` 要么都设了、要么都没设；qcode 会跳过它"
+      mcp_env_literal:
+        en: "the value is a literal, so the secret is in the config file; write ${NAME} instead so it is read from qcode's environment"
+        zh-CN: "值是个字面量，密钥就躺在配置文件里；写成 ${NAME}，让它从 qcode 的环境里读"
+      grant_missing:
+        en: "%{0} does not exist; the grant skips it"
+        zh-CN: "%{0} 不存在；这条授权会跳过它"
+      grant_nothing:
+        en: "\"%{0}\" grants nothing on this machine (no %{1})"
+        zh-CN: "`%{0}` 在这台机器上什么也没授权（没有 %{1}）"
+      sandbox_off_unconfined:
+        en: "sandbox = \"off\"; the server is not confined, so it reads and writes whatever your user can"
+        zh-CN: "`sandbox = \"off\"`；这个服务器没有被关起来，你的用户能读写的它都能读写"
+      key_store_hint_store:
+        en: "store it:"
+        zh-CN: "存起来："
+      key_store_hint_then:
+        en: "then:"
+        zh-CN: "然后："
+      key_store_hint_avoid:
+        en: "avoid:"
+        zh-CN: "别用："
+      key_store_avoid_reason:
+        en: ", which puts the key in the command line"
+        zh-CN: "，那会把密钥写进命令行"
+      acp_ok:
+        en: "protocol v%{0} over stdio (`qc acp`)"
+        zh-CN: "协议 v%{0}，走 stdio（`qc acp`）"
 
   session:
     no_sessions:

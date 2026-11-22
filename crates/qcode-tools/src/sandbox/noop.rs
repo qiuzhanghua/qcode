@@ -19,7 +19,7 @@ impl Sandbox for NoSandbox {
     }
 
     fn describe(&self) -> String {
-        "no OS sandbox; approval is the execution boundary".to_string()
+        qcode_i18n::tr("core.sandbox.describe.noop").into_owned()
     }
 
     fn command(

@@ -5,6 +5,9 @@ use std::process::Command;
 fn qc(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_qc"))
         .args(args)
+        // 钉住语言（ADR-0105 §6）：`qc config show` / `mcp add` / `doctor` 的散文
+        // 都跟随 `[ui] language` / `QCODE_LANG`。不钉的话断言取决于宿主语言。
+        .env("QCODE_LANG", "en")
         .output()
         .expect("run qc")
 }
@@ -288,5 +291,5 @@ fn doctor_accepts_what_add_wrote() {
         "doctor rejected the config `mcp add` wrote:\n{text}"
     );
     // `--disabled` means doctor skips it rather than warning about the port.
-    assert!(text.contains("disabled"), "{text}");
+    assert!(text.contains("disabled; skipped at startup"), "{text}");
 }
