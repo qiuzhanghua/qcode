@@ -7,6 +7,9 @@ fn qc(data: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_qc"))
         .args(args)
         .args(["--data-dir", data.to_str().expect("utf-8 path")])
+        // 钉住语言（ADR-0105 §6）：`sessions …` 的输出现在跟随 `[ui] language` /
+        // `QCODE_LANG`。不钉的话断言会在中文宿主机上通过、英文宿主机上红。
+        .env("QCODE_LANG", "zh-CN")
         .output()
         .expect("run qc")
 }
@@ -87,7 +90,7 @@ fn without_yes_nothing_is_deleted() {
 
     let output = qc(dir.path(), &["sessions", "delete", "--except", &id]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("nothing to delete"), "{stdout}");
+    assert!(stdout.contains("没有要删除的"), "{stdout}");
 }
 
 /// With `--except`, a mistyped id would otherwise mean "keep nothing" — and

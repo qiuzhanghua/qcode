@@ -5,4 +5,59 @@
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
 # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
+qcd/main.rs	qcd {}
+qcd/main.rs	qcd: {error}
+qcd/main.rs	{HELP}
+qcode-core/approval.rs	  argv: {argv}
+qcode-core/approval.rs	  cwd: {cwd}
+qcode-core/approval.rs	  escalate to: {} (sandbox_permissions)
+qcode-core/approval.rs	  justification: {justification}
+qcode-core/approval.rs	  reason: {}
+qcode-core/approval.rs	  rule: {rule}
 qcode-gui/linux.rs	QCode
+qcode-kernel/logging.rs	qcode: [log] level {spec:?} is not a valid filter ({error}); using {fallback}
+qcode-tools/windows_acl.rs	qc-sandbox-run: {detail}
+qcode/daemon.rs	{report}
+qcode/doctor.rs	all checks passed
+qcode/doctor.rs	qcode {}
+qcode/doctor.rs	{} check(s) failed
+qcode/misc.rs	  last attempt failed: {error}
+qcode/misc.rs	  {error}
+qcode/misc.rs	--full needs a terminal; printing names only
+qcode/misc.rs	\n{} skill(s)
+qcode/misc.rs	environment sampling is off ([shell] env_sampling = \"off\")
+qcode/misc.rs	granted windows-acl write access to {}
+qcode/misc.rs	no skills discovered; checked:
+qcode/misc.rs	revoked {removed} ACE(s) under {}
+qcode/misc.rs	run_shell only sees the allow list plus the egress proxy variables
+qcode/misc.rs	sampling failed after {}ms
+qcode/misc.rs	skills are disabled ([skills] enabled = false)
+qcode/misc.rs	{name}
+qcode/misc.rs	{name}={value}
+qcode/run.rs	cost: ${:.6} (estimated)
+qcode/run.rs	paused: {}
+qcode/run.rs	session: {}
+qcode/run.rs	{summary}
+qcode/sandbox_probe.rs	probe: {}
+qcode/sandbox_probe.rs	{line}
+qcode/schedule.rs	{report}
+qcode/settings.rs	  backup: {}
+qcode/settings.rs	  folded [network] enabled/mode into [sandbox] network
+qcode/settings.rs	+++ template {}/{id}
+qcode/settings.rs	+++ template {}/{}
+qcode/settings.rs	--- {} (existing)
+qcode/settings.rs	\n{} template(s)
+qcode/settings.rs	appended [providers.{id}] to {}
+qcode/settings.rs	cancelled; {} unchanged
+qcode/settings.rs	config ok: {}
+qcode/settings.rs	removed MCP server '{name}' from {}
+qcode/settings.rs	warning: {err}
+qcode/settings.rs	{line}
+qcode/update.rs	current version: {CURRENT_VERSION} ({})
+qcode/update.rs	daemon updated: {}
+qcode/update.rs	downloading {}
+qcode/update.rs	installed {} at {}
+qcode/update.rs	latest release:  {}
+qcode/update.rs	no published release for {repo} yet
+qcode/update.rs	qcode is up to date
+qcode/update.rs	warning: cannot download {}: {error}

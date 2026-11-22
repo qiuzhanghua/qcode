@@ -33,7 +33,7 @@ pub(crate) fn cmd_sessions(
             use std::fmt::Write as _;
             let sessions = store.list()?;
             if sessions.is_empty() {
-                report.push_str("no sessions\n");
+                report.push_str(&format!("{}\n", qcode_i18n::tr("cli.session.no_sessions")));
             }
             for session in sessions {
                 let _ = write!(
@@ -72,10 +72,14 @@ pub(crate) fn cmd_sessions(
                             );
                         }
                         if task.roots.is_empty() {
-                            report.push_str("    (no roots)\n");
+                            report
+                                .push_str(&format!("{}\n", qcode_i18n::tr("cli.session.no_roots")));
                         }
                     }
-                    Err(_) => report.push_str("    (no task record)\n"),
+                    Err(_) => report.push_str(&format!(
+                        "{}\n",
+                        qcode_i18n::tr("cli.session.no_task_record")
+                    )),
                 }
             }
         }
@@ -103,7 +107,10 @@ pub(crate) fn cmd_sessions(
             use std::fmt::Write as _;
             let ids = store.gc(older_than_days, yes)?;
             if ids.is_empty() {
-                report.push_str("nothing to clean\n");
+                report.push_str(&format!(
+                    "{}\n",
+                    qcode_i18n::tr("cli.session.nothing_to_clean")
+                ));
             }
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
             let mut freed = 0u64;
@@ -138,7 +145,10 @@ pub(crate) fn cmd_sessions(
                 }
                 let _ = writeln!(report, "freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
             } else {
-                report.push_str("dry run; pass --yes to delete\n");
+                report.push_str(&format!(
+                    "{}\n",
+                    qcode_i18n::tr("cli.session.dry_run_delete")
+                ));
             }
         }
         SessionsCommand::Delete {
@@ -208,7 +218,10 @@ pub(crate) fn cmd_sessions(
                     .collect()
             };
             if doomed.is_empty() {
-                report.push_str("nothing to delete\n");
+                report.push_str(&format!(
+                    "{}\n",
+                    qcode_i18n::tr("cli.session.nothing_to_delete")
+                ));
             }
             // Show what a session was, not just its id: the whole point is to
             // recognise a test run before it goes.
@@ -287,7 +300,10 @@ pub(crate) fn cmd_sessions(
                 workspace.display()
             );
             if !yes {
-                report.push_str("dry run; pass --yes to restore\n");
+                report.push_str(&format!(
+                    "{}\n",
+                    qcode_i18n::tr("cli.session.dry_run_restore")
+                ));
                 write_report(&report)?;
                 return Ok(ExitCode::SUCCESS);
             }
@@ -347,9 +363,10 @@ pub(crate) fn store_key(
         if !status.success() {
             return Err("`security add-generic-password` failed".into());
         }
+        // 只翻前一句；`api_key_command = [...]` 是用户要粘进配置的片段，翻了就废了。
         println!(
-            "stored in the keychain; add to your config:\n\
-             api_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"{service}\", \"-a\", \"{account}\"]"
+            "{}\napi_key_command = [\"security\", \"find-generic-password\", \"-w\", \"-s\", \"{service}\", \"-a\", \"{account}\"]",
+            qcode_i18n::tr("cli.session.keychain_hint")
         );
     }
 
@@ -371,8 +388,8 @@ pub(crate) fn store_key(
             return Err("`secret-tool store` failed".into());
         }
         println!(
-            "stored in libsecret; add to your config:\n\
-             api_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]"
+            "{}\napi_key_command = [\"secret-tool\", \"lookup\", \"service\", \"{service}\", \"user\", \"{account}\"]",
+            qcode_i18n::tr("cli.session.libsecret_hint")
         );
     }
 
@@ -415,9 +432,11 @@ pub(crate) fn store_key(
             return Err("storing the key with DPAPI failed".into());
         }
         println!(
-            "stored (DPAPI, user-scoped) in {}; add to your config:\n\
-             api_key_command = [\"{shell}\", \"-NoProfile\", \"-Command\", \"$s = Get-Content '{}' | ConvertTo-SecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))\"]",
-            path.display(),
+            "{}\napi_key_command = [\"{shell}\", \"-NoProfile\", \"-Command\", \"$s = Get-Content '{}' | ConvertTo-SecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))\"]",
+            qcode_i18n::trp(
+                "cli.session.dpapi_hint",
+                &[path.display().to_string().as_str()]
+            ),
             path.display()
         );
     }

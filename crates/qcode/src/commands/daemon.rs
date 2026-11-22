@@ -51,10 +51,7 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
         // **不承诺报出它服务哪个目录**：锁只回答「有人」，服务目录那份信息只在
         // daemon 自己的进程里，没有任何可读位置。以前这句写着「`qc daemon status`
         // says which」，而 `status` 自己也说查不到——自相矛盾（ADR-0098 §3 修）。
-        eprintln!(
-            "qc daemon: already running (one daemon per user, ADR-0092 §5).\n\
-             It may serve a different data directory; which one cannot be read from the lock."
-        );
+        eprintln!("{}", qcode_i18n::tr("cli.daemon.start.already_running"));
         return Ok(ExitCode::from(1));
     }
 
@@ -63,7 +60,13 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
     let program = match qcode_core::daemon::find_qcd() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("qc daemon: {error}");
+            eprintln!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.daemon.start.find_failed",
+                    &[error.to_string().as_str()]
+                )
+            );
             return Ok(ExitCode::from(1));
         }
     };
@@ -71,7 +74,16 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
     let pid = match qcode_core::daemon::spawn(&program, served, beat) {
         Ok(pid) => pid,
         Err(error) => {
-            eprintln!("qc daemon: cannot start {}: {error}", program.display());
+            eprintln!(
+                "{}",
+                qcode_i18n::trp(
+                    "cli.daemon.start.cannot_start",
+                    &[
+                        program.display().to_string().as_str(),
+                        error.to_string().as_str()
+                    ]
+                )
+            );
             return Ok(ExitCode::from(1));
         }
     };
@@ -91,10 +103,25 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
     while std::time::Instant::now() < deadline {
         match qcode_core::daemon::presence(&user_dir) {
             Presence::Running => {
-                println!("qcd started (pid {pid}) — driving {}", served.display());
                 println!(
-                    "Logs: {}",
-                    qcode_kernel::logging::current_log(served).display()
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.daemon.start.ok",
+                        &[
+                            pid.to_string().as_str(),
+                            served.display().to_string().as_str()
+                        ]
+                    )
+                );
+                println!(
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.daemon.start.logs",
+                        &[qcode_kernel::logging::current_log(served)
+                            .display()
+                            .to_string()
+                            .as_str()]
+                    )
                 );
                 return Ok(ExitCode::SUCCESS);
             }
@@ -110,19 +137,35 @@ fn start(served: &Path, beat: Option<u64>) -> Result<ExitCode, Box<dyn std::erro
     // 问不出来：说清是**判断不了**，不猜结局。
     if let Some(why) = blind_spot {
         eprintln!(
-            "qc daemon: qcd was spawned (pid {pid}) but its state cannot be verified ({why}).\n\
-             The lock mechanism is unavailable, so a running daemon would be invisible here.\n\
-             It is most likely running; check `ps -p {pid}` or the log: {}",
-            qcode_kernel::logging::current_log(served).display()
+            "{}",
+            qcode_i18n::trp(
+                "cli.daemon.start.unverified",
+                &[
+                    pid.to_string().as_str(),
+                    why.as_str(),
+                    qcode_kernel::logging::current_log(served)
+                        .display()
+                        .to_string()
+                        .as_str(),
+                ]
+            )
         );
         return Ok(ExitCode::from(1));
     }
 
     // spawn 成功但它没活下来。不说「已启动」——那正是 §11 要防的那句话。
     eprintln!(
-        "qc daemon: qcd was spawned (pid {pid}) but did not take the driver lock within 3s.\n\
-         It probably exited at startup; see {}",
-        qcode_kernel::logging::current_log(served).display()
+        "{}",
+        qcode_i18n::trp(
+            "cli.daemon.start.no_lock",
+            &[
+                pid.to_string().as_str(),
+                qcode_kernel::logging::current_log(served)
+                    .display()
+                    .to_string()
+                    .as_str(),
+            ]
+        )
     );
     Ok(ExitCode::from(1))
 }
@@ -132,7 +175,7 @@ fn stop(user_dir: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Presence::Absent => {
             // 「没有在跑」是成功——`stop` 的意图已经满足。与 `qc daemon start`
             // 不同：那里「已经有了」是有害的（用户以为起了新的），这里没有。
-            println!("qc daemon: not running.");
+            println!("{}", qcode_i18n::tr("cli.daemon.stop.not_running"));
             Ok(ExitCode::SUCCESS)
         }
         Presence::Running => {
@@ -146,36 +189,39 @@ fn stop(user_dir: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                     while std::time::Instant::now() < deadline {
                         if let Presence::Absent = qcode_core::daemon::presence(user_dir) {
-                            println!("qc daemon: stopped.");
+                            println!("{}", qcode_i18n::tr("cli.daemon.stop.stopped"));
                             return Ok(ExitCode::SUCCESS);
                         }
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                     // 确认了但没停：说清楚，不要报成功。这可能是一次卡住的回合
                     // （它不该无限期挡着退出，但阶段 4 才处理在跑的回合）。
-                    eprintln!(
-                        "qc daemon: it acknowledged the stop but is still running after 5s.\n\
-                         It may be finishing a turn; check `qc daemon status` again."
-                    );
+                    eprintln!("{}", qcode_i18n::tr("cli.daemon.stop.stuck"));
                     Ok(ExitCode::from(1))
                 }
                 Ok(false) => {
                     // 锁在，但通道连不上：半死的实例（挂着但没在监听）。这种情形
                     // 必须与「没有实例」分开——刚探测到它在跑。
-                    eprintln!(
-                        "qc daemon: the lock is held but nothing answers on the control channel.\n\
-                         That process is wedged or shutting down. Wait, or kill it by pid."
-                    );
+                    eprintln!("{}", qcode_i18n::tr("cli.daemon.stop.wedged"));
                     Ok(ExitCode::from(1))
                 }
                 Err(error) => {
-                    eprintln!("qc daemon: cannot send the stop request: {error}");
+                    eprintln!(
+                        "{}",
+                        qcode_i18n::trp(
+                            "cli.daemon.stop.cannot_send",
+                            &[error.to_string().as_str()]
+                        )
+                    );
                     Ok(ExitCode::from(1))
                 }
             }
         }
         Presence::Unknown(why) => {
-            eprintln!("qc daemon: cannot tell whether it is running ({why}).");
+            eprintln!(
+                "{}",
+                qcode_i18n::trp("cli.daemon.stop.cannot_tell", &[why.as_str()])
+            );
             Ok(ExitCode::from(1))
         }
     }

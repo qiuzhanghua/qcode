@@ -779,6 +779,10 @@ fn ui_text_positions() -> &'static [&'static str] {
         "ToolOutput::ok(",
         "ToolOutput::err(",
         "ToolOutput::cancelled(",
+        // CLI 命令输出（`qc <cmd>` 跑完用户读的那几行，I18N.md §10.15）。
+        // 只收 `println!` / `eprintln!` —— 它们是**直接输出**，没有误伤风险。
+        "println!(",
+        "eprintln!(",
         // 有意**不**收 `push_str(` / `write!(`：它们是通用字符串拼装，
         // `qcode-tools/macos.rs` 用它拼 sandbox-exec 的 profile DSL
         // （`(allow file-read*`），翻了那条规则就废了；`apply.rs` 用它拼纯换行。
@@ -834,6 +838,24 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
             })
     };
 
+    // 行首带方括号标记的（`[tool] …`、`[approval] …`、`[warn] …`、`[turn] …`）
+    // 是**进度/诊断行**，与 `tracing` 日志同类，有意保持英文（I18N.md §10.15）：
+    // 它们的方括号段是给人 `grep '^\[tool\]'` 用的，翻了就没了。这是一条**格式**
+    // 规则（首字符是 `[`、内部无空格、紧接 `]`），不是「像不像文案」的猜测。
+    let is_progress_tag = |text: &str| {
+        let Some(rest) = text.strip_prefix('[') else {
+            return false;
+        };
+        let Some(close) = rest.find(']') else {
+            return false;
+        };
+        let tag = &rest[..close];
+        !tag.is_empty()
+            && tag
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch == '_' || ch == '-')
+    };
+
     let mut markers: Vec<&str> = ui_text_positions().to_vec();
     if relative.ends_with("forms.rs") {
         markers.push("=> ");
@@ -848,7 +870,7 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
             if !text.chars().any(|ch| ch.is_ascii_alphabetic()) {
                 continue;
             }
-            if is_key(&text) {
+            if is_key(&text) || is_progress_tag(&text) {
                 continue;
             }
             out.push((index + 1, text));
@@ -893,6 +915,13 @@ fn no_new_hardcoded_english_ui_text() {
         let dir = root.join("crates").join(crate_name).join("src");
         for entry in scan_ui_sources(&dir) {
             let (relative, production) = entry;
+            // `output.rs` 整个文件是有意的英文面（I18N.md §10.15）：
+            // `qc config show` 是 `键 = 值` 的 dump（要能 grep/diff，且没有
+            // `--json` 旁路），其余是 `[tool]` / `[approval]` / `[turn]` 这种
+            // 行首带方括号的进度标记。逐条记进基线只会让真正要还的债看不出来。
+            if relative == "output.rs" {
+                continue;
+            }
             for (_, text) in ui_text_in(&relative, &production) {
                 found.insert((format!("{crate_name}/{relative}"), text));
             }

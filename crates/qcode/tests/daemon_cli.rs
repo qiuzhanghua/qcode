@@ -22,7 +22,11 @@ fn qc() -> Command {
         // `qc_as` 的 HOME 隔离解决，那才是正确的隔离层。
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // 钉住语言（ADR-0105 §6）。这些子命令的输出现在跟随 `[ui] language` /
+        // `QCODE_LANG`，不钉的话断言会在中文宿主机上通过、在英文宿主机上红
+        // —— 或者反过来。以前它们硬编码英文，所以「碰巧两头都过」。
+        .env("QCODE_LANG", "zh-CN");
     command
 }
 
@@ -100,9 +104,10 @@ fn starting_without_qcd_on_path_fails_and_says_so() {
     //
     // 不可接受的是：退出码 0 而 stdout 里没有「started」，或者退出码非 0 却说了
     // 「已启动」。这正是 §11 要防的那个谎。
-    let said_started = stdout_of(&output).contains("started");
-    let complained = stderr_of(&output).contains("not found")
-        || stderr_of(&output).contains("did not take the driver lock");
+    // 中文是钉死的那一种（见 `qc()`）。
+    let said_started = stdout_of(&output).contains("已启动");
+    let complained =
+        stderr_of(&output).contains("找不到") || stderr_of(&output).contains("没拿到驱动锁");
 
     assert!(
         (output.status.success() && said_started) || (!output.status.success() && complained),
@@ -206,7 +211,7 @@ fn stopping_a_stopped_daemon_succeeds() {
     // 「没有在跑」的判断不成立，于是这条只断言「不是崩溃」。
     if output.status.success() {
         assert!(
-            stdout_of(&output).contains("not running") || stdout_of(&output).contains("stopped"),
+            stdout_of(&output).contains("没有在跑") || stdout_of(&output).contains("已停止"),
             "success must say what happened: {}",
             stdout_of(&output)
         );
@@ -235,7 +240,7 @@ fn stop_and_status_agree_about_the_same_state() {
         .args(["daemon", "stop", "--data-dir", &dir])
         .output()
         .expect("stop");
-    let said_not_running = stdout_of(&stop).contains("not running");
+    let said_not_running = stdout_of(&stop).contains("没有在跑");
 
     // 「不知道」（平台没有文件锁）或「在跑」（开发者自己开着 daemon）都不能推出
     // 「stop 该说 not running」——只有 `stopped` 能。

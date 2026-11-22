@@ -54,14 +54,17 @@ pub(crate) fn cmd_logs(
         // Not an error: file logging may never have run in this data directory,
         // and a first `qc logs` before the first turn is a normal thing to do.
         if !args.follow {
-            println!("no log files in {}", dir.display());
+            println!(
+                "{}",
+                qcode_i18n::trp("cli.logs.no_files", &[dir.display().to_string().as_str()])
+            );
             return Ok(ExitCode::SUCCESS);
         }
         // Following a file that does not exist yet is the whole point of pairing
         // this with a fresh `qc gui`: start the watcher first, then reproduce.
         println!(
-            "waiting for the first line in {} (Ctrl-C to stop)",
-            dir.display()
+            "{}",
+            qcode_i18n::trp("cli.logs.waiting", &[dir.display().to_string().as_str()])
         );
     } else {
         // Naming the older files is the point of rotating them: a bug that showed
@@ -73,9 +76,27 @@ pub(crate) fn cmd_logs(
                 // The old wording ("older files in …: 3") sat next to a `--grep` that
                 // only read the current file, so a session that started before the
                 // rotation looked like it had never started.
-                println!("(searching {} files in {})", files.len(), dir.display());
+                println!(
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.logs.searching",
+                        &[
+                            files.len().to_string().as_str(),
+                            dir.display().to_string().as_str()
+                        ]
+                    )
+                );
             } else {
-                println!("(older files in {}: {})", dir.display(), files.len() - 1);
+                println!(
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.logs.older",
+                        &[
+                            dir.display().to_string().as_str(),
+                            (files.len() - 1).to_string().as_str()
+                        ]
+                    )
+                );
             }
         }
         if filter.is_active() {
@@ -181,7 +202,16 @@ impl Filter {
                     return Err(format!("cannot read {}: {error}", path.display()).into());
                 }
                 Err(error) => {
-                    eprintln!("qcode: skipping {}: {error}", path.display());
+                    eprintln!(
+                        "{}",
+                        qcode_i18n::trp(
+                            "cli.logs.skipping",
+                            &[
+                                path.display().to_string().as_str(),
+                                error.to_string().as_str()
+                            ]
+                        )
+                    );
                     continue;
                 }
             };

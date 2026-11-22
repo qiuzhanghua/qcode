@@ -2087,6 +2087,63 @@ core:
 # CLI（`qc`）运行时输出与 TUI 提示。帮助文本（clap）另算，见 I18N.md §4.3。
 cli:
 
+  # ---- CLI 命令的输出（不是帮助）----
+  #
+  # 这一批是 `qc <cmd>` 跑完之后用户读的那几行。与 `cli.cmd.*` 的区别：那些是
+  # **帮助**（解析时求值），这些是**结果**（运行时求值），所以它们跟随
+  # `[ui] language`，而 `--help` 只跟随环境变量/系统（I18N.md §10.14）。
+  #
+  # 不翻的（有意）：`qc daemon:` / `qcode:` 这类**命令名前缀**、`key = value` 的键名、
+  # 配置片段（`api_key_command = [...]`）、`[tool]` / `[approval]` 这类带方括号的
+  # 进度标记（§10.15 记了理由）。
+  logs:
+    no_files:
+      en: "no log files in %{0}"
+      zh-CN: "%{0} 里没有日志文件"
+    waiting:
+      en: "waiting for the first line in %{0} (Ctrl-C to stop)"
+      zh-CN: "正在等 %{0} 里的第一行（Ctrl-C 停止）"
+    searching:
+      en: "(searching %{0} files in %{1})"
+      zh-CN: "（正在搜索 %{1} 里的 %{0} 个文件）"
+    older:
+      en: "(older files in %{0}: %{1})"
+      zh-CN: "（%{0} 里还有 %{1} 个更早的文件）"
+    skipping:
+      en: "qcode: skipping %{0}: %{1}"
+      zh-CN: "qcode：跳过 %{0}：%{1}"
+  session:
+    no_sessions:
+      en: "no sessions"
+      zh-CN: 没有会话
+    no_roots:
+      en: "    (no roots)"
+      zh-CN: "    （没有根目录记录）"
+    no_task_record:
+      en: "    (no task record)"
+      zh-CN: "    （没有任务记录）"
+    nothing_to_clean:
+      en: "nothing to clean"
+      zh-CN: 没有要清理的
+    nothing_to_delete:
+      en: "nothing to delete"
+      zh-CN: 没有要删除的
+    dry_run_delete:
+      en: "dry run; pass --yes to delete"
+      zh-CN: "预演；要真的删除请加 `--yes`"
+    dry_run_restore:
+      en: "dry run; pass --yes to restore"
+      zh-CN: "预演；要真的恢复请加 `--yes`"
+    keychain_hint:
+      en: "stored in the keychain; add to your config:"
+      zh-CN: "已存进钥匙串；在配置里加上："
+    libsecret_hint:
+      en: "stored in libsecret; add to your config:"
+      zh-CN: "已存进 libsecret；在配置里加上："
+    dpapi_hint:
+      en: "stored (DPAPI, user-scoped) in %{0}; add to your config:"
+      zh-CN: "已存进（DPAPI，用户作用域）%{0}；在配置里加上："
+
   # ---- P2：clap 的帮助与报错（见 `crates/qcode/src/clap_i18n.rs`）----
   #
   # 与其它段的根本区别：**这些键是拼出来的**，不是字面量。`clap_i18n::localize`
@@ -2671,6 +2728,50 @@ cli:
     served_elsewhere_note:
       en: "    (it may serve **another** data directory; the lock only answers \"someone is there\", not \"who\")"
       zh-CN: "    （它可能服务**另一个**数据目录；锁只回答「有人」，不回答「是谁」）"
+    # `status` 那几条在上面（`cli.daemon.running` / `.not_running` …）。这里只放
+    # `start` / `stop`。两者措辞不同不是疏漏：`status` 报的是状态，`stop` 报的是
+    # 一次动作的结果，前缀本来就不一样。
+    start:
+      already_running:
+        en: "qc daemon: already running (one daemon per user, ADR-0092 §5).\nIt may serve a different data directory; which one cannot be read from the lock."
+        zh-CN: "qc daemon：已经在跑了（一个用户一个 daemon，ADR-0092 §5）。\n它可能服务的是另一个数据目录；具体是哪个，从锁里读不出来。"
+      find_failed:
+        en: "qc daemon: %{0}"
+        zh-CN: "qc daemon：%{0}"
+      cannot_start:
+        en: "qc daemon: cannot start %{0}: %{1}"
+        zh-CN: "qc daemon：无法启动 %{0}：%{1}"
+      ok:
+        en: "qcd started (pid %{0}) — driving %{1}"
+        zh-CN: "qcd 已启动（pid %{0}）——正在驱动 %{1}"
+      logs:
+        en: "Logs: %{0}"
+        zh-CN: "日志：%{0}"
+      unverified:
+        en: "qc daemon: qcd was spawned (pid %{0}) but its state cannot be verified (%{1}).\nThe lock mechanism is unavailable, so a running daemon would be invisible here.\nIt is most likely running; check `ps -p %{0}` or the log: %{2}"
+        zh-CN: "qc daemon：qcd 已经起来了（pid %{0}），但它的状态无法确认（%{1}）。\n锁机制不可用，所以一个正在跑的 daemon 在这里是看不见的。\n它多半在跑；查 `ps -p %{0}` 或日志：%{2}"
+      no_lock:
+        en: "qc daemon: qcd was spawned (pid %{0}) but did not take the driver lock within 3s.\nIt probably exited at startup; see %{1}"
+        zh-CN: "qc daemon：qcd 已经起来了（pid %{0}），但 3 秒内没拿到驱动锁。\n它多半在启动时就退出了；见 %{1}"
+    stop:
+      not_running:
+        en: "qc daemon: not running."
+        zh-CN: "qc daemon：没有在跑。"
+      stopped:
+        en: "qc daemon: stopped."
+        zh-CN: "qc daemon：已停止。"
+      stuck:
+        en: "qc daemon: it acknowledged the stop but is still running after 5s.\nIt may be finishing a turn; check `qc daemon status` again."
+        zh-CN: "qc daemon：它确认了停止，但 5 秒后还在跑。\n可能正在收尾一个回合；过一会儿再 `qc daemon status`。"
+      wedged:
+        en: "qc daemon: the lock is held but nothing answers on the control channel.\nThat process is wedged or shutting down. Wait, or kill it by pid."
+        zh-CN: "qc daemon：锁被占着，但控制通道上没人应答。\n那个进程要么卡住了、要么正在退出。等一会儿，或者按 pid 杀掉。"
+      cannot_send:
+        en: "qc daemon: cannot send the stop request: %{0}"
+        zh-CN: "qc daemon：无法发出停止请求：%{0}"
+      cannot_tell:
+        en: "qc daemon: cannot tell whether it is running (%{0})."
+        zh-CN: "qc daemon：判断不出它是否在跑（%{0}）。"
   # `qc update` 里那些带具体后果的警告尾巴。英文主干保留在代码里（`warning: …`），
   # 这里只放跟在 `\x20        ` 后面的那句解释——它不是装饰，是「接下来怎么办」。
   update:
