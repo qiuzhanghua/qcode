@@ -120,6 +120,32 @@ pub fn locale() -> String {
 ///
 /// 缺 key 时 `rust-i18n` 不报错，只把 key（或 `locale.key`）原样吐出来 —— 靠
 /// 门禁（key 集合相等）兜，不靠祈祷。
+/// 取一条译文，key 允许是**运行期拼出来的**。取不到返回 `None`。
+///
+/// 与 [`tr`] 的唯一区别是 key 的存活期。`tr` 收 `&'static str`：调用点上是字面量，
+/// 门禁 4（引用的 key 存在）与门禁 6（声明的 key 有人用）都能静态看见。这一条收
+/// `&str`，专给**结构化拼出来**的 key 用——目前只有一处：clap 的帮助树按
+/// `cli.cmd.<命令路径>.<字段>` 查表（见 `crates/qcode/src/clap_i18n.rs`）。
+///
+/// 这类 key 静态扫描看不见，所以另配一道**可达性门禁**
+/// （`crates/qcode/tests/cli_i18n.rs`）：遍历真实的 `Command` 树，断言每个查表点
+/// 都命中一条声明的 key，且每条 `cli.cmd.*` 都能被查到。否则就只能靠人眼。
+pub fn try_tr(key: &str) -> Option<Cow<'static, str>> {
+    try_tr_in(&locale(), key)
+}
+
+/// 同 [`try_tr`]，locale 显式指定（测试用）。
+pub fn try_tr_in(locale: &str, key: &str) -> Option<Cow<'static, str>> {
+    let text = _rust_i18n_translate(locale, key);
+    // 取不到时 rust-i18n 返回 `<locale>.<key>`：同一个哨兵门禁 5 也在用。
+    if text == format!("{locale}.{key}") {
+        return None;
+    }
+    // `text` 的 `Cow` 可能借着 `key` 的存活期（哨兵分支已排除，这里是命中分支，
+    // 底层返回的是嵌入二进制的 `&'static str`），显式声明成 `'static`。
+    Some(Cow::Owned(text.into_owned()))
+}
+
 pub fn tr(key: &'static str) -> Cow<'static, str> {
     _rust_i18n_translate(&locale(), key)
 }

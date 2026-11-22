@@ -8,15 +8,60 @@ mod update;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use qcode_kernel::config;
 
+mod clap_i18n;
 mod cli;
+#[cfg(test)]
+mod cli_i18n_gate;
 mod commands;
 mod output;
 
 use cli::{Cli, Command};
 use commands::*;
+
+/// 解析命令行，把 clap 的帮助与报错也翻成当前语言。
+///
+/// **为什么不能继续用 `Cli::parse_from`**：它只会在出错时自己打印再 `exit`，
+/// 我们拿不到那段文本，也就没法改写 clap 硬编码的 `Usage:` / `error:` 之类
+/// （I18N.md §4.5）。
+///
+/// **英文路径完全走原生**：直接用 `Error::print()` / `Error::exit()`，字节与颜色
+/// 与改动前逐字节相同（不变量 1）。只有非英文才渲染成纯文本再过规则表——
+/// `StyledStr` 的 `Display` 明确是 colorless，所以中文用户拿到的帮助**没有颜色**。
+/// 这是 §4.5 记过的取舍：保色要自己重新着色，属独立改动。
+fn parse_cli(argv: Vec<String>) -> Cli {
+    let localized = clap_i18n::localize(Cli::command());
+    let matches = match localized.try_get_matches_from(argv) {
+        Ok(matches) => matches,
+        Err(error) => exit_with_clap_error(error),
+    };
+    match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        // 走到这里说明 derive 与命令树不一致，是编程错误而非用户输入问题。
+        Err(error) => exit_with_clap_error(error),
+    }
+}
+
+/// 按 clap 的约定把错误打到对的流、用对的退出码。
+fn exit_with_clap_error(error: clap::Error) -> ! {
+    if qcode_i18n::locale() == qcode_i18n::DEFAULT {
+        // 英文：原样交给 clap，含颜色与它自己的流向判断。
+        error.exit()
+    }
+    use std::io::Write;
+    let rendered = clap_i18n::apply_labels(&error.render().to_string());
+    // 用 `write_all` 而不是 `print!` / `eprint!`：这段是**一整块已经渲染好的文本**，
+    // 不是提问。`stdout_channels` 那条测试把所有 `print!("字面量")` 当成提问（因为有
+    // 可能是在问 y/N），而 clap 对「帮助」类错误的约定恰恰是写 stdout。
+    if error.use_stderr() {
+        let _ = std::io::stderr().write_all(rendered.as_bytes());
+    } else {
+        let _ = std::io::stdout().write_all(rendered.as_bytes());
+    }
+    std::process::exit(error.exit_code());
+}
 
 /// The real entry point: answer the macOS guard, then hand over to the runtime.
 ///
@@ -60,7 +105,7 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
         config,
         approval_policy,
         command,
-    } = Cli::parse_from(argv);
+    } = parse_cli(argv);
 
     // Logging comes up before any command runs, because the first thing worth
     // recording is often why the command could not (ADR-0077). It comes up after
@@ -206,9 +251,9 @@ fn print_usage() {
     // handle: the text is what the integration test asserts on, and a `String`
     // is the only shape that can be checked without capturing stdout.
     use std::io::Write;
-    let text = <Cli as clap::CommandFactory>::command()
-        .render_help()
-        .to_string();
+    // 与 `qc --help` 走**同一条**渲染路径（含本地化与内置标签改写），否则两者
+    // 会说出不一样的文本——ADR-0089 的整个意义是「裸 `qc` 给出可读的答案」。
+    let text = clap_i18n::help_text(Cli::command());
     let mut out = std::io::stdout();
     let _ = out.write_all(text.as_bytes());
     let _ = out.flush();

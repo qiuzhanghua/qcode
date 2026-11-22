@@ -1,28 +1,28 @@
-qc - coding agent
+qc - 编程助手
 
-Usage: qc [OPTIONS] [COMMAND]
+用法：qc [OPTIONS] [COMMAND]
 
-Commands:
-  tui        Start the interactive terminal UI
-  run        Run a single headless turn
-  resume     Resume a stored session in the TUI
-  sessions   Inspect persisted sessions
-  schedule   Manage scheduled tasks (ADR-0090)
-  daemon     Start, stop or inspect the scheduled-task daemon (ADR-0092)
-  skills     Inspect discovered Agent Skills
-  logs       Show where the log file is, and its most recent lines (ADR-0077)
-  config     Show or edit the config file
-  template   List available config templates (ADR-0104)
-  mcp        Manage configured MCP servers
-  doctor     Diagnose configuration, credentials and data directory
-  shell-env  Show the shell environment `run_shell` would see (ADR-0064)
-  update     Check for a newer release, or install it
-  acp        Serve the Agent Client Protocol over stdio (for editors)
-  help       Print this message or the help of the given subcommand(s)
+命令：
+  tui        启动交互式终端界面
+  run        跑一个无界面的回合
+  resume     在 TUI 里接着一个已存的会话
+  sessions   查看已落盘的会话
+  schedule   管理定时任务（ADR-0090）
+  daemon     启动、停止或查看定时任务的常驻驱动（ADR-0092）
+  skills     查看已发现的 Agent 技能
+  logs       显示日志文件在哪，以及它最近几行（ADR-0077）
+  config     显示或编辑配置文件
+  template   列出可用的配置模板（ADR-0104）
+  mcp        管理已配置的 MCP 服务器
+  doctor     诊断配置、凭据与数据目录
+  shell-env  显示 `run_shell` 会看到的 shell 环境（ADR-0064）
+  update     检查有没有新版本，或者装上它
+  acp        通过 stdio 提供 Agent Client Protocol（给编辑器用）
+  help       打印本帮助或指定子命令的帮助
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
-  -V, --version                 Print version
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助
+  -V, --version                 打印版本

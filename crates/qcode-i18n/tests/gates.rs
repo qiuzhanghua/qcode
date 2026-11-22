@@ -213,7 +213,14 @@ fn every_declared_key_is_referenced() {
     for (_, _, source) in all_sources() {
         referenced.extend(referenced_keys(&source));
     }
-    let orphans: Vec<&String> = keys.difference(&referenced).collect();
+    // `cli.cmd.*` 是**动态寻址**的：`clap_i18n::localize` 按命令树路径拼 key，
+    // 静态扫描看不见。它的两个方向由另一道门禁盯着
+    // （`crates/qcode/src/cli_i18n_gate.rs`：遍历真实的 `Command` 树，既查「声明
+    // 了却查不到」也查「查得到却没译文」）。这里放行，并**只**放行这一个前缀。
+    let orphans: Vec<&String> = keys
+        .difference(&referenced)
+        .filter(|key| !key.starts_with("cli.cmd."))
+        .collect();
     assert!(
         orphans.is_empty(),
         "这些 key 声明了但没人引用（翻译表在腐坏）：\n  - {}",

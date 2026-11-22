@@ -1,15 +1,15 @@
-Manage configured MCP servers
+管理已配置的 MCP 服务器
 
-Usage: qc mcp [OPTIONS] <COMMAND>
+用法：qc mcp [OPTIONS] <COMMAND>
 
-Commands:
-  list    List configured servers
-  add     Append a server to the user config
-  remove  Remove a server by name
-  help    Print this message or the help of the given subcommand(s)
+命令：
+  list    列出已配置的服务器
+  add     往用户配置里追加一个服务器
+  remove  按名字移除一个服务器
+  help    打印本帮助或指定子命令的帮助
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

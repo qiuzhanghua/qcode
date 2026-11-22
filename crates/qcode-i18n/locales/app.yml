@@ -1438,6 +1438,528 @@ core:
 
 # CLI（`qc`）运行时输出与 TUI 提示。帮助文本（clap）另算，见 I18N.md §4.3。
 cli:
+  # ---- P2：clap 的帮助与报错（见 `crates/qcode/src/clap_i18n.rs`）----
+  #
+  # 与其它段的根本区别：**这些键是拼出来的**，不是字面量。`clap_i18n::localize`
+  # 遍历命令树，按路径查 `cli.cmd.<命令路径>.about` / `.long_about` /
+  # `.arg.<参数id>.help`，所以静态扫描（门禁 4/6）看不见它们；另配一道可达性
+  # 门禁（`crates/qcode/src/cli_i18n_gate.rs`）遍历真实的 `Command` 树证明覆盖。
+  #
+  # **不翻的东西**（翻了会破坏契约或让人按不出来）：命令名、参数名、值名
+  # （`DATA_DIR`）、路径、`cron <expr>`、`YYYY-MM-DD HH:MM`、`[agent] max_turns`、
+  # `ADR-00xx`、`$EDITOR`、`new_once`、`queue`/`skip`、`schema-2`、`config.toml`、
+  # `run_shell`。它们原样留在中文句子里。
+  #
+  # `cli.label.*` 是 clap **内置**的标签（`Usage:` / `Options:` / `Print help` …）：
+  # 硬编码在 clap_builder 里、没有任何 API 可配，只能等渲染成文本后按规则表改写。
+  # 规则表在代码里（它是 clap 的契约），译文在这里。
+  label:
+    usage:
+      en: "Usage:"
+      zh-CN: "用法："
+    commands:
+      en: "Commands:"
+      zh-CN: "命令："
+    options:
+      en: "Options:"
+      zh-CN: "选项："
+    arguments:
+      en: "Arguments:"
+      zh-CN: "参数："
+    print_help_full:
+      en: "Print this message or the help of the given subcommand(s)"
+      zh-CN: "打印本帮助或指定子命令的帮助"
+    print_version:
+      en: "Print version"
+      zh-CN: "打印版本"
+    print_help:
+      en: "Print help"
+      zh-CN: "打印帮助"
+    error_prefix:
+      en: "error: "
+      zh-CN: "错误："
+    tip_prefix:
+      en: "tip: "
+      zh-CN: "提示："
+    more_info:
+      en: "For more information, try '--help'."
+      zh-CN: "更多信息请试 '--help'。"
+    unexpected_argument:
+      en: "unexpected argument '{}' found"
+      zh-CN: "未识别的参数 '{}'"
+    unrecognized_subcommand:
+      en: "unrecognized subcommand '{}'"
+      zh-CN: "未识别的子命令 '{}'"
+  # 帮助正文。键 = 命令树路径，逐级嵌套（`schedule.create` 即 `qc schedule create`）。
+  cmd:
+    top:
+      about:
+        en: "qc - coding agent"
+        zh-CN: "qc - 编程助手"
+      arg:
+        data_dir:
+          help:
+            en: "Data directory. Defaults to the XDG data home"
+            zh-CN: "数据目录。默认取 XDG 数据目录"
+        config:
+          help:
+            en: "Config file. Defaults to ~/.config/qcode/config.toml"
+            zh-CN: "配置文件。默认 ~/.config/qcode/config.toml"
+        approval_policy:
+          help:
+            en: "Approval policy file ([[rules]]). Replaces the config's approval rules"
+            zh-CN: "审批策略文件（[[rules]]）。会替换配置文件里的审批规则"
+    tui:
+      about:
+        en: "Start the interactive terminal UI"
+        zh-CN: "启动交互式终端界面"
+      long_about:
+        en: "Start the interactive terminal UI.\n\nADR-0089: this used to be what bare `qc` did. It is a subcommand now because typing `qc` by accident must not take over the terminal — and because \"which frontend\" is a choice the user makes, not one inferred from the fact that a terminal exists."
+        zh-CN: "启动交互式终端界面。\n\nADR-0089：这原本是裸 `qc` 的行为。现在它是一个子命令：不小心敲下 `qc` 不该就此接管终端——而且「用哪个前端」是用户的选择，不该因为「有终端」就替他推定。"
+    run:
+      about:
+        en: "Run a single headless turn"
+        zh-CN: "跑一个无界面的回合"
+      arg:
+        prompt:
+          help:
+            en: "Prompt text. Read from stdin when omitted"
+            zh-CN: "提示文本。省略时从 stdin 读"
+        skill:
+          help:
+            en: "Activate a discovered skill by prepending its instructions to the prompt"
+            zh-CN: "激活一个已发现的技能：把它的说明前置到提示里"
+        json:
+          help:
+            en: "Emit the event stream as JSONL on stdout"
+            zh-CN: "把事件流以 JSONL 写到 stdout"
+        include_raw:
+          help:
+            en: "Include provider_raw in --json output (hidden by default)"
+            zh-CN: "在 --json 输出里带上 provider_raw（默认隐藏）"
+        provider:
+          help:
+            en: "Provider name: mock, openai, deepseek, ollama, or a custom entry"
+            zh-CN: "供应商名：mock、openai、deepseek、ollama，或配置里自定义的条目"
+        base_url:
+          help:
+            en: "Override the provider base URL"
+            zh-CN: "覆盖供应商的 API 地址"
+        no_stream_usage:
+          help:
+            en: "Do not ask the server for a usage chunk"
+            zh-CN: "不向服务端索取用量分片"
+        max_turns:
+          help:
+            en: "Maximum model calls for this turn. Defaults to [agent] max_turns (8 unless the config says otherwise)"
+            zh-CN: "本回合的模型调用上限。默认取 [agent] max_turns（配置没写就是 8）"
+        yes:
+          help:
+            en: "Auto-approve anything the policy marks as ask"
+            zh-CN: "策略标为「询问」的一律自动放行"
+        cwd:
+          help:
+            en: "Workspace root for tools. Defaults to the current directory"
+            zh-CN: "工具的工作区根目录。默认当前目录"
+        resume:
+          help:
+            en: "Resume an existing session instead of creating a new one"
+            zh-CN: "接着已有会话跑，而不是新建一个"
+        max_cost:
+          help:
+            en: "Stop once the estimated cost exceeds this many USD. Requires a [pricing.\"<model>\"] entry in the config file"
+            zh-CN: "估算成本超过这么多美元就停。需要配置文件里有 [pricing.\"<model>\"] 条目"
+        image:
+          help:
+            en: "Attach an image (PNG/JPEG/WebP/GIF) to this message. Repeatable; needs a provider that accepts images"
+            zh-CN: "给这条消息附一张图（PNG/JPEG/WebP/GIF）。可重复；供应商要支持图片"
+        file:
+          help:
+            en: "Attach a file of any type. The bytes go into the attachment store and the model reads a handle, not the contents. Repeatable"
+            zh-CN: "附一个任意类型的文件。字节进附件库，模型读到的是句柄而不是内容。可重复"
+        timeout:
+          help:
+            en: "Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled (same path as Ctrl-C, including process-group cleanup) and qc exits 124"
+            zh-CN: "整轮的墙钟上限（秒）。到点取消这一轮（与 Ctrl-C 同一条路径，含进程组清理），qc 以 124 退出"
+        continue_:
+          help:
+            en: "Continue a paused turn (`--resume <id>`) without retyping the task. With `--raise-turns`/`--raise-cost`, the new limits apply to this window only"
+            zh-CN: "接着一个暂停的回合继续（配合 `--resume <id>`），不必重打任务。配上 `--raise-turns`/`--raise-cost` 时，新上限只对这一窗生效"
+        raise_turns:
+          help:
+            en: "Turns for this continuation window (implies --continue)"
+            zh-CN: "这一续跑窗的轮数（隐含 --continue）"
+        raise_cost:
+          help:
+            en: "Cost ceiling for this continuation window (implies --continue)"
+            zh-CN: "这一续跑窗的成本上限（隐含 --continue）"
+        raise_persist:
+          help:
+            en: "Also write the raised limit to config.toml, so the next session keeps it. Needs --raise-turns or --raise-cost"
+            zh-CN: "把调高的上限也写进 config.toml，下次会话沿用。需要 --raise-turns 或 --raise-cost"
+    resume:
+      about:
+        en: "Resume a stored session in the TUI"
+        zh-CN: "在 TUI 里接着一个已存的会话"
+      arg:
+        id:
+          help:
+            en: "Session id to resume"
+            zh-CN: "要接着跑的会话 id"
+    sessions:
+      about:
+        en: "Inspect persisted sessions"
+        zh-CN: "查看已落盘的会话"
+      list:
+        about:
+          en: "List stored sessions, newest first"
+          zh-CN: "列出已存的会话，最新的在前"
+        arg:
+          titles:
+            help:
+              en: "Also print the title the sidebar shows for each session"
+              zh-CN: "同时打印侧栏给每个会话显示的那个标题"
+      show:
+        about:
+          en: "Replay one session as JSON"
+          zh-CN: "把一个会话按 JSON 重放出来"
+      fork:
+        about:
+          en: "Copy a conversation prefix into a new session"
+          zh-CN: "把一段对话前缀复制成一个新会话"
+        arg:
+          at:
+            help:
+              en: "Fork after this event seq (default: the whole session)"
+              zh-CN: "在这个事件序号之后分叉（默认：整个会话）"
+      gc:
+        about:
+          en: "Remove sessions whose last event is older than N days"
+          zh-CN: "删掉最后一个事件早于 N 天的会话"
+        arg:
+          yes:
+            help:
+              en: "Actually delete; without it, only print candidates"
+              zh-CN: "真的删；不加就只列出候选"
+      delete:
+        about:
+          en: "Remove one or more sessions by id"
+          zh-CN: "按 id 删掉一个或多个会话"
+        long_about:
+          en: "Remove one or more sessions by id.\n\n`gc` can only drop by age, which does not help when a batch of runs polluted the store and the real work is interleaved with it."
+          zh-CN: "按 id 删掉一个或多个会话。\n\n`gc` 只能按年龄删，而「一批跑批把库弄脏了、真正的工作夹在中间」这种情况它帮不上忙。"
+        arg:
+          ids:
+            help:
+              en: "Session ids to remove. With `--except`, the ids to keep"
+              zh-CN: "要删的会话 id。配上 `--except` 时变成要保留的 id"
+          except:
+            help:
+              en: "Treat `ids` as the sessions to keep and delete every other one"
+              zh-CN: "把 `ids` 当作要保留的，其余全部删掉"
+          keep_title:
+            help:
+              en: "Keep the sessions shown under these titles in the sidebar"
+              zh-CN: "保留侧栏里显示为这些标题的会话"
+          yes:
+            help:
+              en: "Actually delete; without it, only print what would go"
+              zh-CN: "真的删；不加就只列出会删掉哪些"
+      checkpoints:
+        about:
+          en: "List the checkpoints (file pre-images) a session recorded"
+          zh-CN: "列出一个会话记下的检查点（文件改动前的快照）"
+      rollback:
+        about:
+          en: "Put the workspace back to the state before a turn"
+          zh-CN: "把工作区退回到某一轮之前的状态"
+        arg:
+          to:
+            help:
+              en: "Turn to roll back to: files are restored to their state before it"
+              zh-CN: "退回到哪一轮：文件恢复成那一轮之前的样子"
+          yes:
+            help:
+              en: "Restore without asking for confirmation"
+              zh-CN: "不确认直接恢复"
+    schedule:
+      about:
+        en: "Manage scheduled tasks (ADR-0090)"
+        zh-CN: "管理定时任务（ADR-0090）"
+      list:
+        about:
+          en: "List scheduled tasks"
+          zh-CN: "列出定时任务"
+        arg:
+          all:
+            help:
+              en: "Include paused and ended tasks. `--json` is always exhaustive"
+              zh-CN: "连暂停与已结束的也列出来。`--json` 恒为全量"
+          json:
+            help:
+              en: "Machine-readable output. This shape is the stable contract; the text form is not"
+              zh-CN: "机器可读输出。这个形状才是稳定契约，文字形态不是"
+      create:
+        about:
+          en: "Create a scheduled task"
+          zh-CN: "创建一条定时任务"
+        arg:
+          title:
+            help:
+              en: "Short, distinguishable name"
+              zh-CN: "简短、可区分的名称"
+          prompt:
+            help:
+              en: "What gets delivered when it fires — sent verbatim as a user message"
+              zh-CN: "到点投递的内容：原样作为一条用户消息送出"
+          rule:
+            help:
+              en: "cron <expr> | once YYYY-MM-DD HH:MM | every <secs> (>=60) | daily HH:MM | weekly <days> HH:MM | monthly <day> HH:MM"
+              zh-CN: "cron <expr> | once YYYY-MM-DD HH:MM | every <秒> (>=60) | daily HH:MM | weekly <星期> HH:MM | monthly <日> HH:MM"
+          target:
+            help:
+              en: "new_once (default) | new | session:<id>"
+              zh-CN: "new_once（默认）| new | session:<id>"
+          cwd:
+            help:
+              en: "Where the delivered turn runs. Defaults to the current directory, stored absolute — a filesystem root falls back to your home directory, because `/` cannot be a sandbox root"
+              zh-CN: "投递的回合在哪里跑。默认当前目录，存成绝对路径；文件系统根会回落到你的家目录，因为 `/` 不能当沙箱根"
+          overlap:
+            help:
+              en: "queue (default) | skip"
+              zh-CN: "queue（默认）| skip"
+          approval_timeout_secs:
+            help:
+              en: "Deny the delivered turn's approvals after this many seconds; omit to wait for a human"
+              zh-CN: "投递回合的审批超过这么多秒就拒绝；省略则一直等人工"
+          json:
+            help:
+              en: "Machine-readable output: the created task plus the driver state"
+              zh-CN: "机器可读输出：创建出来的任务加上驱动状态"
+      delete:
+        about:
+          en: "Delete a scheduled task by id"
+          zh-CN: "按 id 删除一条定时任务"
+    daemon:
+      about:
+        en: "Start, stop or inspect the scheduled-task daemon (ADR-0092)"
+        zh-CN: "启动、停止或查看定时任务的常驻驱动（ADR-0092）"
+      start:
+        about:
+          en: "Start the daemon in the background"
+          zh-CN: "在后台启动常驻驱动"
+        arg:
+          beat:
+            help:
+              en: "Clock beat in seconds (default 30)"
+              zh-CN: "时钟节拍（秒，默认 30）"
+      stop:
+        about:
+          en: "Stop the running daemon"
+          zh-CN: "停掉正在跑的常驻驱动"
+      status:
+        about:
+          en: "Report whether a daemon is running, and for which data directory"
+          zh-CN: "报告常驻驱动有没有在跑，服务的是哪个数据目录"
+        arg:
+          json:
+            help:
+              en: "Machine-readable output"
+              zh-CN: "机器可读输出"
+    skills:
+      about:
+        en: "Inspect discovered Agent Skills"
+        zh-CN: "查看已发现的 Agent 技能"
+      list:
+        about:
+          en: "List discovered skills and the roots that were checked"
+          zh-CN: "列出已发现的技能，以及查过哪些根目录"
+    logs:
+      about:
+        en: "Show where the log file is, and its most recent lines (ADR-0077)"
+        zh-CN: "显示日志文件在哪，以及它最近几行（ADR-0077）"
+      arg:
+        path_only:
+          help:
+            en: "Print the path and the file listing, but no log lines"
+            zh-CN: "只打印路径与文件列表，不打印日志行"
+        lines:
+          help:
+            en: "How many trailing lines to show"
+            zh-CN: "显示末尾多少行"
+        follow:
+          help:
+            en: "Keep printing new lines as they are written (Ctrl-C to stop)"
+            zh-CN: "边写边打（Ctrl-C 停止）"
+        grep:
+          help:
+            en: "Show only lines matching this regular expression"
+            zh-CN: "只显示匹配这个正则的行"
+        since:
+          help:
+            en: "Drop lines older than this: a duration (`30m`, `2h`, `7d`, bare seconds) or an RFC 3339 timestamp"
+            zh-CN: "丢掉早于此刻的行：一个时长（`30m`、`2h`、`7d`、纯秒数）或 RFC 3339 时间戳"
+    config:
+      about:
+        en: "Show or edit the config file"
+        zh-CN: "显示或编辑配置文件"
+      show:
+        about:
+          en: "Print the effective (merged) configuration"
+          zh-CN: "打印生效的（合并后的）配置"
+      edit:
+        about:
+          en: "Open the user config in $EDITOR"
+          zh-CN: "用 $EDITOR 打开用户配置"
+      migrate:
+        about:
+          en: "Rewrite a v1 file into the schema-2 shape (ADR-0065): fold `[providers.*].default_model` into `[default-model]`, collapse model tables that only carry an id, and switch `version` to `schema`"
+          zh-CN: "把 v1 文件改写成 schema-2 的形状（ADR-0065）：把 `[providers.*].default_model` 并进 `[default-model]`，把只带一个 id 的模型表收掉，并把 `version` 换成 `schema`"
+      key:
+        about:
+          en: "Store an API key in the platform key store (ADR-0039)"
+          zh-CN: "把 API 密钥存进系统钥匙串（ADR-0039）"
+        set:
+          about:
+            en: "Read the key from stdin and store it, then print the config line"
+            zh-CN: "从 stdin 读密钥存进去，然后打印那行配置"
+          arg:
+            provider:
+              help:
+                en: "Config provider name, e.g. deepseek"
+                zh-CN: "配置里的供应商名，例如 deepseek"
+            service:
+              help:
+                en: "Key store service name"
+                zh-CN: "钥匙串里的服务名"
+            account:
+              help:
+                en: "Account name inside the service"
+                zh-CN: "服务里的账户名"
+      init:
+        about:
+          en: "Generate a config file from a built-in template (ADR-0104)"
+          zh-CN: "按内置模板生成一个配置文件（ADR-0104）"
+        long_about:
+          en: "Generate a config file from a built-in template (ADR-0104).\n\nThe template is scaffolding, not an overlay: it is read once, writes an ordinary `config.toml`, and never participates in loading afterwards."
+          zh-CN: "按内置模板生成一个配置文件（ADR-0104）。\n\n模板只是脚手架，不是叠加层：它只被读一次，写出一份普通的 `config.toml`，此后完全不参与加载。"
+        arg:
+          template:
+            help:
+              en: "Template id, e.g. `security-landlock`, `security/landlock`, or a bare `landlock` when it names exactly one template"
+              zh-CN: "模板 id，例如 `security-landlock`、`security/landlock`；只指一个模板时也可以只写 `landlock`"
+          force:
+            help:
+              en: "Overwrite an existing config file (prints a diff first)"
+              zh-CN: "覆盖已存在的配置文件（先打印差异）"
+    template:
+      about:
+        en: "List available config templates (ADR-0104)"
+        zh-CN: "列出可用的配置模板（ADR-0104）"
+      list:
+        about:
+          en: "List available templates (built-in and user), with their platform"
+          zh-CN: "列出可用模板（内置与用户自备），连同它们适用的平台"
+    mcp:
+      about:
+        en: "Manage configured MCP servers"
+        zh-CN: "管理已配置的 MCP 服务器"
+      list:
+        about:
+          en: "List configured servers"
+          zh-CN: "列出已配置的服务器"
+      add:
+        about:
+          en: "Append a server to the user config"
+          zh-CN: "往用户配置里追加一个服务器"
+        arg:
+          command:
+            help:
+              en: "Stdio transport: the program to start"
+              zh-CN: "stdio 传输：要启动的程序"
+          url:
+            help:
+              en: "Streamable HTTP transport: the endpoint URL (ADR-0067)"
+              zh-CN: "streamable HTTP 传输：端点 URL（ADR-0067）"
+          bearer_token_env:
+            help:
+              en: "Name of the environment variable holding the bearer token. The token itself is never written to the config file"
+              zh-CN: "存放 bearer token 的环境变量名。token 本身永远不写进配置文件"
+          headers:
+            help:
+              en: "Extra request header, `Name: value`. Repeatable. Sensitive names (authorization, cookie, token, key, secret, password) are refused: use `--bearer-token-env`"
+              zh-CN: "额外的请求头，`Name: value`。可重复。敏感名字（authorization、cookie、token、key、secret、password）会被拒收：请用 `--bearer-token-env`"
+          args:
+            help:
+              en: "Repeatable: one argument for the server command"
+              zh-CN: "可重复：服务器命令的一个参数"
+          disabled:
+            help:
+              en: "Add the server but leave it disabled"
+              zh-CN: "加进来但先停用"
+          read_paths:
+            help:
+              en: "Extra read+execute root, beyond the ones derived from `command` (ADR-0066). Repeatable"
+              zh-CN: "额外的读+执行根目录，在从 `command` 推导出的那些之外（ADR-0066）。可重复"
+          writable_paths:
+            help:
+              en: "Extra writable root, beyond the workspace and the server's private HOME. Repeatable"
+              zh-CN: "额外的可写根目录，在工作区与服务器私有 HOME 之外。可重复"
+          credentials:
+            help:
+              en: "Credential subtree under `$HOME` the server may read: `github`, `aws`, `ssh`, `npm`, `netrc` or `docker`. Repeatable"
+              zh-CN: "允许服务器读取的 `$HOME` 下凭据子树：`github`、`aws`、`ssh`、`npm`、`netrc` 或 `docker`。可重复"
+          sandbox:
+            help:
+              en: "`confine` (default) or `off`; `off` runs this server without an OS sandbox and makes `qc doctor` mark it"
+              zh-CN: "`confine`（默认）或 `off`；`off` 让这个服务器不带系统沙箱运行，`qc doctor` 会标出来"
+      remove:
+        about:
+          en: "Remove a server by name"
+          zh-CN: "按名字移除一个服务器"
+    doctor:
+      about:
+        en: "Diagnose configuration, credentials and data directory"
+        zh-CN: "诊断配置、凭据与数据目录"
+      arg:
+        probe:
+          help:
+            en: "Connect to every MCP server and compare what it declares in the handshake with what it actually answers (ADR-0068 §4)"
+            zh-CN: "连上每一个 MCP 服务器，把它在握手里声明的东西和它实际答的对比（ADR-0068 §4）"
+    shell-env:
+      about:
+        en: "Show the shell environment `run_shell` would see (ADR-0064)"
+        zh-CN: "显示 `run_shell` 会看到的 shell 环境（ADR-0064）"
+      arg:
+        full:
+          help:
+            en: "Print variable values too. Refused when stdout is not a terminal"
+            zh-CN: "连变量值一起打印。stdout 不是终端时拒绝"
+        json:
+          help:
+            en: "Machine-readable output: one JSON object, values included only with --full"
+            zh-CN: "机器可读输出：一个 JSON 对象，只有加 --full 才带值"
+    update:
+      about:
+        en: "Check for a newer release, or install it"
+        zh-CN: "检查有没有新版本，或者装上它"
+      arg:
+        check:
+          help:
+            en: "Only report whether a newer release exists"
+            zh-CN: "只报告有没有新版本"
+        yes:
+          help:
+            en: "Install without asking for confirmation (required when not on a TTY)"
+            zh-CN: "不确认直接安装（不在 TTY 上时必须加）"
+        install_to:
+          help:
+            en: "Install to this path instead of the running binary (packaging, tests)"
+            zh-CN: "装到这个路径而不是正在跑的那个二进制（打包、测试用）"
+    acp:
+      about:
+        en: "Serve the Agent Client Protocol over stdio (for editors)"
+        zh-CN: "通过 stdio 提供 Agent Client Protocol（给编辑器用）"
   schedule:
     created:
       en: "Created scheduled task `%{0}` (id: %{1})"

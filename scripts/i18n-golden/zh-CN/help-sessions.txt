@@ -1,19 +1,19 @@
-Inspect persisted sessions
+查看已落盘的会话
 
-Usage: qc sessions [OPTIONS] <COMMAND>
+用法：qc sessions [OPTIONS] <COMMAND>
 
-Commands:
-  list         List stored sessions, newest first
-  show         Replay one session as JSON
-  fork         Copy a conversation prefix into a new session
-  gc           Remove sessions whose last event is older than N days
-  delete       Remove one or more sessions by id
-  checkpoints  List the checkpoints (file pre-images) a session recorded
-  rollback     Put the workspace back to the state before a turn
-  help         Print this message or the help of the given subcommand(s)
+命令：
+  list         列出已存的会话，最新的在前
+  show         把一个会话按 JSON 重放出来
+  fork         把一段对话前缀复制成一个新会话
+  gc           删掉最后一个事件早于 N 天的会话
+  delete       按 id 删掉一个或多个会话
+  checkpoints  列出一个会话记下的检查点（文件改动前的快照）
+  rollback     把工作区退回到某一轮之前的状态
+  help         打印本帮助或指定子命令的帮助
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

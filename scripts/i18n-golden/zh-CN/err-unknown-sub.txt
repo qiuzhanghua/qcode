@@ -1,5 +1,5 @@
-error: unrecognized subcommand 'definitely-not-a-command'
+错误：未识别的子命令 'definitely-not-a-command'
 
-Usage: qc [OPTIONS] [COMMAND]
+用法：qc [OPTIONS] [COMMAND]
 
-For more information, try '--help'.
+更多信息请试 '--help'。

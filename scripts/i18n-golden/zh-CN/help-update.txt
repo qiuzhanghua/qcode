@@ -1,11 +1,11 @@
-Check for a newer release, or install it
+检查有没有新版本，或者装上它
 
-Usage: qc update [OPTIONS]
+用法：qc update [OPTIONS]
 
-Options:
-      --check                   Only report whether a newer release exists
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --yes                     Install without asking for confirmation (required when not on a TTY)
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
+选项：
+      --check                   只报告有没有新版本
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --yes                     不确认直接安装（不在 TTY 上时必须加）
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

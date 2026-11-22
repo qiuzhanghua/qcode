@@ -1,27 +1,27 @@
-Show where the log file is, and its most recent lines (ADR-0077)
+显示日志文件在哪，以及它最近几行（ADR-0077）
 
-Usage: qc logs [OPTIONS]
+用法：qc logs [OPTIONS]
 
-Options:
+选项：
       --data-dir <DATA_DIR>
-          Data directory. Defaults to the XDG data home
+          数据目录。默认取 XDG 数据目录
 
       --path-only
-          Print the path and the file listing, but no log lines
+          只打印路径与文件列表，不打印日志行
 
       --config <CONFIG>
-          Config file. Defaults to ~/.config/qcode/config.toml
+          配置文件。默认 ~/.config/qcode/config.toml
 
   -n, --lines <N>
-          How many trailing lines to show
+          显示末尾多少行
           
           [default: 40]
 
       --approval-policy <PATH>
-          Approval policy file ([[rules]]). Replaces the config's approval rules
+          审批策略文件（[[rules]]）。会替换配置文件里的审批规则
 
   -f, --follow
-          Keep printing new lines as they are written (Ctrl-C to stop)
+          边写边打（Ctrl-C 停止）
 
       --grep <PATTERN>
           Show only lines matching this regular expression.
@@ -31,7 +31,7 @@ Options:
           The file's default level keeps third-party `info` out (ADR-0093), but a GUI start still writes its own hundred lines around the two lifecycle ones. Without a filter the only way to find "how did that run end" is `grep`, which is fine until the file is the thing you cannot read (a sandbox, a bug report from someone else). `--grep` makes it one command, and it applies to `--follow` too — which `grep` cannot do.
 
       --since <AGE|TIME>
-          Drop lines older than this: a duration (`30m`, `2h`, `7d`, bare seconds) or an RFC 3339 timestamp
+          丢掉早于此刻的行：一个时长（`30m`、`2h`、`7d`、纯秒数）或 RFC 3339 时间戳
 
   -h, --help
-          Print help (see a summary with '-h')
+          打印帮助 (see a summary with '-h')

@@ -1,13 +1,13 @@
-Inspect discovered Agent Skills
+查看已发现的 Agent 技能
 
-Usage: qc skills [OPTIONS] <COMMAND>
+用法：qc skills [OPTIONS] <COMMAND>
 
-Commands:
-  list  List discovered skills and the roots that were checked
-  help  Print this message or the help of the given subcommand(s)
+命令：
+  list  列出已发现的技能，以及查过哪些根目录
+  help  打印本帮助或指定子命令的帮助
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

@@ -1,5 +1,5 @@
-error: unexpected argument '--nope' found
+错误：未识别的参数 '--nope'
 
-Usage: qc [OPTIONS] [COMMAND]
+用法：qc [OPTIONS] [COMMAND]
 
-For more information, try '--help'.
+更多信息请试 '--help'。

@@ -1,31 +1,31 @@
-Run a single headless turn
+跑一个无界面的回合
 
-Usage: qc run [OPTIONS] [PROMPT]
+用法：qc run [OPTIONS] [PROMPT]
 
-Arguments:
-  [PROMPT]  Prompt text. Read from stdin when omitted
+参数：
+  [PROMPT]  提示文本。省略时从 stdin 读
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --skill <NAME>            Activate a discovered skill by prepending its instructions to the prompt
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --json                    Emit the event stream as JSONL on stdout
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-      --include-raw             Include provider_raw in --json output (hidden by default)
-      --provider <PROVIDER>     Provider name: mock, openai, deepseek, ollama, or a custom entry
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --skill <NAME>            激活一个已发现的技能：把它的说明前置到提示里
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --json                    把事件流以 JSONL 写到 stdout
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+      --include-raw             在 --json 输出里带上 provider_raw（默认隐藏）
+      --provider <PROVIDER>     供应商名：mock、openai、deepseek、ollama，或配置里自定义的条目
       --model <MODEL>           
-      --base-url <BASE_URL>     Override the provider base URL
-      --no-stream-usage         Do not ask the server for a usage chunk
-      --max-turns <MAX_TURNS>   Maximum model calls for this turn. Defaults to [agent] max_turns (8 unless the config says otherwise)
-      --yes                     Auto-approve anything the policy marks as ask
-      --cwd <CWD>               Workspace root for tools. Defaults to the current directory
-      --resume <ID>             Resume an existing session instead of creating a new one
-      --max-cost <USD>          Stop once the estimated cost exceeds this many USD. Requires a [pricing."<model>"] entry in the config file
-      --image <PATH>            Attach an image (PNG/JPEG/WebP/GIF) to this message. Repeatable; needs a provider that accepts images
-      --file <PATH>             Attach a file of any type. The bytes go into the attachment store and the model reads a handle, not the contents. Repeatable
-      --timeout <SECS>          Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled (same path as Ctrl-C, including process-group cleanup) and qc exits 124
-      --continue                Continue a paused turn (`--resume <id>`) without retyping the task. With `--raise-turns`/`--raise-cost`, the new limits apply to this window only
-      --raise-turns <N>         Turns for this continuation window (implies --continue)
-      --raise-cost <USD>        Cost ceiling for this continuation window (implies --continue)
-      --raise-persist           Also write the raised limit to config.toml, so the next session keeps it. Needs --raise-turns or --raise-cost
-  -h, --help                    Print help
+      --base-url <BASE_URL>     覆盖供应商的 API 地址
+      --no-stream-usage         不向服务端索取用量分片
+      --max-turns <MAX_TURNS>   本回合的模型调用上限。默认取 [agent] max_turns（配置没写就是 8）
+      --yes                     策略标为「询问」的一律自动放行
+      --cwd <CWD>               工具的工作区根目录。默认当前目录
+      --resume <ID>             接着已有会话跑，而不是新建一个
+      --max-cost <USD>          估算成本超过这么多美元就停。需要配置文件里有 [pricing."<model>"] 条目
+      --image <PATH>            给这条消息附一张图（PNG/JPEG/WebP/GIF）。可重复；供应商要支持图片
+      --file <PATH>             附一个任意类型的文件。字节进附件库，模型读到的是句柄而不是内容。可重复
+      --timeout <SECS>          整轮的墙钟上限（秒）。到点取消这一轮（与 Ctrl-C 同一条路径，含进程组清理），qc 以 124 退出
+      --continue                接着一个暂停的回合继续（配合 `--resume <id>`），不必重打任务。配上 `--raise-turns`/`--raise-cost` 时，新上限只对这一窗生效
+      --raise-turns <N>         这一续跑窗的轮数（隐含 --continue）
+      --raise-cost <USD>        这一续跑窗的成本上限（隐含 --continue）
+      --raise-persist           把调高的上限也写进 config.toml，下次会话沿用。需要 --raise-turns 或 --raise-cost
+  -h, --help                    打印帮助

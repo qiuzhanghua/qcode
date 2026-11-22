@@ -1,12 +1,12 @@
-Resume a stored session in the TUI
+在 TUI 里接着一个已存的会话
 
-Usage: qc resume [OPTIONS] <ID>
+用法：qc resume [OPTIONS] <ID>
 
-Arguments:
-  <ID>  Session id to resume
+参数：
+  <ID>  要接着跑的会话 id
 
-Options:
-      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
-      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
-      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
-  -h, --help                    Print help
+选项：
+      --data-dir <DATA_DIR>     数据目录。默认取 XDG 数据目录
+      --config <CONFIG>         配置文件。默认 ~/.config/qcode/config.toml
+      --approval-policy <PATH>  审批策略文件（[[rules]]）。会替换配置文件里的审批规则
+  -h, --help                    打印帮助

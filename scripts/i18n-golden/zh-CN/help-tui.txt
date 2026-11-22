@@ -1,18 +1,18 @@
-Start the interactive terminal UI.
+启动交互式终端界面。
 
-ADR-0089: this used to be what bare `qc` did. It is a subcommand now because typing `qc` by accident must not take over the terminal — and because "which frontend" is a choice the user makes, not one inferred from the fact that a terminal exists.
+ADR-0089：这原本是裸 `qc` 的行为。现在它是一个子命令：不小心敲下 `qc` 不该就此接管终端——而且「用哪个前端」是用户的选择，不该因为「有终端」就替他推定。
 
-Usage: qc tui [OPTIONS]
+用法：qc tui [OPTIONS]
 
-Options:
+选项：
       --data-dir <DATA_DIR>
-          Data directory. Defaults to the XDG data home
+          数据目录。默认取 XDG 数据目录
 
       --config <CONFIG>
-          Config file. Defaults to ~/.config/qcode/config.toml
+          配置文件。默认 ~/.config/qcode/config.toml
 
       --approval-policy <PATH>
-          Approval policy file ([[rules]]). Replaces the config's approval rules
+          审批策略文件（[[rules]]）。会替换配置文件里的审批规则
 
   -h, --help
-          Print help (see a summary with '-h')
+          打印帮助 (see a summary with '-h')

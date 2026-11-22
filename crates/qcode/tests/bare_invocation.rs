@@ -28,6 +28,11 @@ fn qc_on_the_terminal_path() -> Command {
         .env_remove("XDG_SESSION_TYPE")
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
+        // 这几条断言比对的是**英文**帮助文本（`Usage: qc` / `Start the interactive
+        // terminal UI`）。I18N.md 不变量 5 要求测试进程钉语言，这里钉 `en` 而不是
+        // `zh-CN`：它顺带守住不变量 1——英文输出必须与双语化之前逐字节相同。
+        // 不钉的话，系统语言是中文的机器上会拿到中文帮助，断言随机红。
+        .env("QCODE_LANG", "en")
         .env("TERM", "xterm-256color")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -103,6 +108,8 @@ fn qc_tui_takes_the_tui_path() {
 fn the_launch_marker_is_still_invisible_to_clap() {
     let output = Command::new(env!("CARGO_BIN_EXE_qc"))
         .args(["--launched-from-gui", "--help"])
+        // 同 `qc_on_the_terminal_path`：断言英文文本，钉 `en`。
+        .env("QCODE_LANG", "en")
         .env("TERM", "xterm-256color")
         .stdin(Stdio::null())
         .output()
