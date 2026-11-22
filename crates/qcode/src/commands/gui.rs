@@ -383,9 +383,7 @@ pub(crate) async fn cmd_gui(
         let backend =
             qcode_gui::UnconfiguredBackend::new(workspace.clone(), store).with_rebuild(rebuild);
         let mut app = qcode_tui::App::new("unconfigured", "-");
-        app.push_notice(
-            "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
-        );
+        app.push_notice(qcode_i18n::tr("gui.notice.not_configured"));
         qcode_gui::run(app, Box::new(backend), setup_path, setup_data_dir, single);
         return Ok(ExitCode::SUCCESS);
     }

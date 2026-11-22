@@ -50,7 +50,7 @@ impl App {
             return None;
         }
         if !self.status.running {
-            self.push_notice("steer: no turn is running".to_string());
+            self.push_notice(qcode_i18n::tr("core.notice.steer_no_turn").into_owned());
             return None;
         }
         self.clear_composer();
@@ -101,7 +101,7 @@ impl App {
             return match position {
                 Some(position) => Some(UiAction::SteeringUndo(position)),
                 None => {
-                    self.push_notice("usage: /unsteer <n> (see /steering)");
+                    self.push_notice(qcode_i18n::tr("core.notice.unsteer_usage").into_owned());
                     None
                 }
             };
@@ -113,7 +113,7 @@ impl App {
                 Some(position) if command == "/steer" => Some(UiAction::QueueSteer(position)),
                 Some(position) => Some(UiAction::QueueDrop(position)),
                 None => {
-                    self.push_notice(format!("usage: {command} <n> (see /queue)"));
+                    self.push_notice(qcode_i18n::trp("core.notice.queue_usage", &[command]));
                     None
                 }
             };
@@ -121,13 +121,11 @@ impl App {
 
         if command == "/continue" || command == "/wrap" {
             if self.status.running {
-                self.push_notice("a turn is already running; Esc cancels it first");
+                self.push_notice(qcode_i18n::tr("core.notice.turn_busy_esc").into_owned());
                 return None;
             }
             let Some(turn) = self.paused_turn() else {
-                self.push_notice(
-                    "nothing is paused; /continue needs a turn that ran out of budget",
-                );
+                self.push_notice(qcode_i18n::tr("core.notice.nothing_paused").into_owned());
                 return None;
             };
             if command == "/wrap" {
@@ -147,7 +145,7 @@ impl App {
             return match turn {
                 Some(turn) => Some(UiAction::Rollback(turn)),
                 None => {
-                    self.push_notice("usage: /rollback <turn> (see /checkpoint)".to_string());
+                    self.push_notice(qcode_i18n::tr("core.notice.rollback_usage").into_owned());
                     None
                 }
             };
@@ -165,7 +163,7 @@ impl App {
                 // 不带参数也当查询：那是用户打字最少、也最可能想要的那个答案。
                 "" | "status" => Some(UiAction::Daemon(crate::DaemonVerb::Status)),
                 other => {
-                    self.push_notice(format!("usage: /daemon start|stop|status (got '{other}')"));
+                    self.push_notice(qcode_i18n::trp("core.notice.daemon_usage", &[other]));
                     None
                 }
             };
@@ -193,14 +191,12 @@ impl App {
 
         let name = command.strip_prefix('/').unwrap_or_default();
         let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
-            self.push_notice(format!(
-                "unknown command '{command}'; try /skills, /subagents, /exit, or /<skill-name>"
-            ));
+            self.push_notice(qcode_i18n::trp("core.notice.unknown_command", &[command]));
             return None;
         };
 
         if self.status.running {
-            self.push_notice("a turn is already running; Esc cancels it before activating a skill");
+            self.push_notice(qcode_i18n::tr("core.notice.turn_busy_esc_skill").into_owned());
             return None;
         }
 
@@ -229,7 +225,7 @@ impl App {
             })
             .collect();
         if calls.is_empty() {
-            self.push_notice("no file changes in this session");
+            self.push_notice(qcode_i18n::tr("core.notice.no_file_changes").into_owned());
             return;
         }
 
@@ -246,7 +242,10 @@ impl App {
                     tool.summary
                 ));
             }
-            text.push_str("\n\nUse /diff <n> to print one patch.");
+            text.push_str(&format!(
+                "\n\n{}",
+                qcode_i18n::tr("core.notice.diff_use_hint")
+            ));
             self.push_notice(text);
             return;
         }
@@ -257,19 +256,22 @@ impl App {
                 let diff = tool.diff.as_ref().expect("filtered above");
                 let mut text = format!("{}\n", tool.summary);
                 if diff.patch.is_empty() {
-                    text.push_str("(this call recorded no patch text)");
+                    text.push_str(qcode_i18n::tr("core.notice.no_patch_text").as_ref());
                 } else {
                     text.push_str(&diff.patch);
                 }
                 self.push_notice(text);
             }
-            _ => self.push_notice(format!("usage: /diff [1..{}]", calls.len())),
+            _ => self.push_notice(qcode_i18n::trp(
+                "core.notice.diff_usage",
+                &[calls.len().to_string().as_str()],
+            )),
         }
     }
 
     pub(crate) fn handle_subagents(&mut self, argument: &str) {
         if self.child_groups.is_empty() {
-            self.push_notice("no sub-agent runs in this session");
+            self.push_notice(qcode_i18n::tr("core.notice.no_subagents").into_owned());
             return;
         }
 
@@ -289,7 +291,10 @@ impl App {
                     self.child_block_count(group),
                 ));
             }
-            text.push_str("\n\nUse /subagents <n> to toggle one; Ctrl-B toggles the newest.");
+            text.push_str(&format!(
+                "\n\n{}",
+                qcode_i18n::tr("core.notice.subagents_use_hint")
+            ));
             self.push_notice(text);
             return;
         }
@@ -304,20 +309,21 @@ impl App {
                 } else {
                     "shown"
                 };
-                self.push_notice(format!("sub-agent group {index}: {state}"));
+                self.push_notice(qcode_i18n::trp(
+                    "core.notice.skill_group",
+                    &[index.to_string().as_str(), state],
+                ));
             }
-            _ => self.push_notice(format!(
-                "usage: /subagents [1..{}]",
-                self.child_groups.len()
+            _ => self.push_notice(qcode_i18n::trp(
+                "core.notice.subagents_usage",
+                &[self.child_groups.len().to_string().as_str()],
             )),
         }
     }
 
     pub(crate) fn show_skills(&mut self) {
         if self.skills.is_empty() {
-            self.push_notice(
-                "no skills discovered; run `qc skills list` to see the roots that were checked",
-            );
+            self.push_notice(qcode_i18n::tr("core.notice.no_skills").into_owned());
             return;
         }
 
@@ -331,13 +337,16 @@ impl App {
                 skill.description.replace(['\n', '\r'], " ")
             ));
         }
-        text.push_str("\n\nUse /skills <name> to show the full instructions.");
+        text.push_str(&format!(
+            "\n\n{}",
+            qcode_i18n::tr("core.notice.skills_use_hint")
+        ));
         self.push_notice(text);
     }
 
     pub(crate) fn show_skill(&mut self, name: &str) {
         let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
-            self.push_notice(format!("unknown skill '{name}'; try /skills"));
+            self.push_notice(qcode_i18n::trp("core.notice.unknown_skill", &[name]));
             return;
         };
 

@@ -491,11 +491,12 @@ impl Tool for RunShell {
                 qcode_i18n::trp("tool.shell.timed_out", &[timeout_secs.to_string().as_str()])
             ));
         } else {
+            let code = exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| qcode_i18n::tr("tool.shell_result.signal").into_owned());
             text.push_str(&format!(
-                "exit code: {}\n",
-                exit_code
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "signal".to_string())
+                "{}\n",
+                qcode_i18n::trp("tool.shell_result.exit_code", &[code.as_str()])
             ));
         }
         text.push_str(&combined);

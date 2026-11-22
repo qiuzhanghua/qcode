@@ -5563,6 +5563,7 @@ dependencies = [
  "async-trait",
  "http",
  "qcode-core",
+ "qcode-i18n",
  "qcode-providers",
  "reqwest",
  "rmcp",

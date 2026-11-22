@@ -584,7 +584,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                             app.status.steering
                                         ));
                                     }
-                                    None => app.push_notice("no turn is running".to_string()),
+                                    None => app.push_notice(qcode_i18n::tr("tui.notice.no_turn").into_owned()),
                                 }
                             }
                             UiAction::Approve {
@@ -623,12 +623,15 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         pending_images.len()
                                     ));
                                 }
-                                Err(error) => app.push_notice(format!("paste failed: {error}")),
+                                Err(error) => app.push_notice(qcode_i18n::trp(
+                                        "tui.notice.paste_failed",
+                                        &[error.to_string().as_str()],
+                                    )),
                             },
                             UiAction::QueueList => {
                                 let items = queue.queued();
                                 if items.is_empty() {
-                                    app.push_notice("queue: empty".to_string());
+                                    app.push_notice(qcode_i18n::tr("tui.notice.queue_empty").into_owned());
                                 } else {
                                     for (index, item) in items.iter().enumerate() {
                                         app.push_notice(format!(
@@ -650,7 +653,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         ));
                                     }
                                     None if !engine_running => {
-                                        app.push_notice("no turn is running".to_string())
+                                        app.push_notice(qcode_i18n::tr("tui.notice.no_turn").into_owned())
                                     }
                                     None => app.push_notice(format!(
                                         "no queued message {position} (see /queue)"
@@ -660,7 +663,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             UiAction::SteeringList => {
                                 let items = queue.pending_step();
                                 if items.is_empty() {
-                                    app.push_notice("steering: empty".to_string());
+                                    app.push_notice(qcode_i18n::tr("tui.notice.steering_empty").into_owned());
                                 } else {
                                     for (index, item) in items.iter().enumerate() {
                                         app.push_notice(format!(
@@ -738,7 +741,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         match qcode_core::daemon::presence(&user_dir) {
                                             qcode_core::daemon::Presence::Running => app
                                                 .push_notice(
-                                                    "daemon already running (one per user)"
+                                                    qcode_i18n::tr("tui.notice.daemon_already_running").as_ref()
                                                         .to_string(),
                                                 ),
                                             _ => match qcode_core::daemon::start(
@@ -758,12 +761,12 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                     qcode_tui::DaemonVerb::Stop => {
                                         match qcode_core::daemon::stop(&user_dir) {
                                             Ok(true) => app.push_notice(
-                                                "daemon: stopped (tasks keep their definitions)"
+                                                qcode_i18n::tr("tui.notice.daemon_stopped").as_ref()
                                                     .to_string(),
                                             ),
                                             // 没有在跑不是错误：用户的意图已经满足。
                                             Ok(false) => app
-                                                .push_notice("daemon: was not running".to_string()),
+                                                .push_notice(qcode_i18n::tr("tui.notice.daemon_was_not_running").into_owned()),
                                             Err(error) => app.push_notice(format!(
                                                 "cannot stop the daemon: {error}"
                                             )),
@@ -778,7 +781,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 // (ADR-0060 §2.11).
                                 if engine_running {
                                     app.status.running = false;
-                                    app.push_notice("a turn is already running".to_string());
+                                    app.push_notice(qcode_i18n::tr("tui.notice.turn_busy").into_owned());
                                 } else {
                                     let paused =
                                         app.paused_turn().and_then(|turn| turn.pause.clone());
@@ -789,9 +792,8 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                             Some(qcode_core::event::Continuation::default())
                                         ),
                                         None => app.push_notice(
-                                            "nothing is paused; /continue needs a turn that ran \
-                                             out of budget"
-                                                .to_string(),
+                                            qcode_i18n::tr("tui.notice.nothing_paused")
+                                                .into_owned(),
                                         ),
                                     }
                                 }
@@ -799,7 +801,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                             UiAction::WrapUp => {
                                 if engine_running {
                                     app.status.running = false;
-                                    app.push_notice("a turn is already running".to_string());
+                                    app.push_notice(qcode_i18n::tr("tui.notice.turn_busy").into_owned());
                                 } else {
                                     start_turn!(
                                         qcode_core::engine::WRAP_UP_PROMPT.to_string(),
@@ -812,7 +814,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                 let turns = snapshots.turns(&session_id).unwrap_or_default();
                                 if turns.is_empty() {
                                     app.push_notice(
-                                        "no checkpoints yet: they are recorded when the agent writes a file"
+                                        qcode_i18n::tr("tui.notice.no_checkpoints").as_ref()
                                             .to_string(),
                                     );
                                 } else {
@@ -835,7 +837,10 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                                         report.restored, report.deleted, report.turns
                                     )),
                                     Err(error) => {
-                                        app.push_notice(format!("rollback failed: {error}"))
+                                        app.push_notice(qcode_i18n::trp(
+                                            "tui.notice.rollback_failed",
+                                            &[error.to_string().as_str()],
+                                        ))
                                     }
                                 }
                             }
@@ -909,7 +914,10 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     app.streaming.clear();
                     app.status.running = false;
                     app.status.last = Some(TurnStatus::Failed);
-                    app.push_notice(format!("engine error: {err}"));
+                    app.push_notice(qcode_i18n::trp(
+                        "tui.notice.engine_error",
+                        &[err.to_string().as_str()],
+                    ));
                 }
                 // A follow-up queued while the turn ran starts its own turn now;
                 // leftover steering was promoted to that queue by the engine.

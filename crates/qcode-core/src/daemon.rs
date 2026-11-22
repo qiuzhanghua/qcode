@@ -202,23 +202,21 @@ pub struct NotInstalled {
 
 impl std::fmt::Display for NotInstalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "`qcd` was not found.")?;
+        writeln!(f, "{}", qcode_i18n::tr("core.daemon.not_installed.head"))?;
         writeln!(f)?;
-        writeln!(
-            f,
-            "The daemon is a separate binary. Install it next to `qc`, or put it on PATH:"
-        )?;
+        writeln!(f, "{}", qcode_i18n::tr("core.daemon.not_installed.explain"))?;
         if self.looked_in.is_empty() {
-            writeln!(f, "  (PATH is empty or unset)")?;
+            writeln!(
+                f,
+                "{}",
+                qcode_i18n::tr("core.daemon.not_installed.path_empty")
+            )?;
         } else {
             for dir in &self.looked_in {
                 writeln!(f, "  {}", dir.display())?;
             }
         }
-        write!(
-            f,
-            "\nTimed tasks will not fire until it exists. `qc schedule list` still works."
-        )
+        write!(f, "\n{}", qcode_i18n::tr("core.daemon.not_installed.tail"))
     }
 }
 

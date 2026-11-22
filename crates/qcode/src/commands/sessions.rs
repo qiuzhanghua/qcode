@@ -117,17 +117,27 @@ pub(crate) fn cmd_sessions(
             for id in &ids {
                 let size = snapshots.size(id).unwrap_or(0);
                 freed += size;
-                let _ = writeln!(
-                    report,
-                    "{} {id} (snapshots: {:.1} MB)",
-                    if yes { "removed" } else { "would remove" },
-                    size as f64 / (1024.0 * 1024.0)
-                );
+                let _ = writeln!(report, "{}", {
+                    let size_mb = format!("{:.1}", size as f64 / (1024.0 * 1024.0));
+                    let args = [id.as_str(), size_mb.as_str()];
+                    if yes {
+                        qcode_i18n::trp("cli.session.gc_removed", &args)
+                    } else {
+                        qcode_i18n::trp("cli.session.gc_would_remove", &args)
+                    }
+                });
             }
             if yes {
                 for id in &ids {
                     if let Err(error) = snapshots.remove_session(id) {
-                        let _ = writeln!(report, "cannot remove snapshots for {id}: {error}");
+                        let _ = writeln!(
+                            report,
+                            "{}",
+                            qcode_i18n::trp(
+                                "cli.session.cannot_remove_snapshots",
+                                &[id.as_str(), error.to_string().as_str()]
+                            )
+                        );
                     }
                 }
                 // Snapshot trees whose session is gone (deleted by hand, or by an
@@ -135,15 +145,35 @@ pub(crate) fn cmd_sessions(
                 let keep: Vec<String> = store.list()?.into_iter().map(|s| s.id).collect();
                 match snapshots.sweep(&keep) {
                     Ok(removed) if !removed.is_empty() => {
-                        let _ =
-                            writeln!(report, "removed {} orphan snapshot tree(s)", removed.len());
+                        let _ = writeln!(
+                            report,
+                            "{}",
+                            qcode_i18n::trp(
+                                "cli.session.removed_orphans",
+                                &[removed.len().to_string().as_str()]
+                            )
+                        );
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        let _ = writeln!(report, "cannot sweep snapshots: {error}");
+                        let _ = writeln!(
+                            report,
+                            "{}",
+                            qcode_i18n::trp(
+                                "cli.session.cannot_sweep_snapshots",
+                                &[error.to_string().as_str()]
+                            )
+                        );
                     }
                 }
-                let _ = writeln!(report, "freed {:.1} MB", freed as f64 / (1024.0 * 1024.0));
+                let _ = writeln!(
+                    report,
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.session.freed",
+                        &[format!("{:.1}", freed as f64 / (1024.0 * 1024.0)).as_str()]
+                    )
+                );
             } else {
                 report.push_str(&format!(
                     "{}\n",
@@ -239,8 +269,11 @@ pub(crate) fn cmd_sessions(
             if !yes {
                 let _ = writeln!(
                     report,
-                    "{} session(s) would be deleted; pass --yes to delete",
-                    doomed.len()
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.session.would_delete_n",
+                        &[doomed.len().to_string().as_str()]
+                    )
                 );
             } else {
                 let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
@@ -251,11 +284,22 @@ pub(crate) fn cmd_sessions(
                     // task targeting the session; pre-images live in a separate
                     // tree (`gc` cleans that one the same way).
                     if let Err(error) = snapshots.remove_session(id) {
-                        let _ = writeln!(report, "cannot remove snapshots for {id}: {error}");
+                        let _ = writeln!(
+                            report,
+                            "{}",
+                            qcode_i18n::trp(
+                                "cli.session.cannot_remove_snapshots",
+                                &[id.as_str(), error.to_string().as_str()]
+                            )
+                        );
                     }
                     removed += 1;
                 }
-                let _ = writeln!(report, "deleted {removed} session(s)");
+                let _ = writeln!(
+                    report,
+                    "{}",
+                    qcode_i18n::trp("cli.session.deleted_n", &[removed.to_string().as_str()])
+                );
             }
         }
         SessionsCommand::Checkpoints { id } => {
@@ -263,11 +307,22 @@ pub(crate) fn cmd_sessions(
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(store.root());
             let turns = snapshots.turns(&id)?;
             if turns.is_empty() {
-                let _ = writeln!(report, "no checkpoints for {id}");
+                let _ = writeln!(
+                    report,
+                    "{}",
+                    qcode_i18n::trp("cli.session.no_checkpoints_for", &[id.as_str()])
+                );
             }
             for turn in turns {
                 let files = snapshots.files(&id, turn)?;
-                let _ = writeln!(report, "turn {turn}: {} file(s)", files.len());
+                let _ = writeln!(
+                    report,
+                    "{}",
+                    qcode_i18n::trp(
+                        "cli.session.turn_files",
+                        &[turn.to_string().as_str(), files.len().to_string().as_str()]
+                    )
+                );
                 for file in files {
                     let _ = writeln!(report, "  {file}");
                 }
@@ -295,9 +350,14 @@ pub(crate) fn cmd_sessions(
             }
             let _ = writeln!(
                 report,
-                "would restore {} turn(s) into {}",
-                affected.len(),
-                workspace.display()
+                "{}",
+                qcode_i18n::trp(
+                    "cli.session.would_restore",
+                    &[
+                        affected.len().to_string().as_str(),
+                        workspace.display().to_string().as_str()
+                    ]
+                )
             );
             if !yes {
                 report.push_str(&format!(
@@ -310,11 +370,22 @@ pub(crate) fn cmd_sessions(
             let report_done = snapshots.restore(&id, to, &workspace)?;
             let _ = writeln!(
                 report,
-                "restored {} file(s), removed {} created file(s) (turns {:?})",
-                report_done.restored, report_done.deleted, report_done.turns
+                "{}",
+                qcode_i18n::trp(
+                    "cli.session.restored",
+                    &[
+                        report_done.restored.to_string().as_str(),
+                        report_done.deleted.to_string().as_str(),
+                        format!("{:?}", report_done.turns).as_str(),
+                    ]
+                )
             );
             for refused in &report_done.refused {
-                let _ = writeln!(report, "skipped {refused}");
+                let _ = writeln!(
+                    report,
+                    "{}",
+                    qcode_i18n::trp("cli.session.skipped", &[refused.to_string().as_str()])
+                );
             }
         }
     }

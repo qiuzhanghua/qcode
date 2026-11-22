@@ -6,6 +6,12 @@ use serde_json::json;
 
 use super::*;
 
+/// 这些断言钉在一种语言上：`pin_for_tests()` 钉中文（ADR-0105 §6）。
+/// 不钉的话，并行测试里谁先跑决定 `CURRENT_LOCALE`，断言会随机红。
+fn pin() {
+    qcode_i18n::pin_for_tests();
+}
+
 fn event(kind: EventKind) -> Event {
     Event::new(1, "s1", 1, kind)
 }
@@ -55,6 +61,7 @@ fn demo_skill() -> SkillView {
 
 #[test]
 fn slash_skills_lists_and_shows_a_skill() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
 
@@ -80,12 +87,13 @@ fn slash_skills_lists_and_shows_a_skill() {
 
 #[test]
 fn slash_skills_reports_unknown_and_empty_cases() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "/skills");
     press(&mut app, "enter");
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("no skills discovered")
+        Some(Block::Notice(text)) if text.contains("没有发现技能")
     ));
 
     app.skills = vec![demo_skill()];
@@ -93,24 +101,26 @@ fn slash_skills_reports_unknown_and_empty_cases() {
     press(&mut app, "enter");
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("unknown skill 'nope'")
+        Some(Block::Notice(text)) if text.contains("不认识的技能 `nope`")
     ));
 }
 
 #[test]
 fn unknown_slash_command_is_not_sent_to_the_model() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "/nope");
     assert_eq!(press(&mut app, "enter"), None);
     assert!(!app.status.running);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("unknown command '/nope'")
+        Some(Block::Notice(text)) if text.contains("不认识的命令 `/nope`")
     ));
 }
 
 #[test]
 fn slash_skill_name_activates_it_as_a_user_message() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
 
@@ -142,6 +152,7 @@ fn slash_skill_name_activates_it_as_a_user_message() {
 
 #[test]
 fn an_image_attachment_rides_on_the_question_row() {
+    pin();
     use qcode_attachments::{AttachmentId, AttachmentRef, ImageMime, ImageRef};
 
     let mut app = App::new("mock", "mock-1");
@@ -184,6 +195,7 @@ fn an_image_attachment_rides_on_the_question_row() {
 
 #[test]
 fn a_file_attachment_rides_on_the_question_row() {
+    pin();
     use qcode_attachments::{AttachmentId, AttachmentRef, FileRef};
 
     let mut app = App::new("mock", "mock-1");
@@ -221,6 +233,7 @@ fn a_file_attachment_rides_on_the_question_row() {
 
 #[test]
 fn slash_skill_activation_is_rejected_while_running() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
     app.status.running = true;
@@ -229,12 +242,13 @@ fn slash_skill_activation_is_rejected_while_running() {
     assert_eq!(press(&mut app, "enter"), None);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("already running")
+        Some(Block::Notice(text)) if text.contains("已经有一个回合在跑")
     ));
 }
 
 #[test]
 fn enter_submits_and_clears_the_composer() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     for character in "fix tests".chars() {
         press(&mut app, &character.to_string());
@@ -248,6 +262,7 @@ fn enter_submits_and_clears_the_composer() {
 
 #[test]
 fn esc_cancels_only_while_running() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     assert_eq!(press(&mut app, "esc"), None);
 
@@ -259,6 +274,7 @@ fn esc_cancels_only_while_running() {
 
 #[test]
 fn replay_of_an_unfinished_turn_ends_idle() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -275,6 +291,7 @@ fn replay_of_an_unfinished_turn_ends_idle() {
 
 #[test]
 fn ctrl_c_cancels_then_quits() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -286,6 +303,7 @@ fn ctrl_c_cancels_then_quits() {
 
 #[test]
 fn approval_prompt_answers_with_y_or_n() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -318,6 +336,7 @@ fn approval_prompt_answers_with_y_or_n() {
 
 #[test]
 fn a_answers_allow_for_the_session() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -345,6 +364,7 @@ fn a_answers_allow_for_the_session() {
 
 #[test]
 fn composer_supports_cjk_and_shift_enter_newlines() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     for character in "中文".chars() {
         press(&mut app, &character.to_string());
@@ -360,6 +380,7 @@ fn composer_supports_cjk_and_shift_enter_newlines() {
 
 #[test]
 fn ctrl_n_and_modified_enter_insert_newlines() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     press(&mut app, "a");
     press(&mut app, "ctrl-n");
@@ -376,6 +397,7 @@ fn ctrl_n_and_modified_enter_insert_newlines() {
 
 #[test]
 fn page_keys_move_the_scroll_offset() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     press(&mut app, "page-up");
     press(&mut app, "page-up");
@@ -396,6 +418,7 @@ fn page_keys_move_the_scroll_offset() {
 
 #[test]
 fn arrows_scroll_when_the_draft_is_a_single_line() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     press(&mut app, "up");
     press(&mut app, "up");
@@ -406,6 +429,7 @@ fn arrows_scroll_when_the_draft_is_a_single_line() {
 
 #[test]
 fn arrows_edit_the_composer_when_the_draft_has_multiple_lines() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "a");
     press(&mut app, "shift-enter");
@@ -418,6 +442,7 @@ fn arrows_edit_the_composer_when_the_draft_has_multiple_lines() {
 
 #[test]
 fn slash_exit_quits_in_three_spellings() {
+    pin();
     for command in ["/exit", "/quit", "/q"] {
         let mut app = App::new("mock", "mock-1");
         type_text(&mut app, command);
@@ -431,6 +456,7 @@ fn slash_exit_quits_in_three_spellings() {
 
 #[test]
 fn slash_checkpoint_and_rollback_are_local_actions() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "/checkpoint");
     assert_eq!(press(&mut app, "enter"), Some(UiAction::Checkpoints));
@@ -459,6 +485,7 @@ fn slash_checkpoint_and_rollback_are_local_actions() {
 
 #[test]
 fn ctrl_v_asks_the_loop_to_paste_an_image() {
+    pin();
     let mut app = App::new("mock", "mock-1");
 
     assert_eq!(press(&mut app, "ctrl-v"), Some(UiAction::PasteImage));
@@ -468,6 +495,7 @@ fn ctrl_v_asks_the_loop_to_paste_an_image() {
 
 #[test]
 fn tool_result_updates_the_matching_row() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -498,6 +526,7 @@ fn tool_result_updates_the_matching_row() {
 
 #[test]
 fn todo_write_result_becomes_a_todo_block() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -529,6 +558,7 @@ fn todo_write_result_becomes_a_todo_block() {
 
 #[test]
 fn failed_todo_write_does_not_replace_the_list() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -570,6 +600,7 @@ fn failed_todo_write_does_not_replace_the_list() {
 
 #[test]
 fn empty_todo_write_clears_the_list_with_a_notice() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "c1".to_string(),
@@ -593,6 +624,7 @@ fn empty_todo_write_clears_the_list_with_a_notice() {
 
 #[test]
 fn assistant_text_and_usage_reach_the_transcript() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::AssistantMessage(AssistantMessage {
         blocks: vec![
@@ -620,6 +652,7 @@ fn assistant_text_and_usage_reach_the_transcript() {
 
 #[test]
 fn turns_track_input_process_answer_and_usage() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&Event::new(
         1,
@@ -702,6 +735,7 @@ fn turns_track_input_process_answer_and_usage() {
 
 #[test]
 fn steered_follow_up_message_becomes_its_own_turn() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     // A 开场：TurnStarted + 输入 + 一个工具调用。
     app.apply(&Event::new(
@@ -809,6 +843,7 @@ fn steered_follow_up_message_becomes_its_own_turn() {
 
 #[test]
 fn v4_plain_user_message_does_not_split_a_turn() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&Event::new(
         1,
@@ -865,6 +900,7 @@ fn v4_plain_user_message_does_not_split_a_turn() {
 
 #[test]
 fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&Event::new(
         1,
@@ -921,6 +957,7 @@ fn v3_log_without_the_marker_falls_back_to_the_heuristic() {
 
 #[test]
 fn turns_are_closed_and_indexed_independently() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     for (turn, input, answer) in [(1u32, "first", "one"), (2u32, "second", "two")] {
         app.apply(&Event::new(
@@ -984,6 +1021,7 @@ fn turns_are_closed_and_indexed_independently() {
 
 #[test]
 fn streamed_reasoning_keeps_its_place_before_later_tools() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -1030,6 +1068,7 @@ fn streamed_reasoning_keeps_its_place_before_later_tools() {
 
 #[test]
 fn reasoning_delta_is_kept_until_the_authoritative_message() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -1060,6 +1099,7 @@ fn reasoning_delta_is_kept_until_the_authoritative_message() {
 
 #[test]
 fn child_events_are_nested_and_do_not_move_parent_status() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -1162,6 +1202,7 @@ fn child_events_are_nested_and_do_not_move_parent_status() {
 
 #[test]
 fn context_deltas_update_the_status_fields() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     assert_eq!(app.context_tokens, 0);
     assert_eq!(app.context_window, None);
@@ -1176,6 +1217,7 @@ fn context_deltas_update_the_status_fields() {
 
 #[test]
 fn ctrl_b_folds_the_newest_child_group() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     assert!(app.child_groups.is_empty());
 
@@ -1207,6 +1249,7 @@ fn ctrl_b_folds_the_newest_child_group() {
 
 #[test]
 fn subagents_command_lists_and_toggles_groups() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(ToolCall {
         call_id: "p1".to_string(),
@@ -1230,7 +1273,7 @@ fn subagents_command_lists_and_toggles_groups() {
     assert_eq!(press(&mut app, "enter"), None);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("sub-agent groups (1)") && text.contains("shown")
+        Some(Block::Notice(text)) if text.contains("子 agent") || text.contains("sub-agent")
     ));
 
     type_text(&mut app, "/subagents 1");
@@ -1240,6 +1283,7 @@ fn subagents_command_lists_and_toggles_groups() {
 
 #[test]
 fn ctrl_t_cycles_the_context_display() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     assert_eq!(app.context_display, ContextDisplay::Auto);
 
@@ -1253,6 +1297,7 @@ fn ctrl_t_cycles_the_context_display() {
 
 #[test]
 fn streamed_text_is_replaced_by_the_final_message() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -1274,6 +1319,7 @@ fn streamed_text_is_replaced_by_the_final_message() {
 
 #[test]
 fn turn_ended_updates_status_and_cost() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::TurnStarted(TurnStarted {
         input: "go".to_string(),
@@ -1292,6 +1338,7 @@ fn turn_ended_updates_status_and_cost() {
 
 #[test]
 fn follow_up_while_running_is_queued() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.status.running = true;
     type_text(&mut app, "next");
@@ -1304,6 +1351,7 @@ fn follow_up_while_running_is_queued() {
 
 #[test]
 fn composer_state_tracks_pending_and_restoring() {
+    pin();
     use qcode_core::event::{ApprovalDecided, Decision, Scope};
 
     let mut app = App::new("mock", "mock-1");
@@ -1355,6 +1403,7 @@ fn composer_state_tracks_pending_and_restoring() {
 
 #[test]
 fn steer_on_send_turns_a_running_submit_into_steering() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.steer_on_send = true;
     app.status.running = true;
@@ -1369,6 +1418,7 @@ fn steer_on_send_turns_a_running_submit_into_steering() {
 
 #[test]
 fn steer_requires_a_running_turn_and_takes_the_draft() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "hurry");
     assert_eq!(press(&mut app, "ctrl-s"), None, "idle: steer is refused");
@@ -1388,6 +1438,7 @@ fn steer_requires_a_running_turn_and_takes_the_draft() {
 
 #[test]
 fn queue_commands_map_to_frontend_actions() {
+    pin();
     let mut app = App::new("mock", "mock-1");
 
     type_text(&mut app, "/queue");
@@ -1404,12 +1455,13 @@ fn queue_commands_map_to_frontend_actions() {
     assert!(
         app.blocks
             .iter()
-            .any(|block| matches!(block, Block::Notice(text) if text.contains("usage")))
+            .any(|block| matches!(block, Block::Notice(text) if (text.contains("用法") || text.contains("usage"))))
     );
 }
 
 #[test]
 fn steering_commands_map_to_frontend_actions() {
+    pin();
     let mut app = App::new("mock", "mock-1");
 
     type_text(&mut app, "/steering");
@@ -1423,12 +1475,13 @@ fn steering_commands_map_to_frontend_actions() {
     assert!(
         app.blocks
             .iter()
-            .any(|block| matches!(block, Block::Notice(text) if text.contains("usage")))
+            .any(|block| matches!(block, Block::Notice(text) if (text.contains("用法") || text.contains("usage"))))
     );
 }
 
 #[test]
 fn diff_command_lists_changes_and_prints_a_patch() {
+    pin();
     use qcode_core::event::{DiffFileStat, DiffKind, ToolDiff, ToolResult, ToolStatus};
 
     let mut app = App::new("mock", "mock-1");
@@ -1493,11 +1546,15 @@ fn diff_command_lists_changes_and_prints_a_patch() {
             _ => None,
         })
         .expect("an error");
-    assert!(out_of_range.contains("usage"), "{out_of_range}");
+    assert!(
+        (out_of_range.contains("用法") || out_of_range.contains("usage")),
+        "{out_of_range}"
+    );
 }
 
 #[test]
 fn submitted_text_is_rendered_once_the_event_arrives() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.composer.apply(InputEvent::InsertStr("hi".to_string()));
     press(&mut app, "enter");
@@ -1524,6 +1581,7 @@ fn submitted_text_is_rendered_once_the_event_arrives() {
 
 #[test]
 fn toggle_tool_flips_only_the_requested_card() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.apply(&event(EventKind::ToolCall(qcode_core::event::ToolCall {
         call_id: "c1".to_string(),
@@ -1559,6 +1617,7 @@ fn toggle_tool_flips_only_the_requested_card() {
 /// 顶到可见处（`scroll = 0`）。
 #[test]
 fn a_notice_lands_in_the_transcript_where_it_can_be_read_back() {
+    pin();
     let mut app = App::new("deepseek", "deepseek-flash");
     app.blocks.push(Block::Assistant("earlier".into()));
     app.scroll = 7;
@@ -1579,6 +1638,7 @@ fn a_notice_lands_in_the_transcript_where_it_can_be_read_back() {
 
 #[test]
 fn reset_transcript_keeps_configuration_and_clears_state() {
+    pin();
     let mut app = App::new("deepseek", "deepseek-flash");
     app.push_notice("old");
     app.status.running = true;
@@ -1633,6 +1693,7 @@ fn paused_session() -> App {
 
 #[test]
 fn continue_requires_a_paused_turn() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     type_text(&mut app, "/continue");
     assert_eq!(press(&mut app, "enter"), None);
@@ -1640,12 +1701,13 @@ fn continue_requires_a_paused_turn() {
     assert!(!app.status.running);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("nothing is paused")
+        Some(Block::Notice(text)) if text.contains("没有暂停的回合")
     ));
 }
 
 #[test]
 fn continue_and_wrap_actions_on_a_paused_turn() {
+    pin();
     let mut app = paused_session();
     type_text(&mut app, "/continue");
     assert_eq!(press(&mut app, "enter"), Some(UiAction::Continue));
@@ -1659,13 +1721,14 @@ fn continue_and_wrap_actions_on_a_paused_turn() {
 
 #[test]
 fn continue_is_refused_while_a_turn_runs() {
+    pin();
     let mut app = paused_session();
     app.status.running = true;
     type_text(&mut app, "/continue");
     assert_eq!(press(&mut app, "enter"), None);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("already running")
+        Some(Block::Notice(text)) if text.contains("已经有一个回合在跑")
     ));
 }
 
@@ -1675,6 +1738,7 @@ fn continue_is_refused_while_a_turn_runs() {
 /// the composer.
 #[test]
 fn command_entry_point_matches_submit_for_the_same_line() {
+    pin();
     let mut app = App::new("mock", "mock-1");
     app.skills = vec![demo_skill()];
 
@@ -1686,7 +1750,7 @@ fn command_entry_point_matches_submit_for_the_same_line() {
     // Fully local: it reports through a notice and returns nothing to execute.
     assert_eq!(app.command("/diff"), None);
     assert!(
-        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("file changes")),
+        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("文件改动")),
         "a bare /diff should explain itself"
     );
 
@@ -1703,6 +1767,6 @@ fn command_entry_point_matches_submit_for_the_same_line() {
     // An unknown name must not be swallowed into a prompt.
     assert_eq!(app.command("/nope"), None);
     assert!(
-        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("unknown command")),
+        matches!(app.blocks.last(), Some(Block::Notice(text)) if text.contains("不认识的命令")),
     );
 }

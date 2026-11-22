@@ -101,7 +101,9 @@ impl Shell {
         self.task_menu = None;
         self.hovered_task = None;
         self.refresh_tasks();
-        self.ui.app.push_notice("new session");
+        self.ui
+            .app
+            .push_notice(qcode_i18n::tr("gui.notice.new_session").into_owned());
         tracing::debug!(
             blocks = self.ui.app.blocks.len(),
             resetting = self.ui.resetting,
@@ -174,9 +176,10 @@ impl Shell {
             Ok(events) => events,
             Err(error) => {
                 self.ui.resetting = false;
-                self.ui
-                    .app
-                    .push_notice(format!("cannot resume {}: {error}", short_id(&id)));
+                self.ui.app.push_notice(qcode_i18n::trp(
+                    "gui.notice.cannot_resume",
+                    &[short_id(&id), error.to_string().as_str()],
+                ));
                 cx.notify();
                 return;
             }
@@ -211,7 +214,7 @@ impl Shell {
             self.ui.process_open_turns.clear();
             self.ui
                 .app
-                .push_notice(format!("resumed {}", short_id(&id)));
+                .push_notice(qcode_i18n::trp("gui.notice.resumed", &[short_id(&id)]));
         }
         if parked_draft {
             // 屏上那份没发出去的新任务被换走了：它还在，但只能从 `+` 回去，
@@ -238,9 +241,10 @@ impl Shell {
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| {
             prefs.last_session = Some(id.clone());
         }) {
-            self.ui
-                .app
-                .push_notice(format!("cannot save gui.json: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_save_gui_json",
+                &[error.to_string().as_str()],
+            ));
         }
         self.pending_root_delete = None;
         self.pending_task_delete = None;
@@ -282,9 +286,9 @@ impl Shell {
         // reply the user is about to get belongs in the transcript it covers.
         self.ui.command_output = None;
         if !self.backend.is_configured() {
-            self.ui.app.push_notice(
-                "not configured yet: open Settings, fill in the provider and key, then restart qc gui",
-            );
+            self.ui
+                .app
+                .push_notice(qcode_i18n::tr("gui.notice.not_configured"));
             cx.notify();
             return;
         }

@@ -645,6 +645,40 @@ gui:
     schedule_incomplete_rule:
       en: "The period is incomplete or invalid: check the period selection"
       zh-CN: 周期不完整或无效：请检查周期选择
+    cannot_list_tasks:
+      en: "cannot list tasks: %{0}"
+      zh-CN: "列不出任务：%{0}"
+    cannot_restore_session:
+      en: "cannot restore last session: %{0}"
+      zh-CN: "恢复不了上次的会话：%{0}"
+    # `gui.json` 是文件名，不翻；`%{0}` 是下层错误串（运行期事实）。
+    cannot_save_gui_json:
+      en: "cannot save gui.json: %{0}"
+      zh-CN: "存不下 gui.json：%{0}"
+    applying_settings:
+      en: "applying settings…"
+      zh-CN: 正在应用设置…
+    settings_applied:
+      en: "settings applied"
+      zh-CN: 设置已应用
+    settings_no_provider:
+      en: "settings saved, but the config has no usable provider; open Settings to add one"
+      zh-CN: "设置已保存，但配置里没有可用的供应商；打开设置添加一个"
+    cannot_reattach:
+      en: "cannot re-attach session: %{0}"
+      zh-CN: "重新接不上会话：%{0}"
+    new_session:
+      en: "new session"
+      zh-CN: 新会话
+    cannot_resume:
+      en: "cannot resume %{0}: %{1}"
+      zh-CN: "接不上 %{0}：%{1}"
+    resumed:
+      en: "resumed %{0}"
+      zh-CN: "已接上 %{0}"
+    cannot_refresh_tasks:
+      en: "cannot refresh tasks: %{0}"
+      zh-CN: "刷新不了任务：%{0}"
   # 新建 / 切换任务时的提示（`shell/session.rs`）。
   session:
     no_provider:
@@ -1850,6 +1884,32 @@ tool:
       deleted:
         en: "Deleted scheduled task `%{0}`"
         zh-CN: "已删除定时任务 `%{0}`"
+
+  # 工具结果的填空。工具结果跟随会话语言（ADR-0105 §5）。
+  shell_result:
+    exit_code:
+      en: "exit code: %{0}"
+      zh-CN: "退出码：%{0}"
+    signal:
+      en: "signal"
+      zh-CN: 信号
+  skills_result:
+    more_omitted:
+      en: "- … %{0} more skill(s) omitted"
+      zh-CN: "- … 还有 %{0} 个技能被省略"
+    bundled_files:
+      en: "## Bundled files"
+      zh-CN: "## 捆绑的文件"
+    more_files_omitted:
+      en: "- … more files omitted"
+      zh-CN: "- … 还有文件被省略"
+    read_one:
+      en: "Read one with skill(name=\"%{0}\", file=\"<path>\")."
+      zh-CN: "用 skill(name=\"%{0}\", file=\"<path>\") 读其中一个。"
+  truncate:
+    bytes:
+      en: "… [%{0} bytes truncated] …"
+      zh-CN: "… [省略 %{0} 字节] …"
 # 驱动状态、审批说明、规则/目标的展示、run 摘要、CLI 追问提示（`qcode-core`）。
 #
 # **这里刻意不含发给模型的指令**：`title.rs` 的两条会话标题 prompt，以及 `turn.rs`
@@ -1900,6 +1960,84 @@ tool:
       en: "command timed out after %{0}s"
       zh-CN: "命令在 %{0} 秒后超时"
 core:
+  # 斜杠命令的用法提示与状态回话。命令名、参数占位（`<n>`）、按键**不翻**：
+  # 用户要照着敲/按。`Esc` 也保留原文——那是键帽上的字。
+  notice:
+    steer_no_turn:
+      en: "steer: no turn is running"
+      zh-CN: "steer：没有在跑的回合"
+    unsteer_usage:
+      en: "usage: /unsteer <n> (see /steering)"
+      zh-CN: "用法：/unsteer <n>（见 /steering）"
+    queue_usage:
+      en: "usage: %{0} <n> (see /queue)"
+      zh-CN: "用法：%{0} <n>（见 /queue）"
+    turn_busy_esc:
+      en: "a turn is already running; Esc cancels it first"
+      zh-CN: "已经有一个回合在跑；先按 Esc 取消它"
+    turn_busy_esc_skill:
+      en: "a turn is already running; Esc cancels it before activating a skill"
+      zh-CN: "已经有一个回合在跑；先按 Esc 取消它，再激活技能"
+    nothing_paused:
+      en: "nothing is paused; /continue needs a turn that ran out of budget"
+      zh-CN: "没有暂停的回合；`/continue` 需要有一个用完预算的回合"
+    rollback_usage:
+      en: "usage: /rollback <turn> (see /checkpoint)"
+      zh-CN: "用法：/rollback <turn>（见 /checkpoint）"
+    daemon_usage:
+      en: "usage: /daemon start|stop|status (got '%{0}')"
+      zh-CN: "用法：/daemon start|stop|status（收到的是 `%{0}`）"
+    unknown_command:
+      en: "unknown command '%{0}'; try /skills, /subagents, /exit, or /<skill-name>"
+      zh-CN: "不认识的命令 `%{0}`；试试 /skills、/subagents、/exit，或者 /<技能名>"
+    no_file_changes:
+      en: "no file changes in this session"
+      zh-CN: 这次会话没有文件改动
+    diff_usage:
+      en: "usage: /diff [1..%{0}]"
+      zh-CN: "用法：/diff [1..%{0}]"
+    no_subagents:
+      en: "no sub-agent runs in this session"
+      zh-CN: 这次会话没有子 agent 运行过
+    subagents_usage:
+      en: "usage: /subagents [1..%{0}]"
+      zh-CN: "用法：/subagents [1..%{0}]"
+    skill_group:
+      en: "sub-agent group %{0}: %{1}"
+      zh-CN: "子 agent 组 %{0}：%{1}"
+    no_skills:
+      en: "no skills discovered; run `qc skills list` to see the roots that were checked"
+      zh-CN: "没有发现技能；跑 `qc skills list` 看检查过哪些位置"
+    unknown_skill:
+      en: "unknown skill '%{0}'; try /skills"
+      zh-CN: "不认识的技能 `%{0}`；试试 /skills"
+    diff_use_hint:
+      en: "Use /diff <n> to print one patch."
+      zh-CN: "用 /diff <n> 打印某个补丁。"
+    subagents_use_hint:
+      en: "Use /subagents <n> to toggle one; Ctrl-B toggles the newest."
+      zh-CN: "用 /subagents <n> 展开/收起某一个；Ctrl-B 切换最新的那个。"
+    skills_use_hint:
+      en: "Use /skills <name> to show the full instructions."
+      zh-CN: "用 /skills <名字> 查看完整说明。"
+    no_patch_text:
+      en: "(this call recorded no patch text)"
+      zh-CN: （这次调用没有记录补丁内容）
+  daemon:
+    not_installed:
+      head:
+        en: "`qcd` was not found."
+        zh-CN: "找不到 `qcd`。"
+      explain:
+        en: "The daemon is a separate binary. Install it next to `qc`, or put it on PATH:"
+        zh-CN: "daemon 是一个独立的二进制。把它装在 `qc` 旁边，或者放进 PATH："
+      path_empty:
+        en: "  (PATH is empty or unset)"
+        zh-CN: "  （PATH 为空或未设置）"
+      tail:
+        en: "Timed tasks will not fire until it exists. `qc schedule list` still works."
+        zh-CN: "在它存在之前，定时任务不会触发。`qc schedule list` 仍然可用。"
+
   # 沙箱与授权的自述（`qc doctor` 与授权报错共用同一份）。
   #
   # 为什么不翻实现名：`sandbox-exec` / `bubblewrap` / `Landlock` / `windows-acl`
@@ -2563,6 +2701,45 @@ cli:
     dry_run_restore:
       en: "dry run; pass --yes to restore"
       zh-CN: "预演；要真的恢复请加 `--yes`"
+    cannot_remove_snapshots:
+      en: "cannot remove snapshots for %{0}: %{1}"
+      zh-CN: "删不掉 %{0} 的快照：%{1}"
+    cannot_sweep_snapshots:
+      en: "cannot sweep snapshots: %{0}"
+      zh-CN: "清理不了快照：%{0}"
+    removed_orphans:
+      en: "removed %{0} orphan snapshot tree(s)"
+      zh-CN: "清掉了 %{0} 棵无主的快照目录"
+    freed:
+      en: "freed %{0} MB"
+      zh-CN: "释放了 %{0} MB"
+    would_delete_n:
+      en: "%{0} session(s) would be deleted; pass --yes to delete"
+      zh-CN: "会删掉 %{0} 个会话；要真的删除请加 `--yes`"
+    deleted_n:
+      en: "deleted %{0} session(s)"
+      zh-CN: "已删除 %{0} 个会话"
+    no_checkpoints_for:
+      en: "no checkpoints for %{0}"
+      zh-CN: "%{0} 没有检查点"
+    turn_files:
+      en: "turn %{0}: %{1} file(s)"
+      zh-CN: "第 %{0} 轮：%{1} 个文件"
+    would_restore:
+      en: "would restore %{0} turn(s) into %{1}"
+      zh-CN: "会把 %{0} 轮恢复进 %{1}"
+    restored:
+      en: "restored %{0} file(s), removed %{1} created file(s) (turns %{2})"
+      zh-CN: "恢复了 %{0} 个文件，删掉了 %{1} 个新建文件（轮次 %{2}）"
+    skipped:
+      en: "skipped %{0}"
+      zh-CN: "跳过了 %{0}"
+    gc_removed:
+      en: "removed %{0} (snapshots: %{1} MB)"
+      zh-CN: "已删除 %{0}（快照：%{1} MB）"
+    gc_would_remove:
+      en: "would remove %{0} (snapshots: %{1} MB)"
+      zh-CN: "会删除 %{0}（快照：%{1} MB）"
     keychain_hint:
       en: "stored in the keychain; add to your config:"
       zh-CN: "已存进钥匙串；在配置里加上："
@@ -3362,6 +3539,44 @@ kernel:
 # 键位与斜杠命令**不翻译**（`/continue`、`[1-9]`、`[Esc]`）：它们是要用户照着按的
 # 字面量，翻了就按不出来。翻的只是它们周围的说明。
 tui:
+  notice:
+    no_turn:
+      en: "no turn is running"
+      zh-CN: 没有在跑的回合
+    turn_busy:
+      en: "a turn is already running"
+      zh-CN: 已经有一个回合在跑
+    queue_empty:
+      en: "queue: empty"
+      zh-CN: "队列：空"
+    steering_empty:
+      en: "steering: empty"
+      zh-CN: "插话队列：空"
+    paste_failed:
+      en: "paste failed: %{0}"
+      zh-CN: "粘贴失败：%{0}"
+    rollback_failed:
+      en: "rollback failed: %{0}"
+      zh-CN: "回滚失败：%{0}"
+    engine_error:
+      en: "engine error: %{0}"
+      zh-CN: "引擎错误：%{0}"
+    daemon_already_running:
+      en: "daemon already running (one per user)"
+      zh-CN: "daemon 已经在跑了（一个用户一个）"
+    daemon_stopped:
+      en: "daemon: stopped (tasks keep their definitions)"
+      zh-CN: "daemon：已停止（任务定义仍然保留）"
+    daemon_was_not_running:
+      en: "daemon: was not running"
+      zh-CN: "daemon：本来就没有在跑"
+    nothing_paused:
+      en: "nothing is paused; /continue needs a turn that ran out of budget"
+      zh-CN: "没有暂停的回合；`/continue` 需要有一个用完预算的回合"
+    no_checkpoints:
+      en: "no checkpoints yet: they are recorded when the agent writes a file"
+      zh-CN: "还没有检查点：agent 写文件时才会记录"
+
   pause:
     commands:
       en: "  already ran: %{0}"

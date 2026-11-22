@@ -207,8 +207,11 @@ fn truncate(text: &str, limit: usize) -> (String, bool) {
     let mut preview = String::with_capacity(limit + 64);
     preview.push_str(&text[..floor_boundary(text, head)]);
     preview.push_str(&format!(
-        "\n… [{} bytes truncated] …\n",
-        text.len().saturating_sub(limit)
+        "\n{}\n",
+        qcode_i18n::trp(
+            "tool.truncate.bytes",
+            &[text.len().saturating_sub(limit).to_string().as_str()]
+        )
     ));
     preview.push_str(&text[ceil_boundary(text, text.len() - tail)..]);
     (preview, true)

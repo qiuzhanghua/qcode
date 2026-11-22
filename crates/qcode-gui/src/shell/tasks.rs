@@ -56,10 +56,10 @@ impl Shell {
                 }
                 self.tasks = tasks;
             }
-            Err(error) => self
-                .ui
-                .app
-                .push_notice(format!("cannot refresh tasks: {error}")),
+            Err(error) => self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_refresh_tasks",
+                &[error.to_string().as_str()],
+            )),
         }
     }
 
@@ -370,9 +370,10 @@ impl Shell {
             if let Err(error) =
                 GuiPreferences::update(&self.data_dir, |prefs| prefs.last_session = None)
             {
-                self.ui
-                    .app
-                    .push_notice(format!("cannot save gui.json: {error}"));
+                self.ui.app.push_notice(qcode_i18n::trp(
+                    "gui.notice.cannot_save_gui_json",
+                    &[error.to_string().as_str()],
+                ));
             }
         }
         self.pending_task_renames.remove(task_id);

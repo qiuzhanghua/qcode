@@ -390,9 +390,10 @@ impl Shell {
         // 只写主题：整份覆盖会把 `last_session`/窗口几何冲回旧值。
         let theme = self.prefs.theme.clone();
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.theme = theme) {
-            self.ui
-                .app
-                .push_notice(format!("cannot save gui.json: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_save_gui_json",
+                &[error.to_string().as_str()],
+            ));
         }
         self.prefs.apply(cx);
         cx.notify();
@@ -417,9 +418,10 @@ impl Shell {
         self.prefs.font_size = next;
         FONT_SIZE_PX.store(next, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.font_size = next) {
-            self.ui
-                .app
-                .push_notice(format!("cannot save gui.json: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_save_gui_json",
+                &[error.to_string().as_str()],
+            ));
         }
         self.prefs.apply(cx);
         cx.notify();

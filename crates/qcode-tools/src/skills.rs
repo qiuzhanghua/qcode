@@ -567,7 +567,13 @@ impl SkillSet {
         }
 
         if omitted > 0 {
-            section.push_str(&format!("- … {omitted} more skill(s) omitted\n"));
+            section.push_str(&format!(
+                "{}\n",
+                qcode_i18n::trp(
+                    "tool.skills_result.more_omitted",
+                    &[omitted.to_string().as_str()]
+                )
+            ));
         }
 
         Some(section.trim_end().to_string())
@@ -661,18 +667,24 @@ fn render_skill(skill: &Skill) -> ToolOutput {
     );
 
     if !skill.files.is_empty() {
-        output.push_str("\n## Bundled files\n\n");
+        output.push_str(&format!(
+            "\n{}\n\n",
+            qcode_i18n::tr("tool.skills_result.bundled_files")
+        ));
         for file in skill.files.iter().take(FILES_IN_OUTPUT) {
             output.push_str("- ");
             output.push_str(file);
             output.push('\n');
         }
         if skill.files.len() > FILES_IN_OUTPUT || skill.files_truncated {
-            output.push_str("- … more files omitted\n");
+            output.push_str(&format!(
+                "- {}\n",
+                qcode_i18n::tr("tool.skills_result.more_files_omitted")
+            ));
         }
         output.push_str(&format!(
-            "\nRead one with skill(name=\"{}\", file=\"<path>\").\n",
-            skill.name
+            "\n{}\n",
+            qcode_i18n::trp("tool.skills_result.read_one", &[skill.name.as_str()])
         ));
     }
 
@@ -1008,7 +1020,13 @@ mod tests {
             "section is {}",
             section.len()
         );
-        assert!(section.contains("more skill(s) omitted"));
+        // 这行现在走翻译表（`tool.skills_result.more_omitted`），跟随会话语言。
+        // 断言「被截断了」这件事本身，而不是英文原文——否则一换语言就红，
+        // 而那正是翻译该有的行为（ADR-0105 §5）。
+        assert!(
+            section.contains("more skill(s) omitted") || section.contains("个技能被省略"),
+            "capped section should say skills were omitted: {section}"
+        );
     }
 
     #[tokio::test]

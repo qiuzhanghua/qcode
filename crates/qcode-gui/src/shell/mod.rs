@@ -242,7 +242,10 @@ impl Shell {
         };
         let cwd = backend.cwd().display().to_string();
         let tasks = backend.tasks().unwrap_or_else(|error| {
-            app.push_notice(format!("cannot list tasks: {error}"));
+            app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_list_tasks",
+                &[error.to_string().as_str()],
+            ));
             Vec::new()
         });
         let titles = task_titles(&tasks, backend.as_ref());
@@ -279,7 +282,10 @@ impl Shell {
                         prefs.last_session = Some(id);
                     }
                 }
-                Err(error) => app.push_notice(format!("cannot restore last session: {error}")),
+                Err(error) => app.push_notice(qcode_i18n::trp(
+                    "gui.notice.cannot_restore_session",
+                    &[error.to_string().as_str()],
+                )),
             }
         }
         // A resumed transcript carries the model it was created with in its
@@ -295,7 +301,10 @@ impl Shell {
                 saved.last_session = Some(id);
             }
         }) {
-            app.push_notice(format!("cannot save gui.json: {error}"));
+            app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_save_gui_json",
+                &[error.to_string().as_str()],
+            ));
         }
         let backend_is_configured = backend.is_configured();
         // The window starts on one task's view; every other task it has visited
@@ -570,9 +579,10 @@ impl Shell {
         // 它们刚存下的值冲掉。
         if let Err(error) = GuiPreferences::update(&self.data_dir, |prefs| prefs.last_session = id)
         {
-            self.ui
-                .app
-                .push_notice(format!("cannot save gui.json: {error}"));
+            self.ui.app.push_notice(qcode_i18n::trp(
+                "gui.notice.cannot_save_gui_json",
+                &[error.to_string().as_str()],
+            ));
         }
         self.refresh_tasks();
     }
@@ -949,7 +959,9 @@ impl Shell {
         // async, and creating a nested runtime here panics ("cannot start a
         // runtime from within a runtime"). The window stays responsive because
         // this is a spawned task, not a blocking call.
-        self.ui.app.push_notice("applying settings…");
+        self.ui
+            .app
+            .push_notice(qcode_i18n::tr("gui.notice.applying_settings").into_owned());
         self.set_notice("applying settings…".to_string(), false, cx);
         cx.spawn(async move |this, cx| {
             let built = rebuild().await;
@@ -1019,9 +1031,10 @@ impl Shell {
                 if let Some(id) = self.active.clone()
                     && let Err(error) = self.backend.resume(&id)
                 {
-                    self.ui
-                        .app
-                        .push_notice(format!("cannot re-attach session: {error}"));
+                    self.ui.app.push_notice(qcode_i18n::trp(
+                        "gui.notice.cannot_reattach",
+                        &[error.to_string().as_str()],
+                    ));
                 }
                 if let Some(provider) = self.backend.provider() {
                     self.ui.app.status.provider = provider;
@@ -1035,7 +1048,9 @@ impl Shell {
                 if let Ok(tasks) = self.backend.tasks() {
                     self.tasks = tasks;
                 }
-                self.ui.app.push_notice("settings applied");
+                self.ui
+                    .app
+                    .push_notice(qcode_i18n::tr("gui.notice.settings_applied").into_owned());
                 // A successful rebuild keeps the previous backend until this
                 // point, so nothing is lost if assembling fails.
                 self.set_notice("settings applied".to_string(), true, cx);
@@ -1068,9 +1083,9 @@ impl Shell {
                     self.backend = Box::new(unconfigured);
                     self.ui.app.status.provider = "unconfigured".to_string();
                     self.ui.app.status.model = "-".to_string();
-                    self.ui.app.push_notice(
-                        "settings saved, but the config has no usable provider; open Settings to add one",
-                    );
+                    self.ui
+                        .app
+                        .push_notice(qcode_i18n::tr("gui.notice.settings_no_provider"));
                     self.set_notice("no usable provider".to_string(), false, cx);
                     return;
                 }

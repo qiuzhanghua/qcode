@@ -793,11 +793,19 @@ fn ui_text_positions() -> &'static [&'static str] {
         "doctor.ok(",
         "doctor.warn(",
         "doctor.fail(",
-        // 有意**不**收 `push_str(` / `write!(`：它们是通用字符串拼装，
-        // `qcode-tools/macos.rs` 用它拼 sandbox-exec 的 profile DSL
-        // （`(allow file-read*`），翻了那条规则就废了；`apply.rs` 用它拼纯换行。
-        // 位置判据在「通用 API」上失效，所以工具输出只认 `ToolOutput::*` 这个
-        // 唯一的构造入口——`run_shell` 的超时/取消那几句也走它。
+        // **拼出来**的文案（I18N.md §10.18）。P3 之后这一片一直没被覆盖，理由
+        // 当时是「`write!` / `push_str` 是通用拼装，`qcode-tools/macos.rs` 用它
+        // 拼 sandbox-exec 的 profile DSL」。那个顾虑是真的，但代价是：TUI 的 16
+        // 条斜杠命令提示、GUI 的 12 条 notice、工具结果的 6 条 —— 全都用
+        // `push_notice` / `push_str` 拼，于是整批落在两条门禁之间。
+        //
+        // 现在收进来，用**文件级豁免**挡住真会坏的那一处（见
+        // `intentional_english` 里的 `macos.rs`），而不是把整族写法排除掉。
+        // `write!` 的纯占位符（`"{}\n"`）由 `is_placeholder_only` 过滤。
+        "push_notice(",
+        "write!(",
+        "writeln!(",
+        "push_str!(",
     ]
 }
 
@@ -935,6 +943,16 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
             line.to_string()
         };
         for marker in &markers {
+            // `Debug` 实现里的 `write!(f, …)` 是**调试表示**（`Disabled({why})`、
+            // `AttachmentId({})`），不是给用户读的文案，跳过。
+            //
+            // 但 `Display` 实现**不能**跳：`NotInstalled` 那种类型的 `Display`
+            // 就是错误正文，`qc daemon` 打到屏幕上给用户看（`qc daemon: {error}`）。
+            // 所以判据是「包在 `Debug` 里」，不是「写进 Formatter」——第一版用了
+            // 后者，把 `qcd was not found.` 那一整段 actionable 的提示也误杀了。
+            if is_in_debug_impl(&lines, index) {
+                continue;
+            }
             // 两参数的调用点（`self.warn(key, detail)`）**第二个**字面量才是文案：
             // 只取 `literal_after` 会永远看到第一个（也就是已翻好的 key），明细就
             // 整批躲过去。doctor 的 22 个标签与约 45 条明细正是这么漏掉两批的，
@@ -952,6 +970,7 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
                     || is_progress_tag(&text)
                     || is_placeholder_only(&text)
                     || is_diff_header(&text)
+                    || is_field_dump_line(&text)
                 {
                     continue;
                 }
@@ -962,28 +981,132 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// 一行里有**两段**文案、只有第二段是文案的调用点。
+/// 这些标记要取「**整个调用**里的全部字面量」，而不只是紧跟着的那一个。
 ///
-/// `self.ok(label_key, detail)` 的第一个参数现在是 `qcode_i18n::tr(…)` 里的 key
-/// （形状像 key，会被 `is_key` 滤掉），真正要盯的是第二个参数。只用「标记之后的
-/// 第一个字面量」会永远只看到那个 key——**这正是 doctor 那一批躲过两轮扫描的原因**。
+/// 两种调用形状都要覆盖：
+/// - `self.ok(label_key, "detail")` —— 第一个字面量是标签，第二个才是明细；
+/// - `push_notice(format!("usage: …"))` —— 紧跟着的是 `format!(`，字面量在它里面。
+///
+/// 第一版只处理了前者（循环调 `literal_after`），于是后者整批漏掉；第一版还因为
+/// `literal_after` 要求「标记后立刻是引号」而**一条都没取到**，门禁照样绿——
+/// 这两次都是靠反向验证发现的（I18N.md §10.17/§10.18）。
 fn is_multi_literal_marker(marker: &str) -> bool {
     matches!(
         marker,
-        "self.ok(" | "self.warn(" | "self.fail(" | "doctor.ok(" | "doctor.warn(" | "doctor.fail("
+        "self.ok("
+            | "self.warn("
+            | "self.fail("
+            | "doctor.ok("
+            | "doctor.warn("
+            | "doctor.fail("
+            | "push_notice("
+            | "write!("
+            | "writeln!("
+            | "push_str!("
     )
 }
 
-/// `marker` 之后同一段文本里的**全部**字符串字面量（按出现顺序）。
+/// 是否是「`键=值` 数据列」的一行（`"{id}  turns=3  cost=$0.1  model=x  cwd=/y"`）。
 ///
-/// 不能用 `literal_after` 循环：那个函数要求「标记之后（跳空白）立刻是引号」，
-/// 而这里标记后面还有 `qcode_i18n::tr(` 之类的代码，第一个字面量前面隔着东西。
+/// 与 `qc config show` 同类：字段名要能稳定 grep、能对账，翻了就变成另一套词汇
+/// （`turns=3` vs `轮数=3`），而 `qc sessions list` 的输出是给人扫和对账用的。
+/// 判据是「含至少两个 `名字=` 片段」——可判定，不是「像不像文案」。
+fn is_field_dump_line(text: &str) -> bool {
+    // 单个字段追加也算：`"  title={title:?}"`、`"  turns={}"`。判据是「行首
+    // （跳空白）就是 `标识符=`」——这是 `按键=值` 数据列的定义，不是猜测。
+    let head = text.trim_start();
+    if let Some(eq) = head.find('=') {
+        let name = &head[..eq];
+        if name.len() >= 3
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return true;
+        }
+    }
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'=' {
+            let mut j = i;
+            while j > 0 && (bytes[j - 1].is_ascii_alphanumeric() || bytes[j - 1] == b'_') {
+                j -= 1;
+            }
+            let name = &text[j..i];
+            if name.len() >= 3
+                && name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                count += 1;
+                if count >= 2 {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 这一行是否落在某个 `impl … Debug` 里。
+///
+/// 往回找最近的 `impl ` 头（最多 60 行）看它是不是 `Debug`。不用语法分析：
+/// 这些文件里 `impl` 头与它的方法之间不会夹另一个 `impl`。
+fn is_in_debug_impl(lines: &[&str], index: usize) -> bool {
+    let start = index.saturating_sub(60);
+    for line in lines[start..index].iter().rev() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
+            return trimmed.contains("Debug");
+        }
+    }
+    false
+}
+
+/// `marker` 那次**调用**内部的全部字符串字面量（按出现顺序）。
+///
+/// 按括号配平截取，而不是「往后扫几行」：后者会把下一个语句的字面量也算进来，
+/// 造出无关的基线条目。
 fn literals_after(text: &str, marker: &str) -> Vec<String> {
     let Some(at) = text.find(marker) else {
         return Vec::new();
     };
+    let body_start = at + marker.len();
+    let bytes = text.as_bytes();
+    let mut depth = 1i32;
+    let mut end = text.len();
+    let mut i = body_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                // 跳过字符串（含转义），免得把串里的括号算进配平。
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => break,
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
     let mut out = Vec::new();
-    let mut chars = text[at + marker.len()..].chars();
+    let mut chars = text[body_start..end].chars();
     while let Some(ch) = chars.next() {
         if ch != '"' {
             continue;
@@ -996,7 +1119,7 @@ fn literals_after(text: &str, marker: &str) -> Vec<String> {
                     closed = true;
                     break;
                 }
-                // 转义对原样保留（`\n` 之类）；`\` 后跟换行是续行，折成一个空格。
+                // 转义对原样保留；`\` 后跟换行是续行，折成一个空格。
                 '\\' => match chars.next() {
                     Some('\n') => {
                         while let Some(w) = chars.clone().next() {
@@ -1024,7 +1147,7 @@ fn literals_after(text: &str, marker: &str) -> Vec<String> {
     out
 }
 
-/// 有意保持英文的文件（每条都带理由，不是「懒得翻」）。
+/// 有意保持英文的文件（每条都带理由，不是「懒得翻」）。/// 有意保持英文的文件（每条都带理由，不是「懒得翻」）。
 ///
 /// 判据只有一条：**它面向的是机器或另一个进程，不是坐在界面前的人。**
 /// 想往这里加一行，先在 PR 里写清为什么不翻——这张表是审计面，不是垃圾桶。
@@ -1049,6 +1172,12 @@ fn intentional_english(path: &str) -> bool {
         // `sandbox-exec` 文档**排障用的，不是给终端用户读的。它与 `qc doctor`
         // 不同——doctor 面向用户，最终要翻（在基线里）。
         | "qcode/sandbox_probe.rs"
+        // sandbox-exec 的 **profile DSL**（`(allow file-read*` / `(deny
+        // file-write*` …）：那是喂给 `sandbox-exec` 的脚本，不是文案。翻一个
+        // 括号或关键字，沙箱就整条失效，而且是**静默**失效（`sandbox-exec`
+        // 会报语法错并拒跑，但报错信息不指向这里）。这是唯一一个「翻了会坏事
+        // 而不是难看」的文件。
+        | "qcode-tools/sandbox/macos.rs"
         // `[approval]` 的结构化明细（`argv:` / `cwd:` / `rule:` / `reason:` …）：
         // 与 `qc config show` 同类——`字段名: 值` 的 dump，字段名要能 grep。
         // 注意 `reason` 的值是**模型写的**，它本来就可能是中文，这一块天然混排，
