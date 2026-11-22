@@ -877,6 +877,546 @@ gui:
         en: A custom provider needs an API endpoint.
         zh-CN: 自定义提供方需要填写 API 地址。
     # ---- 向导模式与设置窗口外壳（`setup/render.rs`）----
+    # 设置页/向导的字段表（`forms.rs` 的 `FIELDS` / `TABLES`）。
+    #
+    # 这里的键由**数据表路径**拼出来：`gui.setup.spec.<path>.label` / `.help`，
+    # 表用 `.title` 与 `.col.<列key>`。与 `cli.cmd.*` 一样是动态寻址，静态扫描看不见，
+    # 由 `crates/qcode-gui/tests/spec_i18n.rs` 遍历真实数据表双向比对。
+    #
+    # 不翻的：`tool:pattern`、`run_shell`、`PWD`、`SHLVL`、`cron`、`owner/repo`、
+    # `stream_usage`（它是配置里的字段名）、`brave`/`tavily`/`searxng`（产品名）、
+    # `none`/`proxy`/`strict`/`open`/`confine`（配置取值）。
+    spec:
+      context.window_tokens:
+        label:
+          en: "Context window (tokens)"
+          zh-CN: "上下文窗口（tokens）"
+        help:
+          en: "Compaction starts at 78% of this value"
+          zh-CN: "压缩从这一值的 78% 开始触发"
+      agent.max_turns:
+        label:
+          en: "Max turns"
+          zh-CN: "最大轮数"
+        help:
+          en: "Model calls allowed for one user message"
+          zh-CN: "一条用户消息允许的模型调用次数"
+      agent.max_cost_usd:
+        label:
+          en: "Max cost (USD)"
+          zh-CN: "成本上限（USD）"
+        help:
+          en: "Optional; needs a pricing entry for the model"
+          zh-CN: "可选；需要该模型在计价表里有条目"
+      session_title.enabled:
+        label:
+          en: "Auto session title"
+          zh-CN: "自动会话标题"
+        help:
+          en: "Model derives a title from the first message; off keeps the truncated-message fallback"
+          zh-CN: "由模型从第一条消息取标题；关掉则用截断消息兜底"
+      session_title.max_title_bytes:
+        label:
+          en: "Title byte cap"
+          zh-CN: "标题字节上限"
+        help:
+          en: "Hard UTF-8 byte limit for any accepted title (80 ≈ 26 CJK chars)"
+          zh-CN: "接受标题的硬性 UTF-8 字节上限（80 ≈ 26 个汉字）"
+      session_title.fallback_max_words:
+        label:
+          en: "Fallback words"
+          zh-CN: "兜底词数"
+        help:
+          en: "Word cap for the deterministic first-message fallback"
+          zh-CN: "确定性兜底（截第一条消息）的词数上限"
+      session_title.fallback_max_bytes:
+        label:
+          en: "Fallback bytes"
+          zh-CN: "兜底字节数"
+        help:
+          en: "Byte cap for the fallback; must not exceed the title byte cap"
+          zh-CN: "兜底的字节上限；不得超过标题字节上限"
+      session_title.max_input_bytes:
+        label:
+          en: "Input byte cap"
+          zh-CN: "输入字节上限"
+        help:
+          en: "First message larger than this skips generation"
+          zh-CN: "第一条消息超过这个大小就跳过生成"
+      session_title.max_output_tokens:
+        label:
+          en: "Output token cap"
+          zh-CN: "输出 token 上限"
+        help:
+          en: "Independent of conversation calls"
+          zh-CN: "与对话调用无关，单独计"
+      session_title.timeout_ms:
+        label:
+          en: "Timeout (ms)"
+          zh-CN: "超时（毫秒）"
+        help:
+          en: "Title call past this fails silently and keeps the fallback"
+          zh-CN: "取标题的调用超过这个时间就静默放弃、保留兜底"
+      session_title.target_words:
+        label:
+          en: "Target words"
+          zh-CN: "目标词数"
+        help:
+          en: "Prompt target for non-CJK titles"
+          zh-CN: "非 CJK 标题在提示里给的目标"
+      session_title.target_cjk_chars:
+        label:
+          en: "Target CJK chars"
+          zh-CN: "目标汉字数"
+        help:
+          en: "Prompt target for CJK titles"
+          zh-CN: "CJK 标题在提示里给的目标"
+      session_title.provider:
+        label:
+          en: "Title provider"
+          zh-CN: "标题供应商"
+        help:
+          en: "Explicit route override; pair with the model. Empty follows the session's own route"
+          zh-CN: "显式指定路由；要和标题模型成对。留空则跟随会话自身的路由"
+      session_title.model:
+        label:
+          en: "Title model"
+          zh-CN: "标题模型"
+        help:
+          en: "Pair with the title provider"
+          zh-CN: "与标题供应商成对指定"
+      terminal.shell:
+        label:
+          en: "Shell"
+          zh-CN: "Shell"
+        help:
+          en: "Empty detects the shell you are already using; the built-in terminal starts it"
+          zh-CN: "留空则探测你正在用的 shell；内建终端用它启动"
+      terminal.start_cwd:
+        label:
+          en: "Start directory"
+          zh-CN: "起始目录"
+        help:
+          en: "Empty follows the cwd of the active terminal, then home"
+          zh-CN: "留空则跟随当前活动终端的 cwd，再退回家目录"
+      terminal.font:
+        label:
+          en: "Font"
+          zh-CN: "字体"
+        help:
+          en: "Empty picks a fixed-width font that covers CJK, when the system has one"
+          zh-CN: "留空则在系统有可用字体时挑一个覆盖 CJK 的等宽字体"
+      terminal.max_scrollback:
+        label:
+          en: "Scrollback lines"
+          zh-CN: "回滚行数"
+        help:
+          en: "History kept per terminal, not visible rows"
+          zh-CN: "每个终端保留的历史行数，不是可见行数"
+      terminal.max_terminals:
+        label:
+          en: "Max terminals"
+          zh-CN: "终端数上限"
+        help:
+          en: "Open tabs beyond this are refused"
+          zh-CN: "超过这个数的标签页会被拒绝打开"
+      shell.env_sampling:
+        label:
+          en: "Shell environment"
+          zh-CN: "Shell 环境"
+        help:
+          en: "auto asks the login shell once per session; off keeps the allow-list only"
+          zh-CN: "auto 表示每个会话问登录 shell 一次；off 则只用白名单"
+      shell.env_command:
+        label:
+          en: "Sampling command"
+          zh-CN: "采样命令"
+        help:
+          en: "Empty derives `{shell} -lic 'env -0'`; {shell} is substituted"
+          zh-CN: "留空则推导成 `{shell} -lic 'env -0'`；`{shell}` 会被替换"
+      shell.env_timeout_ms:
+        label:
+          en: "Sampling timeout (ms)"
+          zh-CN: "采样超时（毫秒）"
+        help:
+          en: "A timeout keeps the previous snapshot instead of blocking the turn"
+          zh-CN: "超时就沿用上一份快照，而不是卡住整个回合"
+      shell.env_ttl_secs:
+        label:
+          en: "Snapshot lifetime (s)"
+          zh-CN: "快照有效期（秒）"
+        help:
+          en: "0 keeps the first snapshot until an rc file changes"
+          zh-CN: "0 表示一直沿用第一份快照，直到 rc 文件发生变化"
+      shell.env_include:
+        label:
+          en: "Pass-through variables"
+          zh-CN: "透传变量"
+        help:
+          en: "One prefix (COT_*) or exact name per line, copied from this process"
+          zh-CN: "每行一个前缀（`COT_*`）或精确名字，从本进程复制"
+      shell.env_exclude:
+        label:
+          en: "Dropped variables"
+          zh-CN: "丢弃变量"
+        help:
+          en: "Noise such as PWD or SHLVL, removed from the snapshot"
+          zh-CN: "`PWD`、`SHLVL` 这类噪声，从快照里删掉"
+      shell.env_sample_sandboxed:
+        label:
+          en: "Sample inside the sandbox"
+          zh-CN: "在沙箱内采样"
+        help:
+          en: "Off by default: the sandbox hides most of the user's real environment"
+          zh-CN: "默认关：沙箱会把用户真实环境挡掉大半"
+      shell.audit:
+        label:
+          en: "Environment audit"
+          zh-CN: "环境审计"
+        help:
+          en: "names records variable names and changes, never values"
+          zh-CN: "`names` 只记变量名与变化，从不记值"
+      ui.busy_delivery:
+        label:
+          en: "Busy delivery"
+          zh-CN: "忙碌投递"
+        help:
+          en: "Sending while a turn runs queues a follow-up or steers into it"
+          zh-CN: "回合进行中发送时：排队成一条后续消息，还是直接插进去"
+      agent.snapshot_shell:
+        label:
+          en: "Snapshot before shell"
+          zh-CN: "Shell 前快照"
+        help:
+          en: "Enables rollback for shell/MCP edits; capped at 64 MB"
+          zh-CN: "给 shell／MCP 的改动开启回滚；上限 64 MB"
+      sandbox.mode:
+        label:
+          en: "Sandbox mode"
+          zh-CN: "沙箱模式"
+        help:
+          en: "OS sandbox for run_shell; none keeps approval as the boundary"
+          zh-CN: "`run_shell` 使用的系统沙箱；`none` 则仍以审批为边界"
+      sandbox.network:
+        label:
+          en: "Network mode"
+          zh-CN: "网络模式"
+        help:
+          en: "off: no egress; proxy: through the proxy; strict: proxy only (macOS); open: raw sockets"
+          zh-CN: "`off` 完全不出网；`proxy` 走代理；`strict` 只允许代理（macOS）；`open` 直连裸网络"
+      approval.allow:
+        label:
+          en: "Always allow"
+          zh-CN: "总是允许"
+        help:
+          en: "One `tool:pattern` per line, e.g. run_shell:echo * (ADR-0065)"
+          zh-CN: "每行一个 `tool:pattern`，例如 `run_shell:echo *`（ADR-0065）"
+      approval.deny:
+        label:
+          en: "Never allow"
+          zh-CN: "永不允许"
+        help:
+          en: "Same shorthand; a deny wins over an allow"
+          zh-CN: "同样的简写；`deny` 优先于 `allow`"
+      sandbox.extra_writable:
+        label:
+          en: "Extra writable roots"
+          zh-CN: "额外可写根目录"
+        help:
+          en: "One path per line, whole subtree; every backend. Not `/`, `~`, `/home`"
+          zh-CN: "每行一个路径，整棵子树；所有后端都生效。不能用 `/`、`~`、`/home`"
+      sandbox.extra_read:
+        label:
+          en: "Extra readable roots"
+          zh-CN: "额外可读根目录"
+        help:
+          en: "One path per line, whole subtree; read + execute, every backend"
+          zh-CN: "每行一个路径，整棵子树；读 + 执行，所有后端都生效"
+      sandbox.allow_pty:
+        label:
+          en: "Allow pseudo-terminals"
+          zh-CN: "允许伪终端"
+        help:
+          en: "landlock: lets a confined process open a PTY. The only devpts available is the host's, so this also reaches your other terminals' shells — off by default; prefer mode = bwrap"
+          zh-CN: "landlock：让受限进程能打开 PTY。可用的 devpts 只宿主那一个，所以这也会碰到你其它终端的 shell——默认关；优先选 `mode = bwrap`"
+      network.allow:
+        label:
+          en: "Allowed hosts"
+          zh-CN: "允许的主机"
+        help:
+          en: "host or host:port; provider host is added automatically"
+          zh-CN: "`host` 或 `host:port`；供应商自己的主机自动加入"
+      network.allow_private:
+        label:
+          en: "Allow private/loopback hosts"
+          zh-CN: "允许私有/回环主机"
+        help:
+          en: "Only for local Ollama or test servers"
+          zh-CN: "只有本地 Ollama 或测试服务器才需要"
+      network.unknown:
+        label:
+          en: "Unknown host policy"
+          zh-CN: "未知主机策略"
+        help:
+          en: "ask is enforced by tool approvals; shell/MCP deny"
+          zh-CN: "`ask` 由工具审批执行；shell／MCP 一律拒绝"
+      network.audit:
+        label:
+          en: "Audit network"
+          zh-CN: "审计网络"
+        help:
+          en: "Append allow/deny records to logs/network.jsonl"
+          zh-CN: "把允许/拒绝记录追加到 `logs/network.jsonl`"
+      search.enabled:
+        label:
+          en: "Enable web_search"
+          zh-CN: "启用 web_search"
+        help:
+          en: "Without a usable backend the tool is not registered"
+          zh-CN: "没有可用后端时这个工具根本不会注册"
+      search.backend:
+        label:
+          en: "Search backend"
+          zh-CN: "搜索后端"
+        help:
+          en: "brave / tavily / searxng"
+          zh-CN: "brave / tavily / searxng"
+      search.api_key_env:
+        label:
+          en: "Search key env"
+          zh-CN: "搜索密钥环境变量"
+        help:
+          en: "Empty uses BRAVE_API_KEY or TAVILY_API_KEY"
+          zh-CN: "留空则用 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`"
+      search.api_key_command:
+        label:
+          en: "Search key command"
+          zh-CN: "搜索密钥命令"
+        help:
+          en: "One argv per line; used when the env key is absent"
+          zh-CN: "每行一个 argv；环境变量里没有密钥时用它"
+      search.max_results:
+        label:
+          en: "Max results"
+          zh-CN: "结果数上限"
+        help:
+          en: "1..=20"
+          zh-CN: "1..=20"
+      search.base_url:
+        label:
+          en: "Search base URL"
+          zh-CN: "搜索基础 URL"
+        help:
+          en: "SearXNG instance or custom endpoint"
+          zh-CN: "SearXNG 实例或自定义端点"
+      skills.enabled:
+        label:
+          en: "Enable Agent Skills"
+          zh-CN: "启用 Agent 技能"
+        help:
+          en: "Discover SKILL.md roots on startup"
+          zh-CN: "启动时发现 SKILL.md 的各个根目录"
+      skills.roots:
+        label:
+          en: "Extra skill roots"
+          zh-CN: "额外技能根目录"
+        help:
+          en: "One path per line; ~/ is expanded"
+          zh-CN: "每行一个路径；`~/` 会展开"
+      update.enabled:
+        label:
+          en: "Enable version checks"
+          zh-CN: "启用版本检查"
+        help:
+          en: "Never replaces the binary automatically"
+          zh-CN: "从不自动替换二进制"
+      update.check:
+        label:
+          en: "Check on startup"
+          zh-CN: "启动时检查"
+        help:
+          en: "Cached for check_days"
+          zh-CN: "缓存时长为 `check_days`"
+      update.check_days:
+        label:
+          en: "Check interval (days)"
+          zh-CN: "检查间隔（天）"
+        help:
+          en: "Minimum days between checks"
+          zh-CN: "两次检查之间至少隔几天"
+      update.repo:
+        label:
+          en: "Update repo"
+          zh-CN: "更新仓库"
+        help:
+          en: "GitHub owner/repo whose releases are the channel"
+          zh-CN: "以哪个 GitHub `owner/repo` 的 release 作为渠道"
+      update.base_url:
+        label:
+          en: "Update API base URL"
+          zh-CN: "更新 API 基础 URL"
+        help:
+          en: "Mirror or local test server"
+          zh-CN: "镜像或本地测试服务器"
+      log.level:
+        label:
+          en: "Log level"
+          zh-CN: "日志级别"
+        help:
+          en: "warn, info, debug, or per-module like `qcode_gui=debug,warn`; RUST_LOG overrides it"
+          zh-CN: "`warn`、`info`、`debug`，或按模块写 `qcode_gui=debug,warn`；`RUST_LOG` 覆盖它"
+      mcp.sandbox:
+        label:
+          en: "MCP sandbox default"
+          zh-CN: "MCP 沙箱默认值"
+        help:
+          en: "confine derives a per-server grant; each server may override it"
+          zh-CN: "`confine` 会为每个服务器推导授权；每个服务器可自行覆盖"
+      gui.theme:
+        label:
+          en: "Theme"
+          zh-CN: "主题"
+        help:
+          en: "Follow the system appearance or force a theme"
+          zh-CN: "跟随系统外观，或强制指定一个主题"
+      gui.font_size:
+        label:
+          en: "Font size"
+          zh-CN: "字号"
+        help:
+          en: "Base UI font size in pixels"
+          zh-CN: "界面的基础字号（像素）"
+      gui.code_font:
+        label:
+          en: "Code font"
+          zh-CN: "代码字体"
+        help:
+          en: "Monospace family used for code blocks"
+          zh-CN: "代码块使用的等宽字体族"
+      gui.density:
+        label:
+          en: "Density"
+          zh-CN: "密度"
+        help:
+          en: "Spacing of transcript rows"
+          zh-CN: "对话行的间距"
+      gui.send_mode:
+        label:
+          en: "Send mode"
+          zh-CN: "发送方式"
+        help:
+          en: "Enter sends, or Cmd/Ctrl+Enter sends and Enter inserts a newline"
+          zh-CN: "Enter 发送，或 Cmd/Ctrl+Enter 发送、Enter 换行"
+      providers:
+        title:
+          en: "Providers"
+          zh-CN: "供应商"
+        col:
+          name:
+            en: "Name"
+            zh-CN: "名称"
+          base_url:
+            en: "Base URL"
+            zh-CN: "基础 URL"
+          protocol:
+            en: "Protocol"
+            zh-CN: "协议"
+          api_key_env:
+            en: "Key env"
+            zh-CN: "密钥环境变量"
+          images:
+            en: "Accepts images"
+            zh-CN: "接受图片"
+          api_key_command:
+            en: "Key command (one argv per line)"
+            zh-CN: "密钥命令（每行一个 argv）"
+          default_model:
+            en: "Default model"
+            zh-CN: "默认模型"
+          extra_body:
+            en: "Extra body"
+            zh-CN: "附加 body"
+          stream_usage:
+            en: "stream_usage"
+            zh-CN: "stream_usage"
+      pricing:
+        title:
+          en: "Pricing (USD per million tokens)"
+          zh-CN: "计价（美元 / 百万 token）"
+        col:
+          model:
+            en: "Model"
+            zh-CN: "模型"
+          input_usd_per_mtok:
+            en: "Input"
+            zh-CN: "输入"
+          output_usd_per_mtok:
+            en: "Output"
+            zh-CN: "输出"
+          cache_read_usd_per_mtok:
+            en: "Cache read"
+            zh-CN: "缓存读"
+          cache_write_usd_per_mtok:
+            en: "Cache write"
+            zh-CN: "缓存写"
+      approval.rules:
+        title:
+          en: "Approval rules"
+          zh-CN: "审批规则"
+        col:
+          id:
+            en: "ID"
+            zh-CN: "ID"
+          tool:
+            en: "Tool"
+            zh-CN: "工具"
+          command_prefix:
+            en: "Command prefix"
+            zh-CN: "命令前缀"
+          path_glob:
+            en: "Path glob"
+            zh-CN: "路径通配"
+          action:
+            en: "Action"
+            zh-CN: "动作"
+          scope:
+            en: "Scope"
+            zh-CN: "作用域"
+      mcp.servers:
+        title:
+          en: "MCP servers"
+          zh-CN: "MCP 服务器"
+        col:
+          name:
+            en: "Name"
+            zh-CN: "名称"
+          command:
+            en: "Command"
+            zh-CN: "命令"
+          args:
+            en: "Args (one per line)"
+            zh-CN: "参数（每行一个）"
+          env:
+            en: "Env (KEY=VALUE per line)"
+            zh-CN: "环境变量（每行 KEY=VALUE）"
+          enabled:
+            en: "Enabled"
+            zh-CN: "启用"
+          timeout_secs:
+            en: "Timeout (s)"
+            zh-CN: "超时（秒）"
+          read_paths:
+            en: "Read paths (one per line)"
+            zh-CN: "可读路径（每行一个）"
+          writable_paths:
+            en: "Writable paths (one per line)"
+            zh-CN: "可写路径（每行一个）"
+          credentials:
+            en: "Credentials (one per line)"
+            zh-CN: "凭据（每行一个）"
+          sandbox:
+            en: "Sandbox"
+            zh-CN: "沙箱"
     # 向导/设置页的侧栏页面名（`Page::title_key`）。
     page:
       welcome:

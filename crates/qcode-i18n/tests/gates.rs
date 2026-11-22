@@ -220,6 +220,9 @@ fn every_declared_key_is_referenced() {
     let orphans: Vec<&String> = keys
         .difference(&referenced)
         .filter(|key| !key.starts_with("cli.cmd."))
+        // 设置页数据表同理（`forms.rs` 的 `FIELDS` / `TABLES` 也是按路径拼 key）。
+        // 它的双向覆盖由 `crates/qcode-gui/tests/spec_i18n.rs` 盯着。
+        .filter(|key| !key.starts_with("gui.setup.spec."))
         .collect();
     assert!(
         orphans.is_empty(),

@@ -548,7 +548,8 @@ fn group_heading(title: impl Into<gpui::SharedString>) -> Div {
 /// 行内问号圆圈携带的数据：哪个键（hover_help 的键）与它的帮助文本。
 struct HelpInlineData {
     key: String,
-    help: &'static str,
+    /// 已经翻译好的帮助文本（节点在构造时就译好，渲染阶段只读它）。
+    help: std::borrow::Cow<'static, str>,
 }
 
 /// 该节点是否是 `<qc-help/>` 行内 HTML 标记（独立函数便于直接测试）。
@@ -568,6 +569,8 @@ pub(super) fn is_help_marker(node: &markdown_ast::Node) -> bool {
 struct HelpInlinePlugin {
     entity: Entity<SetupView>,
     key: String,
+    /// 帮助文本的**译文 key**（`gui.setup.spec.<path>.help`）。在这里翻译而不是
+    /// 在数据表里存英文原文：数据表是 `const`，译不了语言。
     help: &'static str,
 }
 
@@ -588,7 +591,7 @@ impl MarkdownPlugin for HelpInlinePlugin {
                 "qc-help",
                 HelpInlineData {
                     key: self.key.clone(),
-                    help: self.help,
+                    help: qcode_i18n::tr(self.help),
                 },
             ))
         } else {
@@ -609,7 +612,7 @@ impl MarkdownPlugin for HelpInlinePlugin {
         let popover = help_popover(
             self.entity.clone(),
             data.key.clone(),
-            data.help,
+            data.help.clone(),
             open,
             theme.muted_foreground,
             theme.border,
@@ -634,10 +637,12 @@ impl MarkdownPlugin for HelpInlinePlugin {
 
 /// 问号圆圈的悬浮提示 popover：hover 触发（`hover_help` 受控）、移开/Esc/
 /// 点外部关闭。Split 布局（兄弟元素）与 Inline 布局（文本行内元素）共用。
+/// 帮助气泡。`help` 是**已翻译**的文本：数据表里存的是 key，翻译发生在构造
+/// `HelpInlineData` 的时候（数据表是 `const`，译不了语言）。
 fn help_popover(
     entity: Entity<SetupView>,
     key: String,
-    help: &'static str,
+    help: std::borrow::Cow<'static, str>,
     open: bool,
     muted_foreground: Hsla,
     border_color: Hsla,
@@ -701,7 +706,7 @@ fn help_popover(
                 .px_2()
                 .py_1()
                 .text_size(crate::sp(crate::CAPTION_SIZE))
-                .child(help)
+                .child(help.clone())
                 .into_any_element()
         })
 }
@@ -787,14 +792,16 @@ impl SetupView {
                 };
                 Textarea::new(textarea)
                     .h(px(72.0))
-                    .aria_label(field.label)
+                    .aria_label(qcode_i18n::tr(field.label))
                     .into_any_element()
             }
             _ => {
                 let Some(input) = self.inputs.get(&key) else {
                     return div().into_any_element();
                 };
-                Input::new(input).aria_label(field.label).into_any_element()
+                Input::new(input)
+                    .aria_label(qcode_i18n::tr(field.label))
+                    .into_any_element()
             }
         };
         // 全页统一的字段行：标签文字 + 问号圆圈作为文本行内元素流式排布。
@@ -807,7 +814,7 @@ impl SetupView {
             help: field.help,
         };
         // 标记前留一个空格：圆圈与最后一个字符之间要有间距。
-        let markdown = format!("{} <qc-help/>", field.label);
+        let markdown = format!("{} <qc-help/>", qcode_i18n::tr(field.label));
         // 不能是 flex 容器：TextView 作为 flex 子项按内容宽度布局、不收缩
         // 换行。普通块级容器会让 TextView 填满标签列宽（行宽的 16%）并换行。
         let label_block = div().w(relative(0.16)).flex_shrink(0.0).child(
@@ -971,7 +978,7 @@ impl SetupView {
                                     };
                                     Textarea::new(textarea)
                                         .h(px(72.0))
-                                        .aria_label(column.label)
+                                        .aria_label(qcode_i18n::tr(column.label))
                                         .into_any_element()
                                 }
                                 _ => {
@@ -979,7 +986,7 @@ impl SetupView {
                                         continue;
                                     };
                                     Input::new(input)
-                                        .aria_label(column.label)
+                                        .aria_label(qcode_i18n::tr(column.label))
                                         .into_any_element()
                                 }
                             };
@@ -988,7 +995,7 @@ impl SetupView {
                                     .flex()
                                     .flex_col()
                                     .gap_1()
-                                    .child(div().child(column.label))
+                                    .child(div().child(qcode_i18n::tr(column.label)))
                                     .child(control),
                             );
                         }
@@ -1038,7 +1045,7 @@ impl SetupView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().child(table.title))
+            .child(div().child(qcode_i18n::tr(table.title)))
             .children(rows);
         if table.path == ["mcp", "servers"] {
             // 说明文字限制在表格宽度内并允许换行，避免单行长文本撑大设置框。
