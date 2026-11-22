@@ -1,0 +1,18 @@
+Start the interactive terminal UI.
+
+ADR-0089: this used to be what bare `qc` did. It is a subcommand now because typing `qc` by accident must not take over the terminal — and because "which frontend" is a choice the user makes, not one inferred from the fact that a terminal exists.
+
+Usage: qc tui [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>
+          Data directory. Defaults to the XDG data home
+
+      --config <CONFIG>
+          Config file. Defaults to ~/.config/qcode/config.toml
+
+      --approval-policy <PATH>
+          Approval policy file ([[rules]]). Replaces the config's approval rules
+
+  -h, --help
+          Print help (see a summary with '-h')

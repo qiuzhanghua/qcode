@@ -31,11 +31,14 @@ impl Protocol {
     }
 
     /// Display label for configuration surfaces.
-    pub fn label(self) -> &'static str {
+    ///
+    /// 返回 `Cow` 而不是 `&'static str`：`OpenAI 兼容` 是**兼容性描述**，要翻；
+    /// `Anthropic` / `Mock` 是产品名，两种语言下都原样。所以只有一支会分配。
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Protocol::OpenAi => "OpenAI 兼容",
-            Protocol::Anthropic => "Anthropic",
-            Protocol::Mock => "Mock",
+            Protocol::OpenAi => qcode_i18n::tr("kernel.protocol.openai_compat"),
+            Protocol::Anthropic => "Anthropic".into(),
+            Protocol::Mock => "Mock".into(),
         }
     }
 }
@@ -46,6 +49,12 @@ pub struct CatalogEntry {
     /// Provider route key (`providers.<route>` in the config).
     pub route: &'static str,
     /// Name shown by configuration surfaces.
+    ///
+    /// **不翻译，故意如此。** 这里是厂商产品名（`小米 MiMo`、`智谱 Coding`、
+    /// `通义 Token Plan`、`蚂蚁 Ling`），与 `Anthropic` 同级：英文界面写「小米 MiMo」
+    /// 才是对的，译成 "Xiaomi MiMo" 等于替厂商改名。所以这几条会**永久留在门禁 2
+    /// 的基线里**。基线只能表达「还存在」、不能表达「故意留着」，理由就落在这里 ——
+    /// 将来有人想把它们清零，会先读到这段。
     pub display_name: &'static str,
     /// Wire protocol every model on this route speaks.
     pub protocol: Protocol,

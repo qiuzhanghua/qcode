@@ -595,9 +595,12 @@ async fn update_daemon(
     let Some(asset) = release.asset_named("qcd", platform) else {
         eprintln!(
             "warning: this release publishes no {} binary.\n\
-             \x20        定时任务需要它（`qc daemon start`）；若 {} 已存在则仍可用旧版本。",
+             \x20        {}",
             asset_name_for("qcd", &release.version, platform),
-            target.display()
+            qcode_i18n::trp(
+                "cli.update.no_daemon_binary_hint",
+                &[target.display().to_string()]
+            )
         );
         return;
     };
@@ -639,8 +642,9 @@ async fn update_daemon(
         // Windows 上正在跑的 qcd 会被占用；那是「下次再说」，不是更新失败。
         Err(error) => eprintln!(
             "warning: cannot install {}: {error}\n\
-             \x20        `qc daemon stop` 之后再跑一次 `qc update`，或在下次安装时覆盖。",
-            target.display()
+             \x20        {}",
+            target.display(),
+            qcode_i18n::tr("cli.update.install_retry_hint")
         ),
     }
 }
@@ -664,8 +668,9 @@ fn verify_daemon(target: &Path, expected: &str) {
         Err(error) => {
             eprintln!(
                 "warning: cannot run {} --version: {error}\n\
-                 \x20        旁边的 qc 已经更新；定时任务需要这个文件能执行。",
-                target.display()
+                 \x20        {}",
+                target.display(),
+                qcode_i18n::tr("cli.update.cannot_run_hint")
             );
             return;
         }
@@ -678,7 +683,8 @@ fn verify_daemon(target: &Path, expected: &str) {
         eprintln!(
             "warning: {} --version failed ({}); the installed daemon predates version \
              reporting.\n\
-             \x20        它仍能跑，只是这样对不了账。",
+             \x20        {}",
+            qcode_i18n::tr("cli.update.no_version_output_hint"),
             target.display(),
             output.status
         );
@@ -689,10 +695,10 @@ fn verify_daemon(target: &Path, expected: &str) {
     if reported.as_deref() != Some(expected) {
         eprintln!(
             "warning: {} reports {}, expected {expected:?}\n\
-             \x20        装上去的不是这次发布的 daemon。旧的仍能跑（协议没变），\
-             但版本口径不一致。",
+             \x20        {}",
             target.display(),
             reported.as_deref().unwrap_or("nothing"),
+            qcode_i18n::tr("cli.update.version_mismatch_hint"),
         );
     }
 }

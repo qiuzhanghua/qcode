@@ -1,0 +1,28 @@
+qc - coding agent
+
+Usage: qc [OPTIONS] [COMMAND]
+
+Commands:
+  tui        Start the interactive terminal UI
+  run        Run a single headless turn
+  resume     Resume a stored session in the TUI
+  sessions   Inspect persisted sessions
+  schedule   Manage scheduled tasks (ADR-0090)
+  daemon     Start, stop or inspect the scheduled-task daemon (ADR-0092)
+  skills     Inspect discovered Agent Skills
+  logs       Show where the log file is, and its most recent lines (ADR-0077)
+  config     Show or edit the config file
+  template   List available config templates (ADR-0104)
+  mcp        Manage configured MCP servers
+  doctor     Diagnose configuration, credentials and data directory
+  shell-env  Show the shell environment `run_shell` would see (ADR-0064)
+  update     Check for a newer release, or install it
+  acp        Serve the Agent Client Protocol over stdio (for editors)
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help
+  -V, --version                 Print version

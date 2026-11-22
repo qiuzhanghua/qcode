@@ -36,6 +36,9 @@ fn apply(app: &mut App, seq: u64, kind: EventKind) {
 }
 
 fn app_with_transcript() -> App {
+    // 下面这些断言比对的是中文界面文案，所以按 I18N.md 不变量 5 钉 `zh-CN`。
+    // 整份渲染测试共用这个入口，钉一次就够。
+    qcode_i18n::pin_for_tests();
     let mut app = App::new("mock", "mock-1");
     apply(
         &mut app,

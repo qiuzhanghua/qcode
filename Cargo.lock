@@ -5370,6 +5370,7 @@ dependencies = [
  "qcode-attachments",
  "qcode-core",
  "qcode-gui",
+ "qcode-i18n",
  "qcode-image",
  "qcode-kernel",
  "qcode-mcp",
@@ -5432,6 +5433,7 @@ dependencies = [
  "globset",
  "libc",
  "qcode-attachments",
+ "qcode-i18n",
  "reqwest",
  "rusqlite",
  "serde",
@@ -5475,6 +5477,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "gpui-component",
  "gpui-kit",
  "image",
  "ksni",
@@ -5486,6 +5489,7 @@ dependencies = [
  "qcode-attachments",
  "qcode-core",
  "qcode-driver",
+ "qcode-i18n",
  "qcode-image",
  "qcode-kernel",
  "qcode-mcp",
@@ -5506,6 +5510,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcode-i18n"
+version = "0.16.0"
+dependencies = [
+ "rust-i18n",
+ "serde-saphyr",
+ "serde_json",
+ "sys-locale",
+]
+
+[[package]]
 name = "qcode-image"
 version = "0.16.0"
 dependencies = [
@@ -5521,6 +5535,7 @@ version = "0.16.0"
 dependencies = [
  "async-trait",
  "qcode-core",
+ "qcode-i18n",
  "qcode-mcp",
  "qcode-net",
  "qcode-providers",
@@ -5622,6 +5637,7 @@ dependencies = [
  "ignore",
  "libc",
  "qcode-core",
+ "qcode-i18n",
  "qcode-net",
  "qcode-providers",
  "qcode-shell",
@@ -5645,6 +5661,7 @@ version = "0.16.0"
 dependencies = [
  "insta",
  "qcode-core",
+ "qcode-i18n",
  "qcode-ui-state",
  "ratatui",
  "serde_json",
@@ -5668,6 +5685,7 @@ version = "0.16.0"
 dependencies = [
  "qcode-attachments",
  "qcode-core",
+ "qcode-i18n",
  "serde_json",
  "time",
 ]

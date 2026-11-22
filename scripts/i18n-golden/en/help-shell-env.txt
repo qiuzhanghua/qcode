@@ -1,0 +1,11 @@
+Show the shell environment `run_shell` would see (ADR-0064)
+
+Usage: qc shell-env [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --full                    Print variable values too. Refused when stdout is not a terminal
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --json                    Machine-readable output: one JSON object, values included only with --full
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

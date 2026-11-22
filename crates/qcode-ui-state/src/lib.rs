@@ -368,7 +368,7 @@ pub fn summarize_call(name: &str, arguments: &serde_json::Value) -> String {
             match paths.as_slice() {
                 [] => String::new(),
                 [only] => only.to_string(),
-                many => format!("{} 个文件", many.len()),
+                many => qcode_i18n::trp("ui.progress.file_count", &[many.len().to_string()]),
             }
         }
         _ => arguments.to_string(),

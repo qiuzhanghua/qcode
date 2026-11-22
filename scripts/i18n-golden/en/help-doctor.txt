@@ -1,0 +1,21 @@
+Diagnose configuration, credentials and data directory
+
+Usage: qc doctor [OPTIONS]
+
+Options:
+      --data-dir <DATA_DIR>
+          Data directory. Defaults to the XDG data home
+
+      --probe
+          Connect to every MCP server and compare what it declares in the handshake with what it actually answers (ADR-0068 §4).
+          
+          Off by default: a session must not pay one probe per server, and doctor is where that question gets asked on purpose. This starts each stdio server, and for remote ones the session's egress proxy — the same machinery a real run uses, so the network side is exercised too.
+
+      --config <CONFIG>
+          Config file. Defaults to ~/.config/qcode/config.toml
+
+      --approval-policy <PATH>
+          Approval policy file ([[rules]]). Replaces the config's approval rules
+
+  -h, --help
+          Print help (see a summary with '-h')

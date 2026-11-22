@@ -216,9 +216,12 @@ pub fn title_from_model_output(text: &str) -> String {
 }
 
 /// JSON-framed input so message text cannot break the request boundary.
+///
+/// **英文，且不进翻译表**：这是发给模型的指令，不是界面文案。翻它 = 改模型行为 +
+/// 毁提示缓存 + 让 eval 基线漂（I18N.md §2.3 B 类）。
 pub fn frame_title_input(text: &str) -> String {
     format!(
-        "从这份人类消息生成会话标题（JSON）：{}",
+        "Generate a session title from this human message (JSON): {}",
         serde_json::to_string(text).unwrap_or_default()
     )
 }
@@ -227,11 +230,14 @@ pub fn frame_title_input(text: &str) -> String {
 /// borrowed from anywhere; the model owns the language choice.
 pub fn title_system_prompt(target_words: u32, target_cjk_chars: u32) -> String {
     format!(
-        "为一个编程辅助会话生成简洁标题。要求：\n\
-         - 只输出一行纯文本标题，不要引号、前缀、解释、Markdown 或终端控制码；\n\
-         - 使用消息所用的语言；\n\
-         - 非中日韩语言大约 {target_words} 个单词，中日韩语言大约 {target_cjk_chars} 个字；\n\
-         - 若消息信息量很少，仍返回一个简短可行的标题（例如「问候」），不要解释。"
+        "Write a short title for a coding-assistant session. Requirements:\n\
+         - Output one plain-text line only: no quotes, prefix, explanation, Markdown \
+         or terminal control codes;\n\
+         - Use the language of the message;\n\
+         - About {target_words} words for non-CJK languages, about {target_cjk_chars} \
+         characters for CJK languages;\n\
+         - If the message carries little information, still return a short workable \
+         title (for example \"greeting\") without explaining."
     )
 }
 
@@ -247,7 +253,7 @@ pub fn is_eligible_message(message: &UserMessage) -> bool {
     {
         return false;
     }
-    !clean_title_text(strip_schedule_prefill(&message.text)).is_empty()
+    !clean_title_text(&strip_schedule_prefill(&message.text)).is_empty()
 }
 
 /// The first eligible user message: its seq and its cleaned text.
@@ -257,7 +263,7 @@ pub fn first_eligible_message(events: &[Event]) -> Option<(u64, String)> {
             if !is_eligible_message(message) {
                 continue;
             }
-            let text = clean_title_text(strip_schedule_prefill(&message.text));
+            let text = clean_title_text(&strip_schedule_prefill(&message.text));
             if !text.is_empty() {
                 return Some((event.seq, text));
             }
@@ -348,7 +354,7 @@ pub async fn generate_title(
     // 传入的 pending_input（与回合并行生成，对齐「标题在回合中就已生成」）。
     let source = first_eligible_message(&events).or_else(|| {
         pending_input.and_then(|text| {
-            let text = clean_title_text(strip_schedule_prefill(text));
+            let text = clean_title_text(&strip_schedule_prefill(text));
             (!text.is_empty()).then_some((0, text))
         })
     });

@@ -334,6 +334,20 @@ impl CronSpec {
     }
 }
 
+/// 星期名（`weekly` 的展示形式里用）。索引与 [`weekday_of`] 同一套：周日 = 0。
+fn weekday_name(day: u32) -> String {
+    let key = match day {
+        0 => "core.schedule.weekday.sun",
+        1 => "core.schedule.weekday.mon",
+        2 => "core.schedule.weekday.tue",
+        3 => "core.schedule.weekday.wed",
+        4 => "core.schedule.weekday.thu",
+        5 => "core.schedule.weekday.fri",
+        _ => "core.schedule.weekday.sat",
+    };
+    qcode_i18n::tr(key).to_string()
+}
+
 fn weekday_of(day: Weekday) -> u32 {
     match day {
         Weekday::Sunday => 0,
@@ -735,16 +749,26 @@ impl Rule {
             } => {
                 let names: Vec<String> = Self::effective_weekdays(weekdays, *weekday)
                     .into_iter()
-                    .map(|day| {
-                        ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][day as usize]
-                            .to_string()
-                    })
+                    .map(|day| weekday_name(u32::from(day)))
                     .collect();
-                format!("weekly {} {:02}:{:02}", names.join("、"), hour, minute)
+                // 分隔符也是译文的一部分（中文顿号 / 英文逗号加空格），不能写死在
+                // `join` 里。
+                let separator = qcode_i18n::tr("core.schedule.weekday.separator");
+                format!(
+                    "weekly {} {:02}:{:02}",
+                    names.join(separator.as_ref()),
+                    hour,
+                    minute
+                )
             }
-            Rule::Monthly { day, hour, minute } => {
-                format!("monthly {day}日 {:02}:{:02}", hour, minute)
-            }
+            Rule::Monthly { day, hour, minute } => qcode_i18n::trp(
+                "core.schedule.rule.monthly",
+                &[
+                    day.to_string(),
+                    format!("{hour:02}"),
+                    format!("{minute:02}"),
+                ],
+            ),
         }
     }
 }
@@ -834,9 +858,11 @@ impl Target {
     /// 投递目标的紧凑描述（列表 / 详情展示用）。
     pub fn describe(&self) -> String {
         match self {
-            Target::Session { id } => format!("会话 `{id}`"),
-            Target::NewOnce => "新会话（首次投递创建并复用）".to_string(),
-            Target::New => "新会话（每次投递都新建）".to_string(),
+            Target::Session { id } => {
+                qcode_i18n::trp("core.schedule.target.session", &[id.as_str()])
+            }
+            Target::NewOnce => qcode_i18n::tr("core.schedule.target.new_once").to_string(),
+            Target::New => qcode_i18n::tr("core.schedule.target.new").to_string(),
         }
     }
 

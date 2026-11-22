@@ -148,7 +148,9 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("审批流程演示结束。".to_string()),
+                    StreamEvent::TextDelta(
+                        qcode_i18n::tr("kernel.mock.approval.closing").to_string(),
+                    ),
                     StreamEvent::Ended {
                         stop_reason: StopReason::EndTurn,
                     },
@@ -169,7 +171,7 @@ impl ProviderRegistry {
                         arguments: serde_json::json!({
                             "questions": [{
                                 "id": "q1",
-                                "question": "这段代码你想要什么行为？"
+                                "question": qcode_i18n::tr("kernel.mock.approval.ask")
                             }]
                         }),
                     },
@@ -179,7 +181,7 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("提问没能送达，我按默认行为继续。".to_string()),
+                    StreamEvent::TextDelta(qcode_i18n::tr("kernel.mock.ask.closing").to_string()),
                     StreamEvent::Ended {
                         stop_reason: StopReason::EndTurn,
                     },
@@ -199,7 +201,7 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("工具循环跑通了。".to_string()),
+                    StreamEvent::TextDelta(qcode_i18n::tr("kernel.mock.tools.closing").to_string()),
                     StreamEvent::Ended {
                         stop_reason: StopReason::EndTurn,
                     },
@@ -212,10 +214,20 @@ impl ProviderRegistry {
                         call_id: "todo-1".to_string(),
                         name: "todo_write".to_string(),
                         arguments: serde_json::json!({
+                            // 三条待办是「假模型决定的内容」，跟界面语言走；状态
+                            // 是工具契约的一部分，不动。
                             "items": [
-                                {"content": "读 SPEC 的工具契约", "status": "completed"},
-                                {"content": "实现 todo_write", "status": "in_progress"},
-                                {"content": "跑测试与 TUI 验收"}
+                                {
+                                    "content": qcode_i18n::tr("kernel.mock.todo.items.spec"),
+                                    "status": "completed"
+                                },
+                                {
+                                    "content": qcode_i18n::tr("kernel.mock.todo.items.implement"),
+                                    "status": "in_progress"
+                                },
+                                {
+                                    "content": qcode_i18n::tr("kernel.mock.todo.items.verify")
+                                }
                             ]
                         }),
                     },
@@ -225,7 +237,7 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("待办清单已更新。".to_string()),
+                    StreamEvent::TextDelta(qcode_i18n::tr("kernel.mock.todo.closing").to_string()),
                     StreamEvent::Ended {
                         stop_reason: StopReason::EndTurn,
                     },
@@ -242,7 +254,7 @@ impl ProviderRegistry {
                         name: "schedule_create".to_string(),
                         arguments: serde_json::json!({
                             "title": "daily-report",
-                            "prompt": "写日报",
+                            "prompt": qcode_i18n::tr("kernel.mock.schedule.prompt"),
                             "rule": "daily 09:00",
                             "target": "new",
                             "cwd": "/tmp"
@@ -254,7 +266,9 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("定时任务已登记。".to_string()),
+                    StreamEvent::TextDelta(
+                        qcode_i18n::tr("kernel.mock.schedule.closing").to_string(),
+                    ),
                     StreamEvent::Ended {
                         stop_reason: StopReason::EndTurn,
                     },
@@ -267,7 +281,7 @@ impl ProviderRegistry {
                         call_id: "sub-1".to_string(),
                         name: "subagent".to_string(),
                         arguments: serde_json::json!({
-                            "task": "在子会话里总结仓库结构",
+                            "task": qcode_i18n::tr("kernel.mock.subagent.task"),
                             "max_turns": 4
                         }),
                     },
@@ -278,7 +292,7 @@ impl ProviderRegistry {
                 vec![
                     StreamEvent::Started,
                     StreamEvent::TextDelta(
-                        "子 agent：仓库有 core/store/cli 三个 crate。".to_string(),
+                        qcode_i18n::tr("kernel.mock.subagent.child").to_string(),
                     ),
                     StreamEvent::Usage(Usage {
                         input_tokens: Some(12),
@@ -291,7 +305,9 @@ impl ProviderRegistry {
                 ],
                 vec![
                     StreamEvent::Started,
-                    StreamEvent::TextDelta("父 agent 收到子任务结果。".to_string()),
+                    StreamEvent::TextDelta(
+                        qcode_i18n::tr("kernel.mock.subagent.closing").to_string(),
+                    ),
                     StreamEvent::Usage(Usage {
                         input_tokens: Some(12),
                         output_tokens: Some(6),

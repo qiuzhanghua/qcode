@@ -210,17 +210,35 @@ fn status(
 
     let mut report = String::new();
     match &running {
-        Presence::Absent => report.push_str("daemon：没有在跑\n"),
-        Presence::Running => report.push_str("daemon：**在跑**（一个用户一个）\n"),
+        Presence::Absent => {
+            report.push_str(&format!("{}\n", qcode_i18n::tr("cli.daemon.not_running")))
+        }
+        Presence::Running => {
+            report.push_str(&format!("{}\n", qcode_i18n::tr("cli.daemon.running")));
+        }
         Presence::Unknown(why) => {
-            report.push_str(&format!("daemon：**无法判断**（{why}）\n"));
+            report.push_str(&format!(
+                "{}\n",
+                qcode_i18n::trp("cli.daemon.unknown", &[why])
+            ));
         }
     }
-    let _ = writeln!(report, "数据目录：{}", served.display());
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("cli.daemon.data_dir", &[served.display().to_string()])
+    );
     // 这一行来自 ADR-0091 的四态：它说「这个目录的时钟」而不只是「daemon」。
-    let _ = writeln!(report, "驱动：{}", driver.describe());
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("core.driver.footer", &[driver.describe().as_ref()])
+    );
     if let Presence::Running = running {
-        report.push_str("    （它可能服务**另一个**数据目录；锁只回答「有人」，不回答「是谁」）\n");
+        report.push_str(&format!(
+            "{}\n",
+            qcode_i18n::tr("cli.daemon.served_elsewhere_note")
+        ));
     }
     write_report(&report)?;
     Ok(ExitCode::SUCCESS)

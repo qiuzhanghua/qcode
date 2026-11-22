@@ -250,7 +250,7 @@ fn ask_on_stdin(questions: &[QuestionItem]) -> Vec<AnswerItem> {
         for (index, option) in question.options.iter().enumerate() {
             eprintln!("  {}. {}", index + 1, option.label);
         }
-        eprint!("  > 选择编号（逗号分隔；留空=跳过；其他=自由回答） ");
+        eprint!("{}", qcode_i18n::tr("core.question.choice_hint"));
         let _ = std::io::Write::flush(&mut std::io::stderr());
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line).is_err() {
@@ -300,7 +300,7 @@ fn ask_on_stdin(questions: &[QuestionItem]) -> Vec<AnswerItem> {
 /// UI can tell "timed out" apart from "answered".
 pub fn pending_result(call_id: &str) -> String {
     format!(
-        r#"{{"pending":true,"call_id":"{call_id}","message":"等待超时。这不是跳过：问题仍可回答，之后的回答会以带 question_reply 标记的用户消息送达。"}}"#
+        r#"{{"pending":true,"call_id":"{call_id}","message":"Timed out waiting. This is not a skip: the question can still be answered, and a late answer arrives as a user message carrying a question_reply marker."}}"#
     )
 }
 

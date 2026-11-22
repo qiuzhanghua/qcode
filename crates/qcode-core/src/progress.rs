@@ -63,9 +63,13 @@ impl ProgressReport {
         }
         let additions: u32 = self.files.iter().map(|file| file.additions).sum();
         let deletions: u32 = self.files.iter().map(|file| file.deletions).sum();
-        Some(format!(
-            "修改了 {} 个文件（+{additions} −{deletions}）",
-            self.files.len()
+        Some(qcode_i18n::trp(
+            "ui.progress.files_changed",
+            &[
+                self.files.len().to_string(),
+                additions.to_string(),
+                deletions.to_string(),
+            ],
         ))
     }
 }
@@ -233,6 +237,8 @@ mod tests {
 
     #[test]
     fn a_paused_turn_reports_what_it_changed() {
+        // 断言比对中文摘要，文案跟着 locale 走（I18N.md 不变量 5）。
+        qcode_i18n::pin_for_tests();
         let mut write = result(3, 1, "a", ToolStatus::Ok, "ok");
         if let EventKind::ToolResult(result) = &mut write.kind {
             result.diff = Some(diff("src/lib.rs", DiffKind::Modified, 12, 3));

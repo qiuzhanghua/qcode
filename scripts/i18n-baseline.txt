@@ -1,0 +1,180 @@
+# 门禁 2 的基线：现存裸中文 UI 字面量（I18N.md §8.1）。
+# 格式：crate<TAB>转义后的字面量。
+# 只允许减少。每批翻译完成后重跑一次：
+#   QCODE_I18N_UPDATE_BASELINE=1 cargo test -p qcode-i18n
+qcode-gui	 · 待审批
+qcode-gui	 · 目录丢失
+qcode-gui	 · 第 {} 个预算窗口
+qcode-gui	 等 {} 条
+qcode-gui	AI 工具
+qcode-gui	Cmd+Enter 发送 · Enter 换行
+qcode-gui	Ctrl+Enter 发送 · Enter 换行
+qcode-gui	Enter 发送 · Shift+Enter 换行
+qcode-gui	QCode · 空闲
+qcode-gui	QCode · 等待审批（{}）
+qcode-gui	QCode · 运行中
+qcode-gui	[图片已不可用]
+qcode-gui	\nAdd-Type -AssemblyName System.Windows.Forms\n# Pin the .NET UI culture to the machine\'s actual display language so the\n# dialog\'s built-in labels (\"此电脑\", \"This PC\", …) never flip between zh-CN\n# and en-US depending on which resource pack PowerShell happens to load.\n$ui = [System.Globalization.CultureInfo]::InstalledUICulture\n[Threading.Thread]::CurrentThread.CurrentUICulture = $ui\n[Threading.Thread]::CurrentThread.CurrentCulture = $ui\n[Windows.Forms.Application]::CurrentCulture = $ui\n[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n$dialog = New-Object System.Windows.Forms.OpenFileDialog\nif ($ui.Name -like \'zh*\') {\n    $dialog.Title = \'选择工作目录\'\n    $dialog.FileName = \'选择文件夹\'\n    $dialog.Filter = \'文件夹|*.folder\'\n} else {\n    $dialog.Title = \'Open a folder\'\n    $dialog.FileName = \'Open a folder\'\n    $dialog.Filter = \'Folders|*.folder\'\n}\n$dialog.FilterIndex = 1\n$dialog.InitialDirectory = [Environment]::GetFolderPath(\'UserProfile\')\n$dialog.ValidateNames = $false\n$dialog.CheckFileExists = $false\n$dialog.CheckPathExists = $true\nif ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {\n    $path = $dialog.FileName\n    if ([System.IO.Directory]::Exists($path)) {\n        Write-Output $path\n    } else {\n        $dir = [System.IO.Path]::GetDirectoryName($path)\n        if ($dir) { Write-Output $dir }\n    }\n}\n
+qcode-gui	\nAdd-Type -AssemblyName System.Windows.Forms\n# Same culture pin as pick_directory above — keep WinForms built-in strings\n# (\"此电脑\", \"This PC\", …) consistent with the machine\'s display language.\n$ui = [System.Globalization.CultureInfo]::InstalledUICulture\n[Threading.Thread]::CurrentThread.CurrentUICulture = $ui\n[Threading.Thread]::CurrentThread.CurrentCulture = $ui\n[Windows.Forms.Application]::CurrentCulture = $ui\n[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n$dialog = New-Object System.Windows.Forms.OpenFileDialog\nif ($ui.Name -like \'zh*\') {\n    $dialog.Title = \'选择文件\'\n} else {\n    $dialog.Title = \'Choose a file\'\n}\nif ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {\n    Write-Output $dialog.FileName\n}\n
+qcode-gui	bwrap 不可用：bubblewrap 未安装。请用系统包管理器安装 \\\n                                             bubblewrap（Debian/Ubuntu：sudo apt install bubblewrap；\\\n                                             Fedora：sudo dnf install bubblewrap；Arch：sudo pacman -S bubblewrap），\\\n                                             然后重试。
+qcode-gui	{label}: 不是支持的图片格式（png / jpeg / webp / gif）
+qcode-gui	{sandbox} 沙箱
+qcode-gui	⏱ 定时任务 · {}
+qcode-gui	⏸ 已暂停 · {}
+qcode-gui	上一题
+qcode-gui	下一题
+qcode-gui	丢失
+qcode-gui	仅可读取
+qcode-gui	任务
+qcode-gui	任务已删除
+qcode-gui	任务已重命名
+qcode-gui	任务操作
+qcode-gui	任务标题
+qcode-gui	任务标题不能为空
+qcode-gui	使用「{typed}」（{p}）
+qcode-gui	修改了文件
+qcode-gui	修改文件
+qcode-gui	停止
+qcode-gui	停止当前任务
+qcode-gui	停止这个任务（不影响其它任务）
+qcode-gui	允许
+qcode-gui	先这样
+qcode-gui	全部
+qcode-gui	共 {} 个定时任务
+qcode-gui	关闭
+qcode-gui	写入文件
+qcode-gui	列出目录
+qcode-gui	删除任务
+qcode-gui	周期不完整或无效：请检查周期选择
+qcode-gui	命令输出
+qcode-gui	复制
+qcode-gui	外部工具策略
+qcode-gui	多文件写入策略
+qcode-gui	子代理
+qcode-gui	定时
+qcode-gui	定时任务
+qcode-gui	定时任务不存在
+qcode-gui	定时任务常驻驱动：{}
+qcode-gui	定时任务改由这个窗口驱动（之前持有驱动锁的进程已退出）。\\\n                                     关掉窗口就会停——要让它一直跑，用 `qc daemon start`。
+qcode-gui	定时任务由另一个进程驱动（它持有驱动锁），这个窗口不重复触发。\\\n                         要确认谁在跑，用 `qc schedule list`。
+qcode-gui	定时任务筛选
+qcode-gui	定时已失效（目标会话已删除）
+qcode-gui	定时配置有误: {reason}
+qcode-gui	定时错过 {} 次
+qcode-gui	展开侧栏
+qcode-gui	工作区可写
+qcode-gui	工作区外写入策略
+qcode-gui	已保存
+qcode-gui	已创建定时任务 `{}`
+qcode-gui	已删除
+qcode-gui	已复制
+qcode-gui	已开启
+qcode-gui	已恢复
+qcode-gui	已提交，等待引擎确认…
+qcode-gui	已暂停
+qcode-gui	已用 {}/{} 轮
+qcode-gui	已结束
+qcode-gui	已触发
+qcode-gui	已读取文件
+qcode-gui	已运行：{}
+qcode-gui	当前 Turn 结束后应用
+qcode-gui	当前任务还没有内容，直接提问即可
+qcode-gui	当前目录
+qcode-gui	忽略
+qcode-gui	思考
+qcode-gui	总是允许
+qcode-gui	我的任务
+qcode-gui	打开文件夹
+qcode-gui	执行了命令
+qcode-gui	执行命令
+qcode-gui	投递过于频繁：两次投递至少间隔 60 秒
+qcode-gui	折叠侧栏
+qcode-gui	拒绝
+qcode-gui	拿不到驱动锁，这个窗口不会触发定时任务（详见日志 qc logs）。
+qcode-gui	按状态过滤
+qcode-gui	排队中
+qcode-gui	推送
+qcode-gui	提交
+qcode-gui	提问
+qcode-gui	搜索
+qcode-gui	搜索模型…
+qcode-gui	收尾
+qcode-gui	改动
+qcode-gui	整轮
+qcode-gui	新任务
+qcode-gui	新建任务
+qcode-gui	新建终端
+qcode-gui	无沙箱
+qcode-gui	无法切换到 {next_provider}：{error}
+qcode-gui	无法删除任务: {error}
+qcode-gui	无法更新目录: {error}
+qcode-gui	无法重命名任务: {error}
+qcode-gui	是否允许本次操作使用{kind}权限：执行{summary}时，被{reason_cn}拦截，无法在{dir}目录上执行写入，需要提升操作权限；此次操作不会改动任何文件的内容和所有者。
+qcode-gui	显示主窗口
+qcode-gui	更新待办
+qcode-gui	最多 {} 个终端；先关掉一个再开新的
+qcode-gui	未发送的新任务已暂存，按 + 回到它
+qcode-gui	权限规则
+qcode-gui	查找文件
+qcode-gui	查看
+qcode-gui	正在停止 {}
+qcode-gui	正在停止正在运行的任务…
+qcode-gui	正在应用待处理的目录变更
+qcode-gui	沙箱提权策略
+qcode-gui	沙箱目录权限（对当前任务全部目录生效）
+qcode-gui	没有「{}」状态的定时任务
+qcode-gui	添加目录
+qcode-gui	目录变更将在该任务的 Turn 结束后应用
+qcode-gui	目录已存在: {}
+qcode-gui	移除目录
+qcode-gui	第 {index} 题，共 {count} 题
+qcode-gui	第 {} 个预算窗口
+qcode-gui	第 {} 轮
+qcode-gui	等待审批
+qcode-gui	终端
+qcode-gui	终端启动失败（{}）：{error}
+qcode-gui	结束当前 Turn 后可删除
+qcode-gui	继续
+qcode-gui	继续未发送的新任务
+qcode-gui	继续跑会消耗更多预算；需要更多空间可以调大 \\\n                                                         [agent] max_turns / max_cost_usd，或者在新任务里重开。
+qcode-gui	网络访问策略
+qcode-gui	设为主目录
+qcode-gui	设置
+qcode-gui	设置已保存，将在当前任务结束后生效
+qcode-gui	设置已保存：等所有任务空闲后应用
+qcode-gui	设置（在新窗口中打开）
+qcode-gui	设置，在新窗口中打开
+qcode-gui	该任务正在执行中，请等待其回合结束再执行
+qcode-gui	该任务的 Turn 结束后重命名
+qcode-gui	请先停止该任务，再删除正在运行的任务
+qcode-gui	请求报错 · 完整信息
+qcode-gui	请求提权到 {scope}：{}
+qcode-gui	读写文件
+qcode-gui	读取文件
+qcode-gui	跳转到底部
+qcode-gui	跳过
+qcode-gui	输入回答…
+qcode-gui	运行中改名将在 Turn 结束后生效
+qcode-gui	运行命令
+qcode-gui	还没有定时任务——直接在对话里让模型创建即可
+qcode-gui	还没有终端
+qcode-gui	还没有配置 provider，先在 Settings 里配置再新建任务
+qcode-gui	这个任务没有在跑
+qcode-gui	这份草稿还没发出去：发送它，或清空后再新建任务
+qcode-gui	进程执行策略
+qcode-gui	退出
+qcode-gui	选择文件
+qcode-gui	选择目录
+qcode-gui	重命名
+qcode-gui	重命名任务
+qcode-gui	重新关联目录
+qcode-gui	预算接近上限
+qcode-gui	预算用完时这一轮会「暂停」而不是报错：可以直接继续、收尾，或者先这样。
+qcode-gui	（回答中…）
+qcode-gui	（暂无回答）
+qcode-gui	（未说明理由）
+qcode-gui	，
+qcode-kernel	小米 MiMo
+qcode-kernel	智谱 Coding
+qcode-kernel	蚂蚁 Ling
+qcode-kernel	通义 Token Plan

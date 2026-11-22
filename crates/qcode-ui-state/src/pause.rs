@@ -50,7 +50,8 @@ impl PauseCard {
         let mut card = Self {
             summary: pause.summary.clone(),
             headline: headline(pause),
-            window_note: (pause.window > 1).then(|| format!("第 {} 个预算窗口", pause.window)),
+            window_note: (pause.window > 1)
+                .then(|| qcode_i18n::trp("ui.pause.window", &[pause.window.to_string()])),
             ..Self::default()
         };
         let mut files: Vec<qcode_core::event::DiffFileStat> = Vec::new();
@@ -92,9 +93,13 @@ impl PauseCard {
         if !files.is_empty() {
             let additions: u32 = files.iter().map(|file| file.additions).sum();
             let deletions: u32 = files.iter().map(|file| file.deletions).sum();
-            card.files = Some(format!(
-                "修改了 {} 个文件（+{additions} −{deletions}）",
-                files.len()
+            card.files = Some(qcode_i18n::trp(
+                "ui.progress.files_changed",
+                &[
+                    files.len().to_string(),
+                    additions.to_string(),
+                    deletions.to_string(),
+                ],
             ));
         }
         card.more_commands = commands.len().saturating_sub(COMMAND_LIMIT);
@@ -143,15 +148,14 @@ fn failure_line(entry: &ToolEntry) -> String {
 
 fn headline(pause: &PauseInfo) -> String {
     match pause.limit {
-        qcode_core::event::PauseLimit::Turns(limit) => {
-            format!("已用 {}/{} 轮", pause.used.turns, limit)
-        }
-        qcode_core::event::PauseLimit::Usd(limit) => {
-            format!(
-                "成本已达预算 ${limit:.2} 的 95%（已用 ${:.2}）",
-                pause.used.cost_usd
-            )
-        }
+        qcode_core::event::PauseLimit::Turns(limit) => qcode_i18n::trp(
+            "ui.pause.turns_used",
+            &[pause.used.turns.to_string(), limit.to_string()],
+        ),
+        qcode_core::event::PauseLimit::Usd(limit) => qcode_i18n::trp(
+            "ui.pause.cost_ceiling",
+            &[format!("{limit:.2}"), format!("{:.2}", pause.used.cost_usd)],
+        ),
     }
 }
 
@@ -203,6 +207,8 @@ mod tests {
 
     #[test]
     fn counts_files_commands_and_failures() {
+        // 断言比对中文摘要，文案跟着 locale 走（I18N.md 不变量 5）。
+        qcode_i18n::pin_for_tests();
         let app = paused_app(vec![
             EventKind::ToolCall(ToolCall {
                 call_id: "c1".to_string(),

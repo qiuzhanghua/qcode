@@ -84,23 +84,18 @@ impl DaemonButton {
     }
 
     /// 悬停提示：说清**点下去会发生什么**，以及图标为什么是那个亮度。
-    pub(crate) fn tooltip(&self) -> &'static str {
+    pub(crate) fn tooltip(&self) -> std::borrow::Cow<'static, str> {
+        use qcode_i18n::tr;
         match self {
-            Self::Start => "常驻驱动没在跑（图标灰）。点一下启动：关掉窗口后任务仍会触发。",
-            Self::Stop => "常驻驱动在跑（图标绿）。点一下停止：到点不再触发，任务与列表都还在。",
+            Self::Start => tr("gui.daemon.tooltip.start"),
+            Self::Stop => tr("gui.daemon.tooltip.stop"),
             // 这一格最需要解释：窗口在推、但没有 daemon。点了会起一个**排队**的
             // daemon（ADR-0092 §10），不是抢。
-            Self::WindowDriven => {
-                "现在由这个窗口驱动，没有常驻驱动（图标灰）。\
-                 点一下启动：它会等这个窗口退出后接手。"
-            }
-            Self::OccupiedElsewhere => {
-                "常驻驱动在跑（图标绿），但服务的是另一个数据目录——一个用户只有一个。\
-                 点一下把它停掉。"
-            }
-            Self::Unknown => "查不出驱动状态（图标灰）。点一下会尝试启动。",
-            Self::Busy(DaemonTransition::Starting) => "正在启动…",
-            Self::Busy(DaemonTransition::Stopping) => "正在停止…",
+            Self::WindowDriven => tr("gui.daemon.tooltip.window_driven"),
+            Self::OccupiedElsewhere => tr("gui.daemon.tooltip.occupied_elsewhere"),
+            Self::Unknown => tr("gui.daemon.tooltip.unknown"),
+            Self::Busy(DaemonTransition::Starting) => tr("gui.daemon.tooltip.starting"),
+            Self::Busy(DaemonTransition::Stopping) => tr("gui.daemon.tooltip.stopping"),
         }
     }
 
@@ -108,15 +103,16 @@ impl DaemonButton {
     ///
     /// 不再是「画在图标下面的字」——那颗按钮现在只有一个图标（ADR-0100）。文字仍
     /// 然要有：一个只有图形的按钮，屏幕阅读器读不出任何东西。
-    pub(crate) fn state_word(&self) -> &'static str {
+    pub(crate) fn state_word(&self) -> std::borrow::Cow<'static, str> {
+        use qcode_i18n::tr;
         match self {
-            Self::Start => "未常驻",
-            Self::Stop => "常驻中",
-            Self::WindowDriven => "仅窗口驱动",
-            Self::OccupiedElsewhere => "常驻在别处",
-            Self::Unknown => "状态未知",
-            Self::Busy(DaemonTransition::Starting) => "启动中",
-            Self::Busy(DaemonTransition::Stopping) => "停止中",
+            Self::Start => tr("gui.daemon.state.start"),
+            Self::Stop => tr("gui.daemon.state.stop"),
+            Self::WindowDriven => tr("gui.daemon.state.window_driven"),
+            Self::OccupiedElsewhere => tr("gui.daemon.state.occupied_elsewhere"),
+            Self::Unknown => tr("gui.daemon.state.unknown"),
+            Self::Busy(DaemonTransition::Starting) => tr("gui.daemon.state.starting"),
+            Self::Busy(DaemonTransition::Stopping) => tr("gui.daemon.state.stopping"),
         }
     }
 }
@@ -140,13 +136,13 @@ pub(crate) enum DriverTone {
 /// 有一份说「会触发」另一份说「不会」，而用户只会信他先看到的那份。
 pub(crate) fn status_sentence(watch: Option<&Watch>) -> String {
     let Some(watch) = watch else {
-        return "驱动状态未知（后端未装配）。任务仍可登记与编辑，但不会触发。".to_string();
+        return qcode_i18n::tr("gui.daemon.status.unknown").into_owned();
     };
     match &watch.daemon {
         // 本目录没人在推，但这个用户有 daemon 在别处：说清楚「为什么这里不响」，
         // 而不是含糊地报一句「有的」。
         Presence::Running if !watch.will_fire() => {
-            "驱动的跑在别的数据目录上；这些任务到点不会触发。".to_string()
+            qcode_i18n::tr("gui.daemon.status.elsewhere").into_owned()
         }
         _ => driver_footer(watch.driver),
     }
@@ -253,7 +249,9 @@ impl Shell {
                 self.request_daemon_start(cx)
             }
             DaemonButton::Busy(_) => {
-                self.ui.app.push_notice("正在切换，等它完成。".to_string());
+                self.ui
+                    .app
+                    .push_notice(qcode_i18n::tr("gui.daemon.notice.switching").into_owned());
                 cx.notify();
             }
         }
@@ -290,7 +288,9 @@ impl Shell {
         // 上一个切换还没收尾：按钮已经转圈了，命令行再发一个会撞上「锁在、通道没
         // 人答」。跟 `toggle_daemon` 的 Busy 分支同一句。
         if self.daemon_transition.is_some() {
-            self.ui.app.push_notice("正在切换，等它完成。".to_string());
+            self.ui
+                .app
+                .push_notice(qcode_i18n::tr("gui.daemon.notice.switching").into_owned());
             cx.notify();
             return;
         }
@@ -303,7 +303,7 @@ impl Shell {
         {
             self.ui
                 .app
-                .push_notice("常驻驱动已经在跑了，不用再启动。".to_string());
+                .push_notice(qcode_i18n::tr("gui.daemon.notice.already_running").into_owned());
             cx.notify();
             return;
         }
@@ -335,21 +335,25 @@ impl Shell {
                                 if watch.daemon.is_running()
                                     && matches!(watch.driver, DriverStatus::Running { .. }) =>
                             {
-                                format!("定时任务驱动已启动（pid {pid}）")
+                                qcode_i18n::trp("gui.daemon.notice.started", &[pid.to_string()])
                             }
-                            Some(watch) if watch.daemon.is_running() => format!(
-                                "定时任务驱动已启动（pid {pid}），正在等这个窗口退出后接手。"
+                            Some(watch) if watch.daemon.is_running() => qcode_i18n::trp(
+                                "gui.daemon.notice.started_waiting",
+                                &[pid.to_string()],
                             ),
-                            _ => format!("定时任务驱动已启动（pid {pid}），正在就绪…"),
+                            _ => qcode_i18n::trp(
+                                "gui.daemon.notice.started_preparing",
+                                &[pid.to_string()],
+                            ),
                         };
                         shell.ui.app.push_notice(message);
                     }
                     Err(error) => {
                         shell.daemon_transition = None;
-                        shell
-                            .ui
-                            .app
-                            .push_notice(format!("无法启动定时任务驱动：{error}"))
+                        shell.ui.app.push_notice(qcode_i18n::trp(
+                            "gui.daemon.notice.start_failed",
+                            &[&error],
+                        ))
                     }
                 }
                 cx.notify();
@@ -377,18 +381,23 @@ impl Shell {
                 shell.driver_watch_at = None;
                 shell.refresh_driver_watch();
                 match result {
-                    Ok(true) => shell.ui.app.push_notice("定时任务驱动已停止".to_string()),
+                    Ok(true) => shell
+                        .ui
+                        .app
+                        .push_notice(qcode_i18n::tr("gui.daemon.notice.stopped").into_owned()),
                     // `false` 不是错误：用户点下去时它可能刚好自己退了。
                     Ok(false) => {
                         shell.daemon_transition = None;
-                        shell.ui.app.push_notice("驱动已经不在了".to_string())
+                        shell.ui.app.push_notice(
+                            qcode_i18n::tr("gui.daemon.notice.already_gone").into_owned(),
+                        )
                     }
                     Err(error) => {
                         shell.daemon_transition = None;
-                        shell
-                            .ui
-                            .app
-                            .push_notice(format!("无法停止定时任务驱动：{error}"))
+                        shell.ui.app.push_notice(qcode_i18n::trp(
+                            "gui.daemon.notice.stop_failed",
+                            &[&error],
+                        ))
                     }
                 }
                 cx.notify();
@@ -415,6 +424,7 @@ mod tests {
     }
 
     fn at() -> time::PrimitiveDateTime {
+        qcode_i18n::pin_for_tests();
         datetime!(2026-11-16 09:00:00)
     }
 
@@ -425,6 +435,7 @@ mod tests {
     /// 一个还在跑的任务。
     #[test]
     fn the_four_cells_of_the_button() {
+        qcode_i18n::pin_for_tests();
         let cases = [
             // (daemon, driver, 期望)
             (Presence::Absent, DriverStatus::Unknown, DaemonButton::Start),
@@ -486,6 +497,7 @@ mod tests {
     /// 它们分叉的那一格——段落不灰（窗口在推时钟），图标灰（没有 qcd）。
     #[test]
     fn the_icon_is_lit_exactly_when_qcd_runs() {
+        qcode_i18n::pin_for_tests();
         let lit = [
             DaemonButton::Stop,
             DaemonButton::OccupiedElsewhere,
@@ -524,6 +536,7 @@ mod tests {
     /// 窗口里点的一格（点了就起一个排队的 daemon）。这条测试守住那次修正。
     #[test]
     fn only_a_transition_is_not_actionable() {
+        qcode_i18n::pin_for_tests();
         for button in [
             DaemonButton::Start,
             DaemonButton::Stop,
@@ -546,6 +559,7 @@ mod tests {
     /// 一个只有图标的按钮没有文字兜底，提示就是它全部的说明书。
     #[test]
     fn every_tooltip_says_what_a_click_does() {
+        qcode_i18n::pin_for_tests();
         for button in [
             DaemonButton::Start,
             DaemonButton::Stop,
@@ -569,6 +583,7 @@ mod tests {
     /// 唯一的无障碍名字。
     #[test]
     fn every_cell_has_its_own_state_word() {
+        qcode_i18n::pin_for_tests();
         let words = [
             DaemonButton::Start,
             DaemonButton::Stop,
@@ -591,6 +606,7 @@ mod tests {
     /// 过渡态压过一切：`stop` 在途中不该显示成「停止」（否则用户会再点一次）。
     #[test]
     fn a_transition_hides_the_steady_state() {
+        qcode_i18n::pin_for_tests();
         let w = watch(Presence::Running, DriverStatus::Running { at: at() });
         assert_eq!(
             decide(Some(&w), Some(DaemonTransition::Stopping)),
@@ -605,6 +621,7 @@ mod tests {
     /// `Held` 是警告，`Gone` / `Unknown` 才是灰。合盖的笔记本不该被画成停摆。
     #[test]
     fn a_drowsy_driver_is_not_grey() {
+        qcode_i18n::pin_for_tests();
         let tone = |driver| {
             crate::shell::daemon::tone(Some(&Watch {
                 driver,
@@ -627,6 +644,7 @@ mod tests {
     /// 而且必须点出「不补跑」。
     #[test]
     fn the_status_sentence_matches_the_state() {
+        qcode_i18n::pin_for_tests();
         let running = status_sentence(Some(&watch(
             Presence::Running,
             DriverStatus::Running { at: at() },

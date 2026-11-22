@@ -18,14 +18,15 @@ pub(crate) const MAX_IDENTICAL_ROUNDS: u32 = 10;
 /// stays first so a log reader (and the model) can tell it from a real message;
 /// the rest is the instruction, because the transcript above it carries the task
 /// but not the "don't redo what is done" part.
-pub const CONTINUE_PROMPT: &str = "[continue] 按你上面的计划接着做；已完成的部分不要重做，\
-也不要重复调用同样的工具。如果已经做完，直接给出结论。";
+pub const CONTINUE_PROMPT: &str = "[continue] Carry on with the plan above; do not redo what \
+is already done, and do not call the same tools again. If the work is finished, state the \
+conclusion directly.";
 
 /// The instruction a paused turn's wrap-up sends: stop working, write the note.
 /// The frontends all send this text, so the wording lives next to
 /// [`CONTINUE_PROMPT`] instead of being retyped per UI (ADR-0060 §2.5).
-pub const WRAP_UP_PROMPT: &str = "[wrap-up] 请收尾：不要再调用工具，用不超过 15 行总结这次做了什么、\
-没做什么、还剩什么需要人工处理。";
+pub const WRAP_UP_PROMPT: &str = "[wrap-up] Wrap up now: call no more tools, and summarise in \
+at most 15 lines what this turn did, what it did not do, and what still needs a human.";
 
 /// Fraction of a cost budget the loop may spend before it stops. The budget is
 /// a wall, but a call that costs $0.40 cannot be un-placed once it is sent, so
@@ -39,7 +40,7 @@ pub(crate) const BUDGET_HINT_RATIO: f64 = 0.75;
 /// the turn stopped, so the next turn (or the user) can pick it up.
 pub(crate) const HAND_OFF_PROMPT: &str = "You are about to stop: you have no budget left for \
      another step. Do not call tools. In at most 12 lines, write the hand-off for whoever \
-     continues this task: 已完成 (what is done), 未完成 (what is left), 建议下一步 (the next \
+     continues this task: done (what is done), left (what is left), next (the next \
      concrete action). Plain text, no preamble.";
 
 /// Guards against a model that keeps asking for the same call.
@@ -859,16 +860,25 @@ fn with_local_summary(
     let mut summary = String::new();
     match report.files_summary().as_deref() {
         Some(files) => summary.push_str(files),
-        None => summary.push_str("本次没有改动文件"),
+        None => summary.push_str(&qcode_i18n::tr("core.run.no_file_changes")),
     }
     if report.tool_calls > 0 {
-        summary.push_str(&format!("\n调用了 {} 次工具", report.tool_calls));
+        summary.push_str(&qcode_i18n::trp(
+            "core.run.tool_calls",
+            &[report.tool_calls.to_string()],
+        ));
     }
     if !report.failures.is_empty() {
-        summary.push_str(&format!("\n{} 次工具调用失败", report.failures.len()));
+        summary.push_str(&qcode_i18n::trp(
+            "core.run.tool_failures",
+            &[report.failures.len().to_string()],
+        ));
     }
     if !report.last_text.is_empty() {
-        summary.push_str(&format!("\n最后的说明：{}", report.last_text));
+        summary.push_str(&qcode_i18n::trp(
+            "core.run.last_words",
+            &[report.last_text.as_str()],
+        ));
     }
     PauseInfo {
         summary: Some(summary),

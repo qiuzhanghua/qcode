@@ -700,6 +700,19 @@ preflight() {
     echo "==> cargo test --workspace"
     cargo test --workspace --locked
 
+    # 门禁 3（双语 golden，I18N.md §8.1）。门禁 1 与 2 是 `cargo test` 里的测试，
+    # 上面那一步已经跑到；这一条要跑真二进制，所以只能在这里。
+    #
+    # 需要 `target/debug/qc`。`cargo test` 刚编过 workspace，但**不保证**产出 bin
+    # （测试不链 bin）。没有就地编一次，而不是静默跳过——静默跳过正是跨端检查里
+    # 记下的那种事故形状。
+    if [ -x "$ROOT/target/debug/qc" ]; then
+        echo "==> 双语 golden（scripts/check-i18n-golden.sh）"
+        "$ROOT/scripts/check-i18n-golden.sh" || die "双语 golden 与基线不一致（见 scripts/check-i18n-golden.sh --record）"
+    else
+        echo "==> 双语 golden：跳过（没有 target/debug/qc；先 cargo build -p qcode）"
+    fi
+
     echo "==> cargo deny check"
     command -v cargo-deny >/dev/null 2>&1 ||
         die "PATH 上没有 cargo-deny（cargo install cargo-deny；它会落在 \$CARGO_HOME/bin）"

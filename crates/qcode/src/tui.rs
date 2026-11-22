@@ -401,13 +401,14 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
         app.status.running = false;
         app.status.provider = options.provider_name.to_string();
         app.status.model = options.model.to_string();
-        app.push_notice(format!(
-            "resumed session {session_id} ({} events) · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出",
-            events.len()
+        app.push_notice(qcode_i18n::trp(
+            "cli.tui.resumed_hint",
+            &[session_id.as_str(), events.len().to_string().as_str()],
         ));
     } else {
-        app.push_notice(format!(
-            "session {session_id} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /steering 等待注入 · /unsteer <n> 撤回 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+        app.push_notice(qcode_i18n::trp(
+            "cli.tui.new_session_hint",
+            &[session_id.as_str()],
         ));
     }
 

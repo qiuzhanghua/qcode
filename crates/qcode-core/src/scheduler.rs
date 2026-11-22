@@ -139,12 +139,15 @@ impl DriverStatus {
     }
 
     /// 一句话说清「能不能触发」，供工具结果与界面共用。
-    pub fn describe(self) -> &'static str {
+    ///
+    /// 返回 `Cow` 而不是 `&'static str`：译文来自运行期选定的 locale。
+    pub fn describe(self) -> std::borrow::Cow<'static, str> {
+        use qcode_i18n::tr;
         match self {
-            Self::Running { .. } => "驱动在跑（定时任务会正常触发）",
-            Self::Held { .. } => "驱动在跑，但心跳已过期（可能被挂起或者卡住；醒来会继续）",
-            Self::Gone { .. } => "驱动不在跑（上次退出了；到点不会触发，记为错过）",
-            Self::Unknown => "未知（这个数据目录还没有会驱动定时任务的前端跑过）",
+            Self::Running { .. } => tr("core.driver.describe.running"),
+            Self::Held { .. } => tr("core.driver.describe.held"),
+            Self::Gone { .. } => tr("core.driver.describe.gone"),
+            Self::Unknown => tr("core.driver.describe.unknown"),
         }
     }
 }
@@ -192,29 +195,26 @@ pub const DRIVER_LOCK: &str = "driver";
 /// 会继续。把「被挂起」说成「不在跑」，就是劝人去重建一条本来没事的任务。
 pub fn driver_footer(driver: DriverStatus) -> String {
     match driver {
-        DriverStatus::Running { .. } => "驱动：在跑（到点会正常投递）。".to_string(),
+        DriverStatus::Running { .. } => qcode_i18n::tr("core.driver.detail.running").to_string(),
         DriverStatus::Held { at } => {
-            let when = at.map_or_else(|| "还没有心跳".to_string(), |at| format!("上次心跳 {at}"));
-            format!(
-                "**驱动在跑，但心跳已过期**（{when}）：持有调度时钟的进程还在（锁在它手上），\
-                 任务没有丢，但它可能被挂起或者卡住了。唤醒后会继续按规则触发——\
-                 这段里错过的窗口仍然记为错过，不补跑。"
-            )
+            qcode_i18n::trp("core.driver.detail.held", &[heartbeat_phrase(at).as_str()])
         }
-        DriverStatus::Gone { at } => format!(
-            "**驱动不在跑**（上次心跳 {at}，进程已退出）：该任务需要有进程持有调度时钟才会触发。\
-             两种都可以：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），\
-             或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，\
-             并记为错过——不补跑。"
-        ),
-        DriverStatus::Unknown => {
-            "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有进程持有\
-             调度时钟才会触发：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），\
-             或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，\
-             并记为错过——不补跑。"
-                .to_string()
-        }
+        // `Gone` 的 `at` 非空：没有心跳就归 `Unknown` 了，走不到这里。
+        //
+        // 这里传**裸时刻**，不是 [`heartbeat_phrase`]：`gone` 那条模板自己就写着
+        // 「上次心跳 %{0}」，套上去会变成「上次心跳 上次心跳 …」。
+        DriverStatus::Gone { at } => qcode_i18n::trp("core.driver.detail.gone", &[at.to_string()]),
+        DriverStatus::Unknown => qcode_i18n::tr("core.driver.detail.unknown").to_string(),
     }
+}
+
+/// 「上次心跳 <at>」/「还没有心跳」。`Held` 分支把它整个塞进括号里，所以要带前缀；
+/// `Gone` 分支的模板自带「上次心跳」，那边直接传裸时刻。
+fn heartbeat_phrase(at: Option<PrimitiveDateTime>) -> String {
+    at.map_or_else(
+        || qcode_i18n::tr("core.driver.heartbeat.never").to_string(),
+        |at| qcode_i18n::trp("core.driver.heartbeat.at", &[at.to_string()]),
+    )
 }
 
 /// 审批截止时间这一栏该怎么说（ADR-0092 §7）。
@@ -228,13 +228,12 @@ pub fn driver_footer(driver: DriverStatus) -> String {
 /// 那条「建了 ≠ 会跑」的诚实，靠的就是「用户和模型看到的是同一句话」。
 pub fn approval_footer(timeout: Option<Duration>) -> String {
     match timeout {
-        Some(timeout) => format!("审批：{}(超时自动拒绝)。", describe_duration(timeout)),
-        None => format!(
-            "审批：**未设截止时间**——有人值守时一直等人工。\
-             无人值守执行时（常驻 daemon）会补 {}，超时自动拒绝：\
-             没有人在旁边，等下去会把那个会话的写锁一直握着。\
-             要改就加 `--approval-timeout-secs`。",
-            describe_duration(UNATTENDED_APPROVAL_TIMEOUT)
+        Some(timeout) => {
+            qcode_i18n::trp("core.approval.with_timeout", &[describe_duration(timeout)])
+        }
+        None => qcode_i18n::trp(
+            "core.approval.no_deadline",
+            &[describe_duration(UNATTENDED_APPROVAL_TIMEOUT)],
         ),
     }
 }
@@ -874,6 +873,8 @@ mod tests {
     /// 说法漏掉另一半，用户（和模型）都会以为自己知道结果。
     #[test]
     fn approval_footer_names_both_executors() {
+        // 断言比对的是中文文案，而文案现在跟着 locale 走（I18N.md 不变量 5）。
+        qcode_i18n::pin_for_tests();
         let set = approval_footer(Some(Duration::from_secs(90)));
         assert!(set.contains("1m30s"), "要给出人读的时长：{set}");
         assert!(set.contains("自动拒绝"), "设了值就只剩一种结果：{set}");
@@ -1424,6 +1425,8 @@ mod footer_tests {
     /// 这条后果没被删掉（它是 ADR-0059 §3 的全部要点）。
     #[test]
     fn the_not_running_footer_names_both_drivers() {
+        // 同上：`不补跑` 这句是中文断言，必须先钉 `zh-CN`。
+        qcode_i18n::pin_for_tests();
         for status in [
             DriverStatus::Gone {
                 at: crate::schedule::at(2026, time::Month::June, 1, 9, 0),

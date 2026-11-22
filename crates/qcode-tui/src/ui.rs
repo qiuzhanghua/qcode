@@ -305,7 +305,10 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
             } => {
                 push_text(&mut lines, "❯ ", text, Style::default().fg(Color::Cyan));
                 for file in files {
-                    let label = format!("〔文件 {} — {} 字节〕", file.name, file.bytes);
+                    let label = qcode_i18n::trp(
+                        "tui.attachment.file",
+                        &[file.name.clone(), file.bytes.to_string()],
+                    );
                     push_text(
                         &mut lines,
                         "  ",
@@ -314,9 +317,13 @@ fn transcript_lines(app: &App, budget: usize) -> Vec<Line<'static>> {
                     );
                 }
                 for image in images {
-                    let label = format!(
-                        "〔图片 {} — {}×{}，终端只显示占位文字〕",
-                        image.label, image.width, image.height
+                    let label = qcode_i18n::trp(
+                        "tui.attachment.image",
+                        &[
+                            image.label.clone(),
+                            image.width.to_string(),
+                            image.height.to_string(),
+                        ],
                     );
                     push_text(
                         &mut lines,
@@ -404,9 +411,12 @@ fn push_pause(lines: &mut Vec<Line<'static>>, app: &App) {
             .iter()
             .map(|line| line.command.as_str())
             .collect();
-        let mut line = format!("  已运行：{}", commands.join(" · "));
+        let mut line = qcode_i18n::trp("tui.pause.commands", &[commands.join(" · ")]);
         if card.more_commands > 0 {
-            line.push_str(&format!(" 等 {} 条", commands.len() + card.more_commands));
+            line.push_str(&qcode_i18n::trp(
+                "tui.pause.more_commands",
+                &[(commands.len() + card.more_commands).to_string()],
+            ));
         }
         lines.push(Line::from(Span::styled(
             line,
@@ -414,7 +424,7 @@ fn push_pause(lines: &mut Vec<Line<'static>>, app: &App) {
         )));
     }
     lines.push(Line::from(Span::styled(
-        "  /continue 继续（新预算窗口）  ·  直接发消息也继续  ·  /wrap 收尾",
+        qcode_i18n::tr("tui.pause.continue_hint").to_string(),
         Style::default().fg(Color::DarkGray),
     )));
 }
@@ -699,7 +709,10 @@ fn render_question(frame: &mut Frame, prompt: &QuestionPrompt) {
         index += 1;
         if prompt.questions.len() > 1 {
             lines.push(Line::from(vec![Span::styled(
-                format!("— 第 {index} 题 / 共 {} 题 —", prompt.questions.len()),
+                qcode_i18n::trp(
+                    "tui.ask.progress",
+                    &[index.to_string(), prompt.questions.len().to_string()],
+                ),
                 label,
             )]));
         }
@@ -714,7 +727,7 @@ fn render_question(frame: &mut Frame, prompt: &QuestionPrompt) {
             lines.push(Line::from(detail.clone()));
         }
         if question.options.is_empty() {
-            lines.push(Line::from("（无选项，直接输入回答）"));
+            lines.push(Line::from(qcode_i18n::tr("tui.ask.no_options").to_string()));
         }
         for (option_index, option) in question.options.iter().enumerate() {
             lines.push(Line::from(vec![
@@ -739,7 +752,7 @@ fn render_question(frame: &mut Frame, prompt: &QuestionPrompt) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
-        "[1-9] 选择选项 · 逗号分隔多选 · [s] 跳过 · [Enter] 下一题/提交 · [Esc] 取消",
+        qcode_i18n::tr("tui.ask.controls").to_string(),
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD),

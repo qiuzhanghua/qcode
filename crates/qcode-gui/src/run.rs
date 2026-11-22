@@ -82,6 +82,9 @@ pub fn run(
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // 见 `setup::run_setup`：这一次 `init` 同时覆盖框架与我们的文案，
+            // 修掉「中文界面里剪贴板写着 Copy」那个既有 bug（ADR-0105 §1）。
+            qcode_i18n::init(None);
             cx.activate(true);
             prefs.apply(cx);
             // 退出前杀掉 run_shell 还挂着的进程组（ADR-0073）。

@@ -1,0 +1,366 @@
+_version: 2
+
+# 定时任务（Scheduled Tasks）的 GUI 文案：创建 / 编辑表单、详情页、运行记录，
+# 以及删除 / 移除目录 / 退出 / 粘贴这几个弹窗。
+#
+# key 按 `gui.schedule.<区域>.<元素>` 分层，**不用英文原文当 key**（I18N.md §5.2）。
+# 插值统一 `%{0}` 位置占位（`qcode_i18n::trp`），语序由译文自己决定。
+#
+# 值里含 `: `、`#`、`%` 或会被 YAML 当指示符的地方一律加双引号，否则整份文件
+# 解析失败（门禁 1 会直接红）。
+gui:
+  schedule:
+    # 通用按钮词。多处复用同一颗词的按钮共用一个 key，避免同屏出现两种译法。
+    button:
+      cancel:
+        en: Cancel
+        zh-CN: 取消
+      save:
+        en: Save
+        zh-CN: 保存
+      create:
+        en: Create
+        zh-CN: 创建
+      delete:
+        en: Delete
+        zh-CN: 删除
+      remove:
+        en: Remove
+        zh-CN: 移除
+      quit:
+        en: Quit
+        zh-CN: 退出
+      paste:
+        en: Paste
+        zh-CN: 粘贴
+      choose_directory:
+        en: Choose folder
+        zh-CN: 选择目录
+      clear:
+        en: Clear
+        zh-CN: 清除
+
+    # 星期多选 pill。窄按钮，用三字母缩写；中文仍用「周X」。
+    weekday:
+      sun:
+        en: Sun
+        zh-CN: 周日
+      mon:
+        en: Mon
+        zh-CN: 周一
+      tue:
+        en: Tue
+        zh-CN: 周二
+      wed:
+        en: Wed
+        zh-CN: 周三
+      thu:
+        en: Thu
+        zh-CN: 周四
+      fri:
+        en: Fri
+        zh-CN: 周五
+      sat:
+        en: Sat
+        zh-CN: 周六
+
+    # 「周期」下拉的类型项。
+    rule_kind:
+      daily:
+        en: Every day at a fixed time
+        zh-CN: 每天固定时刻
+      weekly:
+        en: Every week at a fixed time
+        zh-CN: 每周固定时刻
+      monthly:
+        en: Every month at a fixed time
+        zh-CN: 每月固定时刻
+      interval:
+        en: Every N seconds
+        zh-CN: 每隔 N 秒
+      once:
+        en: One-off
+        zh-CN: 一次性
+      cron:
+        en: Custom cron
+        zh-CN: 自定义 Cron
+
+    # 「目标」下拉的类型项。
+    target_kind:
+      new_once:
+        en: New session (created on the first run, reused after that)
+        zh-CN: 新会话（首次投递创建并复用）
+      new:
+        en: New session (a fresh one every run)
+        zh-CN: 新会话（每次投递都新建）
+
+    # 任务状态。
+    status:
+      active:
+        en: Active
+        zh-CN: 已开启
+      paused:
+        en: Paused
+        zh-CN: 已暂停
+      ended:
+        en: Ended
+        zh-CN: 已结束
+
+    form:
+      title:
+        edit:
+          en: Edit scheduled task
+          zh-CN: 编辑定时任务
+        create:
+          en: Create a scheduled task
+          zh-CN: 手动创建定时任务
+      # 表单里每行的标签。
+      field:
+        name:
+          en: Name
+          zh-CN: 名称
+        prompt:
+          en: Content
+          zh-CN: 内容
+        rule:
+          en: Schedule
+          zh-CN: 周期
+        target:
+          en: Target
+          zh-CN: 目标
+        approval_timeout:
+          en: Approval timeout (seconds)
+          zh-CN: 审批超时(秒)
+        time:
+          en: Time (HH:MM)
+          zh-CN: 时刻（HH:MM）
+        monthly_day:
+          en: Day of month (1-31)
+          zh-CN: 每月日期（1-31）
+        interval_secs:
+          en: Interval in seconds (60 or more)
+          zh-CN: 间隔秒数（≥ 60）
+        once_at:
+          en: Run at (date + time)
+          zh-CN: 触发时刻（日期 + 时间）
+        cron:
+          en: Cron expression (5 fields)
+          zh-CN: Cron 表达式（5 字段）
+        weekdays:
+          en: Weekdays (pick any)
+          zh-CN: 星期（可多选）
+        workdir:
+          en: Working directory
+          zh-CN: 工作目录
+      # 工作目录那一行没选目录时的占位值。
+      workdir_unset:
+        en: "Not set — uses the session or engine default"
+        zh-CN: 未指定（用会话 / 引擎默认目录）
+      # 输入框的 placeholder。
+      placeholder:
+        name:
+          en: Task name
+          zh-CN: 任务名称
+        prompt:
+          en: What gets delivered to the session when it fires
+          zh-CN: 到点后投递给会话的内容
+        interval_secs:
+          en: Seconds (60 or more)
+          zh-CN: 秒数（≥ 60）
+        monthly_day:
+          en: Day (1-31)
+          zh-CN: 日（1-31）
+        cron:
+          en: "5 fields, e.g. 0 9 * * *"
+          zh-CN: 5 字段，如 0 9 * * *
+        approval_timeout:
+          en: Approval timeout in seconds (optional)
+          zh-CN: 审批超时秒数（可留空）
+      # 提交前的校验提示（notice 条，用户看得见）。
+      error:
+        title_required:
+          en: Enter a task name
+          zh-CN: 请填写任务名称
+        prompt_required:
+          en: Enter what should be delivered
+          zh-CN: 请填写投递内容
+        weekday_required:
+          en: Pick at least one weekday
+          zh-CN: 请至少选择一个星期
+        monthly_day_required:
+          en: Enter the day of the month
+          zh-CN: 请填写每月日期
+        once_date_required:
+          en: Pick a date
+          zh-CN: 请选择日期
+        rule_invalid:
+          en: "Invalid schedule: %{0}"
+          zh-CN: 周期无效：%{0}
+        timeout_invalid:
+          en: The approval timeout must be a whole number of seconds
+          zh-CN: 审批超时需为正整数秒
+      # 没有内核 / provider 时的提示。
+      notice:
+        provider_missing_create:
+          en: No provider is configured yet — set one up in Settings before creating a scheduled task.
+          zh-CN: 还没有配置 provider，先在 Settings 里配置再创建定时任务
+        provider_missing_actions:
+          en: No provider is configured yet, so scheduled-task actions are unavailable.
+          zh-CN: 还没有配置 provider，定时任务操作不可用
+
+    # 确认类弹窗：标题 + 说明段落。
+    dialog:
+      delete_task:
+        title:
+          en: "Delete task \"%{0}\"?"
+          zh-CN: 删除任务 “%{0}”？
+        body:
+          en: This deletes the local task record and its conversation history and cannot be undone. Files on disk are left alone.
+          zh-CN: 将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。
+      rename:
+        title:
+          en: Rename task
+          zh-CN: 重命名任务
+      remove_root:
+        title:
+          en: "Remove folder %{0}?"
+          zh-CN: 移除目录 %{0}？
+        body:
+          en: "Nothing inside %{0} is deleted — the folder is only taken off this task."
+          zh-CN: 不会删除 %{0} 中的文件，只会从当前任务中移除。
+      quit:
+        title:
+          en: Quit QCode?
+          zh-CN: 退出 QCode？
+        body:
+          en: A task is still running; quitting will interrupt it.
+          zh-CN: 当前任务仍在运行，退出会中断它。
+      paste:
+        title:
+          en: "Paste %{0} lines?"
+          zh-CN: 粘贴 %{0} 行？
+        body:
+          en: "Bracketed paste is off in this terminal, so the line breaks in the paste run immediately."
+          zh-CN: 终端没有开启 bracketed paste，粘贴的换行会被立即执行。
+
+    # 「下次触发」的相对时间。
+    next_fire:
+      overdue:
+        en: Overdue
+        zh-CN: 已过期
+      soon:
+        en: In less than a minute
+        zh-CN: 不到 1 分钟后
+      minutes:
+        en: "In %{0} min"
+        zh-CN: "%{0} 分钟后"
+      hours:
+        en: "In %{0} h"
+        zh-CN: "%{0} 小时后"
+      hours_minutes:
+        en: "In %{0} h %{1} min"
+        zh-CN: "%{0} 小时 %{1} 分钟后"
+      days:
+        en: "In %{0} days"
+        zh-CN: "%{0} 天后"
+
+    # 没选中任务时的空态。
+    empty:
+      title:
+        en: Scheduled tasks
+        zh-CN: 定时任务
+      hint:
+        en: Pick a scheduled task on the left to see its details and run log. To create one, just ask the model in a conversation.
+        zh-CN: 从左侧选择一个定时任务查看详情与运行记录；创建定时任务直接在对话里让模型完成。
+
+    # 详情 + 运行记录页。
+    detail:
+      back_tooltip:
+        en: Back to the scheduled task list
+        zh-CN: 返回定时任务列表
+      label:
+        rule:
+          en: Schedule
+          zh-CN: 周期
+        target:
+          en: Target
+          zh-CN: 目标
+        next_fire:
+          en: Next run
+          zh-CN: 下次触发
+        min_interval:
+          en: Minimum delivery interval
+          zh-CN: 最小投递间隔
+        approval_timeout:
+          en: Approval timeout
+          zh-CN: 审批超时
+        reserved_session:
+          en: Reserved session
+          zh-CN: 预留会话
+        last_delivery:
+          en: Last delivery
+          zh-CN: 最近投递
+      value:
+        next_fire:
+          en: "%{0} (%{1})"
+          zh-CN: "%{0}（%{1}）"
+        min_interval:
+          en: "%{0}s (a global guard against flooding)"
+          zh-CN: "%{0}s（全局护栏，防止轰炸）"
+        last_delivery:
+          en: "%{0} → %{1} (message %{2})"
+          zh-CN: "%{0} → %{1}（message %{2}）"
+      action:
+        run_now:
+          en: Run now
+          zh-CN: 立即执行
+        running:
+          en: Running…
+          zh-CN: 执行中…
+        pause:
+          en: Pause
+          zh-CN: 暂停
+        resume:
+          en: Resume
+          zh-CN: 恢复
+        open_session:
+          en: Open session
+          zh-CN: 打开会话
+        edit:
+          en: Edit
+          zh-CN: 修改
+      tooltip:
+        run_now_dormant:
+          en: No driver is running, so nothing would pick this up
+          zh-CN: 驱动不在跑，投递了也没人执行
+        run_now:
+          en: Deliver once now (the schedule itself stays as it is)
+          zh-CN: 立即投递一次（不影响周期）
+        resume_ended:
+          en: An ended task cannot be resumed
+          zh-CN: 已结束的任务不能恢复
+        edit:
+          en: Edit the task's content and schedule
+          zh-CN: 编辑任务内容与周期
+        delete:
+          en: Delete the task and its run log
+          zh-CN: 删除任务及其运行记录
+      log:
+        count:
+          en: "Run log: %{0} entries (the last 30 days / 200 entries are kept)"
+          zh-CN: 运行记录：共 %{0} 条（保留最近 30 天 / 200 条）
+        legacy_entry:
+          en: "(old record: %{0})"
+          zh-CN: （旧记录：%{0}）
+        entry_meta:
+          en: "%{0} · delivered to %{1} · message %{2}"
+          zh-CN: "%{0} · 投递到 %{1} · message %{2}"
+        more:
+          en: Load more
+          zh-CN: 加载更多
+        more_tooltip:
+          en: Load the next 30 older entries
+          zh-CN: 继续加载更早的 30 条运行记录
+        pruned:
+          en: "(older entries have been trimmed)"
+          zh-CN: （更早的记录已被裁剪）

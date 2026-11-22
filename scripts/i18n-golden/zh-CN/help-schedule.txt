@@ -1,0 +1,15 @@
+Manage scheduled tasks (ADR-0090)
+
+Usage: qc schedule [OPTIONS] <COMMAND>
+
+Commands:
+  list    List scheduled tasks
+  create  Create a scheduled task
+  delete  Delete a scheduled task by id
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

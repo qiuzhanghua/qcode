@@ -14,14 +14,23 @@ pub const MAX_ROOTS: usize = 16;
 
 /// 侧栏「在对话中创建定时任务」预填到输入框的引导文字。生成会话标题时要剥掉
 /// 它，否则每条对话创建的会话 title 都以它开头（title 取第一条用户消息）。
-pub const SCHEDULE_DRAFT_PREFILL: &str = "请根据需求创建一个定时任务。";
+/// 取当前语言下的引导文字。
+///
+/// 从 `const` 改成函数：译文来自运行期 locale。**预填与剥离必须取同一条 key**——
+/// 见 [`strip_schedule_prefill`]。
+pub fn schedule_draft_prefill() -> String {
+    qcode_i18n::tr("core.prefill.schedule_draft").to_string()
+}
 
 /// 去掉第一条用户消息里的引导前缀，供会话标题使用（见 [`SCHEDULE_DRAFT_PREFILL`]）。
-pub fn strip_schedule_prefill(text: &str) -> &str {
-    text.trim()
-        .strip_prefix(SCHEDULE_DRAFT_PREFILL)
-        .map(str::trim)
-        .unwrap_or(text.trim())
+pub fn strip_schedule_prefill(text: &str) -> String {
+    let text = text.trim();
+    // 前缀用**当前语言**的引导文字，与预填同一个来源。写死字面量的话，界面语言
+    // 一变剥离就静默失效，会话标题会被这句引导语顶满。
+    let prefill = schedule_draft_prefill();
+    text.strip_prefix(prefill.as_str())
+        .map(|rest| rest.trim().to_string())
+        .unwrap_or_else(|| text.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

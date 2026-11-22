@@ -48,6 +48,13 @@ async fn run(env_marked_from_gui: bool) -> ExitCode {
     let (argv, marked_from_gui) = boot::strip_launch_marker(std::env::args());
     let launch = boot::detect(marked_from_gui, env_marked_from_gui);
 
+    // 界面语言必须在 clap 之前定下来：帮助与报错文案是**解析时**求值的
+    // （ADR-0105 §4.3）。放在 `parse_from` 之后，`qc --help` 就永远是英文。
+    //
+    // 这里传 `None`：P0 只认 `QCODE_LANG` 与系统首选。读 `[ui] language` 得先
+    // 解析 `--config`，而配置加载在 clap 之后，属于后一批的事（I18N.md §9）。
+    qcode_i18n::init(None);
+
     let Cli {
         data_dir,
         config,

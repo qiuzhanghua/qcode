@@ -187,28 +187,32 @@ impl Render for SetupView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().child("Provider directory"))
+                            .child(
+                                div().child(qcode_i18n::tr("gui.setup.provider_directory.title")),
+                            )
                             .children(directory.into_iter().map(|row| {
-                                let credential = match row.credential_state {
-                                    qcode_kernel::provider_registry::CredentialState::Configured => {
-                                        "已存"
-                                    }
-                                    qcode_kernel::provider_registry::CredentialState::Missing => "缺失",
-                                    qcode_kernel::provider_registry::CredentialState::Keyless => {
-                                        "无需 key"
-                                    }
+                                // 凭证三态复用 `gui.setup.credential.*`：这里原先是
+                                // 「已存 / 缺失 / 无需 key」的短说法，与 Provider 卡片上
+                                // 的「凭证已配置 / 凭证缺失 / 无需密钥」是**同一个概念**。
+                                // 留着两套只会让英文也分叉两次，所以统一到一套。
+                                let credential =
+                                    super::models::credential_text(row.credential_state);
+                                let profile = if row.configured {
+                                    qcode_i18n::tr("gui.setup.provider_directory.state.configured")
+                                } else {
+                                    qcode_i18n::tr(
+                                        "gui.setup.provider_directory.state.catalog_default",
+                                    )
                                 };
-                                format!(
-                                    "{} ({}) · {} · {} · 凭证: {}",
-                                    row.route,
-                                    row.display_name,
-                                    row.protocol.as_str(),
-                                    if row.configured {
-                                        "configured"
-                                    } else {
-                                        "catalog default"
-                                    },
-                                    credential
+                                qcode_i18n::trp(
+                                    "gui.setup.provider_directory.line",
+                                    &[
+                                        row.route.as_str(),
+                                        row.display_name.as_str(),
+                                        row.protocol.as_str(),
+                                        profile.as_ref(),
+                                        credential.as_ref(),
+                                    ],
                                 )
                             })),
                     );
@@ -238,9 +242,9 @@ impl Render for SetupView {
                     let egress = forms::network_egress_fields(&network);
                     if egress.is_empty() {
                         let reason = if network == "open" {
-                            "当前为裸网络（open）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。"
+                            qcode_i18n::tr("gui.setup.network.open_note")
                         } else {
-                            "出站已被沙箱全部阻断（off）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。"
+                            qcode_i18n::tr("gui.setup.network.off_note")
                         };
                         body = body.child(
                             div()
@@ -305,10 +309,7 @@ impl Render for SetupView {
                         div()
                             .text_size(crate::sp(crate::CAPTION_SIZE))
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "⚠ network = strict 只支持 [sandbox] mode = \"sandbox-exec\"（当前是 {mode}）；\
-                                 这样保存后装配会失败，请把 Network 改成 proxy 或 off。"
-                            )),
+                            .child(qcode_i18n::trp("gui.setup.network.strict_mode", &[&mode])),
                     );
                 }
             }
@@ -342,7 +343,7 @@ impl Render for SetupView {
                     .items_center()
                     .text_size(crate::sp(crate::CAPTION_SIZE))
                     .text_color(cx.theme().muted_foreground)
-                    .child("自动保存 · 修改即时写入"),
+                    .child(qcode_i18n::tr("gui.setup.autosave")),
             );
         }
 
@@ -472,7 +473,10 @@ impl Render for SetupView {
                     } else {
                         // 设置窗口标题固定为「设置」，不再跟随左侧导航动态切换。
                         // 比向导头部小一档，并向右让出一点间距。
-                        div().text_size(crate::sp(16.0)).pl_3().child("设置")
+                        div()
+                            .text_size(crate::sp(16.0))
+                            .pl_3()
+                            .child(qcode_i18n::tr("gui.setup.window_title"))
                     })
                     .child(if self.wizard { page.title() } else { "" }),
             )
@@ -512,18 +516,20 @@ impl Render for SetupView {
 
 /// One-line intro under the `## {title}` section header, shown for every
 /// settings section (settings mode only).
-fn section_intro(page: Page) -> &'static str {
+fn section_intro(page: Page) -> std::borrow::Cow<'static, str> {
+    use qcode_i18n::tr;
     match page {
-        Page::Models => "配置默认模型与各模型供应商",
-        Page::Agent => "上下文、回合预算与消息行为",
-        Page::NetworkSandbox => "沙箱与网络出口策略",
-        Page::Search => "联网搜索后端与密钥",
-        Page::Mcp => "stdio MCP 服务器",
-        Page::Skills => "Agent 技能",
-        Page::ApprovalPricing => "审批规则与 token 定价",
-        Page::Appearance => "主题、字号与界面偏好",
-        Page::Update => "版本检查与更新源",
-        Page::Welcome | Page::Review => "",
+        Page::Models => tr("gui.setup.section_intro.models"),
+        Page::Agent => tr("gui.setup.section_intro.agent"),
+        Page::NetworkSandbox => tr("gui.setup.section_intro.network_sandbox"),
+        Page::Search => tr("gui.setup.section_intro.search"),
+        Page::Mcp => tr("gui.setup.section_intro.mcp"),
+        Page::Skills => tr("gui.setup.section_intro.skills"),
+        Page::ApprovalPricing => tr("gui.setup.section_intro.approval_pricing"),
+        Page::Appearance => tr("gui.setup.section_intro.appearance"),
+        Page::Update => tr("gui.setup.section_intro.update"),
+        // 欢迎页与确认页的标题下不写引言，不是「空字符串译文」。
+        Page::Welcome | Page::Review => "".into(),
     }
 }
 
@@ -859,7 +865,7 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child("沙箱后端不可用")
+                    .child(qcode_i18n::tr("gui.setup.sandbox.unavailable"))
                     .child(
                         div()
                             .text_size(crate::sp(crate::SECONDARY_SIZE))
@@ -869,7 +875,7 @@ impl SetupView {
                     .child(
                         div().flex().flex_row().justify_end().gap_2().child(
                             Button::new("close-sandbox-blocked")
-                                .label("知道了")
+                                .label(qcode_i18n::tr("gui.setup.sandbox.dismiss"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.sandbox_blocked = None;
                                     cx.notify();
@@ -1091,8 +1097,7 @@ impl SetupView {
         }
         let settings = self.config.shell.clone();
         if settings.env_sampling == qcode_tools::shell_env::EnvSampling::Off {
-            self.shell_probe_note =
-                Some("采样已关闭（[shell] env_sampling = \"off\"）".to_string());
+            self.shell_probe_note = Some(qcode_i18n::tr("gui.setup.shell_probe.off").to_string());
             cx.notify();
             return;
         }
@@ -1102,22 +1107,30 @@ impl SetupView {
             let sample = cache.current();
             let report = cache.last_report().unwrap_or_default();
             let message = match sample {
-                Some(sample) => format!(
-                    "{} · {} 个变量 · {}ms{}",
-                    sample.program().display(),
-                    sample.len(),
-                    report.duration_ms,
-                    if report.cached { " · 缓存" } else { "" }
+                Some(sample) => qcode_i18n::trp(
+                    "gui.setup.shell_probe.summary",
+                    &[
+                        sample.program().display().to_string(),
+                        sample.len().to_string(),
+                        report.duration_ms.to_string(),
+                        if report.cached {
+                            qcode_i18n::tr("gui.setup.shell_probe.cached").to_string()
+                        } else {
+                            String::new()
+                        },
+                    ],
                 ),
-                None => format!(
-                    "采样失败: {}",
-                    report.error.unwrap_or_else(|| "未知原因".to_string())
+                None => qcode_i18n::trp(
+                    "gui.setup.shell_probe.failed",
+                    &[report.error.unwrap_or_else(|| {
+                        qcode_i18n::tr("gui.setup.shell_probe.unknown_cause").to_string()
+                    })],
                 ),
             };
             let _ = tx.send(message);
         });
         self.shell_probe_rx = Some(rx);
-        self.shell_probe_note = Some("采样中…".to_string());
+        self.shell_probe_note = Some(qcode_i18n::tr("gui.setup.shell_probe.running").to_string());
         cx.notify();
         cx.spawn(async move |this, cx| {
             loop {
@@ -1143,7 +1156,9 @@ impl SetupView {
                         Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
                         _ => {
                             view.shell_probe_rx = None;
-                            view.shell_probe_note = Some("采样中断".to_string());
+                            view.shell_probe_note = Some(
+                                qcode_i18n::tr("gui.setup.shell_probe.interrupted").to_string(),
+                            );
                             cx.notify();
                             true
                         }
@@ -1161,7 +1176,7 @@ impl SetupView {
     pub(crate) fn render_shell_environment_probe(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut row = div().flex().flex_row().items_center().gap_2().child(
             Button::new("shell-env-probe")
-                .label("采样一次")
+                .label(qcode_i18n::tr("gui.setup.shell_probe.action"))
                 .on_click(cx.listener(|this, _, _window, cx| {
                     this.probe_shell_environment(cx);
                 })),

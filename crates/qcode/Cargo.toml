@@ -20,6 +20,7 @@ qcode-tui = { version = "0.16.0", path = "../qcode-tui" }
 qcode-acp = { version = "0.16.0", path = "../qcode-acp" }
 qcode-image = { version = "0.16.0", path = "../qcode-image" }
 qcode-kernel = { version = "0.16.0", path = "../qcode-kernel" }
+qcode-i18n = { version = "0.16.0", path = "../qcode-i18n" }
 qcode-gui = { version = "0.16.0", path = "../qcode-gui" }
 # `qc daemon` 的实现（分离启动、在 PATH 里找 `qcd`）已经搬到 `qcode-core::daemon`
 # （ADR-0098 §1），所以这里不再依赖 `qcd`。测试仍要从它取 `NotInstalled` 的文案，

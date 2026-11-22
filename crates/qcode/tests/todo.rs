@@ -7,6 +7,9 @@ use std::process::{Command, Stdio};
 fn mock_todo_scenario_writes_a_checklist() {
     let dir = tempfile::tempdir().expect("temp dir");
     let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+        // 断言比对的是 mock provider 的夹具文本，而夹具跟着 UI 语言走
+        // （I18N.md 不变量 5：测试进程钉 `zh-CN`）。
+        .env("QCODE_LANG", "zh-CN")
         .args([
             "run",
             "demo",

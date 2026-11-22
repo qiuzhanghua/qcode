@@ -1,0 +1,1027 @@
+_version: 2
+
+# 唯一一份翻译表（ADR-0105 §8）。key 是结构化路径，**不是英文原文**——
+# 英文原文改一次，用原文当 key 的表就全表失配（I18N.md §5.2）。
+#
+# 语言只有 en 与 zh-CN。繁体（zh-Hant / zh-TW / zh-HK）在 `normalize` 里
+# 归到 zh-CN（I18N.md §4.4）。
+#
+# 插值统一 `%{name}`（rust-i18n 语法），不要用 `{}`——那是 `format!` 的。
+#
+# P0 只落「程序名」与「错误前缀」两条，用来证明整条链路通。P1 起按
+# gui. / cli. / tui. / tool. / cfg. / ui. / err. 命名空间分批填入。
+
+app:
+  name:
+    en: qcode
+    zh-CN: qcode
+  # `main` 返回 `anyhow::Result` 时 stderr 的前缀由 std 运行时打印，不是我们的代码，
+  # 因此这条只用于我们自己拼错误行的地方。
+  error_prefix:
+    en: "Error: "
+    zh-CN: "错误："
+  # 时长的**文字**部分。选哪一条由 Rust 决定（见
+  # `render::transcript::format_elapsed`），翻译层只负责把分量拼成句子。
+  #
+  # 英文用 `1m 23s`（单位间有空格）：cargo / GitHub Actions / Vercel 都是这个写法。
+  # 中文用 `1分23秒`，与英文**结构平行**（同样紧凑），两边宽度接近，实时计数器跨
+  # 单位时的跳动幅度也就一致。
+  #
+  # 不用 `1:23` 表盘式：`1:23` 本身歧义（1 分 23 秒，还是 1 时 23 分？），而与工具
+  # 耗时的 `m/s` 形态并存时，又会重新变成「一个界面里两种写法」。
+  #
+  # 每个量级都把该有的分量写全，不做零分量省略：这一行每秒重算，秒数始终显示（含
+  # `1m 0s`）——末尾跳动的数字就是「还在跑」的证据，省成 `1m` 反而看不出死活；
+  # 满一小时也照写 `1h 0m 0s`，否则边界上会出现 `59m 59s` → `1h 0s` → `1h 0m 1s`
+  # 这种先掉一个分量再涨回来的抖动。
+  duration:
+    seconds:
+      en: "%{0}s"
+      zh-CN: "%{0}秒"
+    minutes_seconds:
+      en: "%{0}m %{1}s"
+      zh-CN: "%{0}分%{1}秒"
+    hours_minutes_seconds:
+      en: "%{0}h %{1}m %{2}s"
+      zh-CN: "%{0}小时%{1}分%{2}秒"
+  # 时长出现处的**整句**。标签与数值分开翻会拼出「Took1m 23s」这种缺空格的怪句，
+  # 所以整句入 key，由 `%{0}` 承接已经格式化好的时长。
+  elapsed:
+    running:
+      en: "Working · %{0} ···"
+      zh-CN: 工作中，用时 %{0} ···
+    running_plain:
+      en: Working
+      zh-CN: 工作中
+    took:
+      en: "Took %{0}"
+      zh-CN: 耗时 %{0}
+    process_steps:
+      en: "Steps · %{0}"
+      zh-CN: 执行过程 · %{0} 项
+
+# 跨界面复用的**动作与字段名**。放在 `ui.` 而不是各页面各写一份：同一个「取消」
+# 在这个仓库里出现了五次，五份中文看着一样、英文迟早会分叉成 Cancel / Dismiss /
+# Abort。字段名同时兼作无障碍标签（`aria_label`），所以也只能有一份。
+ui:
+  action:
+    cancel:
+      en: Cancel
+      zh-CN: 取消
+    save:
+      en: Save
+      zh-CN: 保存
+    delete:
+      en: Delete
+      zh-CN: 删除
+    edit:
+      en: Edit
+      zh-CN: 编辑
+    set_default:
+      en: Set as default
+      zh-CN: 设为默认
+    add_model:
+      en: + Add model
+      zh-CN: ＋ 添加模型
+  field:
+    display_name:
+      en: Display name
+      zh-CN: 显示名称
+    api_base:
+      en: API endpoint
+      zh-CN: API 地址
+    api_key:
+      en: API key
+      zh-CN: API 密钥
+    model_id:
+      en: Model ID
+      zh-CN: 模型 ID
+    context_window:
+      en: Context window
+      zh-CN: 上下文窗口
+    max_tokens:
+      en: Max output tokens
+      zh-CN: 最大输出 token
+    search_model:
+      en: Search models
+      zh-CN: 搜索模型
+  # 暂停卡片与预算提示的行。**跨 crate 共享**：`qcode-ui-state` 与 `qcode-gui`
+  # 都在拼这些行，而它们是同一条信息，两种写法迟早对不上。
+  progress:
+    files_changed:
+      en: "Changed %{0} files (+%{1} −%{2})"
+      zh-CN: "修改了 %{0} 个文件（+%{1} −%{2}）"
+    # 一次操作涉及多个文件时的计数短语（不是句子）。
+    file_count:
+      en: "%{0} files"
+      zh-CN: "%{0} 个文件"
+  pause:
+    turns_used:
+      en: "%{0}/%{1} turns used"
+      zh-CN: "已用 %{0}/%{1} 轮"
+    cost_ceiling:
+      en: "Cost reached 95% of the $%{0} budget ($%{1} used)"
+      zh-CN: "成本已达预算 $%{0} 的 95%（已用 $%{1}）"
+    window:
+      en: "budget window %{0}"
+      zh-CN: "第 %{0} 个预算窗口"
+    # 引擎给的「继续」不是用户打的字，读成一条通知而不是提问。
+    resume_notice:
+      en: Continuing the paused task
+      zh-CN: 继续上一次暂停的任务
+
+# 配置页（`setup/`）。key 按 `gui.setup.<区域>.<元素>` 分层。
+#
+# 这里的中文一律**保持原文**：这一批只做「把文案搬进表」，不顺手改中文措辞，
+# 否则一次提交里混着「翻译」和「改稿」，中文界面变了却没人能一眼看出为什么。
+gui:
+  setup:
+    # 凭证状态。三个词是仪器读数，不是句子：卡片副标题里与协议名并排（`OpenAI
+    # 兼容 · 凭证缺失`），所以尽量短。
+    credential:
+      configured:
+        en: key configured
+        zh-CN: 凭证已配置
+      missing:
+        en: key missing
+        zh-CN: 凭证缺失
+      keyless:
+        en: no key needed
+        zh-CN: 无需密钥
+    # Provider 卡片列表。
+    card:
+      add_provider:
+        en: + Add model / provider
+        zh-CN: ＋ 添加模型/供应商
+      empty:
+        en: No provider has models configured yet. Click "+ Add model / provider" to pick one and set it up.
+        zh-CN: 还没有配置模型的 Provider。点击「＋ 添加模型/供应商」选择 Provider 并配置。
+      collapse:
+        en: Collapse ▾
+        zh-CN: 收起 ▾
+      expand:
+        en: Expand ▸
+        zh-CN: 展开 ▸
+      # 卡片副标题里的模型能力摘要。`-` 表示未知，由调用方决定。
+      caps:
+        en: Context %{0} · max output %{1}
+        zh-CN: 上下文 %{0} · 最大输出 %{1}
+      no_models:
+        en: This provider has no models yet. Use the button above to add one.
+        zh-CN: 该 Provider 尚无模型，点击上方按钮添加。
+      configure_model:
+        en: + Configure model
+        zh-CN: ＋ 配置模型
+      custom_provider:
+        en: Custom provider…
+        zh-CN: 自定义提供方…
+    # 「添加模型」对话框与编辑面板共用的两个标题。
+    editor:
+      add_model_title:
+        en: Add a model to %{0}
+        zh-CN: 为 %{0} 添加模型
+      edit_title:
+        en: Edit %{0}
+        zh-CN: 编辑 %{0}
+      choose_provider:
+        en: Choose a provider
+        zh-CN: 选择 Provider
+      # 密钥输入框下的说明：这是全仓库唯一一处解释「密钥写到哪」的地方。
+      api_key_hint:
+        en: API key (stored in the system keychain, never written to config.toml)
+        zh-CN: API 密钥（存入系统钥匙串，不写入 config.toml）
+      store_keychain:
+        en: Store in keychain
+        zh-CN: 存入钥匙串
+      collapse_config:
+        en: Collapse settings ▴
+        zh-CN: 收起配置 ▴
+      expand_config:
+        en: More settings ▾
+        zh-CN: 展开更多配置 ▾
+      saved:
+        en: Saved %{0}.
+        zh-CN: 已保存 %{0}。
+      # 同一 provider 既可能被全局默认覆盖，也可能自己就是那个默认。
+      global_override:
+        en: Overridden by the global default "%{0}"; saving here makes this the one that counts.
+        zh-CN: 被全局默认「%{0}」覆盖；保存后以这里为准
+    # 模型目录（一个 provider 的模型清单）。
+    catalog:
+      custom:
+        en: Custom model list in use
+        zh-CN: 已自定义模型目录
+      adapter_default:
+        en: Using the adapter's default models
+        zh-CN: 正在使用适配器默认模型
+      title:
+        en: Model list
+        zh-CN: 模型目录
+      restore:
+        en: Restore default models
+        zh-CN: 恢复默认模型
+      fetch:
+        en: Fetch available models
+        zh-CN: 获取可用模型
+      empty_warning:
+        en: The model picker will show no models at all; IDs outside the list can still be sent.
+        zh-CN: 模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。
+      # 全角冒号是中文排版的一部分，英文要半角加空格。这类只有标点不同的条目
+      # 最容易被漏 —— 「看起来没中文」但照样是中文标点。
+      custom_ids:
+        en: "%{0}: %{1}"
+        zh-CN: "%{0}：%{1}"
+    # 自定义提供方表单。
+    custom:
+      title:
+        en: Add a custom provider
+        zh-CN: 添加自定义提供方
+      protocol:
+        en: API protocol
+        zh-CN: API 协议
+      create:
+        en: Create provider
+        zh-CN: 创建提供方
+    # 从远端拉回的模型里勾选。
+    picker:
+      title:
+        en: Choose models to add
+        zh-CN: 选择要添加的模型
+      hint:
+        en: These are the provider's available models. Tick the ones to add.
+        zh-CN: 以下是模型提供方的可用模型，勾选要添加的模型。
+      select_all:
+        en: Select all
+        zh-CN: 全选
+      clear_all:
+        en: Clear all
+        zh-CN: 取消全选
+      add_selected:
+        en: Add selected
+        zh-CN: 添加所选
+    delete:
+      title:
+        en: Delete %{0}?
+        zh-CN: 删除 %{0}？
+      # 说清「删配置不删钥匙串」：这是用户最容易误解、也最容易造成「我删了密钥
+      # 却还在」困惑的一点。
+      body:
+        en: Deleting %{0} removes its configuration. Keys already stored in the system keychain are kept.
+        zh-CN: 删除 %{0} 会移除其配置；已存入系统钥匙串的密钥不会被移除。
+    notice:
+      default_with_model:
+        en: Set %{0} / %{1} as the default.
+        zh-CN: 已设 %{0} / %{1} 为默认。
+      default_provider:
+        en: Set %{0} as the default provider.
+        zh-CN: 已设 %{0} 为默认提供方。
+      key_restored:
+        en: Restored %{0}'s key command from the system keychain.
+        zh-CN: 已从系统钥匙串恢复 %{0} 的密钥读取命令
+      created:
+        en: Created %{0}.
+        zh-CN: 已创建 %{0}。
+    error:
+      id_invalid:
+        en: A provider ID must start with a lowercase letter, and may then use lowercase letters, digits and dashes.
+        zh-CN: Provider ID 需以小写字母开头，之后可用小写字母、数字和短横线。
+      id_taken:
+        en: Another provider already uses this ID.
+        zh-CN: 已有提供方使用了这个 ID。
+      base_required:
+        en: A custom provider needs an API endpoint.
+        zh-CN: 自定义提供方需要填写 API 地址。
+    # ---- 向导模式与设置窗口外壳（`setup/render.rs`）----
+    window_title:
+      en: Settings
+      zh-CN: 设置
+    autosave:
+      en: Autosave · changes are written immediately
+      zh-CN: 自动保存 · 修改即时写入
+    # 每一页标题下的一句话。它是 `Page` 的属性，不是某段 JSX 里的常量。
+    section_intro:
+      models:
+        en: Default model and provider setup
+        zh-CN: 配置默认模型与各模型供应商
+      agent:
+        en: Context, turn budgets and message behaviour
+        zh-CN: 上下文、回合预算与消息行为
+      network_sandbox:
+        en: Sandbox and network egress policy
+        zh-CN: 沙箱与网络出口策略
+      search:
+        en: Web-search backend and its key
+        zh-CN: 联网搜索后端与密钥
+      mcp:
+        en: stdio MCP servers
+        zh-CN: stdio MCP 服务器
+      skills:
+        en: Agent skills
+        zh-CN: Agent 技能
+      approval_pricing:
+        en: Approval rules and token pricing
+        zh-CN: 审批规则与 token 定价
+      appearance:
+        en: Theme, type size and interface preferences
+        zh-CN: 主题、字号与界面偏好
+      update:
+        en: Version checks and update source
+        zh-CN: 版本检查与更新源
+    # 向导模式下的只读目录：解析器认识的全部 route 及其协议/配置/凭证状态。
+    provider_directory:
+      title:
+        en: Provider directory
+        zh-CN: 提供方目录
+      line:
+        en: "%{0} (%{1}) · %{2} · %{3} · credentials: %{4}"
+        zh-CN: "%{0} (%{1}) · %{2} · %{3} · 凭证: %{4}"
+      # 这一行里的「有没有配置文件」。`catalog default` 指走适配器内置目录、
+      # 没有自己的 profile。
+      state:
+        configured:
+          en: profile configured
+          zh-CN: 已配置
+        catalog_default:
+          en: catalog default
+          zh-CN: 目录默认
+    # 「网络出口」组的整组替代说明，以及 strict 与 sandbox 模式不匹配的警告。
+    network:
+      open_note:
+        en: "Plain network (open): no egress proxy is started, so the allow list, private ranges, unknown-host policy and audit all have no effect."
+        zh-CN: 当前为裸网络（open）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。
+      off_note:
+        en: "All outbound traffic is blocked by the sandbox (off): no egress proxy is started, so the allow list, private ranges, unknown-host policy and audit all have no effect."
+        zh-CN: 出站已被沙箱全部阻断（off）：不启动出口代理，白名单、私有网段、未知主机策略与审计均不生效。
+      strict_mode:
+        en: "⚠ network = strict only supports [sandbox] mode = \"sandbox-exec\" (currently %{0}); saving this way breaks assembly — set Network to proxy or off."
+        zh-CN: "⚠ network = strict 只支持 [sandbox] mode = \"sandbox-exec\"（当前是 %{0}）；这样保存后装配会失败，请把 Network 改成 proxy 或 off。"
+    sandbox:
+      unavailable:
+        en: Sandbox backend unavailable
+        zh-CN: 沙箱后端不可用
+      dismiss:
+        en: Got it
+        zh-CN: 知道了
+    # `[shell]` 下「采样一次」按钮及其一行结果。
+    shell_probe:
+      action:
+        en: Sample once
+        zh-CN: 采样一次
+      running:
+        en: Sampling…
+        zh-CN: 采样中…
+      interrupted:
+        en: Sampling interrupted
+        zh-CN: 采样中断
+      off:
+        en: Sampling is off ([shell] env_sampling = "off")
+        zh-CN: 采样已关闭（[shell] env_sampling = "off"）
+      # 采样失败时 error 可能为空，那时用 `unknown_cause` 顶上。
+      failed:
+        en: "Sampling failed: %{0}"
+        zh-CN: "采样失败: %{0}"
+      unknown_cause:
+        en: unknown reason
+        zh-CN: 未知原因
+      summary:
+        en: "%{0} · %{1} vars · %{2}ms%{3}"
+        zh-CN: "%{0} · %{1} 个变量 · %{2}ms%{3}"
+      # 拼在 `summary` 末尾，所以自带前导分隔符。
+      cached:
+        en: " · cached"
+        zh-CN: " · 缓存"
+    # 表格表单里「获取可用模型」的探测结果（`setup/tables.rs`）。
+    probe:
+      add_provider_first:
+        en: Add this provider first, then fetch its models
+        zh-CN: 先添加该提供方，再获取可用模型
+      base_required:
+        en: Fill in the API endpoint first
+        zh-CN: 请先填写 API 地址
+      running:
+        en: Probing…
+        zh-CN: 正在探测中…
+      no_models:
+        en: This provider listed no models; add them by hand.
+        zh-CN: 该提供方没有列出任何模型，请手动添加。
+      failed:
+        en: "Probe failed: %{0}"
+        zh-CN: "探测失败: %{0}"
+      interrupted:
+        en: Probe interrupted
+        zh-CN: 探测中断
+    # 表格表单里的密钥写入结果。
+    keychain:
+      empty:
+        en: The API key cannot be empty, so it cannot be stored in the credential store
+        zh-CN: API 密钥不能为空，无法存入凭据库
+      saved:
+        en: Saved %{0}'s API key to the system keychain
+        zh-CN: 已保存 %{0} 的 API 密钥到系统钥匙串
+    # 自动保存失败时的错误行（`setup/save.rs`）。全部进 `self.error`，显示在表单上方。
+    save_error:
+      provider_without_models:
+        en: "Provider %{0} has no models: add at least one model, or fill in a default model."
+        zh-CN: 提供方 %{0} 没有模型：请添加至少一个模型或填写默认模型。
+      # 一条模板覆盖三处：字段路径（`sandbox.mode`）、`config.toml`、`gui.json`。
+      # 中文都是「<什么> 没能写入：<为什么>」，所以文件名不必单独开 key。
+      write_failed:
+        en: "Could not write %{0}: %{1}"
+        zh-CN: "%{0} 没能写入：%{1}"
+      field_invalid:
+        en: "%{0} has an invalid value; nothing was written: %{1}"
+        zh-CN: "%{0} 的值不合法，改动没有写入：%{1}"
+      form_invalid:
+        en: "The form still has problems; nothing was written: %{0}"
+        zh-CN: 表单还有问题，改动没有写入：%{0}
+
+# GUI（P1）。key 按 `gui.<区域>.<元素>.<角色>` 分层。
+  daemon:
+    # 悬停提示：说清「点下去会发生什么」与图标为什么是那个亮度。
+    tooltip:
+      start:
+        en: "The resident driver is not running (grey icon). Click to start: tasks still fire after you close the window."
+        zh-CN: 常驻驱动没在跑（图标灰）。点一下启动：关掉窗口后任务仍会触发。
+      stop:
+        en: "The resident driver is running (green icon). Click to stop: nothing fires at its time any more, but the tasks and the list stay."
+        zh-CN: 常驻驱动在跑（图标绿）。点一下停止：到点不再触发，任务与列表都还在。
+      window_driven:
+        en: "This window is driving right now; there is no resident driver (grey icon). Click to start one: it takes over once this window exits."
+        zh-CN: 现在由这个窗口驱动，没有常驻驱动（图标灰）。点一下启动：它会等这个窗口退出后接手。
+      occupied_elsewhere:
+        en: A resident driver is running (green icon), but it serves another data directory — one per user. Click to stop it.
+        zh-CN: 常驻驱动在跑（图标绿），但服务的是另一个数据目录——一个用户只有一个。点一下把它停掉。
+      unknown:
+        en: Cannot tell whether the driver is running (grey icon). Click to try starting it.
+        zh-CN: 查不出驱动状态（图标灰）。点一下会尝试启动。
+      starting:
+        en: Starting…
+        zh-CN: 正在启动…
+      stopping:
+        en: Stopping…
+        zh-CN: 正在停止…
+    # 状态的一句话说清（`/daemon status` 与无障碍标签共用）。
+    state:
+      start:
+        en: not resident
+        zh-CN: 未常驻
+      stop:
+        en: resident
+        zh-CN: 常驻中
+      window_driven:
+        en: window-driven only
+        zh-CN: 仅窗口驱动
+      occupied_elsewhere:
+        en: resident elsewhere
+        zh-CN: 常驻在别处
+      unknown:
+        en: state unknown
+        zh-CN: 状态未知
+      starting:
+        en: starting
+        zh-CN: 启动中
+      stopping:
+        en: stopping
+        zh-CN: 停止中
+    # 段头状态行。
+    status:
+      unknown:
+        en: Driver state unknown (backend not wired up). Tasks can still be registered and edited, but nothing will fire.
+        zh-CN: 驱动状态未知（后端未装配）。任务仍可登记与编辑，但不会触发。
+      elsewhere:
+        en: The driver is running against another data directory; these tasks will not fire at their time.
+        zh-CN: 驱动的跑在别的数据目录上；这些任务到点不会触发。
+    notice:
+      switching:
+        en: Switching; waiting for it to finish.
+        zh-CN: 正在切换，等它完成。
+      already_running:
+        en: The resident driver is already running; no need to start it again.
+        zh-CN: 常驻驱动已经在跑了，不用再启动。
+      started:
+        en: "Scheduled-task driver started (pid %{0})"
+        zh-CN: 定时任务驱动已启动（pid %{0}）
+      started_waiting:
+        en: "Scheduled-task driver started (pid %{0}); waiting for this window to exit before it takes over."
+        zh-CN: 定时任务驱动已启动（pid %{0}），正在等这个窗口退出后接手。
+      started_preparing:
+        en: "Scheduled-task driver started (pid %{0}); getting ready…"
+        zh-CN: 定时任务驱动已启动（pid %{0}），正在就绪…
+      start_failed:
+        en: "Could not start the scheduled-task driver: %{0}"
+        zh-CN: 无法启动定时任务驱动：%{0}
+      stopped:
+        en: Scheduled-task driver stopped
+        zh-CN: 定时任务驱动已停止
+      already_gone:
+        en: The driver is already gone
+        zh-CN: 驱动已经不在了
+      stop_failed:
+        en: "Could not stop the scheduled-task driver: %{0}"
+        zh-CN: 无法停止定时任务驱动：%{0}
+
+# 工具返回值与工具 spec（`qcode-tools` / `qcode-core`）。
+#
+# 这一层是**结果的展示面**：工具回执会渲进对话，用户直接读；错误也是。按
+# ADR-0105 §5 与 I18N.md §2.3 的 C 类处置，跟随 UI 语言。
+#
+# **spec 的参数描述也在这里，且同样跟随 UI 语言。** 这是有意的、也是有代价的：
+# `specs()` 在 `engine/turn.rs` 里**每回合重建**，所以语言切换后下一回合就生效；
+# 代价是同一工具调用的 schema 在不同界面语言下字节不同，切换语言那一次会让提示
+# 缓存失效，eval 基线要按语言各记一套（§2.3 C 类代价 1–2）。中文界面下模型读到
+# 中文参数说明，与顶层 `description`（英文历史包袱）暂时混排 —— 见 I18N.md 遗留项。
+tool:
+  schedule:
+    # 会话没接任务存储时四个工具共用的第一条错误。
+    unavailable:
+      en: "The scheduled-task service is unavailable: this session has no task store wired up, so no scheduled task can be registered."
+      zh-CN: 定时任务服务不可用：当前会话没有接入任务存储（无法登记定时任务）。
+    param:
+      title:
+        en: A short task name in the user's own language, shaped as "action + object" (e.g. "fetch Beijing time"). Leave out meta words like "create"/"scheduled task", and leave out time, status and id. The tool asks the user when it is missing; may be omitted.
+        zh-CN: 用用户的语言、以「动作 + 对象」形式起的简短任务名（如「获取北京时间」）。省略「创建/定时任务」这类元词、时间、状态和 id。用户没给时工具会主动向用户询问，可省略。
+      prompt:
+        en: The reminder delivered into the conversation at trigger time (equivalent to one user message). The tool asks the user when it is missing; may be omitted.
+        zh-CN: 到点后投递给会话的提醒内容（相当于一条用户消息）。用户没给时工具会主动向用户询问，可省略。
+      rule:
+        en: "Trigger rule: cron <expr> / once YYYY-MM-DD HH:MM / every <seconds> (>= 60) / daily HH:MM / weekly <weekdays> HH:MM (may repeat, comma-separated, e.g. 1,3,5; 0 or sun = Sunday) / monthly <day> HH:MM (day 1-31). The tool asks the user when it is missing (listing every period form); may be omitted."
+        zh-CN: 触发规则：cron <expr> / once YYYY-MM-DD HH:MM / every <秒>（≥60）/ daily HH:MM / weekly <星期列表> HH:MM（可多选，逗号分隔，如 1,3,5；0或sun=周日）/ monthly <日> HH:MM（日 1-31）。用户没给时工具会主动向用户询问（列出全部周期方式），可省略。
+      target:
+        en: "Delivery target, one of two: new_once = reuse one session for every delivery (default; in a conversation, the current one); new = create a new session each time. Use session:<session-id> only when the user names a specific conversation. The tool asks the user when it is missing; may be omitted."
+        zh-CN: 投递目标，二选一：new_once = 每次复用同一个会话（默认；在对话中创建时复用当前对话）；new = 每次新建一个会话。仅当用户点名某个具体会话时才用 session:<会话ID>。用户没给时工具会主动向用户询问，可省略。
+      overlap:
+        en: "When the target session is busy: queue = wait for the turn to end (default), skip = skip this delivery."
+        zh-CN: 目标会话忙碌时：queue=等回合结束再投（默认），skip=跳过本次。
+      approval_timeout:
+        en: Approval timeout in seconds for the delivered turn; omit to wait for human approval indefinitely.
+        zh-CN: 投递回合的审批超时秒数；不传则一直等人工审批。
+      cwd:
+        en: Working directory of the delivered turn (absolute path). Use it when the user gave one; when unsure, omit it and the tool asks (the user may skip and use the default).
+        zh-CN: 投递回合的工作目录（绝对路径）。用户明确给了就用；拿不准就省略，工具会主动向用户询问（用户可跳过用默认目录）。
+      id:
+        en: Task id (from schedule_list).
+        zh-CN: 任务 id（来自 schedule_list）。
+      action:
+        en: "edit = change fields (default); pause = pause; resume = resume; run_now = run once now; delete = delete."
+        zh-CN: edit=改字段（默认）；pause=暂停；resume=恢复；run_now=立即执行一次；delete=删除。
+      new_rule:
+        en: The new rule, same format as schedule_create's rule.
+        zh-CN: 新规则，格式同 schedule_create 的 rule。
+      clear_timeout:
+        en: Pass null to clear the approval timeout.
+        zh-CN: 传 null 清除审批超时。
+    # 向导式追问（渲进界面，用户直接作答）。
+    ask:
+      title:
+        en: Give this scheduled task a name (required, short and distinguishable).
+        zh-CN: 给这个定时任务起个名称（必填，简短可区分）。
+      prompt:
+        en: What should be delivered into the conversation at trigger time (required, equivalent to one user message)?
+        zh-CN: 到点后投递给会话的内容是什么（必填，相当于一条用户消息）？
+      rule:
+        en: Choose a trigger period (required).
+        zh-CN: 请选择触发周期（必填）。
+      rule_detail:
+        en: Pick a type, then fill in its parameters (time / weekday / date / seconds / cron expression).
+        zh-CN: 选类型后填对应参数（时刻 / 星期 / 日期 / 秒数 / Cron 表达式）。
+      cwd:
+        en: Set this scheduled task's working directory (absolute path; may be skipped, then the session default applies).
+        zh-CN: 请指定该定时任务的工作目录（绝对路径；可跳过，将使用会话默认目录）
+      target:
+        en: Where should each delivery go?
+        zh-CN: 每次投递到哪里？
+      target_detail:
+        en: "Two choices: reuse one session, or create a new session each time."
+        zh-CN: 二选一：复用同一个会话，或每次新建一个会话。
+      # 两个选项 label 兼作 `parse_target` 的输入（见 `tool.schedule.ask.target_*_label`
+      # 与 `parse_target` 的比较），所以两处必须取同一条 key，不能各写一份。
+      target_reuse_label:
+        en: Reuse one session
+        zh-CN: 复用同一个会话
+      target_reuse_desc:
+        en: Every delivery goes into the session that created it (default; in a conversation, the current one).
+        zh-CN: 所有投递都进入创建它的这个会话（默认；在对话中创建时即当前对话）。
+      target_new_label:
+        en: New session each time
+        zh-CN: 每次新建一个会话
+      target_new_desc:
+        en: Every delivery creates a new session.
+        zh-CN: 每次投递都新建一个会话。
+    error:
+      missing_info:
+        en: "Missing required information: confirm the scheduled task's name, content and period with the user first (working directory and target are optional), then call schedule_create."
+        zh-CN: 缺少必要信息：请先向用户确认该定时任务的名称、内容与周期（工作目录与目标可省略），再调用 schedule_create
+      cancelled:
+        en: "Creation cancelled: not enough information was provided."
+        zh-CN: 创建已取消：未获得完整信息
+      title_required:
+        en: "The title cannot be empty: the user gave no task name."
+        zh-CN: 标题不能为空：用户未提供任务名称
+      prompt_required:
+        en: "The content cannot be empty: the user gave nothing to deliver."
+        zh-CN: 内容不能为空：用户未提供投递内容
+      rule_required:
+        en: "The period cannot be empty: the user gave no trigger rule."
+        zh-CN: 周期不能为空：用户未提供触发周期
+      invalid_rule:
+        en: "Invalid rule: %{0}"
+        zh-CN: "规则无效: %{0}"
+      bad_target:
+        en: "target must be new_once (reuse one session) / new (a new session each time) / session:<session-id>"
+        zh-CN: "target 需为 new_once（每次复用会话）/ new（每次新建会话）/ session:<会话ID>"
+      bad_overlap:
+        en: overlap must be queue / skip
+        zh-CN: overlap 需为 queue / skip
+      missing_id:
+        en: Missing task id
+        zh-CN: 缺少任务 id
+      not_found:
+        en: "Scheduled task `%{0}` does not exist"
+        zh-CN: "定时任务 `%{0}` 不存在"
+      unknown_action:
+        en: "Unknown action `%{0}`; expected edit / pause / resume / run_now / delete"
+        zh-CN: "未知 action `%{0}`，应为 edit / pause / resume / run_now / delete"
+    output:
+      created:
+        en: "Created scheduled task `%{0}` (id: %{1})\n%{2}\n\n%{3}"
+        zh-CN: "已创建定时任务 `%{0}`（id: %{1}）\n%{2}\n\n%{3}"
+      saved:
+        en: "Saved scheduled task `%{0}` (id: %{1})\n%{2}"
+        zh-CN: "已保存定时任务 `%{0}`（id: %{1}）\n%{2}"
+      paused:
+        en: "Paused scheduled task `%{0}`"
+        zh-CN: "已暂停定时任务 `%{0}`"
+      resumed:
+        en: "Resumed scheduled task `%{0}`"
+        zh-CN: "已恢复定时任务 `%{0}`"
+      ran:
+        en: "Triggered scheduled task `%{0}` to run now"
+        zh-CN: "已触发定时任务 `%{0}` 立即执行"
+      deleted:
+        en: "Deleted scheduled task `%{0}`"
+        zh-CN: "已删除定时任务 `%{0}`"
+# 驱动状态、审批说明、规则/目标的展示、run 摘要、CLI 追问提示（`qcode-core`）。
+#
+# **这里刻意不含发给模型的指令**：`title.rs` 的两条会话标题 prompt，以及 `turn.rs`
+# 的 `CONTINUE_PROMPT` / `WRAP_UP_PROMPT` / `HAND_OFF_PROMPT`，都保持中文原样。
+# 理由见 I18N.md §2.3 B 类：prompt 一翻就改模型行为、毁提示缓存、让 eval 基线漂，
+# 而「模型说什么语言」由模型自己按对话内容决定，不由界面语言决定。
+core:
+  driver:
+    # 一句话说清「能不能触发」。工具结果与界面共用同一份。
+    describe:
+      running:
+        en: The driver is running (scheduled tasks fire on time)
+        zh-CN: 驱动在跑（定时任务会正常触发）
+      held:
+        en: The driver is running but its heartbeat is stale (it may be suspended or stuck; it resumes once awake)
+        zh-CN: 驱动在跑，但心跳已过期（可能被挂起或者卡住；醒来会继续）
+      gone:
+        en: The driver is not running (it exited last time; triggers do not fire and are recorded as missed)
+        zh-CN: 驱动不在跑（上次退出了；到点不会触发，记为错过）
+      unknown:
+        en: Unknown (no frontend that drives scheduled tasks has ever run against this data directory)
+        zh-CN: 未知（这个数据目录还没有会驱动定时任务的前端跑过）
+    # `驱动：<describe>` 这层包装（工具列表第一行）。
+    footer:
+      en: "Driver: %{0}"
+      zh-CN: "驱动：%{0}"
+    heartbeat:
+      never:
+        en: no heartbeat yet
+        zh-CN: 还没有心跳
+      at:
+        en: "last heartbeat %{0}"
+        zh-CN: 上次心跳 %{0}
+    # 跟随结果的整段说明。三段措辞各自写死三件事（谁在触发、关窗≠停、不补跑），
+    # 翻的时候不能合并或省略其中任何一件——理由见 `driver_footer` 的函数注释。
+    detail:
+      running:
+        en: "Driver: running (deliveries fire on time)."
+        zh-CN: 驱动：在跑（到点会正常投递）。
+      held:
+        en: "**The driver is running, but its heartbeat is stale** (%{0}): the process holding the scheduling clock is still there (the lock is in its hand), so no task is lost, but it may be suspended or stuck. It resumes firing per the rules once awake — windows missed in this stretch still count as missed and are not replayed."
+        zh-CN: "**驱动在跑，但心跳已过期**（%{0}）：持有调度时钟的进程还在（锁在它手上），任务没有丢，但它可能被挂起或者卡住了。唤醒后会继续按规则触发——这段里错过的窗口仍然记为错过，不补跑。"
+      gone:
+        en: "**The driver is not running** (last heartbeat %{0}, the process exited): this task needs a process holding the scheduling clock before it fires. Either works: the GUI is open (closing the window only hides to the tray; **only quitting the process stops it**), or `qc daemon start` runs a `qcd` with no interface. While it is not running, triggers never happen and are recorded as missed — they are not replayed."
+        zh-CN: "**驱动不在跑**（上次心跳 %{0}，进程已退出）：该任务需要有进程持有调度时钟才会触发。两种都可以：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+      unknown:
+        en: "**Driver unknown**: no frontend that drives scheduled tasks has ever run against this data directory. This task needs a process holding the scheduling clock before it fires: the GUI is open (closing the window only hides to the tray; **only quitting the process stops it**), or `qc daemon start` runs a `qcd` with no interface. While it is not running, triggers never happen and are recorded as missed — they are not replayed."
+        zh-CN: "**驱动未知**：这个数据目录还没有会驱动定时任务的前端跑过。该任务需要有进程持有调度时钟才会触发：GUI 开着（关窗只是隐藏到托盘，**退出进程才停**），或者 `qc daemon start` 起一个没有界面的 `qcd`。它没在跑的时候，到点不会发生，并记为错过——不补跑。"
+  approval:
+    with_timeout:
+      en: "Approval: %{0} (auto-rejected on timeout)."
+      zh-CN: "审批：%{0}(超时自动拒绝)。"
+    no_deadline:
+      en: "Approval: **no deadline set** — with a human around it waits indefinitely. Running unattended (resident daemon) it fills in %{0} and auto-rejects on timeout: with nobody there, waiting would hold that session's write lock forever. To change it, pass `--approval-timeout-secs`."
+      zh-CN: "审批：**未设截止时间**——有人值守时一直等人工。无人值守执行时（常驻 daemon）会补 %{0}，超时自动拒绝：没有人在旁边，等下去会把那个会话的写锁一直握着。要改就加 `--approval-timeout-secs`。"
+  schedule:
+    row:
+      en: "- [%{0}] %{1} (id: %{2})\n  Rule: %{3} · Target: %{4} · Next: %{5}"
+      zh-CN: "- [%{0}] %{1}（id: %{2}）\n  规则：%{3} · 目标：%{4} · 下次触发：%{5}"
+    # CLI 在行末补工作目录（工具详情里单独有一行）。
+    row_dir:
+      en: " · dir: %{0}"
+      zh-CN: " · 目录：%{0}"
+    list_header:
+      en: "Scheduled tasks (%{0}):"
+      zh-CN: "共 %{0} 个定时任务："
+    list_empty:
+      en: There are no scheduled tasks.
+      zh-CN: 当前没有定时任务。
+    # 只有 `qc schedule list` 会说的话：没有任务时提示 `--all`。
+    list_empty_all:
+      en: There are no scheduled tasks.
+      zh-CN: 当前没有定时任务。
+    list_empty_active_only:
+      en: There are no scheduled tasks (`--all` also lists paused and finished ones).
+      zh-CN: 当前没有定时任务（`--all` 连暂停/已结束的也列出来）。
+    # `qc schedule remove <id>` 找不到目标。
+    not_found_by_id:
+      en: "No scheduled task with id %{0}"
+      zh-CN: 没有 id 为 %{0} 的定时任务
+    # 详情里的字段名与行。行是整句，因为中英的字段顺序与标点不同。
+    field:
+      title:
+        en: "Scheduled task %{0} (id: %{1})"
+        zh-CN: "定时任务 %{0}（id: %{1}）"
+      status:
+        en: "Status: %{0}"
+        zh-CN: "状态：%{0}"
+      rule:
+        en: "Rule: %{0}"
+        zh-CN: "规则：%{0}"
+      target:
+        en: "Target: %{0}"
+        zh-CN: "目标：%{0}"
+      next_fire:
+        en: "Next: %{0}"
+        zh-CN: "下次触发：%{0}"
+      min_interval:
+        en: "Minimum delivery interval: %{0}s (global guard against flooding)"
+        zh-CN: "最小投递间隔：%{0}s（全局护栏，防止轰炸）"
+      cwd:
+        en: "Working directory: `%{0}`"
+        zh-CN: "工作目录：`%{0}`"
+      reserved_session:
+        en: "Reserved session: `%{0}`"
+        zh-CN: "预留会话：`%{0}`"
+      last_delivery:
+        en: "Last delivery: %{0} → %{1} (message %{2})"
+        zh-CN: "最近投递：%{0} → %{1}（message %{2}）"
+      missed:
+        en: "Missed: %{0} (a trigger while the host was down does not count and is not replayed)"
+        zh-CN: "错过：%{0} 次（宿主不在运行时到点不算，不补跑）"
+      runs:
+        en: "Run log: %{0} entries (last 30 days / 200 entries kept)"
+        zh-CN: "运行记录：共 %{0} 条（保留最近 30 天 / 200 条）"
+      delivery_line:
+        en: "  - %{0} delivered to %{1} (message %{2}): %{3}"
+        zh-CN: "  - %{0} 投递到 %{1}（message %{2}）：%{3}"
+      pruned:
+        en: (earlier entries have been pruned)
+        zh-CN: （更早的记录已被裁剪）
+    weekday:
+      sun:
+        en: Sun
+        zh-CN: 周日
+      mon:
+        en: Mon
+        zh-CN: 周一
+      tue:
+        en: Tue
+        zh-CN: 周二
+      wed:
+        en: Wed
+        zh-CN: 周三
+      thu:
+        en: Thu
+        zh-CN: 周四
+      fri:
+        en: Fri
+        zh-CN: 周五
+      sat:
+        en: Sat
+        zh-CN: 周六
+      # 多选星期之间的分隔符：中文顿号、英文逗号加空格。它跟星期名一起构成
+      # `weekly` 的展示形式，所以不能写死在 `join` 里。
+      separator:
+        en: ", "
+        zh-CN: "、"
+    target:
+      session:
+        en: "session `%{0}`"
+        zh-CN: "会话 `%{0}`"
+      new_once:
+        en: a new session (created by the first delivery, then reused)
+        zh-CN: 新会话（首次投递创建并复用）
+      new:
+        en: a new session (every delivery creates one)
+        zh-CN: 新会话（每次投递都新建）
+    rule:
+      monthly:
+        en: "monthly on day %{0} at %{1}:%{2}"
+        zh-CN: "monthly %{0}日 %{1}:%{2}"
+  # CLI 追问的输入提示（`qc` 在终端里问用户）。
+  question:
+    choice_hint:
+      en: "  > pick numbers (comma-separated; empty = skip; anything else = free answer) "
+      zh-CN: "  > 选择编号（逗号分隔；留空=跳过；其他=自由回答） "
+  # run 模式的暂停摘要：用户可见，不是 prompt。
+  run:
+    no_file_changes:
+      en: No files changed this run
+      zh-CN: 本次没有改动文件
+    tool_calls:
+      en: "\n%{0} tool calls"
+      zh-CN: "\n调用了 %{0} 次工具"
+    tool_failures:
+      en: "\n%{0} tool calls failed"
+      zh-CN: "\n%{0} 次工具调用失败"
+    last_words:
+      en: "\nLast word: %{0}"
+      zh-CN: "\n最后的说明：%{0}"
+  # 侧栏「在对话中创建定时任务」预填进输入框的引导文字。
+  #
+  # 它同时是**会话标题要剥掉的前缀**（`strip_schedule_prefill` 用 `strip_prefix`
+  # 比对）。所以前缀与预填必须取同一条 key：任何一处写死字面量，只要界面语言变了，
+  # 剥离就静默失效，标题又会被这句引导语顶满。
+  prefill:
+    schedule_draft:
+      en: Create a scheduled task for this requirement.
+      zh-CN: 请根据需求创建一个定时任务。
+
+# CLI（`qc`）运行时输出与 TUI 提示。帮助文本（clap）另算，见 I18N.md §4.3。
+cli:
+  schedule:
+    created:
+      en: "Created scheduled task `%{0}` (id: %{1})"
+      zh-CN: "已创建定时任务 `%{0}`（id: %{1}）"
+    deleted:
+      en: "Deleted scheduled task %{0}"
+      zh-CN: "已删除定时任务 %{0}"
+    delete_failed:
+      en: "Delete failed: %{0}"
+      zh-CN: "删除失败：%{0}"
+    # `qc schedule create` 里回显工作目录：默认是「你当时站的地方」，任务在别处
+    # 触发正是这一行要防的意外。
+    cwd:
+      en: "Working directory: %{0}"
+      zh-CN: "目录：%{0}"
+    cwd_not_a_dir:
+      en: "--cwd %{0} is not a directory"
+      zh-CN: "--cwd %{0} 不是一个目录"
+    fs_root_note:
+      en: "note: %{0} is the filesystem root; the task will run in %{1}"
+      zh-CN: "note: %{0} 是文件系统根；任务将在 %{1} 里跑"
+  daemon:
+    running:
+      en: "daemon: **running** (one per user)"
+      zh-CN: "daemon：**在跑**（一个用户一个）"
+    not_running:
+      en: "daemon: not running"
+      zh-CN: "daemon：没有在跑"
+    unknown:
+      en: "daemon: **cannot tell** (%{0})"
+      zh-CN: "daemon：**无法判断**（%{0}）"
+    data_dir:
+      en: "Data directory: %{0}"
+      zh-CN: "数据目录：%{0}"
+    served_elsewhere_note:
+      en: "    (it may serve **another** data directory; the lock only answers \"someone is there\", not \"who\")"
+      zh-CN: "    （它可能服务**另一个**数据目录；锁只回答「有人」，不回答「是谁」）"
+  # `qc update` 里那些带具体后果的警告尾巴。英文主干保留在代码里（`warning: …`），
+  # 这里只放跟在 `\x20        ` 后面的那句解释——它不是装饰，是「接下来怎么办」。
+  update:
+    no_daemon_binary_hint:
+      en: Scheduled tasks need it (`qc daemon start`); if %{0} already exists, the old version still works.
+      zh-CN: 定时任务需要它（`qc daemon start`）；若 %{0} 已存在则仍可用旧版本。
+    install_retry_hint:
+      en: Run `qc update` again after `qc daemon stop`, or let the next install overwrite it.
+      zh-CN: "`qc daemon stop` 之后再跑一次 `qc update`，或在下次安装时覆盖。"
+    cannot_run_hint:
+      en: The `qc` beside it is already updated; scheduled tasks need this file to be executable.
+      zh-CN: 旁边的 qc 已经更新；定时任务需要这个文件能执行。
+    no_version_output_hint:
+      en: It still runs, it just cannot be checked against.
+      zh-CN: 它仍能跑，只是这样对不了账。
+    version_mismatch_hint:
+      en: The binary installed is not the daemon from this release. The old one still runs (the protocol did not change), but the versions no longer line up.
+      zh-CN: 装上去的不是这次发布的 daemon。旧的仍能跑（协议没变），但版本口径不一致。
+  # TUI 的状态行提示（进入时会话时推一条 notice）。键位与斜杠命令**不翻译**：
+  # 它们是要用户照着按的字面量，翻了就按不出来。
+  tui:
+    new_session_hint:
+      en: "session %{0} · Enter sends (queued while running) · Ctrl-S push · Ctrl-N newline · Esc cancel · Ctrl-O expand · Ctrl-B sub-groups · Ctrl-T ctx display · ↑/↓ or Ctrl-U/D scroll · /skills skills · /queue queue · /steer <n> push · /drop <n> drop · /steering pending injection · /unsteer <n> retract · /checkpoint checkpoint · /rollback <turn> · Ctrl-V paste image · /exit quit · Ctrl-C twice quits"
+      zh-CN: "session %{0} · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /skills 技能 · /queue 队列 · /steer <n> 推送 · /drop <n> 删除 · /steering 等待注入 · /unsteer <n> 撤回 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+    resumed_hint:
+      en: "resumed session %{0} (%{1} events) · Enter sends (queued while running) · Ctrl-S push · Ctrl-N newline · Esc cancel · Ctrl-O expand · Ctrl-B sub-groups · Ctrl-T ctx display · ↑/↓ or Ctrl-U/D scroll · /subagents sub-groups · /checkpoint checkpoint · /rollback <turn> · Ctrl-V paste image · /exit quit · Ctrl-C twice quits"
+      zh-CN: "resumed session %{0} (%{1} events) · Enter 发送（运行中排队）· Ctrl-S 推送 · Ctrl-N 换行 · Esc 取消 · Ctrl-O 展开 · Ctrl-B 子组 · Ctrl-T ctx 显示 · ↑/↓ 或 Ctrl-U/D 滚动 · /subagents 子组 · /checkpoint 检查点 · /rollback <turn> · Ctrl-V 粘贴图片 · /exit 退出 · Ctrl-C 两次退出"
+  config:
+    # `--force` 写出「本平台不适用」的模板时，写进文件头部的那两行注释。
+    # 换行放在 key 里：这两行是一个整体（说明 + 已写出的后果），拆开翻译容易漏。
+    unsupported_template_notice:
+      en: "# Not available on this platform: this template declares %{0}, the current platform is %{1}.\n# The file was written anyway because of --force; the local sandbox backend may fail to assemble."
+      zh-CN: "# 本平台不可用：这份模板声明属于 %{0}，当前平台是 %{1}。\n# 文件已用 --force 写出；本机的沙箱后端可能无法装配。"
+
+# `qcode-kernel`：协议标签与 mock provider 的脚本化响应。
+#
+# **厂商产品名不在这里，也不该翻。** `CatalogEntry.display_name` 里的
+# `智谱 Coding` / `通义 Token Plan` / `蚂蚁 Ling` / `小米 MiMo` 是**产品的名字**，
+# 与 `Anthropic` 一样属于专有名词：英文界面上写「小米 MiMo」才是对的，写成
+# "Xiaomi MiMo" 反而是在替厂商改名。这 4 条会**永久留在门禁 2 的基线里**——基线
+# 只能表达「还存在」，不能表达「故意留着」，所以理由写在 `catalog.rs` 的字段注释里。
+kernel:
+  protocol:
+    # 兼容性描述，不是厂商名，所以要翻。
+    openai_compat:
+      en: OpenAI-compatible
+      zh-CN: OpenAI 兼容
+  # mock provider 的脚本化响应（`provider_registry.rs`）。
+  #
+  # 这些是**假模型说的话**，会原样进对话，所以跟 UI 语言走（按 C 类处置）。
+  # 代价：`crates/qcode/tests/` 里 5 个端到端测试断言这些字符串，必须钉 `zh-CN`
+  # （`QCODE_LANG`），否则机器语言一变就红——那不变量 5 已经要求的事。
+  mock:
+    approval:
+      ask:
+        en: What behaviour do you want from this code?
+        zh-CN: 这段代码你想要什么行为？
+      closing:
+        en: The approval demo is over.
+        zh-CN: 审批流程演示结束。
+    ask:
+      closing:
+        en: The question could not be delivered, so I am continuing with the default behaviour.
+        zh-CN: 提问没能送达，我按默认行为继续。
+    tools:
+      closing:
+        en: The tool loop works end to end.
+        zh-CN: 工具循环跑通了。
+    todo:
+      items:
+        spec:
+          en: Read the tool contract in SPEC
+          zh-CN: 读 SPEC 的工具契约
+        implement:
+          en: Implement todo_write
+          zh-CN: 实现 todo_write
+        verify:
+          en: Run the tests and the TUI acceptance pass
+          zh-CN: 跑测试与 TUI 验收
+      closing:
+        en: The todo list is updated.
+        zh-CN: 待办清单已更新。
+    schedule:
+      prompt:
+        en: Write the daily report
+        zh-CN: 写日报
+      closing:
+        en: The scheduled task is registered.
+        zh-CN: 定时任务已登记。
+    subagent:
+      task:
+        en: Summarise the repository layout in a subsession
+        zh-CN: 在子会话里总结仓库结构
+      child:
+        en: "Sub-agent: the repo has three crates — core, store and cli."
+        zh-CN: 子 agent：仓库有 core/store/cli 三个 crate。
+      closing:
+        en: The parent agent received the sub-task result.
+        zh-CN: 父 agent 收到子任务结果。
+
+# TUI（`qcode-tui`）：暂停卡片、提问控件、附件占位。
+#
+# 键位与斜杠命令**不翻译**（`/continue`、`[1-9]`、`[Esc]`）：它们是要用户照着按的
+# 字面量，翻了就按不出来。翻的只是它们周围的说明。
+tui:
+  pause:
+    commands:
+      en: "  already ran: %{0}"
+      zh-CN: "  已运行：%{0}"
+    more_commands:
+      en: " and %{0} more"
+      zh-CN: " 等 %{0} 条"
+    # 整行提示：三个斜杠命令之间的说明。命令本身原样。
+    continue_hint:
+      en: "  /continue continue (new budget window)  ·  a plain message also continues  ·  /wrap wrap up"
+      zh-CN: "  /continue 继续（新预算窗口）  ·  直接发消息也继续  ·  /wrap 收尾"
+  ask:
+    progress:
+      en: "— question %{0} of %{1} —"
+      zh-CN: "— 第 %{0} 题 / 共 %{1} 题 —"
+    no_options:
+      en: (no options; type your answer)
+      zh-CN: （无选项，直接输入回答）
+    # 按键提示。键名与编号区间原样，只翻说明。
+    controls:
+      en: "[1-9] pick an option · comma separates several · [s] skip · [Enter] next / submit · [Esc] cancel"
+      zh-CN: "[1-9] 选择选项 · 逗号分隔多选 · [s] 跳过 · [Enter] 下一题/提交 · [Esc] 取消"
+  attachment:
+    # 终端里图片只能显示占位文字：说清这一点，用户才不会以为渲染坏了。
+    file:
+      en: "[file %{0} — %{1} bytes]"
+      zh-CN: "〔文件 %{0} — %{1} 字节〕"
+    image:
+      en: "[image %{0} — %{1}×%{2}; the terminal shows placeholder text only]"
+      zh-CN: "〔图片 %{0} — %{1}×%{2}，终端只显示占位文字〕"

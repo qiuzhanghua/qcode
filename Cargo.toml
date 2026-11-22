@@ -3,6 +3,9 @@ resolver = "3"
 members = [
   "crates/qcode-core",
   "crates/qcode-net",
+  # 界面语言的唯一决策点与翻译入口（ADR-0105 §8）。单独成 crate 是因为
+  # `rust-i18n` 4.x 的 `t!` 绑定调用方 crate，翻译表只能有一处 `i18n!`。
+  "crates/qcode-i18n",
   "crates/qcode-providers",
   "crates/qcode-tools",
   "crates/qcode-mcp",

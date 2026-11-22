@@ -255,10 +255,14 @@ fn config_init(
         // so if assembly later fails it does so with the reason visible, not as
         // a bare `Unsupported` out of nowhere.
         document = format!(
-            "# 本平台不可用：这份模板声明属于 {}，当前平台是 {}。\n\
-             # 文件已用 --force 写出；本机的沙箱后端可能无法装配。\n\n{document}",
-            template.os.join(", "),
-            qcode_kernel::template::CURRENT_OS,
+            "{}\n\n{document}",
+            qcode_i18n::trp(
+                "cli.config.unsupported_template_notice",
+                &[
+                    template.os.join(", "),
+                    qcode_kernel::template::CURRENT_OS.to_string(),
+                ],
+            ),
         );
     }
     // The generated file carries the schema version it was written with, so a

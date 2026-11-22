@@ -241,8 +241,9 @@ impl SetupView {
                             && default_model.is_none()
                             && qcode_kernel::config::catalog_models(name.trim()).is_empty()
                         {
-                            return Err(format!(
-                                "提供方 {name} 没有模型：请添加至少一个模型或填写默认模型。"
+                            return Err(qcode_i18n::trp(
+                                "gui.setup.save_error.provider_without_models",
+                                &[name],
                             ));
                         }
                         let provider = ProviderConfig {
@@ -522,8 +523,14 @@ impl SetupView {
         let Some((config, value)) = self.build_scalar(path, cx)? else {
             return Ok(());
         };
-        qcode_kernel::config_edit::set_scalar(&self.path, path, value.as_deref())
-            .map_err(|error| format!("{} 没能写入：{error}", path.join(".")))?;
+        qcode_kernel::config_edit::set_scalar(&self.path, path, value.as_deref()).map_err(
+            |error| {
+                qcode_i18n::trp(
+                    "gui.setup.save_error.write_failed",
+                    &[path.join("."), error.to_string()],
+                )
+            },
+        )?;
         self.config = config;
         Ok(())
     }
@@ -542,9 +549,9 @@ impl SetupView {
         if let Err(error) = apply_scalar(&mut config, path, &value) {
             // Same reason as above: user input in progress, already shown in the UI.
             tracing::debug!(%error, "auto-save skipped: invalid value");
-            return Err(format!(
-                "{} 的值不合法，改动没有写入：{error}",
-                path.join(".")
+            return Err(qcode_i18n::trp(
+                "gui.setup.save_error.field_invalid",
+                &[path.join("."), error.to_string()],
             ));
         }
         let write_value = if value.trim().is_empty() && OPTIONAL_PATHS.contains(&path) {
@@ -578,7 +585,10 @@ impl SetupView {
                 // is already on screen. Logging it at `warn` would bury the
                 // real failures above in validation noise.
                 tracing::debug!(%error, "auto-save skipped: invalid form");
-                Err(format!("表单还有问题，改动没有写入：{error}"))
+                Err(qcode_i18n::trp(
+                    "gui.setup.save_error.form_invalid",
+                    &[&error],
+                ))
             }
         }
     }
@@ -603,7 +613,10 @@ impl SetupView {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "auto-save failed");
-                        Err(format!("config.toml 没能写入：{error}"))
+                        Err(qcode_i18n::trp(
+                            "gui.setup.save_error.write_failed",
+                            &["config.toml", error.to_string().as_str()],
+                        ))
                     }
                 }
             }
@@ -611,7 +624,10 @@ impl SetupView {
                 self.error = Some(error.clone());
                 cx.notify();
                 tracing::debug!(%error, "auto-save skipped: invalid form");
-                Err(format!("表单还有问题，改动没有写入：{error}"))
+                Err(qcode_i18n::trp(
+                    "gui.setup.save_error.form_invalid",
+                    &[&error],
+                ))
             }
         }
     }
@@ -661,7 +677,10 @@ impl SetupView {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "auto-save failed");
-                        view.error = Some(format!("config.toml 没能写入：{error}"));
+                        view.error = Some(qcode_i18n::trp(
+                            "gui.setup.save_error.write_failed",
+                            &["config.toml", error.to_string().as_str()],
+                        ));
                         cx.notify();
                     }
                 }
@@ -712,7 +731,10 @@ impl SetupView {
         });
         if let Err(error) = saved {
             tracing::warn!(%error, "auto-save failed for gui.json");
-            return Err(format!("gui.json 没能写入：{error}"));
+            return Err(qcode_i18n::trp(
+                "gui.setup.save_error.write_failed",
+                &["gui.json", error.to_string().as_str()],
+            ));
         }
         self.prefs = prefs;
         self.prefs.apply(cx);

@@ -1,0 +1,19 @@
+Inspect persisted sessions
+
+Usage: qc sessions [OPTIONS] <COMMAND>
+
+Commands:
+  list         List stored sessions, newest first
+  show         Replay one session as JSON
+  fork         Copy a conversation prefix into a new session
+  gc           Remove sessions whose last event is older than N days
+  delete       Remove one or more sessions by id
+  checkpoints  List the checkpoints (file pre-images) a session recorded
+  rollback     Put the workspace back to the state before a turn
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

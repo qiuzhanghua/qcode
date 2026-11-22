@@ -93,31 +93,57 @@ fn cmd_list(
     let mut report = String::new();
     // Driver state first: it is the answer to "will any of this actually run",
     // and it has to be readable without scrolling (same order as the tool).
-    let _ = writeln!(report, "驱动：{}", driver.describe());
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("core.driver.footer", &[driver.describe().as_ref()])
+    );
     if tasks.is_empty() {
         if all {
-            report.push_str("当前没有定时任务。\n");
+            report.push_str(&format!(
+                "{}\n",
+                qcode_i18n::tr("core.schedule.list_empty_all")
+            ));
         } else {
-            report.push_str("当前没有定时任务（`--all` 连暂停/已结束的也列出来）。\n");
+            report.push_str(&format!(
+                "{}\n",
+                qcode_i18n::tr("core.schedule.list_empty_active_only")
+            ));
         }
         write_report(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
-    let _ = writeln!(report, "共 {} 个定时任务：", tasks.len());
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("core.schedule.list_header", &[tasks.len().to_string()])
+    );
     for task in &tasks {
+        // 与 `schedule_list` 工具共用同一条模板：同一个任务在 CLI 与工具结果里
+        // 长相不一致，是最容易被漏掉的那类不一致。
         let _ = write!(
             report,
-            "- [{}] {}（id: {}）\n  规则：{} · 目标：{} · 下次触发：{}",
-            task.status.as_str(),
-            task.title,
-            task.id,
-            task.rule.describe(),
-            task.target.describe(),
-            task.next_fire_at
-                .map_or_else(|| "-".to_string(), |at| at.to_string()),
+            "{}",
+            qcode_i18n::trp(
+                "core.schedule.row",
+                &[
+                    task.status.as_str(),
+                    task.title.as_str(),
+                    task.id.as_str(),
+                    task.rule.describe().as_str(),
+                    task.target.describe().as_str(),
+                    task.next_fire_at
+                        .map_or_else(|| "-".to_string(), |at| at.to_string())
+                        .as_str(),
+                ],
+            )
         );
         if let Some(cwd) = &task.cwd {
-            let _ = write!(report, " · 目录：{cwd}");
+            let _ = write!(
+                report,
+                "{}",
+                qcode_i18n::trp("core.schedule.row_dir", &[cwd.as_str()])
+            );
         }
         report.push('\n');
     }
@@ -197,17 +223,44 @@ fn cmd_create(
     }
 
     let mut report = String::new();
-    let _ = writeln!(report, "已创建定时任务 `{}`（id: {}）", task.title, task.id);
-    let _ = writeln!(report, "规则：{}", task.rule.describe());
-    let _ = writeln!(report, "目标：{}", task.target.describe());
-    // Echo the directory: the default is "wherever you were standing", and a
-    // task that fires somewhere unexpected is the failure this line prevents.
-    let _ = writeln!(report, "目录：{cwd}", cwd = cwd.display());
     let _ = writeln!(
         report,
-        "下次触发：{}",
-        task.next_fire_at
-            .map_or_else(|| "-".to_string(), |at| at.to_string())
+        "{}",
+        qcode_i18n::trp(
+            "cli.schedule.created",
+            &[task.title.as_str(), task.id.as_str()]
+        )
+    );
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("core.schedule.field.rule", &[task.rule.describe().as_str()])
+    );
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp(
+            "core.schedule.field.target",
+            &[task.target.describe().as_str()]
+        )
+    );
+    // Echo the directory: the default is "wherever you were standing", and a
+    // task that fires somewhere unexpected is the failure this line prevents.
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp("cli.schedule.cwd", &[cwd.display().to_string()])
+    );
+    let _ = writeln!(
+        report,
+        "{}",
+        qcode_i18n::trp(
+            "core.schedule.field.next_fire",
+            &[task
+                .next_fire_at
+                .map_or_else(|| "-".to_string(), |at| at.to_string())
+                .as_str()]
+        )
     );
     // ADR-0092 §7：缺省值不能静默补。`None` 在有人值守与无人值守下是两种
     // 结果，所以这条必须一直印出来，而不是只在设了值时才提一句。
@@ -228,15 +281,21 @@ fn cmd_delete(
         Err(ScheduleError::NotFound(id)) => {
             // Non-zero: a script deleting an id that is not there meant to do
             // something that did not happen.
-            eprintln!("没有 id 为 {id} 的定时任务");
+            eprintln!(
+                "{}",
+                qcode_i18n::trp("core.schedule.not_found_by_id", &[id.as_str()])
+            );
             return Ok(ExitCode::from(1));
         }
         Err(error) => {
-            eprintln!("删除失败：{error}");
+            eprintln!(
+                "{}",
+                qcode_i18n::trp("cli.schedule.delete_failed", &[error.to_string()])
+            );
             return Ok(ExitCode::from(1));
         }
     }
-    let mut report = format!("已删除定时任务 {id}\n");
+    let mut report = format!("{}\n", qcode_i18n::trp("cli.schedule.deleted", &[id]));
     report.push_str(&driver_footer(driver_now(store)));
     write_report(&report)?;
     Ok(ExitCode::SUCCESS)
@@ -253,7 +312,11 @@ fn resolve_cwd(requested: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error
     if let Some(path) = requested {
         let absolute = std::path::absolute(&path)?;
         if !absolute.is_dir() {
-            return Err(format!("--cwd {} 不是一个目录", absolute.display()).into());
+            return Err(qcode_i18n::trp(
+                "cli.schedule.cwd_not_a_dir",
+                &[absolute.display().to_string()],
+            )
+            .into());
         }
         return Ok(absolute);
     }
@@ -263,9 +326,11 @@ fn resolve_cwd(requested: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error
     if fell_back {
         // Say it on stderr so `--json` on stdout stays parseable.
         eprintln!(
-            "note: {} 是文件系统根；任务将在 {} 里跑",
-            here.display(),
-            workspace.display()
+            "{}",
+            qcode_i18n::trp(
+                "cli.schedule.fs_root_note",
+                &[here.display().to_string(), workspace.display().to_string()]
+            )
         );
     }
     Ok(workspace)

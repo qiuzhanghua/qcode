@@ -1,0 +1,13 @@
+List available config templates (ADR-0104)
+
+Usage: qc template [OPTIONS] <COMMAND>
+
+Commands:
+  list  List available templates (built-in and user), with their platform
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

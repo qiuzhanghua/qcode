@@ -306,10 +306,25 @@ impl SetupView {
             ),
             None => (String::new(), String::new(), String::new(), String::new()),
         };
-        let model_id = input(window, cx, id_value, "模型 ID");
-        let name = input(window, cx, name_value, "显示名称");
-        let context_window = input(window, cx, context_value, "上下文窗口");
-        let max_tokens = input(window, cx, max_value, "最大输出 token");
+        let model_id = input(window, cx, id_value, &qcode_i18n::tr("ui.field.model_id"));
+        let name = input(
+            window,
+            cx,
+            name_value,
+            &qcode_i18n::tr("ui.field.display_name"),
+        );
+        let context_window = input(
+            window,
+            cx,
+            context_value,
+            &qcode_i18n::tr("ui.field.context_window"),
+        );
+        let max_tokens = input(
+            window,
+            cx,
+            max_value,
+            &qcode_i18n::tr("ui.field.max_tokens"),
+        );
         // 模型行输入**不**自动保存：编辑中不写盘（避免把半截 id 写进
         // config），只在用户点「保存」时由调用方显式 flush（见
         // `render_add_model_dialog` 的保存按钮、编辑对话框的「保存」）。
@@ -413,12 +428,13 @@ impl SetupView {
                 )
             })
         else {
-            self.probe_result = Some("先添加该提供方，再获取可用模型".to_string());
+            self.probe_result =
+                Some(qcode_i18n::tr("gui.setup.probe.add_provider_first").to_string());
             cx.notify();
             return;
         };
         if base_url.is_empty() {
-            self.probe_result = Some("请先填写 API 地址".to_string());
+            self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.base_required").to_string());
             cx.notify();
             return;
         }
@@ -497,13 +513,13 @@ impl SetupView {
                 self.probe_result = None;
                 self.probe_target = None;
             } else {
-                self.probe_result = Some("正在探测中…".to_string());
+                self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.running").to_string());
                 cx.notify();
                 return;
             }
         }
         if base_url.is_empty() {
-            self.probe_result = Some("请先填写 API 地址".to_string());
+            self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.base_required").to_string());
             cx.notify();
             return;
         }
@@ -525,7 +541,7 @@ impl SetupView {
             let _ = tx.send(result);
         });
         self.probe_rx = Some(rx);
-        self.probe_result = Some("探测中…".to_string());
+        self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.running").to_string());
         self.probe_candidates = None;
         self.probe_target = Some(surface.clone());
         cx.notify();
@@ -557,7 +573,7 @@ impl SetupView {
                         Some(Ok(Ok(candidates))) if candidates.is_empty() => {
                             view.probe_rx = None;
                             view.probe_result =
-                                Some("该提供方没有列出任何模型，请手动添加。".to_string());
+                                Some(qcode_i18n::tr("gui.setup.probe.no_models").to_string());
                             cx.notify();
                             true
                         }
@@ -570,14 +586,16 @@ impl SetupView {
                         }
                         Some(Ok(Err(error))) => {
                             view.probe_rx = None;
-                            view.probe_result = Some(format!("探测失败: {error}"));
+                            view.probe_result =
+                                Some(qcode_i18n::trp("gui.setup.probe.failed", &[&error]));
                             cx.notify();
                             true
                         }
                         Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
                         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                             view.probe_rx = None;
-                            view.probe_result = Some("探测中断".to_string());
+                            view.probe_result =
+                                Some(qcode_i18n::tr("gui.setup.probe.interrupted").to_string());
                             cx.notify();
                             true
                         }
@@ -877,7 +895,7 @@ impl SetupView {
         // 编辑对话框内一行小红字，不占设置页顶部的全局错误位。
         if name.is_empty() || key.is_empty() {
             self.provider_notice = None;
-            self.provider_error = Some("API 密钥不能为空，无法存入凭据库".to_string());
+            self.provider_error = Some(qcode_i18n::tr("gui.setup.keychain.empty").to_string());
             cx.notify();
             return;
         }
@@ -898,7 +916,7 @@ impl SetupView {
                     });
                 }
                 self.provider_error = None;
-                self.provider_notice = Some(format!("已保存 {name} 的 API 密钥到系统钥匙串"));
+                self.provider_notice = Some(qcode_i18n::trp("gui.setup.keychain.saved", &[&name]));
                 self.error = None;
                 // `Input::set_value` 不触发 `InputEvent::Change`，上面的单元格
                 // 更新不会经订阅触发 auto-save，这里手动落盘，否则 api_key_command

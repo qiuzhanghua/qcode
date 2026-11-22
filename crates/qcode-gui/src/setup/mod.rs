@@ -317,6 +317,10 @@ pub(crate) fn close_settings_window(window: &mut Window, cx: &mut App) {
 pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
+        // 框架自带文案（剪贴板 Copy、日历周标题、表格分页…）一直停在默认 `en`，
+        // 因为这里从来没设过语言 —— 那是 ADR-0105 §1 记的既有 bug。gpui-kit 与
+        // 我们用的是**同一份** rust-i18n，所以这一次 `init` 两边一起生效。
+        qcode_i18n::init(None);
         let options = window_icon::attach(WindowOptions::default());
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);
@@ -333,6 +337,10 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
 pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
+        // 框架自带文案（剪贴板 Copy、日历周标题、表格分页…）一直停在默认 `en`，
+        // 因为这里从来没设过语言 —— 那是 ADR-0105 §1 记的既有 bug。gpui-kit 与
+        // 我们用的是**同一份** rust-i18n，所以这一次 `init` 两边一起生效。
+        qcode_i18n::init(None);
         let options = window_icon::attach(WindowOptions::default());
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);

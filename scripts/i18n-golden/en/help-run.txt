@@ -1,0 +1,31 @@
+Run a single headless turn
+
+Usage: qc run [OPTIONS] [PROMPT]
+
+Arguments:
+  [PROMPT]  Prompt text. Read from stdin when omitted
+
+Options:
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --skill <NAME>            Activate a discovered skill by prepending its instructions to the prompt
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --json                    Emit the event stream as JSONL on stdout
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+      --include-raw             Include provider_raw in --json output (hidden by default)
+      --provider <PROVIDER>     Provider name: mock, openai, deepseek, ollama, or a custom entry
+      --model <MODEL>           
+      --base-url <BASE_URL>     Override the provider base URL
+      --no-stream-usage         Do not ask the server for a usage chunk
+      --max-turns <MAX_TURNS>   Maximum model calls for this turn. Defaults to [agent] max_turns (8 unless the config says otherwise)
+      --yes                     Auto-approve anything the policy marks as ask
+      --cwd <CWD>               Workspace root for tools. Defaults to the current directory
+      --resume <ID>             Resume an existing session instead of creating a new one
+      --max-cost <USD>          Stop once the estimated cost exceeds this many USD. Requires a [pricing."<model>"] entry in the config file
+      --image <PATH>            Attach an image (PNG/JPEG/WebP/GIF) to this message. Repeatable; needs a provider that accepts images
+      --file <PATH>             Attach a file of any type. The bytes go into the attachment store and the model reads a handle, not the contents. Repeatable
+      --timeout <SECS>          Whole-turn wall-clock limit in seconds. On expiry the turn is cancelled (same path as Ctrl-C, including process-group cleanup) and qc exits 124
+      --continue                Continue a paused turn (`--resume <id>`) without retyping the task. With `--raise-turns`/`--raise-cost`, the new limits apply to this window only
+      --raise-turns <N>         Turns for this continuation window (implies --continue)
+      --raise-cost <USD>        Cost ceiling for this continuation window (implies --continue)
+      --raise-persist           Also write the raised limit to config.toml, so the next session keeps it. Needs --raise-turns or --raise-cost
+  -h, --help                    Print help

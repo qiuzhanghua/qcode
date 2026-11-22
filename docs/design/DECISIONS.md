@@ -12815,3 +12815,244 @@ text = "· extra_read 是空操作——Windows 后端不限制读，写什么�
 6. **缺省边界可跑（三平台）**：用任意 security 模板生成的配置在 Linux/macOS/Windows 上
    都要能启动——包括 `~/Documents` 不存在的机器（应当只有一条 warn，不是启动失败）。
    Windows 上额外确认 `extra_read` 是空操作这一事实有注释说明。
+
+---
+
+## ADR-0105：界面双语化以 rust-i18n 4.x 为唯一翻译层（2026-11-21）
+
+**状态**：Accepted（2026-11-21）。**P0（基建+语言决策+三道门禁）已实现**，
+P1–P3（文案搬运）待做 —— 实现记录见 [I18N.md](./I18N.md) §10。
+本条只定**机制与语言边界**：用哪个库、语言怎么定、
+哪些字符串永远不翻、测试怎么钉。554 条文案的搬运与分批见
+[I18N.md](./I18N.md)，不在这里。
+
+**背景**
+
+产品语言现在是**裂的**，同一次使用里能看到三种：
+
+| 面 | 现状 |
+|---|---|
+| `qc --help` / 子命令帮助 | **几乎全英文，但 `qc daemon --help` 中英混排**——clap derive 的 `///` 注释放的是英文，偏偏 `cli.rs:363-366,395` 那几行是中文，会被 clap 当成 `about` 原样输出 |
+| `qc schedule list` / `qc logs` 等运行时输出 | **全中文** |
+| GUI（TUI 亦然） | **全中文** |
+
+一个英文用户开箱看到的是：英文帮助 → 中文列表 → 中文界面。这不是「还没做 i18n」，
+是**已经做了两种、缺第三种状态**。
+
+### 一、有一个已经存在的 bug，不做也得做
+
+`qcode-gui` **从未调用过** `gpui_component::set_locale`，所以框架一直停在默认 `en`。
+而 `gpui-component-0.10.0/src/clipboard.rs:117` 渲染的是 `t!("Copy")`。
+
+也就是说**今天的中文 GUI 里，剪贴板菜单写着英文 "Copy"**；日历周标题、表格分页、
+右键菜单同理。这类文案不在我们的代码里（`t!` 调用 311 处，翻译条目不下一千），
+我们既没法用 grep 找出来，也没法手工替换。
+
+所以「本地化」里有一块是**修既有 bug**，而不是新增功能。
+
+### 二、白捡一个杠杆：框架自带同一个翻译层
+
+`gpui-component 0.10.0` 已经：
+
+- 依赖 `rust-i18n = "4.2.0"`（caret，实际锁到 **4.2.4**）；
+- 自带 `locales/ui.yml`（**1006 行**，7 种语言：en / ja / pt-BR / ru / zh-CN / zh-HK / zh-TW）；
+- 公开了 `pub fn locale()` 与 `pub fn set_locale(&str)`。
+
+我们 `Cargo.lock` 里 `rust-i18n` **只有 4.2.4 一份**。于是：**一次 `set_locale`
+同时翻掉框架自带文案和我们自己的文案**——这是 cot_cli 没有的结构性便利，它得自己
+从零搭。
+
+**决定**
+
+### 1. 钉 `rust-i18n` 4.2.x，绝不 3.x
+
+```toml
+rust-i18n = "4.2"   # 与 gpui-component 同一份，lock 里仍是 4.2.4
+```
+
+**3.x 会让语言静默分叉。** `rust-i18n-4.2.4/src/lib.rs:22` 的
+`static CURRENT_LOCALE` 是**进程级**、由 `set_locale` 写入。若我们的 crate 声明
+`rust-i18n = "3"`，Cargo 会同时链入 3.x 与 4.x 两份：两个独立的 `CURRENT_LOCALE`，
+`set_locale` 只影响其中一半 —— 框架组件仍是英文、我们的界面是中文，**不报错、不警告**，
+正是最难查的那类 bug。
+
+`cot_cli` 用的是 **3.1.5**。凡引用它的结论，**依赖声明一律不可照抄**；可借的是它的
+机制与纪律（见 §3、§6）。它的 `util/i18n.rs` 里 `normalize` / `decide` 的形状是对的，
+我们照它的判据重写，不照抄版本。
+
+### 2. 语言来源：`QCODE_LANG` → `sys-locale` → `en`
+
+- **只读环境变量不够。** 中文 macOS 上 `LANG` / `LC_ALL` / `LC_MESSAGES` / `LANGUAGE`
+  可能**四个全空**（cot_cli 在本机实测如此），而 Windows 上这些基本不存在。只读 env
+  等于让中文 macOS 用户和**全部 Windows 用户**永远拿英文。
+- **`sys-locale` 是白捡的。** `0.3.2` 已经在 `Cargo.lock` 里（经 `gpui-base` 的
+  `layout_direction`），升为直接依赖**不新增任何 crate**。各平台实现：Unix 读
+  env 链、macOS 走 `CFLocaleCopyPreferredLanguages`、Windows 走
+  `GetUserPreferredUILanguages`。
+- **认不出落 `en`。** 项目定位是开源、面向国际；让一个法语用户开箱看到中文比看到英文
+  更奇怪。这与 cot_cli 落 `zh-CN` 不同，是**有意的反向选择**。
+
+**代价如实记**：这会把一部分老用户的默认体验从中文改成英文——不是中文系统的用户
+（他们仍由系统语言判定为中文），而是 `LANG` 缺省为 `C` 的 Linux 容器/CI 里。这类环境
+本来也不该看到中文。
+
+### 3. 必须归一化，否则静默失效
+
+macOS 返回的是 **`zh-Hans-CN`**（带 script 子标签），不是 `zh-CN`。直接丢给
+`set_locale` 会**静默 fallback 到英文**——不报错、不警告。
+
+判据（照 cot_cli §5.1 的推理，不照抄代码）：
+
+1. 切掉编码后缀（`.UTF-8`）与修饰符（`@euro`）；
+2. `_` → `-`，转小写；
+3. 只比较**第一个 subtag**：`zho` 不是 `zh`，不会误判；
+4. `c` / `posix` → `en`（Linux CI 的 `LANG=C.UTF-8`）；
+5. **繁体（`zh-Hant` / `zh-TW` / `zh-HK`）走 `zh-CN`**：我们只有一份简体译文，
+   对繁体用户来说中文仍比英文友好。
+
+### 4. prompt 永远不翻译（cot_cli 没有的一类）
+
+`qcode-core/src/title.rs` 的 `title_system_prompt()` 与 `frame_title_input()` 是
+**发给模型的指令**，函数注释写明 *"the model owns the language choice"*。
+
+翻 prompt 的代价不是「界面变英文」，而是：**改模型行为**、**毁 prompt 缓存**、
+**让 eval 基线漂移**。它不是文案，是协议的一部分。
+
+同理，`tracing` 日志保持英文——便于排障与搜 issue。这一条**现状已经合规**：
+全仓 `tracing::{info,warn,error,debug}!` 里中文 **0 条**，不需要动。
+
+### 5. 工具输出跟随 UI 语言
+
+`qcode-tools` 有 58 条中文，大多是工具**返回值**（进模型上下文，再显示给用户）。
+决定：**跟随 UI 语言翻译**。
+
+代价三条，全部记在这里免得以后当成 bug 追：
+
+1. 同一次工具调用在不同语言下产生不同字节 → **语言切换那一次** prompt 缓存失效
+   （同一语言内稳定，不影响正常使用）；
+2. eval 基线要按语言各记一套，否则「改了什么」会被语言差异淹没；
+3. 历史会话里已存的中文**不回改**——历史是历史。
+
+为什么仍然翻：工具输出最终是**用户看的结果面**，不是 wire protocol。真要机器消费
+（JSON、id、路径）另有不变量兜着（见下）。
+
+### 6. 测试进程钉 `zh-CN`
+
+先把实测数字摆清楚，因为「432 处断言」是我一开始估错的：
+
+| 类别 | 实测 |
+|---|---|
+| 测试代码里的中文字符串总数 | 432 |
+| 其中中文只是 `assert!` 的**失败诊断信息**（被断言的值与语言无关） | **154 行** |
+| `assert_eq!` 的**期望值**是中文串 | **22 处** |
+| `.contains/starts_with/ends_with("中文")` 断言界面文案 | **71 处** |
+| **真正依赖中文文案的断言** | **≈93 处** |
+
+例：`assert_eq!(report.fired, 0, "第一拍不投递任何东西")` —— 中文是给失败时的人看的，
+`0` 与语言无关，**这类永不受 i18n 影响**。
+
+于是：
+
+- **钉 `zh-CN` → 那 93 处零改动。**
+- **钉 `en` → 93 处全要改**，而且它是唯一会强制改断言的选项。
+
+选 `zh-CN`。**英文路径的正确性不靠断言，靠门禁**：
+
+1. `en` 与 `zh-CN` 的 key 集合必须完全相等（解析 yml 断言）→ 已实现，
+   `qcode-i18n/tests/gates.rs::every_key_has_both_locales`；
+2. 扫描 UI 层，禁止**新增**裸中文字面量 → 已实现，棘轮式：基线记现存 547 条，
+   只许减少（`scripts/i18n-baseline.txt`）；
+3. 双语 golden：`QCODE_LANG=en|zh-CN` 各跑一遍全部 `--help` 与典型报错，diff 对基线
+   → 已实现，`scripts/check-i18n-golden.sh`（39 项，接进 `make check`）。
+
+第 2 条落地时把「白名单」换成了**基线**：白名单是无限期豁免，基线是只能往下走的
+计数器 —— 不然那 547 条会永远停在那里，等于没有门禁。
+
+**单测内禁止临时 `set_locale` 切换语言**：它是进程级 `AtomicStr`，并行测试互相污染。
+钉语言走 `qcode_i18n::pin_for_tests()`：内部一个 `Once`，值恒定、幂等，**一个进程
+只生效一次**，并发调只有一个赢家、不产生竞争。确需英文断言的地方用逐调用覆写
+（`t!(key, locale = "en")` 形态），不改全局。
+
+P0 的实测结论：`qcode`、`qcode-gui`、`qcode-i18n` 全部测试绿，且那 ≈93 处文案断言
+**一行未改** —— 因为 P0 还没搬任何文案，钉不钉都还是原文。真正的检验在 P1。
+
+### 7. 先基建，后分批
+
+| 批 | 内容 | 可独立交付 |
+|---|---|---|
+| **P0** ✅ | `qcode-i18n` 骨架、`locales/`、语言决策与归一化、`set_locale` 接线、测试钉语言、三道门禁 | 是（只有 2 条基建自检 key，顺带修 §1 的框架 bug） |
+| P1 | GUI 393 条 | 是 |
+| P2 | CLI 24 + TUI 8 + kernel 20 + ui-state 17 + core 34 + **clap 内置标签** | 是 |
+| P3 | 工具输出 58 条 + 残余 | 是 |
+
+**P0 结束时 GUI 的框架文案会从英文变中文**（`set_locale` 生效了）。这是修 bug，但会
+改动现有截图与快照，**必须在同一个提交里同步登记**，否则下一个跑 golden 的人会以为是
+文案回归。
+
+P0 已交付（2026-11-21），逐条对照见 [I18N.md](./I18N.md) §10。
+
+### 8. 模块结构：单 crate 持 locales，函数访问器
+
+这一条是被 **4.x 的实现方式**逼出来的，不是偏好：
+
+`rust-i18n-4.2.4/src/lib.rs:382` 的 `t!` 展开成 **`crate::_rust_i18n_t!`** —— 绑定
+**调用方 crate**。所以每个用 `t!` 的 crate 都必须自己在 crate 根调用 `i18n!`
+（框架自己就是每 crate 一份 yml）。
+
+摆在我们面前的是两个坏选项，和一个好的：
+
+| 方案 | 问题 |
+|---|---|
+| 10 个 crate 各带一份 `locales/` | 翻译要对着 10 个文件干活，key 容易重复且漂移 |
+| 每个 crate 指向同一个目录（相对路径 `../qcode-i18n/locales`） | 同一份表被编进每个二进制，路径脆弱 |
+| **单 crate + 函数访问器** | 一份 yml；失去 `t!` 的语法糖（可补一个 ~10 行的 `macro_rules!` 再拿回来） |
+
+**决定：新建叶子 crate `qcode-i18n`**，唯一调用 `i18n!("locales", fallback = "en")`，
+对外暴露：
+
+```rust
+pub fn tr(key: &str) -> Cow<'static, str>;                        // 无参
+pub fn trf(key: &str, args: &[(&str, &str)]) -> String;           // 带 %{x} 插值
+pub fn locale() -> String;
+pub fn set(locale: &str);       // 归一化后写入，供 config / 测试调用
+pub fn init(cfg: Option<&str>); // QCODE_LANG → sys-locale → en，归一化后 set
+```
+
+其余 crate 依赖它、调 `qcode_i18n::tr("gui.dialog.delete.title")`。**键名自带命名空间**
+（`gui.` / `cli.` / `tui.` / `tool.` / `err.`），一份 `app.yml` 就够。
+
+### 9. 语言切换：改配置后重启生效
+
+不做实时切换。`rust-i18n 4.2.4` 有 `LOCALE_VERSION` 做缓存失效，但**没有观察者**——
+要在 GUI 里即时生效，得自己做一层全局重绘广播，并逐个验证框架组件的文案也跟着变。
+那是独立的一次改动，不属于本条。
+
+**不变量**
+
+1. **机器消费的输出绝不翻译**：`--version`、JSON、id、路径、命令名、参数名、环境变量名。
+2. **日志不翻译**（现状已合规，0 条中文）。
+3. **prompt 不翻译**（§4）。
+4. **测试进程钉 `zh-CN`**（§6），且不得在测试里临时切换。
+5. 一个提交内不得「一半翻了一半没翻」——要么整面完整，要么不动。
+
+**不属于本 ADR**
+
+- 554 条文案的搬运与按 crate 的清单（[I18N.md](./I18N.md)）；
+- GUI 语言切换器与实时生效（§9）；
+- 扩展到 ja / ru / pt-BR（框架已支持这些，键设计保持可扩展）；
+- 把人类可读消息从 stdout 迁到 stderr（行为变更，另行处理）。
+
+**验收（P0）**
+
+1. **`QCODE_LANG=en` 下全部输出与改动前逐字节一致**，唯一例外是 §1 的框架 bug 修复
+   （剪贴板 `Copy` → 「复制」等，需在提交里登记）。
+2. 中文 macOS（系统语言中文、四个 env 全空）退出码与语言判定为 `zh-CN`。
+3. `zh-Hans-CN` 归一化为 `zh-CN`（单测覆盖，这是 macOS 真实返回值）。
+4. GUI 剪贴板菜单的 `Copy` 变为「复制」（§1 的 bug 修掉）。
+5. `cargo test` 全绿，且那 ≈93 处文案断言**一行未改**。
+6. 三道门禁全部接进 `make check`。
+
+**P0 不包含** clap 内置标签（`Usage:` / `Options:` / `Print help`）的汉化。它需要把
+`parse_from` 换成 `try_parse_from` 并后处理渲染结果，是 **P2** 的活（见
+[I18N.md](./I18N.md) §4.5）。所以 P0 结束时 `qc --help` 仍是「英文骨架 + 中文 about」，
+这是**预期中间态**，不是缺陷。

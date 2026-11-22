@@ -17,6 +17,9 @@ qcode-providers = { version = "0.16.0", path = "../qcode-providers" }
 qcode-ui-state = { version = "0.16.0", path = "../qcode-ui-state" }
 qcode-ui-bridge = { version = "0.16.0", path = "../qcode-ui-bridge" }
 qcode-kernel = { version = "0.16.0", path = "../qcode-kernel" }
+# 界面语言（ADR-0105）。一次 `set` 同时覆盖 gpui-kit 自带文案与我们的文案：
+# 两边是同一份 rust-i18n、同一个 `CURRENT_LOCALE`。
+qcode-i18n = { version = "0.16.0", path = "../qcode-i18n" }
 qcode-tools = { version = "0.16.0", path = "../qcode-tools" }
 qcode-mcp = { version = "0.16.0", path = "../qcode-mcp" }
 qcode-terminal = { version = "0.16.0", path = "../qcode-terminal" }
@@ -67,6 +70,10 @@ objc2-foundation = "0.3"
 [dev-dependencies]
 async-trait.workspace = true
 tempfile.workspace = true
+# 只为证明「一次 set_locale 同时翻转框架文案」（ADR-0105 §2 的核心主张，也是
+# §1 那个剪贴板 bug 的验收）。已在依赖树里（gpui-kit 的 `component` 特性），
+# 这里只是把边显式化，不新增 crate。
+gpui-component = "0.10.0"
 # Not a duplicate of the [dependencies] entry above: an integration test only
 # sees its own declared deps, and `tests/backend.rs` spawns a real flooding
 # terminal to prove it cannot starve the scheduler's beat (ADR-0062).

@@ -31,6 +31,9 @@ fn policy_file_allows_shell_without_a_tty() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+        // 断言比对的是 mock provider 的夹具文本，而夹具跟着 UI 语言走
+        // （I18N.md 不变量 5：测试进程钉 `zh-CN`）。
+        .env("QCODE_LANG", "zh-CN")
         .args([
             "run",
             "demo",
@@ -96,6 +99,9 @@ fn policy_file_replaces_config_rules() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+        // 断言比对的是 mock provider 的夹具文本，而夹具跟着 UI 语言走
+        // （I18N.md 不变量 5：测试进程钉 `zh-CN`）。
+        .env("QCODE_LANG", "zh-CN")
         .args([
             "run",
             "demo",
@@ -131,6 +137,9 @@ fn missing_or_malformed_policy_fails_before_running() {
 
     for policy in [missing, invalid] {
         let output = Command::new(env!("CARGO_BIN_EXE_qc"))
+            // 断言比对的是 mock provider 的夹具文本，而夹具跟着 UI 语言走
+            // （I18N.md 不变量 5：测试进程钉 `zh-CN`）。
+            .env("QCODE_LANG", "zh-CN")
             .args([
                 "run",
                 "demo",

@@ -42,7 +42,9 @@ impl App {
                 } else if message.continuation.is_some() {
                     // "继续" is the engine's instruction, not something the user
                     // typed: a continuation row reads as a strip, not a question.
-                    self.push_input(Block::Notice("继续上一次暂停的任务".to_string()));
+                    self.push_input(Block::Notice(
+                        qcode_i18n::tr("ui.pause.resume_notice").to_string(),
+                    ));
                 } else {
                     self.push_input(Block::User {
                         text: message.text.clone(),

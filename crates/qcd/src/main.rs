@@ -13,15 +13,20 @@ use qcode_core::single_instance::{Outcome, Scope};
 /// `qcd --help` 的正文。
 ///
 /// 与 `--version` 一样必须在任何初始化之前打印，理由见 [`early_exit`]。
+/// **英文，且不翻译。** 与 `--version` 一样，这是被脚本与 `qc update` 看的表面
+/// （I18N.md §4.3）：两种语言下逐字节相同才谈得上「可解析」。原来的正文是
+/// 中英混排（`Usage:` 用英文、说明用中文），本批统一成英文，顺带结掉 §9 的
+/// 未决问题 1。
 const HELP: &str = "\
-qcd — 定时任务的常驻驱动（ADR-0092）
+qcd — the resident driver for scheduled tasks (ADR-0092)
 
 Usage: qcd [--beat <secs>] [--data-dir <path>]
        qcd --version | --help
 
-一个用户只有一个 qcd（ADR-0092 §5）：它的互斥锁与 --data-dir 无关，
-所以同一个用户的两个不同数据目录的 qcd 会互相拒绝。换一个 OS 用户另起
-一个是允许的——锁的 base 就在那个用户自己的家目录下。
+One qcd per user (ADR-0092 §5): its mutex has nothing to do with
+--data-dir, so two qcd processes for two different data directories of the
+same user refuse each other. Starting one under a different OS user is
+allowed — the lock lives under that user's own home directory.
 ";
 
 /// `--version` / `--help`：在日志、`lifecycle`、那把锁**之前**回答。

@@ -22,33 +22,36 @@ fn format_next_fire(next: Option<time::PrimitiveDateTime>, now: time::PrimitiveD
     let delta = next - now;
     let minutes = delta.whole_minutes();
     if delta.is_negative() {
-        return "已过期".to_string();
+        return qcode_i18n::tr("gui.schedule.next_fire.overdue").into_owned();
     }
     if minutes < 1 {
-        return "不到 1 分钟后".to_string();
+        return qcode_i18n::tr("gui.schedule.next_fire.soon").into_owned();
     }
     if minutes < 60 {
-        return format!("{minutes} 分钟后");
+        return qcode_i18n::trp("gui.schedule.next_fire.minutes", &[minutes.to_string()]);
     }
     let hours = delta.whole_hours();
     if hours < 24 {
         let rest = minutes - hours * 60;
         return if rest == 0 {
-            format!("{hours} 小时后")
+            qcode_i18n::trp("gui.schedule.next_fire.hours", &[hours.to_string()])
         } else {
-            format!("{hours} 小时 {rest} 分钟后")
+            qcode_i18n::trp(
+                "gui.schedule.next_fire.hours_minutes",
+                &[hours.to_string(), rest.to_string()],
+            )
         };
     }
     let days = delta.whole_days();
-    format!("{days} 天后")
+    qcode_i18n::trp("gui.schedule.next_fire.days", &[days.to_string()])
 }
 
 /// 任务状态的中文标签。
-fn status_label(status: TaskStatus) -> &'static str {
+fn status_label(status: TaskStatus) -> std::borrow::Cow<'static, str> {
     match status {
-        TaskStatus::Active => "已开启",
-        TaskStatus::Paused => "已暂停",
-        TaskStatus::Ended => "已结束",
+        TaskStatus::Active => qcode_i18n::tr("gui.schedule.status.active"),
+        TaskStatus::Paused => qcode_i18n::tr("gui.schedule.status.paused"),
+        TaskStatus::Ended => qcode_i18n::tr("gui.schedule.status.ended"),
     }
 }
 
@@ -78,14 +81,15 @@ impl Shell {
                     div()
                         .text_size(sp(18.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("定时任务"),
+                        .child(qcode_i18n::tr("gui.schedule.empty.title")),
                 ),
             )
             .child(
                 div().px(px(MAIN_PAD_L)).pt_1().child(
-                    div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
-                        "从左侧选择一个定时任务查看详情与运行记录；创建定时任务直接在对话里让模型完成。",
-                    ),
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted)
+                        .child(qcode_i18n::tr("gui.schedule.empty.hint")),
                 ),
             )
     }
@@ -121,7 +125,7 @@ impl Shell {
                     .child(
                         Button::new("schedule-back")
                             .label("←")
-                            .tooltip("返回定时任务列表")
+                            .tooltip(qcode_i18n::tr("gui.schedule.detail.back_tooltip"))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.schedule_detail = None;
                                 this.view = MainView::Schedule;
@@ -168,45 +172,74 @@ impl Shell {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(border)
-                            .child(self.detail_line(cx, "周期", &task.rule.describe()))
-                            .child(self.detail_line(cx, "目标", &task.target.describe()))
                             .child(self.detail_line(
                                 cx,
-                                "下次触发",
+                                &qcode_i18n::tr("gui.schedule.detail.label.rule"),
+                                &task.rule.describe(),
+                            ))
+                            .child(self.detail_line(
+                                cx,
+                                &qcode_i18n::tr("gui.schedule.detail.label.target"),
+                                &task.target.describe(),
+                            ))
+                            .child(self.detail_line(
+                                cx,
+                                &qcode_i18n::tr("gui.schedule.detail.label.next_fire"),
                                 &task.next_fire_at.map_or_else(
                                     || "—".to_string(),
-                                    |at| format!("{at}（{}）", format_next_fire(Some(at), now)),
+                                    |at| {
+                                        qcode_i18n::trp(
+                                            "gui.schedule.detail.value.next_fire",
+                                            &[at.to_string(), format_next_fire(Some(at), now)],
+                                        )
+                                    },
                                 ),
                             ))
-                            .child(self.detail_line(
-                                cx,
-                                "最小投递间隔",
-                                &format!(
-                                    "{}s（全局护栏，防止轰炸）",
-                                    qcode_core::schedule::MIN_DELIVERY_INTERVAL.whole_seconds()
+                            .child(
+                                self.detail_line(
+                                    cx,
+                                    &qcode_i18n::tr("gui.schedule.detail.label.min_interval"),
+                                    &qcode_i18n::trp(
+                                        "gui.schedule.detail.value.min_interval",
+                                        &[qcode_core::schedule::MIN_DELIVERY_INTERVAL
+                                            .whole_seconds()
+                                            .to_string()],
+                                    ),
                                 ),
-                            ))
+                            )
                             .when_some(task.approval_timeout, |this, timeout| {
                                 this.child(self.detail_line(
                                     cx,
-                                    "审批超时",
+                                    &qcode_i18n::tr("gui.schedule.detail.label.approval_timeout"),
                                     &format!("{}s", timeout.as_secs()),
                                 ))
                             })
                             .when_some(task.reserved_session_id.as_deref(), |this, session| {
-                                this.child(self.detail_line(cx, "预留会话", session))
-                            })
-                            .when_some(task.last_receipt.as_ref(), |this, receipt| {
                                 this.child(self.detail_line(
                                     cx,
-                                    "最近投递",
-                                    &format!(
-                                        "{} → {}（message {}）",
-                                        receipt.delivered_at,
-                                        receipt.target_session_id.as_deref().unwrap_or("-"),
-                                        receipt.message_id,
-                                    ),
+                                    &qcode_i18n::tr("gui.schedule.detail.label.reserved_session"),
+                                    session,
                                 ))
+                            })
+                            .when_some(task.last_receipt.as_ref(), |this, receipt| {
+                                this.child(
+                                    self.detail_line(
+                                        cx,
+                                        &qcode_i18n::tr("gui.schedule.detail.label.last_delivery"),
+                                        &qcode_i18n::trp(
+                                            "gui.schedule.detail.value.last_delivery",
+                                            &[
+                                                receipt.delivered_at.to_string(),
+                                                receipt
+                                                    .target_session_id
+                                                    .as_deref()
+                                                    .unwrap_or("-")
+                                                    .to_string(),
+                                                receipt.message_id.to_string(),
+                                            ],
+                                        ),
+                                    ),
+                                )
                             }),
                     )
                     .child(
@@ -218,9 +251,9 @@ impl Shell {
                             .child(
                                 Button::new("schedule-run-now")
                                     .label(if self.schedule_running.contains_key(&task_id) {
-                                        "执行中…"
+                                        qcode_i18n::tr("gui.schedule.detail.action.running")
                                     } else {
-                                        "立即执行"
+                                        qcode_i18n::tr("gui.schedule.detail.action.run_now")
                                     })
                                     .disabled(
                                         status != TaskStatus::Active
@@ -235,9 +268,11 @@ impl Shell {
                                         if self.driver_tone()
                                             == crate::shell::daemon::DriverTone::Dormant
                                         {
-                                            "驱动不在跑，投递了也没人执行"
+                                            qcode_i18n::tr(
+                                                "gui.schedule.detail.tooltip.run_now_dormant",
+                                            )
                                         } else {
-                                            "立即投递一次（不影响周期）"
+                                            qcode_i18n::tr("gui.schedule.detail.tooltip.run_now")
                                         },
                                     )
                                     .on_click({
@@ -252,17 +287,25 @@ impl Shell {
                                     }),
                             )
                             .child(if status == TaskStatus::Active {
-                                Button::new("schedule-pause").label("暂停").on_click({
-                                    let task_id = task_id.clone();
-                                    cx.listener(move |this, _, _window, cx| {
-                                        this.schedule_action(&task_id, ScheduleAction::Pause, cx);
+                                Button::new("schedule-pause")
+                                    .label(qcode_i18n::tr("gui.schedule.detail.action.pause"))
+                                    .on_click({
+                                        let task_id = task_id.clone();
+                                        cx.listener(move |this, _, _window, cx| {
+                                            this.schedule_action(
+                                                &task_id,
+                                                ScheduleAction::Pause,
+                                                cx,
+                                            );
+                                        })
                                     })
-                                })
                             } else {
                                 Button::new("schedule-resume")
-                                    .label("恢复")
+                                    .label(qcode_i18n::tr("gui.schedule.detail.action.resume"))
                                     .disabled(status == TaskStatus::Ended)
-                                    .tooltip("已结束的任务不能恢复")
+                                    .tooltip(qcode_i18n::tr(
+                                        "gui.schedule.detail.tooltip.resume_ended",
+                                    ))
                                     .on_click({
                                         let task_id = task_id.clone();
                                         cx.listener(move |this, _, _window, cx| {
@@ -284,7 +327,9 @@ impl Shell {
                                 |this, session| {
                                     this.child(
                                         Button::new("schedule-open-session")
-                                            .label("打开会话")
+                                            .label(qcode_i18n::tr(
+                                                "gui.schedule.detail.action.open_session",
+                                            ))
                                             .on_click({
                                                 cx.listener(move |this, _, window, cx| {
                                                     this.open_sidebar_section(
@@ -299,8 +344,8 @@ impl Shell {
                             )
                             .child(
                                 Button::new("schedule-edit")
-                                    .label("修改")
-                                    .tooltip("编辑任务内容与周期")
+                                    .label(qcode_i18n::tr("gui.schedule.detail.action.edit"))
+                                    .tooltip(qcode_i18n::tr("gui.schedule.detail.tooltip.edit"))
                                     .on_click({
                                         let task_id = task_id.clone();
                                         cx.listener(move |this, _, window, cx| {
@@ -310,9 +355,9 @@ impl Shell {
                             )
                             .child(
                                 Button::new("schedule-delete")
-                                    .label("删除")
+                                    .label(qcode_i18n::tr("gui.schedule.button.delete"))
                                     .danger()
-                                    .tooltip("删除任务及其运行记录")
+                                    .tooltip(qcode_i18n::tr("gui.schedule.detail.tooltip.delete"))
                                     .on_click({
                                         let task_id = task_id.clone();
                                         cx.listener(move |this, _, _window, cx| {
@@ -325,15 +370,12 @@ impl Shell {
                                     }),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .text_color(muted)
-                            .child(format!(
-                                "运行记录：共 {} 条（保留最近 30 天 / 200 条）",
-                                task.delivery_log.len()
-                            )),
-                    )
+                    .child(div().text_size(sp(CAPTION_SIZE)).text_color(muted).child(
+                        qcode_i18n::trp(
+                            "gui.schedule.detail.log.count",
+                            &[task.delivery_log.len().to_string()],
+                        ),
+                    ))
                     .child(
                         // 运行记录独立滚动区：详情卡片与操作按钮固定在上方，列表
                         // 自己滚；「加载更多」在列表末尾，没加载完就一直在。
@@ -365,7 +407,10 @@ impl Shell {
                                             // 没有则回退到发生时刻。
                                             .child(div().text_size(sp(BODY_SIZE)).child(
                                                 if receipt.prompt.is_empty() {
-                                                    format!("（旧记录：{}）", receipt.occurrence_at)
+                                                    qcode_i18n::trp(
+                                                        "gui.schedule.detail.log.legacy_entry",
+                                                        &[receipt.occurrence_at.to_string()],
+                                                    )
                                                 } else {
                                                     receipt.prompt.clone()
                                                 },
@@ -374,19 +419,22 @@ impl Shell {
                                                 div()
                                                     .text_size(sp(CAPTION_SIZE))
                                                     .text_color(muted)
-                                                    .child(format!(
-                                                        "{} · 投递到 {} · message {}",
-                                                        // 投递时间用实际投递确认时刻
-                                                        // （`delivered_at`）：点击
-                                                        // 「立即执行」时记录的就是那次
-                                                        // 执行的时间，而不是计划触发点
-                                                        // （`occurrence_at`）。
-                                                        receipt.delivered_at,
-                                                        receipt
-                                                            .target_session_id
-                                                            .as_deref()
-                                                            .unwrap_or("-"),
-                                                        receipt.message_id,
+                                                    .child(qcode_i18n::trp(
+                                                        "gui.schedule.detail.log.entry_meta",
+                                                        &[
+                                                            // 投递时间用实际投递确认时刻
+                                                            // （`delivered_at`）：点击
+                                                            // 「立即执行」时记录的就是那次
+                                                            // 执行的时间，而不是计划触发点
+                                                            // （`occurrence_at`）。
+                                                            receipt.delivered_at.to_string(),
+                                                            receipt
+                                                                .target_session_id
+                                                                .as_deref()
+                                                                .unwrap_or("-")
+                                                                .to_string(),
+                                                            receipt.message_id.to_string(),
+                                                        ],
                                                     )),
                                             )
                                             .into_any_element()
@@ -398,8 +446,10 @@ impl Shell {
                                 this.child(
                                     div().flex().justify_center().pt_1().child(
                                         Button::new("schedule-log-more")
-                                            .label("加载更多")
-                                            .tooltip("继续加载更早的 30 条运行记录")
+                                            .label(qcode_i18n::tr("gui.schedule.detail.log.more"))
+                                            .tooltip(qcode_i18n::tr(
+                                                "gui.schedule.detail.log.more_tooltip",
+                                            ))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.schedule_log_count += SCHEDULE_LOG_PAGE_SIZE;
                                                 cx.notify();
@@ -412,7 +462,7 @@ impl Shell {
                                     div()
                                         .text_size(sp(CAPTION_SIZE))
                                         .text_color(muted)
-                                        .child("（更早的记录已被裁剪）"),
+                                        .child(qcode_i18n::tr("gui.schedule.detail.log.pruned")),
                                 )
                             }),
                     ),

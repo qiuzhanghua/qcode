@@ -29,11 +29,18 @@ fn route_valid(route: &str) -> bool {
     !after_dash
 }
 
-fn credential_text(state: qcode_kernel::provider_registry::CredentialState) -> &'static str {
+/// 返回 `Cow` 而不是 `&'static str`：译文来自运行期选定的 locale，编译期常量
+/// 不再可用。英文命中时仍是借用的常量，不额外分配。
+/// 可见于 `setup::render`：向导模式的只读目录与 Provider 卡片显示的是同一套状态，
+/// 不该有两份措辞。
+pub(crate) fn credential_text(
+    state: qcode_kernel::provider_registry::CredentialState,
+) -> std::borrow::Cow<'static, str> {
+    use qcode_kernel::provider_registry::CredentialState;
     match state {
-        qcode_kernel::provider_registry::CredentialState::Configured => "凭证已配置",
-        qcode_kernel::provider_registry::CredentialState::Missing => "凭证缺失",
-        qcode_kernel::provider_registry::CredentialState::Keyless => "无需密钥",
+        CredentialState::Configured => qcode_i18n::tr("gui.setup.credential.configured"),
+        CredentialState::Missing => qcode_i18n::tr("gui.setup.credential.missing"),
+        CredentialState::Keyless => qcode_i18n::tr("gui.setup.credential.keyless"),
     }
 }
 
@@ -93,7 +100,7 @@ impl SetupView {
         cards = cards.child(
             div().flex().flex_row().gap_2().child(
                 Button::new("open-provider-picker")
-                    .label("＋ 添加模型/供应商")
+                    .label(qcode_i18n::tr("gui.setup.card.add_provider"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_provider_picker(window, cx);
                     })),
@@ -120,7 +127,7 @@ impl SetupView {
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(muted_color)
-                    .child("还没有配置模型的 Provider。点击「＋ 添加模型/供应商」选择 Provider 并配置。"),
+                    .child(qcode_i18n::tr("gui.setup.card.empty")),
             );
         }
         for row in filtered {
@@ -167,7 +174,7 @@ impl SetupView {
                 let route_for_default = route.clone();
                 head = head.child(
                     Button::new(format!("default-provider-{route}"))
-                        .label("设为默认")
+                        .label(qcode_i18n::tr("ui.action.set_default"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.make_default(&route_for_default, window, cx);
                         })),
@@ -177,7 +184,7 @@ impl SetupView {
             let route_for_edit = route.clone();
             head = head.child(
                 Button::new(format!("edit-provider-{route}"))
-                    .label("编辑")
+                    .label(qcode_i18n::tr("ui.action.edit"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.open_editor(&route_for_edit, cx);
                     })),
@@ -186,7 +193,7 @@ impl SetupView {
             let route_for_delete = route.clone();
             head = head.child(
                 Button::new(format!("delete-provider-{route}"))
-                    .label("删除")
+                    .label(qcode_i18n::tr("ui.action.delete"))
                     .danger()
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.saved_notice = None;
@@ -198,7 +205,11 @@ impl SetupView {
             // 展开/收起模型列表。
             let route_for_caret = route.clone();
             let head_caret = Button::new(format!("expand-provider-{route}"))
-                .label(if expanded { "收起 ▾" } else { "展开 ▸" })
+                .label(if expanded {
+                    qcode_i18n::tr("gui.setup.card.collapse")
+                } else {
+                    qcode_i18n::tr("gui.setup.card.expand")
+                })
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.toggle_provider_expanded(&route_for_caret, cx);
                 }));
@@ -222,16 +233,20 @@ impl SetupView {
                         Some(name) if name != &model.id => format!("{} — {name}", model.id),
                         _ => model.id.clone(),
                     };
-                    let caps = format!(
-                        "上下文 {} · 最大输出 {}",
-                        model
-                            .context_window
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
-                        model
-                            .max_tokens
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
+                    // 未知值统一写 `-`，与中文界面保持一致：这一行是仪器读数，
+                    // 不是句子，翻译层不该替它决定「未知」怎么写。
+                    let caps = qcode_i18n::trp(
+                        "gui.setup.card.caps",
+                        &[
+                            model
+                                .context_window
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            model
+                                .max_tokens
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        ],
                     );
                     list = list.child(
                         div()
@@ -268,14 +283,14 @@ impl SetupView {
                             .border_color(border_color)
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(muted_color)
-                            .child("该 Provider 尚无模型，点击上方按钮添加。"),
+                            .child(qcode_i18n::tr("gui.setup.card.no_models")),
                     );
                 }
                 let route_manage = route.clone();
                 list = list.child(
                     div().pt_1().child(
                         Button::new(format!("manage-models-{route}"))
-                            .label("＋ 配置模型")
+                            .label(qcode_i18n::tr("gui.setup.card.configure_model"))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.open_add_model(&route_manage, cx);
                             })),
@@ -334,7 +349,7 @@ impl SetupView {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.pick_custom(window, cx);
                         }))
-                        .child("自定义提供方…"),
+                        .child(qcode_i18n::tr("gui.setup.card.custom_provider")),
                 ),
         );
         for row in &usable {
@@ -422,7 +437,7 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child("选择 Provider"))
+                    .child(div().child(qcode_i18n::tr("gui.setup.editor.choose_provider")))
                     .child(
                         div()
                             .id("provider-picker-scroll")
@@ -436,7 +451,7 @@ impl SetupView {
                     .child(
                         div().flex().flex_row().justify_end().child(
                             Button::new("cancel-provider-picker")
-                                .label("取消")
+                                .label(qcode_i18n::tr("ui.action.cancel"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.close_provider_picker(cx);
                                 })),
@@ -494,7 +509,10 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child(format!("为 {route} 添加模型")))
+                    .child(div().child(qcode_i18n::trp(
+                        "gui.setup.editor.add_model_title",
+                        &[route],
+                    )))
                     .child(
                         div()
                             .id("add-model-dialog-scroll")
@@ -516,7 +534,7 @@ impl SetupView {
                     .child(
                         div().flex().flex_row().justify_end().child(
                             Button::new("close-add-model-dialog")
-                                .label("保存")
+                                .label(qcode_i18n::tr("ui.action.save"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     // 弹框内的模型行编辑只在点「保存」时
                                     // 写盘。直接用 flush 的 Result 判断成败：
@@ -609,12 +627,12 @@ impl SetupView {
                     .child(
                         div()
                             .text_size(sp(CAPTION_SIZE))
-                            .child("API 密钥（存入系统钥匙串，不写入 config.toml）"),
+                            .child(qcode_i18n::tr("gui.setup.editor.api_key_hint")),
                     )
-                    .child(Input::new(secret).aria_label("API 密钥"))
+                    .child(Input::new(secret).aria_label(qcode_i18n::tr("ui.field.api_key")))
                     .child(
                         Button::new(format!("store-key-{key}-{row_id}"))
-                            .label("存入钥匙串")
+                            .label(qcode_i18n::tr("gui.setup.editor.store_keychain"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.store_provider_key(row_id, window, cx);
                             })),
@@ -625,9 +643,9 @@ impl SetupView {
         body = body.child(
             Button::new("toggle-provider-config")
                 .label(if expanded {
-                    "收起配置 ▴"
+                    qcode_i18n::tr("gui.setup.editor.collapse_config")
                 } else {
-                    "展开更多配置 ▾"
+                    qcode_i18n::tr("gui.setup.editor.expand_config")
                 })
                 .on_click(cx.listener(|this, _, _window, cx| {
                     this.editor_expanded = !this.editor_expanded;
@@ -680,7 +698,7 @@ impl SetupView {
                 let route_for_default = route.clone();
                 footer = footer.child(
                     Button::new(format!("dialog-default-{route}"))
-                        .label("设为默认")
+                        .label(qcode_i18n::tr("ui.action.set_default"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.make_default(&route_for_default, window, cx);
                         })),
@@ -689,7 +707,7 @@ impl SetupView {
             let route_for_delete = route.clone();
             footer = footer.child(
                 Button::new(format!("dialog-delete-{route}"))
-                    .label("删除")
+                    .label(qcode_i18n::tr("ui.action.delete"))
                     .danger()
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.saved_notice = None;
@@ -704,7 +722,7 @@ impl SetupView {
             .child(div().flex_grow(1.0))
             .child(
                 Button::new("cancel-provider-edit")
-                    .label("取消")
+                    .label(qcode_i18n::tr("ui.action.cancel"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.close_editor(false);
                         cx.notify();
@@ -712,7 +730,7 @@ impl SetupView {
             )
             .child(
                 Button::new("save-provider-edit")
-                    .label("保存")
+                    .label(qcode_i18n::tr("ui.action.save"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         // API 密钥输入框的内容只进钥匙串（`__key` 不写
                         // config）：点「保存」时若还有未存入的密钥，先写入
@@ -741,7 +759,10 @@ impl SetupView {
                         match this.flush_auto_save(AutoSaveKind::Tables, cx) {
                             Ok(()) => {
                                 this.close_editor(true);
-                                this.saved_notice = Some(format!("已保存 {route_close}。"));
+                                this.saved_notice = Some(qcode_i18n::trp(
+                                    "gui.setup.editor.saved",
+                                    &[&route_close],
+                                ));
                             }
                             Err(error) => {
                                 this.provider_error = Some(error);
@@ -772,7 +793,7 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child(format!("编辑 {display}")))
+                    .child(div().child(qcode_i18n::trp("gui.setup.editor.edit_title", &[display])))
                     .child(
                         div()
                             .id("provider-dialog-scroll")
@@ -885,7 +906,10 @@ impl SetupView {
                         div()
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(muted_color)
-                            .child(format!("被全局默认「{global}」覆盖；保存后以这里为准")),
+                            .child(qcode_i18n::trp(
+                                "gui.setup.editor.global_override",
+                                &[global],
+                            )),
                     );
                 }
                 field.into_any_element()
@@ -914,28 +938,28 @@ impl SetupView {
         let (muted_color, border_color) = (theme.muted_foreground, theme.border);
         let overridden = !row.models.is_empty();
         let badge = if overridden {
-            "已自定义模型目录"
+            qcode_i18n::tr("gui.setup.catalog.custom")
         } else {
-            "正在使用适配器默认模型"
+            qcode_i18n::tr("gui.setup.catalog.adapter_default")
         };
         let mut header = div()
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .child(div().child("模型目录"))
+            .child(div().child(qcode_i18n::tr("gui.setup.catalog.title")))
             .child(
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(muted_color)
-                    .child(badge),
+                    .child(badge.clone()),
             )
             .child(div().flex_grow(1.0));
         if overridden {
             let row_id = row.id;
             header = header.child(
                 Button::new(format!("reset-models-{row_id}"))
-                    .label("恢复默认模型")
+                    .label(qcode_i18n::tr("gui.setup.catalog.restore"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
                         this.reset_models(row_id, cx);
                     })),
@@ -945,7 +969,7 @@ impl SetupView {
         let route_probe = route.to_string();
         header = header.child(
             Button::new(format!("probe-models-{row_id}"))
-                .label("获取可用模型")
+                .label(qcode_i18n::tr("gui.setup.catalog.fetch"))
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.probe_models(&route_probe, cx);
                 })),
@@ -962,49 +986,50 @@ impl SetupView {
             for model in &row.models {
                 let model_id = model.id;
                 let row_id = row.id;
-                editor =
-                    editor.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_grow(1.5)
-                                    .child(Input::new(&model.model_id).aria_label("模型 ID")),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_grow(1.0)
-                                    .child(Input::new(&model.name).aria_label("显示名称")),
-                            )
-                            .child(
-                                div().flex().flex_grow(1.0).child(
-                                    Input::new(&model.context_window).aria_label("上下文窗口"),
-                                ),
-                            )
-                            .child(
-                                div().flex().flex_grow(1.0).child(
-                                    Input::new(&model.max_tokens).aria_label("最大输出 token"),
-                                ),
-                            )
-                            .child(
-                                Button::new(format!("remove-model-{row_id}-{model_id}"))
-                                    .label("×")
-                                    .danger()
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.remove_model(row_id, model_id, cx);
-                                    })),
+                editor = editor.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div().flex().flex_grow(1.5).child(
+                                Input::new(&model.model_id)
+                                    .aria_label(qcode_i18n::tr("ui.field.model_id")),
                             ),
-                    );
+                        )
+                        .child(
+                            div().flex().flex_grow(1.0).child(
+                                Input::new(&model.name)
+                                    .aria_label(qcode_i18n::tr("ui.field.display_name")),
+                            ),
+                        )
+                        .child(
+                            div().flex().flex_grow(1.0).child(
+                                Input::new(&model.context_window)
+                                    .aria_label(qcode_i18n::tr("ui.field.context_window")),
+                            ),
+                        )
+                        .child(
+                            div().flex().flex_grow(1.0).child(
+                                Input::new(&model.max_tokens)
+                                    .aria_label(qcode_i18n::tr("ui.field.max_tokens")),
+                            ),
+                        )
+                        .child(
+                            Button::new(format!("remove-model-{row_id}-{model_id}"))
+                                .label("×")
+                                .danger()
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.remove_model(row_id, model_id, cx);
+                                })),
+                        ),
+                );
             }
             let row_id = row.id;
             editor = editor.child(
                 Button::new(format!("add-model-{row_id}"))
-                    .label("＋ 添加模型")
+                    .label(qcode_i18n::tr("ui.action.add_model"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.add_model(row_id, window, cx);
                     })),
@@ -1015,9 +1040,12 @@ impl SetupView {
                 .map(|model| model.id)
                 .collect::<Vec<_>>();
             let hint = if ids.is_empty() {
-                "模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。".to_string()
+                qcode_i18n::tr("gui.setup.catalog.empty_warning").to_string()
             } else {
-                format!("{}：{}", badge, ids.join(" / "))
+                qcode_i18n::trp(
+                    "gui.setup.catalog.custom_ids",
+                    &[badge.to_string(), ids.join(" / ")],
+                )
             };
             editor = editor.child(
                 div()
@@ -1028,7 +1056,7 @@ impl SetupView {
             let row_id = row.id;
             editor = editor.child(
                 Button::new(format!("add-model-{row_id}"))
-                    .label("＋ 添加模型")
+                    .label(qcode_i18n::tr("ui.action.add_model"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.add_model(row_id, window, cx);
                     })),
@@ -1052,23 +1080,26 @@ impl SetupView {
             theme.border,
             theme.danger,
         );
-        let field = |label: &'static str, input: &Entity<InputState>| {
+        // 标签现在来自运行期 locale，不再是编译期常量，所以收 `&str` 而不是
+        // `&'static str`；`child` / `aria_label` 都要求 `'static`，所以在闭包里
+        // 各转一次 `String`。这一处只影响设置页的静态表单，不在渲染热路径上。
+        let field = |label: &str, input: &Entity<InputState>| {
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_size(sp(CAPTION_SIZE)).child(label))
-                .child(Input::new(input).aria_label(label))
+                .child(div().text_size(sp(CAPTION_SIZE)).child(label.to_string()))
+                .child(Input::new(input).aria_label(label.to_string()))
         };
         let mut body = div().flex().flex_col().gap_3();
         if let Some(route) = &self.custom_route {
             body = body.child(field("Provider ID", route));
         }
         if let Some(name) = &self.custom_name {
-            body = body.child(field("显示名称", name));
+            body = body.child(field(&qcode_i18n::tr("ui.field.display_name"), name));
         }
         if let Some(base_url) = &self.custom_base_url {
-            body = body.child(field("API 地址", base_url));
+            body = body.child(field(&qcode_i18n::tr("ui.field.api_base"), base_url));
         }
         if let Some(key_env) = &self.custom_key_env {
             body = body.child(field("Key env", key_env));
@@ -1097,7 +1128,11 @@ impl SetupView {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_size(sp(CAPTION_SIZE)).child("API 协议"))
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .child(qcode_i18n::tr("gui.setup.custom.protocol")),
+                )
                 .child(protocol),
         );
         // Model drafts: only adopted on create.
@@ -1110,29 +1145,23 @@ impl SetupView {
                     .flex_row()
                     .items_center()
                     .gap_1()
+                    .child(div().flex().flex_grow(1.5).child(
+                        Input::new(&model.model_id).aria_label(qcode_i18n::tr("ui.field.model_id")),
+                    ))
+                    .child(div().flex().flex_grow(1.0).child(
+                        Input::new(&model.name).aria_label(qcode_i18n::tr("ui.field.display_name")),
+                    ))
                     .child(
-                        div()
-                            .flex()
-                            .flex_grow(1.5)
-                            .child(Input::new(&model.model_id).aria_label("模型 ID")),
+                        div().flex().flex_grow(1.0).child(
+                            Input::new(&model.context_window)
+                                .aria_label(qcode_i18n::tr("ui.field.context_window")),
+                        ),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_grow(1.0)
-                            .child(Input::new(&model.name).aria_label("显示名称")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_grow(1.0)
-                            .child(Input::new(&model.context_window).aria_label("上下文窗口")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_grow(1.0)
-                            .child(Input::new(&model.max_tokens).aria_label("最大输出 token")),
+                        div().flex().flex_grow(1.0).child(
+                            Input::new(&model.max_tokens)
+                                .aria_label(qcode_i18n::tr("ui.field.max_tokens")),
+                        ),
                     )
                     .child(
                         Button::new(format!("custom-remove-model-{model_id}"))
@@ -1147,7 +1176,7 @@ impl SetupView {
         }
         models = models.child(
             Button::new("custom-add-model")
-                .label("＋ 添加模型")
+                .label(qcode_i18n::tr("ui.action.add_model"))
                 .on_click(cx.listener(|this, _, window, cx| {
                     let model = this.model_row(window, cx, None);
                     this.custom_models.push(model);
@@ -1165,11 +1194,15 @@ impl SetupView {
                         .flex_row()
                         .items_center()
                         .gap_2()
-                        .child(div().text_size(sp(CAPTION_SIZE)).child("模型目录"))
+                        .child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .child(qcode_i18n::tr("gui.setup.catalog.title")),
+                        )
                         .child(div().flex_grow(1.0))
                         .child(
                             Button::new("custom-probe-models")
-                                .label("获取可用模型")
+                                .label(qcode_i18n::tr("gui.setup.catalog.fetch"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.probe_custom_models(cx);
                                 })),
@@ -1201,7 +1234,7 @@ impl SetupView {
             .gap_2()
             .child(
                 Button::new("cancel-custom-provider")
-                    .label("取消")
+                    .label(qcode_i18n::tr("ui.action.cancel"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.close_custom_card();
                         cx.notify();
@@ -1209,7 +1242,7 @@ impl SetupView {
             )
             .child(
                 Button::new("create-custom-provider")
-                    .label("创建提供方")
+                    .label(qcode_i18n::tr("gui.setup.custom.create"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.create_custom_provider(window, cx);
                     })),
@@ -1236,7 +1269,7 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child("添加自定义提供方"))
+                    .child(div().child(qcode_i18n::tr("gui.setup.custom.title")))
                     .child(
                         div()
                             .id("custom-provider-dialog-scroll")
@@ -1263,7 +1296,12 @@ impl SetupView {
             return div().into_any_element();
         }
         if self.probe_search.is_none() {
-            let search = input(window, cx, String::new(), "搜索模型");
+            let search = input(
+                window,
+                cx,
+                String::new(),
+                &qcode_i18n::tr("ui.field.search_model"),
+            );
             self._input_subscriptions.push(cx.subscribe(
                 &search,
                 |view, _input, event: &InputEvent, cx| {
@@ -1357,12 +1395,12 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child("选择要添加的模型"))
+                    .child(div().child(qcode_i18n::tr("gui.setup.picker.title")))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(muted_color)
-                            .child("以下是模型提供方的可用模型，勾选要添加的模型。"),
+                            .child(qcode_i18n::tr("gui.setup.picker.hint")),
                     )
                     .child(
                         div()
@@ -1372,15 +1410,15 @@ impl SetupView {
                             .child(
                                 div().flex_grow(1.0).child(
                                     Input::new(self.probe_search.as_ref().unwrap())
-                                        .aria_label("搜索模型"),
+                                        .aria_label(qcode_i18n::tr("ui.field.search_model")),
                                 ),
                             )
                             .child(
                                 Button::new("probe-toggle-visible")
                                     .label(if all_visible_picked {
-                                        "取消全选"
+                                        qcode_i18n::tr("gui.setup.picker.clear_all")
                                     } else {
-                                        "全选"
+                                        qcode_i18n::tr("gui.setup.picker.select_all")
                                     })
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         for id in &visible_ids {
@@ -1401,15 +1439,17 @@ impl SetupView {
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("close-probe-picker").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.close_probe_picker();
-                                    cx.notify();
-                                }),
-                            ))
+                            .child(
+                                Button::new("close-probe-picker")
+                                    .label(qcode_i18n::tr("ui.action.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.close_probe_picker();
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("adopt-probe-picked")
-                                    .label("添加所选")
+                                    .label(qcode_i18n::tr("gui.setup.picker.add_selected"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.adopt_probe_picked(window, cx);
                                     })),
@@ -1466,14 +1506,12 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(format!("删除 {display}？"))
+                    .child(qcode_i18n::trp("gui.setup.delete.title", &[&display]))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(muted_color)
-                            .child(format!(
-                                "删除 {display} 会移除其配置；已存入系统钥匙串的密钥不会被移除。"
-                            )),
+                            .child(qcode_i18n::trp("gui.setup.delete.body", &[&display])),
                     )
                     .child(
                         div()
@@ -1483,7 +1521,7 @@ impl SetupView {
                             .gap_2()
                             .child(
                                 Button::new("cancel-delete-provider")
-                                    .label("取消")
+                                    .label(qcode_i18n::tr("ui.action.cancel"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.delete_target = None;
                                         cx.notify();
@@ -1491,7 +1529,7 @@ impl SetupView {
                             )
                             .child(
                                 Button::new("confirm-delete-provider")
-                                    .label("删除")
+                                    .label(qcode_i18n::tr("ui.action.delete"))
                                     .danger()
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.remove_provider_route(&route, cx);
@@ -1553,8 +1591,10 @@ impl SetupView {
         pin_default_fields(&mut self.config, provider, model);
         self.set_row_default_model(provider, model, window, cx);
         let notice = match model {
-            Some(model) => format!("已设 {provider} / {model} 为默认。"),
-            None => format!("已设 {provider} 为默认提供方。"),
+            Some(model) => {
+                qcode_i18n::trp("gui.setup.notice.default_with_model", &[provider, model])
+            }
+            None => qcode_i18n::trp("gui.setup.notice.default_provider", &[provider]),
         };
         match super::save::write_config(&self.path, &self.config) {
             Ok(()) => self.saved_notice = Some(notice),
@@ -1676,7 +1716,8 @@ impl SetupView {
         self.open_editor(route, cx);
         // `open_editor` 会清掉提示，所以密钥恢复的提示在它之后设置。
         if restored_key {
-            self.provider_notice = Some(format!("已从系统钥匙串恢复 {route} 的密钥读取命令"));
+            self.provider_notice =
+                Some(qcode_i18n::trp("gui.setup.notice.key_restored", &[&route]));
         }
     }
 
@@ -1708,8 +1749,18 @@ impl SetupView {
         self.editing_provider = None;
         self.saved_notice = None;
         self.custom_route = Some(input(window, cx, String::new(), "Provider ID"));
-        self.custom_name = Some(input(window, cx, String::new(), "显示名称"));
-        self.custom_base_url = Some(input(window, cx, String::new(), "API 地址"));
+        self.custom_name = Some(input(
+            window,
+            cx,
+            String::new(),
+            &qcode_i18n::tr("ui.field.display_name"),
+        ));
+        self.custom_base_url = Some(input(
+            window,
+            cx,
+            String::new(),
+            &qcode_i18n::tr("ui.field.api_base"),
+        ));
         self.custom_key_env = Some(input(window, cx, String::new(), "Key env"));
         self.custom_protocol = "openai".to_string();
         self.custom_models = Vec::new();
@@ -1753,8 +1804,7 @@ impl SetupView {
             .map(|input| input.read(cx).value().trim().to_string())
             .unwrap_or_default();
         if !route_valid(&route) {
-            self.custom_error =
-                Some("Provider ID 需以小写字母开头，之后可用小写字母、数字和短横线。".to_string());
+            self.custom_error = Some(qcode_i18n::tr("gui.setup.error.id_invalid").to_string());
             cx.notify();
             return;
         }
@@ -1767,12 +1817,12 @@ impl SetupView {
                     .any(|row| cell(row, "name", cx).trim() == route)
             });
         if taken {
-            self.custom_error = Some("已有提供方使用了这个 ID。".to_string());
+            self.custom_error = Some(qcode_i18n::tr("gui.setup.error.id_taken").to_string());
             cx.notify();
             return;
         }
         if base_url.is_empty() {
-            self.custom_error = Some("自定义提供方需要填写 API 地址。".to_string());
+            self.custom_error = Some(qcode_i18n::tr("gui.setup.error.base_required").to_string());
             cx.notify();
             return;
         }
@@ -1800,7 +1850,10 @@ impl SetupView {
         }
         self.close_custom_card();
         self.editing_provider = Some(route.clone());
-        self.saved_notice = Some(format!("已创建 {display_name}。"));
+        self.saved_notice = Some(qcode_i18n::trp(
+            "gui.setup.notice.created",
+            &[&display_name],
+        ));
         self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
     }

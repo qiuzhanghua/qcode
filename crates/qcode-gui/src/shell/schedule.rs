@@ -47,14 +47,14 @@ impl ScheduleRuleKind {
         Self::Cron,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Daily => "每天固定时刻",
-            Self::Weekly => "每周固定时刻",
-            Self::Interval => "每隔 N 秒",
-            Self::Once => "一次性",
-            Self::Monthly => "每月固定时刻",
-            Self::Cron => "自定义 Cron",
+            Self::Daily => qcode_i18n::tr("gui.schedule.rule_kind.daily"),
+            Self::Weekly => qcode_i18n::tr("gui.schedule.rule_kind.weekly"),
+            Self::Interval => qcode_i18n::tr("gui.schedule.rule_kind.interval"),
+            Self::Once => qcode_i18n::tr("gui.schedule.rule_kind.once"),
+            Self::Monthly => qcode_i18n::tr("gui.schedule.rule_kind.monthly"),
+            Self::Cron => qcode_i18n::tr("gui.schedule.rule_kind.cron"),
         }
     }
 
@@ -91,10 +91,10 @@ pub(crate) enum ScheduleTargetKind {
 impl ScheduleTargetKind {
     pub(crate) const ALL: [Self; 2] = [Self::NewOnce, Self::New];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::NewOnce => "新会话（首次投递创建并复用）",
-            Self::New => "新会话（每次投递都新建）",
+            Self::NewOnce => qcode_i18n::tr("gui.schedule.target_kind.new_once"),
+            Self::New => qcode_i18n::tr("gui.schedule.target_kind.new"),
         }
     }
 
@@ -192,8 +192,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = cx.new(|cx| InputState::new(window, cx).placeholder("任务名称"));
-        let prompt = cx.new(|cx| InputState::new(window, cx).placeholder("到点后投递给会话的内容"));
+        let title = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.name"))
+        });
+        let prompt = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.prompt"))
+        });
         let time = cx.new(|cx| {
             let mut state = TimeFieldState::new(window, cx)
                 .precision(TimePrecision::Minute)
@@ -206,12 +212,15 @@ impl Shell {
             state
         });
         let interval_secs = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("秒数（≥ 60）");
+            let mut input = InputState::new(window, cx).placeholder(qcode_i18n::tr(
+                "gui.schedule.form.placeholder.interval_secs",
+            ));
             input.set_value("3600", window, cx);
             input
         });
         let monthly_day = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("日（1-31）");
+            let mut input = InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.monthly_day"));
             input.set_value("15", window, cx);
             input
         });
@@ -233,10 +242,15 @@ impl Shell {
             state.set_date_time(naive.and_hms_opt(9, 0, 0).expect("09:00"), window, cx);
             state
         });
-        let cron_expr =
-            cx.new(|cx| InputState::new(window, cx).placeholder("5 字段，如 0 9 * * *"));
-        let timeout_secs =
-            cx.new(|cx| InputState::new(window, cx).placeholder("审批超时秒数（可留空）"));
+        let cron_expr = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.cron"))
+        });
+        let timeout_secs = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(qcode_i18n::tr(
+                "gui.schedule.form.placeholder.approval_timeout",
+            ))
+        });
         let _subscription = cx.subscribe(&title, |shell, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 shell.submit_schedule_form(cx);
@@ -371,12 +385,15 @@ impl Shell {
             state
         });
         let interval_secs = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("秒数（≥ 60）");
+            let mut input = InputState::new(window, cx).placeholder(qcode_i18n::tr(
+                "gui.schedule.form.placeholder.interval_secs",
+            ));
             input.set_value("3600", window, cx);
             input
         });
         let monthly_day = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("日（1-31）");
+            let mut input = InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.monthly_day"));
             input.set_value("15", window, cx);
             input
         });
@@ -397,8 +414,10 @@ impl Shell {
             state.set_date_time(naive.and_hms_opt(9, 0, 0).expect("09:00"), window, cx);
             state
         });
-        let cron_expr =
-            cx.new(|cx| InputState::new(window, cx).placeholder("5 字段，如 0 9 * * *"));
+        let cron_expr = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(qcode_i18n::tr("gui.schedule.form.placeholder.cron"))
+        });
         crate::questions::RulePickerState {
             kind: ScheduleRuleKind::Daily,
             time,
@@ -423,9 +442,9 @@ impl Shell {
             // 没有内核时 `schedule_op` 是空实现：不拦一下的话点了「创建」什么
             // 都不会发生，看起来像按钮坏了。
             self.schedule_form = Some(form);
-            self.ui
-                .app
-                .push_notice("还没有配置 provider，先在 Settings 里配置再创建定时任务");
+            self.ui.app.push_notice(
+                qcode_i18n::tr("gui.schedule.form.notice.provider_missing_create").into_owned(),
+            );
             cx.notify();
             return;
         }
@@ -433,10 +452,20 @@ impl Shell {
         let prompt = form.prompt.read(cx).value().trim().to_string();
         let timeout_text = form.timeout_secs.read(cx).value().trim().to_string();
         if title.is_empty() {
-            return reject_form(self, form, cx, "请填写任务名称");
+            return reject_form(
+                self,
+                form,
+                cx,
+                &qcode_i18n::tr("gui.schedule.form.error.title_required"),
+            );
         }
         if prompt.is_empty() {
-            return reject_form(self, form, cx, "请填写投递内容");
+            return reject_form(
+                self,
+                form,
+                cx,
+                &qcode_i18n::tr("gui.schedule.form.error.prompt_required"),
+            );
         }
         // 把结构化周期翻译回规范表达式，复用 parse_rule 的校验与错误文案：
         // 用户从菜单选类型、填参数，落盘仍是我们一直用的那种规则描述。
@@ -452,7 +481,12 @@ impl Shell {
                         weekdays.sort_unstable();
                         weekdays.dedup();
                         if weekdays.is_empty() {
-                            return reject_form(self, form, cx, "请至少选择一个星期");
+                            return reject_form(
+                                self,
+                                form,
+                                cx,
+                                &qcode_i18n::tr("gui.schedule.form.error.weekday_required"),
+                            );
                         }
                         format!(
                             "weekly {} {clock}",
@@ -466,7 +500,12 @@ impl Shell {
                     _ => {
                         let day = form.monthly_day.read(cx).value().trim().to_string();
                         if day.is_empty() {
-                            return reject_form(self, form, cx, "请填写每月日期");
+                            return reject_form(
+                                self,
+                                form,
+                                cx,
+                                &qcode_i18n::tr("gui.schedule.form.error.monthly_day_required"),
+                            );
                         }
                         format!("monthly {day} {clock}")
                     }
@@ -479,7 +518,12 @@ impl Shell {
                 // 读一次即结束借用：`reject_form` 要接管 form。
                 let picked = form.once_picker.read(cx).date_time().start();
                 let Some(naive) = picked else {
-                    return reject_form(self, form, cx, "请选择日期");
+                    return reject_form(
+                        self,
+                        form,
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.error.once_date_required"),
+                    );
                 };
                 format!("once {}", naive.format("%Y-%m-%d %H:%M"))
             }
@@ -488,7 +532,12 @@ impl Shell {
         let rule = match parse_rule(&rule_text) {
             Ok(rule) => rule,
             Err(error) => {
-                return reject_form(self, form, cx, &format!("周期无效：{error}"));
+                return reject_form(
+                    self,
+                    form,
+                    cx,
+                    &qcode_i18n::trp("gui.schedule.form.error.rule_invalid", &[error.to_string()]),
+                );
             }
         };
         let target = match form.target_kind {
@@ -501,7 +550,14 @@ impl Shell {
         } else {
             match timeout_text.parse::<u64>() {
                 Ok(secs) if secs > 0 => Some(std::time::Duration::from_secs(secs)),
-                _ => return reject_form(self, form, cx, "审批超时需为正整数秒"),
+                _ => {
+                    return reject_form(
+                        self,
+                        form,
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.error.timeout_invalid"),
+                    );
+                }
             }
         };
         match editing {
@@ -552,9 +608,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if self.backend.provider().is_none() {
-            self.ui
-                .app
-                .push_notice("还没有配置 provider，定时任务操作不可用");
+            self.ui.app.push_notice(
+                qcode_i18n::tr("gui.schedule.form.notice.provider_missing_actions").into_owned(),
+            );
             cx.notify();
             return;
         }

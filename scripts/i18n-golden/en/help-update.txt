@@ -1,0 +1,11 @@
+Check for a newer release, or install it
+
+Usage: qc update [OPTIONS]
+
+Options:
+      --check                   Only report whether a newer release exists
+      --data-dir <DATA_DIR>     Data directory. Defaults to the XDG data home
+      --config <CONFIG>         Config file. Defaults to ~/.config/qcode/config.toml
+      --yes                     Install without asking for confirmation (required when not on a TTY)
+      --approval-policy <PATH>  Approval policy file ([[rules]]). Replaces the config's approval rules
+  -h, --help                    Print help

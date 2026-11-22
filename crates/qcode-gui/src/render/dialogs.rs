@@ -31,14 +31,15 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child(format!("删除任务 “{title}”？"))
+                    .child(qcode_i18n::trp(
+                        "gui.schedule.dialog.delete_task.title",
+                        &[&title],
+                    ))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
-                            .child(
-                                "将删除本地任务记录和对话历史，不可恢复。不会删除目录中的文件。",
-                            ),
+                            .child(qcode_i18n::tr("gui.schedule.dialog.delete_task.body")),
                     )
                     .child(
                         div()
@@ -46,15 +47,17 @@ impl Shell {
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("cancel-delete-task").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.pending_task_delete = None;
-                                    cx.notify();
-                                }),
-                            ))
+                            .child(
+                                Button::new("cancel-delete-task")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.pending_task_delete = None;
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("confirm-delete-task")
-                                    .label("删除")
+                                    .label(qcode_i18n::tr("gui.schedule.button.delete"))
                                     .danger()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.pending_task_delete = None;
@@ -92,7 +95,7 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child("重命名任务")
+                    .child(qcode_i18n::tr("gui.schedule.dialog.rename.title"))
                     .child(Input::new(&input).w_full())
                     .child(
                         div()
@@ -100,17 +103,21 @@ impl Shell {
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("cancel-rename-task").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.rename_task = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(Button::new("confirm-rename-task").label("保存").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.save_rename_task(cx);
-                                }),
-                            )),
+                            .child(
+                                Button::new("cancel-rename-task")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.rename_task = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("confirm-rename-task")
+                                    .label(qcode_i18n::tr("gui.schedule.button.save"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.save_rename_task(cx);
+                                    })),
+                            ),
                     ),
             )
             .into_any_element()
@@ -139,7 +146,7 @@ impl Shell {
             .map(|kind| (kind.as_stored().to_string(), kind.label().to_string()))
             .collect();
         // 星期：0=周日，同 crontab。多选 pill 组按周一起始排列。
-        const WEEKDAY_LABELS: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        let weekday_labels = weekday_labels();
         // 目标：类型下拉。
         let target_items: Vec<(String, String)> = ScheduleTargetKind::ALL
             .iter()
@@ -155,7 +162,7 @@ impl Shell {
                     div()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(cx.theme().muted_foreground)
-                        .child("时刻（HH:MM）"),
+                        .child(qcode_i18n::tr("gui.schedule.form.field.time")),
                 )
                 .child(TimeField::new(&state.time).w_full())
                 .into_any_element(),
@@ -166,7 +173,11 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(self.form_field(cx, "每月日期（1-31）", &day))
+                    .child(self.form_field(
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.field.monthly_day"),
+                        &day,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -176,14 +187,18 @@ impl Shell {
                                 div()
                                     .text_size(sp(CAPTION_SIZE))
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("时刻（HH:MM）"),
+                                    .child(qcode_i18n::tr("gui.schedule.form.field.time")),
                             )
                             .child(TimeField::new(&time).w_full()),
                     )
                     .into_any_element()
             }
             ScheduleRuleKind::Interval => self
-                .form_field(cx, "间隔秒数（≥ 60）", &state.interval_secs)
+                .form_field(
+                    cx,
+                    &qcode_i18n::tr("gui.schedule.form.field.interval_secs"),
+                    &state.interval_secs,
+                )
                 .into_any_element(),
             ScheduleRuleKind::Once => {
                 let picker = state.once_picker.clone();
@@ -195,13 +210,17 @@ impl Shell {
                         div()
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(cx.theme().muted_foreground)
-                            .child("触发时刻（日期 + 时间）"),
+                            .child(qcode_i18n::tr("gui.schedule.form.field.once_at")),
                     )
                     .child(DatePicker::new(&picker).w_full())
                     .into_any_element()
             }
             ScheduleRuleKind::Cron => self
-                .form_field(cx, "Cron 表达式（5 字段）", &state.cron_expr)
+                .form_field(
+                    cx,
+                    &qcode_i18n::tr("gui.schedule.form.field.cron"),
+                    &state.cron_expr,
+                )
                 .into_any_element(),
         };
         // 只有「每周」才出现的星期多选（pill 组）；只有「指定会话」才出现的
@@ -217,7 +236,7 @@ impl Shell {
                     div()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(cx.theme().muted_foreground)
-                        .child("星期（可多选）"),
+                        .child(qcode_i18n::tr("gui.schedule.form.field.weekdays")),
                 )
                 .child(
                     div()
@@ -259,7 +278,7 @@ impl Shell {
                                                 });
                                             }
                                         })
-                                        .child(WEEKDAY_LABELS[day as usize].to_string())
+                                        .child(weekday_labels[day as usize].clone())
                                 }
                             }),
                         )
@@ -309,17 +328,25 @@ impl Shell {
                             .text_size(sp(16.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if state.editing.is_some() {
-                                "编辑定时任务"
+                                qcode_i18n::tr("gui.schedule.form.title.edit")
                             } else {
-                                "手动创建定时任务"
+                                qcode_i18n::tr("gui.schedule.form.title.create")
                             }),
                     )
-                    .child(self.form_field(cx, "名称", &state.title))
-                    .child(self.form_field(cx, "内容", &state.prompt))
+                    .child(self.form_field(
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.field.name"),
+                        &state.title,
+                    ))
+                    .child(self.form_field(
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.field.prompt"),
+                        &state.prompt,
+                    ))
                     .child(self.workdir_field(cx))
                     .child(self.form_select(
                         cx,
-                        "周期",
+                        &qcode_i18n::tr("gui.schedule.form.field.rule"),
                         "schedule-rule-kind",
                         state.rule_kind.label().to_string(),
                         state.rule_menu_open,
@@ -346,7 +373,7 @@ impl Shell {
                     .child(param_field)
                     .child(self.form_select(
                         cx,
-                        "目标",
+                        &qcode_i18n::tr("gui.schedule.form.field.target"),
                         "schedule-target-kind",
                         state.target_kind.label().to_string(),
                         state.target_menu_open,
@@ -369,25 +396,31 @@ impl Shell {
                             }
                         },
                     ))
-                    .child(self.form_field(cx, "审批超时(秒)", &state.timeout_secs))
+                    .child(self.form_field(
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.field.approval_timeout"),
+                        &state.timeout_secs,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("cancel-schedule-form").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.schedule_form = None;
-                                    cx.notify();
-                                }),
-                            ))
+                            .child(
+                                Button::new("cancel-schedule-form")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.schedule_form = None;
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("confirm-schedule-form")
                                     .label(if state.editing.is_some() {
-                                        "保存"
+                                        qcode_i18n::tr("gui.schedule.button.save")
                                     } else {
-                                        "创建"
+                                        qcode_i18n::tr("gui.schedule.button.create")
                                     })
                                     .primary()
                                     .on_click(cx.listener(|this, _, _window, cx| {
@@ -577,7 +610,7 @@ impl Shell {
             .map(|kind| (kind.as_stored().to_string(), kind.label().to_string()))
             .collect();
         // 星期：0=周日，同 crontab。多选 pill 组按周一起始排列。
-        const WEEKDAY_LABELS: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        let weekday_labels = weekday_labels();
         let shell = cx.entity().downgrade();
 
         // 周期类型对应的参数行。
@@ -590,7 +623,7 @@ impl Shell {
                     div()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(muted_foreground)
-                        .child("时刻（HH:MM）"),
+                        .child(qcode_i18n::tr("gui.schedule.form.field.time")),
                 )
                 .child(TimeField::new(&rule.time).w_full())
                 .into_any_element(),
@@ -601,7 +634,11 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(self.form_field(cx, "每月日期（1-31）", &day))
+                    .child(self.form_field(
+                        cx,
+                        &qcode_i18n::tr("gui.schedule.form.field.monthly_day"),
+                        &day,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -611,14 +648,18 @@ impl Shell {
                                 div()
                                     .text_size(sp(CAPTION_SIZE))
                                     .text_color(muted_foreground)
-                                    .child("时刻（HH:MM）"),
+                                    .child(qcode_i18n::tr("gui.schedule.form.field.time")),
                             )
                             .child(TimeField::new(&time).w_full()),
                     )
                     .into_any_element()
             }
             ScheduleRuleKind::Interval => self
-                .form_field(cx, "间隔秒数（≥ 60）", &rule.interval_secs)
+                .form_field(
+                    cx,
+                    &qcode_i18n::tr("gui.schedule.form.field.interval_secs"),
+                    &rule.interval_secs,
+                )
                 .into_any_element(),
             ScheduleRuleKind::Once => {
                 let picker = rule.once_picker.clone();
@@ -630,13 +671,17 @@ impl Shell {
                         div()
                             .text_size(sp(CAPTION_SIZE))
                             .text_color(muted_foreground)
-                            .child("触发时刻（日期 + 时间）"),
+                            .child(qcode_i18n::tr("gui.schedule.form.field.once_at")),
                     )
                     .child(DatePicker::new(&picker).w_full())
                     .into_any_element()
             }
             ScheduleRuleKind::Cron => self
-                .form_field(cx, "Cron 表达式（5 字段）", &rule.cron_expr)
+                .form_field(
+                    cx,
+                    &qcode_i18n::tr("gui.schedule.form.field.cron"),
+                    &rule.cron_expr,
+                )
                 .into_any_element(),
         };
 
@@ -652,7 +697,7 @@ impl Shell {
                     div()
                         .text_size(sp(CAPTION_SIZE))
                         .text_color(muted_foreground)
-                        .child("星期（可多选）"),
+                        .child(qcode_i18n::tr("gui.schedule.form.field.weekdays")),
                 )
                 .child(
                     div()
@@ -695,7 +740,7 @@ impl Shell {
                                                 });
                                             }
                                         })
-                                        .child(WEEKDAY_LABELS[day as usize].to_string())
+                                        .child(weekday_labels[day as usize].clone())
                                         .into_any_element()
                                 }
                             }),
@@ -711,7 +756,7 @@ impl Shell {
             .gap_2()
             .child(self.form_select(
                 cx,
-                "周期",
+                &qcode_i18n::tr("gui.schedule.form.field.rule"),
                 "question-rule-kind",
                 rule.kind.label().to_string(),
                 rule.rule_menu_open,
@@ -759,7 +804,7 @@ impl Shell {
         let cwd = state.cwd.clone();
         let cwd_label = cwd
             .clone()
-            .unwrap_or_else(|| "未指定（用会话 / 引擎默认目录）".to_string());
+            .unwrap_or_else(|| qcode_i18n::tr("gui.schedule.form.workdir_unset").into_owned());
         div()
             .flex()
             .flex_col()
@@ -768,7 +813,7 @@ impl Shell {
                 div()
                     .text_size(sp(CAPTION_SIZE))
                     .text_color(muted_foreground)
-                    .child("工作目录"),
+                    .child(qcode_i18n::tr("gui.schedule.form.field.workdir")),
             )
             .child(
                 div()
@@ -791,7 +836,7 @@ impl Shell {
                     )
                     .child(
                         Button::new("schedule-choose-cwd")
-                            .label("选择目录")
+                            .label(qcode_i18n::tr("gui.schedule.button.choose_directory"))
                             .on_click({
                                 let shell = shell.clone();
                                 move |_event, _window, cx| match pick_directory() {
@@ -819,19 +864,23 @@ impl Shell {
                             }),
                     )
                     .when(cwd.is_some(), |this| {
-                        this.child(Button::new("schedule-clear-cwd").label("清除").on_click({
-                            let shell = shell.clone();
-                            move |_event, _window, cx| {
-                                if let Some(shell) = shell.upgrade() {
-                                    shell.update(cx, |shell, cx| {
-                                        if let Some(form) = shell.schedule_form.as_mut() {
-                                            form.cwd = None;
+                        this.child(
+                            Button::new("schedule-clear-cwd")
+                                .label(qcode_i18n::tr("gui.schedule.button.clear"))
+                                .on_click({
+                                    let shell = shell.clone();
+                                    move |_event, _window, cx| {
+                                        if let Some(shell) = shell.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                if let Some(form) = shell.schedule_form.as_mut() {
+                                                    form.cwd = None;
+                                                }
+                                                cx.notify();
+                                            });
                                         }
-                                        cx.notify();
-                                    });
-                                }
-                            }
-                        }))
+                                    }
+                                }),
+                        )
                     }),
             )
     }
@@ -861,12 +910,18 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child(format!("移除目录 {label}？"))
+                    .child(qcode_i18n::trp(
+                        "gui.schedule.dialog.remove_root.title",
+                        &[&label],
+                    ))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
-                            .child(format!("不会删除 {path} 中的文件，只会从当前任务中移除。")),
+                            .child(qcode_i18n::trp(
+                                "gui.schedule.dialog.remove_root.body",
+                                &[&path],
+                            )),
                     )
                     .child(
                         div()
@@ -874,15 +929,17 @@ impl Shell {
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("cancel-remove-root").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.pending_root_delete = None;
-                                    cx.notify();
-                                }),
-                            ))
+                            .child(
+                                Button::new("cancel-remove-root")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.pending_root_delete = None;
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("confirm-remove-root")
-                                    .label("移除")
+                                    .label(qcode_i18n::tr("gui.schedule.button.remove"))
                                     .danger()
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.pending_root_delete = None;
@@ -919,12 +976,12 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child("退出 QCode？")
+                    .child(qcode_i18n::tr("gui.schedule.dialog.quit.title"))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
-                            .child("当前任务仍在运行，退出会中断它。"),
+                            .child(qcode_i18n::tr("gui.schedule.dialog.quit.body")),
                     )
                     .child(
                         div()
@@ -933,13 +990,20 @@ impl Shell {
                             .justify_end()
                             .gap_2()
                             .child(
-                                Button::new("cancel-quit").label("取消").on_click(
-                                    cx.listener(|this, _, _window, cx| this.cancel_quit(cx)),
-                                ),
+                                Button::new("cancel-quit")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.cancel_quit(cx)),
+                                    ),
                             )
-                            .child(Button::new("confirm-quit").label("退出").danger().on_click(
-                                cx.listener(|this, _, _window, cx| this.confirm_quit(cx)),
-                            )),
+                            .child(
+                                Button::new("confirm-quit")
+                                    .label(qcode_i18n::tr("gui.schedule.button.quit"))
+                                    .danger()
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.confirm_quit(cx)),
+                                    ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -974,12 +1038,15 @@ impl Shell {
                     .border_color(theme.border)
                     .p_4()
                     .text_color(theme.popover_foreground)
-                    .child(format!("粘贴 {lines} 行？"))
+                    .child(qcode_i18n::trp(
+                        "gui.schedule.dialog.paste.title",
+                        &[lines.to_string()],
+                    ))
                     .child(
                         div()
                             .text_size(sp(SECONDARY_SIZE))
                             .text_color(theme.muted_foreground)
-                            .child("终端没有开启 bracketed paste，粘贴的换行会被立即执行。"),
+                            .child(qcode_i18n::tr("gui.schedule.dialog.paste.body")),
                     )
                     .child(
                         div()
@@ -987,15 +1054,17 @@ impl Shell {
                             .flex_row()
                             .justify_end()
                             .gap_2()
-                            .child(Button::new("terminal-paste-cancel").label("取消").on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.pending_terminal_paste = None;
-                                    cx.notify();
-                                }),
-                            ))
+                            .child(
+                                Button::new("terminal-paste-cancel")
+                                    .label(qcode_i18n::tr("gui.schedule.button.cancel"))
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.pending_terminal_paste = None;
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("terminal-paste-ok")
-                                    .label("粘贴")
+                                    .label(qcode_i18n::tr("gui.schedule.button.paste"))
                                     .primary()
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.confirm_terminal_paste(cx);
@@ -1005,4 +1074,17 @@ impl Shell {
             )
             .into_any_element()
     }
+}
+
+/// 七天的短名。**函数而不是 const**：`tr` 是运行期查表，`const` 里调不了。
+fn weekday_labels() -> [std::borrow::Cow<'static, str>; 7] {
+    [
+        qcode_i18n::tr("gui.schedule.weekday.sun"),
+        qcode_i18n::tr("gui.schedule.weekday.mon"),
+        qcode_i18n::tr("gui.schedule.weekday.tue"),
+        qcode_i18n::tr("gui.schedule.weekday.wed"),
+        qcode_i18n::tr("gui.schedule.weekday.thu"),
+        qcode_i18n::tr("gui.schedule.weekday.fri"),
+        qcode_i18n::tr("gui.schedule.weekday.sat"),
+    ]
 }

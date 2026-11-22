@@ -180,8 +180,8 @@ pub(crate) fn running_row(shell: &Shell, mark: Hsla, color: Hsla, divider: Hsla)
         .filter(|turn| turn.running())
         .map(|turn| (time::OffsetDateTime::now_utc() - turn.started_at).max(time::Duration::ZERO));
     let label = match elapsed {
-        Some(elapsed) => format!("工作中，用时 {} ···", format_duration_zh(elapsed)),
-        None => "工作中".to_string(),
+        Some(elapsed) => qcode_i18n::trp("app.elapsed.running", &[format_elapsed(elapsed)]),
+        None => qcode_i18n::tr("app.elapsed.running_plain").into_owned(),
     };
     let icon = Icon::default()
         .data(QC_MARK)
@@ -241,26 +241,51 @@ fn flip_angle(delta: f32) -> f32 {
     }
 }
 
-/// Chinese run duration: `23秒`, `1分23秒`, `1小时2分3秒`.
-pub(crate) fn format_duration_zh(duration: time::Duration) -> String {
+/// 运行时长：`23s`、`1m 23s`、`1h 2m 3s`（中文 `23秒`、`1分23秒`、`1小时2分3秒`）。
+///
+/// **为什么只有一个函数**：这里原来有两个 —— `format_duration_zh` 给「工作中，用时」
+/// 出 `1分23秒`，`format_duration` 给「耗时」出 `1m23s`。两者在**同一个视图**里紧挨着
+/// 出现，于是中文界面上一行说中文单位、下一行说英文单位。语言变成运行期维度之后，
+/// 「哪套单位」不再由调用点决定，只能有一个按 locale 分度的实现。
+///
+/// 英文用 `1m 23s`（单位间有空格），中文 `1分23秒`，**结构平行**：同样紧凑、同样
+/// 省略前导零，两边宽度接近 —— 这一行每秒重算，跳动幅度一致才不会看着晃。
+/// 不用 `1:23` 表盘式：它有歧义（1 分 23 秒，还是 1 时 23 分？）。
+///
+/// 秒始终显示（含 `1m 0s`）：末尾跳动的数字就是「还在跑」的证据。
+pub(crate) fn format_elapsed(duration: time::Duration) -> String {
+    format_elapsed_in(&qcode_i18n::locale(), duration)
+}
+
+/// [`format_elapsed`] 的 locale 显式版。
+///
+/// 分开的理由只有一个：**测试要同时看到两种语言的形态**，而 `set_locale` 是进程级
+/// 状态，在并行测试里切换会互相污染（ADR-0105 §6）。有了这个参数，测试不必重写一遍
+/// 分支逻辑，也就不会有「副本与真身漂移」这种最隐蔽的错。
+pub(crate) fn format_elapsed_in(locale: &str, duration: time::Duration) -> String {
     let total = duration.whole_seconds().max(0) as u64;
     let hours = total / 3600;
     let minutes = total / 60 % 60;
     let seconds = total % 60;
     if hours > 0 {
-        format!("{hours}小时{minutes}分{seconds}秒")
+        // 满一小时就把时/分/秒都写出来，**包括 `1h 0m 0s`**。
+        //
+        // 曾经试过「分钟为 0 就省掉分钟」（`1h 3s`），实测在边界上很难看：
+        // 计数从 `59m 59s` 跳到 `1h 0s`，下一秒又变回 `1h 0m 1s` —— 同一行文字
+        // 先掉一个分量再涨回来。一致性比省两个字符重要。
+        qcode_i18n::trp_in(
+            locale,
+            "app.duration.hours_minutes_seconds",
+            &[hours.to_string(), minutes.to_string(), seconds.to_string()],
+        )
     } else if total >= 60 {
-        format!("{minutes}分{seconds}秒")
+        qcode_i18n::trp_in(
+            locale,
+            "app.duration.minutes_seconds",
+            &[minutes.to_string(), seconds.to_string()],
+        )
     } else {
-        format!("{seconds}秒")
-    }
-}
-pub(crate) fn format_duration(duration: time::Duration) -> String {
-    let seconds = duration.whole_seconds().max(0) as u64;
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else {
-        format!("{}m{}s", seconds / 60, seconds % 60)
+        qcode_i18n::trp_in(locale, "app.duration.seconds", &[seconds.to_string()])
     }
 }
 pub(crate) fn reasoning_preview(text: &str) -> String {
@@ -522,14 +547,18 @@ pub(crate) fn turn_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> A
         let elapsed_label = if turn.running() {
             let now = time::OffsetDateTime::now_utc();
             let live = (now - turn.started_at).max(time::Duration::ZERO);
-            format!("耗时{}", format_duration(live))
+            qcode_i18n::trp("app.elapsed.took", &[format_elapsed(live)])
         } else {
             turn.duration()
-                .map(|d| format!("耗时{}", format_duration(d)))
+                .map(|d| qcode_i18n::trp("app.elapsed.took", &[format_elapsed(d)]))
                 .unwrap_or_default()
         };
-        let process_title = process_label(shell, &process_blocks)
-            .unwrap_or_else(|| format!("执行过程 · {} 项", process_blocks.len()));
+        let process_title = process_label(shell, &process_blocks).unwrap_or_else(|| {
+            qcode_i18n::trp(
+                "app.elapsed.process_steps",
+                &[process_blocks.len().to_string()],
+            )
+        });
         let header = div()
             .flex()
             .flex_row()
@@ -1640,4 +1669,74 @@ fn image_tile(image: &qcode_ui_state::ImageBlock, shell: &Shell, index: usize) -
         .border_color(rgba(0x7f7f7f33))
         .child(img(path).object_fit(ObjectFit::Cover).w_full().h_full())
         .into_any_element()
+}
+
+#[cfg(test)]
+mod duration_tests {
+    // 窄导入，**不要** `use super::*`：那会把 crate 根一起 glob 进来，多出的名字
+    // 解析足以把本 crate 的 `#[test]` 展开推过递归上限（与 `render/mod.rs` 的
+    // `tests`、`window_icon.rs` 同一个坑）。
+    use super::{format_elapsed, format_elapsed_in};
+    use time::Duration;
+
+    /// 每种量级对一格，连同两个边界（59/60 秒、59:59 / 1 小时）与「零分量」。
+    ///
+    /// 走 `format_elapsed_in` 而不是切全局 locale：后者是进程级 `AtomicStr`，并行
+    /// 测试里互相污染（ADR-0105 §6）。这里要的正是「两种语言各自的形态」，所以
+    /// 必须能同时看到两边。
+    fn en(seconds: i64) -> String {
+        format_elapsed_in("en", Duration::seconds(seconds))
+    }
+
+    fn zh(seconds: i64) -> String {
+        format_elapsed_in("zh-CN", Duration::seconds(seconds))
+    }
+
+    #[test]
+    fn english_uses_spaced_units() {
+        assert_eq!(en(0), "0s");
+        assert_eq!(en(23), "23s");
+        assert_eq!(en(59), "59s");
+        // 边界：正好一分。
+        assert_eq!(en(60), "1m 0s");
+        assert_eq!(en(83), "1m 23s");
+        assert_eq!(en(3599), "59m 59s");
+        // 边界：正好一小时。
+        // 正好一小时：三个分量都写全，不省零（见 `format_elapsed_in` 的注释）。
+        assert_eq!(en(3600), "1h 0m 0s");
+        assert_eq!(en(3603), "1h 0m 3s");
+        assert_eq!(en(3723), "1h 2m 3s");
+    }
+
+    #[test]
+    fn chinese_keeps_the_same_structure() {
+        assert_eq!(zh(0), "0秒");
+        assert_eq!(zh(23), "23秒");
+        assert_eq!(zh(60), "1分0秒");
+        assert_eq!(zh(83), "1分23秒");
+        assert_eq!(zh(3600), "1小时0分0秒");
+        assert_eq!(zh(3603), "1小时0分3秒");
+        assert_eq!(zh(3723), "1小时2分3秒");
+    }
+
+    /// 负时长（时钟回拨）当 0 处理，不产出 `-5s`。
+    #[test]
+    fn negative_duration_clamps_to_zero() {
+        assert_eq!(en(-5), "0s");
+        assert_eq!(zh(-5), "0秒");
+    }
+
+    /// `format_elapsed` 必须跟随进程当前语言 —— 它的存在意义就是替掉原来那个
+    /// 「同一视图里两种单位」的写法。
+    #[test]
+    fn format_elapsed_follows_the_current_locale() {
+        qcode_i18n::pin_for_tests();
+        for seconds in [0, 59, 60, 83, 3599, 3600, 3603, 3723, 86_400] {
+            assert_eq!(
+                format_elapsed(Duration::seconds(seconds)),
+                zh(seconds),
+                "钉到 zh-CN 之后，{seconds}s 处应产出中文形态"
+            );
+        }
+    }
 }
