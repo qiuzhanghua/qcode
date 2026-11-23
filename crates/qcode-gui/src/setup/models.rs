@@ -75,14 +75,12 @@ pub(super) fn pin_default_fields(config: &mut Config, provider: &str, model: Opt
     }
 }
 
-/// What a candidate row is called: the id, plus the provider's display name
-/// when it differs. The id is what gets written to the config; the name is what
-/// the provider's documentation calls the model.
+/// What a candidate row is called: the model id — the value that actually gets
+/// written to the config. Vendors return a display name (`name`) that differs
+/// from the id (e.g. id `deepseek-v4-flash-200910`, name `deepseek-v4-flash`);
+/// showing only the id keeps the list unambiguous.
 fn candidate_label(candidate: &qcode_providers::discovery::ModelCandidate) -> String {
-    match candidate.name.as_deref() {
-        Some(name) if name != candidate.id => format!("{} — {name}", candidate.id),
-        _ => candidate.id.clone(),
-    }
+    candidate.id.clone()
 }
 
 impl SetupView {

@@ -654,44 +654,19 @@ impl SetupView {
         .detach();
     }
 
-    /// Open the candidate picker over `ids`: everything not already in the
-    /// surface's model rows starts picked (adopting a selection never silently
-    /// rewrites a capacity the user corrected).
+    /// Open the candidate picker: nothing is picked by default — the user ticks
+    /// the models to add. Adopting a selection never silently rewrites a
+    /// capacity the user corrected.
     fn open_probe_picker(
         &mut self,
-        surface: &ProbeSurface,
+        _surface: &ProbeSurface,
         candidates: &[qcode_providers::discovery::ModelCandidate],
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
-        let known = match surface {
-            ProbeSurface::Provider(route) => self
-                .tables
-                .get("providers")
-                .and_then(|table| {
-                    table
-                        .rows
-                        .iter()
-                        .find(|row| cell(row, "name", cx).trim() == route)
-                })
-                .map(|row| {
-                    row.models
-                        .iter()
-                        .map(|model| model.model_id.read(cx).value().to_string())
-                        .collect::<HashSet<_>>()
-                })
-                .unwrap_or_default(),
-            ProbeSurface::Custom => self
-                .custom_models
-                .iter()
-                .map(|model| model.model_id.read(cx).value().to_string())
-                .collect(),
-        };
         self.probe_candidates = Some(candidates.to_vec());
-        self.probe_picked = candidates
-            .iter()
-            .map(|candidate| candidate.id.clone())
-            .filter(|id| !known.contains(id))
-            .collect();
+        // 默认全不选：探测出的模型由用户勾选，不把整份列表静默写进模型行。
+        // 「全选」按钮仍可用（`select_all`）。
+        self.probe_picked = std::collections::HashSet::new();
         self.probe_query = String::new();
     }
 
@@ -751,7 +726,7 @@ impl SetupView {
                 {
                     row.models.extend(added);
                 }
-                self.auto_save(cx, AutoSaveKind::Tables, false);
+                // 模型只进行 state，写盘由编辑页「保存」按钮触发（点击保存才保存）。
             }
             ProbeSurface::Custom => {
                 // 自定义卡片只在「创建」时落盘，这里只改草稿。
