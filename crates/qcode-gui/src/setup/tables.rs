@@ -765,16 +765,21 @@ impl SetupView {
 
     /// Build one model draft row from a picked candidate, keeping the metadata
     /// the listing carried (name, context window, output ceiling).
+    ///
+    /// `pick` 是勾选时展示并记录的值（厂商显示名 name，缺省用 id）；写入
+    /// config 的模型 id 就是它——厂商接受显示名作为模型引用。
     fn model_row_from_candidate(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
         candidates: &[qcode_providers::discovery::ModelCandidate],
-        id: &str,
+        pick: &str,
     ) -> ModelRowState {
-        let candidate = candidates.iter().find(|candidate| candidate.id == id);
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some(pick) || candidate.id == pick);
         let model = qcode_kernel::config::ModelEntry {
-            id: id.to_string(),
+            id: pick.to_string(),
             name: candidate.and_then(|candidate| candidate.name.clone()),
             context_window: candidate.and_then(|candidate| candidate.context_window),
             max_tokens: candidate.and_then(|candidate| candidate.max_tokens),

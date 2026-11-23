@@ -76,12 +76,17 @@ pub(super) fn pin_default_fields(config: &mut Config, provider: &str, model: Opt
     }
 }
 
-/// What a candidate row is called: the model id — the value that actually gets
-/// written to the config. Vendors return a display name (`name`) that differs
-/// from the id (e.g. id `deepseek-v4-flash-200910`, name `deepseek-v4-flash`);
-/// showing only the id keeps the list unambiguous.
+/// What a candidate row is called: the vendor's display name (e.g.
+/// `deepseek-v4-flash`), falling back to the id when the listing carries no
+/// name. The picked value is written into the config as the model id — vendors
+/// accept the display name as the model reference.
 fn candidate_label(candidate: &qcode_providers::discovery::ModelCandidate) -> String {
-    candidate.id.clone()
+    candidate
+        .name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| candidate.id.clone())
 }
 
 impl SetupView {
@@ -1630,11 +1635,11 @@ impl SetupView {
         let all_visible_picked = !visible.is_empty()
             && visible
                 .iter()
-                .all(|candidate| self.probe_picked.contains(&candidate.id));
+                .all(|candidate| self.probe_picked.contains(&candidate_label(candidate)));
         let entity = cx.entity();
         let visible_ids = visible
             .iter()
-            .map(|candidate| candidate.id.clone())
+            .map(|candidate| candidate_label(candidate))
             .collect::<Vec<_>>();
         let mut list = div()
             .id("probe-candidate-list")
@@ -1644,24 +1649,21 @@ impl SetupView {
             .max_h(px(320.0))
             .overflow_y_scroll();
         for candidate in &visible {
-            let id = &candidate.id;
-            let checked = self.probe_picked.contains(id);
-            // The label carries both: the id is what gets written to the config,
-            // the name is what the provider's own docs call the model. Typing the
-            // name where an id belongs is the mistake this line exists to prevent.
-            let label = candidate_label(candidate);
-            let id_clone = id.clone();
+            let pick = candidate_label(candidate);
+            let checked = self.probe_picked.contains(&pick);
+            // 展示与勾选都用厂商显示名（name），写入 config 的也是它。
+            let pick_clone = pick.clone();
             let entity = entity.clone();
             list = list.child(
-                Checkbox::new(format!("probe-candidate-{id}"))
+                Checkbox::new(format!("probe-candidate-{}", candidate.id))
                     .checked(checked)
-                    .label(label)
+                    .label(pick)
                     .on_change(move |checked, _window, cx| {
                         entity.update(cx, |view, cx| {
                             if *checked {
-                                view.probe_picked.insert(id_clone.clone());
+                                view.probe_picked.insert(pick_clone.clone());
                             } else {
-                                view.probe_picked.remove(&id_clone);
+                                view.probe_picked.remove(&pick_clone);
                             }
                             cx.notify();
                         });
