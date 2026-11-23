@@ -444,7 +444,7 @@ pub(crate) fn parse<T: std::str::FromStr>(value: &str, label: &str) -> Result<T,
     value
         .trim()
         .parse()
-        .map_err(|_| format!("{label}: invalid value"))
+        .map_err(|_| qcode_i18n::trp("gui.err.invalid_value", &[label.to_string()]))
 }
 
 pub(crate) fn parse_f64(
@@ -461,7 +461,10 @@ pub(crate) fn parse_sandbox_network(value: &str) -> Result<SandboxNetworkMode, S
         "proxy" => Ok(SandboxNetworkMode::Proxy),
         "strict" => Ok(SandboxNetworkMode::Strict),
         "open" => Ok(SandboxNetworkMode::Open),
-        other => Err(format!("unknown network mode {other}")),
+        other => Err(qcode_i18n::trp(
+            "gui.err.unknown_network_mode",
+            &[other.to_string()],
+        )),
     }
 }
 
@@ -472,7 +475,10 @@ pub(crate) fn parse_sandbox(value: &str) -> Result<SandboxMode, String> {
         "bwrap" => Ok(SandboxMode::Bwrap),
         "landlock" => Ok(SandboxMode::Landlock),
         "windows-acl" => Ok(SandboxMode::WindowsAcl),
-        other => Err(format!("unknown sandbox mode {other}")),
+        other => Err(qcode_i18n::trp(
+            "gui.err.unknown_sandbox_mode",
+            &[other.to_string()],
+        )),
     }
 }
 
@@ -481,7 +487,10 @@ pub(crate) fn parse_network(value: &str) -> Result<NetworkMode, String> {
         "off" => Ok(NetworkMode::Off),
         "proxy" => Ok(NetworkMode::Proxy),
         "strict" => Ok(NetworkMode::Strict),
-        other => Err(format!("unknown network mode {other}")),
+        other => Err(qcode_i18n::trp(
+            "gui.err.unknown_network_mode",
+            &[other.to_string()],
+        )),
     }
 }
 
@@ -490,7 +499,10 @@ pub(crate) fn parse_unknown(value: &str) -> Result<UnknownHost, String> {
         "ask" => Ok(UnknownHost::Ask),
         "deny" => Ok(UnknownHost::Deny),
         "allow" => Ok(UnknownHost::Allow),
-        other => Err(format!("unknown network policy {other}")),
+        other => Err(qcode_i18n::trp(
+            "gui.err.unknown_network_policy",
+            &[other.to_string()],
+        )),
     }
 }
 
@@ -499,7 +511,10 @@ pub(crate) fn parse_search(value: &str) -> Result<SearchBackend, String> {
         "brave" => Ok(SearchBackend::Brave),
         "tavily" => Ok(SearchBackend::Tavily),
         "searxng" => Ok(SearchBackend::Searxng),
-        other => Err(format!("unknown search backend {other}")),
+        other => Err(qcode_i18n::trp(
+            "gui.err.unknown_search_backend",
+            &[other.to_string()],
+        )),
     }
 }
 
@@ -568,9 +583,9 @@ pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, S
     // Written through the Security framework rather than `security
     // add-generic-password -w <key>`, which would put the secret in `argv`.
     credentials::macos::store("qcode", provider, key).map_err(|status| {
-        format!(
-            "keychain write failed ({})",
-            credentials::macos::describe(status)
+        qcode_i18n::trp(
+            "gui.err.keychain_write",
+            &[credentials::macos::describe(status)],
         )
     })?;
     Ok(vec![
@@ -594,15 +609,15 @@ pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, S
         ])
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| format!("secret-tool: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("gui.err.secret_tool", &[error.to_string()]))?;
     child
         .stdin
         .as_mut()
-        .ok_or_else(|| "secret-tool stdin unavailable".to_string())?
+        .ok_or_else(|| qcode_i18n::tr("gui.err.secret_tool_stdin").to_string())?
         .write_all(key.as_bytes())
         .map_err(|error| error.to_string())?;
     if !child.wait().map_err(|error| error.to_string())?.success() {
-        return Err("secret-tool store failed".to_string());
+        return Err(qcode_i18n::tr("gui.err.secret_tool_store").to_string());
     }
     Ok(vec![
         "secret-tool".to_string(),
@@ -632,15 +647,15 @@ pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, S
         ])
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| format!("powershell: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("gui.err.powershell", &[error.to_string()]))?;
     child
         .stdin
         .as_mut()
-        .ok_or_else(|| "powershell stdin unavailable".to_string())?
+        .ok_or_else(|| qcode_i18n::tr("gui.err.powershell_stdin").to_string())?
         .write_all(key.as_bytes())
         .map_err(|error| error.to_string())?;
     if !child.wait().map_err(|error| error.to_string())?.success() {
-        return Err("CredWrite failed".to_string());
+        return Err(qcode_i18n::tr("gui.err.cred_write").to_string());
     }
     Ok(vec![
         "powershell".to_string(),
@@ -652,7 +667,7 @@ pub(crate) fn keychain_store(provider: &str, key: &str) -> Result<Vec<String>, S
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub(crate) fn keychain_store(_provider: &str, _key: &str) -> Result<Vec<String>, String> {
-    Err("keychain setup is not implemented on this platform yet".to_string())
+    Err(qcode_i18n::tr("gui.err.keychain_unimplemented").to_string())
 }
 
 /// The `api_key_command` argv that reads a stored key for `provider`, when one
@@ -769,5 +784,5 @@ pub(crate) fn open_in_editor(path: &std::path::Path) -> Result<(), String> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("cannot open editor: {error}"))
+        .map_err(|error| qcode_i18n::trp("gui.err.open_editor", &[error.to_string()]))
 }

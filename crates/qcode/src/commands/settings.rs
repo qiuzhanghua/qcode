@@ -460,7 +460,7 @@ fn provider_append(
     // sandbox/network pair is untouched by construction; the whole must still
     // parse and pass the config-wide checks (see [`combine_config`]).
     let combined = combine_config(&existing, &section)
-        .map_err(|error| qcode_i18n::trp("cli.err.not_writing", &[error.to_string()]))?;
+        .map_err(|error| qcode_i18n::trp("cli.err.not_writing", &[error.as_str()]))?;
 
     println!("--- {} (existing)", path.display());
     println!("+++ template {}/{}", template.kind.as_str(), id);

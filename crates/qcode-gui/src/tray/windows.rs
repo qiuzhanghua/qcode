@@ -134,7 +134,7 @@ fn tray_thread(ready: Sender<Result<(), String>>) {
             std::ptr::null(),
         );
         if hwnd.is_null() {
-            let _ = ready.send(Err("cannot create the tray message window".into()));
+            let _ = ready.send(Err(qcode_i18n::tr("gui.err.tray_window").into()));
             return;
         }
         let _ = TRAY_HWND.set(hwnd as isize);
@@ -163,7 +163,7 @@ fn tray_thread(ready: Sender<Result<(), String>>) {
         write_tip(&mut nid, &snapshot().tooltip());
 
         if Shell_NotifyIconW(NIM_ADD, &nid) == 0 {
-            let _ = ready.send(Err("Shell_NotifyIcon(NIM_ADD) failed".into()));
+            let _ = ready.send(Err(qcode_i18n::tr("gui.err.tray_icon_add").into()));
             return;
         }
         if let Some(lock) = TRAY_NID.get()

@@ -5,34 +5,6 @@
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
 # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
-qcode-gui/backend.rs	not configured yet: open Settings first
-qcode-gui/backend.rs	rebuild is asynchronous; use rebuild_hook
-qcode-gui/backend.rs	this backend cannot reload
-qcode-gui/fs_watch.rs	path contains NUL
-qcode-gui/platform.rs	cannot open file picker: {error}
-qcode-gui/platform.rs	cannot open folder picker: {error}
-qcode-gui/platform.rs	the native file picker is not implemented on this platform; type the path instead
-qcode-gui/platform.rs	the native folder picker is not implemented on this platform; type the path instead
-qcode-gui/runtime.rs	the turn task panicked; the engine is idle again, see the logs
-qcode-gui/setup/fields.rs	CredWrite failed
-qcode-gui/setup/fields.rs	cannot open editor: {error}
-qcode-gui/setup/fields.rs	keychain setup is not implemented on this platform yet
-qcode-gui/setup/fields.rs	keychain write failed ({})
-qcode-gui/setup/fields.rs	powershell stdin unavailable
-qcode-gui/setup/fields.rs	powershell: {error}
-qcode-gui/setup/fields.rs	secret-tool stdin unavailable
-qcode-gui/setup/fields.rs	secret-tool store failed
-qcode-gui/setup/fields.rs	secret-tool: {error}
-qcode-gui/setup/fields.rs	unknown network mode {other}
-qcode-gui/setup/fields.rs	unknown network policy {other}
-qcode-gui/setup/fields.rs	unknown sandbox mode {other}
-qcode-gui/setup/fields.rs	unknown search backend {other}
-qcode-gui/setup/fields.rs	{label}: invalid value
-qcode-gui/setup/save.rs	{}: required
-qcode-gui/shell/mod.rs	cannot apply settings: {error} (still using the previous kernel)
-qcode-gui/tray/linux.rs	QCode
-qcode-gui/tray/windows.rs	Shell_NotifyIcon(NIM_ADD) failed
-qcode-gui/tray/windows.rs	cannot create the tray message window
 qcode-kernel/config/edit.rs	mcp must be a table
 qcode-kernel/config/edit.rs	mcp.servers must be an array
 qcode-kernel/config/edit.rs	root must be a table

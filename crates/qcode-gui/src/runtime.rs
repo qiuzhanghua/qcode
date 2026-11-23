@@ -431,7 +431,7 @@ impl Drop for TurnGuard {
             let _ = self.done.send((
                 self.target.clone(),
                 self.scheduled.clone(),
-                Err("the turn task panicked; the engine is idle again, see the logs".to_string()),
+                Err(qcode_i18n::tr("gui.err.turn_panicked").to_string()),
             ));
         }
     }

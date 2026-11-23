@@ -138,6 +138,86 @@ ui:
 # 这里的中文一律**保持原文**：这一批只做「把文案搬进表」，不顺手改中文措辞，
 # 否则一次提交里混着「翻译」和「改稿」，中文界面变了却没人能一眼看出为什么。
 gui:
+  # 设置页/向导与后端的状态错误（`Err(String)` / `push_notice`）。
+  # `secret-tool` / `powershell` / `CredWrite` / `Shell_NotifyIcon` 是**程序名与
+  # API 名**，不翻：用户要拿它去搜、去对文档。
+  err:
+    not_configured:
+      en: "not configured yet: open Settings first"
+      zh-CN: "还没配置：先打开设置"
+    invalid_value:
+      en: "%{0}: invalid value"
+      zh-CN: "%{0}：值无效"
+    required:
+      en: "%{0}: required"
+      zh-CN: "%{0}：必填"
+    unknown_network_mode:
+      en: "unknown network mode %{0}"
+      zh-CN: "未知的网络模式 %{0}"
+    unknown_sandbox_mode:
+      en: "unknown sandbox mode %{0}"
+      zh-CN: "未知的沙箱模式 %{0}"
+    unknown_network_policy:
+      en: "unknown network policy %{0}"
+      zh-CN: "未知的网络策略 %{0}"
+    unknown_search_backend:
+      en: "unknown search backend %{0}"
+      zh-CN: "未知的搜索后端 %{0}"
+    open_editor:
+      en: "cannot open editor: %{0}"
+      zh-CN: "打不开编辑器：%{0}"
+    keychain_write:
+      en: "keychain write failed (%{0})"
+      zh-CN: "写入密钥库失败（%{0}）"
+    keychain_unimplemented:
+      en: "keychain setup is not implemented on this platform yet"
+      zh-CN: "这个平台上还没实现密钥库"
+    secret_tool:
+      en: "secret-tool: %{0}"
+      zh-CN: "secret-tool：%{0}"
+    secret_tool_stdin:
+      en: "secret-tool stdin unavailable"
+      zh-CN: "secret-tool 的 stdin 不可用"
+    secret_tool_store:
+      en: "secret-tool store failed"
+      zh-CN: "secret-tool 保存失败"
+    powershell:
+      en: "powershell: %{0}"
+      zh-CN: "powershell：%{0}"
+    powershell_stdin:
+      en: "powershell stdin unavailable"
+      zh-CN: "powershell 的 stdin 不可用"
+    cred_write:
+      en: "CredWrite failed"
+      zh-CN: "CredWrite 失败"
+    file_picker:
+      en: "cannot open file picker: %{0}"
+      zh-CN: "打不开选文件对话框：%{0}"
+    folder_picker:
+      en: "cannot open folder picker: %{0}"
+      zh-CN: "打不开选目录对话框：%{0}"
+    no_native_file_picker:
+      en: "the native file picker is not implemented on this platform; type the path instead"
+      zh-CN: "这个平台上没有系统选文件对话框；请直接输入路径"
+    no_native_folder_picker:
+      en: "the native folder picker is not implemented on this platform; type the path instead"
+      zh-CN: "这个平台上没有系统选目录对话框；请直接输入路径"
+    turn_panicked:
+      en: "the turn task panicked; the engine is idle again, see the logs"
+      zh-CN: "这一轮的任务 panic 了；引擎已回到空闲，详情见日志"
+    tray_window:
+      en: "cannot create the tray message window"
+      zh-CN: "创建托盘消息窗口失败"
+    tray_icon_add:
+      en: "Shell_NotifyIcon(NIM_ADD) failed"
+      zh-CN: "Shell_NotifyIcon(NIM_ADD) 失败"
+    apply_settings:
+      en: "cannot apply settings: %{0}"
+      zh-CN: "应用设置失败：%{0}"
+    apply_settings_stale:
+      en: "cannot apply settings: %{0} (still using the previous kernel)"
+      zh-CN: "应用设置失败：%{0}（仍在用上一个内核）"
+
   # 主区（`render/main.rs`）：状态栏、审批/提问面板、预算提示、覆盖层。
   main:
     # 模型下拉里的一行：`使用「provider」（model）`。

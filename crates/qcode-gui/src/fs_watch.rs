@@ -169,6 +169,7 @@ mod linux_backend {
 
     fn cstring(path: &Path) -> io::Result<std::ffi::CString> {
         std::ffi::CString::new(path.as_os_str().as_bytes())
+            // i18n:keep io 诊断：路径里有 NUL 字节，不是界面文案
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
     }
 }
@@ -187,6 +188,7 @@ mod macos_backend {
     /// 阻塞监听 `dir`（目录内容变化：rename 进出、写入），触发即 `change.change()`。
     pub(super) fn watch(dir: &Path, change: &Notifier) -> io::Result<()> {
         let cdir = std::ffi::CString::new(dir.as_os_str().as_bytes())
+            // i18n:keep io 诊断：路径里有 NUL 字节，不是界面文案
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
         let dir_fd = unsafe { libc::open(cdir.as_ptr(), O_RDONLY | O_DIRECTORY) };
         if dir_fd < 0 {
