@@ -454,7 +454,7 @@ async fn append_title_waiting_lock(
             Err(crate::store::StoreError::Locked(_)) => {
                 if cancel.is_cancelled() {
                     return Err(TitleError::Failed(
-                        "title generation cancelled while waiting for the session lock".to_string(),
+                        qcode_i18n::tr("core.err.title.cancelled_waiting_lock").to_string(),
                     ));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -494,16 +494,18 @@ async fn run_title_call(
         crate::engine::collect_stream(provider, request, cancel, None).await
     })
     .await
-    .map_err(|_| TitleError::Failed("title generation timed out".to_string()))?
+    .map_err(|_| TitleError::Failed(qcode_i18n::tr("core.err.title.timed_out").to_string()))?
     .map_err(|error| TitleError::Failed(error.to_string()))?;
 
     if collected.cancelled {
-        return Err(TitleError::Failed("title generation cancelled".to_string()));
+        return Err(TitleError::Failed(
+            qcode_i18n::tr("core.err.title.cancelled").to_string(),
+        ));
     }
     if collected.stop_reason != StopReason::EndTurn {
-        return Err(TitleError::Failed(format!(
-            "title output stopped early ({:?})",
-            collected.stop_reason
+        return Err(TitleError::Failed(qcode_i18n::trp(
+            "core.err.title.stopped_early",
+            &[format!("{:?}", collected.stop_reason)],
         )));
     }
     let text: String = collected
@@ -518,7 +520,7 @@ async fn run_title_call(
     let title = normalize_title(&title_from_model_output(&text), config.max_title_bytes);
     if title.is_empty() {
         return Err(TitleError::Failed(
-            "title model produced no text".to_string(),
+            qcode_i18n::tr("core.err.title.empty_output").to_string(),
         ));
     }
     Ok(title)

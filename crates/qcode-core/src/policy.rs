@@ -263,17 +263,25 @@ impl Rule {
             && is_pattern(pattern)
             && let Err(error) = Glob::new(pattern)
         {
-            return Err(format!(
-                "rule '{}' has an invalid `tool` pattern {:?}: {error}",
-                self.id, pattern
+            return Err(qcode_i18n::trp(
+                "core.err.policy.tool_pattern",
+                &[
+                    self.id.as_str(),
+                    format!("{pattern:?}").as_str(),
+                    error.to_string().as_str(),
+                ],
             ));
         }
         if let Some(pattern) = &self.path_glob
             && let Err(error) = Glob::new(pattern)
         {
-            return Err(format!(
-                "rule '{}' has an invalid `path_glob` {:?}: {error}",
-                self.id, pattern
+            return Err(qcode_i18n::trp(
+                "core.err.policy.path_glob",
+                &[
+                    self.id.as_str(),
+                    format!("{pattern:?}").as_str(),
+                    error.to_string().as_str(),
+                ],
             ));
         }
         Ok(())

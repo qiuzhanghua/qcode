@@ -135,7 +135,10 @@ pub(super) fn try_request(paths: &super::Paths, request: Request) -> io::Result<
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("unexpected reply from {name}: {line:?}"),
+            qcode_i18n::trp(
+                "core.err.single_instance.unexpected_reply",
+                &[name.to_string(), format!("{line:?}")],
+            ),
         ))
     }
 }

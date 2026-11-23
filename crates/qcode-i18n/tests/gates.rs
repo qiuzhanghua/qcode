@@ -1245,6 +1245,10 @@ fn intentional_english(path: &str) -> bool {
         // 注意 `reason` 的值是**模型写的**，它本来就可能是中文，这一块天然混排，
         // 所以更要把字段名固定成一种语言。
         | "qcode-core/approval.rs"
+        // `todo_write` 的参数诊断：这些串是照着「点名哪个字段、哪个上限」写的，
+        // 好让模型改参数重试。ADR-0105 §5：工具的**技术诊断**保持英文，受众是
+        // 模型而不是终端用户。
+        | "qcode-core/todo.rs"
     )
 }
 

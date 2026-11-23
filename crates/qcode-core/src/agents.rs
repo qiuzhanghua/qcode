@@ -13,16 +13,16 @@ pub const MAX_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Error)]
 pub enum AgentsError {
-    #[error("cannot read {path}: {source}")]
+    #[error("{}", qcode_i18n::trp("core.err.agents.read", &[.path.display().to_string(), .source.to_string()]))]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{path} is a symlink; workspace instructions must be a regular file")]
+    #[error("{}", qcode_i18n::trp("core.err.agents.symlink", &[.path.display().to_string()]))]
     Symlink { path: PathBuf },
-    #[error("{path} is not a regular file")]
+    #[error("{}", qcode_i18n::trp("core.err.agents.not_a_file", &[.path.display().to_string()]))]
     NotAFile { path: PathBuf },
-    #[error("{path} is {bytes} bytes; the limit is {max} bytes", max = MAX_BYTES)]
+    #[error("{}", qcode_i18n::trp("core.err.agents.too_large", &[.path.display().to_string(), .bytes.to_string(), MAX_BYTES.to_string()]))]
     TooLarge { path: PathBuf, bytes: u64 },
 }
 

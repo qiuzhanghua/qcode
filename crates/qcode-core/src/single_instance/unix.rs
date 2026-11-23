@@ -105,7 +105,10 @@ fn private_socket(scope: super::Scope, data_dir: &Path) -> io::Result<PathBuf> {
     Err(last.unwrap_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("no directory short enough for a unix socket ({SUN_PATH} bytes)"),
+            qcode_i18n::trp(
+                "core.err.single_instance.socket_path_too_long",
+                &[SUN_PATH.to_string()],
+            ),
         )
     }))
 }
@@ -147,17 +150,22 @@ fn ensure_private(dir: &Path) -> io::Result<()> {
     if !meta.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("{} exists but is not a directory", dir.display()),
+            qcode_i18n::trp(
+                "core.err.single_instance.not_a_directory",
+                &[dir.display().to_string()],
+            ),
         ));
     }
     if meta.uid() != uid() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!(
-                "{} belongs to uid {}, not {} — refusing to put a control socket there",
-                dir.display(),
-                meta.uid(),
-                uid()
+            qcode_i18n::trp(
+                "core.err.single_instance.foreign_owner",
+                &[
+                    dir.display().to_string(),
+                    meta.uid().to_string(),
+                    uid().to_string(),
+                ],
             ),
         ));
     }
@@ -227,9 +235,9 @@ pub(super) fn try_request(paths: &super::Paths, request: Request) -> io::Result<
         // 连上了却不是我们的协议：把它当「没人能接活」，别硬说成功。
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "unexpected reply from {}: {line:?}",
-                paths.channel.display()
+            qcode_i18n::trp(
+                "core.err.single_instance.unexpected_reply",
+                &[paths.channel.display().to_string(), format!("{line:?}")],
             ),
         ))
     }

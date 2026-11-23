@@ -503,13 +503,14 @@ pub fn acquire_in(scope: Scope, data_dir: &Path) -> io::Result<Outcome> {
             release_in_process(&paths.lock);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!(
-                    "another instance holds {} but did not answer on {} within {}ms; \
-                     not starting a second one (set {}=0 to override)",
-                    paths.lock.display(),
-                    paths.channel_address(),
-                    RETRIES * RETRY_INTERVAL.as_millis() as usize,
-                    scope.env_var(),
+                qcode_i18n::trp(
+                    "core.err.single_instance.another_instance",
+                    &[
+                        paths.lock.display().to_string(),
+                        paths.channel_address().to_string(),
+                        (RETRIES * RETRY_INTERVAL.as_millis() as usize).to_string(),
+                        scope.env_var().to_string(),
+                    ],
                 ),
             ));
         }

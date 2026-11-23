@@ -133,7 +133,7 @@ pub fn summary_input(events: &[Event], boundary: u64) -> String {
                     name, arguments, ..
                 } => {
                     text.push_str(role);
-                    text.push_str(" called ");
+                    text.push_str(" called "); // i18n:keep 送进摘要模型的输入，不是界面文案
                     text.push_str(&name);
                     text.push(' ');
                     text.push_str(&arguments.to_string());

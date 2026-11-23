@@ -316,16 +316,18 @@ pub enum ToolError {
     #[error("{0}")]
     Invalid(String),
     #[error("path escapes the authorized roots: {0}")]
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     PathEscape(String),
     #[error("task has no roots; file tools are unavailable")]
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     NoRoots,
-    #[error("root `{0}` is read-only")]
+    #[error("root `{0}` is read-only")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     ReadOnly(String),
-    #[error("network error: {0}")]
+    #[error("network error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     Network(String),
-    #[error("sandbox error: {0}")]
+    #[error("sandbox error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     Sandbox(String),
-    #[error("io error: {0}")]
+    #[error("io error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     Io(#[from] std::io::Error),
 }
 

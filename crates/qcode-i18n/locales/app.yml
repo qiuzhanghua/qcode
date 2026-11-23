@@ -2250,6 +2250,246 @@ core:
         en: "Timed tasks will not fire until it exists. `qc schedule list` still works."
         zh-CN: "在它存在之前，定时任务不会触发。`qc schedule list` 仍然可用。"
 
+  # 走返回值的错误串（`Err(…)` / `.map_err(…)` / `#[error(…)]`，I18N.md §10.19）。
+  # 它们最终都经 `main.rs` 的 `error: {err}` 打到用户眼前，所以属于界面文案。
+  # 唯一的例外是 `ToolError::*` 的技术诊断：受众是模型（ADR-0105 §5）。
+  #
+  # `#[error]` 里塞不进 `tr()`，写法是 `#[error("{}", trp(key, &[…]))]`——
+  # 属性宏只接受格式串字面量，但接受表达式参数。
+  err:
+    provider:
+      auth:
+        en: "authentication failed: %{0}"
+        zh-CN: "认证失败：%{0}"
+      rate_limit:
+        en: "rate limited: %{0}"
+        zh-CN: "被限流：%{0}"
+      context_overflow:
+        en: "context window exceeded"
+        zh-CN: "上下文窗口已经超出"
+      invalid_request:
+        en: "invalid request: %{0}"
+        zh-CN: "请求无效：%{0}"
+      server:
+        en: "server error: %{0}"
+        zh-CN: "服务端错误：%{0}"
+      network:
+        en: "network error: %{0}"
+        zh-CN: "网络错误：%{0}"
+      cancelled:
+        en: "cancelled"
+        zh-CN: "已取消"
+      protocol:
+        en: "protocol error: %{0}"
+        zh-CN: "协议错误：%{0}"
+    store:
+      io:
+        en: "io error: %{0}"
+        zh-CN: "读写错误：%{0}"
+      json:
+        en: "json error: %{0}"
+        zh-CN: "JSON 错误：%{0}"
+      invalid_id:
+        en: "invalid session id: %{0}"
+        zh-CN: "会话 ID 无效：%{0}"
+      not_found:
+        en: "session not found: %{0}"
+        zh-CN: "找不到会话：%{0}"
+      seq:
+        en: "non-monotonic seq: expected %{0}, got %{1}"
+        zh-CN: "事件序号不单调：期望 %{0}，实际 %{1}"
+      fork:
+        en: "invalid fork boundary %{0} (session has 1..=%{1})"
+        zh-CN: "分叉边界 %{0} 无效（会话范围是 1..=%{1}）"
+      locked:
+        en: "session is already open for writing: %{0}"
+        zh-CN: "会话已经以写入方式打开：%{0}"
+      sqlite:
+        en: "index error: %{0}"
+        zh-CN: "索引错误：%{0}"
+      tasks_unreadable:
+        en: "%{0} is not readable: %{1}"
+        zh-CN: "%{0} 读不出来：%{1}"
+      no_file_lock:
+        en: "no cross-process file lock on this platform"
+        zh-CN: "这个平台上没有跨进程文件锁"
+      lock_file_ex:
+        en: "LockFileEx failed with %{0}"
+        zh-CN: "LockFileEx 失败，错误码 %{0}"
+    task:
+      empty_id:
+        en: "task id must not be empty"
+        zh-CN: "任务 ID 不能为空"
+      invalid_label:
+        en: "root label must be a slug: %{0}"
+        zh-CN: "根目录标签必须是 slug：%{0}"
+      duplicate_label:
+        en: "root label is duplicated: %{0}"
+        zh-CN: "根目录标签重复：%{0}"
+      duplicate_root_id:
+        en: "root id is duplicated: %{0}"
+        zh-CN: "根目录 ID 重复：%{0}"
+      too_many_roots:
+        en: "too many roots (%{0}); maximum is %{1}"
+        zh-CN: "根目录太多（%{0} 个）；上限是 %{1}"
+      multiple_primary:
+        en: "at most one root may be primary"
+        zh-CN: "最多只能有一个主根目录"
+      empty_root_path:
+        en: "root path must not be empty"
+        zh-CN: "根目录路径不能为空"
+      empty_title:
+        en: "task title must not be empty"
+        zh-CN: "任务标题不能为空"
+      title_too_long:
+        en: "task title is too long (%{0}); maximum is 80 characters"
+        zh-CN: "任务标题太长（%{0} 个字符）；上限是 80"
+    agents:
+      read:
+        en: "cannot read %{0}: %{1}"
+        zh-CN: "读不了 %{0}：%{1}"
+      symlink:
+        en: "%{0} is a symlink; workspace instructions must be a regular file"
+        zh-CN: "%{0} 是符号链接；工作区指令必须是普通文件"
+      not_a_file:
+        en: "%{0} is not a regular file"
+        zh-CN: "%{0} 不是普通文件"
+      too_large:
+        en: "%{0} is %{1} bytes; the limit is %{2} bytes"
+        zh-CN: "%{0} 有 %{1} 字节；上限是 %{2} 字节"
+    policy:
+      tool_pattern:
+        en: "rule '%{0}' has an invalid `tool` pattern %{1}: %{2}"
+        zh-CN: "规则 '%{0}' 的 `tool` 模式 %{1} 无效：%{2}"
+      path_glob:
+        en: "rule '%{0}' has an invalid `path_glob` %{1}: %{2}"
+        zh-CN: "规则 '%{0}' 的 `path_glob` %{1} 无效：%{2}"
+    title:
+      cancelled:
+        en: "title generation cancelled"
+        zh-CN: "标题生成已取消"
+      cancelled_waiting_lock:
+        en: "title generation cancelled while waiting for the session lock"
+        zh-CN: "等待会话锁时标题生成被取消"
+      timed_out:
+        en: "title generation timed out"
+        zh-CN: "标题生成超时"
+      stopped_early:
+        en: "title output stopped early (%{0})"
+        zh-CN: "标题输出提前结束（%{0}）"
+      empty_output:
+        en: "title model produced no text"
+        zh-CN: "标题模型没有产出文本"
+    schedule:
+      field_count:
+        en: "a schedule needs 5 fields (minute hour day month weekday), got %{0}"
+        zh-CN: "cron 表达式需要 5 个字段（分 时 日 月 周），实际给了 %{0} 个"
+      field:
+        en: "cannot parse `%{0}`: %{1}"
+        zh-CN: "解析不了 `%{0}`：%{1}"
+      range:
+        en: "value %{0} is out of range %{1}..=%{2} in `%{3}`"
+        zh-CN: "值 %{0} 超出 `%{3}` 的范围 %{1}..=%{2}"
+      unknown_kind:
+        en: "rule `%{0}`: unknown kind; use cron / once / every / daily / weekly / monthly"
+        zh-CN: "规则 `%{0}`：类型不认识；可用 cron / once / every / daily / weekly / monthly"
+      rule_cron:
+        en: "rule `%{0}`: %{1}"
+        zh-CN: "规则 `%{0}`：%{1}"
+      rule_invalid:
+        en: "rule `%{0}`: %{1}"
+        zh-CN: "规则 `%{0}`：%{1}"
+      invalid_wall_clock:
+        en: "invalid wall clock"
+        zh-CN: "墙钟时间无效"
+      missing_cron:
+        en: "missing cron expression"
+        zh-CN: "缺少 cron 表达式"
+      min_interval:
+        en: "interval must be at least 60 seconds"
+        zh-CN: "间隔至少 60 秒"
+      expect_once:
+        en: "expected `once YYYY-MM-DD HH:MM`"
+        zh-CN: "应为 `once YYYY-MM-DD HH:MM`"
+      expect_every:
+        en: "expected `every <seconds>`"
+        zh-CN: "应为 `every <秒数>`"
+      expect_daily:
+        en: "expected `daily HH:MM`"
+        zh-CN: "应为 `daily HH:MM`"
+      expect_weekly:
+        en: "expected `weekly <weekday> HH:MM`"
+        zh-CN: "应为 `weekly <工作日> HH:MM`"
+      expect_monthly:
+        en: "expected `monthly <day> HH:MM` (day 1-31)"
+        zh-CN: "应为 `monthly <日> HH:MM`（日 1-31）"
+      reason:
+        empty:
+          en: "empty"
+          zh-CN: "空"
+        not_a_step:
+          en: "`%{0}` is not a step"
+          zh-CN: "`%{0}` 不是步长"
+        step_zero:
+          en: "step must be > 0"
+          zh-CN: "步长必须大于 0"
+        backwards:
+          en: "%{0}-%{1} is backwards"
+          zh-CN: "%{0}-%{1} 是反的"
+        not_a_number:
+          en: "`%{0}` is not a number or a known name"
+          zh-CN: "`%{0}` 既不是数字也不是已知名字"
+    scheduler:
+      invalid:
+        en: "schedule task: %{0}"
+        zh-CN: "定时任务：%{0}"
+      not_found:
+        en: "schedule task `%{0}` not found"
+        zh-CN: "找不到定时任务 `%{0}`"
+      config_owned:
+        en: "schedule task `%{0}` is declared in config.toml ([schedules.%{0}]); edit that file instead"
+        zh-CN: "定时任务 `%{0}` 是在 config.toml 里声明的（[schedules.%{0}]）；请改那个文件"
+      title_empty:
+        en: "title must not be empty"
+        zh-CN: "任务标题不能为空"
+      title_too_long:
+        en: "title must be at most 120 characters"
+        zh-CN: "任务标题最多 120 个字符"
+      prompt_empty:
+        en: "prompt must not be empty"
+        zh-CN: "提示词不能为空"
+      once_in_the_past:
+        en: "a one-shot task must be scheduled in the future"
+        zh-CN: "一次性任务必须排在将来"
+      not_active:
+        en: "cannot run a task that is paused or ended"
+        zh-CN: "不能运行已暂停或已结束的任务"
+      target_missing:
+        en: "target session `%{0}` does not exist"
+        zh-CN: "目标会话 `%{0}` 不存在"
+    single_instance:
+      no_lock:
+        en: "single-instance locking is not implemented on this platform"
+        zh-CN: "这个平台上没有单实例加锁"
+      no_activation:
+        en: "single-instance activation is not implemented on this platform"
+        zh-CN: "这个平台上没有单实例激活"
+      not_a_directory:
+        en: "%{0} exists but is not a directory"
+        zh-CN: "%{0} 存在，但不是目录"
+      foreign_owner:
+        en: "%{0} belongs to uid %{1}, not %{2} — refusing to put a control socket there"
+        zh-CN: "%{0} 属于 uid %{1}，不是 %{2}——不把控制 socket 放在那里"
+      unexpected_reply:
+        en: "unexpected reply from %{0}: %{1}"
+        zh-CN: "%{0} 的回复看不懂：%{1}"
+      socket_path_too_long:
+        en: "no directory short enough for a unix socket (%{0} bytes)"
+        zh-CN: "找不到足够短的目录来放 unix socket（上限 %{0} 字节）"
+      another_instance:
+        en: "another instance holds %{0} but did not answer on %{1} within %{2}ms; not starting a second one (set %{3}=0 to override)"
+        zh-CN: "另一个实例占着 %{0}，但在 %{2}ms 内没有在 %{1} 上应答；不再起第二个（设 %{3}=0 可覆盖）"
+
   # 沙箱与授权的自述（`qc doctor` 与授权报错共用同一份）。
   #
   # 为什么不翻实现名：`sandbox-exec` / `bubblewrap` / `Landlock` / `windows-acl`

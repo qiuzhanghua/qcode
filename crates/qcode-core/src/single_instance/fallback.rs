@@ -31,7 +31,7 @@ pub(super) fn channel_path(
 pub(super) fn lock(_path: &Path) -> io::Result<Option<LockGuard>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "single-instance locking is not implemented on this platform",
+        qcode_i18n::tr("core.err.single_instance.no_lock").to_string(),
     ))
 }
 
@@ -42,7 +42,7 @@ pub(super) fn try_request(_paths: &super::Paths, _request: super::Request) -> io
 pub(super) fn listen(_paths: &super::Paths) -> io::Result<Listener> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "single-instance activation is not implemented on this platform",
+        qcode_i18n::tr("core.err.single_instance.no_activation").to_string(),
     ))
 }
 

@@ -34,21 +34,21 @@ fn parse_wall_clock(text: &str) -> Option<time::PrimitiveDateTime> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("io error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.io", &[.0.to_string()]))]
     Io(#[from] std::io::Error),
-    #[error("json error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.json", &[.0.to_string()]))]
     Json(#[from] serde_json::Error),
-    #[error("invalid session id: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.invalid_id", &[.0.as_str()]))]
     InvalidId(String),
-    #[error("session not found: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.not_found", &[.0.as_str()]))]
     NotFound(String),
-    #[error("non-monotonic seq: expected {expected}, got {got}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.seq", &[.expected.to_string(), .got.to_string()]))]
     Seq { expected: u64, got: u64 },
-    #[error("invalid fork boundary {boundary} (session has 1..={last})")]
+    #[error("{}", qcode_i18n::trp("core.err.store.fork", &[.boundary.to_string(), .last.to_string()]))]
     InvalidFork { boundary: u64, last: u64 },
-    #[error("session is already open for writing: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.locked", &[.0.as_str()]))]
     Locked(String),
-    #[error("index error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.sqlite", &[.0.to_string()]))]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Task(#[from] TaskError),
@@ -57,7 +57,7 @@ pub enum StoreError {
     /// 单独一个变体而不是复用 [`Self::Json`]：调用方需要区分「文件没有」与「文件坏
     /// 了」，而这两件事的后果相反——前者是「还没建过任务」，后者是「你的任务还在，
     /// 但我读不出来，所以**不要**拿空表去覆盖它」。
-    #[error("{path} is not readable: {source}")]
+    #[error("{}", qcode_i18n::trp("core.err.store.tasks_unreadable", &[.path.to_string(), .source.to_string()]))]
     ScheduleTasks {
         path: String,
         #[source]
@@ -125,7 +125,7 @@ fn lock_exclusive_blocking(_file: &fs::File) -> std::io::Result<()> {
     // No advisory-lock primitive we know of: the honest answer is to say so
     // rather than silently pretend the file is protected.
     Err(std::io::Error::other(
-        "no cross-process file lock on this platform",
+        qcode_i18n::tr("core.err.store.no_file_lock").to_string(),
     ))
 }
 
@@ -178,15 +178,16 @@ fn lock_exclusive_immediate(file: &fs::File) -> std::io::Result<bool> {
     if code == ERROR_LOCK_VIOLATION {
         return Ok(false);
     }
-    Err(std::io::Error::other(format!(
-        "LockFileEx failed with {code}"
+    Err(std::io::Error::other(qcode_i18n::trp(
+        "core.err.store.lock_file_ex",
+        &[code.to_string()],
     )))
 }
 
 #[cfg(not(any(unix, windows)))]
 fn lock_exclusive_immediate(_file: &fs::File) -> std::io::Result<bool> {
     Err(std::io::Error::other(
-        "no cross-process file lock on this platform",
+        qcode_i18n::tr("core.err.store.no_file_lock").to_string(),
     ))
 }
 
