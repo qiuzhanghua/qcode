@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.17.1 — 2026-11-23
+
+错误串补完版：0.17.0 亲口记下的那条**已知边界**——`Err(format!("…"))` 这类走返回值的
+错误串还出英文——在本版还完。**没有破坏性变更**，也没有新配置项：`CONFIG_VERSION`
+仍是 2，`[ui] language` 的取值与优先级一字未动，翻译表只增键。
+
+### 为什么是 patch 而不是 minor
+
+`v0.17.0` 之后 11 个提交全是 `fix` / `feat(i18n)` / `release`，没有一个新增用户可见的
+**能力**：双语界面与 `[ui] language` 0.17.0 已经发了，这版只是把同一件事里「当时承认
+没做完」的那一半做完——错误提示从英文变成跟随语言，是修 bug 不是加功能。
+
+### 还掉的那笔账：英文基线 331 → 0
+
+门禁按「位置」判，而位置表只认**输出调用**（`println!` / `ToolOutput::*` /
+`push_notice`）。`Err(format!(…))` 是构造返回值，不是输出，于是整类落在门外——
+`main.rs` 统一 `eprintln!("error: {err}")`，每一条都会原样打到用户眼前。
+
+位置表新增四条（`Err(` / `.ok_or_else(` / `.map_err(|` / `#[error(`），基线一次涨到
+331，分六批还完：
+
+| 批次 | 范围 | 条数 |
+|---|---|---|
+| `qcode-core` | 会话/任务/定时/标题/单实例的 `thiserror` 与校验 | 93 |
+| attachments / providers / ui-state / tui | 附件、模型列表探测、`/subagents`·`/skills` 列表、状态栏 | 30 |
+| CLI | `qc logs` 的 `--grep`/`--since`、`config init`、`cannot read <path>` | 9 |
+| `qcode-gui` | 凭据写入、文件选择框、设置回读校验、托盘 | 28 |
+| `qcode-kernel` | 配置装载/编辑、`[schedules.*]` 校验、模板装载 | 34 |
+| `qcode-mcp` | 服务器配置校验、授权推导、启动/握手/tools-list | 37 |
+| `qcode-tools` | `SkillError`、bwrap/Landlock 装配、环境采样 | 37 |
+
+翻译表 982 → 1298 键。
+
+### 不翻的，都写成了豁免
+
+`ToolError::*` 的技术诊断（63 条）与 `todo_write` 的参数诊断（11 条）按 ADR-0105 §5
+保持英文：受众是模型，它要据此改参数重试。机制名（`sandbox-exec` / `windows-acl` /
+`streamable-http`）、品牌名、环境变量名、`<edit>` 占位路径同样不翻——一律用
+`// i18n:keep 理由` 或整文件豁免**点名**，共 43 处行级标记。
+
+### `#[error]` 怎么翻
+
+属性宏只收格式串字面量，所以写法是 `#[error("{}", trp(key, &[.0.as_str()]))]`；
+占位符进翻译表，而不是把变量拼进英文句子再整句翻译。顺带把
+`qcode_core::dangerous_write_root` 的返回值从 `Option<&'static str>`（`"your home
+directory"` 这样的英文散文）改成 `Option<String>`，在**唯一的来源**处翻译。
+
+### 顺带修掉的「门禁在撒谎」
+
+- `check-i18n-golden.sh` 的颜色检查在 util-linux 上永远走不到回退：第一条 macOS 写法
+  会先打一行 `invalid option`，旧判据 `[ -z "$out" ]` 因此永远为假，Linux（含 CI 的
+  ubuntu 行）一直误报「en 路径丢了颜色」；
+- 行级豁免补了「上一行也算」：`#[error(…)]` 超行宽时 rustfmt 会把行尾注释挪到下一行，
+  两个 `ToolError` 变体因此被算回基线；
+- 三处只有 Linux 才编到的代码在 mac 上是绿的（`tray/linux.rs` 的 `Cow` 借用、一个死
+  变量、三处 `useless_format`）——换机器编译才炸，这版一并修掉。
+
+### 测试跟着语言走
+
+断言英文原文的测试在 zh 宿主上会红，那不是缺陷而是翻译生效的证据。处理方式是钉**值**
+而不是钉英文：sandbox 的 `describe()` 断言被授的路径与端口、`approval_policy` 断言
+那个策略文件的路径、`tools/schedule` 的「至少 60 秒」中英两种措辞都认。
+
+### 已知边界（没在本版假装完成）
+
+位置表还有两个洞：`let text = format!("…")` 与 `.set_notice("…")` 这两种写法整类扫
+不到（`qcode-gui` 里 `"no usable provider"` 就是后者）。补上会再冒出一批新条目，留
+给下一轮。
+
+### 验证
+
+`cargo fmt --check`、`clippy --workspace --all-targets -D warnings`、全量 137 个测试
+套件、双语 golden 88 项全绿；英文基线 **0** 条，行级豁免 43 处。两语言冒烟：
+`error: 没有这个会话：nope` / `error: no such session: nope`。
+
 ## 0.17.0 — 2026-11-21
 
 界面双语化版：**整轮 i18n 落地**——CLI、TUI、GUI、工具结果共用一张 982 键的翻译表，
