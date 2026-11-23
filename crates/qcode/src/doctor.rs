@@ -504,6 +504,7 @@ impl Doctor {
                 .unwrap_or_else(|| "unknown".to_string())
         };
         self.ok(
+            // i18n:keep 解析 windows_acl::diagnose() 的英文行前缀：是值，翻了对不上
             qcode_i18n::tr("cli.doctor.label.token"),
             qcode_i18n::trp(
                 "cli.doctor.detail.token_details",

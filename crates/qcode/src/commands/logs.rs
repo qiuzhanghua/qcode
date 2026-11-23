@@ -116,8 +116,12 @@ pub(crate) fn cmd_logs(
                 println!("{}", local_time(&line));
             }
         } else {
-            let text = std::fs::read_to_string(&current)
-                .map_err(|error| format!("cannot read {}: {error}", current.display()))?;
+            let text = std::fs::read_to_string(&current).map_err(|error| {
+                qcode_i18n::trp(
+                    "cli.err.cannot_read",
+                    &[current.display().to_string(), error.to_string()],
+                )
+            })?;
             let skip = text.lines().count().saturating_sub(args.lines);
             for line in text.lines().skip(skip) {
                 println!("{}", local_time(line));
@@ -158,7 +162,10 @@ impl Filter {
                 // Named rather than passed through: `regex`'s own message starts
                 // with the pattern, and from there it is not obvious which flag
                 // produced it.
-                format!("--grep {source:?} is not a valid pattern: {error}")
+                qcode_i18n::trp(
+                    "cli.err.bad_grep",
+                    &[format!("{source:?}"), error.to_string()],
+                )
             })?),
             None => None,
         };
@@ -290,9 +297,9 @@ fn parse_since(
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(value.len()),
     );
-    let amount: i64 = amount.parse().map_err(|_| {
-        format!("--since {value:?} is neither a duration (30m, 2h, 7d) nor an RFC 3339 timestamp")
-    })?;
+    let amount: i64 = amount
+        .parse()
+        .map_err(|_| qcode_i18n::trp("cli.err.bad_since", &[format!("{value:?}")]))?;
     let unit = unit.trim();
     let seconds = match unit {
         "s" | "sec" | "secs" => 1,

@@ -459,8 +459,8 @@ fn provider_append(
     // template alone. An append touches only `[providers.*]`, so a user's
     // sandbox/network pair is untouched by construction; the whole must still
     // parse and pass the config-wide checks (see [`combine_config`]).
-    let combined =
-        combine_config(&existing, &section).map_err(|error| format!("{error}; not writing"))?;
+    let combined = combine_config(&existing, &section)
+        .map_err(|error| qcode_i18n::trp("cli.err.not_writing", &[error.to_string()]))?;
 
     println!("--- {} (existing)", path.display());
     println!("+++ template {}/{}", template.kind.as_str(), id);
@@ -507,7 +507,7 @@ fn combine_config(existing: &str, section: &str) -> Result<String, String> {
     combined.push('\n');
     combined.push_str(section);
     let check: qcode_kernel::config::Config = toml::from_str(&combined)
-        .map_err(|error| format!("the appended config does not parse: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("cli.err.appended_unparsable", &[error.to_string()]))?;
     check
         .sandbox
         .validate()

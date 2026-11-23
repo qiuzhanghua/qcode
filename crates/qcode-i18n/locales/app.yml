@@ -2780,6 +2780,25 @@ core:
 # CLI（`qc`）运行时输出与 TUI 提示。帮助文本（clap）另算，见 I18N.md §4.3。
 cli:
 
+  # 命令层的错误正文（`Err(format!(…))` 走返回值那一批）。`--grep` / `--since` /
+  # `30m` 这类**照着敲的 token** 不翻。
+  err:
+    cannot_read:
+      en: "cannot read %{0}: %{1}"
+      zh-CN: "读不了 %{0}：%{1}"
+    not_writing:
+      en: "%{0}; not writing"
+      zh-CN: "%{0}；不写盘"
+    appended_unparsable:
+      en: "the appended config does not parse: %{0}"
+      zh-CN: "追加后的配置解析不了：%{0}"
+    bad_grep:
+      en: "--grep %{0} is not a valid pattern: %{1}"
+      zh-CN: "--grep %{0} 不是有效的正则：%{1}"
+    bad_since:
+      en: "--since %{0} is neither a duration (30m, 2h, 7d) nor an RFC 3339 timestamp"
+      zh-CN: "--since %{0} 既不是时长（30m、2h、7d），也不是 RFC 3339 时间戳"
+
   # ---- CLI 命令的输出（不是帮助）----
   #
   # 这一批是 `qc <cmd>` 跑完之后用户读的那几行。与 `cli.cmd.*` 的区别：那些是
