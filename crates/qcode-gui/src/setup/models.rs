@@ -785,8 +785,10 @@ impl SetupView {
             .join("tj_auth.json")
     }
 
-    /// 切换详情页的套餐：把当前行变成目标套餐 route，并按套餐预设刷新
-    /// base_url / api_key_env / protocol（模型列表保留，由用户编辑/探测）。
+    /// 切换详情页的套餐。切套餐 = 重新打开目标套餐 route 的编辑（预设行语义与
+    /// `pick_provider` 一致）：移除当前套餐行，按目标套餐预设建行并打开编辑页。
+    /// 之前「原地改行 name」会让行 route 与编辑对象不同步，切回时编辑页的行
+    /// 查找失败、退回到列表页。
     fn switch_package(
         &mut self,
         target: &str,
@@ -794,32 +796,15 @@ impl SetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((_, pkg)) = qcode_kernel::config::package_entry(target) else {
+        if qcode_kernel::config::package_entry(target).is_none() {
             return;
-        };
-        if let Some(table) = self.tables.get_mut("providers")
-            && let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id)
-        {
-            if let Some(name) = row.cells.get_mut("name") {
-                name.update(cx, |state, cx| state.set_value(target, window, cx));
-            }
-            if let Some(base_url) = row.cells.get_mut("base_url") {
-                base_url.update(cx, |state, cx| state.set_value(pkg.base_url, window, cx));
-            }
-            if let Some(api_key_env) = row.cells.get_mut("api_key_env") {
-                api_key_env.update(cx, |state, cx| {
-                    state.set_value(pkg.api_key_env, window, cx);
-                });
-            }
-            row.selects
-                .insert("protocol", pkg.protocol.as_str().to_string());
         }
-        // 编辑对象切到套餐 route：对话框标题、套餐高亮随之更新。写盘由
-        // 「保存」按钮统一触发（点击保存才保存）。
-        self.editing_provider = Some(target.to_string());
+        if let Some(table) = self.tables.get_mut("providers") {
+            table.rows.retain(|row| row.id != row_id);
+        }
         self.provider_error = None;
         self.provider_notice = None;
-        cx.notify();
+        self.pick_provider(target, window, cx);
     }
 
     /// The provider edit modal (settings mode): API key first, the fixed
