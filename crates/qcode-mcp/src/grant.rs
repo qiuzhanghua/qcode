@@ -148,42 +148,80 @@ pub enum GrantError {
     /// a different `PATH` than your terminal", and the second is the whole
     /// reason this lookup consults the shell snapshot (ADR-0070).
     #[error(
-        "MCP server '{server}' command {command:?} was not found on {searched}; \
-         use an absolute path if it lives elsewhere"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.command_not_found",
+            &[
+                .server.to_string(),
+                .command.to_string(),
+                .searched.to_string()
+            ]
+        )
     )]
     CommandNotFound {
         server: String,
         command: String,
         /// Not named `source`: `thiserror` would read it as the error source.
-        searched: &'static str,
+        searched: String,
     },
     #[error(
-        "MCP server '{server}' would need read access to {path}, which is {reason}; \
-         add an explicit read_paths entry if that is really intended"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.dangerous_read",
+            &[
+                .server.to_string(),
+                .path.display().to_string(),
+                .reason.to_string()
+            ]
+        )
     )]
     DangerousRoot {
         server: String,
         path: PathBuf,
-        reason: &'static str,
+        reason: String,
     },
     #[error(
-        "MCP server '{server}' would need write access to {path}, which is {reason}; \
-         narrow `writable_paths` to a subdirectory"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.dangerous_write",
+            &[
+                .server.to_string(),
+                .path.display().to_string(),
+                .reason.to_string()
+            ]
+        )
     )]
     DangerousWriteRoot {
         server: String,
         path: PathBuf,
-        reason: &'static str,
+        reason: String,
     },
-    #[error("MCP server '{server}' cannot create its private HOME at {path}: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.home_unavailable",
+            &[
+                .server.to_string(),
+                .path.display().to_string(),
+                .source.to_string()
+            ]
+        )
+    )]
     HomeUnavailable {
         server: String,
         path: PathBuf,
         source: std::io::Error,
     },
     #[error(
-        "MCP server '{server}' sets {key} = \"${{{variable}}}\" but {variable} is not in \
-         qcode's environment"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.missing_env",
+            &[
+                .server.to_string(),
+                .key.to_string(),
+                .variable.to_string()
+            ]
+        )
     )]
     MissingEnv {
         server: String,
@@ -193,7 +231,8 @@ pub enum GrantError {
     /// A remote server has no child process, so there is no grant to derive
     /// (ADR-0067 §7). Its only boundary is the egress proxy.
     #[error(
-        "MCP server '{server}' is remote (`url`), so it has no filesystem grant;          drop request paths from its config"
+        "{}",
+        qcode_i18n::trp("mcp.err.not_a_process", &[.server.as_str()])
     )]
     NotAProcess { server: String },
 }
@@ -565,12 +604,12 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 /// [`qcode_core::dangerous_write_root`] so `[sandbox] extra_writable` refuses
 /// exactly the same ones (ADR-0066 §2 修订注记 2026-11-11 补记). The fourth is
 /// MCP-specific: only this side knows the workspace.
-fn dangerous(path: &Path, workspace: &Path, real_home: Option<&Path>) -> Option<&'static str> {
+fn dangerous(path: &Path, workspace: &Path, real_home: Option<&Path>) -> Option<String> {
     if let Some(reason) = qcode_core::dangerous_write_root(path, real_home) {
         return Some(reason);
     }
     if workspace != path && workspace.starts_with(path) {
-        return Some("a parent of the workspace");
+        return Some(qcode_i18n::tr("mcp.err.reason.workspace_parent").to_string());
     }
     None
 }
@@ -600,12 +639,15 @@ pub enum SearchPath<'a> {
 
 impl SearchPath<'_> {
     /// The value to look in and to hand the child, and a name for error text.
-    fn resolved(self) -> (OsString, &'static str) {
+    fn resolved(self) -> (OsString, String) {
         match self {
-            Self::Snapshot(path) => (path.to_os_string(), "the shell environment's PATH"),
+            Self::Snapshot(path) => (
+                path.to_os_string(),
+                qcode_i18n::tr("mcp.err.source.snapshot").to_string(),
+            ),
             Self::Process => (
                 std::env::var_os("PATH").unwrap_or_default(),
-                "qcode's PATH (shell environment sampling is off or produced nothing)",
+                qcode_i18n::tr("mcp.err.source.process").to_string(),
             ),
         }
     }
@@ -616,7 +658,7 @@ impl SearchPath<'_> {
     }
 
     /// Where this came from, for `qc doctor` and the startup log.
-    pub fn source(self) -> &'static str {
+    pub fn source(self) -> String {
         self.resolved().1
     }
 }
@@ -657,7 +699,7 @@ fn resolve_program(
             server: server.to_string(),
             command: command.to_string(),
             searched: if has_separator {
-                "the path as written"
+                qcode_i18n::tr("mcp.err.source.as_written").to_string()
             } else {
                 path.source()
             },
@@ -684,7 +726,7 @@ fn collect_runtime(
             .map_err(|_| GrantError::CommandNotFound {
                 server: server.to_string(),
                 command: interpreter.display().to_string(),
-                searched: "the shebang of the command",
+                searched: qcode_i18n::tr("mcp.err.source.shebang").to_string(),
             })?;
         collect_runtime(server, &resolved, depth + 1, roots, path)?;
     }
@@ -922,22 +964,14 @@ mod tests {
     fn refusing_the_filesystem_root_and_the_home_directory() {
         let workspace = Path::new("/work/project");
         let home = Path::new("/home/someone");
-        assert_eq!(
-            dangerous(Path::new("/"), workspace, Some(home)),
-            Some("the filesystem root")
-        );
-        assert_eq!(
-            dangerous(home, workspace, Some(home)),
-            Some("your home directory")
-        );
-        assert_eq!(
-            dangerous(Path::new("/home"), workspace, Some(home)),
-            Some("a directory that contains every user's home")
-        );
-        assert_eq!(
-            dangerous(Path::new("/work"), workspace, Some(home)),
-            Some("a parent of the workspace")
-        );
+        // 原因文案跟随界面语言，这里只验「这四种形状都被拒」，不钉措辞。
+        for refused in ["/", "/home", "/work"] {
+            assert!(
+                dangerous(Path::new(refused), workspace, Some(home)).is_some(),
+                "{refused} slipped through"
+            );
+        }
+        assert!(dangerous(home, workspace, Some(home)).is_some());
         // The workspace itself is fine: it is already the writable root.
         assert_eq!(dangerous(workspace, workspace, Some(home)), None);
         assert_eq!(
@@ -966,8 +1000,9 @@ mod tests {
             path: SearchPath::Process,
         })
         .unwrap_err();
+        // 文案跟随界面语言，只验「认得这是 home」：en 与 zh 两种措辞都含 "home"。
         assert!(
-            matches!(error, GrantError::DangerousRoot { reason, .. } if reason == "your home directory"),
+            matches!(&error, GrantError::DangerousRoot { reason, .. } if reason.contains("home")),
             "{error}"
         );
     }

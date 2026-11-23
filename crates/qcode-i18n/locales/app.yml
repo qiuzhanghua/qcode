@@ -1870,6 +1870,10 @@ gui:
 # 缓存失效，eval 基线要按语言各记一套（§2.3 C 类代价 1–2）。中文界面下模型读到
 # 中文参数说明，与顶层 `description`（英文历史包袱）暂时混排 —— 见 I18N.md 遗留项。
 tool:
+  err:
+    extra_writable:
+      en: "[sandbox] extra_writable: %{0} is %{1}; narrow it to a subdirectory"
+      zh-CN: "[sandbox] extra_writable：%{0} 是%{1}；请收窄到子目录"
   schedule:
     # 会话没接任务存储时四个工具共用的第一条错误。
     unavailable:
@@ -2462,6 +2466,16 @@ core:
       path_glob:
         en: "rule '%{0}' has an invalid `path_glob` %{1}: %{2}"
         zh-CN: "规则 '%{0}' 的 `path_glob` %{1} 无效：%{2}"
+    danger:
+      fs_root:
+        en: "the filesystem root"
+        zh-CN: "文件系统根目录"
+      home:
+        en: "your home directory"
+        zh-CN: "你的 home 目录"
+      home_parent:
+        en: "a directory that contains every user's home"
+        zh-CN: "包含所有用户 home 的目录"
     attachment:
       io:
         en: "i/o error at %{0}: %{1}"
@@ -4130,6 +4144,9 @@ kernel:
       both_targets:
         en: "schedule `%{0}`: `task` and `new = true` are mutually exclusive"
         zh-CN: "定时任务 `%{0}`：`task` 和 `new = true` 不能同时设"
+    extra_writable:
+      en: "[sandbox] extra_writable: %{0} is %{1}; list a subdirectory such as \"~/Documents\" instead"
+      zh-CN: "[sandbox] extra_writable：%{0} 是%{1}；请改成列一个子目录，比如 \"~/Documents\""
     approval_policy_missing:
       en: "approval policy not found: %{0}"
       zh-CN: "找不到审批策略文件：%{0}"
@@ -4391,3 +4408,125 @@ provider:
     read_body:
       en: "cannot read the model listing body: %{0}"
       zh-CN: "读不了模型列表的响应体：%{0}"
+
+# `qcode-mcp`：服务器配置校验、授权推导、启动/握手/tools-list。
+# 报错点名的键（`command` / `url` / `timeout_secs` / `read_paths` …）与传输方式名
+# （`stdio` / `streamable-http`）不翻——用户要拿它们去改配置。
+mcp:
+  err:
+    empty_name:
+      en: "MCP server name must not be empty"
+      zh-CN: "MCP 服务器名不能为空"
+    invalid_name:
+      en: "MCP server name '%{0}' may only contain ASCII letters, digits, '-' and '_'"
+      zh-CN: "MCP 服务器名 '%{0}' 只能含 ASCII 字母、数字、'-' 和 '_'"
+    duplicate_name:
+      en: "duplicate MCP server name '%{0}'"
+      zh-CN: "MCP 服务器名重复：'%{0}'"
+    empty_command:
+      en: "MCP server '%{0}' has an empty command"
+      zh-CN: "MCP 服务器 '%{0}' 的 command 是空的"
+    no_transport:
+      en: "MCP server '%{0}' sets neither `command` (stdio) nor `url` (streamable-http); one of the two is required"
+      zh-CN: "MCP 服务器 '%{0}' 既没设 `command`（stdio）也没设 `url`（streamable-http）；两者必须设一个"
+    ambiguous_transport:
+      en: "MCP server '%{0}' sets both `command` and `url`; they are mutually exclusive — drop one, or use two servers if you want both"
+      zh-CN: "MCP 服务器 '%{0}' 同时设了 `command` 和 `url`；两者互斥——去掉一个，或者拆成两个服务器"
+    empty_url:
+      en: "MCP server '%{0}' has an empty url"
+      zh-CN: "MCP 服务器 '%{0}' 的 url 是空的"
+    invalid_url:
+      en: "MCP server '%{0}' url '%{1}' is not an absolute http(s) URL: %{2}"
+      zh-CN: "MCP 服务器 '%{0}' 的 url '%{1}' 不是绝对的 http(s) URL：%{2}"
+    bad_scheme:
+      en: "scheme is %{0}, need http or https"
+      zh-CN: "scheme 是 %{0}，要 http 或 https"
+    wrong_transport_field:
+      en: "MCP server '%{0}' sets `%{1}`, which only applies to the %{2} transport; remove it"
+      zh-CN: "MCP 服务器 '%{0}' 设了 `%{1}`，它只对 %{2} 传输方式有效；请删掉"
+    sensitive_header:
+      en: "MCP server '%{0}' header '%{1}' looks like a credential; put the token in `bearer_token_env_var` instead (the config file is not a secret store)"
+      zh-CN: "MCP 服务器 '%{0}' 的头 '%{1}' 看着像凭据；请把 token 放进 `bearer_token_env_var`（配置文件不是密钥库）"
+    header_injection:
+      en: "MCP server '%{0}' header '%{1}' contains a line break"
+      zh-CN: "MCP 服务器 '%{0}' 的头 '%{1}' 里有换行"
+    zero_timeout:
+      en: "MCP server '%{0}' must set timeout_secs to at least 1"
+      zh-CN: "MCP 服务器 '%{0}' 的 timeout_secs 至少要设成 1"
+    relative_path:
+      en: "MCP server '%{0}' %{1} entry %{2} must be an absolute path (`~` and `~/...` are expanded against your home; `~user/...` and relative paths are not)"
+      zh-CN: "MCP 服务器 '%{0}' 的 %{1} 项 %{2} 必须是绝对路径（`~` 与 `~/...` 会展开到你的 home；`~user/...` 和相对路径不行）"
+    command_not_found:
+      en: "MCP server '%{0}' command '%{1}' was not found on %{2}; use an absolute path if it lives elsewhere"
+      zh-CN: "MCP 服务器 '%{0}' 的命令 '%{1}' 在 %{2} 上找不到；如果它在别处，请写绝对路径"
+    dangerous_read:
+      en: "MCP server '%{0}' would need read access to %{1}, which is %{2}; add an explicit read_paths entry if that is really intended"
+      zh-CN: "MCP 服务器 '%{0}' 需要读 %{1}，而它是%{2}；如果确实需要，请显式加一条 read_paths"
+    dangerous_write:
+      en: "MCP server '%{0}' would need write access to %{1}, which is %{2}; narrow `writable_paths` to a subdirectory"
+      zh-CN: "MCP 服务器 '%{0}' 需要写 %{1}，而它是%{2}；请把 `writable_paths` 收窄到子目录"
+    home_unavailable:
+      en: "MCP server '%{0}' cannot create its private HOME at %{1}: %{2}"
+      zh-CN: "MCP 服务器 '%{0}' 建不了私有 HOME（%{1}）：%{2}"
+    missing_env:
+      en: "MCP server '%{0}' sets %{1} = \"${%{2}}\" but %{2} is not in qcode's environment"
+      zh-CN: "MCP 服务器 '%{0}' 设了 %{1} = \"${%{2}}\"，但 %{2} 不在 qcode 的环境里"
+    not_a_process:
+      en: "MCP server '%{0}' is remote (`url`), so it has no filesystem grant; drop request paths from its config"
+      zh-CN: "MCP 服务器 '%{0}' 是远程的（`url`），没有文件系统授权；请从它的配置里去掉请求路径"
+    reason:
+      workspace_parent:
+        en: "a parent of the workspace"
+        zh-CN: "工作区的上一级目录"
+    source:
+      snapshot:
+        en: "the shell environment's PATH"
+        zh-CN: "shell 环境里的 PATH"
+      process:
+        en: "qcode's PATH (shell environment sampling is off or produced nothing)"
+        zh-CN: "qcode 自己的 PATH（shell 环境采样关着，或者采出来是空的）"
+      as_written:
+        en: "the path as written"
+        zh-CN: "写出来的那个路径"
+      shebang:
+        en: "the shebang of the command"
+        zh-CN: "命令的 shebang"
+    spawn:
+      en: "server '%{0}' failed to start: %{1}%{2}"
+      zh-CN: "服务器 '%{0}' 起不来：%{1}%{2}"
+    spawn_note:
+      en: "\n  note: %{0}"
+      zh-CN: "\n  提示：%{0}"
+    handshake_timeout:
+      en: "server '%{0}' did not finish the handshake within %{1}s"
+      zh-CN: "服务器 '%{0}' 在 %{1} 秒内没走完握手"
+    handshake_failed:
+      en: "server '%{0}' handshake failed: %{1}"
+      zh-CN: "服务器 '%{0}' 握手失败：%{1}"
+    list_timeout:
+      en: "server '%{0}' tools/list timed out after %{1}s"
+      zh-CN: "服务器 '%{0}' 的 tools/list 在 %{1} 秒后超时"
+    list_failed:
+      en: "server '%{0}' tools/list failed: %{1}"
+      zh-CN: "服务器 '%{0}' 的 tools/list 失败：%{1}"
+    no_http_client:
+      en: "server '%{0}' is remote but qcode has no egress client: [network] is disabled, so the request could not be audited or allowlisted — enable the egress proxy, or use a stdio server"
+      zh-CN: "服务器 '%{0}' 是远程的，但 qcode 没有 egress 客户端：[network] 关着，请求无法审计或加白——请开 egress 代理，或改用 stdio 服务器"
+    missing_token:
+      en: "server '%{0}' needs the bearer token in ${%{1}}, but it is not set in qcode's environment"
+      zh-CN: "服务器 '%{0}' 需要 ${%{1}} 里的 bearer token，但 qcode 的环境里没有"
+    bad_url:
+      en: "server '%{0}' url is unusable: %{1}"
+      zh-CN: "服务器 '%{0}' 的 url 用不了：%{1}"
+    bad_header:
+      en: "server '%{0}' has an unusable header '%{1}': %{2}"
+      zh-CN: "服务器 '%{0}' 的头 '%{1}' 用不了：%{2}"
+    input_required:
+      en: "server '%{0}' asked for a multi-round tool call (MRTR InputRequired), which qcode does not support; the raw request state was logged"
+      zh-CN: "服务器 '%{0}' 要求多轮工具调用（MRTR InputRequired），qcode 不支持；原始请求状态已记入日志"
+    private_home:
+      en: "cannot create the private HOME at %{0}"
+      zh-CN: "建不了私有的 HOME：%{0}"
+    sandbox_refused:
+      en: "sandbox refused to start it: %{0}"
+      zh-CN: "沙箱拒绝启动它：%{0}"

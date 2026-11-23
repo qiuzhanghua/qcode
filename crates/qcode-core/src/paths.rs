@@ -73,18 +73,18 @@ pub fn real_home() -> Option<PathBuf> {
 ///
 /// `real_home` is the current user's home, or `None` when it cannot be
 /// determined — in which case the home check is skipped rather than guessed.
-pub fn dangerous_write_root(path: &Path, real_home: Option<&Path>) -> Option<&'static str> {
+pub fn dangerous_write_root(path: &Path, real_home: Option<&Path>) -> Option<String> {
     if path == Path::new("/") {
-        return Some("the filesystem root");
+        return Some(qcode_i18n::tr("core.err.danger.fs_root").to_string());
     }
     if let Some(home) = real_home
         && path == home
     {
-        return Some("your home directory");
+        return Some(qcode_i18n::tr("core.err.danger.home").to_string());
     }
     for name in ["/home", "/Users", "/root"] {
         if path == Path::new(name) {
-            return Some("a directory that contains every user's home");
+            return Some(qcode_i18n::tr("core.err.danger.home_parent").to_string());
         }
     }
     None
@@ -162,19 +162,14 @@ mod tests {
 
     #[test]
     fn the_root_is_never_writable() {
-        assert_eq!(
-            dangerous_write_root(Path::new("/"), None),
-            Some("the filesystem root")
-        );
+        // 文案跟随界面语言，这里只验「这个形状被拒」，不钉具体措辞。
+        assert!(dangerous_write_root(Path::new("/"), None).is_some());
     }
 
     #[test]
     fn the_home_directory_is_never_writable() {
         let home = PathBuf::from("/home/q");
-        assert_eq!(
-            dangerous_write_root(&home, Some(&home)),
-            Some("your home directory")
-        );
+        assert!(dangerous_write_root(&home, Some(&home)).is_some());
         // A subdirectory of the home is the whole point of the check: that is
         // the shape `~/Documents` produces, and it must pass.
         assert_eq!(

@@ -140,7 +140,7 @@ impl Transport {
     pub fn label(self) -> &'static str {
         match self {
             Self::Stdio => "stdio",
-            Self::StreamableHttp => "streamable-http",
+            Self::StreamableHttp => "streamable-http", // i18n:keep 传输方式名（值）
         }
     }
 
@@ -222,35 +222,46 @@ pub struct McpConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum McpConfigError {
-    #[error("MCP server name must not be empty")]
+    #[error("{}", qcode_i18n::tr("mcp.err.empty_name"))]
     EmptyName,
-    #[error("MCP server name '{0}' may only contain ASCII letters, digits, '-' and '_'")]
+    #[error("{}", qcode_i18n::trp("mcp.err.invalid_name", &[.0.as_str()]))]
     InvalidName(String),
-    #[error("duplicate MCP server name '{0}'")]
+    #[error("{}", qcode_i18n::trp("mcp.err.duplicate_name", &[.0.as_str()]))]
     DuplicateName(String),
-    #[error("MCP server '{0}' has an empty command")]
+    #[error("{}", qcode_i18n::trp("mcp.err.empty_command", &[.0.as_str()]))]
     EmptyCommand(String),
-    #[error(
-        "MCP server '{0}' sets neither `command` (stdio) nor `url` (streamable-http); \
-         one of the two is required"
-    )]
+    #[error("{}", qcode_i18n::trp("mcp.err.no_transport", &[.0.as_str()]))]
     NoTransport(String),
-    #[error(
-        "MCP server '{0}' sets both `command` and `url`; they are mutually exclusive — \
-         drop one, or use two servers if you want both"
-    )]
+    #[error("{}", qcode_i18n::trp("mcp.err.ambiguous_transport", &[.0.as_str()]))]
     AmbiguousTransport(String),
-    #[error("MCP server '{0}' has an empty url")]
+    #[error("{}", qcode_i18n::trp("mcp.err.empty_url", &[.0.as_str()]))]
     EmptyUrl(String),
-    #[error("MCP server '{server}' url {url:?} is not an absolute http(s) URL: {reason}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.invalid_url",
+            &[
+                .server.to_string(),
+                .url.to_string(),
+                .reason.to_string()
+            ]
+        )
+    )]
     InvalidUrl {
         server: String,
         url: String,
         reason: String,
     },
     #[error(
-        "MCP server '{server}' sets `{field}`, which only applies to the {owner} transport; \
-         remove it"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.wrong_transport_field",
+            &[
+                .server.to_string(),
+                .field.to_string(),
+                .owner.to_string()
+            ]
+        )
     )]
     WrongTransportField {
         server: String,
@@ -258,18 +269,33 @@ pub enum McpConfigError {
         owner: &'static str,
     },
     #[error(
-        "MCP server '{server}' header {name:?} looks like a credential; put the token in \
-         `bearer_token_env_var` instead (the config file is not a secret store)"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.sensitive_header",
+            &[.server.to_string(), .name.to_string()]
+        )
     )]
     SensitiveHeader { server: String, name: String },
-    #[error("MCP server '{server}' header {name:?} contains a line break")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.header_injection",
+            &[.server.to_string(), .name.to_string()]
+        )
+    )]
     HeaderInjection { server: String, name: String },
-    #[error("MCP server '{0}' must set timeout_secs to at least 1")]
+    #[error("{}", qcode_i18n::trp("mcp.err.zero_timeout", &[.0.as_str()]))]
     ZeroTimeout(String),
     #[error(
-        "MCP server '{server}' {field} entry {path} must be an absolute path \
-         (`~` and `~/...` are expanded against your home; `~user/...` and relative \
-         paths are not)"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.relative_path",
+            &[
+                .server.to_string(),
+                .field.to_string(),
+                .path.to_string()
+            ]
+        )
     )]
     RelativePath {
         server: String,
@@ -347,10 +373,10 @@ fn check_transport(server: &McpServerConfig) -> Result<(), McpConfigError> {
                 return Err(McpConfigError::EmptyCommand(server.name.clone()));
             }
             if server.bearer_token_env_var.is_some() {
-                return Err(wrong("bearer_token_env_var", "streamable-http"));
+                return Err(wrong("bearer_token_env_var", "streamable-http")); // i18n:keep 传输方式名
             }
             if !server.headers.is_empty() {
-                return Err(wrong("headers", "streamable-http"));
+                return Err(wrong("headers", "streamable-http")); // i18n:keep 传输方式名
             }
         }
         Transport::StreamableHttp => {
@@ -364,7 +390,10 @@ fn check_transport(server: &McpServerConfig) -> Result<(), McpConfigError> {
                     return Err(McpConfigError::InvalidUrl {
                         server: server.name.clone(),
                         url: url.to_string(),
-                        reason: format!("scheme is {:?}, need http or https", parsed.scheme()),
+                        reason: qcode_i18n::trp(
+                            "mcp.err.bad_scheme",
+                            &[parsed.scheme().to_string()],
+                        ),
                     });
                 }
                 Err(error) => {
@@ -414,7 +443,7 @@ fn check_transport(server: &McpServerConfig) -> Result<(), McpConfigError> {
             if let Some(var) = &server.bearer_token_env_var
                 && var.trim().is_empty()
             {
-                return Err(wrong("bearer_token_env_var", "streamable-http"));
+                return Err(wrong("bearer_token_env_var", "streamable-http")); // i18n:keep 传输方式名
             }
         }
     }

@@ -138,14 +138,24 @@ impl<'a> ConnectOptions<'a> {
 
 fn hint_text(hint: &Option<String>) -> String {
     match hint {
-        Some(hint) => format!("\n  note: {hint}"),
+        Some(hint) => qcode_i18n::trp("mcp.err.spawn_note", &[hint.as_str()]),
         None => String::new(),
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
-    #[error("server '{server}' failed to start: {source}{}", hint_text(.hint))]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.spawn",
+            &[
+                .server.to_string(),
+                .source.to_string(),
+                hint_text(.hint)
+            ]
+        )
+    )]
     Spawn {
         server: String,
         source: std::io::Error,
@@ -154,16 +164,40 @@ pub enum McpError {
     },
     #[error(transparent)]
     Grant(#[from] GrantError),
-    #[error("server '{server}' did not finish the handshake within {secs}s")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.handshake_timeout",
+            &[.server.to_string(), .secs.to_string()]
+        )
+    )]
     HandshakeTimeout { server: String, secs: u64 },
-    #[error("server '{server}' handshake failed: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.handshake_failed",
+            &[.server.to_string(), .source.to_string()]
+        )
+    )]
     Handshake {
         server: String,
         source: Box<rmcp::service::ClientInitializeError>,
     },
-    #[error("server '{server}' tools/list timed out after {secs}s")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.list_timeout",
+            &[.server.to_string(), .secs.to_string()]
+        )
+    )]
     ListTimeout { server: String, secs: u64 },
-    #[error("server '{server}' tools/list failed: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.list_failed",
+            &[.server.to_string(), .source.to_string()]
+        )
+    )]
     ListTools {
         server: String,
         source: rmcp::ServiceError,
@@ -171,19 +205,37 @@ pub enum McpError {
     /// ADR-0067 §2: without the caller's client there is no audited path, so
     /// there is no path at all.
     #[error(
-        "server '{server}' is remote but qcode has no egress client: [network] is disabled, \
-         so the request could not be audited or allowlisted — enable the egress proxy, or use \
-         a stdio server"
+        "{}",
+        qcode_i18n::trp("mcp.err.no_http_client", &[.server.as_str()])
     )]
     NoHttpClient { server: String },
     #[error(
-        "server '{server}' needs the bearer token in ${var}, but it is not set in qcode's \
-         environment"
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.missing_token",
+            &[.server.to_string(), .var.to_string()]
+        )
     )]
     MissingToken { server: String, var: String },
-    #[error("server '{server}' url is unusable: {detail}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.bad_url",
+            &[.server.to_string(), .detail.to_string()]
+        )
+    )]
     BadUrl { server: String, detail: String },
-    #[error("server '{server}' has an unusable header {name:?}: {detail}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "mcp.err.bad_header",
+            &[
+                .server.to_string(),
+                .name.to_string(),
+                .detail.to_string()
+            ]
+        )
+    )]
     BadHeader {
         server: String,
         name: String,
@@ -193,8 +245,8 @@ pub enum McpError {
     /// has no multi-round trip for tools (ADR-0067 后果), so say so instead of
     /// retrying or pretending the call returned nothing.
     #[error(
-        "server '{server}' asked for a multi-round tool call (MRTR InputRequired), which qcode \
-         does not support; the raw request state was logged"
+        "{}",
+        qcode_i18n::trp("mcp.err.input_required", &[.server.as_str()])
     )]
     InputRequired { server: String },
 }
@@ -369,9 +421,9 @@ async fn connect_stdio(
     grant.prepare_home().map_err(|source| McpError::Spawn {
         server: server.name.clone(),
         source,
-        hint: Some(format!(
-            "cannot create the private HOME at {}",
-            grant.home().display()
+        hint: Some(qcode_i18n::trp(
+            "mcp.err.private_home",
+            &[grant.home().display().to_string()],
         )),
     })?;
 
@@ -396,7 +448,10 @@ async fn connect_stdio(
         Some(confine) if grant.is_confined() => confine(program, &args, workspace, &grant)
             .map_err(|detail| McpError::Spawn {
                 server: server.name.clone(),
-                source: std::io::Error::other(format!("sandbox refused to start it: {detail}")),
+                source: std::io::Error::other(qcode_i18n::trp(
+                    "mcp.err.sandbox_refused",
+                    &[detail.as_str()],
+                )),
                 hint: None,
             })?,
         Some(_) => {

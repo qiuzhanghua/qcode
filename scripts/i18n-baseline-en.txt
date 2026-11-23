@@ -5,43 +5,6 @@
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
 # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
-qcode-mcp/config.rs	MCP server '{0}' has an empty command
-qcode-mcp/config.rs	MCP server '{0}' has an empty url
-qcode-mcp/config.rs	MCP server '{0}' must set timeout_secs to at least 1
-qcode-mcp/config.rs	MCP server '{0}' sets both `command` and `url`; they are mutually exclusive —  drop one, or use two servers if you want both
-qcode-mcp/config.rs	MCP server '{0}' sets neither `command` (stdio) nor `url` (streamable-http);  one of the two is required
-qcode-mcp/config.rs	MCP server '{server}' header {name:?} contains a line break
-qcode-mcp/config.rs	MCP server '{server}' header {name:?} looks like a credential; put the token in  `bearer_token_env_var` instead (the config file is not a secret store)
-qcode-mcp/config.rs	MCP server '{server}' sets `{field}`, which only applies to the {owner} transport;  remove it
-qcode-mcp/config.rs	MCP server '{server}' url {url:?} is not an absolute http(s) URL: {reason}
-qcode-mcp/config.rs	MCP server '{server}' {field} entry {path} must be an absolute path  (`~` and `~/...` are expanded against your home; `~user/...` and relative  paths are not)
-qcode-mcp/config.rs	MCP server name '{0}' may only contain ASCII letters, digits, '-' and '_'
-qcode-mcp/config.rs	MCP server name must not be empty
-qcode-mcp/config.rs	duplicate MCP server name '{0}'
-qcode-mcp/config.rs	scheme is {:?}, need http or https
-qcode-mcp/config.rs	streamable-http
-qcode-mcp/extras.rs	get_prompt needs a `name`
-qcode-mcp/extras.rs	read_resource needs a `uri`
-qcode-mcp/grant.rs	MCP server '{server}' cannot create its private HOME at {path}: {source}
-qcode-mcp/grant.rs	MCP server '{server}' command {command:?} was not found on {searched};  use an absolute path if it lives elsewhere
-qcode-mcp/grant.rs	MCP server '{server}' is remote (`url`), so it has no filesystem grant;          drop request paths from its config
-qcode-mcp/grant.rs	MCP server '{server}' sets {key} = \"${{{variable}}}\" but {variable} is not in  qcode's environment
-qcode-mcp/grant.rs	MCP server '{server}' would need read access to {path}, which is {reason};  add an explicit read_paths entry if that is really intended
-qcode-mcp/grant.rs	MCP server '{server}' would need write access to {path}, which is {reason};  narrow `writable_paths` to a subdirectory
-qcode-mcp/grant.rs	the path as written
-qcode-mcp/grant.rs	the shebang of the command
-qcode-mcp/lib.rs	cannot create the private HOME at {}
-qcode-mcp/lib.rs	sandbox refused to start it: {detail}
-qcode-mcp/lib.rs	server '{server}' asked for a multi-round tool call (MRTR InputRequired), which qcode  does not support; the raw request state was logged
-qcode-mcp/lib.rs	server '{server}' did not finish the handshake within {secs}s
-qcode-mcp/lib.rs	server '{server}' failed to start: {source}{}
-qcode-mcp/lib.rs	server '{server}' handshake failed: {source}
-qcode-mcp/lib.rs	server '{server}' has an unusable header {name:?}: {detail}
-qcode-mcp/lib.rs	server '{server}' is remote but qcode has no egress client: [network] is disabled,  so the request could not be audited or allowlisted — enable the egress proxy, or use  a stdio server
-qcode-mcp/lib.rs	server '{server}' needs the bearer token in ${var}, but it is not set in qcode's  environment
-qcode-mcp/lib.rs	server '{server}' tools/list failed: {source}
-qcode-mcp/lib.rs	server '{server}' tools/list timed out after {secs}s
-qcode-mcp/lib.rs	server '{server}' url is unusable: {detail}
 qcode-tools/ask.rs	bad arguments: {error}
 qcode-tools/ask.rs	no interactive frontend is wired in; nobody can answer
 qcode-tools/sandbox/linux.rs	Landlock is unavailable: {}

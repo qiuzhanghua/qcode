@@ -168,9 +168,9 @@ fn check_extra_write(extra_write: &[PathBuf]) -> Result<Vec<PathBuf>, SandboxErr
             continue;
         }
         if let Some(reason) = qcode_core::dangerous_write_root(path, home.as_deref()) {
-            return Err(SandboxError::Setup(format!(
-                "[sandbox] extra_writable: {} is {reason}; narrow it to a subdirectory",
-                path.display()
+            return Err(SandboxError::Setup(qcode_i18n::trp(
+                "tool.err.extra_writable",
+                &[path.display().to_string(), reason],
             )));
         }
         kept.push(path.clone());

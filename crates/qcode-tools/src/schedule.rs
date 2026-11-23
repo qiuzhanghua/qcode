@@ -1001,7 +1001,12 @@ mod tests {
             .await
             .expect("execute");
         assert_eq!(output.status, ToolStatus::Error);
-        assert!(output.output.contains("at least 60"), "{}", output.output);
+        // 文案跟随界面语言：两种措辞都认，验的是「说清了 60 秒这个下限」。
+        assert!(
+            output.output.contains("at least 60") || output.output.contains("至少 60"),
+            "{}",
+            output.output
+        );
         // 空标题：headless 下工具直接说明缺了什么，让模型先向用户确认。
         let output = ScheduleCreate
             .execute(

@@ -85,6 +85,7 @@ impl McpExtra {
                     .get("uri")
                     .and_then(Value::as_str)
                     .filter(|uri| !uri.trim().is_empty())
+                    // i18n:keep 工具参数诊断，受众是模型（ADR-0105 §5）
                     .ok_or_else(|| "read_resource needs a `uri`".to_string())?;
                 // Built through serde so a protocol struct gaining a field does
                 // not break this call.
@@ -107,6 +108,7 @@ impl McpExtra {
                     .get("name")
                     .and_then(Value::as_str)
                     .filter(|name| !name.trim().is_empty())
+                    // i18n:keep 工具参数诊断，受众是模型（ADR-0105 §5）
                     .ok_or_else(|| "get_prompt needs a `name`".to_string())?;
                 let arguments = args.get("arguments").cloned();
                 let params: GetPromptRequestParams =
