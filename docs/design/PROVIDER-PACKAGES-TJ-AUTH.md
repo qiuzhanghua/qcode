@@ -10,18 +10,18 @@
 
 - Provider 是**路由（route）中心**的：`config.toml` 中 `providers.<route>` 一个路由只有
   一份 base_url、一份 key 引用（`api_key_env` / `api_key_command`）、一份模型列表
-  （`models`）与一个 `default_model`（[ProviderConfig](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/mod.rs#L960-L999)）。
-- 内置 catalog（[catalog.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/catalog.rs#L82-L170)）只有
+  （`models`）与一个 `default_model`（[ProviderConfig](../../crates/qcode-kernel/src/config/mod.rs)）。
+- 内置 catalog（[catalog.rs](../../crates/qcode-kernel/src/config/catalog.rs)）只有
   openai / deepseek / ollama / minimax / anthropic 五家。**火山方舟、智谱 Bigmodel、阿里云百炼均不在内置列表中**。
 - API key 只存 OS 钥匙串（macOS Keychain / Linux secret-tool / Windows CredWrite），
-  config.toml 只存「读回该 key」的命令（[setup/fields.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/fields.rs)）。
-  请求时由 `resolve.rs` 执行 env 或 key 命令得到 key（[resolve.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/resolve.rs#L231-L250)）。
+  config.toml 只存「读回该 key」的命令（[setup/fields.rs](../../crates/qcode-gui/src/setup/fields.rs)）。
+  请求时由 `resolve.rs` 执行 env 或 key 命令得到 key（[resolve.rs](../../crates/qcode-kernel/src/config/resolve.rs)）。
 - LLM 请求经 `ProviderRegistry::build` 构造 OpenAI/Anthropic adapter，`Authorization: Bearer <key>`
-  注入请求头（[openai_compat.rs](file:///d:/workspace/qcode/crates/qcode-providers/src/openai_compat.rs#L148-L155)）。
+  注入请求头（[openai_compat.rs](../../crates/qcode-providers/src/openai_compat.rs)）。
   **401/403 只映射成 `ProviderError::Auth`，没有任何 refresh / 自动重取 token 的流程**
-  （[openai_compat.rs#L527](file:///d:/workspace/qcode/crates/qcode-providers/src/openai_compat.rs#L525-L542)）。
+  （[openai_compat.rs](../../crates/qcode-providers/src/openai_compat.rs)）。
 - 项目现状为「qcode 不实现 OAuth 授权流程」，token 交给外部命令（`api_key_command`）每次取
-  （[ADR-0104 §6，_oauth2-example.toml](file:///d:/workspace/qcode/crates/qcode-kernel/template/llm/_oauth2-example.toml)）。
+  （[ADR-0104 §6，_oauth2-example.toml](../../crates/qcode-kernel/template/llm/_oauth2-example.toml)）。
 
 ### 1.2 目标
 
@@ -117,22 +117,22 @@ pub const PACKAGES: &[PackageGroup] = &[ /* 见下方清单 */ ];
 
 ### 3.3 配置 UI（设置页）
 
-改动集中在 [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs)：
+改动集中在 [models.rs](../../crates/qcode-gui/src/setup/models.rs)：
 
-- **添加流程**（`open_provider_picker`，[models.rs#L1679](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs)）：
+- **添加流程**（`open_provider_picker`，[models.rs](../../crates/qcode-gui/src/setup/models.rs)）：
   - 普通厂商（openai 等）：点选后直接进现有配置对话框——**全程无套餐下拉**。
   - 包型厂商（火山方舟等）：选中厂商后**弹出套餐下拉**（该厂商的 `PACKAGES` 条目），
     选定套餐 → 确定 route → 进入现有配置对话框（API key 钥匙串、模型编辑器、探测全部复用）。
 - **Provider 卡片列表**（`render_models_providers`）：display_name 即「厂商名 (套餐名)」，
   天然带套餐标识；`configured_models`、凭证状态、设为默认等逻辑**零改动**（route 即套餐）。
-- **编辑对话框**（`render_provider_dialog`，[models.rs#L571](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs)）：与现状完全一致，无需按套餐分支。
+- **编辑对话框**（`render_provider_dialog`，[models.rs](../../crates/qcode-gui/src/setup/models.rs)）：与现状完全一致，无需按套餐分支。
 - **钥匙串**（`store_provider_key`）：account 使用 route（= `火山方舟 (基础套餐)` 对应的 route），
-  套餐标识随 route 进入钥匙串条目名，无需改 [fields.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/fields.rs) 的存储逻辑。
+  套餐标识随 route 进入钥匙串条目名，无需改 [fields.rs](../../crates/qcode-gui/src/setup/fields.rs) 的存储逻辑。
 
 ### 3.4 问题框模型列表（D3）
 
-`provider_models`（[lib.rs#L397](file:///d:/workspace/qcode/crates/qcode-gui/src/lib.rs#L397-L437)）与
-`render_model_menu`（[main.rs#L59](file:///d:/workspace/qcode/crates/qcode-gui/src/render/main.rs#L59)）组标题改用
+`provider_models`（[lib.rs](../../crates/qcode-gui/src/lib.rs)）与
+`render_model_menu`（[main.rs](../../crates/qcode-gui/src/render/main.rs)）组标题改用
 display_name：
 
 ```
@@ -205,7 +205,7 @@ pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
 
 ### 4.2 token 存储：`tj_auth.json`
 
-与 `config.toml` 同目录（`home_dir()/.config/qcode/`，见 [load.rs#L230](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/load.rs#L230-L232)）：
+与 `config.toml` 同目录（`home_dir()/.config/qcode/`，见 [load.rs](../../crates/qcode-kernel/src/config/load.rs)）：
 
 ```json
 {
@@ -262,7 +262,7 @@ pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
   `http://127.0.0.1:<固定端口>/oauth2/callback`（RFC 8252），需在 Keycloak 的
   Valid redirect URIs 中精确配置该地址。
 - **401 重试闭环在 provider 内部**，不依赖 engine 层的 `is_retryable`
-  （[stream.rs#L67](file:///d:/workspace/qcode/crates/qcode-core/src/engine/stream.rs#L67-L72)，该表不含 Auth）。
+  （[stream.rs](../../crates/qcode-core/src/engine/stream.rs)，该表不含 Auth）。
 
 ### 4.4 代码落点
 
@@ -332,7 +332,7 @@ pub type AuthPrompt = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 ### 4.6 ADR 影响
 
-[ADR-0104 §6](file:///d:/workspace/qcode/crates/qcode-kernel/template/llm/_oauth2-example.toml)
+[ADR-0104 §6](../../crates/qcode-kernel/template/llm/_oauth2-example.toml)
 「qcode 不实现 oauth2 授权流程」需**修订**：太极统一认证作为内置例外，授权码流程在应用内实现；
 其他 Provider 仍走外部命令模式，不受影响。
 

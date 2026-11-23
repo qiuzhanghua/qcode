@@ -23,16 +23,16 @@
 
 ### 2.1 数据模型（config.toml）
 
-- `providers.<route>` 为一个 `ProviderConfig`（[config/mod.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/mod.rs#L945-L983)）：
+- `providers.<route>` 为一个 `ProviderConfig`（[config/mod.rs](../../crates/qcode-kernel/src/config/mod.rs)）：
   `base_url`、`api_key_env`、`api_key_command`、`default_model`、`protocol`、`images`、`stream_usage`、`extra_body`、`headers`、**`models`**。
-- `models` 语义（U0）：**空列表 = 使用 catalog 内置模型目录**；非空 = 覆盖 catalog（[注释原文](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/mod.rs#L978-L982)）。
-- `ModelEntry`（[config/mod.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/mod.rs#L1055-L1064)）：`id`、`name`、`context_window`、`max_tokens`。
-- 内置 catalog（[catalog.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/catalog.rs#L73-L170)）：openai → deepseek → ollama → minimax → anthropic，每项带 `protocol / base_url / api_key_env / default_model / models / images`。
-- `ProviderRegistry::list_configurable_providers`（[provider_registry.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/provider_registry.rs#L93-L117)）：catalog 目录（presentation order）+ config 中 catalog 未收录的手写 route。
+- `models` 语义（U0）：**空列表 = 使用 catalog 内置模型目录**；非空 = 覆盖 catalog（[注释原文](../../crates/qcode-kernel/src/config/mod.rs)）。
+- `ModelEntry`（[config/mod.rs](../../crates/qcode-kernel/src/config/mod.rs)）：`id`、`name`、`context_window`、`max_tokens`。
+- 内置 catalog（[catalog.rs](../../crates/qcode-kernel/src/config/catalog.rs)）：openai → deepseek → ollama → minimax → anthropic，每项带 `protocol / base_url / api_key_env / default_model / models / images`。
+- `ProviderRegistry::list_configurable_providers`（[provider_registry.rs](../../crates/qcode-kernel/src/provider_registry.rs)）：catalog 目录（presentation order）+ config 中 catalog 未收录的手写 route。
 
 ### 2.2 当前 Models 页 UI
 
-入口 `render_models_providers`（[models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L489-L622)）：
+入口 `render_models_providers`（[models.rs](../../crates/qcode-gui/src/setup/models.rs)）：
 
 ```
 ┌ 模型设置页 ───────────────────────────────┐
@@ -46,12 +46,12 @@
 └────────────────────────────────────────────┘
 ```
 
-- 卡片头：凭证圆点（Configured 实心 / Missing 空心 / Keyless 无）、显示名、`protocol · 凭证状态`、"当前默认"徽标、「设为默认」（[models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L511-L599)）。
-- 「编辑」按钮：已配置 route 直接 `open_editor`；未配置 route 先 `add_provider_preset`（写入 catalog 预设行，[tables.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/tables.rs#L334-L378)）再 `open_editor`。
-- 编辑弹窗 `render_provider_dialog`（[models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L628-L741)）：API 密钥（钥匙串）→ 「展开更多配置」→ 模型目录 `render_models_editor`（[models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L972-L1103)）。
+- 卡片头：凭证圆点（Configured 实心 / Missing 空心 / Keyless 无）、显示名、`protocol · 凭证状态`、"当前默认"徽标、「设为默认」（[models.rs](../../crates/qcode-gui/src/setup/models.rs)）。
+- 「编辑」按钮：已配置 route 直接 `open_editor`；未配置 route 先 `add_provider_preset`（写入 catalog 预设行，[tables.rs](../../crates/qcode-gui/src/setup/tables.rs)）再 `open_editor`。
+- 编辑弹窗 `render_provider_dialog`（[models.rs](../../crates/qcode-gui/src/setup/models.rs)）：API 密钥（钥匙串）→ 「展开更多配置」→ 模型目录 `render_models_editor`（[models.rs](../../crates/qcode-gui/src/setup/models.rs)）。
 - 模型目录编辑器：badge（已自定义/使用默认）、「恢复默认模型」、「获取可用模型」（probe 候选选择框）、模型行（ID/显示名/上下文窗口/max_tokens + 删除 ×）、「＋ 添加模型」。
 
-### 2.3 相关状态字段（SetupView，[mod.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/mod.rs#L82-L181)）
+### 2.3 相关状态字段（SetupView，[mod.rs](../../crates/qcode-gui/src/setup/mod.rs)）
 
 | 字段 | 用途 |
 |---|---|
@@ -159,7 +159,7 @@ Provider 大列表选择框（modal，只选择，不配置）
 
 - **选择框只做选择**：框内无任何表单、无编辑动作；点击行即关闭并进入下一步。
 - **配置页**：**完全复用**现有 `render_provider_dialog`（编辑弹窗）+ `render_models_editor`（模型目录），不新建配置 UI——API 密钥、协议、端点、模型增删、探测、设为默认、删除全部沿用。
-- **未配置 route 的首次进入**：复用 `add_provider_preset`（[tables.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/tables.rs#L334-L378)），catalog 预设行自动带 base_url / key env / protocol / 内置模型列表。
+- **未配置 route 的首次进入**：复用 `add_provider_preset`（[tables.rs](../../crates/qcode-gui/src/setup/tables.rs)），catalog 预设行自动带 base_url / key env / protocol / 内置模型列表。
 
 #### 3.2.2 状态结构
 
@@ -201,12 +201,12 @@ fn pick_provider(&mut self, route: &str, window, cx)
 
 | 位置 | 内容 |
 |---|---|
-| [mod.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/mod.rs#L164-L173) `SetupView` 字段 | `reachability`、`reach_checked_at`、`reach_inflight`、`reach_tx`、`reach_rx` |
-| [mod.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/mod.rs#L386-L390) `SetupView::new` 初始化 | 上述字段的初始值 |
-| [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L47-L57) | `provider_usable` 中 keyless 可达性分支（或整个函数，若其唯一定义点删除） |
-| [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L61-L120) | `ensure_reachability` |
-| [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L122-L165) | `spawn_reach_drain` |
-| [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L492) | `render_models_providers` 开头的 `self.ensure_reachability(cx)` 调用 |
+| [mod.rs](../../crates/qcode-gui/src/setup/mod.rs) `SetupView` 字段 | `reachability`、`reach_checked_at`、`reach_inflight`、`reach_tx`、`reach_rx` |
+| [mod.rs](../../crates/qcode-gui/src/setup/mod.rs) `SetupView::new` 初始化 | 上述字段的初始值 |
+| [models.rs](../../crates/qcode-gui/src/setup/models.rs) | `provider_usable` 中 keyless 可达性分支（或整个函数，若其唯一定义点删除） |
+| [models.rs](../../crates/qcode-gui/src/setup/models.rs) | `ensure_reachability` |
+| [models.rs](../../crates/qcode-gui/src/setup/models.rs) | `spawn_reach_drain` |
+| [models.rs](../../crates/qcode-gui/src/setup/models.rs) | `render_models_providers` 开头的 `self.ensure_reachability(cx)` 调用 |
 
 > 若以上探测线程相关 import（`std::sync::mpsc` 通道、探测线程 spawn）仅此处使用，一并清理。
 
@@ -214,10 +214,10 @@ fn pick_provider(&mut self, route: &str, window, cx)
 
 | 内容 | 位置 |
 |---|---|
-| `provider_models` 中 keyless 探测分支（"无需密钥 provider 必须端点可达才列入"） | [lib.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/lib.rs#L419-L435) |
-| `keyless_endpoint_reachable` | [lib.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/lib.rs#L506-L522) |
-| `endpoint_reachable` | [lib.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/lib.rs#L489-L502) |
-| `endpoint_of` | [lib.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/lib.rs#L462-L486) |
+| `provider_models` 中 keyless 探测分支（"无需密钥 provider 必须端点可达才列入"） | [lib.rs](../../crates/qcode-gui/src/lib.rs) |
+| `keyless_endpoint_reachable` | [lib.rs](../../crates/qcode-gui/src/lib.rs) |
+| `endpoint_reachable` | [lib.rs](../../crates/qcode-gui/src/lib.rs) |
+| `endpoint_of` | [lib.rs](../../crates/qcode-gui/src/lib.rs) |
 | 相关 import（`std::net::TcpStream`、`ToSocketAddrs` 等，若仅此处使用） | lib.rs |
 
 主界面 `provider_models` 简化为：遍历 `config.providers`，只取满足 `configured_models(route)` 的 provider，列出 `effective_models(route)`（排序 / 去重逻辑保留）；不再需要 `list_configurable_providers` 的可访问性过滤与 TCP 探测。
@@ -265,10 +265,10 @@ render_models_providers
 
 ## 5. 保存与数据流
 
-- **模型/Provider 的增删改**：全部走现有 `tables` 状态 + `auto_save(AutoSaveKind::Tables)`（[save.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/save.rs#L373)），**无需新增保存逻辑**。
+- **模型/Provider 的增删改**：全部走现有 `tables` 状态 + `auto_save(AutoSaveKind::Tables)`（[save.rs](../../crates/qcode-gui/src/setup/save.rs)），**无需新增保存逻辑**。
 - **列表可见性由配置驱动**：provider 配置了模型 → 出现在列表；从配置页删除模型目录/删除 provider → 卡片自动消失，无需额外同步。
 - **展开状态**（`expanded_routes`）与选择框开关（`adding_provider`）是纯 UI 状态，不落盘、不进 config.toml。
-- **默认模型**：不受过滤影响；`pin_default_fields` 仍同时写 `[default-model]` 与 `providers.<route>.default_model`（[models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs#L238-L248)）。注意：为某 provider `pin_default` 后，若它原本没有模型目录，`default_model` 会让它满足"已配置模型"判定而出现在列表。
+- **默认模型**：不受过滤影响；`pin_default_fields` 仍同时写 `[default-model]` 与 `providers.<route>.default_model`（[models.rs](../../crates/qcode-gui/src/setup/models.rs)）。注意：为某 provider `pin_default` 后，若它原本没有模型目录，`default_model` 会让它满足"已配置模型"判定而出现在列表。
 
 ---
 
@@ -304,13 +304,13 @@ render_models_providers
 
 | 文件 | 职责 |
 |---|---|
-| [models.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/models.rs) | Models 页渲染、编辑弹窗、默认模型、自定义卡片（主要改动点） |
-| [mod.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/mod.rs) | `SetupView` 状态字段、订阅 |
-| [tables.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/tables.rs) | `add_provider_preset`、probe、模型行增删（复用） |
-| [save.rs](file:///d:/workspace/qcode/crates/qcode-gui/src/setup/save.rs) | 表格保存 / auto-save（复用） |
-| [provider_registry.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/provider_registry.rs) | `list_configurable_providers`（选择框与列表的数据源） |
-| [catalog.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/catalog.rs) | 内置服务商目录、`catalog_models` |
-| [config/mod.rs](file:///d:/workspace/qcode/crates/qcode-kernel/src/config/mod.rs) | `ProviderConfig`、`ModelEntry`（`models`/`default_model` 判定依据） |
+| [models.rs](../../crates/qcode-gui/src/setup/models.rs) | Models 页渲染、编辑弹窗、默认模型、自定义卡片（主要改动点） |
+| [mod.rs](../../crates/qcode-gui/src/setup/mod.rs) | `SetupView` 状态字段、订阅 |
+| [tables.rs](../../crates/qcode-gui/src/setup/tables.rs) | `add_provider_preset`、probe、模型行增删（复用） |
+| [save.rs](../../crates/qcode-gui/src/setup/save.rs) | 表格保存 / auto-save（复用） |
+| [provider_registry.rs](../../crates/qcode-kernel/src/provider_registry.rs) | `list_configurable_providers`（选择框与列表的数据源） |
+| [catalog.rs](../../crates/qcode-kernel/src/config/catalog.rs) | 内置服务商目录、`catalog_models` |
+| [config/mod.rs](../../crates/qcode-kernel/src/config/mod.rs) | `ProviderConfig`、`ModelEntry`（`models`/`default_model` 判定依据） |
 
 ---
 

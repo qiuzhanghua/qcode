@@ -10,7 +10,7 @@
 
 ## 1. 现状
 
-标题推导链（[sessions.rs](file:///d:\workspace\qcode\crates\qcode\src\commands\sessions.rs#L20-L46)）：
+标题推导链（[sessions.rs](../../crates/qcode/src/commands/sessions.rs)）：
 
 1. **用户重命名**：`TaskRenamed` 事件，后写者胜出，永远优先。
 2. **首条用户消息兜底**：剥定时任务预填 → 换行折叠空格 → trim → 前 48 码点。
@@ -69,7 +69,7 @@ pub enum TitleSource {
 要点：
 
 - 新增是 **additive**：`EVENT_SCHEMA_VERSION` 升到 12，旧日志（无新事件）读取不变。
-- **兼容性实现注记**：[store.rs](file:///d:\workspace\qcode\crates\qcode-core\src\store.rs#L617-L632) 目前对未知
+- **兼容性实现注记**：[store.rs](../../crates/qcode-core/src/store.rs) 目前对未知
   `type` 直接 `StoreError::Json`——「旧版本读新日志」会失败。为落实 event.rs 文档承诺的
   「旧 reader 忽略未知 kind」，给 `EventKind` 加一个 catch-all `Unknown` 变体
   （`#[serde(other)]` 或按 `type` 预判），`store::load` 遇未知 kind 跳过而非报错；
@@ -87,7 +87,7 @@ pub enum TitleSource {
 1. 配置 `[session_title] enabled = true`。
 2. 会话还没有任何 `TaskRenamed` / `TitleGenerated`（无标题）。
 3. 本次输入是**合格消息**：非 `continuation`、非 `scheduled`、非 `question_reply`、
-   非 steering 注入（与 [event.rs](file:///d:\workspace\qcode\crates\qcode-core\src\event.rs#L139-L169)
+   非 steering 注入（与 [event.rs](../../crates/qcode-core/src/event.rs)
    的 `UserMessage` 可选字段对应），清洗后非空。
 
 **并发模型**：
@@ -98,7 +98,7 @@ pub enum TitleSource {
 - 失败不重试；一次失败后本会话不再调度（避免反复小额烧钱）。
 
 **路由**：优先 `[session_title] provider/model` 显式覆盖；缺省时复用该会话的
-`SessionStarted` 记录的 provider/model（[event.rs](file:///d:\workspace\qcode\crates\qcode-core\src\event.rs#L101-L116)），
+`SessionStarted` 记录的 provider/model（[event.rs](../../crates/qcode-core/src/event.rs)），
 不等待 request header。
 
 ## 6. 模型调用执行参数
