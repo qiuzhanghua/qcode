@@ -1092,10 +1092,15 @@ impl Shell {
                 // The config still resolves (e.g. egress or policy failed); the
                 // old backend is still in place: say so, or the window looks
                 // broken rather than "the new config did not work".
-                self.ui.app.push_notice(format!(
-                    "cannot apply settings: {error} (still using the previous kernel)"
+                self.ui.app.push_notice(qcode_i18n::trp(
+                    "gui.err.apply_settings_stale",
+                    &[error.as_str()],
                 ));
-                self.set_notice(format!("cannot apply settings: {error}"), false, cx);
+                self.set_notice(
+                    qcode_i18n::trp("gui.err.apply_settings", &[error.as_str()]),
+                    false,
+                    cx,
+                );
             }
         }
     }

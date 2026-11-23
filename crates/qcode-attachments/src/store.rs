@@ -36,22 +36,34 @@ const COPY_BUFFER: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("i/o error at {path}: {source}")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.io", &[.path.display().to_string(), .source.to_string()]))]
     Io {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("attachment is larger than the {limit} byte limit")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.too_large", &[.limit.to_string()]))]
     TooLarge { limit: u64 },
-    #[error("no attachment at {path}")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.missing", &[.path.display().to_string()]))]
     Missing { path: PathBuf },
-    #[error("declared {declared:?} but the bytes are {found:?}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "core.err.attachment.mime_mismatch",
+            &[.declared.as_str(), .found.map_or("?", ImageMime::as_str)]
+        )
+    )]
     MimeMismatch {
         declared: ImageMime,
         found: Option<ImageMime>,
     },
-    #[error("could not read the {mime:?} image: {reason}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "core.err.attachment.undecodable",
+            &[.mime.as_str(), .reason.as_str()]
+        )
+    )]
     Undecodable { mime: ImageMime, reason: String },
 }
 
@@ -163,7 +175,7 @@ impl AttachmentStore {
             crate::dimensions::dimensions(image.mime, image.bytes).ok_or_else(|| {
                 StoreError::Undecodable {
                     mime: image.mime,
-                    reason: "could not read the image dimensions".to_string(),
+                    reason: qcode_i18n::tr("core.err.attachment.dimensions").to_string(),
                 }
             })?;
 
@@ -269,7 +281,7 @@ impl AttachmentStore {
             let (width, height) = crate::dimensions::dimensions(image.mime, image.bytes).ok_or(
                 StoreError::Undecodable {
                     mime: image.mime,
-                    reason: "could not read the original dimensions".to_string(),
+                    reason: qcode_i18n::tr("core.err.attachment.original_dimensions").to_string(),
                 },
             )?;
             let origin_id = AttachmentId::from_bytes(Sha256::digest(image.bytes).into());
@@ -522,7 +534,7 @@ impl TempFile {
             dir,
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "too many temp file collisions",
+                qcode_i18n::tr("core.err.attachment.temp_collisions"),
             ),
         ))
     }

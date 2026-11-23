@@ -189,6 +189,7 @@ pub fn find_qcd() -> Result<PathBuf, NotInstalled> {
     }
 
     Err(NotInstalled {
+        // i18n:keep PATH 是环境变量名
         looked_in: std::env::var_os("PATH")
             .map_or_else(Vec::new, |p| std::env::split_paths(&p).collect()),
     })

@@ -93,9 +93,9 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
-    #[error("authentication failed: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.auth", &[.0.as_str()]))]
     Auth(String),
-    #[error("rate limited: {detail}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.rate_limit", &[.detail.as_str()]))]
     RateLimit {
         #[allow(dead_code)]
         retry_after_secs: Option<u64>,
@@ -103,17 +103,17 @@ pub enum ProviderError {
         /// 完整原因，光靠 "rate limited" 不说明问题。
         detail: String,
     },
-    #[error("context window exceeded")]
+    #[error("{}", qcode_i18n::tr("core.err.provider.context_overflow"))]
     ContextOverflow,
-    #[error("invalid request: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.invalid_request", &[.0.as_str()]))]
     InvalidRequest(String),
-    #[error("server error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.server", &[.0.as_str()]))]
     Server(String),
-    #[error("network error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.network", &[.0.as_str()]))]
     Network(String),
-    #[error("cancelled")]
+    #[error("{}", qcode_i18n::tr("core.err.provider.cancelled"))]
     Cancelled,
-    #[error("protocol error: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.provider.protocol", &[.0.as_str()]))]
     Protocol(String),
 }
 

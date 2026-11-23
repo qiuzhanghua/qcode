@@ -1273,7 +1273,9 @@ fn subagents_command_lists_and_toggles_groups() {
     assert_eq!(press(&mut app, "enter"), None);
     assert!(matches!(
         app.blocks.last(),
-        Some(Block::Notice(text)) if text.contains("子 agent") || text.contains("sub-agent")
+        // 文案跟随界面语言：中文是「子代理分组」，英文是 "sub-agent groups"。
+        Some(Block::Notice(text))
+            if text.contains("子代理") || text.contains("sub-agent")
     ));
 
     type_text(&mut app, "/subagents 1");

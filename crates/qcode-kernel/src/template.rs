@@ -172,14 +172,29 @@ pub struct Template {
 pub enum TemplateError {
     // The field is `path`, not `source`: `thiserror` treats a field named
     // `source` as the wrapped error and would demand `Error` on a `String`.
-    #[error("template {path} is not valid TOML: {error}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "kernel.err.template.parse",
+            &[.path.to_string(), .error.to_string()]
+        )
+    )]
     Parse {
         path: String,
         error: Box<toml::de::Error>,
     },
-    #[error("template {path}: {message}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "kernel.err.template.invalid",
+            &[.path.as_str(), .message.as_str()]
+        )
+    )]
     Invalid { path: String, message: String },
-    #[error("no template named {name:?}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("kernel.err.template.not_found", &[.name.as_str()])
+    )]
     NotFound { name: String },
 }
 
@@ -204,17 +219,18 @@ impl Template {
         let file = parts.next().unwrap_or_default();
         if parts.next().is_some() {
             return Err(invalid(
-                "unexpected nesting; templates are template/<kind>/<id>.toml".to_string(),
+                qcode_i18n::tr("kernel.err.template.nesting").to_string(),
             ));
         }
         let kind = Kind::from_dir(dir).ok_or_else(|| {
-            invalid(format!(
-                "unknown template kind {dir:?}; expected one of llm, security",
+            invalid(qcode_i18n::trp(
+                "kernel.err.template.unknown_kind",
+                &[dir.to_string()],
             ))
         })?;
         let id = file
             .strip_suffix(".toml")
-            .ok_or_else(|| invalid("template files must end in .toml".to_string()))?
+            .ok_or_else(|| invalid(qcode_i18n::tr("kernel.err.template.suffix").to_string()))?
             .to_string();
         if let Some(declared) = raw.template.kind
             && declared != kind
@@ -271,16 +287,21 @@ impl Template {
         // Typos are silent in serde, so catch them the same way a real file does.
         let unknown = crate::config::unknown_keys(&self.config);
         if !unknown.is_empty() {
-            return Err(invalid(format!(
-                "unknown config keys: {}",
-                unknown.join(", "),
+            return Err(invalid(qcode_i18n::trp(
+                "kernel.err.template.unknown_keys",
+                &[unknown.join(", ")],
             )));
         }
         // `Value::to_string` renders inline tables (`{ mode = "x" }`), which is
         // not a TOML document; `to_string_pretty` emits real `[sections]`, so the
         // generated text is exactly what a user would have written by hand.
-        let text = toml::to_string_pretty(&toml::Value::Table(self.config.clone()))
-            .map_err(|error| invalid(format!("cannot render the config section: {error}")))?;
+        let text =
+            toml::to_string_pretty(&toml::Value::Table(self.config.clone())).map_err(|error| {
+                invalid(qcode_i18n::trp(
+                    "kernel.err.template.render",
+                    &[error.to_string()],
+                ))
+            })?;
         let config: Config = toml::from_str(&text).map_err(|error| invalid(format!("{error}")))?;
         config
             .sandbox
@@ -296,9 +317,9 @@ impl Template {
         if config.network_plan().strict
             && config.sandbox.mode != qcode_tools::sandbox::SandboxMode::SandboxExec
         {
-            return Err(invalid(format!(
-                "network strict requires [sandbox] mode = \"sandbox-exec\"; this template asks for {:?}",
-                config.sandbox.mode.label(),
+            return Err(invalid(qcode_i18n::trp(
+                "kernel.err.template.strict_mode",
+                &[config.sandbox.mode.label().to_string()],
             )));
         }
         Ok(config)
@@ -346,7 +367,7 @@ impl Template {
     pub fn document_for(&self, os: &str) -> Result<String, TemplateError> {
         let region = config_region(&self.config_text).ok_or_else(|| TemplateError::Invalid {
             path: self.source.clone(),
-            message: "no `[config]` section".to_string(),
+            message: qcode_i18n::tr("kernel.err.template.no_config_section").to_string(),
         })?;
         // The leading comment block is where a template says what it is and what
         // it cannot do; it belongs at the top of the file the user gets, not only
@@ -391,9 +412,9 @@ impl Template {
             }
             let key = &prompt.key;
             let value = answers.get(key).ok_or_else(|| {
-                invalid(format!(
-                    "missing answer for prompt {key:?} (kind {:?})",
-                    prompt.kind,
+                invalid(qcode_i18n::trp(
+                    "kernel.err.template.missing_answer",
+                    &[key.to_string(), format!("{:?}", prompt.kind)],
                 ))
             })?;
             let value = if prompt.kind == PromptKind::Path {
@@ -404,9 +425,9 @@ impl Template {
             out = out.replace(&format!("${{{key}}}"), &value.to_string_lossy());
         }
         if let Some(leftover) = first_placeholder(&out) {
-            return Err(invalid(format!(
-                "unresolved placeholder ${{{leftover}}}; every ${{\u{2026}}} must be \
-                 answered by a text/path prompt",
+            return Err(invalid(qcode_i18n::trp(
+                "kernel.err.template.unresolved",
+                &[leftover.as_str()],
             )));
         }
         Ok(out)
@@ -499,7 +520,7 @@ pub fn all() -> Result<Vec<Template>, TemplateError> {
         let text =
             std::str::from_utf8(file.data.as_ref()).map_err(|error| TemplateError::Invalid {
                 path: path.clone(),
-                message: format!("not UTF-8: {error}"),
+                message: qcode_i18n::trp("kernel.err.template.utf8", &[error.to_string()]),
             })?;
         templates.push(Template::parse(&path, text)?);
     }

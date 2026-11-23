@@ -10,11 +10,17 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
-    #[error("sandbox `{0}` is not supported on this platform")]
-    Unsupported(&'static str),
-    #[error("sandbox setup failed: {0}")]
+    #[error("{}", qcode_i18n::trp("tool.err.sandbox.unsupported", &[.0]))]
+    Unsupported(String),
+    #[error("{}", qcode_i18n::trp("tool.err.sandbox.setup", &[.0.as_str()]))]
     Setup(String),
-    #[error("sandbox `{name}` failed its preflight: {detail}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.sandbox.preflight",
+            &[.name.to_string(), .detail.to_string()]
+        )
+    )]
     Preflight { name: &'static str, detail: String },
 }
 
@@ -39,10 +45,10 @@ impl SandboxMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::SandboxExec => "sandbox-exec",
+            Self::SandboxExec => "sandbox-exec", // i18n:keep 机制名（值）
             Self::Bwrap => "bwrap",
             Self::Landlock => "landlock",
-            Self::WindowsAcl => "windows-acl",
+            Self::WindowsAcl => "windows-acl", // i18n:keep 机制名（值）
         }
     }
 }
@@ -176,7 +182,7 @@ pub fn build(
     let extra_read = readable;
     if matches!(network, SandboxNetwork::ProxyOnly { .. }) && mode != SandboxMode::SandboxExec {
         return Err(SandboxError::Setup(
-            "network hard mode (proxy-only) is only implemented for macOS sandbox-exec".to_string(),
+            qcode_i18n::tr("tool.err.sandbox.network_hard_mode").to_string(),
         ));
     }
     match mode {
@@ -192,7 +198,8 @@ pub fn build(
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = (primary_root, network, extra_writable, extra_read);
-                Err(SandboxError::Unsupported("sandbox-exec"))
+                // i18n:keep 机制名（值），翻了对不上 ADR 与 man page
+                Err(SandboxError::Unsupported("sandbox-exec".to_string()))
             }
         }
         SandboxMode::Bwrap => {
@@ -214,7 +221,7 @@ pub fn build(
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = (primary_root, network, extra_writable, extra_read, allow_pty);
-                Err(SandboxError::Unsupported("bwrap"))
+                Err(SandboxError::Unsupported("bwrap".to_string()))
             }
         }
         SandboxMode::Landlock => {
@@ -228,7 +235,7 @@ pub fn build(
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = (primary_root, network, extra_writable, extra_read, allow_pty);
-                Err(SandboxError::Unsupported("landlock"))
+                Err(SandboxError::Unsupported("landlock".to_string()))
             }
         }
         SandboxMode::WindowsAcl => {
@@ -245,7 +252,8 @@ pub fn build(
             #[cfg(not(windows))]
             {
                 let _ = (primary_root, network, extra_writable, extra_read);
-                Err(SandboxError::Unsupported("windows-acl"))
+                // i18n:keep 机制名（值），翻了对不上 ADR 与 man page
+                Err(SandboxError::Unsupported("windows-acl".to_string()))
             }
         }
     }
@@ -290,7 +298,7 @@ pub trait Sandbox: Send + Sync + std::fmt::Debug {
         _temp: Option<&Path>,
         _outside: OutsideRoots,
     ) -> Result<Arc<dyn Sandbox>, SandboxError> {
-        Err(SandboxError::Unsupported("multi-root sandbox"))
+        Err(SandboxError::Unsupported("multi-root sandbox".to_string())) // i18n:keep 占位名，不是散文
     }
 
     /// Probe that the sandbox can actually be applied. Default: no-op.

@@ -30,7 +30,7 @@ pub enum Trigger {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("invalid transition: {from:?} + {trigger:?}")]
+#[error("invalid transition: {from:?} + {trigger:?}")] // i18n:keep 内部不变量，出现即 bug，读者是开发者
 pub struct TransitionError {
     pub from: TurnState,
     pub trigger: Trigger,

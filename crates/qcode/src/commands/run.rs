@@ -120,8 +120,12 @@ pub(crate) async fn cmd_run(
                         &[path.display().to_string().as_str()],
                     )
                 })?;
-            let reader = std::fs::File::open(path)
-                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            let reader = std::fs::File::open(path).map_err(|error| {
+                qcode_i18n::trp(
+                    "cli.err.cannot_read",
+                    &[path.display().to_string(), error.to_string()],
+                )
+            })?;
             let stored = attachments_store.put_file(name, reader)?;
             attachments.push(qcode_core::engine::AttachmentSource::Stored(
                 qcode_attachments::AttachmentRef::File(stored),

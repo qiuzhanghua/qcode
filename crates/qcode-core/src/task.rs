@@ -91,23 +91,23 @@ pub struct Task {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TaskError {
-    #[error("task id must not be empty")]
+    #[error("{}", qcode_i18n::tr("core.err.task.empty_id"))]
     EmptyId,
-    #[error("root label must be a slug: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.task.invalid_label", &[.0.as_str()]))]
     InvalidLabel(String),
-    #[error("root label is duplicated: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.task.duplicate_label", &[.0.as_str()]))]
     DuplicateLabel(String),
-    #[error("root id is duplicated: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.task.duplicate_root_id", &[.0.as_str()]))]
     DuplicateRootId(String),
-    #[error("too many roots ({0}); maximum is {MAX_ROOTS}")]
+    #[error("{}", qcode_i18n::trp("core.err.task.too_many_roots", &[.0.to_string(), MAX_ROOTS.to_string()]))]
     TooManyRoots(usize),
-    #[error("at most one root may be primary")]
+    #[error("{}", qcode_i18n::tr("core.err.task.multiple_primary"))]
     MultiplePrimary,
-    #[error("root path must not be empty")]
+    #[error("{}", qcode_i18n::tr("core.err.task.empty_root_path"))]
     EmptyRootPath,
-    #[error("task title must not be empty")]
+    #[error("{}", qcode_i18n::tr("core.err.task.empty_title"))]
     EmptyTitle,
-    #[error("task title is too long ({0}); maximum is 80 characters")]
+    #[error("{}", qcode_i18n::trp("core.err.task.title_too_long", &[.0.to_string()]))]
     TitleTooLong(usize),
 }
 

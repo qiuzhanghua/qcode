@@ -866,10 +866,9 @@ impl SandboxConfig {
         let home = home_dir();
         for path in &self.extra_writable {
             if let Some(reason) = qcode_core::dangerous_write_root(path, home.as_deref()) {
-                return Err(ConfigError::InvalidDocument(format!(
-                    "[sandbox] extra_writable: {} is {reason}; \
-                     list a subdirectory such as \"~/Documents\" instead",
-                    path.display()
+                return Err(ConfigError::InvalidDocument(qcode_i18n::trp(
+                    "kernel.err.extra_writable",
+                    &[path.display().to_string(), reason],
                 )));
             }
         }

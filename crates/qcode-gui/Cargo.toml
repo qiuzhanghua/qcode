@@ -10,22 +10,22 @@ name = "qcode_gui"
 path = "src/lib.rs"
 
 [dependencies]
-qcode-attachments = { version = "0.17.0", path = "../qcode-attachments" }
-qcode-core = { version = "0.17.0", path = "../qcode-core" }
-qcode-driver = { version = "0.17.0", path = "../qcode-driver" }
-qcode-providers = { version = "0.17.0", path = "../qcode-providers" }
-qcode-ui-state = { version = "0.17.0", path = "../qcode-ui-state" }
-qcode-ui-bridge = { version = "0.17.0", path = "../qcode-ui-bridge" }
-qcode-kernel = { version = "0.17.0", path = "../qcode-kernel" }
+qcode-attachments = { version = "0.17.1", path = "../qcode-attachments" }
+qcode-core = { version = "0.17.1", path = "../qcode-core" }
+qcode-driver = { version = "0.17.1", path = "../qcode-driver" }
+qcode-providers = { version = "0.17.1", path = "../qcode-providers" }
+qcode-ui-state = { version = "0.17.1", path = "../qcode-ui-state" }
+qcode-ui-bridge = { version = "0.17.1", path = "../qcode-ui-bridge" }
+qcode-kernel = { version = "0.17.1", path = "../qcode-kernel" }
 # 界面语言（ADR-0105）。一次 `set` 同时覆盖 gpui-kit 自带文案与我们的文案：
 # 两边是同一份 rust-i18n、同一个 `CURRENT_LOCALE`。
-qcode-i18n = { version = "0.17.0", path = "../qcode-i18n" }
-qcode-tools = { version = "0.17.0", path = "../qcode-tools" }
-qcode-mcp = { version = "0.17.0", path = "../qcode-mcp" }
-qcode-terminal = { version = "0.17.0", path = "../qcode-terminal" }
+qcode-i18n = { version = "0.17.1", path = "../qcode-i18n" }
+qcode-tools = { version = "0.17.1", path = "../qcode-tools" }
+qcode-mcp = { version = "0.17.1", path = "../qcode-mcp" }
+qcode-terminal = { version = "0.17.1", path = "../qcode-terminal" }
 # Spike candidate A (ADR-0037): components, virtual lists, code editor, a11y.
 gpui-kit = "0.10.0"
-qcode-image = { version = "0.17.0", path = "../qcode-image" }
+qcode-image = { version = "0.17.1", path = "../qcode-image" }
 base64.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time", "net"] }
 tokio-util.workspace = true
@@ -77,7 +77,7 @@ gpui-component = "0.10.0"
 # Not a duplicate of the [dependencies] entry above: an integration test only
 # sees its own declared deps, and `tests/backend.rs` spawns a real flooding
 # terminal to prove it cannot starve the scheduler's beat (ADR-0062).
-qcode-terminal = { version = "0.17.0", path = "../qcode-terminal" }
+qcode-terminal = { version = "0.17.1", path = "../qcode-terminal" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # StatusNotifierItem + dbusmenu for the Linux tray (ADR-0052).

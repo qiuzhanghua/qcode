@@ -282,7 +282,7 @@ pub fn sample(
     sandbox: Option<&dyn crate::sandbox::Sandbox>,
 ) -> Result<ShellEnv, String> {
     let (program, args) = sampling_command(settings, program)
-        .ok_or_else(|| "environment sampling is off".to_string())?;
+        .ok_or_else(|| qcode_i18n::tr("tool.err.sampler.off").to_string())?;
     let started = Instant::now();
     let mut command = match (settings.env_sample_sandboxed, sandbox) {
         (true, Some(sandbox)) => {
@@ -317,19 +317,21 @@ pub fn sample(
     )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "{} exited with {}: {}",
-            program.display(),
-            output.status,
-            stderr.trim()
+        return Err(qcode_i18n::trp(
+            "tool.err.sampler.exited",
+            &[
+                program.display().to_string(),
+                output.status.to_string(),
+                stderr.trim().to_string(),
+            ],
         ));
     }
 
     let mut vars = parse_env_nul(&output.stdout);
     if vars.is_empty() {
-        return Err(format!(
-            "{} produced no environment entries",
-            program.display()
+        return Err(qcode_i18n::trp(
+            "tool.err.sampler.empty",
+            &[program.display().to_string()],
         ));
     }
     vars.retain(|name, _| !excluded(settings, name));
@@ -348,7 +350,7 @@ fn run_with_timeout(
     detach_from_controlling_terminal(&mut command);
     let mut child = command
         .spawn()
-        .map_err(|error| format!("could not start the sampler: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("tool.err.sampler.start", &[error.to_string()]))?;
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -356,7 +358,10 @@ fn run_with_timeout(
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("sampling timed out after {timeout:?}"));
+                return Err(qcode_i18n::trp(
+                    "tool.err.sampler.timeout",
+                    &[format!("{timeout:?}")],
+                ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(error) => return Err(error.to_string()),

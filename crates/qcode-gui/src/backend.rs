@@ -236,6 +236,7 @@ pub trait Backend {
     /// this when the config file changes, so saving Settings takes effect
     /// without restarting the process or flashing a new window.
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        // i18n:keep 内部不变量：只有不支持 reload 的后端才走到这里
         Err("this backend cannot reload".to_string())
     }
 
@@ -305,7 +306,7 @@ impl Backend for UnconfiguredBackend {
     }
 
     fn set_roots(&mut self, _id: &str, _roots: Vec<Root>) -> Result<(), String> {
-        Err("not configured yet: open Settings first".to_string())
+        Err(qcode_i18n::tr("gui.err.not_configured").to_string())
     }
 
     fn rename_task(&mut self, id: &str, title: String) -> Result<(), String> {
@@ -368,6 +369,7 @@ impl Backend for UnconfiguredBackend {
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        // i18n:keep 开发者才看得到的调用约定
         Err("rebuild is asynchronous; use rebuild_hook".to_string())
     }
 
@@ -494,6 +496,7 @@ impl Backend for LocalBackend {
     }
 
     fn rebuild(&self) -> Result<Box<dyn Backend>, String> {
+        // i18n:keep 开发者才看得到的调用约定
         Err("rebuild is asynchronous; use rebuild_hook".to_string())
     }
 

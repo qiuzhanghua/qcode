@@ -146,7 +146,10 @@ fn budget_line(hint: &BudgetHint) -> String {
         line.push_str(&format!(" · ${:.2}/${:.2}", hint.cost_usd, max_cost));
     }
     if hint.window > 1 {
-        line.push_str(&format!(" · window {}", hint.window));
+        line.push_str(&qcode_i18n::trp(
+            "tui.status.window",
+            &[hint.window.to_string()],
+        ));
     }
     line
 }

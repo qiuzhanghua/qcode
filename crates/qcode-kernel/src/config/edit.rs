@@ -43,19 +43,27 @@ pub fn mcp_add(path: &Path, new: NewMcpServer<'_>) -> Result<(), ConfigError> {
         sandbox,
     } = new;
     let mut document = read_document(path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| ConfigError::InvalidDocument("root must be a table".to_string()))?;
+    let root = document.as_table_mut().ok_or_else(|| {
+        ConfigError::InvalidDocument(qcode_i18n::tr("kernel.err.config.root_not_table").to_string())
+    })?;
     let mcp = root
         .entry("mcp")
         .or_insert_with(|| toml::Value::Table(toml::Table::new()))
         .as_table_mut()
-        .ok_or_else(|| ConfigError::InvalidDocument("mcp must be a table".to_string()))?;
+        .ok_or_else(|| {
+            ConfigError::InvalidDocument(
+                qcode_i18n::tr("kernel.err.config.mcp_not_table").to_string(),
+            )
+        })?;
     let servers = mcp
         .entry("servers")
         .or_insert_with(|| toml::Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| ConfigError::InvalidDocument("mcp.servers must be an array".to_string()))?;
+        .ok_or_else(|| {
+            ConfigError::InvalidDocument(
+                qcode_i18n::tr("kernel.err.config.mcp_servers_not_array").to_string(),
+            )
+        })?;
 
     if servers
         .iter()

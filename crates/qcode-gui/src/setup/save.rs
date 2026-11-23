@@ -62,7 +62,10 @@ impl SetupView {
                     if field.path == ["agent", "max_cost_usd"] {
                         continue;
                     }
-                    return Err(format!("{}: required", field.label));
+                    return Err(qcode_i18n::trp(
+                        "gui.err.required",
+                        &[field.label.to_string()],
+                    ));
                 }
                 if matches!(field.kind, FieldKind::Integer) {
                     parse::<u64>(&value, field.label)?;

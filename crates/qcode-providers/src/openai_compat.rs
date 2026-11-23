@@ -393,8 +393,10 @@ fn process_event(
         return Ok(out);
     }
 
-    let value: Value = serde_json::from_str(data)
-        .map_err(|err| ProviderError::Protocol(format!("invalid chunk: {err}")))?;
+    let value: Value = serde_json::from_str(data).map_err(|err| {
+        // i18n:keep 线上协议诊断，读者是排障的人（ADR-0105 §5 同类）
+        ProviderError::Protocol(format!("invalid chunk: {err}"))
+    })?;
 
     if let Some(error) = value.get("error") {
         return Err(ProviderError::Server(error.to_string()));
@@ -491,6 +493,7 @@ fn emit_tool_calls(
 ) -> Result<(), ProviderError> {
     for (_, call) in std::mem::take(&mut state.tool_calls) {
         let arguments: Value = serde_json::from_str(&call.arguments).map_err(|err| {
+            // i18n:keep 模型给的参数不合法，诊断给模型/排障看
             ProviderError::Protocol(format!("tool arguments are not valid JSON: {err}"))
         })?;
         out.push(StreamEvent::ToolCallDone {

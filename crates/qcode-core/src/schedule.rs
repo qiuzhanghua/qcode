@@ -51,7 +51,9 @@ mod serde_wall_clock {
         D: serde::Deserializer<'de>,
     {
         let text = String::deserialize(deserializer)?;
-        parse(&text).ok_or_else(|| serde::de::Error::custom("invalid wall clock"))
+        parse(&text).ok_or_else(|| {
+            serde::de::Error::custom(qcode_i18n::tr("core.err.schedule.invalid_wall_clock"))
+        })
     }
 
     /// `Option<PrimitiveDateTime>`：`None` → `null`。
@@ -77,7 +79,9 @@ mod serde_wall_clock {
         {
             let text = Option::<String>::deserialize(deserializer)?;
             text.map(|text| {
-                parse(&text).ok_or_else(|| serde::de::Error::custom("invalid wall clock"))
+                parse(&text).ok_or_else(|| {
+                    serde::de::Error::custom(qcode_i18n::tr("core.err.schedule.invalid_wall_clock"))
+                })
             })
             .transpose()
         }
@@ -123,11 +127,25 @@ const FIELDS: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CronError {
-    #[error("a schedule needs 5 fields (minute hour day month weekday), got {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.schedule.field_count", &[.0.to_string()]))]
     FieldCount(usize),
-    #[error("cannot parse `{field}`: {reason}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("core.err.schedule.field", &[.field.to_string(), .reason.to_string()])
+    )]
     Field { field: String, reason: String },
-    #[error("value {value} is out of range {min}..={max} in `{field}`")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "core.err.schedule.range",
+            &[
+                .value.to_string(),
+                .min.to_string(),
+                .max.to_string(),
+                .field.to_string(),
+            ]
+        )
+    )]
     Range {
         field: String,
         value: u32,
@@ -166,7 +184,7 @@ impl Field {
         if field.is_empty() {
             return Err(CronError::Field {
                 field: spec.to_string(),
-                reason: "empty".to_string(),
+                reason: qcode_i18n::tr("core.err.schedule.reason.empty").to_string(),
             });
         }
         let starred = field == "*" || field.starts_with("*/");
@@ -175,12 +193,16 @@ impl Field {
                 Some((range, step)) => {
                     let step: u32 = step.parse().map_err(|_| CronError::Field {
                         field: spec.to_string(),
-                        reason: format!("`{step}` is not a step"),
+                        reason: qcode_i18n::trp(
+                            "core.err.schedule.reason.not_a_step",
+                            &[step.to_string()],
+                        ),
                     })?;
                     if step == 0 {
                         return Err(CronError::Field {
                             field: spec.to_string(),
-                            reason: "step must be > 0".to_string(),
+                            reason: qcode_i18n::tr("core.err.schedule.reason.step_zero")
+                                .to_string(),
                         });
                     }
                     (range, step)
@@ -204,7 +226,10 @@ impl Field {
             if low > high {
                 return Err(CronError::Field {
                     field: spec.to_string(),
-                    reason: format!("{low}-{high} is backwards"),
+                    reason: qcode_i18n::trp(
+                        "core.err.schedule.reason.backwards",
+                        &[low.to_string(), high.to_string()],
+                    ),
                 });
             }
             let mut at = low;
@@ -240,7 +265,10 @@ fn value(text: &str, min: u32, max: u32, names: &[&str], field: &str) -> Result<
             .map(|index| index as u32 + min)
             .ok_or_else(|| CronError::Field {
                 field: field.to_string(),
-                reason: format!("`{text}` is not a number or a known name"),
+                reason: qcode_i18n::trp(
+                    "core.err.schedule.reason.not_a_number",
+                    &[text.to_string()],
+                ),
             })?
     };
     if parsed < min || parsed > max {
@@ -468,15 +496,30 @@ pub enum Rule {
 /// 规则描述解析失败的原因。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuleError {
-    #[error("rule `{text}`: unknown kind; use cron / once / every / daily / weekly / monthly")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("core.err.schedule.unknown_kind", &[.text.as_str()])
+    )]
     UnknownKind { text: String },
-    #[error("rule `{text}`: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "core.err.schedule.rule_cron",
+            &[.text.to_string(), .source.to_string()]
+        )
+    )]
     Cron {
         text: String,
         #[source]
         source: CronError,
     },
-    #[error("rule `{text}`: {reason}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "core.err.schedule.rule_invalid",
+            &[.text.to_string(), .reason.to_string()]
+        )
+    )]
     Invalid { text: String, reason: String },
 }
 
@@ -499,7 +542,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
             if expr.is_empty() {
                 return Err(RuleError::Invalid {
                     text: text.to_string(),
-                    reason: "missing cron expression".to_string(),
+                    reason: qcode_i18n::tr("core.err.schedule.missing_cron").to_string(),
                 });
             }
             let _ = CronSpec::parse(&expr).map_err(|source| RuleError::Cron {
@@ -511,7 +554,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
         Some("once") => {
             let at = parse_once(&parts[1..].join(" ")).ok_or_else(|| RuleError::Invalid {
                 text: text.to_string(),
-                reason: "expected `once YYYY-MM-DD HH:MM`".to_string(),
+                reason: qcode_i18n::tr("core.err.schedule.expect_once").to_string(),
             })?;
             Ok(Rule::Once { at })
         }
@@ -522,12 +565,12 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
                     .and_then(|part| part.parse().ok())
                     .ok_or_else(|| RuleError::Invalid {
                         text: text.to_string(),
-                        reason: "expected `every <seconds>`".to_string(),
+                        reason: qcode_i18n::tr("core.err.schedule.expect_every").to_string(),
                     })?;
             if seconds < 60 {
                 return Err(RuleError::Invalid {
                     text: text.to_string(),
-                    reason: "interval must be at least 60 seconds".to_string(),
+                    reason: qcode_i18n::tr("core.err.schedule.min_interval").to_string(),
                 });
             }
             Ok(Rule::Interval { seconds })
@@ -537,7 +580,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
                 parse_hhmm(parts.get(1).copied().unwrap_or("")).ok_or_else(|| {
                     RuleError::Invalid {
                         text: text.to_string(),
-                        reason: "expected `daily HH:MM`".to_string(),
+                        reason: qcode_i18n::tr("core.err.schedule.expect_daily").to_string(),
                     }
                 })?;
             Ok(Rule::Daily { hour, minute })
@@ -549,7 +592,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
             if parts.len() < 2 {
                 return Err(RuleError::Invalid {
                     text: text.to_string(),
-                    reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                    reason: qcode_i18n::tr("core.err.schedule.expect_weekly").to_string(),
                 });
             }
             let (rest, hhmm) = parts.split_at(parts.len() - 1);
@@ -559,7 +602,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
                     weekdays.push(
                         parse_weekday(piece).ok_or_else(|| RuleError::Invalid {
                             text: text.to_string(),
-                            reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                            reason: qcode_i18n::tr("core.err.schedule.expect_weekly").to_string(),
                         })? % 7,
                     );
                 }
@@ -567,12 +610,12 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
             if weekdays.is_empty() {
                 return Err(RuleError::Invalid {
                     text: text.to_string(),
-                    reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                    reason: qcode_i18n::tr("core.err.schedule.expect_weekly").to_string(),
                 });
             }
             let (hour, minute) = parse_hhmm(hhmm[0]).ok_or_else(|| RuleError::Invalid {
                 text: text.to_string(),
-                reason: "expected `weekly <weekday> HH:MM`".to_string(),
+                reason: qcode_i18n::tr("core.err.schedule.expect_weekly").to_string(),
             })?;
             Ok(Rule::Weekly {
                 weekdays,
@@ -588,13 +631,13 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
                 .filter(|day| (1..=31).contains(day))
                 .ok_or_else(|| RuleError::Invalid {
                     text: text.to_string(),
-                    reason: "expected `monthly <day> HH:MM` (day 1-31)".to_string(),
+                    reason: qcode_i18n::tr("core.err.schedule.expect_monthly").to_string(),
                 })?;
             let (hour, minute) =
                 parse_hhmm(parts.get(2).copied().unwrap_or("")).ok_or_else(|| {
                     RuleError::Invalid {
                         text: text.to_string(),
-                        reason: "expected `monthly <day> HH:MM` (day 1-31)".to_string(),
+                        reason: qcode_i18n::tr("core.err.schedule.expect_monthly").to_string(),
                     }
                 })?;
             Ok(Rule::Monthly { day, hour, minute })

@@ -79,7 +79,7 @@ pub(crate) fn pick_directory() -> Result<Option<PathBuf>, String> {
             .arg("-e")
             .arg(script)
             .output()
-            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.folder_picker", &[error.to_string()]))?;
         if !output.status.success() {
             // Cancel is a non-zero status with an AppleScript cancel message.
             return Ok(None);
@@ -102,7 +102,7 @@ pub(crate) fn pick_directory() -> Result<Option<PathBuf>, String> {
             .arg("--directory")
             .arg(format!("--title={title}"))
             .output()
-            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.folder_picker", &[error.to_string()]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -167,16 +167,15 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 script,
             ])
             .output()
-            .map_err(|error| format!("cannot open folder picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.folder_picker", &[error.to_string()]))?;
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((!path.is_empty()).then(|| PathBuf::from(path)))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        Err(
-            "the native folder picker is not implemented on this platform; type the path instead"
-                .to_string(),
-        )
+        Err(qcode_i18n::tr("gui.err.no_native_folder_picker")
+            .as_ref()
+            .to_string())
     }
 }
 
@@ -195,7 +194,7 @@ pub(crate) fn pick_file() -> Result<Option<PathBuf>, String> {
             .arg("-e")
             .arg(script)
             .output()
-            .map_err(|error| format!("cannot open file picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.file_picker", &[error.to_string()]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -213,7 +212,7 @@ pub(crate) fn pick_file() -> Result<Option<PathBuf>, String> {
             .arg("--file-selection")
             .arg(format!("--title={title}"))
             .output()
-            .map_err(|error| format!("cannot open file picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.file_picker", &[error.to_string()]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -255,15 +254,14 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 script,
             ])
             .output()
-            .map_err(|error| format!("cannot open file picker: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("gui.err.file_picker", &[error.to_string()]))?;
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((!path.is_empty()).then(|| PathBuf::from(path)))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        Err(
-            "the native file picker is not implemented on this platform; type the path instead"
-                .to_string(),
-        )
+        Err(qcode_i18n::tr("gui.err.no_native_file_picker")
+            .as_ref()
+            .to_string())
     }
 }

@@ -113,7 +113,7 @@ impl Tray for QcodeTray {
     }
 
     fn title(&self) -> String {
-        "QCode".to_string()
+        "QCode".to_string() // i18n:keep 品牌名
     }
 
     /// 空字符串：让 host 用 IconPixmap（我们自己的 QC 图标），而不是去
@@ -130,7 +130,7 @@ impl Tray for QcodeTray {
         ToolTip {
             icon_name: self.snapshot.icon_name().to_string(),
             icon_pixmap: Vec::new(),
-            title: "QCode".to_string(),
+            title: "QCode".to_string(), // i18n:keep 品牌名
             description: self.snapshot.tooltip(),
         }
     }

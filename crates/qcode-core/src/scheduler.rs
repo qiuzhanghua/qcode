@@ -18,13 +18,14 @@ use crate::store::{SessionStore, StoreError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
-    #[error("schedule task: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.scheduler.invalid", &[.0.as_str()]))]
     Invalid(String),
-    #[error("schedule task `{0}` not found")]
+    #[error("{}", qcode_i18n::trp("core.err.scheduler.not_found", &[.0.as_str()]))]
     NotFound(String),
     /// 这条任务由 `config.toml` 声明，任务表只是它的投影：改它要去改配置。
     #[error(
-        "schedule task `{0}` is declared in config.toml ([schedules.{0}]); edit that file instead"
+        "{}",
+        qcode_i18n::trp("core.err.scheduler.config_owned", &[.0.as_str()])
     )]
     ConfigOwned(String),
     #[error(transparent)]
@@ -325,31 +326,32 @@ impl Scheduler {
         let title = input.title.trim();
         if title.is_empty() {
             return Err(ScheduleError::Invalid(
-                "title must not be empty".to_string(),
+                qcode_i18n::tr("core.err.scheduler.title_empty").to_string(),
             ));
         }
         if title.chars().count() > 120 {
             return Err(ScheduleError::Invalid(
-                "title must be at most 120 characters".to_string(),
+                qcode_i18n::tr("core.err.scheduler.title_too_long").to_string(),
             ));
         }
         if input.prompt.trim().is_empty() {
             return Err(ScheduleError::Invalid(
-                "prompt must not be empty".to_string(),
+                qcode_i18n::tr("core.err.scheduler.prompt_empty").to_string(),
             ));
         }
         if let Rule::Once { at } = &input.rule
             && *at <= now
         {
             return Err(ScheduleError::Invalid(
-                "a one-shot task must be scheduled in the future".to_string(),
+                qcode_i18n::tr("core.err.scheduler.once_in_the_past").to_string(),
             ));
         }
         if let Target::Session { id } = &input.target
             && self.store.task(id).is_err()
         {
-            return Err(ScheduleError::Invalid(format!(
-                "target session `{id}` does not exist"
+            return Err(ScheduleError::Invalid(qcode_i18n::trp(
+                "core.err.scheduler.target_missing",
+                &[id.as_str()],
             )));
         }
         let id = ulid::Ulid::new().to_string();
@@ -409,12 +411,12 @@ impl Scheduler {
                 let trimmed = title.trim();
                 if trimmed.is_empty() {
                     return Err(ScheduleError::Invalid(
-                        "title must not be empty".to_string(),
+                        qcode_i18n::tr("core.err.scheduler.title_empty").to_string(),
                     ));
                 }
                 if trimmed.chars().count() > 120 {
                     return Err(ScheduleError::Invalid(
-                        "title must be at most 120 characters".to_string(),
+                        qcode_i18n::tr("core.err.scheduler.title_too_long").to_string(),
                     ));
                 }
                 task.title = title;
@@ -422,7 +424,7 @@ impl Scheduler {
             if let Some(prompt) = patch.prompt {
                 if prompt.trim().is_empty() {
                     return Err(ScheduleError::Invalid(
-                        "prompt must not be empty".to_string(),
+                        qcode_i18n::tr("core.err.scheduler.prompt_empty").to_string(),
                     ));
                 }
                 task.prompt = prompt;
@@ -432,7 +434,7 @@ impl Scheduler {
                     && *at <= now
                 {
                     return Err(ScheduleError::Invalid(
-                        "a one-shot task must be scheduled in the future".to_string(),
+                        qcode_i18n::tr("core.err.scheduler.once_in_the_past").to_string(),
                     ));
                 }
                 task.rule = rule;
@@ -444,8 +446,9 @@ impl Scheduler {
                 if let Target::Session { id } = &target
                     && self.store.task(id).is_err()
                 {
-                    return Err(ScheduleError::Invalid(format!(
-                        "target session `{id}` does not exist"
+                    return Err(ScheduleError::Invalid(qcode_i18n::trp(
+                        "core.err.scheduler.target_missing",
+                        &[id.as_str()],
                     )));
                 }
                 task.target = target.clone();
@@ -510,7 +513,7 @@ impl Scheduler {
             .ok_or_else(|| ScheduleError::NotFound(id.to_string()))?;
         if task.status != TaskStatus::Active {
             return Err(ScheduleError::Invalid(
-                "cannot run a task that is paused or ended".to_string(),
+                qcode_i18n::tr("core.err.scheduler.not_active").to_string(),
             ));
         }
         task.next_fire_at = Some(now);

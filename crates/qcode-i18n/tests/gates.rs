@@ -985,7 +985,25 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
         // 为什么用注释而不是「按内容猜」：判据仍是**位置**——作者标注的位置。
         // 内容猜（「像不像标识符」）会把 `prompt is empty` 也放过。要求理由写在
         // 同一行，是为了让每次豁免都在 diff 里露出来、能被审。
-        if tail.contains("// i18n:keep") {
+        // 豁免可以写在**上一行**：`#[error(...)]` 这种属性宏一旦超过行宽，
+        // rustfmt 会把行尾注释挪到下一行，行级标记就失效了（`ToolError` 的两个
+        // 变体撞上过）。只认「以 `// i18n:keep` 开头的整行注释」，不是随便一句
+        // 上一行的注释。
+        let kept_above = index
+            .checked_sub(1)
+            .is_some_and(|previous| lines[previous].trim_start().starts_with("// i18n:keep"));
+        if tail.contains("// i18n:keep") || kept_above {
+            continue;
+        }
+        // ADR-0105 §5 划的那条线：工具结果里「发生了什么」跟随界面语言，但
+        // `ToolError::*` 的**技术诊断保持英文**——受众是模型，它要据此改参数
+        // 重试（`invalid glob`、`invalid hunk header`、`diff is empty`）。
+        //
+        // `Err(` 这条标记是后加的，把 `Err(ToolError::Invalid("diff is empty"))`
+        // 也一并扫了进来；ADR 原文写的是「门禁只认 `ToolOutput::*`，不认
+        // `spec(` 与 `ToolError::*`」。所以按位置排掉：整个调用里出现
+        // `ToolError::` 的，是在构造诊断，不是给用户读的散文。
+        if tail.contains("ToolError::") {
             continue;
         }
         for marker in &markers {
@@ -1234,6 +1252,10 @@ fn intentional_english(path: &str) -> bool {
         // 注意 `reason` 的值是**模型写的**，它本来就可能是中文，这一块天然混排，
         // 所以更要把字段名固定成一种语言。
         | "qcode-core/approval.rs"
+        // `todo_write` 的参数诊断：这些串是照着「点名哪个字段、哪个上限」写的，
+        // 好让模型改参数重试。ADR-0105 §5：工具的**技术诊断**保持英文，受众是
+        // 模型而不是终端用户。
+        | "qcode-core/todo.rs"
     )
 }
 
@@ -1413,4 +1435,23 @@ fn ui_text_detector_skips_key_shaped_strings() {
         "fn f() {\n    Self::Welcome => \"Welcome\",\n}\n",
     );
     assert_eq!(hits.len(), 1, "英文页面名要算文案：{hits:?}");
+}
+
+#[test]
+fn tool_error_diagnostics_stay_english() {
+    // ADR-0105 §5：`ToolError::*` 是给模型改参数重试用的技术诊断，不是界面
+    // 文案。`Err(` 这条标记会把它们一起扫进来，所以按位置排掉。
+    let hits = ui_text_in(
+        "qcode-tools/patch.rs",
+        "fn f() {\n    return Err(ToolError::Invalid(\"diff is empty\".to_string()));\n}\n",
+    );
+    assert!(hits.is_empty(), "ToolError 诊断不该进门禁：{hits:?}");
+
+    // 同一条 `Err(` 位置上**不是** ToolError 的仍然要抓：那条豁免不能顺手把
+    // 整类「走返回值」的用户错误也放掉（这批正是上一轮刚补回来的）。
+    let hits = ui_text_in(
+        "qcode-core/todo.rs",
+        "fn f() {\n    return Err(format!(\"item {number} has empty `content`\"));\n}\n",
+    );
+    assert_eq!(hits.len(), 1, "用户读的错误串仍要抓：{hits:?}");
 }

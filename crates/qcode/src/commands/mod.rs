@@ -51,8 +51,12 @@ pub(crate) fn read_images(
     const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
     let mut attachments = Vec::new();
     for path in paths {
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            qcode_i18n::trp(
+                "cli.err.cannot_read",
+                &[path.display().to_string(), error.to_string()],
+            )
+        })?;
         if metadata.len() > MAX_IMAGE_BYTES {
             return Err(qcode_i18n::trp(
                 "err.cli.image.too_large",
@@ -78,8 +82,12 @@ pub(crate) fn read_images(
                 .into());
             }
         };
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let bytes = std::fs::read(path).map_err(|error| {
+            qcode_i18n::trp(
+                "cli.err.cannot_read",
+                &[path.display().to_string(), error.to_string()],
+            )
+        })?;
         use base64::Engine as _;
         let data_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         attachments.push(qcode_core::engine::Attachment {

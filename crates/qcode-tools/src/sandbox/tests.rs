@@ -832,7 +832,12 @@ mod linux_tests {
 
         let bwrap_root = Bwrap::new(workspace.path(), false, &[], &[PathBuf::from("/")])
             .expect_err("bwrap must reject / writable");
-        assert!(bwrap_root.to_string().contains("filesystem root"));
+        // 文案跟随界面语言：中英两种措辞都认，验的是「拒绝的理由说清了它是根目录」。
+        let reason = bwrap_root.to_string();
+        assert!(
+            reason.contains("filesystem root") || reason.contains("文件系统根目录"),
+            "{reason}"
+        );
 
         if landlock_abi().is_err() {
             eprintln!("skipping the landlock half: landlock unavailable here");
@@ -1478,7 +1483,11 @@ mod landlock_runtime {
             .expect_err("granting / writable must be rejected");
         let text = error.to_string();
         assert!(text.contains("extra_writable"), "{text}");
-        assert!(text.contains("filesystem root"), "{text}");
+        // 文案跟随界面语言：中英两种措辞都认。
+        assert!(
+            text.contains("filesystem root") || text.contains("文件系统根目录"),
+            "{text}"
+        );
     }
 
     /// `[sandbox] allow_pty`: a confined process may allocate a terminal.

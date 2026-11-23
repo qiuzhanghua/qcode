@@ -359,6 +359,7 @@ fn convert_message(message: &Message) -> Result<(&'static str, Vec<Value>), Prov
         }
         Role::Tool => {
             let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
+                // i18n:keep 内部不变量：会话构造错了，不是用户能改的输入
                 ProviderError::InvalidRequest("a tool message must carry tool_call_id".to_string())
             })?;
             let text = message
@@ -397,8 +398,10 @@ fn process_event(
     if data.is_empty() {
         return Ok(Vec::new());
     }
-    let value: Value = serde_json::from_str(data)
-        .map_err(|err| ProviderError::Protocol(format!("invalid chunk: {err}")))?;
+    let value: Value = serde_json::from_str(data).map_err(|err| {
+        // i18n:keep 线上协议诊断，读者是排障的人（ADR-0105 §5 同类）
+        ProviderError::Protocol(format!("invalid chunk: {err}"))
+    })?;
     let kind = event
         .event
         .as_deref()
@@ -532,6 +535,7 @@ fn process_event(
                 .and_then(Value::as_str)
                 .unwrap_or("stream error");
             return Err(map_stream_error(
+                // i18n:keep JSON Pointer（协议字段名）
                 value.pointer("/error/type").and_then(Value::as_str),
                 message,
             ));
@@ -562,6 +566,7 @@ fn emit_tool(tool: ToolAccum) -> Result<StreamEvent, ProviderError> {
         json!({})
     } else {
         serde_json::from_str(&tool.arguments).map_err(|err| {
+            // i18n:keep 模型给的参数不合法，诊断给模型/排障看
             ProviderError::Protocol(format!("tool arguments are not valid JSON: {err}"))
         })?
     };
