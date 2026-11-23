@@ -953,13 +953,6 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
     let lines: Vec<&str> = production.lines().collect();
     let mut out = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        // 只在**标记本行之后没有字面量**时才往后看：否则同一句会在「含标记的行」
-        // 与「上一行的续看窗口」里各被数一次，重复计数会让基线与统计失真。
-        let marker_ends_line = markers
-            .iter()
-            .filter_map(|marker| line.find(marker).map(|at| at + marker.len()))
-            .any(|end| line[end..].trim().is_empty());
-
         // 一次调用的字面量常常在**下一行**：
         //     return Err(format!(
         //         "cannot read {}: {error}", dir.display()).into());

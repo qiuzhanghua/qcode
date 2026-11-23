@@ -149,17 +149,17 @@ impl Tray for QcodeTray {
             }),
             MenuItem::Separator,
             self.item(
-                qcode_i18n::tr("gui.tray.show_window"),
+                &qcode_i18n::tr("gui.tray.show_window"),
                 true,
                 TrayCommand::ShowWindow,
             ),
             self.item(
-                qcode_i18n::tr("gui.tray.stop_current"),
+                &qcode_i18n::tr("gui.tray.stop_current"),
                 self.snapshot.can_stop(),
                 TrayCommand::StopCurrent,
             ),
             MenuItem::Separator,
-            self.item(qcode_i18n::tr("gui.tray.quit"), true, TrayCommand::Quit),
+            self.item(&qcode_i18n::tr("gui.tray.quit"), true, TrayCommand::Quit),
         ]
     }
 }
