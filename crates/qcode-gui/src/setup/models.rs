@@ -1621,15 +1621,20 @@ impl SetupView {
         );
         let candidates = self.probe_candidates.clone().unwrap_or_default();
         let query = self.probe_query.trim().to_lowercase();
+        // 按展示名（name）去重：厂商会给同一模型的多个版本 id 配同一个显示名，
+        // 列表只展示一次，避免 `deepseek-v4-flash` 出现多行。
+        let mut seen = std::collections::HashSet::new();
         let visible = candidates
             .iter()
             .filter(|candidate| {
-                query.is_empty()
+                let pick = candidate_label(candidate);
+                (query.is_empty()
                     || candidate.id.to_lowercase().contains(&query)
                     || candidate
                         .name
                         .as_deref()
-                        .is_some_and(|name| name.to_lowercase().contains(&query))
+                        .is_some_and(|name| name.to_lowercase().contains(&query)))
+                    && seen.insert(pick)
             })
             .collect::<Vec<_>>();
         let all_visible_picked = !visible.is_empty()
