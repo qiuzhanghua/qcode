@@ -62,10 +62,37 @@ impl SetupView {
         let mut row = self.row(
             [
                 ("name", name.to_string()),
-                ("base_url", provider.base_url.clone().unwrap_or_default()),
+                // base_url 缺失（旧版自动保存把空值写盘、或用户没填）时，用
+                // 套餐/内置目录的默认端点兜底，编辑页不至于显示空地址。
+                (
+                    "base_url",
+                    provider
+                        .base_url
+                        .clone()
+                        .or_else(|| {
+                            qcode_kernel::config::package_entry(name)
+                                .map(|(_, pkg)| pkg.base_url.to_string())
+                        })
+                        .or_else(|| {
+                            qcode_kernel::config::catalog_entry(name)
+                                .map(|entry| entry.base_url.to_string())
+                        })
+                        .unwrap_or_default(),
+                ),
                 (
                     "api_key_env",
-                    provider.api_key_env.clone().unwrap_or_default(),
+                    provider
+                        .api_key_env
+                        .clone()
+                        .or_else(|| {
+                            qcode_kernel::config::package_entry(name)
+                                .map(|(_, pkg)| pkg.api_key_env.to_string())
+                        })
+                        .or_else(|| {
+                            qcode_kernel::config::catalog_entry(name)
+                                .map(|entry| entry.api_key_env.to_string())
+                        })
+                        .unwrap_or_default(),
                 ),
                 (
                     "api_key_command",

@@ -225,6 +225,9 @@ pub fn resolve(
         .or_else(|| env("QCODE_BASE_URL"))
         .or_else(|| entry.base_url.clone())
         .or_else(|| catalog.map(|catalog| catalog.base_url.to_string()))
+        // 套餐 provider：config 缺 base_url 时用套餐默认端点兜底（旧版自动
+        // 保存可能把空值写盘，导致 config 里没有 base_url）。
+        .or_else(|| crate::config::package_entry(&name).map(|(_, pkg)| pkg.base_url.to_string()))
         // 太极统一认证的默认模型请求地址（需求 4c）。
         .or_else(|| {
             crate::providers::tj::is_tj_route(&name)
@@ -249,6 +252,7 @@ pub fn resolve(
         .api_key_env
         .clone()
         .or_else(|| catalog.map(|catalog| catalog.api_key_env.to_string()))
+        .or_else(|| crate::config::package_entry(&name).map(|(_, pkg)| pkg.api_key_env.to_string()))
         .unwrap_or_default();
 
     let command = entry.api_key_command.as_deref();
@@ -295,6 +299,10 @@ pub fn resolve(
         })
         .or_else(|| entry.default_model.clone())
         .or_else(|| catalog.and_then(|catalog| catalog.default_model.map(str::to_string)))
+        .or_else(|| {
+            crate::config::package_entry(&name)
+                .and_then(|(_, pkg)| pkg.default_model.map(str::to_string))
+        })
         .or_else(|| entry.models.first().map(|model| model.id.clone()))
         .ok_or_else(|| ConfigError::MissingModel {
             provider: name.clone(),

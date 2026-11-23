@@ -6,6 +6,7 @@
 use super::*;
 use crate::{CAPTION_SIZE, CODE_SIZE, SECONDARY_SIZE, sp};
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 
@@ -99,6 +100,13 @@ impl SetupView {
             div().flex().flex_row().gap_2().child(
                 Button::new("open-provider-picker")
                     .label(qcode_i18n::tr("gui.setup.card.add_provider"))
+                    // 编辑页/加模型弹框打开时禁用：点击套餐等操作的重渲染会让
+                    // mouseup 落到这个按钮上，误触发 open_provider_picker 把正在
+                    // 编辑的 provider 关掉（switch_package → cx.notify() 重渲染）。
+                    .when(
+                        self.editing_provider.is_some() || self.adding_model_provider.is_some(),
+                        |button| button.disabled(true),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_provider_picker(window, cx);
                     })),
@@ -798,7 +806,6 @@ impl SetupView {
         if qcode_kernel::config::package_entry(target).is_none() {
             return;
         }
-        tracing::warn!(target, "switch_package");
         let has_row = self
             .tables
             .get("providers")
@@ -827,11 +834,9 @@ impl SetupView {
             return div().into_any_element();
         }
         let Some(route) = &self.editing_provider else {
-            tracing::warn!("provider dialog: no editing_provider");
             return div().into_any_element();
         };
         let Some(table) = self.tables.get("providers") else {
-            tracing::warn!("provider dialog: no providers table");
             return div().into_any_element();
         };
         let Some(row) = table
@@ -839,16 +844,6 @@ impl SetupView {
             .iter()
             .find(|row| cell(row, "name", cx).trim() == route)
         else {
-            tracing::warn!(
-                route,
-                "provider dialog: row not found (rows={})",
-                table
-                    .rows
-                    .iter()
-                    .map(|row| cell(row, "name", cx))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
             return div().into_any_element();
         };
         let theme = cx.theme();
@@ -1931,7 +1926,6 @@ impl SetupView {
     /// Open one provider's edit dialog; one provider at a time, so opening a
     /// dialog closes the custom declaration card and clears the saved notice.
     fn open_editor(&mut self, route: &str, cx: &mut Context<Self>) {
-        tracing::warn!(route, "open_editor");
         self.clear_probe();
         self.editing_provider = Some(route.to_string());
         // 每次打开都从折叠态开始：对话框第一条只有 API 密钥。
@@ -1948,7 +1942,6 @@ impl SetupView {
     /// committed (the dialog auto-saves as you type; the flag only decides the
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
-        tracing::warn!(changed, "close_editor");
         self.editing_provider = None;
         self.tj_code_input = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
@@ -1973,6 +1966,12 @@ impl SetupView {
     /// 打开「添加模型」的 Provider 选择框：只做选择，不配置；选中某个
     /// Provider 后关闭选择框并进入该 Provider 的配置页。
     fn open_provider_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // 编辑页或加模型弹框打开时该入口不可用（按钮已禁用）；事件误路由时
+        // 直接忽略，避免把正在编辑的 provider 关掉（switch_package 重渲染会让
+        // mouseup 落到「添加模型」按钮上）。
+        if self.editing_provider.is_some() || self.adding_model_provider.is_some() {
+            return;
+        }
         self.adding_provider = true;
         self.editing_provider = None;
         self.declaring = false;
@@ -1988,7 +1987,6 @@ impl SetupView {
     /// 选择框里点了一个 Provider：关闭选择框，未配置的 catalog route 先
     /// 写入预设行，再打开同一个编辑对话框。
     fn pick_provider(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::warn!(route, "pick_provider");
         self.close_provider_picker(cx);
         // 用表格行而不是 `self.config` 决定要不要写预设行。`self.config`
         // 只在异步自动保存完成时才更新：刚删掉一个 provider 后它还残留着
