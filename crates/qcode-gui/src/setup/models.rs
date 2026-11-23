@@ -798,7 +798,7 @@ impl SetupView {
         if qcode_kernel::config::package_entry(target).is_none() {
             return;
         }
-        tracing::debug!(target, "switch_package");
+        tracing::warn!(target, "switch_package");
         let has_row = self
             .tables
             .get("providers")
@@ -827,11 +827,11 @@ impl SetupView {
             return div().into_any_element();
         }
         let Some(route) = &self.editing_provider else {
-            tracing::debug!("provider dialog: no editing_provider");
+            tracing::warn!("provider dialog: no editing_provider");
             return div().into_any_element();
         };
         let Some(table) = self.tables.get("providers") else {
-            tracing::debug!("provider dialog: no providers table");
+            tracing::warn!("provider dialog: no providers table");
             return div().into_any_element();
         };
         let Some(row) = table
@@ -839,7 +839,7 @@ impl SetupView {
             .iter()
             .find(|row| cell(row, "name", cx).trim() == route)
         else {
-            tracing::debug!(
+            tracing::warn!(
                 route,
                 "provider dialog: row not found (rows={})",
                 table
@@ -1931,6 +1931,7 @@ impl SetupView {
     /// Open one provider's edit dialog; one provider at a time, so opening a
     /// dialog closes the custom declaration card and clears the saved notice.
     fn open_editor(&mut self, route: &str, cx: &mut Context<Self>) {
+        tracing::warn!(route, "open_editor");
         self.clear_probe();
         self.editing_provider = Some(route.to_string());
         // 每次打开都从折叠态开始：对话框第一条只有 API 密钥。
@@ -1947,6 +1948,7 @@ impl SetupView {
     /// committed (the dialog auto-saves as you type; the flag only decides the
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
+        tracing::warn!(changed, "close_editor");
         self.editing_provider = None;
         self.tj_code_input = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
@@ -1986,6 +1988,7 @@ impl SetupView {
     /// 选择框里点了一个 Provider：关闭选择框，未配置的 catalog route 先
     /// 写入预设行，再打开同一个编辑对话框。
     fn pick_provider(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::warn!(route, "pick_provider");
         self.close_provider_picker(cx);
         // 用表格行而不是 `self.config` 决定要不要写预设行。`self.config`
         // 只在异步自动保存完成时才更新：刚删掉一个 provider 后它还残留着
