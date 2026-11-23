@@ -788,6 +788,28 @@ pub fn set_default_model(
     edit.save()
 }
 
+/// Write one provider route's keychain-read command (`providers.<route>.
+/// api_key_command`, an array of argv) into `path`, preserving comments and
+/// writing atomically.
+///
+/// Used by「存入钥匙串」: the key itself lives in the OS keychain, and only
+/// this read command must reach config.toml. Writing it *directly* (instead of
+/// a whole-table auto save) means storing a key never runs the form validation
+/// — a provider with no models yet must not fail "提供方没有模型" just because
+/// the user stored its key before editing models (PROVIDER-PACKAGES-TJ-AUTH).
+pub fn set_provider_key_command(
+    path: &Path,
+    route: &str,
+    argv: &[String],
+) -> Result<(), ConfigError> {
+    let mut edit = ConfigEdit::open(path)?;
+    edit.set_string_array(
+        &["providers", route, "api_key_command"],
+        argv.iter().cloned(),
+    )?;
+    edit.save()
+}
+
 /// Write ONE scalar key into `path`, preserving comments and writing
 /// atomically (`.bak`, validation — exactly like [`ConfigEdit::save`]).
 ///

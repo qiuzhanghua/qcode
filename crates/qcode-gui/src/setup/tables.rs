@@ -947,12 +947,27 @@ impl SetupView {
                     });
                 }
                 self.provider_error = None;
-                self.provider_notice = Some(qcode_i18n::trp("gui.setup.keychain.saved", &[&name]));
                 self.error = None;
-                // `Input::set_value` 不触发 `InputEvent::Change`，上面的单元格
-                // 更新不会经订阅触发 auto-save，这里手动落盘，否则 api_key_command
-                // 不会写入 config，凭据状态仍是 Missing。
-                self.auto_save(cx, AutoSaveKind::Tables, true);
+                // 精准写 `providers.<route>.api_key_command`，不走整表自动保存：
+                // 存密钥时用户可能还没编辑模型，「提供方没有模型」的校验不该
+                // 在这里误报。写盘后刷新内存 config，凭证状态随之更新。
+                match qcode_kernel::config_edit::set_provider_key_command(&self.path, &name, &argv)
+                {
+                    Ok(()) => {
+                        if let Ok(loaded) = qcode_kernel::config::load(&self.path) {
+                            self.config = loaded;
+                        }
+                        self.provider_notice =
+                            Some(qcode_i18n::trp("gui.setup.keychain.saved", &[&name]));
+                    }
+                    Err(error) => {
+                        self.provider_notice = None;
+                        self.provider_error = Some(qcode_i18n::trp(
+                            "gui.setup.save_error.write_failed",
+                            &["config.toml", error.to_string().as_str()],
+                        ));
+                    }
+                }
             }
             Err(error) => {
                 self.provider_notice = None;

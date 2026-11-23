@@ -930,6 +930,8 @@ impl SetupView {
                     ),
             );
         }
+        // 模型配置固定显示在 API 密钥下面，不放进「展开更多配置」。
+        body = body.child(self.render_models_editor(row, route, cx));
         let expanded = self.editor_expanded;
         body = body.child(
             Button::new("toggle-provider-config")
@@ -972,7 +974,6 @@ impl SetupView {
                 }
             }
             body = body.child(fields);
-            body = body.child(self.render_models_editor(row, route, cx));
         }
         if let Some(result) = &self.probe_result {
             body = body.child(
