@@ -134,6 +134,7 @@ impl Tool for AskUser {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let params: Params = serde_json::from_value(args)
+            // i18n:keep 工具参数诊断，受众是模型（ADR-0105 §5）
             .map_err(|error| invalid(format!("bad arguments: {error}")))?;
         if let Err(reason) = validate_request(&params.questions, params.intent, params.timeout) {
             return Err(invalid(format!("{reason:?}")));
@@ -152,6 +153,7 @@ impl Tool for AskUser {
                     tokio::time::sleep(std::time::Duration::from_secs(seconds as u64)).await;
                     Ok(ToolOutput::ok(pending_result(&request.call_id)))
                 }
+                // i18n:keep 工具诊断：告诉模型这条路走不通，受众是模型
                 _ => Err(invalid(
                     "no interactive frontend is wired in; nobody can answer",
                 )),

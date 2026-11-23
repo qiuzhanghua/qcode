@@ -85,36 +85,111 @@ pub struct Skill {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
-    #[error("{path}: cannot read: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.read",
+            &[.path.display().to_string(), .source.to_string()]
+        )
+    )]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{path}: a skill directory must not be a symlink")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("tool.err.skill.symlink", &[.path.display().to_string()])
+    )]
     Symlink { path: PathBuf },
-    #[error("{path}: not a directory")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("tool.err.skill.not_a_directory", &[.path.display().to_string()])
+    )]
     NotADirectory { path: PathBuf },
-    #[error("{path}: missing {SKILL_FILE}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.missing_file",
+            &[.path.display().to_string(), SKILL_FILE.to_string()]
+        )
+    )]
     MissingSkillMd { path: PathBuf },
-    #[error("{path}: {SKILL_FILE} must be a regular file")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.not_a_file",
+            &[.path.display().to_string(), SKILL_FILE.to_string()]
+        )
+    )]
     NotAFile { path: PathBuf },
-    #[error("{path}: {SKILL_FILE} is {bytes} bytes; the limit is {max} bytes")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.too_large",
+            &[
+                .path.display().to_string(),
+                SKILL_FILE.to_string(),
+                .bytes.to_string(),
+                .max.to_string()
+            ]
+        )
+    )]
     TooLarge { path: PathBuf, bytes: u64, max: u64 },
-    #[error("{path}: {SKILL_FILE} must start with a `---` frontmatter block")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.missing_frontmatter",
+            &[.path.display().to_string(), SKILL_FILE.to_string()]
+        )
+    )]
     MissingFrontmatter { path: PathBuf },
-    #[error("{path}: frontmatter is not closed with `---`")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.unterminated_frontmatter",
+            &[.path.display().to_string()]
+        )
+    )]
     UnterminatedFrontmatter { path: PathBuf },
-    #[error("{path}: frontmatter field `{field}` is missing")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.missing_field",
+            &[.path.display().to_string(), .field.to_string()]
+        )
+    )]
     MissingField { path: PathBuf, field: &'static str },
-    #[error("{path}: invalid skill name '{name}': {reason}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.invalid_name",
+            &[
+                .path.display().to_string(),
+                .name.to_string(),
+                .reason.to_string()
+            ]
+        )
+    )]
     InvalidName {
         path: PathBuf,
         name: String,
         reason: String,
     },
-    #[error("{path}: description must be 1-{MAX_DESCRIPTION_CHARS} characters")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.invalid_description",
+            &[.path.display().to_string(), MAX_DESCRIPTION_CHARS.to_string()]
+        )
+    )]
     InvalidDescription { path: PathBuf },
-    #[error("{path}: skill name '{name}' does not match the directory name")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "tool.err.skill.name_mismatch",
+            &[.path.display().to_string(), .name.to_string()]
+        )
+    )]
     NameMismatch { path: PathBuf, name: String },
 }
 

@@ -251,7 +251,7 @@ impl Bwrap {
     ) -> Result<Self, SandboxError> {
         if workspace == Path::new("/") {
             return Err(SandboxError::Setup(
-                "refusing to sandbox the filesystem root as the workspace".to_string(),
+                qcode_i18n::tr("tool.err.sandbox.root_as_workspace").to_string(),
             ));
         }
         let extra_write = check_extra_write(extra_write)?;
@@ -314,7 +314,7 @@ impl Sandbox for Bwrap {
         }
         if mapped.is_empty() {
             return Err(SandboxError::Unsupported(
-                "bwrap needs at least one root or a turn temp",
+                qcode_i18n::tr("tool.err.sandbox.bwrap_needs_root").to_string(),
             ));
         }
         Ok(Arc::new(Self {
@@ -393,7 +393,12 @@ impl Sandbox for Bwrap {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .output()
-            .map_err(|err| SandboxError::Setup(format!("cannot run bwrap: {err}")))?;
+            .map_err(|err| {
+                SandboxError::Setup(qcode_i18n::trp(
+                    "tool.err.sandbox.run_bwrap",
+                    &[err.to_string()],
+                ))
+            })?;
 
         if output.status.success() {
             return Ok(());
@@ -641,9 +646,9 @@ impl Landlock {
         // `check_extra_write`.
         let extra_write = check_extra_write(&extra_write)?;
         if let Some((path, _)) = roots.iter().find(|(path, _)| path == Path::new("/")) {
-            return Err(SandboxError::Setup(format!(
-                "refusing to sandbox the filesystem root as a root: {}",
-                path.display()
+            return Err(SandboxError::Setup(qcode_i18n::trp(
+                "tool.err.sandbox.root_as_root",
+                &[path.display().to_string()],
             )));
         }
         let cwd = roots
@@ -852,7 +857,7 @@ impl Sandbox for Landlock {
         }
         if mapped.is_empty() {
             return Err(SandboxError::Unsupported(
-                "landlock needs at least one root or a turn temp",
+                qcode_i18n::tr("tool.err.sandbox.landlock_needs_root").to_string(),
             ));
         }
         Ok(Arc::new(Self::for_roots(
@@ -918,7 +923,12 @@ impl Sandbox for Landlock {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .output()
-            .map_err(|err| SandboxError::Setup(format!("cannot apply Landlock: {err}")))?;
+            .map_err(|err| {
+                SandboxError::Setup(qcode_i18n::trp(
+                    "tool.err.sandbox.apply_landlock",
+                    &[err.to_string()],
+                ))
+            })?;
 
         if output.status.success() {
             return Ok(());
@@ -950,9 +960,9 @@ pub(crate) fn landlock_abi() -> Result<i64, SandboxError> {
         )
     };
     if version < 0 {
-        return Err(SandboxError::Setup(format!(
-            "Landlock is unavailable: {}",
-            std::io::Error::last_os_error()
+        return Err(SandboxError::Setup(qcode_i18n::trp(
+            "tool.err.sandbox.landlock_unavailable",
+            &[std::io::Error::last_os_error().to_string()],
         )));
     }
     Ok(version)
@@ -972,9 +982,9 @@ pub(crate) fn create_ruleset(handled_access_fs: u64) -> Result<RawFd, SandboxErr
         )
     };
     if fd < 0 {
-        return Err(SandboxError::Setup(format!(
-            "cannot create Landlock ruleset: {}",
-            std::io::Error::last_os_error()
+        return Err(SandboxError::Setup(qcode_i18n::trp(
+            "tool.err.sandbox.landlock_ruleset",
+            &[std::io::Error::last_os_error().to_string()],
         )));
     }
     Ok(fd as RawFd)
@@ -988,16 +998,21 @@ pub(crate) fn add_path_rule(
 ) -> Result<(), SandboxError> {
     let path_bytes = path.as_os_str().as_bytes();
     let c_path = std::ffi::CString::new(path_bytes).map_err(|_| {
-        SandboxError::Setup(format!("path contains a NUL byte: {}", path.display()))
+        SandboxError::Setup(qcode_i18n::trp(
+            "tool.err.sandbox.nul_byte",
+            &[path.display().to_string()],
+        ))
     })?;
 
     // SAFETY: `open` with O_PATH only creates a reference, no IO happens.
     let parent_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
     if parent_fd < 0 {
-        return Err(SandboxError::Setup(format!(
-            "cannot open {} for Landlock: {}",
-            path.display(),
-            std::io::Error::last_os_error()
+        return Err(SandboxError::Setup(qcode_i18n::trp(
+            "tool.err.sandbox.landlock_open",
+            &[
+                path.display().to_string(),
+                std::io::Error::last_os_error().to_string(),
+            ],
         )));
     }
 
@@ -1024,10 +1039,12 @@ pub(crate) fn add_path_rule(
     }
 
     if result < 0 {
-        return Err(SandboxError::Setup(format!(
-            "cannot add Landlock rule for {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
+        return Err(SandboxError::Setup(qcode_i18n::trp(
+            "tool.err.sandbox.landlock_rule",
+            &[
+                path.display().to_string(),
+                std::io::Error::last_os_error().to_string(),
+            ],
         )));
     }
     Ok(())

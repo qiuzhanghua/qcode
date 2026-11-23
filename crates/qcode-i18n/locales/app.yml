@@ -1874,6 +1874,105 @@ tool:
     extra_writable:
       en: "[sandbox] extra_writable: %{0} is %{1}; narrow it to a subdirectory"
       zh-CN: "[sandbox] extra_writable：%{0} 是%{1}；请收窄到子目录"
+    sandbox:
+      unsupported:
+        en: "sandbox `%{0}` is not supported on this platform"
+        zh-CN: "这个平台上不支持沙箱 `%{0}`"
+      setup:
+        en: "sandbox setup failed: %{0}"
+        zh-CN: "沙箱装配失败：%{0}"
+      preflight:
+        en: "sandbox `%{0}` failed its preflight: %{1}"
+        zh-CN: "沙箱 `%{0}` 预检没过：%{1}"
+      network_hard_mode:
+        en: "network hard mode (proxy-only) is only implemented for macOS sandbox-exec"
+        zh-CN: "网络硬模式（仅代理）只在 macOS 的 sandbox-exec 上实现"
+      root_as_workspace:
+        en: "refusing to sandbox the filesystem root as the workspace"
+        zh-CN: "不把文件系统根目录当作工作区来沙箱"
+      root_as_root:
+        en: "refusing to sandbox the filesystem root as a root: %{0}"
+        zh-CN: "不把文件系统根目录当作根来沙箱：%{0}"
+      bwrap_needs_root:
+        en: "bwrap needs at least one root or a turn temp"
+        zh-CN: "bwrap 至少需要一个根目录或一个回合临时目录"
+      landlock_needs_root:
+        en: "landlock needs at least one root or a turn temp"
+        zh-CN: "landlock 至少需要一个根目录或一个回合临时目录"
+      run_bwrap:
+        en: "cannot run bwrap: %{0}"
+        zh-CN: "跑不了 bwrap：%{0}"
+      apply_landlock:
+        en: "cannot apply Landlock: %{0}"
+        zh-CN: "应用不了 Landlock：%{0}"
+      landlock_unavailable:
+        en: "Landlock is unavailable: %{0}"
+        zh-CN: "Landlock 不可用：%{0}"
+      landlock_ruleset:
+        en: "cannot create Landlock ruleset: %{0}"
+        zh-CN: "建不了 Landlock ruleset：%{0}"
+      landlock_open:
+        en: "cannot open %{0} for Landlock: %{1}"
+        zh-CN: "为 Landlock 打不开 %{0}：%{1}"
+      landlock_rule:
+        en: "cannot add Landlock rule for %{0}: %{1}"
+        zh-CN: "给 %{0} 加 Landlock 规则失败：%{1}"
+      nul_byte:
+        en: "path contains a NUL byte: %{0}"
+        zh-CN: "路径里有 NUL 字节：%{0}"
+    sampler:
+      off:
+        en: "environment sampling is off"
+        zh-CN: "环境采样关着"
+      start:
+        en: "could not start the sampler: %{0}"
+        zh-CN: "启动不了采样器：%{0}"
+      timeout:
+        en: "sampling timed out after %{0}"
+        zh-CN: "采样超时（超过 %{0}）"
+      exited:
+        en: "%{0} exited with %{1}: %{2}"
+        zh-CN: "%{0} 退出了（%{1}）：%{2}"
+      empty:
+        en: "%{0} produced no environment entries"
+        zh-CN: "%{0} 没有产出任何环境变量"
+    skill:
+      read:
+        en: "%{0}: cannot read: %{1}"
+        zh-CN: "%{0}：读不了：%{1}"
+      symlink:
+        en: "%{0}: a skill directory must not be a symlink"
+        zh-CN: "%{0}：技能目录不能是符号链接"
+      not_a_directory:
+        en: "%{0}: not a directory"
+        zh-CN: "%{0}：不是目录"
+      missing_file:
+        en: "%{0}: missing %{1}"
+        zh-CN: "%{0}：缺 %{1}"
+      not_a_file:
+        en: "%{0}: %{1} must be a regular file"
+        zh-CN: "%{0}：%{1} 必须是普通文件"
+      too_large:
+        en: "%{0}: %{1} is %{2} bytes; the limit is %{3} bytes"
+        zh-CN: "%{0}：%{1} 有 %{2} 字节；上限是 %{3} 字节"
+      missing_frontmatter:
+        en: "%{0}: %{1} must start with a `---` frontmatter block"
+        zh-CN: "%{0}：%{1} 必须以 `---` 的 frontmatter 开头"
+      unterminated_frontmatter:
+        en: "%{0}: frontmatter is not closed with `---`"
+        zh-CN: "%{0}：frontmatter 没有用 `---` 收尾"
+      missing_field:
+        en: "%{0}: frontmatter field `%{1}` is missing"
+        zh-CN: "%{0}：frontmatter 缺字段 `%{1}`"
+      invalid_name:
+        en: "%{0}: invalid skill name '%{1}': %{2}"
+        zh-CN: "%{0}：技能名 '%{1}' 无效：%{2}"
+      invalid_description:
+        en: "%{0}: description must be 1-%{1} characters"
+        zh-CN: "%{0}：description 必须是 1-%{1} 个字符"
+      name_mismatch:
+        en: "%{0}: skill name '%{1}' does not match the directory name"
+        zh-CN: "%{0}：技能名 '%{1}' 和目录名不一致"
   schedule:
     # 会话没接任务存储时四个工具共用的第一条错误。
     unavailable:
