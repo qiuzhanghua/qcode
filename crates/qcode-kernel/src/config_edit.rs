@@ -283,7 +283,7 @@ impl ConfigEdit {
                     path: parent.to_path_buf(),
                     source: std::io::Error::new(
                         source.kind(),
-                        format!("cannot create a temporary file ({source})"),
+                        qcode_i18n::trp("kernel.err.config.temp_file", &[source.to_string()]),
                     ),
                 });
             }
@@ -334,9 +334,9 @@ impl ConfigEdit {
 }
 
 fn split_path<'a>(path: &'a [&'a str]) -> Result<(&'a [&'a str], &'a str), ConfigError> {
-    let (key, parents) = path
-        .split_last()
-        .ok_or_else(|| ConfigError::InvalidDocument("empty config path".to_string()))?;
+    let (key, parents) = path.split_last().ok_or_else(|| {
+        ConfigError::InvalidDocument(qcode_i18n::tr("kernel.err.config.empty_path").to_string())
+    })?;
     Ok((parents, key))
 }
 
@@ -346,11 +346,17 @@ fn table_mut<'a>(root: &'a mut Table, path: &[&str]) -> Result<&'a mut Table, Co
         if !table.contains_key(key) {
             table.insert(key, Item::Table(Table::new()));
         }
-        let item = table
-            .get_mut(key)
-            .ok_or_else(|| ConfigError::InvalidDocument(format!("missing table {key}")))?;
+        let item = table.get_mut(key).ok_or_else(|| {
+            ConfigError::InvalidDocument(qcode_i18n::trp(
+                "kernel.err.config.missing_table",
+                &[key.to_string()],
+            ))
+        })?;
         table = item.as_table_mut().ok_or_else(|| {
-            ConfigError::InvalidDocument(format!("'{key}' is not a table in the config"))
+            ConfigError::InvalidDocument(qcode_i18n::trp(
+                "kernel.err.config.not_table",
+                &[key.to_string()],
+            ))
         })?;
     }
     Ok(table)

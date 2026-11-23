@@ -35,9 +35,9 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 /// runs `qc config migrate` (ADR-0065).
 fn check_version(path: &Path, version: u32) -> Result<(), ConfigError> {
     if version == 0 {
-        return Err(ConfigError::InvalidDocument(format!(
-            "{}: version must be 1 or greater",
-            path.display()
+        return Err(ConfigError::InvalidDocument(qcode_i18n::trp(
+            "kernel.err.config.version",
+            &[path.display().to_string()],
         )));
     }
     if version > CONFIG_VERSION {
@@ -460,7 +460,7 @@ pub(crate) fn validate_document(document: &toml::Value) -> Result<(), ConfigErro
     let text = toml::to_string_pretty(document)
         .map_err(|err| ConfigError::InvalidDocument(err.to_string()))?;
     let mut config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
-        path: PathBuf::from("<edit>"),
+        path: PathBuf::from("<edit>"), // i18n:keep 占位路径，不是文案
         source: Box::new(source),
     })?;
     // `document` itself is never touched — it is `&` and the caller writes it

@@ -41,7 +41,11 @@ pub fn build_policy(
     let rules = match explicit {
         Some(path) => {
             if !path.exists() {
-                return Err(format!("approval policy not found: {}", path.display()).into());
+                return Err(qcode_i18n::trp(
+                    "kernel.err.approval_policy_missing",
+                    &[path.display().to_string()],
+                )
+                .into());
             }
             tracing::info!(path = %path.display(), "loaded approval policy file");
             let mut rules = config::load_policy(path)?;
@@ -115,14 +119,9 @@ fn sandbox_network(
 ) -> Result<SandboxNetwork, Box<dyn std::error::Error>> {
     if loaded.network_plan().strict {
         if loaded.sandbox.mode != SandboxMode::SandboxExec {
-            return Err(
-                "network.mode = \"strict\" requires [sandbox] mode = \"sandbox-exec\" (macOS)"
-                    .into(),
-            );
+            return Err(qcode_i18n::tr("kernel.err.network_strict_macos").into());
         }
-        let egress = egress.ok_or(
-            "network.mode = \"strict\" requires [network] enabled = true (the proxy is the only allowed destination)",
-        )?;
+        let egress = egress.ok_or(qcode_i18n::tr("kernel.err.network_strict_proxy"))?;
         return Ok(SandboxNetwork::ProxyOnly {
             port: egress.port(),
         });
@@ -351,7 +350,12 @@ pub fn mcp_confine(sandbox: Arc<dyn Sandbox>, workspace: &Path) -> Box<qcode_mcp
             // over quietly made `~/.cargo/config.toml` writable by third-party
             // code — whose `[build] rustc-wrapper` runs on the next build.
             .with_roots(&roots, None, qcode_tools::sandbox::OutsideRoots::Nothing)
-            .map_err(|error| format!("{error} (grant: {})", grant.describe()))?;
+            .map_err(|error| {
+                qcode_i18n::trp(
+                    "kernel.err.grant_failed",
+                    &[error.to_string(), grant.describe()],
+                )
+            })?;
         let command = per_server
             .command(program, args, cwd)
             .map_err(|error| error.to_string())?;
@@ -452,7 +456,11 @@ pub fn load_config(
 
     if let Some(path) = explicit {
         if !path.exists() {
-            return Err(format!("config file not found: {}", path.display()).into());
+            return Err(qcode_i18n::trp(
+                "kernel.err.config_missing",
+                &[path.display().to_string()],
+            )
+            .into());
         }
         return Ok(config::load_merged(&path, workspace)?);
     }

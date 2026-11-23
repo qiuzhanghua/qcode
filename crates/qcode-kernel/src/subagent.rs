@@ -108,7 +108,7 @@ impl SubagentRunner for EngineSubagent {
         } else {
             self.store.create_task_with_roots(&meta, roots)
         }
-        .map_err(|err| format!("cannot create subagent session: {err}"))?;
+        .map_err(|err| qcode_i18n::trp("kernel.err.subagent_session", &[err.to_string()]))?;
         let session_id = created.id;
         // Forward the task open events too so the parent sees the child id and
         // its initial root configuration before the first tool call.

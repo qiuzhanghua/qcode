@@ -63,21 +63,48 @@ impl Default for ScheduleConfig {
 /// Why one entry could not be turned into a running [`Schedule`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ScheduleConfigError {
-    #[error("schedule `{name}`: {source}")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "kernel.err.schedule.cron",
+            &[.name.to_string(), .source.to_string()]
+        )
+    )]
     Cron {
         name: String,
         #[source]
         source: qcode_core::schedule::CronError,
     },
-    #[error("schedule `{name}`: prompt must not be empty")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("kernel.err.schedule.empty_prompt", &[.name.as_str()])
+    )]
     EmptyPrompt { name: String },
-    #[error("schedule `{name}`: overlap must be `queue` or `skip`, got `{value}`")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "kernel.err.schedule.overlap",
+            &[.name.as_str(), .value.as_str()]
+        )
+    )]
     Overlap { name: String, value: String },
-    #[error("schedule `{name}`: approval_timeout `{value}` is not a duration like `30m`")]
+    #[error(
+        "{}",
+        qcode_i18n::trp(
+            "kernel.err.schedule.approval_timeout",
+            &[.name.as_str(), .value.as_str()]
+        )
+    )]
     ApprovalTimeout { name: String, value: String },
-    #[error("schedule `{name}`: set either `task` or `new = true`, not neither")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("kernel.err.schedule.no_target", &[.name.as_str()])
+    )]
     NoTarget { name: String },
-    #[error("schedule `{name}`: `task` and `new = true` are mutually exclusive")]
+    #[error(
+        "{}",
+        qcode_i18n::trp("kernel.err.schedule.both_targets", &[.name.as_str()])
+    )]
     BothTargets { name: String },
 }
 

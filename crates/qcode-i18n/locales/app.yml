@@ -4082,6 +4082,113 @@ cli:
 # "Xiaomi MiMo" 反而是在替厂商改名。这 4 条会**永久留在门禁 2 的基线里**——基线
 # 只能表达「还存在」，不能表达「故意留着」，所以理由写在 `catalog.rs` 的字段注释里。
 kernel:
+  # `qcode-kernel` 的错误正文：配置装载/编辑、`[schedules.*]` 校验、模板装载。
+  # 报错里点名的键（`network.mode`、`approval_timeout`、`task`）与占位符语法
+  # (`${…}`) 不翻——用户要拿它们去改文件。
+  err:
+    config:
+      root_not_table:
+        en: "root must be a table"
+        zh-CN: "根节点必须是 table"
+      mcp_not_table:
+        en: "mcp must be a table"
+        zh-CN: "mcp 必须是 table"
+      mcp_servers_not_array:
+        en: "mcp.servers must be an array"
+        zh-CN: "mcp.servers 必须是数组"
+      version:
+        en: "%{0}: version must be 1 or greater"
+        zh-CN: "%{0}：version 必须 ≥ 1"
+      temp_file:
+        en: "cannot create a temporary file (%{0})"
+        zh-CN: "建不了临时文件（%{0}）"
+      empty_path:
+        en: "empty config path"
+        zh-CN: "配置路径是空的"
+      missing_table:
+        en: "missing table %{0}"
+        zh-CN: "配置里没有 %{0} 这张表"
+      not_table:
+        en: "'%{0}' is not a table in the config"
+        zh-CN: "配置里的 '%{0}' 不是 table"
+    schedule:
+      cron:
+        en: "schedule `%{0}`: %{1}"
+        zh-CN: "定时任务 `%{0}`：%{1}"
+      empty_prompt:
+        en: "schedule `%{0}`: prompt must not be empty"
+        zh-CN: "定时任务 `%{0}`：提示词不能为空"
+      overlap:
+        en: "schedule `%{0}`: overlap must be `queue` or `skip`, got `%{1}`"
+        zh-CN: "定时任务 `%{0}`：overlap 只能是 `queue` 或 `skip`，实际是 `%{1}`"
+      approval_timeout:
+        en: "schedule `%{0}`: approval_timeout `%{1}` is not a duration like `30m`"
+        zh-CN: "定时任务 `%{0}`：approval_timeout `%{1}` 不是 `30m` 这样的时长"
+      no_target:
+        en: "schedule `%{0}`: set either `task` or `new = true`, not neither"
+        zh-CN: "定时任务 `%{0}`：`task` 和 `new = true` 要设一个，不能都不设"
+      both_targets:
+        en: "schedule `%{0}`: `task` and `new = true` are mutually exclusive"
+        zh-CN: "定时任务 `%{0}`：`task` 和 `new = true` 不能同时设"
+    approval_policy_missing:
+      en: "approval policy not found: %{0}"
+      zh-CN: "找不到审批策略文件：%{0}"
+    config_missing:
+      en: "config file not found: %{0}"
+      zh-CN: "找不到配置文件：%{0}"
+    network_strict_macos:
+      en: "network.mode = \"strict\" requires [sandbox] mode = \"sandbox-exec\" (macOS)"
+      zh-CN: "network.mode = \"strict\" 需要 [sandbox] mode = \"sandbox-exec\"（macOS）"
+    network_strict_proxy:
+      en: "network.mode = \"strict\" requires [network] enabled = true (the proxy is the only allowed destination)"
+      zh-CN: "network.mode = \"strict\" 需要 [network] enabled = true（代理是唯一允许的出口）"
+    grant_failed:
+      en: "%{0} (grant: %{1})"
+      zh-CN: "%{0}（授权：%{1}）"
+    subagent_session:
+      en: "cannot create subagent session: %{0}"
+      zh-CN: "建不了子代理会话：%{0}"
+    template:
+      parse:
+        en: "template %{0} is not valid TOML: %{1}"
+        zh-CN: "模板 %{0} 不是合法 TOML：%{1}"
+      invalid:
+        en: "template %{0}: %{1}"
+        zh-CN: "模板 %{0}：%{1}"
+      not_found:
+        en: "no template named %{0}"
+        zh-CN: "没有叫 %{0} 的模板"
+      nesting:
+        en: "unexpected nesting; templates are template/<kind>/<id>.toml"
+        zh-CN: "层级不对；模板路径是 template/<kind>/<id>.toml"
+      unknown_kind:
+        en: "unknown template kind %{0}; expected one of llm, security"
+        zh-CN: "不认识的模板类型 %{0}；可选 llm、security"
+      suffix:
+        en: "template files must end in .toml"
+        zh-CN: "模板文件必须以 .toml 结尾"
+      unknown_keys:
+        en: "unknown config keys: %{0}"
+        zh-CN: "不认识的配置项：%{0}"
+      render:
+        en: "cannot render the config section: %{0}"
+        zh-CN: "渲染不出这段配置：%{0}"
+      strict_mode:
+        en: "network strict requires [sandbox] mode = \"sandbox-exec\"; this template asks for %{0}"
+        zh-CN: "network strict 需要 [sandbox] mode = \"sandbox-exec\"；这个模板要的是 %{0}"
+      no_config_section:
+        en: "no `[config]` section"
+        zh-CN: "没有 `[config]` 这一段"
+      missing_answer:
+        en: "missing answer for prompt %{0} (kind %{1})"
+        zh-CN: "提示 %{0}（类型 %{1}）没有答案"
+      utf8:
+        en: "not UTF-8: %{0}"
+        zh-CN: "不是 UTF-8：%{0}"
+      unresolved:
+        en: "unresolved placeholder ${%{0}}; every ${…} must be answered by a text/path prompt"
+        zh-CN: "还有没填的占位符 ${%{0}}；每个 ${…} 都得由 text/path 提示回答"
+
   protocol:
     # 兼容性描述，不是厂商名，所以要翻。
     openai_compat:

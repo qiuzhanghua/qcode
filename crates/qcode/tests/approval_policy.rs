@@ -157,8 +157,10 @@ fn missing_or_malformed_policy_fails_before_running() {
             .expect("run qc");
 
         assert!(!output.status.success(), "policy should be rejected");
+        // 断言钉**被点名的那个文件**，不钉英文原文：文案跟随界面语言
+        //（这个 harness 钉的是 zh-CN），而「说清是哪个策略文件坏了」才是这条测试的意图。
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("approval policy"),
+            String::from_utf8_lossy(&output.stderr).contains(policy.to_str().expect("utf-8 path")),
             "error should name the policy: {}",
             String::from_utf8_lossy(&output.stderr)
         );

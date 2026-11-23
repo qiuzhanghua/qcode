@@ -5,40 +5,6 @@
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
 # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
-qcode-kernel/config/edit.rs	mcp must be a table
-qcode-kernel/config/edit.rs	mcp.servers must be an array
-qcode-kernel/config/edit.rs	root must be a table
-qcode-kernel/config/load.rs	<edit>
-qcode-kernel/config/load.rs	{}: version must be 1 or greater
-qcode-kernel/config/schedule.rs	schedule `{name}`: `task` and `new = true` are mutually exclusive
-qcode-kernel/config/schedule.rs	schedule `{name}`: approval_timeout `{value}` is not a duration like `30m`
-qcode-kernel/config/schedule.rs	schedule `{name}`: overlap must be `queue` or `skip`, got `{value}`
-qcode-kernel/config/schedule.rs	schedule `{name}`: prompt must not be empty
-qcode-kernel/config/schedule.rs	schedule `{name}`: set either `task` or `new = true`, not neither
-qcode-kernel/config/schedule.rs	schedule `{name}`: {source}
-qcode-kernel/config_edit.rs	'{key}' is not a table in the config
-qcode-kernel/config_edit.rs	cannot create a temporary file ({source})
-qcode-kernel/config_edit.rs	empty config path
-qcode-kernel/config_edit.rs	missing table {key}
-qcode-kernel/lib.rs	approval policy not found: {}
-qcode-kernel/lib.rs	config file not found: {}
-qcode-kernel/lib.rs	network.mode = \"strict\" requires [network] enabled = true (the proxy is the only allowed destination)
-qcode-kernel/lib.rs	network.mode = \"strict\" requires [sandbox] mode = \"sandbox-exec\" (macOS)
-qcode-kernel/lib.rs	{error} (grant: {})
-qcode-kernel/subagent.rs	cannot create subagent session: {err}
-qcode-kernel/template.rs	cannot render the config section: {error}
-qcode-kernel/template.rs	missing answer for prompt {key:?} (kind {:?})
-qcode-kernel/template.rs	network strict requires [sandbox] mode = \"sandbox-exec\"; this template asks for {:?}
-qcode-kernel/template.rs	no `[config]` section
-qcode-kernel/template.rs	no template named {name:?}
-qcode-kernel/template.rs	not UTF-8: {error}
-qcode-kernel/template.rs	template files must end in .toml
-qcode-kernel/template.rs	template {path} is not valid TOML: {error}
-qcode-kernel/template.rs	template {path}: {message}
-qcode-kernel/template.rs	unexpected nesting; templates are template/<kind>/<id>.toml
-qcode-kernel/template.rs	unknown config keys: {}
-qcode-kernel/template.rs	unknown template kind {dir:?}; expected one of llm, security
-qcode-kernel/template.rs	unresolved placeholder ${{{leftover}}}; every ${{\u{2026}}} must be  answered by a text/path prompt
 qcode-mcp/config.rs	MCP server '{0}' has an empty command
 qcode-mcp/config.rs	MCP server '{0}' has an empty url
 qcode-mcp/config.rs	MCP server '{0}' must set timeout_secs to at least 1
