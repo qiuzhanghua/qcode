@@ -476,6 +476,17 @@ impl SetupView {
                 .ok()
                 .filter(|key| !key.is_empty())
         };
+        // 钥匙串兜底：env 没有时执行该 route 的 `api_key_command`（存入钥匙串
+        // 的读取命令），否则探测不带 Authorization，网关会 401。
+        let api_key = match api_key {
+            Some(key) => Some(key),
+            None => self
+                .config
+                .providers
+                .get(&name)
+                .and_then(|profile| profile.api_key_command.as_deref())
+                .and_then(|argv| qcode_kernel::config::key_from_command(&name, argv).ok()),
+        };
         // The form has no headers column yet; reuse the config's for this route
         // so a gateway that needs them can still be probed.
         let headers = self

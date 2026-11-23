@@ -1171,7 +1171,10 @@ const KEY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// No shell is involved, so there is nothing to quote or escape; the output is
 /// never echoed, because it is the secret. The child is killed if it outlives
 /// [`KEY_COMMAND_TIMEOUT`].
-fn key_from_command(provider: &str, argv: &[String]) -> Result<String, ConfigError> {
+///
+/// `pub` because the settings page's model probe needs the same source: a key
+/// stored in the OS keychain must be readable when probing `GET {base}/models`.
+pub fn key_from_command(provider: &str, argv: &[String]) -> Result<String, ConfigError> {
     use std::io::Read;
     use std::process::{Command, Stdio};
 
