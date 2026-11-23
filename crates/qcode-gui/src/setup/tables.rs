@@ -966,6 +966,9 @@ impl SetupView {
 /// Subscribe one row's editable cells so typing in a table (settings mode)
 /// triggers a debounced whole-table auto save. The `__key` cell is the
 /// Keychain-only secret input: its edits must not touch config.toml.
+///
+/// Provider 编辑弹框是「点击保存才保存」：编辑对话框打开（`editing_provider`
+/// 有值）时输入不自动保存，写盘由对话框「保存」按钮统一触发。
 fn subscribe_cell_inputs(
     subscriptions: &mut Vec<gpui_kit::Subscription>,
     row: &RowState,
@@ -975,19 +978,17 @@ fn subscribe_cell_inputs(
         if *column_key == "__key" {
             continue;
         }
-        subscriptions.push(
-            cx.subscribe(input, |_view, _input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    _view.auto_save(cx, AutoSaveKind::Tables, true);
-                }
-            }),
-        );
+        subscriptions.push(cx.subscribe(input, |view, _input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && view.editing_provider.is_none() {
+                view.auto_save(cx, AutoSaveKind::Tables, true);
+            }
+        }));
     }
     for textarea in row.textareas.values() {
         subscriptions.push(
-            cx.subscribe(textarea, |_view, _input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    _view.auto_save(cx, AutoSaveKind::Tables, true);
+            cx.subscribe(textarea, |view, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) && view.editing_provider.is_none() {
+                    view.auto_save(cx, AutoSaveKind::Tables, true);
                 }
             }),
         );

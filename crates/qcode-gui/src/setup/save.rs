@@ -578,10 +578,11 @@ impl SetupView {
                 });
                 Ok(())
             }
-            // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示在
-            // 设置页顶部，避免“编辑不生效又看不到错误”。
+            // 校验失败（如提供方没有模型）时阻止落盘，并把原因展示出来：
+            // 编辑弹框打开时显示在弹框内，否则显示设置页顶部，避免「编辑
+            // 不生效又看不到错误」。
             Err(error) => {
-                self.error = Some(error.clone());
+                self.show_save_error(error.clone());
                 cx.notify();
                 // `debug`, not `warn`: this fires on every debounce while the
                 // user is halfway through typing a valid value, and the reason
@@ -593,6 +594,16 @@ impl SetupView {
                     &[&error],
                 ))
             }
+        }
+    }
+
+    /// 保存校验/写盘错误落点：编辑弹框打开时显示在弹框内（provider_error），
+    /// 否则显示设置页顶部（error）。
+    fn show_save_error(&mut self, error: String) {
+        if self.editing_provider.is_some() {
+            self.provider_error = Some(error);
+        } else {
+            self.error = Some(error);
         }
     }
 
@@ -624,7 +635,7 @@ impl SetupView {
                 }
             }
             Err(error) => {
-                self.error = Some(error.clone());
+                self.show_save_error(error.clone());
                 cx.notify();
                 tracing::debug!(%error, "auto-save skipped: invalid form");
                 Err(qcode_i18n::trp(
@@ -680,7 +691,7 @@ impl SetupView {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "auto-save failed");
-                        view.error = Some(qcode_i18n::trp(
+                        view.show_save_error(qcode_i18n::trp(
                             "gui.setup.save_error.write_failed",
                             &["config.toml", error.to_string().as_str()],
                         ));

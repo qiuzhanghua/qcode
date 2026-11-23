@@ -987,10 +987,6 @@ gui:
       add_selected:
         en: Add selected
         zh-CN: 添加所选
-      # 「添加模型」选择框里包型厂商行右侧的提示：点开为套餐下拉。
-      packages:
-        en: Packages ▾
-        zh-CN: 套餐 ▾
     delete:
       title:
         en: Delete %{0}?

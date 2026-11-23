@@ -471,7 +471,13 @@ impl SetupView {
                             div()
                                 .text_size(sp(CAPTION_SIZE))
                                 .text_color(muted_color)
-                                .child(qcode_i18n::tr("gui.setup.picker.packages")),
+                                .child(format!(
+                                    "{} · {}",
+                                    qcode_kernel::config::Protocol::OpenAi.label(),
+                                    credential_text(state.unwrap_or(
+                                        qcode_kernel::provider_registry::CredentialState::Missing
+                                    ))
+                                )),
                         ),
                 )
                 .child(div().flex_grow(1.0));
@@ -793,13 +799,11 @@ impl SetupView {
         let Some((_, pkg)) = qcode_kernel::config::package_entry(target) else {
             return;
         };
-        let mut changed = false;
         if let Some(table) = self.tables.get_mut("providers")
             && let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id)
         {
             if let Some(name) = row.cells.get_mut("name") {
                 name.update(cx, |state, cx| state.set_value(target, window, cx));
-                changed = true;
             }
             if let Some(base_url) = row.cells.get_mut("base_url") {
                 base_url.update(cx, |state, cx| state.set_value(pkg.base_url, window, cx));
@@ -812,13 +816,11 @@ impl SetupView {
             row.selects
                 .insert("protocol", pkg.protocol.as_str().to_string());
         }
-        // 编辑对象切到套餐 route：对话框标题、套餐高亮随之更新。
+        // 编辑对象切到套餐 route：对话框标题、套餐高亮随之更新。写盘由
+        // 「保存」按钮统一触发（点击保存才保存）。
         self.editing_provider = Some(target.to_string());
         self.provider_error = None;
         self.provider_notice = None;
-        if changed {
-            self.auto_save(cx, AutoSaveKind::Tables, false);
-        }
         cx.notify();
     }
 
@@ -1134,7 +1136,8 @@ impl SetupView {
                             {
                                 row.bools.insert(column_key, *checked);
                             }
-                            view.auto_save(cx, AutoSaveKind::Tables, false);
+                            // 编辑弹框改为「点击保存才保存」：只改行 state，
+                            // 不写盘；写盘由对话框「保存」按钮统一触发。
                             cx.notify();
                         });
                     }
@@ -1162,7 +1165,7 @@ impl SetupView {
                                     {
                                         row.selects.insert(column_key, value.clone());
                                     }
-                                    view.auto_save(cx, AutoSaveKind::Tables, false);
+                                    // 编辑弹框改为「点击保存才保存」。
                                     cx.notify();
                                 });
                             }),
