@@ -785,26 +785,37 @@ impl SetupView {
             .join("tj_auth.json")
     }
 
-    /// 切换详情页的套餐。切套餐 = 重新打开目标套餐 route 的编辑（预设行语义与
-    /// `pick_provider` 一致）：移除当前套餐行，按目标套餐预设建行并打开编辑页。
-    /// 之前「原地改行 name」会让行 route 与编辑对象不同步，切回时编辑页的行
-    /// 查找失败、退回到列表页。
+    /// 切换详情页的套餐：确保表格里有目标套餐的行（没有就按预设建行），并把
+    /// 编辑对象切到目标套餐 route。不重开编辑页、不做任何写盘——写盘由「保存」
+    /// 按钮统一触发。
     fn switch_package(
         &mut self,
         target: &str,
-        row_id: u64,
+        _row_id: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if qcode_kernel::config::package_entry(target).is_none() {
             return;
         }
-        if let Some(table) = self.tables.get_mut("providers") {
-            table.rows.retain(|row| row.id != row_id);
+        tracing::debug!(target, "switch_package");
+        let has_row = self
+            .tables
+            .get("providers")
+            .map(|table| {
+                table
+                    .rows
+                    .iter()
+                    .any(|row| cell(row, "name", cx).trim() == target)
+            })
+            .unwrap_or(false);
+        if !has_row {
+            self.add_provider_preset(target, window, cx);
         }
+        self.editing_provider = Some(target.to_string());
         self.provider_error = None;
         self.provider_notice = None;
-        self.pick_provider(target, window, cx);
+        cx.notify();
     }
 
     /// The provider edit modal (settings mode): API key first, the fixed
@@ -816,9 +827,11 @@ impl SetupView {
             return div().into_any_element();
         }
         let Some(route) = &self.editing_provider else {
+            tracing::debug!("provider dialog: no editing_provider");
             return div().into_any_element();
         };
         let Some(table) = self.tables.get("providers") else {
+            tracing::debug!("provider dialog: no providers table");
             return div().into_any_element();
         };
         let Some(row) = table
@@ -826,6 +839,16 @@ impl SetupView {
             .iter()
             .find(|row| cell(row, "name", cx).trim() == route)
         else {
+            tracing::debug!(
+                route,
+                "provider dialog: row not found (rows={})",
+                table
+                    .rows
+                    .iter()
+                    .map(|row| cell(row, "name", cx))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             return div().into_any_element();
         };
         let theme = cx.theme();
