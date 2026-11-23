@@ -988,6 +988,17 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
         if tail.contains("// i18n:keep") {
             continue;
         }
+        // ADR-0105 §5 划的那条线：工具结果里「发生了什么」跟随界面语言，但
+        // `ToolError::*` 的**技术诊断保持英文**——受众是模型，它要据此改参数
+        // 重试（`invalid glob`、`invalid hunk header`、`diff is empty`）。
+        //
+        // `Err(` 这条标记是后加的，把 `Err(ToolError::Invalid("diff is empty"))`
+        // 也一并扫了进来；ADR 原文写的是「门禁只认 `ToolOutput::*`，不认
+        // `spec(` 与 `ToolError::*`」。所以按位置排掉：整个调用里出现
+        // `ToolError::` 的，是在构造诊断，不是给用户读的散文。
+        if tail.contains("ToolError::") {
+            continue;
+        }
         for marker in &markers {
             // `Debug` 实现里的 `write!(f, …)` 是**调试表示**（`Disabled({why})`、
             // `AttachmentId({})`），不是给用户读的文案，跳过。
@@ -1413,4 +1424,23 @@ fn ui_text_detector_skips_key_shaped_strings() {
         "fn f() {\n    Self::Welcome => \"Welcome\",\n}\n",
     );
     assert_eq!(hits.len(), 1, "英文页面名要算文案：{hits:?}");
+}
+
+#[test]
+fn tool_error_diagnostics_stay_english() {
+    // ADR-0105 §5：`ToolError::*` 是给模型改参数重试用的技术诊断，不是界面
+    // 文案。`Err(` 这条标记会把它们一起扫进来，所以按位置排掉。
+    let hits = ui_text_in(
+        "qcode-tools/patch.rs",
+        "fn f() {\n    return Err(ToolError::Invalid(\"diff is empty\".to_string()));\n}\n",
+    );
+    assert!(hits.is_empty(), "ToolError 诊断不该进门禁：{hits:?}");
+
+    // 同一条 `Err(` 位置上**不是** ToolError 的仍然要抓：那条豁免不能顺手把
+    // 整类「走返回值」的用户错误也放掉（这批正是上一轮刚补回来的）。
+    let hits = ui_text_in(
+        "qcode-core/todo.rs",
+        "fn f() {\n    return Err(format!(\"item {number} has empty `content`\"));\n}\n",
+    );
+    assert_eq!(hits.len(), 1, "用户读的错误串仍要抓：{hits:?}");
 }

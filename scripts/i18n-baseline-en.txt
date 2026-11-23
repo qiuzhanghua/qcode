@@ -209,7 +209,6 @@ qcode-mcp/lib.rs	server '{server}' needs the bearer token in ${var}, but it is n
 qcode-mcp/lib.rs	server '{server}' tools/list failed: {source}
 qcode-mcp/lib.rs	server '{server}' tools/list timed out after {secs}s
 qcode-mcp/lib.rs	server '{server}' url is unusable: {detail}
-qcode-mcp/tool.rs	MCP tool arguments must be a JSON object
 qcode-providers/anthropic.rs	/error/type
 qcode-providers/anthropic.rs	a tool message must carry tool_call_id
 qcode-providers/anthropic.rs	invalid chunk: {err}
@@ -225,45 +224,6 @@ qcode-providers/openai_compat.rs	invalid chunk: {err}
 qcode-providers/openai_compat.rs	tool arguments are not valid JSON: {err}
 qcode-tools/ask.rs	bad arguments: {error}
 qcode-tools/ask.rs	no interactive frontend is wired in; nobody can answer
-qcode-tools/fetch.rs	credentials in URLs are not supported
-qcode-tools/fetch.rs	invalid URL: {error}
-qcode-tools/fetch.rs	only http:// and https:// URLs are supported, got '{}'
-qcode-tools/fetch.rs	refusing non-text content type '{content_type}' (only text, JSON and XML are supported)
-qcode-tools/fetch.rs	response looks binary; refusing to return it as text
-qcode-tools/fs.rs	file is not valid UTF-8
-qcode-tools/fs.rs	old_string and new_string are identical
-qcode-tools/fs.rs	old_string is empty
-qcode-tools/patch.rs	`..` is not allowed in patch paths: {raw}
-qcode-tools/patch.rs	`\\ No newline` without a preceding line
-qcode-tools/patch.rs	a patch cannot be both create and delete
-qcode-tools/patch.rs	absolute paths are not allowed: {raw}
-qcode-tools/patch.rs	cannot create {}: it already exists
-qcode-tools/patch.rs	cannot delete {}: it does not exist
-qcode-tools/patch.rs	delete patch for {} leaves content behind
-qcode-tools/patch.rs	diff is empty
-qcode-tools/patch.rs	diff is {} bytes; the limit is {MAX_PATCH_BYTES}
-qcode-tools/patch.rs	empty path in diff header
-qcode-tools/patch.rs	empty path in patch
-qcode-tools/patch.rs	expected a hunk header, got: {}
-qcode-tools/patch.rs	hunk at line {} has {old_seen}/{new_seen} lines, header says {old_len}/{new_len}
-qcode-tools/patch.rs	invalid hunk header: {line}
-qcode-tools/patch.rs	missing `+++` line after `--- {}`
-qcode-tools/patch.rs	missing file path
-qcode-tools/patch.rs	no file patches found; expected a unified diff
-qcode-tools/patch.rs	no hunks for file {}
-qcode-tools/patch.rs	patch touches the same file twice: {}
-qcode-tools/patch.rs	patch touches {} files; the limit is {MAX_FILES}
-qcode-tools/patch.rs	renames are not supported: {old} -> {new}
-qcode-tools/patch.rs	unexpected hunk line: {line}
-qcode-tools/patch.rs	{}: hunk {} counts do not match its header
-qcode-tools/patch.rs	{}: hunk {} overlaps the previous hunk
-qcode-tools/patch.rs	{}: hunk {} starts after the end of the file
-qcode-tools/path.rs	cannot resolve path: {requested}
-qcode-tools/path.rs	cannot resolve path: {}
-qcode-tools/path.rs	path is empty
-qcode-tools/path.rs	root '@{}' is unavailable ({} is gone); relink the root before using it
-qcode-tools/path.rs	unknown root '@{label}'
-qcode-tools/path.rs	workspace not found: {}
 qcode-tools/sandbox/linux.rs	Landlock is unavailable: {}
 qcode-tools/sandbox/linux.rs	bwrap needs at least one root or a turn temp
 qcode-tools/sandbox/linux.rs	cannot add Landlock rule for {}: {}
@@ -282,28 +242,11 @@ qcode-tools/sandbox/mod.rs	sandbox `{name}` failed its preflight: {detail}
 qcode-tools/sandbox/mod.rs	sandbox setup failed: {0}
 qcode-tools/sandbox/mod.rs	sandbox-exec
 qcode-tools/sandbox/mod.rs	windows-acl
-qcode-tools/search.rs	invalid glob: {err}
-qcode-tools/search.rs	invalid regex: {err}
-qcode-tools/shell.rs	command is empty
-qcode-tools/shell.rs	no root and no turn temp: there is nowhere to run the command
-qcode-tools/shell.rs	no shell on PATH (tried pwsh, powershell.exe and cmd.exe)
-qcode-tools/shell.rs	sandbox_permissions requires a non-empty justification
-qcode-tools/shell.rs	unknown sandbox_permissions: {scope}
 qcode-tools/shell_env.rs	could not start the sampler: {error}
 qcode-tools/shell_env.rs	environment sampling is off
 qcode-tools/shell_env.rs	sampling timed out after {timeout:?}
 qcode-tools/shell_env.rs	{} exited with {}: {}
 qcode-tools/shell_env.rs	{} produced no environment entries
-qcode-tools/skills.rs	'{requested}' is not a regular file
-qcode-tools/skills.rs	'{requested}' is not valid UTF-8
-qcode-tools/skills.rs	'{requested}' is {} bytes; the limit is {MAX_REFERENCE_BYTES}
-qcode-tools/skills.rs	'{requested}' looks binary; refusing to load it as text
-qcode-tools/skills.rs	bundled files must not be symlinks
-qcode-tools/skills.rs	file escapes the skill directory
-qcode-tools/skills.rs	file is empty
-qcode-tools/skills.rs	file must be relative to the skill root
-qcode-tools/skills.rs	unknown file '{requested}' in skill '{}'
-qcode-tools/skills.rs	unknown skill '{}'; available: {}
 qcode-tools/skills.rs	{path}: a skill directory must not be a symlink
 qcode-tools/skills.rs	{path}: cannot read: {source}
 qcode-tools/skills.rs	{path}: description must be 1-{MAX_DESCRIPTION_CHARS} characters
@@ -316,12 +259,6 @@ qcode-tools/skills.rs	{path}: skill name '{name}' does not match the directory n
 qcode-tools/skills.rs	{path}: {SKILL_FILE} is {bytes} bytes; the limit is {max} bytes
 qcode-tools/skills.rs	{path}: {SKILL_FILE} must be a regular file
 qcode-tools/skills.rs	{path}: {SKILL_FILE} must start with a `---` frontmatter block
-qcode-tools/subagent.rs	task is empty
-qcode-tools/web_search.rs	invalid search endpoint: {error}
-qcode-tools/web_search.rs	query must be at most {MAX_QUERY_CHARS} characters
-qcode-tools/web_search.rs	query must not be empty
-qcode-tools/web_search.rs	search backend returned invalid JSON: {error}
-qcode-tools/web_search.rs	the {} backend needs [search] base_url
 qcode-tui/ui.rs	 · window {}
 qcode-ui-state/actions.rs	\n  {} [{}] files={}\n    {}
 qcode-ui-state/actions.rs	\n  {}. {} · {} nested · {state}
