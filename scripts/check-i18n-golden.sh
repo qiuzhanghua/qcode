@@ -162,15 +162,23 @@ done
 # `-qec cmd /dev/null`），所以两头都试。
 color_check() {
     local out
+    # 判据是**输出里有没有转义码**，不是「第一条写法是否报错」。
+    #
+    # 旧版用 `[ -z "$out" ]` 决定要不要回退到 `-c` 写法，这条在 util-linux 上
+    # 必错：`script -q /dev/null cmd …` 只认 macOS 的参数顺序，在第 2 个参数就
+    # 报 "invalid option" 并以非零退出——但那行错误本身让 `$out` 非空，于是
+    # 回退永远走不到，Linux 上这条门禁一直在误报「en 路径丢了颜色」。CI 的
+    # ubuntu 行同样跑这个脚本。
     if out=$(script -q /dev/null env -i PATH="$PATH" HOME="$work/home" \
-        TERM=xterm-256color QCODE_LANG=en "$QC" --nope 2>&1); then :; fi
-    if [ -z "$out" ]; then
-        out=$(script -qec "env -i PATH='$PATH' HOME='$work/home' TERM=xterm-256color             QCODE_LANG=en '$QC' --nope" /dev/null 2>&1) || true
-    fi
+        TERM=xterm-256color QCODE_LANG=en "$QC" --nope 2>/dev/null); then :; fi
     case "$out" in
     *$(printf '\033[')*) return 0 ;;
-    *) return 1 ;;
     esac
+    if out=$(script -qec "env -i PATH='$PATH' HOME='$work/home' TERM=xterm-256color QCODE_LANG=en '$QC' --nope" /dev/null 2>/dev/null); then :; fi
+    case "$out" in
+    *$(printf '\033[')*) return 0 ;;
+    esac
+    return 1
 }
 
 if ! color_check; then

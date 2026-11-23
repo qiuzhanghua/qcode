@@ -300,15 +300,12 @@ fn config_init(
 
     if !template.applies_here() {
         if !force {
-            return Err(format!(
-                "{}",
-                qcode_i18n::trp(
-                    "err.cli.template.wrong_os",
-                    &[
-                        template.os.join(", ").as_str(),
-                        qcode_kernel::template::CURRENT_OS
-                    ],
-                ),
+            return Err(qcode_i18n::trp(
+                "err.cli.template.wrong_os",
+                &[
+                    template.os.join(", ").as_str(),
+                    qcode_kernel::template::CURRENT_OS,
+                ],
             )
             .into());
         }
@@ -404,12 +401,9 @@ fn collect_prompt_answers(
     }
     if !std::io::stdin().is_terminal() {
         let keys: Vec<&str> = asks.iter().map(|prompt| prompt.key.as_str()).collect();
-        return Err(format!(
-            "{}",
-            qcode_i18n::trp(
-                "err.cli.template.needs_terminal",
-                &[keys.join(", ").as_str()]
-            ),
+        return Err(qcode_i18n::trp(
+            "err.cli.template.needs_terminal",
+            &[keys.join(", ").as_str()],
         )
         .into());
     }
@@ -451,12 +445,9 @@ fn provider_append(
     let existing = std::fs::read_to_string(path)?;
     let loaded = config::load(path)?;
     if loaded.providers.contains_key(id) {
-        return Err(format!(
-            "{}",
-            qcode_i18n::trp(
-                "err.cli.template.provider_exists",
-                &[path.display().to_string().as_str(), id.as_str()],
-            ),
+        return Err(qcode_i18n::trp(
+            "err.cli.template.provider_exists",
+            &[path.display().to_string().as_str(), id.as_str()],
         )
         .into());
     }

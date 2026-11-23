@@ -109,7 +109,15 @@ mod macos_sandbox_tests {
     fn network_is_opt_in() {
         let sandbox = SandboxExec::new(&workspace(), SandboxNetwork::Allow).expect("profile");
         assert!(sandbox.profile().contains("(allow network*)"));
-        assert!(sandbox.describe().contains("network allowed"));
+        // describe() 的文案跟随界面语言（ADR-0105），不能钉英文原文：宿主是
+        // zh-CN 时它出的是「sandbox-exec（网络允许）」。改成和 tr() 的取值比，
+        // 验的仍然是「这条说明跟着 network 开关走」——若它照抄了 denied 那份，
+        // 这里会红。
+        assert!(
+            sandbox
+                .describe()
+                .contains(qcode_i18n::tr("core.sandbox.describe.macos_allowed").as_ref())
+        );
     }
 
     #[test]
@@ -119,7 +127,9 @@ mod macos_sandbox_tests {
         let profile = sandbox.profile();
         assert!(profile.contains("(allow network-outbound (remote tcp \"localhost:43123\"))"));
         assert!(!profile.contains("(allow network*)"));
-        assert!(sandbox.describe().contains("proxy-only on localhost:43123"));
+        // 端口是**值**，两种语言都原样出现（「…只能走 localhost:43123 的代理」）；
+        // 只钉这个，不钉周围的散文。
+        assert!(sandbox.describe().contains("localhost:43123"));
     }
 
     #[test]
@@ -1222,8 +1232,13 @@ mod landlock_runtime {
             "extra_read must include execute, or a toolchain under it cannot run: {:?}",
             run_script(granted.as_ref())
         );
+        // 验的是「doctor 说得出授了什么」，所以钉**被授的那个路径**，而不是
+        // "extra read" 这句英文——文案跟随界面语言（ADR-0105），宿主是 zh-CN 时
+        // 这里出「，额外可读：[…]」，写死英文会在中文机器上红。
         assert!(
-            granted.describe().contains("extra read"),
+            granted
+                .describe()
+                .contains(&tool.path().display().to_string()),
             "doctor must be able to say what was granted: {}",
             granted.describe()
         );
@@ -1404,7 +1419,9 @@ mod landlock_runtime {
             listed.path().display()
         );
         assert!(
-            granted.describe().contains("extra write"),
+            granted
+                .describe()
+                .contains(&listed.path().display().to_string()),
             "doctor must be able to say what was granted: {}",
             granted.describe()
         );
