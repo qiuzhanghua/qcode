@@ -357,6 +357,20 @@ pub const CATALOG: &[CatalogEntry] = &[
         models: &[],
         images: false,
     },
+    // 太极内网（PROVIDER-PACKAGES-TJ-AUTH §4）：public client + PKCE，
+    // 没有 api_key_env（keyless）——token 由 TjProvider 从 tj_auth.json 与
+    // 授权码流程管理。默认地址为需求 4c 指定的内网网关。
+    CatalogEntry {
+        route: crate::providers::tj::TJ_ROUTE,
+        display_name: "太极内网",
+        protocol: Protocol::OpenAi,
+        base_url: crate::providers::tj::TJ_BASE_URL,
+        api_key_env: "",
+        default_model: None,
+        reasoning_split: false,
+        models: &[],
+        images: false,
+    },
 ];
 
 /// Every built-in catalog route.

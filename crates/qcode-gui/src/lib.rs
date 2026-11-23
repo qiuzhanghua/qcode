@@ -436,7 +436,11 @@ fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
         models.sort();
         models.dedup();
         if !models.is_empty() {
-            out.push((name.clone(), models));
+            // 组标题：套餐条目显示「厂商名 (套餐名)」，其余保持 route key。
+            let label = qcode_kernel::config::package_entry(name)
+                .map(|(group, pkg)| format!("{} ({})", group.display_name, pkg.label))
+                .unwrap_or_else(|| name.clone());
+            out.push((label, models));
         }
     }
     out

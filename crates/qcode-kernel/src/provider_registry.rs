@@ -9,10 +9,11 @@ use qcode_core::event::Usage;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_providers::{
     AnthropicConfig, AnthropicProvider, MockProvider, OpenAiCompatConfig, OpenAiCompatProvider,
+    TjAuthSettings, TjProvider, TjProviderConfig,
 };
 
 use crate::config::{
-    CatalogEntry, Config, ModelEntry, Protocol, ProviderConfig, catalog_entries, catalog_entry,
+    AuthMode, Config, ModelEntry, Protocol, ProviderConfig, catalog_entries, catalog_entry,
 };
 
 /// Directory-level credential state of one provider route (M3).
@@ -33,6 +34,9 @@ pub struct ConfigurableProvider {
     pub route: String,
     /// Name shown by configuration surfaces.
     pub display_name: String,
+    /// 套餐名（`按量计费` / `Coding Plan` / …）——该 route 属于某个厂商的
+    /// 套餐时存在。完整显示名由 [`Self::label`] 派生：厂商名 (套餐名)。
+    pub package_label: Option<&'static str>,
     /// Wire protocol this route speaks (catalog default or config override).
     pub protocol: Protocol,
     /// Whether the user/project config carries a profile for this route.
@@ -41,17 +45,44 @@ pub struct ConfigurableProvider {
     pub credential_state: CredentialState,
 }
 
+impl ConfigurableProvider {
+    /// The display name for configuration surfaces.
+    ///
+    /// 套餐条目显示「厂商名 (套餐名)」（如 `火山引擎 (Coding Plan)`）；
+    /// 其余条目保持既有「产品名 (route)」样式；手写 route 原样返回。
+    pub fn label(&self) -> String {
+        if let Some(package) = self.package_label {
+            format!("{} ({})", self.display_name, package)
+        } else if self.display_name != self.route {
+            format!("{} ({})", self.display_name, self.route)
+        } else {
+            self.route.clone()
+        }
+    }
+}
+
 /// The provider registry: catalog directory + route → adapter construction.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderRegistry {
     /// Egress proxy URL passed to every adapter that reaches the network.
     proxy_url: Option<String>,
+    /// `tj_auth.json` 的路径（太极统一认证）；None = 默认（~/.config/qcode/）。
+    tj_store_path: Option<std::path::PathBuf>,
 }
 
 impl ProviderRegistry {
     /// Create a registry bound to one egress proxy (or none).
     pub fn new(proxy_url: Option<String>) -> Self {
-        Self { proxy_url }
+        Self {
+            proxy_url,
+            tj_store_path: None,
+        }
+    }
+
+    /// Set the `tj_auth.json` location (太极统一认证 token 存储）。
+    pub fn with_tj_store(mut self, path: std::path::PathBuf) -> Self {
+        self.tj_store_path = Some(path);
+        self
     }
 
     /// Build the adapter for one resolved route.
@@ -72,6 +103,25 @@ impl ProviderRegistry {
                 headers: resolved.headers.clone(),
                 images: resolved.images,
             })?),
+            // 太极统一认证：public client + PKCE，token 生命周期在 TjProvider
+            // 内部闭环（ensure/refresh/401 重试）。
+            Protocol::OpenAi if resolved.auth_mode == AuthMode::TjOAuth => {
+                Box::new(TjProvider::new(TjProviderConfig {
+                    name: resolved.name.clone(),
+                    base_url: resolved
+                        .base_url
+                        .clone()
+                        .expect("non-mock provider always has a base URL"),
+                    settings: tj_settings(),
+                    store_path: self.tj_store_path.clone().unwrap_or_else(default_tj_store),
+                    prompt: crate::providers::tj::global_auth_prompt(),
+                    proxy_url: self.proxy_url.clone(),
+                    stream_usage: resolved.stream_usage,
+                    extra_body: resolved.extra_body.clone(),
+                    headers: resolved.headers.clone(),
+                    images: resolved.images,
+                })?)
+            }
             Protocol::OpenAi => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
                 name: resolved.name.clone(),
                 base_url: resolved
@@ -89,25 +139,56 @@ impl ProviderRegistry {
     }
 
     /// The configurable-provider directory: catalog routes first (presentation
-    /// order), then configured routes the catalog does not ship.
+    /// order), then the package table's routes（套餐，catalog 同 route 者由套餐表
+    /// 取代并带套餐标识）, then configured routes neither table ships.
     pub fn list_configurable_providers(&self, config: &Config) -> Vec<ConfigurableProvider> {
+        let package_routes: Vec<&'static str> = crate::config::package_routes().collect();
+        let is_package_route = |route: &str| package_routes.contains(&route);
         let mut rows = Vec::new();
         for entry in catalog_entries() {
+            // 该 route 由套餐表提供（带套餐标识），catalog 版本让位。
+            if is_package_route(entry.route) {
+                continue;
+            }
+            // 太极统一认证的凭证状态由 `tj_auth.json` 是否有有效 token 决定，
+            // 不走 env/key command（需求 4c：无钥匙串逻辑）。
+            let credential_state = if crate::providers::tj::is_tj_route(entry.route) {
+                tj_credential_state()
+            } else {
+                credential_state(config.providers.get(entry.route), Some(entry.api_key_env))
+            };
             rows.push(ConfigurableProvider {
                 route: entry.route.to_string(),
                 display_name: entry.display_name.to_string(),
+                package_label: None,
                 protocol: entry.protocol,
                 configured: config.providers.contains_key(entry.route),
-                credential_state: credential_state(config.providers.get(entry.route), Some(entry)),
+                credential_state,
             });
         }
+        for group in crate::config::package_groups() {
+            for pkg in group.packages {
+                rows.push(ConfigurableProvider {
+                    route: pkg.route.to_string(),
+                    display_name: group.display_name.to_string(),
+                    package_label: Some(pkg.label),
+                    protocol: pkg.protocol,
+                    configured: config.providers.contains_key(pkg.route),
+                    credential_state: credential_state(
+                        config.providers.get(pkg.route),
+                        Some(pkg.api_key_env),
+                    ),
+                });
+            }
+        }
         for (route, profile) in &config.providers {
-            if catalog_entry(route).is_some() {
+            if catalog_entry(route).is_some() || is_package_route(route.as_str()) {
                 continue;
             }
             rows.push(ConfigurableProvider {
                 route: route.clone(),
                 display_name: route.clone(),
+                package_label: None,
                 protocol: profile.protocol.unwrap_or(Protocol::OpenAi),
                 configured: true,
                 credential_state: credential_state(Some(profile), None),
@@ -323,6 +404,47 @@ impl ProviderRegistry {
     }
 }
 
+/// kernel 侧硬编码的太极配置 → providers 层的 `TjAuthSettings`（依赖方向：
+/// qcode-providers 不依赖 kernel，值由这里搬运）。
+fn tj_settings() -> TjAuthSettings {
+    let config = crate::providers::tj::TJ_AUTH;
+    TjAuthSettings {
+        auth_url: config.auth_url.to_string(),
+        token_url: config.token_url.to_string(),
+        userinfo_url: config.userinfo_url.to_string(),
+        jwk_set_url: config.jwk_set_url.to_string(),
+        client_id: config.client_id.to_string(),
+        client_name: config.client_name.to_string(),
+        redirect_uri: config.redirect_uri.to_string(),
+    }
+}
+
+/// `tj_auth.json` 的默认位置：与 config.toml 同目录（`~/.config/qcode/`）。
+fn default_tj_store() -> std::path::PathBuf {
+    qcode_core::real_home()
+        .map(|home| home.join(".config/qcode/tj_auth.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("tj_auth.json"))
+}
+
+/// 太极统一认证的凭证状态：`tj_auth.json` 里有未过期的 access token 才算
+/// Configured，否则 Missing（未登录）。不走 env / key command。
+fn tj_credential_state() -> CredentialState {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let store = qcode_providers::TjTokenStore::new(default_tj_store());
+    match store.load() {
+        Ok(tokens)
+            if !tokens.access_token.is_empty()
+                && (tokens.expires_at == 0 || now < tokens.expires_at) =>
+        {
+            CredentialState::Configured
+        }
+        _ => CredentialState::Missing,
+    }
+}
+
 /// Whether a route counts as "has models configured": a profile exists in
 /// `config.providers` and its `models` list is non-empty or `default_model` is
 /// set. Catalog built-in model lists do not count — the user made no choice.
@@ -347,7 +469,8 @@ pub fn effective_models(route: &str, config: &Config) -> Vec<ModelEntry> {
 /// Credential state for one route (M3). Directory metadata only: it inspects
 /// the env-var *name* and whether a key command is configured, never the key
 /// itself. Precedence mirrors [`crate::config::resolve`]: the profile's
-/// `api_key_env` wins, then the catalog route's.
+/// `api_key_env` wins, then the route's default env (`default_env`, from the
+/// catalog row or the package table).
 ///
 /// A key command counts as configured (it supplies the key at run time, e.g.
 /// from Keychain/libsecret, and we cannot verify it here without running it).
@@ -356,13 +479,13 @@ pub fn effective_models(route: &str, config: &Config) -> Vec<ModelEntry> {
 /// keyless, like the local Ollama and mock routes.
 fn credential_state(
     profile: Option<&ProviderConfig>,
-    catalog: Option<&CatalogEntry>,
+    default_env: Option<&str>,
 ) -> CredentialState {
     let profile = profile.cloned().unwrap_or_default();
     let env = profile
         .api_key_env
         .clone()
-        .or_else(|| catalog.map(|entry| entry.api_key_env.to_string()))
+        .or_else(|| default_env.map(str::to_string))
         .unwrap_or_default();
     if profile
         .api_key_command
@@ -433,6 +556,33 @@ mod tests {
                 None => unsafe { std::env::remove_var(name) },
             }
         }
+    }
+
+    #[test]
+    fn directory_serves_package_rows_with_labels() {
+        // 套餐条目：display_name 是厂商名，package_label 是套餐名，label() 拼成
+        // 「厂商名 (套餐名)」；凭证状态按套餐 api_key_env 判定（未设置 → Missing）。
+        let registry = ProviderRegistry::new(None);
+        let rows = registry.list_configurable_providers(&Config::default());
+        let coding = rows
+            .iter()
+            .find(|row| row.route == "volcano-coding")
+            .unwrap();
+        assert_eq!(coding.display_name, "火山引擎");
+        assert_eq!(coding.package_label, Some("Coding Plan"));
+        assert_eq!(coding.label(), "火山引擎 (Coding Plan)");
+        assert!(!coding.configured);
+        assert_eq!(coding.credential_state, CredentialState::Missing);
+        // xiaomi / zai 同时存在于 catalog 与套餐表：目录只出套餐表版本（带套餐
+        // 标识），避免同一 route 重复两行。
+        let xiaomi: Vec<_> = rows.iter().filter(|row| row.route == "xiaomi").collect();
+        assert_eq!(xiaomi.len(), 1);
+        assert_eq!(xiaomi[0].package_label, Some("按量计费"));
+        assert_eq!(xiaomi[0].label(), "小米 (按量计费)");
+        // catalog 普通条目不带套餐标识，label 保持「产品名 (route)」样式。
+        let deepseek = rows.iter().find(|row| row.route == "deepseek").unwrap();
+        assert_eq!(deepseek.package_label, None);
+        assert_eq!(deepseek.label(), "DeepSeek (deepseek)");
     }
 
     #[test]

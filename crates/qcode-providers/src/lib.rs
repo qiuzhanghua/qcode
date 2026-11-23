@@ -8,8 +8,12 @@ pub mod discovery;
 pub mod mock;
 pub mod openai_compat;
 pub mod sse;
+pub mod tj;
 
 pub use anthropic::{AnthropicConfig, AnthropicProvider};
 pub use discovery::discover_models;
 pub use mock::MockProvider;
 pub use openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+pub use tj::{
+    AuthPrompt, TjAuthClient, TjAuthSettings, TjProvider, TjProviderConfig, TjTokenStore,
+};

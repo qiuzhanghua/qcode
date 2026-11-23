@@ -236,6 +236,11 @@ impl Shell {
         cx: &mut Context<Self>,
         minimize_on_close: bool,
     ) -> Self {
+        // 注册太极统一认证的授权回调（打开系统浏览器 + 等待粘贴 code）；进程级
+        // 一次，所有 TjProvider 复用（PROVIDER-PACKAGES-TJ-AUTH §4.4）。
+        qcode_kernel::providers::tj::set_global_auth_prompt(std::sync::Arc::new(
+            qcode_kernel::providers::tj::open_browser_and_wait,
+        ));
         let mono_font = {
             use gpui_kit::component::ActiveTheme as _;
             cx.theme().mono_font_family.clone()

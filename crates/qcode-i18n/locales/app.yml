@@ -892,6 +892,35 @@ gui:
       store_keychain:
         en: Store in keychain
         zh-CN: 存入钥匙串
+      # 太极内网（需求 4c：无 API 密钥/钥匙串，改登录状态区）。
+      tj_login:
+        en: Sign in with Taiji Intranet
+        zh-CN: 太极内网登录
+      # 详情页套餐选择（有套餐的 Provider 在 API 密钥上面显示）。
+      package:
+        en: Package
+        zh-CN: 套餐
+      tj_code_aria:
+        en: Authorization code from the callback URL
+        zh-CN: 回调 URL 中的授权 code
+      tj_submit:
+        en: Submit code
+        zh-CN: 提交 code
+      tj_hint:
+        en: Taiji Intranet SSO replaces the API key; the token is kept in tj_auth.json next to config.toml.
+        zh-CN: 太极内网登录代替 API 密钥；token 保存在 config.toml 同目录的 tj_auth.json。
+      tj_no_prompt:
+        en: Sign-in is not available in this context.
+        zh-CN: 当前环境无法完成太极内网登录。
+      tj_pending:
+        en: Opening the sign-in page…
+        zh-CN: 正在打开登录页…
+      tj_signed_in:
+        en: Signed in with Taiji Intranet.
+        zh-CN: 太极内网登录成功。
+      tj_interrupted:
+        en: The sign-in flow was interrupted.
+        zh-CN: 太极登录流程被打断。
       collapse_config:
         en: Collapse settings ▴
         zh-CN: 收起配置 ▴
@@ -958,6 +987,10 @@ gui:
       add_selected:
         en: Add selected
         zh-CN: 添加所选
+      # 「添加模型」选择框里包型厂商行右侧的提示：点开为套餐下拉。
+      packages:
+        en: Packages ▾
+        zh-CN: 套餐 ▾
     delete:
       title:
         en: Delete %{0}?

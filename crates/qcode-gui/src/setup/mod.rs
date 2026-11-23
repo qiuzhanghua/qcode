@@ -144,6 +144,12 @@ pub struct SetupView {
     /// Whether the provider-picker overlay (「添加模型」→ 选择 Provider) is open.
     /// The picker only selects; picking a route opens the edit dialog.
     adding_provider: bool,
+    /// 太极登录（设置页「登录」按钮）的结果通道：worker 线程回报
+    /// `Result<(), String>`，前台轮询更新提示。
+    tj_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// 「粘贴授权 code」输入框：登录按钮按下后创建，用户把回调 URL 里的 code
+    /// 粘进来确认（当前 GPUI Windows 未实现 scheme 自动回调，见 kernel tj）。
+    tj_code_input: Option<Entity<InputState>>,
     /// Provider routes whose model list is expanded on the Models page (pure UI
     /// state, never persisted).
     expanded_routes: BTreeSet<String>,
@@ -417,6 +423,8 @@ impl SetupView {
             saved_notice: None,
             declaring: false,
             adding_provider: false,
+            tj_login_rx: None,
+            tj_code_input: None,
             expanded_routes: BTreeSet::new(),
             adding_model_provider: None,
             probe_candidates: None,

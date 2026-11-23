@@ -343,45 +343,76 @@ impl SetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        // The catalog is the single fact source for preset values: route,
-        // endpoint, key env and default model all come from the entry, so new
-        // catalog routes get a button and a pre-filled row automatically.
-        let Some(entry) = qcode_kernel::config::catalog_entry(route) else {
+        // Catalog and package tables are the fact sources for preset values:
+        // route, endpoint, key env and default model all come from the entry,
+        // so new catalog/package routes get a button and a pre-filled row
+        // automatically. The package table is tried second because it carries
+        // the same preset fields as a catalog row.
+        let Some((route_id, base_url, api_key_env, default_model, protocol, models)) =
+            qcode_kernel::config::catalog_entry(route)
+                .map(|entry| {
+                    (
+                        entry.route,
+                        entry.base_url,
+                        entry.api_key_env,
+                        entry.default_model,
+                        entry.protocol,
+                        entry.models,
+                    )
+                })
+                .or_else(|| {
+                    qcode_kernel::config::package_entry(route).map(|(_, pkg)| {
+                        (
+                            pkg.route,
+                            pkg.base_url,
+                            pkg.api_key_env,
+                            pkg.default_model,
+                            pkg.protocol,
+                            pkg.models,
+                        )
+                    })
+                })
+        else {
             return false;
         };
         let row = self.row(
             [
-                ("name", entry.route.to_string()),
-                ("base_url", entry.base_url.to_string()),
-                ("api_key_env", entry.api_key_env.to_string()),
+                ("name", route_id.to_string()),
+                ("base_url", base_url.to_string()),
+                ("api_key_env", api_key_env.to_string()),
                 ("api_key_command", String::new()),
-                (
-                    "default_model",
-                    entry.default_model.unwrap_or("").to_string(),
-                ),
+                ("default_model", default_model.unwrap_or("").to_string()),
                 ("extra_body", String::new()),
                 ("__key", String::new()),
             ],
             [("stream_usage", true)],
-            [("protocol", entry.protocol.as_str().to_string())],
+            [("protocol", protocol.as_str().to_string())],
             window,
             cx,
         );
         let mut row = row;
         row.cells
             .insert("__key", secret_input(window, cx, "API key (Keychain)"));
-        // The preset inherits the catalog's static model list; the first edit
-        // materializes the route's own override (U2).
-        row.models = qcode_kernel::config::catalog_models(entry.route)
+        // The preset inherits the static model list; the first edit
+        // materializes the route's own override (U2). Package rows ship no
+        // static models (they are probe-filled), matching the catalog rows
+        // added 2026-11-19.
+        row.models = models
             .iter()
-            .map(|model| self.model_row(window, cx, Some(model)))
+            .map(|id| {
+                let entry = qcode_kernel::config::ModelEntry {
+                    id: (*id).to_string(),
+                    ..Default::default()
+                };
+                self.model_row(window, cx, Some(&entry))
+            })
             .collect();
         // 重新添加一个「配置节已删、密钥还在钥匙串」的 provider（删行不删
         // 凭据）：预设只写 api_key_env 会把存着的密钥孤儿化——provider 出现
         // 了但用不了。凭据库里有该路由的密钥时，把读取命令恢复进本行，
         // 保存后 `api_key_command` 继续走钥匙串。返回是否恢复，让调用方
         // （picker）在打开编辑框后提示用户。
-        let restored = if let Some(argv) = keychain_exists(entry.route) {
+        let restored = if let Some(argv) = keychain_exists(route_id) {
             if let Some(command) = row.textareas.get_mut("api_key_command") {
                 command.update(cx, |input, cx| {
                     input.set_value(argv.join("\n"), window, cx);

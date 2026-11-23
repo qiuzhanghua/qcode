@@ -80,8 +80,10 @@ base64 = "0.22"
 # ADR-0101 §7: one declaration, so snapshots and attachments cannot drift onto
 # two majors of the same hash.
 sha2 = "0.10"
+# PKCE S256 的安全随机 verifier（太极统一认证，PROVIDER-PACKAGES-TJ-AUTH §4）。
+getrandom = "0.2"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "form"] }
 # Same major as rmcp's `http`, so `HeaderName`/`HeaderValue` unify across the
 # MCP HTTP transport boundary.
 http = "1"

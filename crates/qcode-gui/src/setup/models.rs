@@ -132,11 +132,8 @@ impl SetupView {
         }
         for row in filtered {
             let route = row.route.clone();
-            let display = if row.display_name == row.route {
-                row.route.clone()
-            } else {
-                format!("{} ({})", row.display_name, row.route)
-            };
+            // 显示名：套餐条目为「厂商名 (套餐名)」，其余为「产品名 (route)」。
+            let display = row.label();
             // 默认 provider 前显示实心绿点；其余渲染同尺寸的透明占位
             // （无背景），保证卡片文字左侧对齐。
             let is_default = self.config.default_model.provider.as_deref() == Some(route.as_str());
@@ -320,6 +317,12 @@ impl SetupView {
         );
         let directory = qcode_kernel::provider_registry::ProviderRegistry::new(None)
             .list_configurable_providers(&self.config);
+        // 凭证状态按 route 建索引：套餐分支（`picker_vendor`）也要查，而
+        // `directory` 在下面会被 partition 移走。
+        let by_route: std::collections::BTreeMap<String, _> = directory
+            .iter()
+            .map(|row| (row.route.clone(), row.credential_state))
+            .collect();
         // 已配置（凭证可用）的排在前面，免得用户总得滚动才能看到；组内保持
         // 目录顺序（稳定分区，不是排序——排序会把用户自定义的手写 route 打乱）。
         let (mut usable, mut missing) = directory.into_iter().partition::<Vec<_>, _>(|row| {
@@ -352,18 +355,20 @@ impl SetupView {
                         .child(qcode_i18n::tr("gui.setup.card.custom_provider")),
                 ),
         );
+        // 包型厂商在列表里以厂商行出现，套餐在配置详情页里选；套餐行不在此
+        // 平铺，保证列表干净（无括号、无套餐选择）。
         for row in &usable {
             // 本地 Ollama 不在「添加模型」选择框里提供：模型需自行配置，
             // 没有「一键添加」的预设。
             if row.route == "ollama" {
                 continue;
             }
+            if row.package_label.is_some() {
+                continue;
+            }
             let route = row.route.clone();
-            let display = if row.display_name == row.route {
-                row.route.clone()
-            } else {
-                format!("{} ({})", row.display_name, row.route)
-            };
+            // 选择框只显示产品名，不带 (route) 括号（route 在副文本里）。
+            let display = row.display_name.clone();
             let dot = match row.credential_state {
                 qcode_kernel::provider_registry::CredentialState::Configured => {
                     Some(div().size(px(8.0)).rounded_full().bg(theme.success))
@@ -411,6 +416,62 @@ impl SetupView {
                                     row.protocol.label(),
                                     credential_text(row.credential_state)
                                 )),
+                        ),
+                )
+                .child(div().flex_grow(1.0));
+            rows = rows.child(entry);
+        }
+        // 包型厂商行：点击进入配置详情页，套餐在详情页里选择。
+        for group in qcode_kernel::config::package_groups() {
+            let Some(first) = group.packages.first() else {
+                continue;
+            };
+            let route = first.route.to_string();
+            let vendor_label = group.display_name;
+            let state = by_route.get(&route).copied();
+            let dot = match state {
+                Some(qcode_kernel::provider_registry::CredentialState::Configured) => {
+                    Some(div().size(px(8.0)).rounded_full().bg(theme.success))
+                }
+                Some(qcode_kernel::provider_registry::CredentialState::Missing) => Some(
+                    div()
+                        .size(px(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(muted_color),
+                ),
+                _ => None,
+            };
+            let route_pick = route.clone();
+            let mut entry = div()
+                .id(format!("picker-vendor-{route}"))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .hover(move |this| this.bg(hovered))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pick_provider(&route_pick, window, cx);
+                }));
+            if let Some(dot) = dot {
+                entry = entry.child(dot);
+            }
+            entry = entry
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().child(vendor_label))
+                        .child(
+                            div()
+                                .text_size(sp(CAPTION_SIZE))
+                                .text_color(muted_color)
+                                .child(qcode_i18n::tr("gui.setup.picker.packages")),
                         ),
                 )
                 .child(div().flex_grow(1.0));
@@ -564,6 +625,203 @@ impl SetupView {
             .into_any_element()
     }
 
+    /// 太极统一认证的登录状态区（需求 4c：无 API 密钥/钥匙串，改成登录态）：
+    /// 读 `tj_auth.json` 显示 未登录 / 已登录（用户名），提供「登录」按钮。
+    fn render_tj_login(&self, route: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted_color, success_color, danger_color) =
+            (theme.muted_foreground, theme.success, theme.danger);
+        let store_path = self.tj_store_path();
+        let signed_in = qcode_providers::TjTokenStore::new(store_path)
+            .load()
+            .ok()
+            .filter(|tokens| !tokens.access_token.is_empty())
+            .map(|tokens| {
+                tokens
+                    .username
+                    .unwrap_or_else(|| "太极内网账号".to_string())
+            });
+        let (status, color) = match &signed_in {
+            Some(username) => (format!("已登录（{username}）"), success_color),
+            None => ("未登录".to_string(), muted_color),
+        };
+        let route_for_login = route.to_string();
+        let mut section = div().flex().flex_col().gap_1();
+        section = section.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(div().size(px(8.0)).rounded_full().bg(color))
+                .child(div().text_size(sp(CAPTION_SIZE)).child(status)),
+        );
+        section = section.child(
+            Button::new(format!("tj-login-{route}"))
+                .label(qcode_i18n::tr("gui.setup.editor.tj_login"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    // 按下登录：打开浏览器后需要一个「粘贴 code」输入框。
+                    this.tj_code_input = Some(input(
+                        window,
+                        cx,
+                        String::new(),
+                        &qcode_i18n::tr("gui.setup.editor.tj_code_aria"),
+                    ));
+                    this.login_tj(&route_for_login, cx);
+                })),
+        );
+        // 登录流程进行中：显示「粘贴 code」输入框 + 提交按钮（浏览器回调
+        // `qcode://…?code=…` 无法自动接收，用户把 code 复制过来）。
+        if let Some(code_input) = &self.tj_code_input {
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(div().flex_grow(1.0).child(Input::new(code_input)))
+                    .child(
+                        Button::new("tj-submit-code")
+                            .label(qcode_i18n::tr("gui.setup.editor.tj_submit"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let code = this
+                                    .tj_code_input
+                                    .as_ref()
+                                    .map(|input| input.read(cx).value().trim().to_string())
+                                    .unwrap_or_default();
+                                qcode_kernel::providers::tj::submit_auth_code(code);
+                                if let Some(input) = &this.tj_code_input {
+                                    input.update(cx, |state, cx| {
+                                        state.set_value("", window, cx);
+                                        cx.notify();
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        section = section.child(
+            div()
+                .text_size(sp(CAPTION_SIZE))
+                .text_color(danger_color)
+                .child(qcode_i18n::tr("gui.setup.editor.tj_hint")),
+        );
+        section.into_any_element()
+    }
+
+    /// 触发太极统一认证的授权码流程（设置页「登录」按钮）。reqwest 需要 tokio
+    /// reactor（GPUI executor 不是），所以登录在 worker 线程跑，结果经 channel
+    /// 回报、前台轮询更新提示。
+    fn login_tj(&mut self, _route: &str, cx: &mut Context<Self>) {
+        let Some(prompt) = qcode_kernel::providers::tj::global_auth_prompt() else {
+            self.provider_error = Some(qcode_i18n::tr("gui.setup.editor.tj_no_prompt").to_string());
+            cx.notify();
+            return;
+        };
+        let store_path = self.tj_store_path();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = qcode_kernel::providers::tj::login(&store_path, prompt);
+            let _ = tx.send(result);
+        });
+        self.tj_login_rx = Some(rx);
+        self.provider_error = None;
+        self.provider_notice = Some(qcode_i18n::tr("gui.setup.editor.tj_pending").to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |view, cx| {
+                    let received = view.tj_login_rx.as_ref().map(|rx| rx.try_recv());
+                    match received {
+                        Some(Ok(Ok(()))) => {
+                            view.tj_login_rx = None;
+                            view.provider_notice =
+                                Some(qcode_i18n::tr("gui.setup.editor.tj_signed_in").to_string());
+                            view.provider_error = None;
+                            cx.notify();
+                            true
+                        }
+                        Some(Ok(Err(error))) => {
+                            view.tj_login_rx = None;
+                            view.provider_notice = None;
+                            view.provider_error = Some(error);
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            view.tj_login_rx = None;
+                            view.provider_error =
+                                Some(qcode_i18n::tr("gui.setup.editor.tj_interrupted").to_string());
+                            cx.notify();
+                            true
+                        }
+                        None => true,
+                    }
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// `tj_auth.json` 的位置：与 config.toml 同目录。
+    fn tj_store_path(&self) -> std::path::PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("tj_auth.json")
+    }
+
+    /// 切换详情页的套餐：把当前行变成目标套餐 route，并按套餐预设刷新
+    /// base_url / api_key_env / protocol（模型列表保留，由用户编辑/探测）。
+    fn switch_package(
+        &mut self,
+        target: &str,
+        row_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, pkg)) = qcode_kernel::config::package_entry(target) else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(table) = self.tables.get_mut("providers")
+            && let Some(row) = table.rows.iter_mut().find(|row| row.id == row_id)
+        {
+            if let Some(name) = row.cells.get_mut("name") {
+                name.update(cx, |state, cx| state.set_value(target, window, cx));
+                changed = true;
+            }
+            if let Some(base_url) = row.cells.get_mut("base_url") {
+                base_url.update(cx, |state, cx| state.set_value(pkg.base_url, window, cx));
+            }
+            if let Some(api_key_env) = row.cells.get_mut("api_key_env") {
+                api_key_env.update(cx, |state, cx| {
+                    state.set_value(pkg.api_key_env, window, cx);
+                });
+            }
+            row.selects
+                .insert("protocol", pkg.protocol.as_str().to_string());
+        }
+        // 编辑对象切到套餐 route：对话框标题、套餐高亮随之更新。
+        self.editing_provider = Some(target.to_string());
+        self.provider_error = None;
+        self.provider_notice = None;
+        if changed {
+            self.auto_save(cx, AutoSaveKind::Tables, false);
+        }
+        cx.notify();
+    }
+
     /// The provider edit modal (settings mode): API key first, the fixed
     /// config values and the model catalog collapsed behind an expand toggle.
     /// One provider at a time; the card list only carries one "编辑/添加"
@@ -596,13 +854,7 @@ impl SetupView {
             .list_configurable_providers(&self.config);
         let entry = directory.iter().find(|row| row.route == *route);
         let display = entry
-            .map(|row| {
-                if row.display_name == row.route {
-                    row.route.clone()
-                } else {
-                    format!("{} ({})", row.display_name, row.route)
-                }
-            })
+            .map(|row| row.label())
             .unwrap_or_else(|| route.clone());
         let configured = entry.map(|row| row.configured).unwrap_or(false);
         let usable = entry.map(|row| self.provider_usable(row)).unwrap_or(false);
@@ -616,9 +868,46 @@ impl SetupView {
             .unwrap_or(&[]);
 
         let mut body = div().flex().flex_col().gap_3();
+        // 套餐选择：有套餐的 Provider 在 API 密钥上面显示套餐下拉（无套餐的
+        // Provider 不展示）。切套餐即切换 route（一个套餐 = 一个 route）。
+        if let Some((group, _)) = qcode_kernel::config::package_entry(route.as_str()) {
+            let row_id = row.id;
+            let mut select = div().flex().flex_row().gap_1();
+            for candidate in group.packages {
+                let marker = if candidate.route == route {
+                    "●"
+                } else {
+                    "○"
+                };
+                let target = candidate.route.to_string();
+                let label = candidate.label.to_string();
+                select = select.child(
+                    Button::new(format!("table-providers-{row_id}-package-{target}"))
+                        .label(format!("{marker} {label}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.switch_package(&target, row_id, window, cx);
+                        })),
+                );
+            }
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .child(qcode_i18n::tr("gui.setup.editor.package")),
+                    )
+                    .child(select),
+            );
+        }
         // 第一条是 API 密钥：只有它需要在添加提供方时填写，其余默认都是
-        // 固定值，折叠在展开按钮后面。
-        if let Some(secret) = row.cells.get("__key") {
+        // 固定值，折叠在展开按钮后面。太极统一认证没有钥匙串逻辑（需求 4c），
+        // 这里换成登录状态区。
+        if qcode_kernel::providers::tj::is_tj_route(route) {
+            body = body.child(self.render_tj_login(route, cx));
+        } else if let Some(secret) = row.cells.get("__key") {
             body = body.child(
                 div()
                     .flex()
@@ -1476,13 +1765,7 @@ impl SetupView {
         let display = directory
             .iter()
             .find(|row| row.route == *route)
-            .map(|row| {
-                if row.display_name == row.route {
-                    row.route.clone()
-                } else {
-                    format!("{} ({})", row.display_name, row.route)
-                }
-            })
+            .map(|row| row.label())
             .unwrap_or_else(|| route.clone());
         let route = route.clone();
         div()
@@ -1655,6 +1938,7 @@ impl SetupView {
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
         self.editing_provider = None;
+        self.tj_code_input = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
         // 上一次的探测结果/报错；探测线程的轮询也会因对话框关闭而丢弃
         // 结果（见 `start_probe`）。

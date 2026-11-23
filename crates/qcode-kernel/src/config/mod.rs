@@ -19,6 +19,7 @@ use qcode_tools::web_search::{SearchBackend, SearchSettings};
 mod catalog;
 mod edit;
 mod load;
+mod packages;
 mod resolve;
 mod schedule;
 #[cfg(test)]
@@ -29,6 +30,7 @@ pub use edit::*;
 #[cfg(test)]
 pub(crate) use load::is_system_install;
 pub use load::*;
+pub use packages::*;
 pub use resolve::*;
 pub use schedule::*;
 

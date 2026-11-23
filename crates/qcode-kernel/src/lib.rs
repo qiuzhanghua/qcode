@@ -13,6 +13,7 @@ pub mod config_watch;
 /// 已经是「装配点」（`assemble`、`redact::install`），不是因为它和引擎有关。
 pub mod logging;
 pub mod provider_registry;
+pub mod providers;
 pub mod redact;
 /// Engine-backed `subagent` runner (ADR-0087). It lives here, not in the binary,
 /// because every frontend needs it: `qcode` could not lend a type to

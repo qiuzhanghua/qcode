@@ -8,10 +8,19 @@ pub struct Overrides {
     pub stream_usage: Option<bool>,
 }
 
+/// 一个 route 的认证方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// 普通 API key（env / key command / keyless）。
+    ApiKey,
+    /// 太极统一认证（public client + PKCE，token 生命周期由 TjProvider 管理）。
+    TjOAuth,
+}
+
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub name: String,
-    /// `env NAME`, `command NAME`, or `keyless`, for doctor output.
+    /// `env NAME`, `command NAME`, `keyless`, or `tj-auth`, for doctor output.
     pub api_key_source: String,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -21,6 +30,8 @@ pub struct Resolved {
     /// Wire protocol driving the adapter family; the config's `protocol`
     /// override wins, then the catalog route's, then OpenAI-compatible.
     pub protocol: Protocol,
+    /// How this route authenticates; the adapter family is chosen by this.
+    pub auth_mode: AuthMode,
     /// Provider-specific body fields, already merged with the builtin defaults.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// Whether the model accepts image input. The route decides (catalog) and
@@ -171,6 +182,7 @@ pub fn resolve(
             stream_usage: false,
             is_mock: true,
             protocol: Protocol::Mock,
+            auth_mode: AuthMode::ApiKey,
             extra_body: serde_json::Map::new(),
             images: false,
             headers: std::collections::BTreeMap::new(),
@@ -213,6 +225,11 @@ pub fn resolve(
         .or_else(|| env("QCODE_BASE_URL"))
         .or_else(|| entry.base_url.clone())
         .or_else(|| catalog.map(|catalog| catalog.base_url.to_string()))
+        // 太极统一认证的默认模型请求地址（需求 4c）。
+        .or_else(|| {
+            crate::providers::tj::is_tj_route(&name)
+                .then(|| crate::providers::tj::TJ_BASE_URL.to_string())
+        })
         .ok_or_else(|| ConfigError::UnknownProvider(name.clone()))?;
 
     if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
@@ -222,6 +239,12 @@ pub fn resolve(
         });
     }
 
+    let auth_mode = if crate::providers::tj::is_tj_route(&name) {
+        AuthMode::TjOAuth
+    } else {
+        AuthMode::ApiKey
+    };
+
     let api_key_env = entry
         .api_key_env
         .clone()
@@ -229,7 +252,11 @@ pub fn resolve(
         .unwrap_or_default();
 
     let command = entry.api_key_command.as_deref();
-    let (api_key, api_key_source) = if api_key_env.is_empty() {
+    // 太极统一认证不走 env/key command：token 由 TjProvider 从 tj_auth.json
+    // 与授权码流程管理（PROVIDER-PACKAGES-TJ-AUTH §4）。
+    let (api_key, api_key_source) = if auth_mode == AuthMode::TjOAuth {
+        (None, "tj-auth".to_string())
+    } else if api_key_env.is_empty() {
         match command {
             Some(argv) => (Some(key_from_command(&name, argv)?), command_source(argv)),
             None => (None, "keyless".to_string()),
@@ -282,6 +309,7 @@ pub fn resolve(
         stream_usage: overrides.stream_usage.unwrap_or(entry.stream_usage),
         is_mock: false,
         protocol,
+        auth_mode,
         images,
         extra_body,
         headers: entry.headers.clone(),
