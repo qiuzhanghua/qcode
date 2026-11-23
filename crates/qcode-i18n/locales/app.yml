@@ -2235,6 +2235,24 @@ core:
     no_patch_text:
       en: "(this call recorded no patch text)"
       zh-CN: （这次调用没有记录补丁内容）
+    subagents_header:
+      en: "sub-agent groups (%{0}):"
+      zh-CN: "子代理分组（%{0} 个）："
+    subagent_folded:
+      en: "folded"
+      zh-CN: "已折叠"
+    subagent_shown:
+      en: "shown"
+      zh-CN: "展开"
+    subagent_line:
+      en: "\n  %{0}. %{1} · %{2} nested · %{3}"
+      zh-CN: "\n  %{0}. %{1} · %{2} 个嵌套 · %{3}"
+    skills_header:
+      en: "skills (%{0}):"
+      zh-CN: "技能（%{0} 个）："
+    skill_line:
+      en: "\n  %{0} [%{1}] files=%{2}\n    %{3}"
+      zh-CN: "\n  %{0} [%{1}] 文件=%{2}\n    %{3}"
   daemon:
     not_installed:
       head:
@@ -2364,6 +2382,43 @@ core:
       path_glob:
         en: "rule '%{0}' has an invalid `path_glob` %{1}: %{2}"
         zh-CN: "规则 '%{0}' 的 `path_glob` %{1} 无效：%{2}"
+    attachment:
+      io:
+        en: "i/o error at %{0}: %{1}"
+        zh-CN: "读写 %{0} 出错：%{1}"
+      too_large:
+        en: "attachment is larger than the %{0} byte limit"
+        zh-CN: "附件超过 %{0} 字节的上限"
+      missing:
+        en: "no attachment at %{0}"
+        zh-CN: "%{0} 上没有附件"
+      mime_mismatch:
+        en: "declared %{0} but the bytes are %{1}"
+        zh-CN: "声明是 %{0}，但字节是 %{1}"
+      undecodable:
+        en: "could not read the %{0} image: %{1}"
+        zh-CN: "读不了 %{0} 图片：%{1}"
+      decode:
+        en: "could not decode the image: %{0}"
+        zh-CN: "解不开这张图：%{0}"
+      encode:
+        en: "could not encode the image: %{0}"
+        zh-CN: "编不出这张图：%{0}"
+      still_too_large:
+        en: "the image is still larger than %{0} bytes after scaling it down"
+        zh-CN: "缩过之后这张图仍然大于 %{0} 字节"
+      id:
+        en: "attachment id must be 64 hex characters"
+        zh-CN: "附件 ID 必须是 64 个十六进制字符"
+      dimensions:
+        en: "could not read the image dimensions"
+        zh-CN: "读不出图片尺寸"
+      original_dimensions:
+        en: "could not read the original dimensions"
+        zh-CN: "读不出原图尺寸"
+      temp_collisions:
+        en: "too many temp file collisions"
+        zh-CN: "临时文件冲突太多"
     title:
       cancelled:
         en: "title generation cancelled"
@@ -3991,6 +4046,10 @@ kernel:
 # 键位与斜杠命令**不翻译**（`/continue`、`[1-9]`、`[Esc]`）：它们是要用户照着按的
 # 字面量，翻了就按不出来。翻的只是它们周围的说明。
 tui:
+  status:
+    window:
+      en: " · window %{0}"
+      zh-CN: " · 窗口 %{0}"
   notice:
     queued:
       en: "queued (%{0} pending): starts when this turn ends"
@@ -4101,3 +4160,28 @@ tui:
     image:
       en: "[image %{0} — %{1}×%{2}; the terminal shows placeholder text only]"
       zh-CN: "〔图片 %{0} — %{1}×%{2}，终端只显示占位文字〕"
+
+# `qcode-providers` 自己的文案：模型列表探测（设置页「获取模型」）。
+provider:
+  discover:
+    not_json:
+      en: "model listing at %{0} is not JSON: %{1}"
+      zh-CN: "%{0} 的模型列表不是 JSON：%{1}"
+    no_data:
+      en: "model listing at %{0} has no data array"
+      zh-CN: "%{0} 的模型列表里没有 data 数组"
+    request:
+      en: "cannot build discovery request for %{0}: %{1}"
+      zh-CN: "为 %{0} 建不了 discovery 请求：%{1}"
+    http_client:
+      en: "cannot build HTTP client: %{0}"
+      zh-CN: "建不了 HTTP 客户端：%{0}"
+    get_failed:
+      en: "GET %{0} failed: %{1}"
+      zh-CN: "GET %{0} 失败：%{1}"
+    get_status:
+      en: "GET %{0} returned %{1}: %{2}"
+      zh-CN: "GET %{0} 返回 %{1}：%{2}"
+    read_body:
+      en: "cannot read the model listing body: %{0}"
+      zh-CN: "读不了模型列表的响应体：%{0}"

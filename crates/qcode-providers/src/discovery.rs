@@ -30,10 +30,17 @@ pub fn models_url(base_url: &str) -> String {
 /// `context_window`/`context_length` and `max_output_tokens`/`max_tokens` are
 /// both accepted: endpoints disagree on the spelling, and neither is required.
 pub fn parse_model_candidates(body: &str, url: &str) -> Result<Vec<ModelCandidate>, String> {
-    let value: serde_json::Value = serde_json::from_str(body)
-        .map_err(|error| format!("model listing at {url} is not JSON: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|error| {
+        qcode_i18n::trp(
+            "provider.discover.not_json",
+            &[url.to_string(), error.to_string()],
+        )
+    })?;
     let Some(data) = value.get("data").and_then(serde_json::Value::as_array) else {
-        return Err(format!("model listing at {url} has no data array"));
+        return Err(qcode_i18n::trp(
+            "provider.discover.no_data",
+            &[url.to_string()],
+        ));
     };
     let mut candidates: Vec<ModelCandidate> = data
         .iter()
@@ -101,9 +108,12 @@ fn build_request(
         }
     }
     builder = builder.headers(mandatory);
-    builder
-        .build()
-        .map_err(|error| format!("cannot build discovery request for {url}: {error}"))
+    builder.build().map_err(|error| {
+        qcode_i18n::trp(
+            "provider.discover.request",
+            &[url.to_string(), error.to_string()],
+        )
+    })
 }
 
 /// Probe an OpenAI-compatible endpoint for its model list.
@@ -139,22 +149,27 @@ pub async fn discover_model_candidates(
         // in-flight guard).
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|error| format!("cannot build HTTP client: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("provider.discover.http_client", &[error.to_string()]))?;
     let url = models_url(base_url);
     let request = build_request(&client, base_url, api_key, headers)?;
-    let response = client
-        .execute(request)
-        .await
-        .map_err(|error| format!("GET {url} failed: {error}"))?;
+    let response = client.execute(request).await.map_err(|error| {
+        qcode_i18n::trp(
+            "provider.discover.get_failed",
+            &[url.clone(), error.to_string()],
+        )
+    })?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("GET {url} returned {status}: {text}"));
+        return Err(qcode_i18n::trp(
+            "provider.discover.get_status",
+            &[url, status.to_string(), text],
+        ));
     }
     let body = response
         .text()
         .await
-        .map_err(|error| format!("cannot read the model listing body: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("provider.discover.read_body", &[error.to_string()]))?;
     parse_model_candidates(&body, &url)
 }
 

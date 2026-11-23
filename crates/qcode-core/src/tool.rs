@@ -315,19 +315,23 @@ impl ToolOutput {
 pub enum ToolError {
     #[error("{0}")]
     Invalid(String),
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     #[error("path escapes the authorized roots: {0}")]
-    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
     PathEscape(String),
-    #[error("task has no roots; file tools are unavailable")]
     // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    #[error("task has no roots; file tools are unavailable")]
     NoRoots,
-    #[error("root `{0}` is read-only")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    #[error("root `{0}` is read-only")]
     ReadOnly(String),
-    #[error("network error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    #[error("network error: {0}")]
     Network(String),
-    #[error("sandbox error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    #[error("sandbox error: {0}")]
     Sandbox(String),
-    #[error("io error: {0}")] // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    // i18n:keep 工具诊断，受众是模型（ADR-0105 §5）
+    #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
 

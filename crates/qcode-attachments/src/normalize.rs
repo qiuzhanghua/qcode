@@ -35,11 +35,11 @@ impl Default for NormalizationPolicy {
 
 #[derive(Debug, thiserror::Error)]
 pub enum NormalizeError {
-    #[error("could not decode the image: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.decode", &[.0.as_str()]))]
     Decode(String),
-    #[error("could not encode the image: {0}")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.encode", &[.0.as_str()]))]
     Encode(String),
-    #[error("the image is still larger than {limit} bytes after scaling it down")]
+    #[error("{}", qcode_i18n::trp("core.err.attachment.still_too_large", &[.limit.to_string()]))]
     TooLarge { limit: u64 },
 }
 

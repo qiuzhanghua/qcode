@@ -985,7 +985,14 @@ fn ui_text_in(relative: &str, production: &str) -> Vec<(usize, String)> {
         // 为什么用注释而不是「按内容猜」：判据仍是**位置**——作者标注的位置。
         // 内容猜（「像不像标识符」）会把 `prompt is empty` 也放过。要求理由写在
         // 同一行，是为了让每次豁免都在 diff 里露出来、能被审。
-        if tail.contains("// i18n:keep") {
+        // 豁免可以写在**上一行**：`#[error(...)]` 这种属性宏一旦超过行宽，
+        // rustfmt 会把行尾注释挪到下一行，行级标记就失效了（`ToolError` 的两个
+        // 变体撞上过）。只认「以 `// i18n:keep` 开头的整行注释」，不是随便一句
+        // 上一行的注释。
+        let kept_above = index
+            .checked_sub(1)
+            .is_some_and(|previous| lines[previous].trim_start().starts_with("// i18n:keep"));
+        if tail.contains("// i18n:keep") || kept_above {
             continue;
         }
         // ADR-0105 §5 划的那条线：工具结果里「发生了什么」跟随界面语言，但

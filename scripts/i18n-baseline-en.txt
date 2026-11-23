@@ -5,18 +5,6 @@
 # 判定按**位置**（`.label(` / `.aria_label(` / `group_heading(` /
 # `label:` / `help:` / `title:`，forms.rs 另加 `=> `），不按内容——
 # 「像不像文案」没有可靠判据，见 `ui_text_positions` 的注释。
-qcode-attachments/id.rs	attachment id must be 64 hex characters
-qcode-attachments/normalize.rs	could not decode the image: {0}
-qcode-attachments/normalize.rs	could not encode the image: {0}
-qcode-attachments/normalize.rs	the image is still larger than {limit} bytes after scaling it down
-qcode-attachments/store.rs	attachment is larger than the {limit} byte limit
-qcode-attachments/store.rs	could not read the image dimensions
-qcode-attachments/store.rs	could not read the original dimensions
-qcode-attachments/store.rs	could not read the {mime:?} image: {reason}
-qcode-attachments/store.rs	declared {declared:?} but the bytes are {found:?}
-qcode-attachments/store.rs	i/o error at {path}: {source}
-qcode-attachments/store.rs	no attachment at {path}
-qcode-attachments/store.rs	too many temp file collisions
 qcode-gui/backend.rs	not configured yet: open Settings first
 qcode-gui/backend.rs	rebuild is asynchronous; use rebuild_hook
 qcode-gui/backend.rs	this backend cannot reload
@@ -116,19 +104,6 @@ qcode-mcp/lib.rs	server '{server}' needs the bearer token in ${var}, but it is n
 qcode-mcp/lib.rs	server '{server}' tools/list failed: {source}
 qcode-mcp/lib.rs	server '{server}' tools/list timed out after {secs}s
 qcode-mcp/lib.rs	server '{server}' url is unusable: {detail}
-qcode-providers/anthropic.rs	/error/type
-qcode-providers/anthropic.rs	a tool message must carry tool_call_id
-qcode-providers/anthropic.rs	invalid chunk: {err}
-qcode-providers/anthropic.rs	tool arguments are not valid JSON: {err}
-qcode-providers/discovery.rs	GET {url} failed: {error}
-qcode-providers/discovery.rs	GET {url} returned {status}: {text}
-qcode-providers/discovery.rs	cannot build HTTP client: {error}
-qcode-providers/discovery.rs	cannot build discovery request for {url}: {error}
-qcode-providers/discovery.rs	cannot read the model listing body: {error}
-qcode-providers/discovery.rs	model listing at {url} has no data array
-qcode-providers/discovery.rs	model listing at {url} is not JSON: {error}
-qcode-providers/openai_compat.rs	invalid chunk: {err}
-qcode-providers/openai_compat.rs	tool arguments are not valid JSON: {err}
 qcode-tools/ask.rs	bad arguments: {error}
 qcode-tools/ask.rs	no interactive frontend is wired in; nobody can answer
 qcode-tools/sandbox/linux.rs	Landlock is unavailable: {}
@@ -166,11 +141,6 @@ qcode-tools/skills.rs	{path}: skill name '{name}' does not match the directory n
 qcode-tools/skills.rs	{path}: {SKILL_FILE} is {bytes} bytes; the limit is {max} bytes
 qcode-tools/skills.rs	{path}: {SKILL_FILE} must be a regular file
 qcode-tools/skills.rs	{path}: {SKILL_FILE} must start with a `---` frontmatter block
-qcode-tui/ui.rs	 · window {}
-qcode-ui-state/actions.rs	\n  {} [{}] files={}\n    {}
-qcode-ui-state/actions.rs	\n  {}. {} · {} nested · {state}
-qcode-ui-state/actions.rs	\nFollow the skill instructions above now.
-qcode-ui-state/actions.rs	files: {}
 qcode/commands/logs.rs	--grep {source:?} is not a valid pattern: {error}
 qcode/commands/logs.rs	--since {value:?} is neither a duration (30m, 2h, 7d) nor an RFC 3339 timestamp
 qcode/commands/logs.rs	cannot read {}: {error}

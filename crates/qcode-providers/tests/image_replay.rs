@@ -232,7 +232,7 @@ async fn a_mislabelled_attachment_is_refused_before_anything_is_written() {
 
     let message = error.to_string();
     assert!(
-        message.contains("Png") && message.contains("Gif"),
+        message.contains("image/png") && message.contains("image/gif"),
         "the error should name both the declared and the sniffed type: {message}"
     );
     assert_eq!(objects(store.root()), 0, "nothing was written");

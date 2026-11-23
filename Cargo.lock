@@ -5417,6 +5417,7 @@ name = "qcode-attachments"
 version = "0.17.0"
 dependencies = [
  "image",
+ "qcode-i18n",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -5603,6 +5604,7 @@ dependencies = [
  "futures-util",
  "qcode-attachments",
  "qcode-core",
+ "qcode-i18n",
  "qcode-net",
  "qcode-tools",
  "reqwest",

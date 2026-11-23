@@ -202,7 +202,7 @@ impl App {
 
         let mut text = format!("[skill:{}]\n{}\n", skill.name, skill.body.trim());
         if argument.is_empty() {
-            text.push_str("\nFollow the skill instructions above now.");
+            text.push_str("\nFollow the skill instructions above now."); // i18n:keep 注入会话、给模型读的指令
         } else {
             text.push('\n');
             text.push_str(argument);
@@ -277,18 +277,22 @@ impl App {
 
         if argument.is_empty() {
             let groups = self.child_groups.clone();
-            let mut text = format!("sub-agent groups ({}):", groups.len());
+            let mut text =
+                qcode_i18n::trp("core.notice.subagents_header", &[groups.len().to_string()]);
             for (index, group) in groups.iter().enumerate() {
                 let state = if self.child_group_folded(group) {
-                    "folded"
+                    qcode_i18n::tr("core.notice.subagent_folded")
                 } else {
-                    "shown"
+                    qcode_i18n::tr("core.notice.subagent_shown")
                 };
-                text.push_str(&format!(
-                    "\n  {}. {} · {} nested · {state}",
-                    index + 1,
-                    short_id(group),
-                    self.child_block_count(group),
+                text.push_str(&qcode_i18n::trp(
+                    "core.notice.subagent_line",
+                    &[
+                        (index + 1).to_string(),
+                        short_id(group),
+                        self.child_block_count(group).to_string(),
+                        state.to_string(),
+                    ],
                 ));
             }
             text.push_str(&format!(
@@ -327,14 +331,19 @@ impl App {
             return;
         }
 
-        let mut text = format!("skills ({}):", self.skills.len());
+        let mut text = qcode_i18n::trp(
+            "core.notice.skills_header",
+            &[self.skills.len().to_string()],
+        );
         for skill in &self.skills {
-            text.push_str(&format!(
-                "\n  {} [{}] files={}\n    {}",
-                skill.name,
-                skill.source,
-                skill.files.len(),
-                skill.description.replace(['\n', '\r'], " ")
+            text.push_str(&qcode_i18n::trp(
+                "core.notice.skill_line",
+                &[
+                    skill.name.clone(),
+                    skill.source.clone(),
+                    skill.files.len().to_string(),
+                    skill.description.replace(['\n', '\r'], " "),
+                ],
             ));
         }
         text.push_str(&format!(
@@ -355,7 +364,7 @@ impl App {
             skill.name, skill.source, skill.dir
         );
         if !skill.files.is_empty() {
-            text.push_str(&format!("files: {}", skill.files.join(", ")));
+            text.push_str(&format!("files: {}", skill.files.join(", "))); // i18n:keep 注入会话给模型读的技能抬头
             if skill.files_truncated {
                 text.push_str(" …");
             }

@@ -665,7 +665,12 @@ fn slash_skills_lists_and_shows_skill_content() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let screen = draw(&app, 80, 30);
-    assert!(screen.contains("skills (1)"), "{screen}");
+    // 列表标题跟随界面语言：宿主是 zh-CN 时出「技能（1 个）：」，钉英文必红。
+    // 判据写成两种语言都认，而不是把清单本身放掉。
+    assert!(
+        screen.contains("skills (1)") || screen.contains("技能（1 个）"),
+        "{screen}"
+    );
     assert!(screen.contains("demo"), "{screen}");
     assert!(screen.contains("demo skill"), "{screen}");
 

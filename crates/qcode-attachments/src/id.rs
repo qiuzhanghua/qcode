@@ -81,7 +81,7 @@ impl FromStr for AttachmentId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("attachment id must be 64 hex characters")]
+#[error("{}", qcode_i18n::tr("core.err.attachment.id"))]
 pub struct InvalidAttachmentId;
 
 impl Serialize for AttachmentId {
@@ -94,7 +94,7 @@ impl<'de> Deserialize<'de> for AttachmentId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         Self::from_hex(&text)
-            .ok_or_else(|| D::Error::custom("attachment id must be 64 hex characters"))
+            .ok_or_else(|| D::Error::custom(qcode_i18n::tr("core.err.attachment.id")))
     }
 }
 
