@@ -48,15 +48,13 @@ pub struct ConfigurableProvider {
 impl ConfigurableProvider {
     /// The display name for configuration surfaces.
     ///
-    /// 套餐条目显示「厂商名 (套餐名)」（如 `火山引擎 (Coding Plan)`）；
-    /// 其余条目保持既有「产品名 (route)」样式；手写 route 原样返回。
+    /// 套餐条目显示「厂商名 (套餐名)」（如 `火山引擎 (Coding Plan)`）；其余
+    /// 条目直接显示厂商名（如 `DeepSeek`，不带 route）；手写 route 原样返回。
     pub fn label(&self) -> String {
         if let Some(package) = self.package_label {
             format!("{} ({})", self.display_name, package)
-        } else if self.display_name != self.route {
-            format!("{} ({})", self.display_name, self.route)
         } else {
-            self.route.clone()
+            self.display_name.to_string()
         }
     }
 }
@@ -579,10 +577,10 @@ mod tests {
         assert_eq!(xiaomi.len(), 1);
         assert_eq!(xiaomi[0].package_label, Some("按量计费"));
         assert_eq!(xiaomi[0].label(), "小米 (按量计费)");
-        // catalog 普通条目不带套餐标识，label 保持「产品名 (route)」样式。
+        // catalog 普通条目不带套餐标识，label 直接显示厂商名（不带 route）。
         let deepseek = rows.iter().find(|row| row.route == "deepseek").unwrap();
         assert_eq!(deepseek.package_label, None);
-        assert_eq!(deepseek.label(), "DeepSeek (deepseek)");
+        assert_eq!(deepseek.label(), "DeepSeek");
     }
 
     #[test]

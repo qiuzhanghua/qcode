@@ -256,8 +256,7 @@ pub fn package_routes() -> impl Iterator<Item = &'static str> {
 }
 
 /// 一个 route 在界面上的显示名：套餐条目「厂商名 (套餐名)」，catalog 条目
-/// 「产品名 (route)」（产品名与 route 相同则只显示产品名），其余原样返回
-/// route 本身。
+/// 只显示厂商名（如 `DeepSeek`，不带 route），其余原样返回 route 本身。
 ///
 /// 主界面与设置页共用这一个口径——否则同一 route 在展开列表里显示中文
 /// 「火山引擎 (Coding Plan)」，选中后的按钮/状态上却显示英文 `volcano-coding`。
@@ -267,9 +266,6 @@ pub fn provider_display_label(route: &str) -> String {
         return format!("{} ({})", group.display_name, pkg.label);
     }
     if let Some(entry) = super::catalog_entry(route) {
-        if entry.display_name != route {
-            return format!("{} ({})", entry.display_name, route);
-        }
         return entry.display_name.to_string();
     }
     route.to_string()
