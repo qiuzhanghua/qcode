@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.18.1 — 2026-11-25
+
+终端输入的一处竞态：往跑满的 pty 里灌大段文字时，写入线程可能因为一次「接受 0 字节」
+或一次被信号打断的 `write` 而退出。线程一死，队列里剩下的按键就跟着丢，而
+`Session::write` 早已返回过 `true`——界面上表现为「粘贴之后键盘看起来还在，但打什么都
+没反应」。**没有破坏性变更**，也没有新配置项：`CONFIG_VERSION` 仍是 2，协议、文案、
+产物名一字未动。
+
+### 为什么是 patch 而不是 minor
+
+0.18.0 之后只有一个提交，而且是一条 `fix`：修的是「大粘贴之后输入静默失效」这条既有
+行为，没有新增能力、没有新参数。按 0.17.x 的口径，patch。
+
+### 修的是什么
+
+`write_all_waiting` 原来只把 `WouldBlock` 当「缓冲区满了，等一等」，其余一律当「pty
+没了」并结束写入线程。现在：
+
+- `Ok(0)`：接受 0 字节不等于对端走了（满缓冲在不同平台不一定回 `WouldBlock`），改成按
+  满缓冲等待重试；会话关闭另有 `stopped` 标志兜底。
+- `Interrupted`：被信号打断的 `write` 是「这次没写成」，不是「pty 坏了」，重试。
+- 真正表示对端消失的错误（例如子进程关掉 pty 后的 `EIO`）仍然结束线程——那是会话结束。
+
+### 为什么 CI 红、本地却是绿的
+
+`input_backpressure` 的三条测试要真 PTY。开发机的沙箱里 `Session::spawn` 拿不到
+`/dev/ptmx`，测试按设计**跳过并说出理由**（`require_pty`），`cargo test` 把它们记成
+ok——所以「本地全绿」对这三条是空过的。macOS runner 上它们真的跑了，于是
+`typing_still_works_after_the_input_buffer_fills_up` 在 `wait_for_file` 上超时。
+
+### 测试本身的调整
+
+`wait_for_file` 的等待从 10s 放到 30s。它测的性质是「1 MiB 粘贴之后，再打的 marker
+最终会到」，不是「在共享 runner 上 10 秒内到」——1 MiB 要一小口一小口地过 pty 缓冲，
+负载高时十秒太紧。
+
+### 验证
+
+`e9aa944` 的 CI 六个 job 全绿（含 `test (macos-latest)`）。本机：
+`fmt --all --check`、`clippy --workspace --all-targets -D warnings`、workspace 全量
+测试、双语 golden 88 项、`cargo deny`、Windows 交叉 type-check 全绿；依赖宿主沙箱与
+钥匙串的四条用例在本机跳过（理由同 §「为什么 CI 红」），由 CI 覆盖。
+
 ## 0.18.0 — 2026-11-24
 
 后台任务版：`run_shell` 的超时不再杀进程。到点（默认 **60 秒**）把命令交给后台继续跑，
