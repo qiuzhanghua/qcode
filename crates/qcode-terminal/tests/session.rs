@@ -18,6 +18,38 @@ use qcode_terminal::{Palette, Session, SessionConfig};
 /// file is a poll rather than a sleep, so this only bounds a genuine hang.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 这条文件里的 17 条测试全都起真子进程、真占 PTY，所以**在有 PTY 的机器上**
+/// 才有意义。拿不到 PTY 的地方不止一种：qcode 自己的 landlock 沙箱在
+/// `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`（`make check` 在 `run_shell`
+/// 里跑就是这种情形），精简容器里也可能没有 devpts。此时 `Session::spawn` 返回
+/// `PermissionDenied`——那是**这台机器测不了**，不是会话坏了。报成失败只会让人
+/// 把这一整片门禁当噪音，所以统一跳过、并且**说出来**。
+///
+/// 探测用一条 `exit 0` 的短路命令：只验 PTY 这条管道通不通，与会话行为无关。
+fn pty_available() -> bool {
+    Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "exit 0".to_string()],
+    ))
+    .is_ok()
+}
+
+/// 每个测试的开头一行：`require_pty!();`。名字从线程名取，所以跳过信息会点出
+/// 是哪一条没验。
+macro_rules! require_pty {
+    () => {
+        if !pty_available() {
+            eprintln!(
+                "skipping {}: cannot allocate a PTY here (no /dev/ptmx access — inside a \
+                 landlock sandbox this means [sandbox] allow_pty = false). This behaviour \
+                 is NOT verified by this run.",
+                std::thread::current().name().unwrap_or("this test")
+            );
+            return;
+        }
+    };
+}
+
 fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     while start.elapsed() < TIMEOUT {
@@ -163,6 +195,7 @@ fn probe_help() -> String {
 
 #[test]
 fn a_real_child_runs_and_its_output_lands_on_the_grid() {
+    require_pty!();
     let session = run("/bin/sh", &["-c", "printf 'alpha\\nbravo\\n'"]);
 
     let saw_output = wait_until(|| {
@@ -191,6 +224,7 @@ fn a_real_child_runs_and_its_output_lands_on_the_grid() {
 
 #[test]
 fn typed_input_reaches_the_shell() {
+    require_pty!();
     // A shell reading from the PTY needs a working write path, not just a read
     // path: the keystrokes go through the event loop's `Msg::Input`.
     let session = run("/bin/sh", &[]);
@@ -223,6 +257,7 @@ fn typed_input_reaches_the_shell() {
 
 #[test]
 fn resize_reaches_the_child_and_the_grid() {
+    require_pty!();
     let mut session = run("/bin/sh", &[]);
     assert!(session.resize(100, 30), "resize reached the loop");
 
@@ -245,6 +280,7 @@ fn resize_reaches_the_child_and_the_grid() {
 
 #[test]
 fn a_background_job_dies_when_the_shell_exits_on_its_own() {
+    require_pty!();
     // `close()` deliberately skips the group kill when the child already exited —
     // signalling a reaped pid could hit an unrelated process. That is only safe
     // because the kernel does the cleanup: the child is a session leader, so when
@@ -267,6 +303,7 @@ fn a_background_job_dies_when_the_shell_exits_on_its_own() {
 
 #[test]
 fn closing_the_session_leaves_no_orphans() {
+    require_pty!();
     // `sh -c 'sleep N; true'` forces a real fork: the shell has to survive the
     // `sleep` to run `true`, so the marker process is a *grandchild* of ours.
     // `Pty::drop` only signals the direct child, so without the process-group
@@ -291,6 +328,7 @@ fn closing_the_session_leaves_no_orphans() {
 
 #[test]
 fn closing_escalates_past_a_child_that_ignores_hangup() {
+    require_pty!();
     // A shell that traps `HUP` would survive a polite signal. The escalation to
     // `SIGKILL` is what keeps a stuck tab from becoming a permanent process.
     let marker = marker(3);
@@ -314,6 +352,7 @@ fn closing_escalates_past_a_child_that_ignores_hangup() {
 
 #[test]
 fn a_killed_child_is_reported_as_exited_without_a_code() {
+    require_pty!();
     // "Killed by a signal" and "still running" both have no exit code, so the
     // two have to be distinguishable — otherwise a tab whose shell was killed
     // looks alive forever.
@@ -336,6 +375,7 @@ fn a_killed_child_is_reported_as_exited_without_a_code() {
 
 #[test]
 fn a_colour_reply_travels_the_write_path_to_the_child() {
+    require_pty!();
     // The reply has to travel the write path, not just be recorded: this spawns a
     // child that asks for the background colour and echoes whatever comes back.
     //
@@ -377,6 +417,7 @@ fn a_colour_reply_travels_the_write_path_to_the_child() {
 
 #[test]
 fn a_session_that_exits_on_its_own_still_closes_cleanly() {
+    require_pty!();
     // The common case: the user types `exit`, the child is gone before the tab is
     // closed. Closing must not hang waiting for a process that already exited.
     let session = run("/bin/sh", &["-c", "exit 3"]);
@@ -395,6 +436,7 @@ fn a_session_that_exits_on_its_own_still_closes_cleanly() {
 
 #[test]
 fn the_mode_a_program_sets_decides_how_the_next_key_is_encoded() {
+    require_pty!();
     // The join between the two halves (ADR-0062 §5): the program puts the terminal
     // in application-cursor mode, the window reads `mode()` from the live session
     // and hands it to the encoder. Nothing else connects them, so this is the test
@@ -423,6 +465,7 @@ fn the_mode_a_program_sets_decides_how_the_next_key_is_encoded() {
 
 #[test]
 fn a_flooding_child_keeps_signalling_and_can_still_be_closed() {
+    require_pty!();
     // `yes` never stops writing, so the pty is never empty. The first version of the
     // reading loop accumulated a whole batch and signalled once at the end — with a
     // flood that end never came, so the grid updated with nobody told to repaint (a
@@ -453,6 +496,7 @@ fn a_flooding_child_keeps_signalling_and_can_still_be_closed() {
 
 #[test]
 fn a_flooding_child_is_not_left_running_after_close() {
+    require_pty!();
     // The flood's process must be gone, not merely unsubscribed from: `yes` is exactly
     // the case where a leaked child burns a core forever without being noticed.
     // `yes` is the process itself, so its argv is `yes <marker>`; the helper matches
@@ -475,6 +519,7 @@ fn a_flooding_child_is_not_left_running_after_close() {
 
 #[test]
 fn a_wakeup_callback_does_not_block_the_grid() {
+    require_pty!();
     // The GUI installs an `on_wakeup` that only stores a flag, then reads the grid
     // from its render loop. If the callback ran under the terminal lock, or the
     // grid could not be read while a shell was producing output, the window would
@@ -508,6 +553,7 @@ fn a_wakeup_callback_does_not_block_the_grid() {
 
 #[test]
 fn a_shell_started_from_the_config_draws_a_prompt() {
+    require_pty!();
     // The window starts the user's shell from `[terminal] shell`; if that path
     // produced a session with an empty grid the view would look broken while the
     // child was perfectly alive.
@@ -540,6 +586,7 @@ fn a_shell_started_from_the_config_draws_a_prompt() {
 
 #[test]
 fn the_window_config_start_shape_gets_output() {
+    require_pty!();
     // Mirrors `crates/qcode-gui/src/terminal.rs`: an explicit shell, a cwd, and the
     // two env vars the window sets. If this produced an empty grid the view would be
     // blank while the child was running.
@@ -569,6 +616,7 @@ fn the_window_config_start_shape_gets_output() {
 
 #[test]
 fn the_child_sees_the_shell_it_is_running() {
+    require_pty!();
     // `SHELL` is what nested shells and `$SHELL`-aware scripts read. Inheriting the
     // launcher's value would tell the child about a shell nobody is running.
     let config = SessionConfig::command(
@@ -589,6 +637,7 @@ fn the_child_sees_the_shell_it_is_running() {
 
 #[test]
 fn a_wakeup_that_arrives_before_the_callback_is_replayed() {
+    require_pty!();
     // A caller spawns a session and only then wires up its repaint. A fast child prints
     // in that window — a shell drawing its prompt, `sh -c 'printf x'` — and a missed
     // notification means no repaint is scheduled for that output at all, so the tab

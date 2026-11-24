@@ -921,6 +921,42 @@ mod tests {
         }
     }
 
+    /// Can this machine allocate a pseudo-terminal at all?
+    ///
+    /// 下面两条 tab 记账测试真的起子进程、真的占 PTY，所以它们**在有 PTY 的机器
+    /// 上**才有意义。拿不到 PTY 的地方不止一种：qcode 自己的 landlock 沙箱在
+    /// `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`（`make check` 在
+    /// `run_shell` 里跑就是这种情形），精简容器里也可能没有 devpts。
+    ///
+    /// 探测刻意**不走** `Terminals::open`：那正是这些测试要验的东西，用被测代码
+    /// 当探测器，`open` 一旦整天返回 false 就会变成「跳过 = 绿」。这里探的是下面
+    /// 一层的 `Session::spawn`——PTY 这条管道本身通不通，与 tab 记账无关。
+    #[cfg(unix)]
+    fn pty_available() -> bool {
+        qcode_terminal::Session::spawn(qcode_terminal::SessionConfig {
+            shell: Some((
+                "/bin/sh".to_string(),
+                vec!["-c".to_string(), "exit 0".to_string()],
+            )),
+            ..Default::default()
+        })
+        .is_ok()
+    }
+
+    /// 拿不到 PTY 时的统一出口：**说出来**，不静默。
+    #[cfg(unix)]
+    fn require_pty(test: &str) -> bool {
+        if pty_available() {
+            return true;
+        }
+        eprintln!(
+            "skipping {test}: cannot allocate a PTY here (no /dev/ptmx access — inside a \
+             landlock sandbox this means [sandbox] allow_pty = false). The tab bookkeeping \
+             below is NOT verified by this run."
+        );
+        false
+    }
+
     /// Opening a terminal whose shell exits immediately, and letting
     /// `close_exited` see it, must leave no tabs behind.
     ///
@@ -929,6 +965,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_shell_that_exited_takes_its_tab_with_it() {
+        if !require_pty("a_shell_that_exited_takes_its_tab_with_it") {
+            return;
+        }
         let dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let config = exiting_shell("exited");
 
@@ -962,6 +1001,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn closing_an_exited_tab_keeps_the_active_tab_active() {
+        if !require_pty("closing_an_exited_tab_keeps_the_active_tab_active") {
+            return;
+        }
         let dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let mut terminals = Terminals::default();

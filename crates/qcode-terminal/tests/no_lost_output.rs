@@ -38,6 +38,31 @@ use qcode_terminal::{Session, SessionConfig};
 const PARALLEL: usize = 20;
 const ROUNDS: usize = 5;
 
+/// 这台机器能不能分配伪终端；不能就跳过，并**说出来**。
+///
+/// 两条测试都要真 PTY。拿不到 PTY 的环境不止一种：qcode 自己的 landlock 沙箱在
+/// `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`（`make check` 在 `run_shell`
+/// 里跑就是这种情形），精简容器里也可能没有 devpts。此时 `Session::spawn` 返回
+/// `PermissionDenied`——那不是「丢输出」，是这台机器测不了。
+///
+/// 探测用一条 `exit 0` 的短路命令：只验 PTY 这条管道通不通，与锁竞争无关。
+fn require_pty(test: &str) -> bool {
+    if Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "exit 0".to_string()],
+    ))
+    .is_ok()
+    {
+        return true;
+    }
+    eprintln!(
+        "skipping {test}: cannot allocate a PTY here (no /dev/ptmx access — inside a \
+         landlock sandbox this means [sandbox] allow_pty = false). The lost-output \
+         behaviour is NOT verified by this run."
+    );
+    false
+}
+
 fn spawn_writer() -> Option<Session> {
     let config = SessionConfig::command(
         "/bin/sh",
@@ -90,6 +115,9 @@ fn run_with_contention() -> Option<bool> {
 
 #[test]
 fn output_written_just_before_exit_survives_a_reader_taking_the_lock() {
+    if !require_pty("output_written_just_before_exit_survives_a_reader_taking_the_lock") {
+        return;
+    }
     let mut lost = Vec::new();
     let mut total = 0;
 
@@ -129,6 +157,9 @@ fn output_written_just_before_exit_survives_a_reader_taking_the_lock() {
 
 #[test]
 fn a_reader_that_never_pauses_still_gets_the_output() {
+    if !require_pty("a_reader_that_never_pauses_still_gets_the_output") {
+        return;
+    }
     // The same failure at its most extreme: a tight loop that does nothing but ask
     // for the grid. Before the fix this lost most sessions.
     // Four, not eight: the pty clone on macOS refuses allocations when the rest of

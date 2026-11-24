@@ -1020,6 +1020,28 @@ async fn a_flooding_terminal_does_not_starve_the_scheduler_beat() {
     // one missed beat is allowed), 30 s stall fails after 15 s.
     use qcode_terminal::{Session, SessionConfig};
 
+    // 这一条要一个**真** PTY 才立得起来。拿不到 PTY 的环境不止一种：qcode 自己的
+    // landlock 沙箱在 `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`
+    // （`make check` 在 `run_shell` 里跑就是这种情形），精简容器里也可能没有
+    // devpts。此时 `Session::spawn` 返回 `PermissionDenied`，而那不是「调度被饿死」
+    // ——不区分的话这条门禁会被环境染红，然后被无视。
+    //
+    // 探测刻意用一条 `exit 0` 的短路命令：它只验 PTY 这条管道通不通，与「洪水是否
+    // 饿死调度」无关，所以不会把被测行为探成跳过。跳过时**说出来**。
+    let probe = Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "exit 0".to_string()],
+    ));
+    if probe.is_err() {
+        eprintln!(
+            "skipping a_flooding_terminal_does_not_starve_the_scheduler_beat: cannot allocate \
+             a PTY here (no /dev/ptmx access — inside a landlock sandbox this means \
+             [sandbox] allow_pty = false). ADR-0062's claim is NOT verified by this run."
+        );
+        return;
+    }
+    drop(probe);
+
     let flood = Session::spawn(SessionConfig::command(
         "/bin/sh",
         ["-c".to_string(), "yes qcode-flood".to_string()],

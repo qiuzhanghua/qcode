@@ -160,6 +160,18 @@ done
 # 用 `script` 造伪 TTY：clap 只在 `is_terminal()` 为真时着色，而 `env -i` 起的是
 # 管道。macOS 与 Linux 的 `script` 参数不同（前者 `-q /dev/null cmd`，后者
 # `-qec cmd /dev/null`），所以两头都试。
+#
+# 三态，**不能合并两种「没有颜色」**（2026-11-24 撞到的形状）：在一台拿不到 PTY
+# 的机器上——qcode 自己的 landlock 沙箱不给 `/dev/ptmx`，除非 `[sandbox]
+# allow_pty = true`——`script` 直接报「创建伪终端失败」并一行输出都没有。旧版把
+# 这件事报成「en 路径丢了颜色」，于是 `make check` 在 agent 的 shell 里永远红，
+# 而真正的原因与颜色无关。区分办法是先单独探一次 PTY 能不能分配：
+#
+#   0 = 有 PTY 且 en 带转义码        → 通过
+#   1 = 有 PTY 但 en 没有转义码      → **失败**（那个不变量真的坏了）
+#   2 = 连 PTY 都拿不到              → 跳过，并**说出来**它没被验过
+#
+# 跳过不报失败，但绝不静默：这门禁的价值全在「别人以为验过了」这件事上。
 color_check() {
     local out
     # 判据是**输出里有没有转义码**，不是「第一条写法是否报错」。
@@ -169,24 +181,56 @@ color_check() {
     # 报 "invalid option" 并以非零退出——但那行错误本身让 `$out` 非空，于是
     # 回退永远走不到，Linux 上这条门禁一直在误报「en 路径丢了颜色」。CI 的
     # ubuntu 行同样跑这个脚本。
+    #
+    # 回退也顺带是 PTY 探测：macOS 的写法若能用，第二段就会有输出。
+    local probed=0
     if out=$(script -q /dev/null env -i PATH="$PATH" HOME="$work/home" \
         TERM=xterm-256color QCODE_LANG=en "$QC" --nope 2>/dev/null); then :; fi
     case "$out" in
     *$(printf '\033[')*) return 0 ;;
+    '') : ;;
+    *) probed=1 ;;
     esac
     if out=$(script -qec "env -i PATH='$PATH' HOME='$work/home' TERM=xterm-256color QCODE_LANG=en '$QC' --nope" /dev/null 2>/dev/null); then :; fi
     case "$out" in
     *$(printf '\033[')*) return 0 ;;
+    '') : ;;
+    *) probed=1 ;;
     esac
+
+    # 两种写法都**一个字都没吐**：不是「clap 没着色」，是根本没跑起来。
+    # 直接问一次 PTY 能不能分配，好把原因说出来。
+    if [ "$probed" = 0 ] && ! script -qec 'true' /dev/null >/dev/null 2>&1 &&
+        ! script -q /dev/null true >/dev/null 2>&1; then
+        return 2
+    fi
     return 1
 }
 
-if ! color_check; then
+color_check
+case $? in
+0) ;;
+1)
     echo "✗ en 路径丢了颜色。" >&2
     echo "  原因几乎总是：把 en 也送进了 \`render().to_string()\`——那是 colorless 的。" >&2
     echo "  en 必须走原生 \`Error::print()/exit()\`（见 crates/qcode/src/main.rs）。" >&2
     fail=1
-fi
+    ;;
+2)
+    if command -v script >/dev/null 2>&1; then
+        echo "！en 的颜色不变量这次**没有被验证**：这里分配不到伪终端。" >&2
+        echo "  （最常见的来源：在 qcode 的 landlock 沙箱里跑 make check，而" >&2
+        echo "  [sandbox] allow_pty 是 false——沙箱不给 /dev/ptmx。别处也可能。）" >&2
+        echo "  要真的验一遍：在沙箱外跑本脚本，或设 allow_pty = true 后再跑。" >&2
+    else
+        # 与上面分开说：`script` 缺了是「装一个工具」的事，不是 PTY 的问题。
+        # 不 fail——`ci-cross-check.sh` 对缺失的交叉工具链也是「大声说一句、
+        # 不拦门禁」。但绝不能不说：那正是「以为验过了」的形状。
+        echo "！en 的颜色不变量这次**没有被验证**：PATH 上没有 \`script\`。" >&2
+        echo "  Linux 上它在 util-linux 里（apt install util-linux / dnf install util-linux）。" >&2
+    fi
+    ;;
+esac
 checked=$((checked + 1))
 
 # 不变量：`--version` 与语言无关（ADR-0105 不变量 2）。
