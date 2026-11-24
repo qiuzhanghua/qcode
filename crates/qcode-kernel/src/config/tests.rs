@@ -2115,3 +2115,99 @@ fn settle_default_provider_leaves_a_valid_default_alone() {
         Some("deepseek-flash")
     );
 }
+
+/// 配置里没有任何默认、且只有唯一一个 Provider 时，自动把它钉为默认：
+/// 用户添加第一个 Provider 后无需手动「设为默认」，设置页与主窗口自动对齐。
+#[test]
+fn settle_default_provider_pins_the_only_provider_as_default() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "deepseek-v4-flash-ga-260731".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("volcano-coding"),
+        "唯一 provider 应自动成为默认"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-v4-flash-ga-260731"),
+        "默认模型取该 provider 可推导的第一个"
+    );
+    assert_eq!(
+        config.default_provider, None,
+        "遗留 default_provider 应被清掉"
+    );
+    let env = env_from(&[("VOLC_ARK_CODING_API_KEY", "sk-test")]);
+    let resolved = resolve(&config, &Overrides::default(), &env).expect("resolves");
+    assert_eq!(resolved.name, "volcano-coding");
+}
+
+/// 唯一 provider 推导不出模型（如尚未探测模型的 keyless 端点）时，不自动
+/// 钉默认：resolve 兜底到 mock 而非因缺模型写坏默认。
+#[test]
+fn settle_default_provider_leaves_a_model_less_only_provider_unset() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "ollama".into(),
+        ProviderConfig {
+            base_url: Some("http://localhost:11434/v1".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(config.default_model.provider, None, "无模型不自动钉默认");
+    assert_eq!(config.default_model.model, None);
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).expect("resolves");
+    assert_eq!(resolved.name, "mock");
+}
+
+/// 配置里有唯一一个「已配置模型」的 provider，同时残留若干没配置模型的
+/// provider 行（如 ollama / openai 空行）时，仍自动钉默认——主窗口与设置页
+/// 列表按「已配置模型」过滤，残留行不算数。
+#[test]
+fn settle_default_provider_ignores_model_less_stray_rows() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "ollama".into(),
+        ProviderConfig {
+            base_url: Some("http://localhost:11434/v1".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "openai".into(),
+        ProviderConfig {
+            api_key_env: Some("OPENAI_API_KEY".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "deepseek-v4-flash-ga-260731".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("volcano-coding"),
+        "唯一已配置模型的 provider 应自动成为默认，残留空行不算"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-v4-flash-ga-260731")
+    );
+}

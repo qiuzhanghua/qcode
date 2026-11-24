@@ -417,8 +417,9 @@ impl SetupView {
         }
         // 套餐去重把默认 provider 的 route 移走后，`[default-model]` / 遗留
         // `default_provider` 可能还指着它：不修的话写出的配置 resolve 失败，
-        // 主界面退化成 unconfigured（设置页看着正常、主窗口不认）。自愈后
-        // 再落盘，保证保存出来的配置一定能解析。
+        // 主界面退化成 unconfigured（设置页看着正常、主窗口不认）。自愈
+        // （含「唯一 Provider 自动成为默认」）后落盘，保证保存出来的配置
+        // 一定能解析。
         qcode_kernel::config::settle_default_provider(config);
         Ok(())
     }

@@ -1145,11 +1145,50 @@ impl Shell {
 
     /// Switch the provider+model for subsequent turns (two-level model menu,
     /// V2.1). The backend rebuilds the provider when the route changes.
+    ///
+    /// 「切即默认」：切换结果同时持久化为 `[default-model]` 与 provider 行的
+    /// `default_model`，设置页的默认标记随之同步（与设置页 `pin_default` 写
+    /// 同一对字段，两处保持一个口径）。
     pub(crate) fn switch_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         if provider != self.ui.app.status.provider || model != self.ui.app.status.model {
             self.backend.set_model(provider.clone(), model.clone());
-            self.ui.app.status.provider = provider;
-            self.ui.app.status.model = model;
+            self.ui.app.status.provider = provider.clone();
+            self.ui.app.status.model = model.clone();
+            // 只持久化配置里真实存在的 route：模型菜单的兜底组（恢复的会话 /
+            // 命令行传入）可能不在 providers 里，写一个不存在的默认会让整份
+            // 配置 resolve 失败、主界面退化成 unconfigured。
+            if let Ok(config) = qcode_kernel::config::load(&self.config_path)
+                && config.providers.contains_key(&provider)
+            {
+                let write = qcode_kernel::config_edit::set_default_model(
+                    &self.config_path,
+                    Some(provider.as_str()),
+                    Some(model.as_str()),
+                )
+                .and_then(|()| {
+                    qcode_kernel::config_edit::set_scalar(
+                        &self.config_path,
+                        &["providers", provider.as_str(), "default_model"],
+                        Some(model.as_str()),
+                    )
+                });
+                match write {
+                    Ok(()) => {
+                        // 写盘改变了 config mtime；主窗口的 config watch 检测到
+                        // 会重建一次引擎。引擎用的正是刚写的同一个默认，重建是
+                        // 多余的——把 mtime 提前到写盘后，避免一次无谓的 rebuild。
+                        if let Ok(meta) = std::fs::metadata(&self.config_path) {
+                            self.config_mtime = meta.modified().ok();
+                        }
+                    }
+                    Err(error) => {
+                        self.ui.app.push_notice(qcode_i18n::trp(
+                            "gui.notice.cannot_save_gui_json",
+                            &[error.to_string().as_str()],
+                        ));
+                    }
+                }
+            }
             cx.notify();
         }
     }

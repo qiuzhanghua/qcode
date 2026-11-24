@@ -864,6 +864,17 @@ impl SetupView {
                 .map(|input| input.read(cx).value().trim() != route)
                 .unwrap_or(true)
         });
+        // 删除的正是默认 provider：立即清空内存里的 `[default-model]` 与遗留
+        // `default_provider`。写盘时 `settle_default_provider` 也会清一遍
+        // （异步），这里先清是为了删除后设置页的默认标记立刻消失，而不是等
+        // 写盘回调。
+        if self.config.default_model.provider.as_deref() == Some(route) {
+            self.config.default_model.provider = None;
+            self.config.default_model.model = None;
+        }
+        if self.config.default_provider.as_deref() == Some(route) {
+            self.config.default_provider = None;
+        }
         self.editing_provider = None;
         self.delete_target = None;
         self.auto_save(cx, AutoSaveKind::Tables, false);

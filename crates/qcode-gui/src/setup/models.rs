@@ -578,6 +578,9 @@ impl SetupView {
             .child(
                 div()
                     .w(px(520.0))
+                    // 与 Provider 编辑弹窗一致：整体封顶到窗口高度的 90%，
+                    // 模型列表超出时由 flex_1 滚动区吸收，标题与按钮固定。
+                    .max_h(relative(0.9))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -594,10 +597,11 @@ impl SetupView {
                     .child(
                         div()
                             .id("add-model-dialog-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .max_h(px(440.0))
                             .overflow_y_scroll()
                             .child(self.render_models_editor(row, route, cx)),
                     )
@@ -1129,6 +1133,10 @@ impl SetupView {
             .child(
                 div()
                     .w(px(480.0))
+                    // 弹窗整体封顶到窗口高度的 90%：展开「更多配置」后内容变长时，
+                    // 弹窗不再无限撑高超出设置窗口，而是由下面 flex_1 的滚动区
+                    // 吸收剩余空间、纵向滚动；标题与底部按钮始终可见。
+                    .max_h(relative(0.9))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -1142,10 +1150,11 @@ impl SetupView {
                     .child(
                         div()
                             .id("provider-dialog-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .max_h(px(440.0))
                             .overflow_y_scroll()
                             .child(body),
                     )

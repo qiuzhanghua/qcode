@@ -169,7 +169,8 @@ fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) 
 ///
 /// 策略：默认 route 不在了，先找同一厂商剩下的套餐行接棒（切套餐的语义就是
 /// 默认跟着厂商走），并把模型换成新行可推导的第一个；推导不出来或没有同厂商
-/// 行就清掉默认，让 `resolve` 兜底到 `first_usable_provider`。
+/// 行就清掉默认，让 `resolve` 兜底到 `first_usable_provider`。清理之后仍没有
+/// 任何默认、且只有唯一一个 provider 时，自动把它钉为默认。
 pub fn settle_default_provider(config: &mut Config) {
     // 一个 route 被移出 providers 后还能不能自己解析：配置行还在、或目录里有
     // 默认模型（端点目录必有）都算；套餐与自定义 route 没有目录兜底，移走即
@@ -189,9 +190,6 @@ pub fn settle_default_provider(config: &mut Config) {
         .default_provider
         .as_deref()
         .is_some_and(|route| !self_sufficient(route));
-    if !default_missing && !legacy_missing {
-        return;
-    }
     if default_missing {
         let stale = config.default_model.provider.as_deref();
         let replacement = same_vendor_replacement(config, stale);
@@ -210,6 +208,32 @@ pub fn settle_default_provider(config: &mut Config) {
     }
     if legacy_missing {
         config.default_provider = None;
+    }
+    // 清理之后仍没有任何默认时，若只有一个「已配置模型」的 Provider 就自动
+    // 把它钉为默认：用户添加第一个 Provider 后无需手动「设为默认」。判据与
+    // 设置页/主窗口的列表过滤一致（`configured_models`：models 非空或
+    // default_model 已设）——残留的、没配置模型的 provider 行（如 ollama /
+    // openai 空行）不算数，否则「唯一可用 Provider」会被它们挡住。只在该
+    // provider 能推导出模型时钉 model（否则 resolve 会因缺模型失败），并清掉
+    // 遗留 `default_provider` 避免双默认。
+    //
+    // 注意必须在清理**之后**判断：残留的坏默认（如指向已删 route）若先被
+    // 读到会令 `default_model.provider` 非 None，唯一的 provider 就漏掉了。
+    if config.default_model.provider.is_none() {
+        let configured = config
+            .providers
+            .iter()
+            .filter(|(_, entry)| !entry.models.is_empty() || entry.default_model.is_some())
+            .map(|(route, _)| route)
+            .collect::<Vec<_>>();
+        if configured.len() == 1 {
+            let route = configured[0];
+            if let Some(model) = first_derivable_model(config, route) {
+                config.default_model.provider = Some(route.clone());
+                config.default_model.model = Some(model);
+                config.default_provider = None;
+            }
+        }
     }
 }
 
