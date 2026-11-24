@@ -36,6 +36,23 @@ pid / net 命名空间，重新拼一个根。所以 Landlock 拿不到的东西
 - **bwrap 的错误常常发生在 preflight 而不是运行时。** 缺二进制、userns 被 AppArmor 挡住，
   都在「起一个 `/bin/true`」时就失败，`qc` 直接拒绝启动而不是静默降级。
 
+### 2.1 副作用：`landlock` / `bwrap` 下 `sudo` / `doas` 提不了权
+
+两个后端都在子进程里设 `PR_SET_NO_NEW_PRIVS`（landlock 在 `pre_exec` 里自己设，bwrap 由
+bubblewrap 无条件设——没有它建不了非特权 user namespace）。这个标志**不可清除**，于是
+setuid 程序在 `run_shell` 里拿不到特权：
+
+| 命令 | 报什么 | 字面意思 vs 真实原因 |
+|---|---|---|
+| `doas` | `doas: not installed setuid` | 骗人：`ls -l` 明明是 `-rwsr-xr-x`，是**内核**拒绝了这次 uid 转换 |
+| `sudo` | `sudo: The "no new privileges" flag is set …` | 说了实话，但没说这旗子是 qcode 设的 |
+| `unshare -Ur` / `newuidmap` | 打不开 `/proc/self/uid_map` | 同上，提权路径整条不通 |
+
+`qc doctor` 用一行 `escalation` 说清这件事（`SandboxMode::strips_privilege_escalation`
+是这条输出的来源，`sandbox/tests.rs` 里有一条行为测试：在 landlock 里跑
+`grep NoNewPrivs /proc/self/status` 断言是 `1`）。要真的提权只有两条路：**在外层自己跑**
+那些命令，或者把 `[sandbox] mode` 设成 `none`（此时审批是唯一边界，见 §6）。
+
 ## 3. 能力矩阵（四个后端）
 
 | | `landlock` | `bwrap` | `sandbox-exec` (macOS) | `windows-acl` |
@@ -48,6 +65,7 @@ pid / net 命名空间，重新拼一个根。所以 Landlock 拿不到的东西
 | 外部依赖 | 无 | `bwrap` | 系统自带 | 无 |
 | 需额外系统设置 | 内核 ≥5.13 | Ubuntu 24.04 需放开 userns | 无 | 无 |
 | qcode 里的自称（`qc doctor` 输出） | `Landlock filesystem confinement (network not restricted, …)` | `bubblewrap (network allowed/denied, …)` | `sandbox-exec (network denied/allowed, …)` | **`windows-acl (partial)`** |
+| setuid 提权（`sudo` / `doas`） | ❌（`PR_SET_NO_NEW_PRIVS`） | ❌（bwrap 自己设） | ✅ | ✅ |
 
 > 「限制网络」指的是**机制上的强制**，不是「由代理或审批兜底」。`landlock` 与 `windows-acl`
 > 都没有任何网络机制；`[network]` 那套出口代理只给子进程设 `HTTP_PROXY` 等环境变量，无视

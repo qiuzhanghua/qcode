@@ -3204,6 +3204,8 @@ cli:
       connectivity: { en: "connectivity", zh-CN: 连通性 }
       credentials: { en: "credentials", zh-CN: 凭据 }
       data_dir: { en: "data dir", zh-CN: 数据目录 }
+      # 提权：不是安全检查，是「沙箱里 sudo/doas 为什么不行」那一行。
+      escalation: { en: "escalation", zh-CN: 提权 }
       key_storage: { en: "key storage", zh-CN: 密钥存储 }
       mcp: { en: "mcp", zh-CN: "MCP" }
       mcp_path: { en: "mcp path", zh-CN: "MCP 路径" }
@@ -3342,6 +3344,15 @@ cli:
       sandbox_none_boundary:
         en: "none; approval and workspace path checks are the boundary"
         zh-CN: "无；边界就是审批和路径检查"
+      # 「沙箱里 sudo / doas 为什么不行」。两句都**不报错**：一行是设计如此，
+      # 一行是没有沙箱，两者都不是配置错误，所以 doctor 用 `[ok]` 而不是 `[warn]`。
+      # 报错文案要原样写出 doas 那句，因为那才是用户 grep 到的那一行。
+      escalation_blocked:
+        en: "%{0} sets PR_SET_NO_NEW_PRIVS on every child, and the kernel will not clear it: sudo/doas cannot escalate inside the sandbox (this is by design — `doas` reports \"not installed setuid\", `sudo` reports the flag). Run privileged commands yourself, or set `[sandbox] mode = \"none\"` and rely on approval"
+        zh-CN: "%{0} 给每个子进程设了 PR_SET_NO_NEW_PRIVS，内核不允许再清掉：沙箱里 sudo/doas 提不了权（这是设计如此——`doas` 会报 \"not installed setuid\"，`sudo` 会报该标志已设）。要提权就自己在外层跑，或把 `[sandbox] mode` 设成 `none` 靠审批兜底"
+      escalation_possible:
+        en: "%{0} does not set PR_SET_NO_NEW_PRIVS: a child process can still use a setuid binary, so approval is the only boundary"
+        zh-CN: "%{0} 不设 PR_SET_NO_NEW_PRIVS：子进程仍然能用 setuid 程序提权，边界只剩审批"
       mcp_no_sandbox:
         en: "no sandbox: %{0}"
         zh-CN: "没有沙箱：%{0}"

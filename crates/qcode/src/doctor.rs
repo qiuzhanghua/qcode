@@ -37,6 +37,7 @@ pub async fn run(
     #[cfg(windows)]
     doctor.check_token();
     doctor.check_sandbox(&config);
+    doctor.check_privilege_escalation(&config);
     doctor.check_mcp(&config, &data_dir);
     if probe {
         doctor.check_mcp_capabilities(&config, &data_dir).await;
@@ -682,6 +683,31 @@ impl Doctor {
             }
             Err(err) => self.fail(qcode_i18n::tr("cli.doctor.label.sandbox"), err.to_string()),
         }
+    }
+
+    /// What a setuid binary started by a tool can do.
+    ///
+    /// This is not a security check — nothing here is misconfigured, so it never
+    /// fails. It exists because the two Linux backends that work without root
+    /// set `PR_SET_NO_NEW_PRIVS` on every child, and that flag cannot be cleared
+    /// by the process carrying it: `sudo` and `doas` fail *inside* `run_shell`,
+    /// and neither message states the cause (`doas` prints "not installed
+    /// setuid" — it is installed setuid; the kernel refused the transition).
+    /// One line here is the difference between a five-second read and an hour
+    /// spent checking `ls -l /usr/bin/doas`.
+    ///
+    /// Printed unconditionally, including the `mode = "none"` cases that return
+    /// early from [`Self::check_sandbox`]: "you *can* escalate here" is the
+    /// answer in those, and it is the one that matters when the question is
+    /// "why did this work yesterday?".
+    fn check_privilege_escalation(&mut self, config: &Config) {
+        let mode = config.sandbox.mode;
+        let detail = if mode.strips_privilege_escalation() {
+            qcode_i18n::trp("cli.doctor.detail.escalation_blocked", &[mode.label()])
+        } else {
+            qcode_i18n::trp("cli.doctor.detail.escalation_possible", &[mode.label()])
+        };
+        self.ok(qcode_i18n::tr("cli.doctor.label.escalation"), detail);
     }
 
     /// `qc doctor --probe`: connect for real and compare the handshake's

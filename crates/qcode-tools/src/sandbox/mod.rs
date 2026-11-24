@@ -51,6 +51,36 @@ impl SandboxMode {
             Self::WindowsAcl => "windows-acl", // i18n:keep 机制名（值）
         }
     }
+
+    /// Does every child of this backend lose the ability to gain privileges?
+    ///
+    /// `true` for `landlock` and `bwrap`, both of which set
+    /// `PR_SET_NO_NEW_PRIVS` in the child before `exec`. That flag is what makes
+    /// them work without root, and it cannot be undone by the process that
+    /// carries it — so a setuid binary started from `run_shell` **cannot
+    /// escalate**, `sudo` and `doas` included. The failure messages do not say
+    /// this: `doas` prints "not installed setuid" (it is installed setuid; the
+    /// kernel refused the transition) and `sudo` prints that the flag is set.
+    /// `qc doctor` reports the consequence so that neither message has to be
+    /// decoded by hand.
+    ///
+    /// Kept here, next to [`Self::label`], because it is a property of the
+    /// *mechanism* rather than of a particular ruleset — and because a backend
+    /// that stops setting the flag has to change this answer in the same commit.
+    pub fn strips_privilege_escalation(self) -> bool {
+        match self {
+            // `linux.rs` sets it in `Landlock::build`'s `pre_exec`, right before
+            // `landlock_restrict_self` (which refuses to run without it).
+            Self::Landlock => true,
+            // bubblewrap sets it itself, unconditionally — it is required for
+            // the unprivileged user namespace it creates. Our `bwrap_args` never
+            // passes `--unshare-user-try` without it either.
+            Self::Bwrap => true,
+            // Seatbelt profiles do not need it, and sandbox-exec is not built on
+            // user namespaces. ACL edits are not a privilege transition.
+            Self::SandboxExec | Self::WindowsAcl | Self::None => false,
+        }
+    }
 }
 
 /// What a sandbox grants **beyond** the roots it was given.
