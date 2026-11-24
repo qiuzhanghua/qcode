@@ -6,6 +6,8 @@ pub mod child_groups;
 pub mod diff;
 pub mod fetch;
 pub mod fs;
+pub mod job_tools;
+pub mod jobs;
 pub mod patch;
 pub mod path;
 pub mod procguard;
@@ -45,6 +47,11 @@ pub fn builtin_registry_with_env(
     sandbox: Arc<dyn Sandbox>,
     env: Arc<shell_env::ShellEnvCache>,
 ) -> ToolRegistry {
+    // One job table per registry, so a session's background commands are the
+    // ones its `job_*` tools can see (ADR-0106). Nothing outside the process can
+    // reach them, and the exit hook reaches the processes themselves through
+    // `child_groups`, not through here.
+    let jobs = Arc::new(jobs::JobRegistry::new());
     ToolRegistry::new(vec![
         Arc::new(fs::ReadFile),
         Arc::new(fs::WriteFile),
@@ -54,7 +61,10 @@ pub fn builtin_registry_with_env(
         Arc::new(search::GlobTool),
         Arc::new(search::GrepTool),
         Arc::new(fetch::WebFetch),
-        Arc::new(shell::RunShell::with_env(sandbox, env)),
+        Arc::new(shell::RunShell::with_jobs(sandbox, env, jobs.clone())),
+        Arc::new(job_tools::JobList::new(jobs.clone())),
+        Arc::new(job_tools::JobRead::new(jobs.clone())),
+        Arc::new(job_tools::JobKill::new(jobs)),
         Arc::new(todo::TodoWrite),
         Arc::new(ask::AskUser),
         Arc::new(schedule::ScheduleCreate),

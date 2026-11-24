@@ -27,6 +27,12 @@ use crate::path::{self, Access};
 use crate::sandbox::{NoSandbox, OutsideRoots, Sandbox};
 
 const OUTPUT_LIMIT: usize = 32 * 1024;
+
+/// How long `run_shell` waits in the foreground before handing a command to the
+/// background (ADR-0106). The `spec` advertises the same number: changing one
+/// without the other is how the model ends up guessing wrong.
+pub const DEFAULT_WAIT_SECS: u64 = 60;
+
 /// How long a cancelled or timed-out group gets to exit on SIGTERM before the
 /// whole group is SIGKILLed. Matches the design note in docs/design/SPEC.md.
 const TERM_GRACE: Duration = Duration::from_secs(2);
@@ -140,6 +146,10 @@ pub struct RunShell {
     sandbox: Arc<dyn Sandbox>,
     /// The user's shell environment, sampled once per session (ADR-0064).
     env: Arc<crate::shell_env::ShellEnvCache>,
+    /// Where a command goes when its wait budget runs out (ADR-0106). Shared
+    /// with the `job_*` tools, so a job started here can be read and killed
+    /// there.
+    jobs: Arc<crate::jobs::JobRegistry>,
 }
 
 impl RunShell {
@@ -151,7 +161,15 @@ impl RunShell {
     }
 
     pub fn with_env(sandbox: Arc<dyn Sandbox>, env: Arc<crate::shell_env::ShellEnvCache>) -> Self {
-        Self { sandbox, env }
+        Self::with_jobs(sandbox, env, Arc::new(crate::jobs::JobRegistry::new()))
+    }
+
+    pub fn with_jobs(
+        sandbox: Arc<dyn Sandbox>,
+        env: Arc<crate::shell_env::ShellEnvCache>,
+        jobs: Arc<crate::jobs::JobRegistry>,
+    ) -> Self {
+        Self { sandbox, env, jobs }
     }
 
     pub fn unsandboxed() -> Self {
@@ -170,6 +188,10 @@ struct ShellArgs {
     command: String,
     cwd: Option<String>,
     timeout_secs: Option<u64>,
+    /// Return immediately and let the command run detached (ADR-0106). For work
+    /// that is known not to end on its own — a dev server, a watcher, `tail -f`.
+    #[serde(default)]
+    background: Option<bool>,
     /// Escalation request (SANDBOX-MODE.md): ask to run at a wider write scope.
     /// Only set when the command genuinely needs it — e.g. writes outside the
     /// workspace, direct network, or system-level changes. Must carry a
@@ -192,14 +214,25 @@ impl Tool for RunShell {
             name: "run_shell".to_string(),
             description: "Run a shell command inside the workspace. Use it for builds, \
                           tests, git and package managers; use the dedicated tools for \
-                          reading and editing files."
+                          reading and editing files. A command that outlives \
+                          `timeout_secs` is not killed: it moves to the background and \
+                          this returns a job handle, which `job_read` then follows."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
                     "cwd": {"type": "string", "description": "Working directory, defaults to the workspace root"},
-                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 600},
+                    "timeout_secs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "description": "How long to wait before handing the command to the background (default 60). Not a kill deadline: see `background`."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Return as soon as the command starts instead of waiting. Use it for anything that will not exit on its own (dev server, watcher, tail -f). Read its output with job_read."
+                    },
                     "sandbox_permissions": {
                         "type": "string",
                         "enum": ["read_only", "workspace_write", "full_access"],
@@ -264,7 +297,7 @@ impl Tool for RunShell {
                 )
             })?,
         };
-        let timeout_secs = args.timeout_secs.unwrap_or(120).clamp(1, 600);
+        let timeout_secs = args.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, 600);
         // The initial sandbox is built for the legacy launch workspace, but a
         // task's roots may point somewhere else (a working directory selected
         // in the GUI). Rebuild from the current root set whenever roots exist,
@@ -402,8 +435,12 @@ impl Tool for RunShell {
         // Registered for the exit hook from here until the command is reaped:
         // if the process dies between this line and the drop, the group is still
         // in the registry and `kill_all` takes it out. See `child_groups`.
+        //
+        // On the detach path this guard is moved into the job rather than
+        // dropped: that is the whole of what "a background job is still
+        // cleaned up when qcode quits" amounts to (ADR-0106 §5).
         #[cfg(not(windows))]
-        let _live_group = crate::child_groups::LiveGroup::register(pid);
+        let live_group = crate::child_groups::LiveGroup::register(pid);
         // Windows registers a job object rather than a bare pid, and it has to
         // happen here: the job is what the kernel kills when qcode dies, so it
         // must exist before this child can start anything of its own.
@@ -412,7 +449,7 @@ impl Tool for RunShell {
         // trait impl for it, only the inherent method, which also answers `None`
         // once the child has exited (nothing left to contain, then).
         #[cfg(windows)]
-        let _live_group = crate::child_groups::LiveGroup::register_in_job(pid, child.raw_handle());
+        let live_group = crate::child_groups::LiveGroup::register_in_job(pid, child.raw_handle());
 
         let stdout = child
             .stdout
@@ -422,11 +459,20 @@ impl Tool for RunShell {
             .stderr
             .take()
             .expect("stderr is piped, so the handle exists");
-        let stdout_task = tokio::spawn(read_all(stdout));
-        let stderr_task = tokio::spawn(read_all(stderr));
+        // Pumped into a ring rather than read to completion: the same buffer has
+        // to keep working if this call detaches, and a reader that only answered
+        // at EOF could not say what a still-running command has printed so far.
+        // With eviction off (`Stream::new`) the foreground result is
+        // byte-for-byte what it was before (ADR-0106).
+        let out = crate::jobs::Stream::new();
+        let err = crate::jobs::Stream::new();
+        let stdout_task = tokio::spawn(pump(stdout, out.clone()));
+        let stderr_task = tokio::spawn(pump(stderr, err.clone()));
 
         // Reap on a task of our own so the select below never has to hold
-        // `child`; the pid (captured above) is all the kill path needs.
+        // `child`; the pid (captured above) is all the kill path needs. On the
+        // detach path the receiver moves into the job, and `kill_on_drop` never
+        // fires early because this task keeps owning the child until it exits.
         let (status_tx, mut status_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _ = status_tx.send(child.wait().await);
@@ -434,23 +480,34 @@ impl Tool for RunShell {
 
         let mut exit_status = None;
         let mut cancelled_by_user = false;
-        let mut timed_out = false;
+        // `background` means "do not wait at all"; it uses the same hand-over
+        // path as a spent budget, so there is one detach implementation.
+        let background = args.background.unwrap_or(false);
+        let mut handed_over = background;
 
-        tokio::select! {
-            biased;
-            _ = ctx.cancel.cancelled() => cancelled_by_user = true,
-            result = tokio::time::timeout(Duration::from_secs(timeout_secs), &mut status_rx) => {
-                match result {
-                    Ok(Ok(Ok(status))) => exit_status = Some(status),
-                    Ok(Ok(Err(err))) => return Err(err.into()),
-                    // The wait task went away without a status; nothing to reap.
-                    Ok(Err(_recv)) => {}
-                    Err(_elapsed) => timed_out = true,
+        if !handed_over {
+            tokio::select! {
+                biased;
+                _ = ctx.cancel.cancelled() => cancelled_by_user = true,
+                result = tokio::time::timeout(Duration::from_secs(timeout_secs), &mut status_rx) => {
+                    match result {
+                        Ok(Ok(Ok(status))) => exit_status = Some(status),
+                        Ok(Ok(Err(err))) => return Err(err.into()),
+                        // The wait task went away without a status; nothing to reap.
+                        Ok(Err(_recv)) => {}
+                        // The budget ran out. This is not a kill order any more:
+                        // the command keeps running and the model gets a handle
+                        // for it. Cancelling by hand still kills — see below.
+                        Err(_elapsed) => handed_over = true,
+                    }
                 }
             }
         }
 
-        if cancelled_by_user || timed_out {
+        // Cancelling the turn is an explicit "stop", so it stays a kill. It is
+        // checked before the hand-over, which is why a cancelled call can never
+        // end up as a running job.
+        if cancelled_by_user {
             signal_group(pid, SIGTERM);
             match tokio::time::timeout(TERM_GRACE, &mut status_rx).await {
                 Ok(Ok(Ok(status))) => exit_status = Some(status),
@@ -467,29 +524,86 @@ impl Tool for RunShell {
             }
         }
 
-        let stdout_bytes = drain(stdout_task).await;
-        let stderr_bytes = drain(stderr_task).await;
+        if handed_over && !cancelled_by_user {
+            // Advance the cursors past what this result shows, so the first
+            // `job_read` does not replay it; only then bound the buffers, since
+            // evicting before reading would lose exactly the bytes the model is
+            // about to be handed.
+            let (seen_out, _) = out.read(crate::jobs::READ_LIMIT);
+            let (seen_err, _) = err.read(crate::jobs::READ_LIMIT);
+            out.cap(crate::jobs::STREAM_CAP);
+            err.cap(crate::jobs::STREAM_CAP);
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes);
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
-        let mut combined = String::new();
-        combined.push_str(&stdout);
-        if !stderr.is_empty() {
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
+            let combined = combine(&seen_out, &seen_err);
+            let job = self.jobs.detach(crate::jobs::Detached {
+                pid,
+                command: args.command.clone(),
+                cwd,
+                group: live_group,
+                status: status_rx,
+                out: out.clone(),
+                err: err.clone(),
+            });
+
+            let mut text = String::new();
+            match job {
+                Ok(job) => {
+                    let seconds = timeout_secs.to_string();
+                    text.push_str(&format!(
+                        "{}\n",
+                        if background {
+                            qcode_i18n::trp("tool.jobs.started", &[job.id()])
+                        } else {
+                            qcode_i18n::trp("tool.jobs.detached", &[seconds.as_str(), job.id()])
+                        }
+                    ));
+                    text.push_str(&format!(
+                        "{}\n",
+                        qcode_i18n::trp("tool.jobs.hint", &[job.id()])
+                    ));
+                }
+                Err(crate::jobs::Rejected::TooManyLive(max)) => {
+                    // `detach` has already killed the group: with no slot for the
+                    // job, letting it run is the leak the cap exists to prevent.
+                    text.push_str(&format!(
+                        "{}\n",
+                        qcode_i18n::trp("tool.jobs.too_many", &[max.to_string().as_str()])
+                    ));
+                }
             }
-            combined.push_str(&stderr);
+            text.push_str(&combined);
+
+            let raw = text;
+            let (text, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
+            return Ok(ToolOutput {
+                status: ToolStatus::Ok,
+                output: text,
+                metadata: ToolMetadata {
+                    truncated,
+                    bytes: combined.len() as u64,
+                    exit_code: None,
+                    ..ToolMetadata::default()
+                },
+                usage: Usage::default(),
+                cost_usd: 0.0,
+                full_output: truncated.then(|| raw.clone()),
+                images: Vec::new(),
+                diff: None,
+            });
         }
+
+        drain(stdout_task).await;
+        drain(stderr_task).await;
+
+        let stdout_bytes = out.contents();
+        let stderr_bytes = err.contents();
+
+        let combined = combine(&stdout_bytes, &stderr_bytes);
 
         let exit_code = exit_status.and_then(|status| status.code());
         let mut text = String::new();
         if cancelled_by_user {
             text.push_str(&format!("{}\n", qcode_i18n::tr("tool.cancelled")));
-        } else if timed_out {
-            text.push_str(&format!(
-                "{}\n",
-                qcode_i18n::trp("tool.shell.timed_out", &[timeout_secs.to_string().as_str()])
-            ));
         } else {
             let code = exit_code
                 .map(|code| code.to_string())
@@ -505,8 +619,6 @@ impl Tool for RunShell {
         let (text, truncated) = crate::truncate(&raw, OUTPUT_LIMIT);
         let status = if cancelled_by_user {
             ToolStatus::Cancelled
-        } else if timed_out {
-            ToolStatus::Error
         } else {
             ToolStatus::Ok
         };
@@ -529,30 +641,55 @@ impl Tool for RunShell {
     }
 }
 
-async fn read_all(mut reader: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    let _ = reader.read_to_end(&mut buffer).await;
-    buffer
-}
-
-/// Collect a pipe reader, but never let a leaked grandchild holding the pipe
-/// open keep the tool call alive forever.
-async fn drain(mut task: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
-    match tokio::time::timeout(DRAIN_GRACE, &mut task).await {
-        Ok(Ok(buffer)) => buffer,
-        _ => {
-            task.abort();
-            Vec::new()
+/// Feed one pipe into a ring as it arrives.
+///
+/// No error path: a failed read means the pipe has nothing more to say, which is
+/// the same thing EOF means. What the command already printed is what matters.
+async fn pump(mut reader: impl tokio::io::AsyncRead + Unpin, stream: crate::jobs::Stream) {
+    let mut chunk = vec![0u8; 8192];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => stream.append(&chunk[..read]),
         }
     }
 }
 
+/// Wait for a pipe reader to finish, but never let a leaked grandchild holding
+/// the pipe open keep the tool call alive forever.
+async fn drain(mut task: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(DRAIN_GRACE, &mut task).await.is_err() {
+        task.abort();
+    }
+}
+
+/// stdout then stderr, with a newline between them when stdout did not end in
+/// one.
+///
+/// Shared by the finished-command result and the "here is what it has said so
+/// far" preamble of a detach, so a command that moves to the background reads
+/// the same way one that finishes does. The newline rule is the original one —
+/// `run_shell`'s output for a foreground command is unchanged by ADR-0106.
+fn combine(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    let mut combined = String::new();
+    combined.push_str(&stdout);
+    if !stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(&stderr);
+    }
+    combined
+}
+
 #[cfg(unix)]
-const SIGTERM: i32 = libc::SIGTERM;
+pub(crate) const SIGTERM: i32 = libc::SIGTERM;
 #[cfg(unix)]
 pub(crate) const SIGKILL: i32 = libc::SIGKILL;
 #[cfg(not(unix))]
-const SIGTERM: i32 = 15;
+pub(crate) const SIGTERM: i32 = 15;
 #[cfg(not(unix))]
 pub(crate) const SIGKILL: i32 = 9;
 

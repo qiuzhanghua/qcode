@@ -356,42 +356,6 @@ async fn cancellation_kills_the_whole_process_group() {
     );
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn timeout_kills_the_whole_process_group() {
-    qcode_i18n::pin_for_tests();
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = context(dir.path());
-    let pid_file = dir.path().join("child.pid");
-
-    // The pid file is written before the timeout fires; the tool call itself
-    // is what has to wait one second.
-    let output = RunShell::default()
-        .execute(
-            &ctx,
-            json!({
-                "command": "sleep 30 & echo $! > child.pid; wait",
-                "timeout_secs": 1
-            }),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(output.status, ToolStatus::Error);
-    // 措辞跟着界面语言（`tool.shell.timed_out`）；断言中文原文，硬编码英文会红。
-    assert!(output.output.contains("命令在 1 秒后超时"));
-
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert!(
-        wait_until_gone(pid).await,
-        "grandchild {pid} survived the timeout"
-    );
-}
-
 #[tokio::test]
 async fn web_fetch_goes_through_the_egress_proxy() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -673,6 +637,10 @@ fn png_bytes() -> Vec<u8> {
 /// as an image instead of refusing it as "binary" (ADR-0081).
 #[tokio::test]
 async fn read_file_returns_a_picture_as_an_image() {
+    // Pinned here rather than borrowed from another test: `pin_for_tests` is
+    // process-wide, and cargo does not promise that the test which calls it runs
+    // first.
+    qcode_i18n::pin_for_tests();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("shot.png"), png_bytes()).unwrap();
     let ctx = ToolContext::for_test(dir.path().to_path_buf());
@@ -695,8 +663,7 @@ async fn read_file_returns_a_picture_as_an_image() {
     // The text is what a text-only model sees, and what a human reads in the
     // transcript, so it has to say what happened.
     assert!(output.output.contains("image/png"), "{}", output.output);
-    // 「字节」而不是 `bytes`：这句话跟着界面语言走（`tool.fs.image_returned`），
-    // 而本文件的另一个测试钉了 `zh-CN`，进程级生效。
+    // 「字节」而不是 `bytes`：这句话跟着界面语言走（`tool.fs.image_returned`）。
     assert!(output.output.contains("字节"), "{}", output.output);
 }
 
