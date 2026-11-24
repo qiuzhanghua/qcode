@@ -222,13 +222,25 @@ fn write_all_waiting(end: &mut WriterEnd, bytes: &[u8], stopped: &AtomicBool) ->
         }
         match write_pty(end, &bytes[written..]) {
             Ok(0) => {
-                // A pty that accepts nothing is gone; another attempt would spin.
-                return false;
-            }
-            Ok(count) => written += count,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                // "Accepted nothing" is not the same as "gone". A full input queue
+                // can answer 0 where the portable answer is `WouldBlock`; treating 0
+                // as fatal ended the writer thread, and a thread that dies while a
+                // paste is queued takes every later keystroke with it, silently.
                 std::thread::sleep(FULL_BUFFER_RETRY);
             }
+            Ok(count) => written += count,
+            // A signal is not an answer: retry. `WouldBlock` is the documented
+            // full-buffer case; `Interrupted` reaches here when a write is cut short
+            // (under load, with a child still being reaped) and used to be fatal.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                std::thread::sleep(FULL_BUFFER_RETRY);
+            }
+            // Anything else is the pty going away (`EIO` once the child closed it).
             Err(_) => return false,
         }
     }

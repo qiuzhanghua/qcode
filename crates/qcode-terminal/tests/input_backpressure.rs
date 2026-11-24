@@ -35,7 +35,11 @@ fn payload(total: usize) -> Vec<u8> {
 
 fn wait_for_file(path: &std::path::Path, needle: &str) -> bool {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
+    // Generous on purpose: the property under test is "eventually, and the typing
+    // after the paste still works", not "within ten seconds on a shared runner".
+    // The 1 MiB paste is drained through a small pty buffer, one refill at a time,
+    // and a loaded CI runner can stretch that well past ten seconds.
+    while start.elapsed() < Duration::from_secs(30) {
         if let Ok(bytes) = std::fs::read(path)
             && String::from_utf8_lossy(&bytes).contains(needle)
         {
