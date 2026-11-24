@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.18.0 — 2026-11-24
+
+后台任务版：`run_shell` 的超时不再杀进程。到点（默认 **60 秒**）把命令交给后台继续跑，
+返回一个 `job-N` 句柄；`job_read` 按游标读增量输出、可以长轮询，`job_list` 列出存活与
+最近结束的，`job_kill` 整组收掉。**没有破坏性变更**：`timeout_secs` 的名字与取值范围
+（1–600）不变，只是语义从「死刑判决」变成「前台等待预算」，旧调用一个都不用改。
+`CONFIG_VERSION` 仍是 2，没有新配置项。
+
+### 为什么是 minor 而不是 patch
+
+`v0.17.1` 之后新增的是一条**用户可见的能力**：长任务在跑的时候，模型和人还能继续对话。
+它带来三个新工具（工具表 15 → 18）、一个新参数 `background`，以及一套进程生命周期约定，
+所以是 minor；但它不推翻任何既有契约——取消仍然杀整组、qcode 退出仍然全杀——所以不是
+major。
+
+### 后台任务（ADR-0106）
+
+- `timeout_secs` 默认 60s：到点不杀，转后台并返回句柄 + 此刻已经产出的输出
+- `background: true`：dev server / watcher / `tail -f` 立刻返回，不白等一分钟
+- `job_read`：`stdout`/`stderr` 各 512 KiB 环形缓冲、各一个单调游标，每流单次 32 KiB；
+  `wait_secs` 等到「有新输出 / 任务退出 / 预算用完」，取消只打断等待、不杀任务
+- 上限三个：同时 16 个、单任务寿命 **120 分钟**、已结束留 8 个供查询
+- 被冲掉的字节数如实上报；「转后台」那一刻不丢已经产出的字节
+- qcode 退出时后台任务一起死：复用 ADR-0073 的 `child_groups`，没有第二张登记表
+
+### 一个被测试撞出来的坑：杀任务 ≠ 结束回合
+
+`Phase::Killed` 原本映射 `ToolStatus::Cancelled`，而引擎把任何 `Cancelled` 结果读作
+「本回合被取消」——当场收尾、不再叫模型。于是模型一 `job_kill`，这一轮就断了。
+现在映射 `Ok`；`crates/qcode-providers/tests/job_turn.rs` 用真 registry + `MockProvider`
+把「杀任务之后模型还能说话」与「`Cancelled` 专属回合取消」两半都钉住。
+
+同一轮还修了 `job_kill` 固定睡 4 秒的问题：现在等进程真的被 reap 再返回，合作进程毫秒
+级返回，忽略 SIGTERM 的仍按 2 秒宽限升级 SIGKILL。
+
+### Windows 目标编不过（已修）
+
+`jobs.rs` 用到 `shell::SIGTERM`，而 non-unix 那份是私有的——`cargo check --target
+x86_64-pc-windows-gnullvm` 直接 E0603，等于这个特性在 Windows 上根本编不出来。改成
+`pub(crate)` 后，Windows 与交叉 type-check 都过。
+
+### 太极内网登录回调页
+
+- 回调页标题走 `tr()`（`provider.tj.callback_success` / `callback_rejected`），HTML
+  骨架不翻；两条裸中文从 i18n 门禁里消失
+- 修掉两个不稳的测试：成功页测试会**永久挂起**（写完响应没 drop 服务端 socket，
+  `read_to_string` 一直等 EOF），`strict_requires_the_proxy` 断言英文 `"proxy"` 而错误
+  已经本地化、结果还取决于同进程里谁先 pin 了 `zh-CN`
+
+### 文档
+
+ADR-0106 与 `docs/design/BACKGROUND-JOBS.md` 按实现就地校正：注册表挂在装配出的工具表
+上（不是进程级 static）、每流 512 KiB、寿命 120 分钟、`Killed` 必须 `Ok`、`job_kill`
+不许固定睡眠；§7 的验收清单改成指向三个真实测试文件。SPEC 工具表、README 能力清单、
+I18N 位置表同步；删掉已无人引用的 `tool.shell.timed_out`。
+
+### 验证
+
+`cargo fmt --check`、`clippy --workspace --all-targets -D warnings`、全量测试套件、
+双语 golden、`cargo deny` 全绿；`cargo check --target x86_64-pc-windows-gnullvm` 通过。
+新增测试：`crates/qcode-tools/tests/jobs.rs`（10 条）、`jobs_exit.rs`（1 条）、
+`crates/qcode-providers/tests/job_turn.rs`（3 条）。
+
 ## 0.17.1 — 2026-11-23
 
 错误串补完版：0.17.0 亲口记下的那条**已知边界**——`Err(format!("…"))` 这类走返回值的

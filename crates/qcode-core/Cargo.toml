@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-i18n = { version = "0.17.1", path = "../qcode-i18n" }
-qcode-attachments = { version = "0.17.1", path = "../qcode-attachments" }
+qcode-i18n = { version = "0.18.0", path = "../qcode-i18n" }
+qcode-attachments = { version = "0.18.0", path = "../qcode-attachments" }
 base64.workspace = true
 sha2.workspace = true
 serde.workspace = true
