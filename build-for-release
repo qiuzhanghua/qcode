@@ -287,6 +287,49 @@ musl_cross_cc() {
     esac
 }
 
+# 同一个工具链的 C++ 驱动名（cc-rs 按名字找它，不从上一步的 CC 推）。
+musl_cross_cxx() {
+    local cc
+    cc=$(musl_cross_cc "$1") || return 1
+    echo "${cc%gcc}g++"
+}
+
+# musl 的 C 编译器从哪里找：PATH 优先（真的 musl 交叉 gcc 或 `musl-tools`），
+# 其次 `$MUSL_GCC_DIR`，最后仓库 `.toolchains/` 里由 `scripts/install-musl-gcc.sh`
+# 装的 zig 替身。与 `find_mingw_clang` / `find_zig` 同一条思路：显式设置的先，
+# 仓库内的兜底，任何人都不必为了 make 去改 PATH。
+find_musl_cc() {
+    local name=$1 candidate
+    if candidate=$(command -v "$name" 2>/dev/null); then
+        echo "$candidate"
+        return 0
+    fi
+    for candidate in "${MUSL_GCC_DIR:-}/$name" "$ROOT/.toolchains/musl-gcc/bin/$name"; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+        echo "$candidate"
+        return 0
+    done
+    return 1
+}
+
+# 目标平台有没有 musl 版的 GUI 链接库。gpui 在 Linux 上硬链接 xcb / xkbcommon /
+# xkbcommon-x11，这几个只有 glibc 版本，所以 musl 目标链接不出 `qc`——除非有人
+# 提供了 musl 编的整套（Alpine 系构建机，或自己编的交叉库）。判据只看文件在不在，
+# 不去 pkg-config：交叉编时 `.pc` 本来就要靠 PKG_CONFIG_PATH 另配。
+have_musl_gui_libs() {
+    local target=$1 arch dir
+    arch=$(target_arch "$target") || return 1
+    for dir in "${MUSL_GCC_DIR:-}/../$arch-linux-musl/lib" \
+        "/usr/lib/$arch-linux-musl" "$ROOT/.toolchains/musl-gcc/$arch-linux-musl/lib"; do
+        [ -n "$dir" ] && [ -d "$dir" ] || continue
+        if compgen -G "$dir/libxkbcommon.so*" >/dev/null ||
+            compgen -G "$dir/libxkbcommon.a" >/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # zig cc：没有 root / 没装 aarch64 交叉 gcc 时的退路 —— 一份 zig 自带 glibc 与 musl
 # 两套 sysroot，`zig cc -target aarch64-linux-{gnu,musl}` 就能编 C。
 # 查找顺序：$ZIG > PATH > 仓库 .toolchains/ > cot 的 zig 插件。
@@ -351,12 +394,19 @@ EOF
     echo "$wrapper"
 }
 
-# 交叉 C 编译器：真的 <triple>-gcc 优先，没有就用 zig cc 顶。
+# 交叉 C 编译器：真的 <triple>-gcc 优先，其次 PATH / .toolchains 里的 musl 替身，
+# 最后用 zig cc 顶。
 cross_cc() {
     local target=$1 real
     case "$target" in
     *-linux-gnu) real=$(gnu_gcc "$target") || return 1 ;;
-    *-linux-musl) real=$(musl_cross_cc "$target") || return 1 ;;
+    *-linux-musl)
+        real=$(musl_cross_cc "$target") || return 1
+        if real=$(find_musl_cc "$real"); then
+            echo "$real"
+            return 0
+        fi
+        ;;
     *) return 1 ;;
     esac
     if command -v "$real" >/dev/null 2>&1; then
@@ -371,7 +421,12 @@ have_cross_cc() {
     local target=$1 real
     case "$target" in
     *-linux-gnu) real=$(gnu_gcc "$target") ;;
-    *-linux-musl) real=$(musl_cross_cc "$target") ;;
+    *-linux-musl)
+        real=$(musl_cross_cc "$target") || return 1
+        if find_musl_cc "$real" >/dev/null 2>&1; then
+            return 0
+        fi
+        ;;
     *) return 1 ;;
     esac
     if command -v "$real" >/dev/null 2>&1; then
@@ -464,15 +519,34 @@ not_ready_reason() {
             echo "sysroot 里没有 rust-lld（musl 的链接器）"
             return
         fi
-        # 跨架构时 C 侧也要编译器：aws-lc-sys（rustls 的 C 依赖）会编 C 源码，
-        # rust-lld 只管 Rust 的链接步骤。
-        if [ "$(target_arch "$target")" != "$(target_arch "$HOST_TRIPLE")" ]; then
-            local cc key
-            cc=$(musl_cross_cc "$target")
-            key="CC_${target//-/_}"
-            if [ -z "${!key:-}" ] && ! have_cross_cc "$target"; then
-                echo "跨架构需要 ${cc}（aws-lc-sys 编 C 用）或 zig，也可用 $key 指定"
-            fi
+        # C 侧也要编译器：aws-lc-sys / libsqlite3-sys 会编 C 源码，rust-lld 只管
+        # Rust 的链接步骤。**同架构也一样**——cc-rs 找的是 `x86_64-linux-musl-gcc`，
+        # 宿主 gcc 顶不上（它产出 glibc 目标文件），所以没有它时
+        # `cargo check --target x86_64-unknown-linux-musl` 会死在 build script 里：
+        #
+        #   error occurred in cc-rs: failed to find tool "x86_64-linux-musl-gcc"
+        #
+        # 以前这里只判跨架构，于是 amd64 的 musl 目标在 --list 里显示 ready、
+        # 真编的时候才炸。
+        local cc key
+        cc=$(musl_cross_cc "$target") || cc="musl 交叉 gcc"
+        key="CC_${target//-/_}"
+        if [ -z "${!key:-}" ] && ! have_cross_cc "$target"; then
+            echo "需要 ${cc}（aws-lc-sys / libsqlite3-sys 编 C 用）：装 musl 交叉 gcc，或跑 scripts/install-musl-gcc.sh（用 zig 顶）"
+            return
+        fi
+        # 最后一个坑在**链接**，不在编译：gpui 在 Linux 上硬链接 xcb / xkbcommon /
+        # xkbcommon-x11（链接行里按名字要），而这几个库只有 glibc 版本，musl 世界没有。
+        # 于是 `qc` 的 musl 产物在本机根本链接不出来：
+        #
+        #   rust-lld: error: unable to find library -lxkbcommon
+        #
+        # 这不是缺一个包就能补的（要 musl 编的 xcb/xkbcommon 一整套，Debian 不提供），
+        # 所以 musl 两个目标的**定位是 check / 无 GUI 包的 build**，不是发布件：
+        # `.github/workflows/release.yml` 的矩阵本来也只有 gnu 的 linux 两个。
+        # 详见 docs/DEVELOPMENT.md 的 musl 一节；这里如实说，别让 --list 绿着骗人。
+        if ! have_musl_gui_libs "$target"; then
+            echo "链接不了 qc：没有 musl 版的 xcb/xkbcommon（gpui 硬链接）。本机 musl 只做 cargo check 与无 GUI 包的 build，发布件不发 musl"
         fi
         ;;
     *-pc-windows-gnullvm)
@@ -509,13 +583,26 @@ prepare_target() {
         if [ -z "${!suffix:-}" ]; then
             export "$suffix=$SYSROOT/lib/rustlib/$HOST_TRIPLE/bin/rust-lld"
         fi
-        if [ "$(target_arch "$target")" != "$(target_arch "$HOST_TRIPLE")" ]; then
-            local cc key
-            key="CC_${target//-/_}"
-            if [ -z "${!key:-}" ]; then
-                cc=$(cross_cc "$target") || die "找不到 $target 的 C 交叉编译器（装交叉 gcc 或 zig）"
-                export "$key=$cc"
-            fi
+        # C 侧：aws-lc-sys / libsqlite3-sys 要一个能产出 musl 目标文件的编译器。
+        # **同架构也要**——cc-rs 找的是 `x86_64-linux-musl-gcc`，宿主 gcc 产出的
+        # 是 glibc 目标文件，顶不上。以前这里只在跨架构时设 CC，于是 amd64 的 musl
+        # 目标在 `--list` 里显示 ready、真编时才在 build script 里炸。
+        local cc key
+        cc=$(musl_cross_cc "$target") || cc="musl 交叉 gcc"
+        key="CC_${target//-/_}"
+        if [ -z "${!key:-}" ]; then
+            cc=$(cross_cc "$target") || die "找不到 $cc（装 musl 交叉 gcc、跑 scripts/install-musl-gcc.sh，或装 zig）"
+            export "$key=$cc"
+        fi
+        # C++ 侧：`freetype-sys` 在 pkg-config 失败时退回编自带的 C++ 源码，cc-rs 按
+        # 名字找 `<triple>-g++`。只有 CC 时它会退到宿主 g++（产出 glibc/宿主架构的
+        # 目标文件），所以同一个替身也要指给 CXX。
+        local cxx cxxname ckey
+        ckey="CXX_${target//-/_}"
+        cxxname=$(musl_cross_cxx "$target") || cxxname=""
+        if [ -n "$cxxname" ] && [ -z "${!ckey:-}" ] &&
+            cxx=$(find_musl_cc "$cxxname"); then
+            export "$ckey=$cxx"
         fi
         ;;
     *-pc-windows-gnullvm)
@@ -564,10 +651,17 @@ prepare_target() {
     # x11rb 是纯 Rust，wayland-sys 已经启用 dlopen，freetype-sys 在 pkg-config 失败时
     # 退回编自带的 C++ 源码。
     #
-    # 只在**宿主不是 Linux** 时补（即交叉编），原生 Linux 构建照旧硬链接：CI 发的
-    # linux-amd64 / linux-arm64 都是原生跑的，产物与今天就一致，不必重验。代价写在
-    # ADR-0086 里——交叉产物与发布件的 fontconfig 链接方式不同，本地交叉件只用于冒烟。
-    if [ "$(target_os "$target")" = linux ] && [ "$HOST_OS" != linux ] &&
+    # 判据是「**目标 != 宿主**」，不是「宿主不是 Linux」。
+    #
+    # 2026-11-24 撞到的形状：在 Linux 宿主上编 x86_64-unknown-linux-musl 也是交叉
+    # 编，而 `HOST_OS = linux` 让这条补丁没生效，于是 pkg-config 拿宿主的 `.pc`
+    # 去配 musl 目标，直接在 build script 里 panic。同一台机器上的
+    # aarch64-unknown-linux-gnu 也一样（x86_64 的 .pc 配上 arm64 目标）。
+    #
+    # 原生构建（target == 宿主）照旧硬链接：CI 发的 linux-amd64 / linux-arm64 都是
+    # 原生跑的，产物与今天就一致，不必重验。代价写在 ADR-0086 里——交叉产物与发布件
+    # 的 fontconfig 链接方式不同，本地交叉件只用于冒烟。
+    if [ "$(target_os "$target")" = linux ] && [ "$target" != "$HOST_TRIPLE" ] &&
         [ -z "${RUST_FONTCONFIG_DLOPEN:-}" ]; then
         export RUST_FONTCONFIG_DLOPEN=1
     fi

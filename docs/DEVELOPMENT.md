@@ -27,8 +27,8 @@ make check-platforms   # 宿主编不了的那几个 target 的类型检查
 ## 已安装的 target
 
 `make check-platforms` 只检查**非宿主**的 target，所以列表要和发布矩阵对得上。
-发布矩阵是 8 个目标（`Makefile` 的 `PLATFORMS`），减去宿主 `x86_64-unknown-linux-gnu`
-还剩 **7 个**，本机 7 个都装上了：
+`Makefile` 的 `PLATFORMS` 有 8 个名字，减去宿主 `x86_64-unknown-linux-gnu`
+还剩 **7 个**，本机 7 个都装上了（其中 musl 两个只用于 check，见「musl」一节）：
 
 ```bash
 rustup target add \
@@ -91,6 +91,7 @@ scripts/install-zig.sh --check    # 只报告，不联网
 sudo apt install libfontconfig-dev libfreetype-dev \
                  libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 sudo apt install bubblewrap        # 沙箱的运行时测试
+sudo apt install musl-tools        # 可选：musl 的 C 驱动（只有宿主架构，见「musl」一节）
 ```
 
 - 前一行是 **GUI 的字体/输入栈**：`cargo build --workspace` 会连 `qcode-gui` 一起编，
@@ -98,6 +99,55 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
   见 README「Linux 构建依赖」。
 - `bubblewrap` 只影响 `cargo test -p qcode-tools --lib sandbox::tests::linux_tests`；
   没有它，那条测试会被跳过而不是失败（CI 里装了，所以 CI 上是真跑）。
+
+## musl：只做 check 与无 GUI 包的 build，不出发布件
+
+`*-unknown-linux-musl` 在本机是**验证目标**，不是发布目标。`.github/workflows/release.yml`
+的矩阵只有 `linux-amd64` / `linux-arm64`（两个 gnu），`scripts/build-linux-in-container.sh`
+里也写着容器路径不覆盖 musl——`Makefile` 的 `PLATFORMS` 列着 musl 两个名字，但没有哪条
+流水线产出它们。
+
+能跑通的部分：
+
+```bash
+eval "$(scripts/musl-env.sh)"                            # 宿主架构（x86_64）
+eval "$(scripts/musl-env.sh aarch64-unknown-linux-musl)" # 或指定
+
+cargo check --workspace --target x86_64-unknown-linux-musl   # 17 个 crate 全过
+cargo build --target x86_64-unknown-linux-musl -p qcd        # 静态 PIE，能直接跑
+```
+
+`qcd` 产出的确实是 musl 静态件（`file` 报 `static-pie linked`），没有 gpui 依赖，
+所以这条路是真的可用，不是「check 绿了就转圈」。
+
+**`qc` 链接不出来**，这是结构性限制，不是缺包：
+
+```plain
+rust-lld: error: unable to find library -lxkbcommon
+```
+
+gpui 在 Linux 上硬链接 `xcb` / `xkbcommon` / `xkbcommon-x11`（链接行里按名字要），这几个
+库只有 glibc 版本；Debian 不提供 musl 编的整套，自己编一套属于另一件事。`--list` 因此把
+musl 两个目标列为 skip 并写明原因——以前它显示 `ready`，而真编到链接才炸。
+
+`musl-env.sh` 打印四样东西，每样都对应一个「看起来像仓库 bug」的报错：
+
+| 项 | 没有它时报什么 |
+| --- | --- |
+| `CC_<triple>` / `CXX_<triple>` | `cc-rs: failed to find tool "x86_64-linux-musl-gcc"`（cc-rs 按名字找，宿主 gcc 顶不上） |
+| `RUST_FONTCONFIG_DLOPEN=1` | `pkg-config has not been configured to support cross-compilation` 的 panic |
+| `CARGO_TARGET_<TRIPLE>_LINKER` | 默认用宿主 `cc` 链接 → `cannot find -lxcb` / `-lc++` |
+| `RUSTFLAGS=-Lnative=…` | `rust-lld: unable to find library -ldl`（`rust-lld` 不读 musl 驱动的 spec） |
+
+工具链怎么来，按优先级：
+
+1. 真的交叉 gcc：`musl-tools`（只有宿主架构、**没有 `g++`**）或 musl.cc 的整套
+   （每架构 ~115 MB）。在 PATH 上就直接用，`scripts/install-musl-gcc.sh` 也会跳过它。
+2. 缺的部分由 zig 补：`scripts/install-musl-gcc.sh` 把 `.toolchains/musl-gcc/bin/` 里
+   缺的 `<arch>-linux-musl-{gcc,g++}` 做成指向 `scripts/zig-cc-musl.sh` 的符号链接
+   （`--check` 只报告，自带 smoke test：真编一个 `.o` 再确认是 ELF）。之所以要 `g++`：
+   `freetype-sys` 在 pkg-config 失败时退回编自带的 C++ 源码，而 cc-rs 找的是
+   `<arch>-linux-musl-g++`，`musl-tools` 不提供。
 
 ## 环境变量
 
@@ -139,6 +189,7 @@ rustc -vV | grep '^host'                 # 宿主 triple
 rustup target list --installed           # 或看 sysroot/lib/rustlib/
 command -v x86_64-w64-mingw32-clang      # Windows 交叉 C 编译器
 command -v zig && zig version            # darwin 交叉 C 编译器
+scripts/install-musl-gcc.sh --check      # musl 的 C/C++ 驱动（缺什么补什么）
 pkg-config --modversion fontconfig freetype2 xcb xkbcommon xkbcommon-x11
 cargo fmt --all --check
 make check
