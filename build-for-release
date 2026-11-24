@@ -417,16 +417,24 @@ not_ready_reason() {
         fi
         ;;
     linux)
-        case "$target" in
-        *-linux-musl)
-            echo "容器路径只覆盖 gnu（镜像里没有 musl 交叉 gcc）；musl 请上 Linux 或补工具链"
-            return
-            ;;
-        esac
-        # 非 Linux 宿主上的 gnu 目标走容器（needs_container）；到这里的只有
-        # 「既不是 Linux 宿主、也没有 podman」这一种，说清楚两条路。
+        # 宿主就是 Linux 时，下面两句「换个地方编」都不成立（这里就是那个地方），
+        # 缺的只会是 std 或交叉 C 编译器——交给函数末尾的统一检查去说。
+        #
+        # 2026-11-24 撞到的形状：`--list all` 在 **Linux 宿主**上对两个 musl 目标报
+        # 「容器路径只覆盖 gnu……musl 请上 Linux」——用户已经在 Linux 上了。原因是
+        # musl 分支写在 HOST_OS 判断之前，先 return 掉了，真正的原因（sysroot 里没有
+        # 该目标的 std）被一句无关的容器说明盖住。
         if [ "$HOST_OS" != linux ]; then
-            echo "需要 Linux 桌面库（gpui 硬链接 xcb/xkbcommon）：装 podman 走容器，或在 Linux 上构建"
+            case "$target" in
+            *-linux-musl)
+                echo "容器路径只覆盖 gnu（镜像里没有 musl 交叉 gcc）；musl 请上 Linux 或补工具链"
+                ;;
+            *)
+                # 非 Linux 宿主上的 gnu 目标走容器（needs_container）；到这里的只有
+                # 「既不是 Linux 宿主、也没有 podman」这一种，说清楚两条路。
+                echo "需要 Linux 桌面库（gpui 硬链接 xcb/xkbcommon）：装 podman 走容器，或在 Linux 上构建"
+                ;;
+            esac
             return
         fi
         ;;
@@ -447,7 +455,7 @@ not_ready_reason() {
         ;;
     esac
     if [ ! -d "$SYSROOT/lib/rustlib/$target/lib" ]; then
-        echo "sysroot 里没有该目标的 std（重新装 cot 的 rust 插件）"
+        echo "sysroot 里没有该目标的 std（rustup target add ${target}，或重新装 cot 的 rust 插件）"
         return
     fi
     case "$target" in
