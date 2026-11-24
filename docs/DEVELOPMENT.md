@@ -60,14 +60,27 @@ Rust 侧装好 std 还不够：`libsqlite3-sys` 与 `aws-lc-sys` 的 build scrip
 
 | 目标平台 | 需要 | 本机验证 |
 | --- | --- | --- |
-| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 曾验证（`llvm-mingw_20261006`，两个 triple 的 check + clippy 均通过）；**2026-11-24 复核时本机已不在 PATH**，见下 |
+| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 有（`llvm-mingw_20261117`，clang 23.1.6；两个 triple 的 check + clippy 均通过） |
 | `*-apple-darwin` | **zig**（自带 macOS SDK：libSystem stub 与头文件） | 有（0.17.1），两个 triple 的 check + clippy 均通过 |
 
-llvm-mingw 没有对应的 `install-*.sh`（只有 zig 有）。从 llvm-mingw 的 release 页取
-`llvm-mingw-*-ucrt-ubuntu-*-x86_64.tar.xz` 解开，把 `bin/` 加进 `PATH`，或导出
-`LLVM_MINGW_DIR=<解出来那层目录>`——`find_mingw_clang` 的查找顺序是「PATH 优先，其次
-`$LLVM_MINGW_DIR/bin`」，两条都不在时 `--list`/`check-platforms` 会明说 Windows 两个
-triple 没被检查，而不是假装绿。
+llvm-mingw 没有对应的 `install-*.sh`（只有 zig 有）。本机的装法是 cot 插件
+（`cot i …/llvm-mingw_20261117_linux_amd64.tar.zst`），它同时把 `bin/` 放进 `PATH` 并导出
+`LLVM_MINGW_DIR`——正好喂上 `find_mingw_clang` 的查找顺序「PATH 优先，其次
+`$LLVM_MINGW_DIR/bin`」。
+
+手工装则从 release 页取 **`llvm-mingw-*-ucrt-ubuntu-*-x86_64.tar.xz`**，解开后同样把
+`bin/` 加进 `PATH` 或导出 `LLVM_MINGW_DIR`。下面这几个包的命名区分的**不是 CPU 架构，
+而是宿主**，下载页上最容易挑错：
+
+| 包 | 宿主 | |
+| --- | --- | --- |
+| `…-ucrt-ubuntu-22.04-x86_64.tar.xz` | Linux x86_64 | **要的就是这个**。上游只出到 22.04，老 glibc 向前兼容：实测它要 `GLIBC_2.34`，24.04 是 2.39 |
+| `…-ucrt-ubuntu-22.04-aarch64.tar.xz` | Linux aarch64 | 换的是宿主 CPU |
+| `…-ucrt-<arch>.zip` | Windows | 里面全是 `.exe`，在 Linux 上是死文件 |
+| `…-ucrt-macos-universal.tar.xz` | macOS | |
+
+两条查找路径都不在时，`--list`/`check-platforms` 会明说 Windows 两个 triple 没被检查，
+而不是假装绿。
 
 darwin 那条的两个坑（都已写进 `scripts/zig-cc-darwin.sh`，改脚本前先看它）：
 
@@ -169,13 +182,14 @@ rustc / cargo   /home/q/cot/repo/cargo/bin/         （rustup 的符号链接，
 rustup 家目录    /home/q/cot/cache/rustup            （RUSTUP_HOME；RUSTUP_DIST_SERVER=rsproxy.cn）
 sysroot         /home/q/cot/cache/rustup/toolchains/stable-x86_64-unknown-linux-gnu
 zig             /home/q/cot/lib/zig_0.17.1_linux_amd64/zig
-llvm-mingw      未装（2026-11-24 复核；Windows 交叉检查因此跳过）
+llvm-mingw      /home/q/cot/lib/llvm-mingw_20261117_linux_amd64/（cot 插件；bin/ 在 PATH，LLVM_MINGW_DIR 同指这里）
 ```
 
-这段是 2026-11-24 复核的结果。旧的写法是 `repo/cargo/bin` 为「解包发行版、无 rustup」、
-sysroot 在 `lib/rust_1.100.0_linux_amd64_gnu`——cot 的 rust 插件换成 rustup 之后这两条都
-不成立了，`rustup target add` 也随之可用（这正是上面「已安装的 target」那段现在能直接跑
-`rustup` 的原因）。
+这段是 2026-11-24 复核的结果（llvm-mingw 那一行是同日晚些时候补的）。旧的写法是
+`repo/cargo/bin` 为「解包发行版、无 rustup」、sysroot 在
+`lib/rust_1.100.0_linux_amd64_gnu`——cot 的 rust 插件换成 rustup 之后这两条都不成立了，
+`rustup target add` 也随之可用（这正是上面「已安装的 target」那段现在能直接跑 `rustup`
+的原因）。
 
 `build-for-release` 的 `find_zig` 按 `$ZIG` → `PATH` → 仓库 `.toolchains/` → cot 的插件目录
 查找，`scripts/install-zig.sh` 装到 `.toolchains/` 正是为了进这条查找链。
