@@ -299,6 +299,20 @@ mod tests {
                     usage: Default::default(),
                 }),
             ),
+            // A call with no result behind it is dropped on replay (it would
+            // otherwise invalidate every later request), so the log has to be
+            // a shape a real turn produces: call, then its result.
+            event(
+                4,
+                EventKind::ToolResult(ToolResult {
+                    call_id: "c1".into(),
+                    status: ToolStatus::Ok,
+                    output: "a".into(),
+                    metadata: Default::default(),
+                    diff: None,
+                    images: Vec::new(),
+                }),
+            ),
         ];
         let text = summary_input(&events, 10);
         assert!(text.contains("User: "));

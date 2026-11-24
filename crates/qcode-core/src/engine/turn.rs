@@ -478,10 +478,50 @@ where
         if !step_text.trim().is_empty() {
             last_text = step_text;
         }
-        if !collected.blocks.is_empty() {
+
+        let calls: Vec<ToolCallBlock> = collected
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => Some(ToolCallBlock {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        // Whether this round's calls will run decides what may reach the log.
+        // A round that stops here — cancelled, a spent budget, a repeated call —
+        // must not leave an assistant message whose `tool_calls` have no results
+        // behind them: the provider answers that shape with "insufficient tool
+        // messages following tool_calls message" on *every* later request of the
+        // session. Deciding before the append is what keeps the log legal even
+        // for an instant.
+        let cost_brake = options
+            .max_cost_usd
+            .is_some_and(|limit| total_cost > limit * COST_BRAKE_RATIO);
+        let no_progress_rounds = if collected.cancelled || cost_brake || calls.is_empty() {
+            None
+        } else {
+            progress.observe(&call_signature(&calls))
+        };
+        let calls_will_run = !collected.cancelled && !cost_brake && no_progress_rounds.is_none();
+
+        let stored_blocks = if calls_will_run {
+            collected.blocks.clone()
+        } else {
+            without_tool_calls(&collected.blocks)
+        };
+        if !stored_blocks.is_empty() {
             writer.append(
                 EventKind::AssistantMessage(AssistantMessage {
-                    blocks: collected.blocks.clone(),
+                    blocks: stored_blocks.clone(),
                     provider_raw: json!({ "provider": ctx.provider.name() }),
                     usage: collected.usage.clone(),
                 }),
@@ -489,7 +529,7 @@ where
             )?;
             messages.push(Message {
                 role: Role::Assistant,
-                blocks: collected.blocks.clone(),
+                blocks: stored_blocks,
                 tool_call_id: None,
             });
         }
@@ -511,7 +551,7 @@ where
         }
 
         if let Some(limit) = options.max_cost_usd
-            && total_cost > limit * COST_BRAKE_RATIO
+            && cost_brake
         {
             let pause = PauseInfo {
                 reason: PauseReason::MaxCost,
@@ -541,23 +581,6 @@ where
             );
         }
 
-        let calls: Vec<ToolCallBlock> = collected
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolCall {
-                    call_id,
-                    name,
-                    arguments,
-                } => Some(ToolCallBlock {
-                    call_id: call_id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-
         if calls.is_empty() {
             let text = blocks_text(&collected.blocks);
             return finish(
@@ -577,7 +600,7 @@ where
 
         // The model repeating itself is not progress; stop before the turn
         // budget is spent on identical calls.
-        if let Some(rounds) = progress.observe(&call_signature(&calls)) {
+        if let Some(rounds) = no_progress_rounds {
             let tool = calls
                 .first()
                 .map(|call| call.name.clone())
@@ -714,6 +737,21 @@ pub(crate) fn blocks_text(blocks: &[ContentBlock]) -> String {
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })
+        .collect()
+}
+
+/// The blocks a round may keep when its calls will never run.
+///
+/// Dropping the calls is the point: an assistant `tool_calls` message with no
+/// tool results behind it makes every later request of the session invalid, and
+/// a call that never started has no result to write. The text and the reasoning
+/// stay — that is what the model actually said, and a paused round still wants
+/// its last words in the transcript.
+pub(crate) fn without_tool_calls(blocks: &[ContentBlock]) -> Vec<ContentBlock> {
+    blocks
+        .iter()
+        .filter(|block| !matches!(block, ContentBlock::ToolCall { .. }))
+        .cloned()
         .collect()
 }
 

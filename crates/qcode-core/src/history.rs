@@ -144,8 +144,65 @@ where
     }
     // The batch ended with the event log: the pictures still have to land.
     flush_tool_images(&mut messages, &mut tool_images);
+    // Logs written by older builds can hold a call that never got a result.
+    drop_unanswered_calls(&mut messages);
 
     messages
+}
+
+/// Drop `tool_calls` that no tool message answers.
+///
+/// A turn that paused on its budget (or stopped on `no_progress`) used to
+/// persist the call without a result, and a process that died mid-round leaves
+/// the same shape. Replayed unchanged, such a message makes the provider reject
+/// *every* later request ("insufficient tool messages following tool_calls
+/// message"), so the session could never be resumed. The text stays; the
+/// unanswered calls go — nothing ran, so nothing is lost.
+fn drop_unanswered_calls(messages: &mut Vec<Message>) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].role != Role::Assistant {
+            index += 1;
+            continue;
+        }
+        let calls: Vec<String> = messages[index]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        // Only the messages directly behind it answer it; a call answered later
+        // is no more valid than one answered never.
+        let mut answered: Vec<String> = Vec::new();
+        let mut next = index + 1;
+        while next < messages.len() && messages[next].role == Role::Tool {
+            if let Some(call_id) = &messages[next].tool_call_id {
+                answered.push(call_id.clone());
+            }
+            next += 1;
+        }
+        if calls.iter().all(|call_id| answered.contains(call_id)) {
+            index = next;
+            continue;
+        }
+
+        messages[index].blocks.retain(|block| match block {
+            ContentBlock::ToolCall { call_id, .. } => answered.contains(call_id),
+            _ => true,
+        });
+        if messages[index].blocks.is_empty() {
+            messages.remove(index);
+        } else {
+            index += 1;
+        }
+    }
 }
 
 /// Append the deferred picture messages, in order, after the tool messages
@@ -598,5 +655,82 @@ mod tests {
             &messages[3].blocks[0],
             ContentBlock::Text { text } if text.contains("shot.png")
         ));
+    }
+
+    /// A log written by an older build can hold a call that never ran (a pause
+    /// on budget, a `no_progress` stop). Replayed unchanged, the provider
+    /// rejects every later request, so the replay drops exactly the calls that
+    /// have no answer right behind them.
+    #[test]
+    fn unanswered_calls_are_dropped_on_replay() {
+        let events = vec![
+            event(
+                1,
+                EventKind::AssistantMessage(AssistantMessage {
+                    blocks: vec![
+                        ContentBlock::Text {
+                            text: "let me look".into(),
+                        },
+                        ContentBlock::ToolCall {
+                            call_id: "ran".into(),
+                            name: "read_file".into(),
+                            arguments: json!({"path": "a"}),
+                        },
+                        ContentBlock::ToolCall {
+                            call_id: "never-ran".into(),
+                            name: "run_shell".into(),
+                            arguments: json!({"command": "ls"}),
+                        },
+                    ],
+                    provider_raw: json!({}),
+                    usage: Default::default(),
+                }),
+            ),
+            event(
+                2,
+                EventKind::ToolResult(ToolResult {
+                    call_id: "ran".into(),
+                    status: ToolStatus::Ok,
+                    output: "a".into(),
+                    metadata: Default::default(),
+                    diff: None,
+                    images: Vec::new(),
+                }),
+            ),
+        ];
+
+        let messages = messages_from_events(&events);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, Role::Assistant);
+        let calls: Vec<&str> = messages[0]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall { call_id, .. } => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, vec!["ran"], "only the answered call survives");
+        assert_eq!(messages[1].role, Role::Tool);
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("ran"));
+
+        // A call-only message with nothing answered disappears entirely: an
+        // assistant turn that said nothing and did nothing is no message.
+        let only = vec![event(
+            3,
+            EventKind::AssistantMessage(AssistantMessage {
+                blocks: vec![ContentBlock::ToolCall {
+                    call_id: "never-ran".into(),
+                    name: "run_shell".into(),
+                    arguments: json!({"command": "ls"}),
+                }],
+                provider_raw: json!({}),
+                usage: Default::default(),
+            }),
+        )];
+        assert!(
+            messages_from_events(&only).is_empty(),
+            "an unanswered call-only round leaves no message behind"
+        );
     }
 }

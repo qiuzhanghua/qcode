@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use qcode_core::approval::AutoApprove;
 use qcode_core::cost::Pricing;
 use qcode_core::engine::{EngineError, RunOptions, TurnContext, run_turn};
-use qcode_core::event::{EventKind, PauseLimit, PauseReason, SessionStarted, TurnStatus, Usage};
+use qcode_core::event::{
+    ContentBlock, EventKind, PauseLimit, PauseReason, SessionStarted, TurnStatus, Usage,
+};
 use qcode_core::policy::Policy;
 use qcode_core::provider::{StopReason, StreamEvent, ToolSpec};
 use qcode_core::store::SessionStore;
@@ -195,6 +197,24 @@ async fn exceeding_the_budget_pauses_the_turn_before_tools_run() {
         event.kind,
         EventKind::ToolResult(_) | EventKind::ToolCall(_)
     )));
+    // ...and the abandoned call must not ride on the assistant message either:
+    // a persisted `tool_calls` with no results behind it would make every later
+    // request of this session invalid.
+    let persisted_calls = events.iter().filter_map(|event| match &event.kind {
+        EventKind::AssistantMessage(message) => Some(
+            message
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::ToolCall { .. }))
+                .count(),
+        ),
+        _ => None,
+    });
+    assert_eq!(
+        persisted_calls.sum::<usize>(),
+        0,
+        "a pause keeps the text, not the call that never ran"
+    );
     let ended = events
         .iter()
         .find_map(|event| match &event.kind {

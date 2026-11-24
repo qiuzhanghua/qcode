@@ -723,3 +723,101 @@ async fn cancellation_stops_a_hanging_stream() {
         Some(EventKind::TurnEnded(ended)) if ended.status == TurnStatus::Cancelled
     ));
 }
+
+/// Every call in the log has a result right behind it, or the session can never
+/// be resumed: the provider rejects the whole request otherwise.
+fn calls_left_without_a_result(events: &[qcode_core::event::Event]) -> Vec<String> {
+    use qcode_core::event::ContentBlock;
+
+    let mut pending: Vec<String> = Vec::new();
+    let mut dangling: Vec<String> = Vec::new();
+    for event in events {
+        match &event.kind {
+            EventKind::AssistantMessage(message) => {
+                dangling.extend(pending.drain(..));
+                pending.extend(message.blocks.iter().filter_map(|block| match block {
+                    ContentBlock::ToolCall { call_id, .. } => Some(call_id.clone()),
+                    _ => None,
+                }));
+            }
+            EventKind::ToolResult(result) => pending.retain(|id| id != &result.call_id),
+            EventKind::UserMessage(_) => dangling.extend(pending.drain(..)),
+            _ => {}
+        }
+    }
+    dangling.extend(pending);
+    dangling
+}
+
+/// The repeating-call guard stops the turn *after* the model asked for the call
+/// again. That last call never runs, so it must not be persisted: an assistant
+/// message with `tool_calls` and no results behind it makes every later request
+/// of the session invalid ("insufficient tool messages").
+#[tokio::test]
+async fn the_no_progress_stop_leaves_no_call_without_a_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).unwrap();
+
+    // Ten identical rounds trip the guard; one script entry per round.
+    let provider = MockProvider::scripted((0..10).map(|_| tool_response("fake")).collect());
+    let tools = ToolRegistry::new(vec![Arc::new(FakeTool)]);
+    let policy = Policy::default();
+
+    let error = run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &AutoApprove,
+            snapshots: None,
+            scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
+            questioner: None,
+        },
+        RunOptions {
+            session_id: &id,
+            model: "mock-1",
+            input: "loop".to_string(),
+            cwd: dir.path().to_path_buf(),
+            max_turns: 20,
+            cancel: CancellationToken::new(),
+            pricing: None,
+            max_cost_usd: None,
+            on_delta: None,
+            context_window: None,
+            agents_md: None,
+            skills: None,
+            network: None,
+            attachments: Vec::new(),
+            inbox: None,
+            continuation: None,
+            scheduled: None,
+        },
+        |_| {},
+    )
+    .await
+    .expect_err("the guard stops the turn");
+
+    assert!(
+        matches!(
+            error,
+            qcode_core::engine::EngineError::NoProgress { rounds: 10, .. }
+        ),
+        "unexpected error: {error:?}"
+    );
+
+    let events = store.load(&id).unwrap();
+    assert!(
+        events.iter().any(
+            |event| matches!(&event.kind, EventKind::Error(error) if error.kind == "no_progress")
+        ),
+        "the stop is still reported"
+    );
+    assert_eq!(
+        calls_left_without_a_result(&events),
+        Vec::<String>::new(),
+        "the call that never ran must not be left in the log"
+    );
+}
