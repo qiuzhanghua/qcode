@@ -3,6 +3,9 @@
 //!
 //! This is the contract ADR-0061 promises: "replay equals the first send".
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use qcode_attachments::{AttachmentRef, AttachmentStore};
@@ -10,10 +13,11 @@ use qcode_core::engine::{Attachment, RunOptions, TurnContext, run_turn};
 use qcode_core::event::{ContentBlock, EventKind, SessionStarted};
 use qcode_core::history::messages_from_events_with;
 use qcode_core::policy::Policy;
-use qcode_core::provider::{Capabilities, Role};
+use qcode_core::provider::{Capabilities, Role, StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
-use qcode_core::tool::ToolRegistry;
+use qcode_core::tool::{ApprovalClass, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 use qcode_providers::MockProvider;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 /// A 2×1 PNG: enough for the store to read a real width/height back.
@@ -412,4 +416,161 @@ async fn past_the_request_budget_the_oldest_pictures_become_placeholders() {
         })
         .expect("an attachment list");
     assert_eq!(kept, 21);
+}
+
+/// A tool that hands back a real picture, like `read_file` on a PNG.
+struct ShotTool;
+
+#[async_trait]
+impl Tool for ShotTool {
+    fn name(&self) -> &str {
+        "shot"
+    }
+
+    fn spec(&self) -> qcode_core::provider::ToolSpec {
+        qcode_core::provider::ToolSpec {
+            name: "shot".to_string(),
+            description: "returns a picture".to_string(),
+            parameters: json!({"type": "object"}),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &Value) -> ApprovalClass {
+        ApprovalClass::Read
+    }
+
+    async fn execute(&self, _ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        let mut output = ToolOutput::ok("shot.png: image/png, 70 bytes — returned as an image");
+        output.images = vec![qcode_core::tool::ToolImage {
+            mime_type: "image/png".to_string(),
+            data: png(),
+            label: "shot.png".to_string(),
+        }];
+        Ok(output)
+    }
+}
+
+/// A text-only tool; it only exists to make the batch two calls wide.
+struct TextTool;
+
+#[async_trait]
+impl Tool for TextTool {
+    fn name(&self) -> &str {
+        "plain"
+    }
+
+    fn spec(&self) -> qcode_core::provider::ToolSpec {
+        qcode_core::provider::ToolSpec {
+            name: "plain".to_string(),
+            description: "returns text".to_string(),
+            parameters: json!({"type": "object"}),
+        }
+    }
+
+    fn approval(&self, _ctx: &ToolContext, _args: &Value) -> ApprovalClass {
+        ApprovalClass::Read
+    }
+
+    async fn execute(&self, _ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("plain output"))
+    }
+}
+
+/// Two calls in one assistant message, the first of which hands back a picture.
+///
+/// The follow-up user message must come after *both* tool messages: the wire
+/// format requires an assistant `tool_calls` message to be answered by
+/// consecutive tool messages, and a user message in between makes the very next
+/// request of the same turn invalid ("insufficient tool messages following
+/// tool_calls message"). A real session hit this with `read_file` + `run_shell`
+/// in one round.
+#[tokio::test]
+async fn a_tools_picture_lands_after_the_last_tool_message_of_the_batch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path().join("data"));
+    let (id, _) = store.create(&meta()).expect("session");
+
+    let provider = MockProvider::scripted(vec![
+        vec![
+            StreamEvent::Started,
+            StreamEvent::ToolCallDone {
+                call_id: "c1".to_string(),
+                name: "shot".to_string(),
+                arguments: json!({}),
+            },
+            StreamEvent::ToolCallDone {
+                call_id: "c2".to_string(),
+                name: "plain".to_string(),
+                arguments: json!({}),
+            },
+            StreamEvent::Ended {
+                stop_reason: StopReason::ToolUse,
+            },
+        ],
+        vec![
+            StreamEvent::Started,
+            StreamEvent::TextDelta("done".to_string()),
+            StreamEvent::Ended {
+                stop_reason: StopReason::EndTurn,
+            },
+        ],
+    ])
+    .with_capabilities(Capabilities {
+        images: true,
+        ..Capabilities::default()
+    });
+    let tools = ToolRegistry::new(vec![Arc::new(ShotTool), Arc::new(TextTool)]);
+    let policy = Policy::default();
+
+    run_turn(
+        TurnContext {
+            store: &store,
+            provider: &provider,
+            tools: &tools,
+            policy: &policy,
+            approver: &qcode_core::approval::AutoApprove,
+            snapshots: None,
+            scheduler: None,
+            driver: qcode_core::scheduler::DriverStatus::Unknown,
+            questioner: None,
+        },
+        options(&id, dir.path(), Vec::new()),
+        |_| {},
+    )
+    .await
+    .expect("turn");
+
+    let request = provider.requests().get(1).cloned().expect("second round");
+    let first_tool = request
+        .messages
+        .iter()
+        .position(|message| message.role == Role::Tool)
+        .expect("a tool message");
+    assert_eq!(request.messages[first_tool - 1].role, Role::Assistant);
+    assert_eq!(
+        request.messages[first_tool - 1]
+            .blocks
+            .iter()
+            .filter(|block| matches!(block, ContentBlock::ToolCall { .. }))
+            .count(),
+        2,
+        "the round asked for two calls"
+    );
+
+    let mut index = first_tool;
+    while index < request.messages.len() && request.messages[index].role == Role::Tool {
+        index += 1;
+    }
+    assert_eq!(
+        index - first_tool,
+        2,
+        "both results answer back to back, with no user message between them"
+    );
+    let picture = &request.messages[index];
+    assert_eq!(picture.role, Role::User);
+    assert!(
+        matches!(picture.blocks.last(), Some(ContentBlock::Image { .. })),
+        "the picture follows the whole batch: {:?}",
+        picture.blocks
+    );
 }

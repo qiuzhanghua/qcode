@@ -146,6 +146,12 @@ where
     }
 
     let mut finished = false;
+    // Pictures a tool read (ADR-0081) go in a user message, but only after
+    // *every* tool message of this batch: the provider requires the assistant's
+    // `tool_calls` to be answered by consecutive tool messages, so pushing the
+    // picture next to its own result would split the batch and make the next
+    // request invalid. Collected here, appended after the loop.
+    let mut image_messages: Vec<Vec<ContentBlock>> = Vec::new();
     for (index, planned) in planned.into_iter().enumerate() {
         let output = outputs[index].take().expect("every call has a result");
         // A tool may have done work on the engine's behalf (a sub-agent).
@@ -175,10 +181,10 @@ where
             }],
             tool_call_id: Some(planned.call.call_id),
         });
-        // The pictures this call produced go in a user message right behind the
-        // result: a tool-role message may only carry text in every wire format
-        // we speak (ADR-0081). Built from the bytes in hand rather than read
-        // back from the store — the blobs were just written.
+        // The pictures this call produced cannot ride on the tool message: a
+        // tool-role message may only carry text in every wire format we speak
+        // (ADR-0081). Built from the bytes in hand rather than read back from
+        // the store — the blobs were just written.
         if !output.images.is_empty() {
             let images = output
                 .images
@@ -192,12 +198,20 @@ where
                 })
                 .collect();
             if let Some(blocks) = super::history::image_followup(images) {
-                messages.push(Message {
-                    role: Role::User,
-                    blocks,
-                    tool_call_id: None,
-                });
+                image_messages.push(blocks);
             }
+        }
+    }
+
+    // The batch is fully answered; only now may the pictures follow it. A
+    // cancelled run ends the turn right here, so its pictures are moot.
+    if !finished {
+        for blocks in image_messages {
+            messages.push(Message {
+                role: Role::User,
+                blocks,
+                tool_call_id: None,
+            });
         }
     }
 

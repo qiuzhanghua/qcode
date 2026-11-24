@@ -80,20 +80,33 @@ where
     let is_replaced = |seq: u64| replaced.iter().any(|(from, to)| seq >= *from && seq <= *to);
 
     let mut messages = Vec::new();
+    // Pictures a tool read (ADR-0081) cannot ride on the tool message — every
+    // wire format allows text only there — so they follow as a user message.
+    // They may only appear *after the last* tool message of the batch: the
+    // provider requires one assistant `tool_calls` message to be answered by
+    // consecutive tool messages, and a user message between two results makes
+    // the whole request invalid ("insufficient tool messages"). Holding them
+    // here instead of pushing them next to their own result is what keeps a
+    // batch of several calls (read_file + run_shell, say) legal.
+    let mut tool_images: Vec<Vec<ContentBlock>> = Vec::new();
 
     for event in events {
         if is_replaced(event.seq) {
             continue;
         }
         match &event.kind {
-            EventKind::Compaction(compaction) => messages.push(Message {
-                role: Role::User,
-                blocks: vec![ContentBlock::Text {
-                    text: summary_text(&compaction.summary),
-                }],
-                tool_call_id: None,
-            }),
+            EventKind::Compaction(compaction) => {
+                flush_tool_images(&mut messages, &mut tool_images);
+                messages.push(Message {
+                    role: Role::User,
+                    blocks: vec![ContentBlock::Text {
+                        text: summary_text(&compaction.summary),
+                    }],
+                    tool_call_id: None,
+                });
+            }
             EventKind::UserMessage(message) => {
+                flush_tool_images(&mut messages, &mut tool_images);
                 let blocks = blocks_for_message(
                     &message.text,
                     &message.attachments,
@@ -106,11 +119,14 @@ where
                     tool_call_id: None,
                 });
             }
-            EventKind::AssistantMessage(message) => messages.push(Message {
-                role: Role::Assistant,
-                blocks: message.blocks.clone(),
-                tool_call_id: None,
-            }),
+            EventKind::AssistantMessage(message) => {
+                flush_tool_images(&mut messages, &mut tool_images);
+                messages.push(Message {
+                    role: Role::Assistant,
+                    blocks: message.blocks.clone(),
+                    tool_call_id: None,
+                });
+            }
             EventKind::ToolResult(result) => {
                 messages.push(Message {
                     role: Role::Tool,
@@ -119,23 +135,29 @@ where
                     }],
                     tool_call_id: Some(result.call_id.clone()),
                 });
-                // Pictures from a tool (ADR-0081) cannot ride on the tool
-                // message: every wire format we speak allows text only there.
-                // They go in a user message right behind it, which is the one
-                // role all of them accept images in.
                 if let Some(blocks) = tool_image_blocks(result, &mut load) {
-                    messages.push(Message {
-                        role: Role::User,
-                        blocks,
-                        tool_call_id: None,
-                    });
+                    tool_images.push(blocks);
                 }
             }
             _ => {}
         }
     }
+    // The batch ended with the event log: the pictures still have to land.
+    flush_tool_images(&mut messages, &mut tool_images);
 
     messages
+}
+
+/// Append the deferred picture messages, in order, after the tool messages
+/// they belong to. Called at every message boundary and at the end of the log.
+fn flush_tool_images(messages: &mut Vec<Message>, pending: &mut Vec<Vec<ContentBlock>>) {
+    for blocks in pending.drain(..) {
+        messages.push(Message {
+            role: Role::User,
+            blocks,
+            tool_call_id: None,
+        });
+    }
 }
 
 /// Assemble the follow-up user message for pictures a tool produced: one
@@ -493,5 +515,88 @@ mod tests {
         let messages = messages_from_events_with(&events, |_| None, |_| String::new());
         assert_eq!(messages.len(), 1, "only the tool result, no empty caption");
         assert_eq!(messages[0].role, Role::Tool);
+    }
+
+    /// One assistant message may ask for several calls (`read_file` plus
+    /// `run_shell` in the same round, which a real run did). The provider wants
+    /// every call answered by tool messages *back to back*; a user message
+    /// carrying the picture between the two results makes it reject the request
+    /// with "insufficient tool messages following tool_calls message". So the
+    /// picture has to wait for the end of the batch.
+    #[test]
+    fn a_tools_picture_waits_for_the_whole_batch_of_results() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = qcode_attachments::AttachmentStore::open(dir.path()).expect("store");
+        let image = store
+            .put_image(qcode_attachments::NewImage {
+                bytes: &png_bytes(),
+                mime: qcode_attachments::ImageMime::Png,
+                name: Some("shot.png"),
+            })
+            .expect("put image");
+
+        let events = vec![
+            event(
+                1,
+                EventKind::AssistantMessage(AssistantMessage {
+                    blocks: vec![
+                        ContentBlock::ToolCall {
+                            call_id: "c1".into(),
+                            name: "read_file".into(),
+                            arguments: json!({"path": "shot.png"}),
+                        },
+                        ContentBlock::ToolCall {
+                            call_id: "c2".into(),
+                            name: "run_shell".into(),
+                            arguments: json!({"command": "ls"}),
+                        },
+                    ],
+                    provider_raw: json!({}),
+                    usage: Default::default(),
+                }),
+            ),
+            event(
+                2,
+                EventKind::ToolResult(ToolResult {
+                    call_id: "c1".into(),
+                    status: ToolStatus::Ok,
+                    output: "shot.png: image/png".into(),
+                    metadata: Default::default(),
+                    diff: None,
+                    images: vec![image],
+                }),
+            ),
+            event(
+                3,
+                EventKind::ToolResult(ToolResult {
+                    call_id: "c2".into(),
+                    status: ToolStatus::Ok,
+                    output: "a.txt".into(),
+                    metadata: Default::default(),
+                    diff: None,
+                    images: Vec::new(),
+                }),
+            ),
+        ];
+
+        let messages = messages_from_events_with(
+            &events,
+            |image| store.read_image(image).ok(),
+            |_| String::new(),
+        );
+
+        let roles: Vec<Role> = messages.iter().map(|message| message.role).collect();
+        assert_eq!(
+            roles,
+            vec![Role::Assistant, Role::Tool, Role::Tool, Role::User],
+            "the picture has to follow *both* tool messages"
+        );
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c2"));
+        assert!(messages[3].tool_call_id.is_none());
+        assert!(matches!(
+            &messages[3].blocks[0],
+            ContentBlock::Text { text } if text.contains("shot.png")
+        ));
     }
 }
