@@ -22,23 +22,29 @@ make check-platforms   # 宿主编不了的那几个 target 的类型检查
 | rustc | 1.100.0 | 本机验证版本；`Cargo.toml` 的 MSRV 也是 **1.100**（与容器镜像、CI `msrv` job 同一版，只有一个数字） |
 | edition | 2024 | 需要 1.85+，MSRV 已高于此 |
 | 宿主 | `x86_64-unknown-linux-gnu` | 本文所有验证都在此宿主上完成 |
-| 管理器 | rustup 或不带 rustup 的发行版 | cot 工具链是解包的发行版、**没有 rustup**，装 target 要另想办法（见下） |
+| 管理器 | rustup（cot 的 rust 插件就是） | `repo/cargo/bin/{rustc,cargo}` 是 `rustup` 的符号链接，`RUSTUP_HOME=/home/q/cot/cache/rustup`，所以 `rustup target add` 直接可用。**解包的发行版**（老式 cot 插件）没有 rustup，那种机器装 target 要另想办法（见下） |
 
 ## 已安装的 target
 
 `make check-platforms` 只检查**非宿主**的 target，所以列表要和发布矩阵对得上。
-发布矩阵是 8 个目标（`Makefile` 的 `PLATFORMS`），本机把 6 个原生目标 + 2 个 darwin
-都装上了：
+发布矩阵是 8 个目标（`Makefile` 的 `PLATFORMS`），减去宿主 `x86_64-unknown-linux-gnu`
+还剩 **7 个**，本机 7 个都装上了：
 
 ```bash
 rustup target add \
-  aarch64-unknown-linux-gnu     aarch64-unknown-linux-musl \
-  x86_64-pc-windows-gnullvm     aarch64-pc-windows-gnullvm \
-  aarch64-apple-darwin          x86_64-apple-darwin
+  aarch64-unknown-linux-gnu  x86_64-unknown-linux-musl  aarch64-unknown-linux-musl \
+  x86_64-pc-windows-gnullvm  aarch64-pc-windows-gnullvm \
+  aarch64-apple-darwin       x86_64-apple-darwin
 # 宿主 x86_64-unknown-linux-gnu 自带
 ```
 
-没有 rustup 的机器（cot 工具链）用仓库里的脚本把 `rust-std-*.tar.xz` 解进 sysroot：
+这段以前漏过一次 `x86_64-unknown-linux-musl`（矩阵里 linux 有 4 项：gnu/musl ×
+amd64/arm64，照着抄只有 3 项），后果是 `make linux-musl-amd64` 在 `--list` 里显示
+「sysroot 里没有该目标的 std」——看起来像工具链坏了，其实是这一行少抄了一个 triple。
+对账办法是两边都数一遍：`--list all` 的 linux 目标数 == `Makefile` 的 `PLATFORMS` 里的
+linux 目标数。
+
+只有**解包的发行版**（没有 rustup）才需要仓库里的脚本把 `rust-std-*.tar.xz` 解进 sysroot：
 
 ```bash
 scripts/install-rust-std.sh aarch64-apple-darwin rust-std-1.100.0-aarch64-apple-darwin.tar.xz
@@ -54,8 +60,14 @@ Rust 侧装好 std 还不够：`libsqlite3-sys` 与 `aws-lc-sys` 的 build scrip
 
 | 目标平台 | 需要 | 本机验证 |
 | --- | --- | --- |
-| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 有（`llvm-mingw_20261006`），两个 triple 的 check + clippy 均通过 |
+| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 曾验证（`llvm-mingw_20261006`，两个 triple 的 check + clippy 均通过）；**2026-11-24 复核时本机已不在 PATH**，见下 |
 | `*-apple-darwin` | **zig**（自带 macOS SDK：libSystem stub 与头文件） | 有（0.17.1），两个 triple 的 check + clippy 均通过 |
+
+llvm-mingw 没有对应的 `install-*.sh`（只有 zig 有）。从 llvm-mingw 的 release 页取
+`llvm-mingw-*-ucrt-ubuntu-*-x86_64.tar.xz` 解开，把 `bin/` 加进 `PATH`，或导出
+`LLVM_MINGW_DIR=<解出来那层目录>`——`find_mingw_clang` 的查找顺序是「PATH 优先，其次
+`$LLVM_MINGW_DIR/bin`」，两条都不在时 `--list`/`check-platforms` 会明说 Windows 两个
+triple 没被检查，而不是假装绿。
 
 darwin 那条的两个坑（都已写进 `scripts/zig-cc-darwin.sh`，改脚本前先看它）：
 
@@ -103,11 +115,17 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
 不是要求，只是本机的事实，便于对照：
 
 ```plain
-rustc / cargo   /home/q/cot/repo/cargo/bin/         （解包发行版，无 rustup）
-sysroot         /home/q/cot/lib/rust_1.100.0_linux_amd64_gnu
+rustc / cargo   /home/q/cot/repo/cargo/bin/         （rustup 的符号链接，rustup 1.29.3）
+rustup 家目录    /home/q/cot/cache/rustup            （RUSTUP_HOME；RUSTUP_DIST_SERVER=rsproxy.cn）
+sysroot         /home/q/cot/cache/rustup/toolchains/stable-x86_64-unknown-linux-gnu
 zig             /home/q/cot/lib/zig_0.17.1_linux_amd64/zig
-llvm-mingw      /home/q/cot/lib/llvm-mingw_20261006_linux_amd64/bin/
+llvm-mingw      未装（2026-11-24 复核；Windows 交叉检查因此跳过）
 ```
+
+这段是 2026-11-24 复核的结果。旧的写法是 `repo/cargo/bin` 为「解包发行版、无 rustup」、
+sysroot 在 `lib/rust_1.100.0_linux_amd64_gnu`——cot 的 rust 插件换成 rustup 之后这两条都
+不成立了，`rustup target add` 也随之可用（这正是上面「已安装的 target」那段现在能直接跑
+`rustup` 的原因）。
 
 `build-for-release` 的 `find_zig` 按 `$ZIG` → `PATH` → 仓库 `.toolchains/` → cot 的插件目录
 查找，`scripts/install-zig.sh` 装到 `.toolchains/` 正是为了进这条查找链。
