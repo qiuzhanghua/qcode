@@ -22,23 +22,29 @@ make check-platforms   # 宿主编不了的那几个 target 的类型检查
 | rustc | 1.100.0 | 本机验证版本；`Cargo.toml` 的 MSRV 也是 **1.100**（与容器镜像、CI `msrv` job 同一版，只有一个数字） |
 | edition | 2024 | 需要 1.85+，MSRV 已高于此 |
 | 宿主 | `x86_64-unknown-linux-gnu` | 本文所有验证都在此宿主上完成 |
-| 管理器 | rustup 或不带 rustup 的发行版 | cot 工具链是解包的发行版、**没有 rustup**，装 target 要另想办法（见下） |
+| 管理器 | rustup（cot 的 rust 插件就是） | `repo/cargo/bin/{rustc,cargo}` 是 `rustup` 的符号链接，`RUSTUP_HOME=/home/q/cot/cache/rustup`，所以 `rustup target add` 直接可用。**解包的发行版**（老式 cot 插件）没有 rustup，那种机器装 target 要另想办法（见下） |
 
 ## 已安装的 target
 
 `make check-platforms` 只检查**非宿主**的 target，所以列表要和发布矩阵对得上。
-发布矩阵是 8 个目标（`Makefile` 的 `PLATFORMS`），本机把 6 个原生目标 + 2 个 darwin
-都装上了：
+`Makefile` 的 `PLATFORMS` 有 8 个名字，减去宿主 `x86_64-unknown-linux-gnu`
+还剩 **7 个**，本机 7 个都装上了（其中 musl 两个只用于 check，见「musl」一节）：
 
 ```bash
 rustup target add \
-  aarch64-unknown-linux-gnu     aarch64-unknown-linux-musl \
-  x86_64-pc-windows-gnullvm     aarch64-pc-windows-gnullvm \
-  aarch64-apple-darwin          x86_64-apple-darwin
+  aarch64-unknown-linux-gnu  x86_64-unknown-linux-musl  aarch64-unknown-linux-musl \
+  x86_64-pc-windows-gnullvm  aarch64-pc-windows-gnullvm \
+  aarch64-apple-darwin       x86_64-apple-darwin
 # 宿主 x86_64-unknown-linux-gnu 自带
 ```
 
-没有 rustup 的机器（cot 工具链）用仓库里的脚本把 `rust-std-*.tar.xz` 解进 sysroot：
+这段以前漏过一次 `x86_64-unknown-linux-musl`（矩阵里 linux 有 4 项：gnu/musl ×
+amd64/arm64，照着抄只有 3 项），后果是 `make linux-musl-amd64` 在 `--list` 里显示
+「sysroot 里没有该目标的 std」——看起来像工具链坏了，其实是这一行少抄了一个 triple。
+对账办法是两边都数一遍：`--list all` 的 linux 目标数 == `Makefile` 的 `PLATFORMS` 里的
+linux 目标数。
+
+只有**解包的发行版**（没有 rustup）才需要仓库里的脚本把 `rust-std-*.tar.xz` 解进 sysroot：
 
 ```bash
 scripts/install-rust-std.sh aarch64-apple-darwin rust-std-1.100.0-aarch64-apple-darwin.tar.xz
@@ -54,8 +60,14 @@ Rust 侧装好 std 还不够：`libsqlite3-sys` 与 `aws-lc-sys` 的 build scrip
 
 | 目标平台 | 需要 | 本机验证 |
 | --- | --- | --- |
-| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 有（`llvm-mingw_20261006`），两个 triple 的 check + clippy 均通过 |
+| `*-pc-windows-gnullvm` | llvm-mingw 的 `<arch>-w64-mingw32-clang` | 曾验证（`llvm-mingw_20261006`，两个 triple 的 check + clippy 均通过）；**2026-11-24 复核时本机已不在 PATH**，见下 |
 | `*-apple-darwin` | **zig**（自带 macOS SDK：libSystem stub 与头文件） | 有（0.17.1），两个 triple 的 check + clippy 均通过 |
+
+llvm-mingw 没有对应的 `install-*.sh`（只有 zig 有）。从 llvm-mingw 的 release 页取
+`llvm-mingw-*-ucrt-ubuntu-*-x86_64.tar.xz` 解开，把 `bin/` 加进 `PATH`，或导出
+`LLVM_MINGW_DIR=<解出来那层目录>`——`find_mingw_clang` 的查找顺序是「PATH 优先，其次
+`$LLVM_MINGW_DIR/bin`」，两条都不在时 `--list`/`check-platforms` 会明说 Windows 两个
+triple 没被检查，而不是假装绿。
 
 darwin 那条的两个坑（都已写进 `scripts/zig-cc-darwin.sh`，改脚本前先看它）：
 
@@ -79,6 +91,7 @@ scripts/install-zig.sh --check    # 只报告，不联网
 sudo apt install libfontconfig-dev libfreetype-dev \
                  libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 sudo apt install bubblewrap        # 沙箱的运行时测试
+sudo apt install musl-tools        # 可选：musl 的 C 驱动（只有宿主架构，见「musl」一节）
 ```
 
 - 前一行是 **GUI 的字体/输入栈**：`cargo build --workspace` 会连 `qcode-gui` 一起编，
@@ -86,6 +99,55 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
   见 README「Linux 构建依赖」。
 - `bubblewrap` 只影响 `cargo test -p qcode-tools --lib sandbox::tests::linux_tests`；
   没有它，那条测试会被跳过而不是失败（CI 里装了，所以 CI 上是真跑）。
+
+## musl：只做 check 与无 GUI 包的 build，不出发布件
+
+`*-unknown-linux-musl` 在本机是**验证目标**，不是发布目标。`.github/workflows/release.yml`
+的矩阵只有 `linux-amd64` / `linux-arm64`（两个 gnu），`scripts/build-linux-in-container.sh`
+里也写着容器路径不覆盖 musl——`Makefile` 的 `PLATFORMS` 列着 musl 两个名字，但没有哪条
+流水线产出它们。
+
+能跑通的部分：
+
+```bash
+eval "$(scripts/musl-env.sh)"                            # 宿主架构（x86_64）
+eval "$(scripts/musl-env.sh aarch64-unknown-linux-musl)" # 或指定
+
+cargo check --workspace --target x86_64-unknown-linux-musl   # 17 个 crate 全过
+cargo build --target x86_64-unknown-linux-musl -p qcd        # 静态 PIE，能直接跑
+```
+
+`qcd` 产出的确实是 musl 静态件（`file` 报 `static-pie linked`），没有 gpui 依赖，
+所以这条路是真的可用，不是「check 绿了就转圈」。
+
+**`qc` 链接不出来**，这是结构性限制，不是缺包：
+
+```plain
+rust-lld: error: unable to find library -lxkbcommon
+```
+
+gpui 在 Linux 上硬链接 `xcb` / `xkbcommon` / `xkbcommon-x11`（链接行里按名字要），这几个
+库只有 glibc 版本；Debian 不提供 musl 编的整套，自己编一套属于另一件事。`--list` 因此把
+musl 两个目标列为 skip 并写明原因——以前它显示 `ready`，而真编到链接才炸。
+
+`musl-env.sh` 打印四样东西，每样都对应一个「看起来像仓库 bug」的报错：
+
+| 项 | 没有它时报什么 |
+| --- | --- |
+| `CC_<triple>` / `CXX_<triple>` | `cc-rs: failed to find tool "x86_64-linux-musl-gcc"`（cc-rs 按名字找，宿主 gcc 顶不上） |
+| `RUST_FONTCONFIG_DLOPEN=1` | `pkg-config has not been configured to support cross-compilation` 的 panic |
+| `CARGO_TARGET_<TRIPLE>_LINKER` | 默认用宿主 `cc` 链接 → `cannot find -lxcb` / `-lc++` |
+| `RUSTFLAGS=-Lnative=…` | `rust-lld: unable to find library -ldl`（`rust-lld` 不读 musl 驱动的 spec） |
+
+工具链怎么来，按优先级：
+
+1. 真的交叉 gcc：`musl-tools`（只有宿主架构、**没有 `g++`**）或 musl.cc 的整套
+   （每架构 ~115 MB）。在 PATH 上就直接用，`scripts/install-musl-gcc.sh` 也会跳过它。
+2. 缺的部分由 zig 补：`scripts/install-musl-gcc.sh` 把 `.toolchains/musl-gcc/bin/` 里
+   缺的 `<arch>-linux-musl-{gcc,g++}` 做成指向 `scripts/zig-cc-musl.sh` 的符号链接
+   （`--check` 只报告，自带 smoke test：真编一个 `.o` 再确认是 ELF）。之所以要 `g++`：
+   `freetype-sys` 在 pkg-config 失败时退回编自带的 C++ 源码，而 cc-rs 找的是
+   `<arch>-linux-musl-g++`，`musl-tools` 不提供。
 
 ## 环境变量
 
@@ -103,11 +165,17 @@ sudo apt install bubblewrap        # 沙箱的运行时测试
 不是要求，只是本机的事实，便于对照：
 
 ```plain
-rustc / cargo   /home/q/cot/repo/cargo/bin/         （解包发行版，无 rustup）
-sysroot         /home/q/cot/lib/rust_1.100.0_linux_amd64_gnu
+rustc / cargo   /home/q/cot/repo/cargo/bin/         （rustup 的符号链接，rustup 1.29.3）
+rustup 家目录    /home/q/cot/cache/rustup            （RUSTUP_HOME；RUSTUP_DIST_SERVER=rsproxy.cn）
+sysroot         /home/q/cot/cache/rustup/toolchains/stable-x86_64-unknown-linux-gnu
 zig             /home/q/cot/lib/zig_0.17.1_linux_amd64/zig
-llvm-mingw      /home/q/cot/lib/llvm-mingw_20261006_linux_amd64/bin/
+llvm-mingw      未装（2026-11-24 复核；Windows 交叉检查因此跳过）
 ```
+
+这段是 2026-11-24 复核的结果。旧的写法是 `repo/cargo/bin` 为「解包发行版、无 rustup」、
+sysroot 在 `lib/rust_1.100.0_linux_amd64_gnu`——cot 的 rust 插件换成 rustup 之后这两条都
+不成立了，`rustup target add` 也随之可用（这正是上面「已安装的 target」那段现在能直接跑
+`rustup` 的原因）。
 
 `build-for-release` 的 `find_zig` 按 `$ZIG` → `PATH` → 仓库 `.toolchains/` → cot 的插件目录
 查找，`scripts/install-zig.sh` 装到 `.toolchains/` 正是为了进这条查找链。
@@ -121,6 +189,7 @@ rustc -vV | grep '^host'                 # 宿主 triple
 rustup target list --installed           # 或看 sysroot/lib/rustlib/
 command -v x86_64-w64-mingw32-clang      # Windows 交叉 C 编译器
 command -v zig && zig version            # darwin 交叉 C 编译器
+scripts/install-musl-gcc.sh --check      # musl 的 C/C++ 驱动（缺什么补什么）
 pkg-config --modversion fontconfig freetype2 xcb xkbcommon xkbcommon-x11
 cargo fmt --all --check
 make check

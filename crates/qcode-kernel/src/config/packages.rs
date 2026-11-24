@@ -19,8 +19,9 @@ use super::Protocol;
 pub struct PackageEntry {
     /// Provider route key (`providers.<route>` in the config).
     pub route: &'static str,
-    /// 套餐名（`按量计费` / `Coding Plan` / `Agent Plan`）。作为产品词展示，
-    /// 与 catalog 的厂商产品名同一惯例，不翻译。
+    /// 套餐名，取 [`PKG_PAY_AS_YOU_GO`] / [`PKG_CODING_PLAN`] / [`PKG_AGENT_PLAN`]
+    /// 三者之一。作为产品词展示，与 catalog 的厂商产品名同一惯例，不翻译
+    /// （理由见那几个常量的注释）。
     pub label: &'static str,
     /// Default endpoint; a user `base_url` overrides it.
     pub base_url: &'static str,
@@ -46,6 +47,21 @@ pub struct PackageGroup {
     pub packages: &'static [PackageEntry],
 }
 
+/// 套餐名是**厂商自己的产品词**，与 catalog 的厂商名同一惯例，不翻译。
+///
+/// 提成常量而不是每行写一个字面量，有两个具体原因：
+/// - 门禁 6（禁止新增硬编码英文 UI 文案）按**位置**判定，`label:` 是它认的位置。
+///   13 个引用点各标一句 `// i18n:keep` 只会把意图埋进噪音；这里标一次就够。
+/// - 同一批出现三次以上，散着写迟早会有一处写成 `Coding plan`——那是产品词，
+///   拼错就是错字。
+///
+/// 它们与要翻的散文不同：`按量计费` 是计费方式的通用说法，但它作为套餐名是
+/// 厂商给的名字（火山引擎、阿里云等都用这同一个词指「按量」这一档）。翻成
+/// "pay as you go" 会让中英两边的套餐列表看起来是两个不同的产品。
+const PKG_PAY_AS_YOU_GO: &str = "按量计费";
+const PKG_CODING_PLAN: &str = "Coding Plan";
+const PKG_AGENT_PLAN: &str = "Agent Plan";
+
 /// The package table, in presentation order.
 ///
 /// 套餐清单 2026-11-23 用户确认。端点取自各厂商公开 OpenAI 兼容地址或既有
@@ -59,7 +75,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "volcano",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://ark.cn-beijing.volces.com/api/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "VOLC_ARK_API_KEY",
@@ -68,7 +84,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "volcano-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 base_url: "https://ark.cn-beijing.volces.com/api/coding/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "VOLC_ARK_CODING_API_KEY",
@@ -77,7 +93,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "volcano-agent",
-                label: "Agent Plan",
+                label: PKG_AGENT_PLAN,
                 base_url: "https://ark.cn-beijing.volces.com/api/plan/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "VOLC_ARK_AGENT_API_KEY",
@@ -92,7 +108,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "bigmodel",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://open.bigmodel.cn/api/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BIGMODEL_API_KEY",
@@ -101,7 +117,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "bigmodel-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BIGMODEL_CODING_API_KEY",
@@ -116,7 +132,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "dashscope",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 protocol: Protocol::OpenAi,
                 api_key_env: "DASHSCOPE_API_KEY",
@@ -125,7 +141,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "dashscope-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 base_url: "https://coding.dashscope.aliyuncs.com/v1",
                 protocol: Protocol::OpenAi,
                 api_key_env: "DASHSCOPE_CODING_API_KEY",
@@ -140,7 +156,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "xiaomi",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://api.xiaomimimo.com/v1",
                 protocol: Protocol::OpenAi,
                 api_key_env: "XIAOMI_API_KEY",
@@ -149,7 +165,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "xiaomi-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 // 小米的套餐实为「Token Plan」；OpenAI 兼容端点与按量的
                 // `api.xiaomimimo.com/v1` 不同，中国集群为 token-plan-cn 子域。
                 base_url: "https://token-plan-cn.xiaomimimo.com/v1",
@@ -166,7 +182,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "zai",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://api.z.ai/api/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "ZAI_API_KEY",
@@ -175,7 +191,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "zai-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 base_url: "https://api.z.ai/api/coding/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "ZAI_CODING_API_KEY",
@@ -190,7 +206,7 @@ pub const PACKAGES: &[PackageGroup] = &[
         packages: &[
             PackageEntry {
                 route: "byteplus",
-                label: "按量计费",
+                label: PKG_PAY_AS_YOU_GO,
                 base_url: "https://ark.ap-southeast.bytepluses.com/api/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BYTEPLUS_API_KEY",
@@ -199,7 +215,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             },
             PackageEntry {
                 route: "byteplus-coding",
-                label: "Coding Plan",
+                label: PKG_CODING_PLAN,
                 base_url: "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BYTEPLUS_CODING_API_KEY",

@@ -46,8 +46,37 @@ fn wait_for_file(path: &std::path::Path, needle: &str) -> bool {
     false
 }
 
+/// 这台机器能不能分配伪终端；不能就跳过，并**说出来**。
+///
+/// 三条测试都要真 PTY。拿不到 PTY 的环境不止一种：qcode 自己的 landlock 沙箱在
+/// `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`（`make check` 在 `run_shell`
+/// 里跑就是这种情形），精简容器里也可能没有 devpts。此时 `Session::spawn` 返回
+/// `PermissionDenied`——那不是「背压坏了」，是这台机器测不了，报成失败只会让人
+/// 把这条门禁当噪音。
+///
+/// 探测用一条 `exit 0` 的短路命令：它只验 PTY 这条管道通不通，与背压无关。
+fn require_pty(test: &str) -> bool {
+    if Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "exit 0".to_string()],
+    ))
+    .is_ok()
+    {
+        return true;
+    }
+    eprintln!(
+        "skipping {test}: cannot allocate a PTY here (no /dev/ptmx access — inside a \
+         landlock sandbox this means [sandbox] allow_pty = false). The input-backpressure \
+         behaviour is NOT verified by this run."
+    );
+    false
+}
+
 #[test]
 fn typing_still_works_after_the_input_buffer_fills_up() {
+    if !require_pty("typing_still_works_after_the_input_buffer_fills_up") {
+        return;
+    }
     let path = std::env::temp_dir().join(format!("qcode-terminal-fill-{}", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
@@ -98,6 +127,9 @@ fn typing_still_works_after_the_input_buffer_fills_up() {
 
 #[test]
 fn a_paste_larger_than_the_buffer_arrives_complete() {
+    if !require_pty("a_paste_larger_than_the_buffer_arrives_complete") {
+        return;
+    }
     // Not just "the last byte got through": the whole paste has to land, in order,
     // because a truncated `vim` paste leaves a half-edited file on disk.
     let path = std::env::temp_dir().join(format!("qcode-terminal-paste-{}", std::process::id()));
@@ -141,6 +173,9 @@ fn a_paste_larger_than_the_buffer_arrives_complete() {
 
 #[test]
 fn closing_a_session_while_a_write_waits_does_not_hang() {
+    if !require_pty("closing_a_session_while_a_write_waits_does_not_hang") {
+        return;
+    }
     // The waiting must end when the session does: a thread retrying into a full buffer
     // forever would keep the tab's pty open and the thread alive.
     let session = Session::spawn(SessionConfig::command(

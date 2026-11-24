@@ -921,6 +921,17 @@ gui:
       tj_interrupted:
         en: The sign-in flow was interrupted.
         zh-CN: 太极登录流程被打断。
+      # 登录状态区的三个短标签（详情页常驻显示，所以独立成 key）。
+      tj_status_signed_in:
+        en: Signed in (%{0})
+        zh-CN: 已登录（%{0}）
+      tj_status_signed_out:
+        en: Not signed in
+        zh-CN: 未登录
+      # token 里没有 `username` 时显示的占位账号名。
+      tj_account_fallback:
+        en: Taiji Intranet account
+        zh-CN: 太极内网账号
       collapse_config:
         en: Collapse settings ▴
         zh-CN: 收起配置 ▴
@@ -3209,6 +3220,8 @@ cli:
       connectivity: { en: "connectivity", zh-CN: 连通性 }
       credentials: { en: "credentials", zh-CN: 凭据 }
       data_dir: { en: "data dir", zh-CN: 数据目录 }
+      # 提权：不是安全检查，是「沙箱里 sudo/doas 为什么不行」那一行。
+      escalation: { en: "escalation", zh-CN: 提权 }
       key_storage: { en: "key storage", zh-CN: 密钥存储 }
       mcp: { en: "mcp", zh-CN: "MCP" }
       mcp_path: { en: "mcp path", zh-CN: "MCP 路径" }
@@ -3347,6 +3360,15 @@ cli:
       sandbox_none_boundary:
         en: "none; approval and workspace path checks are the boundary"
         zh-CN: "无；边界就是审批和路径检查"
+      # 「沙箱里 sudo / doas 为什么不行」。两句都**不报错**：一行是设计如此，
+      # 一行是没有沙箱，两者都不是配置错误，所以 doctor 用 `[ok]` 而不是 `[warn]`。
+      # 报错文案要原样写出 doas 那句，因为那才是用户 grep 到的那一行。
+      escalation_blocked:
+        en: "%{0} sets PR_SET_NO_NEW_PRIVS on every child, and the kernel will not clear it: sudo/doas cannot escalate inside the sandbox (this is by design — `doas` reports \"not installed setuid\", `sudo` reports the flag). Run privileged commands yourself, or set `[sandbox] mode = \"none\"` and rely on approval"
+        zh-CN: "%{0} 给每个子进程设了 PR_SET_NO_NEW_PRIVS，内核不允许再清掉：沙箱里 sudo/doas 提不了权（这是设计如此——`doas` 会报 \"not installed setuid\"，`sudo` 会报该标志已设）。要提权就自己在外层跑，或把 `[sandbox] mode` 设成 `none` 靠审批兜底"
+      escalation_possible:
+        en: "%{0} does not set PR_SET_NO_NEW_PRIVS: a child process can still use a setuid binary, so approval is the only boundary"
+        zh-CN: "%{0} 不设 PR_SET_NO_NEW_PRIVS：子进程仍然能用 setuid 程序提权，边界只剩审批"
       mcp_no_sandbox:
         en: "no sandbox: %{0}"
         zh-CN: "没有沙箱：%{0}"
@@ -4519,6 +4541,57 @@ tui:
 
 # `qcode-providers` 自己的文案：模型列表探测（设置页「获取模型」）。
 provider:
+  # 太极内网登录（PKCE 授权码流程）的报错与存储诊断。
+  #
+  # 这些串会经 `ProviderError::Auth(..)` 的载荷原样进界面，所以是**面向用户
+  # 的散文**，要走 `tr()`；`code` / `refresh_token` / `access_token` /
+  # `authorization` 是 OAuth 参数名，不翻。
+  tj:
+    auth_url:
+      en: "cannot build the authorization URL: %{0}"
+      zh-CN: "建不了授权地址：%{0}"
+    login_incomplete:
+      en: "Taiji Intranet sign-in did not finish (the callback carried no code)"
+      zh-CN: "太极内网登录未完成（回调未带回 code）"
+    not_signed_in:
+      en: "not signed in to Taiji Intranet; finish signing in on the settings page"
+      zh-CN: "太极内网未登录，请在设置页完成登录"
+    login_runtime:
+      en: "cannot start the sign-in runtime: %{0}"
+      zh-CN: "起不了登录运行时：%{0}"
+    store_read:
+      en: "cannot read %{0}: %{1}"
+      zh-CN: "读不了 %{0}：%{1}"
+    store_parse:
+      en: "cannot parse %{0}: %{1}"
+      zh-CN: "解析不了 %{0}：%{1}"
+    store_create:
+      en: "cannot create %{0}: %{1}"
+      zh-CN: "建不了 %{0}：%{1}"
+    store_serialize:
+      en: "cannot serialize the tokens: %{0}"
+      zh-CN: "序列化不了 token：%{0}"
+    store_write:
+      en: "cannot write %{0}: %{1}"
+      zh-CN: "写不了 %{0}：%{1}"
+    store_chmod:
+      en: "cannot chmod %{0}: %{1}"
+      zh-CN: "改不了 %{0} 的权限：%{1}"
+    store_move:
+      en: "cannot move %{0} into place: %{1}"
+      zh-CN: "挪不动 %{0}：%{1}"
+    token_request:
+      en: "token request failed: %{0}"
+      zh-CN: "token 请求失败：%{0}"
+    token_status:
+      en: "token endpoint %{0} returned %{1}: %{2}"
+      zh-CN: "token 端点 %{0} 返回 %{1}：%{2}"
+    token_not_json:
+      en: "token reply is not JSON: %{0}"
+      zh-CN: "token 响应不是 JSON：%{0}"
+    token_no_access_token:
+      en: "token reply has no access_token: %{0}"
+      zh-CN: "token 响应里没有 access_token：%{0}"
   discover:
     not_json:
       en: "model listing at %{0} is not JSON: %{1}"

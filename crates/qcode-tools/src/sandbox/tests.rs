@@ -1774,6 +1774,88 @@ mod landlock_runtime {
         let _ = &output;
         assert!(!outside.exists(), "sandbox created {}", outside.display());
     }
+
+    /// `qc doctor` tells the user that setuid binaries cannot escalate under
+    /// this backend (`SandboxMode::strips_privilege_escalation`). That claim is
+    /// about what a child process actually sees, so assert it by running one —
+    /// asserting on the enum alone would stay green if the `pre_exec` hook were
+    /// dropped.
+    ///
+    /// The real-world symptom this explains: `doas` prints
+    /// `not installed setuid` (its setuid bit is fine; the kernel refused the
+    /// transition because `PR_SET_NO_NEW_PRIVS` is set and cannot be cleared).
+    ///
+    /// Two ways this test can quietly lie, both ruled out here:
+    ///
+    /// * **`landlock_or_skip`'s skip path.** `landlock_restrict_self` needs
+    ///   `PR_SET_NO_NEW_PRIVS`, so a dropped `prctl` makes the *preflight* fail —
+    ///   and that helper reads a failed preflight as "this machine cannot test
+    ///   it". Measured: with the `prctl` deleted the test stayed green. So the
+    ///   preflight is asserted, not skipped, whenever the kernel has Landlock.
+    /// * **inheritance.** If the test process already carries the flag (an outer
+    ///   sandbox — this very repository's `run_shell`, a CI container with
+    ///   `--security-opt no-new-privileges`), the child gets it for free and the
+    ///   assertion passes with no `prctl` at all. Measured too. There is no way
+    ///   to clear the flag from inside, so the only honest move is to say the
+    ///   check is masked and skip it.
+    #[test]
+    fn children_carry_no_new_privs() {
+        let own = std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find(|line| line.starts_with("NoNewPrivs:"))
+            .map(|line| line.trim_end().ends_with('1'))
+            .unwrap_or(false);
+        if own {
+            eprintln!(
+                "skipping: this process already has NoNewPrivs=1 (inherited from an outer \
+                 sandbox), so a child would inherit it too and the assertion below could not \
+                 tell whether landlock sets it itself"
+            );
+            return;
+        }
+
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        if let Err(err) = landlock_abi() {
+            eprintln!("skipping: landlock unavailable here: {err}");
+            return;
+        }
+        let sandbox =
+            Landlock::new(workspace.path(), &[], &[], false).expect("build the landlock ruleset");
+        sandbox.check().expect(
+            "this kernel has Landlock, so the preflight must pass: a failure here means the \
+             ruleset or the PR_SET_NO_NEW_PRIVS hook is broken, not that the machine is \
+             untestable",
+        );
+
+        let mut command = sandbox
+            .command(
+                OsStr::new("/bin/sh"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from("grep -i '^NoNewPrivs' /proc/self/status"),
+                ],
+                workspace.path(),
+            )
+            .expect("command");
+        let output = command.output().expect("run");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            output.status.success(),
+            "cannot read /proc/self/status under landlock: {output:?}"
+        );
+        assert!(
+            stdout.trim().ends_with('1'),
+            "a child of the landlock sandbox reports {stdout:?}; expected NoNewPrivs: 1. \
+             If the pre_exec hook lost its prctl, sudo/doas would silently start working — \
+             and `SandboxMode::strips_privilege_escalation` would be lying in `qc doctor`"
+        );
+        assert!(
+            SandboxMode::Landlock.strips_privilege_escalation(),
+            "the behavioral assertion above proves this answer"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

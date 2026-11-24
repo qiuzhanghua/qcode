@@ -75,32 +75,59 @@ impl TjTokenStore {
         if !self.path.exists() {
             return Ok(TjTokens::default());
         }
-        let text = std::fs::read_to_string(&self.path)
-            .map_err(|error| format!("cannot read {}: {error}", self.path.display()))?;
-        serde_json::from_str(&text)
-            .map_err(|error| format!("cannot parse {}: {error}", self.path.display()))
+        let text = std::fs::read_to_string(&self.path).map_err(|error| {
+            qcode_i18n::trp(
+                "provider.tj.store_read",
+                &[self.path.display().to_string(), error.to_string()],
+            )
+        })?;
+        serde_json::from_str(&text).map_err(|error| {
+            qcode_i18n::trp(
+                "provider.tj.store_parse",
+                &[self.path.display().to_string(), error.to_string()],
+            )
+        })
     }
 
     pub fn save(&self, tokens: &TjTokens) -> Result<(), String> {
         if let Some(dir) = self.path.parent()
             && !dir.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(dir)
-                .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+            std::fs::create_dir_all(dir).map_err(|error| {
+                qcode_i18n::trp(
+                    "provider.tj.store_create",
+                    &[dir.display().to_string(), error.to_string()],
+                )
+            })?;
         }
-        let text = serde_json::to_string_pretty(tokens)
-            .map_err(|error| format!("cannot serialize tokens: {error}"))?;
+        let text = serde_json::to_string_pretty(tokens).map_err(|error| {
+            qcode_i18n::trp("provider.tj.store_serialize", &[error.to_string()])
+        })?;
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, text)
-            .map_err(|error| format!("cannot write {}: {error}", tmp.display()))?;
+        std::fs::write(&tmp, text).map_err(|error| {
+            qcode_i18n::trp(
+                "provider.tj.store_write",
+                &[tmp.display().to_string(), error.to_string()],
+            )
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-                .map_err(|error| format!("cannot chmod {}: {error}", tmp.display()))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(
+                |error| {
+                    qcode_i18n::trp(
+                        "provider.tj.store_chmod",
+                        &[tmp.display().to_string(), error.to_string()],
+                    )
+                },
+            )?;
         }
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|error| format!("cannot move {} into place: {error}", self.path.display()))
+        std::fs::rename(&tmp, &self.path).map_err(|error| {
+            qcode_i18n::trp(
+                "provider.tj.store_move",
+                &[self.path.display().to_string(), error.to_string()],
+            )
+        })
     }
 }
 
@@ -158,21 +185,25 @@ impl TjAuthClient {
             .form(&params)
             .send()
             .await
-            .map_err(|error| format!("token request failed: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("provider.tj.token_request", &[error.to_string()]))?;
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(format!(
-                "token endpoint {} returned {status}: {body}",
-                self.settings.token_url
+            return Err(qcode_i18n::trp(
+                "provider.tj.token_status",
+                &[
+                    self.settings.token_url.clone(),
+                    status.to_string(),
+                    body.clone(),
+                ],
             ));
         }
         let value: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|error| format!("token reply is not JSON: {error}"))?;
+            .map_err(|error| qcode_i18n::trp("provider.tj.token_not_json", &[error.to_string()]))?;
         let access_token = value
             .get("access_token")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("token reply has no access_token: {body}"))?
+            .ok_or_else(|| qcode_i18n::trp("provider.tj.token_no_access_token", &[body.as_str()]))?
             .to_string();
         let refresh_token = value
             .get("refresh_token")
@@ -301,14 +332,19 @@ impl TjProvider {
                 ("code_challenge", challenge.as_str()),
             ],
         )
-        .map_err(|error| ProviderError::Auth(format!("cannot build authorization URL: {error}")))?;
+        .map_err(|error| {
+            ProviderError::Auth(qcode_i18n::trp(
+                "provider.tj.auth_url",
+                &[error.to_string()],
+            ))
+        })?;
         let code = match &self.config.prompt {
             Some(prompt) => prompt(auth_url.to_string()).ok_or_else(|| {
-                ProviderError::Auth("太极内网登录未完成（回调未带回 code）".to_string())
+                ProviderError::Auth(qcode_i18n::tr("provider.tj.login_incomplete").to_string())
             })?,
             None => {
                 return Err(ProviderError::Auth(
-                    "太极内网未登录，请在设置页完成登录".to_string(),
+                    qcode_i18n::tr("provider.tj.not_signed_in").to_string(),
                 ));
             }
         };

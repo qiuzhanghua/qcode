@@ -24,6 +24,31 @@ use std::time::{Duration, Instant};
 use qcode_terminal::alacritty_terminal::term::cell::Cell;
 use qcode_terminal::{Session, SessionConfig};
 
+/// 这台机器能不能分配伪终端；不能就跳过，并**说出来**。
+///
+/// 三条测试都要真 PTY。拿不到 PTY 的环境不止一种：qcode 自己的 landlock 沙箱在
+/// `[sandbox] allow_pty = false` 时不给 `/dev/ptmx`（`make check` 在 `run_shell`
+/// 里跑就是这种情形），精简容器里也可能没有 devpts。此时 `Session::spawn` 返回
+/// `PermissionDenied`——那不是「scrollback 上限破了」，是这台机器测不了。
+///
+/// 探测用一条 `exit 0` 的短路命令：只验 PTY 这条管道通不通，与内存上限无关。
+fn require_pty(test: &str) -> bool {
+    if Session::spawn(SessionConfig::command(
+        "/bin/sh",
+        ["-c".to_string(), "exit 0".to_string()],
+    ))
+    .is_ok()
+    {
+        return true;
+    }
+    eprintln!(
+        "skipping {test}: cannot allocate a PTY here (no /dev/ptmx access — inside a \
+         landlock sandbox this means [sandbox] allow_pty = false). The resource bound is \
+         NOT verified by this run."
+    );
+    false
+}
+
 fn wait_until(mut condition: impl FnMut() -> bool, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -47,6 +72,9 @@ fn resident_kib() -> Option<u64> {
 
 #[test]
 fn history_is_capped_so_a_flooding_child_cannot_grow_memory_forever() {
+    if !require_pty("history_is_capped_so_a_flooding_child_cannot_grow_memory_forever") {
+        return;
+    }
     // A child that prints hundreds of thousands of lines. Scrollback is set small so
     // the test is fast and the cap is easy to reason about.
     const SCROLLBACK: usize = 200;
@@ -90,6 +118,9 @@ fn history_is_capped_so_a_flooding_child_cannot_grow_memory_forever() {
 
 #[test]
 fn a_capped_history_is_still_consistent_after_scrolling() {
+    if !require_pty("a_capped_history_is_still_consistent_after_scrolling") {
+        return;
+    }
     // The cap must not corrupt what is displayed: after scrolling deep into history and
     // back, the live screen has to be current again — a clamped scroll that left the
     // viewport pinned would show stale rows forever.
@@ -142,6 +173,9 @@ fn a_capped_history_is_still_consistent_after_scrolling() {
 #[test]
 #[ignore = "machine-dependent baseline; run with scripts/perf-session.sh"]
 fn eight_flooding_terminals_stay_within_the_resource_budget() {
+    if !require_pty("eight_flooding_terminals_stay_within_the_resource_budget") {
+        return;
+    }
     const TERMINALS: usize = 8;
     const SCROLLBACK: usize = 10_000;
     const COLUMNS: usize = 80;
