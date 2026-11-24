@@ -131,7 +131,10 @@
 | `list_dir` | `path` | 无 | allow | 默认忽略 `.git`、`target`、`node_modules` |
 | `glob` | `pattern, path?` | 无 | allow | 结果排序；上限 1000 |
 | `grep` | `pattern, path?, glob?, context?` | 无 | allow | 内部 ripgrep；遵守 .gitignore |
-| `run_shell` | `command, cwd?, timeout?` | 执行 | ask | 独立进程组；清洗环境变量；默认超时 120s |
+| `run_shell` | `command, cwd?, timeout_secs?, background?` | 执行 | ask | 独立进程组；清洗环境变量；60s 前台等待预算，到点转后台（ADR-0106） |
+| `job_list` | — | 无 | allow | 存活 + 最近 8 个已结束的后台任务 |
+| `job_read` | `job, wait_secs?` | 无 | allow | 读「上次之后」的输出，每流 32KB；`wait_secs` 可长轮询 |
+| `job_kill` | `job` | 停进程 | ask | 与前台取消同一套 SIGTERM→SIGKILL |
 | `skill` | `name, file?` | 读本地 skill | allow | 加载 SKILL.md 正文或附件；路径限制在 skill 目录 |
 | `todo_write` | `items[]` | session 状态 | allow | 渲染在 TUI，不进文件系统 |
 | `web_fetch` | `url` | 网络 | ask | 仅 http/https；上限 100KB；域名策略 |

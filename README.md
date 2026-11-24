@@ -553,6 +553,10 @@ cargo build -p qcode-eval
 - **工具循环**：`read_file` / `write_file` / `edit_file` / `apply_patch` / `list_dir` /
   `glob` / `grep` / `run_shell` / `web_fetch` / `web_search` / `todo_write` / `subagent`，多轮调用直到任务完成。
   `glob` 与 `grep` 遵守 `.gitignore`，跳过隐藏与构建目录。
+- **后台任务**：`run_shell` 的前台等待预算是 60s（`timeout_secs`，1–600，可按命令调），
+  到点不再杀——命令转后台继续跑，返回 `job-N` 句柄。`job_read` 读「上次之后」的输出
+  （可带 `wait_secs` 长轮询），`job_list` 列存活与最近结束的，`job_kill` 整组收掉。
+  单任务寿命 120 分钟、同时最多 16 个；qcode 退出时后台任务一起死（ADR-0106）。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名、命令前缀与路径 glob；
   `deny` 永远优先，其余按「最具体者胜」——**精确工具名 > 通配 > 无条件**，与规则在文件里的
   先后无关，所以一条 `mcp__*` 不会盖掉一条精确的 `deny`。每次决策写事件，含命中的 rule id。
@@ -1027,7 +1031,7 @@ action = "allow"
 ```
 crates/qcode-core        domain、event、store、task/roots、policy、tool、todo、engine
 crates/qcode-providers   provider 实现（mock + OpenAI-compatible + Anthropic Messages）
-crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / web_fetch / web_search / todo_write / subagent / skill
+crates/qcode-tools       read_file / write_file / edit_file / apply_patch / list_dir / glob / grep / run_shell / job_list / job_read / job_kill / web_fetch / web_search / todo_write / subagent / skill
 crates/qcode-mcp         MCP client（stdio + Streamable HTTP，tools/resources/prompts）
 crates/qcode-eval        eval runner（qc-eval：fixture + planted/hidden + checks）
 crates/qcode             CLI 包（包名 qcode，二进制 qc）、配置解析、doctor
