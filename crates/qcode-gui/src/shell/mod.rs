@@ -66,7 +66,7 @@ pub(crate) struct Shell {
     /// Provider/Model 下拉列表的分组缓存：只在弹层打开时重新计算，避免每帧
     /// 在主线程同步读配置、并对无密钥 provider 做端点探测（DNS/TCP 无超时
     /// 保护，会卡住整窗）。
-    pub(crate) model_groups: Vec<(String, Vec<String>)>,
+    pub(crate) model_groups: Vec<(String, String, Vec<String>)>,
     pub(crate) _model_search_subscription: gpui_kit::Subscription,
     /// Filters the task list by title or short id.
     /// Set by the Textarea's PressEnter event; consumed in render where a Window exists.
@@ -1078,6 +1078,39 @@ impl Shell {
                             .ok()
                         });
                 if usable.is_none() {
+                    // 默认 route 被套餐去重/删除移走也会走到这里（保存路径的自愈
+                    // 兜底的是新写盘；这份磁盘配置可能是历史遗留）。先自愈再试
+                    // 一次，能解析就写回并重建，而不是直接退化成 unconfigured。
+                    let healed =
+                        qcode_kernel::config::load(&self.config_path)
+                            .ok()
+                            .map(|mut loaded| {
+                                qcode_kernel::config::settle_default_provider(&mut loaded);
+                                loaded
+                            });
+                    let healed_usable = healed.as_ref().and_then(|loaded| {
+                        qcode_kernel::config::resolve(
+                            loaded,
+                            &qcode_kernel::config::Overrides::default(),
+                            &|key| std::env::var(key).ok(),
+                        )
+                        .ok()
+                    });
+                    if healed_usable.is_some() {
+                        if let Some(loaded) = healed
+                            && let Err(write_error) =
+                                qcode_kernel::config_edit::ConfigEdit::open(&self.config_path)
+                                    .and_then(|mut edit| {
+                                        edit.apply_config(&loaded)?;
+                                        edit.save()
+                                    })
+                        {
+                            tracing::warn!(error = %write_error, "could not persist the healed default provider");
+                        }
+                        // 重新读取修复后的配置并重建，引擎落到新默认上。
+                        self.apply_config_change(cx);
+                        return;
+                    }
                     let store = qcode_core::store::SessionStore::new(&self.data_dir);
                     let rebuild = self.backend.rebuild_hook();
                     let mut unconfigured =
@@ -1112,11 +1145,50 @@ impl Shell {
 
     /// Switch the provider+model for subsequent turns (two-level model menu,
     /// V2.1). The backend rebuilds the provider when the route changes.
+    ///
+    /// 「切即默认」：切换结果同时持久化为 `[default-model]` 与 provider 行的
+    /// `default_model`，设置页的默认标记随之同步（与设置页 `pin_default` 写
+    /// 同一对字段，两处保持一个口径）。
     pub(crate) fn switch_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         if provider != self.ui.app.status.provider || model != self.ui.app.status.model {
             self.backend.set_model(provider.clone(), model.clone());
-            self.ui.app.status.provider = provider;
-            self.ui.app.status.model = model;
+            self.ui.app.status.provider = provider.clone();
+            self.ui.app.status.model = model.clone();
+            // 只持久化配置里真实存在的 route：模型菜单的兜底组（恢复的会话 /
+            // 命令行传入）可能不在 providers 里，写一个不存在的默认会让整份
+            // 配置 resolve 失败、主界面退化成 unconfigured。
+            if let Ok(config) = qcode_kernel::config::load(&self.config_path)
+                && config.providers.contains_key(&provider)
+            {
+                let write = qcode_kernel::config_edit::set_default_model(
+                    &self.config_path,
+                    Some(provider.as_str()),
+                    Some(model.as_str()),
+                )
+                .and_then(|()| {
+                    qcode_kernel::config_edit::set_scalar(
+                        &self.config_path,
+                        &["providers", provider.as_str(), "default_model"],
+                        Some(model.as_str()),
+                    )
+                });
+                match write {
+                    Ok(()) => {
+                        // 写盘改变了 config mtime；主窗口的 config watch 检测到
+                        // 会重建一次引擎。引擎用的正是刚写的同一个默认，重建是
+                        // 多余的——把 mtime 提前到写盘后，避免一次无谓的 rebuild。
+                        if let Ok(meta) = std::fs::metadata(&self.config_path) {
+                            self.config_mtime = meta.modified().ok();
+                        }
+                    }
+                    Err(error) => {
+                        self.ui.app.push_notice(qcode_i18n::trp(
+                            "gui.notice.cannot_save_gui_json",
+                            &[error.to_string().as_str()],
+                        ));
+                    }
+                }
+            }
             cx.notify();
         }
     }

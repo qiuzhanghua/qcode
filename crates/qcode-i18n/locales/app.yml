@@ -1802,6 +1802,11 @@ gui:
       provider_without_models:
         en: "Provider %{0} has no models: add at least one model, or fill in a default model."
         zh-CN: 提供方 %{0} 没有模型：请添加至少一个模型或填写默认模型。
+      # 编辑已有 Provider 时套餐锁定：不允许在编辑页更换套餐（一个 Provider
+      # 的套餐在添加时确定）。显示在编辑对话框内部（provider_error）。
+      package_locked:
+        en: "Cannot change this provider's package from the edit page. To switch packages, delete it and add it again."
+        zh-CN: 编辑页不允许更换套餐。如需切换套餐，请删除该提供方后重新添加。
       # 一条模板覆盖三处：字段路径（`sandbox.mode`）、`config.toml`、`gui.json`。
       # 中文都是「<什么> 没能写入：<为什么>」，所以文件名不必单独开 key。
       write_failed:
@@ -1812,7 +1817,7 @@ gui:
         zh-CN: "%{0} 的值不合法，改动没有写入：%{1}"
       form_invalid:
         en: "The form still has problems; nothing was written: %{0}"
-        zh-CN: 表单还有问题，改动没有写入：%{0}
+        zh-CN: 表单有问题，改动没有写入：%{0}
 
 # GUI（P1）。key 按 `gui.<区域>.<元素>.<角色>` 分层。
   daemon:

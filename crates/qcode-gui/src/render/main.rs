@@ -11,15 +11,16 @@ use crate::questions::QuestionInputState;
 /// 按搜索词过滤模型分组：仅匹配模型名（大小写不敏感子串匹配），过滤后
 /// 为空的 Provider 组整组剔除；搜索词为空时返回全量分组。
 fn filter_model_groups(
-    groups: &[(String, Vec<String>)],
+    groups: &[(String, String, Vec<String>)],
     query: &str,
-) -> Vec<(String, Vec<String>)> {
+) -> Vec<(String, String, Vec<String>)> {
     let q = query.trim().to_lowercase();
     groups
         .iter()
-        .map(|(provider, models)| {
+        .map(|(route, label, models)| {
             (
-                provider.clone(),
+                route.clone(),
+                label.clone(),
                 models
                     .iter()
                     .filter(|model| model.to_lowercase().contains(&q))
@@ -27,24 +28,24 @@ fn filter_model_groups(
                     .collect::<Vec<_>>(),
             )
         })
-        .filter(|(_, models)| q.is_empty() || !models.is_empty())
+        .filter(|(_, _, models)| q.is_empty() || !models.is_empty())
         .collect()
 }
 
-/// 键盘可导航的扁平模型行（provider, model）：按分组顺序展开；若内核当前
+/// 键盘可导航的扁平模型行（route, model）：按分组顺序展开；若内核当前
 /// provider 不在配置里（恢复的会话 / 命令行传入），追加兜底组模型作为
 /// 最后一行，保证键盘能选中它。
 fn flat_model_rows(
-    groups: &[(String, Vec<String>)],
+    groups: &[(String, String, Vec<String>)],
     query: &str,
     current: &(String, String),
 ) -> Vec<(String, String)> {
     let filtered = filter_model_groups(groups, query);
     let mut flat: Vec<(String, String)> = filtered
         .iter()
-        .flat_map(|(provider, models)| models.iter().map(move |m| (provider.clone(), m.clone())))
+        .flat_map(|(route, _, models)| models.iter().map(move |m| (route.clone(), m.clone())))
         .collect();
-    if !groups.iter().any(|(p, _)| p == &current.0) {
+    if !groups.iter().any(|(route, _, _)| route == &current.0) {
         flat.push((current.0.clone(), current.1.clone()));
     }
     flat
@@ -72,13 +73,16 @@ impl Shell {
 
         // 弹层 id 与 trigger Button 的 "model-menu" 区分开，避免 GPUI
         // element state（keyed state / 按钮状态）串用。
+        // 按钮显示 provider 的**显示名**（中文），而 `current` / 切换仍用 route：
+        // 显示名与 route 是两回事，混用正是「列表中文、按钮英文」的来源。
+        let provider_label = qcode_kernel::config::provider_display_label(&provider);
         Popover::new("model-menu-popover")
             .anchor(Anchor::BottomLeft)
             .appearance(true)
             .overlay_closable(true)
             .trigger(
                 Button::new("model-menu")
-                    .label(format!("{provider} / {model}"))
+                    .label(format!("{provider_label} / {model}"))
                     .dropdown_caret(true),
             )
             .track_focus(&search_focus)
@@ -107,7 +111,7 @@ impl Shell {
                 let filtered = filter_model_groups(&groups, &query);
                 let flat_len = filtered
                     .iter()
-                    .map(|(_, models)| models.len())
+                    .map(|(_, _, models)| models.len())
                     .sum::<usize>();
                 // 键盘高亮只落在配置内的模型行上；兜底组的行高亮单独按
                 // `index == flat_len` 判断（见下方兜底组渲染）。
@@ -117,7 +121,7 @@ impl Shell {
                 // 组标题行（灰色小字、不可点击）+ 模型行（可点击、高亮）。
                 let mut rows = Vec::new();
                 let mut flat_ix = 0usize;
-                for (provider_name, models) in &filtered {
+                for (route, label, models) in &filtered {
                     rows.push(
                         div()
                             .h(px(26.))
@@ -125,13 +129,13 @@ impl Shell {
                             .text_color(cx.theme().muted_foreground)
                             .items_center()
                             .px_2()
-                            .child(provider_name.clone())
+                            .child(label.clone())
                             .into_any_element(),
                     );
                     for model in models {
                         let ix = flat_ix;
                         flat_ix += 1;
-                        let p = provider_name.clone();
+                        let p = route.clone();
                         let m = model.clone();
                         let checked = current.0 == p && current.1 == m;
                         let highlighted = selected == Some(ix);
@@ -194,7 +198,7 @@ impl Shell {
                 // The kernel's provider may not be in the config (resumed
                 // session or a model passed on the command line): keep it
                 // reachable as its own group.
-                if !groups.iter().any(|(p, _)| p == &current.0) {
+                if !groups.iter().any(|(route, _, _)| route == &current.0) {
                     rows.push(
                         div()
                             .h(px(26.))
@@ -202,7 +206,7 @@ impl Shell {
                             .text_color(cx.theme().muted_foreground)
                             .items_center()
                             .px_2()
-                            .child(current.0.clone())
+                            .child(qcode_kernel::config::provider_display_label(&current.0))
                             .into_any_element(),
                     );
                     let p = current.0.clone();
@@ -257,7 +261,7 @@ impl Shell {
                 if !typed.is_empty() {
                     let already_listed = filtered
                         .iter()
-                        .any(|(_, models)| models.iter().any(|model| model == &typed));
+                        .any(|(_, _, models)| models.iter().any(|model| model == &typed));
                     if !already_listed {
                         let p = current.0.clone();
                         let m = typed.clone();

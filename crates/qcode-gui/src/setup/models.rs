@@ -194,7 +194,7 @@ impl SetupView {
                 Button::new(format!("edit-provider-{route}"))
                     .label(qcode_i18n::tr("ui.action.edit"))
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.open_editor(&route_for_edit, cx);
+                        this.open_editor(&route_for_edit, true, cx);
                     })),
             );
             // 删除走同一个确认弹框（`render_delete_dialog`）。
@@ -578,6 +578,9 @@ impl SetupView {
             .child(
                 div()
                     .w(px(520.0))
+                    // 与 Provider 编辑弹窗一致：整体封顶到窗口高度的 90%，
+                    // 模型列表超出时由 flex_1 滚动区吸收，标题与按钮固定。
+                    .max_h(relative(0.9))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -594,10 +597,11 @@ impl SetupView {
                     .child(
                         div()
                             .id("add-model-dialog-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .max_h(px(440.0))
                             .overflow_y_scroll()
                             .child(self.render_models_editor(row, route, cx)),
                     )
@@ -814,8 +818,27 @@ impl SetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if qcode_kernel::config::package_entry(target).is_none() {
+        // 编辑已有 Provider 时套餐锁定：按钮已禁用，这里再防一道，防止
+        // 事件误路由（如重渲染导致 mouseup 落错按钮）偷偷切套餐。
+        if self.editing_package_locked {
             return;
+        }
+        let Some((group, _)) = qcode_kernel::config::package_entry(target) else {
+            return;
+        };
+        // 套餐单选：切到目标套餐时，把同组其他套餐行移出表格。否则保存时
+        // `apply_tables` 遍历所有行，残留的旧套餐行（需要密钥但没模型）会
+        // 触发「提供方没有模型」校验，整个保存被拒。
+        let group_routes = group
+            .packages
+            .iter()
+            .map(|pkg| pkg.route)
+            .collect::<Vec<_>>();
+        if let Some(table) = self.tables.get_mut("providers") {
+            table.rows.retain(|row| {
+                let name = cell(row, "name", cx).trim().to_string();
+                !group_routes.contains(&name.as_str()) || name == target
+            });
         }
         let has_row = self
             .tables
@@ -884,8 +907,10 @@ impl SetupView {
         let mut body = div().flex().flex_col().gap_3();
         // 套餐选择：有套餐的 Provider 在 API 密钥上面显示套餐下拉（无套餐的
         // Provider 不展示）。切套餐即切换 route（一个套餐 = 一个 route）。
+        // 编辑已有 Provider 时套餐锁定（`editing_package_locked`），不可切换。
         if let Some((group, _)) = qcode_kernel::config::package_entry(route.as_str()) {
             let row_id = row.id;
+            let package_locked = self.editing_package_locked;
             let mut select = div().flex().flex_row().gap_1();
             for candidate in group.packages {
                 let marker = if candidate.route == route {
@@ -898,6 +923,7 @@ impl SetupView {
                 select = select.child(
                     Button::new(format!("table-providers-{row_id}-package-{target}"))
                         .label(format!("{marker} {label}"))
+                        .when(package_locked, |button| button.disabled(true))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.switch_package(&target, row_id, window, cx);
                         })),
@@ -1057,6 +1083,31 @@ impl SetupView {
                         {
                             this.store_provider_key(row_id, window, cx);
                         }
+                        // 套餐锁定校验：编辑已有 Provider 时不允许更换套餐（route
+                        // 不变）。按钮已禁用、`switch_package` 已防呆，这里在保存
+                        // 时再兜底校验一次——若表格里该行被改名/换成别的套餐
+                        // route，直接拒绝保存，而不是静默写进 config。
+                        if this.editing_package_locked {
+                            let locked_route = this.editing_provider.clone().unwrap_or_default();
+                            let row_intact = this
+                                .tables
+                                .get("providers")
+                                .map(|table| {
+                                    table
+                                        .rows
+                                        .iter()
+                                        .any(|row| cell(row, "name", cx).trim() == locked_route)
+                                })
+                                .unwrap_or(false);
+                            if !row_intact {
+                                this.provider_error = Some(
+                                    qcode_i18n::tr("gui.setup.save_error.package_locked")
+                                        .to_string(),
+                                );
+                                cx.notify();
+                                return;
+                            }
+                        }
                         // 「保存」= 真正落盘：picker 选中的预设行此时才写进
                         // config、刷进列表。flush 失败（表单校验不过）时不
                         // 关对话框、不声称已保存。
@@ -1088,6 +1139,10 @@ impl SetupView {
             .child(
                 div()
                     .w(px(480.0))
+                    // 弹窗整体封顶到窗口高度的 90%：展开「更多配置」后内容变长时，
+                    // 弹窗不再无限撑高超出设置窗口，而是由下面 flex_1 的滚动区
+                    // 吸收剩余空间、纵向滚动；标题与底部按钮始终可见。
+                    .max_h(relative(0.9))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -1101,10 +1156,11 @@ impl SetupView {
                     .child(
                         div()
                             .id("provider-dialog-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .max_h(px(440.0))
                             .overflow_y_scroll()
                             .child(body),
                     )
@@ -1938,9 +1994,14 @@ impl SetupView {
 
     /// Open one provider's edit dialog; one provider at a time, so opening a
     /// dialog closes the custom declaration card and clears the saved notice.
-    fn open_editor(&mut self, route: &str, cx: &mut Context<Self>) {
+    ///
+    /// `lock_package` 为 true 时锁定套餐切换：编辑**已有** Provider 时套餐在
+    /// 添加那一刻就确定了，编辑页不应再允许换套餐；picker 添加流程传 false，
+    /// 让用户先选套餐再保存。
+    fn open_editor(&mut self, route: &str, lock_package: bool, cx: &mut Context<Self>) {
         self.clear_probe();
         self.editing_provider = Some(route.to_string());
+        self.editing_package_locked = lock_package;
         // 每次打开都从折叠态开始：对话框第一条只有 API 密钥。
         self.editor_expanded = false;
         self.provider_error = None;
@@ -1956,6 +2017,7 @@ impl SetupView {
     /// saved-notice copy).
     fn close_editor(&mut self, changed: bool) {
         self.editing_provider = None;
+        self.editing_package_locked = false;
         self.tj_code_input = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
         // 上一次的探测结果/报错；探测线程的轮询也会因对话框关闭而丢弃
@@ -2001,6 +2063,22 @@ impl SetupView {
     /// 写入预设行，再打开同一个编辑对话框。
     fn pick_provider(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.close_provider_picker(cx);
+        // 套餐单选：从 picker 进入厂商行时，把同厂商其他套餐行移出表格。
+        // 否则保存时 `apply_tables` 会把残留套餐行也写进 config，出现
+        // 同厂商多个 profile（见 `switch_package` 的同款清理）。
+        if let Some((group, _)) = qcode_kernel::config::package_entry(route) {
+            let group_routes = group
+                .packages
+                .iter()
+                .map(|pkg| pkg.route)
+                .collect::<Vec<_>>();
+            if let Some(table) = self.tables.get_mut("providers") {
+                table.rows.retain(|row| {
+                    let name = cell(row, "name", cx).trim().to_string();
+                    !group_routes.contains(&name.as_str())
+                });
+            }
+        }
         // 用表格行而不是 `self.config` 决定要不要写预设行。`self.config`
         // 只在异步自动保存完成时才更新：刚删掉一个 provider 后它还残留着
         // 那条旧 profile，`pick_provider` 会因此跳过预设写入，卡片继续按
@@ -2021,7 +2099,9 @@ impl SetupView {
         } else {
             false
         };
-        self.open_editor(route, cx);
+        // picker 添加流程：套餐在编辑页里确定，先不锁定（`open_editor` 的
+        // `lock_package=false`），让用户选好套餐再保存。
+        self.open_editor(route, false, cx);
         // `open_editor` 会清掉提示，所以密钥恢复的提示在它之后设置。
         if restored_key {
             self.provider_notice =

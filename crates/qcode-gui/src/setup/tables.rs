@@ -743,17 +743,43 @@ impl SetupView {
             .collect::<Vec<_>>();
         match surface {
             ProbeSurface::Provider(route) => {
-                if let Some(table) = self.tables.get_mut("providers")
-                    && let Some(row) = table.rows.iter_mut().find(|row| {
-                        row.cells
-                            .get("name")
-                            .map(|input| input.read(cx).value().trim() == route)
-                            .unwrap_or(false)
+                // 目标套餐行仍存在（探测期间未因套餐切换被移除）才把模型加进
+                // 去并切回该套餐；行已不存在时保持当前编辑对象，避免把
+                // `editing_provider` 指向一个不存在的行，编辑页渲染为空导致
+                // 看起来像「添加所选后编辑页被关闭」。
+                let target_exists = self
+                    .tables
+                    .get("providers")
+                    .map(|table| {
+                        table
+                            .rows
+                            .iter()
+                            .any(|row| cell(row, "name", cx).trim() == route)
                     })
-                {
-                    row.models.extend(added);
+                    .unwrap_or(false);
+                if target_exists {
+                    if let Some(table) = self.tables.get_mut("providers")
+                        && let Some(row) = table.rows.iter_mut().find(|row| {
+                            row.cells
+                                .get("name")
+                                .map(|input| input.read(cx).value().trim() == route)
+                                .unwrap_or(false)
+                        })
+                    {
+                        row.models.extend(added);
+                    }
+                    // 模型只进行 state，写盘由编辑页「保存」按钮触发（点击保存才保存）。
+                    // 探测/添加所选绑定的是发起探测那一刻的套餐行；把当前编辑对象
+                    // 切回该套餐，picker 关闭后用户停在它上面直接看到带回的模型，
+                    // 而不是落到另一个套餐的空模型列表上。
+                    if self.adding_model_provider.is_some() {
+                        self.adding_model_provider = Some(route.clone());
+                    } else {
+                        self.editing_provider = Some(route.clone());
+                    }
+                } else {
+                    tracing::debug!(route, "adopt_probe_picked: target package row gone");
                 }
-                // 模型只进行 state，写盘由编辑页「保存」按钮触发（点击保存才保存）。
             }
             ProbeSurface::Custom => {
                 // 自定义卡片只在「创建」时落盘，这里只改草稿。
@@ -838,6 +864,17 @@ impl SetupView {
                 .map(|input| input.read(cx).value().trim() != route)
                 .unwrap_or(true)
         });
+        // 删除的正是默认 provider：立即清空内存里的 `[default-model]` 与遗留
+        // `default_provider`。写盘时 `settle_default_provider` 也会清一遍
+        // （异步），这里先清是为了删除后设置页的默认标记立刻消失，而不是等
+        // 写盘回调。
+        if self.config.default_model.provider.as_deref() == Some(route) {
+            self.config.default_model.provider = None;
+            self.config.default_model.model = None;
+        }
+        if self.config.default_provider.as_deref() == Some(route) {
+            self.config.default_provider = None;
+        }
         self.editing_provider = None;
         self.delete_target = None;
         self.auto_save(cx, AutoSaveKind::Tables, false);

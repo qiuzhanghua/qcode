@@ -36,6 +36,13 @@ impl IntoElement for HelpCircle {
 
 impl Render for SetupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 主窗口模型菜单「切即默认」会直接写 config.toml；本窗口没有自己的
+        // 事件流，在这里幂等地起一个低频 mtime ticker，检测到外部写入就刷新
+        // 内存 config，让默认 Provider 的标记与主窗口保持同步（render 至少会
+        // 跑一次，ticker 只 spawn 一次）。
+        if !self.config_ticker_running {
+            self.start_config_ticker(cx);
+        }
         let page = Page::ALL[self.page];
         // w_full：正文宽度固定为滚动区宽度，长文本（如 MCP 说明）才能自动换行，
         // 否则按内容自然宽度排布会把设置框撑大。

@@ -1948,3 +1948,266 @@ fn the_built_provider_reports_the_resolved_image_capability() {
         assert_eq!(provider.capabilities().images, expected, "{protocol}");
     }
 }
+
+/// 套餐切换把旧套餐 route 移出 providers 后，`[default-model]` 还指着它：
+/// 整份配置 resolve 失败（主界面退化成 unconfigured）。`settle_default_provider`
+/// 把默认迁到同厂商剩下的套餐行，配置恢复可解析。
+#[test]
+fn settle_default_provider_moves_a_stale_package_default_to_the_sibling_package() {
+    let mut config = Config {
+        default_model: DefaultModelConfig {
+            provider: Some("volcano".into()),
+            model: Some("doubao-1-5-pro".into()),
+        },
+        ..Config::default()
+    };
+    // 旧套餐行（默认）：被套餐去重移走前长这样。
+    config.providers.insert(
+        "volcano".into(),
+        ProviderConfig {
+            default_model: Some("doubao-1-5-pro".into()),
+            models: vec![ModelEntry {
+                id: "doubao-1-5-pro".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    // 去重：表格只留 coding plan 行，旧行被移出（见 apply_tables 的 keep_rows）。
+    config.providers.remove("volcano");
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "doubao-pro-32k".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    let env = env_from(&[("VOLC_ARK_CODING_API_KEY", "sk-test")]);
+    assert!(
+        resolve(&config, &Overrides::default(), &env).is_err(),
+        "自愈前：默认 route 已不在 providers，必须解析失败"
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("volcano-coding"),
+        "默认应迁到同厂商剩下的套餐行"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("doubao-pro-32k"),
+        "模型换成新套餐行可推导的第一个，旧模型的 id 不带到新套餐上"
+    );
+    let resolved = resolve(&config, &Overrides::default(), &env).expect("自愈后必须解析成功");
+    assert_eq!(resolved.name, "volcano-coding");
+    assert_eq!(resolved.model, "doubao-pro-32k");
+}
+
+/// 没有同厂商行可接棒（或新行推导不出模型）时，默认被清空，`resolve` 兜底
+/// 到第一个可用 provider / mock，而不是整份配置死掉。
+#[test]
+fn settle_default_provider_clears_a_default_with_no_replacement() {
+    let mut config = Config {
+        default_model: DefaultModelConfig {
+            provider: Some("custom-x".into()),
+            model: Some("m1".into()),
+        },
+        ..Config::default()
+    };
+    config.providers.insert(
+        "custom-x".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "m1".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.remove("custom-x");
+    settle_default_provider(&mut config);
+    assert_eq!(config.default_model.provider, None);
+    assert_eq!(config.default_model.model, None);
+    // 没有可用 provider：resolve 兜底到 mock，而不是报错。
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).expect("resolves");
+    assert_eq!(resolved.name, "mock");
+}
+
+/// 目录 route（有目录默认模型）即使没有配置行也能自己解析：默认不该被自愈
+/// 挪走——它本来就工作。
+#[test]
+fn settle_default_provider_leaves_a_catalog_default_alone() {
+    let mut config = Config {
+        default_model: DefaultModelConfig {
+            provider: Some("deepseek".into()),
+            model: Some("deepseek-flash".into()),
+        },
+        ..Config::default()
+    };
+    config.providers.insert(
+        "deepseek".into(),
+        ProviderConfig {
+            default_model: Some("deepseek-flash".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.remove("deepseek");
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("deepseek"),
+        "目录 route 默认不该被自愈动到"
+    );
+    let env = env_from(&[("DEEPSEEK_API_KEY", "sk-test")]);
+    let resolved = resolve(&config, &Overrides::default(), &env).expect("目录兜底仍可解析");
+    assert_eq!(resolved.name, "deepseek");
+}
+
+/// 遗留 `default_provider` 指着已删除的 route 时同样被清掉，避免它把整个
+/// 解析带死。
+#[test]
+fn settle_default_provider_clears_a_stale_legacy_default_provider() {
+    let mut config = Config {
+        default_provider: Some("volcano".into()),
+        ..Config::default()
+    };
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "doubao-pro-32k".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(config.default_provider, None);
+    let env = env_from(&[("VOLC_ARK_CODING_API_KEY", "sk-test")]);
+    let resolved = resolve(&config, &Overrides::default(), &env).expect("resolves");
+    assert_eq!(resolved.name, "volcano-coding");
+}
+
+/// 默认 route 仍在 providers 里时是 no-op：自愈不该动正常的默认。
+#[test]
+fn settle_default_provider_leaves_a_valid_default_alone() {
+    let mut config = Config {
+        default_model: DefaultModelConfig {
+            provider: Some("deepseek".into()),
+            model: Some("deepseek-flash".into()),
+        },
+        ..Config::default()
+    };
+    config.providers.insert(
+        "deepseek".into(),
+        ProviderConfig {
+            default_model: Some("deepseek-flash".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(config.default_model.provider.as_deref(), Some("deepseek"));
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-flash")
+    );
+}
+
+/// 配置里没有任何默认、且只有唯一一个 Provider 时，自动把它钉为默认：
+/// 用户添加第一个 Provider 后无需手动「设为默认」，设置页与主窗口自动对齐。
+#[test]
+fn settle_default_provider_pins_the_only_provider_as_default() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "deepseek-v4-flash-ga-260731".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("volcano-coding"),
+        "唯一 provider 应自动成为默认"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-v4-flash-ga-260731"),
+        "默认模型取该 provider 可推导的第一个"
+    );
+    assert_eq!(
+        config.default_provider, None,
+        "遗留 default_provider 应被清掉"
+    );
+    let env = env_from(&[("VOLC_ARK_CODING_API_KEY", "sk-test")]);
+    let resolved = resolve(&config, &Overrides::default(), &env).expect("resolves");
+    assert_eq!(resolved.name, "volcano-coding");
+}
+
+/// 唯一 provider 推导不出模型（如尚未探测模型的 keyless 端点）时，不自动
+/// 钉默认：resolve 兜底到 mock 而非因缺模型写坏默认。
+#[test]
+fn settle_default_provider_leaves_a_model_less_only_provider_unset() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "ollama".into(),
+        ProviderConfig {
+            base_url: Some("http://localhost:11434/v1".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(config.default_model.provider, None, "无模型不自动钉默认");
+    assert_eq!(config.default_model.model, None);
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).expect("resolves");
+    assert_eq!(resolved.name, "mock");
+}
+
+/// 配置里有唯一一个「已配置模型」的 provider，同时残留若干没配置模型的
+/// provider 行（如 ollama / openai 空行）时，仍自动钉默认——主窗口与设置页
+/// 列表按「已配置模型」过滤，残留行不算数。
+#[test]
+fn settle_default_provider_ignores_model_less_stray_rows() {
+    let mut config = Config::default();
+    config.providers.insert(
+        "ollama".into(),
+        ProviderConfig {
+            base_url: Some("http://localhost:11434/v1".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "openai".into(),
+        ProviderConfig {
+            api_key_env: Some("OPENAI_API_KEY".into()),
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "volcano-coding".into(),
+        ProviderConfig {
+            models: vec![ModelEntry {
+                id: "deepseek-v4-flash-ga-260731".into(),
+                ..ModelEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    settle_default_provider(&mut config);
+    assert_eq!(
+        config.default_model.provider.as_deref(),
+        Some("volcano-coding"),
+        "唯一已配置模型的 provider 应自动成为默认，残留空行不算"
+    );
+    assert_eq!(
+        config.default_model.model.as_deref(),
+        Some("deepseek-v4-flash-ga-260731")
+    );
+}

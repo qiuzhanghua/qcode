@@ -125,6 +125,9 @@ pub struct SetupView {
     /// Models-section state (settings mode, provider card list).
     /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
+    /// 编辑已有 Provider 时锁定套餐：从卡片「编辑」进入的编辑页不允许切换
+    /// 套餐（一个 Provider 的套餐在添加时确定）；picker 添加流程不受限。
+    editing_package_locked: bool,
     /// The edit dialog's "更多配置" section is collapsed by default: the API
     /// key is the only field shown first, the fixed config values and the
     /// model catalog appear after expanding.
@@ -209,6 +212,8 @@ pub struct SetupView {
     /// One close attempt has already been refused because the last write failed.
     /// The next one goes through, so a read-only config cannot trap the user.
     close_after_save_error: bool,
+    /// config watch ticker 已启动（幂等，避免每个渲染帧重复 spawn）。
+    config_ticker_running: bool,
     /// Kept alive so text edits (which fire `InputEvent::Change` on the input
     /// entities, not on this view) can trigger auto saves. Wizard mode never
     /// subscribes.
@@ -416,6 +421,7 @@ impl SetupView {
             shell_probe_note: None,
             shell_probe_rx: None,
             editing_provider: None,
+            editing_package_locked: false,
             editor_expanded: false,
             provider_error: None,
             provider_notice: None,
@@ -443,6 +449,7 @@ impl SetupView {
             hover_help: None,
             closing: false,
             close_after_save_error: false,
+            config_ticker_running: false,
             pending_auto_save: None,
             auto_save_generation: 0,
             auto_save_writing: false,
@@ -539,6 +546,46 @@ impl SetupView {
             view.seed_table(table, window, cx);
         }
         view
+    }
+
+    /// 幂等地启动 config mtime 检测 ticker（约每 500ms）。主窗口模型菜单的
+    /// 「切即默认」会直接写 config.toml；检测到外部写入就把 `self.config`
+    /// 刷新到磁盘现值，Provider 列表的默认绿点/「设为默认」按钮与主窗口保持
+    /// 同步。本窗口自己的写盘路径（auto-save / pin_default）也会改 mtime，
+    /// 刷新读到的是刚写的内容，无副作用；关闭时退出循环。
+    fn start_config_ticker(&mut self, cx: &mut Context<Self>) {
+        self.config_ticker_running = true;
+        let path = self.path.clone();
+        let mut last = std::fs::metadata(&path)
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let alive = this.update(cx, |view, cx| {
+                    if view.closing {
+                        return false;
+                    }
+                    let now = std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|meta| meta.modified().ok());
+                    if now.is_some() && now != last {
+                        last = now;
+                        if let Ok(loaded) = qcode_kernel::config::load(&path) {
+                            view.config = loaded;
+                        }
+                        cx.notify();
+                    }
+                    true
+                });
+                if !alive.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Cmd+= / Cmd+- on macOS, Ctrl+= / Ctrl+- elsewhere: the same zoom the main

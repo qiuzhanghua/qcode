@@ -745,7 +745,7 @@ fn calls_left_without_a_result(events: &[qcode_core::event::Event]) -> Vec<Strin
             _ => {}
         }
     }
-    dangling.extend(pending);
+    dangling.append(&mut pending);
     dangling
 }
 
