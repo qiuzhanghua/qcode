@@ -4544,6 +4544,13 @@ provider:
     login_incomplete:
       en: "Taiji Intranet sign-in did not finish (the callback carried no code)"
       zh-CN: "太极内网登录未完成（回调未带回 code）"
+    # loopback 回调页（浏览器上看到的两个页面）。只翻标题，HTML 骨架不翻。
+    callback_success:
+      en: "Signed in — you can close this page"
+      zh-CN: "登录成功，可以关闭此页面"
+    callback_rejected:
+      en: "This callback did not match the sign-in — waiting for the right one"
+      zh-CN: "回调校验失败"
     not_signed_in:
       en: "not signed in to Taiji Intranet; finish signing in on the settings page"
       zh-CN: "太极内网未登录，请在设置页完成登录"

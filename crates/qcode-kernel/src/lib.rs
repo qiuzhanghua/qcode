@@ -738,7 +738,9 @@ mod sandbox_network_tests {
             toml::from_str("[network]\nmode = \"strict\"\n[sandbox]\nmode = \"sandbox-exec\"\n")
                 .unwrap();
         let error = sandbox_network(&cfg, None).unwrap_err();
-        assert!(error.to_string().contains("proxy"), "{error}");
+        // 断言可操作的那一段（配置键），而不是某个语言的措辞：这条错误走
+        // `tr()`，措辞跟着界面语言变，而中文里没有 "proxy" 这个词。
+        assert!(error.to_string().contains("[network] enabled"), "{error}");
     }
 
     #[test]

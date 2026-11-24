@@ -184,26 +184,45 @@ fn read_http_request_head(stream: &mut std::net::TcpStream) -> std::io::Result<S
     Ok(String::from_utf8_lossy(&data).into_owned())
 }
 
-/// 向浏览器返回「登录成功」页。
-fn write_success_page(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
-    let body = "<html><body style=\"font-family:sans-serif;text-align:center;margin-top:4rem\"><h2>登录成功，可以关闭此页面</h2></body></html>";
+/// 回调页的骨架 + 一行标题。只有标题走 `tr()`：看这个页面的人就是选界面
+/// 语言的那个人（ADR-0105），而布局是 HTML，不翻。
+fn callback_page(headline: &str) -> String {
+    format!(
+        "<html><body style=\"font-family:sans-serif;text-align:center;margin-top:4rem\"><h2>{headline}</h2></body></html>"
+    )
+}
+
+/// 两个回调页只差状态行与标题，正文与关闭连接的方式共用。
+fn write_callback_page(
+    stream: &mut std::net::TcpStream,
+    status: &str,
+    headline: &str,
+) -> std::io::Result<()> {
+    let body = callback_page(headline);
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
     use std::io::Write;
     stream.write_all(response.as_bytes())
 }
 
+/// 向浏览器返回「登录成功」页。
+fn write_success_page(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    write_callback_page(
+        stream,
+        "200 OK",
+        &qcode_i18n::tr("provider.tj.callback_success"),
+    )
+}
+
 /// 回调校验失败时告知浏览器（继续等待真正属于本次登录的回调）。
 fn write_error_page(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
-    let body = "<html><body style=\"font-family:sans-serif;text-align:center;margin-top:4rem\"><h2>回调校验失败</h2></body></html>";
-    let response = format!(
-        "HTTP/1.1 400 Bad Request\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    use std::io::Write;
-    stream.write_all(response.as_bytes())
+    write_callback_page(
+        stream,
+        "400 Bad Request",
+        &qcode_i18n::tr("provider.tj.callback_rejected"),
+    )
 }
 
 /// 用系统默认浏览器打开 URL（macOS `open`，Linux `xdg-open`，Windows `start`）。
@@ -328,12 +347,29 @@ mod tests {
 
     #[test]
     fn success_page_is_a_valid_http_response() {
+        // 页面标题跟着界面语言（`provider.tj.callback_success`），断言中文原文。
+        qcode_i18n::pin_for_tests();
         let (mut browser, mut server) = socket_pair();
         write_success_page(&mut server).unwrap();
+        // 真实现里 accept 出来的 stream 在写完就掉落，浏览器才读到 EOF；
+        // 不 drop 的话 `read_to_string` 会一直等下去。
+        drop(server);
         let mut response = String::new();
         browser.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("登录成功"));
+    }
+
+    #[test]
+    fn rejection_page_is_a_400_with_its_own_headline() {
+        qcode_i18n::pin_for_tests();
+        let (mut browser, mut server) = socket_pair();
+        write_error_page(&mut server).unwrap();
+        drop(server);
+        let mut response = String::new();
+        browser.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("回调校验失败"));
     }
 
     #[test]
