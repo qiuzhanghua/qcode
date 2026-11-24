@@ -654,13 +654,19 @@ impl SetupView {
             .ok()
             .filter(|tokens| !tokens.access_token.is_empty())
             .map(|tokens| {
-                tokens
-                    .username
-                    .unwrap_or_else(|| "太极内网账号".to_string())
+                tokens.username.unwrap_or_else(|| {
+                    qcode_i18n::tr("gui.setup.editor.tj_account_fallback").to_string()
+                })
             });
         let (status, color) = match &signed_in {
-            Some(username) => (format!("已登录（{username}）"), success_color),
-            None => ("未登录".to_string(), muted_color),
+            Some(username) => (
+                qcode_i18n::trp("gui.setup.editor.tj_status_signed_in", &[username.as_str()]),
+                success_color,
+            ),
+            None => (
+                qcode_i18n::tr("gui.setup.editor.tj_status_signed_out").to_string(),
+                muted_color,
+            ),
         };
         let route_for_login = route.to_string();
         let mut section = div().flex().flex_col().gap_1();
@@ -2202,17 +2208,32 @@ mod label_tests {
         }
     }
 
+    /// The row shows the **vendor's display name**, and the id only when the
+    /// listing carries no name — the picked value is written to the config as
+    /// the model reference, and vendors accept the display name there.
+    ///
+    /// This used to assert `id — name`. Commit 5eb17dd changed
+    /// `candidate_label` to show the name alone (so the list reads
+    /// `deepseek-v4-flash` instead of the versioned `…-200910` id) but left this
+    /// assertion behind, which made `cargo test -p qcode-gui --lib` red for
+    /// every run after it. The behaviour, not the test, was the intent.
     #[test]
-    fn a_display_name_rides_along_with_the_id() {
+    fn a_display_name_wins_over_the_id() {
         assert_eq!(
-            candidate_label(&candidate("deepseek-flash", Some("DeepSeek-V4.1-Flash"))),
-            "deepseek-flash — DeepSeek-V4.1-Flash"
+            candidate_label(&candidate("deepseek-flash-200910", Some("deepseek-flash"))),
+            "deepseek-flash"
         );
-        // Same name as the id, or no name: the row stays just the id.
+        // Nothing to show but the id: fall back to it.
         assert_eq!(
             candidate_label(&candidate("deepseek-flash", None)),
             "deepseek-flash"
         );
+        // An empty name is the same as no name (`""` would render a blank row).
+        assert_eq!(
+            candidate_label(&candidate("deepseek-flash", Some(""))),
+            "deepseek-flash"
+        );
+        // name == id: unchanged, but it must not double up.
         assert_eq!(
             candidate_label(&candidate("deepseek-flash", Some("deepseek-flash"))),
             "deepseek-flash"

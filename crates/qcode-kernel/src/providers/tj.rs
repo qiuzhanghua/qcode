@@ -149,7 +149,7 @@ pub fn login(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| format!("cannot start login runtime: {error}"))?;
+        .map_err(|error| qcode_i18n::trp("provider.tj.login_runtime", &[error.to_string()]))?;
     runtime
         .block_on(provider.login())
         .map_err(|error| error.to_string())

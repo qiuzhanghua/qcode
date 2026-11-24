@@ -6,7 +6,13 @@ qcode-gui	\nAdd-Type -AssemblyName System.Windows.Forms\n# Pin the .NET UI cultu
 qcode-gui	\nAdd-Type -AssemblyName System.Windows.Forms\n# Same culture pin as pick_directory above — keep WinForms built-in strings\n# (\"此电脑\", \"This PC\", …) consistent with the machine\'s display language.\n$ui = [System.Globalization.CultureInfo]::InstalledUICulture\n[Threading.Thread]::CurrentThread.CurrentUICulture = $ui\n[Threading.Thread]::CurrentThread.CurrentCulture = $ui\n[Windows.Forms.Application]::CurrentCulture = $ui\n[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n$dialog = New-Object System.Windows.Forms.OpenFileDialog\nif ($ui.Name -like \'zh*\') {\n    $dialog.Title = \'选择文件\'\n} else {\n    $dialog.Title = \'Choose a file\'\n}\nif ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {\n    Write-Output $dialog.FileName\n}\n
 qcode-gui	打开文件夹
 qcode-gui	选择文件
+qcode-kernel	太极内网
+qcode-kernel	小米
 qcode-kernel	小米 MiMo
+qcode-kernel	按量计费
+qcode-kernel	智谱 Bigmodel
 qcode-kernel	智谱 Coding
+qcode-kernel	火山引擎
 qcode-kernel	蚂蚁 Ling
 qcode-kernel	通义 Token Plan
+qcode-kernel	阿里云
