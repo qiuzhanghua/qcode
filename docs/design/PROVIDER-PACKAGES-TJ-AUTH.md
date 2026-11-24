@@ -31,7 +31,7 @@
 4. 新增「太极统一认证」Provider：OAuth 端点与 client_id 硬编码（public client + PKCE，
    无 client_secret）；无 token 走授权码流程（打开 Keycloak 登录页 → 回调 code → PKCE 换
    token）；401 先 refresh、失败再走授权码流程；token 存 `tj_auth.json`；配置页无钥匙串
-   逻辑；默认地址 `http://192.168.69.126:6573/v1/chat/completions`。
+   逻辑；默认地址 `http://192.168.69.126:6573/v1`（请求时由 openai 协议拼出 `/chat/completions`）。
 
 ---
 
@@ -183,14 +183,14 @@ pub struct TjAuthConfig {
     pub jwk_set_url: &'static str,  // https://auth.taiji.com.cn/realms/taiji/protocol/openid-connect/certs
     pub client_id: &'static str,    // "qcode"
     pub client_name: &'static str,  // "qcode"
-    pub redirect_uri: &'static str, // "qcode://oauth2/callback"（自定义 scheme，需在系统注册，见 §4.3）
+    pub redirect_uri: &'static str, // "http://127.0.0.1:43782/oauth2/callback"（loopback 首选，端口以实施时为准，见 §4.3）
     // 无 client_secret 字段。
 }
 pub const TJ_AUTH: TjAuthConfig = TjAuthConfig { /* 按上述实测值填入 */ };
 
 /// 太极 route 判定与默认请求地址（需求 4c）
 pub const TJ_ROUTE: &str = "tj";
-pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
+pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1";
 ```
 
 > **实测记录（2026-11-23，Keycloak 26.2.4，realm `taiji`，client `qcode`）**：
@@ -232,7 +232,7 @@ pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
 │      1) 生成 code_verifier + code_challenge(S256)
 │      2) 打开 Keycloak 登录页（系统浏览器或应用内嵌 WebView）
 │         —— 用户在登录页输入用户名/密码完成登录
-│      3) 回调 qcode://oauth2/callback?code=… 拿到 code
+│      3) 回调 http://127.0.0.1:<固定端口>/oauth2/callback?code=… 拿到 code
 │      4) POST token_url（code + code_verifier + redirect_uri，
 │         无 client_secret）→ access_token + refresh_token + expires_in
 │      5) 写回 tj_auth.json                      │
@@ -256,11 +256,28 @@ pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
   `jwk_set_url` 预留给需要验签的场景（当前流程未强制验签）。
 - **认证方式**：public client + PKCE S256（实测通过，见 §4.1 记录）——token 请求不带
   client_secret；`code_verifier` 用完即弃，不需要持久化。
-- **回调 scheme 注册**：`qcode://` 自定义 scheme 需要系统注册——Windows 写注册表
-  `HKCU\Software\Classes\qcode`，macOS 配 Info.plist `CFBundleURLTypes`，Linux 用
-  `.desktop` 文件的 `MimeType=x-scheme-handler/qcode`。备用方案：loopback 回调
-  `http://127.0.0.1:<固定端口>/oauth2/callback`（RFC 8252），需在 Keycloak 的
-  Valid redirect URIs 中精确配置该地址。
+- **回调接入决策（2026-11-24 定稿）**：首选 **loopback 回调**
+  `http://127.0.0.1:<固定端口>/oauth2/callback`（RFC 8252）：
+  1. 登录时起临时 HTTP server（绑 `127.0.0.1`，一次性，收到 code 即关），
+     浏览器 302 到该地址后返回「登录成功」HTML 页；
+  2. `redirect_uri` 从 `qcode://oauth2/callback` 改为该 loopback 地址
+     ——token 交换与授权请求共用同一字段（§4.4 `TjAuthSettings.redirect_uri`），
+     Keycloak 的 redirect_uri 一致性校验自动满足；
+  3. 前置条件：太极 Keycloak 的 Valid Redirect URIs 精确加入该地址
+     （端口固定、不做轮换；Keycloak 对动态 loopback 端口是否放行需实施时实测）。
+- **为什么不用 `qcode://` 自定义 scheme（备用方案）**：scheme 回调在 Windows
+  依赖「OS 拉起新进程 → 单实例转发 → IPC 分发」整条链路（VSCode 扩展的
+  `registerUriHandler` 即这套基础设施的现成形态）；而 qcode 的单实例通道被
+  设计为不带载荷（single_instance ADR-0084「永远不要再加第三种请求」），
+  需自建跨进程 URL 传递。且 scheme 回调无法给浏览器返回成功页面（浏览器把
+  URL 交给 OS 即脱离链路）。
+- **曾对比 device flow（RFC 8628，VSCode 桌面端登录方式）**：可彻底免回调
+  （应用内显示一次性 user_code + 验证 URL，轮询 token 端点换 token），但
+  前提是太极 realm 开启 `OAuth 2.0 Device Authorization Grant`（未确认）；
+  若已开启可优先采用，未开启走 loopback。
+- **实施时应补充 `state` 参数**：当前授权请求无 `state`（仅靠 PKCE code 一次性
+  兜底串号），对齐 VSCode 扩展 `_pendingStates` 做法——授权请求带 `state`，
+  回调时校验后再换 token。
 - **401 重试闭环在 provider 内部**，不依赖 engine 层的 `is_retryable`
   （[stream.rs](../../crates/qcode-core/src/engine/stream.rs)，该表不含 Auth）。
 
@@ -314,7 +331,7 @@ pub type AuthPrompt = Arc<dyn Fn() -> Option<String> + Send + Sync>;
   - **跳过 API 密钥区块与「存入钥匙串」按钮**（需求 4c，无钥匙串逻辑）；
   - 新增「太极统一认证」状态区：显示 未登录 / 已登录（用户名），「登录」按钮 → 打开
     Keycloak 登录页（触发授权码流程）并写 `tj_auth.json`；
-  - base_url 预填 `http://192.168.69.126:6573/v1/chat/completions`，其余字段与模型编辑器与其他 Provider 相同（需求 4c）。
+  - base_url 预填 `http://192.168.69.126:6573/v1`，其余字段与模型编辑器与其他 Provider 相同（需求 4c）。
 - 注册 `AuthPrompt` 回调（打开 Keycloak 登录页并等待回调 code），注入 `ProviderRegistry::build`。
 - `provider_usable()`：tj route 的可用性由 token 存在性决定，同步 `credential_state`。
 
@@ -360,3 +377,5 @@ pub type AuthPrompt = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 | 4 | `tj_auth.json` 明文存 token | 本地明文凭据 | 类 Unix 0600 权限；Windows 按用户目录隔离 |
 | 5 | 套餐模型列表需不重叠（保证模型→套餐映射唯一，方案 B 才依赖；方案 A 无此约束） | — | 方案 A 天然规避 |
 | 6 | 无 token 时 CLI 场景（无 GUI 可开登录页） | `AuthPrompt = None` | 返回明确错误「太极统一认证未登录，请在设置页登录」 |
+| 7 | loopback 回调需太极 Keycloak 白名单加入 `http://127.0.0.1:<port>/oauth2/callback`（2026-11-24 已确认可加） | 未加入时浏览器回调失败 | 首选路径（§4.3）；未开通则退回手动粘贴兜底 |
+| 8 | 太极 realm 是否开启 device flow（RFC 8628）未确认 | 已开则可进一步免回调 | 已开优先 device flow，未开走 loopback（§4.3） |

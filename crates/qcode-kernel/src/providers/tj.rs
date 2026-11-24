@@ -18,7 +18,7 @@ pub struct TjAuthConfig {
     pub client_id: &'static str,
     /// 客户端名称。
     pub client_name: &'static str,
-    /// 回调地址（`qcode://` 自定义 scheme，需在系统注册；见设计文档 §4.3）。
+    /// 回调地址（loopback，登录时起临时 HTTP server 接收；见设计文档 §4.3）。
     pub redirect_uri: &'static str,
 }
 
@@ -29,12 +29,12 @@ pub const TJ_AUTH: TjAuthConfig = TjAuthConfig {
     jwk_set_url: "https://auth.taiji.com.cn/realms/taiji/protocol/openid-connect/certs",
     client_id: "qcode",
     client_name: "qcode",
-    redirect_uri: "qcode://oauth2/callback",
+    redirect_uri: "http://127.0.0.1:43782/oauth2/callback",
 };
 
 /// 太极 route 判定与默认模型请求地址（需求 4c）。
 pub const TJ_ROUTE: &str = "tj";
-pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1/chat/completions";
+pub const TJ_BASE_URL: &str = "http://192.168.69.126:6573/v1";
 
 /// 该 route 是否是太极统一认证 Provider。
 pub fn is_tj_route(route: &str) -> bool {
@@ -76,19 +76,134 @@ pub fn submit_auth_code(code: String) {
     }
 }
 
-/// 默认授权回调实现（GUI 启动时注册为全局回调）：打开系统浏览器访问登录页，
-/// 阻塞等待用户在设置页粘贴回调 URL 里的 code（最长 5 分钟，超时返回 None）。
+/// loopback 回调端口（固定端口；须与太极 Keycloak 的 Valid Redirect URIs
+/// 白名单里配置的地址一致，见设计文档 PROVIDER-PACKAGES-TJ-AUTH §4.3）。
+pub const LOOPBACK_PORT: u16 = 43782;
+
+/// 从 URL 里取一个 query 参数（`state` / `code`）。
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    parsed
+        .query_pairs()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+}
+
+/// 默认授权回调实现（GUI 启动时注册为全局回调，见设计文档 §4.3）：
 ///
-/// 当前 GPUI 的 `register_url_scheme` 在 Windows 未实现（vendor/gpui-pre-windows
-/// platform.rs#L1139），`qcode://` 回调无法自动接收，所以第一版用「手动粘贴 code」
-/// 兜底；将来 scheme 注册可用后可直接换成自动回调。
+/// 1. 起一个**临时** loopback HTTP server（`127.0.0.1:<LOOPBACK_PORT>`，仅本机
+///    可连），浏览器授权后 302 到该地址，qcode 收到回调、校验 `state`、提取
+///    `code`，并向浏览器返回「登录成功」页面——listener 随本次登录结束而关闭；
+/// 2. 同时保留 `submit_auth_code` 手动注入通道作为兜底（listener 不可用等场景）；
+/// 3. 最长 5 分钟，超时返回 `None`。
 pub fn open_browser_and_wait(auth_url: String) -> Option<String> {
-    open_browser(&auth_url);
+    let expected_state = query_param(&auth_url, "state");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", LOOPBACK_PORT))
+        .ok()
+        .inspect(|listener| {
+            // accept 轮询用非阻塞；accept 返回的连接自身是阻塞的，read 会等到
+            // 浏览器发完请求为止。
+            listener.set_nonblocking(true).ok();
+        });
     let (tx, rx) = std::sync::mpsc::channel();
     if let Ok(mut guard) = pending_code_tx().lock() {
         *guard = Some(tx);
     }
-    rx.recv_timeout(std::time::Duration::from_secs(300)).ok()
+    open_browser(&auth_url);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        // 手动注入通道（兜底）：GUI 或未来流程把 code 直接交给等待者。
+        if let Ok(code) = rx.try_recv() {
+            return Some(code);
+        }
+        // loopback 回调：浏览器授权后 302 到这里。
+        if let Some(listener) = &listener
+            && let Ok((mut stream, _)) = listener.accept()
+        {
+            match receive_callback(&mut stream, expected_state.as_deref()) {
+                Some(code) => {
+                    let _ = write_success_page(&mut stream);
+                    return Some(code);
+                }
+                None => {
+                    // 不是本次登录的回调（state 不符或格式不对）：告知浏览器并继续等。
+                    let _ = write_error_page(&mut stream);
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// 从一次 HTTP 回调连接里解析出 `code`，并校验 `state` 与本次授权请求一致。
+///
+/// 请求形如 `GET /oauth2/callback?code=…&state=… HTTP/1.1`。state 不符或没有
+/// code 返回 `None`（丢弃该连接，继续等真正属于本次登录的回调）。
+fn receive_callback(
+    stream: &mut std::net::TcpStream,
+    expected_state: Option<&str>,
+) -> Option<String> {
+    let head = read_http_request_head(stream).ok()?;
+    let target = head.lines().next()?.split_whitespace().nth(1)?;
+    let url = format!("http://127.0.0.1:{LOOPBACK_PORT}{target}");
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    let code = query_param(parsed.as_str(), "code")?;
+    if code.is_empty() {
+        return None;
+    }
+    match expected_state {
+        // 本次授权请求带了 state：回调必须原样带回来（防旧链接/伪造触发）。
+        Some(state) if query_param(parsed.as_str(), "state").as_deref() != Some(state) => None,
+        _ => Some(code),
+    }
+}
+
+/// 读到 HTTP 请求头（`\r\n\r\n` 为止）。浏览器回调只发一个 GET，头部量很小。
+fn read_http_request_head(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 4096];
+    let mut data = Vec::new();
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                data.extend_from_slice(&buf[..n]);
+                if data.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(String::from_utf8_lossy(&data).into_owned())
+}
+
+/// 向浏览器返回「登录成功」页。
+fn write_success_page(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    let body = "<html><body style=\"font-family:sans-serif;text-align:center;margin-top:4rem\"><h2>登录成功，可以关闭此页面</h2></body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    use std::io::Write;
+    stream.write_all(response.as_bytes())
+}
+
+/// 回调校验失败时告知浏览器（继续等待真正属于本次登录的回调）。
+fn write_error_page(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    let body = "<html><body style=\"font-family:sans-serif;text-align:center;margin-top:4rem\"><h2>回调校验失败</h2></body></html>";
+    let response = format!(
+        "HTTP/1.1 400 Bad Request\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    use std::io::Write;
+    stream.write_all(response.as_bytes())
 }
 
 /// 用系统默认浏览器打开 URL（macOS `open`，Linux `xdg-open`，Windows `start`）。
@@ -103,11 +218,12 @@ fn open_browser(url: &str) {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // 必须把 URL 用引号包起来再交给 cmd：授权 URL 的查询串含 `&`，cmd 会
+        // 把它当成命令分隔符，导致 client_id/redirect_uri 等被当作命令执行。
         let _ = std::process::Command::new("cmd")
             .arg("/c")
-            .arg("start")
-            .arg("")
-            .arg(url)
+            .raw_arg(format!("start \"\" \"{url}\""))
             .spawn();
     }
 }
@@ -153,4 +269,80 @@ pub fn login(
     runtime
         .block_on(provider.login())
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn callback_url(code: &str, state: &str) -> Vec<u8> {
+        format!(
+            "GET /oauth2/callback?code={code}&state={state} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// 造一对已连接的 TcpStream（浏览器端 + 回调接收端）。
+    fn socket_pair() -> (std::net::TcpStream, std::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let browser = std::net::TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (browser, server)
+    }
+
+    #[test]
+    fn query_param_extracts_state_and_code() {
+        let url = "https://auth.taiji.com.cn/realms/taiji/protocol/openid-connect/auth?response_type=code&client_id=qcode&state=abc123&code_challenge=x";
+        assert_eq!(query_param(url, "state").as_deref(), Some("abc123"));
+        assert_eq!(query_param(url, "code"), None);
+        assert_eq!(query_param("not a url", "state"), None);
+    }
+
+    #[test]
+    fn loopback_callback_extracts_code_and_checks_state() {
+        let (mut browser, mut server) = socket_pair();
+        browser.write_all(&callback_url("c0de", "s1")).unwrap();
+        assert_eq!(
+            receive_callback(&mut server, Some("s1")).as_deref(),
+            Some("c0de")
+        );
+    }
+
+    #[test]
+    fn loopback_callback_rejects_a_wrong_state() {
+        // 旧链接/伪造回调带了错误的 state：必须丢弃，不当作本次登录的结果。
+        let (mut browser, mut server) = socket_pair();
+        browser.write_all(&callback_url("c0de", "wrong")).unwrap();
+        assert_eq!(receive_callback(&mut server, Some("s1")), None);
+    }
+
+    #[test]
+    fn loopback_callback_tolerates_absent_state_when_not_expected() {
+        // 授权请求没带 state（旧版本）时，回调只要带 code 就收。
+        let (mut browser, mut server) = socket_pair();
+        browser.write_all(&callback_url("c0de", "s1")).unwrap();
+        assert_eq!(receive_callback(&mut server, None).as_deref(), Some("c0de"));
+    }
+
+    #[test]
+    fn success_page_is_a_valid_http_response() {
+        let (mut browser, mut server) = socket_pair();
+        write_success_page(&mut server).unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("登录成功"));
+    }
+
+    #[test]
+    fn the_redirect_uri_matches_the_loopback_port() {
+        // 白名单地址与 listener 端口必须同源：redirect_uri 就来自这里的端口常量。
+        assert!(
+            TJ_AUTH
+                .redirect_uri
+                .starts_with(&format!("http://127.0.0.1:{LOOPBACK_PORT}/oauth2/callback"))
+        );
+    }
 }

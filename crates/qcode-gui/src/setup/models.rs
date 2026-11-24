@@ -650,8 +650,7 @@ impl SetupView {
     /// 读 `tj_auth.json` 显示 未登录 / 已登录（用户名），提供「登录」按钮。
     fn render_tj_login(&self, route: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (muted_color, success_color, danger_color) =
-            (theme.muted_foreground, theme.success, theme.danger);
+        let (muted_color, success_color) = (theme.muted_foreground, theme.success);
         let store_path = self.tj_store_path();
         let signed_in = qcode_providers::TjTokenStore::new(store_path)
             .load()
@@ -686,54 +685,34 @@ impl SetupView {
         section = section.child(
             Button::new(format!("tj-login-{route}"))
                 .label(qcode_i18n::tr("gui.setup.editor.tj_login"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    // 按下登录：打开浏览器后需要一个「粘贴 code」输入框。
-                    this.tj_code_input = Some(input(
-                        window,
-                        cx,
-                        String::new(),
-                        &qcode_i18n::tr("gui.setup.editor.tj_code_aria"),
-                    ));
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    // 登录：打开 Keycloak 登录页，loopback 回调自动收回 code
+                    // （见 kernel tj `open_browser_and_wait`），无需手动粘贴。
                     this.login_tj(&route_for_login, cx);
                 })),
         );
-        // 登录流程进行中：显示「粘贴 code」输入框 + 提交按钮（浏览器回调
-        // `qcode://…?code=…` 无法自动接收，用户把 code 复制过来）。
-        if let Some(code_input) = &self.tj_code_input {
-            section = section.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(div().flex_grow(1.0).child(Input::new(code_input)))
-                    .child(
-                        Button::new("tj-submit-code")
-                            .label(qcode_i18n::tr("gui.setup.editor.tj_submit"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let code = this
-                                    .tj_code_input
-                                    .as_ref()
-                                    .map(|input| input.read(cx).value().trim().to_string())
-                                    .unwrap_or_default();
-                                qcode_kernel::providers::tj::submit_auth_code(code);
-                                if let Some(input) = &this.tj_code_input {
-                                    input.update(cx, |state, cx| {
-                                        state.set_value("", window, cx);
-                                        cx.notify();
-                                    });
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
+        // 按钮下方的登录反馈：成功显示绿色「登录成功」，进行中显示灰色提示。
+        let signed_in = qcode_i18n::tr("gui.setup.editor.tj_signed_in").to_string();
+        let pending = qcode_i18n::tr("gui.setup.editor.tj_pending").to_string();
+        match self.provider_notice.as_deref() {
+            Some(notice) if notice == signed_in.as_str() => {
+                section = section.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(success_color)
+                        .child(notice.to_string()),
+                );
+            }
+            Some(notice) if notice == pending.as_str() => {
+                section = section.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted_color)
+                        .child(notice.to_string()),
+                );
+            }
+            _ => {}
         }
-        section = section.child(
-            div()
-                .text_size(sp(CAPTION_SIZE))
-                .text_color(danger_color)
-                .child(qcode_i18n::tr("gui.setup.editor.tj_hint")),
-        );
         section.into_any_element()
     }
 
@@ -993,7 +972,10 @@ impl SetupView {
             );
         }
         // 蓝色小字成功提示（如密钥已存入钥匙串），同样只在编辑框内显示。
-        if let Some(notice) = &self.provider_notice {
+        // 太极路由的成功/进行中提示在登录按钮下方单独渲染（绿色），这里不重复。
+        if !qcode_kernel::providers::tj::is_tj_route(route)
+            && let Some(notice) = &self.provider_notice
+        {
             body = body.child(
                 div()
                     .text_size(sp(CAPTION_SIZE))
@@ -1005,6 +987,11 @@ impl SetupView {
             let mut fields = div().flex().flex_col().gap_2();
             for column in columns {
                 if column.key == "name" {
+                    continue;
+                }
+                // 太极统一认证只有 openai 协议：隐藏协议选择，避免误切协议
+                // 导致请求失败（PROVIDER-PACKAGES-TJ-AUTH §4）。
+                if column.key == "protocol" && qcode_kernel::providers::tj::is_tj_route(route) {
                     continue;
                 }
                 if let Some(field) = self.render_provider_field(row, column, cx) {
@@ -2018,7 +2005,6 @@ impl SetupView {
     fn close_editor(&mut self, changed: bool) {
         self.editing_provider = None;
         self.editing_package_locked = false;
-        self.tj_code_input = None;
         // 关闭编辑框即清理探测状态与对话框内提示：再次打开时不会残留
         // 上一次的探测结果/报错；探测线程的轮询也会因对话框关闭而丢弃
         // 结果（见 `start_probe`）。

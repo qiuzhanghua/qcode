@@ -33,9 +33,11 @@ pub struct TjAuthSettings {
     pub redirect_uri: String,
 }
 
-/// 授权回调：GUI 注册——用给定的授权 URL（已带 `code_challenge`）打开 Keycloak
-/// 登录页，阻塞等待 `qcode://oauth2/callback` 回调带回的 code，返回该 code。
-/// `None` = 没有交互能力（CLI / 无人值守），此时返回 `None` 表示无法完成授权。
+/// 授权回调：GUI 注册——用给定的授权 URL（已带 `code_challenge` 与 `state`）
+/// 打开 Keycloak 登录页，阻塞等待 loopback 回调
+/// （`http://127.0.0.1:<port>/oauth2/callback`，见 kernel 侧 §4.3）带回的 code，
+/// 返回该 code。`None` = 没有交互能力（CLI / 无人值守），此时返回 `None`
+/// 表示无法完成授权。
 pub type AuthPrompt = Arc<dyn Fn(String) -> Option<String> + Send + Sync>;
 
 /// `tj_auth.json` 的 token 记录。
@@ -321,6 +323,9 @@ impl TjProvider {
         // 授权码流程（PKCE S256）：生成 verifier/challenge，打开登录页取 code，
         // 用 code + verifier 换 token 并落盘。
         let (verifier, challenge) = pkce_pair();
+        // `state` 防串号/CSRF：kernel 侧的回调处理会校验它原样带回
+        // （对齐 VSCode 扩展 _pendingStates 的做法，设计文档 §4.3）。
+        let state = random_state();
         let auth_url = reqwest::Url::parse_with_params(
             &self.config.settings.auth_url,
             &[
@@ -328,6 +333,7 @@ impl TjProvider {
                 ("client_id", self.config.settings.client_id.as_str()),
                 ("redirect_uri", self.config.settings.redirect_uri.as_str()),
                 ("scope", "openid"),
+                ("state", state.as_str()),
                 ("code_challenge_method", "S256"),
                 ("code_challenge", challenge.as_str()),
             ],
@@ -441,6 +447,14 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// OAuth `state` 参数：16 字节 OS 随机数 → 32 字符 hex。回调时由 kernel 侧
+/// 校验它原样带回（防旧链接/伪造触发登录）。
+fn random_state() -> String {
+    let mut bytes = [0u8; 16];
+    let _ = getrandom::getrandom(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// 从 access_token（JWT）的载荷里解出 `exp`（Unix 秒）。本地**不解签**，仅
 /// 读取过期时间；无 `exp` 时返回 None（由 `expires_in` 兜底）。
 fn decode_jwt_exp(token: &str) -> Option<u64> {
@@ -462,6 +476,15 @@ mod tests {
         // challenge 必须等于 SHA256(verifier) 的 base64url 编码。
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         assert_eq!(challenge, expected);
+    }
+
+    #[test]
+    fn state_is_a_random_32_char_hex_string() {
+        let a = random_state();
+        let b = random_state();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "两次随机 state 不该相同");
     }
 
     #[test]
