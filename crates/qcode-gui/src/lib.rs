@@ -394,7 +394,7 @@ pub fn short_id(id: &str) -> &str {
 /// accessed nor pinned as default). Keyless endpoints (e.g. Ollama) are no
 /// longer auto-probed: a provider that configured models is listed as-is, and
 /// a real outage surfaces at run time.
-fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
+fn provider_models(config_path: &Path) -> Vec<(String, String, Vec<String>)> {
     let Ok(config) = qcode_kernel::config::load(config_path) else {
         return Vec::new();
     };
@@ -436,11 +436,11 @@ fn provider_models(config_path: &Path) -> Vec<(String, Vec<String>)> {
         models.sort();
         models.dedup();
         if !models.is_empty() {
-            // 组标题：套餐条目显示「厂商名 (套餐名)」，其余保持 route key。
-            let label = qcode_kernel::config::package_entry(name)
-                .map(|(group, pkg)| format!("{} ({})", group.display_name, pkg.label))
-                .unwrap_or_else(|| name.clone());
-            out.push((label, models));
+            // 组标题：与设置页共用 `provider_display_label`（套餐「厂商名 (套餐名)」、
+            // catalog「产品名 (route)」），route 与 label 分开返回——route 用于
+            // 匹配/切换，label 用于显示。
+            let label = qcode_kernel::config::provider_display_label(name);
+            out.push((name.clone(), label, models));
         }
     }
     out

@@ -216,6 +216,50 @@ impl SetupView {
         config.pricing.clear();
         config.approval.rules.clear();
         config.mcp.servers.clear();
+        // 套餐单选：同一厂商（package group）只保留一个套餐行。优先保留当前
+        // 编辑的套餐行（`editing_provider` 指向的 route），否则保留表格里
+        // 第一个出现的；其余同厂商行**不参与校验、不写入**。
+        //
+        // 去重必须在写入之前完成：历史遗留的旧套餐行（如火山按量计费）通常
+        // 没有模型，若在写入循环里先被遍历，会触发「提供方没有模型」校验并
+        // 拒绝整个保存——新套餐（coding plan）的模型反而写不进去，config 里
+        // 就没有可用 provider，主界面提示「还没有配置 Provider」。
+        let mut kept_vendors: std::collections::HashMap<&'static str, String> =
+            std::collections::HashMap::new();
+        let mut kept_row_ids: std::collections::HashMap<&'static str, u64> =
+            std::collections::HashMap::new();
+        let mut keep_rows: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        if let Some(providers) = self.tables.get("providers") {
+            for row in &providers.rows {
+                let name = cell(row, "name", cx).trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some((group, _)) = qcode_kernel::config::package_entry(&name) {
+                    match kept_vendors.get(group.vendor) {
+                        None => {
+                            kept_vendors.insert(group.vendor, name.clone());
+                            kept_row_ids.insert(group.vendor, row.id);
+                            keep_rows.insert(row.id);
+                        }
+                        Some(_) => {
+                            // 该厂商已有保留行：当前行只有是正在编辑的套餐时
+                            // 才替换保留行，否则跳过。
+                            if self.editing_provider.as_deref() == Some(name.as_str()) {
+                                if let Some(prev) = kept_row_ids.remove(group.vendor) {
+                                    keep_rows.remove(&prev);
+                                }
+                                kept_vendors.insert(group.vendor, name.clone());
+                                kept_row_ids.insert(group.vendor, row.id);
+                                keep_rows.insert(row.id);
+                            }
+                        }
+                    }
+                } else {
+                    keep_rows.insert(row.id);
+                }
+            }
+        }
         for table in forms::TABLES {
             let key = table.path.join(".");
             let Some(state) = self.tables.get(&key) else {
@@ -224,6 +268,9 @@ impl SetupView {
             for row in &state.rows {
                 match table.path {
                     ["providers"] => {
+                        if !keep_rows.contains(&row.id) {
+                            continue;
+                        }
                         let name = cell(row, "name", cx);
                         if name.trim().is_empty() {
                             continue;
@@ -368,6 +415,11 @@ impl SetupView {
                 }
             }
         }
+        // 套餐去重把默认 provider 的 route 移走后，`[default-model]` / 遗留
+        // `default_provider` 可能还指着它：不修的话写出的配置 resolve 失败，
+        // 主界面退化成 unconfigured（设置页看着正常、主窗口不认）。自愈后
+        // 再落盘，保证保存出来的配置一定能解析。
+        qcode_kernel::config::settle_default_provider(config);
         Ok(())
     }
 
@@ -399,6 +451,15 @@ impl SetupView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 if view.closing {
+                    return;
+                }
+                // 编辑弹框/添加模型弹框/自定义卡片打开时遵循「点击保存才保存」：
+                // 防抖到点不写盘，pending 留给关闭后的保存/关闭路径（编辑页里
+                // 改的字段不应被一个早先排队的定时器偷偷写进磁盘）。
+                if view.editing_provider.is_some()
+                    || view.adding_model_provider.is_some()
+                    || view.declaring
+                {
                     return;
                 }
                 if view.auto_save_generation == generation

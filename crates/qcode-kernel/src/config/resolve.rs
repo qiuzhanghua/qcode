@@ -118,11 +118,17 @@ fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) 
                 return false;
             };
             let catalog = catalog_entry(name);
-            // A legal endpoint must exist, from the config or the catalog.
+            // 套餐 route 的端点/密钥 env 默认值在 package 表里（catalog 没有），
+            // 与 `resolve` 主路径的兜底顺序保持一致，否则省略了 base_url /
+            // api_key_env、依赖套餐默认的 route 会在兜底被误判为不可用。
+            let package = package_entry(name);
+            // A legal endpoint must exist, from the config, the catalog, or the
+            // package table.
             let Some(base_url) = entry
                 .base_url
                 .clone()
                 .or_else(|| catalog.map(|catalog| catalog.base_url.to_string()))
+                .or_else(|| package.map(|(_, pkg)| pkg.base_url.to_string()))
             else {
                 return false;
             };
@@ -135,6 +141,7 @@ fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) 
                 .api_key_env
                 .clone()
                 .or_else(|| catalog.map(|catalog| catalog.api_key_env.to_string()))
+                .or_else(|| package.map(|(_, pkg)| pkg.api_key_env.to_string()))
                 .unwrap_or_default();
             if !api_key_env.is_empty()
                 && env(&api_key_env).is_none_or(|key| key.is_empty())
@@ -145,9 +152,90 @@ fn first_usable_provider(config: &Config, env: &dyn Fn(&str) -> Option<String>) 
             // A model must be derivable once resolved.
             entry.default_model.is_some()
                 || catalog.is_some_and(|catalog| catalog.default_model.is_some())
+                || package.is_some_and(|(_, pkg)| pkg.default_model.is_some())
                 || !entry.models.is_empty()
         })
         .cloned()
+}
+
+/// 把 `[default-model]` / 遗留 `default_provider` 里指向的、已经不在
+/// `config.providers` 中的 route 修掉。
+///
+/// 场景：设置页的套餐单选（同一厂商只留一个套餐行，见 `apply_tables` 的
+/// 去重）会把旧套餐的 route 从 providers 里移走；若它恰好是默认，整份配置
+/// 就再也 `resolve` 不了——设置页看着一切正常（它读的是表格与内存 config），
+/// 主窗口却退化成 unconfigured（它读的是 `resolve`）。两边的状态读的不是
+/// 同一个东西，就是这个差异。
+///
+/// 策略：默认 route 不在了，先找同一厂商剩下的套餐行接棒（切套餐的语义就是
+/// 默认跟着厂商走），并把模型换成新行可推导的第一个；推导不出来或没有同厂商
+/// 行就清掉默认，让 `resolve` 兜底到 `first_usable_provider`。
+pub fn settle_default_provider(config: &mut Config) {
+    // 一个 route 被移出 providers 后还能不能自己解析：配置行还在、或目录里有
+    // 默认模型（端点目录必有）都算；套餐与自定义 route 没有目录兜底，移走即
+    // 失效。目录 route 的默认不该被这次自愈动到——它本来就解析得了。
+    let self_sufficient = |route: &str| {
+        config.providers.contains_key(route)
+            || catalog_entry(route)
+                .map(|catalog| catalog.default_model.is_some())
+                .unwrap_or(false)
+    };
+    let default_missing = config
+        .default_model
+        .provider
+        .as_deref()
+        .is_some_and(|route| !self_sufficient(route));
+    let legacy_missing = config
+        .default_provider
+        .as_deref()
+        .is_some_and(|route| !self_sufficient(route));
+    if !default_missing && !legacy_missing {
+        return;
+    }
+    if default_missing {
+        let stale = config.default_model.provider.as_deref();
+        let replacement = same_vendor_replacement(config, stale);
+        match replacement
+            .and_then(|route| first_derivable_model(config, &route).map(|model| (route, model)))
+        {
+            Some((route, model)) => {
+                config.default_model.provider = Some(route);
+                config.default_model.model = Some(model);
+            }
+            None => {
+                config.default_model.provider = None;
+                config.default_model.model = None;
+            }
+        }
+    }
+    if legacy_missing {
+        config.default_provider = None;
+    }
+}
+
+/// 同厂商剩下的套餐行：`route` 属于某个套餐厂商时，返回 `providers` 里
+/// 该厂商仍在的行（`BTreeMap` 顺序，第一个），否则 `None`。
+fn same_vendor_replacement(config: &Config, route: Option<&str>) -> Option<String> {
+    let group = route.and_then(|route| package_entry(route).map(|(group, _)| group))?;
+    config
+        .providers
+        .keys()
+        .find(|candidate| package_entry(candidate).is_some_and(|(g, _)| g.vendor == group.vendor))
+        .cloned()
+}
+
+/// 一个 provider 自己可推导的第一个模型：行 `default_model` → 行模型列表
+/// 第一个 → 套餐默认 → 目录默认。与 `resolve` 的模型推导顺序一致。
+fn first_derivable_model(config: &Config, route: &str) -> Option<String> {
+    let entry = config.providers.get(route)?;
+    entry
+        .default_model
+        .clone()
+        .or_else(|| entry.models.first().map(|model| model.id.clone()))
+        .or_else(|| package_entry(route).and_then(|(_, pkg)| pkg.default_model.map(str::to_string)))
+        .or_else(|| {
+            catalog_entry(route).and_then(|catalog| catalog.default_model.map(str::to_string))
+        })
 }
 
 pub fn resolve(

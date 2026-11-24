@@ -125,6 +125,9 @@ pub struct SetupView {
     /// Models-section state (settings mode, provider card list).
     /// The route whose edit dialog is open; one provider at a time.
     editing_provider: Option<String>,
+    /// 编辑已有 Provider 时锁定套餐：从卡片「编辑」进入的编辑页不允许切换
+    /// 套餐（一个 Provider 的套餐在添加时确定）；picker 添加流程不受限。
+    editing_package_locked: bool,
     /// The edit dialog's "更多配置" section is collapsed by default: the API
     /// key is the only field shown first, the fixed config values and the
     /// model catalog appear after expanding.
@@ -416,6 +419,7 @@ impl SetupView {
             shell_probe_note: None,
             shell_probe_rx: None,
             editing_provider: None,
+            editing_package_locked: false,
             editor_expanded: false,
             provider_error: None,
             provider_notice: None,

@@ -69,7 +69,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "volcano-coding",
                 label: "Coding Plan",
-                base_url: "https://ark.cn-beijing.volces.com/api/v3",
+                base_url: "https://ark.cn-beijing.volces.com/api/coding/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "VOLC_ARK_CODING_API_KEY",
                 default_model: None,
@@ -78,7 +78,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "volcano-agent",
                 label: "Agent Plan",
-                base_url: "https://ark.cn-beijing.volces.com/api/v3",
+                base_url: "https://ark.cn-beijing.volces.com/api/plan/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "VOLC_ARK_AGENT_API_KEY",
                 default_model: None,
@@ -126,8 +126,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "dashscope-coding",
                 label: "Coding Plan",
-                // TODO(套餐): Coding Plan 端点待厂商文档核对，暂同按量端点。
-                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                base_url: "https://coding.dashscope.aliyuncs.com/v1",
                 protocol: Protocol::OpenAi,
                 api_key_env: "DASHSCOPE_CODING_API_KEY",
                 default_model: None,
@@ -151,8 +150,9 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "xiaomi-coding",
                 label: "Coding Plan",
-                // TODO(套餐): Coding Plan 端点待厂商文档核对，暂同按量端点。
-                base_url: "https://api.xiaomimimo.com/v1",
+                // 小米的套餐实为「Token Plan」；OpenAI 兼容端点与按量的
+                // `api.xiaomimimo.com/v1` 不同，中国集群为 token-plan-cn 子域。
+                base_url: "https://token-plan-cn.xiaomimimo.com/v1",
                 protocol: Protocol::OpenAi,
                 api_key_env: "XIAOMI_CODING_API_KEY",
                 default_model: None,
@@ -167,7 +167,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "zai",
                 label: "按量计费",
-                base_url: "https://api.z.ai/api/coding/paas/v4",
+                base_url: "https://api.z.ai/api/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "ZAI_API_KEY",
                 default_model: None,
@@ -176,7 +176,6 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "zai-coding",
                 label: "Coding Plan",
-                // TODO(套餐): Coding Plan 端点待厂商文档核对，暂同 catalog 的 zai 端点。
                 base_url: "https://api.z.ai/api/coding/paas/v4",
                 protocol: Protocol::OpenAi,
                 api_key_env: "ZAI_CODING_API_KEY",
@@ -192,8 +191,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "byteplus",
                 label: "按量计费",
-                // TODO(套餐): BytePlus OpenAI 兼容端点待厂商文档确认后替换。
-                base_url: "",
+                base_url: "https://ark.ap-southeast.bytepluses.com/api/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BYTEPLUS_API_KEY",
                 default_model: None,
@@ -202,8 +200,7 @@ pub const PACKAGES: &[PackageGroup] = &[
             PackageEntry {
                 route: "byteplus-coding",
                 label: "Coding Plan",
-                // TODO(套餐): BytePlus Coding Plan 端点待厂商文档确认后替换。
-                base_url: "",
+                base_url: "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
                 protocol: Protocol::OpenAi,
                 api_key_env: "BYTEPLUS_CODING_API_KEY",
                 default_model: None,
@@ -242,6 +239,26 @@ pub fn package_routes() -> impl Iterator<Item = &'static str> {
         .map(|entry| entry.route)
 }
 
+/// 一个 route 在界面上的显示名：套餐条目「厂商名 (套餐名)」，catalog 条目
+/// 「产品名 (route)」（产品名与 route 相同则只显示产品名），其余原样返回
+/// route 本身。
+///
+/// 主界面与设置页共用这一个口径——否则同一 route 在展开列表里显示中文
+/// 「火山引擎 (Coding Plan)」，选中后的按钮/状态上却显示英文 `volcano-coding`。
+/// 它是纯静态表查询，不读 config，可随处调用（含渲染路径）。
+pub fn provider_display_label(route: &str) -> String {
+    if let Some((group, pkg)) = package_entry(route) {
+        return format!("{} ({})", group.display_name, pkg.label);
+    }
+    if let Some(entry) = super::catalog_entry(route) {
+        if entry.display_name != route {
+            return format!("{} ({})", entry.display_name, route);
+        }
+        return entry.display_name.to_string();
+    }
+    route.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +287,15 @@ mod tests {
                     "{} lacks an api_key_env",
                     entry.route
                 );
+                // 套餐端点必须是合法的 https URL：不同套餐的端点各不相同
+                // （按量 / Coding Plan / Agent Plan 走不同子域或路径），写错
+                // 会把套餐 key 打到错误端点、拿 404 或烧按量额度。
+                assert!(
+                    entry.base_url.starts_with("https://"),
+                    "{} base_url is not https: {}",
+                    entry.route,
+                    entry.base_url
+                );
             }
         }
     }
@@ -280,6 +306,11 @@ mod tests {
         assert_eq!(group.vendor, "volcano");
         assert_eq!(entry.label, "Coding Plan");
         assert_eq!(entry.api_key_env, "VOLC_ARK_CODING_API_KEY");
+        // Coding Plan 端点与按量端点不同：这是把套餐 key 打对端点的关键。
+        assert_eq!(
+            entry.base_url, "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "volcano Coding Plan 端点必须与按量 /api/v3 区分"
+        );
         assert!(package_entry("openai").is_none());
         assert!(package_group("dashscope").is_some());
         assert!(package_group("openai").is_none());

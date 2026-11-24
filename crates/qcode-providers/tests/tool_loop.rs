@@ -734,18 +734,18 @@ fn calls_left_without_a_result(events: &[qcode_core::event::Event]) -> Vec<Strin
     for event in events {
         match &event.kind {
             EventKind::AssistantMessage(message) => {
-                dangling.extend(pending.drain(..));
+                dangling.append(&mut pending);
                 pending.extend(message.blocks.iter().filter_map(|block| match block {
                     ContentBlock::ToolCall { call_id, .. } => Some(call_id.clone()),
                     _ => None,
                 }));
             }
             EventKind::ToolResult(result) => pending.retain(|id| id != &result.call_id),
-            EventKind::UserMessage(_) => dangling.extend(pending.drain(..)),
+            EventKind::UserMessage(_) => dangling.append(&mut pending),
             _ => {}
         }
     }
-    dangling.extend(pending);
+    dangling.append(&mut pending);
     dangling
 }
 

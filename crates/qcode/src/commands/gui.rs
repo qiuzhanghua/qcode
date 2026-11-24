@@ -347,11 +347,38 @@ pub(crate) async fn cmd_gui(
     // document, and `resolve` can still succeed when the shell provides the key
     // through env vars, which would silently skip the unconfigured path.
     let exists = setup_path.exists();
-    let resolved = config::load(&setup_path).ok().and_then(|loaded| {
-        config::resolve(&loaded, &config::Overrides::default(), &|key| {
-            std::env::var(key).ok()
-        })
-        .ok()
+    let resolved = config::load(&setup_path).ok().and_then(|mut loaded| {
+        let resolve_with = |loaded: &config::Config| {
+            config::resolve(loaded, &config::Overrides::default(), &|key| {
+                std::env::var(key).ok()
+            })
+            .ok()
+        };
+        match resolve_with(&loaded) {
+            Some(resolved) => Some(resolved),
+            None => {
+                // 默认 provider 引用了一个已被移走/删除的 route（如设置页套餐
+                // 切换把旧套餐行去掉，但 `[default-model]` 还指着它）。先自愈
+                // 再试一次：能解析就用修复后的配置并把修复写回磁盘，让主窗口
+                // 与设置页读到同一份，而不是一上来就退化成 unconfigured。
+                config::settle_default_provider(&mut loaded);
+                match resolve_with(&loaded) {
+                    Some(resolved) => {
+                        if let Err(error) = qcode_kernel::config_edit::ConfigEdit::open(
+                            &setup_path,
+                        )
+                        .and_then(|mut edit| {
+                            edit.apply_config(&loaded)?;
+                            edit.save()
+                        }) {
+                            tracing::warn!(error = %error, "gui: could not persist the healed default provider");
+                        }
+                        Some(resolved)
+                    }
+                    None => None,
+                }
+            }
+        }
     });
     match &resolved {
         Some(resolved) => tracing::info!(

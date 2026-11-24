@@ -251,7 +251,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "zai",
         display_name: "Z.ai",
         protocol: Protocol::OpenAi,
-        base_url: "https://api.z.ai/api/coding/paas/v4",
+        // 按量计费端点（/api/paas/v4）。Z.ai 的 Coding Plan 走 /api/coding/paas/v4，
+        // 与套餐表 `zai` = 按量计费保持一致——resolve 时 catalog 优先于套餐表，
+        // 这里错了会把按量的 key 打到 Coding 端点上。
+        base_url: "https://api.z.ai/api/paas/v4",
         api_key_env: "ZAI_API_KEY",
         default_model: None,
         reasoning_split: false,
