@@ -468,7 +468,7 @@ impl SetupView {
                         window,
                         cx,
                         scalar_string(&config, field.path, &[]),
-                        field.label,
+                        &qcode_i18n::tr(field.label),
                     );
                     if !wizard {
                         let path: &'static [&'static str] = field.path;
@@ -489,7 +489,7 @@ impl SetupView {
                         window,
                         cx,
                         scalar_string(&config, field.path, &[]),
-                        field.label,
+                        &qcode_i18n::tr(field.label),
                     );
                     if !wizard {
                         // Text edits fire on the input entity, not this view;
@@ -518,8 +518,12 @@ impl SetupView {
                         .insert(key, gui_string(&prefs, field.path, options));
                 }
                 _ => {
-                    let input_entity =
-                        input(window, cx, gui_string(&prefs, field.path, &[]), field.label);
+                    let input_entity = input(
+                        window,
+                        cx,
+                        gui_string(&prefs, field.path, &[]),
+                        &qcode_i18n::tr(field.label),
+                    );
                     if !wizard {
                         let path: &'static [&'static str] = field.path;
                         let subscription = cx.subscribe(

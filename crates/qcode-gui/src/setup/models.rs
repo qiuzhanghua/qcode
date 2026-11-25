@@ -1233,13 +1233,13 @@ impl SetupView {
                 let textarea = row.textareas.get(column.key)?;
                 Textarea::new(textarea)
                     .h(px(72.0))
-                    .aria_label(column.label)
+                    .aria_label(qcode_i18n::tr(column.label))
                     .into_any_element()
             }
             _ => {
                 let input = row.cells.get(column.key)?;
                 let control = Input::new(input)
-                    .aria_label(column.label)
+                    .aria_label(qcode_i18n::tr(column.label))
                     .into_any_element();
                 if column.key != "default_model" {
                     return Some(control);
@@ -1268,7 +1268,11 @@ impl SetupView {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_size(sp(CAPTION_SIZE)).child(column.label))
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .child(qcode_i18n::tr(column.label)),
+                )
                 .child(control)
                 .into_any_element(),
         )

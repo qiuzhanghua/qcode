@@ -931,10 +931,13 @@ impl SetupView {
             if is_lines_cell(column.key) {
                 textarea_map.insert(
                     column.key,
-                    textarea(window, cx, String::new(), column.label),
+                    textarea(window, cx, String::new(), &qcode_i18n::tr(column.label)),
                 );
             } else {
-                cell_map.insert(column.key, input(window, cx, String::new(), column.label));
+                cell_map.insert(
+                    column.key,
+                    input(window, cx, String::new(), &qcode_i18n::tr(column.label)),
+                );
             }
         }
         let row = RowState {

@@ -64,13 +64,13 @@ impl SetupView {
                     }
                     return Err(qcode_i18n::trp(
                         "gui.err.required",
-                        &[field.label.to_string()],
+                        &[qcode_i18n::tr(field.label).to_string()],
                     ));
                 }
                 if matches!(field.kind, FieldKind::Integer) {
-                    parse::<u64>(&value, field.label)?;
+                    parse::<u64>(&value, &qcode_i18n::tr(field.label))?;
                 } else {
-                    parse::<f64>(&value, field.label)?;
+                    parse::<f64>(&value, &qcode_i18n::tr(field.label))?;
                 }
             }
         }
