@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.19.0 — 2026-11-25
+
+太极内网从「能登录」到「能日常用」，外加一轮界面刺：自定义模型发现、主界面一键登录、
+设置页该拦的拦截、代码字体回退与侧栏悬浮按钮的排版问题。**没有破坏性变更**：
+`CONFIG_VERSION` 仍是 2，翻译表只增键（1341 → 1350）。
+
+### 为什么是 minor 而不是 patch
+
+`v0.18.1` 之后有两个 `feat`：太极内网的**自定义模型发现**（模型列表不再依赖通用
+`GET {base}/models`）与主界面**一键登录**。两者都新增了用户可见的能力，所以是 minor；
+但没有改动任何既有配置格式或工具契约，所以不是 major。
+
+### 太极内网
+
+- **自定义模型发现**：模型列表要先拿登录用户名 POST 密钥服务（`Secret` 头 + JSON body）
+  换 plugin key，再用这个 key 带 `X-App-ID` 请求；探测流程抽成共享的 `start_probe_with`
+- **「已登录却提示未登录」**：token 响应里没有 `username`，登录时从 `id_token` 载荷解出
+  `preferred_username`（退 `sub`）落盘；旧的 `tj_auth.json` 也经 `TjTokens::username()`
+  兜底读取
+- **主界面一键登录**：401「未登录」横幅旁新增按钮，先刷新 token、失败再走授权码流程
+  （provider 新增 `refresh_or_login`，kernel 暴露同一入口）
+- **删除即清凭证**：设置页删掉太极内网 provider 时一并删除 `tj_auth.json`
+- **保存校验收紧**：provider 至少能推导出一个模型才能保存，且只校验正在编辑的那个，
+  避免 ollama 之类的空模型行挡住别的 provider
+
+### 设置页
+
+- **web_search 的必填项**：已启用但没配齐（brave/tavily 缺密钥、searxng 缺 `base_url`）
+  时，向导的「下一步」「保存并开始」在 Search 页直接拦住；设置模式在「搜索后端」下方
+  实时红字提示还缺什么。校验与内核注册判定一致，但**不跑** `api_key_command`——设置页
+  校验不该有副作用
+- **补齐 `tr()`**：provider 编辑器的字段标签、输入框 placeholder、校验错误里的字段名
+  都走 `tr()`，不再把原始 key 甩到界面上
+
+### 界面
+
+- **代码字体回退**（Windows 上常见）：默认 `JetBrains Mono` 没装时 GPUI 会静默回退到
+  比例字体，而终端格子是按等宽算的、字形按比例排——于是颜色 run 与光标浮在文字右后方、
+  shell 拿到的列数偏少使长行提前换行。现在 `apply` 时实测 `M`/`i` 的 advance 判定等宽
+  性，不等宽就按 Cascadia Mono → Consolas → … 换第一个等宽的，所有代码面一起修
+- **侧栏悬浮按钮**：窄侧栏时操作按钮叠在标题上，透明底让文字透出、两者糊成一团；按钮
+  组改用与所在行一致但不透明的底色
+- **Windows 关窗日志**：`HWND` 在 `WM_DESTROY` 之后才移除，VSync 线程与 `PostMessageW`
+  会在这段时间命中已销毁句柄，以 ERROR 打 `0x80070578`。`post_message` 补 `IsWindow`
+  守卫，VSync 的 `RedrawWindow` 残留竞态改为静默丢弃
+
+### 验证
+
+`fmt --all --check`、`clippy --workspace --all-targets -D warnings`、workspace 全量
+测试、双语 golden 88 项、`cargo deny`、Windows 交叉 type-check 全绿；`acea446` 的 CI
+六个 job 全绿。依赖宿主沙箱与钥匙串的四条用例在本机跳过（没有 `/dev/ptmx` 与钥匙串），
+由 CI 覆盖。
+
 ## 0.18.1 — 2026-11-25
 
 终端输入的一处竞态：往跑满的 pty 里灌大段文字时，写入线程可能因为一次「接受 0 字节」
