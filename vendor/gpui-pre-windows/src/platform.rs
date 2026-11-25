@@ -299,6 +299,13 @@ impl WindowsPlatform {
             .read()
             .iter()
             .for_each(|handle| unsafe {
+                // Same race as the vsync thread: a closing window's HWND can
+                // outlive its GPUI entry until WM_DESTROY is processed, so a
+                // destroyed window may still be listed here. Posting to it
+                // fails with ERROR_INVALID_WINDOW_HANDLE; skip it.
+                if !IsWindow(Some(handle.as_raw())).as_bool() {
+                    return;
+                }
                 PostMessageW(Some(handle.as_raw()), message, wparam, lparam).log_err();
             });
     }
@@ -484,9 +491,13 @@ impl WindowsPlatform {
                                     hwnd.frame_signal.take();
                                 }
                             }
-                            RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
-                                .ok()
-                                .log_err();
+                            // The `IsWindow` check cannot close the race entirely:
+                            // the window can be destroyed right after it passes.
+                            // RedrawWindow then fails with the same spurious
+                            // ERROR_INVALID_WINDOW_HANDLE, so the failure is
+                            // swallowed instead of logged — there is nothing left
+                            // to redraw anyway.
+                            let _ = RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE);
                         }
                     }
                 }

@@ -34,12 +34,19 @@ if !IsWindow(Some(hwnd.as_raw())).as_bool() {
 }
 ```
 
+That check cannot close the race entirely (the window can be destroyed right
+after it passes), so the `RedrawWindow` failure is swallowed rather than
+logged. The same `IsWindow` guard is applied to `post_message`'s
+`PostMessageW`, which iterates the same raw-handle list and used to log the
+same spurious error when a broadcast landed during teardown.
+
 ## Patches
 
 Two, both small and both explained at the site:
 
-1. `src/platform.rs` — the `IsWindow` guard in `begin_vsync_thread` described
-   above.
+1. `src/platform.rs` — the `IsWindow` guards in `begin_vsync_thread` and
+   `post_message`, plus swallowing the residual `RedrawWindow` failure,
+   described above.
 2. `build.rs` — the HLSL gate. Upstream writes
 
    ```rust
