@@ -780,7 +780,7 @@ impl SetupView {
     }
 
     /// `tj_auth.json` 的位置：与 config.toml 同目录。
-    fn tj_store_path(&self) -> std::path::PathBuf {
+    pub(crate) fn tj_store_path(&self) -> std::path::PathBuf {
         self.path
             .parent()
             .unwrap_or(std::path::Path::new("."))

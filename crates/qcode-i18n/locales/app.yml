@@ -364,6 +364,17 @@ gui:
     error_banner:
       en: Request failed · full details
       zh-CN: 请求报错 · 完整信息
+    # 主界面错误横幅里，太极内网 401「未登录」时的登录按钮（点击先刷新
+    # token、失败再走完整授权码流程）。
+    tj_login:
+      en: Sign in to Taiji Intranet
+      zh-CN: 太极内网登录
+    tj_login_pending:
+      en: Signing in…
+      zh-CN: 登录中…
+    tj_signed_in:
+      en: Signed in to Taiji Intranet
+      zh-CN: 太极内网登录成功
   # 侧栏（`render/sidebar.rs`）：产品名、两个段、任务行菜单、目录编辑、图标轨。
   sidebar:
     # 产品标识（ADR-0063 §2 定的临时名 `AI 工具`）。

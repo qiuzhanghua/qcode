@@ -307,6 +307,24 @@ impl TjProvider {
         self.ensure_token().await.map(|_| ())
     }
 
+    /// 主界面「太极内网登录」按钮用的路径：**先无条件刷新**（有
+    /// `refresh_token` 才试），失败再走完整授权码流程（PKCE S256）。
+    ///
+    /// 与 [`Self::login`] 的区别：`login` 在本地 token 未过期时直接返回——
+    /// 401 时本地 access token 可能仍显示“有效”（被吊销/被踢），那个短路
+    /// 会让按钮点了等于没点，这里必须真的换一次才管用。
+    pub async fn refresh_or_login(&self) -> Result<(), ProviderError> {
+        let stored = self.store.load().unwrap_or_default();
+        if !stored.refresh_token.is_empty()
+            && let Ok(fresh) = self.auth.refresh(&stored.refresh_token).await
+        {
+            let _ = self.store.save(&fresh);
+            return Ok(());
+        }
+        // 刷新失败（或无 refresh_token）→ 走与 401 重试相同的兜底：授权码流程。
+        self.ensure_token().await.map(|_| ())
+    }
+
     /// 确保有一个可用的 access token：有效则直接用；无/过期先试 refresh，再
     /// 失败走授权码流程（PKCE S256）。
     async fn ensure_token(&self) -> Result<String, ProviderError> {

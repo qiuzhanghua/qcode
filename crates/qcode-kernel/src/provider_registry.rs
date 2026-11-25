@@ -418,7 +418,8 @@ fn tj_settings() -> TjAuthSettings {
 }
 
 /// `tj_auth.json` 的默认位置：与 config.toml 同目录（`~/.config/qcode/`）。
-fn default_tj_store() -> std::path::PathBuf {
+/// GUI 删除太极内网 provider 时也要清掉这份 token（绿点/运行时读的是它）。
+pub fn default_tj_store() -> std::path::PathBuf {
     qcode_core::real_home()
         .map(|home| home.join(".config/qcode/tj_auth.json"))
         .unwrap_or_else(|| std::path::PathBuf::from("tj_auth.json"))

@@ -261,13 +261,12 @@ fn tj_settings() -> qcode_providers::TjAuthSettings {
     }
 }
 
-/// 走一次完整的授权码流程（PKCE S256）并把 token 写入 `store_path`
-/// （设置页「登录」按钮）。阻塞调用（内部起 current-thread tokio runtime），
-/// GUI 应在 worker 线程执行；已登录时幂等。
-pub fn login(
+/// 构造 TjProvider（配置硬编码 + store 路径 + 授权回调）。设置页「登录」与
+/// 主界面「太极内网登录」两条入口共用同一份构造。
+fn tj_provider(
     store_path: &std::path::Path,
     prompt: qcode_providers::AuthPrompt,
-) -> Result<(), String> {
+) -> Result<qcode_providers::TjProvider, String> {
     let config = qcode_providers::TjProviderConfig {
         name: TJ_ROUTE.to_string(),
         base_url: TJ_BASE_URL.to_string(),
@@ -280,14 +279,43 @@ pub fn login(
         headers: Default::default(),
         images: false,
     };
-    let provider = qcode_providers::TjProvider::new(config).map_err(|error| error.to_string())?;
+    qcode_providers::TjProvider::new(config).map_err(|error| error.to_string())
+}
+
+/// 在 current-thread tokio runtime 上阻塞执行 `future`（登录是 reqwest 异步
+/// HTTP，GPUI executor 不是 tokio reactor，GUI 应在 worker 线程调用）。
+fn block_on_token_op<F>(future: F) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<(), qcode_core::provider::ProviderError>>,
+{
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| qcode_i18n::trp("provider.tj.login_runtime", &[error.to_string()]))?;
-    runtime
-        .block_on(provider.login())
-        .map_err(|error| error.to_string())
+    runtime.block_on(future).map_err(|error| error.to_string())
+}
+
+/// 走一次完整的授权码流程（PKCE S256）并把 token 写入 `store_path`
+/// （设置页「登录」按钮）。阻塞调用（内部起 current-thread tokio runtime），
+/// GUI 应在 worker 线程执行；已登录时幂等。
+pub fn login(
+    store_path: &std::path::Path,
+    prompt: qcode_providers::AuthPrompt,
+) -> Result<(), String> {
+    let provider = tj_provider(store_path, prompt)?;
+    block_on_token_op(provider.login())
+}
+
+/// 主界面「太极内网登录」按钮：先无条件刷新 token，刷新失败再走完整授权码
+/// 流程（PKCE S256）。与 `login`（本地 token 有效就幂等返回）不同：401 时
+/// 本地 token 可能仍未过期，`login` 会短路，必须真的换一次。阻塞调用
+/// （内部起 current-thread tokio runtime），GUI 应在 worker 线程执行。
+pub fn refresh_or_login(
+    store_path: &std::path::Path,
+    prompt: qcode_providers::AuthPrompt,
+) -> Result<(), String> {
+    let provider = tj_provider(store_path, prompt)?;
+    block_on_token_op(provider.refresh_or_login())
 }
 
 #[cfg(test)]

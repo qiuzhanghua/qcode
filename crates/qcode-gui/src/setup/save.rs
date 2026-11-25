@@ -279,14 +279,12 @@ impl SetupView {
                         let default_model =
                             stale_model_default(name.trim(), optional(row, "default_model", cx));
                         let models = model_entries(row, cx);
-                        // 无需密钥的 provider（如 ollama）从自身端点获取模型
-                        // 列表，静态模型为空是正常状态，不做「至少一个模型」
-                        // 校验，否则每次保存都会被它挡住。
-                        let keyless = optional(row, "api_key_env", cx).is_none() && argv.is_empty();
-                        // 需要密钥的提供方必须能推导出至少一个模型（模型列表 /
-                        // 默认模型 / 内置目录），否则在模型菜单里没有可选模型、
-                        // 无法使用，拒绝保存。
-                        if !keyless
+                        // 「至少一个模型」只对**当前正在编辑/保存的那个 provider**
+                        // 生效（编辑弹框是「点保存才保存」，`editing_provider`
+                        // 非 None）：其它行（如还没探测模型的 ollama 行）不该
+                        // 挡住你保存现在的这个——否则改太极内网会报「ollama 没有
+                        // 模型」。没模型的 provider 只有它自己保存时才会被拒绝。
+                        if self.editing_provider.as_deref() == Some(name.trim())
                             && models.is_empty()
                             && default_model.is_none()
                             && qcode_kernel::config::catalog_models(name.trim()).is_empty()

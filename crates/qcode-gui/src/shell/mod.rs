@@ -213,6 +213,11 @@ pub(crate) struct Shell {
     /// 其它平台保持 `None`，也就没人读它。
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) settings_hwnd: Option<isize>,
+    /// 主界面「太极内网登录」按钮：登录流程在 worker 线程跑，`Some` = 进行中
+    /// （按钮禁用，防止连点）。
+    pub(crate) tj_login_pending: bool,
+    /// 登录结果通道（worker → 主线程轮询），与设置页 `login_tj` 同款模式。
+    pub(crate) tj_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) prefs: GuiPreferences,
 }
@@ -410,6 +415,8 @@ impl Shell {
             pending_backend: None,
             settings_window: None,
             settings_hwnd: None,
+            tj_login_pending: false,
+            tj_login_rx: None,
             config_path,
             data_dir,
             prefs,
@@ -891,6 +898,84 @@ impl Shell {
                     cx.notify();
                 }
             });
+        })
+        .detach();
+    }
+
+    /// 主界面「太极内网登录」按钮：worker 线程里**先刷新 token、失败再走完整
+    /// 授权码流程**（`tj::refresh_or_login`），结果经 channel 回报、前台轮询
+    /// 更新横幅。与设置页 `login_tj` 同款模式：reqwest 需要 tokio reactor，
+    /// GPUI executor 不是，所以登录必须在 worker 线程跑。
+    pub(crate) fn tj_login(&mut self, cx: &mut Context<Self>) {
+        if self.tj_login_pending {
+            return;
+        }
+        let Some(prompt) = qcode_kernel::providers::tj::global_auth_prompt() else {
+            self.ui.error_banner =
+                Some(qcode_i18n::tr("gui.setup.editor.tj_no_prompt").to_string());
+            cx.notify();
+            return;
+        };
+        // 与设置页同一份 token 存储：与 config.toml 同目录的 `tj_auth.json`。
+        let store_path = self
+            .config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("tj_auth.json");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = qcode_kernel::providers::tj::refresh_or_login(&store_path, prompt);
+            let _ = tx.send(result);
+        });
+        self.tj_login_rx = Some(rx);
+        self.tj_login_pending = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |shell, cx| {
+                    let received = shell.tj_login_rx.as_ref().map(|rx| rx.try_recv());
+                    match received {
+                        Some(Ok(Ok(()))) => {
+                            shell.tj_login_rx = None;
+                            shell.tj_login_pending = false;
+                            // 成功：这条 401 横幅已经过时，换成一条短暂的状态确认。
+                            shell.ui.error_banner = None;
+                            shell.set_notice(
+                                qcode_i18n::tr("gui.main.tj_signed_in").to_string(),
+                                true,
+                                cx,
+                            );
+                            true
+                        }
+                        Some(Ok(Err(error))) => {
+                            shell.tj_login_rx = None;
+                            shell.tj_login_pending = false;
+                            // 失败：把原因写回横幅，按钮保留可重试。
+                            shell.ui.error_banner = Some(error);
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            shell.tj_login_rx = None;
+                            shell.tj_login_pending = false;
+                            shell.ui.error_banner =
+                                Some(qcode_i18n::tr("gui.setup.editor.tj_interrupted").to_string());
+                            cx.notify();
+                            true
+                        }
+                        None => true,
+                    }
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
         })
         .detach();
     }

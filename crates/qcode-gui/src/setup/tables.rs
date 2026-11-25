@@ -875,10 +875,39 @@ impl SetupView {
         if self.config.default_provider.as_deref() == Some(route) {
             self.config.default_provider = None;
         }
+        // 太极内网：删除 provider 一并清掉登录 token（`tj_auth.json`）。凭证
+        // 状态读的是 token 文件、不看 config，不删的话设置页/选择页的绿点会
+        // 一直亮着——「删了等于没删」。
+        if qcode_kernel::providers::tj::is_tj_route(route) {
+            self.remove_tj_token_store();
+        }
         self.editing_provider = None;
         self.delete_target = None;
         self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
+    }
+
+    /// 太极内网删除 provider 时的 token 清理：删掉 `tj_auth.json`（设置页登录
+    /// 写的 config 同目录那份 + 绿点/运行时读的默认路径那份，二者一致时去重）。
+    /// 失败不阻塞删除——token 文件本来就可能不存在（从未登录）。
+    fn remove_tj_token_store(&self) {
+        let mut paths = vec![
+            self.tj_store_path(),
+            qcode_kernel::provider_registry::default_tj_store(),
+        ];
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    path = %path.display(),
+                    "cannot remove the taiji token store",
+                ),
+            }
+        }
     }
 
     pub(crate) fn add_row(
