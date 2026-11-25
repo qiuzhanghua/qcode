@@ -464,6 +464,15 @@ impl Shell {
             let label = format!("{title}{wonky}");
             let menu_open = self.task_menu.as_deref() == Some(id.as_str());
             let show_actions = self.hovered_task.as_deref() == Some(id.as_str()) || menu_open;
+            // 操作按钮组的底色：行背景是半透明色（0.55 / 0.7），直接拿来当底
+            // 色的话标题文字还会透出来。这里用 Hsla::blend 把行背景合成到
+            // sidebar 基色上，得到与所在行外观一致但**不透明**的等效色——完全
+            // 盖住底下的文字，按钮自身保持清晰。
+            let controls_bg = if active {
+                cx.theme().sidebar.blend(row_active)
+            } else {
+                cx.theme().sidebar.blend(row_hover)
+            };
             let hover_id = id.clone();
             let mut task_row = div()
                 .relative()
@@ -579,6 +588,10 @@ impl Shell {
                 .flex_row()
                 .items_center()
                 .gap_1()
+                // 整块底色 + 与行同款圆角：按钮悬浮出现时盖住底下透出来的标题，
+                // 宽度只包住两个按钮，不与行背景形成可察觉的接缝。
+                .rounded(px(6.0))
+                .bg(controls_bg)
                 .invisible()
                 .when(show_actions, |this| this.visible())
                 .child(task_menu_wrapper)
