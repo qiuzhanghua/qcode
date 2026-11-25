@@ -1580,6 +1580,15 @@ gui:
           sandbox:
             en: "Sandbox"
             zh-CN: "沙箱"
+    # 搜索页的「已启用但缺必填项」提示（设置页警示 / 向导拦截）。与内核注册
+    # web_search 时的判定一致，文案点名还差哪个必填项。
+    search:
+      unconfigured_key:
+        en: "web_search is enabled but no API key is configured. Fill in the Search key env or the Search key command, or export %{0}."
+        zh-CN: "web_search 已启用但未配置 API 密钥。请填写「搜索密钥环境变量」或「搜索密钥命令」，或导出 %{0}。"
+      unconfigured_url:
+        en: "web_search is enabled but no base URL is configured. Fill in the Search base URL with a SearXNG instance (JSON API enabled)."
+        zh-CN: "web_search 已启用但未配置搜索基础 URL。请填写 SearXNG 实例地址（需开启 JSON API）。"
     # 向导/设置页的侧栏页面名（`Page::title_key`）。
     page:
       welcome:

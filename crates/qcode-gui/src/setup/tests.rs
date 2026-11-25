@@ -2,11 +2,12 @@ use super::save::{CloseOutcome, decide_close, split_target};
 use super::save::{GrantCells, McpRowCells};
 use super::{
     AutoSaveKind, credential_presets, extra_body_from_lines, images_override, is_lines_cell,
-    lines_from, overridden_default_model, parse_sandbox_mode, stale_model_default,
-    sync_default_model,
+    lines_from, overridden_default_model, parse_sandbox_mode, search_missing_message,
+    search_usable, stale_model_default, sync_default_model,
 };
 use crate::forms::{self, FieldKind};
 use gpui_kit::component::text::markdown_ast;
+use qcode_tools::web_search::SearchBackend;
 use std::path::PathBuf;
 
 /// 行内问号圆圈的标记识别：只有 `<qc-help/>` 这一个 HTML 节点被当成标记，
@@ -83,6 +84,65 @@ fn strict_network_is_only_offered_for_sandbox_exec() {
             "{mode} must not offer network = strict"
         );
     }
+}
+
+/// web_search 的「已启用但缺必填项」判定：与内核注册时的判定一致
+/// （`SearchSettings::is_usable`），但不运行 `api_key_command` —— 设置页校验
+/// 不该有执行用户命令的副作用。
+#[test]
+fn search_usable_matches_the_kernel_semantics() {
+    // brave: 默认环境变量有值即可用；没有则不可用。
+    assert!(search_usable(SearchBackend::Brave, "", "", "", &|key| (key
+        == "BRAVE_API_KEY")
+        .then(|| "k".to_string())));
+    assert!(!search_usable(SearchBackend::Brave, "", "", "", &|_| None));
+    // 显式 api_key_env 且变量已导出 → 可用；变量没导出 → 不可用。
+    assert!(search_usable(
+        SearchBackend::Tavily,
+        "MY_KEY",
+        "",
+        "",
+        &|key| (key == "MY_KEY").then(|| "k".to_string())
+    ));
+    assert!(!search_usable(
+        SearchBackend::Tavily,
+        "MY_KEY",
+        "",
+        "",
+        &|_| None
+    ));
+    // 配置了 api_key_command 就算有密钥来源（内核会运行它取 key）。
+    assert!(search_usable(
+        SearchBackend::Brave,
+        "",
+        "echo hi",
+        "",
+        &|_| None
+    ));
+    // searxng 无 key，但要 base_url。
+    assert!(!search_usable(SearchBackend::Searxng, "", "", "", &|_| {
+        None
+    }));
+    assert!(search_usable(
+        SearchBackend::Searxng,
+        "",
+        "",
+        "http://localhost:8888",
+        &|_| None
+    ));
+}
+
+/// 缺必填项的提示要点名「还差什么」：key 型后端说出默认环境变量，
+/// searxng 指出要填 base_url。
+#[test]
+fn search_missing_message_names_the_required_field() {
+    qcode_i18n::pin_for_tests();
+    let key = search_missing_message(SearchBackend::Brave);
+    assert!(key.contains("BRAVE_API_KEY"), "{key}");
+    assert!(key.contains("web_search"), "{key}");
+    let url = search_missing_message(SearchBackend::Searxng);
+    assert!(url.contains("SearXNG"), "{url}");
+    assert!(url.contains("web_search"), "{url}");
 }
 
 /// The Network & Sandbox page must actually carry the sandbox controls: a

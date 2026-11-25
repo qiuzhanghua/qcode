@@ -271,6 +271,32 @@ impl Render for SetupView {
                 } else {
                     for field in forms::fields_for(page) {
                         body = body.child(self.render_field(field, cx));
+                        // web_search 已启用但缺必填项：警示紧跟在「搜索后端」切换
+                        // 下面，避免沉在页面底部（下面还有密钥/命令/URL 三组输入）
+                        // 被滚出视线。内核每次重建都会在日志里 WARN「the tool is
+                        // not registered」，这里直接说清还缺什么；向导模式下
+                        // `validate_page` 还会拦下「下一步」。
+                        if field.path == ["search", "backend"] && page == Page::Search {
+                            let (enabled, backend, api_key_env, api_key_command, base_url) =
+                                search_form_values(self, cx);
+                            if enabled
+                                && !search_usable(
+                                    backend,
+                                    &api_key_env,
+                                    &api_key_command,
+                                    &base_url,
+                                    &|key| std::env::var(key).ok(),
+                                )
+                            {
+                                body = body.child(
+                                    div()
+                                        .w_full()
+                                        .text_size(crate::sp(crate::CAPTION_SIZE))
+                                        .text_color(cx.theme().danger)
+                                        .child(search_missing_message(backend)),
+                                );
+                            }
+                        }
                     }
                 }
                 for table in forms::tables_for(page) {

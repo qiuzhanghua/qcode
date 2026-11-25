@@ -518,6 +518,74 @@ pub(crate) fn parse_search(value: &str) -> Result<SearchBackend, String> {
     }
 }
 
+/// The `[search]` block as the form currently holds it, for the
+/// enabled-but-unconfigured check. Order: enabled, backend, api_key_env,
+/// api_key_command, base_url. Reads the widgets directly (bools / selects /
+/// inputs / textareas) so the wizard's `validate_page` and the settings page's
+/// warning agree on what the user has typed — not on what the file last said.
+pub(crate) fn search_form_values(
+    view: &SetupView,
+    cx: &Context<SetupView>,
+) -> (bool, SearchBackend, String, String, String) {
+    let enabled = view.bools.get("search.enabled").copied().unwrap_or(false);
+    let backend = view
+        .selects
+        .get("search.backend")
+        .map(|name| parse_search(name).unwrap_or_default())
+        .unwrap_or_default();
+    (
+        enabled,
+        backend,
+        scalar_value(view, "search.api_key_env", cx),
+        scalar_value(view, "search.api_key_command", cx),
+        scalar_value(view, "search.base_url", cx),
+    )
+}
+
+/// Whether an enabled `web_search` would actually be registered — the same
+/// test the kernel applies at assembly (`SearchSettings::is_usable`), minus the
+/// side effect of running `api_key_command`: the settings page must not execute
+/// a user-configured command just to validate a form. A configured command
+/// counts as a key source here; if it fails at runtime the kernel logs it and
+/// the tool stays unregistered.
+pub(crate) fn search_usable(
+    backend: SearchBackend,
+    api_key_env: &str,
+    api_key_command: &str,
+    base_url: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    match backend {
+        SearchBackend::Searxng => !base_url.trim().is_empty(),
+        _ => {
+            if !api_key_command.trim().is_empty() {
+                return true;
+            }
+            let name = if api_key_env.trim().is_empty() {
+                backend.default_api_key_env().unwrap_or("")
+            } else {
+                api_key_env.trim()
+            };
+            env(name).is_some_and(|key| !key.trim().is_empty())
+        }
+    }
+}
+
+/// The message for an enabled-but-unconfigured `web_search`, naming the field
+/// the user still has to fill in.
+pub(crate) fn search_missing_message(backend: SearchBackend) -> std::borrow::Cow<'static, str> {
+    match backend {
+        SearchBackend::Searxng => qcode_i18n::tr("gui.setup.search.unconfigured_url"),
+        _ => std::borrow::Cow::Owned(qcode_i18n::trp(
+            "gui.setup.search.unconfigured_key",
+            &[backend
+                .default_api_key_env()
+                .unwrap_or_default()
+                .to_string()],
+        )),
+    }
+}
+
 pub(crate) fn action_name(action: &Action) -> &'static str {
     match action {
         Action::Allow => "allow",

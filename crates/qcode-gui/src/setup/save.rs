@@ -74,6 +74,19 @@ impl SetupView {
                 }
             }
         }
+        // 搜索页：web_search 开了就必须配齐必填项，否则内核每次重建都在日志里
+        // WARN「the tool is not registered」。这里拦住，让用户补上或关掉开关。
+        if page == Page::Search {
+            let (enabled, backend, api_key_env, api_key_command, base_url) =
+                search_form_values(self, cx);
+            if enabled
+                && !search_usable(backend, &api_key_env, &api_key_command, &base_url, &|key| {
+                    std::env::var(key).ok()
+                })
+            {
+                return Err(search_missing_message(backend).to_string());
+            }
+        }
         Ok(())
     }
 
@@ -100,6 +113,27 @@ impl SetupView {
                 std::env::var(key).ok()
             })
             .map_err(|error| error.to_string())?;
+            // 向导的最后一关（Review 页的「保存并开始」）：用户可能跳过搜索页
+            // 直接到这里，所以这里再拦一次。settings 模式不校验（自动保存，用户
+            // 可能先开开关再补 key），由 Search 页的行内警示盯着。
+            if config.search.enabled {
+                let command = config
+                    .search
+                    .api_key_command
+                    .as_deref()
+                    .map(|argv| argv.join("\n"))
+                    .unwrap_or_default();
+                let base_url = config.search.base_url.clone().unwrap_or_default();
+                if !search_usable(
+                    config.search.backend,
+                    &config.search.api_key_env,
+                    &command,
+                    &base_url,
+                    &|key| std::env::var(key).ok(),
+                ) {
+                    return Err(search_missing_message(config.search.backend).to_string());
+                }
+            }
         }
         Ok(config)
     }
