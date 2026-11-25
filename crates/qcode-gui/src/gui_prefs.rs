@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, px};
+use gpui_kit::{App, Pixels, px};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +67,71 @@ impl Default for GuiPreferences {
             schedule_section_open: true,
         }
     }
+}
+
+/// Whether `family` resolves to an effectively monospaced face.
+///
+/// GPUI does not fail when a family is unavailable: it resolves to the first
+/// entry of its fallback stack instead (`.ZedMono` → `.ZedSans` → Helvetica →
+/// Segoe UI → …). On Windows the default code font, JetBrains Mono, is usually
+/// not installed, so the terminal's Latin face silently lands on Segoe UI — a
+/// *proportional* font. A terminal grid is built on one cell width (`advance`),
+/// so a proportional face makes every cell wider than its glyphs: differently
+/// coloured runs and the cursor land far to the right of the text, and the
+/// shell is told fewer columns than the view can hold, wrapping lines early.
+/// Measuring 'M' against 'i' catches it: a mono face reports the same advance
+/// for both, a proportional face differs by a wide margin.
+fn is_monospace(text_system: &gpui_kit::TextSystem, family: &str, size: Pixels) -> bool {
+    let font = gpui_kit::Font {
+        family: family.into(),
+        features: Default::default(),
+        fallbacks: None,
+        weight: gpui_kit::FontWeight::NORMAL,
+        style: gpui_kit::FontStyle::Normal,
+    };
+    let id = text_system.resolve_font(&font);
+    let (Ok(m), Ok(i)) = (
+        text_system.advance(id, size, 'M'),
+        text_system.advance(id, size, 'i'),
+    ) else {
+        return false;
+    };
+    let m = m.width.as_f32();
+    let i = i.width.as_f32();
+    m > 0.0 && (m - i).abs() / m <= 0.1
+}
+
+/// The monospace family every code surface draws with, guaranteed monospaced.
+///
+/// `code_font` is the user's choice and wins when it actually resolves to a
+/// monospaced face. When it does not — an unavailable font falls back to a
+/// proportional one through GPUI — the first platform mono face that measures
+/// monospaced replaces it, for the whole window (terminal, transcript and any
+/// other code surface share `theme.mono_font_family`).
+fn resolve_mono_family(code_font: &str, size: Pixels, cx: &App) -> gpui_kit::SharedString {
+    let text_system = cx.text_system();
+    if is_monospace(text_system, code_font, size) {
+        return code_font.into();
+    }
+    const MONO_FALLBACKS: &[&str] = &[
+        // Windows
+        "Cascadia Mono",
+        "Consolas",
+        "Courier New",
+        // macOS
+        "Menlo",
+        "Monaco",
+        // Linux
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "monospace",
+    ];
+    MONO_FALLBACKS
+        .iter()
+        .copied()
+        .find(|candidate| is_monospace(text_system, candidate, size))
+        .map(Into::into)
+        .unwrap_or_else(|| code_font.into())
 }
 
 impl GuiPreferences {
@@ -134,10 +199,15 @@ impl GuiPreferences {
             Theme::change(mode, None, cx);
         }
         let font_size = px(self.font_size as f32);
+        // `code_font` 缺失时 GPUI 会静默回退到比例字体（Windows 上通常是
+        // Segoe UI），终端的格子几何建立在等宽 advance 上，比例字体一进来
+        // 整个网格就错位。这里把 mono 族换成**实测等宽**的字体；用户显式
+        // 选择的字体解析后确实等宽时保持原样。
+        let mono_family = resolve_mono_family(&self.code_font, font_size, cx);
         Theme::update(cx, |theme| {
             theme.font_size = font_size;
             theme.mono_font_size = font_size;
-            theme.mono_font_family = self.code_font.clone().into();
+            theme.mono_font_family = mono_family;
         });
     }
 
