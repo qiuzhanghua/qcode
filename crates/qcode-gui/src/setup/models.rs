@@ -657,7 +657,7 @@ impl SetupView {
             .ok()
             .filter(|tokens| !tokens.access_token.is_empty())
             .map(|tokens| {
-                tokens.username.unwrap_or_else(|| {
+                tokens.username().unwrap_or_else(|| {
                     qcode_i18n::tr("gui.setup.editor.tj_account_fallback").to_string()
                 })
             });
@@ -1530,9 +1530,16 @@ impl SetupView {
             Button::new("custom-add-model")
                 .label(qcode_i18n::tr("ui.action.add_model"))
                 .on_click(cx.listener(|this, _, window, cx| {
-                    let model = this.model_row(window, cx, None);
-                    this.custom_models.push(model);
-                    cx.notify();
+                    // 已有未填 id 的空行时不再追加：连点不会堆出一串空行。
+                    let has_blank = this
+                        .custom_models
+                        .iter()
+                        .any(|model| model.model_id.read(cx).value().trim().is_empty());
+                    if !has_blank {
+                        let model = this.model_row(window, cx, None);
+                        this.custom_models.push(model);
+                        cx.notify();
+                    }
                 })),
         );
         body = body.child(

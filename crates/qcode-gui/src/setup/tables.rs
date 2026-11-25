@@ -491,6 +491,35 @@ impl SetupView {
             cx.notify();
             return;
         };
+        // 太极内网的模型发现是自定义两步流程（与其它 Provider 的
+        // `GET {base}/models` 完全不同）：先用登录用户名到密钥服务换 plugin
+        // key，再用该 key 带 `X-App-ID` 请求模型列表。用户名来自登录成功后
+        // 写入的 `tj_auth.json`。
+        if qcode_kernel::providers::tj::is_tj_route(&name) {
+            let username = qcode_providers::TjTokenStore::new(self.tj_store_path())
+                .load()
+                .ok()
+                .and_then(|tokens| tokens.username())
+                .unwrap_or_default();
+            if username.is_empty() {
+                self.probe_result = Some(qcode_i18n::tr("provider.tj.not_signed_in").to_string());
+                cx.notify();
+                return;
+            }
+            let worker = move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(runtime) => {
+                        runtime.block_on(qcode_providers::tj::discover_tj_models(&username))
+                    }
+                    Err(error) => Err(format!("cannot start probe runtime: {error}")),
+                }
+            };
+            self.start_probe_with(ProbeSurface::Provider(name), worker, cx);
+            return;
+        }
         if base_url.is_empty() {
             self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.base_required").to_string());
             cx.notify();
@@ -556,17 +585,54 @@ impl SetupView {
         );
     }
 
-    /// Shared probe machinery: spawn the discovery on a worker thread, drain
-    /// the result channel in a foreground poll loop, and open the candidate
-    /// picker on success. `surface` decides where results are adopted and what
-    /// still counts as the probe's home: when the surface closes or switches,
-    /// the loop discards the result instead of reopening a stale picker.
+    /// Probe one OpenAI-compatible route for its model list (`GET {base}/models`).
+    /// The tj route does not come here: its model list is a custom two-step
+    /// flow (see [`SetupView::probe_models`]).
     fn start_probe(
         &mut self,
         surface: ProbeSurface,
         base_url: String,
         api_key: Option<String>,
         headers: std::collections::BTreeMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if base_url.is_empty() {
+            self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.base_required").to_string());
+            cx.notify();
+            return;
+        }
+        let worker = move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            match runtime {
+                Ok(runtime) => {
+                    runtime.block_on(qcode_providers::discovery::discover_model_candidates(
+                        &base_url,
+                        api_key.as_deref(),
+                        &headers,
+                    ))
+                }
+                Err(error) => Err(format!("cannot start probe runtime: {error}")),
+            }
+        };
+        self.start_probe_with(surface, worker, cx);
+    }
+
+    /// Shared probe machinery: spawn `worker` on a background thread, drain the
+    /// result channel in a foreground poll loop, and open the candidate picker
+    /// on success. `surface` decides where results are adopted and what still
+    /// counts as the probe's home: when the surface closes or switches, the
+    /// loop discards the result instead of reopening a stale picker.
+    ///
+    /// The generic discovery and the tj-specific one both route through here —
+    /// they differ only in what `worker` does.
+    fn start_probe_with(
+        &mut self,
+        surface: ProbeSurface,
+        worker: impl FnOnce() -> Result<Vec<qcode_providers::discovery::ModelCandidate>, String>
+        + Send
+        + 'static,
         cx: &mut Context<Self>,
     ) {
         // A probe is already in flight. The only way one sticks is the worker
@@ -587,33 +653,23 @@ impl SetupView {
                 return;
             }
         }
-        if base_url.is_empty() {
-            self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.base_required").to_string());
-            cx.notify();
-            return;
-        }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            let result = match runtime {
-                Ok(runtime) => {
-                    runtime.block_on(qcode_providers::discovery::discover_model_candidates(
-                        &base_url,
-                        api_key.as_deref(),
-                        &headers,
-                    ))
-                }
-                Err(error) => Err(format!("cannot start probe runtime: {error}")),
-            };
-            let _ = tx.send(result);
+            let _ = tx.send(worker());
         });
         self.probe_rx = Some(rx);
         self.probe_result = Some(qcode_i18n::tr("gui.setup.probe.running").to_string());
         self.probe_candidates = None;
         self.probe_target = Some(surface.clone());
         cx.notify();
+        self.drain_probe(surface, cx);
+    }
+
+    /// The foreground poll loop for an in-flight probe: every 100 ms it tries
+    /// the result channel, opens the candidate picker on success or writes the
+    /// error into `probe_result`, and stops once the surface closes/switches
+    /// or the window is torn down.
+    fn drain_probe(&self, surface: ProbeSurface, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -817,6 +873,20 @@ impl SetupView {
     /// the in-memory table row; persisting is deferred to the caller's save
     /// (「保存」按钮), so model edits never write half-typed values.
     pub(crate) fn add_model(&mut self, row_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // 已有未填 id 的空行时不再追加：连点「添加模型」不会堆出一串空行。
+        // 编辑弹框与「为某 Provider 添加模型」弹框共用这条路径。
+        let has_blank = self
+            .tables
+            .get("providers")
+            .and_then(|table| table.rows.iter().find(|row| row.id == row_id))
+            .is_some_and(|row| {
+                row.models
+                    .iter()
+                    .any(|model| model.model_id.read(cx).value().trim().is_empty())
+            });
+        if has_blank {
+            return;
+        }
         let model = self.model_row(window, cx, None);
         let Some(table) = self.tables.get_mut("providers") else {
             return;

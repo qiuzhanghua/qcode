@@ -60,6 +60,14 @@ impl TjTokens {
     fn is_valid(&self, now: u64) -> bool {
         !self.access_token.is_empty() && (self.expires_at == 0 || now < self.expires_at)
     }
+
+    /// 登录用户名：优先存盘的 `username` 字段；旧文件里只有 id_token（token
+    /// 响应不带 `username` 字段时，见 `post_token`）则从 id_token 载荷解出。
+    pub fn username(&self) -> Option<String> {
+        self.username
+            .clone()
+            .or_else(|| self.id_token.as_deref().and_then(decode_jwt_username))
+    }
 }
 
 /// `tj_auth.json` 读写：原子写（临时文件 + rename），类 Unix 权限 0600。
@@ -222,10 +230,13 @@ impl TjAuthClient {
             .get("id_token")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        // 太极的 token 响应不带 `username` 字段（2026-11 实测），用户名从
+        // id_token 载荷兜底解出（`preferred_username`，退 `sub`）。
         let username = value
             .get("username")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| id_token.as_deref().and_then(decode_jwt_username));
         Ok(TjTokens {
             access_token,
             refresh_token,
@@ -480,6 +491,101 @@ fn decode_jwt_exp(token: &str) -> Option<u64> {
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     value.get("exp").and_then(serde_json::Value::as_u64)
+}
+
+/// 从 id_token（JWT）载荷里取登录用户名：`preferred_username`，退 `sub`。
+/// 与 `decode_jwt_exp` 一样本地不解签，只读载荷；签名由服务端校验。
+fn decode_jwt_username(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("preferred_username")
+        .or_else(|| value.get("sub"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// 太极内网模型发现的固定端点与插件凭据（与 kernel 侧 PROVIDER-PACKAGES-TJ-AUTH
+/// 配套的插件接口，2026-11 实测值）。模型列表**不是**通用的
+/// `GET {base}/models`：需要先用登录用户名到密钥服务换 plugin key，再用该
+/// key 带 `X-App-ID` 请求模型列表。
+const TJ_GET_KEY_URL: &str = "http://192.168.242.214:3344/api/get_key";
+const TJ_GET_KEY_SECRET: &str = "7XTwQgNhWye3yUzOjrQeZLfVFGzpEeN52vgC6sIVWB1udoZF7";
+const TJ_MODELS_URL: &str = "http://192.168.242.214:8888/v1/models";
+const TJ_MODELS_APP_ID: &str = "tj_plugin_prod_001";
+
+/// 太极内网的模型发现：先用 `username`（登录成功后写入 `tj_auth.json`）到
+/// 密钥服务换 plugin key，再用该 key 带 `X-App-ID` 请求模型列表。结果与
+/// 通用发现一样是候选元数据（`id` / `name` / 上下文窗口 / 输出上限），
+/// 由调用方决定采纳哪些。
+pub async fn discover_tj_models(
+    username: &str,
+) -> Result<Vec<crate::discovery::ModelCandidate>, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| qcode_i18n::trp("provider.discover.http_client", &[error.to_string()]))?;
+    let key = fetch_tj_key(&client, username).await?;
+    let response = client
+        .get(TJ_MODELS_URL)
+        .header("X-App-ID", TJ_MODELS_APP_ID)
+        .bearer_auth(&key)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| {
+            qcode_i18n::trp(
+                "provider.discover.get_failed",
+                &[TJ_MODELS_URL.to_string(), error.to_string()],
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(qcode_i18n::trp(
+            "provider.discover.get_status",
+            &[TJ_MODELS_URL.to_string(), status.to_string(), text],
+        ));
+    }
+    let body = response.text().await.map_err(|error| {
+        qcode_i18n::trp(
+            "provider.discover.read_body",
+            &[TJ_MODELS_URL.to_string(), error.to_string()],
+        )
+    })?;
+    crate::discovery::parse_model_candidates(&body, TJ_MODELS_URL)
+}
+
+/// 用户名 → plugin key：`POST /api/get_key`，`Secret` 头 + JSON body。
+async fn fetch_tj_key(client: &reqwest::Client, username: &str) -> Result<String, String> {
+    let response = client
+        .post(TJ_GET_KEY_URL)
+        .header("Secret", TJ_GET_KEY_SECRET)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&serde_json::json!({ "username": username }))
+        .send()
+        .await
+        .map_err(|error| qcode_i18n::trp("provider.tj.get_key_request", &[error.to_string()]))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(qcode_i18n::trp(
+            "provider.tj.get_key_status",
+            &[TJ_GET_KEY_URL.to_string(), status.to_string(), body.clone()],
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| qcode_i18n::trp("provider.tj.get_key_not_json", &[error.to_string()]))?;
+    let key = value
+        .pointer("/keys/0/key")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| qcode_i18n::trp("provider.tj.get_key_no_key", &[body.as_str()]))?
+        .to_string();
+    Ok(key)
 }
 
 #[cfg(test)]

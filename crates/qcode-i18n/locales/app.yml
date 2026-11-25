@@ -4655,6 +4655,19 @@ provider:
     token_no_access_token:
       en: "token reply has no access_token: %{0}"
       zh-CN: "token 响应里没有 access_token：%{0}"
+    # 模型发现的 get_key 步骤（太极插件密钥服务，见 `discover_tj_models`）。
+    get_key_request:
+      en: "the plugin key request failed: %{0}"
+      zh-CN: "插件密钥请求失败：%{0}"
+    get_key_status:
+      en: "plugin key endpoint %{0} returned %{1}: %{2}"
+      zh-CN: "插件密钥端点 %{0} 返回 %{1}：%{2}"
+    get_key_not_json:
+      en: "plugin key reply is not JSON: %{0}"
+      zh-CN: "插件密钥响应不是 JSON：%{0}"
+    get_key_no_key:
+      en: "plugin key reply has no usable key: %{0}"
+      zh-CN: "插件密钥响应里没有可用的 key：%{0}"
   discover:
     not_json:
       en: "model listing at %{0} is not JSON: %{1}"
