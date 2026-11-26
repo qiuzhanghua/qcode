@@ -541,6 +541,19 @@ impl ConfigEdit {
                 "stream_usage",
                 Item::Value(Value::from(provider.stream_usage)),
             );
+            // 可配置 OAuth2 统一认证：整块 `oauth2` 子表按存在与否写入（None
+            // 不写，避免给普通 provider 留下空子表）。mode 是 snake_case 枚举。
+            if let Some(oauth2) = &provider.oauth2 {
+                let mut sub = Table::new();
+                sub.insert("mode", Item::Value(Value::from(oauth2.mode.as_str())));
+                set_optional(&mut sub, "client_id", Some(oauth2.client_id.clone()));
+                set_optional(&mut sub, "client_secret", oauth2.client_secret.clone());
+                set_optional(&mut sub, "auth_url", Some(oauth2.auth_url.clone()));
+                set_optional(&mut sub, "token_url", Some(oauth2.token_url.clone()));
+                set_optional(&mut sub, "scope", oauth2.scope.clone());
+                set_optional(&mut sub, "redirect_uri", oauth2.redirect_uri.clone());
+                table.insert("oauth2", Item::Table(sub));
+            }
             if !provider.models.is_empty() {
                 // A bare id is all most files need; ADR-0065 lets that be a
                 // string array, and writing `[[providers.x.models]]` tables for
@@ -1234,6 +1247,7 @@ roots = ["~/skills"]
                 stream_usage: false,
                 extra_body: Default::default(),
                 headers: Default::default(),
+                oauth2: None,
                 models: vec![crate::config::ModelEntry {
                     id: "deepseek-flash".to_string(),
                     name: Some("DeepSeek Flash".to_string()),

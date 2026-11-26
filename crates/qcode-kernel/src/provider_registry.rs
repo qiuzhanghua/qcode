@@ -8,8 +8,8 @@
 use qcode_core::event::Usage;
 use qcode_core::provider::{Provider, StopReason, StreamEvent};
 use qcode_providers::{
-    AnthropicConfig, AnthropicProvider, MockProvider, OpenAiCompatConfig, OpenAiCompatProvider,
-    TjAuthSettings, TjProvider, TjProviderConfig,
+    AnthropicConfig, AnthropicProvider, MockProvider, OAuth2Provider, OAuth2ProviderConfig,
+    OpenAiCompatConfig, OpenAiCompatProvider, TjAuthSettings, TjProvider, TjProviderConfig,
 };
 
 use crate::config::{
@@ -70,6 +70,8 @@ pub struct ProviderRegistry {
     proxy_url: Option<String>,
     /// `tj_auth.json` 的路径（太极统一认证）；None = 默认（~/.config/qcode/）。
     tj_store_path: Option<std::path::PathBuf>,
+    /// `oauth2_auth.json` 的路径（可配置 OAuth2 统一认证）；None = 默认。
+    oauth2_store_path: Option<std::path::PathBuf>,
 }
 
 impl ProviderRegistry {
@@ -78,12 +80,19 @@ impl ProviderRegistry {
         Self {
             proxy_url,
             tj_store_path: None,
+            oauth2_store_path: None,
         }
     }
 
     /// Set the `tj_auth.json` location (太极统一认证 token 存储）。
     pub fn with_tj_store(mut self, path: std::path::PathBuf) -> Self {
         self.tj_store_path = Some(path);
+        self
+    }
+
+    /// Set the `oauth2_auth.json` location（可配置 OAuth2 统一认证 token 存储）。
+    pub fn with_oauth2_store(mut self, path: std::path::PathBuf) -> Self {
+        self.oauth2_store_path = Some(path);
         self
     }
 
@@ -130,6 +139,34 @@ impl ProviderRegistry {
                     images: resolved.images,
                 })?)
             }
+            // 可配置 OAuth2 统一认证：端点/客户端标识来自 `providers.<route>.
+            // oauth2`（用户配置），token 生命周期在 OAuth2Provider 内部闭环
+            // （ensure/refresh/401 重试）。与太极一样：引擎侧不挂授权回调
+            // （prompt = None），任务运行时未登录报「OAuth2 未登录」，由界面
+            // 错误横幅上的「OAuth2 登录」按钮显式触发登录。
+            Protocol::OpenAi if resolved.auth_mode == AuthMode::OAuth2 => {
+                let oauth2 = resolved.oauth2.as_ref().ok_or_else(|| {
+                    qcode_i18n::trp("provider.oauth2.config_missing", &[resolved.name.as_str()])
+                })?;
+                Box::new(OAuth2Provider::new(OAuth2ProviderConfig {
+                    name: resolved.name.clone(),
+                    base_url: resolved
+                        .base_url
+                        .clone()
+                        .expect("non-mock provider always has a base URL"),
+                    settings: crate::providers::oauth2::oauth2_settings(oauth2),
+                    store_path: self
+                        .oauth2_store_path
+                        .clone()
+                        .unwrap_or_else(default_oauth2_store),
+                    prompt: None,
+                    proxy_url: self.proxy_url.clone(),
+                    stream_usage: resolved.stream_usage,
+                    extra_body: resolved.extra_body.clone(),
+                    headers: resolved.headers.clone(),
+                    images: resolved.images,
+                })?)
+            }
             Protocol::OpenAi => Box::new(OpenAiCompatProvider::new(OpenAiCompatConfig {
                 name: resolved.name.clone(),
                 base_url: resolved
@@ -158,10 +195,12 @@ impl ProviderRegistry {
             if is_package_route(entry.route) {
                 continue;
             }
-            // 太极统一认证的凭证状态由 `tj_auth.json` 是否有有效 token 决定，
-            // 不走 env/key command（需求 4c：无钥匙串逻辑）。
+            // 太极 / 可配置 OAuth2 统一认证的凭证状态由各自的 token 文件是否有
+            // 有效 token 决定，不走 env/key command（无钥匙串逻辑）。
             let credential_state = if crate::providers::tj::is_tj_route(entry.route) {
                 tj_credential_state()
+            } else if crate::providers::oauth2::is_oauth2_route(entry.route) {
+                oauth2_credential_state()
             } else {
                 credential_state(config.providers.get(entry.route), Some(entry.api_key_env))
             };
@@ -438,6 +477,14 @@ pub fn default_tj_store() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("tj_auth.json"))
 }
 
+/// `oauth2_auth.json` 的默认位置：与 config.toml 同目录（`~/.config/qcode/`）。
+/// GUI 删除 OAuth2 provider 时也要清掉这份 token（绿点/运行时读的是它）。
+pub fn default_oauth2_store() -> std::path::PathBuf {
+    qcode_core::real_home()
+        .map(|home| home.join(".config/qcode/oauth2_auth.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("oauth2_auth.json"))
+}
+
 /// 太极统一认证的凭证状态：`tj_auth.json` 里有未过期的 access token 才算
 /// Configured，否则 Missing（未登录）。不走 env / key command。
 fn tj_credential_state() -> CredentialState {
@@ -446,6 +493,25 @@ fn tj_credential_state() -> CredentialState {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     let store = qcode_providers::TjTokenStore::new(default_tj_store());
+    match store.load() {
+        Ok(tokens)
+            if !tokens.access_token.is_empty()
+                && (tokens.expires_at == 0 || now < tokens.expires_at) =>
+        {
+            CredentialState::Configured
+        }
+        _ => CredentialState::Missing,
+    }
+}
+
+/// 可配置 OAuth2 统一认证的凭证状态：`oauth2_auth.json` 里有未过期的 access
+/// token 才算 Configured，否则 Missing（未登录）。不走 env / key command。
+fn oauth2_credential_state() -> CredentialState {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let store = qcode_providers::TjTokenStore::new(default_oauth2_store());
     match store.load() {
         Ok(tokens)
             if !tokens.access_token.is_empty()
@@ -607,5 +673,35 @@ mod tests {
         )
         .unwrap();
         assert!(registry.build(&mock).is_ok());
+    }
+
+    #[test]
+    fn build_oauth2_route_constructs_an_oauth2_provider() {
+        use crate::config::OAuth2AuthConfig;
+        let mut config = Config::default();
+        config.providers.insert(
+            "oauth2".to_string(),
+            ProviderConfig {
+                base_url: Some("https://gw.example.com/v1".to_string()),
+                oauth2: Some(OAuth2AuthConfig {
+                    mode: qcode_providers::OAuth2Mode::Pkce,
+                    client_id: "qcode".to_string(),
+                    client_secret: None,
+                    auth_url: "https://auth.example.com/oauth2/auth".to_string(),
+                    token_url: "https://auth.example.com/oauth2/token".to_string(),
+                    scope: None,
+                    redirect_uri: None,
+                }),
+                default_model: Some("llm-v1".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
+        let resolved =
+            crate::config::resolve(&config, &crate::config::Overrides::default(), &|_| None)
+                .unwrap();
+        assert_eq!(resolved.auth_mode, crate::config::AuthMode::OAuth2);
+        let registry = ProviderRegistry::new(None);
+        let provider = registry.build(&resolved).expect("build oauth2 route");
+        assert_eq!(provider.name(), "oauth2");
     }
 }

@@ -1476,8 +1476,8 @@ impl Shell {
                     )
                     .children(
                         // 报错提示：同款卡片，红色 title，单「关闭」按钮。当前
-                        // provider 是太极内网、报错又是「未登录」的 401 时，旁边
-                        // 多一个「太极内网登录」按钮（点击先刷新、失败再登录）。
+                        // provider 是太极内网 / OAuth2 统一认证、报错又是「未登录」
+                        // 的 401 时，旁边多一个「登录」按钮（点击先刷新、失败再登录）。
                         self.ui.error_banner.clone().map(|message| {
                             // 401 的「未登录」文案：`ProviderError::Auth` 的 Display
                             // 结果按界面语言生成，这里用同一组 key 算一遍再比对，
@@ -1490,6 +1490,14 @@ impl Shell {
                                 qcode_kernel::providers::tj::is_tj_route(
                                     &self.ui.app.status.provider,
                                 ) && message == tj_not_signed_in;
+                            let oauth2_not_signed_in = qcode_i18n::trp(
+                                "core.err.provider.auth",
+                                &[qcode_i18n::tr("provider.oauth2.not_signed_in")],
+                            );
+                            let show_oauth2_login =
+                                qcode_kernel::providers::oauth2::is_oauth2_route(
+                                    &self.ui.app.status.provider,
+                                ) && message == oauth2_not_signed_in;
                             div()
                                 // 与提问面板同宽：左右各收窄 5%，居中。
                                 .w(relative(0.9))
@@ -1551,6 +1559,24 @@ impl Shell {
                                                         .on_click(cx.listener(
                                                             |this, _, _window, cx| {
                                                                 this.tj_login(cx);
+                                                            },
+                                                        ))
+                                                }))
+                                                .children(show_oauth2_login.then(|| {
+                                                    Button::new("oauth2-login")
+                                                        .label(if self.oauth2_login_pending {
+                                                            qcode_i18n::tr(
+                                                                "gui.main.oauth2_login_pending",
+                                                            )
+                                                        } else {
+                                                            qcode_i18n::tr(
+                                                                "gui.main.oauth2_login",
+                                                            )
+                                                        })
+                                                        .disabled(self.oauth2_login_pending)
+                                                        .on_click(cx.listener(
+                                                            |this, _, _window, cx| {
+                                                                this.oauth2_login(cx);
                                                             },
                                                         ))
                                                 }))

@@ -150,6 +150,17 @@ pub struct SetupView {
     /// 太极登录（设置页「登录」按钮）的结果通道：worker 线程回报
     /// `Result<(), String>`，前台轮询更新提示。
     tj_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// 可配置 OAuth2 统一认证（设置页编辑弹框内的草稿）：登录模式 + 端点/客户端
+    /// 标识。只有 route 为 oauth2 时创建；保存时写入 `providers.<route>.oauth2`。
+    oauth2_mode: String,
+    oauth2_client_id: Option<Entity<InputState>>,
+    oauth2_client_secret: Option<Entity<InputState>>,
+    oauth2_auth_url: Option<Entity<InputState>>,
+    oauth2_token_url: Option<Entity<InputState>>,
+    oauth2_scope: Option<Entity<InputState>>,
+    oauth2_redirect_uri: Option<Entity<InputState>>,
+    /// OAuth2 登录（设置页「登录」按钮）的结果通道。
+    oauth2_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Provider routes whose model list is expanded on the Models page (pure UI
     /// state, never persisted).
     expanded_routes: BTreeSet<String>,
@@ -427,6 +438,14 @@ impl SetupView {
             declaring: false,
             adding_provider: false,
             tj_login_rx: None,
+            oauth2_mode: "authorization_code".to_string(),
+            oauth2_client_id: None,
+            oauth2_client_secret: None,
+            oauth2_auth_url: None,
+            oauth2_token_url: None,
+            oauth2_scope: None,
+            oauth2_redirect_uri: None,
+            oauth2_login_rx: None,
             expanded_routes: BTreeSet::new(),
             adding_model_provider: None,
             probe_candidates: None,

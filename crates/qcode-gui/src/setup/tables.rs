@@ -525,6 +525,36 @@ impl SetupView {
             cx.notify();
             return;
         }
+        // 可配置 OAuth2 统一认证的模型发现：把 access token 放 header
+        // （`GET {base}/models` + Bearer）——与太极（用户名换 plugin key 再带
+        // X-App-ID 拉列表）不同，直接复用通用探测。未登录时提示先登录。
+        if qcode_kernel::providers::oauth2::is_oauth2_route(&name) {
+            let token = qcode_providers::TjTokenStore::new(self.oauth2_store_path())
+                .load()
+                .ok()
+                .filter(|tokens| !tokens.access_token.is_empty())
+                .map(|tokens| tokens.access_token);
+            let Some(token) = token else {
+                self.probe_result =
+                    Some(qcode_i18n::tr("provider.oauth2.not_signed_in").to_string());
+                cx.notify();
+                return;
+            };
+            let headers = self
+                .config
+                .providers
+                .get(&name)
+                .map(|existing| existing.headers.clone())
+                .unwrap_or_default();
+            self.start_probe(
+                ProbeSurface::Provider(name),
+                base_url,
+                Some(token),
+                headers,
+                cx,
+            );
+            return;
+        }
         let api_key = if api_key_env.is_empty() {
             None
         } else {
@@ -951,10 +981,38 @@ impl SetupView {
         if qcode_kernel::providers::tj::is_tj_route(route) {
             self.remove_tj_token_store();
         }
+        // 可配置 OAuth2 统一认证：同样删除 `oauth2_auth.json`（凭证状态读它）。
+        if qcode_kernel::providers::oauth2::is_oauth2_route(route) {
+            self.remove_oauth2_token_store();
+        }
         self.editing_provider = None;
         self.delete_target = None;
         self.auto_save(cx, AutoSaveKind::Tables, false);
         cx.notify();
+    }
+
+    /// 可配置 OAuth2 统一认证删除 provider 时的 token 清理：删掉
+    /// `oauth2_auth.json`（设置页登录写的 config 同目录那份 + 绿点/运行时读的
+    /// 默认路径那份，二者一致时去重）。失败不阻塞删除——token 文件本来就可能
+    /// 不存在（从未登录）。
+    fn remove_oauth2_token_store(&self) {
+        let mut paths = vec![
+            self.oauth2_store_path(),
+            qcode_kernel::provider_registry::default_oauth2_store(),
+        ];
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    path = %path.display(),
+                    "cannot remove the oauth2 token store",
+                ),
+            }
+        }
     }
 
     /// 太极内网删除 provider 时的 token 清理：删掉 `tj_auth.json`（设置页登录

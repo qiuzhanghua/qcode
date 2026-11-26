@@ -364,6 +364,19 @@ impl SetupView {
                                 .get(name.trim())
                                 .map(|existing| existing.headers.clone())
                                 .unwrap_or_default(),
+                            // 可配置 OAuth2 统一认证：编辑 oauth2 route 时把草稿
+                            // 写进 config（oauth2 字段不在表格列里）；其它 route
+                            // 从既有 config 保留（仿 headers 的保留方式）。
+                            oauth2: if qcode_kernel::providers::oauth2::is_oauth2_route(name.trim())
+                                && self.editing_provider.as_deref() == Some(name.trim())
+                            {
+                                Some(self.oauth2_draft_config(cx))
+                            } else {
+                                self.config
+                                    .providers
+                                    .get(name.trim())
+                                    .and_then(|existing| existing.oauth2.clone())
+                            },
                             models,
                         };
                         let synced = provider.default_model.clone();

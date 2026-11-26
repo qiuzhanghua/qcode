@@ -375,6 +375,17 @@ gui:
     tj_signed_in:
       en: Signed in to Taiji Intranet
       zh-CN: 太极内网登录成功
+    # 主界面错误横幅里，可配置 OAuth2 统一认证 401「未登录」时的登录按钮
+    # （点击先刷新 token、失败再走完整登录流程）。
+    oauth2_login:
+      en: Sign in with OAuth2
+      zh-CN: OAuth2 登录
+    oauth2_login_pending:
+      en: Signing in…
+      zh-CN: 登录中…
+    oauth2_signed_in:
+      en: Signed in with OAuth2
+      zh-CN: OAuth2 登录成功
   # 侧栏（`render/sidebar.rs`）：产品名、两个段、任务行菜单、目录编辑、图标轨。
   sidebar:
     # 产品标识（ADR-0063 §2 定的临时名 `AI 工具`）。
@@ -934,6 +945,67 @@ gui:
       tj_account_fallback:
         en: Taiji Intranet account
         zh-CN: 太极内网账号
+      # 可配置 OAuth2 统一认证（`providers.<route>.oauth2`）：模式选择 + 端点/
+      # 客户端标识 + 登录状态区。
+      oauth2_mode_label:
+        en: Sign-in mode
+        zh-CN: 登录模式
+      oauth2_mode_auth_code:
+        en: Authorization code
+        zh-CN: 授权码
+      oauth2_mode_pkce:
+        en: PKCE
+        zh-CN: PKCE
+      oauth2_client_id_label:
+        en: Client ID
+        zh-CN: Client ID
+      oauth2_client_secret_label:
+        en: Client secret (authorization-code mode only)
+        zh-CN: Client Secret（仅授权码模式）
+      oauth2_auth_url_label:
+        en: Authorization URL
+        zh-CN: 授权地址（Authorization URL）
+      oauth2_token_url_label:
+        en: Token URL
+        zh-CN: 令牌地址（Token URL）
+      oauth2_scope_label:
+        en: Scope (optional)
+        zh-CN: Scope（可选）
+      oauth2_redirect_uri_label:
+        en: Redirect URI (optional)
+        zh-CN: Redirect URI（可选）
+      oauth2_login:
+        en: Sign in with OAuth2
+        zh-CN: OAuth2 登录
+      oauth2_no_prompt:
+        en: Sign-in is not available in this context.
+        zh-CN: 当前环境无法完成 OAuth2 登录。
+      oauth2_pending:
+        en: Opening the sign-in page…
+        zh-CN: 正在打开登录页…
+      oauth2_signed_in:
+        en: Signed in with OAuth2.
+        zh-CN: OAuth2 登录成功。
+      oauth2_interrupted:
+        en: The sign-in flow was interrupted.
+        zh-CN: OAuth2 登录流程被打断。
+      oauth2_incomplete:
+        en: Fill in Client ID, Authorization URL and Token URL before signing in.
+        zh-CN: 请先填写 Client ID、授权地址和令牌地址再登录。
+      oauth2_status_signed_in:
+        en: Signed in (%{0})
+        zh-CN: 已登录（%{0}）
+      oauth2_status_signed_out:
+        en: Not signed in
+        zh-CN: 未登录
+      oauth2_account_fallback:
+        en: OAuth2 account
+        zh-CN: OAuth2 账号
+      # 卡片/选择器副标题里的「类型」标签：OAuth2 统一认证显示「其他」（wire
+      # protocol 虽是 OpenAI 兼容，但对用户它不是 OpenAI）。
+      oauth2_type_other:
+        en: Other
+        zh-CN: 其他
       collapse_config:
         en: Collapse settings ▴
         zh-CN: 收起配置 ▴
@@ -4679,6 +4751,46 @@ provider:
     get_key_no_key:
       en: "plugin key reply has no usable key: %{0}"
       zh-CN: "插件密钥响应里没有可用的 key：%{0}"
+  # 可配置 OAuth2 统一认证（授权码 / PKCE）的报错与存储诊断。
+  #
+  # 这些串会经 `ProviderError::Auth(..)` 的载荷原样进界面，所以是**面向用户
+  # 的散文**，要走 `tr()`；`code` / `refresh_token` / `access_token` /
+  # `client_secret` / `authorization` 是 OAuth 参数名，不翻。
+  oauth2:
+    config_missing:
+      en: "provider '%{0}' is marked as OAuth2 but has no providers.%{0}.oauth2 settings; add them in Settings"
+      zh-CN: "provider '%{0}' 标记为 OAuth2 但没有 providers.%{0}.oauth2 配置；请在设置页补上"
+    auth_url:
+      en: "cannot build the authorization URL: %{0}"
+      zh-CN: "建不了授权地址：%{0}"
+    login_incomplete:
+      en: "OAuth2 sign-in did not finish (the callback carried no code)"
+      zh-CN: "OAuth2 登录未完成（回调未带回 code）"
+    # loopback 回调页（浏览器上看到的两个页面）。只翻标题，HTML 骨架不翻。
+    callback_success:
+      en: "Signed in — you can close this page"
+      zh-CN: "登录成功，可以关闭此页面"
+    callback_rejected:
+      en: "This callback did not match the sign-in — waiting for the right one"
+      zh-CN: "回调校验失败"
+    not_signed_in:
+      en: "not signed in with OAuth2; finish signing in on the settings page"
+      zh-CN: "OAuth2 未登录，请在设置页完成登录"
+    login_runtime:
+      en: "cannot start the sign-in runtime: %{0}"
+      zh-CN: "起不了登录运行时：%{0}"
+    token_request:
+      en: "token request failed: %{0}"
+      zh-CN: "token 请求失败：%{0}"
+    token_status:
+      en: "token endpoint %{0} returned %{1}: %{2}"
+      zh-CN: "token 端点 %{0} 返回 %{1}：%{2}"
+    token_not_json:
+      en: "token reply is not JSON: %{0}"
+      zh-CN: "token 响应不是 JSON：%{0}"
+    token_no_access_token:
+      en: "token reply has no access_token: %{0}"
+      zh-CN: "token 响应里没有 access_token：%{0}"
   discover:
     not_json:
       en: "model listing at %{0} is not JSON: %{1}"

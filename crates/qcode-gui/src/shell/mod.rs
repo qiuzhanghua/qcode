@@ -218,6 +218,9 @@ pub(crate) struct Shell {
     pub(crate) tj_login_pending: bool,
     /// 登录结果通道（worker → 主线程轮询），与设置页 `login_tj` 同款模式。
     pub(crate) tj_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// 主界面「OAuth2 登录」按钮：同款模式（`Some` = 进行中）。
+    pub(crate) oauth2_login_pending: bool,
+    pub(crate) oauth2_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     pub(crate) data_dir: PathBuf,
     pub(crate) prefs: GuiPreferences,
 }
@@ -245,6 +248,12 @@ impl Shell {
         // 一次，所有 TjProvider 复用（PROVIDER-PACKAGES-TJ-AUTH §4.4）。
         qcode_kernel::providers::tj::set_global_auth_prompt(std::sync::Arc::new(
             qcode_kernel::providers::tj::open_browser_and_wait,
+        ));
+        // 注册可配置 OAuth2 统一认证的授权回调（同一 loopback 实现，监听端口
+        // 取自授权 URL 的 `redirect_uri` 参数）；进程级一次，所有 OAuth2Provider
+        // 复用。
+        qcode_kernel::providers::oauth2::set_global_oauth2_prompt(std::sync::Arc::new(
+            qcode_kernel::providers::oauth2::open_browser_and_wait,
         ));
         let mono_font = {
             use gpui_kit::component::ActiveTheme as _;
@@ -417,6 +426,8 @@ impl Shell {
             settings_hwnd: None,
             tj_login_pending: false,
             tj_login_rx: None,
+            oauth2_login_pending: false,
+            oauth2_login_rx: None,
             config_path,
             data_dir,
             prefs,
@@ -964,6 +975,95 @@ impl Shell {
                             shell.tj_login_pending = false;
                             shell.ui.error_banner =
                                 Some(qcode_i18n::tr("gui.setup.editor.tj_interrupted").to_string());
+                            cx.notify();
+                            true
+                        }
+                        None => true,
+                    }
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 主界面「OAuth2 登录」按钮：与 `tj_login` 同款模式——worker 线程里**先
+    /// 刷新 token、失败再走完整登录流程**（`oauth2::refresh_or_login`），结果经
+    /// channel 回报、前台轮询更新横幅。OAuth2 端点/客户端标识从 config 读取
+    /// （`providers.<route>.oauth2`，设置页保存的），token 存与 config.toml
+    /// 同目录的 `oauth2_auth.json`。
+    pub(crate) fn oauth2_login(&mut self, cx: &mut Context<Self>) {
+        if self.oauth2_login_pending {
+            return;
+        }
+        let Some(prompt) = qcode_kernel::providers::oauth2::global_oauth2_prompt() else {
+            self.ui.error_banner =
+                Some(qcode_i18n::tr("gui.setup.editor.oauth2_no_prompt").to_string());
+            cx.notify();
+            return;
+        };
+        let settings = qcode_kernel::config::load(&self.config_path)
+            .ok()
+            .and_then(|config| config.providers.get("oauth2").cloned())
+            .and_then(|profile| profile.oauth2)
+            .map(|oauth2| qcode_kernel::providers::oauth2::oauth2_settings(&oauth2));
+        let Some(settings) = settings else {
+            self.ui.error_banner =
+                Some(qcode_i18n::tr("gui.setup.editor.oauth2_incomplete").to_string());
+            cx.notify();
+            return;
+        };
+        let store_path = self
+            .config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("oauth2_auth.json");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result =
+                qcode_kernel::providers::oauth2::refresh_or_login(&store_path, settings, prompt);
+            let _ = tx.send(result);
+        });
+        self.oauth2_login_rx = Some(rx);
+        self.oauth2_login_pending = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |shell, cx| {
+                    let received = shell.oauth2_login_rx.as_ref().map(|rx| rx.try_recv());
+                    match received {
+                        Some(Ok(Ok(()))) => {
+                            shell.oauth2_login_rx = None;
+                            shell.oauth2_login_pending = false;
+                            shell.ui.error_banner = None;
+                            shell.set_notice(
+                                qcode_i18n::tr("gui.main.oauth2_signed_in").to_string(),
+                                true,
+                                cx,
+                            );
+                            true
+                        }
+                        Some(Ok(Err(error))) => {
+                            shell.oauth2_login_rx = None;
+                            shell.oauth2_login_pending = false;
+                            shell.ui.error_banner = Some(error);
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            shell.oauth2_login_rx = None;
+                            shell.oauth2_login_pending = false;
+                            shell.ui.error_banner = Some(
+                                qcode_i18n::tr("gui.setup.editor.oauth2_interrupted").to_string(),
+                            );
                             cx.notify();
                             true
                         }

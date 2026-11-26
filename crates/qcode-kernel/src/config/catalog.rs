@@ -427,6 +427,23 @@ pub const CATALOG: &[CatalogEntry] = &[
         models: &[],
         images: false,
     },
+    // 可配置 OAuth2 统一认证：端点/客户端标识在设置页编辑（`providers.<route>.
+    // oauth2`），base_url 由用户填（catalog 留空 → resolve 缺 base_url 报错，
+    // 不默认成任何网关）。token 由 OAuth2Provider 从 oauth2_auth.json 与授权
+    // 流程管理，没有 api_key_env。安全级别按国内平台（Safe）：模型选择按钮的
+    // 配色跟着它走，与国内 provider 一致。
+    CatalogEntry {
+        route: crate::providers::oauth2::OAUTH2_ROUTE,
+        display_name: "OAuth2 统一认证",
+        protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
+        base_url: "",
+        api_key_env: "",
+        default_model: None,
+        reasoning_split: false,
+        models: &[],
+        images: false,
+    },
 ];
 
 /// Every built-in catalog route.

@@ -57,7 +57,8 @@ pub struct TjTokens {
 }
 
 impl TjTokens {
-    fn is_valid(&self, now: u64) -> bool {
+    /// `pub(crate)`：OAuth2 统一认证的 token 有效性判定复用。
+    pub(crate) fn is_valid(&self, now: u64) -> bool {
         !self.access_token.is_empty() && (self.expires_at == 0 || now < self.expires_at)
     }
 
@@ -467,8 +468,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// PKCE S256：43 字符 verifier + 对应 challenge。
-fn pkce_pair() -> (String, String) {
+/// PKCE S256：43 字符 verifier + 对应 challenge。`pub(crate)`：OAuth2 统一
+/// 认证 Provider（`oauth2.rs`）的 PKCE 模式复用同一套生成。
+pub(crate) fn pkce_pair() -> (String, String) {
     let mut bytes = [0u8; 32];
     let _ = getrandom::getrandom(&mut bytes);
     let verifier = URL_SAFE_NO_PAD.encode(bytes);
@@ -477,8 +479,8 @@ fn pkce_pair() -> (String, String) {
 }
 
 /// OAuth `state` 参数：16 字节 OS 随机数 → 32 字符 hex。回调时由 kernel 侧
-/// 校验它原样带回（防旧链接/伪造触发登录）。
-fn random_state() -> String {
+/// 校验它原样带回（防旧链接/伪造触发登录）。`pub(crate)`：OAuth2 复用。
+pub(crate) fn random_state() -> String {
     let mut bytes = [0u8; 16];
     let _ = getrandom::getrandom(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -486,7 +488,8 @@ fn random_state() -> String {
 
 /// 从 access_token（JWT）的载荷里解出 `exp`（Unix 秒）。本地**不解签**，仅
 /// 读取过期时间；无 `exp` 时返回 None（由 `expires_in` 兜底）。
-fn decode_jwt_exp(token: &str) -> Option<u64> {
+/// `pub(crate)`：OAuth2 统一认证的 token 解析复用。
+pub(crate) fn decode_jwt_exp(token: &str) -> Option<u64> {
     let payload = token.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -495,7 +498,8 @@ fn decode_jwt_exp(token: &str) -> Option<u64> {
 
 /// 从 id_token（JWT）载荷里取登录用户名：`preferred_username`，退 `sub`。
 /// 与 `decode_jwt_exp` 一样本地不解签，只读载荷；签名由服务端校验。
-fn decode_jwt_username(token: &str) -> Option<String> {
+/// `pub(crate)`：OAuth2 统一认证的用户名兜底复用。
+pub(crate) fn decode_jwt_username(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;

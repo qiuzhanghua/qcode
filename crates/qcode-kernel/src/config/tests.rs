@@ -1517,6 +1517,83 @@ fn first_usable_skips_mock_and_unusable_routes_then_falls_back_to_mock() {
 }
 
 #[test]
+fn oauth2_route_resolves_to_oauth2_auth_mode_with_no_key() {
+    // 可配置 OAuth2 统一认证：带 `oauth2` 配置的 route 走 OAuth2 认证模式，
+    // api_key 置空、api_key_source = "oauth2"，oauth2 配置原样带上。
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "pkce"
+            client_id = "qcode"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+    assert_eq!(resolved.name, "oauth2");
+    assert_eq!(resolved.auth_mode, AuthMode::OAuth2);
+    assert!(resolved.api_key.is_none());
+    assert_eq!(resolved.api_key_source, "oauth2");
+    let oauth2 = resolved.oauth2.as_ref().unwrap();
+    assert_eq!(oauth2.mode, qcode_providers::OAuth2Mode::Pkce);
+    assert_eq!(oauth2.client_id, "qcode");
+}
+
+#[test]
+fn oauth2_route_without_base_url_fails_to_resolve() {
+    // 无 base_url 的 oauth2 route：不默认任何网关（与太极的硬编码默认不同），
+    // 显式选中它时 resolve 报错。
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            client_id = "qcode"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let overrides = Overrides {
+        provider: Some("oauth2".to_string()),
+        ..Overrides::default()
+    };
+    assert!(resolve(&config, &overrides, &env_from(&[])).is_err());
+}
+
+#[test]
+fn first_usable_skips_oauth2_route_without_base_url() {
+    // 无 base_url 的 oauth2 行不算「可用」：默认落在别的可用 provider 上。
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            client_id = "qcode"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+
+            [providers.openai]
+            base_url = "https://api.openai.com/v1"
+            api_key_env = "OPENAI_API_KEY"
+            default_model = "gpt-4o"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("OPENAI_API_KEY", "sk-test")]),
+    )
+    .unwrap();
+    assert_eq!(resolved.name, "openai");
+}
+
+#[test]
 fn models_accept_a_bare_list_of_ids() {
     // ADR-0065: the shorthand is what the settings page writes.
     let config: Config = toml::from_str(

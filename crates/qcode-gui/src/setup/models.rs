@@ -51,10 +51,12 @@ impl SetupView {
     /// 模型的 keyless provider（如 ollama）视为可用，真正不可用时由配置页
     /// 「获取可用模型」或任务运行期报错兜底。
     fn provider_usable(&self, row: &qcode_kernel::provider_registry::ConfigurableProvider) -> bool {
-        // 太极内网是 keyless provider（OAuth 登录、无 API key）：未登录只是
-        // 运行任务前的状态，登录随时可补，不因此挡住「设为默认」；其余
-        // provider 仍按凭证状态判定。
-        if qcode_kernel::providers::tj::is_tj_route(&row.route) {
+        // 太极 / 可配置 OAuth2 统一认证是 keyless provider（OAuth 登录、无 API
+        // key）：未登录只是运行任务前的状态，登录随时可补，不因此挡住「设为
+        // 默认」；其余 provider 仍按凭证状态判定。
+        if qcode_kernel::providers::tj::is_tj_route(&row.route)
+            || qcode_kernel::providers::oauth2::is_oauth2_route(&row.route)
+        {
             return true;
         }
         !matches!(
@@ -93,6 +95,18 @@ fn candidate_label(candidate: &qcode_providers::discovery::ModelCandidate) -> St
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| candidate.id.clone())
+}
+
+/// 卡片/选择器副标题里的「类型」标签：OAuth2 统一认证显示「其他」（它的 wire
+/// protocol 虽是 OpenAI 兼容，但对用户它不是 OpenAI）。
+fn provider_type_label(
+    row: &qcode_kernel::provider_registry::ConfigurableProvider,
+) -> std::borrow::Cow<'static, str> {
+    if qcode_kernel::providers::oauth2::is_oauth2_route(&row.route) {
+        qcode_i18n::tr("gui.setup.editor.oauth2_type_other")
+    } else {
+        row.protocol.label()
+    }
 }
 
 impl SetupView {
@@ -175,7 +189,7 @@ impl SetupView {
                                 .text_color(muted_color)
                                 .child(format!(
                                     "{} · {}",
-                                    row.protocol.label(),
+                                    provider_type_label(row),
                                     credential_text(row.credential_state)
                                 )),
                         ),
@@ -199,8 +213,8 @@ impl SetupView {
             head = head.child(
                 Button::new(format!("edit-provider-{route}"))
                     .label(qcode_i18n::tr("ui.action.edit"))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.open_editor(&route_for_edit, true, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_editor(&route_for_edit, true, window, cx);
                     })),
             );
             // 删除走同一个确认弹框（`render_delete_dialog`）。
@@ -439,7 +453,7 @@ impl SetupView {
                                 .text_color(muted_color)
                                 .child(format!(
                                     "{} · {}",
-                                    row.protocol.label(),
+                                    provider_type_label(row),
                                     credential_text(row.credential_state)
                                 )),
                         ),
@@ -802,6 +816,410 @@ impl SetupView {
             .join("tj_auth.json")
     }
 
+    /// `oauth2_auth.json` 的位置：与 config.toml 同目录。
+    pub(crate) fn oauth2_store_path(&self) -> std::path::PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("oauth2_auth.json")
+    }
+
+    /// 初始化可配置 OAuth2 的草稿（打开编辑框时）：从 config 的
+    /// `providers.<route>.oauth2` 读值建输入框；没有配置时用默认值
+    /// （authorization_code + 默认 loopback 回调）。与太极（硬编码）不同，
+    /// 这些端点/客户端标识是用户配置，必须在编辑框里可改。
+    fn init_oauth2_draft(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let oauth2 = self
+            .config
+            .providers
+            .get(route)
+            .and_then(|profile| profile.oauth2.clone());
+        self.oauth2_mode = oauth2
+            .as_ref()
+            .map(|config| config.mode.as_str().to_string())
+            .unwrap_or_else(|| "authorization_code".to_string());
+        let label = |key: &'static str| qcode_i18n::tr(key).to_string();
+        self.oauth2_client_id = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .map(|c| c.client_id.clone())
+                .unwrap_or_default(),
+            &label("gui.setup.editor.oauth2_client_id_label"),
+        ));
+        // client_secret 明文存于 config（已确认的决策），打开时 masked 回显。
+        self.oauth2_client_secret = Some(secret_input(
+            window,
+            cx,
+            &label("gui.setup.editor.oauth2_client_secret_label"),
+        ));
+        if let Some(secret) = &self.oauth2_client_secret
+            && let Some(value) = oauth2.as_ref().and_then(|c| c.client_secret.clone())
+        {
+            secret.update(cx, |state, cx| {
+                state.set_value(value, window, cx);
+            });
+        }
+        self.oauth2_auth_url = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .map(|c| c.auth_url.clone())
+                .unwrap_or_default(),
+            &label("gui.setup.editor.oauth2_auth_url_label"),
+        ));
+        self.oauth2_token_url = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .map(|c| c.token_url.clone())
+                .unwrap_or_default(),
+            &label("gui.setup.editor.oauth2_token_url_label"),
+        ));
+        self.oauth2_scope = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .and_then(|c| c.scope.clone())
+                .unwrap_or_default(),
+            &label("gui.setup.editor.oauth2_scope_label"),
+        ));
+        self.oauth2_redirect_uri = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .and_then(|c| c.redirect_uri.clone())
+                .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri),
+            &label("gui.setup.editor.oauth2_redirect_uri_label"),
+        ));
+    }
+
+    /// 从草稿实体读值构造 `OAuth2AuthSettings`（保存与登录共用）。草稿未初始化
+    /// 或 client_id / auth_url / token_url 为空时返回 None（登录/保存前必须填）。
+    fn oauth2_draft_settings(
+        &self,
+        cx: &Context<Self>,
+    ) -> Option<qcode_providers::OAuth2AuthSettings> {
+        let client_id = self
+            .oauth2_client_id
+            .as_ref()?
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let auth_url = self
+            .oauth2_auth_url
+            .as_ref()?
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let token_url = self
+            .oauth2_token_url
+            .as_ref()?
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if client_id.is_empty() || auth_url.is_empty() || token_url.is_empty() {
+            return None;
+        }
+        let mode = if self.oauth2_mode == "pkce" {
+            qcode_providers::OAuth2Mode::Pkce
+        } else {
+            qcode_providers::OAuth2Mode::AuthorizationCode
+        };
+        let client_secret = self
+            .oauth2_client_secret
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .filter(|secret| !secret.is_empty());
+        let scope = self
+            .oauth2_scope
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .filter(|scope| !scope.is_empty());
+        let redirect_uri = self
+            .oauth2_redirect_uri
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .filter(|uri| !uri.is_empty())
+            .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri);
+        Some(qcode_providers::OAuth2AuthSettings {
+            mode,
+            client_id,
+            client_secret,
+            auth_url,
+            token_url,
+            scope,
+            redirect_uri,
+        })
+    }
+
+    /// 从草稿实体读值构造 `OAuth2AuthConfig`（保存时写进 config 的
+    /// `providers.<route>.oauth2`）。字段缺省/为空也返回 Some（空串 + 默认
+    /// 模式），保证 route 保持 oauth2 身份——必填校验在登录/探测阶段做。
+    pub(crate) fn oauth2_draft_config(
+        &self,
+        cx: &Context<Self>,
+    ) -> qcode_kernel::config::OAuth2AuthConfig {
+        let read = |entity: Option<&Entity<InputState>>| {
+            entity
+                .map(|entity| entity.read(cx).value().trim().to_string())
+                .unwrap_or_default()
+        };
+        let non_empty = |value: String| {
+            if value.is_empty() { None } else { Some(value) }
+        };
+        qcode_kernel::config::OAuth2AuthConfig {
+            mode: if self.oauth2_mode == "pkce" {
+                qcode_providers::OAuth2Mode::Pkce
+            } else {
+                qcode_providers::OAuth2Mode::AuthorizationCode
+            },
+            client_id: read(self.oauth2_client_id.as_ref()),
+            client_secret: non_empty(read(self.oauth2_client_secret.as_ref())),
+            auth_url: read(self.oauth2_auth_url.as_ref()),
+            token_url: read(self.oauth2_token_url.as_ref()),
+            scope: non_empty(read(self.oauth2_scope.as_ref())),
+            redirect_uri: non_empty(read(self.oauth2_redirect_uri.as_ref())),
+        }
+    }
+
+    /// 可配置 OAuth2 统一认证的配置区 + 登录状态区（设置页编辑弹框内）。
+    ///
+    /// 模式（授权码 / PKCE）决定展示的字段与登录流程：授权码（confidential）
+    /// 额外展示 Client Secret（换 token 带 client_secret）；PKCE（public）不
+    /// 展示 Client Secret（授权 URL 带 S256 code_challenge）。端点/客户端标识
+    /// 是用户配置（写入 `providers.<route>.oauth2`），与太极的硬编码不同。
+    fn render_oauth2_config(&self, route: &str, cx: &mut Context<Self>) -> AnyElement {
+        let mut section = div().flex().flex_col().gap_2();
+        // 模式选择：授权码 / PKCE 双按钮。
+        let mut mode_row = div().flex().flex_row().gap_1();
+        for (value, label_key) in [
+            (
+                "authorization_code",
+                "gui.setup.editor.oauth2_mode_auth_code",
+            ),
+            ("pkce", "gui.setup.editor.oauth2_mode_pkce"),
+        ] {
+            let marker = if self.oauth2_mode == value {
+                "●"
+            } else {
+                "○"
+            };
+            let value = value.to_string();
+            let label = qcode_i18n::tr(label_key).to_string();
+            mode_row = mode_row.child(
+                Button::new(format!("oauth2-mode-{value}-{route}"))
+                    .label(format!("{marker} {label}"))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.oauth2_mode = value.clone();
+                        cx.notify();
+                    })),
+            );
+        }
+        section = section.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .child(qcode_i18n::tr("gui.setup.editor.oauth2_mode_label")),
+                )
+                .child(mode_row),
+        );
+        // 客户端标识与端点（字段随模式增减：Client Secret 仅授权码显示）。
+        let mut fields: Vec<(&'static str, &Entity<InputState>)> = Vec::new();
+        if let Some(entity) = &self.oauth2_client_id {
+            fields.push(("gui.setup.editor.oauth2_client_id_label", entity));
+        }
+        if self.oauth2_mode == "authorization_code"
+            && let Some(entity) = &self.oauth2_client_secret
+        {
+            fields.push(("gui.setup.editor.oauth2_client_secret_label", entity));
+        }
+        if let Some(entity) = &self.oauth2_auth_url {
+            fields.push(("gui.setup.editor.oauth2_auth_url_label", entity));
+        }
+        if let Some(entity) = &self.oauth2_token_url {
+            fields.push(("gui.setup.editor.oauth2_token_url_label", entity));
+        }
+        if let Some(entity) = &self.oauth2_scope {
+            fields.push(("gui.setup.editor.oauth2_scope_label", entity));
+        }
+        if let Some(entity) = &self.oauth2_redirect_uri {
+            fields.push(("gui.setup.editor.oauth2_redirect_uri_label", entity));
+        }
+        for (label_key, entity) in fields {
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .child(qcode_i18n::tr(label_key)),
+                    )
+                    .child(Input::new(entity).aria_label(qcode_i18n::tr(label_key))),
+            );
+        }
+        // 登录状态区。
+        section = section.child(self.render_oauth2_login(route, cx));
+        section.into_any_element()
+    }
+
+    /// 可配置 OAuth2 统一认证的登录状态区：读 `oauth2_auth.json` 显示
+    /// 未登录 / 已登录（用户名），提供「登录」按钮。
+    fn render_oauth2_login(&self, route: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted_color, success_color) = (theme.muted_foreground, theme.success);
+        let store_path = self.oauth2_store_path();
+        let signed_in = qcode_providers::TjTokenStore::new(store_path)
+            .load()
+            .ok()
+            .filter(|tokens| !tokens.access_token.is_empty())
+            .map(|tokens| {
+                tokens.username().unwrap_or_else(|| {
+                    qcode_i18n::tr("gui.setup.editor.oauth2_account_fallback").to_string()
+                })
+            });
+        let (status, color) = match &signed_in {
+            Some(username) => (
+                qcode_i18n::trp(
+                    "gui.setup.editor.oauth2_status_signed_in",
+                    &[username.as_str()],
+                ),
+                success_color,
+            ),
+            None => (
+                qcode_i18n::tr("gui.setup.editor.oauth2_status_signed_out").to_string(),
+                muted_color,
+            ),
+        };
+        let route_for_login = route.to_string();
+        let mut section = div().flex().flex_col().gap_1();
+        section = section.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(div().size(px(8.0)).rounded_full().bg(color))
+                .child(div().text_size(sp(CAPTION_SIZE)).child(status)),
+        );
+        section = section.child(
+            Button::new(format!("oauth2-login-{route}"))
+                .label(qcode_i18n::tr("gui.setup.editor.oauth2_login"))
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.login_oauth2(&route_for_login, cx);
+                })),
+        );
+        // 按钮下方的登录反馈：成功显示绿色「登录成功」，进行中显示灰色提示。
+        let signed_in = qcode_i18n::tr("gui.setup.editor.oauth2_signed_in").to_string();
+        let pending = qcode_i18n::tr("gui.setup.editor.oauth2_pending").to_string();
+        match self.provider_notice.as_deref() {
+            Some(notice) if notice == signed_in.as_str() => {
+                section = section.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(success_color)
+                        .child(notice.to_string()),
+                );
+            }
+            Some(notice) if notice == pending.as_str() => {
+                section = section.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(muted_color)
+                        .child(notice.to_string()),
+                );
+            }
+            _ => {}
+        }
+        section.into_any_element()
+    }
+
+    /// 触发可配置 OAuth2 统一认证的登录流程（设置页「登录」按钮）。从草稿
+    /// 构造 `OAuth2AuthSettings` 显式传给 kernel（kernel 读不到 GUI 草稿），
+    /// worker 线程跑登录、结果经 channel 回报、前台轮询更新提示。
+    fn login_oauth2(&mut self, _route: &str, cx: &mut Context<Self>) {
+        let Some(prompt) = qcode_kernel::providers::oauth2::global_oauth2_prompt() else {
+            self.provider_error =
+                Some(qcode_i18n::tr("gui.setup.editor.oauth2_no_prompt").to_string());
+            cx.notify();
+            return;
+        };
+        let Some(settings) = self.oauth2_draft_settings(cx) else {
+            self.provider_error =
+                Some(qcode_i18n::tr("gui.setup.editor.oauth2_incomplete").to_string());
+            cx.notify();
+            return;
+        };
+        let store_path = self.oauth2_store_path();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = qcode_kernel::providers::oauth2::login(&store_path, settings, prompt);
+            let _ = tx.send(result);
+        });
+        self.oauth2_login_rx = Some(rx);
+        self.provider_error = None;
+        self.provider_notice = Some(qcode_i18n::tr("gui.setup.editor.oauth2_pending").to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let done = this.update(cx, |view, cx| {
+                    let received = view.oauth2_login_rx.as_ref().map(|rx| rx.try_recv());
+                    match received {
+                        Some(Ok(Ok(()))) => {
+                            view.oauth2_login_rx = None;
+                            view.provider_notice = Some(
+                                qcode_i18n::tr("gui.setup.editor.oauth2_signed_in").to_string(),
+                            );
+                            view.provider_error = None;
+                            cx.notify();
+                            true
+                        }
+                        Some(Ok(Err(error))) => {
+                            view.oauth2_login_rx = None;
+                            view.provider_notice = None;
+                            view.provider_error = Some(error);
+                            cx.notify();
+                            true
+                        }
+                        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => false,
+                        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                            view.oauth2_login_rx = None;
+                            view.provider_error = Some(
+                                qcode_i18n::tr("gui.setup.editor.oauth2_interrupted").to_string(),
+                            );
+                            cx.notify();
+                            true
+                        }
+                        None => true,
+                    }
+                });
+                match done {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
     /// 切换详情页的套餐：确保表格里有目标套餐的行（没有就按预设建行），并把
     /// 编辑对象切到目标套餐 route。不重开编辑页、不做任何写盘——写盘由「保存」
     /// 按钮统一触发。
@@ -938,8 +1356,11 @@ impl SetupView {
         }
         // 第一条是 API 密钥：只有它需要在添加提供方时填写，其余默认都是
         // 固定值，折叠在展开按钮后面。太极统一认证没有钥匙串逻辑（需求 4c），
-        // 这里换成登录状态区。
-        if qcode_kernel::providers::tj::is_tj_route(route) {
+        // 这里换成登录状态区。可配置 OAuth2 统一认证没有 API 密钥，换成
+        // 「配置区 + 登录状态区」（模式/端点/客户端标识由用户编辑）。
+        if qcode_kernel::providers::oauth2::is_oauth2_route(route) {
+            body = body.child(self.render_oauth2_config(route, cx));
+        } else if qcode_kernel::providers::tj::is_tj_route(route) {
             body = body.child(self.render_tj_login(route, cx));
         } else if let Some(secret) = row.cells.get("__key") {
             body = body.child(
@@ -987,8 +1408,10 @@ impl SetupView {
             );
         }
         // 蓝色小字成功提示（如密钥已存入钥匙串），同样只在编辑框内显示。
-        // 太极路由的成功/进行中提示在登录按钮下方单独渲染（绿色），这里不重复。
+        // 太极 / OAuth2 路由的成功/进行中提示在登录按钮下方单独渲染（绿色），
+        // 这里不重复。
         if !qcode_kernel::providers::tj::is_tj_route(route)
+            && !qcode_kernel::providers::oauth2::is_oauth2_route(route)
             && let Some(notice) = &self.provider_notice
         {
             body = body.child(
@@ -1004,9 +1427,12 @@ impl SetupView {
                 if column.key == "name" {
                     continue;
                 }
-                // 太极统一认证只有 openai 协议：隐藏协议选择，避免误切协议
-                // 导致请求失败（PROVIDER-PACKAGES-TJ-AUTH §4）。
-                if column.key == "protocol" && qcode_kernel::providers::tj::is_tj_route(route) {
+                // 太极 / OAuth2 统一认证只有 openai 协议：隐藏协议选择，避免
+                // 误切协议导致请求失败。
+                if column.key == "protocol"
+                    && (qcode_kernel::providers::tj::is_tj_route(route)
+                        || qcode_kernel::providers::oauth2::is_oauth2_route(route))
+                {
                     continue;
                 }
                 if let Some(field) = self.render_provider_field(row, column, cx) {
@@ -2056,7 +2482,13 @@ impl SetupView {
     /// `lock_package` 为 true 时锁定套餐切换：编辑**已有** Provider 时套餐在
     /// 添加那一刻就确定了，编辑页不应再允许换套餐；picker 添加流程传 false，
     /// 让用户先选套餐再保存。
-    fn open_editor(&mut self, route: &str, lock_package: bool, cx: &mut Context<Self>) {
+    fn open_editor(
+        &mut self,
+        route: &str,
+        lock_package: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.clear_probe();
         self.editing_provider = Some(route.to_string());
         self.editing_package_locked = lock_package;
@@ -2067,6 +2499,10 @@ impl SetupView {
         self.declaring = false;
         self.adding_provider = false;
         self.saved_notice = None;
+        // 可配置 OAuth2 统一认证：打开时把 config 里的 oauth2 配置读进草稿。
+        if qcode_kernel::providers::oauth2::is_oauth2_route(route) {
+            self.init_oauth2_draft(route, window, cx);
+        }
         cx.notify();
     }
 
@@ -2158,7 +2594,7 @@ impl SetupView {
         };
         // picker 添加流程：套餐在编辑页里确定，先不锁定（`open_editor` 的
         // `lock_package=false`），让用户选好套餐再保存。
-        self.open_editor(route, false, cx);
+        self.open_editor(route, false, window, cx);
         // `open_editor` 会清掉提示，所以密钥恢复的提示在它之后设置。
         if restored_key {
             self.provider_notice =

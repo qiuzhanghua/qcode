@@ -15,6 +15,9 @@ pub enum AuthMode {
     ApiKey,
     /// 太极统一认证（public client + PKCE，token 生命周期由 TjProvider 管理）。
     TjOAuth,
+    /// 可配置 OAuth2 统一认证（授权码 / PKCE，端点与客户端标识来自
+    /// `providers.<route>.oauth2`，token 生命周期由 OAuth2Provider 管理）。
+    OAuth2,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,9 @@ pub struct Resolved {
     pub protocol: Protocol,
     /// How this route authenticates; the adapter family is chosen by this.
     pub auth_mode: AuthMode,
+    /// 可配置 OAuth2 统一认证的配置（`providers.<route>.oauth2`）；仅
+    /// `auth_mode == OAuth2` 时有值。
+    pub oauth2: Option<OAuth2AuthConfig>,
     /// Provider-specific body fields, already merged with the builtin defaults.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// Whether the model accepts image input. The route decides (catalog) and
@@ -295,6 +301,7 @@ pub fn resolve(
             is_mock: true,
             protocol: Protocol::Mock,
             auth_mode: AuthMode::ApiKey,
+            oauth2: None,
             extra_body: serde_json::Map::new(),
             images: false,
             headers: std::collections::BTreeMap::new(),
@@ -354,7 +361,9 @@ pub fn resolve(
         });
     }
 
-    let auth_mode = if crate::providers::tj::is_tj_route(&name) {
+    let auth_mode = if entry.oauth2.is_some() {
+        AuthMode::OAuth2
+    } else if crate::providers::tj::is_tj_route(&name) {
         AuthMode::TjOAuth
     } else {
         AuthMode::ApiKey
@@ -368,17 +377,16 @@ pub fn resolve(
         .unwrap_or_default();
 
     let command = entry.api_key_command.as_deref();
-    // 太极统一认证不走 env/key command：token 由 TjProvider 从 tj_auth.json
-    // 与授权码流程管理（PROVIDER-PACKAGES-TJ-AUTH §4）。
-    let (api_key, api_key_source) = if auth_mode == AuthMode::TjOAuth {
-        (None, "tj-auth".to_string())
-    } else if api_key_env.is_empty() {
-        match command {
+    // 太极 / 可配置 OAuth2 统一认证不走 env/key command：token 由各自
+    // Provider 从 token 文件与授权流程管理。
+    let (api_key, api_key_source) = match auth_mode {
+        AuthMode::TjOAuth => (None, "tj-auth".to_string()),
+        AuthMode::OAuth2 => (None, "oauth2".to_string()),
+        AuthMode::ApiKey if api_key_env.is_empty() => match command {
             Some(argv) => (Some(key_from_command(&name, argv)?), command_source(argv)),
             None => (None, "keyless".to_string()),
-        }
-    } else {
-        match env(&api_key_env) {
+        },
+        AuthMode::ApiKey => match env(&api_key_env) {
             Some(key) if !key.is_empty() => (Some(key), format!("env {api_key_env}")),
             _ => match command {
                 Some(argv) => (Some(key_from_command(&name, argv)?), command_source(argv)),
@@ -389,7 +397,7 @@ pub fn resolve(
                     });
                 }
             },
-        }
+        },
     };
 
     let model = overrides
@@ -430,6 +438,7 @@ pub fn resolve(
         is_mock: false,
         protocol,
         auth_mode,
+        oauth2: entry.oauth2.clone(),
         images,
         extra_body,
         headers: entry.headers.clone(),

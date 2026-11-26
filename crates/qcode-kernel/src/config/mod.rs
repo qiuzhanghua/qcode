@@ -992,6 +992,11 @@ pub struct ProviderConfig {
     /// `content-type` can never be overridden.
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// 可配置 OAuth2 统一认证（`providers.<route>.oauth2`）：登录模式、客户端
+    /// 标识与端点。有值时该 route 走 OAuth2 Provider（token 生命周期由
+    /// `OAuth2Provider` 管理，见 PROVIDER 的 oauth2 设计）。
+    #[serde(default)]
+    pub oauth2: Option<OAuth2AuthConfig>,
     /// This route's own model catalog (U0). An empty list means "serve the
     /// catalog's built-in models"; any entry replaces that catalog, so a row is
     /// only ever added deliberately.
@@ -1011,9 +1016,35 @@ impl Default for ProviderConfig {
             stream_usage: true,
             extra_body: Default::default(),
             headers: Default::default(),
+            oauth2: None,
             models: Vec::new(),
         }
     }
+}
+
+/// 可配置 OAuth2 统一认证的端点与客户端标识（`providers.<route>.oauth2`）。
+///
+/// 由设置页编辑、随 config.toml 落盘（client_secret 为 OAuth 客户端凭据，按
+/// 用户决策直接存这里）。`mode` 决定登录流程：授权码（confidential，换 token
+/// 时带 `client_secret`）或 PKCE（public，带 `code_verifier`、无 secret）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OAuth2AuthConfig {
+    #[serde(default)]
+    pub mode: qcode_providers::OAuth2Mode,
+    #[serde(default)]
+    pub client_id: String,
+    /// 授权码模式（confidential client）的客户端密钥；PKCE 模式为 None。
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub auth_url: String,
+    #[serde(default)]
+    pub token_url: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// 回调地址；None = 默认 loopback（`http://127.0.0.1:43782/oauth2/callback`）。
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
 }
 
 /// One model a provider route serves. Hand-declared routes carry their own
