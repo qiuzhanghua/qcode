@@ -1,5 +1,136 @@
 # Changelog
 
+## 0.20.0 — 2026-11-26
+
+OAuth2 版：provider 多了一种认证形状——可配置的统一认证（授权码 / PKCE 两种登录模式），
+端点、客户端标识、密钥全部写在 `config.toml` 里，token 的获取、刷新与 401 恢复都关在
+provider 内部。顺带把「这个 provider 的数据去哪」做成了内生标识，并在界面上可见。
+**没有破坏性变更**：`CONFIG_VERSION` 仍是 2，旧配置逐字节照读；翻译表只增键
+（1350 → 1386）。
+
+### 为什么是 minor 而不是 patch
+
+`v0.19.0` 之后有三个 `feat`：OAuth2 统一认证、provider 安全级别、模型列表框滚动。
+第一个是**用户可见的新能力**（能接一类此前接不了的服务，且登录流程与 401 恢复是新的
+交互），后两个也都改动了界面能看见的东西。没有任何既有配置格式、工具契约或协议被推翻
+——新字段进的是 `Option` 且带 `serde(default)`——所以是 minor，不是 major。
+
+### OAuth2 统一认证（ADR-0107）
+
+**这一条推翻了 ADR-0104 §6**（原话是「本 ADR 不实现 oauth2 授权流程」，理由是
+`api_key_command` 已经把 token 交给外部工具管）。推翻的理由写在新 ADR 里：前提是
+「已经有专门的工具在管 token」，而统一认证那条链路是授权码 + 浏览器 + loopback 回调 +
+refresh 轮转，用 `api_key_command` 表达等于让用户自己写一个 OAuth 客户端。
+
+- **配置形状**：`providers.<route>.oauth2` 子表，七个字段（`mode` / `client_id` /
+  `client_secret` / `auth_url` / `token_url` / `scope` / `redirect_uri`）；没有
+  `well-known` 自动发现——统一认证的端点通常不是标准 OIDC 布局，猜一次错一次
+- **两种模式**：`authorization_code`（confidential，换 token 带 `client_secret`）与
+  `pkce`（public，带 S256 `code_verifier`）；差别只在授权 URL 带不带 challenge、换
+  token 带 secret 还是 verifier；PKCE 的 S256 / `state` 复用太极那份已实测的实现
+- **判定优先级**：`oauth2` 子表 > 太极路由名 > `api_key`。显式配置压过路由名约定，
+  避免「配置里写了却静默不生效」
+- **token 生命周期在 provider 内**：请求前 `ensure`（本地有效→用；过期→refresh→失败
+  再登录）、401 → `refresh_or_reauth`（refresh → 登录 → 重试一次）、手动登录走
+  `refresh_or_login`（无条件先 refresh）。**不往引擎的 `is_retryable` 里加 `Auth`**
+  ——那会改掉所有 provider 的重试语义
+- **凭据分文件**：`oauth2_auth.json`（与 `config.toml` 同目录，原子写 + `0600`），
+  与太极的 `tj_auth.json` 分开，删一个不影响另一个
+- **`base_url` 不默认成任何网关**：catalog 留空，缺了就报错，让用户填一次
+- **太极内网改走共享实现**：`qcode-kernel/src/providers/tj.rs` 412 → 164 行，只剩端点
+  常量（硬编码的需求不变）；通用部分进 `qcode-providers/src/oauth2.rs`
+- **loopback 回调**：`127.0.0.1:43782/oauth2/callback`，与太极共用同一个 listener 实现；
+  `redirect_uri` 可覆盖，因为不同认证服务器白名单里的地址不一样
+- **主窗口 401 横幅**：OAuth2 route 的「未登录」也带一键登录按钮，与太极那条同形
+
+**已知取舍**：`client_secret` 可以明文存 `config.toml`，但那只保留给向后兼容。客户端
+密钥现在有三个来源，优先级 **`client_secret_env` > `client_secret_command` > 明文**
+（ADR-0107 补记）：
+
+- `client_secret_env = "CORP_OAUTH_SECRET"`：只存变量名，不存值
+- `client_secret_command = ["security", "find-generic-password", "-w", "-s", "corp"]`：
+  从 Keychain / libsecret / 凭据管理器的 stdout 取，与 `api_key_command` 同一条路径
+  （不经 shell、5 秒超时）
+- 配了 env 却取不到 → 启动时报错点名那个变量，**不**静默退回明文
+- 解析一次即存入 `Resolved`（密钥不轮转，不必每次 refresh 都 spawn），并一并进
+  `redact`，日志脱敏这条缺口补上了
+- 设置页三个框都在、不做互斥禁用（禁用会丢值），改为一句话写清优先级 + 冲突时警告；
+  命令参数含空格时那个框不渲染、原值原样保留
+- `qc doctor` 在来源是明文时 warn；`qc config show` 只报来源，从不报值
+
+**仍未解决的那一半**：把密钥放进环境变量或钥匙串，保护的是「其他用户」与「磁盘被拷走」，
+不是「同用户进程」。RFC 8252 的结论是 native app 该注册成 public client、**不该有**
+client secret。若网关支持 PKCE，这个字段就是多余的。这条已作为**待验证项**写进 ADR-0107
+补记（附查验方法与判定口径）——注册配置不在 qcode 侧，需要有网关管理员权限的人去确认。
+
+### Provider 安全级别
+
+- **内生标识**：每个 provider 在 catalog / 套餐表里带一档 `SecurityLevel`——`Safest`
+  （太极内网，数据不出内网）/ `Safe`（国内平台）/ `Unsafe`（国外平台）；不是配置项，
+  用户改不了，跟着数据去向走
+- **界面上可见**：provider 编辑页用灰字展示级别，模型菜单按级别着色
+
+### 太极内网
+
+- **未登录不再挡路**：太极内网是 keyless provider（OAuth 运行时登录），未登录时也能设为
+  默认、也能进模型菜单；真发请求时才报「太极内网未登录」，由 401 横幅上的按钮补救
+- **跑任务不再自动弹浏览器**：引擎侧不挂授权回调时（`prompt = None`）直接报错交给横幅，
+  而不是在任务运行中弹一个登录页打断用户
+- **保存失败从 `.bak` 恢复**：`config.toml` 的替换是「写临时文件 → 备份成 `.bak` →
+  改名」；改名这一步失败会让 config 整个消失（只剩 `.bak`）。现在失败时从备份恢复，
+  保证磁盘上始终有一份可读配置
+
+### 界面
+
+- **模型列表框最高 4 行**：超过就纵向滚动，Provider 编辑、配置模型、自定义 Provider
+  三个弹框一致——模型多的 provider 不再把弹框撑出屏幕
+
+### 原生依赖
+
+无新增。两处 HTTP 都走已有的 `reqwest`，PKCE 的 S256 走已有的 `sha2` / `base64`。
+
+### 验证
+
+`make check`（`build-for-release --check`）全绿：`fmt --all --check`、`clippy --workspace
+--all-targets -D warnings`、workspace 全量测试、`cargo deny`（advisories / bans /
+licenses / sources 四项 ok）、Windows 交叉 type-check、双语 golden。
+
+本次补了 20 条测试，覆盖新增的几处行为：
+
+- **密钥来源优先级**（`crates/qcode-kernel/src/config/tests.rs` 7 条）：env 压过明文、
+  无其它来源时回退明文、配了 env 却缺变量时**报错并点名变量**、`client_secret_env = ""`
+  关掉该来源、从命令取到 trim 后的值、来源判定与解析结果一致
+- **写盘往返**（`config_edit.rs` 1 条）：两个新键保存后能读回，且不会凭空写出空的
+  `client_secret`
+- **授权 URL 与换 token 参数**（`crates/qcode-providers/src/oauth2.rs` 6 条，替换了原先
+  两条名不符实的）：PKCE 带 S256 challenge、授权码模式不带、自定义 scope 生效、PKCE
+  换 token 带 verifier 且**不带 secret**、授权码模式带 secret、refresh 两者都不带
+- **密钥真的接进了运行期**（kernel 侧 3 条）：`oauth2_settings` 透传已解析的密钥；
+  `install_secrets` 把 api_key **和** OAuth2 secret 都送进 `redact`
+- **输出不泄漏**（新 e2e `crates/qcode/tests/oauth2_secret_output.rs` 4 条）：真实二进制
+  跑 `qc config show` / `qc doctor`，断言输出里没有 secret 值、但**确实有那一行**
+  （否则「没有值」只是因为没打印，断言会空过）
+- **argv 往返**（`qcode-gui` 2 条）：参数含空格时拒绝表示而不是猜、空表单等于「不用这个
+  来源」
+
+后三组里有两组做过**变异验证**：故意删掉 `install_secrets` 里的 OAuth2 那一条、故意让
+`config show` 打印 secret，对应的测试都确实变红——不是只在绿的时候绿。
+
+顺带修掉两处**从 `9f8306d` 起就红着**的 i18n 门禁（那条提交没跑过门禁）：
+
+- 门禁 2：`catalog.rs` 的 `display_name: "OAuth2 统一认证"` 是裸中文 UI 字面量。改成
+  `"OAuth2"`（catalog 的 `display_name` 按约定是名字，不是句子；同表里 `智谱 Coding`
+  之类是机构自己的名字，不进基线就只能是这种）
+- 门禁 6：「声明了但没人引用」误报了 14 条——扫描器只认 `tr("…")` 的调用形状，而
+  `CallbackKeys { success: "provider.oauth2.callback_success" }` 与设置页的
+  `("gui.setup.editor.x_label", entity)` 数组是**当数据**把 key 传出去的。给扫描器补
+  一趟「与声明 key 完全相等的字面量也算引用」，孤儿仍然抓得到，拼出来的 key 仍不在
+  覆盖范围
+
+**仍未做**：太极内网（登录→模型列表→跑一次会话）与 OAuth2 两种模式各登录一次的手动
+冒烟。**授权服务器那一跳没有自动化**——它需要一个真账号。所以那两次冒烟是流程的
+一部分，不是可选项。
+
 ## 0.19.0 — 2026-11-25
 
 太极内网从「能登录」到「能日常用」，外加一轮界面刺：自定义模型发现、主界面一键登录、

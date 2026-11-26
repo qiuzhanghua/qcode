@@ -10,18 +10,18 @@ name = "qc"
 path = "src/main.rs"
 
 [dependencies]
-qcode-attachments = { version = "0.19.0", path = "../qcode-attachments" }
-qcode-core = { version = "0.19.0", path = "../qcode-core" }
-qcode-providers = { version = "0.19.0", path = "../qcode-providers" }
-qcode-tools = { version = "0.19.0", path = "../qcode-tools" }
-qcode-mcp = { version = "0.19.0", path = "../qcode-mcp" }
-qcode-net = { version = "0.19.0", path = "../qcode-net" }
-qcode-tui = { version = "0.19.0", path = "../qcode-tui" }
-qcode-acp = { version = "0.19.0", path = "../qcode-acp" }
-qcode-image = { version = "0.19.0", path = "../qcode-image" }
-qcode-kernel = { version = "0.19.0", path = "../qcode-kernel" }
-qcode-i18n = { version = "0.19.0", path = "../qcode-i18n" }
-qcode-gui = { version = "0.19.0", path = "../qcode-gui" }
+qcode-attachments = { version = "0.20.0", path = "../qcode-attachments" }
+qcode-core = { version = "0.20.0", path = "../qcode-core" }
+qcode-providers = { version = "0.20.0", path = "../qcode-providers" }
+qcode-tools = { version = "0.20.0", path = "../qcode-tools" }
+qcode-mcp = { version = "0.20.0", path = "../qcode-mcp" }
+qcode-net = { version = "0.20.0", path = "../qcode-net" }
+qcode-tui = { version = "0.20.0", path = "../qcode-tui" }
+qcode-acp = { version = "0.20.0", path = "../qcode-acp" }
+qcode-image = { version = "0.20.0", path = "../qcode-image" }
+qcode-kernel = { version = "0.20.0", path = "../qcode-kernel" }
+qcode-i18n = { version = "0.20.0", path = "../qcode-i18n" }
+qcode-gui = { version = "0.20.0", path = "../qcode-gui" }
 # `qc daemon` 的实现（分离启动、在 PATH 里找 `qcd`）已经搬到 `qcode-core::daemon`
 # （ADR-0098 §1），所以这里不再依赖 `qcd`。测试仍要从它取 `NotInstalled` 的文案，
 # 于是留在 dev-dependencies——那正好把「发布物不依赖 daemon」这条边界变成了编译期事实。
@@ -78,7 +78,7 @@ tempfile.workspace = true
 time.workspace = true
 # 测试要从 daemon 侧取 `NotInstalled` 的文案（`describe_for_test`）。发布物不依赖
 # `qcd`——`core::daemon` 才是实现（ADR-0098 §1），把它留在 dev 里让这条边界可验。
-qcd = { version = "0.19.0", path = "../qcd" }
+qcd = { version = "0.20.0", path = "../qcd" }
 # 曾经有过 `gui` feature（默认关，另出一份 `qcode-desktop`）。ADR-0086 把它删了：
 # 发行物只有一个 `qc`，窗口是它的固有部分，不是可选插件。留着一个「一关就编不过」
 # 的空 feature 只会误导人——`--no-default-features` 现在是无操作，照常编出带窗口的
