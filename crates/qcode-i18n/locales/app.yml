@@ -4422,6 +4422,17 @@ kernel:
     openai_compat:
       en: OpenAI-compatible
       zh-CN: OpenAI 兼容
+  # Provider 安全级别（内生标识，按数据去向粗分三档；界面只读展示，非配置项）。
+  security:
+    safest:
+      en: Secure
+      zh-CN: 安全
+    safe:
+      en: Relatively secure
+      zh-CN: 较安全
+    unsafe:
+      en: Overseas
+      zh-CN: 国外
   # mock provider 的脚本化响应（`provider_registry.rs`）。
   #
   # 这些是**假模型说的话**，会原样进对话，所以跟 UI 语言走（按 C 类处置）。

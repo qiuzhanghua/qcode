@@ -12,7 +12,7 @@
 //! composite display name「厂商名 (套餐名)」. Routes that exist in both tables
 //! (`xiaomi`, `zai`) are served by this table, which carries the package label.
 
-use super::Protocol;
+use super::{Protocol, SecurityLevel};
 
 /// One package of one vendor: a `providers.<route>` preset entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,10 @@ pub struct PackageGroup {
     pub vendor: &'static str,
     /// 厂商显示名（不翻译，产品名，与 catalog 同惯例）。
     pub display_name: &'static str,
+    /// 安全级别标识（厂商级属性，该厂商所有套餐共享）。这六家都是国内平台
+    /// （火山引擎 / 智谱 / 阿里云 / 小米 / Z.ai / BytePlus 均为字节或境内厂商），
+    /// 统一为「比较安全」。
+    pub security: SecurityLevel,
     /// Packages of this vendor, in presentation order.
     pub packages: &'static [PackageEntry],
 }
@@ -72,6 +76,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "volcano",
         display_name: "火山引擎",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "volcano",
@@ -105,6 +110,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "bigmodel",
         display_name: "智谱 Bigmodel",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "bigmodel",
@@ -129,6 +135,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "dashscope",
         display_name: "阿里云",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "dashscope",
@@ -153,6 +160,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "xiaomi",
         display_name: "小米",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "xiaomi",
@@ -179,6 +187,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "zai",
         display_name: "Z.ai",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "zai",
@@ -203,6 +212,7 @@ pub const PACKAGES: &[PackageGroup] = &[
     PackageGroup {
         vendor: "byteplus",
         display_name: "BytePlus",
+        security: SecurityLevel::Safe,
         packages: &[
             PackageEntry {
                 route: "byteplus",

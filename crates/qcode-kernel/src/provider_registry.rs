@@ -13,7 +13,8 @@ use qcode_providers::{
 };
 
 use crate::config::{
-    AuthMode, Config, ModelEntry, Protocol, ProviderConfig, catalog_entries, catalog_entry,
+    AuthMode, Config, ModelEntry, Protocol, ProviderConfig, SecurityLevel, catalog_entries,
+    catalog_entry,
 };
 
 /// Directory-level credential state of one provider route (M3).
@@ -39,6 +40,9 @@ pub struct ConfigurableProvider {
     pub package_label: Option<&'static str>,
     /// Wire protocol this route speaks (catalog default or config override).
     pub protocol: Protocol,
+    /// 安全级别标识（最安全 / 比较安全 / 不安全）。目录里的**每个** Provider
+    /// 都有：套餐行取厂商级别，catalog 行取条目级别，手写 route 取默认。
+    pub security: SecurityLevel,
     /// Whether the user/project config carries a profile for this route.
     pub configured: bool,
     /// Credential state of this route: key stored, key missing, or keyless.
@@ -160,6 +164,7 @@ impl ProviderRegistry {
                 display_name: entry.display_name.to_string(),
                 package_label: None,
                 protocol: entry.protocol,
+                security: entry.security,
                 configured: config.providers.contains_key(entry.route),
                 credential_state,
             });
@@ -171,6 +176,7 @@ impl ProviderRegistry {
                     display_name: group.display_name.to_string(),
                     package_label: Some(pkg.label),
                     protocol: pkg.protocol,
+                    security: group.security,
                     configured: config.providers.contains_key(pkg.route),
                     credential_state: credential_state(
                         config.providers.get(pkg.route),
@@ -188,6 +194,7 @@ impl ProviderRegistry {
                 display_name: route.clone(),
                 package_label: None,
                 protocol: profile.protocol.unwrap_or(Protocol::OpenAi),
+                security: crate::config::security_level(route),
                 configured: true,
                 credential_state: credential_state(Some(profile), None),
             });

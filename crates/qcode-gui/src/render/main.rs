@@ -76,6 +76,23 @@ impl Shell {
         // 按钮显示 provider 的**显示名**（中文），而 `current` / 切换仍用 route：
         // 显示名与 route 是两回事，混用正是「列表中文、按钮英文」的来源。
         let provider_label = qcode_kernel::config::provider_display_label(&provider);
+        // 触发按钮按当前 Provider 的安全级别着色（级别是内生字段，见
+        // `config::security_level`）：安全 = 浅绿、较安全 = 浅黄、国外 = 浅粉。
+        // `ButtonCustomVariant::color` 常态按 20% 透明度渲染（light 主题下
+        // 恰好呈浅色调），hover/active 全不透明度加深一档；深色文字在三种
+        // 浅色底上都可读。
+        let security = qcode_kernel::config::security_level(&provider);
+        let (security_tint, security_tint_hover, security_tint_active) = match security {
+            qcode_kernel::config::SecurityLevel::Safest => {
+                (rgb(0x22C55E), rgb(0xBBF7D0), rgb(0x86EFAC))
+            }
+            qcode_kernel::config::SecurityLevel::Safe => {
+                (rgb(0xEAB308), rgb(0xFDE68A), rgb(0xFCD34D))
+            }
+            qcode_kernel::config::SecurityLevel::Unsafe => {
+                (rgb(0xEC4899), rgb(0xF9A8D4), rgb(0xF472B6))
+            }
+        };
         Popover::new("model-menu-popover")
             .anchor(Anchor::BottomLeft)
             .appearance(true)
@@ -83,7 +100,14 @@ impl Shell {
             .trigger(
                 Button::new("model-menu")
                     .label(format!("{provider_label} / {model}"))
-                    .dropdown_caret(true),
+                    .dropdown_caret(true)
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(security_tint.into())
+                            .hover(security_tint_hover.into())
+                            .active(security_tint_active.into())
+                            .foreground(rgb(0x374151).into()),
+                    ),
             )
             .track_focus(&search_focus)
             .on_open_change({

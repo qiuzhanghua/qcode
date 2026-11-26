@@ -43,6 +43,32 @@ impl Protocol {
     }
 }
 
+/// Provider 安全级别（按数据去向粗分三档）。每个 Provider 都必须有标识：
+/// 太极内网最安全，国内平台（火山、小米、DeepSeek 等）比较安全，国外平台
+/// （OpenAI、Anthropic 等）不安全。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityLevel {
+    /// 最安全：太极内网，数据不出内网。
+    Safest,
+    /// 比较安全：国内平台，数据留在境内。
+    Safe,
+    /// 不安全：国外平台，数据出境。
+    Unsafe,
+}
+
+impl SecurityLevel {
+    /// Display label for configuration surfaces.
+    ///
+    /// 是界面文案（跟 locale 走），不是数据值，所以返回 `Cow` 而不是静态字符串。
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            SecurityLevel::Safest => qcode_i18n::tr("kernel.security.safest"),
+            SecurityLevel::Safe => qcode_i18n::tr("kernel.security.safe"),
+            SecurityLevel::Unsafe => qcode_i18n::tr("kernel.security.unsafe"),
+        }
+    }
+}
+
 /// One built-in provider route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatalogEntry {
@@ -76,6 +102,8 @@ pub struct CatalogEntry {
     /// `providers.<route>.images` overrides it — a gateway may differ from the
     /// vendor it fronts, and a brand-new model may outrun this table.
     pub images: bool,
+    /// 安全级别标识（最安全 / 比较安全 / 不安全），按厂商所在地与数据去向填。
+    pub security: SecurityLevel,
 }
 
 /// The built-in provider catalog, in presentation order.
@@ -84,6 +112,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "openai",
         display_name: "OpenAI",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.openai.com/v1",
         api_key_env: "OPENAI_API_KEY",
         default_model: Some("gpt-5.4"),
@@ -116,6 +145,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "deepseek",
         display_name: "DeepSeek",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://api.deepseek.com/v1",
         api_key_env: "DEEPSEEK_API_KEY",
         // What `GET https://api.deepseek.com/models` answers, as of 2026-11-10:
@@ -131,6 +161,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "ollama",
         display_name: "Ollama",
         protocol: Protocol::OpenAi,
+        // 本地推理，数据不出本机；但按用户口径「只有太极内网是最安全的」，
+        // 归为比较安全（数据不发送给任何第三方）。
+        security: SecurityLevel::Safe,
         base_url: "http://localhost:11434/v1",
         api_key_env: "",
         default_model: None,
@@ -146,6 +179,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "minimax",
         display_name: "MiniMax",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://api.minimaxi.com/v1",
         api_key_env: "MINIMAX_API_KEY",
         default_model: Some("MiniMax-M3"),
@@ -159,6 +193,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "anthropic",
         display_name: "Anthropic",
         protocol: Protocol::Anthropic,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.anthropic.com",
         api_key_env: "ANTHROPIC_API_KEY",
         default_model: Some("claude-sonnet-4-5"),
@@ -185,6 +220,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "openrouter",
         display_name: "OpenRouter",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://openrouter.ai/api/v1",
         api_key_env: "OPENROUTER_API_KEY",
         default_model: None,
@@ -196,6 +232,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "google",
         display_name: "Google Gemini",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         api_key_env: "GEMINI_API_KEY",
         default_model: None,
@@ -207,6 +244,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "groq",
         display_name: "Groq",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.groq.com/openai/v1",
         api_key_env: "GROQ_API_KEY",
         default_model: None,
@@ -218,6 +256,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "mistral",
         display_name: "Mistral",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.mistral.ai/v1",
         api_key_env: "MISTRAL_API_KEY",
         default_model: None,
@@ -229,6 +268,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "xai",
         display_name: "xAI",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.x.ai/v1",
         api_key_env: "XAI_API_KEY",
         default_model: None,
@@ -240,6 +280,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "moonshotai",
         display_name: "Moonshot (Kimi)",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://api.moonshot.ai/v1",
         api_key_env: "MOONSHOT_API_KEY",
         default_model: None,
@@ -251,6 +292,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "zai",
         display_name: "Z.ai",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         // 按量计费端点（/api/paas/v4）。Z.ai 的 Coding Plan 走 /api/coding/paas/v4，
         // 与套餐表 `zai` = 按量计费保持一致——resolve 时 catalog 优先于套餐表，
         // 这里错了会把按量的 key 打到 Coding 端点上。
@@ -265,6 +307,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "zai-coding-cn",
         display_name: "智谱 Coding",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
         api_key_env: "ZAI_CODING_CN_API_KEY",
         default_model: None,
@@ -276,6 +319,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "qwen-token-plan-cn",
         display_name: "通义 Token Plan",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         api_key_env: "QWEN_TOKEN_PLAN_CN_API_KEY",
         default_model: None,
@@ -287,6 +331,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "ant-ling",
         display_name: "蚂蚁 Ling",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://api.ant-ling.com/v1",
         api_key_env: "ANT_LING_API_KEY",
         default_model: None,
@@ -298,6 +343,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "xiaomi",
         display_name: "小米 MiMo",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Safe,
         base_url: "https://api.xiaomimimo.com/v1",
         api_key_env: "XIAOMI_API_KEY",
         default_model: None,
@@ -309,6 +355,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "cerebras",
         display_name: "Cerebras",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.cerebras.ai/v1",
         api_key_env: "CEREBRAS_API_KEY",
         default_model: None,
@@ -320,6 +367,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "together",
         display_name: "Together AI",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.together.ai/v1",
         api_key_env: "TOGETHER_API_KEY",
         default_model: None,
@@ -331,6 +379,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "fireworks",
         display_name: "Fireworks AI",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://api.fireworks.ai/inference",
         api_key_env: "FIREWORKS_API_KEY",
         default_model: None,
@@ -342,6 +391,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "nvidia",
         display_name: "NVIDIA NIM",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://integrate.api.nvidia.com/v1",
         api_key_env: "NVIDIA_API_KEY",
         default_model: None,
@@ -353,6 +403,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: "huggingface",
         display_name: "Hugging Face",
         protocol: Protocol::OpenAi,
+        security: SecurityLevel::Unsafe,
         base_url: "https://router.huggingface.co/v1",
         api_key_env: "HF_TOKEN",
         default_model: None,
@@ -367,6 +418,8 @@ pub const CATALOG: &[CatalogEntry] = &[
         route: crate::providers::tj::TJ_ROUTE,
         display_name: "太极内网",
         protocol: Protocol::OpenAi,
+        // 唯一的最安全：数据不出内网（需求 4c 的太极统一认证网关）。
+        security: SecurityLevel::Safest,
         base_url: crate::providers::tj::TJ_BASE_URL,
         api_key_env: "",
         default_model: None,
@@ -409,4 +462,61 @@ pub fn catalog_models(route: &str) -> Vec<super::ModelEntry> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 一个 route 的安全级别，**保证每个 Provider 都有标识**：
+/// - 套餐表（厂商级）优先：同一厂商的所有套餐共享一个级别（`PackageGroup.security`）；
+/// - 其次 catalog 条目（太极内网 = 最安全、国内平台 = 比较安全、国外 = 不安全）；
+/// - 其余手写 route 默认「比较安全」——自定义网关多为境内自建/国内平台
+///   （如火山方舟），与 `Protocol` 对未知 route 的默认同理。
+///
+/// 设置页编辑弹框（Provider 名字后面的灰色标识）与目录行共用这一个口径。
+pub fn security_level(route: &str) -> SecurityLevel {
+    if let Some((group, _)) = super::package_entry(route) {
+        return group.security;
+    }
+    catalog_entry(route)
+        .map(|entry| entry.security)
+        .unwrap_or(SecurityLevel::Safe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_tj_is_safest() {
+        // 用户口径：只有太极内网是最安全的。钉死这条不变量，防止将来
+        // 把某个国内平台误标成 Safest。
+        for entry in catalog_entries() {
+            assert_eq!(
+                entry.security == SecurityLevel::Safest,
+                entry.route == crate::providers::tj::TJ_ROUTE,
+                "只有太极内网（{}）是最安全的，{} 不是",
+                crate::providers::tj::TJ_ROUTE,
+                entry.route
+            );
+        }
+    }
+
+    #[test]
+    fn security_level_covers_every_route() {
+        // 太极内网 = 最安全；国内平台 = 比较安全；国外平台 = 不安全；
+        // 手写 route 落到「比较安全」默认；套餐 route 取厂商级。
+        assert_eq!(
+            security_level(crate::providers::tj::TJ_ROUTE),
+            SecurityLevel::Safest
+        );
+        assert_eq!(security_level("deepseek"), SecurityLevel::Safe);
+        assert_eq!(security_level("xiaomi"), SecurityLevel::Safe);
+        assert_eq!(security_level("volcano-coding"), SecurityLevel::Safe);
+        assert_eq!(security_level("openai"), SecurityLevel::Unsafe);
+        assert_eq!(security_level("anthropic"), SecurityLevel::Unsafe);
+        assert_eq!(
+            security_level("claude"),
+            SecurityLevel::Unsafe,
+            "claude 是 anthropic 的别名"
+        );
+        assert_eq!(security_level("my-gateway"), SecurityLevel::Safe);
+    }
 }

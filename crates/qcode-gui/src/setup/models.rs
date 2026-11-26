@@ -1139,7 +1139,28 @@ impl SetupView {
                     .border_color(border_color)
                     .p_4()
                     .text_color(popover_fg)
-                    .child(div().child(qcode_i18n::trp("gui.setup.editor.edit_title", &[display])))
+                    .child(
+                        // 标题行：Provider 名字后面跟一个灰色小字的安全级别标识。
+                        // 级别是内生字段（catalog/套餐表硬编码），不是配置项，
+                        // 所以只读展示、没有编辑入口。
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div().child(qcode_i18n::trp(
+                                    "gui.setup.editor.edit_title",
+                                    &[display],
+                                )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(sp(CAPTION_SIZE))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(qcode_kernel::config::security_level(route).label()),
+                            ),
+                    )
                     .child(
                         div()
                             .id("provider-dialog-scroll")
