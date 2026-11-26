@@ -154,7 +154,10 @@ impl ProviderRegistry {
                         .base_url
                         .clone()
                         .expect("non-mock provider always has a base URL"),
-                    settings: crate::providers::oauth2::oauth2_settings(oauth2),
+                    settings: crate::providers::oauth2::oauth2_settings(
+                        oauth2,
+                        resolved.oauth2_client_secret.clone(),
+                    ),
                     store_path: self
                         .oauth2_store_path
                         .clone()
@@ -687,6 +690,8 @@ mod tests {
                     mode: qcode_providers::OAuth2Mode::Pkce,
                     client_id: "qcode".to_string(),
                     client_secret: None,
+                    client_secret_env: None,
+                    client_secret_command: None,
                     auth_url: "https://auth.example.com/oauth2/auth".to_string(),
                     token_url: "https://auth.example.com/oauth2/token".to_string(),
                     scope: None,

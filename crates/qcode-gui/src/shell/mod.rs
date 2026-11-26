@@ -1006,11 +1006,29 @@ impl Shell {
             cx.notify();
             return;
         };
-        let settings = qcode_kernel::config::load(&self.config_path)
+        // 401 横幅的登录走 config 里那份配置：密钥来源（env / command / 明文）
+        // 必须按优先级解析，不能直接读明文——否则设置了 client_secret_env 的
+        // 用户点这个按钮会拿到一个 None，登录静默降级。
+        //
+        // 解析失败（配了 env 却没有那个变量）要把**原因**显示出来：横幅上写
+        // 「配置不完整」会把人送去检查端点，而真正缺的是一个环境变量。
+        let oauth2 = qcode_kernel::config::load(&self.config_path)
             .ok()
-            .and_then(|config| config.providers.get("oauth2").cloned())
-            .and_then(|profile| profile.oauth2)
-            .map(|oauth2| qcode_kernel::providers::oauth2::oauth2_settings(&oauth2));
+            .and_then(|config| config.providers.get("oauth2")?.oauth2.clone());
+        let settings = match oauth2.map(|oauth2| {
+            qcode_kernel::config::oauth2_client_secret("oauth2", &oauth2, &|key| {
+                std::env::var(key).ok()
+            })
+            .map(|secret| qcode_kernel::providers::oauth2::oauth2_settings(&oauth2, secret))
+        }) {
+            Some(Ok(settings)) => Some(settings),
+            Some(Err(error)) => {
+                self.ui.error_banner = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+            None => None,
+        };
         let Some(settings) = settings else {
             self.ui.error_banner =
                 Some(qcode_i18n::tr("gui.setup.editor.oauth2_incomplete").to_string());

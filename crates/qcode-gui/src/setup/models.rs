@@ -109,6 +109,27 @@ fn provider_type_label(
     }
 }
 
+/// 把配置里的 argv 渲染成「一行空格分隔」的表单值。
+///
+/// 返回 `None` 表示**这个 argv 不能用表单表示**：任一参数含空白，拼成一行再
+/// 拆开就会变成另一个 argv。`["-s", "my service"]` 存下、显示成
+/// `-s my service`、再读回成 `["-s", "my", "service"]` —— 取密钥静默失败，
+/// 而错误现场在别人的认证服务器上，极难查。
+///
+/// 所以这类配置不进输入框，调用方改为只读提示 + 原样保留。
+pub(crate) fn argv_to_form(argv: &[String]) -> Option<String> {
+    if argv.iter().any(|arg| arg.contains(char::is_whitespace)) {
+        return None;
+    }
+    Some(argv.join(" "))
+}
+
+/// 表单值拆回 argv。空白（含全空）→ `None`，表示「不用这个来源」。
+pub(crate) fn form_to_argv(form: &str) -> Option<Vec<String>> {
+    let argv: Vec<String> = form.split_whitespace().map(str::to_string).collect();
+    (!argv.is_empty()).then_some(argv)
+}
+
 impl SetupView {
     /// The provider card list: saved notice, one card per directory row, the
     /// inline editor for the open route, and the add actions.
@@ -861,6 +882,35 @@ impl SetupView {
                 state.set_value(value, window, cx);
             });
         }
+        // 密钥的两个非明文来源（ADR-0107 补记）。清空 = 不用这个来源。
+        self.oauth2_client_secret_env = Some(input(
+            window,
+            cx,
+            oauth2
+                .as_ref()
+                .and_then(|c| c.client_secret_env.clone())
+                .unwrap_or_default(),
+            &label("gui.setup.editor.oauth2_client_secret_env_label"),
+        ));
+        // 命令是一行空格分隔的 argv。**参数里含空格就无法无损往返**，所以那种
+        // 情况不渲染输入框，改为提示「只能在 config.toml 里编辑」，并把原值记在
+        // 状态里原样保留——把 `-s "my service"` 拆成两个参数会让取密钥静默失败。
+        let command = oauth2
+            .as_ref()
+            .and_then(|c| c.client_secret_command.clone())
+            .filter(|argv| !argv.is_empty());
+        let form = command.as_deref().and_then(argv_to_form);
+        let opaque = command.is_some() && form.is_none();
+        self.oauth2_secret_command_opaque = opaque;
+        self.oauth2_secret_command_argv = command.clone().unwrap_or_default();
+        self.oauth2_client_secret_command = (!opaque).then(|| {
+            input(
+                window,
+                cx,
+                form.unwrap_or_default(),
+                &label("gui.setup.editor.oauth2_client_secret_command_label"),
+            )
+        });
         self.oauth2_auth_url = Some(input(
             window,
             cx,
@@ -899,46 +949,48 @@ impl SetupView {
         ));
     }
 
-    /// 从草稿实体读值构造 `OAuth2AuthSettings`（保存与登录共用）。草稿未初始化
-    /// 或 client_id / auth_url / token_url 为空时返回 None（登录/保存前必须填）。
+    /// 从草稿实体读值构造 `OAuth2AuthSettings`（登录用）。
+    ///
+    /// 失败时返回**可显示的原因**，而不是一个 None：密钥配成「从环境变量取」却
+    /// 没导出那个变量时，界面上必须点名缺的是哪个变量——只说「配置不完整」会把
+    /// 人送去反复检查端点，而那些是对的。校验顺序：必填项 → 密钥来源。
     fn oauth2_draft_settings(
         &self,
         cx: &Context<Self>,
-    ) -> Option<qcode_providers::OAuth2AuthSettings> {
+    ) -> Result<qcode_providers::OAuth2AuthSettings, String> {
         let client_id = self
             .oauth2_client_id
-            .as_ref()?
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .unwrap_or_default();
         let auth_url = self
             .oauth2_auth_url
-            .as_ref()?
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .unwrap_or_default();
         let token_url = self
             .oauth2_token_url
-            .as_ref()?
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
+            .as_ref()
+            .map(|entity| entity.read(cx).value().trim().to_string())
+            .unwrap_or_default();
         if client_id.is_empty() || auth_url.is_empty() || token_url.is_empty() {
-            return None;
+            return Err(qcode_i18n::tr("gui.setup.editor.oauth2_incomplete").to_string());
         }
         let mode = if self.oauth2_mode == "pkce" {
             qcode_providers::OAuth2Mode::Pkce
         } else {
             qcode_providers::OAuth2Mode::AuthorizationCode
         };
-        let client_secret = self
-            .oauth2_client_secret
-            .as_ref()
-            .map(|entity| entity.read(cx).value().trim().to_string())
-            .filter(|secret| !secret.is_empty());
+        // 密钥按 env > command > 明文的优先级解析，与 kernel 是同一个函数
+        // （ADR-0107 补记）：设置页的「登录」按钮必须与运行时拿到同一个密钥，
+        // 否则会出现「设置页能登录、跑任务却 401」。
+        let draft = self.oauth2_draft_config(cx);
+        let client_secret = qcode_kernel::config::oauth2_client_secret(
+            qcode_kernel::providers::oauth2::OAUTH2_ROUTE,
+            &draft,
+            &|key| std::env::var(key).ok(),
+        )
+        .map_err(|error| error.to_string())?;
         let scope = self
             .oauth2_scope
             .as_ref()
@@ -950,7 +1002,7 @@ impl SetupView {
             .map(|entity| entity.read(cx).value().trim().to_string())
             .filter(|uri| !uri.is_empty())
             .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri);
-        Some(qcode_providers::OAuth2AuthSettings {
+        Ok(qcode_providers::OAuth2AuthSettings {
             mode,
             client_id,
             client_secret,
@@ -984,6 +1036,14 @@ impl SetupView {
             },
             client_id: read(self.oauth2_client_id.as_ref()),
             client_secret: non_empty(read(self.oauth2_client_secret.as_ref())),
+            client_secret_env: non_empty(read(self.oauth2_client_secret_env.as_ref())),
+            // 参数含空格的那份 argv 表单表示不了，原样写回（否则一次保存就把它
+            // 拆成两个参数）。
+            client_secret_command: if self.oauth2_secret_command_opaque {
+                Some(self.oauth2_secret_command_argv.clone())
+            } else {
+                form_to_argv(&read(self.oauth2_client_secret_command.as_ref()))
+            },
             auth_url: read(self.oauth2_auth_url.as_ref()),
             token_url: read(self.oauth2_token_url.as_ref()),
             scope: non_empty(read(self.oauth2_scope.as_ref())),
@@ -1046,6 +1106,19 @@ impl SetupView {
         {
             fields.push(("gui.setup.editor.oauth2_client_secret_label", entity));
         }
+        // 非明文的两个来源（ADR-0107 补记）：只在授权码模式有意义，PKCE 不需要
+        // 密钥，展示它们只会让人以为要填。
+        if self.oauth2_mode == "authorization_code" {
+            if let Some(entity) = &self.oauth2_client_secret_env {
+                fields.push(("gui.setup.editor.oauth2_client_secret_env_label", entity));
+            }
+            if let Some(entity) = &self.oauth2_client_secret_command {
+                fields.push((
+                    "gui.setup.editor.oauth2_client_secret_command_label",
+                    entity,
+                ));
+            }
+        }
         if let Some(entity) = &self.oauth2_auth_url {
             fields.push(("gui.setup.editor.oauth2_auth_url_label", entity));
         }
@@ -1072,9 +1145,64 @@ impl SetupView {
                     .child(Input::new(entity).aria_label(qcode_i18n::tr(label_key))),
             );
         }
+        // 密钥来源的说明：优先级 + 冲突警告 + 「含空格的命令不可在此编辑」。
+        if self.oauth2_mode == "authorization_code" {
+            let theme = cx.theme();
+            let count = self.oauth2_secret_source_count(cx);
+            let (text, color) = if count > 1 {
+                (
+                    qcode_i18n::tr("gui.setup.editor.oauth2_secret_conflict").to_string(),
+                    theme.warning,
+                )
+            } else {
+                (
+                    qcode_i18n::tr("gui.setup.editor.oauth2_secret_priority").to_string(),
+                    theme.muted_foreground,
+                )
+            };
+            section = section.child(
+                div()
+                    .text_size(sp(CAPTION_SIZE))
+                    .text_color(color)
+                    .child(text),
+            );
+            if self.oauth2_secret_command_opaque {
+                section = section.child(
+                    div()
+                        .text_size(sp(CAPTION_SIZE))
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            qcode_i18n::tr("gui.setup.editor.oauth2_secret_command_opaque")
+                                .to_string(),
+                        ),
+                );
+            }
+        }
         // 登录状态区。
         section = section.child(self.render_oauth2_login(route, cx));
         section.into_any_element()
+    }
+
+    /// 三个密钥来源填了几个：用来在表单里说清「哪一项会被用」。
+    ///
+    /// 不做「填了一个就禁用另外两个」：那会在切换时丢掉已填的值，而丢掉一个
+    /// 密钥是不可撤销的。改为把优先级写出来，并在一项以上被填时明确警告「明文
+    /// 那份会被忽略」——用户看到的是真相，不是一个自动清空的输入框。
+    fn oauth2_secret_source_count(&self, cx: &Context<Self>) -> usize {
+        let filled = |entity: Option<&Entity<InputState>>| {
+            entity.is_some_and(|entity| !entity.read(cx).value().trim().is_empty())
+        };
+        let mut count = 0;
+        if filled(self.oauth2_client_secret_env.as_ref()) {
+            count += 1;
+        }
+        if self.oauth2_secret_command_opaque || filled(self.oauth2_client_secret_command.as_ref()) {
+            count += 1;
+        }
+        if filled(self.oauth2_client_secret.as_ref()) {
+            count += 1;
+        }
+        count
     }
 
     /// 可配置 OAuth2 统一认证的登录状态区：读 `oauth2_auth.json` 显示
@@ -1158,11 +1286,14 @@ impl SetupView {
             cx.notify();
             return;
         };
-        let Some(settings) = self.oauth2_draft_settings(cx) else {
-            self.provider_error =
-                Some(qcode_i18n::tr("gui.setup.editor.oauth2_incomplete").to_string());
-            cx.notify();
-            return;
+        let settings = match self.oauth2_draft_settings(cx) {
+            Ok(settings) => settings,
+            // 原因已经是可以直接显示的话（缺哪个变量、缺哪个必填项）。
+            Err(reason) => {
+                self.provider_error = Some(reason);
+                cx.notify();
+                return;
+            }
         };
         let store_path = self.oauth2_store_path();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2770,7 +2901,7 @@ mod label_tests {
     // re-exports GPUI's own `test` proc-macro attribute; `use super::*` would
     // pull it in, and every `#[test]` below would then expand to the GPUI macro
     // instead of the built-in attribute, recursing until the limit trips.
-    use super::candidate_label;
+    use super::{argv_to_form, candidate_label, form_to_argv};
     use qcode_providers::discovery::ModelCandidate;
 
     fn candidate(id: &str, name: Option<&str>) -> ModelCandidate {
@@ -2779,6 +2910,44 @@ mod label_tests {
             name: name.map(str::to_string),
             ..ModelCandidate::default()
         }
+    }
+
+    /// 往返必须无损，或者明确拒绝。
+    ///
+    /// 这组断言钉的是「宁可拒绝也不猜」：参数含空格时 `argv_to_form` 返回
+    /// `None`，调用方于是不进输入框、原样保留。若哪天它改成「拼起来算了」，
+    /// `["-s", "my service"]` 会在下一次保存时变成 `["-s", "my", "service"]`，
+    /// 而取密钥失败发生在认证服务器那边，几乎无法归因到「我保存了一次设置」。
+    #[test]
+    fn an_argv_with_whitespace_inside_an_argument_is_refused() {
+        let plain = ["security", "find-generic-password", "-w"];
+        let form = argv_to_form(&plain.map(str::to_string)).expect("representable");
+        assert_eq!(form, "security find-generic-password -w");
+        // 往返回到同一个 argv。
+        assert_eq!(
+            form_to_argv(&form),
+            Some(plain.map(str::to_string).to_vec())
+        );
+
+        // 参数里有空格：拒绝，而不是悄悄改形状。
+        let spaced = ["secret-tool", "lookup", "-s", "my service"];
+        assert_eq!(argv_to_form(&spaced.map(str::to_string)), None);
+        // 而如果硬拼，往返就不一致 —— 说明拒绝是对的。
+        assert_ne!(
+            form_to_argv(&spaced.join(" ")),
+            Some(spaced.map(str::to_string).to_vec())
+        );
+    }
+
+    /// 空表单等于「不用这个来源」，不是「一个空参数的命令」。
+    ///
+    /// 后者会让 kernel 去 spawn 一个空程序名，或者在 `key_from_command` 里报
+    /// 「the command is empty」——一条用户没配过的错误。
+    #[test]
+    fn an_empty_form_means_no_command_at_all() {
+        assert_eq!(form_to_argv(""), None);
+        assert_eq!(form_to_argv("   \n\t "), None);
+        assert_eq!(form_to_argv("true"), Some(vec!["true".to_string()]));
     }
 
     /// The row shows the **vendor's display name**, and the id only when the

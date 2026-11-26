@@ -548,6 +548,18 @@ impl ConfigEdit {
                 sub.insert("mode", Item::Value(Value::from(oauth2.mode.as_str())));
                 set_optional(&mut sub, "client_id", Some(oauth2.client_id.clone()));
                 set_optional(&mut sub, "client_secret", oauth2.client_secret.clone());
+                set_optional(
+                    &mut sub,
+                    "client_secret_env",
+                    oauth2.client_secret_env.clone(),
+                );
+                if let Some(argv) = oauth2
+                    .client_secret_command
+                    .as_ref()
+                    .filter(|argv| !argv.is_empty())
+                {
+                    sub.insert("client_secret_command", Item::Value(argv_value(argv)));
+                }
                 set_optional(&mut sub, "auth_url", Some(oauth2.auth_url.clone()));
                 set_optional(&mut sub, "token_url", Some(oauth2.token_url.clone()));
                 set_optional(&mut sub, "scope", oauth2.scope.clone());
@@ -955,6 +967,65 @@ mod tests {
 
     fn temp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    /// ADR-0107 补记：两个新的密钥来源键必须能往返，否则「设置页里填了
+    /// env、保存后却只剩明文」——而那种丢失是静默的，密钥本身看不出少了。
+    #[test]
+    fn the_oauth2_secret_sources_round_trip_through_a_save() {
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+schema = 2
+default_provider = "oauth2"
+
+[providers.oauth2]
+base_url = "https://gw.example.com/v1"
+[providers.oauth2.oauth2]
+mode = "authorization_code"
+client_id = "qcode"
+client_secret_env = "CORP_OAUTH_SECRET"
+client_secret_command = ["security", "find-generic-password", "-w", "-s", "corp"]
+auth_url = "https://auth.example.com/oauth2/auth"
+token_url = "https://auth.example.com/oauth2/token"
+"#,
+        )
+        .expect("write");
+
+        let mut config = crate::config::load(&path).expect("load");
+        // 触发一次真正的写盘（设置页每改一项都会走这条路径）。
+        config.agent.max_turns = 7;
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        edit.apply_config(&config).expect("apply");
+        edit.save().expect("save");
+
+        let reloaded = crate::config::load(&path).expect("reload");
+        let oauth2 = reloaded.providers["oauth2"]
+            .oauth2
+            .as_ref()
+            .expect("oauth2 sub-table survives");
+        assert_eq!(
+            oauth2.client_secret_env.as_deref(),
+            Some("CORP_OAUTH_SECRET")
+        );
+        assert_eq!(
+            oauth2.client_secret_command.as_deref(),
+            Some(
+                [
+                    "security".to_string(),
+                    "find-generic-password".to_string(),
+                    "-w".to_string(),
+                    "-s".to_string(),
+                    "corp".to_string(),
+                ]
+                .as_slice()
+            )
+        );
+        // 没有明文的那份，就不该凭空冒出来一个空键。
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("client_secret ="), "{text}");
     }
 
     /// The bug this fixes: saving any setting from the GUI used to freeze `~/x`

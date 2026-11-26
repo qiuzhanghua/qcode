@@ -69,6 +69,24 @@ pub(crate) fn print_config(config: &config::Config) {
             "  {name}: base_url={:?} model={:?} api_key_env={:?} stream_usage={}",
             provider.base_url, provider.default_model, provider.api_key_env, provider.stream_usage
         );
+        // OAuth2 的客户端密钥**只报来源，从不报值**（与 doctor 同一条规矩）。
+        // env 报变量名（那是用户自己填的、本来就可见的），command 只报「有」。
+        if let Some(oauth2) = &provider.oauth2 {
+            use qcode_kernel::config::SecretSource;
+            let source = match oauth2.secret_source() {
+                SecretSource::Env => format!(
+                    "env {:?}",
+                    oauth2.client_secret_env.as_deref().unwrap_or_default()
+                ),
+                other => other.label().to_string(),
+            };
+            println!(
+                "    oauth2: mode={} client_id={:?} client_secret=<{}>",
+                oauth2.mode.as_str(),
+                oauth2.client_id,
+                source
+            );
+        }
     }
     let plan = config.network_plan();
     println!(

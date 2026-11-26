@@ -155,6 +155,16 @@ pub struct SetupView {
     oauth2_mode: String,
     oauth2_client_id: Option<Entity<InputState>>,
     oauth2_client_secret: Option<Entity<InputState>>,
+    /// 客户端密钥的来源（env > command > 明文，ADR-0107 补记）。三者都在表单
+    /// 里可编辑，靠优先级选一个生效。
+    oauth2_client_secret_env: Option<Entity<InputState>>,
+    oauth2_client_secret_command: Option<Entity<InputState>>,
+    /// 配置里那份 `client_secret_command` 的参数含空格时记为 true：这样的
+    /// argv 无法用「空格分隔的一行」无损表示，所以表单不渲染它（见
+    /// `render_oauth2_config` 的提示），保存时也原样保留。
+    oauth2_secret_command_opaque: bool,
+    /// 原样保留的 argv（仅 `oauth2_secret_command_opaque` 为真时有值）。
+    oauth2_secret_command_argv: Vec<String>,
     oauth2_auth_url: Option<Entity<InputState>>,
     oauth2_token_url: Option<Entity<InputState>>,
     oauth2_scope: Option<Entity<InputState>>,
@@ -441,6 +451,10 @@ impl SetupView {
             oauth2_mode: "authorization_code".to_string(),
             oauth2_client_id: None,
             oauth2_client_secret: None,
+            oauth2_client_secret_env: None,
+            oauth2_client_secret_command: None,
+            oauth2_secret_command_opaque: false,
+            oauth2_secret_command_argv: Vec::new(),
             oauth2_auth_url: None,
             oauth2_token_url: None,
             oauth2_scope: None,

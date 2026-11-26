@@ -1543,6 +1543,162 @@ fn oauth2_route_resolves_to_oauth2_auth_mode_with_no_key() {
     assert_eq!(oauth2.client_id, "qcode");
 }
 
+/// ADR-0107 补记：客户端密钥的三个来源，优先级 env > command > 明文。
+#[test]
+fn oauth2_client_secret_prefers_the_environment_over_the_plain_text() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "authorization_code"
+            client_id = "qcode"
+            client_secret = "from-file"
+            client_secret_env = "CORP_OAUTH_SECRET"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(
+        &config,
+        &Overrides::default(),
+        &env_from(&[("CORP_OAUTH_SECRET", "from-env")]),
+    )
+    .unwrap();
+    // 明文仍在配置里（不改写用户的文件），但**用的**是环境变量那份。
+    assert_eq!(
+        resolved.oauth2.as_ref().unwrap().client_secret.as_deref(),
+        Some("from-file")
+    );
+    assert_eq!(resolved.oauth2_client_secret.as_deref(), Some("from-env"));
+}
+
+#[test]
+fn oauth2_client_secret_falls_back_to_the_plain_text_without_other_sources() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "authorization_code"
+            client_id = "qcode"
+            client_secret = "from-file"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+    assert_eq!(
+        resolved.oauth2_client_secret.as_deref(),
+        Some("from-file"),
+        "没有 env / command 时必须仍能用明文（向后兼容）"
+    );
+}
+
+/// 显式配了 `client_secret_env` 却取不到值：报错，**不**静默退回明文。
+///
+/// 退回明文会让「我把明文删了、改从环境变量取」这个动作看起来生效了，实际没有。
+#[test]
+fn a_missing_secret_env_is_an_error_not_a_silent_fallback() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "authorization_code"
+            client_id = "qcode"
+            client_secret = "from-file"
+            client_secret_env = "CORP_OAUTH_SECRET"
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let error = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap_err();
+    assert!(
+        error.to_string().contains("CORP_OAUTH_SECRET"),
+        "错误信息必须点名缺失的变量：{error}"
+    );
+}
+
+/// `client_secret_env = ""` 等于关掉这个来源（与 `api_key_env = ""` 同义），
+/// 于是退回下一级。
+#[test]
+fn an_empty_secret_env_name_disables_that_source() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "authorization_code"
+            client_id = "qcode"
+            client_secret = "from-file"
+            client_secret_env = ""
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+    assert_eq!(resolved.oauth2_client_secret.as_deref(), Some("from-file"));
+}
+
+/// 命令来源走的是与 `api_key_command` 同一条路径：spawn、读 stdout、trim。
+#[test]
+fn oauth2_client_secret_can_come_from_a_command() {
+    let config: Config = toml::from_str(
+        r#"
+            [providers.oauth2]
+            base_url = "https://gw.example.com/v1"
+            default_model = "llm-v1"
+            [providers.oauth2.oauth2]
+            mode = "authorization_code"
+            client_id = "qcode"
+            client_secret_command = ["printf", "  from-command\n"]
+            auth_url = "https://auth.example.com/oauth2/auth"
+            token_url = "https://auth.example.com/oauth2/token"
+            "#,
+    )
+    .unwrap();
+    let resolved = resolve(&config, &Overrides::default(), &env_from(&[])).unwrap();
+    assert_eq!(
+        resolved.oauth2_client_secret.as_deref(),
+        Some("from-command")
+    );
+}
+
+/// 三个来源都填时，来源判定（doctor / `qc config show` 用）与解析结果一致。
+#[test]
+fn the_secret_source_label_follows_the_same_priority() {
+    use crate::config::{SecretSource, oauth2_client_secret};
+
+    let mut config = crate::config::OAuth2AuthConfig::default();
+    assert_eq!(config.secret_source(), SecretSource::None);
+    assert_eq!(
+        oauth2_client_secret("p", &config, &env_from(&[])).unwrap(),
+        None
+    );
+
+    config.client_secret = Some("plain".to_string());
+    assert_eq!(config.secret_source(), SecretSource::Plaintext);
+
+    config.client_secret_command = Some(vec!["true".to_string()]);
+    assert_eq!(config.secret_source(), SecretSource::Command);
+
+    config.client_secret_env = Some("SEC".to_string());
+    assert_eq!(config.secret_source(), SecretSource::Env);
+    assert_eq!(
+        oauth2_client_secret("p", &config, &env_from(&[("SEC", "v")])).unwrap(),
+        Some("v".to_string())
+    );
+}
+
 #[test]
 fn oauth2_route_without_base_url_fails_to_resolve() {
     // 无 base_url 的 oauth2 route：不默认任何网关（与太极的硬编码默认不同），

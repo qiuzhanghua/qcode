@@ -434,7 +434,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     // 配色跟着它走，与国内 provider 一致。
     CatalogEntry {
         route: crate::providers::oauth2::OAUTH2_ROUTE,
-        display_name: "OAuth2 统一认证",
+        display_name: "OAuth2",
         protocol: Protocol::OpenAi,
         security: SecurityLevel::Safe,
         base_url: "",

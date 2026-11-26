@@ -100,28 +100,21 @@ impl OAuth2AuthClient {
         code_verifier: Option<&str>,
         client_secret: Option<&str>,
     ) -> Result<TjTokens, String> {
-        let mut params = vec![
-            ("grant_type", "authorization_code"),
-            ("client_id", self.settings.client_id.as_str()),
-            ("code", code),
-            ("redirect_uri", self.settings.redirect_uri.as_str()),
-        ];
-        if let Some(verifier) = code_verifier {
-            params.push(("code_verifier", verifier));
-        }
-        if let Some(secret) = client_secret {
-            params.push(("client_secret", secret));
-        }
+        let params = exchange_params(&self.settings, code, code_verifier, client_secret);
+        let params: Vec<(&str, &str)> = params
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
         self.post_token(&params).await
     }
 
     /// refresh_token 换新 token（两种模式同构：不带 secret / verifier）。
     pub async fn refresh(&self, refresh_token: &str) -> Result<TjTokens, String> {
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("client_id", self.settings.client_id.as_str()),
-            ("refresh_token", refresh_token),
-        ];
+        let params = refresh_params(&self.settings, refresh_token);
+        let params: Vec<(&str, &str)> = params
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
         self.post_token(&params).await
     }
 
@@ -295,30 +288,7 @@ impl OAuth2Provider {
             OAuth2Mode::AuthorizationCode => (None, None),
         };
         let state = random_state();
-        let scope = self
-            .config
-            .settings
-            .scope
-            .clone()
-            .unwrap_or_else(|| "openid".to_string());
-        let mut params = vec![
-            ("response_type", "code"),
-            ("client_id", self.config.settings.client_id.as_str()),
-            ("redirect_uri", self.config.settings.redirect_uri.as_str()),
-            ("scope", scope.as_str()),
-            ("state", state.as_str()),
-        ];
-        if let Some(challenge) = &challenge {
-            params.push(("code_challenge_method", "S256"));
-            params.push(("code_challenge", challenge.as_str()));
-        }
-        let auth_url = reqwest::Url::parse_with_params(&self.config.settings.auth_url, &params)
-            .map_err(|error| {
-                ProviderError::Auth(qcode_i18n::trp(
-                    "provider.oauth2.auth_url",
-                    &[error.to_string()],
-                ))
-            })?;
+        let auth_url = authorize_url(&self.config.settings, challenge.as_deref(), &state)?;
         let code = match &self.config.prompt {
             Some(prompt) => prompt(auth_url.to_string()).ok_or_else(|| {
                 ProviderError::Auth(qcode_i18n::tr("provider.oauth2.login_incomplete").to_string())
@@ -417,44 +387,165 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// 授权页 URL。`challenge` 为 `Some` 时补 S256 参数（只有 PKCE 模式会）。
+///
+/// 抽成自由函数是为了让「PKCE 带 challenge、授权码模式不带」这条**安全相关**的
+/// 差别能被单测钉住——它原先内联在 `ensure_token` 里，而那条路径必须先起浏览器
+/// 才能走到，测不了。
+fn authorize_url(
+    settings: &OAuth2AuthSettings,
+    challenge: Option<&str>,
+    state: &str,
+) -> Result<reqwest::Url, ProviderError> {
+    // scope 缺省补 `openid`：统一认证普遍按 OIDC 子集实现，不带 scope 会被拒。
+    let scope = settings.scope.as_deref().unwrap_or("openid");
+    let mut params = vec![
+        ("response_type", "code"),
+        ("client_id", settings.client_id.as_str()),
+        ("redirect_uri", settings.redirect_uri.as_str()),
+        ("scope", scope),
+        ("state", state),
+    ];
+    if let Some(challenge) = challenge {
+        params.push(("code_challenge_method", "S256"));
+        params.push(("code_challenge", challenge));
+    }
+    reqwest::Url::parse_with_params(&settings.auth_url, &params).map_err(|error| {
+        ProviderError::Auth(qcode_i18n::trp(
+            "provider.oauth2.auth_url",
+            &[error.to_string()],
+        ))
+    })
+}
+
+/// code 换 token 的表单参数。
+///
+/// 两种模式的差别就在这里：PKCE 带 `code_verifier`、**不带** `client_secret`；
+/// 授权码模式反过来。写错的方向是「public client 把 secret 发出去」或
+/// 「confidential client 不带 secret 被拒」，两种都值得一条测试。
+fn exchange_params(
+    settings: &OAuth2AuthSettings,
+    code: &str,
+    code_verifier: Option<&str>,
+    client_secret: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut params = vec![
+        ("grant_type".to_string(), "authorization_code".to_string()),
+        ("client_id".to_string(), settings.client_id.clone()),
+        ("code".to_string(), code.to_string()),
+        ("redirect_uri".to_string(), settings.redirect_uri.clone()),
+    ];
+    if let Some(verifier) = code_verifier {
+        params.push(("code_verifier".to_string(), verifier.to_string()));
+    }
+    if let Some(secret) = client_secret {
+        params.push(("client_secret".to_string(), secret.to_string()));
+    }
+    params
+}
+
+/// refresh 的表单参数。两种模式同构，且**都不带** `client_secret`
+/// （PKCE 没有可带的；授权码模式的 refresh 端点按 RFC 6749 §6 也只认 client
+/// 认证，而我们是 public 客户端路径的复用，实测两种网关都不需要）。
+fn refresh_params(settings: &OAuth2AuthSettings, refresh_token: &str) -> Vec<(String, String)> {
+    vec![
+        ("grant_type".to_string(), "refresh_token".to_string()),
+        ("client_id".to_string(), settings.client_id.clone()),
+        ("refresh_token".to_string(), refresh_token.to_string()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn pkce_mode_builds_auth_url_with_challenge() {
-        // 用 mock client 构造 provider，直接调授权 URL 构造路径会触发网络，
-        // 因此这里只验证 mode 的静态属性 + 默认 scope/redirect_uri。
-        let settings = OAuth2AuthSettings {
-            mode: OAuth2Mode::Pkce,
+    fn settings(mode: OAuth2Mode) -> OAuth2AuthSettings {
+        OAuth2AuthSettings {
+            mode,
             client_id: "cli".to_string(),
-            client_secret: None,
+            client_secret: match mode {
+                OAuth2Mode::AuthorizationCode => Some("sec".to_string()),
+                OAuth2Mode::Pkce => None,
+            },
             auth_url: "https://auth.example.com/oauth2/auth".to_string(),
             token_url: "https://auth.example.com/oauth2/token".to_string(),
             scope: None,
             redirect_uri: "http://127.0.0.1:43782/oauth2/callback".to_string(),
-        };
-        assert_eq!(settings.mode.as_str(), "pkce");
-        // 默认 scope 由 ensure_token 内联补齐为 openid；此处验证常量默认。
-        let mut with_default = settings.clone();
-        assert!(with_default.scope.is_none());
-        with_default.scope = Some("openid".to_string());
-        assert_eq!(with_default.scope.as_deref(), Some("openid"));
+        }
+    }
+
+    fn query(url: &reqwest::Url) -> BTreeMap<String, String> {
+        url.query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn pkce_mode_builds_auth_url_with_challenge() {
+        let url = authorize_url(&settings(OAuth2Mode::Pkce), Some("ch"), "st").expect("url");
+        let params = query(&url);
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(params.get("client_id").map(String::as_str), Some("cli"));
+        assert_eq!(params.get("state").map(String::as_str), Some("st"));
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(params.get("code_challenge").map(String::as_str), Some("ch"));
+        // 缺省 scope 是 openid。
+        assert_eq!(params.get("scope").map(String::as_str), Some("openid"));
     }
 
     #[test]
     fn authorization_code_mode_has_no_verifier_path() {
-        let settings = OAuth2AuthSettings {
-            mode: OAuth2Mode::AuthorizationCode,
-            client_id: "cli".to_string(),
-            client_secret: Some("sec".to_string()),
-            auth_url: "https://auth.example.com/oauth2/auth".to_string(),
-            token_url: "https://auth.example.com/oauth2/token".to_string(),
-            scope: None,
-            redirect_uri: "http://127.0.0.1:43782/oauth2/callback".to_string(),
-        };
-        assert_eq!(settings.mode.as_str(), "authorization_code");
-        assert_eq!(settings.client_secret.as_deref(), Some("sec"));
+        // 授权码模式不带 challenge 的任何一个参数；带上会被认证服务器按 PKCE
+        // 处理，而 confidential client 又没有 verifier，换 token 必然失败。
+        let url = authorize_url(&settings(OAuth2Mode::AuthorizationCode), None, "st").expect("url");
+        let params = query(&url);
+        assert!(!params.contains_key("code_challenge"));
+        assert!(!params.contains_key("code_challenge_method"));
+    }
+
+    #[test]
+    fn a_configured_scope_replaces_the_openid_default() {
+        let mut settings = settings(OAuth2Mode::Pkce);
+        settings.scope = Some("openid profile email".to_string());
+        let url = authorize_url(&settings, None, "st").expect("url");
+        assert_eq!(
+            query(&url).get("scope").map(String::as_str),
+            Some("openid profile email")
+        );
+    }
+
+    #[test]
+    fn pkce_exchange_sends_a_verifier_and_never_a_secret() {
+        let settings = settings(OAuth2Mode::Pkce);
+        let params = exchange_params(&settings, "c", Some("v"), None);
+        let keys: Vec<&str> = params.iter().map(|(key, _)| key.as_str()).collect();
+        assert!(keys.contains(&"code_verifier"));
+        // public client 把 secret 发出去是泄露，不只是错误。
+        assert!(!keys.contains(&"client_secret"));
+    }
+
+    #[test]
+    fn authorization_code_exchange_sends_the_secret() {
+        let settings = settings(OAuth2Mode::AuthorizationCode);
+        let params = exchange_params(&settings, "c", None, Some("sec"));
+        let keys: Vec<&str> = params.iter().map(|(key, _)| key.as_str()).collect();
+        assert!(keys.contains(&"client_secret"));
+        assert!(!keys.contains(&"code_verifier"));
+    }
+
+    #[test]
+    fn refresh_never_carries_a_secret_or_verifier() {
+        let params = refresh_params(&settings(OAuth2Mode::AuthorizationCode), "r");
+        let keys: Vec<&str> = params.iter().map(|(key, _)| key.as_str()).collect();
+        assert!(!keys.contains(&"client_secret"));
+        assert!(!keys.contains(&"code_verifier"));
+        assert!(keys.contains(&"refresh_token"));
     }
 
     #[test]

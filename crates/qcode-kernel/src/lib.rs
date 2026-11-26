@@ -633,6 +633,27 @@ pub struct Assembled {
     pub config_path: Option<std::path::PathBuf>,
 }
 
+/// Register every credential this configuration resolved for redaction.
+///
+/// Split out of [`assemble`] so it can be tested: the property worth asserting is
+/// not "masking works" (that is [`redact::Redactor`]'s own unit tests) but **that
+/// each credential is actually handed to it**. A secret left out here is invisible
+/// in every other test and only shows up in a log file.
+///
+/// Today that is two: the provider API key, and the OAuth2 client secret
+/// (ADR-0107 补记). The OAuth2 one matters for a specific shape — a token endpoint
+/// that echoes its request back in an error body puts the secret in the text we
+/// log, and nothing upstream of this point knows it is a secret.
+fn install_secrets(resolved: &config::Resolved) {
+    redact::install(
+        resolved
+            .api_key
+            .clone()
+            .into_iter()
+            .chain(resolved.oauth2_client_secret.clone()),
+    );
+}
+
 /// Assemble the kernel for the directory qc was started in.
 ///
 /// ADR-0036: this is the only place that wires configuration, policy, egress,
@@ -657,7 +678,7 @@ pub async fn assemble(
     // known. Installing here is what keeps `qc acp` — a long-lived headless server
     // whose provider errors all go to the log — from being the one caller that
     // forgets (ADR-0078).
-    redact::install(resolved.api_key.clone());
+    install_secrets(&resolved);
     let policy = build_policy(&loaded, approval_policy)?;
     let data_dir = resolve_data_dir(data_dir);
     // The egress proxy must exist before the sandbox in strict mode: the
@@ -717,6 +738,78 @@ pub async fn assemble(
         sandbox: sandbox_name,
         config_path: watched_config,
     })
+}
+
+#[cfg(test)]
+mod install_secrets_tests {
+    use super::*;
+
+    /// 每个解析出来的凭据都必须进 redact —— 漏一个在任何其它测试里都看不见，
+    /// 只会出现在日志文件里。
+    ///
+    /// 两条都要断言：只测 OAuth2 那条的话，`api_key` 哪天被漏掉同样没人发现；
+    /// 只测 api_key 那条则正是 `log_redaction.rs` 已有的覆盖，而它对 OAuth2
+    /// 一无所知。
+    ///
+    /// 用 `redact::current().secrets()` 读回集合，所以测的是「装进去了」而不是
+    /// 「安装函数被调过」。同一个测试会污染进程级集合，因此两个值各带进程号
+    /// 后缀，避免与别的测试里的短串互相吃（`Redactor` 会丢掉长度 < 4 的项）。
+    #[test]
+    fn both_the_api_key_and_the_oauth2_secret_reach_the_redactor() {
+        let tag = std::process::id();
+        let api_key = format!("sk-api-{tag}-MUST-NOT-LEAK");
+        let oauth2_secret = format!("oauth2-secret-{tag}-MUST-NOT-LEAK");
+
+        let mut resolved: config::Resolved = config::resolve(
+            &config::Config::default(),
+            &config::Overrides::default(),
+            &|_| None,
+        )
+        .expect("mock resolves");
+        resolved.api_key = Some(api_key.clone());
+        resolved.oauth2_client_secret = Some(oauth2_secret.clone());
+
+        install_secrets(&resolved);
+
+        let redactor = redact::current();
+        let registered = redactor.secrets();
+        assert!(
+            registered.iter().any(|secret| secret == &api_key),
+            "the API key was never installed: {registered:?}"
+        );
+        assert!(
+            registered.iter().any(|secret| secret == &oauth2_secret),
+            "the OAuth2 client secret was never installed: {registered:?}"
+        );
+        // 端到端：真的被掩掉，而不只是躺在集合里。
+        assert_eq!(redactor.redact(&api_key), "<redacted>");
+        assert_eq!(redactor.redact(&oauth2_secret), "<redacted>");
+    }
+
+    /// 没配 OAuth2 时不该凭空注册什么（`None` 不能被当成空串塞进去）。
+    #[test]
+    fn a_configuration_without_oauth2_installs_nothing_extra() {
+        let tag = std::process::id();
+        let api_key = format!("sk-only-{tag}-MUST-NOT-LEAK");
+
+        let mut resolved: config::Resolved = config::resolve(
+            &config::Config::default(),
+            &config::Overrides::default(),
+            &|_| None,
+        )
+        .expect("mock resolves");
+        resolved.api_key = Some(api_key.clone());
+        resolved.oauth2_client_secret = None;
+
+        install_secrets(&resolved);
+
+        let redactor = redact::current();
+        assert_eq!(redactor.redact(&api_key), "<redacted>");
+        assert!(
+            !redactor.secrets().iter().any(String::is_empty),
+            "an empty string was registered as a secret"
+        );
+    }
 }
 
 #[cfg(test)]

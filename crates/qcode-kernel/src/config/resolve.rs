@@ -36,8 +36,13 @@ pub struct Resolved {
     /// How this route authenticates; the adapter family is chosen by this.
     pub auth_mode: AuthMode,
     /// 可配置 OAuth2 统一认证的配置（`providers.<route>.oauth2`）；仅
-    /// `auth_mode == OAuth2` 时有值。
+    /// `auth_mode == OAuth2` 时有值。**这是原始配置**（写回、展示用）；
+    /// 要用的时候拿 [`Self::oauth2_client_secret`]。
     pub oauth2: Option<OAuth2AuthConfig>,
+    /// 已解析的 OAuth2 客户端密钥，按 `client_secret_env`、`client_secret_command`、
+    /// `client_secret` 的顺序取第一个可用的。**刻意与 `oauth2` 分开**：密钥可能
+    /// 来自一条命令，每次展示都去 spawn 一次是错的，所以解析一次、结果留在这里。
+    pub oauth2_client_secret: Option<String>,
     /// Provider-specific body fields, already merged with the builtin defaults.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// Whether the model accepts image input. The route decides (catalog) and
@@ -302,6 +307,7 @@ pub fn resolve(
             protocol: Protocol::Mock,
             auth_mode: AuthMode::ApiKey,
             oauth2: None,
+            oauth2_client_secret: None,
             extra_body: serde_json::Map::new(),
             images: false,
             headers: std::collections::BTreeMap::new(),
@@ -367,6 +373,14 @@ pub fn resolve(
         AuthMode::TjOAuth
     } else {
         AuthMode::ApiKey
+    };
+
+    // 客户端密钥只在 oauth2 分支里解析，而且**只解析一次**（ADR-0107 补记）。
+    // 放在这里而不是装配点，是为了让「配了 env 却没有这个变量」在装配前就报错，
+    // 而不是等到用户点登录才失败。
+    let oauth2_client_secret = match &entry.oauth2 {
+        Some(config) => crate::config::oauth2_client_secret(&name, config, env)?,
+        None => None,
     };
 
     let api_key_env = entry
@@ -439,6 +453,7 @@ pub fn resolve(
         protocol,
         auth_mode,
         oauth2: entry.oauth2.clone(),
+        oauth2_client_secret,
         images,
         extra_body,
         headers: entry.headers.clone(),

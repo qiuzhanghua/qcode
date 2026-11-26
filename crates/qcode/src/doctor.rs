@@ -301,6 +301,21 @@ impl Doctor {
         }
     }
 
+    /// OAuth2 客户端密钥的存放方式。明文写在 config.toml 里仍受支持（向后
+    /// 兼容），但值得提示一次：这个文件会被备份、被同步、被贴进聊天窗口。
+    fn check_oauth2_secret(&mut self, resolved: &config::Resolved) {
+        let Some(oauth2) = &resolved.oauth2 else {
+            return;
+        };
+        if oauth2.secret_source() != config::SecretSource::Plaintext {
+            return;
+        }
+        self.warn(
+            qcode_i18n::tr("cli.doctor.label.oauth2_secret"),
+            qcode_i18n::tr("cli.doctor.detail.oauth2_secret_plaintext"),
+        );
+    }
+
     fn check_provider(&mut self, config: &Config) {
         match config::resolve(config, &config::Overrides::default(), &|key| {
             std::env::var(key).ok()
@@ -332,6 +347,7 @@ impl Doctor {
                     );
                 }
                 self.check_pricing(config, &resolved.model);
+                self.check_oauth2_secret(&resolved);
             }
             Err(err) => {
                 let missing_key =

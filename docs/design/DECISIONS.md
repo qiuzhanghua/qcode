@@ -13243,3 +13243,224 @@ ADR-0073 的核心保证与 `procguard`/`win_job` 三层兜底的前提。
 3. **GUI/TUI 的任务面板**：可点杀的面板要先决定它归哪个视图（工具卡的兄弟，还是
    内建终端的兄弟）。
 4. **输出落盘 / 优先级 / 限流**：16 个并发上限是粗糙但够用的闸。
+
+## ADR-0107：OAuth2 做成可配置 Provider——推翻 ADR-0104 §6 的「不实现授权流程」（2026-11-26）
+
+**状态**：Accepted（2026-11-26），已实现（`9f8306d`）。实现要点见
+[qcode-providers/src/oauth2.rs](../../crates/qcode-providers/src/oauth2.rs) 与
+[qcode-kernel/src/providers/loopback.rs](../../crates/qcode-kernel/src/providers/loopback.rs)
+的文件头。
+
+**本条取代 [ADR-0104 §6](#6-oauth2-的边界不实现授权协议用-api_key_command)。**
+ADR 的规矩是改动需追加决策记录，推翻一条已定边界更需要写清楚：当时为什么那样定、
+现在为什么不算数。原文不删，作为「曾经这样想过」留档。
+
+**背景：ADR-0104 §6 当时是对的**
+
+§6 的原话是「模板要能表达『这个 provider 需要的参数比一个 key 多』，但**本 ADR 不实现
+oauth2 授权流程**」，理由是 `ProviderConfig` 已经有 `api_key_command`：
+
+> 这就是 oauth2 的真实可行路径：token 交给专门的工具管，qcode 只负责调用它。
+
+这个判断在**当时**成立，而且今天看仍是正确的抽象：**qcode 不该为了拿一个字符串而长出
+一整套 OAuth 客户端**。它成立的前提是一个隐含条件——「已经有专门的工具在管 token」。
+
+前提在太极内网（ADR 未收录，实现见 `crates/qcode-providers/src/tj.rs`）上先破了：
+那条链路是 Keycloak 授权码 + PKCE、浏览器登录页、loopback 回调、access token 过期与
+refresh 轮转。用 `api_key_command` 表达它，等于要求用户自己写一个 OAuth 客户端并把
+轮转、原子写、过期判定全部做对——**把 qcode 该负的复杂度推给了用户**。
+
+只是「一个特例」时，硬编码还能算妥协：端点、客户端 id 写死在
+`qcode-kernel/src/providers/tj.rs`，412 行。但接着出现第二个、第三个要接**同一个统一
+认证**的网关，妥协就变成了形状问题：每接一个网关抄一遍 412 行，端点一改要发版。
+
+**决定**
+
+### 1. 配置形状：`providers.<route>.oauth2` 子表
+
+```toml
+[providers.corp]
+base_url = "https://gw.example.com/v1"
+[providers.corp.oauth2]
+mode = "authorization_code"        # 或 "pkce"
+client_id = "qcode"
+client_secret = "…"                # 仅 authorization_code；pkce 留空
+auth_url = "https://sso.example.com/auth"
+token_url = "https://sso.example.com/token"
+scope = "openid profile"
+redirect_uri = "http://127.0.0.1:43782/oauth2/callback"   # 可省，见 §3
+```
+
+七个字段，`serde(default)` 齐全。**没有 `well-known` 自动发现**：统一认证的端点通常
+不是标准 OIDC 布局（太极的 userinfo 就是网关自定义路径），猜一次错一次，不如让用户填。
+
+### 2. 两种模式，差别只有一个分支
+
+| | `authorization_code` | `pkce` |
+|---|---|---|
+| 客户端类型 | confidential | public |
+| 授权 URL | 不带 `code_challenge` | 带 S256 `code_challenge` |
+| 换 token | `code` + `client_secret` | `code` + `code_verifier` |
+| refresh | 同构（两种模式都不带 secret/verifier） | 同构 |
+
+默认 `authorization_code`：需要 secret 的那条更严格，安全默认取严。PKCE 的 S256、
+`state`、`random` 全部复用 `tj.rs` 已有实现（`pkce_pair` / `random_state`），不新写一份
+密码学代码——**这类东西要么复用已实测过的，要么别写**。
+
+### 3. `redirect_uri` 默认 loopback，端口固定 43782
+
+登录时在本机起一个临时 HTTP server，浏览器授权后 302 回来，校验 `state`、取 `code`、
+回一个「登录成功」页，listener 随本次登录关闭。端口与路径
+（`127.0.0.1:43782/oauth2/callback`）与太极一致，两者共用一个实现。
+
+**代价如实记**：认证服务器那边的 Valid Redirect URIs 白名单里必须先登记这个地址。
+所以 `redirect_uri` 可覆盖——不同认证服务器给的白名单不一样，写死会让整套东西在
+用户的环境里直接不工作。
+
+### 4. 认证判定的优先级：`oauth2` > 太极路由名 > `api_key`
+
+```
+providers.<route>.oauth2 存在  → AuthMode::OAuth2     （api_key / api_key_env 一律不参与）
+route 名是太极                → AuthMode::TjOAuth
+否则                          → AuthMode::ApiKey
+```
+
+**显式配置压过路由名约定**：一个 route 恰好叫 `tj` 但用户写了 `oauth2` 子表，按用户
+说的走。反过来的顺序会让「配置里写了却静默不生效」成为可能，那是最难查的一类问题。
+
+`AuthMode::OAuth2` 分支下 `resolve` 返回 `api_key: None`、来源写 `"oauth2"`——token 由
+Provider 从文件与授权流程里取，不经 env、不经 key command。
+
+### 5. token 生命周期全部在 Provider 内部
+
+三处入口，一条闭环：
+
+| 时机 | 动作 |
+|---|---|
+| 每次请求前 `ensure` | 本地 token 有效 → 直接用；无/过期 → 先 refresh，失败再走完整登录 |
+| 请求返回 401 | `refresh_or_reauth`：先 refresh，失败再登录，然后**重试一次** |
+| 用户点「登录」 | `refresh_or_login`：**无条件**先 refresh（有 refresh_token 才试），失败再登录 |
+
+**不依赖引擎的 `is_retryable`**：那张表不含 `Auth`，为 OAuth2 往里加一条会波及所有
+provider 的重试语义。闭环关在 Provider 里，引擎不需要知道 token 会过期。
+
+落盘 `oauth2_auth.json`（`config.toml` 同目录），复用 `TjTokenStore`：临时文件 +
+rename 原子写、类 Unix `0600`。与太极的 `tj_auth.json` **分文件**，两个认证各管各的
+凭据，删一个不影响另一个。
+
+### 6. `client_secret` 明文存 `config.toml`
+
+这是本 ADR 唯一一条「明知不理想、仍然这样做」的决定，**因为它是用户明确的选择**：
+配置要能被看见、被备份、被复制到另一台机器。
+
+配套的三条缓解：设置页用 masked 输入框回显（不打印明文）；`qc doctor` 只报「凭据来源」
+从不报值（`doctor.rs:319-330` 的既有约定）；错误信息里不回显 secret。
+
+**否决过的替代**：存进 OS 钥匙串。不是因为它更差——是因为它在 Linux 上会**静默失败**：
+无桌面会话、无 `secret-service` 的机器上钥匙串要么不可用要么要用户解锁，而 `qc` 得在
+CI、容器、`ssh` 里都能跑。Rust 侧没有「钥匙串不可用就体面降级」的干净写法，`doctor`
+里那张 `secret-tool` / `Keychain` / `CredWriteW` 的对照表就是这个现实的记录。
+
+### 7. 安全级别内生化：`Safe`
+
+catalog 条目（`catalog.rs` 的 `OAUTH2_ROUTE`）标 `SecurityLevel::Safe`，与国内平台一致；
+模型菜单按钮的配色跟着它走。**`base_url` 留空**，不默认成任何网关——`resolve` 时缺
+`base_url` 直接报错，宁可让用户填一次，也不要把他发到我们不认识的服务器上。
+
+**被否决的替代方案**
+
+- **维持 ADR-0104 §6，只把 `api_key_command` 写进文档教用户用**。第 N 个网关就要写
+  第 N 个 OAuth 客户端，而「refresh 轮转 + 原子写 + 过期判定」三件事用户几乎必然写错
+  一两件。把复杂度推给用户不等于没有复杂度。
+- **每个网关硬编码一份（复制太极那份 412 行）**。端点一改要发版；而且每份都会慢慢长歪。
+- **做标准 OIDC 发现（`/.well-known/openid-configuration`）**。统一认证的端点布局不标准
+  （§1），发现拿到的东西经常少一半还得手填，多一条网络依赖不多一个可用性。
+- **让引擎的重试表认 `Auth`**。见 §5，改的是所有 provider 的语义。
+- **`client_secret` 进钥匙串**。见 §6。
+- **把 token 存进同一个 `tj_auth.json`**。两个认证共用一个文件，删一个会带走另一个的
+  凭据；而且文件里没有「这份属于哪个 route」的字段——**分文件是最省事的多实例隔离**。
+
+**后果**
+
+- **`CONFIG_VERSION` 不变，仍是 2**。`oauth2: Option<OAuth2AuthConfig>` 带
+  `#[serde(default)]`，旧 `config.toml` 读进来是 `None`，行为与改动前**逐字节一致**；
+  写回时按「存在才写子表」处理（`config_edit.rs:544-555`），不会给没配 oauth2 的
+  provider 凭空添一个空表。
+- 文案 1350 → **1386**（+36 条，en / zh-CN 成对）。
+- 太极内网改走共享实现：`qcode-kernel/src/providers/tj.rs` **412 → 164 行**，只剩端点
+  常量（需求「硬编码」不变）；通用部分进 `qcode-providers/src/oauth2.rs`。
+  **行为必须不变**，这是本改动最大的回归面——见下。
+- 工具、引擎、事件、存储的契约**一个字没动**。这次改的是 provider 装配与设置页。
+
+**遗留（都写下来，不假装没有）**
+
+1. **`client_secret` 不进 `redact`**。`redact::install` 只装 `resolved.api_key`，而
+   OAuth2 route 的 `api_key` 是 `None`，所以 secret 从没被注册为待脱敏串。影响面窄
+   （secret 通常不会出现在响应体里），但**如果某个 token 端点把 secret 回显进错误，
+   它会原样进日志**。修法是装配时把 `oauth2.client_secret` 一并 install，属于下一版。
+2. **无 id_token 验签**。`jwk_set_url` 字段在太极那边是预留，本 ADR 沿用：只从
+   `id_token` 载荷里取 `preferred_username` 当显示名，签名不验。取用户名不构成信任
+   决策，所以可以接受；若将来要基于 claim 做授权，必须先补验签。
+3. **同一时刻只有一个登录流程在等**（`PENDING_CODE_TX` 单槽）。两个 provider 同时点
+   登录，后一个把前一个的等待替换掉。GUI 上是串行操作，实际撞不到。
+4. **回调端口固定 43782**。占用了就没有第二个并发登录；换端口要同时改认证服务器白名单。
+5. **真登录只能手验**。单测覆盖的是 URL 构造、模式差异、token 过期判定、存储往返
+   （`qcode-providers/src/oauth2.rs` 5 条 + `kernel/providers/oauth2.rs` 4 条 +
+   `config/tests.rs` 3 条），**授权服务器那一跳没有自动化**——它需要一个真的账号。
+   发版前手验两种模式各一次，是流程的一部分，不是可选项。
+
+**补记（2026-11-26）：客户端密钥不再只有明文一种来源，并登记一条待验证的出路**
+
+§6 写的是「`client_secret` 明文存 `config.toml`，因为它是用户明确的选择」。这条仍然
+成立，但**它只管「能不能用」**，不该成为唯一选项：明文那份会被备份、被同步、被贴进
+聊天窗口，而用户没有任何不改配置结构就能避免这些的办法。
+
+所以 §6 的字段加了两个同级兄弟，与 `api_key_env` / `api_key_command` 同构：
+
+| 键 | 值 | 优先级 |
+|---|---|---|
+| `client_secret_env` | 环境变量**名**（不存值） | 1（最高） |
+| `client_secret_command` | argv 数组，读 stdout（不经 shell，5s 超时） | 2 |
+| `client_secret` | 明文 | 3（最低，向后兼容） |
+
+四条取舍，都是「不这样做就会静默错」的那类：
+
+1. **解析一次，结果存 `Resolved.oauth2_client_secret`**。密钥不像 access token 会轮转，
+   它只在换 token 的请求里出现。所以装配时解析一次，而不是每次 refresh 都 spawn 一次
+   命令——那会让一次登录变成「N 次 exec」。
+2. **显式配了 env 却取不到 → 报错**（`ConfigError::MissingSecretEnv`），不静默退回
+   明文。退回会让「我把明文删了、改从环境变量取」看起来生效了，实际没有。`client_secret_env
+   = ""` 等于关掉这个来源（与 `api_key_env = ""` 同义）。
+3. **`client_secret` 一并进 `redact`**。这修掉了上面遗留 1：`assemble()` 里改成
+   `api_key` 与 `oauth2_client_secret` 一起 `install`。
+4. **设置页三个框都在、不做互斥禁用**。填一个就禁用另外两个会在切换时丢掉已填的值，
+   而丢掉一个密钥不可撤销。改为把优先级写出来，并在「填了不止一个」时明确警告「明文
+   那份会被忽略」——`client_secret_command` 的参数若含空格，表单表示不了，就不渲染那个
+   框、原样保留 argv（把 `-s "my service"` 拆成两个参数会让取密钥静默失败）。
+
+`qc doctor` 在来源是明文时给一条 warn；`qc config show` 只报来源（env 报变量名，
+command/明文只报类别），从不报值。
+
+**为什么这不等于「问题解决了」**
+
+密钥放进环境变量或钥匙串，保护的是「其他用户」和「磁盘被拷走」，**不是「同用户进程」**
+——同一用户下的任何进程都能读到。所以 RFC 8252（OAuth for Native Apps）的结论是：
+native app 应注册成 **public client**，不该有 client secret。上面这套是**降低暴露面**，
+不是保密。
+
+### 待验证：网关能否把 qcode 注册成 public client
+
+**这是本条最该被后续检验的一件事，写在这里就是为了别忘。** 如果网关支持，那么
+`authorization_code` 模式与整个 `client_secret*` 三件套对我们是多余的——切到 `pkce`，
+这个字段直接不存在，风险从根上消失，代码也可以删。
+
+| 项 | 内容 |
+|---|---|
+| 要回答的问题 | 该统一认证网关（Keycloak 或等价实现）能否把 qcode 注册为 public client（仅 PKCE、无 secret） |
+| 怎么验 | 在认证服务器的 client 注册页/管理员处看该 client 的 **Access Type / Client authentication**：`public` + 勾选 PKCE 即支持。也可直接发一次授权请求（`code_challenge_method=S256`，不带 secret 换 token）看是否返回 token |
+| 判定 | **能** → 把默认模式改成 `pkce`，`client_secret*` 三个字段标记为「仅为兼容旧网关保留」；**不能** → 本条维持现状 |
+| 现状 | **未验证**。太极内网已知是 public + PKCE（2026-11-23 实测），但那是另一套客户端；可配置 OAuth2 面向的网关尚未确认 |
+| 谁去验 | 有该网关管理员权限的人（注册配置不在 qcode 侧，改不了） |
+
+在这条被验证之前，`authorization_code` 保持为默认模式（安全默认取严），用户能选 `pkce`
+就说明其网关支持，不必等这条结论。

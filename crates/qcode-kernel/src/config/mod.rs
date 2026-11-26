@@ -1024,18 +1024,29 @@ impl Default for ProviderConfig {
 
 /// 可配置 OAuth2 统一认证的端点与客户端标识（`providers.<route>.oauth2`）。
 ///
-/// 由设置页编辑、随 config.toml 落盘（client_secret 为 OAuth 客户端凭据，按
-/// 用户决策直接存这里）。`mode` 决定登录流程：授权码（confidential，换 token
-/// 时带 `client_secret`）或 PKCE（public，带 `code_verifier`、无 secret）。
+/// 由设置页编辑、随 config.toml 落盘。`mode` 决定登录流程：授权码（confidential，
+/// 换 token 时带 `client_secret`）或 PKCE（public，带 `code_verifier`、无 secret）。
+///
+/// **客户端密钥有三个来源，优先级依次是 `client_secret_env`、
+/// `client_secret_command`、`client_secret`**（ADR-0107 补记）。三者的区别只在
+/// 「值从哪来」，与 `api_key_env` / `api_key_command` 同构。明文那份保留是为了
+/// 向后兼容，新配置应当用前两个之一。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OAuth2AuthConfig {
     #[serde(default)]
     pub mode: qcode_providers::OAuth2Mode,
     #[serde(default)]
     pub client_id: String,
-    /// 授权码模式（confidential client）的客户端密钥；PKCE 模式为 None。
+    /// 明文客户端密钥（最低优先级；向后兼容用）。
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// 环境变量名（最高优先级）。只存名字，不存值。
+    #[serde(default)]
+    pub client_secret_env: Option<String>,
+    /// 从外部命令的 stdout 取密钥（argv，不经 shell）。Keychain / libsecret /
+    /// 凭据管理器都从这里接。
+    #[serde(default)]
+    pub client_secret_command: Option<Vec<String>>,
     #[serde(default)]
     pub auth_url: String,
     #[serde(default)]
@@ -1045,6 +1056,97 @@ pub struct OAuth2AuthConfig {
     /// 回调地址；None = 默认 loopback（`http://127.0.0.1:43782/oauth2/callback`）。
     #[serde(default)]
     pub redirect_uri: Option<String>,
+}
+
+/// 客户端密钥来自哪里。给 doctor / `qc config show` 这类**只该报来源、不该报
+/// 值**的场合用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretSource {
+    Env,
+    Command,
+    /// 明文写在 config.toml 里。
+    Plaintext,
+    None,
+}
+
+impl SecretSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            SecretSource::Env => "env",
+            SecretSource::Command => "command",
+            SecretSource::Plaintext => "plaintext",
+            SecretSource::None => "none",
+        }
+    }
+}
+
+impl OAuth2AuthConfig {
+    /// 按优先级判断「会用哪个来源」，**不读取值**（因此不会 spawn 命令）。
+    pub fn secret_source(&self) -> SecretSource {
+        if self
+            .client_secret_env
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+        {
+            SecretSource::Env
+        } else if self
+            .client_secret_command
+            .as_deref()
+            .is_some_and(|argv| !argv.is_empty())
+        {
+            SecretSource::Command
+        } else if self
+            .client_secret
+            .as_deref()
+            .is_some_and(|secret| !secret.trim().is_empty())
+        {
+            SecretSource::Plaintext
+        } else {
+            SecretSource::None
+        }
+    }
+}
+
+/// 按 `client_secret_env` > `client_secret_command` > `client_secret` 解析出
+/// 客户端密钥。
+///
+/// 解析**一次**就够：密钥不像 access token 会轮转，它只在换 token 的请求里出现。
+/// 所以这里可以（也只该）在装配时调一次，而不是每次 refresh 都 spawn 一次命令。
+///
+/// 显式指定了来源却取不到时**报错**，不静默退回明文：用户写了「从环境变量取」
+/// 就是要求它来自那里，悄悄改用文件里那份会让「我撤销了明文」这个动作看起来
+/// 生效了，实际没有。
+pub fn oauth2_client_secret(
+    provider: &str,
+    config: &OAuth2AuthConfig,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<String>, ConfigError> {
+    match config.secret_source() {
+        SecretSource::Env => {
+            let name = config
+                .client_secret_env
+                .as_deref()
+                .expect("source says env")
+                .trim();
+            match env(name) {
+                Some(value) if !value.trim().is_empty() => Ok(Some(value.trim().to_string())),
+                _ => Err(ConfigError::MissingSecretEnv {
+                    provider: provider.to_string(),
+                    env: name.to_string(),
+                }),
+            }
+        }
+        SecretSource::Command => {
+            let argv = config
+                .client_secret_command
+                .as_deref()
+                .expect("source says command");
+            // 与 api_key 共用同一条路径：5 秒超时、不经 shell、输出不落日志。
+            key_from_command(provider, argv).map(Some)
+        }
+        SecretSource::Plaintext => Ok(config.client_secret.clone()),
+        SecretSource::None => Ok(None),
+    }
 }
 
 /// One model a provider route serves. Hand-declared routes carry their own
@@ -1156,6 +1258,13 @@ pub enum ConfigError {
     MissingKey { provider: String, env: String },
     #[error("provider '{provider}': key command failed ({detail})")]
     KeyCommand { provider: String, detail: String },
+    /// 显式配置了 `oauth2.client_secret_env` 却取不到值。只在该来源被选中时
+    /// 报出；`client_secret_env = ""` 等于关掉这个来源（与 `api_key_env` 同义）。
+    #[error(
+        "provider '{provider}' requires ${env} for its OAuth2 client secret; export it, or \
+         clear providers.{provider}.oauth2.client_secret_env"
+    )]
+    MissingSecretEnv { provider: String, env: String },
     #[error(
         "provider '{provider}' has no model; pass --model or set \
          providers.{provider}.default_model"

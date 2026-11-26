@@ -56,13 +56,18 @@ pub fn default_redirect_uri() -> String {
 /// kernel 侧 config 的 `OAuth2AuthConfig` → providers 层的 `OAuth2AuthSettings`
 /// （依赖方向：qcode-providers 不依赖 kernel，值在这里搬运；`redirect_uri`
 /// 缺省补 loopback 默认地址）。
+///
+/// `client_secret` 由调用方传入**已解析**的值（[`crate::config::oauth2_client_secret`]
+/// 的结果），而不是从 `config` 里再读一次明文：那会绕过 env / command 两个来源，
+/// 让「密钥只从环境变量取」变成一句空话。
 pub fn oauth2_settings(
     config: &crate::config::OAuth2AuthConfig,
+    client_secret: Option<String>,
 ) -> qcode_providers::OAuth2AuthSettings {
     qcode_providers::OAuth2AuthSettings {
         mode: config.mode,
         client_id: config.client_id.clone(),
-        client_secret: config.client_secret.clone(),
+        client_secret,
         auth_url: config.auth_url.clone(),
         token_url: config.token_url.clone(),
         scope: config.scope.clone(),
@@ -164,12 +169,14 @@ mod tests {
             mode: OAuth2Mode::Pkce,
             client_id: "cli".to_string(),
             client_secret: None,
+            client_secret_env: None,
+            client_secret_command: None,
             auth_url: "https://auth.example.com/oauth2/auth".to_string(),
             token_url: "https://auth.example.com/oauth2/token".to_string(),
             scope: None,
             redirect_uri: None,
         };
-        let settings = oauth2_settings(&config);
+        let settings = oauth2_settings(&config, None);
         assert_eq!(settings.mode, OAuth2Mode::Pkce);
         assert_eq!(settings.client_id, "cli");
         assert_eq!(settings.client_secret, None);
@@ -178,6 +185,32 @@ mod tests {
             settings.redirect_uri,
             format!("http://127.0.0.1:{}/oauth2/callback", LOOPBACK_PORT)
         );
+    }
+
+    /// 传进来的密钥必须真的落进 settings。
+    ///
+    /// 这条看着琐碎，但它盖的是一个**所有其它测试都发现不了**的错误：
+    /// `oauth2_settings` 第二参数接的是已解析的密钥，如果有人把它写成
+    /// `client_secret: None`（或从 `config.client_secret` 重新读明文，绕过
+    /// env / command 两个来源），上面那条测试照样绿——它测的正是 `None`。
+    /// 而运行时的表现是授权码模式换 token 被网关拒绝，看起来像端点配错了。
+    #[test]
+    fn settings_conversion_carries_the_resolved_secret() {
+        let mut config = crate::config::OAuth2AuthConfig {
+            mode: OAuth2Mode::AuthorizationCode,
+            client_id: "cli".to_string(),
+            client_secret_env: Some("CORP_OAUTH_SECRET".to_string()),
+            auth_url: "https://auth.example.com/oauth2/auth".to_string(),
+            token_url: "https://auth.example.com/oauth2/token".to_string(),
+            ..Default::default()
+        };
+        // 明文那份**没有**：密钥只来自环境变量，所以 settings 里出现值就说明
+        // 用的是传进来的那个，而不是配置里重新读的。
+        config.client_secret = None;
+        let settings = oauth2_settings(&config, Some("resolved-by-env".to_string()));
+        assert_eq!(settings.client_secret.as_deref(), Some("resolved-by-env"));
+        // 而配置里那两个来源的名字不该被带到运行期结构里：settings 只承载值。
+        assert_eq!(settings.mode, OAuth2Mode::AuthorizationCode);
     }
 
     #[test]

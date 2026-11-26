@@ -213,6 +213,20 @@ fn every_declared_key_is_referenced() {
     for (_, _, source) in all_sources() {
         referenced.extend(referenced_keys(&source));
     }
+    // **当数据传出去的 key**：`CallbackKeys { success: "provider.oauth2.callback_success" }`、
+    // 设置页的 `("gui.setup.editor.x_label", entity)` 数组——调用点 `tr()` 拿到的是
+    // 变量，上面那个按 `tr("…")` 形状扫的探测器看不见它们。这类引用一字不差、
+    // 是完整字面量，所以按「与声明 key 完全相等」再收一遍。
+    //
+    // 这不是放宽门禁：真正的孤儿仍然抓得到（没有字面量就没有引用），而**拼出来的**
+    // key 依旧看不见——那类照旧在调用处加白名单，见本测试的文档注释。
+    for (_, _, source) in all_sources() {
+        for literal in string_literals(&source) {
+            if keys.contains(&literal) {
+                referenced.insert(literal);
+            }
+        }
+    }
     // `cli.cmd.*` 是**动态寻址**的：`clap_i18n::localize` 按命令树路径拼 key，
     // 静态扫描看不见。它的两个方向由另一道门禁盯着
     // （`crates/qcode/src/cli_i18n_gate.rs`：遍历真实的 `Command` 树，既查「声明

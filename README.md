@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.19.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.20.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -321,8 +321,8 @@ GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于�
 写地址，别依赖那个配置：
 
 ```bash
-git push git@gitee.com:opentj/qcode.git main v0.19.0   # 1. gitee，失败即停
-git push gh main v0.19.0                               # 2. GitHub，触发 CI / 发布
+git push git@gitee.com:opentj/qcode.git main v0.20.0   # 1. gitee，失败即停
+git push gh main v0.20.0                               # 2. GitHub，触发 CI / 发布
 ```
 
 推完两端用 `git ls-remote` 确认指向同一个 commit：
@@ -809,7 +809,7 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.19.0 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
+v0.20.0 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
 一个常驻驱动 `qcd`（无窗口，只服务定时任务，与 `qc` 同目录发布；段头那颗幽灵图标
 绿色＝它在跑、灰色＝没在跑，点一下启停，ADR-0100）、
 定时任务的建法：跟 agent 说一句，或 `qc schedule create`（入口取舍见 ADR-0097）、
@@ -819,6 +819,9 @@ GUI 段头按钮、TUI `/daemon`，ADR-0092/0098）、Task/目录模型
 三端系统托盘与 Queue/Steer、Settings 热重建、附件内容寻址存储、内建终端、
 会话标题自动生成（用户重命名 > 模型 > 兜底）、可折叠侧栏、shell 环境采样、
 配置文件 schema 2、会话日志事件 schema 12 已落地。
+provider 有两种认证形状：`api_key`（env / `api_key_command` / 无 key）与可配置 OAuth2
+统一认证（授权码或 PKCE，端点与客户端标识写在 `providers.<route>.oauth2`，ADR-0107）；
+每个 provider 带一档数据去向标识（Safest / Safe / Unsafe），在编辑页与模型菜单可见。
 多根 sandbox 三端齐备：macOS `sandbox-exec`、Linux `bwrap` 与 Landlock、Windows ACL
 都按 Task 的 roots 逐目录建规则。逐版本明细见 [CHANGELOG.md](CHANGELOG.md)，
 分发产物（发布工作流、SHA256SUMS、brew/scoop/winget 清单）见「发布构建」。
