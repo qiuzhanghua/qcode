@@ -411,10 +411,13 @@ fn provider_models(config_path: &Path) -> Vec<(String, String, Vec<String>)> {
         if !qcode_kernel::provider_registry::configured_models(name, &config) {
             continue;
         }
+        // 太极内网是 keyless provider（OAuth 运行时登录）：未登录不挡列表，
+        // 与设置页「设为默认」的可用口径一致（选中并运行时才触发登录）。
         if matches!(
             state.get(name.as_str()),
             Some(qcode_kernel::provider_registry::CredentialState::Missing)
-        ) {
+        ) && !qcode_kernel::providers::tj::is_tj_route(name)
+        {
             continue;
         }
         let mut models: Vec<String> = provider

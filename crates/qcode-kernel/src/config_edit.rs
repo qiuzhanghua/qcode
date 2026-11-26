@@ -310,14 +310,19 @@ impl ConfigEdit {
             });
         }
 
+        let backup = parent.join(format!("{file_name}.bak"));
         if self.path.exists() {
-            let backup = parent.join(format!("{file_name}.bak"));
             std::fs::copy(&self.path, &backup).map_err(|source| ConfigError::Read {
-                path: backup,
+                path: backup.clone(),
                 source,
             })?;
             #[cfg(windows)]
             {
+                // Windows：`rename` 不保证覆盖已存在的目标，先删旧文件。删除
+                // 与改名之间若改名失败，config 会整个消失（只剩 .bak）——真实
+                // 事故：切模型时引擎写 `[default-model]`，rename 失败后主窗口
+                // 读到空配置、退化成 unconfigured。所以改名失败必须立刻用
+                // .bak 恢复，保证磁盘上始终有一份可读配置。
                 std::fs::remove_file(&self.path).map_err(|source| ConfigError::Read {
                     path: self.path.clone(),
                     source,
@@ -325,9 +330,19 @@ impl ConfigEdit {
             }
         }
 
-        std::fs::rename(&temp, &self.path).map_err(|source| ConfigError::Read {
-            path: self.path.clone(),
-            source,
+        std::fs::rename(&temp, &self.path).map_err(|source| {
+            // 改名失败：config 已被删掉（或没被替换），从 .bak 恢复，而不是
+            // 把「唯一的配置文件丢失」当作普通错误返回。
+            if self.path.exists() {
+                let _ = std::fs::remove_file(&self.path);
+            }
+            if backup.exists() {
+                let _ = std::fs::copy(&backup, &self.path);
+            }
+            ConfigError::Read {
+                path: self.path.clone(),
+                source,
+            }
         })?;
         Ok(())
     }

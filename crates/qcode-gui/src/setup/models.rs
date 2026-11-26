@@ -51,6 +51,12 @@ impl SetupView {
     /// 模型的 keyless provider（如 ollama）视为可用，真正不可用时由配置页
     /// 「获取可用模型」或任务运行期报错兜底。
     fn provider_usable(&self, row: &qcode_kernel::provider_registry::ConfigurableProvider) -> bool {
+        // 太极内网是 keyless provider（OAuth 登录、无 API key）：未登录只是
+        // 运行任务前的状态，登录随时可补，不因此挡住「设为默认」；其余
+        // provider 仍按凭证状态判定。
+        if qcode_kernel::providers::tj::is_tj_route(&row.route) {
+            return true;
+        }
         !matches!(
             row.credential_state,
             qcode_kernel::provider_registry::CredentialState::Missing
@@ -235,7 +241,16 @@ impl SetupView {
             if expanded {
                 let models =
                     qcode_kernel::provider_registry::effective_models(&route, &self.config);
-                let mut list = div().flex().flex_col().gap_1();
+                // 模型行列表：最多同时显示 4 行（约 26px/行 + gap_1 = 116px），
+                // 超过 4 行则纵向滚动；「配置模型」按钮保持在滚动区外。
+                let mut list = div()
+                    .id(format!("expanded-models-{route}"))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .when(models.len() > 4, |this| {
+                        this.max_h(px(116.0)).overflow_y_scroll()
+                    });
                 for model in &models {
                     let label = match &model.name {
                         Some(name) if name != &model.id => format!("{} — {name}", model.id),
@@ -294,8 +309,9 @@ impl SetupView {
                             .child(qcode_i18n::tr("gui.setup.card.no_models")),
                     );
                 }
+                card = card.child(list);
                 let route_manage = route.clone();
-                list = list.child(
+                card = card.child(
                     div().pt_1().child(
                         Button::new(format!("manage-models-{route}"))
                             .label(qcode_i18n::tr("gui.setup.card.configure_model"))
@@ -304,7 +320,6 @@ impl SetupView {
                             })),
                     ),
                 );
-                card = card.child(list);
             }
             cards = cards.child(card);
         }

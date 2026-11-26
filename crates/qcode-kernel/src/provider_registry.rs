@@ -107,6 +107,12 @@ impl ProviderRegistry {
             })?),
             // 太极统一认证：public client + PKCE，token 生命周期在 TjProvider
             // 内部闭环（ensure/refresh/401 重试）。
+            //
+            // 引擎侧不挂授权回调（prompt = None）：任务运行时未登录会直接报
+            // 「太极内网未登录」，由界面错误横幅上的「太极内网登录」按钮
+            // （`tj::refresh_or_login`，用全局回调）显式触发授权码流程，而不是
+            // 每次跑任务都自动弹浏览器登录页。已登录但 token 过期时的静默
+            // refresh 仍正常（那是「登录过、到期了」，不是「没登录」）。
             Protocol::OpenAi if resolved.auth_mode == AuthMode::TjOAuth => {
                 Box::new(TjProvider::new(TjProviderConfig {
                     name: resolved.name.clone(),
@@ -116,7 +122,7 @@ impl ProviderRegistry {
                         .expect("non-mock provider always has a base URL"),
                     settings: tj_settings(),
                     store_path: self.tj_store_path.clone().unwrap_or_else(default_tj_store),
-                    prompt: crate::providers::tj::global_auth_prompt(),
+                    prompt: None,
                     proxy_url: self.proxy_url.clone(),
                     stream_usage: resolved.stream_usage,
                     extra_body: resolved.extra_body.clone(),
