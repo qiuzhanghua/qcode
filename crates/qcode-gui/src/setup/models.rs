@@ -1356,10 +1356,23 @@ impl SetupView {
             .pt_2()
             .child(header);
         if overridden {
+            // 模型行列表：最多同时显示 4 行（32px/行 + gap_1 = 140px），超过
+            // 4 行则纵向滚动；「添加模型」按钮保持在滚动区外。
+            // `.id()` 让列表成为 stateful 元素，`overflow_y_scroll` 才可用
+            // （与弹框滚动区的写法一致）。
+            let row_id = row.id;
+            let mut list = div()
+                .id(format!("model-list-{row_id}"))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .when(row.models.len() > 4, |this| {
+                    this.max_h(px(140.0)).overflow_y_scroll()
+                });
             for model in &row.models {
                 let model_id = model.id;
                 let row_id = row.id;
-                editor = editor.child(
+                list = list.child(
                     div()
                         .flex()
                         .flex_row()
@@ -1399,6 +1412,7 @@ impl SetupView {
                         ),
                 );
             }
+            editor = editor.child(list);
             let row_id = row.id;
             editor = editor.child(
                 Button::new(format!("add-model-{row_id}"))
@@ -1509,10 +1523,19 @@ impl SetupView {
                 .child(protocol),
         );
         // Model drafts: only adopted on create.
-        let mut models = div().flex().flex_col().gap_1();
+        // 行列表最多显示 4 行（32px/行 + gap_1 = 140px），超过 4 行则纵向
+        // 滚动；「添加模型」按钮保持在滚动区外。
+        let mut model_rows = div()
+            .id("custom-model-list")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(self.custom_models.len() > 4, |this| {
+                this.max_h(px(140.0)).overflow_y_scroll()
+            });
         for model in &self.custom_models {
             let model_id = model.id;
-            models = models.child(
+            model_rows = model_rows.child(
                 div()
                     .flex()
                     .flex_row()
@@ -1547,6 +1570,7 @@ impl SetupView {
                     ),
             );
         }
+        let mut models = div().flex().flex_col().gap_1().child(model_rows);
         models = models.child(
             Button::new("custom-add-model")
                 .label(qcode_i18n::tr("ui.action.add_model"))
