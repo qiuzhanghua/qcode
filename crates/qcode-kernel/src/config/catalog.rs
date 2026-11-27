@@ -44,8 +44,8 @@ impl Protocol {
 }
 
 /// Provider 安全级别（按数据去向粗分三档）。每个 Provider 都必须有标识：
-/// 太极内网最安全，国内平台（火山、小米、DeepSeek 等）比较安全，国外平台
-/// （OpenAI、Anthropic 等）不安全。
+/// 太极内网与可配置 OAuth2 统一认证最安全，国内平台（火山、小米、DeepSeek
+/// 等）比较安全，国外平台（OpenAI、Anthropic 等）不安全。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityLevel {
     /// 最安全：太极内网，数据不出内网。
@@ -430,13 +430,14 @@ pub const CATALOG: &[CatalogEntry] = &[
     // 可配置 OAuth2 统一认证：端点/客户端标识在设置页编辑（`providers.<route>.
     // oauth2`），base_url 由用户填（catalog 留空 → resolve 缺 base_url 报错，
     // 不默认成任何网关）。token 由 OAuth2Provider 从 oauth2_auth.json 与授权
-    // 流程管理，没有 api_key_env。安全级别按国内平台（Safe）：模型选择按钮的
-    // 配色跟着它走，与国内 provider 一致。
+    // 流程管理，没有 api_key_env。与太极内网同级的统一认证网关（授权码/PKCE +
+    // Bearer token 闭环），安全级别与太极一致（最安全）——模型选择按钮的配色
+    // 跟着它走。
     CatalogEntry {
         route: crate::providers::oauth2::OAUTH2_ROUTE,
         display_name: "OAuth2",
         protocol: Protocol::OpenAi,
-        security: SecurityLevel::Safe,
+        security: SecurityLevel::Safest,
         base_url: "",
         api_key_env: "",
         default_model: None,
@@ -483,7 +484,8 @@ pub fn catalog_models(route: &str) -> Vec<super::ModelEntry> {
 
 /// 一个 route 的安全级别，**保证每个 Provider 都有标识**：
 /// - 套餐表（厂商级）优先：同一厂商的所有套餐共享一个级别（`PackageGroup.security`）；
-/// - 其次 catalog 条目（太极内网 = 最安全、国内平台 = 比较安全、国外 = 不安全）；
+/// - 其次 catalog 条目（太极内网与 OAuth2 统一认证 = 最安全、国内平台 = 比较安全、
+///   国外 = 不安全）；
 /// - 其余手写 route 默认「比较安全」——自定义网关多为境内自建/国内平台
 ///   （如火山方舟），与 `Protocol` 对未知 route 的默认同理。
 ///
@@ -502,15 +504,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_tj_is_safest() {
-        // 用户口径：只有太极内网是最安全的。钉死这条不变量，防止将来
-        // 把某个国内平台误标成 Safest。
+    fn only_trusted_gateways_are_safest() {
+        // 用户口径：只有统一认证网关（太极内网、可配置 OAuth2）是最安全的。
+        // 钉死这条不变量，防止将来把某个国内平台误标成 Safest。
         for entry in catalog_entries() {
+            let trusted = matches!(
+                entry.route,
+                crate::providers::tj::TJ_ROUTE | crate::providers::oauth2::OAUTH2_ROUTE
+            );
             assert_eq!(
                 entry.security == SecurityLevel::Safest,
-                entry.route == crate::providers::tj::TJ_ROUTE,
-                "只有太极内网（{}）是最安全的，{} 不是",
-                crate::providers::tj::TJ_ROUTE,
+                trusted,
+                "只有太极内网与 OAuth2 是最安全的（{} 不是）",
                 entry.route
             );
         }
@@ -518,11 +523,16 @@ mod tests {
 
     #[test]
     fn security_level_covers_every_route() {
-        // 太极内网 = 最安全；国内平台 = 比较安全；国外平台 = 不安全；
-        // 手写 route 落到「比较安全」默认；套餐 route 取厂商级。
+        // 太极内网与 OAuth2 统一认证 = 最安全；国内平台 = 比较安全；国外平台 =
+        // 不安全；手写 route 落到「比较安全」默认；套餐 route 取厂商级。
         assert_eq!(
             security_level(crate::providers::tj::TJ_ROUTE),
             SecurityLevel::Safest
+        );
+        assert_eq!(
+            security_level(crate::providers::oauth2::OAUTH2_ROUTE),
+            SecurityLevel::Safest,
+            "OAuth2 统一认证与太极同级（最安全）"
         );
         assert_eq!(security_level("deepseek"), SecurityLevel::Safe);
         assert_eq!(security_level("xiaomi"), SecurityLevel::Safe);

@@ -962,21 +962,6 @@ gui:
       oauth2_client_secret_label:
         en: Client secret (authorization-code mode only)
         zh-CN: Client Secret（仅授权码模式）
-      oauth2_client_secret_env_label:
-        en: Client secret from environment variable (name only)
-        zh-CN: 从环境变量取 Client Secret（只填变量名）
-      oauth2_client_secret_command_label:
-        en: Client secret from command (space-separated arguments)
-        zh-CN: 从命令取 Client Secret（参数用空格分隔）
-      oauth2_secret_priority:
-        en: "env > command > plain text; only the highest one that is filled in is used"
-        zh-CN: "优先级：环境变量 > 命令 > 明文；只使用填了的最高优先那一项"
-      oauth2_secret_conflict:
-        en: "more than one source is filled in — the plain-text secret will be ignored"
-        zh-CN: "填了不止一个来源——明文那一项会被忽略"
-      oauth2_secret_command_opaque:
-        en: "this command has arguments containing spaces; it can only be edited in config.toml"
-        zh-CN: "这条命令的参数里有空格，只能在 config.toml 里编辑"
       oauth2_auth_url_label:
         en: Authorization URL
         zh-CN: 授权地址（Authorization URL）

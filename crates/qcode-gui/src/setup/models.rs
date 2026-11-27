@@ -7,6 +7,7 @@ use super::*;
 use crate::{CAPTION_SIZE, CODE_SIZE, SECONDARY_SIZE, sp};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Disableable as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 
@@ -107,27 +108,6 @@ fn provider_type_label(
     } else {
         row.protocol.label()
     }
-}
-
-/// 把配置里的 argv 渲染成「一行空格分隔」的表单值。
-///
-/// 返回 `None` 表示**这个 argv 不能用表单表示**：任一参数含空白，拼成一行再
-/// 拆开就会变成另一个 argv。`["-s", "my service"]` 存下、显示成
-/// `-s my service`、再读回成 `["-s", "my", "service"]` —— 取密钥静默失败，
-/// 而错误现场在别人的认证服务器上，极难查。
-///
-/// 所以这类配置不进输入框，调用方改为只读提示 + 原样保留。
-pub(crate) fn argv_to_form(argv: &[String]) -> Option<String> {
-    if argv.iter().any(|arg| arg.contains(char::is_whitespace)) {
-        return None;
-    }
-    Some(argv.join(" "))
-}
-
-/// 表单值拆回 argv。空白（含全空）→ `None`，表示「不用这个来源」。
-pub(crate) fn form_to_argv(form: &str) -> Option<Vec<String>> {
-    let argv: Vec<String> = form.split_whitespace().map(str::to_string).collect();
-    (!argv.is_empty()).then_some(argv)
 }
 
 impl SetupView {
@@ -845,9 +825,24 @@ impl SetupView {
             .join("oauth2_auth.json")
     }
 
+    /// 从回调地址里取出端口（`http://127.0.0.1:43782/oauth2/callback` → 43782）。
+    ///
+    /// host 与路径固定，只有端口参与登录监听；解析失败（格式异常 / 无端口）
+    /// 返回 `None`，调用方落回默认端口 [`LOOPBACK_PORT`]。
+    fn redirect_uri_port(uri: &str) -> Option<u16> {
+        uri.split_once("://")?
+            .1
+            .split_once('/')?
+            .0
+            .rsplit_once(':')?
+            .1
+            .parse()
+            .ok()
+    }
+
     /// 初始化可配置 OAuth2 的草稿（打开编辑框时）：从 config 的
     /// `providers.<route>.oauth2` 读值建输入框；没有配置时用默认值
-    /// （authorization_code + 默认 loopback 回调）。与太极（硬编码）不同，
+    /// （PKCE + 默认 loopback 回调）。与太极（硬编码）不同，
     /// 这些端点/客户端标识是用户配置，必须在编辑框里可改。
     fn init_oauth2_draft(&mut self, route: &str, window: &mut Window, cx: &mut Context<Self>) {
         let oauth2 = self
@@ -858,7 +853,8 @@ impl SetupView {
         self.oauth2_mode = oauth2
             .as_ref()
             .map(|config| config.mode.as_str().to_string())
-            .unwrap_or_else(|| "authorization_code".to_string());
+            // 默认 PKCE（public，无需 Client Secret）。
+            .unwrap_or_else(|| "pkce".to_string());
         let label = |key: &'static str| qcode_i18n::tr(key).to_string();
         self.oauth2_client_id = Some(input(
             window,
@@ -882,35 +878,8 @@ impl SetupView {
                 state.set_value(value, window, cx);
             });
         }
-        // 密钥的两个非明文来源（ADR-0107 补记）。清空 = 不用这个来源。
-        self.oauth2_client_secret_env = Some(input(
-            window,
-            cx,
-            oauth2
-                .as_ref()
-                .and_then(|c| c.client_secret_env.clone())
-                .unwrap_or_default(),
-            &label("gui.setup.editor.oauth2_client_secret_env_label"),
-        ));
-        // 命令是一行空格分隔的 argv。**参数里含空格就无法无损往返**，所以那种
-        // 情况不渲染输入框，改为提示「只能在 config.toml 里编辑」，并把原值记在
-        // 状态里原样保留——把 `-s "my service"` 拆成两个参数会让取密钥静默失败。
-        let command = oauth2
-            .as_ref()
-            .and_then(|c| c.client_secret_command.clone())
-            .filter(|argv| !argv.is_empty());
-        let form = command.as_deref().and_then(argv_to_form);
-        let opaque = command.is_some() && form.is_none();
-        self.oauth2_secret_command_opaque = opaque;
-        self.oauth2_secret_command_argv = command.clone().unwrap_or_default();
-        self.oauth2_client_secret_command = (!opaque).then(|| {
-            input(
-                window,
-                cx,
-                form.unwrap_or_default(),
-                &label("gui.setup.editor.oauth2_client_secret_command_label"),
-            )
-        });
+        // 密钥来源：只在 GUI 编辑明文（ADR-0107 的 env/command 两个非明文来源
+        // 不进设置页，配置走 config.toml，见 ADR-0107）。
         self.oauth2_auth_url = Some(input(
             window,
             cx,
@@ -938,15 +907,24 @@ impl SetupView {
                 .unwrap_or_default(),
             &label("gui.setup.editor.oauth2_scope_label"),
         ));
-        self.oauth2_redirect_uri = Some(input(
-            window,
-            cx,
-            oauth2
-                .as_ref()
-                .and_then(|c| c.redirect_uri.clone())
-                .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri),
-            &label("gui.setup.editor.oauth2_redirect_uri_label"),
-        ));
+        // 回调地址：host 与路径固定（loopback 监听永远绑 127.0.0.1，见 kernel
+        // loopback 模块），只开放端口编辑——改 host 的配置本就不会生效。
+        // 输入即时校验：只接受能解析成 u16 的值，超端口上限（65535）或非数字
+        // 的输入会被直接拒绝。
+        let redirect_port = oauth2
+            .as_ref()
+            .and_then(|c| c.redirect_uri.as_deref())
+            .and_then(Self::redirect_uri_port)
+            .unwrap_or(qcode_kernel::providers::loopback::LOOPBACK_PORT);
+        let port_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(label("gui.setup.editor.oauth2_redirect_uri_label"))
+                .validate(|text, _| text.parse::<u16>().is_ok())
+        });
+        port_input.update(cx, |state, cx| {
+            state.set_value(redirect_port.to_string(), window, cx);
+        });
+        self.oauth2_redirect_port = Some(port_input);
     }
 
     /// 从草稿实体读值构造 `OAuth2AuthSettings`（登录用）。
@@ -996,11 +974,14 @@ impl SetupView {
             .as_ref()
             .map(|entity| entity.read(cx).value().trim().to_string())
             .filter(|scope| !scope.is_empty());
+        // 回调地址只暴露端口（host 与路径固定），拼回完整 URL；端口非法/留空
+        // 落回默认 loopback 地址。
         let redirect_uri = self
-            .oauth2_redirect_uri
+            .oauth2_redirect_port
             .as_ref()
             .map(|entity| entity.read(cx).value().trim().to_string())
-            .filter(|uri| !uri.is_empty())
+            .and_then(|port| port.parse::<u16>().ok())
+            .map(|port| format!("http://127.0.0.1:{port}/oauth2/callback"))
             .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri);
         Ok(qcode_providers::OAuth2AuthSettings {
             mode,
@@ -1036,37 +1017,105 @@ impl SetupView {
             },
             client_id: read(self.oauth2_client_id.as_ref()),
             client_secret: non_empty(read(self.oauth2_client_secret.as_ref())),
-            client_secret_env: non_empty(read(self.oauth2_client_secret_env.as_ref())),
-            // 参数含空格的那份 argv 表单表示不了，原样写回（否则一次保存就把它
-            // 拆成两个参数）。
-            client_secret_command: if self.oauth2_secret_command_opaque {
-                Some(self.oauth2_secret_command_argv.clone())
-            } else {
-                form_to_argv(&read(self.oauth2_client_secret_command.as_ref()))
-            },
+            // 密钥的 env/command 两个非明文来源不进设置页（ADR-0107）：GUI 保存
+            // 只写明文这一份；要用前两者得手改 config.toml。
             auth_url: read(self.oauth2_auth_url.as_ref()),
             token_url: read(self.oauth2_token_url.as_ref()),
             scope: non_empty(read(self.oauth2_scope.as_ref())),
-            redirect_uri: non_empty(read(self.oauth2_redirect_uri.as_ref())),
+            // 回调地址：host 与路径固定，只存用户编辑的端口（拼回完整 URL）；
+            // 端口非法/留空 → None，运行时落回默认 loopback 地址。
+            redirect_uri: self
+                .oauth2_redirect_port
+                .as_ref()
+                .map(|entity| entity.read(cx).value().trim().to_string())
+                .and_then(|port| port.parse::<u16>().ok())
+                .map(|port| format!("http://127.0.0.1:{port}/oauth2/callback")),
+            // env/command 两个非明文来源不在表单里，保存时置空（见上方注释）。
+            ..Default::default()
         }
     }
 
     /// 可配置 OAuth2 统一认证的配置区 + 登录状态区（设置页编辑弹框内）。
     ///
-    /// 模式（授权码 / PKCE）决定展示的字段与登录流程：授权码（confidential）
-    /// 额外展示 Client Secret（换 token 带 client_secret）；PKCE（public）不
-    /// 展示 Client Secret（授权 URL 带 S256 code_challenge）。端点/客户端标识
-    /// 是用户配置（写入 `providers.<route>.oauth2`），与太极的硬编码不同。
+    /// 布局：端点（授权/令牌地址、scope、回调）在前——两种模式都要填；登录模式
+    /// 按钮居中；客户端标识按模式增减：授权码（confidential）展示 Client ID +
+    /// Client Secret（换 token 带 client_secret），PKCE（public，默认）只展示
+    /// Client ID（授权 URL 带 S256 code_challenge）。端点/客户端标识是用户配置
+    /// （写入 `providers.<route>.oauth2`），与太极的硬编码不同。
     fn render_oauth2_config(&self, route: &str, cx: &mut Context<Self>) -> AnyElement {
+        let label = |key: &'static str| qcode_i18n::tr(key).to_string();
         let mut section = div().flex().flex_col().gap_2();
-        // 模式选择：授权码 / PKCE 双按钮。
+        let field_row = |key: &'static str, entity: &Entity<InputState>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(sp(CAPTION_SIZE)).child(label(key)))
+                .child(Input::new(entity).aria_label(label(key)))
+        };
+        // 端点（共用，两种模式都要填）在最前。
+        for (key, entity) in [
+            (
+                "gui.setup.editor.oauth2_auth_url_label",
+                &self.oauth2_auth_url,
+            ),
+            (
+                "gui.setup.editor.oauth2_token_url_label",
+                &self.oauth2_token_url,
+            ),
+            ("gui.setup.editor.oauth2_scope_label", &self.oauth2_scope),
+        ] {
+            if let Some(entity) = entity {
+                section = section.child(field_row(key, entity));
+            }
+        }
+        // 回调地址：host 与路径固定（loopback 监听永远绑 127.0.0.1），只开放端口。
+        if let Some(entity) = &self.oauth2_redirect_port {
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(sp(CAPTION_SIZE))
+                            .child(qcode_i18n::tr("gui.setup.editor.oauth2_redirect_uri_label")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(sp(SECONDARY_SIZE))
+                                    .child("http://127.0.0.1:"),
+                            )
+                            .child(
+                                Input::new(entity)
+                                    .w(px(64.0))
+                                    .with_size(gpui_kit::component::Size::Small)
+                                    .aria_label(qcode_i18n::tr(
+                                        "gui.setup.editor.oauth2_redirect_uri_label",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(sp(SECONDARY_SIZE))
+                                    .child("/oauth2/callback"),
+                            ),
+                    ),
+            );
+        }
+        // 登录模式：PKCE（默认）/ 授权码 双按钮。
         let mut mode_row = div().flex().flex_row().gap_1();
         for (value, label_key) in [
+            ("pkce", "gui.setup.editor.oauth2_mode_pkce"),
             (
                 "authorization_code",
                 "gui.setup.editor.oauth2_mode_auth_code",
             ),
-            ("pkce", "gui.setup.editor.oauth2_mode_pkce"),
         ] {
             let marker = if self.oauth2_mode == value {
                 "●"
@@ -1096,113 +1145,21 @@ impl SetupView {
                 )
                 .child(mode_row),
         );
-        // 客户端标识与端点（字段随模式增减：Client Secret 仅授权码显示）。
-        let mut fields: Vec<(&'static str, &Entity<InputState>)> = Vec::new();
+        // 客户端标识：Client ID 始终显示；Client Secret 仅授权码模式显示。
         if let Some(entity) = &self.oauth2_client_id {
-            fields.push(("gui.setup.editor.oauth2_client_id_label", entity));
+            section = section.child(field_row("gui.setup.editor.oauth2_client_id_label", entity));
         }
         if self.oauth2_mode == "authorization_code"
             && let Some(entity) = &self.oauth2_client_secret
         {
-            fields.push(("gui.setup.editor.oauth2_client_secret_label", entity));
-        }
-        // 非明文的两个来源（ADR-0107 补记）：只在授权码模式有意义，PKCE 不需要
-        // 密钥，展示它们只会让人以为要填。
-        if self.oauth2_mode == "authorization_code" {
-            if let Some(entity) = &self.oauth2_client_secret_env {
-                fields.push(("gui.setup.editor.oauth2_client_secret_env_label", entity));
-            }
-            if let Some(entity) = &self.oauth2_client_secret_command {
-                fields.push((
-                    "gui.setup.editor.oauth2_client_secret_command_label",
-                    entity,
-                ));
-            }
-        }
-        if let Some(entity) = &self.oauth2_auth_url {
-            fields.push(("gui.setup.editor.oauth2_auth_url_label", entity));
-        }
-        if let Some(entity) = &self.oauth2_token_url {
-            fields.push(("gui.setup.editor.oauth2_token_url_label", entity));
-        }
-        if let Some(entity) = &self.oauth2_scope {
-            fields.push(("gui.setup.editor.oauth2_scope_label", entity));
-        }
-        if let Some(entity) = &self.oauth2_redirect_uri {
-            fields.push(("gui.setup.editor.oauth2_redirect_uri_label", entity));
-        }
-        for (label_key, entity) in fields {
-            section = section.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(sp(CAPTION_SIZE))
-                            .child(qcode_i18n::tr(label_key)),
-                    )
-                    .child(Input::new(entity).aria_label(qcode_i18n::tr(label_key))),
-            );
-        }
-        // 密钥来源的说明：优先级 + 冲突警告 + 「含空格的命令不可在此编辑」。
-        if self.oauth2_mode == "authorization_code" {
-            let theme = cx.theme();
-            let count = self.oauth2_secret_source_count(cx);
-            let (text, color) = if count > 1 {
-                (
-                    qcode_i18n::tr("gui.setup.editor.oauth2_secret_conflict").to_string(),
-                    theme.warning,
-                )
-            } else {
-                (
-                    qcode_i18n::tr("gui.setup.editor.oauth2_secret_priority").to_string(),
-                    theme.muted_foreground,
-                )
-            };
-            section = section.child(
-                div()
-                    .text_size(sp(CAPTION_SIZE))
-                    .text_color(color)
-                    .child(text),
-            );
-            if self.oauth2_secret_command_opaque {
-                section = section.child(
-                    div()
-                        .text_size(sp(CAPTION_SIZE))
-                        .text_color(theme.muted_foreground)
-                        .child(
-                            qcode_i18n::tr("gui.setup.editor.oauth2_secret_command_opaque")
-                                .to_string(),
-                        ),
-                );
-            }
+            section = section.child(field_row(
+                "gui.setup.editor.oauth2_client_secret_label",
+                entity,
+            ));
         }
         // 登录状态区。
         section = section.child(self.render_oauth2_login(route, cx));
         section.into_any_element()
-    }
-
-    /// 三个密钥来源填了几个：用来在表单里说清「哪一项会被用」。
-    ///
-    /// 不做「填了一个就禁用另外两个」：那会在切换时丢掉已填的值，而丢掉一个
-    /// 密钥是不可撤销的。改为把优先级写出来，并在一项以上被填时明确警告「明文
-    /// 那份会被忽略」——用户看到的是真相，不是一个自动清空的输入框。
-    fn oauth2_secret_source_count(&self, cx: &Context<Self>) -> usize {
-        let filled = |entity: Option<&Entity<InputState>>| {
-            entity.is_some_and(|entity| !entity.read(cx).value().trim().is_empty())
-        };
-        let mut count = 0;
-        if filled(self.oauth2_client_secret_env.as_ref()) {
-            count += 1;
-        }
-        if self.oauth2_secret_command_opaque || filled(self.oauth2_client_secret_command.as_ref()) {
-            count += 1;
-        }
-        if filled(self.oauth2_client_secret.as_ref()) {
-            count += 1;
-        }
-        count
     }
 
     /// 可配置 OAuth2 统一认证的登录状态区：读 `oauth2_auth.json` 显示
@@ -2901,7 +2858,7 @@ mod label_tests {
     // re-exports GPUI's own `test` proc-macro attribute; `use super::*` would
     // pull it in, and every `#[test]` below would then expand to the GPUI macro
     // instead of the built-in attribute, recursing until the limit trips.
-    use super::{argv_to_form, candidate_label, form_to_argv};
+    use super::candidate_label;
     use qcode_providers::discovery::ModelCandidate;
 
     fn candidate(id: &str, name: Option<&str>) -> ModelCandidate {
@@ -2910,44 +2867,6 @@ mod label_tests {
             name: name.map(str::to_string),
             ..ModelCandidate::default()
         }
-    }
-
-    /// 往返必须无损，或者明确拒绝。
-    ///
-    /// 这组断言钉的是「宁可拒绝也不猜」：参数含空格时 `argv_to_form` 返回
-    /// `None`，调用方于是不进输入框、原样保留。若哪天它改成「拼起来算了」，
-    /// `["-s", "my service"]` 会在下一次保存时变成 `["-s", "my", "service"]`，
-    /// 而取密钥失败发生在认证服务器那边，几乎无法归因到「我保存了一次设置」。
-    #[test]
-    fn an_argv_with_whitespace_inside_an_argument_is_refused() {
-        let plain = ["security", "find-generic-password", "-w"];
-        let form = argv_to_form(&plain.map(str::to_string)).expect("representable");
-        assert_eq!(form, "security find-generic-password -w");
-        // 往返回到同一个 argv。
-        assert_eq!(
-            form_to_argv(&form),
-            Some(plain.map(str::to_string).to_vec())
-        );
-
-        // 参数里有空格：拒绝，而不是悄悄改形状。
-        let spaced = ["secret-tool", "lookup", "-s", "my service"];
-        assert_eq!(argv_to_form(&spaced.map(str::to_string)), None);
-        // 而如果硬拼，往返就不一致 —— 说明拒绝是对的。
-        assert_ne!(
-            form_to_argv(&spaced.join(" ")),
-            Some(spaced.map(str::to_string).to_vec())
-        );
-    }
-
-    /// 空表单等于「不用这个来源」，不是「一个空参数的命令」。
-    ///
-    /// 后者会让 kernel 去 spawn 一个空程序名，或者在 `key_from_command` 里报
-    /// 「the command is empty」——一条用户没配过的错误。
-    #[test]
-    fn an_empty_form_means_no_command_at_all() {
-        assert_eq!(form_to_argv(""), None);
-        assert_eq!(form_to_argv("   \n\t "), None);
-        assert_eq!(form_to_argv("true"), Some(vec!["true".to_string()]));
     }
 
     /// The row shows the **vendor's display name**, and the id only when the

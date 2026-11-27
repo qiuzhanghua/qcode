@@ -155,20 +155,13 @@ pub struct SetupView {
     oauth2_mode: String,
     oauth2_client_id: Option<Entity<InputState>>,
     oauth2_client_secret: Option<Entity<InputState>>,
-    /// 客户端密钥的来源（env > command > 明文，ADR-0107 补记）。三者都在表单
-    /// 里可编辑，靠优先级选一个生效。
-    oauth2_client_secret_env: Option<Entity<InputState>>,
-    oauth2_client_secret_command: Option<Entity<InputState>>,
-    /// 配置里那份 `client_secret_command` 的参数含空格时记为 true：这样的
-    /// argv 无法用「空格分隔的一行」无损表示，所以表单不渲染它（见
-    /// `render_oauth2_config` 的提示），保存时也原样保留。
-    oauth2_secret_command_opaque: bool,
-    /// 原样保留的 argv（仅 `oauth2_secret_command_opaque` 为真时有值）。
-    oauth2_secret_command_argv: Vec<String>,
     oauth2_auth_url: Option<Entity<InputState>>,
     oauth2_token_url: Option<Entity<InputState>>,
     oauth2_scope: Option<Entity<InputState>>,
-    oauth2_redirect_uri: Option<Entity<InputState>>,
+    /// 回调地址的**端口**（host 与路径固定为 `127.0.0.1:/oauth2/callback`）：
+    /// loopback 监听永远绑 127.0.0.1（kernel loopback 模块），改 host 必失败，
+    /// 所以只开放端口编辑；保存时拼回 `http://127.0.0.1:{port}/oauth2/callback`。
+    oauth2_redirect_port: Option<Entity<InputState>>,
     /// OAuth2 登录（设置页「登录」按钮）的结果通道。
     oauth2_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Provider routes whose model list is expanded on the Models page (pure UI
@@ -448,17 +441,13 @@ impl SetupView {
             declaring: false,
             adding_provider: false,
             tj_login_rx: None,
-            oauth2_mode: "authorization_code".to_string(),
+            oauth2_mode: "pkce".to_string(),
             oauth2_client_id: None,
             oauth2_client_secret: None,
-            oauth2_client_secret_env: None,
-            oauth2_client_secret_command: None,
-            oauth2_secret_command_opaque: false,
-            oauth2_secret_command_argv: Vec::new(),
             oauth2_auth_url: None,
             oauth2_token_url: None,
             oauth2_scope: None,
-            oauth2_redirect_uri: None,
+            oauth2_redirect_port: None,
             oauth2_login_rx: None,
             expanded_routes: BTreeSet::new(),
             adding_model_provider: None,
