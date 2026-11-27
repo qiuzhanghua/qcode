@@ -960,8 +960,8 @@ gui:
         en: Client ID
         zh-CN: Client ID
       oauth2_client_secret_label:
-        en: Client secret (authorization-code mode only)
-        zh-CN: Client Secret（仅授权码模式）
+        en: Client secret
+        zh-CN: Client Secret
       oauth2_auth_url_label:
         en: Authorization URL
         zh-CN: 授权地址（Authorization URL）
@@ -972,8 +972,8 @@ gui:
         en: Scope (optional)
         zh-CN: Scope（可选）
       oauth2_redirect_uri_label:
-        en: Redirect URI (optional)
-        zh-CN: Redirect URI（可选）
+        en: Redirect URI
+        zh-CN: Redirect URI
       oauth2_login:
         en: Sign in with OAuth2
         zh-CN: OAuth2 登录

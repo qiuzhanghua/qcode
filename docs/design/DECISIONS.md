@@ -13361,11 +13361,14 @@ rename 原子写、类 Unix `0600`。与太极的 `tj_auth.json` **分文件**�
 CI、容器、`ssh` 里都能跑。Rust 侧没有「钥匙串不可用就体面降级」的干净写法，`doctor`
 里那张 `secret-tool` / `Keychain` / `CredWriteW` 的对照表就是这个现实的记录。
 
-### 7. 安全级别内生化：`Safe`
+### 7. 安全级别内生化：`Safest`
 
-catalog 条目（`catalog.rs` 的 `OAUTH2_ROUTE`）标 `SecurityLevel::Safe`，与国内平台一致；
-模型菜单按钮的配色跟着它走。**`base_url` 留空**，不默认成任何网关——`resolve` 时缺
-`base_url` 直接报错，宁可让用户填一次，也不要把他发到我们不认识的服务器上。
+catalog 条目（`catalog.rs` 的 `OAUTH2_ROUTE`）标 `SecurityLevel::Safest`，与太极内网
+同级——可配置 OAuth2 是统一认证网关（授权码/PKCE + Bearer token 闭环），不是普通
+国内平台，取最安全；模型菜单按钮的配色跟着它走。**`base_url` 留空**，不默认成任何
+网关——`resolve` 时缺 `base_url` 直接报错，宁可让用户填一次，也不要把他发到我们
+不认识的服务器上。（初稿写的是 `Safe`、与国内平台一致；实现时按「统一认证网关与
+太极内网同级」取 `Safest`，本条以此为准。）
 
 **被否决的替代方案**
 
@@ -13433,10 +13436,12 @@ catalog 条目（`catalog.rs` 的 `OAUTH2_ROUTE`）标 `SecurityLevel::Safe`，�
    = ""` 等于关掉这个来源（与 `api_key_env = ""` 同义）。
 3. **`client_secret` 一并进 `redact`**。这修掉了上面遗留 1：`assemble()` 里改成
    `api_key` 与 `oauth2_client_secret` 一起 `install`。
-4. **设置页三个框都在、不做互斥禁用**。填一个就禁用另外两个会在切换时丢掉已填的值，
-   而丢掉一个密钥不可撤销。改为把优先级写出来，并在「填了不止一个」时明确警告「明文
-   那份会被忽略」——`client_secret_command` 的参数若含空格，表单表示不了，就不渲染那个
-   框、原样保留 argv（把 `-s "my service"` 拆成两个参数会让取密钥静默失败）。
+4. **设置页只放一个明文框，不做三来源编辑**。OAuth2 编辑框只提供 masked 的
+   `client_secret` 明文输入；`client_secret_env` / `client_secret_command` 两个来源
+   **不进设置页**，要配只能手改 config.toml。这条取代早先「三个框都在」的想法：
+   三个并列的 secret 框等于让用户自己执行优先级，多填/填错的代价是「明文那份会被
+   静默忽略」；而且来源字段本身不是秘密，不该用 secret 框表达——与 providers 表格
+   api_key 的既有模式一致（明文在编辑框 masked，env/command 是普通文本）。
 
 `qc doctor` 在来源是明文时给一条 warn；`qc config show` 只报来源（env 报变量名，
 command/明文只报类别），从不报值。

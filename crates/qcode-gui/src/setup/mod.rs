@@ -159,9 +159,10 @@ pub struct SetupView {
     oauth2_token_url: Option<Entity<InputState>>,
     oauth2_scope: Option<Entity<InputState>>,
     /// 回调地址的**端口**（host 与路径固定为 `127.0.0.1:/oauth2/callback`）：
-    /// loopback 监听永远绑 127.0.0.1（kernel loopback 模块），改 host 必失败，
-    /// 所以只开放端口编辑；保存时拼回 `http://127.0.0.1:{port}/oauth2/callback`。
-    oauth2_redirect_port: Option<Entity<InputState>>,
+    /// loopback 监听永远绑 127.0.0.1（kernel loopback 模块），端口也是固定的
+    /// （默认 [`LOOPBACK_PORT`]），**不可编辑**，只做展示；保存时拼回
+    /// `http://127.0.0.1:{port}/oauth2/callback`。
+    oauth2_redirect_port: String,
     /// OAuth2 登录（设置页「登录」按钮）的结果通道。
     oauth2_login_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Provider routes whose model list is expanded on the Models page (pure UI
@@ -447,7 +448,7 @@ impl SetupView {
             oauth2_auth_url: None,
             oauth2_token_url: None,
             oauth2_scope: None,
-            oauth2_redirect_port: None,
+            oauth2_redirect_port: String::new(),
             oauth2_login_rx: None,
             expanded_routes: BTreeSet::new(),
             adding_model_provider: None,

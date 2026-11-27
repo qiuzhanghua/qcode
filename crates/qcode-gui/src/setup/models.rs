@@ -7,7 +7,6 @@ use super::*;
 use crate::{CAPTION_SIZE, CODE_SIZE, SECONDARY_SIZE, sp};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Disableable as _;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::Textarea;
 
@@ -908,23 +907,14 @@ impl SetupView {
             &label("gui.setup.editor.oauth2_scope_label"),
         ));
         // 回调地址：host 与路径固定（loopback 监听永远绑 127.0.0.1，见 kernel
-        // loopback 模块），只开放端口编辑——改 host 的配置本就不会生效。
-        // 输入即时校验：只接受能解析成 u16 的值，超端口上限（65535）或非数字
-        // 的输入会被直接拒绝。
-        let redirect_port = oauth2
+        // loopback 模块），端口**不可编辑**，只展示（配置里有自定义端口就读它，
+        // 否则落默认 loopback 端口）。
+        self.oauth2_redirect_port = oauth2
             .as_ref()
             .and_then(|c| c.redirect_uri.as_deref())
             .and_then(Self::redirect_uri_port)
-            .unwrap_or(qcode_kernel::providers::loopback::LOOPBACK_PORT);
-        let port_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(label("gui.setup.editor.oauth2_redirect_uri_label"))
-                .validate(|text, _| text.parse::<u16>().is_ok())
-        });
-        port_input.update(cx, |state, cx| {
-            state.set_value(redirect_port.to_string(), window, cx);
-        });
-        self.oauth2_redirect_port = Some(port_input);
+            .unwrap_or(qcode_kernel::providers::loopback::LOOPBACK_PORT)
+            .to_string();
     }
 
     /// 从草稿实体读值构造 `OAuth2AuthSettings`（登录用）。
@@ -978,9 +968,8 @@ impl SetupView {
         // 落回默认 loopback 地址。
         let redirect_uri = self
             .oauth2_redirect_port
-            .as_ref()
-            .map(|entity| entity.read(cx).value().trim().to_string())
-            .and_then(|port| port.parse::<u16>().ok())
+            .parse::<u16>()
+            .ok()
             .map(|port| format!("http://127.0.0.1:{port}/oauth2/callback"))
             .unwrap_or_else(qcode_kernel::providers::oauth2::default_redirect_uri);
         Ok(qcode_providers::OAuth2AuthSettings {
@@ -1022,13 +1011,12 @@ impl SetupView {
             auth_url: read(self.oauth2_auth_url.as_ref()),
             token_url: read(self.oauth2_token_url.as_ref()),
             scope: non_empty(read(self.oauth2_scope.as_ref())),
-            // 回调地址：host 与路径固定，只存用户编辑的端口（拼回完整 URL）；
-            // 端口非法/留空 → None，运行时落回默认 loopback 地址。
+            // 回调地址：host 与路径固定，只存端口（拼回完整 URL）；端口非法/
+            // 留空 → None，运行时落回默认 loopback 地址。
             redirect_uri: self
                 .oauth2_redirect_port
-                .as_ref()
-                .map(|entity| entity.read(cx).value().trim().to_string())
-                .and_then(|port| port.parse::<u16>().ok())
+                .parse::<u16>()
+                .ok()
                 .map(|port| format!("http://127.0.0.1:{port}/oauth2/callback")),
             // env/command 两个非明文来源不在表单里，保存时置空（见上方注释）。
             ..Default::default()
@@ -1069,8 +1057,9 @@ impl SetupView {
                 section = section.child(field_row(key, entity));
             }
         }
-        // 回调地址：host 与路径固定（loopback 监听永远绑 127.0.0.1），只开放端口。
-        if let Some(entity) = &self.oauth2_redirect_port {
+        // 回调地址：host、路径与端口全部固定（loopback 监听永远绑 127.0.0.1，
+        // 端口不可编辑），整行以纯文本展示完整地址。
+        if !self.oauth2_redirect_port.is_empty() {
             section = section.child(
                 div()
                     .flex()
@@ -1083,28 +1072,12 @@ impl SetupView {
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(sp(SECONDARY_SIZE))
-                                    .child("http://127.0.0.1:"),
-                            )
-                            .child(
-                                Input::new(entity)
-                                    .w(px(64.0))
-                                    .with_size(gpui_kit::component::Size::Small)
-                                    .aria_label(qcode_i18n::tr(
-                                        "gui.setup.editor.oauth2_redirect_uri_label",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_size(sp(SECONDARY_SIZE))
-                                    .child("/oauth2/callback"),
-                            ),
+                            .text_size(sp(CAPTION_SIZE))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "http://127.0.0.1:{}/oauth2/callback",
+                                self.oauth2_redirect_port
+                            )),
                     ),
             );
         }
