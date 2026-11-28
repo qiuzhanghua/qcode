@@ -232,6 +232,15 @@ pub trait Backend {
         None
     }
     fn try_recv(&mut self) -> Option<SessionEvent>;
+    /// The live skill index, when a kernel is assembled (ADR-0110 §2).
+    ///
+    /// The settings window lists skills from here rather than discovering them
+    /// itself: skills served over MCP only exist after a connection, and a
+    /// settings window must not open one just to draw a list. `None` means
+    /// "no kernel": the caller falls back to a local discovery pass.
+    fn skill_index(&self) -> Option<std::sync::Arc<qcode_tools::skills::SkillIndex>> {
+        None
+    }
     /// Build a fresh backend from the current configuration. The shell calls
     /// this when the config file changes, so saving Settings takes effect
     /// without restarting the process or flashing a new window.
@@ -400,6 +409,10 @@ pub struct LocalBackend {
     commands: UnboundedSender<UiCommand>,
     events: UnboundedReceiver<SessionEvent>,
     rebuild: Option<RebuildFn>,
+    /// Kept so the settings window can list what this session actually has
+    /// (ADR-0110 §2) — including skills served over MCP, which only exist
+    /// after this backend's handshake.
+    skill_index: std::sync::Arc<qcode_tools::skills::SkillIndex>,
 }
 
 impl LocalBackend {
@@ -410,6 +423,7 @@ impl LocalBackend {
         let sandbox = engine.sandbox.clone();
         let store = engine.store.clone();
         let schedule_errors = engine.schedule_errors.clone();
+        let skill_index = engine.skill_index.clone();
         let (ui, port) = channels();
         let commands = port.take_commands().expect("command receiver");
         runtime::spawn(engine, port, commands);
@@ -423,6 +437,7 @@ impl LocalBackend {
             commands: ui.commands,
             events: ui.events,
             rebuild: None,
+            skill_index,
         }
     }
 
@@ -649,5 +664,9 @@ impl Backend for LocalBackend {
 
     fn try_recv(&mut self) -> Option<SessionEvent> {
         self.events.try_recv().ok()
+    }
+
+    fn skill_index(&self) -> Option<std::sync::Arc<qcode_tools::skills::SkillIndex>> {
+        Some(self.skill_index.clone())
     }
 }

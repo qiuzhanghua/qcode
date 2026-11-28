@@ -866,6 +866,13 @@ impl SetupView {
     /// Read the form's current value for `path`, the same way `build_config`
     /// would (bools → `self.bools`, selects → `self.selects`, else the input).
     fn field_value(&self, path: &[&str], cx: &Context<Self>) -> Option<String> {
+        // `skills.disabled` has no widget: the 技能 list's switches own it and
+        // write `self.config` directly (ADR-0110 §5). Without this branch
+        // `build_scalar` returns `None`, treats the widget as gone and silently
+        // skips the write.
+        if path == ["skills", "disabled"] {
+            return Some(self.config.skills.disabled.join("\n"));
+        }
         let key = path.join(".");
         if let Some(value) = self.bools.get(&key) {
             return Some(value.to_string());
@@ -893,6 +900,9 @@ const OPTIONAL_PATHS: &[&[&str]] = &[
     &["search", "base_url"],
     &["search", "api_key_command"],
     &["update", "base_url"],
+    // Every skill switched back on: remove the key rather than write
+    // `disabled = []`, so the file does not accumulate empty tables.
+    &["skills", "disabled"],
 ];
 
 /// Read one provider row's model catalog from the form. Rows without an id

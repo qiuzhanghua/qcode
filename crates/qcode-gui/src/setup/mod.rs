@@ -24,18 +24,23 @@ use qcode_kernel::config::SandboxNetworkMode;
 use qcode_tools::web_search::SearchBackend;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use qcode_tools::skills::{SkillIndex, SkillSummary};
 
 mod credentials;
 mod fields;
 mod models;
 mod render;
 mod save;
+mod skills;
 mod tables;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use fields::*;
+pub(crate) use skills::OpenSkill;
 
 /// One editable cell in a table row.
 pub(crate) struct RowState {
@@ -230,6 +235,22 @@ pub struct SetupView {
     /// entities, not on this view) can trigger auto saves. Wizard mode never
     /// subscribes.
     _input_subscriptions: Vec<gpui_kit::Subscription>,
+    /// The 技能 list's data (ADR-0110 §2): the live session index in the GUI,
+    /// a locally discovered one everywhere else.
+    skills: Arc<SkillIndex>,
+    /// Where project skill roots resolve. Only for display and for the local
+    /// discovery fallback; a live index already did its own.
+    skills_workspace: PathBuf,
+    /// Whether [`Self::skills`] is the running session's index. When false the
+    /// switches can only write the file — there is no kernel to tell.
+    skills_live: bool,
+    /// Rows for the list, rebuilt when the index revision moves.
+    skill_rows: Vec<SkillSummary>,
+    skill_rows_revision: u64,
+    /// `[skills] disabled` entries that match nothing discovered.
+    stale_skill_keys: Vec<String>,
+    /// The content dialog (ADR-0110 §7).
+    open_skill: Option<OpenSkill>,
 }
 
 /// Install the one close path every settings/setup window shares.
@@ -359,7 +380,7 @@ pub fn run_setup(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);
             window.activate_window();
-            let view = cx.new(|cx| SetupView::new(path, data_dir, true, window, cx));
+            let view = cx.new(|cx| SetupView::new(path, data_dir, true, None, window, cx));
             wire_close_handler(window, &view, cx);
             view
         })
@@ -385,7 +406,7 @@ pub fn run_settings(path: PathBuf, data_dir: PathBuf) {
         gpui_kit::open_window(options, cx, |window, cx| {
             window_icon::identify(window);
             window.activate_window();
-            let view = cx.new(|cx| SetupView::new(path, data_dir, false, window, cx));
+            let view = cx.new(|cx| SetupView::new(path, data_dir, false, None, window, cx));
             wire_close_handler(window, &view, cx);
             view
         })
@@ -398,6 +419,9 @@ impl SetupView {
         path: PathBuf,
         data_dir: PathBuf,
         wizard: bool,
+        // `(live index, workspace)`: `None` means "no kernel yet", and the view
+        // discovers skills itself (ADR-0110 §2).
+        skills: Option<(Arc<SkillIndex>, PathBuf)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -410,6 +434,15 @@ impl SetupView {
         let config = loaded.unwrap_or_else(|_| Config::default());
         let prefs = GuiPreferences::load(&data_dir);
         let edit = ConfigEdit::open(&path).unwrap_or_else(|_| ConfigEdit::empty(&path));
+        let (live_index, workspace) = match skills {
+            Some((index, workspace)) => (Some(index), workspace),
+            None => (
+                None,
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            ),
+        };
+        let (skill_index, skills_live) =
+            SetupView::build_skill_index(&config, workspace.clone(), live_index);
         let mut view = Self {
             path,
             data_dir,
@@ -473,6 +506,13 @@ impl SetupView {
             auto_save_generation: 0,
             auto_save_writing: false,
             _input_subscriptions: Vec::new(),
+            skills: skill_index,
+            skills_workspace: workspace,
+            skills_live,
+            skill_rows: Vec::new(),
+            skill_rows_revision: u64::MAX,
+            stale_skill_keys: Vec::new(),
+            open_skill: None,
         };
         for field in forms::FIELDS {
             let key = field.path.join(".");

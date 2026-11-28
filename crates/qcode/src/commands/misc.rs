@@ -159,6 +159,11 @@ pub(crate) fn cmd_skills(
 
     let roots = qcode_kernel::skill_roots(&loaded.skills, &workspace);
     let skills = SkillSet::discover(&roots);
+    // ADR-0110 §8: this lists what the model can use, so the skills turned off
+    // in the settings list stay out — but the count is reported, or 「I turned
+    // it off and now it is gone」 reads like discovery broke.
+    let disabled = qcode_tools::skills::Disabled::from_raw(&loaded.skills.disabled);
+    let disabled_count = skills.len() - skills.iter().filter(|s| disabled.allows(s)).count();
 
     if skills.is_empty() {
         println!("{}", qcode_i18n::tr("cli.skills.none_found"));
@@ -169,7 +174,7 @@ pub(crate) fn cmd_skills(
         return Ok(ExitCode::SUCCESS);
     }
 
-    for skill in skills.iter() {
+    for skill in skills.iter().filter(|skill| disabled.allows(skill)) {
         println!(
             "{}",
             qcode_i18n::trp(
@@ -188,8 +193,25 @@ pub(crate) fn cmd_skills(
     }
     println!(
         "\n{}",
-        qcode_i18n::trp("cli.skills.count", &[skills.len().to_string().as_str()])
+        qcode_i18n::trp(
+            "cli.skills.count",
+            &[skills
+                .iter()
+                .filter(|skill| disabled.allows(skill))
+                .count()
+                .to_string()
+                .as_str()]
+        )
     );
+    if disabled_count > 0 {
+        println!(
+            "{}",
+            qcode_i18n::trp(
+                "cli.skills.disabled_count",
+                &[disabled_count.to_string().as_str()]
+            )
+        );
+    }
     print_mcp_hint();
     Ok(ExitCode::SUCCESS)
 }

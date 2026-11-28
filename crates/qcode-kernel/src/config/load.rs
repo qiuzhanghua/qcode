@@ -183,6 +183,15 @@ pub fn merge_project(base: &mut Config, project: Config, sections: ProjectSectio
             "project config cannot enable skills over MCP; ignoring [skills] mcp = true"
         );
     }
+    // ADR-0110: `disabled` is a visibility decision the user made, so a
+    // repository cannot override it either — not to disable the user's skills
+    // and not to re-enable the ones they turned off. Ignored wholesale rather
+    // than merged, which also keeps the settings switches honest: a merged list
+    // carries no record of which file each entry came from, so a switch would
+    // appear to do nothing.
+    if !project.skills.disabled.is_empty() {
+        tracing::warn!("project config cannot disable skills; ignoring [skills] disabled");
+    }
     // Per-server opt-ins from the project file lose the same way. Wrapping the
     // extended range covers every server the project contributed without
     // having to tell them apart: a server the user already configured keeps
@@ -533,7 +542,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     // `sandbox` is the crate-wide default; each server may override it.
     ("mcp", &["servers", "sandbox"]),
-    ("skills", &["enabled", "roots", "mcp"]),
+    ("skills", &["enabled", "roots", "mcp", "disabled"]),
     (
         "sandbox",
         &[

@@ -33,7 +33,12 @@ fn every_known_config_key_has_a_control() {
                 // latter; old files keep working through the loader's fallback
                 // (`Config::network_mode_with`), and a save never rewrites the
                 // legacy keys, so they need no control.
-                || (*section == "network" && matches!(*key, "mode" | "enabled"));
+                || (*section == "network" && matches!(*key, "mode" | "enabled"))
+                // ADR-0110 §6: `[skills] disabled` is owned by the 技能 list's
+                // per-skill switches, not by a field — it is a set of names
+                // discovered at runtime, which `FieldSpec` cannot express
+                // (a text box would be a worse editor than the switches).
+                || (*section == "skills" && *key == "disabled");
             if auto_managed {
                 continue;
             }

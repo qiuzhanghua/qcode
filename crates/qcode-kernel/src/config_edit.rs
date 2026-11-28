@@ -889,6 +889,7 @@ fn set_scalar_value(edit: &mut ConfigEdit, keys: &[&str], value: &str) -> Result
         | ["sandbox", "extra_read"]
         | ["network", "allow"]
         | ["skills", "roots"]
+        | ["skills", "disabled"]
         | ["search", "api_key_command"] => {
             let values = value
                 .lines()
@@ -1535,6 +1536,25 @@ roots = ["~/skills"]
         );
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(text.contains("# keep me"), "{text}");
+
+        // ADR-0110 §5: the 技能 switches write one name per line, and a name
+        // may carry `origin:` — the array branch must not mangle it.
+        set_scalar(
+            &path,
+            &["skills", "disabled"],
+            Some("pdf\nmcp:github:playwright-cli"),
+        )
+        .expect("disabled");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert_eq!(
+            loaded.skills.disabled,
+            ["pdf".to_string(), "mcp:github:playwright-cli".to_string()]
+        );
+        // Empty means "nothing is disabled": the key goes away rather than
+        // leaving an empty array behind.
+        set_scalar(&path, &["skills", "disabled"], None).expect("remove disabled");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert!(loaded.skills.disabled.is_empty());
 
         set_scalar(&path, &["default_provider"], None).expect("remove");
         let loaded = crate::config::load(&path).expect("valid");

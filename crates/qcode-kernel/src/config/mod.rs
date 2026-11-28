@@ -458,6 +458,18 @@ pub struct SkillsConfig {
     /// `[[mcp.servers]].skills = true`.
     #[serde(default)]
     pub mcp: bool,
+    /// Skills turned off in the settings list (ADR-0110 §4).
+    ///
+    /// A bare name disables every origin that answers to it; `origin:name`
+    /// disables one (`mcp:github:pdf`). Recording the *off* set rather than an
+    /// `enabled` allow-list is what keeps a newly installed skill live without
+    /// anyone visiting this screen.
+    ///
+    /// Read by the index as a view filter, not applied during discovery: a
+    /// served skill's TTL refresh re-lists the server and would resurrect
+    /// anything removed at discovery time (ADR-0110 §3).
+    #[serde(default)]
+    pub disabled: Vec<String>,
 }
 
 impl Default for SkillsConfig {
@@ -466,6 +478,7 @@ impl Default for SkillsConfig {
             enabled: true,
             roots: Vec::new(),
             mcp: false,
+            disabled: Vec::new(),
         }
     }
 }

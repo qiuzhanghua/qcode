@@ -1016,7 +1016,16 @@ impl SkillSet {
     /// replaces an earlier skill with the same name. Missing roots are fine;
     /// invalid skills are skipped with a warning.
     pub fn discover(roots: &[(SkillSource, PathBuf)]) -> Self {
+        Self::discover_reporting(roots).0
+    }
+
+    /// [`Self::discover`], plus the list of skipped directories.
+    ///
+    /// The settings list needs both: the set to render, the skips to answer
+    /// "I put a skill there and it is not listed" (ADR-0110 §6).
+    pub fn discover_reporting(roots: &[(SkillSource, PathBuf)]) -> (Self, Vec<Skipped>) {
         let mut by_name: BTreeMap<String, Skill> = BTreeMap::new();
+        let mut skipped = Vec::new();
 
         for (source, root) in roots {
             let entries = match std::fs::read_dir(root) {
@@ -1028,6 +1037,10 @@ impl SkillSet {
                         %error,
                         "cannot read the skill directory"
                     );
+                    skipped.push(Skipped {
+                        path: root.clone(),
+                        reason: error.to_string(),
+                    });
                     continue;
                 }
             };
@@ -1039,6 +1052,10 @@ impl SkillSet {
                 };
                 if metadata.file_type().is_symlink() {
                     tracing::warn!(path = %path.display(), "skipping symlinked skill directory");
+                    skipped.push(Skipped {
+                        path,
+                        reason: "symlink".to_string(),
+                    });
                     continue;
                 }
                 if !metadata.is_dir() {
@@ -1050,12 +1067,16 @@ impl SkillSet {
                     }
                     Err(error) => {
                         tracing::warn!(path = %path.display(), %error, "skipping invalid skill");
+                        skipped.push(Skipped {
+                            path,
+                            reason: error.to_string(),
+                        });
                     }
                 }
             }
         }
 
-        Self::sorted(by_name.into_values().collect())
+        (Self::sorted(by_name.into_values().collect()), skipped)
     }
 
     /// Append skills served over MCP (ADR-0108 §2).
@@ -1169,9 +1190,42 @@ impl SkillSet {
         self.skills.iter()
     }
 
+    /// The key a settings switch writes for `skill` (ADR-0110 §4).
+    ///
+    /// Same rule as [`Self::display_name`] — bare name when unique, origin
+    /// added only on a collision — but spelled parseably (`origin:name`)
+    /// instead of readably (`name (origin)`).
+    pub fn disable_key(&self, skill: &Skill) -> String {
+        if self
+            .skills
+            .iter()
+            .filter(|other| other.name == skill.name)
+            .count()
+            > 1
+        {
+            format!("{}:{}", skill.source.origin_label(), skill.name)
+        } else {
+            skill.name.clone()
+        }
+    }
+
     /// The block appended to the system prompt. `None` when no skill exists.
     pub fn prompt_section(&self) -> Option<String> {
-        if self.skills.is_empty() {
+        self.prompt_section_allowing(&Disabled::default())
+    }
+
+    /// [`Self::prompt_section`] with the disabled skills left out.
+    ///
+    /// The filter lives here rather than in `discover` on purpose: a served
+    /// skill's TTL refresh re-lists the server and would resurrect anything
+    /// dropped at discovery time (ADR-0110 §3).
+    pub fn prompt_section_allowing(&self, allowed: &Disabled) -> Option<String> {
+        let skills: Vec<&Skill> = self
+            .skills
+            .iter()
+            .filter(|skill| allowed.allows(skill))
+            .collect();
+        if skills.is_empty() {
             return None;
         }
 
@@ -1183,7 +1237,7 @@ impl SkillSet {
         );
         let mut omitted = 0;
 
-        for (index, skill) in self.skills.iter().enumerate() {
+        for (index, skill) in skills.iter().enumerate() {
             let description = skill.description.replace(['\n', '\r'], " ");
             let line = format!(
                 "- `{}` ({}): {}\n",
@@ -1192,7 +1246,7 @@ impl SkillSet {
                 description
             );
             if section.len() + line.len() > MAX_PROMPT_BYTES {
-                omitted = self.skills.len() - index;
+                omitted = skills.len() - index;
                 break;
             }
             section.push_str(&line);
@@ -1210,6 +1264,126 @@ impl SkillSet {
 
         Some(section.trim_end().to_string())
     }
+}
+
+/// One entry of `[skills] disabled` (ADR-0110 §4).
+///
+/// `origin: None` disables every origin that answers to `name`; `origin:
+/// Some(..)` disables exactly one. Parsing leans on a property of the spec
+/// rather than on escaping: a skill name may only contain `a-z`, `0-9` and
+/// `-` (SKILLS.md §3), so a `:` can only ever be the separator. Split at the
+/// **last** one, because an origin can itself contain a colon (`mcp:github`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisableKey {
+    /// `None` means every origin.
+    pub origin: Option<String>,
+    pub name: String,
+}
+
+impl DisableKey {
+    /// Parse one config entry. `None` for blank or name-less input, which the
+    /// loader drops with a warning instead of treating as "disable everything".
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        match raw.rsplit_once(':') {
+            Some((origin, name)) if !origin.trim().is_empty() && !name.trim().is_empty() => {
+                Some(Self {
+                    origin: Some(origin.trim().to_string()),
+                    name: name.trim().to_string(),
+                })
+            }
+            _ => Some(Self {
+                origin: None,
+                name: raw.to_string(),
+            }),
+        }
+    }
+
+    /// How the key is written back to the config and shown in the UI.
+    pub fn render(&self) -> String {
+        match &self.origin {
+            Some(origin) => format!("{origin}:{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    pub fn matches(&self, skill: &Skill) -> bool {
+        if self.name != skill.name {
+            return false;
+        }
+        match &self.origin {
+            None => true,
+            // `origin_label`, not `label`: a server called `user` must not be
+            // disabled by (or confused with) the user's own root.
+            Some(origin) => skill.source.origin_label() == *origin,
+        }
+    }
+}
+
+/// The parsed form of `[skills] disabled`.
+#[derive(Debug, Default, Clone)]
+pub struct Disabled {
+    keys: Vec<DisableKey>,
+}
+
+impl Disabled {
+    pub fn from_raw(raw: &[String]) -> Self {
+        Self {
+            keys: raw
+                .iter()
+                .filter_map(|entry| DisableKey::parse(entry))
+                .collect(),
+        }
+    }
+
+    pub fn allows(&self, skill: &Skill) -> bool {
+        !self.keys.iter().any(|key| key.matches(skill))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &DisableKey> {
+        self.keys.iter()
+    }
+}
+
+/// One row of the settings list (ADR-0110 §3): everything a card line needs,
+/// plus the identity a switch writes back. Deliberately without the body —
+/// reading every `SKILL.md` to draw a list would be N × 64KiB of I/O per frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSummary {
+    /// Round-trip identity for the disable key: the bare name when unique,
+    /// otherwise `origin:name`.
+    pub key: String,
+    pub name: String,
+    /// `SkillSource::origin_label()`.
+    pub source: String,
+    pub description: String,
+    /// The directory for a disk skill, the resource URI for a served one.
+    pub location: String,
+    pub files: Vec<String>,
+    /// Served by an MCP server: no body lives on this side.
+    pub served: bool,
+    pub disabled: bool,
+}
+
+/// A skill directory that was skipped during discovery, and why.
+///
+/// Discovery used to report these only through `tracing::warn`, which answers
+/// "where did my skill go" for whoever reads the log and nobody else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 /// A lookup that owns its skills.
@@ -1238,15 +1412,38 @@ pub enum Resolved {
 #[derive(Debug)]
 pub struct SkillIndex {
     set: RwLock<SkillSet>,
+    /// Skills the user turned off in the settings list (ADR-0110 §3). A read
+    /// filter, never a discovery-time deletion: a served skill's TTL refresh
+    /// re-lists the server and would put a deleted entry straight back.
+    disabled: RwLock<Disabled>,
+    /// Directories discovery refused, for the settings list.
+    skipped: Vec<Skipped>,
     revision: AtomicU64,
 }
 
 impl SkillIndex {
     pub fn new(set: SkillSet) -> Self {
+        Self::with_disabled(set, &[])
+    }
+
+    pub fn with_disabled(set: SkillSet, raw: &[String]) -> Self {
         Self {
             set: RwLock::new(set),
+            disabled: RwLock::new(Disabled::from_raw(raw)),
+            skipped: Vec::new(),
             revision: AtomicU64::new(0),
         }
+    }
+
+    /// Attach the discovery report (ADR-0110 §6). Builder-style because the
+    /// skips are informational: nothing else reads them.
+    pub fn with_skipped(mut self, skipped: Vec<Skipped>) -> Self {
+        self.skipped = skipped;
+        self
+    }
+
+    pub fn skipped(&self) -> &[Skipped] {
+        &self.skipped
     }
 
     fn read(&self) -> RwLockReadGuard<'_, SkillSet> {
@@ -1261,6 +1458,33 @@ impl SkillIndex {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn read_disabled(&self) -> RwLockReadGuard<'_, Disabled> {
+        self.disabled
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Replace the disabled set. Returns the new revision, so a cached list can
+    /// tell whether it is still current.
+    ///
+    /// The revision is bumped even when the set is unchanged: callers use it as
+    /// "the view moved", and a redundant bump costs one redraw.
+    pub fn set_disabled(&self, raw: &[String]) -> u64 {
+        *self
+            .disabled
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Disabled::from_raw(raw);
+        self.revision.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The disabled keys as written in the config, for the settings switches.
+    pub fn disabled_keys(&self) -> Vec<String> {
+        self.read_disabled()
+            .iter()
+            .map(DisableKey::render)
+            .collect()
+    }
+
     /// Monotonic; every mutation bumps it once.
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::SeqCst)
@@ -1272,51 +1496,108 @@ impl SkillIndex {
     /// between them and hand back a string newer than the number it reports.
     pub fn section(&self) -> (u64, Option<String>) {
         let set = self.read();
-        (self.revision.load(Ordering::SeqCst), set.prompt_section())
+        let disabled = self.read_disabled();
+        (
+            self.revision.load(Ordering::SeqCst),
+            set.prompt_section_allowing(&disabled),
+        )
     }
 
     /// The prompt section, without the revision. Kept for the frontends that
     /// still cache the string once (ADR-0108 P1 C2 moves them to [`Self::section`]).
     pub fn prompt_section(&self) -> Option<String> {
-        self.read().prompt_section()
+        let set = self.read();
+        let disabled = self.read_disabled();
+        set.prompt_section_allowing(&disabled)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read().is_empty()
+        self.len() == 0
     }
 
     pub fn len(&self) -> usize {
-        self.read().len()
+        let set = self.read();
+        let disabled = self.read_disabled();
+        set.iter().filter(|skill| disabled.allows(skill)).count()
     }
 
     /// The skill called `name`, when exactly one origin answers to it.
     pub fn get(&self, name: &str) -> Option<Skill> {
-        self.read().get(name).cloned()
+        match self.resolve(name) {
+            Resolved::Found(skill) => Some(skill),
+            _ => None,
+        }
     }
 
     /// Up to `limit` names, for the "unknown skill; available: …" hint.
     pub fn names(&self, limit: usize) -> Vec<String> {
-        self.read()
-            .iter()
+        let set = self.read();
+        let disabled = self.read_disabled();
+        set.iter()
+            .filter(|skill| disabled.allows(skill))
             .take(limit)
             .map(|skill| skill.name.clone())
             .collect()
     }
 
-    /// An immutable copy, for callers that only ever read (the UI list, the
-    /// `/skill` slash command). Rare and small; served skills carry no body.
+    /// An immutable copy of what the model may use.
     pub fn snapshot(&self) -> SkillSet {
-        self.read().clone()
+        let set = self.read();
+        let disabled = self.read_disabled();
+        SkillSet::sorted(
+            set.iter()
+                .filter(|skill| disabled.allows(skill))
+                .cloned()
+                .collect(),
+        )
     }
 
     pub fn resolve(&self, name: &str) -> Resolved {
-        match self.read().lookup(name) {
-            Lookup::Found(skill) => Resolved::Found(skill.clone()),
-            Lookup::Unknown => Resolved::Unknown,
-            Lookup::Ambiguous(candidates) => {
-                Resolved::Ambiguous(candidates.into_iter().cloned().collect())
-            }
+        let set = self.read();
+        let disabled = self.read_disabled();
+        let mut found: Vec<Skill> = set
+            .iter()
+            .filter(|skill| skill.name == name && disabled.allows(skill))
+            .cloned()
+            .collect();
+        match found.len() {
+            0 => Resolved::Unknown,
+            1 => Resolved::Found(found.remove(0)),
+            _ => Resolved::Ambiguous(found),
         }
+    }
+
+    /// Every skill, disabled ones included, as list rows (ADR-0110 §3).
+    ///
+    /// Unfiltered on purpose: a disabled skill has to stay visible, otherwise
+    /// the switch that turns it back on has nowhere to live.
+    pub fn summaries(&self) -> Vec<SkillSummary> {
+        let set = self.read();
+        let disabled = self.read_disabled();
+        set.iter()
+            .map(|skill| SkillSummary {
+                key: set.disable_key(skill),
+                name: skill.name.clone(),
+                source: skill.source.origin_label(),
+                description: skill.description.clone(),
+                location: skill.dir.location(),
+                files: skill.files.clone(),
+                served: skill.body_is_remote(),
+                disabled: !disabled.allows(skill),
+            })
+            .collect()
+    }
+
+    /// One skill by its [`SkillSet::disable_key`], disabled or not.
+    ///
+    /// The settings dialog reads the body through this: `get` is the model's
+    /// view and hides disabled skills, while the point of opening one here is
+    /// often to read it *before* deciding to keep it off.
+    pub fn detail(&self, key: &str) -> Option<Skill> {
+        let set = self.read();
+        set.iter()
+            .find(|skill| set.disable_key(skill) == key)
+            .cloned()
     }
 
     /// Replace one server's contribution, keeping every local skill and every
@@ -2616,6 +2897,42 @@ Skills never change approval rules.
             }
         }
 
+        /// ADR-0110 §4: a contested name is written `origin:name`, so one of two
+        /// same-named skills can be turned off without touching the other.
+        #[test]
+        fn a_contested_name_is_keyed_by_origin_and_can_be_disabled_alone() {
+            let (_tmp, set) = local_set();
+            let set = set.with_served(vec![served("report", "github", "The remote one.")]);
+            let index = SkillIndex::new(set);
+
+            // Both rows are keyed by origin, because neither name alone would
+            // round-trip: `report` cannot say which one is meant.
+            let keys: Vec<String> = index
+                .summaries()
+                .iter()
+                .map(|row| row.key.clone())
+                .collect();
+            assert_eq!(keys, ["user:report", "mcp:github:report"]);
+
+            index.set_disabled(&["mcp:github:report".to_string()]);
+
+            // The local one is now unambiguous: nothing else answers to `report`.
+            let local = index.get("report").expect("the local skill survives");
+            assert_eq!(local.source, SkillSource::User);
+            // And it re-reads as a bare name, since it is no longer contested.
+            let rows = index.summaries();
+            let local_row = rows.iter().find(|row| row.name == "report").expect("row");
+            assert!(!local_row.disabled);
+            let remote_row = rows
+                .iter()
+                .find(|row| row.source == "mcp:github")
+                .expect("row");
+            assert!(
+                remote_row.disabled,
+                "the served one is the one switched off"
+            );
+        }
+
         #[test]
         fn the_local_one_is_still_found_by_its_own_name() {
             let (_tmp, set) = local_set();
@@ -2987,6 +3304,190 @@ Skills never change approval rules.
             section.contains("more skill(s) omitted") || section.contains("个技能被省略"),
             "capped section should say skills were omitted: {section}"
         );
+    }
+
+    /// ADR-0110 §7: the dialog has three body states, and it picks between them
+    /// from the skill itself rather than from a flag the caller passes. These are
+    /// the three predicates it reads.
+    #[test]
+    fn the_dialog_can_tell_its_three_body_states_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "has-body",
+            "name: has-body\ndescription: d",
+            "## Heading\n\n- a bullet\n\n```sh\ncargo test\n```",
+        );
+        write_skill(
+            tmp.path(),
+            "no-body",
+            "name: no-body\ndescription: d",
+            "", // an empty `SKILL.md`: frontmatter only
+        );
+        let index = SkillIndex::new(set(tmp.path()));
+
+        // 1. A local skill with a body: rendered as Markdown, and the raw text is
+        //    still there for 复制 — no `plain_text_from_markdown` flattening.
+        let with_body = index.detail("has-body").expect("detail");
+        assert!(!with_body.body_is_remote());
+        assert!(!with_body.body.trim().is_empty());
+        assert!(with_body.body.contains("## Heading"), "{}", with_body.body);
+        assert!(with_body.body.contains("- a bullet"), "{}", with_body.body);
+        assert!(with_body.body.contains("```sh"), "{}", with_body.body);
+
+        // 2. A local skill without one: the dialog explains instead of drawing
+        //    an empty panel.
+        let without = index.detail("no-body").expect("detail");
+        assert!(!without.body_is_remote());
+        assert!(without.body.trim().is_empty(), "{:?}", without.body);
+
+        // 3. A served skill: no body on this side at all, and the description is
+        //    what stands in for it (SEP-2640 forbids fetching ahead of need).
+        let entry = RemoteEntry {
+            uri: "skill://remote-only/SKILL.md".to_string(),
+            frontmatter: [
+                ("name".to_string(), json!("remote-only")),
+                (
+                    "description".to_string(),
+                    json!("what the server says it does"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            files: Vec::new(),
+            dynamic: false,
+        };
+        let served = Skill::from_remote("github".into(), entry);
+        assert!(served.body_is_remote());
+        assert!(served.body.is_empty(), "{:?}", served.body);
+        assert_eq!(served.source.origin_label(), "mcp:github");
+        assert!(!served.description.is_empty());
+    }
+
+    /// ADR-0110 §6: `disabled_keys()` is what the page compares rows against, so
+    /// it has to report the config's entries verbatim — including ones that
+    /// match nothing, which is how a typo stays visible instead of vanishing.
+    #[test]
+    fn disabled_keys_reports_entries_that_match_no_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(tmp.path(), "real", "name: real\ndescription: d", "b");
+        let index = SkillIndex::with_disabled(
+            set(tmp.path()),
+            &["real".to_string(), "ghost".to_string(), "  ".to_string()],
+        );
+
+        // `ghost` matches no skill but is still reported; the blank entry is
+        // dropped at parse time rather than being mistaken for a name.
+        assert_eq!(index.disabled_keys(), ["real", "ghost"]);
+        let rows = index.summaries();
+        assert!(rows.iter().any(|row| row.name == "real" && row.disabled));
+        assert!(!rows.iter().any(|row| row.name == "ghost"));
+    }
+
+    #[test]
+    fn disable_keys_split_on_the_last_colon() {
+        let parse = |raw: &str| DisableKey::parse(raw).expect("key");
+        assert_eq!(parse("pdf").render(), "pdf");
+        assert_eq!(parse("  pdf  ").render(), "pdf");
+        let scoped = parse("mcp:github:playwright-cli");
+        assert_eq!(scoped.origin.as_deref(), Some("mcp:github"));
+        assert_eq!(scoped.name, "playwright-cli");
+        assert_eq!(scoped.render(), "mcp:github:playwright-cli");
+        assert_eq!(parse("user:pdf").origin.as_deref(), Some("user"));
+        assert!(DisableKey::parse("   ").is_none());
+        assert!(DisableKey::parse("").is_none());
+    }
+
+    /// The core of ADR-0110 §3: switching a skill off is a read-time filter.
+    ///
+    /// It must hide the skill from every path the model reads, keep it visible
+    /// to the settings list, and survive `replace_served` — the TTL refresh is
+    /// exactly what a discovery-time deletion would lose to.
+    #[test]
+    fn a_disabled_skill_is_hidden_from_the_model_but_still_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "alpha",
+            "name: alpha\ndescription: first",
+            "alpha body",
+        );
+        write_skill(
+            tmp.path(),
+            "beta",
+            "name: beta\ndescription: second",
+            "beta body",
+        );
+        let index = SkillIndex::with_disabled(set(tmp.path()), &["alpha".to_string()]);
+
+        assert!(!index.prompt_section().unwrap().contains("`alpha`"));
+        assert!(index.prompt_section().unwrap().contains("`beta`"));
+        assert!(index.names(10).contains(&"beta".to_string()));
+        assert!(!index.names(10).contains(&"alpha".to_string()));
+        assert!(index.get("alpha").is_none());
+        assert!(matches!(index.resolve("alpha"), Resolved::Unknown));
+        assert_eq!(index.len(), 1);
+        assert!(index.snapshot().iter().all(|skill| skill.name != "alpha"));
+
+        // The list still shows both, and marks the one that is off.
+        let summaries = index.summaries();
+        assert_eq!(summaries.len(), 2);
+        let alpha = summaries
+            .iter()
+            .find(|row| row.name == "alpha")
+            .expect("alpha stays visible");
+        assert!(alpha.disabled);
+        assert_eq!(alpha.key, "alpha");
+
+        // Reading it before deciding is the point of the dialog, so `detail`
+        // does not filter.
+        assert_eq!(index.detail("alpha").unwrap().body.trim(), "alpha body");
+
+        // Switching back on restores everything.
+        let before = index.revision();
+        index.set_disabled(&[]);
+        assert!(index.prompt_section().unwrap().contains("`alpha`"));
+        assert_eq!(index.len(), 2);
+        // A reader that cached the section keys on the revision, so it has to
+        // move — otherwise a frontend would keep the stale prompt string.
+        assert!(
+            index.revision() > before,
+            "set_disabled must bump the revision"
+        );
+    }
+
+    /// A served skill's TTL refresh must not resurrect a disabled one.
+    #[test]
+    fn a_refresh_does_not_bring_a_disabled_served_skill_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(tmp.path(), "local", "name: local\ndescription: d", "b");
+        let index = SkillIndex::with_disabled(set(tmp.path()), &["served".to_string()]);
+
+        let entry = RemoteEntry {
+            uri: "skill://served/SKILL.md".to_string(),
+            // The listing's frontmatter, as a server sends it: a JSON map.
+            frontmatter: [
+                ("name".to_string(), json!("served")),
+                ("description".to_string(), json!("from a server")),
+            ]
+            .into_iter()
+            .collect(),
+            files: Vec::new(),
+            dynamic: false,
+        };
+        index.replace_served("github", vec![Skill::from_remote("github".into(), entry)]);
+
+        assert!(index.get("served").is_none());
+        assert!(
+            !index.prompt_section().unwrap().contains("`served`"),
+            "the refresh re-listed the server, the filter still applies"
+        );
+        // A different origin is a different skill: the bare key keeps it out,
+        // but a source-scoped key must not touch anything else.
+        index.set_disabled(&["mcp:github:served".to_string()]);
+        assert!(index.get("served").is_none());
+        index.set_disabled(&["mcp:other:served".to_string()]);
+        assert!(index.get("served").is_some());
     }
 
     #[tokio::test]

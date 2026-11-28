@@ -1912,6 +1912,56 @@ gui:
         en: "The form still has problems; nothing was written: %{0}"
         zh-CN: 表单有问题，改动没有写入：%{0}
 
+  # 技能列表（ADR-0110）：直接在设置页看清有哪些技能、谁给的、逐个启停。
+  skills:
+    header:
+      en: "Discovered skills (%{0})"
+      zh-CN: "已发现的技能（%{0}）"
+    workspace:
+      en: "project roots: %{0}"
+      zh-CN: "项目根按 %{0} 解析"
+    refresh:
+      en: "Refresh"
+      zh-CN: "刷新"
+    files:
+      en: "%{0} files"
+      zh-CN: "%{0} 个附件"
+    # 发现被 `[skills] enabled = false` 整段关掉时的唯一一行。
+    disabled_source:
+      en: "Skill discovery is off ([skills] enabled = false). Turn it on above to list skills."
+      zh-CN: "技能发现已关闭（`[skills] enabled = false`）。打开上面的开关才会列出技能。"
+    empty:
+      en: "No skill found. The roots checked this time:"
+      zh-CN: "没有发现任何技能。这次检查过的根："
+    # 目录存在但不是合法技能（缺 SKILL.md、名字与目录不符、超限、symlink）。
+    skipped:
+      en: "%{0} directories were skipped:"
+      zh-CN: "%{0} 个目录被跳过："
+    # 配置里关掉的名字在发现结果里找不到（拼错、服务器改名、目录被删）。
+    stale:
+      en: "%{0} disabled entries match no skill"
+      zh-CN: "%{0} 条禁用项没有对应的技能"
+    clear_stale:
+      en: "Clean up"
+      zh-CN: "清理"
+    dialog:
+      copy:
+        en: "Copy"
+        zh-CN: "复制"
+      copied:
+        en: "Copied"
+        zh-CN: "已复制"
+      close:
+        en: "Close"
+        zh-CN: "关闭"
+      empty_body:
+        en: "This SKILL.md has no body."
+        zh-CN: "这个 SKILL.md 没有正文。"
+      # 服务端技能只有清单，没有正文：SEP-2640 不允许提前取文件。
+      served:
+        en: "The body is fetched by %{0} when it is used; this window does not ask for it."
+        zh-CN: "正文由 %{0} 在用到时提供，本窗口不取。"
+
 # GUI（P1）。key 按 `gui.<区域>.<元素>.<角色>` 分层。
   daemon:
     # 悬停提示：说清「点下去会发生什么」与图标为什么是那个亮度。
@@ -3264,6 +3314,10 @@ cli:
     count:
       en: "%{0} skill(s)"
       zh-CN: "%{0} 个技能"
+    # 设置页里逐个关掉的技能（ADR-0110）。它们不列在上面，只报个数。
+    disabled_count:
+      en: "%{0} more disabled in Settings"
+      zh-CN: "另有 %{0} 个已在设置里关掉"
     skill_line:
       en: "%{0}  [%{1}]  files=%{2}"
       zh-CN: "%{0}  [%{1}]  文件 %{2} 个"

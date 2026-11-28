@@ -901,6 +901,32 @@ fn a_project_config_can_still_turn_skills_over_mcp_off() {
     );
 }
 
+/// ADR-0110 §4: `[skills] disabled` is a visibility decision the *user* made,
+/// so a repository can neither switch the user's skills off nor switch back on
+/// the ones they turned off. Ignored wholesale rather than merged: a merged list
+/// carries no record of which file each entry came from, so the settings
+/// switches — which edit the user's list only — would appear to do nothing.
+#[test]
+fn a_project_config_cannot_disable_skills() {
+    let mut base: Config = toml::from_str("").unwrap();
+    base.skills.disabled = vec!["pdf".to_string()];
+    let project: Config = toml::from_str(
+        r#"
+            [skills]
+            disabled = ["pdf-forms", "mcp:github:playwright-cli"]
+            "#,
+    )
+    .unwrap();
+
+    merge_project(&mut base, project, ProjectSections::default());
+
+    assert_eq!(
+        base.skills.disabled,
+        ["pdf".to_string()],
+        "the repo's entries are dropped, the user's survive untouched"
+    );
+}
+
 #[test]
 fn network_defaults_and_overrides() {
     let defaults: Config = toml::from_str("").unwrap();
@@ -1254,6 +1280,36 @@ fn every_section_key_the_build_reads_is_known() {
         unknown_keys(&document)
     );
 }
+/// ADR-0110 §4: `[skills] disabled` is written by the settings switches, so a
+/// typo in it has to be reported like any other unknown key — which only works
+/// if the key is on the known list. The switches write it, the user will hand
+/// edit it, and `disabledd` must warn instead of silently doing nothing.
+#[test]
+fn skills_disabled_is_a_known_key() {
+    let document: toml::Table = r#"
+        [skills]
+        enabled = true
+        mcp = false
+        roots = []
+        disabled = ["pdf", "mcp:github:playwright-cli"]
+    "#
+    .parse()
+    .expect("document");
+    assert!(
+        unknown_keys(&document).is_empty(),
+        "{:?}",
+        unknown_keys(&document)
+    );
+
+    let typo: toml::Table = "[skills]\ndisabledd = [\"pdf\"]\n"
+        .parse()
+        .expect("document");
+    assert!(
+        !unknown_keys(&typo).is_empty(),
+        "a misspelt key must still be reported"
+    );
+}
+
 #[test]
 fn minimax_defaults_to_the_m3_model() {
     let config: Config = toml::from_str(r#"default_provider = "minimax""#).unwrap();

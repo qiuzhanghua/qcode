@@ -476,6 +476,14 @@ impl Shell {
         }
         let config_path = self.config_path.clone();
         let data_dir = self.data_dir.clone();
+        // ADR-0110 §2: hand over the running session's skill index (and the
+        // workspace the engine resolved project roots against), so the 技能
+        // page lists what the model actually has — served skills included.
+        // Read before the closure below moves `self` into the window callback.
+        let skills = self
+            .backend
+            .skill_index()
+            .map(|index| (index, self.backend.cwd().to_path_buf()));
         // 设置窗口跟随主窗口的尺寸：宽高都是主窗口的 3/4，相对主窗口横竖
         // 居中。主窗口几何由 render 每帧写入 `prefs.window_geometry`（全局
         // 坐标），多显示器下也正落在主窗口中央。取不到时退回固定尺寸。
@@ -513,8 +521,10 @@ impl Shell {
             {
                 settings_hwnd_in_open.set(Some(win32.hwnd.get()));
             }
-            let view =
-                cx.new(|cx| crate::setup::SetupView::new(config_path, data_dir, false, window, cx));
+            // ADR-0110 §2: the skills list reads the running session's index.
+            let view = cx.new(|cx| {
+                crate::setup::SetupView::new(config_path, data_dir, false, skills, window, cx)
+            });
             // One close path for all three settings windows: flush the pending
             // auto save, stop background tasks, then hide-then-remove so the
             // platform's deactivation callback never targets a removed window

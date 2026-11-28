@@ -306,6 +306,12 @@ impl Render for SetupView {
             for field in forms::GUI_FIELDS.iter().filter(|field| field.page == page) {
                 body = body.child(self.render_field(field, cx));
             }
+            // ADR-0110 §1: the 技能 page lists what was discovered, under the
+            // three switches that decide where discovery looks. Settings mode
+            // only — the wizard has no index yet.
+            if !self.wizard && page == Page::Skills {
+                body = body.child(self.render_skill_list(cx));
+            }
             if !self.wizard && page == Page::Appearance {
                 body = body.child(self.render_shell_environment_probe(cx));
             }
@@ -484,6 +490,15 @@ impl Render for SetupView {
             .when(!self.wizard, |this| {
                 this.key_context("Settings").on_action(cx.listener(
                     |this, _: &CloseSettingsShortcut, window, cx| {
+                        // ADR-0110 §7: Escape steps out one layer. With the skill
+                        // panel open it closes the panel and nothing else —
+                        // 「Escape goes back」 is the gesture the user meant, and
+                        // this is the only handler both hosts share (`run.rs`
+                        // binds the key for the GUI's settings window; the
+                        // wizard's own `run` binds nothing).
+                        if this.dismiss_open_skill(cx) {
+                            return;
+                        }
                         // Same path as the X button: flush the pending edit first, and
                         // stay open (with the reason on screen) if the write failed.
                         if !this.prepare_to_close(cx) {
@@ -537,6 +552,9 @@ impl Render for SetupView {
             .child(self.render_probe_picker(window, cx))
             .child(self.render_delete_dialog(cx))
             .child(self.render_sandbox_blocked_dialog(cx))
+            // ADR-0110 §7: the skill content panel. Hangs here with the other
+            // overlays so it covers the whole window.
+            .child(self.render_open_skill_dialog(cx))
             // Ctrl+= / Ctrl+- (Cmd+= / Cmd+- on macOS) zoom the whole UI's text
             // while this window has focus; the key bindings are app-global, the
             // handlers are per-window (see `SetupView::zoom_font`).

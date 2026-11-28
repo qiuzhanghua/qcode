@@ -14095,3 +14095,374 @@ host 合规，并把这句话写进 [SKILLS.md](./SKILLS.md) §7 与 README。
 - 不做 per-skill approval 或 acting-window 闸门（与选择的安全模型相反）。
 - 不改 `[sandbox]` 的默认值（另立 ADR）。
 - 不改 `CONFIG_VERSION`。
+
+## ADR-0110：设置页列出技能并逐个启停——禁用是索引的读时视图，不是发现阶段的删除（2026-11-28）
+
+**状态**：拟议（2026-11-28）。落地清单见文末。
+
+**补充 [SKILLS.md](./SKILLS.md) §2（发现）与 §8（配置）**，沿用
+[ADR-0108](#adr-0108skills-走-mcp远程索引按服务器-opt-in推翻-adr-0004-的不做远程安装2026-11-26)
+§2/§3 的来源标记与热更新路径，生效时机沿用 ADR-0103 §3（配置变更只在所有会话空闲时
+兑现，从不打断进行中的 turn）。
+
+### 背景：三个事实凑在一起
+
+1. 设置页的「技能」只有三个开关（启用、额外根目录、MCP 授权），**看不见自己有什么
+   技能**。要看只有两条路，都在窗口外：TUI 的 `/skills`、终端里的 `qc skills list`。
+2. ADR-0108 之后来源变成两类（磁盘根 + `mcp:<server>`），索引里可能同时有「自己装的
+   两个」和「某个服务器塞来的十个」。来源不同，而用户能做的唯一一件事是整体开/关
+   （`[skills] mcp`）——粒度不对。
+3. 索引有 16KiB 的 system prompt 预算（SKILLS.md §6）。`~/.agents/skills` 被
+   `npx skills` 装满之后，唯一能省 token 的办法是**删目录**；想恢复就得重装。
+
+所以缺的不是「再列一遍」，而是**能在原地把某个技能从索引里摘出去、并且随时摘回来**
+的地方。
+
+### §1 位置：Skills 页表单下方一张卡片
+
+- 渲染点与 `Page::Appearance` 的 `render_shell_environment_probe` 同一个位置
+  （`forms::FIELDS` 的循环之后追加一个 `body.child(…)`），因此不引入新的布局概念。
+- 卡片占该页剩余纵向空间。**技能列表自带滚动**（见 §6），不与页面共用滚动条；页面
+  本身仍然可滚，所以窗口再矮也不会把行压没。
+- **向导弹窗里不显示**（`!self.wizard`）：那时还没有索引，也不该让人在第一屏做四十个
+  开关。与 `render_shell_environment_probe`、「自动保存」footer 同一条 `!self.wizard`
+  惯例。
+
+### §2 数据源：活索引优先，没有索引时退回本地发现
+
+| 打开方式 | 数据源 | 能看到 |
+|---|---|---|
+| 主窗口「设置」（`shell/view.rs::open_settings`） | 正在跑的那份 `Arc<SkillIndex>`（`Engine.skill_index`，`LocalBackend` 存一份 Arc 克隆） | 磁盘 + `mcp:<server>` |
+| 首次运行向导（`run_setup`）；以及 `run_settings` 这条导出的入口 | `SkillSet::discover(skill_roots(…))`，与 `qc skills list` 同一条路径 | 只有磁盘（向导里这张卡片本来就不显示，见 §1） |
+
+`Backend` 加 `fn skill_index(&self) -> Option<Arc<SkillIndex>>`（默认 `None`），
+`UnconfiguredBackend` 保持默认，于是自动落到发现路径。`open_settings` 把它和
+`backend.cwd()` 一起交给 `SetupView`。
+
+**没有活索引时，视图里也建一个 `SkillIndex`**（`SkillIndex::new(SkillSet::discover(…))`
+配上配置里的 `disabled`），而不是另走一条渲染分支。这样「摘要 + 详情 + 禁用过滤」只有
+一份实现，两处数据源的差别只剩一件事：**点开关能不能推到模型那边**。反之（视图里存一个
+`Option<Arc<SkillIndex>>` 加一个 `SkillSet`）会把过滤逻辑写两遍，而 §4 的迷你语法正是
+最不该有第二份实现的东西。
+
+为什么不让设置窗口自己发现一遍：MCP 提供的技能**只能从一次握手里拿到**（ADR-0108 §2
+的「先连接一次」），设置窗口自己不连服务器，也不该为了一张列表去连。无索引时的
+workspace 取 `backend.cwd()`（引擎装配时用的那个），没有 backend 时就是进程 cwd——与
+`qc skills list` 同口径。卡片上写出这次用的是哪个目录。
+
+顺带记一笔：`setup/mod.rs` 的注释把入口数成三个（向导、`qcode settings`、GUI 的「设置」），
+但 `qc` 没有 `settings` 子命令，`run_settings` 目前**没有调用方**。这不是本 ADR 的范围，
+只是别照着那句注释去做集成。
+
+### §3 禁用是索引的读时视图，不是发现阶段的删除
+
+`SkillIndex` 加一个 `disabled: RwLock<Disabled>`；`SkillSet` 不动。
+
+- 过滤发生在所有读路径：`section()` / `prompt_section()`、`get()`、`resolve()`、
+  `names()`、`snapshot()`、`is_empty()` / `len()`。
+- 新增 `SkillIndex::summaries() -> Vec<SkillSummary>`（`name`、`source`、
+  `description`、`location`、`files`、`served`、`disabled`），**不过滤**，给界面用。
+- 新增 `SkillIndex::detail(key) -> Option<Skill>`，同样**不过滤**：被禁的技能要能打开看
+  正文（「关掉之前先看清楚」是这一页的用途之一），而 `get()` 已经按本节规则过滤了。摘要里
+  不带正文（一份 64KiB × N 不该为了画一行字全读进来），正文在点开时才由这里取。
+- 于是「能看见被禁用项的那一份」和「模型能用的那一份」是同一个对象的两种投影，
+  不可能各自漂移。
+
+为什么不在发现阶段删掉（`SkillSet::discover` 少塞一个）：
+
+1. **TTL 刷新会把它复活**。`replace_served` 重列服务器时会把删掉的条目塞回来（ADR-0108
+   的热更新路径），除非把禁用集合一路传进 `with_served`——那等于把一个「视图决定」塞进
+   「发现逻辑」，两件事混在一起。
+2. **列表要显示它**。被关掉的技能必须仍出现在卡片里，否则关掉就再也打不开，只能去改
+   配置文件。发现阶段删掉 = 这一行不存在。
+3. **开关要能立即生效**，而重新发现要重建整个 kernel（§5）。
+
+被禁用的技能对模型表现为**不存在**（`resolve` 给 `Resolved::Unknown`，错误信息里不再
+列出它），而不是「被拒绝」：拒绝会告诉模型「本机有这个东西」，而 skill 的正文本来就是
+不可信指令（SKILLS.md §7），连它的存在都不必说。
+
+### §4 禁用键：裸名字，重名时才带来源
+
+```toml
+[skills]
+disabled = ["pdf", "mcp:github:playwright-cli"]
+```
+
+- 技能名的字符集是 `a-z`、`0-9`、`-`（SKILLS.md §3），**不可能含 `:`**。因此「含 `:`
+  即带来源」可以靠**最后一个 `:`** 切分：`mcp:github:playwright-cli` → 来源
+  `mcp:github`、名字 `playwright-cli`。
+- 裸名字 = 禁用**所有**来源的同名技能；带来源 = 只禁那一个。
+- 界面写哪个：与索引给模型看的身份**同一条规则**（`SkillSet::display_name`）——名字唯一
+  就写裸的，重名才写 `origin:name`。注意两处拼法有意不同：prompt 里是
+  `name (origin)`（给人读），配置里是 `origin:name`（可解析）。别为了「统一」把配置
+  改成括号写法。
+- 不认识的来源（服务器改名、根被删）：整条忽略并 WARN，**绝不能**退化成「全禁」。
+
+### §5 写盘与生效
+
+- 写盘走 auto-save：`AutoSaveKind::Scalar(&["skills", "disabled"])`，在
+  `config_edit::set_scalar_value` 的数组分支里加这一项（与 `skills.roots` 同一行，用
+  `set_string_array`）。名字里的 `:` 不需要转义。
+- 运行态：点一下开关**同时**做两件事——写 config.toml，并把新集合推给活索引
+  （`SkillIndex::set_disabled`，`revision` +1）。于是下一个回合的 system prompt 里就没
+  有它了（前端每回合读索引，ADR-0108 P1 C4），而正在跑的 turn 不受影响（prompt 已经
+  发出去了）。配置写盘照例触发主窗口的 mtime 检测 → 一次内核重建（ADR-0103 §3）；重建
+  后索引从 config 里读到的还是同一个集合，结果一致，**不闪**。
+- 行状态与事实来源一一对应：**有索引时读索引**（唯一事实），无索引时读 `self.config`。
+  这样卡片上的开关永远不会声称一个模型看不见的状态。
+- 没有后端、因而没有活索引时（向导，以及将来若接上 `run_settings`）：只有写盘，开关对
+  **下一个进程**生效。这与保存边上的「修改即时写入」不矛盾——写的是文件。
+- `[skills] enabled = false`：卡片只留一行「技能发现已关闭」，不列行；**不清理
+  `disabled`**（关掉发现不该丢掉之前做的选择）。
+
+### §6 卡片的样子：一个自带滚动的列表
+
+每行一行正文 + 一行小字：
+
+```
+[开关] name   [来源徽章]   files=N
+       description（单行，超出截断）
+       路径 / URI（等宽、小字、灰）
+```
+
+- **列表自己滚，不分页。** 行数没有上限（`~/.agents/skills` 装几十个是常态），所以
+  列表是个有界滚动区：`.id("skills-list-scroll")` + 超过阈值时 `max_h(px(...))` +
+  `.overflow_y_scroll()`。`.id()` 不是可选的——没有它元素不是 stateful，`overflow_y_scroll`
+  不生效（`setup/models.rs` 的模型行列表就踩过，注释还留着）。
+- 只在真的放不下时才加高度上限（`.when(len > N, …)`），与那个模型行列表同一写法：两个
+  技能时不该出现一条没用的滚动条。
+- **不接 `TableSpec`。** 那不是风格偏好：`forms::TABLES` 那条路是带分页的表格
+  （`setup/mod.rs` 注释里的「表格分页」），而这一页要的是「滚到底」，不是「翻到第 2 页」。
+  做成卡片列表就顺手没有分页。
+- 来源徽章文字就用 `origin_label()`（`global` / `user` / `config` / `project` /
+  `mcp:<server>`），不另起一套；`mcp:` 用弱色，让「这不是本机的」一眼可见——ADR-0108
+  §3 的初衷。
+- 被禁用的行**保留**，正文降为 `muted_foreground`，开关是关的。它就是回到「开」的
+  唯一入口。
+- **点行（开关以外的位置）打开内容弹窗**（§7）。
+- 空态三种，每种都要说话：
+  - 发现被关：一行说明；
+  - 一个都没发现：列出这次检查过的根（`skill_roots` 的输出），与 `qc skills list`、
+    TUI `/skills` 的指路一致；
+  - 有服务器会贡献但没贡献：说出数量与原因（没连上 / 该服务器没开 `skills`）。
+- 被跳过的非法技能：`SkillSet::discover` 目前只 `tracing::warn`。加一个
+  `discover_reporting` 返回 `(set, Vec<Skipped>)`，让 `discover` 退化成薄包装（四个
+  调用点不动）。卡片底部一行 `N 个被跳过`，展开看 `路径 + 原因`。这一页的用途之一就是
+  回答「我那个技能去哪了」，只让它出现在日志里等于没答。
+- 对不上的禁用项：配置里有、发现结果里没有的名字，单独一行 `N 条禁用项没有对应的
+  技能`（拼错、服务器改了名、目录被删），带「清理」——否则它会在配置里烂着。
+- 按钮两个：`刷新`（无索引时重新发现；有索引时只是重读 `revision`）、`打开根目录`
+  （复用 `setup::fields::open_in_editor` 的形状，新增不指定编辑器的那一支：macOS
+  `open`、Linux `xdg-open`、Windows `explorer`）。
+- 不做搜索框、不做全选/全不选、不按来源筛选。几十行，先看真实数量再说。
+
+### §7 内容弹窗：一个可滚动、可复制、Esc 关闭的只读面板
+
+`SetupView` 加一个 `open_skill: Option<OpenSkill>`（打开的那一个），照
+`render_sandbox_blocked_dialog` 的形状画：`absolute` 全屏遮罩 + 居中的面板，挂在
+`render` 末尾那一串 `.child(self.render_…)` 里。面板：
+
+```
+name  [来源徽章]            [复制]  [关闭]
+路径 / URI · files=N           ← 小字、灰
+────────────────────────────────────
+<正文，TextView::markdown，可滚动>
+```
+
+`OpenSkill` 是 `setup` 自己的小结构：`{ key, skill: Skill, copied_at: Option<Instant> }`。
+**名字不叫 `SkillView`**——那个名字在 `qcode-ui-state` 里已经是「给 `/skills` 的只读
+元数据」的意思（TUI 与 GUI 共用），在设置页再造一个同名不同物的类型，读代码的人一定会
+混。它持有 `detail()` 取回的 `Skill` 快照，所以正文只在打开时读一次，不是每帧 clone
+64KiB；代价是开着弹窗时来一次 TTL 刷新，面板里看到的还是打开那一刻的正文（服务器端
+技能本来也没有正文，见下）。
+
+- **正文从哪来**：本地技能直接是 `Skill.body`（`Skill::load` 已经把 `SKILL.md` 的正文
+  读进内存了，零 IO）。`mcp:<server>` 的技能**没有正文**——`Skill::from_remote` 明确写
+  `body: String::new()`，「a served skill never carries a body up front」，SEP-2640 也
+  不允许提前取文件。所以服务端技能的面板显示 `description` + 清单里的文件列表 +
+  一行说明「正文由 `mcp:<server>` 在用到时提供，本窗口不取」。
+  真去取需要 `resources/read`，那条路在 `SkillTool` 的 reader 上、是 async、还要一次
+  活的连接；把一个只读设置页接到它上面属于另一件事（列为 P2，不进本 ADR）。
+- **滚动**：正文区 `.id("skill-view-scroll")` + `max_h(…)` + `.overflow_y_scroll()`。
+  弹窗自己的滚动条，与 §6 的列表互不影响（弹窗是遮罩，列表在下面，滚轮只有一层在
+  指针下）。
+- **面板是变量，不是 `dialog.child(…)`**：遮罩是 `flex items_center justify_center`，
+  往它身上 `.child(…)` 会得到「第二个居中项」，不是「面板里的下一行」。第一次落地就是这么
+  错的：正文挂在遮罩上，铺满窗口，面板只剩标题栏那么大一个角。所以正文/说明一律
+  `panel = panel.child(…)`，最后才 `overlay.child(panel)`。
+- **宽度**：滚动区 `.w_full().min_w_0()`，正文 `TextView::w_full()`。`SKILL.md` 里常有
+  长代码围栏，没有这两条会把面板横向撑破。
+- **复制**：`cx.write_to_clipboard(ClipboardItem::new_string(body))`，复制的是
+  `Skill.body` **原文**。不走 `copy_text::plain_text_from_markdown`——那个函数的用途是
+  把 markdown 拍平成聊天气泡里好看的纯文本（见它的模块注释），而这里要的正好相反：
+  技能正文的价值就在标题、列表和代码块的结构上，拍平等于把内容弄坏。按钮点完换成
+  「已复制」，1.5 秒后换回（`cx.spawn` + `timer`，与主窗口 `copied_recently` 同一个
+  思路，但设置页没有那套 flash 表，本地面板自己记一个 `Instant` 就够）。
+- **Esc 关闭**：**接在已有的 `CloseSettingsShortcut` 处理器里**，先问弹窗：
+
+  ```rust
+  .on_action(cx.listener(|this, _: &CloseSettingsShortcut, window, cx| {
+      // 弹窗开着时 Esc 关弹窗，不是关窗口。同一处理器里两个含义，因为
+      // 「Esc 退一层」本来就是用户在按的那个意思。
+      if this.dismiss_open_skill(cx) {
+          return;
+      }
+      if !this.prepare_to_close(cx) {
+          return;
+      }
+      crate::setup::close_settings_window(window, cx);
+  }))
+  ```
+
+  不新建 `KeyBinding` 的理由不是省事：**`SetupView` 有两个宿主**，设置窗口从主窗口
+  打开时用的是主窗口那套 keymap（`run.rs`），而 `run_setup` / `run_settings` 各自
+  `gpui_kit::application().run(…)` 起一个新 App、**一个键都没绑**。绑到 `run.rs` 里就
+  等于「Esc 关弹窗」只在其中一个宿主成立。而在处理器里提前返回，宿主是谁都成立。
+  同理不用 `on_key_down`：key-down 监听只在没有 binding 认领这次击键时才跑
+  （`render/mod.rs` 的 `copy_selection` 注释写明了这个次序），而 Escape 已经被
+  `Settings` 上下文的 binding 认领了，轮不到它。
+- 关闭方式就两种：Esc、面板上的「关闭」。**不做点击遮罩关闭**——与设置窗口里现有的五个
+  弹窗保持一致（它们都只有按钮），而且在一个可滚动的只读面板上，误点到外面会丢掉刚
+  打开的东西。
+- 弹窗开着时不许第二次打开（`open_skill` 是单值），也不与其它五个弹窗同时出现：技能页
+  上没有别的弹窗，这一条靠页面天然成立。
+
+### §8 一致性：`qc skills list`
+
+同一个过滤：它列的是「模型能用什么」，所以被禁用的不列，末尾加一行 `N 个已禁用`。
+不新增 `qc skills enable/disable` 子命令——写配置的事留给设置页和编辑器，命令行只负责
+回答「现在是什么样」。
+
+### 替代方案
+
+| 方案 | 为什么不 |
+|---|---|
+| 列表只做磁盘发现，不接索引 | 用户看到 12 个、模型看到 22 个。这一页的第二个用途正是「某某服务器塞了什么进来」 |
+| 单独一个窗口/抽屉装列表 | 技能本来就是设置项；飘出去以后「开关在哪」又要记一次 |
+| 在发现阶段删除实现禁用 | TTL 刷新复活（§3-1）；关掉的行从界面上消失（§3-2） |
+| 改成 `enabled = [...]` 白名单 | 新装的技能默认不进 prompt，`npx skills` 装完没反应。默认必须「装了就生效」，所以记**禁用**才对 |
+| 按来源整段关闭（就有了全关 MCP 那条） | 粒度不够：同一个服务器里既有想要的也有不想要的 |
+| 允许项目配置写 `disabled` | 见下 |
+| 列表用 `TableSpec`（也就带上了分页） | 要的是「滚到底」，不是翻页；而且那张表的行是输入格，这里是只读 + 一个开关 |
+| 列表跟着页面滚，自己不滚 | 三个表单字段会被几十行推走，用户每看一次列表都要先滚回去改设置 |
+| Esc 绑到新的 key context 上关弹窗 | `SetupView` 有两个宿主，其中一个一个键都没绑（§7） |
+| 弹窗正文复制走 `plain_text_from_markdown` | 那是给聊天气泡用的拍平规则，会把标题、列表、代码块的骨架一起拆掉 |
+| 点遮罩关闭弹窗 | 设置窗口现有的五个弹窗都不这么做；只读面板上误点会丢掉刚打开的内容 |
+
+**项目层只认用户层**：`[skills] disabled` 写在 `.qcode/config.toml` 里一律忽略并 WARN。
+理由与 `[skills] mcp` 逐字相同（`config/load.rs` 的 `merge_project`）：授权不能被仓库里
+的文件改写。还有一条实现理由：合并后的 `Config` 不记录每个条目的来源，若允许合并，界面
+就分不清「这个人关的」和「这个仓库关的」，开关会出现「点了没反应」。
+
+### 后果
+
+好的：
+
+- 第一次能在应用内看清「我有哪些技能、谁给的、有几个附件」，并当场摘掉不需要的。
+- 摘掉一个技能不动磁盘，随时摘回来；省的是 system prompt 的 16KiB 预算。
+- 禁用是读时视图，所以 TTL 热更新、`list_changed`、内核重建三条路径的行为一致。
+- 关掉之前能先点开读一遍正文，读的时候能整段复制走 —— 不用为了看一眼去开编辑器。
+
+坏的：
+
+- `SkillIndex` 从「一份集合 + 一个 revision」变成「一份集合 + 一个视图集合」，读路径
+  多一次加锁与过滤。`summaries()` 每次调用都分配，界面按 `revision` 缓存。
+- 配置里多了一个「名字 + 可选来源」的迷你语法（§4），要靠单测守着。
+- 设置窗口开始依赖活的 kernel 状态（`Arc<SkillIndex>`），`Backend` 因此多一个方法；而
+  没有索引的那条路（向导）仍然存在，两种数据源都要各自测到。
+- 服务端技能在弹窗里只能看到清单，看不到正文（§7）。这是 SEP-2640 的按需取带来的，不是
+  实现偷懒；代价是「从服务器来的技能」这一页仍然读不到内容。
+
+### 测试
+
+- **布局测不到，这是第一次落地时真的踩到的坑**：正文最初写成 `dialog.child(scroll)`，
+  而 `dialog` 是那层居中的遮罩 —— 于是正文成了遮罩的第二个子元素，铺满整个窗口，按钮被
+  挤到角落。要断言「正文在面板里」需要 headless 窗口的 bounds 查询：`gpui-kit` 与
+  `gpui-base` 的 `test-support` 都提供，但都会拉可选的 `gpui-fast` 引擎，而它的
+  `proptest ^1.12` 在本机镜像源里没有（只有 1.11）。所以这条**只能靠人眼看一次**。
+  记在这里，是为了下次有人想加布局断言时不必重新踩：先解决 `proptest` 的源，或者等
+  `gpui-fast` 放宽版本。
+- `parse_disable_key`：裸名、`global:x`、`mcp:github:x`、未知来源、名字里多个 `:`、空串。
+  → `skills::tests::disable_keys_split_on_the_last_colon`
+- 过滤：`section()` 不含被禁的；`resolve()` 给 `Unknown`（不是 `Ambiguous`）；`names()`
+  不列；`snapshot()` 不含；`summaries()` 含且 `disabled = true`。
+  → `skills::tests::a_disabled_skill_is_hidden_from_the_model_but_still_listed`
+- `detail()` **不过滤**：被禁的技能仍能取到，且 `body` 与磁盘上的 `SKILL.md` 正文一致。
+  → 同上一条（`detail("alpha").body`）。
+- 热更新：`replace_served` 之后，被禁用的 served 技能**仍然不出现**。
+  → `skills::tests::a_refresh_does_not_bring_a_disabled_served_skill_back`
+- 重名：只禁 `mcp:github:report` 时本地 `report` 仍在，且两行都不再报歧义。
+  → `a_served_skill_never_shadows_a_local_one::a_contested_name_is_keyed_by_origin_and_can_be_disabled_alone`
+- 重新启用：`set_disabled(空)` 之后集合与禁用前逐项相同（`revision` 变了）。
+  → 同 `a_disabled_skill_…`（末尾断言 `revision()` 递增）。
+- 关发现：`enabled = false` 时 loader 什么都不发现，且 `disabled` 未被清空。
+  → `skill_load_tests::switching_discovery_off_leaves_the_off_list_alone`
+  （「卡片不列行」那个**分支**在 `render_skill_list` 里，需要 window，测不到。）
+- 发现报告：缺 `SKILL.md` 的目录进 `skipped` 且带原因，不是只打日志。
+  → `skill_load_tests::a_broken_skill_directory_is_reported_not_just_logged`
+- 项目层：`.qcode/config.toml` 里的 `[skills] disabled` 被整体忽略，用户的条目原样保留。
+  → `config::tests::a_project_config_cannot_disable_skills`
+- 已知键表：`("skills", &["enabled", "roots", "mcp", "disabled"])`，否则用户把
+  `disabled` 拼错时没有任何提示。
+  → `config::tests::skills_disabled_is_a_known_key`（正反两面：合法键不报、`disabledd` 报）
+- 弹窗的三种正文状态各一条：本地有正文（且原文含 `#`/`- `/围栏，证明没被
+  `plain_text_from_markdown` 处理过——这也是「复制」拿到的东西）；`served` 无正文、
+  `body_is_remote()` 为真、来源带 `mcp:` 前缀；本地正文为空文件。
+  → `skills::tests::the_dialog_can_tell_its_three_body_states_apart`
+- 开关写什么（ADR-0110 §5）：关掉追加、打开只删自己、连按两次不重复、带空白的条目按
+  解析后等价处理、`origin:name` 只影响自己那个来源、坏条目**不**被开关顺手删掉。
+  → `setup::skills::tests::*`（`toggle_disabled` 系列 6 条）
+- 哪些算「没有对应的技能」（§6 的提示与「清理」共用同一判定）：裸名按 name 匹配，
+  `origin:name` 必须精确匹配某行的 key —— 否则服务器删掉技能后那条禁用项永远清不掉。
+  → `setup::skills::tests::*`（`stale_disabled` 系列 4 条）
+  *（`stale_disabled` 的第一版就是错的：`row.key == … || row.name == …` 让
+  `mcp:github:report` 因为本地 `report` 存在而显得有效。测试先红后绿。）*
+- `disabled_keys()` 原样报告配置条目（含匹配不到任何行的），空串在解析期被丢弃。
+  → `skills::tests::disabled_keys_reports_entries_that_match_no_skill`
+- 写盘往返：`set_scalar(["skills","disabled"], …)` 数组分支不被 `origin:` 的冒号破坏，
+  清空时删键而不是留空数组。
+  → `config_edit::tests::set_scalar_round_trips_and_removes`
+- 「Esc 关弹窗而不是关窗口」这一条**测不到**（GUI 测试没有窗口）。所以它靠两个更硬的
+  东西兜着：处理器里那行提前返回，以及 `dismiss_open_skill` 是个纯函数式的
+  `Option::take`。写在测试清单里是为了记下这个空洞，不是假装覆盖了。
+- 复制按钮本身（写剪贴板）**测不到**，同上：要 window。可测的是它复制的*内容*，
+  已由上面「三种正文状态」覆盖。
+- i18n：新增 `gui.skills.*`、`gui.skills.dialog.*`、`cli.skills.disabled_count` 的中英
+  两份，过门禁 4/6（`crates/qcode-i18n/tests/gates.rs`）。
+- 一致性：`qc skills list` 少列被禁的，并多打一行「另有 N 个已在设置里关掉」。
+  → 手工验过（`--config` 指向临时文件，45 → 44），无自动化测试：这条命令要读真实
+  home 树，断精确数量会随开发机变化。
+
+### 落地清单（P0）
+
+| 文件 | 改动 |
+|---|---|
+| `crates/qcode-tools/src/skills.rs` | `Disabled` / `parse_disable_key`；`SkillIndex.disabled` + `set_disabled`；所有读路径过滤；`summaries()` / `SkillSummary` / `detail()`；`discover_reporting` |
+| `crates/qcode-kernel/src/config/mod.rs` | `SkillsConfig.disabled: Vec<String>`（`serde(default)`） |
+| `crates/qcode-kernel/src/config/load.rs` | 项目层忽略 + WARN；已知键表加 `disabled` |
+| `crates/qcode-kernel/src/lib.rs` | 装配时把 `loaded.skills.disabled` 交给索引 |
+| `crates/qcode-kernel/src/config_edit.rs` | `set_scalar_value` 的数组分支加 `["skills", "disabled"]` |
+| `crates/qcode-gui/src/backend.rs` | `Backend::skill_index()`（默认 `None`）；`LocalBackend` 存一份 Arc |
+| `crates/qcode-gui/src/shell/view.rs` | `open_settings` 传索引与 `backend.cwd()` |
+| `crates/qcode-gui/src/setup/mod.rs` | `skills: Arc<SkillIndex>` 与 `open_skill: Option<OpenSkill>` 两个字段 |
+| `crates/qcode-kernel/src/config/tests.rs` | 项目层忽略、已知键表各一条 |
+| `crates/qcode-gui/src/setup/skills.rs` | 列表卡片（自带滚动）、`render_open_skill_dialog`、`toggle_disabled` / `stale_disabled`、`CloseSettingsShortcut` 处理器加提前返回 |
+| `crates/qcode-gui/src/setup/skills/tests.rs` | 开关写什么、哪些算 stale（10 条，不需要 window） |
+| `crates/qcode-gui/src/setup/fields.rs` | 开关写入（`AutoSaveKind::Scalar`）与 `open_root` |
+| `crates/qcode-i18n/locales/app.yml` | `gui.skills.*`、`gui.skills.dialog.*` |
+| `crates/qcode/src/commands/misc.rs` | `qc skills list` 应用过滤 + 一行禁用数 |
+| `docs/design/SKILLS.md` | §2/§8 补 `disabled` 与设置页；§7 补「禁用是视图，不是权限」 |
+
+`forms.rs` 不动：卡片不是 `FieldSpec`，与 Models 页的 Provider 卡片同一类东西。
+`run.rs` 不动：Esc 走已有的 `CloseSettingsShortcut` 处理器，不新增 key binding。
+
+### 本 ADR 不做
+
+- 不做 `enabled` 白名单、不做按来源整段关、不做每任务/每目录覆盖（项目层已明确不认）。
+- 不做在列表里新建/编辑/删除技能：那是写 `SKILL.md`，可能落在 workspace 之外，属于另一
+  条写权限边界。
+- 不做在弹窗里加载 `mcp:<server>` 的正文（§7 的 P2）：要 async reader 与一次活连接。
+- 不做弹窗里的附件浏览与逐文件复制（等价于 `skill(name, file=…)` 的界面）。
+- 不做列表分页、搜索、排序切换、键盘导航（↑↓ 选中行）与点击遮罩关闭。
+- 不动 `[skills] enabled` 与 `[skills] mcp` 的默认值。
+- 不改 `CONFIG_VERSION`：加一个可选字段，不迁移。

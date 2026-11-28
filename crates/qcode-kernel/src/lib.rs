@@ -424,10 +424,22 @@ pub fn mcp_roots(workspace: &Path, grant: &qcode_mcp::GrantSet) -> Vec<qcode_cor
 /// Discover skills unless the config disables them. A missing `HOME` only
 /// loses the user-level root; configured and project roots still work.
 pub fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<SkillSet> {
+    load_skills_reporting(config, workspace).0
+}
+
+/// [`load_skills`], plus the directories discovery skipped.
+///
+/// The settings list shows the skips (ADR-0110 §6): "the skill I installed is
+/// not listed" is answered by the same call that built the list.
+pub fn load_skills_reporting(
+    config: &config::SkillsConfig,
+    workspace: &Path,
+) -> (Arc<SkillSet>, Vec<qcode_tools::skills::Skipped>) {
     if !config.enabled {
-        return Arc::new(SkillSet::default());
+        return (Arc::new(SkillSet::default()), Vec::new());
     }
-    Arc::new(SkillSet::discover(&skill_roots(config, workspace)))
+    let (set, skipped) = SkillSet::discover_reporting(&skill_roots(config, workspace));
+    (Arc::new(set), skipped)
 }
 
 /// The servers the config lets contribute skills, by label (ADR-0108 §1).
@@ -995,13 +1007,16 @@ pub async fn assemble(
     // One index per session: `SkillSet` stays the immutable value it always
     // was, and the index is what lets a later `list_changed` swap one server's
     // contribution without rebuilding this assembly (ADR-0108 P1).
+    let (local, skipped) = load_skills_reporting(&loaded.skills, cwd);
     let set = if served.is_empty() {
-        (*load_skills(&loaded.skills, cwd)).clone()
+        (*local).clone()
     } else {
-        let local = load_skills(&loaded.skills, cwd);
         (*local).clone().with_served(served_skills(served))
     };
-    let skills = Arc::new(SkillIndex::new(set));
+    // ADR-0110: the user's off-list rides along as a view filter, and the
+    // discovery report rides along for the settings list.
+    let skills =
+        Arc::new(SkillIndex::with_disabled(set, &loaded.skills.disabled).with_skipped(skipped));
     // SEP-2640 defines no `list_changed` notification; a server's `ttlMs` is the
     // only hint that its catalogue moved. Refresh on that hint, and let the
     // revision bump tell the next turn that the prompt changed.
@@ -1096,6 +1111,80 @@ mod install_secrets_tests {
             !redactor.secrets().iter().any(String::is_empty),
             "an empty string was registered as a secret"
         );
+    }
+}
+
+#[cfg(test)]
+mod skill_load_tests {
+    use super::*;
+
+    /// ADR-0110 §4: turning discovery off does not rewrite the off-list.
+    ///
+    /// The switches write the same key, and someone who turns discovery off to
+    /// debug something must get their choices back when they turn it on again —
+    /// so `load` must not "clean up" entries it cannot currently resolve.
+    #[test]
+    fn switching_discovery_off_leaves_the_off_list_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".qcode/skills/alpha");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: alpha\ndescription: first\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let mut config = config::SkillsConfig {
+            disabled: vec!["alpha".to_string()],
+            ..Default::default()
+        };
+
+        // `skill_roots` also lists the real home tree, so these assertions are
+        // about *this* skill, not about the total count: a machine with forty
+        // installed skills must not change the verdict.
+        let (set, _) = load_skills_reporting(&config, tmp.path());
+        // Finding it at all is the point: `load_skills*` does **not** apply the
+        // off-list, only `SkillIndex` does (ADR-0110 §3). A loader that filtered
+        // here would be the discovery-time deletion the ADR rules out.
+        set.iter()
+            .find(|skill| skill.name == "alpha")
+            .expect("discovered even though it is on the off-list");
+
+        config.enabled = false;
+        let (set, skipped) = load_skills_reporting(&config, tmp.path());
+        assert!(set.is_empty(), "no skill is discovered at all");
+        assert!(skipped.is_empty(), "and nothing is reported as skipped");
+        assert_eq!(
+            config.disabled,
+            ["alpha".to_string()],
+            "the off-list is not the loader's to rewrite"
+        );
+    }
+
+    /// ADR-0110 §6: the settings list answers 「where did my skill go」 with the
+    /// directories discovery refused, not just a log line.
+    #[test]
+    fn a_broken_skill_directory_is_reported_not_just_logged() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No SKILL.md: the classic "I created the directory and nothing showed up".
+        std::fs::create_dir_all(tmp.path().join(".qcode/skills/oops")).unwrap();
+        let good = tmp.path().join(".qcode/skills/fine");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            good.join("SKILL.md"),
+            "---\nname: fine\ndescription: ok\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let config = config::SkillsConfig::default();
+        let (set, skipped) = load_skills_reporting(&config, tmp.path());
+
+        assert!(set.iter().any(|skill| skill.name == "fine"));
+        let oops = skipped
+            .iter()
+            .find(|entry| entry.path.ends_with("oops"))
+            .expect("the broken directory is reported");
+        assert!(!oops.reason.is_empty(), "the reason must be printable");
     }
 }
 

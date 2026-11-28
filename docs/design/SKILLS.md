@@ -28,6 +28,10 @@ skill 里让模型跑的命令仍然走正常的策略与审批。
   `warn` 并跳过，不影响 qc 启动。
 - 没有 `HOME` 时只丢 global / user 根，config / project 根照常工作。
 - `[skills] enabled = false` 完全跳过发现；`qc skills list` 可打印发现结果与被检查的根。
+- `[skills] disabled` 里的技能**仍然被发现**，只是不进 system prompt（ADR-0110 §3）：
+  过滤在索引的读侧，不在发现侧，否则服务器的 TTL 刷新会把它们塞回来。设置页的「技能」
+  列表逐个开关，写的就是这一项；名字唯一时写裸名，重名时写 `来源:名字`
+  （`mcp:github:pdf`）。项目层不认这一项（与 `[skills] mcp` 同一条理由）。
 
 ## 3. Frontmatter 子集
 
@@ -99,6 +103,8 @@ qcode 只解释两个字段：
 - skill 内容是**不可信指令**：不改变审批、不扩大 workspace、不引入 `allowed-tools`。
 - 用户级 skill 在 workspace 之外，只有 `skill` 工具能读；`read_file` 仍被限制在 workspace。
 - 不做 imports、自动激活或 slash command；这些留给后续版本。
+- **设置页的开关不是权限**：`disabled` 只决定这个技能是否进入索引，不改变审批、不改变
+  沙箱。关掉它等于「模型不知道有这个技能」（ADR-0110 §3）。
 - **MCP 来源的 skill 默认不发现**：`[skills] mcp = false`，要按服务器 `skills = true` 才开。
   开启后：来源在索引与正文里都标成 `mcp:<server>`；正文按清单的 size + SHA-256 与
   frontmatter 逐字段校验（内容绑定）；`resources: "dynamic"` 的 skill 拒载；跨服务器读
@@ -116,6 +122,7 @@ qcode 只解释两个字段：
 enabled = true   # 默认 true
 mcp = false      # 是否允许 MCP server 贡献 skill 索引（默认 false，ADR-0108）
 roots = ["~/space/skills/skills"]   # 额外目录，可选
+disabled = ["pdf", "mcp:github:playwright-cli"]   # 设置页逐个关掉的，可选（ADR-0110）
 
 [[mcp.servers]]
 name = "github"

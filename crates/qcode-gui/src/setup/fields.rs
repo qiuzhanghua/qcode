@@ -264,6 +264,8 @@ pub(crate) fn apply_scalar(config: &mut Config, path: &[&str], value: &str) -> R
                 .map(std::path::PathBuf::from)
                 .collect()
         }
+        // ADR-0110 §4: names (optionally `origin:name`), one per line.
+        ["skills", "disabled"] => config.skills.disabled = lines_from(value),
         ["search", "enabled"] => config.search.enabled = value == "true",
         ["search", "backend"] => config.search.backend = parse_search(value)?,
         ["search", "api_key_env"] => config.search.api_key_env = value.to_string(),
